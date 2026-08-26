@@ -48,7 +48,7 @@ publishing {
 }
 
 dependencies {
-    implementation(project(":core:common"))
+    api(project(":core:common"))
     implementation(project(":core:security"))
     implementation(project(":core:network"))
     implementation(project(":core:persistence"))
