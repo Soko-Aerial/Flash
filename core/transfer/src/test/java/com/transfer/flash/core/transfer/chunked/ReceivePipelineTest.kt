@@ -205,4 +205,165 @@ class ReceivePipelineTest {
         val (deferredComplete, _) = runWith(null)
         assertFalse(deferredComplete.verified)
     }
+
+    @Test
+    fun `resume seed pre-marks persisted chunks so sender may skip them`() {
+        val frames = chunkFrames()
+        // Simulate a pre-restart receiver that already persisted the first 40 chunks.
+        val seeded = (0 until 40).toList()
+        val sink = RecordingSink()
+        val pipeline = ReceivePipeline(
+            sink = sink,
+            emitSessionStarted = true,
+            resumeIndexesProvider = { seeded },
+        )
+
+        val startEvents = pipeline.onFrame(ChunkFrame.serialize(startFrame()))
+        // Fresh session still just announces itself — seeded indexes are not yet complete.
+        assertEquals(1, startEvents.filterIsInstance<ReceiveEvent.SessionStarted>().size)
+        assertTrue(startEvents.none { it is ReceiveEvent.Completed })
+
+        // The resuming sender omits the 40 seeded chunks and sends only the remaining 30.
+        var completed: ChunkFrame.Complete? = null
+        for (frame in frames.drop(40)) {
+            for (event in pipeline.onFrame(ChunkFrame.serialize(frame))) {
+                if (event is ReceiveEvent.Completed) completed = event.frame
+            }
+        }
+
+        assertNotNull("completion reached without re-sending seeded chunks", completed)
+        // Only the non-seeded chunks were written; seeded chunks were never re-received.
+        assertEquals((40 until frames.size).toList(), sink.indexesWritten)
+    }
+
+    @Test
+    fun `fully seeded resume completes on fileStart with no further chunks`() {
+        val frames = chunkFrames()
+        val sink = RecordingSink()
+        val pipeline = ReceivePipeline(
+            sink = sink,
+            emitSessionStarted = true,
+            resumeIndexesProvider = { (0 until frames.size).toList() },
+        )
+
+        val events = pipeline.onFrame(ChunkFrame.serialize(startFrame()))
+        val completed = events.filterIsInstance<ReceiveEvent.Completed>().singleOrNull()
+        assertNotNull("all-chunks-persisted resume finalizes immediately", completed)
+        assertEquals(0, sink.writes)
+    }
+
+    @Test
+    fun `resume seed ignores out-of-range indexes`() {
+        val frames = chunkFrames()
+        val sink = RecordingSink()
+        val pipeline = ReceivePipeline(
+            sink = sink,
+            emitSessionStarted = true,
+            resumeIndexesProvider = { listOf(-1, 0, frames.size, frames.size + 100) },
+        )
+        // Only index 0 is in range; the session must not complete or throw on the bogus indexes.
+        val events = pipeline.onFrame(ChunkFrame.serialize(startFrame()))
+        assertTrue(events.none { it is ReceiveEvent.Completed })
+
+        var completed: ChunkFrame.Complete? = null
+        for (frame in frames.drop(1)) {
+            for (event in pipeline.onFrame(ChunkFrame.serialize(frame))) {
+                if (event is ReceiveEvent.Completed) completed = event.frame
+            }
+        }
+        assertNotNull(completed)
+        assertEquals((1 until frames.size).toList(), sink.indexesWritten)
+    }
+
+    // ---- #5: inbound offer / acceptance gate ------------------------------------------------
+
+    @Test
+    fun `requireAcceptance defers the sink and drops chunks until accepted`() {
+        val sink = RecordingSink()
+        var sinkFactoryCalls = 0
+        val pipeline = ReceivePipeline(
+            sink = sink,
+            emitSessionStarted = true,
+            requireAcceptance = true,
+            sinkFactory = { sinkFactoryCalls++; sink },
+        )
+
+        val startEvents = pipeline.onFrame(ChunkFrame.serialize(startFrame()))
+        // The offer is announced, but no destination is created before consent.
+        assertEquals(1, startEvents.filterIsInstance<ReceiveEvent.SessionStarted>().size)
+        assertEquals("no sink resolved before acceptance", 0, sinkFactoryCalls)
+
+        // A chunk arriving before the user accepts is dropped, never written.
+        val early = chunkFrames()[0]
+        val rejected = pipeline.onFrame(ChunkFrame.serialize(early)).single() as ReceiveEvent.Rejected
+        assertEquals(RejectReason.AWAITING_ACCEPTANCE, rejected.reason)
+        assertEquals(0, sink.writes)
+        assertNull("nothing acked while awaiting acceptance", pipeline.flushPendingAck())
+    }
+
+    @Test
+    fun `acceptSession resolves the sink and lets chunks flow to completion`() {
+        val sink = RecordingSink()
+        var sinkFactoryCalls = 0
+        val pipeline = ReceivePipeline(
+            sink = sink,
+            requireAcceptance = true,
+            sinkFactory = { sinkFactoryCalls++; sink },
+        )
+        pipeline.onFrame(ChunkFrame.serialize(startFrame()))
+
+        assertTrue("acceptSession opens an awaiting offer", pipeline.acceptSession(meta.transferId))
+        assertEquals("sink resolved exactly once on accept", 1, sinkFactoryCalls)
+        assertFalse("second accept is a no-op", pipeline.acceptSession(meta.transferId))
+
+        val frames = chunkFrames()
+        var completed: ChunkFrame.Complete? = null
+        for (frame in frames) {
+            for (event in pipeline.onFrame(ChunkFrame.serialize(frame))) {
+                if (event is ReceiveEvent.Completed) completed = event.frame
+            }
+            if (completed != null) break
+        }
+        assertNotNull("accepted offer streams to completion", completed)
+        assertEquals(frames.size, sink.writes)
+    }
+
+    @Test
+    fun `declineSession drops the offer so later chunks are unknown`() {
+        val sink = RecordingSink()
+        val pipeline = ReceivePipeline(
+            sink = sink,
+            requireAcceptance = true,
+            sinkFactory = { sink },
+        )
+        pipeline.onFrame(ChunkFrame.serialize(startFrame()))
+
+        assertTrue(pipeline.declineSession(meta.transferId))
+        assertFalse("declining a gone session returns false", pipeline.declineSession(meta.transferId))
+
+        val chunk = chunkFrames()[0]
+        val rejected = pipeline.onFrame(ChunkFrame.serialize(chunk)).single() as ReceiveEvent.Rejected
+        assertEquals(RejectReason.UNKNOWN_TRANSFER, rejected.reason)
+        assertEquals(0, sink.writes)
+    }
+
+    @Test
+    fun `fully seeded resume bypasses the acceptance gate and finalizes`() {
+        val frames = chunkFrames()
+        val sink = RecordingSink()
+        var sinkFactoryCalls = 0
+        val pipeline = ReceivePipeline(
+            sink = sink,
+            requireAcceptance = true,
+            resumeIndexesProvider = { (0 until frames.size).toList() },
+            sinkFactory = { sinkFactoryCalls++; sink },
+        )
+
+        val events = pipeline.onFrame(ChunkFrame.serialize(startFrame()))
+        val completed = events.filterIsInstance<ReceiveEvent.Completed>().singleOrNull()
+        assertNotNull("a fully-persisted resume finalizes even under the offer gate", completed)
+        // No new destination is created for an already-complete resume, and accept is a no-op.
+        assertEquals(0, sink.writes)
+        assertFalse(pipeline.acceptSession(meta.transferId))
+    }
 }

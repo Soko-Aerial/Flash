@@ -35,6 +35,7 @@ class WsConnection(
     private val listener: Listener,
     private val pingIntervalMs: Long = DEFAULT_PING_INTERVAL_MS,
     private val readTimeoutMs: Int = DEFAULT_READ_TIMEOUT_MS,
+    private val livenessTimeoutMs: Long = DEFAULT_LIVENESS_TIMEOUT_MS,
 ) {
     interface Listener {
         fun onTextMessage(connection: WsConnection, text: String)
@@ -48,16 +49,36 @@ class WsConnection(
     private val input: InputStream = socket.getInputStream()
     private val output: OutputStream = socket.getOutputStream()
 
+    /**
+     * Wall-clock of the last inbound frame of ANY kind (text/binary/ping/pong). The keepalive
+     * watchdog compares against this to prune half-open connections deterministically, instead of
+     * waiting for a blocked read to trip its socket timeout — which never fires reliably when the
+     * peer's OS silently drops the TCP state (force-stop / uninstall on a Wi-Fi hotspot).
+     */
+    @Volatile
+    private var lastInboundAtMs: Long = System.currentTimeMillis()
+
     val isOpen: Boolean
         get() = !closed.get()
 
     fun start() {
         runCatching { socket.soTimeout = readTimeoutMs }
+        // TCP keepalive gives the kernel a second, independent path to notice a dead peer.
+        runCatching { socket.keepAlive = true }
+        lastInboundAtMs = System.currentTimeMillis()
         scope.launch { readLoop() }
         scope.launch {
             while (scope.isActive) {
                 kotlinx.coroutines.delay(pingIntervalMs)
                 if (closed.get()) break
+                // Prune before pinging: if nothing has come back within the liveness window, the
+                // peer is gone. A live peer answers our PINGs with PONGs (which refresh
+                // lastInboundAtMs), so a stale timestamp means no traffic at all — close now.
+                val silentForMs = System.currentTimeMillis() - lastInboundAtMs
+                if (silentForMs > livenessTimeoutMs) {
+                    close("No inbound traffic for ${silentForMs}ms")
+                    break
+                }
                 send(WebSocketCodec.OPCODE_PING, ByteArray(0))
             }
         }
@@ -112,7 +133,10 @@ class WsConnection(
     private suspend fun readLoop() {
         try {
             while (!closed.get() && scope.isActive) {
-                when (val message = WebSocketCodec.readMessage(input)) {
+                val message = WebSocketCodec.readMessage(input)
+                // Any inbound frame proves the peer is alive — refresh the watchdog timestamp.
+                lastInboundAtMs = System.currentTimeMillis()
+                when (message) {
                     is WebSocketCodec.Message.Text -> listener.onTextMessage(this, message.text)
                     is WebSocketCodec.Message.Binary -> listener.onBinaryMessage(this, message.data)
                     is WebSocketCodec.Message.Ping -> send(WebSocketCodec.OPCODE_PONG, message.payload)
@@ -139,7 +163,14 @@ class WsConnection(
         private const val TAG = "WS"
 
         /** Idle connections are refreshed 3x per read-timeout window (ping -> pong traffic). */
-        const val DEFAULT_PING_INTERVAL_MS = 15_000L
-        const val DEFAULT_READ_TIMEOUT_MS = 45_000
+        const val DEFAULT_PING_INTERVAL_MS = 10_000L
+        const val DEFAULT_READ_TIMEOUT_MS = 30_000
+
+        /**
+         * Watchdog window: if no inbound frame arrives for this long the peer is pruned. Sized to
+         * ~2.5 ping intervals so a live peer that misses one PONG is forgiven, but a dead one is
+         * dropped in ~25s regardless of where the read loop is parked.
+         */
+        const val DEFAULT_LIVENESS_TIMEOUT_MS = 25_000L
     }
 }

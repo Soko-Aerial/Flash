@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
@@ -175,7 +176,18 @@ fun FlashVoiceMessageCard(
     val motion = FlashTheme.motion
     val haptics = rememberFlashHaptics()
 
-    // --- Playback state (demo-mode ticker; real decode deferred — see component doc) ---
+    // --- Playback state ---
+    // Real audio via [FlashAudioPlayer] when the note has a downloaded local file; otherwise the
+    // demo-mode ticker still drives previews / not-yet-downloaded cards.
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val hasAudio = attachment.uri != null && attachment.transferStatus == FlashFileTransferStatus.Downloaded
+    val audioPlayer = remember(attachment.id, attachment.uri, hasAudio) {
+        if (hasAudio) FlashAudioPlayer(context, attachment.uri!!) else null
+    }
+    DisposableEffect(audioPlayer) {
+        onDispose { audioPlayer?.release() }
+    }
+
     var isPlaying by remember(attachment.id) { mutableStateOf(false) }
     var elapsedMs by remember(attachment.id) { mutableLongStateOf(0L) }
     var hasStarted by remember(attachment.id) { mutableStateOf(false) }
@@ -186,12 +198,27 @@ fun FlashVoiceMessageCard(
     val displayElapsedMs = scrubFraction?.let { FlashVoiceMath.elapsedForFraction(it, durationMs) } ?: elapsedMs
 
     LaunchedEffect(isPlaying, playbackSpeed, attachment.id) {
-        while (isPlaying && elapsedMs < durationMs) {
-            delay(FlashVoiceMath.TICK_MS)
-            elapsedMs = (elapsedMs + (FlashVoiceMath.TICK_MS * playbackSpeed.toLong())).coerceAtMost(durationMs)
-        }
-        if (elapsedMs >= durationMs && durationMs > 0L) {
-            isPlaying = false
+        if (audioPlayer != null) {
+            audioPlayer.setSpeed(playbackSpeed)
+            if (isPlaying) audioPlayer.play() else audioPlayer.pause()
+            while (isPlaying) {
+                elapsedMs = audioPlayer.positionMs().coerceAtMost(if (durationMs > 0L) durationMs else Long.MAX_VALUE)
+                if (!audioPlayer.isPlaying() && elapsedMs > 0L) {
+                    // Reached the end (MediaPlayer stops itself) — snap to full and reset.
+                    if (durationMs > 0L) elapsedMs = durationMs
+                    isPlaying = false
+                    break
+                }
+                delay(FlashVoiceMath.TICK_MS)
+            }
+        } else {
+            while (isPlaying && elapsedMs < durationMs) {
+                delay(FlashVoiceMath.TICK_MS)
+                elapsedMs = (elapsedMs + (FlashVoiceMath.TICK_MS * playbackSpeed.toLong())).coerceAtMost(durationMs)
+            }
+            if (elapsedMs >= durationMs && durationMs > 0L) {
+                isPlaying = false
+            }
         }
     }
 
@@ -265,6 +292,7 @@ fun FlashVoiceMessageCard(
                     if (isPlaying || elapsedMs < durationMs) hasStarted = true
                     if (!isPlaying && elapsedMs >= durationMs && durationMs > 0L) {
                         elapsedMs = 0L
+                        audioPlayer?.seekTo(0L)
                     }
                     isPlaying = !isPlaying
                     onActionClick()
@@ -291,12 +319,14 @@ fun FlashVoiceMessageCard(
             onSeek = { fraction ->
                 scrubFraction = null
                 elapsedMs = FlashVoiceMath.elapsedForFraction(fraction, durationMs)
+                audioPlayer?.seekTo(elapsedMs)
                 hasStarted = true
             },
             onScrub = { fraction -> scrubFraction = fraction },
             onScrubEnd = {
                 scrubFraction?.let { fraction ->
                     elapsedMs = FlashVoiceMath.elapsedForFraction(fraction, durationMs)
+                    audioPlayer?.seekTo(elapsedMs)
                 }
                 scrubFraction = null
                 hasStarted = true

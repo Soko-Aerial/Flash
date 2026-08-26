@@ -178,6 +178,7 @@ class NsdTransportLogicTest {
         maxDutyCycles: Int = Int.MAX_VALUE,
         idleWaits: MutableList<Long>? = null,
         slept: MutableList<Long>? = null,
+        lostDebounceMs: Long = 0L,
     ): NsdTransport {
         val recordedDelays = delays
         val recordedIdleWaits = idleWaits
@@ -201,6 +202,7 @@ class NsdTransportLogicTest {
                 recordedIdleWaits?.add(ms)
                 false // full gap elapsed; deterministic, no virtual time needed
             },
+            lostDebounceMs = lostDebounceMs, // synchronous loss in tests unless a case opts into debounce
             logInfo = {},
             logWarn = {},
             bridgeOverride = bridge,
@@ -368,6 +370,41 @@ class NsdTransportLogicTest {
         recorder.cancel()
     }
 
+    @Test
+    fun monitorLost_debounced_reFindCancelsRemoval_noLostEmitted() {
+        // With a long debounce, a transient radio goodbye must NOT evict the peer synchronously;
+        // a re-find (onServiceFound → resolved update) before the window elapses cancels the pending
+        // removal entirely. This is the hotspot/mDNS-flap fix: the peer stays in the directory.
+        val bridge = FakeBridge()
+        val directory = FakeDirectory()
+        val transport = newTransport(
+            apiLevel = 34,
+            directory = directory,
+            bridge = bridge,
+            lostDebounceMs = 10_000L,
+        )
+        runBlocking { transport.startBrowsing() }
+        val recorder = EventRecorder(transport)
+
+        directory.seenResults.addLast(DiffFound(endpointOf("peer-1")))
+        bridge.fireServiceFound("Flash Peer")
+        bridge.fireMonitorUpdated(resolvedData())
+
+        // Transient loss: removal is deferred by the debounce, so nothing happens yet.
+        directory.lostResult = DiffLost("peer-1")
+        bridge.fireMonitorLost("Flash Peer")
+        assertTrue("removal must be deferred, not immediate", directory.lostCalls.isEmpty())
+
+        // Peer re-announced within the window → cancels the pending removal.
+        directory.seenResults.addLast(DiffFound(endpointOf("peer-1")))
+        bridge.fireServiceFound("Flash Peer")
+        bridge.fireMonitorUpdated(resolvedData())
+
+        assertTrue("re-find must cancel the removal", directory.lostCalls.isEmpty())
+        assertTrue(recorder.received.filterIsInstance<FlashTransportEvent.Lost>().isEmpty())
+        recorder.cancel()
+    }
+
     // ------------------------------------------------------------------
     // Retry policy re-browse (C3.3) + API-level branch selection (C3.4)
     // ------------------------------------------------------------------
@@ -423,7 +460,10 @@ class NsdTransportLogicTest {
     }
 
     @Test
-    fun multicastLock_acquiredOnlyBelowThreshold() {
+    fun multicastLock_acquiredOnAllApiLevels() {
+        // Background/screen-off resilience fix: the multicast lock is now taken on ALL API
+        // levels while browsing. Framework-managed multicast (T-ext 7+) only covers FOREGROUND
+        // apps, but Flash browses from a backgrounded FGS, so the explicit lock is always needed.
         val oldBridge = FakeBridge()
         val oldTransport = newTransport(apiLevel = 33, directory = FakeDirectory(), bridge = oldBridge)
         runBlocking { oldTransport.startBrowsing() }
@@ -432,7 +472,7 @@ class NsdTransportLogicTest {
         val newBridge = FakeBridge()
         val newTransport = newTransport(apiLevel = 35, directory = FakeDirectory(), bridge = newBridge)
         runBlocking { newTransport.startBrowsing() }
-        assertFalse(newBridge.lockStates.contains(true))
+        assertTrue(newBridge.lockStates.contains(true))
     }
 
     @Test

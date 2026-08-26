@@ -29,6 +29,15 @@ interface OutboxDao {
     @Query("UPDATE outbox SET attempts = attempts + 1 WHERE localId = :localId")
     suspend fun incrementAttempts(localId: String)
 
+    /**
+     * Failed-delivery reschedule (#21): atomically bump the attempt count AND push the next retry
+     * into the future so a failed send backs off instead of being re-claimed every drain tick.
+     * Combined into one statement so a concurrent claimer never sees the incremented count without
+     * the advanced [nextAttemptAt]. [dueForDelivery] then skips the row until its backoff elapses.
+     */
+    @Query("UPDATE outbox SET attempts = attempts + 1, nextAttemptAt = :nextAttemptAt WHERE localId = :localId")
+    suspend fun rescheduleAttempt(localId: String, nextAttemptAt: Long)
+
     @Query("DELETE FROM outbox WHERE localId = :localId")
     suspend fun delete(localId: String)
 

@@ -22,6 +22,7 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -116,21 +117,148 @@ class FlashMotion internal constructor(
         return progress.asState()
     }
 
-    /** Conversation ↔ list navigation (UI-033). */
-    fun screenEnter(): EnterTransition {
+    /**
+     * Conversation ↔ list navigation (UI-033). Alias of the forward-push pair, kept for
+     * callers that do not care about direction.
+     */
+    fun screenEnter(): EnterTransition = screenPushEnter()
+
+    fun screenExit(): ExitTransition = screenPushExit()
+
+    /** Push (a screen opening on top): incoming rides in from the trailing edge. */
+    fun screenPushEnter(): EnterTransition {
         if (reduceMotion) {
             return EnterTransition.None
         }
         return fadeIn(tween(slowMillis, easing = Decelerate)) +
-            slideInHorizontally(tween(slowMillis, easing = Standard)) { fullWidth -> (fullWidth * 0.3f).toInt() }
+            slideInHorizontally(tween(slowMillis, easing = Standard)) { w -> (w * ScreenSlide).toInt() }
     }
 
-    fun screenExit(): ExitTransition {
+    fun screenPushExit(): ExitTransition {
         if (reduceMotion) {
             return ExitTransition.None
         }
         return fadeOut(tween(slowMillis, easing = Accelerate)) +
-            slideOutHorizontally(tween(slowMillis, easing = Accelerate)) { fullWidth -> (-fullWidth * 0.3f).toInt() }
+            slideOutHorizontally(tween(slowMillis, easing = Accelerate)) { w -> (-w * ScreenSlide).toInt() }
+    }
+
+    /** Pop (a screen closing): the mirror image of [screenPushEnter] / [screenPushExit]. */
+    fun screenPopEnter(): EnterTransition {
+        if (reduceMotion) {
+            return EnterTransition.None
+        }
+        return fadeIn(tween(slowMillis, easing = Decelerate)) +
+            slideInHorizontally(tween(slowMillis, easing = Standard)) { w -> (-w * ScreenSlide).toInt() }
+    }
+
+    fun screenPopExit(): ExitTransition {
+        if (reduceMotion) {
+            return ExitTransition.None
+        }
+        return fadeOut(tween(slowMillis, easing = Accelerate)) +
+            slideOutHorizontally(tween(slowMillis, easing = Accelerate)) { w -> (w * ScreenSlide).toInt() }
+    }
+
+    /**
+     * UI-046 lateral tab hop: a short slide (no page-push depth) so switching tabs reads like a
+     * pager rather than opening a new screen. [towardEnd] follows the sign of the tab-index delta.
+     */
+    fun tabEnter(towardEnd: Boolean): EnterTransition {
+        if (reduceMotion) {
+            return EnterTransition.None
+        }
+        val sign = if (towardEnd) 1f else -1f
+        return fadeIn(tween(normalMillis, easing = Decelerate)) +
+            slideInHorizontally(tween(normalMillis, easing = Standard)) { w -> (w * TabSlide * sign).toInt() }
+    }
+
+    fun tabExit(towardEnd: Boolean): ExitTransition {
+        if (reduceMotion) {
+            return ExitTransition.None
+        }
+        val sign = if (towardEnd) -1f else 1f
+        return fadeOut(tween(fastMillis, easing = Accelerate)) +
+            slideOutHorizontally(tween(normalMillis, easing = Accelerate)) { w -> (w * TabSlide * sign).toInt() }
+    }
+
+    /** Full-window overlay (Dev Console) rising from the bottom edge. */
+    fun sheetEnter(): EnterTransition {
+        if (reduceMotion) {
+            return EnterTransition.None
+        }
+        return fadeIn(tween(fastMillis, easing = Decelerate)) +
+            slideInVertically(
+                animationSpec = spring(
+                    dampingRatio = SpringDefaultDamping,
+                    stiffness = SpringDefaultStiffness,
+                    visibilityThreshold = IntOffset.VisibilityThreshold,
+                ),
+                initialOffsetY = { fullHeight -> fullHeight },
+            )
+    }
+
+    fun sheetExit(): ExitTransition {
+        if (reduceMotion) {
+            return ExitTransition.None
+        }
+        return fadeOut(tween(fastMillis, easing = Accelerate)) +
+            slideOutVertically(tween(normalMillis, easing = Accelerate)) { fullHeight -> fullHeight }
+    }
+
+
+    /**
+     * UI-046: hanging shell bar (bottom nav) entering/leaving as tab roots and pushed
+     * screens swap. Drops out downward so it reads as chrome sliding off the page.
+     */
+    fun shellBarEnter(): EnterTransition {
+        if (reduceMotion) {
+            return EnterTransition.None
+        }
+        return fadeIn(tween(normalMillis, easing = Decelerate)) +
+            slideInVertically(
+                animationSpec = spring(
+                    dampingRatio = SpringSnappyDamping,
+                    stiffness = SpringSnappyStiffness,
+                ),
+                initialOffsetY = { fullHeight -> fullHeight },
+            )
+    }
+
+    fun shellBarExit(): ExitTransition {
+        if (reduceMotion) {
+            return ExitTransition.None
+        }
+        return fadeOut(tween(fastMillis, easing = Accelerate)) +
+            slideOutVertically(tween(normalMillis, easing = Accelerate)) { fullHeight -> fullHeight }
+    }
+
+    /**
+     * UI-046: unread badge on a bottom-nav tab. Pops from the icon corner instead of blinking
+     * into existence, so a count arriving while you look elsewhere still registers.
+     */
+    fun badgePopEnter(): EnterTransition {
+        if (reduceMotion) {
+            return EnterTransition.None
+        }
+        return fadeIn(tween(fastMillis, easing = Decelerate)) +
+            scaleIn(
+                initialScale = BadgePopStartScale,
+                animationSpec = spring(
+                    dampingRatio = SpringSnappyDamping,
+                    stiffness = SpringSnappyStiffness,
+                ),
+            )
+    }
+
+    fun badgePopExit(): ExitTransition {
+        if (reduceMotion) {
+            return ExitTransition.None
+        }
+        return fadeOut(tween(fastMillis, easing = Accelerate)) +
+            scaleOut(
+                targetScale = BadgePopStartScale,
+                animationSpec = tween(fastMillis, easing = Accelerate),
+            )
     }
 
     /** Multi-line composer height growth (UI-011). */
@@ -202,11 +330,49 @@ class FlashMotion internal constructor(
     fun <T> tweenNormalSpec(): androidx.compose.animation.core.TweenSpec<T> =
         tween(normalMillis, easing = Standard)
 
+    /**
+     * 0 → 1 entrance progress for the [index]-th item of a page that just came on screen, used
+     * as alpha + a small rise inside `graphicsLayer { }` so the stagger costs a render pass and
+     * not a recomposition. The delay is capped at [MaxStaggerSteps] steps so long lists do not
+     * cascade for seconds; reduce-motion reports 1f immediately.
+     *
+     * [key] restarts the stagger — pass the page/state identity, not the item, so re-entering a
+     * tab replays it while a scroll does not.
+     */
+    @Composable
+    fun rememberStaggerProgress(index: Int, key: Any): State<Float> {
+        val progress = remember(key) { Animatable(if (reduceMotion) 1f else 0f) }
+        LaunchedEffect(key) {
+            if (progress.value == 1f) return@LaunchedEffect
+            val step = index.coerceIn(0, MaxStaggerSteps)
+            progress.animateTo(
+                targetValue = 1f,
+                animationSpec = tween(
+                    durationMillis = normalMillis,
+                    delayMillis = if (reduceMotion) 0 else step * StaggerStepMillis,
+                    easing = Decelerate,
+                ),
+            )
+        }
+        return progress.asState()
+    }
+
     companion object {
         const val FastMillis = 120
         const val NormalMillis = 200
         const val SlowMillis = 320
         const val EmphasisMillis = 400
+
+        /** Per-item delay of [rememberStaggerProgress], and how many items still get one. */
+        const val StaggerStepMillis = 24
+        const val MaxStaggerSteps = 6
+
+        /** Screen-push travel as a fraction of window width; tab hops are shorter. */
+        const val ScreenSlide = 0.3f
+        const val TabSlide = 0.1f
+
+        /** Scale a nav badge pops out of (and collapses back into). */
+        const val BadgePopStartScale = 0.5f
 
         const val SpringSnappyDamping = 0.85f
         const val SpringSnappyStiffness = 600f

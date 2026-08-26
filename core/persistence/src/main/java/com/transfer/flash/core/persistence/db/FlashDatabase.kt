@@ -75,6 +75,9 @@ abstract class FlashDatabase : RoomDatabase() {
 
     companion object {
         const val DATABASE_NAME = "flash.db"
-        const val DATABASE_VERSION = 1
+        // v2: MessageEntity gained attachment columns (attachmentTransferId/Name/Mime/Size/Path).
+        // v3: MessageEntity gained reply columns (replyToId/replyToPreview). Migrations in
+        //     [FlashMigrations]; production open path is non-destructive from v2 onward.
+        const val DATABASE_VERSION = 3
     }
 }

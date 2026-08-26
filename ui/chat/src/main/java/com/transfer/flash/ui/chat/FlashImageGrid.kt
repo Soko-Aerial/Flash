@@ -460,10 +460,33 @@ fun FlashImageTile(
                     .background(Brush.linearGradient(gradientColors)),
             ) {
                 FlashIcon(
-                    icon = FlashIcons.Gallery,
+                    icon = if (image.isVideo) FlashIcons.Play else FlashIcons.Gallery,
                     tint = Color.White.copy(alpha = 0.5f),
                     size = FlashDimensions.iconLg,
                 )
+            }
+        }
+
+        // B4: video attachments overlay a centered play affordance on top of the thumbnail so a
+        // tap clearly means "play". Images render bare.
+        if (image.isVideo && bitmap != null) {
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier.fillMaxSize(),
+            ) {
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .size(48.dp)
+                        .clip(RoundedCornerShape(24.dp))
+                        .background(Color(0x99000000)),
+                ) {
+                    FlashIcon(
+                        icon = FlashIcons.Play,
+                        tint = Color.White,
+                        size = FlashDimensions.iconMd,
+                    )
+                }
             }
         }
     }

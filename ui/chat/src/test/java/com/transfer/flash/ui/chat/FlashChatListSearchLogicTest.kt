@@ -68,6 +68,29 @@ class FlashChatListSearchLogicTest {
     }
 
     @Test
+    fun `body match ids surface a chat whose title and preview do not match`() {
+        // "zebra" matches no title/preview, but c3 has a deep-history body hit (#12).
+        val result = FlashChatListSearchMath.filterChats(sampleChats, "zebra", bodyMatchIds = setOf("c3"))
+        assertEquals(listOf("c3"), result.map { it.id })
+    }
+
+    @Test
+    fun `body match is unioned with title-preview match without duplicating rows`() {
+        // "a" already matches several rows by title/preview; adding c1 as a body hit must not
+        // duplicate c1 and must preserve original list order.
+        val textMatches = FlashChatListSearchMath.filterChats(sampleChats, "a").map { it.id }
+        val unioned = FlashChatListSearchMath.filterChats(sampleChats, "a", bodyMatchIds = setOf("c1"))
+        val expected = sampleChats.filter { it.id == "c1" || it.id in textMatches }.map { it.id }
+        assertEquals(expected, unioned.map { it.id })
+        assertEquals(unioned.map { it.id }.distinct(), unioned.map { it.id })
+    }
+
+    @Test
+    fun `blank query ignores body match ids and returns all`() {
+        assertEquals(3, FlashChatListSearchMath.filterChats(sampleChats, "", bodyMatchIds = setOf("c2")).size)
+    }
+
+    @Test
     fun `search active only for non-blank trimmed query`() {
         assertFalse(FlashChatListSearchMath.isSearchActive(""))
         assertFalse(FlashChatListSearchMath.isSearchActive("   "))

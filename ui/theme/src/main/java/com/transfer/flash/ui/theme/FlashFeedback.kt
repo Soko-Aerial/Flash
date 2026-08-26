@@ -1,6 +1,7 @@
 package com.transfer.flash.ui.theme
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -49,12 +50,19 @@ object FlashHapticPolicy {
      *
      * Note Compose's `LocalHapticFeedback` already honors the system touch-feedback
      * setting (`HAPTIC_FEEDBACK_ENABLED`) via `View.performHapticFeedback`; the explicit
-     * [systemHapticsEnabled] flag lets callers/policy tests model that gate explicitly.
+     * [systemHapticsEnabled] flag carries Flash's own Settings → Haptics preference
+     * (UI-049) on top of it, and lets policy tests model the gate explicitly.
      */
     fun enabled(reduceMotion: Boolean, systemHapticsEnabled: Boolean = true): Boolean {
         return systemHapticsEnabled
     }
 }
+
+/**
+ * User-level haptics preference (Settings → Haptics, UI-049). Defaults to true so previews and
+ * tests keep feedback on; [FlashTheme] provides the real value from the settings model.
+ */
+internal val LocalFlashHapticsEnabled = compositionLocalOf { true }
 
 /**
  * UI-039 single choke point for all chat haptics.
@@ -68,9 +76,14 @@ object FlashHapticPolicy {
 fun rememberFlashHaptics(): (FlashHaptic) -> Unit {
     val hapticFeedback = LocalHapticFeedback.current
     val reduceMotion = FlashTheme.motion.reduceMotion
-    return remember(hapticFeedback, reduceMotion) {
+    val userEnabled = LocalFlashHapticsEnabled.current
+    return remember(hapticFeedback, reduceMotion, userEnabled) {
         { haptic ->
-            if (FlashHapticPolicy.enabled(reduceMotion = reduceMotion)) {
+            if (FlashHapticPolicy.enabled(
+                    reduceMotion = reduceMotion,
+                    systemHapticsEnabled = userEnabled,
+                )
+            ) {
                 hapticFeedback.performHapticFeedback(
                     when (haptic) {
                         FlashHaptic.Tick -> HapticFeedbackType.TextHandleMove

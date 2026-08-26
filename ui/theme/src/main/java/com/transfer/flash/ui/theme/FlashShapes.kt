@@ -35,6 +35,9 @@ object FlashShapes {
     val avatar = RoundedCornerShape(radiusFull)
     val button = RoundedCornerShape(radius12)
 
+    /** UI-046 hanging bottom-nav capsule, its sliding indicator chip, and tab badges. */
+    val navBar = RoundedCornerShape(radiusFull)
+
     /** Grouped message bubble — all corners rounded. */
     val bubbleGrouped = RoundedCornerShape(radius20)
 

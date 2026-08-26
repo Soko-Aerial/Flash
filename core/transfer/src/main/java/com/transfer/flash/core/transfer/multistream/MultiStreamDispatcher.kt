@@ -240,16 +240,25 @@ class MultiStreamDispatcher(
 
             // Announce the transfer on EVERY live channel: the receiver pipeline registers its
             // session on FILE_START — chunks arriving first would be rejected UNKNOWN_TRANSFER.
+            //
+            // A channel that refuses (null) or throws on open is NOT fatal: per StreamChannel's
+            // contract we proceed with the wires that DID open. The failed slot becomes a dead
+            // worker (startOk = false) that still drains its own feed and hands frames to survivors
+            // via `shared` — so the single materializer never blocks on a full feed. If EVERY slot
+            // fails, all workers start dead, aliveWorkers hits 0, and maybeResolveFromState fails
+            // the transfer fast ("all channels failed"). The previous `return@coroutineScope
+            // failWith(...)` deadlocked instead: it left the already-launched materializer parked
+            // forever in feeds[i].send() (buffer full, no worker draining), so coroutineScope —
+            // which joins all children — could never return and send() hung permanently.
             val channels = (0 until effectiveStreams).map { id ->
                 val channel = try {
                     factory.open(id, peerDeviceId)
-                        ?: return@coroutineScope failWith(
-                            deferred, "channel factory refused stream $id",
-                        )
                 } catch (t: Throwable) {
-                    return@coroutineScope failWith(
-                        deferred, "channel open failed: ${t.message}",
-                    )
+                    null
+                }
+                if (channel == null) {
+                    synchronized(terminalLock) { deadIds.add(id) }
+                    return@map Pair(DeadStreamChannel(id), false)
                 }
                 val startOk = runCatching {
                     channel.sendFrame(ChunkFrame.serialize(chunker.fileStart(meta, plan, resolvedDigest)))
@@ -651,4 +660,15 @@ private fun ChunkStream.closeQuietly() {
     } catch (_: RuntimeException) {
         // Best-effort close on teardown paths; never masks the original outcome.
     }
+}
+
+/**
+ * Stand-in wire for a slot whose real [StreamChannel] never opened. The slot's worker starts dead
+ * (`startOk = false`) and therefore never calls [sendFrame] — it only drains its feed and
+ * redistributes frames to survivors — but the method returns false defensively. This lets an
+ * open-failure reuse the tested dead-worker drain/redistribute path instead of early-returning and
+ * stranding the materializer on a full feed.
+ */
+private class DeadStreamChannel(override val id: Int) : StreamChannel {
+    override suspend fun sendFrame(frameBytes: ByteArray): Boolean = false
 }

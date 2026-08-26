@@ -22,6 +22,10 @@ sealed interface MessageWireFrame {
         val senderName: String?,
         val text: String,
         val sentAt: Long,
+        /** Reply/quote: the quoted message's localId, or null for a normal message. */
+        val replyToId: String? = null,
+        /** Short snapshot of the quoted message's text, carried so the peer renders the quote. */
+        val replyToPreview: String? = null,
     ) : MessageWireFrame
 
     /**

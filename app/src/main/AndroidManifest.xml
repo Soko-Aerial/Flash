@@ -6,11 +6,15 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <!-- Keeps the CPU alive during screen-off/Doze so WebSocket keepalive pings keep firing
+         and the mesh sessions/multicast survive (held for the FlashBackgroundService lifetime). -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- P3.5/D-M4: background discovery host (connectedDevice FGS type). -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- B9: voice-message capture via MediaRecorder (runtime-requested on first hold). -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <application
         android:name=".di.FlashApplication"
@@ -38,11 +42,6 @@
             android:name=".debug.FlashBackgroundService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
-
-        <service
-            android:name="com.transfer.flash.core.transfer.service.FlashTransferForegroundService"
-            android:exported="false"
-            android:foregroundServiceType="dataSync" />
 
         <provider
             android:name="androidx.core.content.FileProvider"

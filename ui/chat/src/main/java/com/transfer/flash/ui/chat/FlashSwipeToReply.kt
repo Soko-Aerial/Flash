@@ -49,6 +49,7 @@ fun FlashSwipeToReplyContainer(
     onReply: () -> Unit,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
+    isMine: Boolean = false,
     thresholdDp: Dp = 52.dp,
     content: @Composable () -> Unit,
 ) {
@@ -165,9 +166,12 @@ fun FlashSwipeToReplyContainer(
             }
         }
 
-        // Foreground Message Bubble
+        // Foreground Message Bubble. The container is fillMaxWidth (so the reply badge can sit at
+        // CenterEnd), which would otherwise pin the narrower bubble to TopStart and defeat the
+        // parent Column's horizontalAlignment — so align the bubble to its own side here.
         Box(
             modifier = Modifier
+                .align(if (isMine) Alignment.CenterEnd else Alignment.CenterStart)
                 .offset { IntOffset(x = offsetX.value.roundToInt(), y = 0) },
         ) {
             content()

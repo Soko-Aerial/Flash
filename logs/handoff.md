@@ -1,5 +1,29 @@
 # Current Handoff
 
+## 2026-08-26 -- Core library publishing plan authored (GitHub → JitPack → Gradle) -- READ docs/publishing/
+- **The owner wants to publish the `core:*` modules as a reusable LAN-transfer library** so other developers
+  consume the engine instead of building from scratch. Hosting decision: **GitHub → JitPack → Gradle**, NOT
+  Maven Central. The next agent (OpenCode, run in this same folder) implements it.
+- **The plan is `docs/publishing/` (7 files).** Start at `PHASE-00-overview.md`; phases are ordered and each
+  is self-contained (problem → exact files/code → acceptance → `./gradlew` verify). Do them in order:
+  01 foundation (LICENSE, single version source, compat baseline) → 02 dependency-scope (**hard blocker**) →
+  03 api-surface (`explicitApi()` + hide internals) → 04 persistence-decoupling (SQLCipher off the transfer
+  path) → 05 consumer-ergonomics (`Flash.create()` factory + README) → 06 jitpack-publishing (`jitpack.yml`
+  openjdk17, tag/release, verify).
+- **The one blocker that makes or breaks it: dependency scope (Phase 2).** Core modules use
+  `implementation(project(...))` but expose those types in PUBLIC signatures, so individual `core:*`
+  artifacts DO NOT COMPILE for a downstream consumer. `:core:engine` is the only coherent artifact today
+  (it uses `api(...)`), so the minimum-viable path publishes `core-engine` only. Prove any scope fix with an
+  EXTERNAL `:sample:consumer`, never the library's own build.
+- **What JitPack removes vs Maven Central** (do not waste effort): GPG signing, a Sonatype/Central
+  `repositories{}` publish target, strict POM validation, and the javadoc jar are all NOT needed. JitPack
+  just needs a working `publishToMavenLocal`, `jitpack.yml` pinning JDK 17 (AGP 9.3.1), and a Git tag +
+  GitHub release. Consumer coordinate: `com.github.<user>.<repo>:core-engine:<TAG>`.
+- **Two decisions need the owner:** LICENSE copyright holder (Phase 1.1); keep compileSdk 37/AGP 9.3.1
+  (narrow reach) vs lower for wider consumer support (Phase 1.3).
+- **No `core:*` code changed this session** — docs only; the prior green build state stands. (Aside: I
+  accidentally overwrote AGENTS.md and reverted it with `git checkout` — AGENTS.md is intact.)
+
 ## 2026-08-25 -- RESOLVED: sender could not pause (ERROR-018, ADR-021) -- nine pause/resume/cancel defects
 - **The reported bug was a REGISTRATION RACE, not a broken pause button.** `sendFile` returns the instant the
   send coroutine launches, but `executeSend` registered its dispatcher only after the resume-chunk DAO query

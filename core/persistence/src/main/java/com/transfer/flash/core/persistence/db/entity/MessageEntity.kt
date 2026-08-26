@@ -30,4 +30,22 @@ data class MessageEntity(
     val status: String,
     val editedAt: Long? = null,
     val deletedAt: Long? = null,
+    /**
+     * Attachment metadata (null text-only messages leave these null). [attachmentTransferId] links
+     * the row to a live [com.transfer.flash] transfer so the UI can join progress; [attachmentPath]
+     * is the openable local file (source URI on send, received path on the receiver). MIME drives
+     * whether the bubble renders an image, a video play button, or a generic file card.
+     */
+    val attachmentTransferId: String? = null,
+    val attachmentName: String? = null,
+    val attachmentMime: String? = null,
+    val attachmentSize: Long = 0L,
+    val attachmentPath: String? = null,
+    /**
+     * Reply/quote metadata (v3). [replyToId] is the quoted message's [localId]; [replyToPreview]
+     * is a short snapshot of its text captured at send time so the quoted preview renders without
+     * a join and survives the quoted message being tombstoned. Both null for non-reply messages.
+     */
+    val replyToId: String? = null,
+    val replyToPreview: String? = null,
 )

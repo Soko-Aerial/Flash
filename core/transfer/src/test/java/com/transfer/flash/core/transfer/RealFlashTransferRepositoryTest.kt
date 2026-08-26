@@ -23,6 +23,7 @@ import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -149,6 +150,7 @@ class RealFlashTransferRepositoryTest {
         override suspend fun insertAll(chunks: List<TransferChunkEntity>) = Unit
         override suspend fun markChunkDone(transferId: String, chunkIndex: Int) = Unit
         override suspend fun resetStuck(transferId: String) = Unit
+        override suspend fun allDoneChunks(): List<com.transfer.flash.core.persistence.db.dao.ChunkIndexRef> = emptyList()
         override suspend fun doneChunks(transferId: String): List<Int> {
             while (!open.get()) delay(5)
             return emptyList()
@@ -331,6 +333,104 @@ class RealFlashTransferRepositoryTest {
             FlashTransferState.Cancelled,
             repo.snapshot(transferId).state,
         )
+        Unit
+    }
+
+    // ---- #5: inbound offer / accept / decline (ADR-018 local intake gate) ------------------
+
+    /** Minimal repo: the offer path touches only activeTransfers + the control SharedFlows. */
+    private fun offerRepo(): RealFlashTransferRepository = RealFlashTransferRepository(
+        chunker = Chunker(),
+        streamChannelFactory = StreamChannelFactory { channelId, _ ->
+            object : StreamChannel {
+                override val id: Int = channelId
+                override suspend fun sendFrame(frameBytes: ByteArray): Boolean = true
+            }
+        },
+        fileSourceOpener = { ByteArrayInputStream(ByteArray(0)) },
+        repositoryScope = newScope(),
+        workerDispatcher = testDispatcher,
+        defaultStreams = 1,
+    )
+
+    @Test
+    fun `onIncomingOffered inserts an Offered receiving row and is idempotent`() {
+        val repo = offerRepo()
+        repo.onIncomingOffered("tx-off", "fx-off", "photo.jpg", 4096L, "Pixel", "peer-1")
+        val row = repo.snapshot(FlashTransferId("tx-off"))
+        assertEquals(FlashTransferState.Offered, row.state)
+        assertEquals("photo.jpg", row.fileName)
+        assertEquals(4096L, row.bytesTotal)
+        assertEquals("peer-1", row.peerDeviceId)
+
+        // A duplicate FILE_START (resume re-offer) must not spawn a second row.
+        repo.onIncomingOffered("tx-off", "fx-off", "photo.jpg", 4096L, "Pixel", "peer-1")
+        assertEquals(1, repo.activeTransfers.value.count { it.id.value == "tx-off" })
+    }
+
+    @Test
+    fun `acceptIncoming flips Offered to Transferring and emits only the local ACCEPT`() = runBlocking {
+        val repo = offerRepo()
+        val scope = newScope()
+        val incoming = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val outgoing = java.util.concurrent.CopyOnWriteArrayList<String>()
+        scope.launch { repo.incomingControl.collect { incoming.add(it.action) } }
+        scope.launch { repo.outgoingControl.collect { outgoing.add(it.action) } }
+        awaitUntil(describe = { "control collectors never subscribed" }) {
+            repo.incomingControl.subscriptionCount.value >= 1 &&
+                repo.outgoingControl.subscriptionCount.value >= 1
+        }
+
+        repo.onIncomingOffered("tx-acc", "fx-acc", "clip.mp4", 8192L, "Pixel", "peer-2")
+        assertTrue(repo.acceptIncoming(FlashTransferId("tx-acc")) is FlashResult.Success)
+
+        val row = repo.snapshot(FlashTransferId("tx-acc"))
+        assertEquals(FlashTransferState.Transferring, row.state)
+        assertNull("accept clears the waiting-for-acceptance message", row.errorMessage)
+
+        awaitUntil(describe = { "ACCEPT never emitted, saw=$incoming" }) { incoming.contains("accept") }
+        // The host — not the repo — sends RESUME after resolving the sink; no wire frame here.
+        assertEquals(listOf("accept"), incoming.toList())
+        assertTrue("accept must not emit an outgoing control frame", outgoing.isEmpty())
+    }
+
+    @Test
+    fun `declineIncoming cancels the offer and tells the sender to cancel`() = runBlocking {
+        val repo = offerRepo()
+        val scope = newScope()
+        val incoming = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val outgoing = java.util.concurrent.CopyOnWriteArrayList<Pair<String, String?>>()
+        scope.launch { repo.incomingControl.collect { incoming.add(it.action) } }
+        scope.launch { repo.outgoingControl.collect { outgoing.add(it.action to it.peerDeviceId) } }
+        awaitUntil(describe = { "control collectors never subscribed" }) {
+            repo.incomingControl.subscriptionCount.value >= 1 &&
+                repo.outgoingControl.subscriptionCount.value >= 1
+        }
+
+        repo.onIncomingOffered("tx-dec", "fx-dec", "doc.pdf", 2048L, "Pixel", "peer-3")
+        assertTrue(repo.declineIncoming(FlashTransferId("tx-dec")) is FlashResult.Success)
+
+        val row = repo.snapshot(FlashTransferId("tx-dec"))
+        assertEquals(FlashTransferState.Cancelled, row.state)
+        assertEquals("declined", row.errorMessage)
+
+        awaitUntil(describe = { "DECLINE never emitted" }) { incoming.contains("decline") }
+        awaitUntil(describe = { "outgoing CANCEL never emitted" }) { outgoing.any { it.first == "cancel" } }
+        assertEquals("peer-3", outgoing.first { it.first == "cancel" }.second)
+    }
+
+    @Test
+    fun `accept and decline reject a transfer that is not an open offer`() = runBlocking {
+        val repo = offerRepo()
+        // No such transfer at all.
+        assertTrue(repo.acceptIncoming(FlashTransferId("ghost")) is FlashResult.Failure)
+        assertTrue(repo.declineIncoming(FlashTransferId("ghost")) is FlashResult.Failure)
+
+        // Present but already accepted (Transferring) — the offer gate is closed.
+        repo.onIncomingOffered("tx-2x", "fx-2x", "a.bin", 1024L, "Pixel", "peer-4")
+        assertTrue(repo.acceptIncoming(FlashTransferId("tx-2x")) is FlashResult.Success)
+        assertTrue("double-accept is rejected", repo.acceptIncoming(FlashTransferId("tx-2x")) is FlashResult.Failure)
+        assertTrue("cannot decline an accepted offer", repo.declineIncoming(FlashTransferId("tx-2x")) is FlashResult.Failure)
         Unit
     }
 }

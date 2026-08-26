@@ -93,6 +93,21 @@ enum class FlashFileTransferStatus {
 }
 
 /**
+ * Live transfer progress for a chat attachment, keyed by transferId, injected from the transfer
+ * layer so a chat bubble can render inline send/receive progress alongside the Transfers tab (B4).
+ * Pure data (no Android types) → the join between chat rows and live transfers stays testable.
+ */
+data class FlashAttachmentProgress(
+    /** 0f..1f fraction of bytes moved. */
+    val progress: Float,
+    val status: FlashFileTransferStatus,
+    /** Openable local file: source URI while sending, received path once inbound completes. */
+    val localPath: String? = null,
+    val speedMbps: Float = 0f,
+    val etaSeconds: Int = 0,
+)
+
+/**
  * File attachment representation for conversation UI (UI-016).
  */
 data class FlashFileAttachmentUi(
@@ -119,6 +134,8 @@ data class FlashImageAttachmentUi(
     val mimeType: String = "image/jpeg",
     val caption: String? = null,
     val seedColor: Long = 0xFF2A2D36,
+    /** Video attachments reuse the image tile for a thumbnail but overlay a play button (B4). */
+    val isVideo: Boolean = false,
 )
 
 /**
@@ -215,6 +232,8 @@ data class FlashGroupMemberUi(
 data class FlashConversationUiState(
     val header: FlashChatHeaderUiState,
     val messages: List<FlashMessageUi>,
+    /** Persisted unsent composer text for this conversation (#9), restored when the screen opens. */
+    val draftText: String = "",
 )
 
 data class FlashConversation(

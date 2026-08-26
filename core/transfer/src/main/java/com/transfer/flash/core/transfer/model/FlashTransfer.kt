@@ -43,4 +43,9 @@ data class FlashTransfer(
     val wireFileId: String? = null,
     /** Counterpart device id — required to route wire control frames (pause/resume/cancel). */
     val peerDeviceId: String? = null,
+    /**
+     * Absolute path to the completed file on THIS device: the received file for inbound transfers,
+     * or the source file for outbound ones. Openable/shareable via FileProvider. Null until known.
+     */
+    val localPath: String? = null,
 )

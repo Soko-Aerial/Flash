@@ -152,6 +152,12 @@ class DefaultFlashNetwork(
         synchronized(lock) { knownEndpoints[deviceId] = Endpoint(host, port, 0L) }
     }
 
+    /** #17: discovery dropped this peer — forget its route so `peerCountDiscovered` shrinks. */
+    override fun forgetEndpoint(deviceId: String) {
+        val removed = synchronized(lock) { knownEndpoints.remove(deviceId) != null }
+        if (removed) refreshState()
+    }
+
     // ------------------------------------------------------------------
     // Connect / disconnect
     // ------------------------------------------------------------------

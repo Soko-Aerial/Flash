@@ -61,7 +61,7 @@ object FlashStateMath {
 
 /** Screen-specific state copy (UI-025) — never generic "Nothing here yet". */
 object FlashStateCopy {
-    enum class EmptyKind { ChatListFirstRun, ConversationEmpty }
+    enum class EmptyKind { ChatListFirstRun, ConversationEmpty, TransfersFirstRun }
 
     data class Copy(val headline: String, val body: String, val actionLabel: String? = null)
 
@@ -74,6 +74,11 @@ object FlashStateCopy {
         EmptyKind.ConversationEmpty -> Copy(
             headline = "Say hello",
             body = "Messages you send appear right here — everything stays on your network.",
+        )
+        EmptyKind.TransfersFirstRun -> Copy(
+            headline = "No transfers yet",
+            body = "Send something from a chat or pick a device nearby and your files will appear here.",
+            actionLabel = "Find devices",
         )
     }
 }
@@ -89,6 +94,7 @@ fun FlashEmptyState(
     icon: FlashIconSpec = when (kind) {
         FlashStateCopy.EmptyKind.ChatListFirstRun -> FlashIcons.Group
         FlashStateCopy.EmptyKind.ConversationEmpty -> FlashIcons.Send
+        FlashStateCopy.EmptyKind.TransfersFirstRun -> FlashIcons.Transfer
     },
     onAction: (() -> Unit)? = null,
 ) {
