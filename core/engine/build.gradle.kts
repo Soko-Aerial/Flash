@@ -5,7 +5,7 @@ plugins {
 
 android {
     namespace = "com.transfer.flash.core.engine"
-    compileSdk = 37
+    compileSdk = 35
 
     defaultConfig {
         minSdk = 24
@@ -38,9 +38,7 @@ android {
 publishing {
     publications {
         register<MavenPublication>("release") {
-            groupId = "com.transfer.flash"
             artifactId = "core-engine"
-            version = "1.0.0"
 
             afterEvaluate {
                 from(components["release"])

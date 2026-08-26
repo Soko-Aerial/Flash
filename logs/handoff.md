@@ -1,5 +1,27 @@
 # Current Handoff
 
+## 2026-08-26 -- Publishing Phase 1 DONE: Apache-2.0 + core compileSdk 35 (both owner decisions resolved) -- next = Phase 2
+- **Phase 1 of `docs/publishing/` is IMPLEMENTED and both owner decisions are locked.** LICENSE = **Apache-2.0**,
+  holder **"The Flash Project"** (patent grant + Android-ecosystem norm; see ADR-022). Compat baseline =
+  **`core:*` modules lowered to `compileSdk 35`** so AGP-8.7-era consumers can build; the app and
+  `targetSdk 36` are untouched. `minSdk 24` (Android 7) already covered the owner's "down to Android 8" ask —
+  nothing to lower there.
+- **Files changed (all inside the plan's allowlist):** `LICENSE` (full Apache text), `NOTICE`, root
+  `build.gradle.kts` (`flashLibraryVersion` single-source), all 8 `core/*/build.gradle.kts` (compileSdk 35),
+  `gradle/libs.versions.toml` (sqlcipher 4.18.0→4.17.0), `core/discovery/.../nsd/NsdTransport.kt` (onServiceLost
+  forward-compat). No `app/`, `ui/`, or `media-downloader-main/` code touched.
+- **Two obstacles hit and cleared (see progress.md + ADR-022):** (1) SQLCipher 4.18.0 hard-floors compileSdk
+  at 37 — every version 4.9.0–4.17.0 has no floor, so pinned 4.17.0. (2) `ServiceInfoCallback.onServiceLost`
+  is `(NsdServiceInfo)` at SDK 37 but no-arg at 34–36 — kept the no-arg `override`, demoted the param variant
+  to a plain method (still binds at runtime on Android 17).
+- **Verified:** all 10 modules compile at 35; `assembleDebug` BUILD SUCCESSFUL, `app-debug.apk` (29.7 MB)
+  produced; the two previously-flaking timing tests pass on isolated `--rerun-tasks`. The combined
+  `testDebugUnitTest assembleDebug` did NOT go green in one shot — two load flakes (ERROR-019), each green
+  alone. Re-run on an idle machine for a single clean green if you want it on record.
+- **NEXT: Phase 2 (`docs/publishing/PHASE-02-dependency-scope.md`) — the HARD BLOCKER.** `implementation`
+  `(project(...))` → `api(...)` where public types cross module boundaries; prove the fix with an EXTERNAL
+  `:sample:consumer`, never the library's own build. Then Phases 3–6. Owner device run EXP-002 still pending.
+
 ## 2026-08-26 -- Core library publishing plan authored (GitHub → JitPack → Gradle) -- READ docs/publishing/
 - **The owner wants to publish the `core:*` modules as a reusable LAN-transfer library** so other developers
   consume the engine instead of building from scratch. Hosting decision: **GitHub → JitPack → Gradle**, NOT

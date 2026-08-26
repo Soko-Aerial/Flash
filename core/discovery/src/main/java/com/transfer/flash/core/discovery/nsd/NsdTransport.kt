@@ -287,14 +287,18 @@ class RealNsdManagerBridge(
                 mapResolved(serviceInfo)?.let(events::onUpdated)
             }
 
-            override fun onServiceLost(serviceInfo: NsdServiceInfo) {
-                events.onMonitorLost(serviceInfo.serviceName)
-            }
-
-            // Abstract no-arg variant (API 34): implement so the anonymous object is
-            // concrete; the parameterized override above handles enrichment when used.
+            // API 34-36 abstract method — exists on every SDK this compiles against.
             override fun onServiceLost() {
                 events.onMonitorLost(null)
+            }
+
+            // Forward-compat: SDK 37 (Android 17) re-typed ServiceInfoCallback with an
+            // NsdServiceInfo parameter. Declared WITHOUT `override` so it compiles at
+            // compileSdk 35 (where the interface only has the no-arg variant); on
+            // Android 17 devices the matching JVM signature implements the newer
+            // framework method at runtime. Harmless extra method on API <= 36.
+            fun onServiceLost(serviceInfo: NsdServiceInfo) {
+                events.onMonitorLost(serviceInfo.serviceName)
             }
 
             override fun onServiceInfoCallbackRegistrationFailed(errorCode: Int) {
