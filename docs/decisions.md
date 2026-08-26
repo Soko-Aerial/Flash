@@ -494,3 +494,49 @@ Subagent outage forced direct implementation; research was still completed per-c
 
 ### Revisit when
 Two-pane expanded layout (UI-034 pass), deep links (notification -> conversation), or >6 destinations.
+
+
+## ADR-022 - Publishing baseline: Apache-2.0 license + core compileSdk 35 (widest consumer reach)
+
+### Decision
+1. **License = Apache-2.0**, copyright "The Flash Project" (`LICENSE` + `NOTICE` at repo root). Resolves the
+   Phase 1.1 owner decision.
+2. **The published `core:*` modules compile at `compileSdk = 35`** (was 37). The app module and
+   `targetSdk = 36` are unchanged; `minSdk = 24` (Android 7.0) is unchanged and already covers the owner's
+   "down to Android 8 / API 26" goal. Resolves the Phase 1.3 owner decision.
+3. **`net.zetetic:sqlcipher-android` pinned to 4.17.0** (from 4.18.0). 4.18.0 raised its AAR
+   `minCompileSdk` to 37; 4.9.0-4.17.0 declare `minCompileSdk=1`. This is the only dependency that blocked 35.
+4. **`NsdTransport` `onServiceLost` forward-compat pattern**: keep the API-34 no-arg `override`, demote the
+   API-37 `onServiceLost(NsdServiceInfo)` to a non-`override` method so it compiles at 35 yet still binds the
+   Android-17 framework method at runtime by JVM signature.
+
+### Context
+Owner wants the LAN-transfer engine published as a free, reusable library (GitHub -> JitPack -> Gradle) that
+any developer can consume. compileSdk 37 (Android 17) + AGP 9.3.1 forced consumers onto bleeding-edge build
+tooling; lowering the library's compileSdk to 35 widens the consumable toolchain to the AGP 8.7 era without
+touching runtime behavior (compileSdk is a compile-time API ceiling, not a runtime floor). "Free" was the
+owner's explicit goal - Apache-2.0 gives unrestricted commercial/derivative use plus a patent grant, unlike
+the copyleft (GPL/LGPL/MPL) options that would deter embedding the library.
+
+### Alternatives considered
+- **MIT license**: equally permissive and shorter, but no patent grant and not the plan's assumed standard -
+  rejected in favor of Apache-2.0's patent protection and ecosystem alignment.
+- **GPL/LGPL/MPL**: copyleft obligations kill library adoption - rejected outright.
+- **Keep compileSdk 37**: narrowest reach (AGP 9.3+/Gradle 9.5/Kotlin 2.2 required of every consumer) -
+  rejected; the whole point of publishing is external consumption.
+- **compileSdk 36**: viable fallback if a 35-incompatible dep had appeared. Only sqlcipher blocked 35 and a
+  one-patch downgrade cleared it, so 35 (wider reach) stands. 36 is the fallback if a future dep floors at 36.
+- **Lower minSdk/targetSdk too**: unnecessary - minSdk 24 already exceeds the Android-8 goal, and lowering
+  targetSdk weakens the app's behavior contract for no consumer benefit.
+
+### Consequences
+- SQLCipher stays a patch behind latest; revisit if 4.18+ ships a needed fix. core:persistence only.
+- compileSdk 35 means new Android-16/17 compile-time APIs are unavailable to core modules until a consumer
+  base justifies raising it; none are currently used (highest runtime gates are API 33/34 with legacy paths).
+- The NsdTransport method is intentionally not marked `override` - a future compileSdk bump to 37 should
+  restore `override` and delete the no-arg variant only after confirming API 34-36 consumers are dropped.
+
+### Revisit when
+Phase 4 decides the final published module set (persistence may leave the transfer path entirely, removing
+the SQLCipher constraint), or a consumer needs an Android 16/17 compile-time API, or the AGP/Gradle floor is
+raised deliberately.
