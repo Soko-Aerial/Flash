@@ -18,4 +18,7 @@ object FlashElevation {
 
     /** Modal scrim-backed dialogs only. */
     val modal = 8.dp
+
+    /** UI-046 hanging app-shell bar: reads as detached chrome above the page. */
+    val floating = 10.dp
 }

@@ -39,11 +39,12 @@ class FlashSettingsDataStoreTest {
         val settings = newSettings()
 
         assertEquals("system", settings.themeMode.first())
-        assertTrue(settings.dynamicAccent.first())
+        assertFalse(settings.dynamicAccent.first())
         assertTrue(settings.hapticsEnabled.first())
         assertEquals("system", settings.reduceMotionOverride.first())
         assertFalse(settings.soundsEnabled.first())
         assertFalse(settings.autoAcceptTrusted.first())
+        assertFalse(settings.backgroundTransfers.first())
         assertNull(settings.saveLocationUri.first())
         assertEquals(365, settings.retentionDays.first())
         assertEquals("", settings.displayName.first())
@@ -137,6 +138,15 @@ class FlashSettingsDataStoreTest {
         assertEquals("Kali", settings.displayName.first())
         settings.setDisplayName("")
         assertEquals("", settings.displayName.first())
+    }
+
+    @Test
+    fun `backgroundTransfers roundtrip`() = runTest {
+        val settings = newSettings()
+        settings.setBackgroundTransfers(true)
+        assertTrue(settings.backgroundTransfers.first())
+        settings.setBackgroundTransfers(false)
+        assertFalse(settings.backgroundTransfers.first())
     }
 
     @Test

@@ -60,6 +60,7 @@ class FlashSettingsDataStore(
         val reduceMotionOverride = stringPreferencesKey("reduce_motion_override")
         val soundsEnabled = booleanPreferencesKey("sounds_enabled")
         val autoAcceptTrusted = booleanPreferencesKey("auto_accept_trusted")
+        val backgroundTransfers = booleanPreferencesKey("background_transfers")
         val saveLocationUri = stringPreferencesKey("save_location_uri")
         val retentionDays = intPreferencesKey("retention_days")
         val displayName = stringPreferencesKey("display_name")
@@ -91,8 +92,9 @@ class FlashSettingsDataStore(
     val themeMode: Flow<String> =
         preferences.map { it[Keys.themeMode] ?: THEME_MODE_SYSTEM }
 
+    /** Default FALSE: matches the shipped UI default (dynamic accent is opt-in, UI-049). */
     val dynamicAccent: Flow<Boolean> =
-        preferences.map { it[Keys.dynamicAccent] ?: true }
+        preferences.map { it[Keys.dynamicAccent] ?: false }
 
     val hapticsEnabled: Flow<Boolean> =
         preferences.map { it[Keys.hapticsEnabled] ?: true }
@@ -106,6 +108,10 @@ class FlashSettingsDataStore(
 
     val autoAcceptTrusted: Flow<Boolean> =
         preferences.map { it[Keys.autoAcceptTrusted] ?: false }
+
+    /** Keep transfers running when the app leaves the foreground (UI-049). Default FALSE. */
+    val backgroundTransfers: Flow<Boolean> =
+        preferences.map { it[Keys.backgroundTransfers] ?: false }
 
     val saveLocationUri: Flow<String?> =
         preferences.map { it[Keys.saveLocationUri] }
@@ -139,6 +145,10 @@ class FlashSettingsDataStore(
 
     suspend fun setAutoAcceptTrusted(value: Boolean) {
         dataStore.edit { it[Keys.autoAcceptTrusted] = value }
+    }
+
+    suspend fun setBackgroundTransfers(value: Boolean) {
+        dataStore.edit { it[Keys.backgroundTransfers] = value }
     }
 
     suspend fun setSaveLocationUri(value: String?) {

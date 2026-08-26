@@ -338,6 +338,66 @@ class MultiStreamDispatcherTest {
         assertEquals(0, h.assembler.writes)
     }
 
+    // Regression (open-failure deadlock): a factory that refuses/throws on open must NOT hang.
+    // The old code did `return@coroutineScope failWith(...)`, which stranded the already-launched
+    // materializer in feeds[i].send() (buffer full, no worker draining) so coroutineScope never
+    // returned. The `timeout` here turns any regression into a test failure instead of a hung suite.
+    @Test(timeout = 30_000)
+    fun `all streams fail to open - fails fast without hanging`() = runBlocking {
+        val executor =
+            java.util.concurrent.Executors.newFixedThreadPool(8) { r -> Thread(r, "ms-open-fail") }
+        liveExecutors.add(executor)
+        val dispatcher = MultiStreamDispatcher(
+            chunker = Chunker(),
+            meta = meta,
+            source = ChunkSource { payload.inputStream() },
+            factory = StreamChannelFactory { _, _ -> null }, // every open refuses
+            streamCount = 3,
+            requestedChunkSize = chunkSize,
+            workerDispatcher = executor.asCoroutineDispatcher(),
+        )
+
+        val result = dispatcher.send()
+
+        val failed = result as? MultiStreamResult.Failed
+            ?: throw AssertionError("expected Failed got $result")
+        assertTrue(failed.reason.isNotEmpty())
+        assertEquals(setOf(0, 1, 2), failed.deadChannelIds.toSet())
+    }
+
+    // Regression (skip-slot contract, StreamChannel KDoc): when only SOME streams open, the failed
+    // slot becomes a dead worker that drains its feed and redistributes to the survivors, which
+    // must still deliver the whole file exactly once.
+    @Test(timeout = 60_000)
+    fun `one stream fails to open - survivors complete the file`() = runBlocking {
+        val executor =
+            java.util.concurrent.Executors.newFixedThreadPool(8) { r -> Thread(r, "ms-open-skip") }
+        liveExecutors.add(executor)
+        val assembler = Assembler(Chunker.totalChunks(totalBytes, chunkSize))
+        val receiver = MultiStreamReceiver(assembler)
+        lateinit var dispatcher: MultiStreamDispatcher
+        // Only ids 0 and 2 have real channels; id 1's open returns null (skipped slot).
+        val channels = listOf(0, 2).map { id -> LoopbackChannel(id, receiver) { dispatcher } }
+        dispatcher = MultiStreamDispatcher(
+            chunker = Chunker(),
+            meta = meta,
+            source = ChunkSource { payload.inputStream() },
+            factory = StreamChannelFactory { id, _ -> channels.firstOrNull { it.id == id } },
+            streamCount = 3,
+            requestedChunkSize = chunkSize,
+            workerDispatcher = executor.asCoroutineDispatcher(),
+        )
+
+        val result = dispatcher.send()
+
+        val completed = result as? MultiStreamResult.Completed
+            ?: throw AssertionError("expected Completed got $result")
+        assertEquals(19, completed.chunksSent)
+        assertTrue(completed.deadChannelIds.contains(1))
+        assertTrue(assembler.matches(payload))
+        assertEquals("exactly-once writes", 19, assembler.writes)
+    }
+
     @Test(timeout = 60_000)
     fun `progress is monotonic and eta sane while transferring`() = runBlocking {
         val (h, gate, _) = gatedHarness()

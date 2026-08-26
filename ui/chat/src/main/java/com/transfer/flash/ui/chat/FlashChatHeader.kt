@@ -3,6 +3,7 @@ package com.transfer.flash.ui.chat
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,12 +19,16 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import com.transfer.flash.core.common.model.FlashPeerPresence
 import com.transfer.flash.core.messaging.model.FlashChatHeaderUiState
@@ -35,9 +40,12 @@ import com.transfer.flash.ui.icons.FlashIcon
 import com.transfer.flash.ui.icons.FlashIconSpec
 import com.transfer.flash.ui.icons.FlashIcons
 import com.transfer.flash.ui.theme.FlashDimensions
+import com.transfer.flash.ui.theme.FlashHaptic
 import com.transfer.flash.ui.theme.FlashSpacing
 import com.transfer.flash.ui.theme.FlashText
 import com.transfer.flash.ui.theme.FlashTheme
+import com.transfer.flash.ui.theme.flashPressScale
+import com.transfer.flash.ui.theme.rememberFlashHaptics
 
 @Composable
 fun FlashChatHeader(
@@ -52,6 +60,16 @@ fun FlashChatHeader(
     onSearchClick: () -> Unit = {},
 ) {
     val colors = FlashTheme.colors
+    val haptics = rememberFlashHaptics()
+    // UI-037 conversation-open handoff: the avatar springs up from 0.85 and the title slides in
+    // from the leading edge while the message list runs its own messageEnter() stagger. Keyed on
+    // the conversation identity so switching peers replays it; both reads are deferred into
+    // graphicsLayer, so the header does not recompose per frame. Collapses under reduce-motion
+    // (rememberStaggerProgress starts at 1f).
+    val entryKey = state.avatarSeed
+    val avatarEntry = FlashTheme.motion.rememberStaggerProgress(index = 0, key = entryKey)
+    val titleEntry = FlashTheme.motion.rememberStaggerProgress(index = 1, key = entryKey)
+    val isRtl = LocalLayoutDirection.current == LayoutDirection.Rtl
 
     Column(
         modifier = modifier
@@ -66,8 +84,21 @@ fun FlashChatHeader(
                 .padding(horizontal = FlashSpacing.space4),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            FlashHeaderIconButton(onClick = onBack, description = "Back") {
+            FlashHeaderIconButton(
+                onClick = {
+                    haptics(FlashHaptic.Tick)
+                    onBack()
+                },
+                description = "Back",
+            ) {
                 FlashIcon(icon = FlashIcons.Back)
+            }
+
+            val avatarEntryModifier = Modifier.graphicsLayer {
+                val scale = AvatarEntryScale + (1f - AvatarEntryScale) * avatarEntry.value
+                scaleX = scale
+                scaleY = scale
+                alpha = avatarEntry.value
             }
 
             if (state.isGroup && state.memberInitials.size >= 2) {
@@ -76,7 +107,7 @@ fun FlashChatHeader(
                     initials = state.memberInitials,
                     seed = state.avatarSeed,
                     size = FlashDimensions.avatarMd,
-                    modifier = Modifier
+                    modifier = avatarEntryModifier
                         .clip(CircleShape)
                         .clickable(onClick = onAvatarClick)
                         // UI-038: group collage opens group info — expose as a labeled button.
@@ -90,7 +121,7 @@ fun FlashChatHeader(
                     initials = state.avatarInitials,
                     seed = state.avatarSeed,
                     size = FlashDimensions.avatarMd,
-                    modifier = Modifier
+                    modifier = avatarEntryModifier
                         .clip(CircleShape)
                         .clickable(onClick = onAvatarClick)
                         // UI-038: avatar opens the peer/group profile — expose as a labeled button.
@@ -104,7 +135,12 @@ fun FlashChatHeader(
             Column(
                 modifier = Modifier
                     .weight(1f)
-                    .padding(horizontal = FlashSpacing.space12),
+                    .padding(horizontal = FlashSpacing.space12)
+                    .graphicsLayer {
+                        val travel = (1f - titleEntry.value) * TitleEntryTravel.toPx()
+                        translationX = if (isRtl) travel else -travel
+                        alpha = titleEntry.value
+                    },
             ) {
                 FlashText(
                     text = state.title,
@@ -278,11 +314,18 @@ private fun FlashHeaderIconButton(
     description: String,
     content: @Composable () -> Unit,
 ) {
+    val interaction = remember { MutableInteractionSource() }
     Box(
         modifier = Modifier
             .size(FlashDimensions.minTouchTarget)
+            // House press feel instead of a Material ripple, matching FlashChatListRow.
+            .flashPressScale(interaction)
             .clip(CircleShape)
-            .clickable(onClick = onClick)
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                onClick = onClick,
+            )
             .semantics {
                 role = Role.Button
                 contentDescription = description
@@ -292,6 +335,12 @@ private fun FlashHeaderIconButton(
         content()
     }
 }
+
+/** Scale the conversation avatar springs up from on open. */
+private const val AvatarEntryScale = 0.85f
+
+/** Distance the title/status block slides in from the leading edge on open. */
+private val TitleEntryTravel: Dp = 12.dp
 
 private fun FlashNetworkTransport.iconSpec(): FlashIconSpec? = when (this) {
     FlashNetworkTransport.Lan -> FlashIcons.Wifi

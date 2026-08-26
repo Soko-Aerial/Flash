@@ -29,6 +29,21 @@ interface TransferChunkDao {
     )
     suspend fun doneChunks(transferId: String): List<Int>
 
+    /**
+     * All completed chunk rows across every transfer, for warming the in-memory receiver
+     * done-set at startup so a resumed inbound FILE_START can seed its bit-vector synchronously
+     * (#20). Rows are role-scoped by transferId (a device is only ever sender OR receiver for a
+     * given id), so send-side rows never mis-seed a receive session.
+     */
+    @Query("SELECT transferId, chunkIndex FROM transfer_chunks WHERE done = 1")
+    suspend fun allDoneChunks(): List<ChunkIndexRef>
+
     @Query("UPDATE transfer_chunks SET done = 0 WHERE transferId = :transferId")
     suspend fun resetStuck(transferId: String)
 }
+
+/** Lightweight projection for [TransferChunkDao.allDoneChunks]. */
+data class ChunkIndexRef(
+    val transferId: String,
+    val chunkIndex: Int,
+)

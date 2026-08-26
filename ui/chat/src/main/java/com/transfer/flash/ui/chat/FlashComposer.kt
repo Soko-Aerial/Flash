@@ -84,8 +84,16 @@ fun FlashComposer(
     isAttachmentExpanded: Boolean = false,
     enabled: Boolean = true,
     placeholderText: String = "Message...",
-    /** UI-020: invoked when a voice recording is sent (demo-mode capture — see voice-message.md). */
+    /** UI-020: invoked when a voice recording is sent. [onSendVoice] carries duration + waveform;
+     *  the host owns the recorded audio file (started via [onVoiceRecordStart]). */
     onSendVoice: (FlashVoiceAttachmentUi) -> Unit = {},
+    /** B9: fired when a hold begins. Return false if capture could not start (e.g. mic permission
+     *  not yet granted) so the composer aborts the recording gesture. Default keeps demo behavior. */
+    onVoiceRecordStart: () -> Boolean = { true },
+    /** B9: fired when a recording is discarded (slide-to-cancel or below the minimum length). */
+    onVoiceRecordCancel: () -> Unit = {},
+    /** B9: real per-tick loudness (0..100) from the live recorder; null falls back to demo samples. */
+    voiceAmplitudeProvider: (() -> Int)? = null,
 ) {
     val colors = FlashTheme.colors
     val typography = FlashTheme.typography
@@ -108,6 +116,11 @@ fun FlashComposer(
         recordPaused = false
     }
 
+    fun cancelRecording() {
+        onVoiceRecordCancel()
+        resetRecording()
+    }
+
     fun sendVoiceRecording() {
         if (recordElapsedMs >= FlashVoiceRecordingMath.MIN_RECORD_MS) {
             onSendVoice(
@@ -117,19 +130,25 @@ fun FlashComposer(
                     amplitudes = recordAmplitudes.toList(),
                 ),
             )
+            resetRecording()
+        } else {
+            // Below the minimum length — discard the partial capture rather than sending noise.
+            cancelRecording()
         }
-        resetRecording()
     }
 
-    // Recording ticker: advances timer + appends smoothed demo-mode amplitudes.
+    // Recording ticker: advances timer + appends waveform samples (real mic loudness when a
+    // [voiceAmplitudeProvider] is supplied, otherwise smoothed demo-mode values).
     LaunchedEffect(isRecording, recordPaused) {
         var last = 60
         while (isRecording && !recordPaused) {
             kotlinx.coroutines.delay(FlashVoiceRecordingMath.TICK_MS)
             if (!recordPaused) {
                 recordElapsedMs += FlashVoiceRecordingMath.TICK_MS
-                last = FlashVoiceRecordingMath.nextDemoAmplitude(last)
-                recordAmplitudes = (recordAmplitudes + FlashVoiceRecordingMath.smoothAmplitude(recordAmplitudes.lastOrNull() ?: last, last))
+                val sample = voiceAmplitudeProvider?.invoke()
+                    ?.takeIf { it > 0 }
+                    ?: FlashVoiceRecordingMath.nextDemoAmplitude(last).also { last = it }
+                recordAmplitudes = (recordAmplitudes + FlashVoiceRecordingMath.smoothAmplitude(recordAmplitudes.lastOrNull() ?: sample, sample))
                     .takeLast(FlashVoiceRecordingMath.STRIP_BAR_COUNT * 3)
             }
         }
@@ -255,7 +274,7 @@ fun FlashComposer(
                             elapsedMs = recordElapsedMs,
                             amplitudes = recordAmplitudes,
                             isPaused = recordPaused,
-                            onCancel = { resetRecording() },
+                            onCancel = { cancelRecording() },
                             onTogglePause = { recordPaused = !recordPaused },
                             onSend = { sendVoiceRecording() },
                             modifier = Modifier.fillMaxWidth(),
@@ -269,7 +288,7 @@ fun FlashComposer(
                             elapsedMs = recordElapsedMs,
                             amplitudes = recordAmplitudes,
                             isPaused = recordPaused,
-                            onCancel = { resetRecording() },
+                            onCancel = { cancelRecording() },
                             onTogglePause = { recordPaused = !recordPaused },
                             onSend = { sendVoiceRecording() },
                             modifier = Modifier.fillMaxWidth(),
@@ -284,7 +303,11 @@ fun FlashComposer(
                     isRecording = isRecordingActive,
                     enabled = enabled,
                     onStartRecord = {
-                        recordingPhase = FlashRecordingPhase.Holding
+                        // Only enter the recording surface if the host actually started capture
+                        // (mic permission granted). Otherwise stay Idle — a permission prompt fired.
+                        if (onVoiceRecordStart()) {
+                            recordingPhase = FlashRecordingPhase.Holding
+                        }
                     },
                     onSlideUpdate = { totalDx, totalDy ->
                         val cancelPx = with(density) { FlashVoiceRecordingMath.CANCEL_SLIDE_DP.dp.toPx() }
@@ -298,7 +321,7 @@ fun FlashComposer(
                     },
                     onRecordEnd = {
                         when (recordingPhase) {
-                            FlashRecordingPhase.CancelArmed -> resetRecording()
+                            FlashRecordingPhase.CancelArmed -> cancelRecording()
                             FlashRecordingPhase.Holding -> sendVoiceRecording()
                             FlashRecordingPhase.Locked, FlashRecordingPhase.Idle -> Unit
                         }

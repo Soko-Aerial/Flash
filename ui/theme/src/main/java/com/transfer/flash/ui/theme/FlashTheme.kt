@@ -45,11 +45,14 @@ object FlashTheme {
  *   [FlashColors.accentPrimary], [FlashColors.accentSecondary] and [FlashColors.textLink]
  *   from the system wallpaper scheme; surfaces, neutrals, bubbles and all other slots stay
  *   Flash-owned per ADR-005. Default false — Flash Pulse identity first.
+ * @param hapticsEnabled UI-039/UI-049 user preference. False silences every
+ *   [rememberFlashHaptics] call site in the subtree without touching the call sites.
  */
 @Composable
 fun FlashTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     dynamicAccent: Boolean = false,
+    hapticsEnabled: Boolean = true,
     colors: FlashColors = if (darkTheme) FlashColors.dark() else FlashColors.light(),
     typography: FlashTypography = FlashTypography.default(),
     motion: FlashMotion = rememberFlashMotion(),
@@ -78,6 +81,7 @@ fun FlashTheme(
         LocalFlashColors provides resolvedColors,
         LocalFlashTypography provides rememberedTypography,
         LocalFlashMotion provides rememberedMotion,
+        LocalFlashHapticsEnabled provides hapticsEnabled,
         content = content,
     )
 }

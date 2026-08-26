@@ -63,10 +63,13 @@ object NsdApiThresholds {
     const val SDK_SERVICE_INFO_NETWORK_FIELD = 33
 
     /**
-     * Above this level (i.e. 34+) we SKIP acquiring the Wi-Fi multicast lock:
-     * T-extensions 7+ manage foreground multicast reception in the framework and the
-     * docs advise background apps to avoid the lock for battery reasons (C3.11).
-     * At or below this level the lock is still acquired (legacy NsdFlashDiscovery behavior).
+     * Historic threshold above which (34+) the Wi-Fi multicast lock used to be skipped, on the
+     * theory that T-extensions 7+ manage foreground multicast reception in-framework.
+     *
+     * NO LONGER USED to gate the lock: framework-managed multicast only applies to FOREGROUND
+     * apps, and Flash browses from a backgrounded connectedDevice FGS (screen off), where mDNS
+     * is not delivered without the explicit lock. [NsdTransport] now acquires the lock on ALL
+     * API levels. Retained as documentation of the researched threshold.
      */
     const val SDK_MULTICAST_LOCK_NOT_NEEDED = 34
 }

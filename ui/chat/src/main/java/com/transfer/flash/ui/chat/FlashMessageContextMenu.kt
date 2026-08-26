@@ -124,7 +124,12 @@ fun FlashMessageFocusOverlay(
 
         Column(
             modifier = Modifier
-                .fillMaxWidth()
+                // Wrap content (NOT fillMaxWidth): a full-width column would swallow taps across
+                // the whole screen band beside the ~220dp card, creating dead zones where "tap
+                // empty space to dismiss" silently fails. Wrapping means only the card/reaction bar
+                // eat the tap; every genuinely empty pixel falls through to the scrim's onDismiss.
+                // Side placement now comes from aligning the column itself, not horizontalAlignment.
+                .align(if (message.isMine) Alignment.CenterEnd else Alignment.CenterStart)
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,

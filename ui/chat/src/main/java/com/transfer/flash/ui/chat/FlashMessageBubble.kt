@@ -71,6 +71,7 @@ fun FlashMessageBubble(
     onReplySwipe: () -> Unit = {},
     onJumpToMessage: (String) -> Unit = {},
     onImageClick: (index: Int, image: com.transfer.flash.core.messaging.model.FlashImageAttachmentUi) -> Unit = { _, _ -> },
+    onFileClick: (com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit = {},
     isHighlighted: Boolean = false,
     /** UI-023: when non-blank, matching substrings inside the message body are highlighted. */
     searchQuery: String? = null,
@@ -94,6 +95,7 @@ fun FlashMessageBubble(
             FlashSwipeToReplyContainer(
                 onReply = onReplySwipe,
                 enabled = !inSelectionMode,
+                isMine = message.isMine,
             ) {
                 FlashBubbleSurface(
                     message = message,
@@ -104,6 +106,7 @@ fun FlashMessageBubble(
                     onSelectToggle = onSelectToggle,
                     onJumpToMessage = onJumpToMessage,
                     onImageClick = onImageClick,
+                    onFileClick = onFileClick,
                     isHighlighted = isHighlighted,
                     deliveryStatus = deliveryStatus,
                     searchQuery = searchQuery,
@@ -133,6 +136,7 @@ private fun FlashBubbleSurface(
     onSelectToggle: () -> Unit,
     onJumpToMessage: (String) -> Unit,
     onImageClick: (index: Int, image: com.transfer.flash.core.messaging.model.FlashImageAttachmentUi) -> Unit,
+    onFileClick: (com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit,
     isHighlighted: Boolean,
     deliveryStatus: (@Composable () -> Unit)?,
     searchQuery: String?,
@@ -237,8 +241,8 @@ private fun FlashBubbleSurface(
                     FlashFileMessageCard(
                         attachment = file,
                         isParentOutgoing = message.isMine,
-                        onCardClick = {},
-                        onActionClick = {},
+                        onCardClick = { onFileClick(file) },
+                        onActionClick = { onFileClick(file) },
                     )
                     Spacer(modifier = Modifier.height(FlashSpacing.space4))
                 }

@@ -2842,3 +2842,53 @@ than patching the one symptom. Nine distinct defects; the reported one is #1.
 Do not reintroduce "look up the dispatcher, then pause it" anywhere - read ADR-021 first; pause is an intent
 recorded before the lookup. When the transport gains a per-transfer intake gate, revisit the deliberate
 asymmetry in `onRemoteTransferControl` (remote PAUSE does not gate).
+
+## 2026-08-26 — Core library publishing-readiness audit + phased plan (GitHub → JitPack → Gradle)
+
+### Worked on
+Investigation only (no library source changed this session): audited the `core:*` modules for
+publishability as a reusable third-party library, then turned every blocker into an ordered, self-contained
+implementation plan for a follow-up agent (the owner will run OpenCode in this same folder).
+
+### Changed
+- NEW `docs/publishing/` — a 7-file phased plan. Read `PHASE-00-overview.md` first; phases are ordered and
+  each is self-contained (problem → exact files/code → acceptance → `./gradlew` verification):
+  - `PHASE-00-overview.md` — hosting = GitHub→JitPack→Gradle (NOT Maven Central); which Central blockers
+    DROP on JitPack (GPG signing, Central repo target, strict POM, javadoc jar — do not work on them);
+    minimum-shippable path = Phase 1→2→6 publishing only `:core:engine`.
+  - `PHASE-01-foundation.md` — LICENSE/NOTICE (Apache-2.0), centralize the hardcoded `version="1.0.0"` into
+    one root `flashLibraryVersion`, compat-ceiling decision, wrapper/.gitignore hygiene.
+  - `PHASE-02-dependency-scope.md` — **HARD BLOCKER.** `implementation(project(...))`→`api(...)` where public
+    types cross module boundaries (else individual `core:*` artifacts are uncompilable for consumers). Def.
+    flip: `api(project(":core:common"))` in all six non-engine modules; the rest data-driven off Phase 3's
+    API dump. Acceptance = a throwaway `:sample:consumer` compiles against the published artifact only.
+  - `PHASE-03-api-surface.md` — add binary-compatibility-validator (`apiDump`), enable `explicitApi()`
+    per module, demote internals (ChaosNetworkHarness, codecs/framing, MultiStreamDispatcher & pipelines,
+    DAOs, mutable flows) to `internal`/@FlashInternalApi.
+  - `PHASE-04-persistence-decoupling.md` — invert transfer→persistence so SQLCipher/Room native libs aren't
+    forced on LAN-transfer-only consumers (define a `TransferStore` port in transfer; persistence adapts it;
+    engine wires it, nullable). Interim = ABI-filter docs. Decide the published module set.
+  - `PHASE-05-consumer-ergonomics.md` — `Flash.create(context)` factory + `FlashConfig`, unified `close()`
+    lifecycle, required-permissions README section, consumer README structure, consumer-rules.pro comments.
+  - `PHASE-06-jitpack-publishing.md` — publication blocks are JitPack-ready (no signing/repo target needed),
+    `jitpack.yml` pinning `openjdk17` (AGP 9.3.1 needs JDK 17) running `publishToMavenLocal -x test -x lint`,
+    tag/release discipline (tag == `flashLibraryVersion`), external-consumer verification gate.
+
+### Verification
+- JitPack mechanics web-confirmed 2026-08-26 (docs.jitpack.io/android, /building; jitpack.io consumer
+  snippet; multi-module submodule coordinate `com.github.User.Repo:module:Tag`). No build run — this session
+  produced docs only; no `core:*` code was touched, so the prior green build state is unaffected.
+
+### Problems
+- Self-inflicted, already fixed: I first overwrote the tracked `AGENTS.md` (its full ruleset) with a small
+  handoff stub. Reverted with `git checkout -- AGENTS.md` (back to 1091 lines). AGENTS.md is unchanged.
+
+### Remaining
+- All implementation (Phases 1–6) is unstarted — the plan is the deliverable. Two decisions need the owner:
+  LICENSE copyright holder (Phase 1.1) and whether to lower compileSdk 37/AGP 9.3.1 for wider reach (1.3).
+
+### Next AI
+Follow `docs/publishing/PHASE-00-overview.md` and do the phases in order. Verify every phase with the
+`./gradlew` command it lists. Prove the Phase-2 scope fix with an EXTERNAL consumer, not the library's own
+build (the library build hides the leak). Scope: only `core/*`, root Gradle files, `docs/`, and the new
+files the plan names — do not touch `app/`, `ui/`, or `media-downloader-main/`.

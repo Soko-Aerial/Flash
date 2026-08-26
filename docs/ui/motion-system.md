@@ -2,10 +2,10 @@
 
 **Status:** IMPLEMENTED (UI-037 foundation; UI-039 + UI-041 + UI-040 appended below)  
 **Component ID:** UI-037; **UI-039** haptics; **UI-041** micro-interactions; **UI-040** sound feedback  
-**Last updated:** 2026-08-22  
+**Last updated:** 2026-08-25  
 **Depends on:** UI-001 (Flash Pulse design system)  
 **Master plan:** [flash-premium-chat-ui-implementation.md](flash-premium-chat-ui-implementation.md)  
-**Code:** `app/src/main/java/com/transfer/flash/ui/theme/FlashMotion.kt`, `FlashMotionSheet.kt`, `ui/theme/src/main/java/com/transfer/flash/ui/theme/FlashFeedback.kt`, `ui/theme/src/main/java/com/transfer/flash/ui/theme/FlashSounds.kt`
+**Code:** `ui/theme/src/main/java/com/transfer/flash/ui/theme/FlashMotion.kt`, `FlashInteraction.kt`, `FlashMotionSheet.kt`, `ui/theme/src/main/java/com/transfer/flash/ui/theme/FlashFeedback.kt`, `ui/theme/src/main/java/com/transfer/flash/ui/theme/FlashSounds.kt`
 
 ---
 
@@ -157,10 +157,31 @@ All transitions must complete or snap within **≤ 400 ms** except media viewer 
 | `statusCrossfade` | fade in | fade out | fast |
 | `messageEnter` | fade + slide up 25% + scale 0.96 | — | normal |
 | `messageExit` | — | fade | fast |
-| `screenTransition` | fade + slide start 30% | fade + slide end 30% | slow |
+| `screenPushEnter` / `screenPushExit` | fade + slide in from trailing 30% | fade + slide out leading 30% | slow |
+| `screenPopEnter` / `screenPopExit` | mirror: fade + slide in from **leading** 30% | fade + slide out **trailing** 30% | slow |
+| `screenEnter` / `screenExit` | aliases of the push pair, for callers that do not care about direction | — | slow |
+| `tabEnter(towardEnd)` / `tabExit(towardEnd)` | short lateral hop, ±10% width by tab-index sign | — | normal |
+| `sheetEnter` / `sheetExit` | fade + rise from the bottom edge (default spring) | fade + slide down | fast / normal |
+| `shellBarEnter` / `shellBarExit` | hanging nav capsule rises from below on the snappy spring | fade + drop | normal |
+| `badgePopEnter` / `badgePopExit` | fade + scale from 0.5 (snappy spring) | fade + scale back to 0.5 | fast |
 | `composerExpand` | fade + slide up 12 dp | fade | normal + gentle spring |
 | `replyExpand` | fade + expand vertical | fade | normal |
 | `mediaOpen` | fade + scale 0.92 | fade + scale 0.96 | slow |
+
+### Progress helpers (0 → 1 values read inside `graphicsLayer`)
+
+| Name | Use |
+|---|---|
+| `rememberMessageEnterProgress(animate)` | the freshly appended tail message's own alpha/rise/scale channel (UI-006); fixed at item birth so later `animate` changes cannot reset it |
+| `rememberStaggerProgress(index, key)` | per-item entrance delay for a page that just came on screen — `StaggerStepMillis` (24ms) per step, capped at `MaxStaggerSteps` (6) so long lists do not cascade. `key` restarts the stagger: pass the **page/state identity**, not the item, so re-entering a tab replays it while a scroll does not. Indices must be literal in lazy lists — a captured counter hands out arbitrary delays because item lambdas compose out of order |
+
+**Reduce-motion contract.** Every `EnterTransition`/`ExitTransition`/`ContentTransform` token above and both
+progress helpers collapse *themselves* (to `None` / immediate 1f). The raw spec accessors
+(`tweenFastSpec()`, `tweenNormalSpec()`, `springSnappySpec()`, …) do **not** — they only report
+`FastMillis`/`NormalMillis` through `reduceMotion`-aware duration getters, so `spring`-based specs and any
+`animate*AsState` built on them keep animating. Call sites that use them must gate explicitly:
+`animationSpec = if (motion.reduceMotion) snap() else motion.tweenNormalSpec()`. `messagePlacementSpec()`
+and `flashPressScale` already do this internally.
 
 ---
 
@@ -205,9 +226,12 @@ Identical timings; no separate dark motion palette.
 | File | Role |
 |---|---|
 | `FlashMotion.kt` | Tokens, curves, springs, transition builders, reduce-motion probe |
+| `FlashInteraction.kt` | `Modifier.flashPressScale(interactionSource)` — shared 0.98 press feel, read in `graphicsLayer`, gates its own spec on `reduceMotion` |
 | `FlashTheme.kt` | `LocalFlashMotion`, `FlashTheme.motion`, `rememberFlashMotion()` |
 | `FlashMotionSheet.kt` | QA demo cycling status crossfade + message enter sample |
-| `FlashChatHeader.kt` | First consumer — `statusCrossfade()` |
+| `FlashChatHeader.kt` | First consumer — `statusCrossfade()`; also the conversation-open avatar/title handoff via `rememberStaggerProgress` |
+| `FlashNavigation.kt` | UI-033 consumer — direction-aware `screenPush*` / `screenPop*` / `tab*` pairs |
+| `FlashBottomNav.kt` | UI-046 consumer — `shellBarEnter/Exit`, `badgePopEnter/Exit`, snappy spring for the indicator |
 | `FlashFeedback.kt` | UI-039: `FlashHaptic`, `FlashHapticPolicy`, `rememberFlashHaptics()` |
 
 **Dependencies:** Compose Animation (BOM). No new Gradle libraries.
@@ -220,7 +244,8 @@ Identical timings; no separate dark motion palette.
 - [x] Physical device — header status uses Flash crossfade (conversation screen)
 - [x] Dark mode preview
 - [ ] Large font — N/A for motion sheet (no layout change)
-- [ ] RTL — screen transition direction deferred to UI-033
+- [ ] RTL — screen/tab transition direction (slide offsets are width-fraction based; the shell's
+      indicator and header entrance negate their translation under `LayoutDirection.Rtl`)
 - [x] Reduced motion — unit logic via `FlashMotion(reduceMotion = true)` instant transitions
 - [ ] Performance spot-check — deferred until UI-005 list animations
 
@@ -229,7 +254,10 @@ Identical timings; no separate dark motion palette.
 ## Known limitations
 
 - ~~UI-040 sound not implemented~~ — implemented 2026-08-22, full section below.
-- `screenTransition` not wired to navigation yet (UI-033).
+- ~~`screenTransition` not wired to navigation yet (UI-033)~~ — wired 2026-08-25 as the
+  direction-aware `screenPush*` / `screenPop*` / `tab*` pairs.
+- The raw spec accessors (`tween*Spec`, `spring*Spec`) do not self-collapse under reduce-motion;
+  callers must gate them. Easy to forget — see the contract note under Named transitions.
 - No automated test for system reduce-motion setting on device (manual QA).
 
 ---

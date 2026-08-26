@@ -73,6 +73,12 @@ object FlashIcons {
     val Wifi = FlashIconSpec(R.drawable.flash_ic_wifi, "Wi-Fi")
     val WifiDirect = FlashIconSpec(R.drawable.flash_ic_wifi_direct, "Wi-Fi Direct")
 
+    /** UI-046 bottom-navigation tab glyphs (docs/ui/bottom-nav.md). */
+    val Chat = FlashIconSpec(R.drawable.flash_ic_chat, "Chats")
+    val Transfer = FlashIconSpec(R.drawable.flash_ic_transfer, "Transfers")
+    val Nearby = FlashIconSpec(R.drawable.flash_ic_nearby, "Nearby")
+    val Settings = FlashIconSpec(R.drawable.flash_ic_settings, "Settings")
+
     // Provisional reaction / action icons (UI-009 will refine)
     val Thread = FlashIconSpec(R.drawable.flash_ic_thread, "Thread reply")
     val Flag = FlashIconSpec(R.drawable.flash_ic_flag, "Flag message")

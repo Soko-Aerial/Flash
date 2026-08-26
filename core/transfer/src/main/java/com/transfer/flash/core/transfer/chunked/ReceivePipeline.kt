@@ -44,6 +44,33 @@ class ReceivePipeline(
     private val sinkFactory: ((ChunkFrame.FileStart) -> ChunkSink)? = null,
     /** When true, [ReceiveEvent.SessionStarted] is emitted on session open (default off). */
     private val emitSessionStarted: Boolean = false,
+    /**
+     * When true (#5), a fresh FILE_START opens a session in an *awaiting-acceptance* state: the
+     * [sinkFactory] is NOT invoked (no destination file is created) and any chunk that arrives
+     * before [acceptSession] is dropped ([RejectReason.AWAITING_ACCEPTANCE]) instead of written.
+     * The host surfaces the offer to the user off [ReceiveEvent.SessionStarted] and then calls
+     * [acceptSession] (resolves the sink, chunks flow) or [declineSession] (drops the session).
+     *
+     * A compliant sender parks after FILE_START until it receives the accept (RESUME), so the
+     * drop path only ever fires for a misbehaving/legacy sender — belt-and-suspenders that
+     * guarantees the "no bytes on disk before consent" property regardless of sender behavior.
+     *
+     * A fully-seeded resume (every chunk already persisted) still finalizes immediately: the
+     * resume seed implies the user accepted in the pre-restart session.
+     */
+    private val requireAcceptance: Boolean = false,
+    /**
+     * Optional resume seam (#20). Invoked once when a valid FILE_START opens a new session; the
+     * returned indexes are pre-marked in the fresh bit-vector so a receiver that persisted partial
+     * progress across a restart does NOT wait for chunks the sender already skips (sender-side
+     * resume reads its own done-set and omits confirmed chunks — without this the receive vector
+     * would never complete). Must be pure and fast: it is called under the pipeline lock, so the
+     * host supplies an in-memory (pre-warmed) done-set, not a blocking DAO read. Indexes outside
+     * `[0, totalChunks)` are ignored. The partial destination file's bytes for these indexes are
+     * assumed already on disk (the sink handle reopens without truncating); the host's whole-file
+     * digest recheck is the integrity backstop.
+     */
+    private val resumeIndexesProvider: ((ChunkFrame.FileStart) -> List<Int>)? = null,
 ) {
     init {
         require(ackEvery > 0) { "ackEvery must be > 0" }
@@ -108,6 +135,33 @@ class ReceivePipeline(
     @Synchronized
     fun cancelSession(transferId: String): Boolean = sessions.remove(transferId) != null
 
+    /**
+     * #5: accepts a pending offer — resolves the deferred destination sink (invoking
+     * [sinkFactory], which creates the file) and opens the session for writes. Returns true when
+     * an awaiting session existed. If the session was already open (or fully-seeded resume), this
+     * is a no-op returning false.
+     */
+    @Synchronized
+    fun acceptSession(transferId: String): Boolean {
+        val session = sessions[transferId] ?: return false
+        if (!session.awaitingAcceptance) return false
+        session.resolvedSink = sinkFactory?.invoke(session.start) ?: sink
+        session.awaitingAcceptance = false
+        return true
+    }
+
+    /**
+     * #5: declines a pending offer — drops the session. No sink was ever resolved, so nothing is
+     * on disk to clean up. Returns true when an awaiting session existed.
+     */
+    @Synchronized
+    fun declineSession(transferId: String): Boolean {
+        val session = sessions[transferId] ?: return false
+        if (!session.awaitingAcceptance) return false
+        sessions.remove(transferId)
+        return true
+    }
+
     @Synchronized
     fun clear() = sessions.clear()
 
@@ -128,16 +182,36 @@ class ReceivePipeline(
         if (sessions.size >= maxConcurrentSessions) {
             return listOf(reject(RejectReason.SESSION_FULL, frame.transferId))
         }
-        sessions[frame.transferId] = Session(
-            start = frame,
-            vector = ResumeBitVector(frame.totalChunks),
-            resolvedSink = sinkFactory?.invoke(frame) ?: sink,
-        )
-        return if (emitSessionStarted) {
-            listOf(ReceiveEvent.SessionStarted(frame))
-        } else {
-            emptyList()
+        val vector = ResumeBitVector(frame.totalChunks)
+        // #20: pre-mark chunks the receiver already persisted before a restart, so the vector can
+        // reach completion even though the resuming sender skips re-sending them.
+        resumeIndexesProvider?.invoke(frame)?.forEach { index ->
+            if (index in 0 until frame.totalChunks) {
+                vector.markReceived(index)
+            }
         }
+        val fullySeeded = vector.isComplete()
+        // #5: a fresh offer awaits explicit acceptance — defer the sink (no destination file yet).
+        // A fully-seeded resume bypasses the gate (the user accepted pre-restart) and finalizes.
+        val awaiting = requireAcceptance && !fullySeeded
+        val session = Session(
+            start = frame,
+            vector = vector,
+            resolvedSink = if (awaiting) null else (sinkFactory?.invoke(frame) ?: sink),
+            awaitingAcceptance = awaiting,
+        )
+        sessions[frame.transferId] = session
+        val events = ArrayList<ReceiveEvent>(2)
+        if (emitSessionStarted) {
+            events.add(ReceiveEvent.SessionStarted(frame))
+        }
+        // A fully-seeded resume (every chunk already persisted, only the COMPLETE handshake was
+        // lost pre-restart) must finalize now — the sender has nothing left to send (#20).
+        if (fullySeeded) {
+            session.finished = true
+            events.add(buildComplete(session, frame.transferId))
+        }
+        return events
     }
 
     private fun handleChunk(frame: ChunkFrame.Chunk): List<ReceiveEvent> {
@@ -150,6 +224,13 @@ class ReceivePipeline(
             // Late duplicate after COMPLETE: idempotent silence — sender's mirror
             // already holds every index once coverage was reached (C5.3 contract).
             return emptyList()
+        }
+        if (session.awaitingAcceptance) {
+            // #5: offer not yet accepted — never write to disk. A compliant sender parks after
+            // FILE_START and sends nothing here; this only fires for a misbehaving/legacy sender.
+            return listOf(
+                ReceiveEvent.Rejected(RejectReason.AWAITING_ACCEPTANCE, frame.transferId, frame.index),
+            )
         }
         val totalChunks = session.start.totalChunks
         if (frame.index < 0 || frame.index >= totalChunks) {
@@ -174,7 +255,7 @@ class ReceivePipeline(
         }
 
         if (!alreadyReceived) {
-            session.resolvedSink.write(frame.index, frame.data)
+            session.resolvedSink?.write(frame.index, frame.data)
         }
         val newlyMarked = session.vector.markReceived(frame.index)
         session.pending.add(frame.index)
@@ -244,7 +325,8 @@ class ReceivePipeline(
     private class Session(
         val start: ChunkFrame.FileStart,
         val vector: ResumeBitVector,
-        val resolvedSink: ChunkSink,
+        var resolvedSink: ChunkSink?,
+        var awaitingAcceptance: Boolean = false,
     ) {
         val pending = sortedSetOf<Int>()
         var finished = false
@@ -333,4 +415,7 @@ enum class RejectReason {
 
     /** Sender-only frames (ACK_BATCH/COMPLETE) fed into the receive side. */
     UNEXPECTED_DIRECTION,
+
+    /** #5: a chunk arrived for a session whose offer the user has not yet accepted. */
+    AWAITING_ACCEPTANCE,
 }

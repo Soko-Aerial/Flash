@@ -1,7 +1,9 @@
 package com.transfer.flash.core.transfer
 
 import com.transfer.flash.core.common.model.FlashDevice
+import com.transfer.flash.core.common.result.FlashError
 import com.transfer.flash.core.common.result.FlashResult
+import com.transfer.flash.core.persistence.db.dao.ChunkIndexRef
 import com.transfer.flash.core.persistence.db.dao.TransferChunkDao
 import com.transfer.flash.core.persistence.db.dao.TransferDao
 import com.transfer.flash.core.persistence.db.entity.TransferChunkEntity
@@ -55,6 +57,14 @@ class RealFlashTransferRepository(
     private val repositoryScope: CoroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
     private val workerDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val defaultStreams: Int = 2,
+    /**
+     * When true (production wiring), every OUTBOUND send parks after emitting FILE_START and does
+     * NOT stream chunks until the receiver explicitly accepts (a RESUME control frame). This is the
+     * sender half of the inbound offer/accept gate (#5): a compliant sender sends nothing to drop,
+     * so no chunk is ever lost to the pre-accept window (the dispatcher does not retransmit merely
+     * un-ACKed chunks). Defaults off so unit tests keep their immediate-streaming contract.
+     */
+    private val requireReceiverAcceptance: Boolean = false,
 ) : FlashTransferRepository {
 
     private val _activeTransfers = MutableStateFlow<List<FlashTransfer>>(emptyList())
@@ -84,6 +94,14 @@ class RealFlashTransferRepository(
         const val ACTION_PAUSE = "pause"
         const val ACTION_RESUME = "resume"
         const val ACTION_CANCEL = "cancel"
+
+        /**
+         * Local-only intake actions for the inbound offer gate (#5). These never go on the wire as
+         * an XFER `action` — accept maps to a RESUME sent to the peer, decline to a CANCEL. They
+         * travel on [incomingControl] so the host can resolve/drop the deferred pipeline sink.
+         */
+        const val ACTION_ACCEPT = "accept"
+        const val ACTION_DECLINE = "decline"
     }
 
     private val runningJobs = ConcurrentHashMap<String, Job>()
@@ -147,7 +165,17 @@ class RealFlashTransferRepository(
         sourceUri = fileUri,
         wireFileId = fileId,
         peerDeviceId = targetDevice.id.value,
+        errorMessage = if (requireReceiverAcceptance) "waiting for receiver to accept" else null,
     )
+
+    // #5 sender half: park before streaming until the receiver accepts (arrives as RESUME). We
+    // reuse the pause-intent race machinery — seeding it BEFORE the send job launches guarantees
+    // the dispatcher starts paused the instant it registers, so only FILE_START (the offer) goes
+    // out. A RESUME that beats dispatcher registration clears the intent and the sender streams
+    // immediately; either ordering is safe.
+    if (requireReceiverAcceptance) {
+        pauseIntents.add(transferIdString)
+    }
 
     _activeTransfers.update { it + initialTransfer }
     transferDao?.insert(
@@ -568,7 +596,47 @@ class RealFlashTransferRepository(
 
     // ---- receive-side tracking (inbound transfers surface in activeTransfers) ------------------
 
-    override fun onIncomingStarted(
+    /**
+     * In-memory receiver done-set (#20): transferId -> confirmed chunk indexes. Warmed from the DB
+     * at startup by [preloadReceiverProgress] and kept current by [onIncomingChunkConfirmed], so
+     * the receive pipeline can seed a resumed FILE_START's bit-vector synchronously (no blocking
+     * DAO read under its lock). Mirrors the send-side persistence into the same `transfer_chunks`
+     * table; ids are role-scoped so send/receive rows never collide on one device.
+     */
+    private val receiverDone = ConcurrentHashMap<String, MutableSet<Int>>()
+
+    /** Warms [receiverDone] from persisted chunk rows. Call once during transport startup. */
+    suspend fun preloadReceiverProgress() {
+        val rows = transferChunkDao?.allDoneChunks() ?: return
+        for (row in rows) {
+            receiverDone.getOrPut(row.transferId) { java.util.Collections.newSetFromMap(ConcurrentHashMap()) }
+                .add(row.chunkIndex)
+        }
+    }
+
+    /** Synchronous resume seed for the receive pipeline; empty when nothing was persisted. */
+    fun receiverDoneIndexes(transferId: String): List<Int> =
+        receiverDone[transferId]?.sorted() ?: emptyList()
+
+    /**
+     * Records receiver-confirmed chunks (#20): updates the in-memory set immediately (so a
+     * mid-session re-offer seeds correctly) and persists them so a post-restart resume can skip
+     * them. INSERT-or-ignore mirrors the sender's [executeSend] persistence.
+     */
+    fun onIncomingChunkConfirmed(transferId: String, indexes: List<Int>) {
+        if (indexes.isEmpty()) return
+        val set = receiverDone.getOrPut(transferId) {
+            java.util.Collections.newSetFromMap(ConcurrentHashMap())
+        }
+        val fresh = indexes.filter { set.add(it) }
+        if (fresh.isEmpty()) return
+        val dao = transferChunkDao ?: return
+        repositoryScope.launch(workerDispatcher) {
+            dao.insertAll(fresh.map { TransferChunkEntity(transferId, it, done = true) })
+        }
+    }
+
+    override fun onIncomingOffered(
         transferId: String,
         fileId: String,
         fileName: String,
@@ -587,9 +655,93 @@ class RealFlashTransferRepository(
                     direction = FlashTransferDirection.Receiving,
                     bytesDone = 0L,
                     bytesTotal = totalBytes,
+                    state = FlashTransferState.Offered,
+                    wireFileId = fileId,
+                    peerDeviceId = peerDeviceId,
+                )
+            }
+        }
+    }
+
+    override suspend fun acceptIncoming(transferId: FlashTransferId): FlashResult<Unit> {
+        val id = transferId.value
+        val transfer = _activeTransfers.value.find { it.id.value == id }
+            ?: return FlashResult.Failure(FlashError.TransferFailed(id, "unknown transfer"))
+        if (transfer.state != FlashTransferState.Offered) {
+            return FlashResult.Failure(FlashError.TransferFailed(id, "not an open offer"))
+        }
+        updateTransferState(id) {
+            it.copy(state = FlashTransferState.Transferring, errorMessage = null)
+        }
+        // Host resolves the deferred destination sink for this id, THEN sends the sender a RESUME —
+        // that ordering is load-bearing: a chunk arriving before the sink is resolved would be
+        // dropped and never retransmitted. We therefore emit ONLY the local ACCEPT here and let the
+        // host sequence acceptSession()→RESUME on this single event.
+        emitIncoming(id, ACTION_ACCEPT)
+        return FlashResult.Success(Unit)
+    }
+
+    override suspend fun declineIncoming(transferId: FlashTransferId): FlashResult<Unit> {
+        val id = transferId.value
+        val transfer = _activeTransfers.value.find { it.id.value == id }
+            ?: return FlashResult.Failure(FlashError.TransferFailed(id, "unknown transfer"))
+        if (transfer.state != FlashTransferState.Offered) {
+            return FlashResult.Failure(FlashError.TransferFailed(id, "not an open offer"))
+        }
+        updateTransferState(id) {
+            it.copy(
+                state = FlashTransferState.Cancelled,
+                speedBytesPerSec = 0L,
+                etaSeconds = 0L,
+                errorMessage = "declined",
+            )
+        }
+        // Host drops the (never-materialized) pipeline session; sender abandons the parked send.
+        emitIncoming(id, ACTION_DECLINE)
+        emitOutgoing(id, transfer.peerDeviceId, ACTION_CANCEL)
+        return FlashResult.Success(Unit)
+    }
+
+    override fun onIncomingStarted(
+        transferId: String,
+        fileId: String,
+        fileName: String,
+        totalBytes: Long,
+        peerName: String,
+        peerDeviceId: String?,
+        localPath: String?,
+    ) {
+        _activeTransfers.update { list ->
+            if (list.any { it.id.value == transferId }) {
+                // Row already present (an accepted OFFER): keep its identity but fill in the now-
+                // resolved destination path and ensure it is Transferring. Never downgrade a
+                // terminal state (a decline that raced the sink resolution stays Cancelled).
+                list.map { existing ->
+                    if (existing.id.value != transferId) {
+                        existing
+                    } else if (existing.state == FlashTransferState.Cancelled ||
+                        existing.state == FlashTransferState.Failed
+                    ) {
+                        existing
+                    } else {
+                        existing.copy(
+                            state = FlashTransferState.Transferring,
+                            localPath = localPath ?: existing.localPath,
+                        )
+                    }
+                }
+            } else {
+                list + FlashTransfer(
+                    id = FlashTransferId(transferId),
+                    peerName = peerName,
+                    fileName = fileName,
+                    direction = FlashTransferDirection.Receiving,
+                    bytesDone = 0L,
+                    bytesTotal = totalBytes,
                     state = FlashTransferState.Transferring,
                     wireFileId = fileId,
                     peerDeviceId = peerDeviceId,
+                    localPath = localPath,
                 )
             }
         }
@@ -607,7 +759,7 @@ class RealFlashTransferRepository(
         }
     }
 
-    override fun onIncomingCompleted(transferId: String, verified: Boolean) {
+    override fun onIncomingCompleted(transferId: String, verified: Boolean, localPath: String?) {
         updateTransferState(transferId) { transfer ->
             transfer.copy(
                 bytesDone = transfer.bytesTotal,
@@ -615,18 +767,27 @@ class RealFlashTransferRepository(
                 speedBytesPerSec = 0L,
                 etaSeconds = 0L,
                 errorMessage = if (verified) null else "completed without whole-file verification",
+                localPath = localPath ?: transfer.localPath,
             )
         }
     }
 
     override fun onIncomingFailed(transferId: String, reason: String) {
         updateTransferState(transferId) { transfer ->
-            transfer.copy(
-                state = FlashTransferState.Failed,
-                errorMessage = reason,
-                speedBytesPerSec = 0L,
-                etaSeconds = 0L,
-            )
+            // Never clobber a terminal state: a declined/cancelled offer or an already-completed
+            // transfer must not be relabelled Failed by a late teardown callback.
+            if (transfer.state == FlashTransferState.Cancelled ||
+                transfer.state == FlashTransferState.Completed
+            ) {
+                transfer
+            } else {
+                transfer.copy(
+                    state = FlashTransferState.Failed,
+                    errorMessage = reason,
+                    speedBytesPerSec = 0L,
+                    etaSeconds = 0L,
+                )
+            }
         }
     }
 

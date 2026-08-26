@@ -16,11 +16,18 @@ import com.transfer.flash.core.network.FlashNetwork
 import com.transfer.flash.core.network.bridge.DiscoveryRouteBinder
 import com.transfer.flash.core.network.ws.WsFlashNetwork
 import com.transfer.flash.core.network.ws.WsSession
+import com.transfer.flash.core.security.crypto.FlashFingerprint
+import com.transfer.flash.core.security.crypto.KeystoreFlashCrypto
+import com.transfer.flash.core.security.trust.AndroidPreferencesTrustStore
+import com.transfer.flash.pairing.PairingCoordinator
+import com.transfer.flash.net.AutoConnectGate
 import com.transfer.flash.core.transfer.FlashTransferRepository
 import com.transfer.flash.core.transfer.RealFlashTransferRepository
 import com.transfer.flash.core.transfer.chunked.ChunkFrame
+import com.transfer.flash.core.transfer.chunked.IncrementalSha256
 import com.transfer.flash.core.transfer.chunked.ReceiveEvent
 import com.transfer.flash.core.transfer.chunked.ReceivePipeline
+import com.transfer.flash.core.transfer.chunked.Sha256
 import com.transfer.flash.core.transfer.multistream.StreamChannel
 import com.transfer.flash.core.transfer.policy.FileRandomAccessSinkHandle
 import com.transfer.flash.core.transfer.policy.RandomAccessChunkSink
@@ -30,15 +37,20 @@ import com.transfer.flash.identity.AppIdentity
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
+import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -66,7 +78,11 @@ object DiscoveryEngineHolder {
 
     private const val MSG_PREFIX = "FLASH_MSG"
     private const val RECEIPT_PREFIX = "FLASH_RCPT"
+    private const val READ_PREFIX = "FLASH_READ"
+    private const val REACT_PREFIX = "FLASH_REACT"
+    private const val TYPING_PREFIX = "FLASH_TYPING"
     private const val XFER_PREFIX = "FLASH_XFER"
+    private const val PAIR_PREFIX = "FLASH_PAIR"
 
     @Volatile
     private var composite: CompositeDiscovery? = null
@@ -83,9 +99,29 @@ object DiscoveryEngineHolder {
     @Volatile
     private var dataServer: com.transfer.flash.core.network.datachannel.DataChannelServer? = null
 
-    private var binderJob: Job? = null
+    @Volatile
+    private var pairing: PairingCoordinator? = null
 
-    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var binderJob: Job? = null
+    private var autoConnectJob: Job? = null
+
+    /**
+     * Attempt-bounding gate for the auto-connect sweep, hoisted to a field so the screen-on
+     * re-arm ([onScreenOn]) shares the same gate state as the periodic loop instead of racing
+     * a second, independent gate.
+     */
+    @Volatile
+    private var autoConnectGate: AutoConnectGate? = null
+
+    /** Local device id, cached so [onScreenOn] can run a sweep without re-reading identity. */
+    @Volatile
+    private var localDeviceId: String? = null
+
+    // #16: recreatable so stopAll can cancel every collector/session job launched on it. A cancelled
+    // CoroutineScope stays cancelled, so ensureStarted swaps in a fresh one when restarting.
+    private var appScope = newAppScope()
+
+    private fun newAppScope() = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     /** Serializes start/stop so racing callers cannot leak duplicate NSD engines/servers. */
     private val lifecycleMutex = Mutex()
@@ -98,8 +134,13 @@ object DiscoveryEngineHolder {
 
     fun currentChats(): FlashChatRepository? = chatRepo
 
+    fun currentPairing(): PairingCoordinator? = pairing
+
     suspend fun ensureStarted(context: Context): CompositeDiscovery = lifecycleMutex.withLock {
         composite?.let { return it }
+        // #16: a prior stopAll cancels appScope; a cancelled scope never runs new coroutines, so
+        // start fresh before launching this session's collectors.
+        if (!appScope.isActive) appScope = newAppScope()
         val appContext = context.applicationContext
         val identity0 = AppIdentity(appContext)
         val identity = FlashAdvertisedIdentity(
@@ -141,19 +182,35 @@ object DiscoveryEngineHolder {
             "Discovery startAll failed: ${(result as? FlashResult.Failure)?.error}"
         }
 
-        val db = androidx.room.Room.databaseBuilder(
+        // Full-database encryption via SQLCipher with a keystore-wrapped passphrase; explicit
+        // migrations, NO destructive fallback (C1.7 / D2) — a schema bump migrates data instead of
+        // wiping it, and the on-disk DB is unreadable without this device's keystore.
+        val db = com.transfer.flash.core.persistence.db.FlashDatabaseOpener.openEncrypted(
             appContext,
-            com.transfer.flash.core.persistence.db.FlashDatabase::class.java,
-            "flash-dev.db",
-        ).fallbackToDestructiveMigration(dropAllTables = true).build()
+            com.transfer.flash.persistence.KeystorePassphraseProvider(appContext),
+            *com.transfer.flash.core.persistence.db.FlashMigrations.ALL,
+        )
 
         // ---- receive-side infrastructure (must precede the send factory wiring) ----
         val receivedDir = File(appContext.getExternalFilesDir(null), "FlashReceived").apply { mkdirs() }
         val openHandles = ConcurrentHashMap<String, RandomAccessSinkHandle>()
         val incomingMeta = ConcurrentHashMap<String, ChunkFrame.FileStart>()
+        // transferId -> absolute path of the received file on disk, so completed inbound transfers
+        // (and the chat attachment rows they back) can be opened/shared via FileProvider.
+        val receivedPaths = ConcurrentHashMap<String, String>()
+        // peerDeviceId -> in-flight inbound transferIds, so a session/data-channel drop can fail and
+        // clean up every stranded receive for that peer (#4). Sets are concurrent-safe.
+        val incomingByPeer = ConcurrentHashMap<String, MutableSet<String>>()
+        // Late-bound so the data-channel server listener (built below, before the cleanup closure
+        // exists) can forward connection-closed events to the same inbound-cleanup path (#4).
+        var onPeerConnectionClosed: ((String) -> Unit)? = null
 
         /** Per-peer resolved data-port offset from its advertised WS port (probed once). */
         val dataPortCache = ConcurrentHashMap<String, Int>()
+
+        // Late-bound so the receive pipeline's resume seam (built before the repo) can read the
+        // repo's in-memory receiver done-set synchronously (#20).
+        var transferForResume: RealFlashTransferRepository? = null
 
         val receivePipeline = ReceivePipeline(
             sink = { _, _ -> Log.w(TAG_TRANSFER, "Legacy shared sink invoked — expected per-transfer sinkFactory") },
@@ -162,16 +219,24 @@ object DiscoveryEngineHolder {
                 val safeId = sanitizePathComponent(start.transferId)
                 val dest = File(File(receivedDir, safeId), safeName)
                 dest.parentFile?.mkdirs()
+                receivedPaths[start.transferId] = dest.absolutePath
                 val handle = FileRandomAccessSinkHandle(dest, start.totalBytes)
                 openHandles[start.transferId] = handle
                 Log.i(TAG_TRANSFER, "Receiver destination opened file=${dest.absolutePath} totalBytes=${start.totalBytes} chunkSize=${start.chunkSize}")
                 RandomAccessChunkSink(handle, start.chunkSize)
             },
             emitSessionStarted = true,
+            // #5: hold every fresh inbound transfer as an OFFER — no destination file is created
+            // and no chunk is written until the user accepts (acceptSession resolves the sink).
+            requireAcceptance = true,
+            // #20: seed a resumed FILE_START's bit-vector from the persisted receiver done-set.
+            resumeIndexesProvider = { start ->
+                transferForResume?.receiverDoneIndexes(start.transferId) ?: emptyList()
+            },
         )
 
         // Real N-socket multistream: dedicated plain-TCP data channels next to the WS port.
-        val router = DataChannelRouter(receivePipeline, openHandles, incomingMeta)
+        val router = DataChannelRouter(receivePipeline, openHandles, incomingMeta, receivedPaths, incomingByPeer)
         val dcServer = com.transfer.flash.core.network.datachannel.DataChannelServer(
             localDeviceId = identity.deviceId.value,
             listener = object : com.transfer.flash.core.network.datachannel.DataChannelServer.Listener {
@@ -184,7 +249,11 @@ object DiscoveryEngineHolder {
                     router.onBytes("dc:$channelId", senderDeviceId, payload, reply)
                 }
 
-                override fun onConnectionClosed(peerDeviceId: String?, channelId: Int) = Unit
+                override fun onConnectionClosed(peerDeviceId: String?, channelId: Int) {
+                    // A dropped data channel strands any inbound transfer mid-flight (#4); route the
+                    // peer through the same cleanup the WS-session teardown uses.
+                    peerDeviceId?.let { pid -> onPeerConnectionClosed?.invoke(pid) }
+                }
             },
         )
         val dataPort = runCatching {
@@ -262,7 +331,14 @@ object DiscoveryEngineHolder {
             },
             transferDao = db.transferDao(),
             transferChunkDao = db.transferChunkDao(),
+            // #5: park every outbound send after FILE_START until the receiver accepts (a RESUME).
+            // A compliant sender streams nothing pre-accept, so no chunk is ever lost to the gate.
+            requireReceiverAcceptance = true,
         )
+
+        // Trust store is shared by chat (peer-name resolution) and pairing (persisted trust). One
+        // instance, created before the chat repo so its name resolver can capture it.
+        val trustStore = AndroidPreferencesTrustStore(appContext)
 
         val chatImpl = RealFlashChatRepository(
             localDeviceId = identity.deviceId.value,
@@ -273,6 +349,44 @@ object DiscoveryEngineHolder {
             receiptDao = db.receiptDao(),
             draftDao = db.draftDao(),
             recentSearchDao = db.recentSearchDao(),
+            reactionDao = db.reactionDao(),
+            // Online indicator: a peer is online iff it has a live session. activeSessions is keyed
+            // by the peer's FlashDeviceId, and a conversationId IS that peer id, so the repo can key
+            // presence directly off this id set.
+            onlinePeerIds = networkImpl.activeSessions.map { sessions ->
+                sessions.keys.mapTo(HashSet()) { it.value }
+            },
+            // A conversationId is the peer's device UUID; resolve it to the paired friendly name so
+            // the chat list / header show the real name instead of the raw id.
+            peerNameResolver = { id -> trustStore.getTrustedPeers()[FlashDeviceId(id)] },
+            // B4: join live transfer progress onto chat attachment rows so a chat bubble mirrors the
+            // Transfers tab (image thumbnail / file card with progress). Completed transfers drop out
+            // of activeTransfers; applyAttachment then falls back to the row's stored path so the
+            // attachment stays visible and openable.
+            attachmentProgress = transferImpl.activeTransfers.map { transfers ->
+                transfers.associate { t ->
+                    t.id.value to com.transfer.flash.core.messaging.model.FlashAttachmentProgress(
+                        progress = if (t.bytesTotal > 0L) {
+                            (t.bytesDone.toFloat() / t.bytesTotal.toFloat()).coerceIn(0f, 1f)
+                        } else {
+                            0f
+                        },
+                        status = when (t.state) {
+                            com.transfer.flash.core.transfer.model.FlashTransferState.Completed,
+                            com.transfer.flash.core.transfer.model.FlashTransferState.Verifying ->
+                                com.transfer.flash.core.messaging.model.FlashFileTransferStatus.Downloaded
+                            com.transfer.flash.core.transfer.model.FlashTransferState.Failed,
+                            com.transfer.flash.core.transfer.model.FlashTransferState.Cancelled ->
+                                com.transfer.flash.core.messaging.model.FlashFileTransferStatus.Failed
+                            else ->
+                                com.transfer.flash.core.messaging.model.FlashFileTransferStatus.Transferring
+                        },
+                        localPath = t.localPath ?: t.sourceUri,
+                        speedMbps = t.speedBytesPerSec / 1_000_000f,
+                        etaSeconds = t.etaSeconds.toInt(),
+                    )
+                }
+            },
             transportSink = { targetDeviceId, wireFrame ->
                 val session = networkImpl.activeSessions.value[FlashDeviceId(targetDeviceId)] as? WsSession
                 if (session == null) {
@@ -290,6 +404,9 @@ object DiscoveryEngineHolder {
                             "senderName" to (wireFrame.senderName ?: "Peer"),
                             "sentAt" to wireFrame.sentAt.toString(),
                             "text" to wireFrame.text,
+                            // Reply/quote metadata (#8); empty string when this is not a reply.
+                            "replyToId" to (wireFrame.replyToId ?: ""),
+                            "replyToPreview" to (wireFrame.replyToPreview ?: ""),
                         ),
                     )
                     is MessageWireFrame.DeliveryReceipt -> FlashTextFraming.encodeFields(
@@ -301,11 +418,77 @@ object DiscoveryEngineHolder {
                             "deliveredAt" to wireFrame.deliveredAt.toString(),
                         ),
                     )
-                    else -> return@RealFlashChatRepository false
+                    is MessageWireFrame.ReadReceipt -> FlashTextFraming.encodeFields(
+                        READ_PREFIX,
+                        listOf(
+                            "conversationId" to wireFrame.conversationId,
+                            "memberId" to wireFrame.memberId,
+                            "upToMessageId" to wireFrame.upToMessageId,
+                            "readAt" to wireFrame.readAt.toString(),
+                        ),
+                    )
+                    is MessageWireFrame.ReactionFrame -> FlashTextFraming.encodeFields(
+                        REACT_PREFIX,
+                        listOf(
+                            "messageId" to wireFrame.messageId,
+                            "conversationId" to wireFrame.conversationId,
+                            "memberId" to wireFrame.memberId,
+                            "emoji" to wireFrame.emoji,
+                            "isAdded" to wireFrame.isAdded.toString(),
+                        ),
+                    )
+                    is MessageWireFrame.TypingFrame -> FlashTextFraming.encodeFields(
+                        TYPING_PREFIX,
+                        listOf(
+                            "conversationId" to wireFrame.conversationId,
+                            "memberId" to wireFrame.memberId,
+                            "memberName" to wireFrame.memberName,
+                            "isTyping" to wireFrame.isTyping.toString(),
+                            "timestampMs" to wireFrame.timestampMs.toString(),
+                        ),
+                    )
                 }
                 val sent = session.connection.sendText(frameText)
                 Log.i(TAG_CHAT, "Dispatched chat frame to $targetDeviceId (success=$sent)")
                 sent
+            },
+        )
+
+        // ---- pairing (C2/C4): persistent identity fingerprint + trust store, glued to the
+        // pure DefaultFlashPairingProtocol by PairingCoordinator. Frames ride the same WS text
+        // framing as chat/receipts/transfer control, under the FLASH_PAIR prefix. Trust persists
+        // to SharedPreferences (AndroidPreferencesTrustStore), so paired peers survive restarts.
+        val crypto = KeystoreFlashCrypto(appContext)
+        val localFingerprintHex =
+            FlashFingerprint.formatHexGroups(FlashFingerprint.fingerprint(crypto.identityPublicKey.encoded))
+        // (trustStore constructed above, shared with the chat repo.)
+        // One ephemeral ECDH key reused for the lifetime of this engine (no session encryption is
+        // wired yet — the key rides the handshake but is opaque to the current transport).
+        val ephemeralPublicKey = crypto.generateEphemeralEcdhKeyPair().public.encoded
+        val pairingCoordinator = PairingCoordinator(
+            localFingerprintHex = localFingerprintHex,
+            localDeviceId = identity.deviceId.value,
+            localName = identity.friendlyName,
+            localModel = identity.deviceModel,
+            ephemeralPublicKey = ephemeralPublicKey,
+            trustStore = trustStore,
+            scope = appScope,
+            sendToPeer = { peerId, text ->
+                // MUST be non-blocking: beginPair is invoked from the UI (main) dispatcher, and a
+                // blocking socket write there throws NetworkOnMainThreadException — which WsConnection
+                // catches as a write failure and CLOSES the session, tearing down the link the
+                // handshake needs. sendTextAsync queues the write on the connection's own IO scope.
+                // The boolean reports reachability (is there a live session?), which is exactly the
+                // signal beginPair uses for its "Couldn't reach…" feedback.
+                val session = networkImpl.activeSessions.value[FlashDeviceId(peerId)] as? WsSession
+                if (session != null) {
+                    session.connection.sendTextAsync(text)
+                    Log.i(TAG_WS, "Pairing sendToPeer id=$peerId queued (hasSession=true)")
+                    true
+                } else {
+                    Log.i(TAG_WS, "Pairing sendToPeer id=$peerId no session")
+                    false
+                }
             },
         )
 
@@ -323,6 +506,92 @@ object DiscoveryEngineHolder {
         // Tracked as a SET of paused transfer ids, not a boolean: with two inbound transfers
         // paused, resuming one used to ungate the socket for both.
         val pausedIntakeIds = MutableStateFlow<Set<String>>(emptySet())
+
+        // Single idempotent teardown for one inbound transfer: close+drop the sink handle, forget
+        // its metadata, drop the pipeline session, un-gate intake, unregister it from its peer, and
+        // mark the transfer row failed (#4). Safe to call for an unknown/already-cleaned id.
+        val cleanupInbound: (String, String) -> Unit = { transferId, reason ->
+            openHandles.remove(transferId)?.let { handle -> runCatching { handle.close() } }
+            incomingMeta.remove(transferId)
+            receivedPaths.remove(transferId)
+            receivePipeline.cancelSession(transferId)
+            pausedIntakeIds.update { it - transferId }
+            incomingByPeer.values.forEach { it.remove(transferId) }
+            transferImpl.onIncomingFailed(transferId, reason)
+        }
+
+        // Fail every stranded inbound transfer for a peer whose transport just dropped (#4).
+        val failInboundForPeer: (String, String) -> Unit = { peerId, reason ->
+            incomingByPeer.remove(peerId)?.toList()?.forEach { transferId ->
+                Log.i(TAG_TRANSFER, "Peer $peerId dropped — failing inbound transferId=$transferId ($reason)")
+                cleanupInbound(transferId, reason)
+            }
+        }
+        onPeerConnectionClosed = { peerId -> failInboundForPeer(peerId, "data channel closed") }
+
+        // Sends one FLASH_XFER control frame to a peer's WebSocket session (ADR-018). Shared by the
+        // outgoingControl collector and the offer-accept path (which must RESUME the sender only
+        // AFTER the local sink is resolved, so it cannot go through the fire-and-forget flow).
+        val sendXfer: (String, String, String) -> Unit = { peerId, action, transferId ->
+            val session = networkImpl.activeSessions.value[FlashDeviceId(peerId)] as? WsSession
+            if (session == null) {
+                Log.w(TAG_TRANSFER, "Cannot deliver XFER $action: no session for $peerId")
+            } else {
+                val frame = FlashTextFraming.encodeFields(
+                    XFER_PREFIX,
+                    listOf("action" to action, "transferId" to transferId),
+                )
+                val ok = session.connection.sendText(frame)
+                Log.i(TAG_TRANSFER, "XFER $action → $peerId (sent=$ok) transferId=$transferId")
+            }
+        }
+
+        // Accepts a pending inbound OFFER (#5): resolve the deferred sink FIRST (so no early chunk
+        // is dropped), surface it as Transferring + a chat bubble, then RESUME the parked sender.
+        val acceptOffer: (String) -> Unit = { transferId ->
+            val meta = incomingMeta[transferId]
+            val pid = transferImpl.activeTransfers.value.find { it.id.value == transferId }?.peerDeviceId
+            if (meta == null) {
+                Log.w(TAG_TRANSFER, "Accept for unknown offer transferId=$transferId")
+            } else if (receivePipeline.acceptSession(transferId)) {
+                transferImpl.onIncomingStarted(
+                    transferId = transferId,
+                    fileId = meta.fileId,
+                    fileName = meta.fileName,
+                    totalBytes = meta.totalBytes,
+                    peerName = pid ?: "",
+                    peerDeviceId = pid,
+                    localPath = receivedPaths[transferId],
+                )
+                // #1: mint the inbound attachment bubble now that the user has accepted.
+                pid?.let {
+                    chatImpl.onInboundAttachment(
+                        peerDeviceId = it,
+                        transferId = transferId,
+                        fileName = meta.fileName,
+                        mimeType = guessMimeType(meta.fileName),
+                        sizeBytes = meta.totalBytes,
+                    )
+                }
+                // Release the parked sender AFTER the sink exists.
+                pid?.let { sendXfer(it, RealFlashTransferRepository.ACTION_RESUME, transferId) }
+                Log.i(TAG_TRANSFER, "Accepted offer transferId=$transferId → streaming")
+            } else {
+                Log.w(TAG_TRANSFER, "acceptSession no-op transferId=$transferId (already open?)")
+            }
+        }
+
+        // Declines a pending inbound OFFER (#5): drop the never-materialized session and local
+        // bookkeeping. The repo already marked the row Cancelled and emitted a CANCEL to the sender.
+        val declineOffer: (String) -> Unit = { transferId ->
+            receivePipeline.declineSession(transferId)
+            incomingMeta.remove(transferId)
+            receivedPaths.remove(transferId)
+            pausedIntakeIds.update { it - transferId }
+            incomingByPeer.values.forEach { it.remove(transferId) }
+            Log.i(TAG_TRANSFER, "Declined offer transferId=$transferId")
+        }
+
         appScope.launch {
             transferImpl.incomingControl.collect { control ->
                 when (control.action) {
@@ -335,14 +604,13 @@ object DiscoveryEngineHolder {
                         Log.i(TAG_TRANSFER, "Incoming intake RESUMED transferId=${control.transferId} paused=${pausedIntakeIds.value.size}")
                     }
                     RealFlashTransferRepository.ACTION_CANCEL -> {
-                        // Remote cancel: tear down sink + pipeline session; un-gate intake.
-                        openHandles.remove(control.transferId)?.let { handle ->
-                            runCatching { handle.close() }
-                        }
-                        receivePipeline.cancelSession(control.transferId)
-                        pausedIntakeIds.update { it - control.transferId }
+                        // Remote cancel: tear down sink + pipeline session, un-gate intake, and mark
+                        // the row failed via the shared inbound-cleanup path.
+                        cleanupInbound(control.transferId, "cancelled by peer")
                         Log.i(TAG_TRANSFER, "Incoming transfer CANCELLED transferId=${control.transferId}")
                     }
+                    RealFlashTransferRepository.ACTION_ACCEPT -> acceptOffer(control.transferId)
+                    RealFlashTransferRepository.ACTION_DECLINE -> declineOffer(control.transferId)
                 }
             }
         }
@@ -373,14 +641,21 @@ object DiscoveryEngineHolder {
             networkImpl.activeSessions.collect { sessions ->
                 sessionJobs.keys.filterNot { it in sessions.values }.forEach { stale ->
                     sessionJobs.remove(stale)?.cancel()
+                    // The WS session is the authoritative "peer gone" signal: fail every inbound
+                    // transfer still in flight for it so no handle/row is stranded (#4).
+                    failInboundForPeer(stale.peerDeviceId.value, "peer disconnected")
                     Log.d(TAG_WS, "Cancelled collectors for stale session peer=${stale.peer.friendlyName}")
                 }
                 sessions.values.forEach { session ->
                     if (session is WsSession && !sessionJobs.containsKey(session)) {
+                        // Announce our identity fingerprint so the peer can derive the shared
+                        // pairing code the moment it taps Pair (see PairingFraming.Hello).
+                        Log.i(TAG_WS, "Session up peer=${session.peer.friendlyName} id=${session.peerDeviceId.value} — sending pairing hello")
+                        pairingCoordinator.onSessionUp(session.peerDeviceId.value)
                         sessionJobs[session] = appScope.launch {
                             launch {
                                 session.incomingText.collect { text ->
-                                    handleInboundText(chatImpl, transferImpl, text)
+                                    handleInboundText(chatImpl, transferImpl, pairingCoordinator, session.peerDeviceId.value, text)
                                 }
                             }
                             launch {
@@ -395,10 +670,21 @@ object DiscoveryEngineHolder {
                                         receivePipeline = receivePipeline,
                                         openHandles = openHandles,
                                         incomingMeta = incomingMeta,
+                                        receivedPaths = receivedPaths,
+                                        incomingByPeer = incomingByPeer,
                                         peerLabel = session.peer.friendlyName,
                                         peerDeviceId = session.peerDeviceId.value,
                                         data = data,
                                         reply = { bytes -> session.connection.sendBinary(bytes) },
+                                        onAttachmentStarted = { pid, transferId, fileName, totalBytes ->
+                                            chatImpl.onInboundAttachment(
+                                                peerDeviceId = pid,
+                                                transferId = transferId,
+                                                fileName = fileName,
+                                                mimeType = guessMimeType(fileName),
+                                                sizeBytes = totalBytes,
+                                            )
+                                        },
                                     )
                                 }
                             }
@@ -412,14 +698,88 @@ object DiscoveryEngineHolder {
         network = networkImpl
         transferRepo = transferImpl
         chatRepo = chatImpl
+        pairing = pairingCoordinator
         transferRef = transferImpl
         router.transfer = transferImpl
+        transferForResume = transferImpl
+        // Warm the receiver done-set so a resumed inbound FILE_START seeds its bit-vector (#20).
+        appScope.launch { runCatching { transferImpl.preloadReceiverProgress() } }
         dataServer = dcServer
+
+        // Proactively hold a full-duplex session with every discovered peer, dialing in whichever
+        // direction the network permits. On a Wi-Fi hotspot the SoftAP/gateway device cannot open a
+        // TCP connection to a client station — only the client can dial — so without this the host
+        // can never initiate pairing/chat and the on-demand session created by a Pair tap is too
+        // fragile to survive. Once ANY side's dial lands, all traffic rides that one session.
+        // Glare (both sides dialing) is resolved by WsFlashNetwork.registerSession; AutoConnectGate
+        // bounds attempts so a permanently-unreachable direction is retried, not hammered.
+        autoConnectJob = appScope.launch {
+            val gate = AutoConnectGate()
+            autoConnectGate = gate
+            localDeviceId = identity.deviceId.value
+            while (isActive) {
+                runAutoConnectSweep(engine, networkImpl, identity.deviceId.value, gate)
+                delay(AUTO_CONNECT_SWEEP_MS)
+            }
+        }
 
         // Auto-start foreground service so screen-off or background doesn't kill the server
         runCatching { FlashBackgroundService.start(appContext) }
 
         return composite!!
+    }
+
+    /**
+     * One pass of the proactive auto-connect sweep: dials every discovered peer that lacks a
+     * live session, bounded by [AutoConnectGate]. Extracted from the periodic loop so the
+     * screen-on re-arm ([onScreenOn]) can force an immediate sweep instead of waiting up to
+     * [AUTO_CONNECT_SWEEP_MS] for the next tick. Each dial is launched on [appScope] and ends
+     * its own gate entry, exactly as the original inline loop did.
+     */
+    private fun runAutoConnectSweep(
+        engine: CompositeDiscovery,
+        networkImpl: WsFlashNetwork,
+        localId: String,
+        gate: AutoConnectGate,
+    ) {
+        val endpoints = engine.discoveredEndpoints.value
+        val active = networkImpl.activeSessions.value
+        for (ep in endpoints) {
+            val id = ep.deviceId.value
+            if (id == localId) continue
+            val hasSession = active.containsKey(ep.deviceId)
+            if (!gate.tryBegin(id, hasSession, System.currentTimeMillis())) continue
+            appScope.launch {
+                Log.i(TAG_WS, "Auto-connect dialing peer=${ep.friendlyName} id=$id at ${ep.hostAddress}:${ep.port}")
+                val result = runCatching { networkImpl.connectManual(ep.hostAddress, ep.port) }.getOrNull()
+                val ok = result is FlashResult.Success
+                Log.i(TAG_WS, "Auto-connect result peer=$id success=$ok")
+                gate.end(id)
+            }
+        }
+    }
+
+    /**
+     * Screen-on / user-present re-arm, invoked by [FlashBackgroundService]'s screen receiver.
+     *
+     * Screen-off + Doze can silently drop WebSocket sessions and stall mDNS reception even with
+     * the service's wake/Wi-Fi locks held. When the screen returns we (1) restart discovery
+     * browsing so returning peers are re-found, and (2) force an immediate auto-connect sweep so
+     * discovered/known peers are re-dialed at once rather than after the next periodic tick.
+     *
+     * Safe to call when the engine has not started (no-op).
+     */
+    fun onScreenOn() {
+        val engine = composite ?: return
+        val networkImpl = network ?: return
+        val gate = autoConnectGate ?: return
+        val localId = localDeviceId ?: return
+        appScope.launch {
+            Log.i(TAG_DISCOVERY, "Screen-on: restarting discovery browsing and forcing auto-connect sweep")
+            runCatching { engine.startDiscovery() }
+                .onFailure { Log.w(TAG_DISCOVERY, "Screen-on discovery restart failed", it) }
+            runAutoConnectSweep(engine, networkImpl, localId, gate)
+        }
     }
 
     /**
@@ -438,7 +798,18 @@ object DiscoveryEngineHolder {
             ?: throw IOException("Content resolver returned null stream for $uriString")
     }
 
-    private suspend fun handleInboundText(chatImpl: RealFlashChatRepository, transferImpl: RealFlashTransferRepository, text: String) {
+    private suspend fun handleInboundText(
+        chatImpl: RealFlashChatRepository,
+        transferImpl: RealFlashTransferRepository,
+        pairing: PairingCoordinator,
+        peerDeviceId: String,
+        text: String,
+    ) {
+        if (FlashTextFraming.parseFields(text, PAIR_PREFIX) != null) {
+            Log.i(TAG_WS, "Inbound pairing frame from id=$peerDeviceId")
+            pairing.onInbound(peerDeviceId, text)
+            return
+        }
         val msgFields = FlashTextFraming.parseFields(text, MSG_PREFIX)
         if (msgFields != null) {
             val localId = msgFields["localId"] ?: return
@@ -450,6 +821,9 @@ object DiscoveryEngineHolder {
                     senderName = msgFields["senderName"] ?: "Peer",
                     sentAt = msgFields["sentAt"]?.toLongOrNull() ?: System.currentTimeMillis(),
                     text = msgFields["text"] ?: "",
+                    // Reply/quote metadata (#8); blank fields (non-reply / legacy peer) → null.
+                    replyToId = msgFields["replyToId"]?.ifBlank { null },
+                    replyToPreview = msgFields["replyToPreview"]?.ifBlank { null },
                 ),
             )
             return
@@ -462,6 +836,46 @@ object DiscoveryEngineHolder {
                     conversationId = receiptFields["conversationId"] ?: "",
                     memberId = receiptFields["memberId"] ?: "",
                     deliveredAt = receiptFields["deliveredAt"]?.toLongOrNull() ?: System.currentTimeMillis(),
+                ),
+            )
+            return
+        }
+        val readFields = FlashTextFraming.parseFields(text, READ_PREFIX)
+        if (readFields != null) {
+            chatImpl.onInboundWireFrame(
+                MessageWireFrame.ReadReceipt(
+                    conversationId = readFields["conversationId"] ?: "",
+                    memberId = readFields["memberId"] ?: return,
+                    upToMessageId = readFields["upToMessageId"] ?: return,
+                    readAt = readFields["readAt"]?.toLongOrNull() ?: System.currentTimeMillis(),
+                ),
+            )
+            return
+        }
+        val reactFields = FlashTextFraming.parseFields(text, REACT_PREFIX)
+        if (reactFields != null) {
+            chatImpl.onInboundWireFrame(
+                MessageWireFrame.ReactionFrame(
+                    messageId = reactFields["messageId"] ?: return,
+                    conversationId = reactFields["conversationId"] ?: "",
+                    memberId = reactFields["memberId"] ?: return,
+                    emoji = reactFields["emoji"] ?: return,
+                    isAdded = reactFields["isAdded"]?.toBooleanStrictOrNull() ?: true,
+                ),
+            )
+            return
+        }
+        val typingFields = FlashTextFraming.parseFields(text, TYPING_PREFIX)
+        if (typingFields != null) {
+            chatImpl.onInboundWireFrame(
+                MessageWireFrame.TypingFrame(
+                    // Thread typing under the SENDER's device id, matching how inbound text is keyed
+                    // (the wire conversationId is our own id from the peer's perspective).
+                    conversationId = peerDeviceId,
+                    memberId = typingFields["memberId"] ?: return,
+                    memberName = typingFields["memberName"] ?: "Peer",
+                    isTyping = typingFields["isTyping"]?.toBooleanStrictOrNull() ?: false,
+                    timestampMs = typingFields["timestampMs"]?.toLongOrNull() ?: System.currentTimeMillis(),
                 ),
             )
             return
@@ -481,10 +895,18 @@ object DiscoveryEngineHolder {
         receivePipeline: ReceivePipeline,
         openHandles: ConcurrentHashMap<String, RandomAccessSinkHandle>,
         incomingMeta: ConcurrentHashMap<String, ChunkFrame.FileStart>,
+        receivedPaths: ConcurrentHashMap<String, String>,
+        incomingByPeer: ConcurrentHashMap<String, MutableSet<String>>,
         peerLabel: String,
         peerDeviceId: String?,
         data: ByteArray,
         reply: (ByteArray) -> Boolean,
+        /**
+         * Invoked once per inbound transfer when its file header arrives, so the chat layer can
+         * mint an inbound attachment bubble (#1). Null for the data-channel router path, which has
+         * no chat repo reference; the WS session collector supplies it.
+         */
+        onAttachmentStarted: ((peerDeviceId: String, transferId: String, fileName: String, totalBytes: Long) -> Unit)? = null,
     ) {
         Log.d(TAG_TRANSFER, "Received binary frame: ${data.size} bytes from $peerLabel")
         // 1. First route to active senders (ACKs or COMPLETE from receiver)
@@ -500,7 +922,16 @@ object DiscoveryEngineHolder {
                 is ReceiveEvent.SessionStarted -> {
                     val frame = event.frame
                     incomingMeta[frame.transferId] = frame
-                    transferImpl.onIncomingStarted(
+                    // Register under the peer so a transport drop can fail this transfer (#4).
+                    peerDeviceId?.let { pid ->
+                        incomingByPeer.getOrPut(pid) {
+                            java.util.Collections.newSetFromMap(ConcurrentHashMap())
+                        }.add(frame.transferId)
+                    }
+                    // #5: surface as a pending OFFER (Offered state, no sink/file, no chat bubble
+                    // yet). Acceptance (incomingControl ACTION_ACCEPT) resolves the sink, flips it
+                    // Transferring, mints the attachment bubble, and RESUMEs the parked sender.
+                    transferImpl.onIncomingOffered(
                         transferId = frame.transferId,
                         fileId = frame.fileId,
                         fileName = frame.fileName,
@@ -508,19 +939,34 @@ object DiscoveryEngineHolder {
                         peerName = peerLabel,
                         peerDeviceId = peerDeviceId,
                     )
-                    Log.i(TAG_TRANSFER, "Receiving '${frame.fileName}' (${frame.totalBytes} bytes, ${frame.totalChunks} chunks) from $peerLabel")
+                    Log.i(TAG_TRANSFER, "Offered '${frame.fileName}' (${frame.totalBytes} bytes, ${frame.totalChunks} chunks) from $peerLabel — awaiting accept")
                 }
                 is ReceiveEvent.AckBatchReady -> {
                     Log.d(TAG_TRANSFER, "Receiver emitting ACK batch with ${event.frame.indexes.size} indexes")
+                    // #20: persist the confirmed indexes so a post-restart resume skips them.
+                    transferImpl.onIncomingChunkConfirmed(event.frame.transferId, event.frame.indexes)
                     updateIncomingProgress(transferImpl, receivePipeline, incomingMeta, event.frame.transferId)
                     reply(ChunkFrame.serialize(event.frame))
                 }
                 is ReceiveEvent.Completed -> {
-                    val handle = openHandles.remove(event.frame.transferId)
+                    val transferId = event.frame.transferId
+                    val handle = openHandles.remove(transferId)
                     handle?.flush()
                     handle?.close()
-                    transferImpl.onIncomingCompleted(event.frame.transferId, event.frame.verified)
-                    Log.i(TAG_TRANSFER, "Receiver completed transferId=${event.frame.transferId} verified=${event.frame.verified}")
+                    incomingByPeer.values.forEach { it.remove(transferId) }
+                    val path = receivedPaths.remove(transferId)
+                    val expectedHex = incomingMeta.remove(transferId)?.fileSha256Hex
+                    // #19: whole-file digest recheck against the manifest hash, layered on the
+                    // pipeline's per-chunk verify-before-write. Chunk hashes already guarantee each
+                    // piece's integrity; this catches assembly/offset faults or manifest/content
+                    // divergence before the file is surfaced as trusted.
+                    val wholeFileVerified = event.frame.verified && verifyWholeFile(path, expectedHex)
+                    transferImpl.onIncomingCompleted(
+                        transferId,
+                        wholeFileVerified,
+                        localPath = path,
+                    )
+                    Log.i(TAG_TRANSFER, "Receiver completed transferId=$transferId chunkVerified=${event.frame.verified} wholeFileVerified=$wholeFileVerified")
                     reply(ChunkFrame.serialize(event.frame))
                 }
                 is ReceiveEvent.Rejected -> {
@@ -544,6 +990,8 @@ object DiscoveryEngineHolder {
         private val receivePipeline: ReceivePipeline,
         private val openHandles: ConcurrentHashMap<String, RandomAccessSinkHandle>,
         private val incomingMeta: ConcurrentHashMap<String, ChunkFrame.FileStart>,
+        private val receivedPaths: ConcurrentHashMap<String, String>,
+        private val incomingByPeer: ConcurrentHashMap<String, MutableSet<String>>,
     ) {
         /** Late-bound because the repo is constructed after this router in ensureStarted. */
         @Volatile
@@ -551,7 +999,34 @@ object DiscoveryEngineHolder {
 
         fun onBytes(peerLabel: String, peerDeviceId: String?, bytes: ByteArray, reply: (ByteArray) -> Boolean) {
             val impl = transfer ?: return
-            handleInboundBinary(impl, receivePipeline, openHandles, incomingMeta, peerLabel, peerDeviceId, bytes, reply)
+            handleInboundBinary(impl, receivePipeline, openHandles, incomingMeta, receivedPaths, incomingByPeer, peerLabel, peerDeviceId, bytes, reply)
+        }
+    }
+
+    /**
+     * Streams the fully-assembled destination file through SHA-256 and compares it in constant time
+     * against the manifest's declared whole-file digest (#19). Returns false when either input is
+     * missing/invalid or the file cannot be read, so an unverifiable transfer surfaces as
+     * unverified rather than being silently trusted.
+     */
+    private fun verifyWholeFile(path: String?, expectedHex: String?): Boolean {
+        if (path.isNullOrBlank() || expectedHex.isNullOrBlank() || !Sha256.isValidHex(expectedHex)) {
+            return false
+        }
+        return runCatching {
+            val acc = IncrementalSha256()
+            File(path).inputStream().use { input ->
+                val buffer = ByteArray(64 * 1024)
+                while (true) {
+                    val read = input.read(buffer)
+                    if (read < 0) break
+                    acc.update(buffer, 0, read)
+                }
+            }
+            Sha256.hexEqualsConstantTime(acc.digestHex(), Sha256.normalizeHex(expectedHex))
+        }.getOrElse { e ->
+            Log.w(TAG_TRANSFER, "Whole-file verify failed to read $path: ${e.message}")
+            false
         }
     }
 
@@ -575,6 +1050,37 @@ object DiscoveryEngineHolder {
     private fun sanitizePathComponent(raw: String): String =
         raw.replace(Regex("[^A-Za-z0-9._ ()-]"), "_").trim('.').ifBlank { "unnamed" }.take(120)
 
+    /**
+     * Best-effort MIME from a file name extension, used to render an inbound attachment bubble as
+     * an image/video/audio card vs. a generic file card (#1). Falls back to octet-stream.
+     */
+    private fun guessMimeType(fileName: String): String {
+        val ext = fileName.substringAfterLast('.', "").lowercase(Locale.getDefault())
+        return when (ext) {
+            "jpg", "jpeg" -> "image/jpeg"
+            "png" -> "image/png"
+            "gif" -> "image/gif"
+            "webp" -> "image/webp"
+            "heic", "heif" -> "image/heic"
+            "bmp" -> "image/bmp"
+            "mp4", "m4v" -> "video/mp4"
+            "mov" -> "video/quicktime"
+            "webm" -> "video/webm"
+            "mkv" -> "video/x-matroska"
+            "3gp" -> "video/3gpp"
+            "mp3" -> "audio/mpeg"
+            "m4a", "aac" -> "audio/aac"
+            "ogg", "oga" -> "audio/ogg"
+            "wav" -> "audio/wav"
+            "opus" -> "audio/opus"
+            "flac" -> "audio/flac"
+            "pdf" -> "application/pdf"
+            "zip" -> "application/zip"
+            "txt" -> "text/plain"
+            else -> "application/octet-stream"
+        }
+    }
+
     /** Stops advertising/browsing, sessions, and releases the ephemeral port. Idempotent. */
     suspend fun stopAll() = lifecycleMutex.withLock {
         val currentEngine: CompositeDiscovery?
@@ -586,16 +1092,27 @@ object DiscoveryEngineHolder {
             network = null
             transferRepo = null
             chatRepo = null
+            pairing = null
         }
         binderJob?.cancel()
         binderJob = null
+        autoConnectJob?.cancel()
+        autoConnectJob = null
+        autoConnectGate = null
+        localDeviceId = null
         dataServer?.stop()
         dataServer = null
         currentEngine?.stopAll()
         currentNetwork?.stop()
+        // #16: cancel every collector/session job launched on appScope (incoming/outgoing control,
+        // activeSessions, per-session readers, auto-connect). ensureStarted recreates the scope.
+        appScope.cancel()
     }
 
     const val TOTAL_TEST_BYTES: Long = 10L * 1024 * 1024
+
+    /** Cadence of the background auto-connect sweep; per-peer attempts are gated by [AutoConnectGate]. */
+    private const val AUTO_CONNECT_SWEEP_MS = 5_000L
 }
 
 /**

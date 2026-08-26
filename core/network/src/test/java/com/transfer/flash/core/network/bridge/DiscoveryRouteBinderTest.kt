@@ -86,6 +86,37 @@ class DiscoveryRouteBinderTest {
         Unit
     }
 
+    @Test
+    fun observe_forgetsEndpointsDroppedFromSnapshot_butLeavesUntrackedRoutes() {
+        val endpoints = MutableStateFlow<List<FlashDiscoveredEndpoint>>(emptyList())
+        val routes = HashMap<String, Pair<String, Int>>()
+        // Full EndpointMemory (not SAM): honours both remember and forget, like the real network impls.
+        val memory = object : EndpointMemory {
+            override fun rememberEndpoint(deviceId: String, host: String, port: Int) {
+                routes[deviceId] = host to port
+            }
+
+            override fun forgetEndpoint(deviceId: String) {
+                routes.remove(deviceId)
+            }
+        }
+        // An inbound-HELLO route the binder never bound — must survive discovery churn.
+        routes["hello-only"] = "10.9.9.9" to 9999
+
+        DiscoveryRouteBinder.observe(scope, endpoints, memory)
+
+        // Emission 1: a + b discovered.
+        endpoints.value = listOf(endpoint("a", "10.0.0.1", 1000), endpoint("b", "10.0.0.2", 2000))
+        assertEquals("10.0.0.1" to 1000, routes["a"])
+        assertEquals("10.0.0.2" to 2000, routes["b"])
+
+        // Emission 2: b lost — its route is pruned, a stays, hello-only untouched.
+        endpoints.value = listOf(endpoint("a", "10.0.0.1", 1000))
+        assertEquals("10.0.0.1" to 1000, routes["a"])
+        assertEquals(null, routes["b"])
+        assertEquals("10.9.9.9" to 9999, routes["hello-only"])
+    }
+
     private fun runBlockingCompat(block: suspend () -> Unit) {
         kotlinx.coroutines.runBlocking { block() }
     }

@@ -30,6 +30,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import com.transfer.flash.core.messaging.model.FlashChatHeaderUiState
 import com.transfer.flash.core.messaging.model.FlashGroupMemberUi
 import com.transfer.flash.core.messaging.model.FlashMemberRole
 import com.transfer.flash.core.messaging.model.FlashNetworkTransport
@@ -299,6 +300,27 @@ private fun memberRowDescription(member: FlashGroupMemberUi): String {
         }
     }
 }
+
+/**
+ * Build member rows from the real group header (UI-029). The header only carries
+ * per-member initials plus aggregate online/total counts — no names, roles, or
+ * per-member transport — so rows use the initials as a neutral label and mark the
+ * first [FlashChatHeaderUiState.onlineCount] members online. Returns an empty list
+ * when there is no roster (the current 1:1-only build), so no fabricated identities
+ * ever reach production; [sampleGroupMembers] stays confined to @Preview.
+ */
+fun groupMembersFromHeader(header: FlashChatHeaderUiState): List<FlashGroupMemberUi> =
+    header.memberInitials.mapIndexed { index, initials ->
+        val online = index < header.onlineCount
+        FlashGroupMemberUi(
+            id = "member_$index",
+            name = initials.uppercase(),
+            initials = initials,
+            isOnline = online,
+            role = FlashMemberRole.Member,
+            transport = if (online) header.transport else FlashNetworkTransport.Unknown,
+        )
+    }
 
 /** Sample data: owner + admin + members with mixed transports/online states. */
 fun sampleGroupMembers(): List<FlashGroupMemberUi> = listOf(

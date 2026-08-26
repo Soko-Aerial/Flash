@@ -2,10 +2,10 @@
 
 **Status:** IMPLEMENTED  
 **Component ID:** UI-003  
-**Last updated:** 2026-08-19  
-**Depends on:** UI-001, UI-002, UI-037  
+**Last updated:** 2026-08-25  
+**Depends on:** UI-001, UI-002, UI-037, UI-046 (shell inset)  
 **Master plan:** [flash-premium-chat-ui-implementation.md](flash-premium-chat-ui-implementation.md)  
-**Code:** `app/src/main/java/com/transfer/flash/ui/chat/FlashChatList*.kt`
+**Code:** `ui/chat/src/main/java/com/transfer/flash/ui/chat/FlashChatList*.kt`
 
 ---
 
@@ -126,11 +126,19 @@ Icons: `FlashIcons.Pin`, `Mute`, `Group`, `Gallery`, `Delivered`, `Read`, `Faile
 
 | Trigger | Token |
 |---|---|
+| Branch swap (error ⇄ loading ⇄ empty ⇄ content) | `AnimatedContent` over a private `ChatListPageState` **enum** from the pure `chatListPageState(...)` helper — targeting the whole UI state would restart the crossfade on every presence/typing tick |
 | Typing ↔ preview | `FlashTheme.motion.statusCrossfade()` |
 | Unread badge show/hide | `AnimatedVisibility` + scale 0.8→1, `springSnappySpec` |
-| Row press | scale 0.98, `springSnappySpec` |
-| List insert/remove | `Modifier.animateItem()` + `messageEnter`/`messageExit` where applicable |
+| Row press | `Modifier.flashPressScale(interactionSource)` — scale 0.98, `springSnappySpec`, `indication = null` |
+| List insert/remove/reorder | `Modifier.animateItem(motion.messagePlacementSpec(), motion.messageFadeOutSpec())`, rows keyed by conversation id |
 | Pin state change | background crossfade `statusCrossfade` |
+| Row tap → Conversation | the shell's `screenPushEnter()/Exit()`; the header's avatar and title then run their own `rememberStaggerProgress` handoff (see [navigation.md](navigation.md)) |
+
+**Shell integration (2026-08-25):** `listState: LazyListState` and `bottomInset: Dp` are parameters, both
+supplied by `MainActivity`. The scroll state must be hoisted — `FlashAnimatedScreen` disposes the outgoing
+page on every tab hop, so a page-local `rememberLazyListState()` would reset the list on each switch and
+the shell could not implement re-select-to-top. `bottomInset` becomes the `LazyColumn`'s bottom
+`contentPadding` so rows scroll *under* the hanging capsule rather than being clipped above it.
 
 ---
 

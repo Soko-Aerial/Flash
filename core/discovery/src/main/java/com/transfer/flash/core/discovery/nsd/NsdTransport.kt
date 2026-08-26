@@ -1,8 +1,6 @@
 package com.transfer.flash.core.discovery.nsd
 
 import android.content.Context
-import android.net.NetworkCapabilities
-import android.net.NetworkRequest
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.net.wifi.WifiManager
@@ -33,6 +31,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.nio.charset.StandardCharsets
@@ -246,31 +245,19 @@ class RealNsdManagerBridge(
             }
         }
         discoveryListener = listener
-        return if (request.useNetworkRequestDiscovery) {
-            runCatching {
-                val networkRequest = NetworkRequest.Builder()
-                    .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-                    .addTransportType(NetworkCapabilities.TRANSPORT_ETHERNET)
-                    .build()
-                nsdManager.discoverServices(
-                    request.serviceType,
-                    NsdManager.PROTOCOL_DNS_SD,
-                    networkRequest,
-                    DIRECT_EXECUTOR,
-                    listener,
-                )
-            }.onFailure { Log.w(tag, "NetworkRequest discovery failed; falling back", it) }
-                .isSuccess || runCatching {
-                // Synchronous failure of the NetworkRequest overload → legacy fallback.
-                nsdManager.discoverServices(request.serviceType, NsdManager.PROTOCOL_DNS_SD, listener)
-            }.onFailure { Log.w(tag, "Legacy NSD discovery failed", it) }
-                .isSuccess
-        } else {
-            runCatching {
-                nsdManager.discoverServices(request.serviceType, NsdManager.PROTOCOL_DNS_SD, listener)
-            }.onFailure { Log.w(tag, "Legacy NSD discovery failed", it) }
-                .isSuccess
-        }
+        // Browse UNBOUND (no NetworkRequest transport filter). The API 33+ NetworkRequest overload
+        // only delivers services seen on a CONNECTED TRANSPORT_WIFI/ETHERNET network — which does
+        // NOT exist on a device that is HOSTING a Wi-Fi hotspot (SoftAP up, Wi-Fi STA off). Bound
+        // that way, a hotspot host never discovers its clients even though it still advertises (so
+        // the client finds the host) — exactly the asymmetric-discovery symptom. The unbound
+        // overload listens on all local interfaces, including the SoftAP/tether interface, restoring
+        // symmetric discovery over a hotspot. `request.useNetworkRequestDiscovery` is retained on the
+        // wire request for API gating/telemetry but no longer narrows the browse network.
+        return runCatching {
+            @Suppress("DEPRECATION")
+            nsdManager.discoverServices(request.serviceType, NsdManager.PROTOCOL_DNS_SD, listener)
+        }.onFailure { Log.w(tag, "NSD discovery failed", it) }
+            .isSuccess
     }
 
     override fun stopBrowse() {
@@ -523,6 +510,15 @@ class NsdTransport(
      * determinism reason as [sleep]; null uses the conflated-channel default.
      */
     private val idleWaitOverride: (suspend (Long) -> Boolean)? = null,
+    /**
+     * Grace window before a radio-reported service loss (`onServiceLost` / monitor lost) is
+     * promoted to a typed [FlashTransportEvent.Lost]. mDNS over Wi-Fi — and especially over a
+     * phone HOTSPOT — drops and re-announces services frequently; without this window a single
+     * transient goodbye flaps the peer out of the directory (the symptom: a discovered device
+     * vanishes on a tab switch and never returns). A re-find within the window cancels the
+     * pending removal. JVM tests pass 0 for synchronous assertions.
+     */
+    private val lostDebounceMs: Long = DEFAULT_LOST_DEBOUNCE_MS,
     private val logInfo: (String) -> Unit = { Log.i(TAG, it) },
     private val logWarn: (String) -> Unit = { Log.w(TAG, it) },
     bridgeOverride: NsdManagerBridge? = null,
@@ -572,6 +568,12 @@ class NsdTransport(
 
     /** Reverse map serviceName → deviceId so radio loss can produce typed Lost events. */
     private val deviceIdsByServiceName = HashMap<String, FlashDeviceId>()
+
+    /**
+     * serviceName → in-flight debounced removal job (see [lostDebounceMs]). Touched only from the
+     * [lane], so no external synchronization. A re-find cancels and removes the matching entry.
+     */
+    private val pendingLost = HashMap<String, Job>()
 
     private var scope: CoroutineScope? = null
 
@@ -856,6 +858,9 @@ class NsdTransport(
         synchronized(deviceIdsByServiceName) {
             deviceIdsByServiceName[data.serviceName] = deviceId
         }
+        // The peer is back (or still here): cancel any debounced removal armed by a prior
+        // transient loss so it never flaps out of the directory.
+        pendingLost.remove(data.serviceName)?.cancel()
         emitDiff(diff)
     }
 
@@ -863,14 +868,25 @@ class NsdTransport(
         if (serviceName == null) return
         scope?.launch(lane) {
             if (!browsing) return@launch
-            val deviceId = synchronized(deviceIdsByServiceName) {
-                deviceIdsByServiceName.remove(serviceName)
+            // Debounce transient radio goodbyes (mDNS over Wi-Fi / hotspot flaps constantly): defer
+            // the removal by [lostDebounceMs]; a re-find (handleServiceUpdated) cancels it. Always
+            // replace any prior pending job for this service so a stale (cancelled-scope) entry can
+            // never suppress a fresh removal. Only a peer still absent after the window is evicted.
+            pendingLost.remove(serviceName)?.cancel()
+            val job = scope?.launch(lane) {
+                delay(lostDebounceMs)
+                if (!browsing) return@launch
+                pendingLost.remove(serviceName)
+                val deviceId = synchronized(deviceIdsByServiceName) {
+                    deviceIdsByServiceName.remove(serviceName)
+                } ?: return@launch
+                // Bookkeep the loss in the directory; the typed Lost event below carries the
+                // serviceName we already know, so the generic Diff.Lost emission is skipped
+                // (avoids duplicate Lost events for one radio goodbye).
+                directory.applyLost(deviceId)
+                emitEvent(FlashTransportEvent.Lost(deviceId, serviceName))
             } ?: return@launch
-            // Bookkeep the loss in the directory; the typed Lost event below carries the
-            // serviceName we already know, so the generic Diff.Lost emission is skipped
-            // (avoids duplicate Lost events for one radio goodbye).
-            directory.applyLost(deviceId)
-            emitEvent(FlashTransportEvent.Lost(deviceId, serviceName))
+            pendingLost[serviceName] = job
         }
     }
 
@@ -931,10 +947,14 @@ class NsdTransport(
         apiLevel.sdkInt >= NsdApiThresholds.SDK_NETWORK_REQUEST_DISCOVERY
 
     private fun acquireMulticastLockIfNeeded() {
-        // Conservative stand-in for T-extensions 7 (see NsdApiThresholds KDoc).
-        if (apiLevel.sdkInt < NsdApiThresholds.SDK_MULTICAST_LOCK_NOT_NEEDED) {
-            bridge.setMulticastLock(true)
-        }
+        // Take the Wi-Fi multicast lock on ALL API levels while browsing/advertising.
+        // The T-extensions 7+ framework-managed multicast reception (approximated by
+        // NsdApiThresholds.SDK_MULTICAST_LOCK_NOT_NEEDED = 34) only applies to FOREGROUND
+        // apps. Flash discovers from a backgrounded connectedDevice FGS with the screen off,
+        // where the framework does NOT deliver mDNS to us — so we must hold the explicit lock
+        // regardless of API level, or returning peers are never re-discovered. setMulticastLock
+        // is idempotent (guards on isHeld), so repeated acquire calls are safe.
+        bridge.setMulticastLock(true)
     }
 
     private fun releaseMulticastLockIfIdle() {
@@ -961,6 +981,13 @@ class NsdTransport(
         const val DEFAULT_SERVICE_TYPE = "_flash-transfer._tcp."
         const val DEFAULT_MAX_RESTARTS = 5
         const val MAX_NAME_LENGTH = 24
+
+        /**
+         * Default radio-loss debounce (see the `lostDebounceMs` constructor param). ~6s comfortably
+         * spans an mDNS re-announce interval, so a peer that is merely blinking (common on a phone
+         * hotspot) is retained, while a genuinely departed peer clears within a few seconds.
+         */
+        const val DEFAULT_LOST_DEBOUNCE_MS = 6_000L
         private const val EVENT_BUFFER = 64
     }
 }
