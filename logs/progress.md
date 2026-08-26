@@ -2947,3 +2947,49 @@ Implemented `docs/publishing/PHASE-01-foundation.md` and resolved BOTH owner dec
 Continue at `docs/publishing/PHASE-02-dependency-scope.md`. Phase 1 is DONE. Re-run
 `testDebugUnitTest assembleDebug` on an idle machine if you want the single clean green on record; if the
 same two tests time out, it's ERROR-019 load flake — re-run each task alone before assuming a regression.
+
+## 2026-08-26 — Publishing Phase 2 IMPLEMENTED: dependency-scope fix (core:common → api) + external consumer gate
+Executed `docs/publishing/PHASE-02-dependency-scope.md` Tasks 2.1 and 2.3. Task 2.2 (deeper cross-module
+leaks) stays deferred to Phase 3's `.api` dump exactly as the plan directs ("do not guess the rest").
+
+### Changes
+- **Task 2.1** — flipped `implementation(project(":core:common"))` → `api(project(":core:common"))` in all
+  six non-engine consumers: persistence, security, discovery, network, transfer, messaging. (engine was
+  already all-`api`; common is a leaf.) core:common types (FlashDevice/FlashDeviceId/FlashResult/…) are the
+  shared vocabulary in nearly every module's public API, so they MUST be `api` or granular artifacts don't
+  compile for consumers.
+- **Task 2.3** — added two throwaway, NON-published test-harness modules under `sample/` (wired into
+  settings.gradle.kts; no `maven-publish`, so they never publish):
+  - `:sample:consumer` → depends on ONLY `:core:engine`; references FlashEngine/FlashDeviceId/FlashResult
+    (shape A, the umbrella = documented default).
+  - `:sample:consumer-granular` → depends on ONLY `:core:network`; references FlashNetwork + FlashDevice
+    (shape B; directly validates the Task 2.1 flip — FlashDevice must resolve with no manual core:common).
+
+### Why the in-build consumer is a faithful test
+A separate module using `implementation(project(":core:X"))` sees only X's `api`-scoped deps on its compile
+classpath and NOT X's `implementation` deps — the same visibility a JitPack POM produces. So these harnesses
+reproduce the real consumer classpath; the "library build hides scope bugs" caveat applies to the library's
+OWN modules (all on one classpath), not to a separate consumer module.
+
+### Verification
+- `:sample:consumer:assembleDebug :sample:consumer-granular:assembleDebug :core:engine:publishToMavenLocal`
+  → BUILD SUCCESSFUL. Both shapes compile; engine AAR+POM+metadata published to Maven Local.
+- Published `core-engine-1.0.0.pom` inspected: all 7 sibling modules in `compile` scope (from `api`);
+  `core-ktx`/`lifecycle-runtime-ktx` in `runtime` scope (from `implementation`). Exactly the correct
+  consumer contract.
+- `:app:assembleDebug` → BUILD SUCCESSFUL (scope widening cannot break the app; confirmed).
+- Full unit suite NOT re-run: api-vs-implementation is a compile-classpath-visibility change with no runtime
+  or test-behavior effect, and every core release variant compiled during the publish. (For a clean full
+  green, see ERROR-019 re: the two load-flaky tests.)
+
+### Remaining
+- Phase 3 (`PHASE-03-api-surface.md`): binary-compatibility-validator `apiDump` + `explicitApi()` + demote
+  internals. Its `.api` dumps then drive Phase 2 Task 2.2 (promote any remaining foreign-type leaks in
+  network/transfer/messaging/security to `api`).
+- Phases 4–6 after that. Owner device run EXP-002 still pending.
+
+### Next AI
+Do `docs/publishing/PHASE-03-api-surface.md`. When the `.api` dumps exist, close Phase 2 Task 2.2: for each
+module, any core:* type appearing in a PUBLIC signature whose dep is still `implementation` → promote to
+`api`; if it only appears in internal/private members (now hidden), leave `implementation`. Re-run the two
+`sample/` consumers after any change.

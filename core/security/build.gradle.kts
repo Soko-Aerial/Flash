@@ -48,7 +48,7 @@ publishing {
 }
 
 dependencies {
-    implementation(project(":core:common"))
+    api(project(":core:common"))
     implementation(project(":core:persistence"))
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.room.runtime)

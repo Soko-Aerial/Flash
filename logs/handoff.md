@@ -1,5 +1,25 @@
 # Current Handoff
 
+## 2026-08-26 -- Publishing Phase 2 DONE: dependency-scope fixed (core:common → api) + external consumer gate -- next = Phase 3
+- **Phase 2 (the HARD BLOCKER) is IMPLEMENTED.** All six non-engine core modules now declare
+  `api(project(":core:common"))` (was `implementation`), so core:common's shared vocabulary
+  (FlashDevice/FlashDeviceId/FlashResult/…) lands on a consumer's COMPILE classpath. Without this, granular
+  `core:*` artifacts fail with "unresolved reference: FlashDevice" on JitPack.
+- **Acceptance PROVEN with external consumers** (Task 2.3): two throwaway, non-published modules under
+  `sample/` (in settings.gradle.kts, NO maven-publish): `:sample:consumer` (engine-only → shape A umbrella)
+  and `:sample:consumer-granular` (network-only, references FlashDevice → shape B). Both compile.
+  `:core:engine:publishToMavenLocal` succeeds and the published `core-engine-1.0.0.pom` has all 7 siblings in
+  `compile` scope and impl-only deps in `runtime` — the correct consumer contract.
+- **Task 2.2 is DEFERRED to Phase 3 by design.** Deeper cross-module leaks (e.g. network exposing a
+  security/discovery type) are NOT guessed — they get read off Phase 3's `.api` dumps and the offending
+  `implementation` deps promoted to `api` then. The umbrella (`core-engine`) is the documented default and is
+  already fully coherent.
+- **Verified:** consumer + publish build SUCCESSFUL; `:app:assembleDebug` SUCCESSFUL. Full unit suite not
+  re-run (scope-only change, behaviorally inert; core release variants all compiled during publish).
+- **NEXT: Phase 3 (`docs/publishing/PHASE-03-api-surface.md`)** — binary-compat-validator `apiDump` +
+  `explicitApi()` + hide internals; then close Phase 2 Task 2.2 off the dumps. Owner device run EXP-002 still
+  pending.
+
 ## 2026-08-26 -- Publishing Phase 1 DONE: Apache-2.0 + core compileSdk 35 (both owner decisions resolved) -- next = Phase 2
 - **Phase 1 of `docs/publishing/` is IMPLEMENTED and both owner decisions are locked.** LICENSE = **Apache-2.0**,
   holder **"The Flash Project"** (patent grant + Android-ecosystem norm; see ADR-022). Compat baseline =
