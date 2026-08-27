@@ -1,6 +1,6 @@
 package com.transfer.flash.core.network
 
-enum class FlashConnectionState {
+public enum class FlashConnectionState {
     Connecting,
     Connected,
     Disconnecting,

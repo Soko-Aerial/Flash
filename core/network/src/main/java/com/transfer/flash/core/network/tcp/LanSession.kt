@@ -47,31 +47,31 @@ import java.util.concurrent.atomic.AtomicBoolean
  * touching `android.util.Log` (which throws "not mocked" on the JVM).
  * Production default routes to [Log.println] exactly like before hardening.
  */
-fun interface LanSessionLogger {
-    fun log(priority: Int, tag: String, message: String, error: Throwable?)
+public fun interface LanSessionLogger {
+    public fun log(priority: Int, tag: String, message: String, error: Throwable?)
 
-    companion object {
-        val ANDROID = LanSessionLogger { priority, tag, message, error ->
+    public companion object {
+        public val ANDROID: LanSessionLogger = LanSessionLogger { priority, tag, message, error ->
             val text = if (error != null) "$message - ${Log.getStackTraceString(error)}" else message
             Log.println(priority, tag, text)
         }
 
-        val DEBUG = Log.DEBUG
-        val INFO = Log.INFO
-        val WARN = Log.WARN
+        public val DEBUG: Int = Log.DEBUG
+        public val INFO: Int = Log.INFO
+        public val WARN: Int = Log.WARN
     }
 }
 
 /** Thrown into pending sendAwaitAck waiters when the session closes early. */
 private class SessionClosedException(message: String) : RuntimeException(message)
 
-class LanSession(
+public class LanSession(
     private val socket: Socket,
     private val reader: BufferedReader,
     private val writer: PrintWriter,
     private val localDeviceId: String,
     private val localFriendlyName: String,
-    val peerInfo: LanProbeHello,
+    public val peerInfo: LanProbeHello,
     private val onDisconnected: (LanProbeHello, String) -> Unit,
     /**
      * Heartbeat ping interval ms (C4.3). Defaults to
@@ -81,9 +81,9 @@ class LanSession(
      * detection while tolerating a single lost exchange to Wi-Fi jitter.
      * Old 3 s cadence remains available by passing 3_000 explicitly.
      */
-    val heartbeatIntervalMs: Long = HeartbeatPolicy.DEFAULT_INTERVAL_MS,
+    public val heartbeatIntervalMs: Long = HeartbeatPolicy.DEFAULT_INTERVAL_MS,
     /** Missed pings before DeclareDead; see [heartbeatIntervalMs]. */
-    val heartbeatMissedThreshold: Int = HeartbeatPolicy.DEFAULT_MISSED_THRESHOLD,
+    public val heartbeatMissedThreshold: Int = HeartbeatPolicy.DEFAULT_MISSED_THRESHOLD,
     /** Injected log sink (JVM-test seam); default is android.util.Log. */
     private val logger: LanSessionLogger = LanSessionLogger.ANDROID,
 ) : FlashSession {
@@ -126,7 +126,7 @@ class LanSession(
         extraBufferCapacity = FRAME_ACK_BUFFER,
         onBufferOverflow = BufferOverflow.DROP_OLDEST,
     )
-    val incomingFrames: SharedFlow<String> = _incomingFrames.asSharedFlow()
+    public val incomingFrames: SharedFlow<String> = _incomingFrames.asSharedFlow()
 
     /**
      * frameId -> waiter for outstanding [sendAwaitAck] calls.
@@ -149,7 +149,7 @@ class LanSession(
     private var readJob: Job? = null
     private var heartbeatJob: Job? = null
 
-    fun start() {
+    public fun start() {
         if (closed.get()) return
         readJob = scope.launch { readLoop() }
         heartbeatJob = scope.launch { heartbeatLoop() }
@@ -181,7 +181,7 @@ class LanSession(
      * Payload must be single-line UTF-8 text (existing line-framing rule);
      * embedded newlines would corrupt the envelope/payload pairing.
      */
-    suspend fun sendAwaitAck(message: ByteArray, timeoutMs: Long = DEFAULT_ACK_TIMEOUT_MS): FlashResult<Unit> =
+    public suspend fun sendAwaitAck(message: ByteArray, timeoutMs: Long = DEFAULT_ACK_TIMEOUT_MS): FlashResult<Unit> =
         withContext(Dispatchers.IO) {
             if (closed.get()) {
                 return@withContext FlashResult.Failure(FlashError.PeerUnavailable(peerDeviceId.value, "Session closed"))
@@ -235,7 +235,7 @@ class LanSession(
         onDisconnected(peerInfo, reason)
     }
 
-    fun close(reason: String) {
+    public fun close(reason: String) {
         if (!closed.compareAndSet(false, true)) return
         failPendingAcks(reason)
         closeSocket()
@@ -422,8 +422,8 @@ class LanSession(
     private fun tickIntervalMs(policy: HeartbeatPolicy): Long =
         (policy.intervalMs / HEARTBEAT_TICK_DIVISOR).coerceIn(MIN_HEARTBEAT_TICK_MS, policy.intervalMs)
 
-    companion object {
-        fun create(
+    public companion object {
+        public fun create(
             socket: Socket,
             localDeviceId: String,
             localFriendlyName: String,
@@ -441,10 +441,10 @@ class LanSession(
             )
         }
 
-        const val PROTOCOL_VERSION = 1
+        public const val PROTOCOL_VERSION: Int = 1
 
         /** Default per-frame wait for a peer FLASH_ACK in [sendAwaitAck]. */
-        const val DEFAULT_ACK_TIMEOUT_MS = 5_000L
+        public const val DEFAULT_ACK_TIMEOUT_MS: Long = 5_000L
         private const val TAG = "LAN"
         private const val FRAME_ACK_BUFFER = 64
         private const val HEARTBEAT_TICK_DIVISOR = 4L

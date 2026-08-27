@@ -78,7 +78,7 @@ import java.util.Locale
  * thread-safe. Collectors are launched lazily into an injected scope so tests
  * can supply a synchronous dispatcher for deterministic assertions.
  */
-class CompositeDiscovery(
+public class CompositeDiscovery(
     private val transports: List<FlashRadioTransport>,
     private val directoryFactory: () -> EndpointDirectory = { StandardEndpointDirectory() },
     scopeFactory: () -> CoroutineScope = { CoroutineScope(SupervisorJob() + Dispatchers.Default) },
@@ -94,24 +94,24 @@ class CompositeDiscovery(
     private val maxSweepLoops: Int = Int.MAX_VALUE,
 ) : FlashDiscovery {
 
-    companion object {
+    public companion object {
         /**
          * Default presence grace window (ms) for [sweep]. See class KDoc for
          * the mDNS-TTL research behind choosing 30 s.
          */
-        const val DEFAULT_GRACE_MS: Long = 30_000L
+        public const val DEFAULT_GRACE_MS: Long = 30_000L
 
         /**
          * Default period between automatic sweeps: fast enough that a departed
          * peer disappears at most ~[DEFAULT_SWEEP_INTERVAL_MS] + [DEFAULT_GRACE_MS]
          * after its last real sighting, slow enough to be negligible load.
          */
-        const val DEFAULT_SWEEP_INTERVAL_MS: Long = 5_000L
+        public const val DEFAULT_SWEEP_INTERVAL_MS: Long = 5_000L
 
         /** Highest priority first; unknown names rank after these. */
-        val PRIORITY_ORDER: List<String> = listOf("LAN", "WIFI_DIRECT", "WIFI_AWARE", "BLE")
+        public val PRIORITY_ORDER: List<String> = listOf("LAN", "WIFI_DIRECT", "WIFI_AWARE", "BLE")
 
-        fun priorityRank(transportName: String): Int {
+        public fun priorityRank(transportName: String): Int {
             val idx = PRIORITY_ORDER.indexOf(transportName.uppercase(Locale.ROOT))
             return if (idx >= 0) idx else PRIORITY_ORDER.size
         }
@@ -138,7 +138,7 @@ class CompositeDiscovery(
     private val _discoveryMode = MutableStateFlow(FlashDiscoveryMode.STANDARD)
 
     /** Current discovery mode; updated by [setMode] before transports are fanned out to. */
-    val discoveryMode: StateFlow<FlashDiscoveryMode> = _discoveryMode
+    public val discoveryMode: StateFlow<FlashDiscoveryMode> = _discoveryMode
 
     /** Policy table entry for [_discoveryMode]; single source for state-message logic. */
     @Volatile private var currentPolicy: DiscoveryModePolicy =
@@ -156,7 +156,7 @@ class CompositeDiscovery(
      * Live traffic only — no replay, matching FlashTransportEvent semantics;
      * buffer absorbs bursts, DROP_OLDEST sheds oldest events under overload.
      */
-    val mergedEvents: SharedFlow<FlashTransportEvent> = _mergedEvents
+    public val mergedEvents: SharedFlow<FlashTransportEvent> = _mergedEvents
 
     private val _discoveredEndpoints =
         MutableStateFlow<List<FlashDiscoveredEndpoint>>(emptyList())
@@ -262,7 +262,7 @@ class CompositeDiscovery(
      * no-op) so aggregation stays uniform; [refreshState] consults
      * [currentPolicy] so `isAdvertising` never claims visibility in GHOST.
      */
-    suspend fun startAll(port: Int, identity: FlashAdvertisedIdentity): FlashResult<Unit> {
+    public suspend fun startAll(port: Int, identity: FlashAdvertisedIdentity): FlashResult<Unit> {
         this.identity = identity
         this.advertisedPort = port
         val failures = mutableListOf<String>()
@@ -302,7 +302,7 @@ class CompositeDiscovery(
      * browsing"`). Existing consumers of [state] keep parsing the suffix
      * unchanged — the prefix is purely additive.
      */
-    suspend fun setMode(mode: FlashDiscoveryMode) {
+    public suspend fun setMode(mode: FlashDiscoveryMode) {
         currentPolicy = DiscoveryModePolicy.forMode(mode)
         _discoveryMode.value = mode
         synchronized(lock) { collectingOrStart() }
@@ -321,7 +321,7 @@ class CompositeDiscovery(
      * (hysteresis). Idempotent per instant: repeated calls at the same or later
      * time produce no duplicates because aged entries were removed.
      */
-    fun sweep(nowMs: Long, graceWindowMs: Long = DEFAULT_GRACE_MS) {
+    public fun sweep(nowMs: Long, graceWindowMs: Long = DEFAULT_GRACE_MS) {
         val agedOut = mutableListOf<AgedOut>()
         synchronized(lock) {
             val serviceNames = HashMap<FlashDeviceId, String>()

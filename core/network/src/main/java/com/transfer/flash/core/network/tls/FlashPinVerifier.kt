@@ -13,7 +13,7 @@ package com.transfer.flash.core.network.tls
  * - Equality checks MUST be constant-time (`MessageDigest.isEqual`) so pin comparisons never
  *   leak prefix-match timing — same convention as `FlashFingerprint.constantTimeEquals`.
  */
-fun interface FlashPinVerifier {
+public fun interface FlashPinVerifier {
 
     /**
      * @param deviceId       stable identity of the remote peer this connection claims to be.
@@ -21,11 +21,11 @@ fun interface FlashPinVerifier {
      *                       public key presented in the peer's certificate chain.
      * @return true iff [fingerprintHex] is the key previously pinned for [deviceId].
      */
-    fun isPinned(deviceId: String, fingerprintHex: String): Boolean
+    public fun isPinned(deviceId: String, fingerprintHex: String): Boolean
 
-    companion object {
+    public companion object {
         /** Uppercase, strip colons/spaces so any human-formatted input compares equal. */
-        fun normalize(raw: String): String =
+        public fun normalize(raw: String): String =
             raw.replace(":", "").replace(" ", "").uppercase()
     }
 }

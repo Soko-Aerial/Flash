@@ -13,7 +13,7 @@ import androidx.room.PrimaryKey
     primaryKeys = ["messageId", "emoji"],
     indices = [Index(value = ["messageId"])],
 )
-data class ReactionEntity(
+public data class ReactionEntity(
     val messageId: String,
     val emoji: String,
     val count: Int = 1,

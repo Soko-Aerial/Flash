@@ -20,17 +20,17 @@ import kotlinx.coroutines.withContext
  * their channel). Connection failure/handshake rejection returns **null** so callers can fall
  * back to multiplexing over the main WebSocket.
  */
-object DataChannelClient {
+public object DataChannelClient {
 
     private const val TAG = "DATA"
     private const val CONNECT_TIMEOUT_MS = 4_000
     private const val HANDSHAKE_TIMEOUT_MS = 6_000
 
-    interface DataSendChannel {
+    public interface DataSendChannel {
         /** Writes one frame; false on failure (channel dead). */
-        suspend fun send(payload: ByteArray): Boolean
+        public suspend fun send(payload: ByteArray): Boolean
 
-        fun close()
+        public fun close()
     }
 
     /**
@@ -40,7 +40,7 @@ object DataChannelClient {
      * @param localDeviceId OUR device id, sent in the join so the peer can route control frames back.
      * @param onFrame invoked on a reader coroutine for every inbound frame (ACKs/COMPLETE).
      */
-    fun connect(
+    public fun connect(
         host: String,
         port: Int,
         targetDeviceId: String,

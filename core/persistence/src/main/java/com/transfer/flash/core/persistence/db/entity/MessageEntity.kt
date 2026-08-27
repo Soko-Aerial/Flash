@@ -20,7 +20,7 @@ import androidx.room.PrimaryKey
         Index(value = ["sentAt"]),
     ],
 )
-data class MessageEntity(
+public data class MessageEntity(
     @PrimaryKey val localId: String,
     val conversationId: String,
     val senderId: String,

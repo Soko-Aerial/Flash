@@ -32,7 +32,7 @@ import com.transfer.flash.core.common.time.SystemTimeSource
  *   WIFI_DIRECT, CONNECTION, PAIRING, TLS, TRANSFER, CHUNK, STORAGE, DATABASE, SERVICE,
  *   PERFORMANCE). Never log secrets or sensitive user data (§24).
  */
-class FlashLogger(
+internal class FlashLogger(
     private val tag: String,
     capacity: Int = DEFAULT_CAPACITY,
     private val timeSource: FlashTimeSource = SystemTimeSource,

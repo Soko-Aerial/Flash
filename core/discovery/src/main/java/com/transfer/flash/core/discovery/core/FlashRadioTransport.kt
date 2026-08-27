@@ -21,7 +21,7 @@ import kotlinx.coroutines.flow.Flow
  *   pre-connection consistency cross-check only (see zeroconf spoofing threat
  *   model in docs/security notes / plan P3.5 research).
  */
-data class FlashAdvertisedIdentity(
+public data class FlashAdvertisedIdentity(
     val deviceId: FlashDeviceId,
     val friendlyName: String,
     val deviceModel: String,
@@ -40,11 +40,11 @@ data class FlashAdvertisedIdentity(
  *   endpoint out (plan C3.5) — consumers must treat both identically.
  * - Events are hot flows; subscribers see only live traffic (no replay).
  */
-sealed interface FlashTransportEvent {
-    data class Found(val endpoint: FlashDiscoveredEndpoint) : FlashTransportEvent
-    data class Updated(val endpoint: FlashDiscoveredEndpoint) : FlashTransportEvent
-    data class Lost(val deviceId: FlashDeviceId, val serviceName: String?) : FlashTransportEvent
-    data class StateChanged(val browsing: Boolean, val message: String) : FlashTransportEvent
+public sealed interface FlashTransportEvent {
+    public data class Found(val endpoint: FlashDiscoveredEndpoint) : FlashTransportEvent
+    public data class Updated(val endpoint: FlashDiscoveredEndpoint) : FlashTransportEvent
+    public data class Lost(val deviceId: FlashDeviceId, val serviceName: String?) : FlashTransportEvent
+    public data class StateChanged(val browsing: Boolean, val message: String) : FlashTransportEvent
 }
 
 /**
@@ -53,27 +53,27 @@ sealed interface FlashTransportEvent {
  * BLE-presence later (plan C3.6-C3.8). Implementations own their radio lifecycle
  * but MUST NOT hold UI types.
  */
-interface FlashRadioTransport {
+public interface FlashRadioTransport {
     /** Transport identifier used by [CompositeDiscovery] for priority/dedup reporting. */
-    val transportName: String
+    public val transportName: String
 
-    val events: Flow<FlashTransportEvent>
+    public val events: Flow<FlashTransportEvent>
 
     /**
      * Advertise this device using its own identity details until [stop].
      * Idempotent: re-invoking while advertising updates the advertised record.
      */
-    suspend fun startAdvertising(port: Int, identity: FlashAdvertisedIdentity): FlashResult<Unit>
+    public suspend fun startAdvertising(port: Int, identity: FlashAdvertisedIdentity): FlashResult<Unit>
 
     /**
      * Browse CONTINUOUSLY until [stop]: peers already present appear within
      * seconds; peers joining later appear without any caller action; internal
      * start failures restart with capped retries (plan C3.3).
      */
-    suspend fun startBrowsing(): FlashResult<Unit>
+    public suspend fun startBrowsing(): FlashResult<Unit>
 
     /** Stops advertising and browsing and releases radio resources. Idempotent. */
-    suspend fun stop(): FlashResult<Unit>
+    public suspend fun stop(): FlashResult<Unit>
 
     /**
      * Applies a discovery-mode policy (plan P3.5-B2). Default no-op so radios
@@ -83,5 +83,5 @@ interface FlashRadioTransport {
      * Implementations SHOULD honor: advertise toggle immediately, duty-cycle
      * and backoff knobs at their next loop iteration (live-when-safe rule).
      */
-    suspend fun setMode(policy: DiscoveryModePolicy) {}
+    public suspend fun setMode(policy: DiscoveryModePolicy) {}
 }

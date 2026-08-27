@@ -37,7 +37,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Determinism: time enters ONLY through explicit [nowMs] reads compared against injected
  * [graceMs]; tests either inject a fake clock or use graceMs = 0 for immediate transitions.
  */
-class TransferCompletionStateMachine(
+internal class TransferCompletionStateMachine(
     private val totalChunks: Int,
     private val graceMs: Long,
     private val nowMs: () -> Long,

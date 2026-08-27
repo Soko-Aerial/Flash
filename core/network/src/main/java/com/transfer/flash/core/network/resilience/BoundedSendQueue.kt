@@ -7,7 +7,7 @@ import kotlin.concurrent.withLock
 /**
  * Overflow decision for [BoundedSendQueue.enqueue].
  */
-sealed interface EnqueueResult<out T> {
+internal sealed interface EnqueueResult<out T> {
     data class Enqueued<T>(val sizeAfterEnqueue: Int) : EnqueueResult<T>
     data class Rejected(val reason: RejectReason) : EnqueueResult<Nothing>
 }
@@ -17,7 +17,7 @@ sealed interface EnqueueResult<out T> {
  * keep their own copy of the write (plan upgrade 5: "overflow ⇒ typed error,
  * outbox retains the write (C6 owns retry)").
  */
-enum class RejectReason {
+internal enum class RejectReason {
     /** Queue at capacity — nothing was evicted, nothing lost silently. */
     QueueFull,
 
@@ -49,7 +49,7 @@ enum class RejectReason {
  *
  * Thread-safe: multiple producers, single logical consumer (drain loop).
  */
-class BoundedSendQueue<T>(val capacity: Int = DEFAULT_CAPACITY) {
+internal class BoundedSendQueue<T>(val capacity: Int = DEFAULT_CAPACITY) {
 
     init {
         require(capacity > 0) { "capacity must be > 0" }

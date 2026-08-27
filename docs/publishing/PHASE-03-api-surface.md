@@ -29,6 +29,13 @@ Every one of these becomes a compatibility obligation the day you publish.
 
 ## Task 3.1 — Add the binary‑compatibility‑validator (generates the API dump)
 
+> **WITHDRAWN — superseded by ADR‑023 (2026‑08‑26).** BCV v0.18.1 registers no
+> `apiDump`/`apiCheck` tasks under this project's AGP 9.3.1 built‑in Kotlin (no
+> classic `kotlin-android`/JVM/MPP plugin), so it is inert here. The plugin,
+> the root `apiValidation {}` block, and the `libs.versions.toml` entry were
+> removed. Published‑ABI enforcement is `explicitApi()` (strict) per module
+> instead — see ADR‑023. The steps below are kept for historical context only.
+
 This gives a reviewable text snapshot of the exact public ABI per module — the
 source of truth for Phase 2.2 and for spotting leaks.
 
@@ -105,7 +112,84 @@ Specific dispositions:
   `SharedFlow`/`StateFlow` supertype publicly and keep the mutable backing field
   `private`.
 
+## Task 3.3 — AS‑BUILT classification (2026‑08‑26)
+
+The aspirational "Specific dispositions" above were written before checking what
+`app/` and `ui/` actually import. Ground truth (verified by grepping consumer
+imports) overrides them. **Decision rule, in priority order:**
+
+1. **Transitive‑forced public wins over everything.** If a plain‑`public`
+   app‑facing signature returns/accepts/extends a type, that type is `public`
+   regardless of intent (e.g. `FlashIdentityStore.getIdentity(): FlashIdentity`
+   forces `FlashIdentity` public; `DefaultFlashPairingProtocol(… timeouts:
+   PairingTimeouts = …)` forces `PairingTimeouts` public).
+2. **Imported by `app/` or `ui/` → plain `public`.** Those modules are out of
+   scope and cannot receive `@file:OptIn`, so `internal`/`@FlashInternalApi`
+   would break their compile.
+3. **Imported by another `core:*` module but NOT app/ui → `@FlashInternalApi`**
+   (Kotlin‑public, opt‑in ERROR) + `@file:OptIn(… FlashInternalApi::class)` on the
+   consuming file(s).
+4. **Referenced only inside its own module, not leaked through any public
+   signature → `internal`.** (Unit tests keep friend‑path access.)
+
+Modules **common, messaging, engine, discovery** are DONE (green under strict
+`explicitApi()`).
+
+### persistence — entire data layer stays plain `public` (Phase‑3 reality)
+`app` wires the DB directly (`FlashDatabaseOpener.openEncrypted` → `FlashDatabase`
+→ `*Dao` accessors → entities/query‑result types), and `FlashSettingsDataStore` is
+app/engine‑referenced. So every entity, DAO, `FlashDatabase`, opener, migration,
+`RetentionPolicy`, and settings type is plain `public`. Gating this behind
+`@FlashInternalApi` is **Phase 4** (persistence‑decoupling) work, not Phase 3.
+
+### security
+- **public** — identity: `FlashIdentityStore`, `FlashIdentity` (forced),
+  `AndroidPreferencesIdentityStore`; trust: `FlashTrustStore` (app+engine+transfer),
+  `AndroidPreferencesTrustStore` (app+transfer); crypto: `FlashFingerprint` (app),
+  `KeystoreFlashCrypto` (app), `FlashCrypto` (contract, implemented by the app‑facing
+  `KeystoreFlashCrypto`); pairing: `FlashPairingFrame`, `PairingPhase`,
+  `PairingSessionState`, `FlashPairingEvent`, `DefaultFlashPairingProtocol` (all app),
+  `FlashPairingProtocol` (contract), `PairingTimeouts` (forced).
+- **internal** — crypto: `SoftwareFlashCrypto`, `Hkdf`, `E2eFrameCodec`, `EcP256Ops`
+  (already); pairing: `NumericComparisonCode`, `PairingSessionStateMachine`,
+  `PairingSessionEvent`; trust/pinned: `RoomTrustedStore`, `TofuPolicy`,
+  `LegacyTrustMigration`. (All used only inside impl bodies; verify no public leak.)
+- **@FlashInternalApi** — none (every cross‑core security type is also app‑facing →
+  already public).
+
+### transfer
+- **public** — `ChunkFrame`, `ReceivePipeline`, `Sha256`, `StreamChannel` are all
+  imported by `app/…/debug/DiscoveryEngineHolder.kt`, so they are `public`
+  (**correcting** the "→ internal" disposition above). Plus the documented repo
+  contract (`FlashTransferRepository`, `RealFlashTransferRepository`, progress/model
+  types consumers see).
+- **internal** — module‑only impl: `MultiStreamDispatcher`, `Chunker`, `SendPipeline`,
+  `ResumeBitVector`, and the multistream receiver internals — subject to
+  "public‑exposes‑internal" checks at compile (promote if a public repo signature
+  leaks them).
+- **@FlashInternalApi** — none confirmed yet (network↔transfer only crosses in the
+  transfer→network direction; the `DataChannelFraming`→`ChunkFrame` grep hit was a
+  comment, not a code dep).
+
+### network
+- **@FlashInternalApi** — `WebSocketCodec`: imported cross‑core by
+  `core/transfer/…/wslegacy/WsTransferManager.kt` → gate with `@FlashInternalApi`
+  and add `@file:OptIn(… FlashInternalApi::class)` to `WsTransferManager.kt`
+  (**correcting** the "→ internal" disposition; `internal` is invisible cross‑module).
+- **internal** — network‑only: `SecureSocketUpgrader`, `FlashTlsContextFactory`,
+  `ChaosNetworkHarness`, `ChaosSession` (main‑source but referenced only by
+  `ChaosResilienceTest`), `DataChannelFraming` (used by `DataChannelClient`/`Server`
+  within network). None are imported by app/ui.
+- **public** — the documented network contract (`FlashNetwork`,
+  `DefaultFlashNetwork`, and `WsTransferClient`/`WsTransferServer` **iff** app/ui
+  construct them — verify consumer imports during execution).
+
 ## Task 3.4 — Re‑dump and reconcile with Phase 2.2
+
+> **N/A under ADR‑023** — there is no `.api` dump to re‑generate. Foreign‑type
+> leaks are now surfaced by explicitApi's "public‑exposes‑internal"
+> (`EXPOSED_*`) compile errors, which force the promote‑to‑`api` decision at the
+> leak site. Remaining Phase 2.2 dep‑scope reconciliation is tracked there.
 
 After demotions, run `./gradlew apiDump` again. The `.api` files should shrink to
 the intended surface. Now revisit **Phase 2.2**: any foreign `core:*` type still
@@ -114,11 +198,16 @@ Anything that became `internal` no longer leaks → its dep stays `implementatio
 
 ## Acceptance
 
+> **Restated by ADR‑023.** BCV `apiDump`/`apiCheck` are removed; the acceptance
+> is the explicitApi criterion below (met — all 8 `core/*` modules green under
+> strict `explicitApi()`).
+
 - `explicitApi()` (strict) active in every published `core/*` module; build is
   green.
-- `.api` dumps contain only the `public-api.md` contract + minimal
-  `@FlashInternalApi` surface — no Chaos/codec/pipeline/DAO types.
-- `./gradlew apiCheck` passes (dumps match committed baseline).
+- ~~`.api` dumps contain only the `public-api.md` contract + minimal
+  `@FlashInternalApi` surface — no Chaos/codec/pipeline/DAO types.~~ *(no dumps;
+  enforced at compile instead)*
+- ~~`./gradlew apiCheck` passes (dumps match committed baseline).~~ *(N/A)*
 
 ## Verification (hand off)
 

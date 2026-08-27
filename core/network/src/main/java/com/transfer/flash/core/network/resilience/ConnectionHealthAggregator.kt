@@ -29,19 +29,19 @@ import kotlinx.coroutines.flow.asStateFlow
  *    sees peers but no sessions exist yet ("peers>0-but-no-sessions").
  * 4. **Offline** — no peers visible, no attempts, no sessions.
  */
-class ConnectionHealthAggregator(initial: FlashConnectionHealth = FlashConnectionHealth.Offline) {
+public class ConnectionHealthAggregator(initial: FlashConnectionHealth = FlashConnectionHealth.Offline) {
 
     private val _health = MutableStateFlow(initial)
 
     /** Observable current health; conflated StateFlow semantics. */
-    val health: StateFlow<FlashConnectionHealth> = _health.asStateFlow()
+    public val health: StateFlow<FlashConnectionHealth> = _health.asStateFlow()
 
     /**
      * Feeds a fresh snapshot of all four signals and updates [health].
      * Snapshot-based (not delta-based) so dropped events can never wedge the
      * aggregate in a stale state.
      */
-    fun apply(
+    public fun apply(
         peerCountDiscovered: Int,
         connectingAttempts: Int,
         onlineSessions: Int,
@@ -55,11 +55,11 @@ class ConnectionHealthAggregator(initial: FlashConnectionHealth = FlashConnectio
         )
     }
 
-    companion object {
+    public companion object {
         /**
          * Pure mapping function exposed for direct deterministic testing.
          */
-        fun resolve(
+        public fun resolve(
             peerCountDiscovered: Int,
             connectingAttempts: Int,
             onlineSessions: Int,

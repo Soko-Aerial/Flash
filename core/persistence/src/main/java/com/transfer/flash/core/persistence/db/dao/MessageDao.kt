@@ -13,17 +13,17 @@ import kotlinx.coroutines.flow.Flow
  * are stable under concurrent inserts and cost an index seek instead of OFFSET.
  */
 @Dao
-interface MessageDao {
+public interface MessageDao {
 
     /** @return row id of the inserted row, or -1 when a duplicate [localId] was ignored. */
     @Insert(onConflict = OnConflictStrategy.IGNORE)
-    suspend fun insert(message: MessageEntity): Long
+    public suspend fun insert(message: MessageEntity): Long
 
     @Query(
         "SELECT * FROM messages WHERE conversationId = :conversationId AND deletedAt IS NULL " +
             "ORDER BY sentAt DESC, localId DESC",
     )
-    fun observeConversation(conversationId: String): Flow<List<MessageEntity>>
+    public fun observeConversation(conversationId: String): Flow<List<MessageEntity>>
 
     /**
      * Keyset page strictly before `(cursorSentAt, cursorLocalId)` in descending
@@ -35,7 +35,7 @@ interface MessageDao {
             "(sentAt < :cursorSentAt OR (sentAt = :cursorSentAt AND localId < :cursorLocalId)) " +
             "ORDER BY sentAt DESC, localId DESC LIMIT :limit",
     )
-    suspend fun historyBefore(
+    public suspend fun historyBefore(
         conversationId: String,
         cursorSentAt: Long,
         cursorLocalId: String,
@@ -47,15 +47,15 @@ interface MessageDao {
      *  carries only the payload), so a message is never re-routed to whatever conversation happens
      *  to be active when the drain fires. */
     @Query("SELECT * FROM messages WHERE localId = :localId LIMIT 1")
-    suspend fun getByLocalId(localId: String): MessageEntity?
+    public suspend fun getByLocalId(localId: String): MessageEntity?
 
     /** True when any message row already references [transferId] as an attachment. Used to keep
      *  inbound-attachment ingestion idempotent (a replayed transfer start must not double-insert). */
     @Query("SELECT EXISTS(SELECT 1 FROM messages WHERE attachmentTransferId = :transferId)")
-    suspend fun existsAttachment(transferId: String): Boolean
+    public suspend fun existsAttachment(transferId: String): Boolean
 
     @Query("UPDATE messages SET status = :status WHERE localId = :localId")
-    suspend fun updateStatus(localId: String, status: String)
+    public suspend fun updateStatus(localId: String, status: String)
 
     /**
      * Read-receipt absorption (C6.3): when a peer reports it has read up to [upToMessageId], mark
@@ -68,7 +68,7 @@ interface MessageDao {
             "AND senderId = :selfId AND status != 'READ' AND sentAt <= " +
             "(SELECT sentAt FROM messages WHERE localId = :upToMessageId)",
     )
-    suspend fun markReadUpTo(conversationId: String, selfId: String, upToMessageId: String)
+    public suspend fun markReadUpTo(conversationId: String, selfId: String, upToMessageId: String)
 
     /** Newest message localId in a conversation (composite cursor head), or null if empty. Used by
      *  the chat-list bulk "mark read" to advance `lastReadCursor` to the latest message. */
@@ -76,7 +76,7 @@ interface MessageDao {
         "SELECT localId FROM messages WHERE conversationId = :conversationId " +
             "ORDER BY sentAt DESC, localId DESC LIMIT 1",
     )
-    suspend fun newestLocalId(conversationId: String): String?
+    public suspend fun newestLocalId(conversationId: String): String?
 
     /**
      * Per-conversation unread counts (C6.x badge). A message counts as unread when it is inbound
@@ -93,7 +93,7 @@ interface MessageDao {
             "m.sentAt > (SELECT sentAt FROM messages WHERE localId = c.lastReadCursor)" +
             ") GROUP BY m.conversationId",
     )
-    fun observeUnreadCounts(selfId: String): Flow<List<ConversationUnread>>
+    public fun observeUnreadCounts(selfId: String): Flow<List<ConversationUnread>>
 
     /**
      * Per-conversation latest-message preview (chat-list preview line + content search). For each
@@ -105,19 +105,19 @@ interface MessageDao {
         "SELECT conversationId AS conversationId, text AS previewText, MAX(sentAt) AS sentAt " +
             "FROM messages WHERE deletedAt IS NULL GROUP BY conversationId",
     )
-    fun observeLatestPreviews(): Flow<List<ConversationPreview>>
+    public fun observeLatestPreviews(): Flow<List<ConversationPreview>>
 
     @Query("UPDATE messages SET editedAt = :editedAt WHERE localId = :localId")
-    suspend fun markEdited(localId: String, editedAt: Long)
+    public suspend fun markEdited(localId: String, editedAt: Long)
 
     /** Tombstone only — never deletes the row (history pagination must stay stable). */
     @Query("UPDATE messages SET deletedAt = :deletedAt WHERE localId = :localId")
-    suspend fun markDeleted(localId: String, deletedAt: Long)
+    public suspend fun markDeleted(localId: String, deletedAt: Long)
 
     /** Hard-delete every message of the given conversations. Used only by the chat-list bulk
      *  delete (the whole thread is going away), not by per-message tombstoning. */
     @Query("DELETE FROM messages WHERE conversationId IN (:ids)")
-    suspend fun deleteByConversations(ids: List<String>)
+    public suspend fun deleteByConversations(ids: List<String>)
 
     /**
      * Full-history content search (UI-search): case-insensitive substring match over message
@@ -128,5 +128,5 @@ interface MessageDao {
         "SELECT * FROM messages WHERE deletedAt IS NULL AND text LIKE '%' || :query || '%' " +
             "ORDER BY sentAt DESC, localId DESC LIMIT :limit",
     )
-    suspend fun searchMessages(query: String, limit: Int): List<MessageEntity>
+    public suspend fun searchMessages(query: String, limit: Int): List<MessageEntity>
 }

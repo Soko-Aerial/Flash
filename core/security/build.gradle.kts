@@ -47,11 +47,25 @@ publishing {
     }
 }
 
+// Phase 3 Task 3.2: strict explicit-API mode. See docs/publishing/PHASE-03-api-surface.md.
+kotlin {
+    explicitApi()
+}
+
 dependencies {
     api(project(":core:common"))
-    implementation(project(":core:persistence"))
+    // Phase 4 (ADR-024): security no longer depends on core:persistence / Room. The only coupling
+    // was the unused RoomTrustedStore adapter (deleted); the live trust store is the
+    // SharedPreferences-backed AndroidPreferencesTrustStore. This keeps Room/SQLCipher off the
+    // classpath of security and of everything downstream of it (notably core:transfer).
     implementation(libs.androidx.core.ktx)
-    implementation(libs.androidx.room.runtime)
+    // Public API returns kotlinx.coroutines Flow/StateFlow (FlashPairingProtocol/trust), so
+    // coroutines must be `api` — an `implementation` scope keeps those return types off a
+    // downstream consumer's classpath. lifecycle-runtime-ktx below stays for the Main dispatcher.
+    api(libs.kotlinx.coroutines.core)
+    // Provides kotlinx-coroutines (Flow/StateFlow used by FlashPairingProtocol). Previously leaked
+    // in transitively via Room; now declared directly, matching core:network / core:discovery.
+    implementation(libs.androidx.lifecycle.runtime.ktx)
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
 }

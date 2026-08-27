@@ -2,4 +2,16 @@
 <resources>
 
     <style name="Theme.Flash" parent="android:Theme.Material.Light.NoActionBar" />
+
+    <!--
+      Cold-start splash (androidx core-splashscreen, works down to minSdk 24). The dark
+      tile + bolt bridge the gap before Compose renders; postSplashScreenTheme hands off
+      to Theme.Flash. The looping breathe/pulse animation is the Compose overlay
+      (FlashSplashScreen), kept on screen via setKeepOnScreenCondition { !ready }.
+    -->
+    <style name="Theme.Flash.Splash" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/flash_splash_bg</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/flash_splash_icon</item>
+        <item name="postSplashScreenTheme">@style/Theme.Flash</item>
+    </style>
 </resources>

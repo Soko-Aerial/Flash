@@ -18,7 +18,7 @@ import java.net.Socket
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-class LanConnectionProbe(
+public class LanConnectionProbe(
     context: Context?,
     private val localDeviceId: String,
     private val localFriendlyName: String,
@@ -28,10 +28,10 @@ class LanConnectionProbe(
     private val connectivityManager =
         context?.applicationContext?.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
 
-    suspend fun probe(hostAddress: String, port: Int, peerDeviceId: String? = null): Result<LanProbeHello> =
+    public suspend fun probe(hostAddress: String, port: Int, peerDeviceId: String? = null): Result<LanProbeHello> =
         probeEndpoint(hostAddress, port, peerDeviceId)
 
-    suspend fun probeEndpoint(hostAddress: String, port: Int, peerDeviceId: String? = null): Result<LanProbeHello> = withContext(Dispatchers.IO) {
+    public suspend fun probeEndpoint(hostAddress: String, port: Int, peerDeviceId: String? = null): Result<LanProbeHello> = withContext(Dispatchers.IO) {
         connectSession(hostAddress, port, peerDeviceId) { _, _ -> }.map { session ->
             session.close("Probe complete")
             session.peerInfo
@@ -40,7 +40,7 @@ class LanConnectionProbe(
         }
     }
 
-    suspend fun connectSession(
+    public suspend fun connectSession(
         hostAddress: String,
         port: Int,
         peerDeviceId: String? = null,
@@ -82,7 +82,7 @@ class LanConnectionProbe(
         }
     }
 
-    suspend fun notifyDisconnect(hostAddress: String, port: Int, peerDeviceId: String? = null): Result<Unit> = withContext(Dispatchers.IO) {
+    public suspend fun notifyDisconnect(hostAddress: String, port: Int, peerDeviceId: String? = null): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
             val network = findLanNetwork()
             logger.log(
@@ -117,10 +117,10 @@ class LanConnectionProbe(
         }
     }
 
-    companion object {
-        const val TAG = "LAN"
-        const val PROTOCOL_VERSION = 1
-        const val CONNECT_TIMEOUT_MS = 4_000
-        const val READ_TIMEOUT_MS = 4_000
+    public companion object {
+        public const val TAG: String = "LAN"
+        public const val PROTOCOL_VERSION: Int = 1
+        public const val CONNECT_TIMEOUT_MS: Int = 4_000
+        public const val READ_TIMEOUT_MS: Int = 4_000
     }
 }

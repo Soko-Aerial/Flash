@@ -47,8 +47,16 @@ publishing {
     }
 }
 
+// Phase 3 Task 3.2: strict explicit-API mode. See docs/publishing/PHASE-03-api-surface.md.
+kotlin {
+    explicitApi()
+}
+
 dependencies {
     api(project(":core:common"))
+    // Public API returns kotlinx.coroutines Flow/StateFlow (chat streams), so coroutines must be
+    // `api` (implementation would keep those return types off a consumer's classpath).
+    api(libs.kotlinx.coroutines.core)
     implementation(project(":core:security"))
     implementation(project(":core:network"))
     implementation(project(":core:persistence"))

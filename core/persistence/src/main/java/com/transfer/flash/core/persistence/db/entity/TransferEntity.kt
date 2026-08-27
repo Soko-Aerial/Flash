@@ -5,7 +5,7 @@ import androidx.room.PrimaryKey
 
 /** Transfer-level progress row; per-chunk resume state lives in [TransferChunkEntity]. */
 @Entity(tableName = "transfers")
-data class TransferEntity(
+public data class TransferEntity(
     @PrimaryKey val transferId: String,
     val totalBytes: Long,
     val bytesDone: Long = 0L,

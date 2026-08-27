@@ -8,7 +8,7 @@ import java.io.RandomAccessFile
 /**
  * Storage destination type where a received file will land (C5.9).
  */
-sealed interface DestinationTarget {
+internal sealed interface DestinationTarget {
     /** Target is a standard filesystem file (e.g. app-internal cache or public downloads on supported platforms). */
     data class FileTarget(val file: File) : DestinationTarget
 
@@ -20,7 +20,7 @@ sealed interface DestinationTarget {
  * Strategy for determining whether and where to store an incoming file transfer offer.
  * Rule: Explicit acceptance is required — never auto-download unapproved files into user folders (UI-016 contract).
  */
-sealed interface TransferAcceptance {
+internal sealed interface TransferAcceptance {
     /** Transfer is accepted and assigned a specific target sink. */
     data class Accepted(val target: DestinationTarget) : TransferAcceptance
 
@@ -34,7 +34,7 @@ sealed interface TransferAcceptance {
 /**
  * Resolves destination targets and manages file creation/resumption handles for [ChunkSink].
  */
-interface DestinationPolicy {
+internal interface DestinationPolicy {
     /**
      * Determines the initial acceptance decision for an incoming file offer.
      *
@@ -67,27 +67,27 @@ interface DestinationPolicy {
 /**
  * A seekable write handle that can write chunks at arbitrary byte offsets.
  */
-interface RandomAccessSinkHandle : Closeable {
+public interface RandomAccessSinkHandle : Closeable {
     /**
      * Writes [data] at the specified [byteOffset].
      */
-    fun writeAt(byteOffset: Long, data: ByteArray)
+    public fun writeAt(byteOffset: Long, data: ByteArray)
 
     /**
      * Flushes buffered writes to underlying storage.
      */
-    fun flush()
+    public fun flush()
 
     /**
      * Returns true if the sink handle is valid and ready for writes.
      */
-    val isOpen: Boolean
+    public val isOpen: Boolean
 }
 
 /**
  * JVM / standard filesystem implementation of [RandomAccessSinkHandle] using [RandomAccessFile].
  */
-class FileRandomAccessSinkHandle(
+public class FileRandomAccessSinkHandle(
     private val file: File,
     private val expectedTotalBytes: Long,
 ) : RandomAccessSinkHandle {

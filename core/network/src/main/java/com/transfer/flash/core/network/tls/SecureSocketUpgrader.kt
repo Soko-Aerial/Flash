@@ -26,11 +26,11 @@ import kotlinx.coroutines.withContext
  * @param handshakeTimeoutMs     bound applied to the TLS handshake (see
  *                               [SecureSocketUpgrader.wrapClient] for the timeout mechanism).
  */
-class TlsOptions(
-    val pinVerifier: FlashPinVerifier,
-    val keyManagers: Array<KeyManager>,
-    val expectedDeviceId: String? = null,
-    val handshakeTimeoutMs: Long = SecureSocketUpgrader.DEFAULT_HANDSHAKE_TIMEOUT_MS,
+public class TlsOptions(
+    public val pinVerifier: FlashPinVerifier,
+    public val keyManagers: Array<KeyManager>,
+    public val expectedDeviceId: String? = null,
+    public val handshakeTimeoutMs: Long = SecureSocketUpgrader.DEFAULT_HANDSHAKE_TIMEOUT_MS,
 )
 
 /**
@@ -78,7 +78,7 @@ class TlsOptions(
  * - https://developer.android.com/reference/android/net/SSLCertificateSocketFactory
  * - https://android.googlesource.com/platform/external/conscrypt/+/master/src/main/java/org/conscrypt/OpenSSLSocketImpl.java
  */
-object SecureSocketUpgrader {
+internal object SecureSocketUpgrader {
 
     /** Default handshake bound; generous enough for slow radios, short enough to fail fast. */
     const val DEFAULT_HANDSHAKE_TIMEOUT_MS: Long = 5_000

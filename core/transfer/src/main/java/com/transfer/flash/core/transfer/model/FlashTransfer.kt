@@ -1,14 +1,14 @@
 package com.transfer.flash.core.transfer.model
 
 @JvmInline
-value class FlashTransferId(val value: String)
+public value class FlashTransferId(public val value: String)
 
-enum class FlashTransferDirection {
+public enum class FlashTransferDirection {
     Sending,
     Receiving,
 }
 
-enum class FlashTransferState {
+public enum class FlashTransferState {
     Offered,
     Queued,
     Transferring,
@@ -19,7 +19,7 @@ enum class FlashTransferState {
     Cancelled,
 }
 
-data class FlashTransfer(
+public data class FlashTransfer(
     val id: FlashTransferId,
     val peerName: String,
     val fileName: String,

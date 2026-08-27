@@ -15,4 +15,11 @@ plugins {
     alias(libs.plugins.kotlin.compose) apply false
     alias(libs.plugins.ksp) apply false
     alias(libs.plugins.hilt) apply false
+    // NOTE (Phase 3 Task 3.1, ADR-023): the kotlinx binary-compatibility-validator
+    // was evaluated for tracking the published ABI (apiDump/apiCheck). Under this
+    // project's AGP 9.3.1 built-in Kotlin (no classic `kotlin.android`/JVM/MPP
+    // plugin), BCV registers no tasks for Android library variants, so it is inert
+    // here. Removed. The published ABI is instead enforced at the compiler by
+    // `explicitApi()` (strict) in every `core/*` module — no symbol reaches the ABI
+    // without a deliberate public/internal/@FlashInternalApi decision.
 }

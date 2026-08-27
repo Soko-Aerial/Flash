@@ -5,12 +5,12 @@ package com.transfer.flash.core.common.time
  * heartbeat deadlines, transfer ETA, log timestamps) can be unit-tested deterministically.
  * Consumers depend on this interface; concrete wiring happens in `:core:engine` / `:app`.
  */
-interface FlashTimeSource {
+public interface FlashTimeSource {
     /** Current time in epoch milliseconds. */
-    fun nowMs(): Long
+    public fun nowMs(): Long
 }
 
 /** Real clock backed by [System.currentTimeMillis]. Production default. */
-object SystemTimeSource : FlashTimeSource {
+public object SystemTimeSource : FlashTimeSource {
     override fun nowMs(): Long = System.currentTimeMillis()
 }

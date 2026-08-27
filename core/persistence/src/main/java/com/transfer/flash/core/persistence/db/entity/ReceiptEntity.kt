@@ -8,7 +8,7 @@ import androidx.room.Entity
  * monotonic per member; re-inserts of the same stage must not resurrect older states).
  */
 @Entity(tableName = "receipts", primaryKeys = ["messageId", "memberId"])
-data class ReceiptEntity(
+public data class ReceiptEntity(
     val messageId: String,
     val memberId: String,
     val state: String,

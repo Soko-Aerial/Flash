@@ -14,7 +14,7 @@ package com.transfer.flash.core.persistence.retention
  *   age (plan C1.6: pinned conversations are respected through this flag —
  *   the caller maps "belongs to a pinned conversation" to protected=true).
  */
-data class PrunableEntry(
+public data class PrunableEntry(
     val localId: String,
     val createdAt: Long,
     val protected: Boolean,
@@ -54,16 +54,16 @@ data class PrunableEntry(
  * feature is ever wanted it must be an explicit user action, not a side
  * effect of the retention setting.
  */
-object RetentionPolicy {
+public object RetentionPolicy {
 
-    const val MILLIS_PER_DAY: Long = 86_400_000L
+    public const val MILLIS_PER_DAY: Long = 86_400_000L
 
     /**
      * The deletion cutoff in epoch millis, or null when retention is disabled
      * ([retentionDays] <= 0). Entries with createdAt strictly before this
      * cutoff (and not protected) are eligible for deletion.
      */
-    fun cutoffMsOrNull(nowMs: Long, retentionDays: Int): Long? {
+    public fun cutoffMsOrNull(nowMs: Long, retentionDays: Int): Long? {
         if (retentionDays <= 0) return null
         return nowMs - retentionDays.toLong() * MILLIS_PER_DAY
     }
@@ -72,7 +72,7 @@ object RetentionPolicy {
      * Returns the localIds of entries eligible for deletion per the rules in
      * the class KDoc. Order of results follows the input order.
      */
-    fun eligibleForDeletion(
+    public fun eligibleForDeletion(
         nowMs: Long,
         retentionDays: Int,
         entries: List<PrunableEntry>,
@@ -99,10 +99,10 @@ object RetentionPolicy {
  *   under re-delivery of the same id list (at-least-once execution by the
  *   scheduler must not be harmful).
  */
-interface PrunableSource {
+public interface PrunableSource {
     /** All unprotected-and-protected rows older than [cutoffMs], protection resolved by the implementation. */
-    suspend fun entriesOlderThan(cutoffMs: Long): List<PrunableEntry>
+    public suspend fun entriesOlderThan(cutoffMs: Long): List<PrunableEntry>
 
     /** Deletes the rows identified by [ids]; unknown ids are ignored. */
-    suspend fun delete(ids: List<String>)
+    public suspend fun delete(ids: List<String>)
 }

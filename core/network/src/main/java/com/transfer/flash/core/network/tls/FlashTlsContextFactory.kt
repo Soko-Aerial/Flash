@@ -27,7 +27,7 @@ import javax.net.ssl.SSLSocket
  * https://developer.android.com/privacy-and-security/security-ssl). This is the same trust model
  * as SSH known-hosts, and it fails closed: an unknown key aborts the handshake.
  */
-object FlashTlsContextFactory {
+internal object FlashTlsContextFactory {
 
     /** Preferred first; adjacent versions so negotiation never degrades (see [configure]). */
     private val PREFERRED_PROTOCOLS = arrayOf("TLSv1.3", "TLSv1.2")

@@ -1,5 +1,3 @@
-@file:OptIn(FlashInternalApi::class)
-
 package com.transfer.flash.core.transfer.protocol
 
 import com.transfer.flash.core.common.annotation.FlashInternalApi
@@ -10,8 +8,8 @@ import com.transfer.flash.core.common.protocol.FlashTextFraming
  * File bytes travel as binary frames between [fileStart] and [fileEnd];
  * message order is guaranteed per connection.
  */
-@FlashInternalApi
-object WsTransferMessages {
+@OptIn(FlashInternalApi::class)
+internal object WsTransferMessages {
 
     const val PROTOCOL_VERSION = 1
 

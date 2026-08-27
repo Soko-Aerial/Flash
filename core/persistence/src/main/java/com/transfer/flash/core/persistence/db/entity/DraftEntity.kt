@@ -5,7 +5,7 @@ import androidx.room.PrimaryKey
 
 /** Unsent composer text per conversation. One row per conversation; last-write-wins. */
 @Entity(tableName = "drafts")
-data class DraftEntity(
+public data class DraftEntity(
     @PrimaryKey val conversationId: String,
     val text: String,
     val updatedAt: Long,

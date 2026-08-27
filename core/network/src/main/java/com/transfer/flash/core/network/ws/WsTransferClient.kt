@@ -1,9 +1,12 @@
+@file:OptIn(FlashInternalApi::class)
+
 package com.transfer.flash.core.network.ws
 
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
+import com.transfer.flash.core.common.annotation.FlashInternalApi
 import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.Socket
@@ -26,7 +29,7 @@ import com.transfer.flash.core.network.tls.TlsOptions
  * @param context nullable so pure-JVM tests can drive loopback connections; when null the
  * socket is not pinned to a Wi-Fi/Ethernet network (plain default routing).
  */
-class WsTransferClient(
+public class WsTransferClient(
     context: Context?,
     private val connectionListener: WsConnection.Listener,
     private val tls: TlsOptions? = null,
@@ -34,7 +37,7 @@ class WsTransferClient(
     private val connectivityManager = context?.applicationContext
         ?.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
 
-    suspend fun connect(host: String, port: Int): WsConnection = withContext(Dispatchers.IO) {
+    public suspend fun connect(host: String, port: Int): WsConnection = withContext(Dispatchers.IO) {
         val network = findLanNetwork()
         WsLog.i(
             TAG,
@@ -96,9 +99,9 @@ class WsTransferClient(
         }
     }
 
-    companion object {
-        const val TAG = "WS"
-        const val CONNECT_TIMEOUT_MS = 4_000
-        const val HANDSHAKE_TIMEOUT_MS = 8_000
+    public companion object {
+        public const val TAG: String = "WS"
+        public const val CONNECT_TIMEOUT_MS: Int = 4_000
+        public const val HANDSHAKE_TIMEOUT_MS: Int = 8_000
     }
 }
