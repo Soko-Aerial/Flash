@@ -7,14 +7,14 @@ import com.transfer.flash.core.persistence.db.entity.DraftEntity
 import kotlinx.coroutines.flow.Flow
 
 @Dao
-interface DraftDao {
+public interface DraftDao {
 
     @Upsert
-    suspend fun upsert(draft: DraftEntity)
+    public suspend fun upsert(draft: DraftEntity)
 
     @Query("SELECT * FROM drafts WHERE conversationId = :conversationId")
-    fun observeDraft(conversationId: String): Flow<DraftEntity?>
+    public fun observeDraft(conversationId: String): Flow<DraftEntity?>
 
     @Query("DELETE FROM drafts WHERE conversationId = :conversationId")
-    suspend fun clear(conversationId: String)
+    public suspend fun clear(conversationId: String)
 }

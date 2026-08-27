@@ -1,5 +1,7 @@
 package com.transfer.flash.core.common.protocol
 
+import com.transfer.flash.core.common.annotation.FlashInternalApi
+
 /**
  * Flash wire protocol version constant and compatibility policy (C0.1).
  *
@@ -37,18 +39,19 @@ package com.transfer.flash.core.common.protocol
  * **Revisit when:** more than one active wire revision must coexist in the field; then adopt
  * min..max range advertisement or capability bits per the phux/BIP-434 patterns above.
  */
-object FlashProtocol {
+@FlashInternalApi
+public object FlashProtocol {
 
     /**
      * Current Flash wire protocol version. Bumped only for breaking wire changes;
      * additive changes must not bump this while the exact-match policy holds.
      */
-    const val VERSION: Int = 2
+    public const val VERSION: Int = 2
 
     /**
      * Exact-match compatibility policy (v1): a peer is compatible only if its advertised
      * version equals [VERSION]. Both older and newer peers are rejected so that neither side
      * guesses about the other's framing semantics.
      */
-    fun isCompatible(peerVersion: Int): Boolean = peerVersion == VERSION
+    public fun isCompatible(peerVersion: Int): Boolean = peerVersion == VERSION
 }

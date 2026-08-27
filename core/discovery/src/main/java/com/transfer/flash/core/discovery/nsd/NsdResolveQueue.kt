@@ -7,7 +7,7 @@ import android.util.Log
 /**
  * Serializes NSD service resolution requests to avoid Android NSD manager daemon concurrency crashes.
  */
-class NsdResolveQueue(
+internal class NsdResolveQueue(
     private val nsdManager: NsdManager,
     private val tag: String = "NSD-RESOLVE",
     private val onResolvedCallback: (NsdServiceInfo) -> Unit,

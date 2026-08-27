@@ -22,23 +22,23 @@ import java.security.MessageDigest
  * 3. **Constant-time comparisons** of digest material via [MessageDigest.isEqual] to avoid
  *    timing side channels on hash checks ([rawEqualsConstantTime], [hexEqualsConstantTime]).
  */
-object Sha256 {
+public object Sha256 {
 
     /** Length of a lowercase hexadecimal SHA-256 string ("abc" digest form). */
-    const val HEX_LENGTH: Int = 64
+    public const val HEX_LENGTH: Int = 64
 
     /** Length of a raw (binary) SHA-256 digest. */
-    const val RAW_LENGTH: Int = 32
+    public const val RAW_LENGTH: Int = 32
 
     /** One-shot digest over one or concatenated byte arrays. */
-    fun digest(vararg chunks: ByteArray): ByteArray =
+    public fun digest(vararg chunks: ByteArray): ByteArray =
         instance().apply { chunks.forEach { update(it) } }.digest()
 
     /** One-shot digest formatted as lowercase hex. */
-    fun digestHex(bytes: ByteArray): String = hex(digest(bytes))
+    public fun digestHex(bytes: ByteArray): String = hex(digest(bytes))
 
     /** Lowercase hex formatting, consistent with the project's `*Hex` naming convention. */
-    fun hex(raw: ByteArray): String {
+    public fun hex(raw: ByteArray): String {
         val sb = StringBuilder(raw.size * 2)
         for (b in raw) {
             val v = b.toInt() and 0xFF
@@ -49,18 +49,18 @@ object Sha256 {
     }
 
     /** Constant-time equality of two raw digests (length-safe). */
-    fun rawEqualsConstantTime(a: ByteArray, b: ByteArray): Boolean =
+    public fun rawEqualsConstantTime(a: ByteArray, b: ByteArray): Boolean =
         MessageDigest.isEqual(a, b)
 
     /** Constant-time equality of two hex-formatted digests (length-safe). */
-    fun hexEqualsConstantTime(a: String, b: String): Boolean =
+    public fun hexEqualsConstantTime(a: String, b: String): Boolean =
         MessageDigest.isEqual(a.toByteArray(Charsets.US_ASCII), b.toByteArray(Charsets.US_ASCII))
 
     /**
      * True iff [value] is exactly [HEX_LENGTH] lowercase-or-uppercase hex characters.
      * Used to validate wire-supplied `FILE_START.fileSha256Hex` before trust.
      */
-    fun isValidHex(value: String): Boolean {
+    public fun isValidHex(value: String): Boolean {
         if (value.length != HEX_LENGTH) return false
         for (c in value) {
             val ok = c in '0'..'9' || c in 'a'..'f' || c in 'A'..'F'
@@ -70,7 +70,7 @@ object Sha256 {
     }
 
     /** Normalizes a valid hex digest string to the canonical lowercase wire form. */
-    fun normalizeHex(value: String): String {
+    public fun normalizeHex(value: String): String {
         require(isValidHex(value)) { "not a SHA-256 hex digest: length=${value.length}" }
         return value.lowercase()
     }
@@ -84,25 +84,25 @@ object Sha256 {
  * Streaming SHA-256 accumulator for single-pass hashing while chunks flow through a pipeline.
  * Not thread-safe; scope it to the owning pipeline loop.
  */
-class IncrementalSha256 {
+public class IncrementalSha256 {
 
     private val digest = MessageDigest.getInstance("SHA-256")
 
-    fun update(bytes: ByteArray) {
+    public fun update(bytes: ByteArray) {
         digest.update(bytes)
     }
 
-    fun update(bytes: ByteArray, offset: Int, length: Int) {
+    public fun update(bytes: ByteArray, offset: Int, length: Int) {
         digest.update(bytes, offset, length)
     }
 
     /** Finishes the digest and returns the raw 32-byte result (does not reset). */
-    fun digestRaw(): ByteArray = digest.digest()
+    public fun digestRaw(): ByteArray = digest.digest()
 
     /** Finishes the digest and returns the lowercase-hex result (does not reset). */
-    fun digestHex(): String = Sha256.hex(digest.digest())
+    public fun digestHex(): String = Sha256.hex(digest.digest())
 
-    fun reset() {
+    public fun reset() {
         digest.reset()
     }
 }

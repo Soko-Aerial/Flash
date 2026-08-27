@@ -3,7 +3,7 @@ package com.transfer.flash.core.network.resilience
 /**
  * Liveness state of the remote peer as judged by [HeartbeatTracker].
  */
-enum class HeartbeatState {
+internal enum class HeartbeatState {
     /** Recent pong(s) within threshold — peer presumed alive. */
     Alive,
 
@@ -20,7 +20,7 @@ enum class HeartbeatState {
 /**
  * What the owning connection loop should do at the current tick.
  */
-sealed interface HeartbeatAction {
+internal sealed interface HeartbeatAction {
     /** No ping is outstanding and one is due — send a ping now. */
     data object PingNow : HeartbeatAction
 
@@ -58,7 +58,7 @@ sealed interface HeartbeatAction {
  * Thread-safety: NOT thread-safe by design — the owning connection loop
  * serializes calls (mirrors LanSession's single read-loop model).
  */
-class HeartbeatTracker(private val policy: HeartbeatPolicy = HeartbeatPolicy()) {
+internal class HeartbeatTracker(private val policy: HeartbeatPolicy = HeartbeatPolicy()) {
 
     var state: HeartbeatState = HeartbeatState.Alive
         private set

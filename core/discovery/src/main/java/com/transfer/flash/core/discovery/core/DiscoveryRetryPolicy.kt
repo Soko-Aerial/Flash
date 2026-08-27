@@ -12,7 +12,7 @@ package com.transfer.flash.core.discovery.core
  * Give-up signal: [delayForAttempt] returns null once [maxAttempts] attempts
  * have been consumed (caller should surface a persistent-failure state).
  */
-class DiscoveryRetryPolicy(
+internal class DiscoveryRetryPolicy(
     private val baseDelayMs: Long = DEFAULT_BASE_DELAY_MS,
     private val maxDelayMs: Long = DEFAULT_MAX_DELAY_MS,
     private val maxAttempts: Int = DEFAULT_MAX_ATTEMPTS,

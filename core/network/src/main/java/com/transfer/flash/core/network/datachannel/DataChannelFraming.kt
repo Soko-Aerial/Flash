@@ -12,7 +12,7 @@ import java.io.OutputStream
  * density — no masking, no opcode overhead, no text/binary multiplexing. Control/chat stays
  * on the main WebSocket session; a join handshake binds each data socket to its session.
  */
-object DataChannelFraming {
+internal object DataChannelFraming {
 
     const val MAX_FRAME_BYTES = 512 * 1024
     const val JOIN_PREFIX = "FLASH_JOIN"

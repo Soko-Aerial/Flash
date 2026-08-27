@@ -27,7 +27,7 @@ package com.transfer.flash.core.transfer.chunked
  *   [recheckWholeFileDigest] is enabled, `verified` additionally requires the injected
  *   [WholeFileDigestProvider] digest to match `FILE_START.fileSha256Hex`.
  */
-class ReceivePipeline(
+public class ReceivePipeline(
     private val sink: ChunkSink,
     private val ackEvery: Int = DEFAULT_ACK_EVERY,
     private val recheckWholeFileDigest: Boolean = false,
@@ -85,10 +85,10 @@ class ReceivePipeline(
     private val sessions = LinkedHashMap<String, Session>()
 
     /** Snapshot of per-transfer progress vectors keyed by transferId. */
-    val progressVectors: Map<String, ResumeBitVector>
+    public val progressVectors: Map<String, ResumeBitVector>
         get() = sessions.mapValues { (_, s) -> s.vector }
 
-    fun activeTransferIds(): Set<String> = sessions.keys.toSet()
+    public fun activeTransferIds(): Set<String> = sessions.keys.toSet()
 
     /**
      * Processes one inbound frame payload.
@@ -98,7 +98,7 @@ class ReceivePipeline(
      * Thread-safe: frames may arrive concurrently from WebSocket and data-channel readers.
      */
     @Synchronized
-    fun onFrame(bytes: ByteArray): List<ReceiveEvent> {
+    public fun onFrame(bytes: ByteArray): List<ReceiveEvent> {
         return when (val frame = ChunkFrame.parse(bytes)) {
             null -> listOf(ReceiveEvent.Rejected(RejectReason.MALFORMED_FRAME, null))
             is ChunkFrame.FileStart -> handleFileStart(frame)
@@ -110,7 +110,7 @@ class ReceivePipeline(
 
     /** Emits (and clears) any pending partial ACK batch; null when nothing pending. */
     @Synchronized
-    fun flushPendingAck(): ReceiveEvent? {
+    public fun flushPendingAck(): ReceiveEvent? {
         for ((transferId, session) in sessions) {
             if (!session.finished && session.pending.isNotEmpty()) {
                 return buildAck(session, transferId)
@@ -120,12 +120,12 @@ class ReceivePipeline(
     }
 
     @Synchronized
-    fun doneIndexes(transferId: String): List<Int>? =
+    public fun doneIndexes(transferId: String): List<Int>? =
         sessions[transferId]?.vector?.doneIndexes()
 
     /** Serialized bit-vector for persistence (C5.6 `TransferChunkEntity`); null if unknown id. */
     @Synchronized
-    fun serializedProgress(transferId: String): ByteArray? =
+    public fun serializedProgress(transferId: String): ByteArray? =
         sessions[transferId]?.vector?.toSerialized()
 
     /**
@@ -133,7 +133,7 @@ class ReceivePipeline(
      * The destination sink handle is closed by the HOST (it owns the handle map).
      */
     @Synchronized
-    fun cancelSession(transferId: String): Boolean = sessions.remove(transferId) != null
+    public fun cancelSession(transferId: String): Boolean = sessions.remove(transferId) != null
 
     /**
      * #5: accepts a pending offer — resolves the deferred destination sink (invoking
@@ -142,7 +142,7 @@ class ReceivePipeline(
      * is a no-op returning false.
      */
     @Synchronized
-    fun acceptSession(transferId: String): Boolean {
+    public fun acceptSession(transferId: String): Boolean {
         val session = sessions[transferId] ?: return false
         if (!session.awaitingAcceptance) return false
         session.resolvedSink = sinkFactory?.invoke(session.start) ?: sink
@@ -155,7 +155,7 @@ class ReceivePipeline(
      * on disk to clean up. Returns true when an awaiting session existed.
      */
     @Synchronized
-    fun declineSession(transferId: String): Boolean {
+    public fun declineSession(transferId: String): Boolean {
         val session = sessions[transferId] ?: return false
         if (!session.awaitingAcceptance) return false
         sessions.remove(transferId)
@@ -163,7 +163,7 @@ class ReceivePipeline(
     }
 
     @Synchronized
-    fun clear() = sessions.clear()
+    public fun clear(): Unit = sessions.clear()
 
     private fun handleFileStart(frame: ChunkFrame.FileStart): List<ReceiveEvent> {
         val validationError = validateFileStart(frame)
@@ -332,57 +332,57 @@ class ReceivePipeline(
         var finished = false
     }
 
-    companion object {
+    public companion object {
 
         /** Shared default batch size — both pipelines must agree (C5.7 keeps this constant). */
-        const val DEFAULT_ACK_EVERY: Int = 32
+        public const val DEFAULT_ACK_EVERY: Int = 32
 
         private const val DEFAULT_MAX_SESSIONS: Int = 32
     }
 }
 
 /** Destination abstraction: persists one verified chunk at [index]. */
-fun interface ChunkSink {
+public fun interface ChunkSink {
 
-    fun write(index: Int, data: ByteArray)
+    public fun write(index: Int, data: ByteArray)
 }
 
 /**
  * Optional whole-file digest seam for final re-checks (e.g. hashing the assembled destination
  * via random access after all chunks landed). Returning null defers to per-chunk trust.
  */
-fun interface WholeFileDigestProvider {
+public fun interface WholeFileDigestProvider {
 
-    fun currentDigestHex(): String?
+    public fun currentDigestHex(): String?
 }
 
-sealed interface ReceiveEvent {
+public sealed interface ReceiveEvent {
 
     /**
      * Emitted once per transfer when a valid FILE_START opened a session. Hosts can use this
      * to finalize destination bookkeeping (the sink itself was already resolved via
      * [ReceivePipeline.sinkFactory] before this event fires).
      */
-    data class SessionStarted(val frame: ChunkFrame.FileStart) : ReceiveEvent
+    public data class SessionStarted(val frame: ChunkFrame.FileStart) : ReceiveEvent
 
     /** Receiver → sender confirmation carrying deduplicated ascending verified indexes. */
-    data class AckBatchReady(val frame: ChunkFrame.AckBatch) : ReceiveEvent
+    public data class AckBatchReady(val frame: ChunkFrame.AckBatch) : ReceiveEvent
 
     /** Emitted exactly once per session when the last verified chunk lands. */
-    data class Completed(val frame: ChunkFrame.Complete) : ReceiveEvent
+    public data class Completed(val frame: ChunkFrame.Complete) : ReceiveEvent
 
     /**
      * Graceful rejection: the pipeline stays usable; the reason drives engine-level retry /
      * targeted repair decisions.
      */
-    data class Rejected(
+    public data class Rejected(
         val reason: RejectReason,
         val transferId: String?,
         val index: Int = -1,
     ) : ReceiveEvent
 }
 
-enum class RejectReason {
+public enum class RejectReason {
     /** Unparseable bytes: bad magic/version/type, truncation, trailing garbage. */
     MALFORMED_FRAME,
 

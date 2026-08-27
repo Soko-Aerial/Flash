@@ -3,10 +3,10 @@ package com.transfer.flash.core.network.tcp
 import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.common.protocol.FlashTextFraming
 
-data class LanProbeHello(
-    val protocolVersion: Int,
-    val deviceId: String,
-    val friendlyName: String,
+public data class LanProbeHello(
+    public val protocolVersion: Int,
+    public val deviceId: String,
+    public val friendlyName: String,
 )
 
 /**
@@ -14,7 +14,7 @@ data class LanProbeHello(
  * processed a specific [LanProbeData]-enveloped frame. Correlation is by
  * [ackedFrameId] — sender-chosen UUID echoed back verbatim.
  */
-data class LanProbeAck(
+internal data class LanProbeAck(
     val protocolVersion: Int,
     val senderDeviceId: String,
     val senderFriendlyName: String,
@@ -28,7 +28,7 @@ data class LanProbeAck(
  * correlation. Additive: sessions that never emit FLASH_DATA keep the old
  * wire format byte-for-byte.
  */
-data class LanProbeData(
+internal data class LanProbeData(
     val protocolVersion: Int,
     val senderDeviceId: String,
     val senderFriendlyName: String,
@@ -36,8 +36,7 @@ data class LanProbeData(
 )
 
 @OptIn(FlashInternalApi::class)
-@FlashInternalApi
-object LanProbeMessages {
+internal object LanProbeMessages {
     const val HELLO_PREFIX = "FLASH_HELLO"
     const val OK_PREFIX = "FLASH_OK"
     const val DISCONNECT_PREFIX = "FLASH_DISCONNECT"

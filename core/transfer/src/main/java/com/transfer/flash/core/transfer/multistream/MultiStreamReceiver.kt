@@ -40,7 +40,7 @@ import com.transfer.flash.core.transfer.chunked.RejectReason
  * exactly once, attributed to whichever single delivery won the lock ("last-finishing coordinator
  * path").
  */
-class MultiStreamReceiver(
+internal class MultiStreamReceiver(
     sink: ChunkSink,
     ackEvery: Int = ReceivePipeline.DEFAULT_ACK_EVERY,
 ) {
@@ -77,7 +77,7 @@ class MultiStreamReceiver(
 }
 
 /** A [ReceiveEvent] tagged with the channel id it must be answered on. */
-sealed interface RoutedReceiveEvent {
+internal sealed interface RoutedReceiveEvent {
 
     /** Informational: a receive session opened (no wire reply required). */
     data class SessionStarted(

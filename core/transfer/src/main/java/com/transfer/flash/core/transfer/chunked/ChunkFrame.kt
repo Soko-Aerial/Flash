@@ -83,18 +83,18 @@ import java.nio.ByteOrder
  * (https://github.com/localsend/protocol §4): metadata first, then content, receiver-side
  * verification feedback to the sender.
  */
-sealed class ChunkFrame {
+public sealed class ChunkFrame {
 
-    abstract val type: FrameType
+    public abstract val type: FrameType
 
-    enum class FrameType(val code: Byte) {
+    public enum class FrameType(public val code: Byte) {
         FILE_START(1),
         CHUNK(2),
         ACK_BATCH(3),
         COMPLETE(4),
     }
 
-    data class FileStart(
+    public data class FileStart(
         val transferId: String,
         val fileId: String,
         val fileName: String,
@@ -115,7 +115,7 @@ sealed class ChunkFrame {
         override val type: FrameType get() = FrameType.FILE_START
     }
 
-    data class Chunk(
+    public data class Chunk(
         val transferId: String,
         val fileId: String,
         val index: Int,
@@ -155,7 +155,7 @@ sealed class ChunkFrame {
         }
     }
 
-    data class AckBatch(
+    public data class AckBatch(
         val transferId: String,
         val fileId: String,
         val indexes: List<Int>,
@@ -172,7 +172,7 @@ sealed class ChunkFrame {
         override val type: FrameType get() = FrameType.ACK_BATCH
     }
 
-    data class Complete(
+    public data class Complete(
         val transferId: String,
         val fileId: String,
         val verified: Boolean,
@@ -185,26 +185,26 @@ sealed class ChunkFrame {
         override val type: FrameType get() = FrameType.COMPLETE
     }
 
-    companion object {
+    public companion object {
 
-        val MAGIC: ByteArray = byteArrayOf('F'.code.toByte(), 'L'.code.toByte(), 'S'.code.toByte(), 'H'.code.toByte())
+        public val MAGIC: ByteArray = byteArrayOf('F'.code.toByte(), 'L'.code.toByte(), 'S'.code.toByte(), 'H'.code.toByte())
 
         /** Framing version; pinned to FlashProtocol.VERSION (v2). */
-        const val VERSION: Int = 2
+        public const val VERSION: Int = 2
 
-        const val HEADER_SIZE: Int = 10
+        public const val HEADER_SIZE: Int = 10
 
         /** Hard cap for a single id/name string on the wire. */
-        const val MAX_STRING_BYTES: Int = 4096
+        public const val MAX_STRING_BYTES: Int = 4096
 
         /** Hard cap for CHUNK data accepted when parsing untrusted input (>= max chunk size). */
-        const val MAX_CHUNK_DATA_BYTES: Int = 1024 * 1024
+        public const val MAX_CHUNK_DATA_BYTES: Int = 1024 * 1024
 
         /** Hard cap for ACK batch size when parsing untrusted input. */
-        const val MAX_ACK_COUNT: Int = 1 shl 20
+        public const val MAX_ACK_COUNT: Int = 1 shl 20
 
         /** Serializes a frame to the full header + payload byte layout documented above. */
-        fun serialize(frame: ChunkFrame): ByteArray {
+        public fun serialize(frame: ChunkFrame): ByteArray {
             val payload = PayloadWriter()
             when (frame) {
                 is FileStart -> {
@@ -254,7 +254,7 @@ sealed class ChunkFrame {
          * Parses one full frame; returns null on ANY malformation (see class KDoc).
          * Tolerates nothing silently: trailing garbage after the payload is rejected.
          */
-        fun parse(bytes: ByteArray): ChunkFrame? {
+        public fun parse(bytes: ByteArray): ChunkFrame? {
             if (bytes.size < HEADER_SIZE) return null
             for (i in MAGIC.indices) {
                 if (bytes[i] != MAGIC[i]) return null

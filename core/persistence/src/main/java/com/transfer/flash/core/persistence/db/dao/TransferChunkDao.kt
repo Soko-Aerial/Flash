@@ -12,22 +12,22 @@ import com.transfer.flash.core.persistence.db.entity.TransferChunkEntity
  * file identity no longer matches (C1 resume rule).
  */
 @Dao
-interface TransferChunkDao {
+public interface TransferChunkDao {
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
-    suspend fun insertAll(chunks: List<TransferChunkEntity>)
+    public suspend fun insertAll(chunks: List<TransferChunkEntity>)
 
     @Query(
         "UPDATE transfer_chunks SET done = 1 " +
             "WHERE transferId = :transferId AND chunkIndex = :chunkIndex",
     )
-    suspend fun markChunkDone(transferId: String, chunkIndex: Int)
+    public suspend fun markChunkDone(transferId: String, chunkIndex: Int)
 
     @Query(
         "SELECT chunkIndex FROM transfer_chunks " +
             "WHERE transferId = :transferId AND done = 1 ORDER BY chunkIndex ASC",
     )
-    suspend fun doneChunks(transferId: String): List<Int>
+    public suspend fun doneChunks(transferId: String): List<Int>
 
     /**
      * All completed chunk rows across every transfer, for warming the in-memory receiver
@@ -36,14 +36,14 @@ interface TransferChunkDao {
      * given id), so send-side rows never mis-seed a receive session.
      */
     @Query("SELECT transferId, chunkIndex FROM transfer_chunks WHERE done = 1")
-    suspend fun allDoneChunks(): List<ChunkIndexRef>
+    public suspend fun allDoneChunks(): List<ChunkIndexRef>
 
     @Query("UPDATE transfer_chunks SET done = 0 WHERE transferId = :transferId")
-    suspend fun resetStuck(transferId: String)
+    public suspend fun resetStuck(transferId: String)
 }
 
 /** Lightweight projection for [TransferChunkDao.allDoneChunks]. */
-data class ChunkIndexRef(
+public data class ChunkIndexRef(
     val transferId: String,
     val chunkIndex: Int,
 )

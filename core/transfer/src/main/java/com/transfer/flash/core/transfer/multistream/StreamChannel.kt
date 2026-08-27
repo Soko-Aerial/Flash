@@ -21,16 +21,16 @@ package com.transfer.flash.core.transfer.multistream
  *   returns every un-ACKed claimed chunk of this channel to the shared pool, and continues on
  *   surviving channels; failure isolation is the whole point of N streams.
  */
-interface StreamChannel {
+public interface StreamChannel {
 
     /** Stable identity used for telemetry, end-game owner election, and ACK routing. */
-    val id: Int
+    public val id: Int
 
     /**
      * Sends one serialized FLSH v2 frame. Suspending is expected (socket writes); returning
      * `false`/throwing signals permanent death of THIS channel only.
      */
-    suspend fun sendFrame(frameBytes: ByteArray): Boolean
+    public suspend fun sendFrame(frameBytes: ByteArray): Boolean
 }
 
 /**
@@ -42,7 +42,7 @@ interface StreamChannel {
  * [peerDeviceId] is the intended recipient (when known, null otherwise) so factories can route
  * every channel of this session to the correct peer instead of an arbitrary live one.
  */
-fun interface StreamChannelFactory {
+public fun interface StreamChannelFactory {
 
-    suspend fun open(channelId: Int, peerDeviceId: String?): StreamChannel?
+    public suspend fun open(channelId: Int, peerDeviceId: String?): StreamChannel?
 }

@@ -6,15 +6,15 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
 /** Sink side of the C3→C4 seam: endpoint memory (implemented by DefaultFlashNetwork). */
-fun interface EndpointMemory {
-    fun rememberEndpoint(deviceId: String, host: String, port: Int)
+public fun interface EndpointMemory {
+    public fun rememberEndpoint(deviceId: String, host: String, port: Int)
 
     /**
      * #17: drop a route the discovery layer no longer advertises so the "discovered peers"
      * set (and `peerCountDiscovered`) shrinks instead of growing monotonically. Default no-op
      * keeps SAM constructors working; real network impls override to prune + refresh state.
      */
-    fun forgetEndpoint(deviceId: String) {}
+    public fun forgetEndpoint(deviceId: String) {}
 }
 
 /**
@@ -23,10 +23,10 @@ fun interface EndpointMemory {
  *
  * Pure plumbing, JVM-testable: flows/scope injected.
  */
-object DiscoveryRouteBinder {
+public object DiscoveryRouteBinder {
 
     /** Binds one snapshot immediately (also used per-emission by [observe]). */
-    fun bindAll(memory: EndpointMemory, endpoints: List<FlashDiscoveredEndpoint>) {
+    public fun bindAll(memory: EndpointMemory, endpoints: List<FlashDiscoveredEndpoint>) {
         endpoints.forEach { ep -> memory.rememberEndpoint(ep.deviceId.value, ep.hostAddress, ep.port) }
     }
 
@@ -41,7 +41,7 @@ object DiscoveryRouteBinder {
      * this observer itself bound are ever forgotten, so inbound-HELLO endpoints
      * (never present in the discovery snapshot) are left untouched.
      */
-    fun observe(
+    public fun observe(
         scope: kotlinx.coroutines.CoroutineScope,
         endpoints: StateFlow<List<FlashDiscoveredEndpoint>>,
         memory: EndpointMemory,

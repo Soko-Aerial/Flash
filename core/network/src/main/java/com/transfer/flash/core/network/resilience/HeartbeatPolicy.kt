@@ -28,7 +28,7 @@ package com.transfer.flash.core.network.resilience
  * - https://websocket.org/guides/use-cases/chat/ (10–15 s presence heartbeats, 2–3 missed intervals)
  * - https://dev.to/137foundry/why-application-level-heartbeats-beat-tcp-keepalive-for-websockets-1bfl (TCP keepalive inadequacy)
  */
-data class HeartbeatPolicy(
+internal data class HeartbeatPolicy(
     val intervalMs: Long = DEFAULT_INTERVAL_MS,
     val missedThreshold: Int = DEFAULT_MISSED_THRESHOLD,
 ) {

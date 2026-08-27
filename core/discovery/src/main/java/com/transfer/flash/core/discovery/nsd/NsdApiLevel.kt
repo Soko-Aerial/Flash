@@ -6,15 +6,15 @@ import android.os.Build
  * Isolates [Build.VERSION.SDK_INT] so unit tests can fake API levels and drive every
  * NSD strategy branch (plan C3.4) on the JVM without Robolectric.
  */
-interface NsdApiLevel {
-    val sdkInt: Int
+public interface NsdApiLevel {
+    public val sdkInt: Int
 
     /** Production implementation reading the real OS value. */
-    fun isAtLeast(level: Int): Boolean = sdkInt >= level
+    public fun isAtLeast(level: Int): Boolean = sdkInt >= level
 }
 
 /** Reads [Build.VERSION.SDK_INT]. Never construct in JVM tests — use a fake [NsdApiLevel]. */
-object BuildNsdApiLevel : NsdApiLevel {
+public object BuildNsdApiLevel : NsdApiLevel {
     override val sdkInt: Int
         get() = Build.VERSION.SDK_INT
 }
@@ -43,13 +43,13 @@ object BuildNsdApiLevel : NsdApiLevel {
  * taking the lock unnecessarily (safe direction: extra lock costs battery, absence
  * of the lock silently breaks mDNS reception).
  */
-object NsdApiThresholds {
+public object NsdApiThresholds {
 
     /**
      * `registerServiceInfoCallback` + deprecation of blocking-style `resolveService`.
      * At this level we switch to continuous monitoring (C3.4 upper branch).
      */
-    const val SDK_SERVICE_INFO_CALLBACK = 34
+    public const val SDK_SERVICE_INFO_CALLBACK: Int = 34
 
     /**
      * `discoverServices(serviceType, protocolType, NetworkRequest, Executor, listener)`
@@ -57,10 +57,10 @@ object NsdApiThresholds {
      * re-found when a matching network rejoins (proper Found/Lost across Wi-Fi drops).
      * Requires ACCESS_NETWORK_STATE. Below this level use the legacy PROTOCOL_DNS_SD call.
      */
-    const val SDK_NETWORK_REQUEST_DISCOVERY = 33
+    public const val SDK_NETWORK_REQUEST_DISCOVERY: Int = 33
 
     /** `NsdServiceInfo.getNetwork()`/`setNetwork(Network)` availability. */
-    const val SDK_SERVICE_INFO_NETWORK_FIELD = 33
+    public const val SDK_SERVICE_INFO_NETWORK_FIELD: Int = 33
 
     /**
      * Historic threshold above which (34+) the Wi-Fi multicast lock used to be skipped, on the
@@ -71,5 +71,5 @@ object NsdApiThresholds {
      * is not delivered without the explicit lock. [NsdTransport] now acquires the lock on ALL
      * API levels. Retained as documentation of the researched threshold.
      */
-    const val SDK_MULTICAST_LOCK_NOT_NEEDED = 34
+    public const val SDK_MULTICAST_LOCK_NOT_NEEDED: Int = 34
 }

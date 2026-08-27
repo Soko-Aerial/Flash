@@ -25,13 +25,13 @@ package com.transfer.flash.core.security.pairing
  * Equality note: [ByteArray] fields participate in equals/hashCode via content,
  * not identity.
  */
-sealed interface FlashPairingFrame {
+public sealed interface FlashPairingFrame {
 
     /** Unique identifier shared by all frames of one pairing attempt. */
-    val requestId: String
+    public val requestId: String
 
     /** Initiator announces itself and offers its key material. */
-    data class PairRequest(
+    public data class PairRequest(
         override val requestId: String,
         val senderDeviceId: String,
         val senderName: String,
@@ -55,7 +55,7 @@ sealed interface FlashPairingFrame {
     }
 
     /** Responder agrees to pair. */
-    data class PairAccept(
+    public data class PairAccept(
         override val requestId: String,
     ) : FlashPairingFrame
 
@@ -63,13 +63,13 @@ sealed interface FlashPairingFrame {
      * Proof that the sender derived (and visually confirmed) the same numeric
      * comparison code: SHA-256 hex of the code, compared constant-time by the receiver.
      */
-    data class PairConfirm(
+    public data class PairConfirm(
         override val requestId: String,
         val codeHashHex: String,
     ) : FlashPairingFrame
 
     /** Completion frame; carries the sender's pinned identity material. */
-    data class Paired(
+    public data class Paired(
         override val requestId: String,
         val peerFingerprintHex: String,
         val peerEphemeralPublicKey: ByteArray,

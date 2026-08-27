@@ -6,13 +6,13 @@ import kotlinx.coroutines.flow.StateFlow
 /**
  * Public discovery interface for peer advertising and scanning across local network mediums.
  */
-interface FlashDiscovery {
-    val state: StateFlow<FlashDiscoveryState>
-    val discoveredEndpoints: StateFlow<List<FlashDiscoveredEndpoint>>
+public interface FlashDiscovery {
+    public val state: StateFlow<FlashDiscoveryState>
+    public val discoveredEndpoints: StateFlow<List<FlashDiscoveredEndpoint>>
 
-    suspend fun startDiscovery(): FlashResult<Unit>
-    suspend fun stopDiscovery(): FlashResult<Unit>
-    suspend fun startAdvertising(listenPort: Int): FlashResult<Unit>
-    suspend fun stopAdvertising(): FlashResult<Unit>
-    suspend fun stopAll(): FlashResult<Unit>
+    public suspend fun startDiscovery(): FlashResult<Unit>
+    public suspend fun stopDiscovery(): FlashResult<Unit>
+    public suspend fun startAdvertising(listenPort: Int): FlashResult<Unit>
+    public suspend fun stopAdvertising(): FlashResult<Unit>
+    public suspend fun stopAll(): FlashResult<Unit>
 }

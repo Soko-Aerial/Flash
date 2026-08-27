@@ -9,10 +9,10 @@ import java.security.MessageDigest
  * constant-time: https://developer.android.com/reference/java/security/MessageDigest#isEqual(byte[],%20byte[]))
  * so fingerprint/code comparisons never leak prefix-match timing to a malicious peer.
  */
-object FlashFingerprint {
+public object FlashFingerprint {
 
     /** SHA-256 over the public key's encoded form (D3 — java.security SHA-256, zero deps). */
-    fun fingerprint(publicKeyEncoded: ByteArray): ByteArray =
+    public fun fingerprint(publicKeyEncoded: ByteArray): ByteArray =
         MessageDigest.getInstance("SHA-256").digest(publicKeyEncoded)
 
     /**
@@ -20,10 +20,10 @@ object FlashFingerprint {
      * Deterministic across processes/devices — the exact string shown on both pairing
      * devices must be byte-identical so users can compare visually.
      */
-    fun formatHexGroups(bytes: ByteArray): String =
+    public fun formatHexGroups(bytes: ByteArray): String =
         bytes.joinToString(separator = ":") { byte -> "%02X".format(byte) }
 
     /** Constant-time equality; safe for fingerprints and 6-digit pairing codes. */
-    fun constantTimeEquals(a: ByteArray, b: ByteArray): Boolean =
+    public fun constantTimeEquals(a: ByteArray, b: ByteArray): Boolean =
         MessageDigest.isEqual(a, b)
 }

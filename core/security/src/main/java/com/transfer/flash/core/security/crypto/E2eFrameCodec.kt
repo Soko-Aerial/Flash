@@ -1,3 +1,5 @@
+@file:OptIn(com.transfer.flash.core.common.annotation.FlashInternalApi::class)
+
 package com.transfer.flash.core.security.crypto
 
 import com.transfer.flash.core.common.protocol.FlashProtocol
@@ -32,7 +34,7 @@ import javax.crypto.spec.SecretKeySpec
  * multi-hop sessions, add explicit epoch/rekey negotiation here and document the counter in
  * docs/protocol.md before shipping.
  */
-object E2eFrameCodec {
+internal object E2eFrameCodec {
 
     /** GCM-standard 96-bit nonce length. */
     const val NONCE_BYTES = 12

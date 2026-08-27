@@ -39,7 +39,7 @@ import java.security.MessageDigest
  * [MessageDigest], US-ASCII encoding). Fully unit-tested including the symmetry
  * property.
  */
-object NumericComparisonCode {
+internal object NumericComparisonCode {
 
     /** Display length of the derived code (zero-padded decimal). */
     const val CODE_LENGTH = 6

@@ -19,10 +19,10 @@ import kotlinx.coroutines.flow.asStateFlow
  * PeerAccepted; PeerDeclined; Expired; Confirmed }` (+ [Failed] for protocol
  * errors, which have no demo-card representation).
  */
-sealed interface FlashPairingEvent {
+public sealed interface FlashPairingEvent {
 
     /** A peer wants to pair. Carries everything the consent card renders. */
-    data class RequestReceived(
+    public data class RequestReceived(
         val requestId: String,
         val peerDeviceId: String,
         val peerName: String,
@@ -31,26 +31,26 @@ sealed interface FlashPairingEvent {
     ) : FlashPairingEvent
 
     /** Peer agreed (PAIR_ACCEPT received on the initiator side). */
-    data class PeerAccepted(val requestId: String) : FlashPairingEvent
+    public data class PeerAccepted(val requestId: String) : FlashPairingEvent
 
     /** Peer explicitly declined. */
-    data class PeerDeclined(val requestId: String?) : FlashPairingEvent
+    public data class PeerDeclined(val requestId: String?) : FlashPairingEvent
 
     /** Neutral timeout — nobody misbehaved; retry is safe. */
-    data class Expired(val requestId: String?) : FlashPairingEvent
+    public data class Expired(val requestId: String?) : FlashPairingEvent
 
     /**
      * Handshake completed. Carries the material to pin via TOFU
-     * ([com.transfer.flash.core.security.trust.pinned.TofuPolicy]/[com.transfer.flash.core.security.trust.pinned.RoomTrustedStore.pin]).
+     * ([com.transfer.flash.core.security.trust.pinned.TofuPolicy]).
      */
-    data class Confirmed(
+    public data class Confirmed(
         val requestId: String,
         val fingerprintHex: String,
         val ephemeralPubKey: ByteArray,
     ) : FlashPairingEvent
 
     /** Protocol violation (e.g., numeric-comparison hash mismatch). */
-    data class Failed(val requestId: String?, val reason: String) : FlashPairingEvent
+    public data class Failed(val requestId: String?, val reason: String) : FlashPairingEvent
 }
 
 /**
@@ -78,34 +78,34 @@ sealed interface FlashPairingEvent {
  * Expiry semantics follow [PairingSessionStateMachine]: Expired is neutral, distinct
  * from Failed. The engine decides whether to auto-retry or resurface UI.
  */
-interface FlashPairingProtocol {
+public interface FlashPairingProtocol {
     /** Hot stream of pairing events; never completes. */
-    val events: Flow<FlashPairingEvent>
+    public val events: Flow<FlashPairingEvent>
 
     /** Current session snapshot (for UI state restoration / tests). */
-    val session: StateFlow<PairingSessionState>
+    public val session: StateFlow<PairingSessionState>
 
     /** Initiates pairing with [peer]; sends PAIR_REQUEST. */
-    fun beginRequest(
+    public fun beginRequest(
         peerDeviceId: String,
         peerName: String?,
         peerFingerprintHex: String,
     ): FlashResult<Unit>
 
     /** Local user accepted the displayed code match; sends PAIR_ACCEPT. */
-    suspend fun respondAccept(): FlashResult<Unit>
+    public suspend fun respondAccept(): FlashResult<Unit>
 
     /** Local user declined/dismissed; resets locally (decline frame lands C4/C6). */
-    suspend fun respondDecline(): FlashResult<Unit>
+    public suspend fun respondDecline(): FlashResult<Unit>
 
     /** Transport layer entry point for decoded inbound frames. */
-    suspend fun onFrame(frame: FlashPairingFrame)
+    public suspend fun onFrame(frame: FlashPairingFrame)
 
     /** Engine clock tick; drives request/decision-window expiry. */
-    fun onTick(nowMs: Long)
+    public fun onTick(nowMs: Long)
 }
 
-class DefaultFlashPairingProtocol(
+public class DefaultFlashPairingProtocol(
     private val localFingerprintHex: String,
     private val localDeviceId: String,
     private val localName: String,

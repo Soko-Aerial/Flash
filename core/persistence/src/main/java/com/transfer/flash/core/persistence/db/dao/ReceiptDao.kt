@@ -9,15 +9,15 @@ import kotlinx.coroutines.flow.Flow
 
 /** Receipt inserts are idempotent per `(messageId, memberId)`; first state wins. */
 @Dao
-interface ReceiptDao {
+public interface ReceiptDao {
 
     /** @return row id of the inserted row, or -1 when a duplicate receipt was ignored. */
     @Insert(onConflict = OnConflictStrategy.IGNORE)
-    suspend fun insert(receipt: ReceiptEntity): Long
+    public suspend fun insert(receipt: ReceiptEntity): Long
 
     @Query("SELECT * FROM receipts WHERE messageId = :messageId ORDER BY memberId")
-    fun observeForMessage(messageId: String): Flow<List<ReceiptEntity>>
+    public fun observeForMessage(messageId: String): Flow<List<ReceiptEntity>>
 
     @Query("SELECT COUNT(*) FROM receipts WHERE messageId = :messageId")
-    suspend fun countForMessage(messageId: String): Int
+    public suspend fun countForMessage(messageId: String): Int
 }

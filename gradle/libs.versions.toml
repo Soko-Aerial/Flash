@@ -1,6 +1,7 @@
 [versions]
 agp = "9.3.1"
 coreKtx = "1.10.1"
+coreSplashscreen = "1.0.1"
 junit = "4.13.2"
 junitVersion = "1.1.5"
 espressoCore = "3.5.1"
@@ -9,16 +10,18 @@ activityCompose = "1.8.0"
 kotlin = "2.2.10"
 composeBom = "2025.12.00"
 room = "2.8.4"
-sqlcipher = "4.18.0"
+sqlcipher = "4.17.0"
 sqliteKtx = "2.6.2"
 datastore = "1.1.7"
 coroutinesTest = "1.10.2"
+coroutines = "1.10.2"
 robolectric = "4.16.1"
 hilt = "2.60.1"
 ksp = "2.3.11"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
+androidx-core-splashscreen = { group = "androidx.core", name = "core-splashscreen", version.ref = "coreSplashscreen" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }
 androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espressoCore" }
@@ -41,6 +44,7 @@ androidx-sqlite = { group = "androidx.sqlite", name = "sqlite-ktx", version.ref 
 sqlcipher-android = { group = "net.zetetic", name = "sqlcipher-android", version.ref = "sqlcipher" }
 androidx-datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastore" }
 kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutinesTest" }
+kotlinx-coroutines-core = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-core", version.ref = "coroutines" }
 robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }
 bouncycastle = { group = "org.bouncycastle", name = "bcprov-jdk18on", version = "1.81" }
 bouncycastle-pkix = { group = "org.bouncycastle", name = "bcpkix-jdk18on", version = "1.81" }

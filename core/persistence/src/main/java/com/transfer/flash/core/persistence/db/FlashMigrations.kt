@@ -10,10 +10,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
  *
  * Pass [ALL] to [FlashDatabaseOpener.openEncrypted].
  */
-object FlashMigrations {
+public object FlashMigrations {
 
     /** v1 → v2: [MessageEntity] gained inline-attachment columns. */
-    val MIGRATION_1_2 = object : Migration(1, 2) {
+    public val MIGRATION_1_2: Migration = object : Migration(1, 2) {
         override fun migrate(db: SupportSQLiteDatabase) {
             db.execSQL("ALTER TABLE messages ADD COLUMN attachmentTransferId TEXT")
             db.execSQL("ALTER TABLE messages ADD COLUMN attachmentName TEXT")
@@ -24,7 +24,7 @@ object FlashMigrations {
     }
 
     /** v2 → v3: [MessageEntity] gained reply/quote columns. */
-    val MIGRATION_2_3 = object : Migration(2, 3) {
+    public val MIGRATION_2_3: Migration = object : Migration(2, 3) {
         override fun migrate(db: SupportSQLiteDatabase) {
             db.execSQL("ALTER TABLE messages ADD COLUMN replyToId TEXT")
             db.execSQL("ALTER TABLE messages ADD COLUMN replyToPreview TEXT")
@@ -32,5 +32,5 @@ object FlashMigrations {
     }
 
     /** Every migration, in order, for the open path. */
-    val ALL: Array<Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3)
+    public val ALL: Array<Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3)
 }

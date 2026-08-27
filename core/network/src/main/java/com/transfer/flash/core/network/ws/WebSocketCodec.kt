@@ -1,5 +1,6 @@
 package com.transfer.flash.core.network.ws
 
+import com.transfer.flash.core.common.annotation.FlashInternalApi
 import java.io.ByteArrayOutputStream
 import java.io.EOFException
 import java.io.IOException
@@ -18,14 +19,15 @@ import java.security.SecureRandom
  *
  * Pure JVM (no Android imports) so it is covered by local unit tests.
  */
-object WebSocketCodec {
+@FlashInternalApi
+public object WebSocketCodec {
 
-    const val OPCODE_CONTINUATION = 0x0
-    const val OPCODE_TEXT = 0x1
-    const val OPCODE_BINARY = 0x2
-    const val OPCODE_CLOSE = 0x8
-    const val OPCODE_PING = 0x9
-    const val OPCODE_PONG = 0xA
+    public const val OPCODE_CONTINUATION: Int = 0x0
+    public const val OPCODE_TEXT: Int = 0x1
+    public const val OPCODE_BINARY: Int = 0x2
+    public const val OPCODE_CLOSE: Int = 0x8
+    public const val OPCODE_PING: Int = 0x9
+    public const val OPCODE_PONG: Int = 0xA
 
     private const val WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
     private const val MAX_HEADER_BYTES = 16 * 1024
@@ -33,12 +35,12 @@ object WebSocketCodec {
 
     private val random = SecureRandom()
 
-    sealed interface Message {
-        data class Text(val text: String) : Message
-        data class Binary(val data: ByteArray) : Message
-        data class Close(val code: Int, val reason: String) : Message
-        data class Ping(val payload: ByteArray) : Message
-        data class Pong(val payload: ByteArray) : Message
+    public sealed interface Message {
+        public data class Text(val text: String) : Message
+        public data class Binary(val data: ByteArray) : Message
+        public data class Close(val code: Int, val reason: String) : Message
+        public data class Ping(val payload: ByteArray) : Message
+        public data class Pong(val payload: ByteArray) : Message
     }
 
     private data class FrameHeader(
@@ -48,21 +50,21 @@ object WebSocketCodec {
         val length: Long,
     )
 
-    fun newClientKey(): String {
+    public fun newClientKey(): String {
         val key = ByteArray(16)
         random.nextBytes(key)
         return base64Encode(key)
     }
 
     /** RFC 6455 §4.2.2 accept value: base64( SHA-1( key + GUID ) ). */
-    fun acceptKey(clientKey: String): String {
+    public fun acceptKey(clientKey: String): String {
         val digest = MessageDigest.getInstance("SHA-1")
             .digest((clientKey.trim() + WS_GUID).toByteArray(Charsets.US_ASCII))
         return base64Encode(digest)
     }
 
     /** Writes a single unfragmented frame. Client frames must pass [masked] = true. */
-    fun writeFrame(output: OutputStream, opcode: Int, payload: ByteArray, masked: Boolean) {
+    public fun writeFrame(output: OutputStream, opcode: Int, payload: ByteArray, masked: Boolean) {
         val maskKey = if (masked) ByteArray(4).also(random::nextBytes) else null
         val header = ByteArrayOutputStream(14)
         header.write(0x80 or opcode)
@@ -99,7 +101,7 @@ object WebSocketCodec {
     }
 
     /** Reads one complete WebSocket message, reassembling continuation frames. */
-    fun readMessage(input: InputStream): Message {
+    public fun readMessage(input: InputStream): Message {
         val messageBuffer = ByteArrayOutputStream()
         var messageOpcode = -1
         while (true) {
@@ -155,7 +157,7 @@ object WebSocketCodec {
      * Reads an HTTP header block (request or response) terminated by CRLFCRLF.
      * Reads byte-by-byte so no bytes past the header are consumed before frame parsing.
      */
-    fun readHttpHeaderBlock(input: InputStream): String {
+    public fun readHttpHeaderBlock(input: InputStream): String {
         val bytes = ByteArrayOutputStream()
         val terminator = byteArrayOf('\r'.code.toByte(), '\n'.code.toByte(), '\r'.code.toByte(), '\n'.code.toByte())
         var matched = 0
@@ -174,7 +176,7 @@ object WebSocketCodec {
     }
 
     /** Splits a header block into the start line and a lowercase-keyed header map. */
-    fun parseHeaders(block: String): Pair<String, Map<String, String>> {
+    public fun parseHeaders(block: String): Pair<String, Map<String, String>> {
         val lines = block.split("\r\n").filter { it.isNotEmpty() }
         val startLine = lines.firstOrNull().orEmpty()
         val headers = lines.drop(1).mapNotNull { line ->
@@ -189,7 +191,7 @@ object WebSocketCodec {
     }
 
     /** Standard-alphabet Base64 encoder (encode-only; keeps this class free of Android/java.util.Base64). */
-    fun base64Encode(data: ByteArray): String {
+    public fun base64Encode(data: ByteArray): String {
         val alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
         val result = StringBuilder((data.size + 2) / 3 * 4)
         var index = 0

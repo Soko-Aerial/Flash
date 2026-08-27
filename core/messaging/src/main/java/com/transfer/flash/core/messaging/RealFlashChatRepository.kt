@@ -57,8 +57,8 @@ import kotlinx.coroutines.sync.withLock
 /**
  * Functional wire transport provider for sending frames to a target conversation / peer.
  */
-fun interface MessageTransportSink {
-    suspend fun send(conversationId: String, frame: MessageWireFrame): Boolean
+public fun interface MessageTransportSink {
+    public suspend fun send(conversationId: String, frame: MessageWireFrame): Boolean
 }
 
 /**
@@ -71,7 +71,7 @@ fun interface MessageTransportSink {
  * - **Delivery & Read Receipts (C6.3):** Emits and absorbs delivery receipts to update status flags.
  * - **Ephemeral Typing & Presence (C6.6):** Memory-only TTL state for live typing indicators.
  */
-class RealFlashChatRepository(
+public class RealFlashChatRepository(
     private val localDeviceId: String,
     private val localDisplayName: String,
     private val messageDao: MessageDao,
@@ -505,7 +505,7 @@ class RealFlashChatRepository(
      * and becomes openable once downloaded. Idempotent per [transferId] so a replayed start (e.g.
      * reconnect) does not double-insert. Threaded under the sender's device id, like inbound text.
      */
-    fun onInboundAttachment(
+    public fun onInboundAttachment(
         peerDeviceId: String,
         transferId: String,
         fileName: String,
@@ -546,7 +546,7 @@ class RealFlashChatRepository(
     /**
      * Ingests an inbound wire frame from the network layer.
      */
-    suspend fun onInboundWireFrame(frame: MessageWireFrame) {
+    public suspend fun onInboundWireFrame(frame: MessageWireFrame) {
         when (frame) {
             is MessageWireFrame.TextMessage -> {
                 // conversationId doubles as the transport routing key (a device id). The sender

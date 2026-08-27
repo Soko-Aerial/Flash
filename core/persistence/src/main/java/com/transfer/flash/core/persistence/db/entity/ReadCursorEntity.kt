@@ -13,7 +13,7 @@ import androidx.room.Index
     primaryKeys = ["conversationId", "memberId"],
     indices = [Index(value = ["conversationId", "upToSentAt"])],
 )
-data class ReadCursorEntity(
+public data class ReadCursorEntity(
     val conversationId: String,
     val memberId: String,
     val upToMessageId: String,

@@ -725,3 +725,32 @@ pause/resume/cancel surface:
 
 ### Status
 RESOLVED (2026-08-25) - code-level; device confirmation pending
+
+
+## ERROR-019 - Two timing tests flake under CPU-saturated full builds (RESOLVED / mitigated)
+`FlashStressLogicTest."2000-message generation completes well under one second"` (:ui:chat) and
+`RealFlashTransferRepositoryTest."pause issued before the dispatcher is registered is applied, not silently
+lost"` (:core:transfer) both FAILED during a combined `testDebugUnitTest assembleDebug` run, then both
+PASSED on `--rerun-tasks` in isolation. Not regressions — load flakes.
+
+### Root cause
+Both are wall-clock assertions with no relation to the correctness of the code under test:
+- FlashStressLogic asserts pure in-memory generation finishes in `< 1000 ms` (`FlashStressLogicTest.kt:89`;
+  the comment notes the real device target is <100 ms and 1 s is a deliberately generous CI guard). Under a
+  concurrent `assembleDebug` (dexing/packaging saturating all cores) it measured 1798 ms.
+- RealFlashTransferRepository uses `awaitUntil` — a `Thread.sleep(5)` busy-wait with a 20 s deadline
+  (`RealFlashTransferRepositoryTest.kt:54`) — driven by a real dispatcher. CPU starvation stalled the
+  transfer coroutine past 20 s (`state=Transferring chunks=8`).
+Neither touches the Android SDK, SQLCipher, or NSD, so the compileSdk-35 / sqlcipher-4.17.0 changes in this
+session cannot be the cause.
+
+### Mitigation
+If either fails during a full combined build, RE-RUN THE TASK IN ISOLATION before suspecting a regression:
+`./gradlew.bat :ui:chat:testDebugUnitTest :core:transfer:testDebugUnitTest --rerun-tasks`. Both go green on
+an unsaturated machine. Durable fixes if it becomes chronic: raise/remove the stress-test time bound (it is
+already a CI-only guard), and/or make the repository test drive a virtual-time dispatcher instead of the
+sleep-based `awaitUntil`. Not done now — the tests are correct on idle hardware and the thresholds document
+intent.
+
+### Status
+RESOLVED (2026-08-26) - load-induced flake; both tests verified green on isolated `--rerun-tasks`.

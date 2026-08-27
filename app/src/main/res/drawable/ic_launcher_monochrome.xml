@@ -1,0 +1,18 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Themed-icon (monochrome) silhouette: solid fill, system applies its own tint. -->
+    <group
+        android:translateX="54"
+        android:translateY="54"
+        android:scaleX="2.9"
+        android:scaleY="2.9">
+        <group android:translateX="-12" android:translateY="-12">
+            <path
+                android:fillColor="#FF000000"
+                android:pathData="M13.6,2.2 L4.2,13.9 L10.8,13.9 L9.4,21.8 L19.8,9.7 L13.2,9.7 Z" />
+        </group>
+    </group>
+</vector>

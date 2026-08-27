@@ -3,6 +3,14 @@ package com.transfer.flash.core.security.trust.pinned
 import com.transfer.flash.core.common.model.FlashDeviceId
 import com.transfer.flash.core.security.trust.FlashTrustStore
 
+/** Snapshot row of a trusted peer produced by [LegacyTrustMigration.computeMigrations]. */
+internal data class FlashTrustedPeer(
+    val deviceId: String,
+    val name: String,
+    val fingerprintHex: String,
+    val trustedAt: Long,
+)
+
 /**
  * Pure merge logic for the one-time migration of legacy SharedPreferences-backed
  * trust entries into the Room pin store (C2.4).
@@ -17,7 +25,7 @@ import com.transfer.flash.core.security.trust.FlashTrustStore
  * Idempotency rule: any device already present in Room (with or without pin) wins;
  * the legacy entry is skipped. Pure function — unit-testable without Android/Room.
  */
-object LegacyTrustMigration {
+internal object LegacyTrustMigration {
 
     /**
      * Computes the rows to insert for one migration pass.

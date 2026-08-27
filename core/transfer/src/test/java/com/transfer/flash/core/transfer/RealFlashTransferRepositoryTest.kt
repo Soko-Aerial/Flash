@@ -2,8 +2,7 @@ package com.transfer.flash.core.transfer
 
 import com.transfer.flash.core.common.model.FlashDevice
 import com.transfer.flash.core.common.result.FlashResult
-import com.transfer.flash.core.persistence.db.dao.TransferChunkDao
-import com.transfer.flash.core.persistence.db.entity.TransferChunkEntity
+import com.transfer.flash.core.transfer.store.TransferStore
 import com.transfer.flash.core.transfer.chunked.ChunkFrame
 import com.transfer.flash.core.transfer.chunked.Chunker
 import com.transfer.flash.core.transfer.model.FlashTransfer
@@ -143,14 +142,16 @@ class RealFlashTransferRepositoryTest {
     )
 
     /**
-     * Chunk DAO whose resume query parks until released — reproduces the exact window `sendFile`
-     * returns into, where the send coroutine is live but its dispatcher is not registered yet.
+     * [TransferStore] whose resume query parks until released — reproduces the exact window
+     * `sendFile` returns into, where the send coroutine is live but its dispatcher is not
+     * registered yet.
      */
-    private class GatedChunkDao(val open: AtomicBoolean = AtomicBoolean(false)) : TransferChunkDao {
-        override suspend fun insertAll(chunks: List<TransferChunkEntity>) = Unit
-        override suspend fun markChunkDone(transferId: String, chunkIndex: Int) = Unit
-        override suspend fun resetStuck(transferId: String) = Unit
-        override suspend fun allDoneChunks(): List<com.transfer.flash.core.persistence.db.dao.ChunkIndexRef> = emptyList()
+    private class GatedTransferStore(val open: AtomicBoolean = AtomicBoolean(false)) : TransferStore {
+        override suspend fun insertTransfer(transferId: String, totalBytes: Long, status: String) = Unit
+        override suspend fun setBytesDone(transferId: String, bytesDone: Long) = Unit
+        override suspend fun setStatus(transferId: String, status: String) = Unit
+        override suspend fun markChunksDone(transferId: String, indexes: List<Int>) = Unit
+        override suspend fun allDoneChunks(): List<TransferStore.ChunkRef> = emptyList()
         override suspend fun doneChunks(transferId: String): List<Int> {
             while (!open.get()) delay(5)
             return emptyList()
@@ -159,7 +160,7 @@ class RealFlashTransferRepositoryTest {
 
     @Test(timeout = 60_000)
     fun `pause issued before the dispatcher is registered is applied, not silently lost`() = runBlocking {
-        val dao = GatedChunkDao()
+        val dao = GatedTransferStore()
         val chunksOnWire = AtomicInteger(0)
         lateinit var repo: RealFlashTransferRepository
         val factory = StreamChannelFactory { channelId, _ ->
@@ -183,7 +184,7 @@ class RealFlashTransferRepositoryTest {
             chunker = Chunker(),
             streamChannelFactory = factory,
             fileSourceOpener = { ByteArrayInputStream(eightChunkPayload) },
-            transferChunkDao = dao,
+            store = dao,
             repositoryScope = newScope(),
             workerDispatcher = testDispatcher,
             defaultStreams = 1,
@@ -280,7 +281,7 @@ class RealFlashTransferRepositoryTest {
 
     @Test(timeout = 60_000)
     fun `cancel unparks a paused sender so the job actually stops`() = runBlocking {
-        val dao = GatedChunkDao(AtomicBoolean(true))
+        val dao = GatedTransferStore(AtomicBoolean(true))
         val chunksOnWire = AtomicInteger(0)
         val gateEntered = AtomicBoolean(false)
         val gate = CompletableDeferred<Unit>()
@@ -301,7 +302,7 @@ class RealFlashTransferRepositoryTest {
             chunker = Chunker(),
             streamChannelFactory = factory,
             fileSourceOpener = { ByteArrayInputStream(eightChunkPayload) },
-            transferChunkDao = dao,
+            store = dao,
             repositoryScope = newScope(),
             workerDispatcher = testDispatcher,
             defaultStreams = 1,

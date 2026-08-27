@@ -16,30 +16,30 @@ import com.transfer.flash.core.discovery.FlashDiscoveredEndpoint
  * NOT thread-safe by itself: owners guard it (single dispatcher or lock) and map
  * returned diffs onto event flows. Fully JVM-testable; no Android types.
  */
-interface EndpointDirectory {
-    data class Entry(
+public interface EndpointDirectory {
+    public data class Entry(
         val endpoint: FlashDiscoveredEndpoint,
         val firstSeenAtMs: Long,
         val lastSeenAtMs: Long,
     )
 
-    sealed interface Diff {
-        data class Found(val entry: Entry) : Diff
-        data class Updated(val entry: Entry, val previous: Entry) : Diff
-        data class Lost(val deviceId: FlashDeviceId) : Diff
-        data object Unchanged : Diff
+    public sealed interface Diff {
+        public data class Found(val entry: Entry) : Diff
+        public data class Updated(val entry: Entry, val previous: Entry) : Diff
+        public data class Lost(val deviceId: FlashDeviceId) : Diff
+        public data object Unchanged : Diff
     }
 
     /** Applies a radio sighting; Found for new peers, Updated on any field change. */
-    fun applySeen(endpoint: FlashDiscoveredEndpoint, nowMs: Long): Diff
+    public fun applySeen(endpoint: FlashDiscoveredEndpoint, nowMs: Long): Diff
 
     /** Removes a peer explicitly (radio goodbye); Unchanged when unknown. */
-    fun applyLost(deviceId: FlashDeviceId): Diff
+    public fun applyLost(deviceId: FlashDeviceId): Diff
 
     /** Ages out stale entries; one [Diff.Lost] per aged-out peer. */
-    fun sweepExpired(graceWindowMs: Long, nowMs: Long): List<Diff.Lost>
+    public fun sweepExpired(graceWindowMs: Long, nowMs: Long): List<Diff.Lost>
 
-    fun snapshot(): List<Entry>
+    public fun snapshot(): List<Entry>
 
-    fun get(deviceId: FlashDeviceId): Entry?
+    public fun get(deviceId: FlashDeviceId): Entry?
 }

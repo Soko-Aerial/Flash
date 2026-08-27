@@ -15,7 +15,7 @@ import com.transfer.flash.core.security.trust.FlashTrustStore
  * constructed by the caller with its `Context` — moved out of this class so the store
  * seam stays JVM-testable per R2).
  */
-class WsPairingStore(
+internal class WsPairingStore(
     private val store: FlashTrustStore,
 ) {
     fun isPaired(deviceId: String): Boolean = store.isTrusted(deviceId)

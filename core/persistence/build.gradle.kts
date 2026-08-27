@@ -6,7 +6,7 @@ plugins {
 
 android {
     namespace = "com.transfer.flash.core.persistence"
-    compileSdk = 37
+    compileSdk = 35
 
     defaultConfig {
         minSdk = 24
@@ -50,9 +50,7 @@ android {
 publishing {
     publications {
         register<MavenPublication>("release") {
-            groupId = "com.transfer.flash"
             artifactId = "core-persistence"
-            version = "1.0.0"
 
             afterEvaluate {
                 from(components["release"])
@@ -66,8 +64,19 @@ ksp {
     arg("room.incremental", "true")
 }
 
+// Phase 3 Task 3.2: strict explicit-API mode. See docs/publishing/PHASE-03-api-surface.md.
+// NOTE: the Room data layer (entities, DAOs, FlashDatabase) is transitively forced public
+// because :app wires the DB directly via FlashDatabaseOpener → FlashDatabase → *Dao accessors.
+// Gating that layer behind @FlashInternalApi is Phase 4 (persistence-decoupling) work.
+kotlin {
+    explicitApi()
+}
+
 dependencies {
-    implementation(project(":core:common"))
+    api(project(":core:common"))
+    // Public API returns kotlinx.coroutines Flow/StateFlow (settings/DataStore), so coroutines
+    // must be `api` (implementation would keep those return types off a consumer's classpath).
+    api(libs.kotlinx.coroutines.core)
 
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
