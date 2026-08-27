@@ -27,6 +27,16 @@ depends on a concrete storage implementation (Room/SQLCipher).
 
 ## Task 4.1 — Invert the dependency (recommended)
 
+> **STATUS: DONE (2026-08-27).** Implemented as designed, plus one coupling the plan only hinted at
+> (step 4's "verify nothing else re-adds it"): `core:security` transitively re-added persistence via the
+> **unused** `RoomTrustedStore`, so `core:transfer → core:security → core:persistence` still pulled Room.
+> Resolved by deleting that dead adapter (see ADR-024). The `RoomTransferStore` adapter lives in
+> **`core:engine`**, not `core:persistence` — a persistence-side adapter would have formed the cycle
+> `persistence → transfer → security → persistence`. Acceptance verified: `:core:transfer:dependencies`
+> shows no room/sqlcipher on `releaseCompileClasspath` or `debugRuntimeClasspath`; transfer/security/engine
+> unit tests and `:app:assembleDebug` all green. Step 6 (messaging) deferred per Task 4.3 (messaging not
+> published in v1).
+
 Define the storage contract **in the transfer module** and let persistence
 implement it. Transfer then has zero compile dependency on Room/SQLCipher.
 
@@ -85,20 +95,42 @@ opt‑out‑able** rather than silent:
 
 ## Task 4.3 — Decide the published module set
 
-Not every core module has to ship in v1. Publishing fewer, cleaner artifacts is
-better than shipping leaky ones.
+> **STATUS: DONE (2026-08-27).** Decision below is grounded in the actual
+> `releaseRuntimeClasspath` of each module (Room/SQLCipher is `implementation`-scoped inside
+> `core:persistence`, so it shows on runtime — what ships — not on compile classpaths). This table is
+> the source of truth for the Phase 5 README.
 
-- **Definitely publish:** `core-engine` (umbrella) + `core-common`.
-- **Publish if their `.api` is clean and scopes are fixed:** `core-transfer`,
-  `core-network`, `core-discovery`, `core-security`.
-- **Hold back if still DAO‑coupled:** `core-messaging`, `core-persistence` (or
-  publish `core-persistence` explicitly as the optional storage add‑on).
-- JitPack builds and serves whatever the repo produces; you control the *supported*
-  set purely through what the README documents. Undocumented modules still
-  resolve but aren't promised.
+**Measured Room/SQLCipher footprint (release runtime classpath):**
+
+| Module | Room/SQLCipher? | v1 tier |
+|---|---|---|
+| `core-common` | no | **Supported — lightweight** |
+| `core-security` | no | **Supported — lightweight** |
+| `core-discovery` | no | **Supported — lightweight** |
+| `core-network` | no | **Supported — lightweight** |
+| `core-transfer` | no | **Supported — lightweight** |
+| `core-engine` | **yes** (umbrella, `api`s persistence + messaging) | **Supported — batteries-included umbrella** |
+| `core-persistence` | **yes** (the Room module; 4 SQLCipher ABIs) | **Supported — optional storage add-on** |
+| `core-messaging` | **yes** (→ persistence, not yet inverted) | **Experimental — not promised in v1** |
+
+**Rationale / contract for the README:**
+- **Lightweight core (no native libs):** a LAN file-transfer consumer takes `core-transfer` (+ its
+  automatic `common`/`security`/`network`/`discovery` deps) and either provides their own `TransferStore`
+  or passes `store = null` to run without persistence. Zero SQLCipher ABIs on their classpath.
+- **Batteries-included:** `core-engine` wires everything (including `RoomTransferStore`) and therefore
+  intentionally bundles Room/SQLCipher. This is the "just give me a working engine" artifact.
+- **Optional storage:** `core-persistence` is published as the explicit opt-in storage backend (Room +
+  SQLCipher, 4 native ABIs: arm64-v8a, armeabi-v7a, x86, x86_64). Documented with the ABI-trim snippet
+  from Task 4.2 for consumers who ship fewer ABIs.
+- **Experimental:** `core-messaging` is still DAO-coupled (its inversion, Phase 4 step 6, is deferred). It
+  still *resolves* on JitPack (the repo builds every module) and is pulled transitively by `core-engine`,
+  but it is **not documented as a standalone supported artifact** in v1. Promote it once it gets the same
+  port/adapter treatment `core-transfer` received (see ADR-024).
+- JitPack builds and serves whatever the repo produces; the *supported* set is controlled purely by what
+  the README documents. Undocumented modules still resolve but aren't promised.
 
 **Acceptance:** the README (Phase 5) lists exactly which artifacts are supported
-and which are optional/experimental.
+and which are optional/experimental. *(Decision recorded here; README authored in Phase 5.)*
 
 ---
 

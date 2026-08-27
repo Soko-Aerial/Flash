@@ -8,7 +8,7 @@ import androidx.room.Entity
  * `done = 1` for a transfer is its resume bit-vector.
  */
 @Entity(tableName = "transfer_chunks", primaryKeys = ["transferId", "chunkIndex"])
-data class TransferChunkEntity(
+public data class TransferChunkEntity(
     val transferId: String,
     val chunkIndex: Int,
     val done: Boolean = false,

@@ -11,8 +11,12 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
@@ -65,6 +69,7 @@ import com.transfer.flash.core.persistence.settings.FlashSettingsDataStore
 import com.transfer.flash.ui.shell.FlashBottomNav
 import com.transfer.flash.ui.shell.FlashBottomNavDefaults
 import com.transfer.flash.ui.shell.FlashBottomNavItem
+import com.transfer.flash.ui.splash.FlashSplashScreen
 import com.transfer.flash.ui.transfers.FlashTransfersScreen
 import com.transfer.flash.ui.transfers.FlashTransferState
 import com.transfer.flash.ui.transfers.TransfersUiState
@@ -98,6 +103,14 @@ class MainActivity : ComponentActivity() {
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* best-effort; no-op on denial */ }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Must be called before super.onCreate to take over the theme's splash window.
+        // Keep the cold-start splash up for exactly as long as the engine takes to boot:
+        // a fast phone dismisses it almost immediately, a slow phone holds it — no fixed
+        // minimum. Also release on start failure so a boot error never traps the user.
+        val splashScreen = installSplashScreen()
+        splashScreen.setKeepOnScreenCondition {
+            !appEngine.ready.value && appEngine.startError.value == null
+        }
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         maybeRequestNotificationPermission()
@@ -203,12 +216,34 @@ fun FlashApp(engine: AppEngine, showDevConsoleEntry: Boolean = false) {
             dynamicAccent = settings.dynamicAccent,
             hapticsEnabled = settings.hapticsEnabled,
         ) {
-            FlashShell(
-                engine = engine,
-                showDevConsoleEntry = showDevConsoleEntry,
-                settings = settings,
-                onSettingsChange = onSettingsChange,
-            )
+            // Launch animation: the looping splash stays up until the engine is ready (or
+            // boot fails), then fades out. No minimum display time — a fast boot dismisses
+            // it almost immediately; a slow one keeps it looping. The 6s ceiling only
+            // guards against a stalled boot trapping the user, never adds latency.
+            val startError by engine.startError.collectAsState()
+            var dismissSplash by remember { mutableStateOf(false) }
+            LaunchedEffect(ready, startError) {
+                if (ready || startError != null) dismissSplash = true
+            }
+            LaunchedEffect(Unit) {
+                kotlinx.coroutines.delay(6_000)
+                dismissSplash = true
+            }
+            Box(modifier = Modifier.fillMaxSize()) {
+                FlashShell(
+                    engine = engine,
+                    showDevConsoleEntry = showDevConsoleEntry,
+                    settings = settings,
+                    onSettingsChange = onSettingsChange,
+                )
+                AnimatedVisibility(
+                    visible = !dismissSplash,
+                    enter = EnterTransition.None,
+                    exit = fadeOut(animationSpec = tween(250)),
+                ) {
+                    FlashSplashScreen()
+                }
+            }
         }
     }
 }

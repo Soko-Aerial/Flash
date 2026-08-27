@@ -3,7 +3,7 @@ package com.transfer.flash.core.transfer.manifest
 /**
  * Manifest item representing one file in a multi-file transfer session (C5.10).
  */
-data class ManifestItem(
+internal data class ManifestItem(
     val fileId: String,
     val relativePath: String,
     val fileName: String,
@@ -22,7 +22,7 @@ data class ManifestItem(
 /**
  * Transfer manifest grouping one or more files under a single transfer session (C5.10).
  */
-data class TransferManifest(
+internal data class TransferManifest(
     val transferId: String,
     val senderDeviceId: String,
     val items: List<ManifestItem>,

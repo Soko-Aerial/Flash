@@ -1,6 +1,9 @@
+@file:OptIn(FlashInternalApi::class)
+
 package com.transfer.flash.core.network.ws
 
 import android.util.Log
+import com.transfer.flash.core.common.annotation.FlashInternalApi
 import java.io.InputStream
 import java.io.OutputStream
 import java.net.Socket
@@ -28,19 +31,19 @@ import kotlinx.coroutines.launch
  * sessions surface disconnects instead of blocking forever. Live peers answer PINGs
  * with PONGs, which keeps healthy idle connections fresh.
  */
-class WsConnection(
+public class WsConnection(
     private val socket: Socket,
     private val maskOutboundFrames: Boolean,
-    val remoteLabel: String,
+    public val remoteLabel: String,
     private val listener: Listener,
     private val pingIntervalMs: Long = DEFAULT_PING_INTERVAL_MS,
     private val readTimeoutMs: Int = DEFAULT_READ_TIMEOUT_MS,
     private val livenessTimeoutMs: Long = DEFAULT_LIVENESS_TIMEOUT_MS,
 ) {
-    interface Listener {
-        fun onTextMessage(connection: WsConnection, text: String)
-        fun onBinaryMessage(connection: WsConnection, data: ByteArray)
-        fun onConnectionClosed(connection: WsConnection, reason: String)
+    public interface Listener {
+        public fun onTextMessage(connection: WsConnection, text: String)
+        public fun onBinaryMessage(connection: WsConnection, data: ByteArray)
+        public fun onConnectionClosed(connection: WsConnection, reason: String)
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -58,10 +61,10 @@ class WsConnection(
     @Volatile
     private var lastInboundAtMs: Long = System.currentTimeMillis()
 
-    val isOpen: Boolean
+    public val isOpen: Boolean
         get() = !closed.get()
 
-    fun start() {
+    public fun start() {
         runCatching { socket.soTimeout = readTimeoutMs }
         // TCP keepalive gives the kernel a second, independent path to notice a dead peer.
         runCatching { socket.keepAlive = true }
@@ -84,16 +87,16 @@ class WsConnection(
         }
     }
 
-    fun sendText(text: String): Boolean {
+    public fun sendText(text: String): Boolean {
         return send(WebSocketCodec.OPCODE_TEXT, text.toByteArray(Charsets.UTF_8))
     }
 
     /** Fire-and-forget text send that is safe to call from any thread (including main). */
-    fun sendTextAsync(text: String) {
+    public fun sendTextAsync(text: String) {
         scope.launch { sendText(text) }
     }
 
-    fun sendBinary(data: ByteArray): Boolean {
+    public fun sendBinary(data: ByteArray): Boolean {
         return send(WebSocketCodec.OPCODE_BINARY, data)
     }
 
@@ -102,7 +105,7 @@ class WsConnection(
      * so this is safe to call from any thread (StrictMode forbids network writes on main).
      * The listener callback fires immediately; the peer observes the close frame or EOF.
      */
-    fun close(reason: String) {
+    public fun close(reason: String) {
         if (!closed.compareAndSet(false, true)) return
         scope.launch {
             runCatching {
@@ -159,18 +162,18 @@ class WsConnection(
         }
     }
 
-    companion object {
+    public companion object {
         private const val TAG = "WS"
 
         /** Idle connections are refreshed 3x per read-timeout window (ping -> pong traffic). */
-        const val DEFAULT_PING_INTERVAL_MS = 10_000L
-        const val DEFAULT_READ_TIMEOUT_MS = 30_000
+        public const val DEFAULT_PING_INTERVAL_MS: Long = 10_000L
+        public const val DEFAULT_READ_TIMEOUT_MS: Int = 30_000
 
         /**
          * Watchdog window: if no inbound frame arrives for this long the peer is pruned. Sized to
          * ~2.5 ping intervals so a live peer that misses one PONG is forgiven, but a dead one is
          * dropped in ~25s regardless of where the read loop is parked.
          */
-        const val DEFAULT_LIVENESS_TIMEOUT_MS = 25_000L
+        public const val DEFAULT_LIVENESS_TIMEOUT_MS: Long = 25_000L
     }
 }

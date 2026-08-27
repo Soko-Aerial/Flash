@@ -34,7 +34,7 @@ import java.security.MessageDigest
  * - Known ≠ presented (constant-time compare) → **Mismatch**: hard fail carrying
  *   event data for the UI-031 "key changed" warning.
  */
-object TofuPolicy {
+internal object TofuPolicy {
 
     /** Sentinel stored in migrated legacy rows: trusted historically, no crypto pin yet. */
     const val LEGACY_UNBOUND_FINGERPRINT: String = ""

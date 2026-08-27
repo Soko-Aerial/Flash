@@ -30,7 +30,7 @@ package com.transfer.flash.core.network.resilience
  * internal clock (`FlashTimeSource` lives in :core:common and is not visible
  * cross-module by test-design constraint).
  */
-class ReconnectPolicy(
+internal class ReconnectPolicy(
     /** Lower bound of every delay in ms. */
     val baseMs: Long = DEFAULT_BASE_MS,
     /** Upper bound of any delay in ms. */

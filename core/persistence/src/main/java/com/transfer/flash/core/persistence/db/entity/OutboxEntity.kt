@@ -9,7 +9,7 @@ import androidx.room.PrimaryKey
  * increasing counts. Removal from the outbox is the commit point of delivery.
  */
 @Entity(tableName = "outbox")
-data class OutboxEntity(
+public data class OutboxEntity(
     @PrimaryKey val localId: String,
     val attempts: Int = 0,
     val nextAttemptAt: Long,

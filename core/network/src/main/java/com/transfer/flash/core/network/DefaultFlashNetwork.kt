@@ -42,7 +42,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * wired in :core:engine). TLS upgrade lands via SecureSocketUpgrader at the WS
  * layer today and LAN sessions next (tracked debt item, AGENTS.md §19).
  */
-class DefaultFlashNetwork(
+internal class DefaultFlashNetwork(
     context: Context?,
     private val localDeviceId: String,
     private val localFriendlyName: String,

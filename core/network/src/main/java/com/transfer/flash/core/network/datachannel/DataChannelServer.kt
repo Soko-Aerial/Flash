@@ -22,27 +22,27 @@ import kotlinx.coroutines.launch
  * Frames arriving on a channel are delivered to [Listener.onFrame] with a `reply` lambda that
  * writes back down the SAME connection (ADR-015: ACKs travel the arriving channel).
  */
-class DataChannelServer(
+public class DataChannelServer(
     private val localDeviceId: String,
     private val listener: Listener,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
 ) {
-    interface Listener {
+    public interface Listener {
         /** One inbound frame from [senderDeviceId] (the joining peer) on stream [channelId]. */
-        fun onFrame(senderDeviceId: String, channelId: Int, payload: ByteArray, reply: (ByteArray) -> Boolean)
+        public fun onFrame(senderDeviceId: String, channelId: Int, payload: ByteArray, reply: (ByteArray) -> Boolean)
 
-        fun onConnectionClosed(peerDeviceId: String?, channelId: Int)
+        public fun onConnectionClosed(peerDeviceId: String?, channelId: Int)
     }
 
     private val running = AtomicBoolean(false)
     private var serverSocket: ServerSocket? = null
 
     @Volatile
-    var listenPort: Int = 0
+    public var listenPort: Int = 0
         private set
 
     @Synchronized
-    fun start(preferredPort: Int, portSpan: Int = 20): Int {
+    public fun start(preferredPort: Int, portSpan: Int = 20): Int {
         if (running.get()) return listenPort
         var lastError: Exception? = null
         for (offset in 0..portSpan) {
@@ -62,7 +62,7 @@ class DataChannelServer(
     }
 
     @Synchronized
-    fun stop() {
+    public fun stop() {
         running.set(false)
         runCatching { serverSocket?.close() }
         serverSocket = null
@@ -135,7 +135,7 @@ class DataChannelServer(
         }
     }
 
-    companion object {
+    private companion object {
         private const val TAG = "DATA"
         private const val HANDSHAKE_TIMEOUT_MS = 6_000
     }

@@ -7,18 +7,18 @@ import java.io.InputStream
  * Splits an injected byte source into CHUNK frames with per-chunk SHA-256 plus a whole-file
  * SHA-256, single pass, constant memory — never a whole file in RAM (AGENTS.md §18). C5.4.
  */
-fun interface ChunkSource {
+public fun interface ChunkSource {
 
     /**
      * Opens a fresh stream over the source bytes. MUST be callable multiple times: the send
      * pipeline opens once for hashing and once for chunking (and again per resume attempt).
      * Implementations over `ContentResolver`/SAF satisfy this naturally.
      */
-    fun open(): InputStream
+    public fun open(): InputStream
 }
 
 /** Identity + declared size of one outgoing file. */
-data class FileMeta(
+public data class FileMeta(
     val transferId: String,
     val fileId: String,
     val fileName: String,
@@ -33,7 +33,7 @@ data class FileMeta(
 }
 
 /** Resolved chunking parameters for one transfer. */
-data class ChunkPlan(
+public data class ChunkPlan(
     val totalBytes: Long,
     val chunkSize: Int,
     val totalChunks: Int,
@@ -75,29 +75,29 @@ data class ChunkPlan(
  * no send). Random-access skipping via a future `SeekableSource` interface is reserved; linear
  * skip is acceptable for v1 because local flash read throughput far exceeds any LAN path.
  */
-class Chunker {
+public class Chunker {
 
-    companion object {
+    public companion object {
 
-        const val MIN_CHUNK_SIZE_BYTES: Int = 16 * 1024
+        public const val MIN_CHUNK_SIZE_BYTES: Int = 16 * 1024
 
-        const val MAX_CHUNK_SIZE_BYTES: Int = 256 * 1024
+        public const val MAX_CHUNK_SIZE_BYTES: Int = 256 * 1024
 
-        const val DEFAULT_CHUNK_SIZE_BYTES: Int = 64 * 1024
+        public const val DEFAULT_CHUNK_SIZE_BYTES: Int = 64 * 1024
 
         /** Sizes snap to this multiple so plans stay page-aligned and diffable. */
-        const val SIZE_GRANULARITY_BYTES: Int = 4 * 1024
+        public const val SIZE_GRANULARITY_BYTES: Int = 4 * 1024
 
         private const val LOW_ANCHOR_BYTES_PER_SEC: Double = 256.0 * 1024 // ~2 Mbit/s
 
         private const val HIGH_ANCHOR_BYTES_PER_SEC: Double = 64.0 * 1024 * 1024
 
         /** Clamps an arbitrary requested chunk size into the hard bounds. */
-        fun clamp(requestedChunkSize: Int): Int =
+        public fun clamp(requestedChunkSize: Int): Int =
             requestedChunkSize.coerceIn(MIN_CHUNK_SIZE_BYTES, MAX_CHUNK_SIZE_BYTES)
 
         /** ceil(totalBytes / chunkSize); throws if the chunk count would overflow Int. */
-        fun totalChunks(totalBytes: Long, chunkSize: Int): Int {
+        public fun totalChunks(totalBytes: Long, chunkSize: Int): Int {
             require(totalBytes > 0) { "totalBytes must be > 0, was $totalBytes" }
             require(chunkSize > 0) { "chunkSize must be > 0" }
             // Overflow-safe ceil division: (totalBytes + chunkSize - 1) would wrap for
@@ -113,7 +113,7 @@ class Chunker {
          * Pure adaptive-size function; see class KDoc for the researched curve.
          * Non-positive/NaN inputs fall back to [MIN_CHUNK_SIZE_BYTES].
          */
-        fun adaptiveSize(recentThroughputBytesPerSec: Double): Int {
+        public fun adaptiveSize(recentThroughputBytesPerSec: Double): Int {
             if (recentThroughputBytesPerSec.isNaN() || recentThroughputBytesPerSec <= 0.0) {
                 return MIN_CHUNK_SIZE_BYTES
             }
@@ -133,7 +133,7 @@ class Chunker {
      * Validates metadata against the framing rules and resolves [ChunkPlan]. Throws
      * [IllegalArgumentException] on programmer error (bad size bounds, non-positive totals).
      */
-    fun plan(meta: FileMeta, requestedChunkSize: Int = DEFAULT_CHUNK_SIZE_BYTES): ChunkPlan {
+    public fun plan(meta: FileMeta, requestedChunkSize: Int = DEFAULT_CHUNK_SIZE_BYTES): ChunkPlan {
         val chunkSize = clamp(requestedChunkSize)
         val totalChunks = totalChunks(meta.totalBytes, chunkSize)
         return ChunkPlan(
@@ -144,7 +144,7 @@ class Chunker {
     }
 
     /** Builds the FILE_START frame once the whole-file digest is known. */
-    fun fileStart(meta: FileMeta, plan: ChunkPlan, fileSha256Hex: String): ChunkFrame.FileStart =
+    public fun fileStart(meta: FileMeta, plan: ChunkPlan, fileSha256Hex: String): ChunkFrame.FileStart =
         ChunkFrame.FileStart(
             transferId = meta.transferId,
             fileId = meta.fileId,
@@ -159,7 +159,7 @@ class Chunker {
      * Streaming hash-only pre-pass (constant memory). Used when the caller has no pre-computed
      * whole-file digest for `FILE_START`.
      */
-    fun hashOnly(source: ChunkSource): String {
+    public fun hashOnly(source: ChunkSource): String {
         source.open().use { stream ->
             val digest = IncrementalSha256()
             val buffer = ByteArray(DEFAULT_CHUNK_SIZE_BYTES)
@@ -183,7 +183,7 @@ class Chunker {
      * @throws IllegalStateException if the source yields fewer/more bytes than
      * [ChunkPlan.totalBytes], or the cross-check above fails.
      */
-    fun openChunkStream(
+    public fun openChunkStream(
         source: ChunkSource,
         meta: FileMeta,
         plan: ChunkPlan,
@@ -196,7 +196,7 @@ class Chunker {
  * Lazy pull-based CHUNK iterator (constant memory). Consume fully for a clean finish; always
  * [close] when aborting early (send failure, cancellation) to release the underlying stream.
  */
-class ChunkStream internal constructor(
+public class ChunkStream internal constructor(
     private val stream: InputStream,
     private val meta: FileMeta,
     private val plan: ChunkPlan,
@@ -227,10 +227,10 @@ class ChunkStream internal constructor(
     }
 
     /** Valid only after full consumption (or asserted via [expectFileSha256Hex]). */
-    val observedFileSha256Hex: String
+    public val observedFileSha256Hex: String
         get() = fileDigest.digestHex()
 
-    val emittedChunks: Int
+    public val emittedChunks: Int
         get() = nextIndex
 
     override fun close() {

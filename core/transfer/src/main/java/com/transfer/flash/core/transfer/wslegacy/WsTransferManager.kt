@@ -1,9 +1,8 @@
-@file:OptIn(FlashInternalApi::class)
+@file:OptIn(com.transfer.flash.core.common.annotation.FlashInternalApi::class)
 
 package com.transfer.flash.core.transfer.wslegacy
 
 import android.content.Context
-import com.transfer.flash.core.common.annotation.FlashInternalApi
 import android.net.Uri
 import android.os.SystemClock
 import android.provider.OpenableColumns
@@ -56,7 +55,7 @@ import kotlinx.coroutines.launch
  * `localFriendlyName`) instead of read from the `:app` `AppIdentity`; the future
  * `:core:engine` / `:app` wiring passes the current identity at construction.
  */
-class WsTransferManager(
+internal class WsTransferManager(
     context: Context,
     localDeviceId: String,
     localFriendlyName: String,

@@ -30,7 +30,7 @@ import java.util.BitSet
  * count and ignores/clears padding bits at or above [totalChunks], so a hostile or stale payload
  * can never resurrect chunks that do not belong to the transfer.
  */
-class ResumeBitVector(val totalChunks: Int) {
+public class ResumeBitVector(public val totalChunks: Int) {
 
     init {
         require(totalChunks > 0) { "totalChunks must be > 0, was $totalChunks" }
@@ -39,7 +39,7 @@ class ResumeBitVector(val totalChunks: Int) {
     private val bits = BitSet(totalChunks)
 
     /** Number of distinct received (marked) chunk indexes. */
-    val receivedCount: Int
+    public val receivedCount: Int
         get() = bits.cardinality()
 
     /**
@@ -47,20 +47,20 @@ class ResumeBitVector(val totalChunks: Int) {
      * @return true if this call newly marked the index, false if it was already marked.
      * @throws IndexOutOfBoundsException if [index] is outside `[0, totalChunks)`.
      */
-    fun markReceived(index: Int): Boolean {
+    public fun markReceived(index: Int): Boolean {
         require(index in 0 until totalChunks) { "chunk index $index out of range [0,$totalChunks)" }
         val was = bits.get(index)
         bits.set(index)
         return !was
     }
 
-    fun isReceived(index: Int): Boolean =
+    public fun isReceived(index: Int): Boolean =
         index in 0 until totalChunks && bits.get(index)
 
-    fun isComplete(): Boolean = receivedCount == totalChunks
+    public fun isComplete(): Boolean = receivedCount == totalChunks
 
     /** Ascending list of not-yet-received chunk indexes (the "holes" to request on resume). */
-    fun missingIndexes(): List<Int> {
+    public fun missingIndexes(): List<Int> {
         val out = ArrayList<Int>(totalChunks - receivedCount)
         for (i in 0 until totalChunks) {
             if (!bits.get(i)) out.add(i)
@@ -69,7 +69,7 @@ class ResumeBitVector(val totalChunks: Int) {
     }
 
     /** Ascending list of received chunk indexes (what a receiver reports back to a sender). */
-    fun doneIndexes(): List<Int> {
+    public fun doneIndexes(): List<Int> {
         val out = ArrayList<Int>(receivedCount)
         var i = bits.nextSetBit(0)
         while (i >= 0) {
@@ -84,13 +84,13 @@ class ResumeBitVector(val totalChunks: Int) {
      * ignored rather than thrown: remote reports arrive over the wire and must never crash the
      * pipeline.
      */
-    fun reconcile(remoteDoneIndexes: Collection<Int>) {
+    public fun reconcile(remoteDoneIndexes: Collection<Int>) {
         for (i in remoteDoneIndexes) {
             if (i in 0 until totalChunks) bits.set(i)
         }
     }
 
-    fun toSerialized(): ByteArray {
+    public fun toSerialized(): ByteArray {
         val words = bits.toLongArray()
         val out = ByteArray(4 + words.size * 8)
         writeI32Le(out, 0, words.size)
@@ -108,10 +108,10 @@ class ResumeBitVector(val totalChunks: Int) {
     override fun toString(): String =
         "ResumeBitVector(received=${receivedCount}/$totalChunks)"
 
-    companion object {
+    public companion object {
 
         /** Word length in bits — documented constant so the wire layout stays pinned. */
-        const val WORD_BITS: Int = 64
+        public const val WORD_BITS: Int = 64
 
         /**
          * Restores a vector previously written by [toSerialized].
@@ -120,7 +120,7 @@ class ResumeBitVector(val totalChunks: Int) {
          * `ceil(totalChunks / 64)` allows, or trailing garbage). Padding bits at or above
          * [totalChunks] are tolerated and cleared.
          */
-        fun fromSerialized(totalChunks: Int, bytes: ByteArray?): ResumeBitVector? {
+        public fun fromSerialized(totalChunks: Int, bytes: ByteArray?): ResumeBitVector? {
             require(totalChunks > 0) { "totalChunks must be > 0, was $totalChunks" }
             if (bytes == null || bytes.size < 4) return null
             val wordCount = readI32Le(bytes, 0)

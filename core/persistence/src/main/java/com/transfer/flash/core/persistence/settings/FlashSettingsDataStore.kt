@@ -44,7 +44,7 @@ import kotlinx.coroutines.flow.map
  * would silently reset the user's value, so treat key strings as migration-
  * sensitive (C1.5 "migration-safe key naming").
  */
-class FlashSettingsDataStore(
+public class FlashSettingsDataStore(
     produceFile: () -> File,
     /**
      * Scope in which DataStore performs its IO. Provided by the app layer
@@ -53,29 +53,29 @@ class FlashSettingsDataStore(
      */
     scope: CoroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
 ) {
-    object Keys {
-        val themeMode = stringPreferencesKey("theme_mode")
-        val dynamicAccent = booleanPreferencesKey("dynamic_accent")
-        val hapticsEnabled = booleanPreferencesKey("haptics_enabled")
-        val reduceMotionOverride = stringPreferencesKey("reduce_motion_override")
-        val soundsEnabled = booleanPreferencesKey("sounds_enabled")
-        val autoAcceptTrusted = booleanPreferencesKey("auto_accept_trusted")
-        val backgroundTransfers = booleanPreferencesKey("background_transfers")
-        val saveLocationUri = stringPreferencesKey("save_location_uri")
-        val retentionDays = intPreferencesKey("retention_days")
-        val displayName = stringPreferencesKey("display_name")
+    public object Keys {
+        public val themeMode: Preferences.Key<String> = stringPreferencesKey("theme_mode")
+        public val dynamicAccent: Preferences.Key<Boolean> = booleanPreferencesKey("dynamic_accent")
+        public val hapticsEnabled: Preferences.Key<Boolean> = booleanPreferencesKey("haptics_enabled")
+        public val reduceMotionOverride: Preferences.Key<String> = stringPreferencesKey("reduce_motion_override")
+        public val soundsEnabled: Preferences.Key<Boolean> = booleanPreferencesKey("sounds_enabled")
+        public val autoAcceptTrusted: Preferences.Key<Boolean> = booleanPreferencesKey("auto_accept_trusted")
+        public val backgroundTransfers: Preferences.Key<Boolean> = booleanPreferencesKey("background_transfers")
+        public val saveLocationUri: Preferences.Key<String> = stringPreferencesKey("save_location_uri")
+        public val retentionDays: Preferences.Key<Int> = intPreferencesKey("retention_days")
+        public val displayName: Preferences.Key<String> = stringPreferencesKey("display_name")
     }
 
-    companion object {
-        const val THEME_MODE_SYSTEM = "system"
-        const val THEME_MODE_LIGHT = "light"
-        const val THEME_MODE_DARK = "dark"
+    public companion object {
+        public const val THEME_MODE_SYSTEM: String = "system"
+        public const val THEME_MODE_LIGHT: String = "light"
+        public const val THEME_MODE_DARK: String = "dark"
 
-        const val MOTION_OVERRIDE_SYSTEM = "system"
-        const val MOTION_OVERRIDE_ON = "on"
-        const val MOTION_OVERRIDE_OFF = "off"
+        public const val MOTION_OVERRIDE_SYSTEM: String = "system"
+        public const val MOTION_OVERRIDE_ON: String = "on"
+        public const val MOTION_OVERRIDE_OFF: String = "off"
 
-        const val DEFAULT_RETENTION_DAYS = 365
+        public const val DEFAULT_RETENTION_DAYS: Int = 365
     }
 
     private val dataStore = PreferenceDataStoreFactory.create(
@@ -89,79 +89,79 @@ class FlashSettingsDataStore(
             if (throwable is IOException) emit(emptyPreferences()) else throw throwable
         }
 
-    val themeMode: Flow<String> =
+    public val themeMode: Flow<String> =
         preferences.map { it[Keys.themeMode] ?: THEME_MODE_SYSTEM }
 
     /** Default FALSE: matches the shipped UI default (dynamic accent is opt-in, UI-049). */
-    val dynamicAccent: Flow<Boolean> =
+    public val dynamicAccent: Flow<Boolean> =
         preferences.map { it[Keys.dynamicAccent] ?: false }
 
-    val hapticsEnabled: Flow<Boolean> =
+    public val hapticsEnabled: Flow<Boolean> =
         preferences.map { it[Keys.hapticsEnabled] ?: true }
 
-    val reduceMotionOverride: Flow<String> =
+    public val reduceMotionOverride: Flow<String> =
         preferences.map { it[Keys.reduceMotionOverride] ?: MOTION_OVERRIDE_SYSTEM }
 
     /** Default FALSE: sounds are opt-in only (owner decision D6, UI-040). */
-    val soundsEnabled: Flow<Boolean> =
+    public val soundsEnabled: Flow<Boolean> =
         preferences.map { it[Keys.soundsEnabled] ?: false }
 
-    val autoAcceptTrusted: Flow<Boolean> =
+    public val autoAcceptTrusted: Flow<Boolean> =
         preferences.map { it[Keys.autoAcceptTrusted] ?: false }
 
     /** Keep transfers running when the app leaves the foreground (UI-049). Default FALSE. */
-    val backgroundTransfers: Flow<Boolean> =
+    public val backgroundTransfers: Flow<Boolean> =
         preferences.map { it[Keys.backgroundTransfers] ?: false }
 
-    val saveLocationUri: Flow<String?> =
+    public val saveLocationUri: Flow<String?> =
         preferences.map { it[Keys.saveLocationUri] }
 
     /** Retention window in days feeding C1.6 ([com.transfer.flash.core.persistence.retention]). 0 disables retention pruning. */
-    val retentionDays: Flow<Int> =
+    public val retentionDays: Flow<Int> =
         preferences.map { it[Keys.retentionDays] ?: DEFAULT_RETENTION_DAYS }
 
-    val displayName: Flow<String> =
+    public val displayName: Flow<String> =
         preferences.map { it[Keys.displayName].orEmpty() }
 
-    suspend fun setThemeMode(value: String) {
+    public suspend fun setThemeMode(value: String) {
         dataStore.edit { it[Keys.themeMode] = value }
     }
 
-    suspend fun setDynamicAccent(value: Boolean) {
+    public suspend fun setDynamicAccent(value: Boolean) {
         dataStore.edit { it[Keys.dynamicAccent] = value }
     }
 
-    suspend fun setHapticsEnabled(value: Boolean) {
+    public suspend fun setHapticsEnabled(value: Boolean) {
         dataStore.edit { it[Keys.hapticsEnabled] = value }
     }
 
-    suspend fun setReduceMotionOverride(value: String) {
+    public suspend fun setReduceMotionOverride(value: String) {
         dataStore.edit { it[Keys.reduceMotionOverride] = value }
     }
 
-    suspend fun setSoundsEnabled(value: Boolean) {
+    public suspend fun setSoundsEnabled(value: Boolean) {
         dataStore.edit { it[Keys.soundsEnabled] = value }
     }
 
-    suspend fun setAutoAcceptTrusted(value: Boolean) {
+    public suspend fun setAutoAcceptTrusted(value: Boolean) {
         dataStore.edit { it[Keys.autoAcceptTrusted] = value }
     }
 
-    suspend fun setBackgroundTransfers(value: Boolean) {
+    public suspend fun setBackgroundTransfers(value: Boolean) {
         dataStore.edit { it[Keys.backgroundTransfers] = value }
     }
 
-    suspend fun setSaveLocationUri(value: String?) {
+    public suspend fun setSaveLocationUri(value: String?) {
         dataStore.edit { prefs ->
             if (value == null) prefs.remove(Keys.saveLocationUri) else prefs[Keys.saveLocationUri] = value
         }
     }
 
-    suspend fun setRetentionDays(value: Int) {
+    public suspend fun setRetentionDays(value: Int) {
         dataStore.edit { it[Keys.retentionDays] = value }
     }
 
-    suspend fun setDisplayName(value: String) {
+    public suspend fun setDisplayName(value: String) {
         dataStore.edit { it[Keys.displayName] = value }
     }
 }

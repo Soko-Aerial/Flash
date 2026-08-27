@@ -32,15 +32,15 @@ import kotlinx.coroutines.flow.map
  * Key naming: stable `"flash_discovery_mode"` under its own key; treat as
  * migration-sensitive per C1.5 (renaming silently resets the user's mode).
  */
-class DiscoveryModeSetting(private val dataStore: DataStore<Preferences>) {
+public class DiscoveryModeSetting(private val dataStore: DataStore<Preferences>) {
 
     /** Stored canonical mode strings; order is UI display order, not ranking. */
-    companion object {
-        const val KEY_NAME = "flash_discovery_mode"
+    public companion object {
+        public const val KEY_NAME: String = "flash_discovery_mode"
 
-        const val DEFAULT = "STANDARD"
+        public const val DEFAULT: String = "STANDARD"
 
-        val VALID = listOf("STANDARD", "GHOST", "BOOST", "ECO", "RECEIVE_KIOSK")
+        public val VALID: List<String> = listOf("STANDARD", "GHOST", "BOOST", "ECO", "RECEIVE_KIOSK")
 
         private val KEY = stringPreferencesKey(KEY_NAME)
     }
@@ -49,7 +49,7 @@ class DiscoveryModeSetting(private val dataStore: DataStore<Preferences>) {
      * Current discovery mode as one of [VALID]; emits [DEFAULT] when unset or
      * when the stored value is unknown to this build (forward-compat fallback).
      */
-    val discoveryMode: Flow<String> = dataStore.data
+    public val discoveryMode: Flow<String> = dataStore.data
         .catch { throwable ->
             if (throwable is IOException) emit(emptyPreferences()) else throw throwable
         }
@@ -59,7 +59,7 @@ class DiscoveryModeSetting(private val dataStore: DataStore<Preferences>) {
      * Persists [canonicalName]. Throws [IllegalArgumentException] for values
      * outside [VALID] — callers (UI enums) must map before calling.
      */
-    suspend fun setDiscoveryMode(canonicalName: String) {
+    public suspend fun setDiscoveryMode(canonicalName: String) {
         require(canonicalName in VALID) {
             "Unknown discovery mode '$canonicalName'; valid: $VALID"
         }

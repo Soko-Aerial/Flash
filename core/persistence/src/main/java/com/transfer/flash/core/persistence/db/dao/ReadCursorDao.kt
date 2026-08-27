@@ -21,22 +21,22 @@ import kotlinx.coroutines.flow.Flow
  *  3. seeding via IGNORE-insert inside the same transaction makes the absent-row case race-free.
  */
 @Dao
-interface ReadCursorDao {
+public interface ReadCursorDao {
 
     @Query(
         "SELECT * FROM read_cursors " +
             "WHERE conversationId = :conversationId AND memberId = :memberId",
     )
-    suspend fun get(conversationId: String, memberId: String): ReadCursorEntity?
+    public suspend fun get(conversationId: String, memberId: String): ReadCursorEntity?
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
-    suspend fun insertSeed(cursor: ReadCursorEntity)
+    public suspend fun insertSeed(cursor: ReadCursorEntity)
 
     @Query(
         "UPDATE read_cursors SET upToMessageId = :upToMessageId, upToSentAt = :upToSentAt " +
             "WHERE conversationId = :conversationId AND memberId = :memberId",
     )
-    suspend fun updateCursor(
+    public suspend fun updateCursor(
         conversationId: String,
         memberId: String,
         upToMessageId: String,
@@ -48,7 +48,7 @@ interface ReadCursorDao {
      * strictly further than the stored one; older or equal positions are no-ops.
      */
     @Transaction
-    suspend fun advanceFurthest(
+    public suspend fun advanceFurthest(
         conversationId: String,
         memberId: String,
         upToMessageId: String,
@@ -65,5 +65,5 @@ interface ReadCursorDao {
     }
 
     @Query("SELECT * FROM read_cursors WHERE conversationId = :conversationId ORDER BY memberId")
-    fun observeCursors(conversationId: String): Flow<List<ReadCursorEntity>>
+    public fun observeCursors(conversationId: String): Flow<List<ReadCursorEntity>>
 }

@@ -9,11 +9,11 @@ import com.transfer.flash.core.common.result.FlashResult
  * Android [SharedPreferences] implementation of [FlashTrustStore].
  * Maintains 100% backward compatibility with Flash 1.0 pairing storage keys (`flash_ws_pairing`).
  */
-class AndroidPreferencesTrustStore(
+public class AndroidPreferencesTrustStore(
     private val preferences: SharedPreferences,
 ) : FlashTrustStore {
 
-    constructor(context: Context) : this(
+    public constructor(context: Context) : this(
         context.applicationContext.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
     )
 
@@ -46,8 +46,8 @@ class AndroidPreferencesTrustStore(
 
     private fun keyFor(deviceId: String): String = "$KEY_PREFIX$deviceId"
 
-    companion object {
-        const val PREFERENCES_NAME = "flash_ws_pairing"
-        const val KEY_PREFIX = "paired_"
+    public companion object {
+        public const val PREFERENCES_NAME: String = "flash_ws_pairing"
+        public const val KEY_PREFIX: String = "paired_"
     }
 }

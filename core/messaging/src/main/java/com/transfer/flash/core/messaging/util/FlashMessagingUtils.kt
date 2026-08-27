@@ -10,7 +10,7 @@ import com.transfer.flash.core.messaging.model.FlashMessageGroupPosition
 import com.transfer.flash.core.messaging.model.FlashMessageUi
 import com.transfer.flash.core.messaging.model.FlashNetworkTransport
 
-fun computeMessageGroupPositions(messages: List<FlashMessageUi>): List<FlashMessageUi> {
+public fun computeMessageGroupPositions(messages: List<FlashMessageUi>): List<FlashMessageUi> {
     if (messages.isEmpty()) return messages
 
     return messages.mapIndexed { index, message ->
@@ -33,14 +33,14 @@ fun computeMessageGroupPositions(messages: List<FlashMessageUi>): List<FlashMess
     }
 }
 
-fun sortedChatListItems(items: List<FlashChatListItemUi>): List<FlashChatListItemUi> {
+public fun sortedChatListItems(items: List<FlashChatListItemUi>): List<FlashChatListItemUi> {
     return items.sortedWith(
         compareByDescending<FlashChatListItemUi> { it.isPinned }
             .thenByDescending { it.sortOrder },
     )
 }
 
-fun sampleFlashChatListState(): FlashChatListUiState {
+public fun sampleFlashChatListState(): FlashChatListUiState {
     val items = listOf(
         FlashChatListItemUi(
             id = "conv-false-school",
@@ -99,7 +99,7 @@ fun sampleFlashChatListState(): FlashChatListUiState {
     return FlashChatListUiState(items = sortedChatListItems(items))
 }
 
-fun sampleFlashConversationState(): FlashConversationUiState {
+public fun sampleFlashConversationState(): FlashConversationUiState {
     val rawMessages = listOf(
         FlashMessageUi(
             id = "1",
@@ -225,7 +225,7 @@ fun sampleFlashConversationState(): FlashConversationUiState {
     )
 }
 
-fun sampleDirectChatHeader(): FlashChatHeaderUiState = FlashChatHeaderUiState(
+public fun sampleDirectChatHeader(): FlashChatHeaderUiState = FlashChatHeaderUiState(
     title = "Alex Chen",
     avatarInitials = "AC",
     presence = FlashPeerPresence.Online,
@@ -234,7 +234,7 @@ fun sampleDirectChatHeader(): FlashChatHeaderUiState = FlashChatHeaderUiState(
     showCallActions = true,
 )
 
-fun chatListRowContentDescription(item: FlashChatListItemUi): String {
+public fun chatListRowContentDescription(item: FlashChatListItemUi): String {
     val preview = when {
         item.isTyping -> "typing"
         else -> item.previewText
@@ -252,7 +252,7 @@ fun chatListRowContentDescription(item: FlashChatListItemUi): String {
  * preview, chat-list previews). Voice → `Voice message • m:ss`, images → count,
  * files → file name. Returns "" when there is nothing to summarize.
  */
-fun flashMessageContentSummary(message: FlashMessageUi): String {
+public fun flashMessageContentSummary(message: FlashMessageUi): String {
     if (message.text.isNotBlank()) return message.text
 
     message.voiceAttachments.firstOrNull()?.let { voice ->

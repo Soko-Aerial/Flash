@@ -7,7 +7,7 @@ import com.transfer.flash.core.transfer.chunked.ChunkSink
  * Chunks can arrive in any order from multiple parallel streams; this sink computes the
  * exact byte offset `(index * chunkSize)` and writes it via the handle.
  */
-class RandomAccessChunkSink(
+public class RandomAccessChunkSink(
     private val handle: RandomAccessSinkHandle,
     private val chunkSize: Int,
 ) : ChunkSink {

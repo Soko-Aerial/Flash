@@ -5,7 +5,7 @@ plugins {
 
 android {
     namespace = "com.transfer.flash.core.common"
-    compileSdk = 37
+    compileSdk = 35
 
     defaultConfig {
         minSdk = 24
@@ -38,15 +38,20 @@ android {
 publishing {
     publications {
         register<MavenPublication>("release") {
-            groupId = "com.transfer.flash"
             artifactId = "core-common"
-            version = "1.0.0"
 
             afterEvaluate {
                 from(components["release"])
             }
         }
     }
+}
+
+// Phase 3 Task 3.2: strict explicit-API mode. Every declaration that is part of the
+// module's API must state its visibility, so nothing leaks into the published ABI by
+// omission. See docs/publishing/PHASE-03-api-surface.md.
+kotlin {
+    explicitApi()
 }
 
 dependencies {

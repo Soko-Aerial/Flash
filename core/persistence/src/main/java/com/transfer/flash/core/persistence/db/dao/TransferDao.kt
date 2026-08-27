@@ -8,18 +8,18 @@ import com.transfer.flash.core.persistence.db.entity.TransferEntity
 import kotlinx.coroutines.flow.Flow
 
 @Dao
-interface TransferDao {
+public interface TransferDao {
 
     /** Last-write-wins: progress rows are re-inserted with updated byte counters. */
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insert(transfer: TransferEntity)
+    public suspend fun insert(transfer: TransferEntity)
 
     @Query("SELECT * FROM transfers WHERE transferId = :transferId")
-    fun observe(transferId: String): Flow<TransferEntity?>
+    public fun observe(transferId: String): Flow<TransferEntity?>
 
     @Query("UPDATE transfers SET bytesDone = :bytesDone WHERE transferId = :transferId")
-    suspend fun setBytesDone(transferId: String, bytesDone: Long)
+    public suspend fun setBytesDone(transferId: String, bytesDone: Long)
 
     @Query("UPDATE transfers SET status = :status WHERE transferId = :transferId")
-    suspend fun setStatus(transferId: String, status: String)
+    public suspend fun setStatus(transferId: String, status: String)
 }

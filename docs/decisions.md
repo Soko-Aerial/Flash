@@ -494,3 +494,140 @@ Subagent outage forced direct implementation; research was still completed per-c
 
 ### Revisit when
 Two-pane expanded layout (UI-034 pass), deep links (notification -> conversation), or >6 destinations.
+
+
+## ADR-022 - Publishing baseline: Apache-2.0 license + core compileSdk 35 (widest consumer reach)
+
+### Decision
+1. **License = Apache-2.0**, copyright "The Flash Project" (`LICENSE` + `NOTICE` at repo root). Resolves the
+   Phase 1.1 owner decision.
+2. **The published `core:*` modules compile at `compileSdk = 35`** (was 37). The app module and
+   `targetSdk = 36` are unchanged; `minSdk = 24` (Android 7.0) is unchanged and already covers the owner's
+   "down to Android 8 / API 26" goal. Resolves the Phase 1.3 owner decision.
+3. **`net.zetetic:sqlcipher-android` pinned to 4.17.0** (from 4.18.0). 4.18.0 raised its AAR
+   `minCompileSdk` to 37; 4.9.0-4.17.0 declare `minCompileSdk=1`. This is the only dependency that blocked 35.
+4. **`NsdTransport` `onServiceLost` forward-compat pattern**: keep the API-34 no-arg `override`, demote the
+   API-37 `onServiceLost(NsdServiceInfo)` to a non-`override` method so it compiles at 35 yet still binds the
+   Android-17 framework method at runtime by JVM signature.
+
+### Context
+Owner wants the LAN-transfer engine published as a free, reusable library (GitHub -> JitPack -> Gradle) that
+any developer can consume. compileSdk 37 (Android 17) + AGP 9.3.1 forced consumers onto bleeding-edge build
+tooling; lowering the library's compileSdk to 35 widens the consumable toolchain to the AGP 8.7 era without
+touching runtime behavior (compileSdk is a compile-time API ceiling, not a runtime floor). "Free" was the
+owner's explicit goal - Apache-2.0 gives unrestricted commercial/derivative use plus a patent grant, unlike
+the copyleft (GPL/LGPL/MPL) options that would deter embedding the library.
+
+### Alternatives considered
+- **MIT license**: equally permissive and shorter, but no patent grant and not the plan's assumed standard -
+  rejected in favor of Apache-2.0's patent protection and ecosystem alignment.
+- **GPL/LGPL/MPL**: copyleft obligations kill library adoption - rejected outright.
+- **Keep compileSdk 37**: narrowest reach (AGP 9.3+/Gradle 9.5/Kotlin 2.2 required of every consumer) -
+  rejected; the whole point of publishing is external consumption.
+- **compileSdk 36**: viable fallback if a 35-incompatible dep had appeared. Only sqlcipher blocked 35 and a
+  one-patch downgrade cleared it, so 35 (wider reach) stands. 36 is the fallback if a future dep floors at 36.
+- **Lower minSdk/targetSdk too**: unnecessary - minSdk 24 already exceeds the Android-8 goal, and lowering
+  targetSdk weakens the app's behavior contract for no consumer benefit.
+
+### Consequences
+- SQLCipher stays a patch behind latest; revisit if 4.18+ ships a needed fix. core:persistence only.
+- compileSdk 35 means new Android-16/17 compile-time APIs are unavailable to core modules until a consumer
+  base justifies raising it; none are currently used (highest runtime gates are API 33/34 with legacy paths).
+- The NsdTransport method is intentionally not marked `override` - a future compileSdk bump to 37 should
+  restore `override` and delete the no-arg variant only after confirming API 34-36 consumers are dropped.
+
+### Revisit when
+Phase 4 decides the final published module set (persistence may leave the transfer path entirely, removing
+the SQLCipher constraint), or a consumer needs an Android 16/17 compile-time API, or the AGP/Gradle floor is
+raised deliberately.
+
+## ADR-023 - Published-ABI enforcement is `explicitApi()` (strict), not binary-compatibility-validator
+
+### Decision
+The kotlinx **binary-compatibility-validator** (BCV) plugin is **removed** from the build. The published
+`core:*` ABI is instead enforced at the compiler by Kotlin **`explicitApi()` in strict mode**, enabled in
+every `core/*` module. Phase 3 Task 3.1 (a checked-in `.api` dump per module) is therefore **withdrawn**;
+Tasks 3.2/3.3 (explicit-visibility classification) fully deliver the phase goal on their own.
+
+### Context
+Task 3.1 planned to apply BCV at the root and commit `core/*/api/*.api` dumps as the reviewable source of
+truth for the public ABI (feeding Phase 2.2 leak-detection). On execution the plugin (v0.18.1) applied
+without error but registered **no tasks**: `./gradlew apiDump` and `apiCheck` both fail with "Task not
+found". BCV wires its per-project tasks off the classic `org.jetbrains.kotlin.{jvm,multiplatform}` /
+`kotlin-android` plugin's source sets. This project uses **AGP 9.3.1 with built-in Kotlin** and no classic
+Kotlin Gradle plugin, so BCV finds no source sets to snapshot on the Android library variants and stays
+inert. Its Android support has never targeted AGP's built-in-Kotlin variant model.
+
+The phase's actual goal — "stop shipping the entire implementation as public API" — is achieved by
+`explicitApi()` strict, which the compiler enforces on every declaration: no symbol reaches the ABI without
+a deliberate `public` / `internal` / `@FlashInternalApi` decision, or the module fails to compile. That is a
+stronger, always-on guarantee than a dump that can drift until someone reruns `apiCheck`.
+
+### Alternatives considered
+- **Keep BCV applied but inert**: dead plugin + `apiValidation {}` block implying ABI tracking that does not
+  exist — misleading. Rejected; removed alias, `apiValidation` block, and the `libs.versions.toml` entry.
+- **Add the classic `kotlin-android` plugin alongside AGP built-in Kotlin just to feed BCV**: two Kotlin
+  toolchains in one build is fragile and risks version skew against AGP 9.3.1. Not worth a text dump.
+- **Hand-maintain `.api` files**: no tooling to diff them against reality — worse than nothing.
+
+### Consequences
+- No committed `.api` baseline and no `apiCheck` gate. ABI regressions are caught at compile time
+  (explicitApi errors) and in review, not by a mechanical diff. Acceptable for a single-owner library.
+- Phase 3 acceptance is restated: **`explicitApi()` strict active and green in all 8 `core/*` modules**
+  (common, messaging, engine, discovery, persistence, security, transfer, network — all verified green).
+  The `apiDump`/`apiCheck` acceptance lines in PHASE-03 are superseded by this ADR.
+- Phase 2.2 leak-detection loses its automated dump input; leaks are instead surfaced by explicitApi's
+  "public-exposes-internal" (`EXPOSED_*`) compile errors, which force the promote-to-`api`-dep decision at
+  the point of the leak.
+
+### Revisit when
+The build migrates to a classic Kotlin Gradle plugin (JVM/MPP/kotlin-android) — BCV would then register its
+tasks and a committed `.api` baseline becomes worthwhile — or a maintainer team larger than one makes a
+mechanical ABI-diff gate worth the tooling.
+
+## ADR-024 - Persistence decoupling: transfer & security own storage ports; Room adapters live in core:engine
+
+### Decision
+`core:transfer` and `core:security` **no longer depend on `core:persistence`** (and therefore no longer
+drag Room / SQLCipher onto their classpaths). Storage is inverted behind ports:
+- `core:transfer` owns `TransferStore` (a plain `suspend` interface, zero Room types). `core:engine`'s new
+  `RoomTransferStore` adapts `TransferDao`/`TransferChunkDao` to it. The repository takes a nullable
+  `store: TransferStore?` — `null` means "run without persistence" (resume-across-restart disabled), the
+  pre-existing DB-less behavior.
+- `core:security` dropped persistence entirely by **deleting the unused `RoomTrustedStore`** adapter. It was
+  `internal`, had no construction site anywhere, and was superseded by the SharedPreferences-backed
+  `AndroidPreferencesTrustStore` that the app actually wires. The pin-decision logic (`TofuPolicy`) and the
+  legacy-migration logic (`LegacyTrustMigration`, with `FlashTrustedPeer` relocated beside it) stay in
+  security — they are pure, Room-free, and still tested.
+
+### Context
+The publishing goal is a lightweight `core-transfer` a LAN-only consumer can adopt without shipping four
+SQLCipher native ABIs. Transfer's *direct* `implementation(project(":core:persistence"))` was the obvious
+coupling, but removing it alone was insufficient: `./gradlew :core:transfer:dependencies` still showed
+`androidx.room` + `net.zetetic:sqlcipher-android` because **`core:transfer → core:security → core:persistence`**.
+Security's only persistence use was the dead `RoomTrustedStore`, so deleting it (plus security's direct
+`libs.androidx.room.runtime`) severed the last edge.
+
+Placing `RoomTransferStore` in `core:persistence` was impossible: `security → persistence` and
+`transfer → security` mean a persistence-side adapter that touches transfer would form the cycle
+`persistence → transfer → security → persistence`. `core:engine` already `api`s both transfer and
+persistence and nothing depends back on it, so it is the correct home for both Room adapters.
+
+### Consequences
+- `./gradlew :core:transfer:dependencies` shows **no room / sqlcipher** on any configuration
+  (releaseCompileClasspath and debugRuntimeClasspath both verified clean). Transfer's `.api` exposes only
+  `TransferStore`, not DAO types.
+- Removing persistence from security also removed the transitively-provided `kotlinx-coroutines`. Security
+  now declares `libs.androidx.lifecycle.runtime.ktx` directly (same source the other core modules use for
+  `Flow`/`StateFlow`) — no behavior change, just an explicit edge that was previously leaking in via Room.
+- The app wires `store = RoomTransferStore(db.transferDao(), db.transferChunkDao())` in
+  `DiscoveryEngineHolder`; the trust store there was already `AndroidPreferencesTrustStore`, so the sample
+  app's behavior is unchanged (assembleDebug green).
+- The C2.4 Room-pinning store is gone from the tree but recoverable from git history if that feature is
+  ever wired; the reusable pieces (`TofuPolicy`, `LegacyTrustMigration`) were kept.
+
+### Revisit when
+A future feature genuinely needs a Room-backed trust store: reintroduce it as an adapter in `core:engine`
+(implementing a security-owned port), never by re-adding `persistence` to `core:security`.
+
+

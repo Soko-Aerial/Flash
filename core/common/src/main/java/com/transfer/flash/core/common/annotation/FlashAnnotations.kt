@@ -10,7 +10,7 @@ package com.transfer.flash.core.common.annotation
 )
 @Retention(AnnotationRetention.BINARY)
 @Target(AnnotationTarget.CLASS, AnnotationTarget.FUNCTION, AnnotationTarget.PROPERTY, AnnotationTarget.CONSTRUCTOR)
-annotation class FlashInternalApi
+public annotation class FlashInternalApi
 
 /**
  * Marks declarations that are experimental, under active evaluation, and subject to change.
@@ -21,4 +21,4 @@ annotation class FlashInternalApi
 )
 @Retention(AnnotationRetention.BINARY)
 @Target(AnnotationTarget.CLASS, AnnotationTarget.FUNCTION, AnnotationTarget.PROPERTY, AnnotationTarget.CONSTRUCTOR)
-annotation class FlashExperimentalApi
+public annotation class FlashExperimentalApi

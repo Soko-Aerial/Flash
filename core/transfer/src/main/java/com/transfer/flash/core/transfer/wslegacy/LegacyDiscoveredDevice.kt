@@ -8,12 +8,12 @@ package com.transfer.flash.core.transfer.wslegacy
  * `WsDiscoveredDevice` (`com.transfer.flash.core.transfer.model`) once the wslegacy engine
  * is retired — see docs/core-upgrade-plan.md C5.2/C5.3.
  */
-enum class LegacyTransportType {
+internal enum class LegacyTransportType {
     LAN,
     WIFI_DIRECT,
 }
 
-data class LegacyDiscoveredDevice(
+internal data class LegacyDiscoveredDevice(
     val deviceId: String,
     val friendlyName: String,
     val hostAddress: String,

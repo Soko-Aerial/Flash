@@ -1,5 +1,7 @@
 package com.transfer.flash.core.common.protocol
 
+import com.transfer.flash.core.common.annotation.FlashInternalApi
+
 /**
  * Single shared wire container for Flash application frames (C0.2).
  *
@@ -19,7 +21,8 @@ package com.transfer.flash.core.common.protocol
  *
  * @throws IllegalArgumentException if [id], [type], or [senderId] is blank, or [sentAt] <= 0.
  */
-data class FlashEnvelope(
+@FlashInternalApi
+public data class FlashEnvelope(
     val id: String,
     val type: String,
     val payloadJson: String,

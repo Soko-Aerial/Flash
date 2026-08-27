@@ -19,7 +19,7 @@ import java.util.concurrent.ConcurrentHashMap
  * sessions are torn down long before this becomes a memory concern. Scope it
  * per-session, never process-global. Thread-safe.
  */
-class DedupGate {
+internal class DedupGate {
 
     private val seen: MutableSet<String> = Collections.newSetFromMap(ConcurrentHashMap())
 
@@ -37,7 +37,7 @@ class DedupGate {
  * are in `[0, 1]`; randomness comes from one seeded [kotlin.random.Random]
  * so every scenario run is reproducible.
  */
-data class ChaosConfig(
+internal data class ChaosConfig(
     /** Probability an inbound frame vanishes entirely (silent loss). */
     val inboundDropProbability: Double = 0.0,
 
@@ -70,7 +70,7 @@ data class ChaosConfig(
 }
 
 /** A frame delivered through the chaos pipeline after faults were applied. */
-data class DeliveredFrame(
+internal data class DeliveredFrame(
     val frameId: String,
     val payload: ByteArray,
     /** Explicit caller-supplied timestamp, optionally shifted by delay faults. */
@@ -94,7 +94,7 @@ data class DeliveredFrame(
  * Delegation: interface methods default-delegate to [delegate]; only [send]
  * and disconnect behavior are overridden.
  */
-class ChaosSession(
+internal class ChaosSession(
     private val delegate: FlashSession,
     val config: ChaosConfig,
     private val random: kotlin.random.Random,

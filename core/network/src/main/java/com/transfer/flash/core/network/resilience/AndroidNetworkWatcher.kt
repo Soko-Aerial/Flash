@@ -16,7 +16,7 @@ import android.net.NetworkRequest
  * surface here is deliberately minimal (register/unregister, idempotent).
  * Requires ACCESS_NETWORK_STATE — already declared app-wide.
  */
-class AndroidNetworkWatcher(
+internal class AndroidNetworkWatcher(
     context: Context,
     private val onAvailable: () -> Unit,
     private val onLost: () -> Unit = {},

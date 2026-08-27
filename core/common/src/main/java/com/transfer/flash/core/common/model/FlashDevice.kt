@@ -9,7 +9,7 @@ package com.transfer.flash.core.common.model
  * @property presence The current presence/connection state of the peer.
  * @property protocolVersion The highest supported Flash protocol version of the peer.
  */
-data class FlashDevice(
+public data class FlashDevice(
     val id: FlashDeviceId,
     val friendlyName: String,
     val transportType: FlashTransportType,

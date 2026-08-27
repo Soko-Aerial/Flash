@@ -36,7 +36,7 @@ import com.transfer.flash.core.common.model.FlashDeviceId
  * `fp8` decode to emptySet / null respectively (backward compatible with
  * pre-P3.5 advertisers).
  */
-object TxtCodec {
+internal object TxtCodec {
 
     const val KEY_DEVICE_ID = "device_id"
     const val KEY_NAME = "name"

@@ -1,5 +1,186 @@
 # Current Handoff
 
+## 2026-08-27 -- Codex logo candidate added under `logo-codex/`
+- Created a separate formal logo proposal for the owner's AI logo competition. Entry point:
+  `logo-codex/preview/contact-sheet.png`; source notes: `logo-codex/README.md`.
+- Final mark: F-shaped transfer monogram using Flash Pulse teal, graphite, off-white, and a restrained spark
+  amber transfer lane. It intentionally avoids a generic lightning-bolt centerpiece.
+- Deliverables: SVG masters, Android adaptive templates, PNG exports from 16px through 1024px, lockups, mono
+  assets, and archived concept/refinement materials.
+- Verification: rendered via `node logo-codex/build.mjs` and visually inspected contact sheet plus 48px/16px
+  icons and lockups.
+- No app/source files were modified by this branding pass. If selected, integrate launcher resources in a
+  dedicated follow-up change.
+
+## 2026-08-27 -- Publishing Phase 5 authoring COMPLETE (5.1–5.5 done) + coroutines dep-scope leak fixed -- next = Phase 6 (JitPack)
+- **All Phase 5 authoring tasks are DONE.** 5.1 (`Flash.create` factory) + 5.3 (Closeable) landed earlier
+  this session (entry below). This entry covers 5.2 + 5.4 + 5.5 and a real dependency-scope fix uncovered
+  by the sample.
+- **README.md authored at repo root (5.2 + 5.4):** pitch → JitPack install (commented badge + `<user>/<repo>`
+  and `<TAG>` placeholders, filled in Phase 6) → quick-start → `FlashConfig` table → lifecycle → permissions
+  (required vs optional foreground-service split, each with a "why", explicit no-location note) →
+  compatibility table → published module set (Phase 4 Task 4.3) → Apache-2.0. The quick-start is **compiled
+  verbatim** as `sample/consumer/src/main/java/.../QuickStart.kt` so README code can't silently drift.
+- **5.5 cleanups:** every `core/*/consumer-rules.pro` now carries a documented comment header (persistence
+  was 0 bytes). Verified NO first-party reflection anywhere in `core/*` → "no keep rules needed; transitive
+  Room/SQLCipher ship their own" is accurate. `resourcePrefix`: **not needed** (no `core/*` has `res/`).
+- **REAL BUG FIXED — coroutines dependency-scope leak:** core modules returned `Flow`/`StateFlow` from their
+  PUBLIC API but only had coroutines via `implementation(lifecycle.runtime.ktx)`, so those return types were
+  OFF a downstream consumer's compile classpath (the sample's `QuickStart.kt` couldn't resolve `StateFlow`/
+  `first`). Fixed: added `api(libs.kotlinx.coroutines.core)` to discovery/network/transfer/persistence/
+  security/messaging + new catalog entry `kotlinx-coroutines-core` (`coroutines = "1.10.2"`). Engine
+  re-exports it transitively via `api(project(...))`. **This is the kind of leak the `:sample:consumer`
+  harness (Phase 2 Task 2.3) exists to catch — it worked.**
+- **Verified green:** `:sample:consumer:assembleDebug`, `:sample:consumer-granular:assembleDebug`,
+  `:app:compileDebugKotlin`, and `compileReleaseKotlin` for all six touched core modules + engine.
+- **⚠ Build-infra gotcha (not code):** a Kotlin daemon crash corrupted the Gradle module-metadata cache
+  (`E:\Flash\.gradle-user-home\caches\modules-2\metadata-2.107\module-metadata.bin`) and `gradlew --stop`
+  left one daemon alive rewriting it. Recovery: `taskkill //F` the stale `java.exe` daemons → delete
+  `metadata-2.107` + `Flash/.gradle/configuration-cache` → rebuild clean. If a build fails reading
+  `module-metadata.bin`, do this.
+- **⚠ Owner decision to flag:** Phase 1 option (b) was only HALF applied — compileSdk was lowered to 35 for
+  reach, but AGP stayed 9.3.1, so the AGP 9.3 / Gradle 9.5 floor is still the real adoption ceiling (apps on
+  AGP 8.x can't consume the artifacts). README documents this honestly. Decide whether to also lower AGP.
+- **NOT committed** — branch `publishing/library-prep`, awaiting owner's go-ahead. Owner device run EXP-002
+  still pending.
+- **NEXT: Phase 6 (`docs/publishing/PHASE-06-jitpack-publishing.md`) — JitPack publish.** That phase fills
+  the README's `<user>/<repo>`/`<TAG>`/badge placeholders and verifies a real JitPack build. Build env is
+  mandatory (see below). Messaging inversion stays deferred.
+
+## 2026-08-27 -- Publishing Phase 5 Task 5.1 + 5.3 DONE (`Flash.create` factory + Closeable) -- next = 5.2/5.4/5.5 + sample
+- **`Flash.create(context, FlashConfig = FlashConfig())` is live** in `core:engine`
+  (`core/engine/src/main/java/com/transfer/flash/core/engine/Flash.kt`). One call builds all six
+  `FlashEngine` subsystems on ONE shared `CoroutineScope`, opens the encrypted Room DB, and launches
+  network/discovery/data-channel/auto-connect async. This is now the documented happy path (the six
+  `Default*` constructors remain for advanced users).
+- **`FlashConfig(displayName, enableResume=true, autoAcceptIncoming=false, receivedFilesDir=null)`** per the
+  owner's decision "Full engine, autoAccept default false." Offer gate is ALWAYS on (`requireAcceptance` +
+  `requireReceiverAcceptance`); `autoAcceptIncoming` only auto-invokes the accept path (→ RESUME) on the
+  offer event. `enableResume` toggles `RoomTransferStore` vs null (DB always opens — chats/settings need it).
+- **New support files:** `core/engine/.../store/KeystorePassphraseProvider.kt` (verbatim port of the app's
+  keystore-wrapped SQLCipher passphrase — same PREFS `flash_db_secure` / alias `flash_db_passphrase_key`, so
+  it unwraps the SAME on-disk DB as the app) and `core/engine/.../internal/AutoConnectGate.kt` (pure JVM gate).
+- **Excluded by design:** pairing (`PairingCoordinator` depends on app UI types + isn't part of
+  `FlashEngine`), `FlashBackgroundService`, Dev Console. Wiring is **duplicated** from
+  `DiscoveryEngineHolder` (NOT refactored) to honor "keep everything" and not destabilize the running app —
+  accepted, logged tech debt. Holder left untouched.
+- **Task 5.3 folded in:** `FlashEngine : Closeable`; `DefaultFlashEngine` gains idempotent
+  `onClose: () -> Unit = {}` (AtomicBoolean-guarded, defaulted so hand-assembled callers +
+  `DefaultFlashEngineTest` compile unchanged). Factory teardown stops data-channel server + network +
+  discovery, closes DB, cancels the shared scope.
+- **Build change:** added `implementation(libs.androidx.room.runtime)` to `core/engine/build.gradle.kts` —
+  the engine is the composition root and must see Room's `Migration` + `RoomDatabase.close()`; `implementation`
+  (not `api`) keeps Room internal, consistent with ADR-024.
+- **Verified green:** `:core:engine:compileDebugKotlin`, `:core:engine:compileReleaseKotlin` (explicitApi
+  strict), `:core:engine:testDebugUnitTest`, `:app:compileDebugKotlin`.
+- **NOT committed** — branch `publishing/library-prep`, awaiting owner's go-ahead. Owner device run EXP-002
+  still pending.
+- **NEXT (Phase 5 remainder):** 5.2 permissions section, 5.4 root README (quick-start using `Flash.create`
+  + `close()`), 5.5 consumer-rules.pro comment headers + resourcePrefix decision, and a `:sample:consumer`
+  module that mirrors the README and runs `Flash.create` + `close()`
+  (`./gradlew :sample:consumer:assembleDebug`). Then Phase 6 (JitPack). Messaging inversion stays deferred.
+  Build env is mandatory (see below).
+
+## 2026-08-27 -- Publishing Phase 4 DONE (Task 4.1 decoupling + Task 4.3 module-set decision) -- next = Phase 5 README
+- **Phase 4 COMPLETE.** Task 4.1 (persistence decoupling) + Task 4.3 (published module set) both done;
+  Task 4.2 (interim ABI-trim fallback) not needed since 4.1 landed; step 6 (messaging inversion) deferred
+  by decision (messaging held out of the v1 supported set).
+- **Task 4.3 decision (source of truth = PHASE-04 doc table, grounded in `releaseRuntimeClasspath`):**
+  - **Supported — lightweight (no Room/SQLCipher):** `core-common`, `core-security`, `core-discovery`,
+    `core-network`, `core-transfer`.
+  - **Supported — batteries-included umbrella (bundles Room):** `core-engine`.
+  - **Supported — optional storage add-on (Room + 4 SQLCipher ABIs):** `core-persistence`.
+  - **Experimental — not promised in v1 (still DAO-coupled):** `core-messaging` (resolves + is pulled
+    transitively by engine, just undocumented as standalone).
+- **Task 4.1 COMPLETE.** `core:transfer` no longer depends on `core:persistence`, and neither does
+  `core:security`. `./gradlew :core:transfer:dependencies` shows **no `androidx.room` / `net.zetetic`
+  sqlcipher** on `releaseCompileClasspath` or `debugRuntimeClasspath`. A LAN-only consumer can now take
+  `core-transfer` without the four SQLCipher native ABIs.
+- **How (transfer):** new port `TransferStore` in `core:transfer` (`store/TransferStore.kt`, plain suspend
+  iface). `RealFlashTransferRepository` takes nullable `store: TransferStore?` (null = DB-less, unchanged
+  behavior). Room adapter `RoomTransferStore` lives in **`core:engine`** — NOT persistence, which would
+  create the cycle `persistence → transfer → security → persistence`. App wires it in
+  `DiscoveryEngineHolder` (`store = RoomTransferStore(db.transferDao(), db.transferChunkDao())`).
+- **How (security):** the transitive leak `transfer → security → persistence` came from the **dead**
+  `RoomTrustedStore` (internal, never constructed; app uses `AndroidPreferencesTrustStore`). Owner approved
+  **deleting** it. Also removed security's direct `libs.androidx.room.runtime`. `FlashTrustedPeer` moved next
+  to `LegacyTrustMigration`; `TofuPolicy` + `LegacyTrustMigration` kept (pure, Room-free, still tested).
+  Security now declares `libs.androidx.lifecycle.runtime.ktx` for coroutines (was leaking in via Room).
+- **Verified green:** `:core:transfer:testDebugUnitTest`, `:core:security:testDebugUnitTest`,
+  `:core:engine:testDebugUnitTest`, `:core:engine:compileDebugKotlin`, `:app:compileDebugKotlin`,
+  `:app:assembleDebug`. Sample app behavior unchanged.
+- **NOT committed** — branch `publishing/library-prep`, awaiting owner's go-ahead. Owner device run EXP-002
+  still pending.
+- **NEXT: Phase 5 (`docs/publishing/PHASE-05-*.md`) — consumer ergonomics / README.** The v1 supported
+  module set is decided (table above / in PHASE-04 Task 4.3); Phase 5 authors the README that documents it.
+  Phase 4 step 6 (messaging inversion) stays deferred — hold `core-messaging` out of the v1 supported set
+  rather than inverting now; promote it later with the same port/adapter treatment (ADR-024). Then Phase 6
+  JitPack. Build env is mandatory (see below).
+
+## 2026-08-26 -- Publishing Phase 3 DONE: explicitApi() strict green in all 8 core modules; BCV removed (ADR-023) -- next = Phase 4
+- **Phase 3 is COMPLETE.** `explicitApi()` (strict) is enabled and **green across all 8 published `core/*`
+  modules** (common, messaging, engine, discovery, persistence, security, transfer, network). Every public
+  symbol now carries a deliberate `public` / `internal` / `@FlashInternalApi` decision — enforced by the
+  compiler, so nothing reaches the ABI by accident.
+- **network was the last module (8/8), closed this session.** `WebSocketCodec` → `@FlashInternalApi` (used
+  cross-core by transfer's `WsTransferManager`); all app/ui-facing session/transport entry points → plain
+  `public`; wire-only probe messages → `internal`. `@file:OptIn(FlashInternalApi::class)` added to every
+  in-library `WebSocketCodec` use site INCLUDING the same-module test `WebSocketCodecTest.kt`.
+- **Task 3.1 (binary-compatibility-validator) WITHDRAWN — see ADR-023.** BCV v0.18.1 registers no
+  `apiDump`/`apiCheck` tasks under AGP 9.3.1 built-in Kotlin (no classic Kotlin plugin) — inert. Removed the
+  plugin alias, the root `apiValidation {}` block, and the `libs.versions.toml` entry. ABI enforcement is
+  `explicitApi()` strict instead. There is **no `.api` dump** — do not go looking for one.
+- **Verified:** all 8 `:core:*:compileReleaseKotlin` SUCCESSFUL; `:core:network:testDebugUnitTest`
+  SUCCESSFUL; `:core:transfer:compileReleaseKotlin` SUCCESSFUL; root config re-resolves after BCV removal.
+- **NOT committed** — branch `publishing/library-prep`, awaiting owner's go-ahead. Owner device run EXP-002
+  still pending.
+- **NEXT: Phase 4 (`docs/publishing/PHASE-04-*.md`).** Phase 2 Task 2.2 stays deferred: under ADR-023 there
+  is no dump to read leaks from; foreign-type leaks now surface as explicitApi `EXPOSED_*` compile errors at
+  the leak site (none currently failing → no promotion forced). Build env is MANDATORY (JAVA_HOME=AS jbr,
+  GRADLE_USER_HOME=E:\Flash\.gradle-user-home, JAVA_TOOL_OPTIONS unixdomain tmpdir; `./gradlew.bat … --console=plain`).
+
+## 2026-08-26 -- Publishing Phase 2 DONE: dependency-scope fixed (core:common → api) + external consumer gate -- next = Phase 3
+- **Phase 2 (the HARD BLOCKER) is IMPLEMENTED.** All six non-engine core modules now declare
+  `api(project(":core:common"))` (was `implementation`), so core:common's shared vocabulary
+  (FlashDevice/FlashDeviceId/FlashResult/…) lands on a consumer's COMPILE classpath. Without this, granular
+  `core:*` artifacts fail with "unresolved reference: FlashDevice" on JitPack.
+- **Acceptance PROVEN with external consumers** (Task 2.3): two throwaway, non-published modules under
+  `sample/` (in settings.gradle.kts, NO maven-publish): `:sample:consumer` (engine-only → shape A umbrella)
+  and `:sample:consumer-granular` (network-only, references FlashDevice → shape B). Both compile.
+  `:core:engine:publishToMavenLocal` succeeds and the published `core-engine-1.0.0.pom` has all 7 siblings in
+  `compile` scope and impl-only deps in `runtime` — the correct consumer contract.
+- **Task 2.2 is DEFERRED to Phase 3 by design.** Deeper cross-module leaks (e.g. network exposing a
+  security/discovery type) are NOT guessed — they get read off Phase 3's `.api` dumps and the offending
+  `implementation` deps promoted to `api` then. The umbrella (`core-engine`) is the documented default and is
+  already fully coherent.
+- **Verified:** consumer + publish build SUCCESSFUL; `:app:assembleDebug` SUCCESSFUL. Full unit suite not
+  re-run (scope-only change, behaviorally inert; core release variants all compiled during publish).
+- **NEXT: Phase 3 (`docs/publishing/PHASE-03-api-surface.md`)** — binary-compat-validator `apiDump` +
+  `explicitApi()` + hide internals; then close Phase 2 Task 2.2 off the dumps. Owner device run EXP-002 still
+  pending.
+
+## 2026-08-26 -- Publishing Phase 1 DONE: Apache-2.0 + core compileSdk 35 (both owner decisions resolved) -- next = Phase 2
+- **Phase 1 of `docs/publishing/` is IMPLEMENTED and both owner decisions are locked.** LICENSE = **Apache-2.0**,
+  holder **"The Flash Project"** (patent grant + Android-ecosystem norm; see ADR-022). Compat baseline =
+  **`core:*` modules lowered to `compileSdk 35`** so AGP-8.7-era consumers can build; the app and
+  `targetSdk 36` are untouched. `minSdk 24` (Android 7) already covered the owner's "down to Android 8" ask —
+  nothing to lower there.
+- **Files changed (all inside the plan's allowlist):** `LICENSE` (full Apache text), `NOTICE`, root
+  `build.gradle.kts` (`flashLibraryVersion` single-source), all 8 `core/*/build.gradle.kts` (compileSdk 35),
+  `gradle/libs.versions.toml` (sqlcipher 4.18.0→4.17.0), `core/discovery/.../nsd/NsdTransport.kt` (onServiceLost
+  forward-compat). No `app/`, `ui/`, or `media-downloader-main/` code touched.
+- **Two obstacles hit and cleared (see progress.md + ADR-022):** (1) SQLCipher 4.18.0 hard-floors compileSdk
+  at 37 — every version 4.9.0–4.17.0 has no floor, so pinned 4.17.0. (2) `ServiceInfoCallback.onServiceLost`
+  is `(NsdServiceInfo)` at SDK 37 but no-arg at 34–36 — kept the no-arg `override`, demoted the param variant
+  to a plain method (still binds at runtime on Android 17).
+- **Verified:** all 10 modules compile at 35; `assembleDebug` BUILD SUCCESSFUL, `app-debug.apk` (29.7 MB)
+  produced; the two previously-flaking timing tests pass on isolated `--rerun-tasks`. The combined
+  `testDebugUnitTest assembleDebug` did NOT go green in one shot — two load flakes (ERROR-019), each green
+  alone. Re-run on an idle machine for a single clean green if you want it on record.
+- **NEXT: Phase 2 (`docs/publishing/PHASE-02-dependency-scope.md`) — the HARD BLOCKER.** `implementation`
+  `(project(...))` → `api(...)` where public types cross module boundaries; prove the fix with an EXTERNAL
+  `:sample:consumer`, never the library's own build. Then Phases 3–6. Owner device run EXP-002 still pending.
+
 ## 2026-08-26 -- Core library publishing plan authored (GitHub → JitPack → Gradle) -- READ docs/publishing/
 - **The owner wants to publish the `core:*` modules as a reusable LAN-transfer library** so other developers
   consume the engine instead of building from scratch. Hosting decision: **GitHub → JitPack → Gradle**, NOT

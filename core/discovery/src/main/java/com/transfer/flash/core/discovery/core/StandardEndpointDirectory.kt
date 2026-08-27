@@ -18,7 +18,7 @@ import com.transfer.flash.core.discovery.FlashDiscoveredEndpoint
  * field, so model changes cannot be observed here (the TXT `model` key feeds
  * UI rows via decode, not this directory).
  */
-class StandardEndpointDirectory : EndpointDirectory {
+public class StandardEndpointDirectory : EndpointDirectory {
 
     private val entries = LinkedHashMap<FlashDeviceId, EndpointDirectory.Entry>()
 

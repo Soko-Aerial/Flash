@@ -9,7 +9,7 @@ import androidx.room.PrimaryKey
  * pin: `isPinned(deviceId, fingerprintHex)` fails closed when the peer's key changes.
  */
 @Entity(tableName = "trusted_peers", indices = [Index(value = ["trustedAt"])])
-data class TrustedPeerEntity(
+public data class TrustedPeerEntity(
     @PrimaryKey val deviceId: String,
     val name: String,
     val fingerprintHex: String,

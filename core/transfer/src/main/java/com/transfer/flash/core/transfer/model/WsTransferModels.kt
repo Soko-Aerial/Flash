@@ -2,18 +2,18 @@ package com.transfer.flash.core.transfer.model
 
 import com.transfer.flash.core.network.ws.WsTransferServer
 
-enum class WsTransferDirection { SENDING, RECEIVING }
+internal enum class WsTransferDirection { SENDING, RECEIVING }
 
-enum class WsTransferStatus { ACTIVE, COMPLETED, FAILED }
+internal enum class WsTransferStatus { ACTIVE, COMPLETED, FAILED }
 
-data class WsPeer(
+internal data class WsPeer(
     val deviceId: String,
     val friendlyName: String,
     val address: String,
     val outbound: Boolean,
 )
 
-data class WsTransferItem(
+internal data class WsTransferItem(
     val id: String,
     val peerName: String,
     val fileName: String,
@@ -25,7 +25,7 @@ data class WsTransferItem(
     val filePath: String? = null,
 )
 
-data class WsDiscoveredDevice(
+internal data class WsDiscoveredDevice(
     val deviceId: String,
     val friendlyName: String,
     val address: String,
@@ -34,7 +34,7 @@ data class WsDiscoveredDevice(
     val connecting: Boolean,
 )
 
-data class WsTransferUiState(
+internal data class WsTransferUiState(
     val localDeviceId: String = "",
     val friendlyName: String = "",
     val isServerRunning: Boolean = false,

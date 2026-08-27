@@ -1,3 +1,5 @@
+@file:OptIn(com.transfer.flash.core.common.annotation.FlashInternalApi::class)
+
 package com.transfer.flash.core.discovery.nsd
 
 import android.content.Context
@@ -43,7 +45,7 @@ import kotlin.coroutines.coroutineContext
 // ---------------------------------------------------------------------------
 
 /** TXT-record payload of one advertisement (neutral form of NsdServiceInfo attrs). */
-data class AdvertiseRequest(
+public data class AdvertiseRequest(
     val serviceName: String,
     val serviceType: String,
     val port: Int,
@@ -51,18 +53,18 @@ data class AdvertiseRequest(
 )
 
 /** Neutral callbacks mirroring [NsdManager.RegistrationListener]. */
-interface AdvertiseEvents {
-    fun onRegistered(actualServiceName: String, actualPort: Int)
-    fun onRegistrationFailed(errorCode: Int)
-    fun onUnregistered()
-    fun onUnregistrationFailed(errorCode: Int)
+public interface AdvertiseEvents {
+    public fun onRegistered(actualServiceName: String, actualPort: Int)
+    public fun onRegistrationFailed(errorCode: Int)
+    public fun onUnregistered()
+    public fun onUnregistrationFailed(errorCode: Int)
 }
 
 /**
  * Which resolution mechanism the bridge should use for a discovered service
  * (plan C3.4 split). Recorded verbatim by test fakes to assert branch selection.
  */
-enum class ResolutionStrategy {
+public enum class ResolutionStrategy {
     /** API 34+: continuous monitoring via `registerServiceInfoCallback`. */
     INFO_CALLBACK,
 
@@ -70,7 +72,7 @@ enum class ResolutionStrategy {
     LEGACY_RESOLVE_QUEUE,
 }
 
-data class BrowseRequest(
+public data class BrowseRequest(
     val serviceType: String,
     /**
      * True requests the API 33+ `discoverServices(String, Int, NetworkRequest, Executor, Listener)`
@@ -81,18 +83,18 @@ data class BrowseRequest(
 )
 
 /** Neutral callbacks mirroring [NsdManager.DiscoveryListener]. */
-interface BrowseEvents {
-    fun onStarted()
-    fun onStartFailed(errorCode: Int)
-    fun onServiceFound(serviceName: String)
-    fun onServiceLost(serviceName: String)
+public interface BrowseEvents {
+    public fun onStarted()
+    public fun onStartFailed(errorCode: Int)
+    public fun onServiceFound(serviceName: String)
+    public fun onServiceLost(serviceName: String)
 }
 
 /** Resolution/monitoring flavor requested by the transport. */
-data class MonitorRequest(val serviceName: String, val strategy: ResolutionStrategy)
+public data class MonitorRequest(val serviceName: String, val strategy: ResolutionStrategy)
 
 /** Fully resolved service data, neutralized out of [NsdServiceInfo]. */
-data class ResolvedServiceData(
+public data class ResolvedServiceData(
     val hostAddress: String?,
     val port: Int,
     val serviceName: String,
@@ -100,16 +102,16 @@ data class ResolvedServiceData(
 )
 
 /** Neutral callbacks mirroring [NsdManager.ResolveListener]/[NsdManager.ServiceInfoCallback]. */
-interface MonitorEvents {
+public interface MonitorEvents {
     /** First invocation per peer acts as Found, subsequent ones as Updated. */
-    fun onUpdated(data: ResolvedServiceData)
+    public fun onUpdated(data: ResolvedServiceData)
 
     /** Radio-reported loss (ServiceInfoCallback.onServiceLost or post-resolve loss). */
-    fun onMonitorLost(serviceName: String?)
+    public fun onMonitorLost(serviceName: String?)
 
-    fun onRegistrationFailed(errorCode: Int)
+    public fun onRegistrationFailed(errorCode: Int)
 
-    fun onUnregistered()
+    public fun onUnregistered()
 }
 
 /**
@@ -122,25 +124,25 @@ interface MonitorEvents {
  * [ResolutionStrategy.LEGACY_RESOLVE_QUEUE] strategy — preserving its serialized,
  * generation-checked resolution while keeping Android types out of the transport logic.
  */
-interface NsdManagerBridge {
+public interface NsdManagerBridge {
     /** Acquires (true) or releases (false) the Wi-Fi multicast lock. */
-    fun setMulticastLock(active: Boolean)
+    public fun setMulticastLock(active: Boolean)
 
     /** Initiates advertising. Returns false when the call itself threw (async failures arrive via [AdvertiseEvents]). */
-    fun advertise(request: AdvertiseRequest, events: AdvertiseEvents): Boolean
+    public fun advertise(request: AdvertiseRequest, events: AdvertiseEvents): Boolean
 
-    fun unadvertise(events: AdvertiseEvents)
+    public fun unadvertise(events: AdvertiseEvents)
 
     /** Starts browsing. Returns false when the call itself threw (treated like onStartFailed). */
-    fun startBrowse(request: BrowseRequest, events: BrowseEvents): Boolean
+    public fun startBrowse(request: BrowseRequest, events: BrowseEvents): Boolean
 
-    fun stopBrowse()
+    public fun stopBrowse()
 
     /** Starts resolution ([LEGACY_RESOLVE_QUEUE]) or continuous monitoring ([INFO_CALLBACK]). */
-    fun monitor(request: MonitorRequest, events: MonitorEvents): Boolean
+    public fun monitor(request: MonitorRequest, events: MonitorEvents): Boolean
 
     /** Cancels all outstanding monitors/resolutions. */
-    fun cancelMonitors()
+    public fun cancelMonitors()
 }
 
 /**
@@ -148,7 +150,7 @@ interface NsdManagerBridge {
  * hardened [NsdResolveQueue]. All framework calls are wrapped so unexpected
  * exceptions surface as boolean initiation-failures rather than crashes.
  */
-class RealNsdManagerBridge(
+public class RealNsdManagerBridge(
     context: Context,
     private val tag: String = TAG,
 ) : NsdManagerBridge {
@@ -287,14 +289,18 @@ class RealNsdManagerBridge(
                 mapResolved(serviceInfo)?.let(events::onUpdated)
             }
 
-            override fun onServiceLost(serviceInfo: NsdServiceInfo) {
-                events.onMonitorLost(serviceInfo.serviceName)
-            }
-
-            // Abstract no-arg variant (API 34): implement so the anonymous object is
-            // concrete; the parameterized override above handles enrichment when used.
+            // API 34-36 abstract method — exists on every SDK this compiles against.
             override fun onServiceLost() {
                 events.onMonitorLost(null)
+            }
+
+            // Forward-compat: SDK 37 (Android 17) re-typed ServiceInfoCallback with an
+            // NsdServiceInfo parameter. Declared WITHOUT `override` so it compiles at
+            // compileSdk 35 (where the interface only has the no-arg variant); on
+            // Android 17 devices the matching JVM signature implements the newer
+            // framework method at runtime. Harmless extra method on API <= 36.
+            fun onServiceLost(serviceInfo: NsdServiceInfo) {
+                events.onMonitorLost(serviceInfo.serviceName)
             }
 
             override fun onServiceInfoCallbackRegistrationFailed(errorCode: Int) {
@@ -360,14 +366,14 @@ class RealNsdManagerBridge(
 
     private val queueLock = Any()
 
-    companion object {
-        const val TAG = "DISCOVERY"
+    public companion object {
+        public const val TAG: String = "DISCOVERY"
 
         /**
          * Direct executor: NSD callbacks stay on ConnectivityThread, matching
          * NsdFlashDiscovery behavior (no extra thread hops, no executor lifecycle).
          */
-        val DIRECT_EXECUTOR: java.util.concurrent.Executor =
+        public val DIRECT_EXECUTOR: java.util.concurrent.Executor =
             java.util.concurrent.Executor { block -> block.run() }
     }
 }
@@ -387,7 +393,7 @@ class RealNsdManagerBridge(
  * TODO(unify): narrowed to the DECODE path only; fold once callers can accept
  * strict decoding (noted in logs/progress.md).
  */
-object NsdTxtCodec {
+internal object NsdTxtCodec {
     const val KEY_DEVICE_ID = TxtCodec.KEY_DEVICE_ID
     const val KEY_NAME = TxtCodec.KEY_NAME
     const val KEY_MODEL = TxtCodec.KEY_MODEL
@@ -437,7 +443,7 @@ object NsdTxtCodec {
 }
 
 /** Pure restart-decision math so retry scheduling is unit-testable without virtual time. */
-object NsdRestartPolicy {
+internal object NsdRestartPolicy {
 
     /** @param delayMs null means "give up" (attempt budget exhausted). */
     data class Decision(val attempt: Int, val delayMs: Long?)
@@ -482,7 +488,7 @@ object NsdRestartPolicy {
  * the Found/Lost contract. Engine wiring later may replace this via constructor
  * injection if desired.
  */
-class NsdTransport(
+public class NsdTransport(
     context: Context?,
     private val apiLevel: NsdApiLevel,
     private val directory: EndpointDirectory,
@@ -891,7 +897,7 @@ class NsdTransport(
     }
 
     /** Pulls engine-wired sweep results into Lost events (sweeper wiring is the engine's job, C3.5). */
-    fun pollSweep() {
+    public fun pollSweep() {
         scope?.launch(lane) {
             sweep(timeSourceMs()).forEach { agedOut ->
                 val serviceName = findServiceNameFor(agedOut.deviceId)
@@ -976,18 +982,18 @@ class NsdTransport(
         }
     }
 
-    companion object {
-        const val TAG = "DISCOVERY"
-        const val DEFAULT_SERVICE_TYPE = "_flash-transfer._tcp."
-        const val DEFAULT_MAX_RESTARTS = 5
-        const val MAX_NAME_LENGTH = 24
+    public companion object {
+        public const val TAG: String = "DISCOVERY"
+        public const val DEFAULT_SERVICE_TYPE: String = "_flash-transfer._tcp."
+        public const val DEFAULT_MAX_RESTARTS: Int = 5
+        public const val MAX_NAME_LENGTH: Int = 24
 
         /**
          * Default radio-loss debounce (see the `lostDebounceMs` constructor param). ~6s comfortably
          * spans an mDNS re-announce interval, so a peer that is merely blinking (common on a phone
          * hotspot) is retained, while a genuinely departed peer clears within a few seconds.
          */
-        const val DEFAULT_LOST_DEBOUNCE_MS = 6_000L
+        public const val DEFAULT_LOST_DEBOUNCE_MS: Long = 6_000L
         private const val EVENT_BUFFER = 64
     }
 }
