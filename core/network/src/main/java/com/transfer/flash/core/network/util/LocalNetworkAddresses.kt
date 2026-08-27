@@ -6,11 +6,11 @@ import android.net.NetworkCapabilities
 import java.net.Inet4Address
 import java.net.NetworkInterface
 
-class LocalNetworkAddresses(context: Context) {
+public class LocalNetworkAddresses(context: Context) {
     private val connectivityManager =
         context.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
 
-    fun ipv4Addresses(): List<String> {
+    public fun ipv4Addresses(): List<String> {
         val fromNetworks = connectivityManager.allNetworks
             .filter { network ->
                 val capabilities = connectivityManager.getNetworkCapabilities(network)

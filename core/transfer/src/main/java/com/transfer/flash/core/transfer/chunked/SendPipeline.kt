@@ -27,7 +27,7 @@ package com.transfer.flash.core.transfer.chunked
  * after reconnect (C5.6 reconcile-on-reconnect). The mirror vectors survive via
  * [confirmedSnapshot]/[sentSnapshot] for persistence into `TransferChunkEntity`.
  */
-class SendPipeline(
+internal class SendPipeline(
     private val chunker: Chunker,
     private val send: suspend (ByteArray) -> Boolean,
 ) {
@@ -194,7 +194,7 @@ class SendPipeline(
     private var fileId: String? = null
 }
 
-sealed interface SendResult {
+internal sealed interface SendResult {
 
     data class Completed(
         val totalChunks: Int,

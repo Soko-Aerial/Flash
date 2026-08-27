@@ -1,0 +1,28 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="288dp"
+    android:height="288dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!--
+      System-splash icon (Android 12+ windowSplashScreenAnimatedIcon). Static bolt on
+      transparent; the looping breathe/pulse animation is the Compose overlay
+      (FlashSplashScreen). Kept minimal so the cold-start window is just a flicker-free
+      bridge into the app. Master: logo-claude/svg/flash-icon-pulse.svg.
+    -->
+    <path android:pathData="M13.6,2.2 L4.2,13.9 L10.8,13.9 L9.4,21.8 L19.8,9.7 L13.2,9.7 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="4.2"
+                android:startY="2.2"
+                android:endX="19.8"
+                android:endY="21.8">
+                <item android:offset="0.0" android:color="#FF4FD1C2" />
+                <item android:offset="0.5" android:color="#FF1FB8A6" />
+                <item android:offset="0.78" android:color="#FF0D9488" />
+                <item android:offset="1.0" android:color="#FFE8950A" />
+            </gradient>
+        </aapt:attr>
+    </path>
+</vector>

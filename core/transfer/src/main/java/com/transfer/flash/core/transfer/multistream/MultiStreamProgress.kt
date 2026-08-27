@@ -12,7 +12,7 @@ package com.transfer.flash.core.transfer.multistream
  *   double-counts overlapping windows). `-1.0` until two samples exist.
  * @param etaMs `(totalBytes - bytesDone) / rate`; `-1` when unknown/stalled/completed.
  */
-data class MultiStreamProgress(
+internal data class MultiStreamProgress(
     val bytesDone: Long,
     val totalBytes: Long,
     val instantBytesPerSec: Double = -1.0,
@@ -98,7 +98,7 @@ internal class RollingRateMeter(
 }
 
 /** Terminal outcome of [MultiStreamDispatcher.send]. */
-sealed interface MultiStreamResult {
+internal sealed interface MultiStreamResult {
 
     /**
      * All chunks confirmed by the receiver (bit-vector complete).

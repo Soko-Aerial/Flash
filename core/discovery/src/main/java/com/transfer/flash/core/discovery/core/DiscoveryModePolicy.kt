@@ -14,7 +14,7 @@ package com.transfer.flash.core.discovery.core
  * - [capabilityFlags]: TXT `caps` tokens advertised for the mode (consumers may
  *   filter peers by them; RECEIVE_KIOSK advertises `kiosk` willingness).
  */
-data class DiscoveryModePolicy(
+public data class DiscoveryModePolicy(
     val mode: FlashDiscoveryMode,
     val advertises: Boolean,
     val browseDutyCycleMs: Long?,
@@ -22,10 +22,10 @@ data class DiscoveryModePolicy(
     val restartBackoffBaseMs: Long,
     val capabilityFlags: Set<String>,
 ) {
-    companion object {
-        const val CAP_KIOSK = "kiosk"
+    public companion object {
+        public const val CAP_KIOSK: String = "kiosk"
 
-        fun forMode(mode: FlashDiscoveryMode): DiscoveryModePolicy = when (mode) {
+        public fun forMode(mode: FlashDiscoveryMode): DiscoveryModePolicy = when (mode) {
             FlashDiscoveryMode.STANDARD -> DiscoveryModePolicy(
                 mode = mode,
                 advertises = true,
@@ -74,9 +74,9 @@ data class DiscoveryModePolicy(
             )
         }
 
-        const val DEFAULT_BACKOFF_BASE_MS: Long = 1_000L
-        const val BOOST_BACKOFF_BASE_MS: Long = 250L
-        const val ECO_BROWSE_MS: Long = 20_000L
-        const val ECO_IDLE_MS: Long = 100_000L
+        public const val DEFAULT_BACKOFF_BASE_MS: Long = 1_000L
+        public const val BOOST_BACKOFF_BASE_MS: Long = 250L
+        public const val ECO_BROWSE_MS: Long = 20_000L
+        public const val ECO_IDLE_MS: Long = 100_000L
     }
 }

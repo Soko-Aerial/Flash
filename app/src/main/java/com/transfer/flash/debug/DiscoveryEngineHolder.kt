@@ -23,6 +23,7 @@ import com.transfer.flash.pairing.PairingCoordinator
 import com.transfer.flash.net.AutoConnectGate
 import com.transfer.flash.core.transfer.FlashTransferRepository
 import com.transfer.flash.core.transfer.RealFlashTransferRepository
+import com.transfer.flash.core.engine.store.RoomTransferStore
 import com.transfer.flash.core.transfer.chunked.ChunkFrame
 import com.transfer.flash.core.transfer.chunked.IncrementalSha256
 import com.transfer.flash.core.transfer.chunked.ReceiveEvent
@@ -329,8 +330,7 @@ object DiscoveryEngineHolder {
             fileSourceOpener = { uriString ->
                 openSource(uriString, appContext)
             },
-            transferDao = db.transferDao(),
-            transferChunkDao = db.transferChunkDao(),
+            store = RoomTransferStore(db.transferDao(), db.transferChunkDao()),
             // #5: park every outbound send after FILE_START until the receiver accepts (a RESUME).
             // A compliant sender streams nothing pre-accept, so no chunk is ever lost to the gate.
             requireReceiverAcceptance = true,

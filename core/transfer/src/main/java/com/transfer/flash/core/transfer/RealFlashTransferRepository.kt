@@ -3,12 +3,6 @@ package com.transfer.flash.core.transfer
 import com.transfer.flash.core.common.model.FlashDevice
 import com.transfer.flash.core.common.result.FlashError
 import com.transfer.flash.core.common.result.FlashResult
-import com.transfer.flash.core.persistence.db.dao.ChunkIndexRef
-import com.transfer.flash.core.persistence.db.dao.TransferChunkDao
-import com.transfer.flash.core.persistence.db.dao.TransferDao
-import com.transfer.flash.core.persistence.db.entity.TransferChunkEntity
-import com.transfer.flash.core.persistence.db.entity.TransferEntity
-import com.transfer.flash.core.persistence.settings.FlashSettingsDataStore
 import com.transfer.flash.core.transfer.chunked.ChunkSource
 import com.transfer.flash.core.transfer.chunked.Chunker
 import com.transfer.flash.core.transfer.chunked.FileMeta
@@ -20,6 +14,7 @@ import com.transfer.flash.core.transfer.model.FlashTransferState
 import com.transfer.flash.core.transfer.multistream.MultiStreamDispatcher
 import com.transfer.flash.core.transfer.multistream.MultiStreamResult
 import com.transfer.flash.core.transfer.multistream.StreamChannelFactory
+import com.transfer.flash.core.transfer.store.TransferStore
 import java.io.InputStream
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -38,22 +33,21 @@ import kotlinx.coroutines.launch
 /**
  * Functional stream source provider returning an [InputStream] given a source URI / descriptor.
  */
-fun interface FileSourceOpener {
-    fun open(fileUri: String): InputStream
+public fun interface FileSourceOpener {
+    public fun open(fileUri: String): InputStream
 }
 
 /**
  * Concrete implementation of [FlashTransferRepository] (C5.2).
  * Orchestrates multi-stream chunked file transfers over [MultiStreamDispatcher],
- * persists transfer progress and resume states to Room DAOs, and exposes reactive UI state.
+ * persists transfer progress and resume states through the optional [TransferStore] port
+ * (null = run without persistence; only resume-across-restart is disabled), and exposes reactive UI state.
  */
-class RealFlashTransferRepository(
+public class RealFlashTransferRepository(
     private val chunker: Chunker = Chunker(),
     private val streamChannelFactory: StreamChannelFactory,
     private val fileSourceOpener: FileSourceOpener,
-    private val transferDao: TransferDao? = null,
-    private val transferChunkDao: TransferChunkDao? = null,
-    private val settingsDataStore: FlashSettingsDataStore? = null,
+    private val store: TransferStore? = null,
     private val repositoryScope: CoroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
     private val workerDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val defaultStreams: Int = 2,
@@ -76,9 +70,9 @@ class RealFlashTransferRepository(
      * transfer is paused — TCP backpressure then throttles the sender (no wire protocol change).
      */
     private val _incomingControl = MutableSharedFlow<IncomingControl>(extraBufferCapacity = 16)
-    val incomingControl: MutableSharedFlow<IncomingControl> = _incomingControl
+    public val incomingControl: MutableSharedFlow<IncomingControl> = _incomingControl
 
-    data class IncomingControl(val transferId: String, val action: String)
+    public data class IncomingControl(val transferId: String, val action: String)
 
     /**
      * Wire-level control frames to deliver to the counterpart peer (`FLASH_XFER`, ADR-018):
@@ -86,22 +80,22 @@ class RealFlashTransferRepository(
      * of relying on TCP backpressure alone (which cannot reach dedicated data channels).
      */
     private val _outgoingControl = MutableSharedFlow<OutgoingControl>(extraBufferCapacity = 16)
-    val outgoingControl: MutableSharedFlow<OutgoingControl> = _outgoingControl
+    public val outgoingControl: MutableSharedFlow<OutgoingControl> = _outgoingControl
 
-    data class OutgoingControl(val transferId: String, val peerDeviceId: String?, val action: String)
+    public data class OutgoingControl(val transferId: String, val peerDeviceId: String?, val action: String)
 
-    companion object {
-        const val ACTION_PAUSE = "pause"
-        const val ACTION_RESUME = "resume"
-        const val ACTION_CANCEL = "cancel"
+    public companion object {
+        public const val ACTION_PAUSE: String = "pause"
+        public const val ACTION_RESUME: String = "resume"
+        public const val ACTION_CANCEL: String = "cancel"
 
         /**
          * Local-only intake actions for the inbound offer gate (#5). These never go on the wire as
          * an XFER `action` — accept maps to a RESUME sent to the peer, decline to a CANCEL. They
          * travel on [incomingControl] so the host can resolve/drop the deferred pipeline sink.
          */
-        const val ACTION_ACCEPT = "accept"
-        const val ACTION_DECLINE = "decline"
+        public const val ACTION_ACCEPT: String = "accept"
+        public const val ACTION_DECLINE: String = "decline"
     }
 
     private val runningJobs = ConcurrentHashMap<String, Job>()
@@ -178,13 +172,10 @@ class RealFlashTransferRepository(
     }
 
     _activeTransfers.update { it + initialTransfer }
-    transferDao?.insert(
-        TransferEntity(
-            transferId = transferIdString,
-            totalBytes = fileSize,
-            bytesDone = 0L,
-            status = FlashTransferState.Queued.name,
-        ),
+    store?.insertTransfer(
+        transferId = transferIdString,
+        totalBytes = fileSize,
+        status = FlashTransferState.Queued.name,
     )
 
         val job = repositoryScope.launch(workerDispatcher) {
@@ -219,7 +210,7 @@ class RealFlashTransferRepository(
             totalBytes = fileSize,
         )
 
-        val doneIndexes = transferChunkDao?.doneChunks(transferId) ?: emptyList()
+        val doneIndexes = store?.doneChunks(transferId) ?: emptyList()
         val source = ChunkSource { fileSourceOpener.open(fileUri) }
 
         val dispatcher = MultiStreamDispatcher(
@@ -249,13 +240,13 @@ class RealFlashTransferRepository(
                         etaSeconds = if (progress.etaMs >= 0) progress.etaMs / 1000 else -1L,
                     )
                 }
-                transferDao?.setBytesDone(transferId, progress.bytesDone)
+                store?.setBytesDone(transferId, progress.bytesDone)
 
                 // Persist newly confirmed chunks so a later resume skips them (C5.6).
                 val confirmedNow = dispatcher.confirmedIndexesSnapshot()
                 val fresh = confirmedNow.filter { it !in persistedDone }
                 if (fresh.isNotEmpty()) {
-                    transferChunkDao?.insertAll(fresh.map { TransferChunkEntity(transferId, it, done = true) })
+                    store?.markChunksDone(transferId, fresh)
                     persistedDone = confirmedNow.toSet()
                 }
             }
@@ -273,8 +264,8 @@ class RealFlashTransferRepository(
                             etaSeconds = 0L,
                         )
                     }
-                    transferDao?.setStatus(transferId, FlashTransferState.Completed.name)
-                    transferDao?.setBytesDone(transferId, fileSize)
+                    store?.setStatus(transferId, FlashTransferState.Completed.name)
+                    store?.setBytesDone(transferId, fileSize)
                 }
 
                 is MultiStreamResult.Failed -> {
@@ -289,7 +280,7 @@ class RealFlashTransferRepository(
                             etaSeconds = 0L,
                         )
                     }
-                    transferDao?.setStatus(transferId, FlashTransferState.Failed.name)
+                    store?.setStatus(transferId, FlashTransferState.Failed.name)
                 }
             }
         } catch (ce: kotlinx.coroutines.CancellationException) {
@@ -309,7 +300,7 @@ class RealFlashTransferRepository(
                     etaSeconds = 0L,
                 )
             }
-            transferDao?.setStatus(transferId, FlashTransferState.Failed.name)
+            store?.setStatus(transferId, FlashTransferState.Failed.name)
         } finally {
             // Retire only OUR registrations: a resume that relaunched this transferId may already
             // have registered a replacement dispatcher/job under the same key, and blindly
@@ -339,7 +330,7 @@ class RealFlashTransferRepository(
             updateTransferState(transferId) {
                 it.copy(state = FlashTransferState.Paused, speedBytesPerSec = 0L, etaSeconds = -1L)
             }
-            transferDao?.setStatus(transferId, FlashTransferState.Paused.name)
+            store?.setStatus(transferId, FlashTransferState.Paused.name)
         }
 
         if (pauseIntents.contains(transferId)) {
@@ -347,7 +338,7 @@ class RealFlashTransferRepository(
             return
         }
         updateTransferState(transferId) { it.copy(state = FlashTransferState.Transferring) }
-        transferDao?.setStatus(transferId, FlashTransferState.Transferring.name)
+        store?.setStatus(transferId, FlashTransferState.Transferring.name)
         if (pauseIntents.contains(transferId)) enterPaused()
     }
 
@@ -384,7 +375,7 @@ class RealFlashTransferRepository(
         updateTransferState(transferId.value) {
             it.copy(state = FlashTransferState.Paused, speedBytesPerSec = 0L, etaSeconds = -1L)
         }
-        transferDao?.setStatus(transferId.value, FlashTransferState.Paused.name)
+        store?.setStatus(transferId.value, FlashTransferState.Paused.name)
         // Always tell the peer, dispatcher or not: it stops ACK/intake churn on its side and keeps
         // both UIs in lockstep.
         emitOutgoing(transferId.value, transfer.peerDeviceId, ACTION_PAUSE)
@@ -439,7 +430,7 @@ class RealFlashTransferRepository(
             updateTransferState(transferId.value) {
                 it.copy(state = FlashTransferState.Transferring, errorMessage = null)
             }
-            transferDao?.setStatus(transferId.value, FlashTransferState.Transferring.name)
+            store?.setStatus(transferId.value, FlashTransferState.Transferring.name)
             emitOutgoing(transferId.value, transfer.peerDeviceId, ACTION_RESUME)
             return FlashResult.Success(Unit)
         }
@@ -447,7 +438,7 @@ class RealFlashTransferRepository(
         updateTransferState(transferId.value) {
             it.copy(state = FlashTransferState.Queued, errorMessage = null)
         }
-        transferDao?.setStatus(transferId.value, FlashTransferState.Queued.name)
+        store?.setStatus(transferId.value, FlashTransferState.Queued.name)
 
         // Tell the peer before the relaunch: a receiver that paused its own intake must re-open
         // the gate, otherwise the fresh dispatcher blocks on backpressure with nothing draining.
@@ -485,7 +476,7 @@ class RealFlashTransferRepository(
         updateTransferState(transferId.value) {
             it.copy(state = FlashTransferState.Cancelled, speedBytesPerSec = 0L, etaSeconds = 0L)
         }
-        transferDao?.setStatus(transferId.value, FlashTransferState.Cancelled.name)
+        store?.setStatus(transferId.value, FlashTransferState.Cancelled.name)
 
         // Tell the counterpart so both sides tear down deterministically (ADR-018).
         if (transfer != null) {
@@ -501,7 +492,7 @@ class RealFlashTransferRepository(
      * Applies a `FLASH_XFER` control frame received from the counterpart peer (ADR-018).
      * Keeps BOTH sides' state and transmission behavior in lockstep.
      */
-    fun onRemoteTransferControl(transferId: String, action: String) {
+    public fun onRemoteTransferControl(transferId: String, action: String) {
         runCatching { android.util.Log.i("TRANSFER", "remote control action=$action transferId=$transferId") }
         val transfer = _activeTransfers.value.find { it.id.value == transferId } ?: return
         when (action) {
@@ -606,8 +597,8 @@ class RealFlashTransferRepository(
     private val receiverDone = ConcurrentHashMap<String, MutableSet<Int>>()
 
     /** Warms [receiverDone] from persisted chunk rows. Call once during transport startup. */
-    suspend fun preloadReceiverProgress() {
-        val rows = transferChunkDao?.allDoneChunks() ?: return
+    public suspend fun preloadReceiverProgress() {
+        val rows = store?.allDoneChunks() ?: return
         for (row in rows) {
             receiverDone.getOrPut(row.transferId) { java.util.Collections.newSetFromMap(ConcurrentHashMap()) }
                 .add(row.chunkIndex)
@@ -615,7 +606,7 @@ class RealFlashTransferRepository(
     }
 
     /** Synchronous resume seed for the receive pipeline; empty when nothing was persisted. */
-    fun receiverDoneIndexes(transferId: String): List<Int> =
+    public fun receiverDoneIndexes(transferId: String): List<Int> =
         receiverDone[transferId]?.sorted() ?: emptyList()
 
     /**
@@ -623,16 +614,16 @@ class RealFlashTransferRepository(
      * mid-session re-offer seeds correctly) and persists them so a post-restart resume can skip
      * them. INSERT-or-ignore mirrors the sender's [executeSend] persistence.
      */
-    fun onIncomingChunkConfirmed(transferId: String, indexes: List<Int>) {
+    public fun onIncomingChunkConfirmed(transferId: String, indexes: List<Int>) {
         if (indexes.isEmpty()) return
         val set = receiverDone.getOrPut(transferId) {
             java.util.Collections.newSetFromMap(ConcurrentHashMap())
         }
         val fresh = indexes.filter { set.add(it) }
         if (fresh.isEmpty()) return
-        val dao = transferChunkDao ?: return
+        val activeStore = store ?: return
         repositoryScope.launch(workerDispatcher) {
-            dao.insertAll(fresh.map { TransferChunkEntity(transferId, it, done = true) })
+            activeStore.markChunksDone(transferId, fresh)
         }
     }
 

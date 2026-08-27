@@ -11,34 +11,34 @@ import com.transfer.flash.core.common.annotation.FlashInternalApi
  * - '=' -> '%3D'
  */
 @FlashInternalApi
-object FlashTextFraming {
+public object FlashTextFraming {
 
-    fun escape(value: String): String {
+    public fun escape(value: String): String {
         return value
             .replace("%", "%25")
             .replace(" ", "%20")
             .replace("=", "%3D")
     }
 
-    fun unescape(value: String): String {
+    public fun unescape(value: String): String {
         return value
             .replace("%3D", "=")
             .replace("%20", " ")
             .replace("%25", "%")
     }
 
-    fun encodeFields(prefix: String, vararg fields: Pair<String, String>): String {
+    public fun encodeFields(prefix: String, vararg fields: Pair<String, String>): String {
         return encodeFields(prefix, fields.toList())
     }
 
-    fun encodeFields(prefix: String, fields: List<Pair<String, String>>): String {
+    public fun encodeFields(prefix: String, fields: List<Pair<String, String>>): String {
         val encodedPairs = fields.map { (key, value) ->
             "$key=${escape(value)}"
         }
         return (listOf(prefix) + encodedPairs).joinToString(separator = " ")
     }
 
-    fun parseFields(text: String, expectedPrefix: String): Map<String, String>? {
+    public fun parseFields(text: String, expectedPrefix: String): Map<String, String>? {
         val parts = text.trim().split(' ')
         if (parts.firstOrNull() != expectedPrefix) return null
 

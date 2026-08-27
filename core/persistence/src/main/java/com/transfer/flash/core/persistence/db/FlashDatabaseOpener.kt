@@ -10,8 +10,8 @@ import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
  * key unwrapping the SQLCipher passphrase) is implemented in `:app` (C1.4 note); this module
  * stays Keystore-free per R2.
  */
-fun interface PassphraseProvider {
-    fun passphrase(): ByteArray
+public fun interface PassphraseProvider {
+    public fun passphrase(): ByteArray
 }
 
 /**
@@ -25,14 +25,14 @@ fun interface PassphraseProvider {
  *
  * The passphrase itself is never logged by this class.
  */
-object FlashDatabaseOpener {
+public object FlashDatabaseOpener {
 
     /**
      * Production path: full-database encryption via SQLCipher (decision D2). No destructive
      * fallback — unknown schema versions fail fast; migrations are supplied explicitly
      * (empty at v1) and expanded from v2 onward per C1.7.
      */
-    fun openEncrypted(
+    public fun openEncrypted(
         context: Context,
         passphraseProvider: PassphraseProvider,
         vararg migrations: Migration,
@@ -53,7 +53,7 @@ object FlashDatabaseOpener {
      * In-memory path for JVM unit tests only (Robolectric): no SQLCipher factory because the
      * native sqlcipher .so cannot load on the JVM; the framework SQLite driver is used.
      */
-    fun openInMemory(context: Context): FlashDatabase =
+    public fun openInMemory(context: Context): FlashDatabase =
         Room.inMemoryDatabaseBuilder(context.applicationContext, FlashDatabase::class.java)
             // !!! TEST-ONLY: destructive fallback exists here ONLY so ad-hoc test schemas never
             // wedge the JVM suite. PRODUCTION FORBIDS destructive migration from v2 onward

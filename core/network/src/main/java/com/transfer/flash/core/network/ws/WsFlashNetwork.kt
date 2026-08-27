@@ -53,7 +53,7 @@ import kotlinx.coroutines.withTimeoutOrNull
  * - Instant disconnect detection via socket FIN/RST and WebSocket ping/pong keepalives.
  * - Unified text (chat/signaling) and binary (chunked file transfer) transport.
  */
-class WsFlashNetwork(
+public class WsFlashNetwork(
     private val context: Context?,
     private val localDeviceId: String,
     private val localFriendlyName: String,
@@ -207,7 +207,7 @@ class WsFlashNetwork(
     }
 
     /** Resolved endpoint for a discovered peer (host + WS port), or null when unknown. */
-    fun endpointOf(deviceId: String?): Pair<String, Int>? =
+    public fun endpointOf(deviceId: String?): Pair<String, Int>? =
         deviceId?.let { id -> knownEndpoints[id]?.let { it.host to it.port } }
 
     // ------------------------------------------------------------------
@@ -605,8 +605,8 @@ class WsFlashNetwork(
         }
     }
 
-    companion object {
-        const val PROTOCOL_VERSION = 2
+    public companion object {
+        public const val PROTOCOL_VERSION: Int = 2
         private const val HELLO_PREFIX = "FLASH_WS_HELLO"
         private const val HANDSHAKE_TIMEOUT_MS = 6_000L
     }

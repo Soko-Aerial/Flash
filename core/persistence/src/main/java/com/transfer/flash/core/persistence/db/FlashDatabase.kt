@@ -49,35 +49,35 @@ import com.transfer.flash.core.persistence.db.entity.TrustedPeerEntity
     version = FlashDatabase.DATABASE_VERSION,
     exportSchema = true,
 )
-abstract class FlashDatabase : RoomDatabase() {
+public abstract class FlashDatabase : RoomDatabase() {
 
-    abstract fun messageDao(): MessageDao
+    public abstract fun messageDao(): MessageDao
 
-    abstract fun conversationDao(): ConversationDao
+    public abstract fun conversationDao(): ConversationDao
 
-    abstract fun receiptDao(): ReceiptDao
+    public abstract fun receiptDao(): ReceiptDao
 
-    abstract fun outboxDao(): OutboxDao
+    public abstract fun outboxDao(): OutboxDao
 
-    abstract fun transferDao(): TransferDao
+    public abstract fun transferDao(): TransferDao
 
-    abstract fun transferChunkDao(): TransferChunkDao
+    public abstract fun transferChunkDao(): TransferChunkDao
 
-    abstract fun recentSearchDao(): RecentSearchDao
+    public abstract fun recentSearchDao(): RecentSearchDao
 
-    abstract fun trustedPeerDao(): TrustedPeerDao
+    public abstract fun trustedPeerDao(): TrustedPeerDao
 
-    abstract fun reactionDao(): ReactionDao
+    public abstract fun reactionDao(): ReactionDao
 
-    abstract fun draftDao(): DraftDao
+    public abstract fun draftDao(): DraftDao
 
-    abstract fun readCursorDao(): ReadCursorDao
+    public abstract fun readCursorDao(): ReadCursorDao
 
-    companion object {
-        const val DATABASE_NAME = "flash.db"
+    public companion object {
+        public const val DATABASE_NAME: String = "flash.db"
         // v2: MessageEntity gained attachment columns (attachmentTransferId/Name/Mime/Size/Path).
         // v3: MessageEntity gained reply columns (replyToId/replyToPreview). Migrations in
         //     [FlashMigrations]; production open path is non-destructive from v2 onward.
-        const val DATABASE_VERSION = 3
+        public const val DATABASE_VERSION: Int = 3
     }
 }

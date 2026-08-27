@@ -3,6 +3,25 @@
 **Goal:** turn the prepared repo into a resolvable Gradle dependency via JitPack,
 and verify a real consumer can pull it. This is the phase that actually ships it.
 
+## STATUS (updated 2026-08-27)
+- **Repo coordinates:** `Kali452345/Flash` → JitPack `com.github.Kali452345.Flash:core-engine:v1.0.0`.
+- **Task 6.1 — DONE + VERIFIED.** `./gradlew … :core:<mod>:publishToMavenLocal -x test -x lint`
+  publishes all **eight** supported modules to `~/.m2/repository/com/transfer/flash/…` at
+  `1.0.0` (aar + sources jar + pom + module). Engine POM lists the expected transitive deps.
+- **Task 6.2 — DONE.** `jitpack.yml` created at repo root (openjdk17 + single-line install).
+- **CORRECTION vs original draft:** `core:engine` `api`-depends on **`core:messaging`**, so the
+  published set is **8 modules** (common, security, discovery, network, transfer, persistence,
+  **messaging**, engine) — not 7. The earlier install list omitting messaging would have left a
+  consumer of `core-engine` unable to resolve `core-messaging:1.0.0`. Both `jitpack.yml` and the
+  README module table now reflect this (messaging = shipped-transitively, API experimental).
+- **Task 6.5 — DONE (repo/user filled).** README badge + install snippet use the real coordinates
+  and the intended `v1.0.0` tag. Correct once that tag/release actually exists.
+- **REMAINING (needs the user — git push/tag/release, then external verify):**
+  6.3 commit + `git tag v1.0.0` + push + cut GitHub Release; 6.4 verify a fresh external project
+  resolves `core-engine:v1.0.0` from JitPack.
+
+---
+
 **Prereq:** Phases 1–2 at minimum (a compilable umbrella artifact). Phases 3–5
 strongly recommended before a public tag.
 

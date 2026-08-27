@@ -18,7 +18,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-class LanProbeServer(
+public class LanProbeServer(
     private val deviceId: String,
     private val friendlyName: String,
     private val onPeerProbed: (LanProbeHello, String, LanSession) -> Unit = { _, _, _ -> },
@@ -30,10 +30,10 @@ class LanProbeServer(
     private var serverSocket: ServerSocket? = null
     private var acceptJob: Job? = null
 
-    val port: Int
+    public val port: Int
         get() = serverSocket?.localPort ?: 0
 
-    suspend fun start(): Int = withContext(Dispatchers.IO) {
+    public suspend fun start(): Int = withContext(Dispatchers.IO) {
         if (running.get()) return@withContext port
 
         val socket = createServerSocket().apply {
@@ -49,7 +49,7 @@ class LanProbeServer(
         socket.localPort
     }
 
-    fun stop() {
+    public fun stop() {
         running.set(false)
         acceptJob?.cancel()
         acceptJob = null
@@ -123,11 +123,11 @@ class LanProbeServer(
             .getOrElse { ServerSocket(0) }
     }
 
-    companion object {
-        const val TAG = "LAN"
-        const val PROTOCOL_VERSION = 1
-        const val DEFAULT_PORT = 45821
-        const val ACCEPT_TIMEOUT_MS = 1_000
-        const val READ_TIMEOUT_MS = 3_000
+    public companion object {
+        public const val TAG: String = "LAN"
+        public const val PROTOCOL_VERSION: Int = 1
+        public const val DEFAULT_PORT: Int = 45821
+        public const val ACCEPT_TIMEOUT_MS: Int = 1_000
+        public const val READ_TIMEOUT_MS: Int = 3_000
     }
 }

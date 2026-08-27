@@ -20,7 +20,7 @@ import com.transfer.flash.core.common.time.FlashTimeSource
  * | [Expired]                 | `Expired`                     | Timeout — **neutral** outcome, deliberately distinct from [Failed]. |
  * | [Failed]                  | *(no demo equivalent)*        | Protocol error (e.g., confirmation-hash mismatch); surfaces via error states, not the pairing card. |
  */
-enum class PairingPhase {
+public enum class PairingPhase {
     Idle,
     RequestReceived,
     AwaitingLocalDecision,
@@ -32,7 +32,7 @@ enum class PairingPhase {
 }
 
 /** Engine-owned timeout configuration for a pairing session. */
-data class PairingTimeouts(
+public data class PairingTimeouts(
     /**
      * How long a pairing request stays valid after creation. Mirrors the 30 s
      * countdown shown by UI-032 (`expiresInSeconds = 30` in profile-ui.md).
@@ -45,8 +45,8 @@ data class PairingTimeouts(
      */
     val decisionWindowMs: Long = DEFAULT_REQUEST_EXPIRY_MS,
 ) {
-    companion object {
-        const val DEFAULT_REQUEST_EXPIRY_MS: Long = 30_000L
+    public companion object {
+        public const val DEFAULT_REQUEST_EXPIRY_MS: Long = 30_000L
     }
 }
 
@@ -56,7 +56,7 @@ data class PairingTimeouts(
  * `(state, event)` so every transition path can be unit-tested without Android,
  * coroutines, or real time.
  */
-data class PairingSessionState(
+public data class PairingSessionState(
     val phase: PairingPhase = PairingPhase.Idle,
     val requestId: String? = null,
     val peerDeviceId: String? = null,
@@ -76,13 +76,13 @@ data class PairingSessionState(
     /** Human-readable reason when [phase] is [PairingPhase.Failed]. */
     val failureReason: String? = null,
 ) {
-    companion object {
-        val IDLE: PairingSessionState = PairingSessionState()
+    public companion object {
+        public val IDLE: PairingSessionState = PairingSessionState()
     }
 }
 
 /** Events driving the pairing state machine. Pure data; no coroutines required. */
-sealed interface PairingSessionEvent {
+internal sealed interface PairingSessionEvent {
 
     /** A validated PAIR_REQUEST arrived (responder side). */
     data class RequestReceived(
@@ -152,7 +152,7 @@ sealed interface PairingSessionEvent {
  *   terminal) leave the state UNCHANGED — the reducer is total and never throws.
  * - Local decline is NOT an error: it resets to Idle (the demo dismissed the card).
  */
-object PairingSessionStateMachine {
+internal object PairingSessionStateMachine {
 
     fun initial(): PairingSessionState = PairingSessionState.IDLE
 

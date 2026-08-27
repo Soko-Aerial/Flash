@@ -7,7 +7,7 @@ package com.transfer.flash.core.discovery.core
  * translates a mode into concrete knobs (advertise? duty cycle? backoff
  * base? auto-accept?) that the transport/composite layers honor.
  */
-enum class FlashDiscoveryMode {
+public enum class FlashDiscoveryMode {
     /** Advertise + continuous browse. Default behavior. */
     STANDARD,
 

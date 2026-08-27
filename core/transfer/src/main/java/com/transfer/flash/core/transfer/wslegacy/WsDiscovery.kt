@@ -17,7 +17,7 @@ import kotlinx.coroutines.launch
  *
  * Compatibility adapter for [NsdFlashDiscovery] in the legacy WebSocket transfer manager.
  */
-class WsDiscovery(
+internal class WsDiscovery(
     context: Context,
     localDeviceId: String,
     friendlyName: String,

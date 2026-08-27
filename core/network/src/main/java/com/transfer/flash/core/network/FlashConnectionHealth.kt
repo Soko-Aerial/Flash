@@ -8,7 +8,7 @@ package com.transfer.flash.core.network
  * Lifecycle: OFFLINE → CONNECTING → CONNECTED; DEGRADED marks connected-but-
  * impaired paths (relay/lossy link — populated post-v1 with D5 mesh).
  */
-enum class FlashConnectionHealth {
+public enum class FlashConnectionHealth {
     /** No reachable peers and no active sessions. */
     Offline,
 

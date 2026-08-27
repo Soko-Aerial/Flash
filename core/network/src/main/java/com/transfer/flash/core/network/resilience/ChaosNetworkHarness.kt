@@ -21,7 +21,7 @@ import java.util.concurrent.CopyOnWriteArrayList
  * All time flows through explicit `nowMs` parameters supplied by tests —
  * fully deterministic, no coroutine-test dependency.
  */
-class ChaosNetworkHarness(
+internal class ChaosNetworkHarness(
     delegate: FlashSession,
     val chaos: ChaosSession,
     queueCapacity: Int = BoundedSendQueue.DEFAULT_CAPACITY,

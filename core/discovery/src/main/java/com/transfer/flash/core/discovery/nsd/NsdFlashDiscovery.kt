@@ -24,7 +24,7 @@ import java.nio.charset.StandardCharsets
  * Headless Android NSD (mDNS / DNS-SD) discovery and advertising engine.
  * Encapsulates Wi-Fi multicast locks, serialized service resolution, and stale callback protection.
  */
-class NsdFlashDiscovery(
+public class NsdFlashDiscovery(
     context: Context,
     private val localDeviceId: FlashDeviceId,
     private val friendlyNameProvider: () -> String,
@@ -288,9 +288,9 @@ class NsdFlashDiscovery(
         multicastLock = null
     }
 
-    companion object {
-        const val TAG = "DISCOVERY"
-        const val SERVICE_TYPE_LAN = "_flash-transfer._tcp."
-        const val SERVICE_TYPE_WS = "_flashws._tcp."
+    public companion object {
+        public const val TAG: String = "DISCOVERY"
+        public const val SERVICE_TYPE_LAN: String = "_flash-transfer._tcp."
+        public const val SERVICE_TYPE_WS: String = "_flashws._tcp."
     }
 }

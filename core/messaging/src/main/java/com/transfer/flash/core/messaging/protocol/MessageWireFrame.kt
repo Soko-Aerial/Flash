@@ -3,7 +3,7 @@ package com.transfer.flash.core.messaging.protocol
 /**
  * Protocol frames exchanged over Flash networking sessions for messaging (C6.0).
  */
-sealed interface MessageWireFrame {
+public sealed interface MessageWireFrame {
 
     /**
      * Outbox text message payload.
@@ -15,7 +15,7 @@ sealed interface MessageWireFrame {
      * @property text message content string.
      * @property sentAt client timestamp in ms.
      */
-    data class TextMessage(
+    public data class TextMessage(
         val localId: String,
         val conversationId: String,
         val senderId: String,
@@ -31,7 +31,7 @@ sealed interface MessageWireFrame {
     /**
      * Delivery receipt confirming that a message was received and committed to storage.
      */
-    data class DeliveryReceipt(
+    public data class DeliveryReceipt(
         val messageId: String,
         val conversationId: String,
         val memberId: String,
@@ -41,7 +41,7 @@ sealed interface MessageWireFrame {
     /**
      * Read cursor receipt confirming that messages up to [upToMessageId] have been seen.
      */
-    data class ReadReceipt(
+    public data class ReadReceipt(
         val conversationId: String,
         val memberId: String,
         val upToMessageId: String,
@@ -52,7 +52,7 @@ sealed interface MessageWireFrame {
      * Ephemeral typing state frame.
      * TTL-governed, never persisted to disk.
      */
-    data class TypingFrame(
+    public data class TypingFrame(
         val conversationId: String,
         val memberId: String,
         val memberName: String,
@@ -63,7 +63,7 @@ sealed interface MessageWireFrame {
     /**
      * Reaction update frame.
      */
-    data class ReactionFrame(
+    public data class ReactionFrame(
         val messageId: String,
         val conversationId: String,
         val memberId: String,

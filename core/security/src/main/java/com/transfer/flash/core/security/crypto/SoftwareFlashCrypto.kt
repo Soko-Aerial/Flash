@@ -19,7 +19,7 @@ import java.security.PublicKey
  * hardware-backed. The ephemeral-ECDH + HKDF session-key path is identical in both classes;
  * ephemeral keys are memory-only by design everywhere.
  */
-class SoftwareFlashCrypto : FlashCrypto {
+internal class SoftwareFlashCrypto : FlashCrypto {
 
     private val identityKeyPair: KeyPair by lazy { EcP256Ops.ephemeralKeyPair() }
 

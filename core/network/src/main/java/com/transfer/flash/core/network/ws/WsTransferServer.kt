@@ -1,6 +1,9 @@
+@file:OptIn(FlashInternalApi::class)
+
 package com.transfer.flash.core.network.ws
 
 import android.util.Log
+import com.transfer.flash.core.common.annotation.FlashInternalApi
 import java.io.IOException
 import java.net.ServerSocket
 import java.net.Socket
@@ -42,7 +45,7 @@ internal object WsLog {
  * streams of accepted sockets are never touched before the wrap (clean-boundary rule,
  * see `SecureSocketUpgrader` KDoc); pre-wrap access fails closed.
  */
-class WsTransferServer(
+public class WsTransferServer(
     private val connectionListener: WsConnection.Listener,
     private val onConnection: (WsConnection) -> Unit,
     private val tls: TlsOptions? = null,
@@ -52,14 +55,14 @@ class WsTransferServer(
     private var acceptJob: Job? = null
 
     @Volatile
-    var listenPort: Int = 0
+    public var listenPort: Int = 0
         private set
 
-    val isRunning: Boolean
+    public val isRunning: Boolean
         get() = serverSocket?.isClosed == false
 
     @Synchronized
-    fun start(): Int {
+    public fun start(): Int {
         if (isRunning) return listenPort
         val socket = runCatching { ServerSocket(PREFERRED_PORT) }.getOrElse { ServerSocket(0) }
         serverSocket = socket
@@ -70,7 +73,7 @@ class WsTransferServer(
     }
 
     @Synchronized
-    fun stop() {
+    public fun stop() {
         acceptJob?.cancel()
         acceptJob = null
         runCatching { serverSocket?.close() }
@@ -127,8 +130,8 @@ class WsTransferServer(
         onConnection(WsConnection(socket, maskOutboundFrames = false, remoteLabel = label, listener = connectionListener))
     }
 
-    companion object {
-        const val PREFERRED_PORT = 45822
+    public companion object {
+        public const val PREFERRED_PORT: Int = 45822
         private const val TAG = "WS"
         private const val HANDSHAKE_TIMEOUT_MS = 8_000
     }

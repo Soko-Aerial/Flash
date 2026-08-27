@@ -12,12 +12,12 @@ import java.util.UUID
  * Android [SharedPreferences] implementation of [FlashIdentityStore].
  * Maintains 100% backward compatibility with Flash 1.0 identity storage keys.
  */
-class AndroidPreferencesIdentityStore(
+public class AndroidPreferencesIdentityStore(
     private val preferences: SharedPreferences,
     private val defaultNameProvider: () -> String = ::defaultDeviceName,
 ) : FlashIdentityStore {
 
-    constructor(context: Context) : this(
+    public constructor(context: Context) : this(
         context.applicationContext.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
     )
 
@@ -47,12 +47,12 @@ class AndroidPreferencesIdentityStore(
         return FlashResult.Success(Unit)
     }
 
-    companion object {
-        const val PREFERENCES_NAME = "flash_identity"
-        const val KEY_DEVICE_ID = "device_id"
-        const val KEY_FRIENDLY_NAME = "friendly_name"
+    public companion object {
+        public const val PREFERENCES_NAME: String = "flash_identity"
+        public const val KEY_DEVICE_ID: String = "device_id"
+        public const val KEY_FRIENDLY_NAME: String = "friendly_name"
 
-        fun defaultDeviceName(): String {
+        public fun defaultDeviceName(): String {
             val model = Build.MODEL?.trim().orEmpty()
             return if (model.isBlank()) "Flash Android" else "Flash $model"
         }

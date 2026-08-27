@@ -8,7 +8,7 @@ import androidx.room.PrimaryKey
  * recency/activity rank maintained by the repository layer (C6), not by SQL triggers.
  */
 @Entity(tableName = "conversations")
-data class ConversationEntity(
+public data class ConversationEntity(
     @PrimaryKey val id: String,
     val title: String,
     val isGroup: Boolean,

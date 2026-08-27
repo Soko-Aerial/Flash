@@ -47,6 +47,13 @@ publishing {
     }
 }
 
+// Phase 3 Task 3.2: strict explicit-API mode. Every declaration that is part of the
+// module's API must state its visibility, so nothing leaks into the published ABI by
+// omission. See docs/publishing/PHASE-03-api-surface.md.
+kotlin {
+    explicitApi()
+}
+
 dependencies {
     implementation(libs.androidx.core.ktx)
     testImplementation(libs.junit)

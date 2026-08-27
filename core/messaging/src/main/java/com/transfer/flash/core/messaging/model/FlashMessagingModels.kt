@@ -4,12 +4,12 @@ import com.transfer.flash.core.common.model.FlashDeviceId
 import com.transfer.flash.core.common.model.FlashPeerPresence
 
 @JvmInline
-value class FlashMessageId(val value: String)
+public value class FlashMessageId(public val value: String)
 
 @JvmInline
-value class FlashConversationId(val value: String)
+public value class FlashConversationId(public val value: String)
 
-enum class FlashMessageStatus {
+public enum class FlashMessageStatus {
     Pending,
     Sent,
     Delivered,
@@ -17,14 +17,14 @@ enum class FlashMessageStatus {
     Failed,
 }
 
-enum class FlashMessageGroupPosition {
+public enum class FlashMessageGroupPosition {
     SINGLE,
     TOP,
     MIDDLE,
     BOTTOM,
 }
 
-enum class FlashListPreviewDelivery {
+public enum class FlashListPreviewDelivery {
     Sending,
     Sent,
     Delivered,
@@ -32,14 +32,14 @@ enum class FlashListPreviewDelivery {
     Failed,
 }
 
-enum class FlashNetworkTransport {
+public enum class FlashNetworkTransport {
     Lan,
     WifiDirect,
     Relay,
     Unknown,
 }
 
-data class FlashAttachment(
+public data class FlashAttachment(
     val id: String,
     val name: String,
     val size: Long,
@@ -47,7 +47,7 @@ data class FlashAttachment(
     val uri: String? = null,
 )
 
-data class FlashMessage(
+public data class FlashMessage(
     val id: FlashMessageId,
     val conversationId: FlashConversationId,
     val senderId: FlashDeviceId,
@@ -65,7 +65,7 @@ data class FlashMessage(
  * One entry per unique emoji. [isSelfReacted] indicates whether the local
  * user contributed to this reaction.
  */
-data class FlashReaction(
+public data class FlashReaction(
     val emoji: String,
     val count: Int,
     val isSelfReacted: Boolean = false,
@@ -75,7 +75,7 @@ data class FlashReaction(
 /**
  * In-bubble reference to a previous quoted message (UI-010).
  */
-data class FlashQuotedReplyUi(
+public data class FlashQuotedReplyUi(
     val messageId: String,
     val senderName: String,
     val textSnippet: String,
@@ -85,7 +85,7 @@ data class FlashQuotedReplyUi(
 /**
  * Transfer state for file attachments (UI-016).
  */
-enum class FlashFileTransferStatus {
+public enum class FlashFileTransferStatus {
     NotDownloaded,
     Transferring,
     Downloaded,
@@ -97,7 +97,7 @@ enum class FlashFileTransferStatus {
  * layer so a chat bubble can render inline send/receive progress alongside the Transfers tab (B4).
  * Pure data (no Android types) → the join between chat rows and live transfers stays testable.
  */
-data class FlashAttachmentProgress(
+public data class FlashAttachmentProgress(
     /** 0f..1f fraction of bytes moved. */
     val progress: Float,
     val status: FlashFileTransferStatus,
@@ -110,7 +110,7 @@ data class FlashAttachmentProgress(
 /**
  * File attachment representation for conversation UI (UI-016).
  */
-data class FlashFileAttachmentUi(
+public data class FlashFileAttachmentUi(
     val id: String,
     val name: String,
     val sizeBytes: Long,
@@ -125,7 +125,7 @@ data class FlashFileAttachmentUi(
 /**
  * Image attachment representation for conversation photo messages and grids (UI-017).
  */
-data class FlashImageAttachmentUi(
+public data class FlashImageAttachmentUi(
     val id: String,
     val uri: String? = null,
     val thumbUri: String? = null,
@@ -144,7 +144,7 @@ data class FlashImageAttachmentUi(
  * [amplitudes] are pre-computed normalized loudness samples (0..100) captured at
  * record/send time; playback cards resample them into waveform bars.
  */
-data class FlashVoiceAttachmentUi(
+public data class FlashVoiceAttachmentUi(
     val id: String,
     val uri: String? = null,
     val durationMs: Long = 0L,
@@ -153,7 +153,7 @@ data class FlashVoiceAttachmentUi(
     val transferStatus: FlashFileTransferStatus = FlashFileTransferStatus.Downloaded,
 )
 
-data class FlashMessageUi(
+public data class FlashMessageUi(
     val id: String,
     val senderName: String,
     val senderInitials: String,
@@ -172,7 +172,7 @@ data class FlashMessageUi(
     val showSenderHeader: Boolean = true,
 )
 
-data class FlashChatListItemUi(
+public data class FlashChatListItemUi(
     val id: String,
     val title: String,
     val avatarInitials: String,
@@ -190,13 +190,13 @@ data class FlashChatListItemUi(
     val sortOrder: Long = 0L,
 )
 
-data class FlashChatListUiState(
+public data class FlashChatListUiState(
     val items: List<FlashChatListItemUi> = emptyList(),
     val selectionMode: Boolean = false,
     val selectedIds: Set<String> = emptySet(),
 )
 
-data class FlashChatHeaderUiState(
+public data class FlashChatHeaderUiState(
     val title: String,
     val avatarInitials: String,
     val avatarSeed: String = title,
@@ -217,10 +217,10 @@ data class FlashChatHeaderUiState(
 )
 
 /** Role of a member inside a group conversation (UI-029). */
-enum class FlashMemberRole { Owner, Admin, Member }
+public enum class FlashMemberRole { Owner, Admin, Member }
 
 /** One member row of a group conversation (UI-029). */
-data class FlashGroupMemberUi(
+public data class FlashGroupMemberUi(
     val id: String,
     val name: String,
     val initials: String,
@@ -229,14 +229,14 @@ data class FlashGroupMemberUi(
     val transport: FlashNetworkTransport = FlashNetworkTransport.Unknown,
 )
 
-data class FlashConversationUiState(
+public data class FlashConversationUiState(
     val header: FlashChatHeaderUiState,
     val messages: List<FlashMessageUi>,
     /** Persisted unsent composer text for this conversation (#9), restored when the screen opens. */
     val draftText: String = "",
 )
 
-data class FlashConversation(
+public data class FlashConversation(
     val id: FlashConversationId,
     val title: String,
     val lastMessage: FlashMessage? = null,
@@ -247,7 +247,7 @@ data class FlashConversation(
     val presence: FlashPeerPresence = FlashPeerPresence.Offline,
 )
 
-data class FlashConversationDetail(
+public data class FlashConversationDetail(
     val conversation: FlashConversation,
     val messages: List<FlashMessage> = emptyList(),
 )

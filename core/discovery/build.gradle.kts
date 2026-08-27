@@ -49,7 +49,16 @@ publishing {
 
 dependencies {
     api(project(":core:common"))
+    // Public API returns kotlinx.coroutines Flow/StateFlow (e.g. discoveredEndpoints), so
+    // coroutines must be `api` — an `implementation` scope would keep those return types off a
+    // downstream consumer's compile classpath (verified via :sample:consumer).
+    api(libs.kotlinx.coroutines.core)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     testImplementation(libs.junit)
+}
+
+// Phase 3 Task 3.2: strict explicit-API mode. See docs/publishing/PHASE-03-api-surface.md.
+kotlin {
+    explicitApi()
 }

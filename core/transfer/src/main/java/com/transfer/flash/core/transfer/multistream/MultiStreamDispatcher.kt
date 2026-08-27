@@ -52,7 +52,7 @@ import java.util.concurrent.atomic.AtomicLong
  *
  * Instances hold no global/static mutable state — run as many simultaneously as needed.
  */
-class MultiStreamDispatcher(
+internal class MultiStreamDispatcher(
     private val chunker: Chunker,
     private val meta: FileMeta,
     private val source: ChunkSource,

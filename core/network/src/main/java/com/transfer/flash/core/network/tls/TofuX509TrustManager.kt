@@ -45,7 +45,7 @@ import javax.net.ssl.X509ExtendedTrustManager
  * [FlashPinVerifier], which is contractually required to use `MessageDigest.isEqual`
  * (see [FlashPinVerifier] KDoc). This class never compares fingerprints itself.
  */
-class TofuX509TrustManager(
+internal class TofuX509TrustManager(
     private val pinVerifier: FlashPinVerifier,
     private val expectedDeviceId: String?,
     private val onKeyChanged: (presentedFingerprintHex: String) -> Unit = {},

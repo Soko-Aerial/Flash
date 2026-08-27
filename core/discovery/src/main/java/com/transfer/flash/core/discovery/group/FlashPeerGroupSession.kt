@@ -31,14 +31,14 @@ import java.util.concurrent.ConcurrentHashMap
  * any                   --> (map cleared)     disconnectAll() resets the session
  * ```
  */
-enum class PeerLinkStateKind { Connecting, Online, Failed, Sending, Done }
+internal enum class PeerLinkStateKind { Connecting, Online, Failed, Sending, Done }
 
 /**
  * Immutable snapshot of one peer's link state. [attempt] is the 1-based
  * connect-attempt counter (history of how many tries it took / were burned);
  * [bytesSent]/[bytesTotal] are meaningful only while [kind] is [PeerLinkStateKind.Sending].
  */
-data class PeerLinkState(
+internal data class PeerLinkState(
     val endpointId: String,
     val kind: PeerLinkStateKind,
     val bytesSent: Long = 0,
@@ -64,7 +64,7 @@ data class PeerLinkState(
  *   failure signal; thrown non-cancellation exceptions are treated as failure
  *   of THAT peer only (isolation invariant).
  */
-interface GroupPeerConnector {
+internal interface GroupPeerConnector {
     /** Attempt to establish a link to [endpointId]. True = online. */
     suspend fun connect(endpointId: String): Boolean
 
@@ -127,7 +127,7 @@ interface GroupPeerConnector {
  * Pure Kotlin: zero Android dependencies; all collaborators constructor-
  * injected (ground rule R2).
  */
-class FlashPeerGroupSession(
+internal class FlashPeerGroupSession(
     private val connector: GroupPeerConnector,
     private val scope: CoroutineScope,
     private val maxConnectAttempts: Int = DEFAULT_MAX_CONNECT_ATTEMPTS,

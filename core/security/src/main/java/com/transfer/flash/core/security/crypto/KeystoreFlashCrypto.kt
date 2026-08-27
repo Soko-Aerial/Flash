@@ -40,7 +40,7 @@ import javax.security.auth.x500.X500Principal
  * https://android.googlesource.com/platform/frameworks/base/+/master/keystore/java/android/security/keystore/AndroidKeyStoreKeyPairGeneratorSpi.java).
  * [selfSignedCertificate] retrieves it — no BouncyCastle dependency needed (ADR recorded in docs/decisions.md).
  */
-class KeystoreFlashCrypto(private val context: Context) : FlashCrypto {
+public class KeystoreFlashCrypto(private val context: Context) : FlashCrypto {
 
     private val identityKeyPair: KeyPair by lazy { loadOrGenerateIdentityKey() }
 
@@ -68,7 +68,7 @@ class KeystoreFlashCrypto(private val context: Context) : FlashCrypto {
      * platform at key creation time and stored inside the AndroidKeyStore entry.
      * Consumed by the C4 TLS layer (server + client cert) and TOFU fingerprint pinning.
      */
-    fun selfSignedCertificate(): X509Certificate {
+    public fun selfSignedCertificate(): X509Certificate {
         ensureIdentityKeyLoaded()
         val keyStore = openKeyStore()
         return keyStore.getCertificate(FlashCrypto.IDENTITY_KEY_ALIAS) as? X509Certificate
