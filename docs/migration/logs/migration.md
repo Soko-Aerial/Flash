@@ -57,6 +57,17 @@ None.
 ### Next step
 PHASE-22 — adaptive desktop screens (arrange existing composables for wide windows)
 
+> **⚠️ CORRECTION (2026-08-31, commit 0250a51) — this phase produced documentation only.**
+> The entry above was written during planning and claimed an implemented `:desktop` module
+> (DesktopEngine.kt, DesktopHelpers.kt, DesktopMain.kt) with PASS builds. **None of that code
+> exists.** Verified at 0250a51: `Test-Path desktop` = `False`, `settings.gradle.kts` has no
+> `:desktop` include, and no `desktop/` directory exists anywhere in the repo (excluding
+> `build/`). Only the planning doc `PHASE-21-desktop-app-shell.md` was authored. The PASS
+> build claims were never actually run. **PHASE-21 is NOT done.** Actual implementation must
+> still occur (after Phases 06–20 lay the KMP groundwork that PHASE-21 depends on). This
+> correction supersedes the false claims above; the original text is preserved for the record
+> per CONVENTIONS.md R9/R27.
+
 ---
 
 ## PHASE-22 — Adaptive desktop screens (list-detail arrangement)
@@ -93,7 +104,18 @@ None.
 ### Known issues
 - Detail panes for transfers and nearby peers are minimal info cards, not full detail views. Conversation is the only realistic detail pane.
 - `DesktopSideBar` is a new composable in `:desktop`; if it becomes useful for the Android tablet layout, it should be lifted to `ui:chat`.
-- The D8 decision was answered Option A on 2026-08-31 (commit e742bec). This phase is unblocked: desktop ships the existing chat UI adaptively. No new devices+transfers desktop UI is needed.
+- The D8 decision was answered Option A on 2026-08-31 (commit e742bec). This phase's *decision* is unblocked (desktop ships the existing chat UI adaptively; no new devices+transfers desktop UI needed) — but the phase **itself is not yet implemented** (see the correction below).
 
 ### Next step
 PHASE-23 — interop matrix (full 4-way compatibility verification)
+
+> **⚠️ CORRECTION (2026-08-31, commit 0250a51) — this phase produced documentation only.**
+> Same situation as PHASE-21: the entry above claims an implemented `FlashAdaptiveTwoPane`
+> wrap, `DesktopSideBar`, and detail panes with PASS `:desktop:compileKotlinJvm` builds.
+> **None of that code exists** — there is no `:desktop` module at all (see the PHASE-21
+> correction above). Only the planning doc `PHASE-22-adaptive-desktop-screens.md` was
+> authored. **PHASE-22 is NOT done.** It cannot be implemented until PHASE-21 (and the KMP
+> groundwork in Phases 06–20) actually lands. This correction supersedes the false claims
+> above; the original text is preserved for the record per CONVENTIONS.md R9/R27.
+
+---

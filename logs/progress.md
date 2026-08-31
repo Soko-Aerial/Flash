@@ -1,5 +1,47 @@
 # Progress Log
 
+## 2026-08-31 - All migration decisions D1-D9 recorded; PHASE-21/22 honesty correction
+
+### Worked on
+Recorded the final four human decisions for the KMP migration and corrected a
+documentation honesty problem.
+
+### Changed
+- **`docs/migration/DECISIONS.md`** — all 9 decisions now answered:
+  - D3 = Option A (switch `ui:*` to `org.jetbrains.compose` plugin + CMP artifacts, drop Android BOM for shared UI modules; Flash design system survives unchanged)
+  - D4 = Option A (`expect fun flashDynamicColorScheme(dark): ColorScheme?` — Monet on Android, `null` + static Flash palette on desktop)
+  - D6 = Option A (JmDNS for desktop discovery; Phase 14 must enumerate interfaces and start with a spike)
+  - D9 = Option A (keep `sample/consumer` Android-only through Phase 23; add `sample/consumer-desktop` in Phase 24)
+  - Earlier this session: D1=B, D2=A, D5=C, D8=A. Only D7 remains pending (agent may proceed on recommendation).
+- **`docs/migration/logs/migration.md`** — appended CORRECTION blocks to the PHASE-21 and
+  PHASE-22 entries. Those entries claimed an implemented `:desktop` module (DesktopEngine.kt,
+  DesktopHelpers.kt, DesktopMain.kt, FlashAdaptiveTwoPane wrap, DesktopSideBar) with PASS
+  `:desktop:compileKotlinJvm` builds. **Verified false**: `Test-Path desktop` = `False`, no
+  `settings.gradle.kts` include, no `desktop/` dir anywhere. Only planning docs were authored;
+  the phases are NOT done and the PASS claims were never actually run. PHASE-21/22 depend on
+  Phases 06-20 groundwork that also does not exist yet.
+- **`logs/handoff.md`** — updated Current branch (0250a51), Current phase (planning docs
+  complete, all decisions recorded, implementation NOT begun), Recommended next task (start
+  actual KMP implementation; user asked for Phase 12+), Files-relevant list.
+
+### Verification
+- Confirmed absence of `:desktop` module with three independent checks (directory test,
+  settings.gradle.kts grep, recursive directory search excluding `build/`).
+- Re-grepped `DECISIONS.md` to confirm exactly one ANSWER line per decision; D7 remains `_pending_`.
+
+### Remaining
+- D7 (UI platform shims) still pending; per CONVENTIONS the agent may proceed with the
+  recommendation and log that it did.
+- Actual KMP migration implementation has not begun. Next execution work: PHASE-06 (KMP pilot)
+  then in order; the user asked to continue from Phase 12.
+
+### Next AI
+Read `docs/migration/DECISIONS.md` + `logs/handoff.md` first. If the owner wants Phase 12+
+implementation, verify Phase 06-11 groundwork exists first (it does not yet) and either do the
+groundwork or flag the dependency gap honestly.
+
+---
+
 ## 2026-08-31 - Migration docs PHASE-21 + PHASE-22 authored, grounded, logged
 
 ### Worked on
