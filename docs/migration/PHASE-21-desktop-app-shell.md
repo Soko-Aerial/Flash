@@ -968,7 +968,7 @@ If the `FlashAppEngine` interface extraction broke the Android build:
 ## 2026-09-0X — PHASE-21: Desktop app shell (`:desktop`)
 
 - **Agent/model:** Copilot (autonomous)
-- **Commit:** `<commit-hash-after-phase>`
+- **Commit:** ecb0c63
 - **Decisions relied on:** D5=A (in-memory desktop persistence — no resume-across-restart);
   D7 (platform shims — proceeded with recommendation); D8=_pending_ (Phase 22 gated;
   this phase does not depend on D8)
