@@ -1,5 +1,126 @@
 # Progress Log
 
+## 2026-08-31 - Migration docs PHASE-21 + PHASE-22 authored, grounded, logged
+
+### Worked on
+Authored and code-grounded the final two desktop migration phase documents:
+`docs/migration/PHASE-21-desktop-app-shell.md` and
+`docs/migration/PHASE-22-adaptive-desktop-screens.md`.
+
+### Changed
+- **PHASE-21** (~45 KB): Created a new `:desktop` application module plan
+  (`kotlin("multiplatform")` + Compose Desktop). `DesktopEngine` (no-Hilt
+  equivalent of `AppEngine`), `DesktopHelpers.kt` (6 Android-only helper stubs),
+  `DesktopMain.kt` with `application { Window { DesktopShell(engine) } }`, and
+  `settings.gradle.kts` inclusion. Option B shell — thin `:desktop` module
+  composing shared `ui:chat` screens with inline domain→UI mappers (no `:app`
+  dependency). D8=_pending_ (Phase 22 gated; Phase 21 does not depend on D8).
+- **PHASE-22** (~21.5 KB): Adaptive desktop screens plan — wrap `DesktopShell`
+  tab content in `FlashAdaptiveTwoPane` (list+detail at ≥840dp expanded width),
+  `DesktopSideBar` (vertical tab bar), `TransferDetailPane`, `NearbyDetailPane`,
+  `PlaceholderDetailPane`. Bottom tab bar retained for compact/medium widths.
+- **Grounded every theme token / API / composable signature against source:**
+  `FlashColors.kt`, `FlashDimensions.kt`, `FlashShapes.kt`, `FlashTypography.kt`,
+  `FlashText.kt`, `FlashIcons.kt`, `FlashTheme.kt`, `FlashAdaptiveLayouts.kt`,
+  `FlashBottomNav.kt`, `FlashNavigation.kt`, `FlashTransfersScreen.kt`,
+  `FlashNearbyScreen.kt`, `FlashChatListScreen.kt`, `FlashConversationScreen.kt`,
+  `FlashSettingsScreen.kt`. Fixed ~10+ ungrounded references (tabActiveBg,
+  surfaceApp, roundedMedium, iconMedium, labelMedium, bodyLarge, spec= param,
+  FlashBottomNav param names, FlashIcons.Upload→Transfer, sidebarWidth→inline
+  200.dp).
+- **Migration log:** appended PHASE-21 + PHASE-22 entries to
+  `docs/migration/logs/migration.md` (previously zero entries).
+
+### Verification
+- PHASE-22 grep sweep: no ungrounded tokens remain (`sidebarWidth`,
+  `surfaceApp`, `tabActiveBg`, `tabInactiveBg`, `roundedMedium`, `iconMedium`,
+  `spec =`, `labelMedium`, `bodyLarge` — only the correct inline 200.dp constant
+  remains).
+- PHASE-21/22 are documentation-only phases; no Gradle build applies.
+- D8 remains `_pending_` — PHASE-22 proceeded with Option A recommendation per
+  the phase file's contingency; commit message must note the assumption.
+
+### Remaining
+- Commit `docs/migration/` (branch `dev`), record commit hash in
+  `logs/handoff.md` and `docs/migration/logs/migration.md` (placeholder
+  `<commit-hash-after-phase>`).
+- PHASE-23 (interop matrix) is the next migration step; D8 still needs an owner
+  answer before any Option B desktop UI work.
+
+### Next AI
+Commit the migration docs, then verify README phase table (rows 21/22) and
+proceed to PHASE-23 if the owner has not reprioritized.
+
+## 2026-08-30 - PHASE-11 transfer file-count arithmetic reconciled
+
+### Worked on
+Fixed internal numeric inconsistencies in `docs/migration/PHASE-11-repositories-kmp.md` for the
+`core:transfer` source-set split.
+
+### Changed
+Recounted the transfer production tree empirically and corrected the split from the erroneous
+"5 commonMain / 13 jvmAndAndroidMain / 0 androidMain" (presented variously as "18 production", "6/9",
+"15 live") to the verified **5 commonMain / 14 jvmAndAndroidMain / 0 androidMain + WsTransferModels
+orphan deletion**. The missing file was `multistream/TransferCompletionStateMachine.kt` (fourteenth
+jvmAndAndroidMain row). Updated the header, the prose blockquotes, the placement table (added row 14),
+the Step-4 `git mv` block (folded `manifest/TransferManifest.kt` into the 14), the count-check, the
+completion checklist, and the log-entry section.
+
+### Why
+The doc claimed 18 production files (5+13) but the authoritative walk shows **24 total** production
+files = 20 non-wslegacy + 4 wslegacy; Phase 02 leaves **20 non-wslegacy** = 5 commonMain + 14
+jvmAndAndroidMain + 1 WsTransferModels orphan (recommend delete). The earlier "6/9" figure was flat
+wrong. Also confirmed transfer tests = **86 `@Test` across 13 files** (89-tree minus the 3 in
+`wslegacy/WsPairingStoreTest`) and messaging = **16 `@Test` across 3 files**.
+
+### Verification
+Recounts via PowerShell file-walk + `Select-String @Test`; grep confirms no stale "5 / 13", "18
+production", "15 production", "6 commonMain" or "9 jvm" figures remain in the doc.
+
+### Remaining
+Phase files 12–15, 17–22 still to author. Next per user directive: pick the next phase and ground it
+the same way (e.g., **PHASE-12-engine-kmp.md**).
+
+### Next AI
+Continue the migration sequence — read `AGENTS.md`, `logs/handoff.md`, `docs/migration/README.md`,
+then author the next phase doc grounded against actual code.
+
+## 2026-08-27 - UI-031 encryption badge wired into conversation header
+
+### Worked on
+Closed the last piece of deferred UI-031 wiring: mounting the verification-aware encryption
+badge + trust sheet in the conversation header. The components (`FlashEncryptionBadge`,
+`FlashEncryptionSheet`, `FlashEncryptionMath`) already existed but had no call site.
+
+### Changed
+- `ui/chat/.../FlashChatHeader.kt`: added optional `encryptionState: FlashEncryptionBadgeState`
+  (default `None`) + `onEncryptionClick`. When state != None the status line renders the tappable
+  `FlashEncryptionBadge` in place of the static lock icon; callers that don't pass it (previews)
+  keep the legacy static `state.isEncrypted` icon. `encryptionState` added to the status crossfade key.
+- `ui/chat/.../FlashConversationScreen.kt`: derives state from signals it already receives —
+  `FlashEncryptionMath.badgeState(isEncrypted = header.isEncrypted, isVerified = isPeerTrusted)`;
+  tapping opens `FlashEncryptionSheet`. Groups pass `None` (no per-member verification model yet).
+
+### Why
+UI-031 was listed in handoff "Deferred / pending integration". Pairing (UI-032) already feeds
+`isPeerTrusted` from `:app` via `engine.pairing.trustedPeers`, so verification state was available —
+only the badge mount was missing. No engine change required.
+
+### Verification
+- `:ui:chat:compileDebugKotlin` BUILD SUCCESSFUL.
+- `:app:compileDebugKotlin` + `:ui:chat:testDebugUnitTest` BUILD SUCCESSFUL (only pre-existing
+  deprecation warnings; a transient Kotlin-daemon fallback recovered on its own).
+
+### Remaining
+- Sheet's "Verify security codes" / "View fingerprint" rows stay disabled-with-explanation until
+  code-comparison verification lands in the engine.
+- Physical-device visual check of the badge + sheet (light/dark) still pending.
+
+### Next AI
+Optional: run the full suite + `assembleDebug`, and device-verify the badge. Otherwise UI-031 is
+integrated; remaining deferred items are UI-024 recent-searches persistence, UI-019/UI-020 media
+ADRs, and the messaging port/adapter inversion.
+
 ## 2026-08-27 - Logo + launch animation wired into app & library
 
 ### Worked on
