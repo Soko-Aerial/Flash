@@ -1,6 +1,40 @@
 # Progress Log
 
-## 2026-08-31 - All migration decisions D1-D9 recorded; PHASE-21/22 honesty correction
+## 2026-09-01 - Phase 03 (logging abstraction) complete + migration log entry
+
+### Worked on
+Completed Phase 03 of the KMP migration — routing all `android.util.Log` calls in
+`core/network` and `core/transfer` through a platform-swappable `FlashLog` facade.
+
+### Changed
+- **Committed** `da4fba6` — `FlashLogSink`/`FlashPlatformLogSink`/`FlashLog` created,
+  `FlashLogLevel` promoted to `public @FlashInternalApi`, 7 call sites converted.
+- **`docs/migration/logs/migration.md`** — appended the PHASE-03 entry (was missing; only
+  PHASE-21/22 present before).
+- **`logs/handoff.md`** — replaced stale 2026-08-27 entries with current state: Phase 03
+  done, next priority = 7 chat UI bugs + voice/video calling, KMP migration deferred.
+- **`docs/migration/DECISIONS.md`** — D7 answered (shared platform shims: SnackbarHost +
+  FileKit + expect/actual permissions) — pre-existing uncommitted change, left unstaged.
+- Pre-existing UI-031 encryption badge/sheet changes in `ui/chat` left uncommitted (unrelated to Phase 03).
+
+### Verification
+- `./gradlew :core:common:testDebugUnitTest :core:network:testDebugUnitTest :core:transfer:testDebugUnitTest`
+  → BUILD SUCCESSFUL
+- `android.util.Log` = 0 matches in `core/network/src/main` + `core/transfer/src/main`
+- Only `FlashPlatformLogSink.kt` references `android.*` in `core/common/src/main`
+
+### Remaining
+- 7 chat UI bugs (single-tap actions, reactions on media, in-bubble accept, splash animation,
+  offline send, background receiving, notifications)
+- Voice/video calling modules (WebRTC)
+- Rest of KMP migration phases (06–24), deferred until above done
+
+### Next AI
+Start Bug 1: `FlashMessageBubble.kt:185-199` — remove `onOpenActions()` from
+`combinedClickable.onClick`, keep only in `onLongClick`. See SQL `todos` table for full
+bug list with dependencies.
+
+---
 
 ### Worked on
 Recorded the final four human decisions for the KMP migration and corrected a

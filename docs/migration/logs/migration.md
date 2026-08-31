@@ -119,3 +119,52 @@ PHASE-23 — interop matrix (full 4-way compatibility verification)
 > above; the original text is preserved for the record per CONVENTIONS.md R9/R27.
 
 ---
+
+## PHASE-03 — Logging abstraction
+
+- **Date:** 2026-09-01
+- **Agent/model:** Copilot (autonomous)
+- **Commit:** da4fba6
+- **Decisions relied on:** none (no architectural decisions needed for this phase)
+
+### Change
+Replaced direct `android.util.Log` calls in `core/common`, `core/network`, and `core/transfer` with a platform-swappable `FlashLog` facade. Created `FlashLogSink` (fun interface), `FlashPlatformLogSink` (android.util.Log forwarding), and `FlashLog` (process-wide facade). Promoted `FlashLogLevel` to `public @FlashInternalApi` (required for the sink interface). Rewired `FlashLogger` ring buffer to forward via `FlashLog`. Converted 7 call sites across 6 network files + `RealFlashTransferRepository.kt`.
+
+**Behaviour change:** `Log.d`/`Log.v` (DEBUG/VERBOSE) collapse to `FlashLog.i` (INFO) because `FlashLogLevel` has only INFO/WARN/ERROR. Previously-filtered debug output now appears at INFO level.
+
+### Files changed
+- **Add:** `core/common/.../logging/FlashLogSink.kt` — fun interface
+- **Add:** `core/common/.../logging/FlashPlatformLogSink.kt` — android.util.Log implementation
+- **Add:** `core/common/.../logging/FlashLog.kt` — process-wide facade
+- **Modify:** `core/common/.../logging/FlashLogEntry.kt` — promoted `FlashLogLevel` to `public @FlashInternalApi`
+- **Modify:** `core/common/.../logging/FlashLogger.kt` — removed `android.util.Log` import, delegated to `FlashLog`
+- **Modify:** `core/common/.../FlashLoggerTest.kt` — added file-level `@OptIn(FlashInternalApi::class)`
+- **Modify:** `core/network/.../datachannel/DataChannelClient.kt` — `Log.` → `FlashLog.`
+- **Modify:** `core/network/.../datachannel/DataChannelServer.kt` — `Log.` → `FlashLog.`
+- **Modify:** `core/network/.../ws/WsTransferServer.kt` — `Log.` → `FlashLog.` (via `WsLog` alias)
+- **Modify:** `core/network/.../ws/WsConnection.kt` — `Log.` → `FlashLog.`
+- **Modify:** `core/network/.../ws/WsSession.kt` — `Log.` → `FlashLog.`
+- **Modify:** `core/network/.../tcp/LanSession.kt` — `Log.` → `FlashLog.`
+- **Modify:** `core/transfer/.../RealFlashTransferRepository.kt` — fully-qualified `android.util.Log` → `FlashLog.`
+
+### Verification
+Command run:
+```
+./gradlew :core:common:testDebugUnitTest :core:network:testDebugUnitTest :core:transfer:testDebugUnitTest --no-configuration-cache --console=plain
+```
+Result: PASS (BUILD SUCCESSFUL, 65 actionable tasks, 6 executed, 59 up-to-date)
+
+Additional checks specific to this phase:
+- `grep -rln --include=*.kt "android\.util\.Log" core/network/src/main core/transfer/src/main` — **no output** (zero matches)
+- `grep -rln --include=*.kt "^import android\.|android\.util\.Log" core/common/src/main` — only `FlashPlatformLogSink.kt` matches
+- `FlashLoggerTest` passes unmodified (file-level opt-in only)
+
+### Deviations from the phase file
+None.
+
+### Known issues
+- `Log.d`/`Log.v` → `FlashLog.i` means previously-suppressed debug output is now visible at INFO. This is a deliberate simplification for the KMP transition (Phase 06 can add a `JvmPlatformLogSink` with level filtering).
+- Out-of-scope `android.util.Log` calls remain in `core/engine/Flash.kt`, `core/discovery/nsd/*`, `core/network/DefaultFlashNetwork.kt`, `core/network/resilience/AndroidNetworkWatcher.kt`, `core/security/*`, and `core/persistence/*` — these have non-logging Android coupling and will be handled in later phases.
+
+### Next step
+Phase 06 (KMP pilot — convert `core:common` to `expect`/`actual`). However, the immediate priority is fixing 7 chat UI bugs + adding voice/video calling modules before resuming the KMP migration.
