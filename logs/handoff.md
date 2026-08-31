@@ -326,20 +326,19 @@
 - **Installed to Device:** Tested debug APK installed on physical phone via ADB.
 
 ## Current branch
-`dev` — migration docs committed as `ecb0c63`
+`dev` — migration decisions committed as `0250a51` (D3=A, D4=A, D6=A, D9=A; D8=A earlier as `e742bec`; D1=B, D2=A, D5=C as `74367dd`)
 
 ## Last verified build
-Working tree at 2026-08-31 (PHASE-21/22 migration docs authored) — documentation-only changes; no build required.
+Working tree at 2026-08-31 (migration decision recording + PHASE-21/22 log honesty correction) — documentation-only changes; no build required.
 Previous build reference: 644 tests / 0 failures (2026-08-24, ERROR-016 fix).
 
 ## Current phase
-**Migration documentation — PHASE-12 through PHASE-22 authored, grounded, logged.**
+**Migration planning docs complete (PHASE-00–PHASE-24); all human decisions D1–D9 recorded. Actual KMP implementation has NOT begun.**
+
 - All 25 phase files (PHASE-00 through PHASE-24) exist in `docs/migration/`.
-- PHASE-21 (`:desktop` app shell) and PHASE-22 (adaptive desktop screens) are the final
-  two to be code-grounded and logged. D8 is `_pending_`; PHASE-22 proceeded with Option A
-  recommendation (desktop ships existing chat UI adaptively).
-- `docs/migration/logs/migration.md` now has entries for PHASE-21 and PHASE-22.
-- **Next execution step:** PHASE-23 — interop matrix (full 4-way compatibility verification).
+- **All 9 decisions answered** in `docs/migration/DECISIONS.md`: D1=B (strict commonMain), D2=A (keep core:*), D3=A (switch ui:* to org.jetbrains.compose), D4=A (expect fun flashDynamicColorScheme seam), D5=C (Room 3 KMP + encrypted desktop), D6=A (JmDNS), D7=**pending** (agent may proceed with recommendation — Toast→Snackbar, FileKit, expect ensurePermission), D8=A (desktop ships existing chat UI adaptively), D9=A (keep sample/consumer Android-only through Phase 23; add sample/consumer-desktop in Phase 24).
+- **HONESTY CORRECTION:** PHASE-21 and PHASE-22 log entries claimed an implemented `:desktop` module with PASS builds — **no such code exists** (verified: no `desktop/` dir, no `settings.gradle.kts` include). Those phases produced planning docs only and are **NOT done**. See corrections appended to `docs/migration/logs/migration.md`.
+- **Next execution step:** the migration is still documentation-only. Actual implementation must start from the beginning (Phase 06 groundwork per D1=B), then proceed in order. Do not attempt PHASE-21/22 implementation until Phases 06–20 land.
 
 ## Component status
 - **UI-034 (Adaptive layouts):** `IMPLEMENTED` in `ui/adaptive/FlashAdaptiveLayouts.kt` â€” two-pane not yet consumed by screens (integration pending).
@@ -435,7 +434,13 @@ All items below are absorbed into those two documents:
 - **Engine-side**: auto-retry/backoff indicator (UI-044), key-changed warning state (UI-031).
 
 ## Recommended next task
-**PHASE-23 — interop matrix (full 4-way compatibility verification).** After that, PHASE-24 (publishing). Then D8 needs an owner answer before any Option B desktop UI work. If the owner is not available, proceed with PHASE-23 (it does not depend on D8).
+**The migration is in planning-docs-only state; actual KMP implementation has not begun.** The first implementation phase is **PHASE-06 (KMP pilot)** — converting `core:common` to the first `commonMain` source set. But the user explicitly asked to continue from Phase 12. Since all decisions are now recorded, the next real step is to start the actual KMP migration implementation. The recommended order is:
+1. **PHASE-06** — KMP pilot (set up `commonMain` in `core:common` per D1=B)
+2. **PHASE-07** — Security KMP (crypto, TLS, pinning)
+3. ... through PHASE-20 in order
+4. PHASE-21 and PHASE-22 only after Phases 06–20 land (they are currently planning docs only; the log claims of implemented code are false and corrected)
+
+If the user wants to continue from Phase 12 as requested, start with **PHASE-12 (engine KMP implementation)** — but note that Phases 06–11 (KMP groundwork) have not been implemented, so Phase 12's dependencies may not be satisfied.
 
 ## 2026-08-22 - P3 NSD session note (agent handoff)
 - LAN MVP networking now has `nsd/NsdTransport.kt` (:core:discovery) implementing FlashRadioTransport C3.2-C3.4 (identity TXT advertise + self-filter, continuous browse w/ capped restarts, API>=34 ServiceInfoCallback vs <34 hardened NsdResolveQueue split, NetworkRequest-scoped discovery API 33+). `NsdFlashDiscovery` untouched (R4). NOT yet Gradle-verified (forbidden session) - run testDebugUnitTest first; tests: nsd/NsdTransportLogicTest.kt (pure-JVM, no coroutines-test dep in module).
@@ -472,16 +477,13 @@ Git Bash equivalent: `export JAVA_HOME=... GRADLE_USER_HOME=... JAVA_TOOL_OPTION
 then `./gradlew.bat testDebugUnitTest assembleDebug --console=plain`.
 
 ## Files most relevant to next task
-- `docs/migration/PHASE-23-interop-matrix.md` (next phase — full 4-way compatibility verification)
-- `docs/migration/PHASE-24-publishing.md` (publishing phase after PHASE-23)
-- `docs/migration/DECISIONS.md` — D8=_pending_ (owner answer needed before Option B desktop UI)
-- `docs/migration/logs/migration.md` (phase log, now has PHASE-21/22 entries)
+- `docs/migration/PHASE-06-kmp-pilot.md` (first actual KMP implementation phase — blocked by nothing; D1=B chosen)
+- `docs/migration/PHASE-12-engine-kmp.md` (engine KMP — where user asked to start)
+- `docs/migration/DECISIONS.md` — all 9 decisions recorded; D7 still pending (agent may proceed on recommendation)
+- `docs/migration/logs/migration.md` (phase log, with PHASE-21/22 honesty corrections appended)
 - `docs/migration/README.md` (phase table, verify rows 21/22)
 - `logs/handoff.md` testing backlog below (owner runs; lead fixes / marks VERIFIED)
-- `ui/chat/src/main/java/com/transfer/flash/ui/adaptive/FlashAdaptiveLayouts.kt` (two-pane consumption pending)
-- `ui/chat/src/main/java/com/transfer/flash/ui/chat/FlashStressTestScreen.kt` (entry-point wiring)
-- `docs/ui/performance.md` (device measurement plan for UI-042/043 numbers)
-- Integration files from Deferred block: FlashNavigation.kt, FlashNetworkSimSheet.kt, FlashEncryptionIndicators.kt, FlashPairingFlow.kt
+- `docs/migration/CONVENTIONS.md` (R1–R11 rules for every phase)
 
 ## 2026-08-22 - P3 pure-logic agent handoff (C3.3/C3.5/C3.9)
 - Created (ONLY these): `core/discovery/.../core/{StandardEndpointDirectory,TxtCodec,DiscoveryRetryPolicy,CompositeDiscovery}.kt` + 4 matching JUnit4 test classes under src/test. NO existing file touched; nsd/** untouched.
