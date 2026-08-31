@@ -64,7 +64,7 @@ PHASE-22 — adaptive desktop screens (arrange existing composables for wide win
 - **Date:** 2026-08-31
 - **Agent/model:** Copilot (autonomous)
 - **Commit:** ecb0c63
-- **Decisions relied on:** D8=_pending_ (proceeded with Option A recommendation — desktop ships existing chat UI adaptively)
+- **Decisions relied on:** D8=Option A (desktop ships existing chat UI adaptively — answered 2026-08-31)
 
 ### Change
 Wrapped `DesktopShell` tab content in `FlashAdaptiveTwoPane` so expanded windows (≥840dp) show list + detail side by side. Added `DesktopSideBar` (vertical tab bar for expanded width), `TransferDetailPane`, `NearbyDetailPane`, and `PlaceholderDetailPane`. The bottom tab bar is retained for compact/medium widths. No changes to `ui:chat` adaptive primitives or the Android shell.
@@ -93,7 +93,7 @@ None.
 ### Known issues
 - Detail panes for transfers and nearby peers are minimal info cards, not full detail views. Conversation is the only realistic detail pane.
 - `DesktopSideBar` is a new composable in `:desktop`; if it becomes useful for the Android tablet layout, it should be lifted to `ui:chat`.
-- The D8 decision is still `_pending_`. If D8 is answered B, this phase is blocked and must be re-scoped to build the devices+transfers desktop UI.
+- The D8 decision was answered Option A on 2026-08-31 (commit e742bec). This phase is unblocked: desktop ships the existing chat UI adaptively. No new devices+transfers desktop UI is needed.
 
 ### Next step
 PHASE-23 — interop matrix (full 4-way compatibility verification)
