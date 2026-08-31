@@ -2,8 +2,8 @@
 
 package com.transfer.flash.core.network.ws
 
-import android.util.Log
 import com.transfer.flash.core.common.annotation.FlashInternalApi
+import com.transfer.flash.core.common.logging.FlashLog
 import java.io.InputStream
 import java.io.OutputStream
 import java.net.Socket
@@ -127,7 +127,7 @@ public class WsConnection(
             }
         }.onFailure { error ->
             if (!closed.get()) {
-                Log.w(TAG, "WS write failed remote=$remoteLabel", error)
+                FlashLog.w(TAG, "WS write failed remote=$remoteLabel", error)
                 close("Write failed")
             }
         }.isSuccess
@@ -152,7 +152,7 @@ public class WsConnection(
             }
         } catch (error: Exception) {
             if (!closed.get()) {
-                Log.d(TAG, "WS read loop ended remote=$remoteLabel (${error.message ?: error::class.java.simpleName})")
+                FlashLog.i(TAG, "WS read loop ended remote=$remoteLabel (${error.message ?: error::class.java.simpleName})")
                 close("Connection error: ${error.message ?: error::class.java.simpleName}")
             }
         } finally {
