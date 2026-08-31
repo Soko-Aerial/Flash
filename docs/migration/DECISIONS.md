@@ -60,7 +60,7 @@ Flash, or is Android + desktop the end state?**
 If the answer is "Android + desktop", Option A is strictly better. If iOS is a real
 roadmap item, Option B is the honest choice and the schedule must grow accordingly.
 
-**ANSWER:** _pending_
+**ANSWER:** Option B (chosen 2026-08-31) — strict `commonMain`: stdlib + coroutines only. Rewrites the transport onto Ktor/okio and replaces the JCA crypto layer with a multiplatform crypto library; re-verifies every security property. Buys iOS/Native capability. This materially grows the schedule for Phase 06 and the security-critical phases.
 
 ---
 
@@ -76,7 +76,7 @@ not require renaming anything.
 **Option B — rename now.** Only worth it if you also want to restructure artifact
 coordinates, and it should then be its own isolated phase with its own commit.
 
-**ANSWER:** _pending_
+**ANSWER:** Option A (chosen 2026-08-31) — keep `core:*` names.
 
 ---
 
@@ -155,7 +155,11 @@ the desktop port easier.** Under Option A that constraint is satisfied trivially
 because nothing is persisted on desktop. Under Option B it is **violated** unless
 Option C follows. Decide A→C as a sequence, or B as a knowing, documented tradeoff.
 
-**ANSWER:** _pending_
+**ANSWER:** Option C (chosen 2026-08-31) — migrate to Room 3 KMP AND add encrypted
+desktop storage (evaluate `s0d3s/SQLCipherMultiplatform`, `bloomberg/selekt`, Zetetic
+SQLCipher-for-JDBC for maintenance status + licence before adoption). Desktop gets full
+persistence and encryption, so resume-across-restart and transfer history work on
+desktop. Phase 09 schedule grows accordingly.
 
 ---
 
