@@ -326,7 +326,7 @@
 - **Installed to Device:** Tested debug APK installed on physical phone via ADB.
 
 ## Current branch
-`dev` (migration docs staged)
+`dev` — migration docs committed as `ecb0c63`
 
 ## Last verified build
 Working tree at 2026-08-31 (PHASE-21/22 migration docs authored) — documentation-only changes; no build required.

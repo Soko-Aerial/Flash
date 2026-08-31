@@ -454,7 +454,7 @@ revert `FlashDimensions.kt` before verifying:
 ## 2026-09-0X — PHASE-22: Adaptive desktop screens (list-detail arrangement)
 
 - **Agent/model:** Copilot (autonomous)
-- **Commit:** `<commit-hash-after-phase>`
+- **Commit:** ecb0c63
 - **Decisions relied on:** D8=_pending_ (proceeded with Option A recommendation —
   desktop ships existing chat UI adaptively)
 

@@ -41,11 +41,8 @@ Authored and code-grounded the final two desktop migration phase documents:
   the phase file's contingency; commit message must note the assumption.
 
 ### Remaining
-- Commit `docs/migration/` (branch `dev`), record commit hash in
-  `logs/handoff.md` and `docs/migration/logs/migration.md` (placeholder
-  `<commit-hash-after-phase>`).
 - PHASE-23 (interop matrix) is the next migration step; D8 still needs an owner
-  answer before any Option B desktop UI work.
+  answer before any Option B desktop UI work. Migration docs committed as `ecb0c63`.
 
 ### Next AI
 Commit the migration docs, then verify README phase table (rows 21/22) and

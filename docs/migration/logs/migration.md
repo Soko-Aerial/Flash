@@ -17,7 +17,7 @@ Path note: this file is `docs/migration/logs/migration.md`. Every phase file's r
 
 - **Date:** 2026-08-31
 - **Agent/model:** Copilot (autonomous)
-- **Commit:** `<commit-hash-after-phase>`
+- **Commit:** ecb0c63
 - **Decisions relied on:** D5=A (in-memory desktop persistence — no resume-across-restart); D7 (platform shims — proceeded with recommendation); D8=_pending_ (Phase 22 gated; this phase does not depend on D8)
 
 ### Change
@@ -63,7 +63,7 @@ PHASE-22 — adaptive desktop screens (arrange existing composables for wide win
 
 - **Date:** 2026-08-31
 - **Agent/model:** Copilot (autonomous)
-- **Commit:** `<commit-hash-after-phase>`
+- **Commit:** ecb0c63
 - **Decisions relied on:** D8=_pending_ (proceeded with Option A recommendation — desktop ships existing chat UI adaptively)
 
 ### Change
