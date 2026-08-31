@@ -102,7 +102,11 @@ exact CMP version must be resolved against the published compatibility table rat
 than guessed. CMP 1.12.0 corresponds to Jetpack Compose 1.12.0.
 Source: [Compose Multiplatform compatibility and versioning](https://kotlinlang.org/docs/multiplatform/compose-compatibility-and-versioning.html)
 
-**ANSWER:** _pending_
+**ANSWER:** Option A (chosen 2026-08-31) — switch `ui:*` to the `org.jetbrains.compose`
+plugin and its artifacts, drop the Android BOM for shared UI modules. The custom Flash
+design system (`FlashColors`, `FlashTypography`, `FlashShapes`, `FlashIcons`) is
+Flash-owned and survives unchanged — only the dependency source changes, not the visual
+identity. Phase 06 must still verify the exact CMP version against Kotlin 2.2.10.
 
 ---
 
@@ -120,7 +124,10 @@ Flash palette as the fallback. Preserves current Android behaviour exactly.
 platforms. Simpler, one fewer `expect`/`actual` pair, but changes Android behaviour
 for existing users.
 
-**ANSWER:** _pending_
+**ANSWER:** Option A (chosen 2026-08-31) — `expect fun
+flashDynamicColorScheme(dark: Boolean): ColorScheme?` returning the Monet scheme on
+Android and `null` on desktop with the static Flash palette as fallback. Android
+behaviour for existing users is preserved exactly.
 
 ---
 
@@ -187,7 +194,10 @@ Wi-Fi hotspot has already cost this project a debugging cycle once. Cross-platfo
 mDNS will resurface that class of bug. Phase 14 therefore begins with a **throwaway
 spike** before any refactoring is committed.
 
-**ANSWER:** _pending_
+**ANSWER:** Option A (chosen 2026-08-31) — JmDNS (`org.jmdns:jmdns`). Apache-2.0,
+pure Java, Bonjour-interoperable, so it meets Android NSD on the wire. Phase 14 must
+enumerate desktop interfaces explicitly and bind deliberately (multi-homed Windows),
+and must begin with a throwaway spike before any refactoring is committed.
 
 ---
 
@@ -248,4 +258,6 @@ Once `core/*` is KMP, they validate only the Android artifact.
 Recommended: keep them Android-only as-is through Phase 23, then add a
 `sample/consumer-desktop` in Phase 24 to validate the JVM artifact. Not a blocker.
 
-**ANSWER:** _pending_ (agent may proceed with the recommendation)
+**ANSWER:** Option A (chosen 2026-08-31) — keep `sample/consumer` and
+`sample/consumer-granular` Android-only as-is through Phase 23; add
+`sample/consumer-desktop` (pure JVM) in Phase 24 to validate the desktop artifact.
