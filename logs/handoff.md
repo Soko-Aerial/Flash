@@ -1,6 +1,60 @@
 # Current Handoff
 
-## 2026-08-27 -- Codex logo candidate added under `logo-codex/`
+## 2026-09-01 — Phase 03 complete; starting chat UI bugs + voice/video
+
+### Current branch
+`dev`
+
+### Last verified build
+da4fba6 (Phase 03 — logging abstraction)
+
+### Current phase
+Phase 03 complete. Next migration phase: 06 (KMP pilot). But the immediate priority is fixing 7 chat UI bugs + adding voice/video calling modules before resuming the KMP migration.
+
+### Working features
+- Phase 03 logging abstraction (`FlashLog`/`FlashLogSink`/`FlashPlatformLogSink`) committed and tested
+- All 7 `android.util.Log` call sites in `core/network` and `core/transfer` routed through `FlashLog`
+- All 9 migration decisions (D1–D9) recorded; D7 chose recommendation (shared platform shims via SnackbarHost + FileKit + expect/actual permissions)
+- PHASE-21/22 corrections documented (not implemented — desktop module doesn't exist yet)
+
+### In progress
+- **Bug 1:** Fix single-tap opening actions overlay (`FlashMessageBubble.kt:185-199`)
+- Subsequent bugs 2–7
+- Voice/video calling (WebRTC) modules
+
+### Broken
+- Bug 1: Single tap on message opens actions (not just long-press)
+- Bug 2: Reactions don't work on voice/files/video
+- Bug 3: Receiver must go to transfers page to accept (no in-bubble accept)
+- Bug 4: Splash animation not reusable
+- Bug 5: Offline messages don't send on peer reconnect
+- Bug 6: App shows offline when backgrounded (FGS not auto-started)
+- Bug 7: No message notifications
+
+### Last change
+da4fba6 — Phase 03 logging abstraction committed. 13 files changed, 171 insertions, 68 deletions.
+
+### Last test
+`./gradlew :core:common:testDebugUnitTest :core:network:testDebugUnitTest :core:transfer:testDebugUnitTest` — BUILD SUCCESSFUL
+
+### Known blockers
+- Gradle metadata cache corruption: if `metadata-2.107\module-metadata.bin` errors, delete `F:\AndroidDev\Gradle\caches\modules-2\metadata-2.107` and rebuild
+- Known flaky test: `RealFlashChatRepositoryTest.kt:493` — timing-sensitive drain test, unrelated
+- PHASE-21/22 depend on Phases 06–20 groundwork that does not exist yet; deferred
+- KMP migration is DE-prioritized until chat UI bugs + calling modules are done
+
+### Recommended next task
+**Bug 1:** Fix `FlashMessageBubble.kt:185-199` — remove `onOpenActions()` from `combinedClickable.onClick`, keep only in `onLongClick`.
+
+### Files most relevant to next task
+- `ui/chat/src/main/java/com/transfer/flash/ui/chat/FlashMessageBubble.kt`
+- `ui/chat/src/main/java/com/transfer/flash/ui/chat/FlashConversationScreen.kt`
+- `app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt`
+- `core/messaging/src/main/java/com/transfer/flash/core/messaging/RealFlashChatRepository.kt`
+- `app/src/main/java/com/transfer/flash/MainActivity.kt`
+- `app/src/main/java/com/transfer/flash/debug/FlashBackgroundService.kt`
+
+
 - Created a separate formal logo proposal for the owner's AI logo competition. Entry point:
   `logo-codex/preview/contact-sheet.png`; source notes: `logo-codex/README.md`.
 - Final mark: F-shaped transfer monogram using Flash Pulse teal, graphite, off-white, and a restrained spark
