@@ -326,20 +326,20 @@
 - **Installed to Device:** Tested debug APK installed on physical phone via ADB.
 
 ## Current branch
-`main`
+`dev` (migration docs staged)
 
 ## Last verified build
-Working tree at 2026-08-24 (ERROR-016 fix) — `testDebugUnitTest assembleDebug` BUILD SUCCESSFUL, 411 actionable tasks,
-**644 tests / 0 failures / 0 skipped**. `:core:transfer:testDebugUnitTest` alone: 70 tests green (was hanging).
-Previous reference point: commit `9060445` (411 tasks, 0 failures).
+Working tree at 2026-08-31 (PHASE-21/22 migration docs authored) — documentation-only changes; no build required.
+Previous build reference: 644 tests / 0 failures (2026-08-24, ERROR-016 fix).
 
 ## Current phase
-**Phase 7 (Engine Facade) Complete + Unified WebSocket Transport Deployed.**
-- Ready for multi-device testing on Router / Hotspot networks and Phase 8 UI App Shell wiring (`docs/ui-page-plan.md`).
-- `:core:engine` module created and integrated into settings and app.
-- `FlashEngine` and `DefaultFlashEngine` facade binding all 6 subsystems (`chats`, `transfers`, `discovery`, `network`, `trustStore`, `settings`).
-- Full project build & test suite: 100% GREEN (411 Gradle tasks, `assembleDebug` + `testDebugUnitTest` successful with 0 failures).
-- Up next: **Phase 8 / App Shell & Pages Integration** (wiring UI navigation tabs and pages in `docs/ui-page-plan.md` to `FlashEngine`).
+**Migration documentation — PHASE-12 through PHASE-22 authored, grounded, logged.**
+- All 25 phase files (PHASE-00 through PHASE-24) exist in `docs/migration/`.
+- PHASE-21 (`:desktop` app shell) and PHASE-22 (adaptive desktop screens) are the final
+  two to be code-grounded and logged. D8 is `_pending_`; PHASE-22 proceeded with Option A
+  recommendation (desktop ships existing chat UI adaptively).
+- `docs/migration/logs/migration.md` now has entries for PHASE-21 and PHASE-22.
+- **Next execution step:** PHASE-23 — interop matrix (full 4-way compatibility verification).
 
 ## Component status
 - **UI-034 (Adaptive layouts):** `IMPLEMENTED` in `ui/adaptive/FlashAdaptiveLayouts.kt` â€” two-pane not yet consumed by screens (integration pending).
@@ -395,6 +395,7 @@ Previous reference point: commit `9060445` (411 tasks, 0 failures).
 - LAN Discovery and experimental WebSocket multi-peer mesh Transfer.
 
 ## In progress
+- **KMP migration docs (docs/migration/):** PHASE-12–22 authored & grounded; PHASE-23 (interop matrix) and PHASE-24 (publishing) authored but NOT yet grounded/logged. D8=_pending_ (owner answer needed before any Option B desktop UI).
 - **UI-028 (Group header):** IMPLEMENTED â€” device verification pending.
 - **UI-025/026/027 (states):** device verification pending.
 - **UI-021/022, UI-020, UI-019:** device verification pending.
@@ -403,13 +404,10 @@ Previous reference point: commit `9060445` (411 tasks, 0 failures).
 - None.
 
 ## Last change
-ERROR-013 rewrite attempt REVERTED after findings: structured-concurrency dispatcher fixed symptoms but exposed entangled completion semantics (first-wins terminal guard vs late authoritative frames — racing-ACK regression); dedicated test dispatchers disproved pool starvation; thread dumps show claim/read lock as blocker. Next session: build completion state machine pure-first (PairingSessionStateMachine pattern), then thin executor. Tests remain @Ignore green-skipped.
+Authored + code-grounded migration docs **PHASE-21** (`:desktop` app shell) and **PHASE-22** (adaptive desktop screens). Verified every theme token, API call, and composable signature in PHASE-22 against actual source (FlashColors/Dimensions/Shapes/Typography/Text/Icons/Theme, FlashAdaptiveLayouts, FlashBottomNav, FlashNavigation, FlashTransfersScreen, FlashNearbyScreen, FlashChatListScreen, FlashConversationScreen, FlashSettingsScreen); fixed ~10+ ungrounded references. Appended PHASE-21 + PHASE-22 entries to `docs/migration/logs/migration.md` (previously zero entries).
 
 ## Last test
-testDebugUnitTest assembleDebug - BUILD SUCCESSFUL (2026-08-24); **644 tests / 0 failures / 0 skipped** across 11 test
-modules (app 1, core:common 42, core:discovery 79, core:engine 1, core:messaging 12, core:network 99,
-core:persistence 34, core:security 80, core:transfer 70, ui:chat 189, ui:theme 37).
-`MultiStreamDispatcherTest` additionally re-run 8x standalone (real threads) - 8/8 green, no flakiness.
+PHASE-22 grep sweep — no ungrounded tokens remain (tabActiveBg, surfaceApp, roundedMedium, iconMedium, labelMedium, bodyLarge, spec=, FlashBottomNav param mismatch all gone; only the correct inline 200.dp sidebarWidth constant remains). Docs are documentation-only; no Gradle build applies. Prior build reference: 644 tests / 0 failures (2026-08-24).
 
 ## Known blockers
 - **Environment (ERROR-017, WORKAROUND MANDATORY)**: Gradle cannot start at all in this environment without
@@ -437,7 +435,7 @@ All items below are absorbed into those two documents:
 - **Engine-side**: auto-retry/backoff indicator (UI-044), key-changed warning state (UI-031).
 
 ## Recommended next task
-**Owner device run (two phones):** Dev Console → Connect → Test 10MB on Router AND Hotspot. Expected sender log: chunks sent + "consumed by sender dispatcher" ACKs; expected receiver log: `Receiver destination opened file=...` → `Receiver completed transferId=... verified=true`, and a 10,485,760-byte file at `FlashReceived/<transferId>/test_10mb.bin`. Then Ping Msg both ways and Choose File & Send. If green, proceed to Phase 8 UI App Shell wiring (`docs/ui-page-plan.md`).
+**PHASE-23 — interop matrix (full 4-way compatibility verification).** After that, PHASE-24 (publishing). Then D8 needs an owner answer before any Option B desktop UI work. If the owner is not available, proceed with PHASE-23 (it does not depend on D8).
 
 ## 2026-08-22 - P3 NSD session note (agent handoff)
 - LAN MVP networking now has `nsd/NsdTransport.kt` (:core:discovery) implementing FlashRadioTransport C3.2-C3.4 (identity TXT advertise + self-filter, continuous browse w/ capped restarts, API>=34 ServiceInfoCallback vs <34 hardened NsdResolveQueue split, NetworkRequest-scoped discovery API 33+). `NsdFlashDiscovery` untouched (R4). NOT yet Gradle-verified (forbidden session) - run testDebugUnitTest first; tests: nsd/NsdTransportLogicTest.kt (pure-JVM, no coroutines-test dep in module).
@@ -474,7 +472,12 @@ Git Bash equivalent: `export JAVA_HOME=... GRADLE_USER_HOME=... JAVA_TOOL_OPTION
 then `./gradlew.bat testDebugUnitTest assembleDebug --console=plain`.
 
 ## Files most relevant to next task
-- `logs/handoff.md` testing backlog above (owner runs; lead fixes / marks VERIFIED)
+- `docs/migration/PHASE-23-interop-matrix.md` (next phase — full 4-way compatibility verification)
+- `docs/migration/PHASE-24-publishing.md` (publishing phase after PHASE-23)
+- `docs/migration/DECISIONS.md` — D8=_pending_ (owner answer needed before Option B desktop UI)
+- `docs/migration/logs/migration.md` (phase log, now has PHASE-21/22 entries)
+- `docs/migration/README.md` (phase table, verify rows 21/22)
+- `logs/handoff.md` testing backlog below (owner runs; lead fixes / marks VERIFIED)
 - `ui/chat/src/main/java/com/transfer/flash/ui/adaptive/FlashAdaptiveLayouts.kt` (two-pane consumption pending)
 - `ui/chat/src/main/java/com/transfer/flash/ui/chat/FlashStressTestScreen.kt` (entry-point wiring)
 - `docs/ui/performance.md` (device measurement plan for UI-042/043 numbers)
