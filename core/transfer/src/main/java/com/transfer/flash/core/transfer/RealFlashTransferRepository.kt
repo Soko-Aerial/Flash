@@ -1,5 +1,9 @@
+@file:OptIn(FlashInternalApi::class)
+
 package com.transfer.flash.core.transfer
 
+import com.transfer.flash.core.common.annotation.FlashInternalApi
+import com.transfer.flash.core.common.logging.FlashLog
 import com.transfer.flash.core.common.model.FlashDevice
 import com.transfer.flash.core.common.result.FlashError
 import com.transfer.flash.core.common.result.FlashResult
@@ -118,7 +122,7 @@ public class RealFlashTransferRepository(
     private fun emitOutgoing(transferId: String, peerDeviceId: String?, action: String) {
         if (!_outgoingControl.tryEmit(OutgoingControl(transferId, peerDeviceId, action))) {
             runCatching {
-                android.util.Log.w(
+                FlashLog.w(
                     "TRANSFER",
                     "Dropped outgoing control action=$action transferId=$transferId (no collector / buffer full)",
                 )
@@ -130,7 +134,7 @@ public class RealFlashTransferRepository(
     private fun emitIncoming(transferId: String, action: String) {
         if (!_incomingControl.tryEmit(IncomingControl(transferId, action))) {
             runCatching {
-                android.util.Log.w(
+                FlashLog.w(
                     "TRANSFER",
                     "Dropped incoming control action=$action transferId=$transferId (no collector / buffer full)",
                 )
@@ -346,7 +350,7 @@ public class RealFlashTransferRepository(
         val transfer = _activeTransfers.value.find { it.id == transferId }
             ?: return FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Transfer not found: ${transferId.value}"))
         runCatching {
-            android.util.Log.i(
+            FlashLog.i(
                 "TRANSFER",
                 "pauseTransfer id=${transferId.value} direction=${transfer.direction} state=${transfer.state} jobPresent=${runningJobs.containsKey(transferId.value)}",
             )
@@ -493,7 +497,7 @@ public class RealFlashTransferRepository(
      * Keeps BOTH sides' state and transmission behavior in lockstep.
      */
     public fun onRemoteTransferControl(transferId: String, action: String) {
-        runCatching { android.util.Log.i("TRANSFER", "remote control action=$action transferId=$transferId") }
+        runCatching { FlashLog.i("TRANSFER", "remote control action=$action transferId=$transferId") }
         val transfer = _activeTransfers.value.find { it.id.value == transferId } ?: return
         when (action) {
             ACTION_PAUSE -> when (transfer.direction) {

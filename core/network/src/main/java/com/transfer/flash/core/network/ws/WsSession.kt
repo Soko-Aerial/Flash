@@ -1,6 +1,9 @@
+@file:OptIn(FlashInternalApi::class)
+
 package com.transfer.flash.core.network.ws
 
-import android.util.Log
+import com.transfer.flash.core.common.annotation.FlashInternalApi
+import com.transfer.flash.core.common.logging.FlashLog
 import com.transfer.flash.core.common.model.FlashDevice
 import com.transfer.flash.core.common.model.FlashDeviceId
 import com.transfer.flash.core.common.model.FlashTransportType
@@ -107,14 +110,14 @@ public class WsSession(
     public fun onTextReceived(text: String) {
         val result = textChannel.trySendBlocking(text)
         if (result.isFailure && !result.isClosed) {
-            Log.w(logTag, "WS text frame dropped (buffer full) peer=${peer.friendlyName}")
+            FlashLog.w(logTag, "WS text frame dropped (buffer full) peer=${peer.friendlyName}")
         }
     }
 
     public fun onBinaryReceived(data: ByteArray) {
         val result = binaryChannel.trySendBlocking(data)
         if (result.isFailure && !result.isClosed) {
-            Log.w(logTag, "WS binary frame dropped (buffer full) peer=${peer.friendlyName}")
+            FlashLog.w(logTag, "WS binary frame dropped (buffer full) peer=${peer.friendlyName}")
         }
     }
 

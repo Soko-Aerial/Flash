@@ -1,6 +1,9 @@
+@file:OptIn(FlashInternalApi::class)
+
 package com.transfer.flash.core.network.datachannel
 
-import android.util.Log
+import com.transfer.flash.core.common.annotation.FlashInternalApi
+import com.transfer.flash.core.common.logging.FlashLog
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.net.ServerSocket
@@ -52,7 +55,7 @@ public class DataChannelServer(
                 listenPort = socket.localPort
                 running.set(true)
                 scope.launch { acceptLoop(socket) }
-                Log.i(TAG, "DataChannelServer listening on port $listenPort")
+                FlashLog.i(TAG, "DataChannelServer listening on port $listenPort")
                 return listenPort
             } catch (e: Exception) {
                 lastError = e
@@ -105,7 +108,7 @@ public class DataChannelServer(
             output.write((DataChannelFraming.JOIN_OK + "\n").toByteArray(Charsets.US_ASCII))
             output.flush()
             socket.soTimeout = 0 // frames may idle between bursts; keepalives live at WS layer
-            Log.d(TAG, "Data channel joined channel=$channelId from=${socket.inetAddress?.hostAddress}")
+            FlashLog.i(TAG, "Data channel joined channel=$channelId from=${socket.inetAddress?.hostAddress}")
 
             while (true) {
                 val payload = DataChannelFraming.readFrame(input) ?: break
@@ -118,11 +121,11 @@ public class DataChannelServer(
                 try {
                     listener.onFrame(senderDeviceId, channelId, payload, reply)
                 } catch (e: Exception) {
-                    Log.w(TAG, "data frame handler error channel=$channelId", e)
+                    FlashLog.w(TAG, "data frame handler error channel=$channelId", e)
                 }
             }
         }.onFailure { error ->
-            Log.d(TAG, "data channel ended: ${error.message ?: error::class.java.simpleName}")
+            FlashLog.i(TAG, "data channel ended: ${error.message ?: error::class.java.simpleName}")
         }
         runCatching { socket.close() }
         listener.onConnectionClosed(joinedPeer, joinedChannel)
