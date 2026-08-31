@@ -232,7 +232,7 @@ windows", which per AUDIT.md CORRECTION 9 is largely already possible.
 
 **Do not let an agent silently pick B and report it as "sharing the UI".**
 
-**ANSWER:** _pending_
+**ANSWER:** Option A (chosen 2026-08-31) — desktop ships the existing chat UI, adaptively laid out.
 
 ---
 
