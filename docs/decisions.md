@@ -701,3 +701,70 @@ case where WebRTC is the right tool and WS is only the signaling channel.
 - Remote-relay or internet calling is ever considered: STUN/TURN and a rendezvous server
   become mandatory; this ADR's LAN-only ICE assumption breaks.
 - Group calls: multi-peer topology (mesh vs SFU) needs its own ADR.
+
+## ADR-026 - Duplicate-session tiebreaker: deterministic originator-id comparison resolves connect glare
+
+### Decision
+When `WsFlashNetwork.registerSession` finds a duplicate session for the same peer with
+**equal** transport rank, the incumbent is no longer chosen by arbitrary arrival order (a
+coin flip from the two phones' perspective). Instead both ends of the same TCP pair apply
+the same deterministic rule:
+
+> Keep the session whose *originator device id* is lexicographically smaller. Originator is
+> `localDeviceId` for outbound sessions, `peerDeviceId` for inbound sessions.
+
+`WsSession` carries a new `isOutbound: Boolean = false` flag so the session manager knows
+which side originated the socket. Because A's outbound *is* B's inbound (same TCP pair),
+both phones observe the same two ids and compute the same winner, so the surviving socket
+stays live on both sides.
+
+The auto-connect sweep additionally skips peers with an in-flight reconnect
+(`isReconnectInFlight`) so the two dial engines (gated 5s sweep and the #18 reconnect
+engine) never race the same peer in the first place.
+
+### Context
+After a session drop, both the gated 5s auto-connect sweep and the ungated #18 reconnect
+engine dial the same peer; both phones dial each other → connect glare. Each
+`registerSession` runs under its own per-process `registryLock` (no cross-device
+coordination), so each admits its own outbound dial first; the peer's inbound dial hits
+`SessionHardeningPolicy.resolveDuplicate` with equal LAN rank (0=0) → `KeepExisting` → the
+inbound socket is closed. The tie was a coin flip: ~50% of the time A keeps its outbound
+(TCP pair #1) while B keeps its outbound (pair #2) — but pair #1 is B's inbound (B closed
+it) and pair #2 is A's inbound (A closed it). Both surviving "sessions" sat on dead sockets
+→ both scheduled reconnect → glare again → infinite ~2s storm ("WS connecting" storms,
+"cannot reach" errors, online/offline flicker). Full root cause in ERROR-023.
+
+### Alternatives considered
+- **Keep the coin flip (status quo):** rejected — it is the bug. No data existed to break
+  the tie deterministically.
+- **Prefer the inbound (newer) session unconditionally:** rejected — both devices would
+  then keep their *inbound* sockets (each device's inbound is the other's outbound, which
+  the other device closed) → the mirror-image dead-socket storm.
+- **Prefer the outbound unconditionally:** rejected — symmetric deadlock for the same
+  reason in reverse.
+- **Compare transport-level tiebreakers (port numbers, connection timestamps):** rejected —
+  not shared/consistent across both devices; only device ids are common to both endpoints
+  of a TCP pair.
+- **Coordinate glare across devices (e.g. a lock frame):** rejected — adds a round trip to
+  every connect and a failure mode (lock lost); the pure-deterministic rule needs no
+  coordination.
+
+### Why originator-id comparison was selected
+Device ids are the only datum both endpoints of a TCP pair share and agree on, and the
+comparison is stable across reconnects. Both ends compute the same winner with no extra
+wire traffic and no timing dependence. `SessionHardeningPolicy.resolveDuplicate` keeps its
+`KeepExisting` on equal-rank behavior (stability wins when there is no glare); the glare
+tiebreaker is layered on top for equal-rank duplicates specifically.
+
+### Consequences
+- `WsSession` gained `isOutbound`; `registerSession` applies `resolveGlareTie` for
+  equal-rank duplicates. `SessionHardeningPolicy` KDoc documents the layered rule.
+- The sweep dedup (`isReconnectInFlight` skip) reduces the number of simultaneous dials, so
+  glare becomes rarer even before the tiebreaker engages.
+- A glare regression test (`testConnectGlareConvergesOnSingleLivePair`) asserts exactly one
+  live session per side, A holds outbound (smaller id), B holds inbound, message
+  round-trips, no reconnect storm.
+
+### Revisit when
+Cross-device session coordination (e.g. a connection-ownership frame) is ever built, or if
+a multi-link transport makes "same TCP pair" no longer the unit of comparison.

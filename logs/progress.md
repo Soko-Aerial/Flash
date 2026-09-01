@@ -1,6 +1,71 @@
 # Progress Log
 
-## 2026-09-02 — Voice/video calling: :core:calling + :ui:calling + app-layer wiring COMPLETE (build verified)
+## 2026-09-02 — Nearby/discovery reconnect storm ROOT-CAUSED & FIXED (connect-glare race, ERROR-023); calling + dual-band hypotheses ruled out
+
+### Worked on
+Investigated the owner's Nearby-page bugs: repeated "WS connecting" storms every ~2s,
+"cannot reach" errors, online/offline flicker, and main-thread jank (58+ skipped frames).
+Also investigated the owner's hypothesis that the regression came from the voice/video
+calling work, and the later hypothesis that the two phones were split across the
+2.4 GHz / 5 GHz bands of the router.
+
+### Root cause (primary bug) — connect-glare race
+After a session drop, BOTH the gated 5s auto-connect sweep (AutoConnectGate 15s suppress)
+AND the ungated #18 reconnect engine dial the same peer. Both devices dial each other
+simultaneously → connect glare. Each `registerSession` runs under its own per-process
+`registryLock` (no cross-device coordination), so each admits its own outbound dial first;
+the peer's inbound dial then hits `SessionHardeningPolicy.resolveDuplicate` with EQUAL LAN
+rank (0=0) → `KeepExisting` → the inbound socket is closed.
+
+- **Why ~50% cross-wire infinite storm:** the tie is a coin flip. ~50% of the time A keeps
+  its outbound (TCP pair #1) while B keeps its outbound (pair #2) — but pair #1 is B's
+  inbound (B closed it) and pair #2 is A's inbound (A closed it). Both surviving
+  "sessions" sit on dead sockets → both schedule reconnect → glare again → infinite storm.
+
+### Changed
+- `core/network/.../ws/WsSession.kt` — new `isOutbound: Boolean = false` param (line 54).
+  This is the key tiebreaker data: outbound→localDeviceId, inbound→peerDeviceId.
+- `core/network/.../ws/WsFlashNetwork.kt`:
+  - `connectManual` passes `isOutbound = true` (line 281).
+  - `registerSession` applies a deterministic `resolveGlareTie` when a duplicate session has
+    equal transport rank: keep the session whose originator device id is lexicographically
+    smaller (lines 383-437). Both ends of the same TCP pair compute the same winner, so the
+    surviving socket stays live on BOTH sides.
+  - New `isReconnectInFlight()` accessor (line 531).
+- `app/.../debug/DiscoveryEngineHolder.kt` — `runAutoConnectSweep` skips peers with an
+  in-flight reconnect (line 845) so the two dial engines never race the same peer.
+- `core/network/.../ws/WsTransferClient.kt` — `findLanNetwork()` sorts by `networkHandle`
+  so both devices deterministically pick the same network when several are eligible.
+- `app/src/main/AndroidManifest.xml` — `enableOnBackInvokedCallback="true"` (line 43) fixes
+  the "OnBackInvokedCallback is not enabled" warning.
+- `SessionHardeningPolicy.kt` — KDoc now documents the deterministic originator tiebreaker
+  applied on top of the equal-rank `KeepExisting` behavior.
+- `core/network/src/test/.../ws/WsFlashNetworkTest.kt` — new glare regression test
+  `testConnectGlareConvergesOnSingleLivePair`: two networks dial each other simultaneously,
+  asserts exactly one live session per side, A holds outbound (smaller id), B holds inbound,
+  message round-trips, no reconnect storm.
+
+### Hypotheses ruled out
+- **Calling regression: NO.** `CallFrameCodec.decode` uses exact-prefix
+  `FlashTextFraming.parseFields` and returns null for non-`FLASH_CALL` frames → cannot
+  misroute chat/pairing frames. No call frames observed in the storming logcat anyway.
+- **Dual-band split: NO (see logs/experiments.md EXP-005).** Both phones on the same
+  192.168.0.x/24 subnet, same network handle `501621903373`; router bridges bands at L2.
+  A latent non-determinism in `findLanNetwork()` was fixed by the deterministic sort.
+
+### Verification
+- `:core:network:testDebugUnitTest` — **4/4 PASS** (incl. new glare regression test).
+- `:app:compileDebugKotlin` — **BUILD SUCCESSFUL**.
+
+### Remaining
+- **Physical two-phone re-test**: reproduce the post-drop storm, confirm the tiebreaker
+  converges to a single live session and the storm stops. This is the decisive step.
+- Physical two-phone calling test (from prior entry) is still pending.
+
+### Next AI
+Run the two-phone re-test and record the result in `logs/experiments.md`. If any storm
+remains, capture both devices' logcat and check that both endpoints compute the same
+tiebreaker winner from device ids.
 
 ### Worked on
 Implemented the entire voice/video calling feature across three layers:

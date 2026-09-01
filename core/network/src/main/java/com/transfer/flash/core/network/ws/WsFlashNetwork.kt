@@ -278,7 +278,7 @@ public class WsFlashNetwork(
             else -> handshakeOutcome.getOrThrow()
         }
 
-            val session = WsSession(connection, peerDevice) { s, _ ->
+            val session = WsSession(connection, peerDevice, isOutbound = true) { s, _ ->
                 onSessionDisconnected(s)
             }
 
@@ -376,6 +376,17 @@ public class WsFlashNetwork(
      *   incumbent (stability wins — no reconnect churn, no frame loss across a swap); a strictly
      *   richer new path supersedes it. This replaces the old unconditional "newer session wins",
      *   which tore down a healthy incumbent on every connect-glare event.
+     * - **Connect-glare tiebreaker (ERROR-023):** when a second LAN session for the SAME peer
+     *   arrives via the opposite direction (our inbound vs our outbound dial), rank is a tie
+     *   (LAN=LAN), and `KeepExisting` alone would leave each side keeping whichever registered
+     *   first — a coin flip that ~50% of the time cross-wires the two ends onto different sockets
+     *   of the same TCP pair, both of which then die and re-glare forever. Break the tie
+     *   DETERMINISTICALLY from the only data both devices share: keep the session whose originator
+     *   id (`isOutbound` ? local : peer) is lexicographically smaller. Because device A's outbound
+     *   IS device B's inbound (the same TCP pair), both ends compute the same winner and converge
+     *   on one live socket. The loser's socket is closed by the caller's "Session not admitted"
+     *   path on the accepting side, and on the dialing side by the local `registerSession`
+     *   returning false.
      *
      * The compound check-then-mutate runs under [registryLock] so a simultaneous inbound+outbound
      * glare for the same peer cannot both be admitted.
@@ -387,11 +398,16 @@ public class WsFlashNetwork(
             }
             val existing = sessionsById[session.peerDeviceId]
             if (existing != null && existing !== session) {
-                val decision = hardeningPolicy.resolveDuplicate(
-                    SessionHardeningPolicy.transportRank(existing.transportType),
-                    SessionHardeningPolicy.transportRank(session.transportType),
-                )
-                if (decision == DuplicateSessionDecision.KeepExisting) {
+                val sameTransport = existing.transportType == session.transportType
+                val keepExisting = if (sameTransport) {
+                    resolveGlareTie(existing, session)
+                } else {
+                    hardeningPolicy.resolveDuplicate(
+                        SessionHardeningPolicy.transportRank(existing.transportType),
+                        SessionHardeningPolicy.transportRank(session.transportType),
+                    ) == DuplicateSessionDecision.KeepExisting
+                }
+                if (keepExisting) {
                     return false
                 }
                 // PreferNew: migrate to the richer path, closing the incumbent's socket.
@@ -418,6 +434,24 @@ public class WsFlashNetwork(
         refreshState()
         refreshHealthFromSessions()
         return true
+    }
+
+    /**
+     * Deterministic connect-glare tiebreaker (ERROR-023) for two sessions of the same transport
+     * rank for the same peer. Returns true to keep [existing] and reject [candidate].
+     *
+     * Converges both devices on ONE socket by comparing the session ORIGINATOR ids, which are
+     * mirrored across the pair: A's outbound session (originator = A) is B's inbound session
+     * (originator = A too, because B sees the peer's id A in its inbound HELLO). Keeping the
+     * session whose originator id is lexicographically smaller therefore makes A and B both keep
+     * the SAME underlying TCP pair — no coin-flip cross-wiring, no reconnect storm.
+     */
+    private fun resolveGlareTie(existing: WsSession, candidate: WsSession): Boolean {
+        val existingOrigin = if (existing.isOutbound) localDeviceId else existing.peerDeviceId.value
+        val candidateOrigin = if (candidate.isOutbound) localDeviceId else candidate.peerDeviceId.value
+        // Prefer the session whose ORIGINATOR is the smaller id; ties (never in practice for the
+        // same peer, but safe) keep the incumbent.
+        return existingOrigin <= candidateOrigin
     }
 
     private fun onSessionDisconnected(session: WsSession) {
@@ -487,6 +521,14 @@ public class WsFlashNetwork(
         }
         reconnectJobs[deviceId] = job
     }
+
+    /**
+     * True while a backoff reconnect loop is currently (re)dialing [deviceId] — i.e. a reconnect
+     * is already in flight from the #18 engine. The auto-connect sweep uses this to skip peers it
+     * would otherwise redundantly dial at the same moment, cutting connect-glare re-entry
+     * (ERROR-023).
+     */
+    public fun isReconnectInFlight(deviceId: String): Boolean = reconnectJobs.containsKey(deviceId)
 
     /**
      * Starts the [AndroidNetworkWatcher] (no-op when [context] is null, e.g. JVM tests). On a fresh

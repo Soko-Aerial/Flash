@@ -839,6 +839,10 @@ object DiscoveryEngineHolder {
             val id = ep.deviceId.value
             if (id == localId) continue
             val hasSession = active.containsKey(ep.deviceId)
+            // ERROR-023 dedup: if the #18 reconnect engine is already backoff-dialing this peer
+            // right now, don't fire a redundant dial from the sweep at the same moment — two
+            // simultaneous outbound dials to the same peer only widen the glare window.
+            if (networkImpl.isReconnectInFlight(id)) continue
             if (!gate.tryBegin(id, hasSession, System.currentTimeMillis())) continue
             appScope.launch {
                 Log.i(TAG_WS, "Auto-connect dialing peer=${ep.friendlyName} id=$id at ${ep.hostAddress}:${ep.port}")

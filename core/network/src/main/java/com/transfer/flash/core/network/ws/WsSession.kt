@@ -46,6 +46,12 @@ import kotlinx.coroutines.flow.consumeAsFlow
 public class WsSession(
     public val connection: WsConnection,
     override val peer: FlashDevice,
+    /**
+     * True when this session came from OUR outbound dial ([WsFlashNetwork.connectManual]);
+     * false when it was accepted as an inbound connection. Used by the deterministic
+     * connect-glare tiebreaker (ERROR-023) so both peers converge on the same socket.
+     */
+    public val isOutbound: Boolean = false,
     private val logTag: String = TAG,
     private val onDisconnected: (WsSession, String) -> Unit = { _, _ -> },
 ) : FlashSession {
