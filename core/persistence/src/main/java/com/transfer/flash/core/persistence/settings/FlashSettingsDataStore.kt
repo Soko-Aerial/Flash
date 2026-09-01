@@ -61,6 +61,10 @@ public class FlashSettingsDataStore(
         public val soundsEnabled: Preferences.Key<Boolean> = booleanPreferencesKey("sounds_enabled")
         public val autoAcceptTrusted: Preferences.Key<Boolean> = booleanPreferencesKey("auto_accept_trusted")
         public val backgroundTransfers: Preferences.Key<Boolean> = booleanPreferencesKey("background_transfers")
+        public val autoDownloadVoice: Preferences.Key<Boolean> = booleanPreferencesKey("auto_download_voice")
+        public val autoDownloadImage: Preferences.Key<Boolean> = booleanPreferencesKey("auto_download_image")
+        public val autoDownloadVideo: Preferences.Key<Boolean> = booleanPreferencesKey("auto_download_video")
+        public val autoDownloadFile: Preferences.Key<Boolean> = booleanPreferencesKey("auto_download_file")
         public val saveLocationUri: Preferences.Key<String> = stringPreferencesKey("save_location_uri")
         public val retentionDays: Preferences.Key<Int> = intPreferencesKey("retention_days")
         public val displayName: Preferences.Key<String> = stringPreferencesKey("display_name")
@@ -113,6 +117,22 @@ public class FlashSettingsDataStore(
     public val backgroundTransfers: Flow<Boolean> =
         preferences.map { it[Keys.backgroundTransfers] ?: false }
 
+    /**
+     * Bug 3: per-MIME auto-download of inbound offers, resolved in the chat bubble.
+     * Defaults (owner decision): voice + images auto-download (TRUE); videos + files ask (FALSE).
+     */
+    public val autoDownloadVoice: Flow<Boolean> =
+        preferences.map { it[Keys.autoDownloadVoice] ?: true }
+
+    public val autoDownloadImage: Flow<Boolean> =
+        preferences.map { it[Keys.autoDownloadImage] ?: true }
+
+    public val autoDownloadVideo: Flow<Boolean> =
+        preferences.map { it[Keys.autoDownloadVideo] ?: false }
+
+    public val autoDownloadFile: Flow<Boolean> =
+        preferences.map { it[Keys.autoDownloadFile] ?: false }
+
     public val saveLocationUri: Flow<String?> =
         preferences.map { it[Keys.saveLocationUri] }
 
@@ -149,6 +169,22 @@ public class FlashSettingsDataStore(
 
     public suspend fun setBackgroundTransfers(value: Boolean) {
         dataStore.edit { it[Keys.backgroundTransfers] = value }
+    }
+
+    public suspend fun setAutoDownloadVoice(value: Boolean) {
+        dataStore.edit { it[Keys.autoDownloadVoice] = value }
+    }
+
+    public suspend fun setAutoDownloadImage(value: Boolean) {
+        dataStore.edit { it[Keys.autoDownloadImage] = value }
+    }
+
+    public suspend fun setAutoDownloadVideo(value: Boolean) {
+        dataStore.edit { it[Keys.autoDownloadVideo] = value }
+    }
+
+    public suspend fun setAutoDownloadFile(value: Boolean) {
+        dataStore.edit { it[Keys.autoDownloadFile] = value }
     }
 
     public suspend fun setSaveLocationUri(value: String?) {

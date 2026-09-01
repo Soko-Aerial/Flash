@@ -105,6 +105,17 @@ fun FlashConversationScreen(
      * host (:app) routes it through the transfer pipeline + writes a chat row (wired in MainActivity).
      */
     onSendVoiceMessage: (localPath: String, durationMs: Long, amplitudes: List<Int>) -> Unit = { _, _, _ -> },
+    /**
+     * Accept a pending inbound file/video offer from within the chat bubble (Bug 3). [file.id] is
+     * the wire transferId; the host (:app) routes it to the transfer repository's acceptIncoming.
+     * Default no-op keeps previews inert.
+     */
+    onAcceptOffer: (transferId: String) -> Unit = {},
+    /**
+     * Decline a pending inbound file/video offer from within the chat bubble (Bug 3). [transferId]
+     * routes to the transfer repository's declineIncoming. Default no-op keeps previews inert.
+     */
+    onDeclineOffer: (transferId: String) -> Unit = {},
 ) {
     val context = LocalContext.current
     val motion = FlashTheme.motion
@@ -182,6 +193,19 @@ fun FlashConversationScreen(
 
     // UI-032: 1:1 peer details sheet (opened from the header avatar for non-group chats).
     var showPeerDetails by remember { mutableStateOf(false) }
+
+    // UI-031: encryption trust sheet, opened from the header badge. Trust state comes from the
+    // engine via isPeerTrusted (verified) + header.isEncrypted (channel encrypted). Groups keep
+    // the legacy static lock (per-member verification isn't modeled yet).
+    var showEncryptionSheet by remember { mutableStateOf(false) }
+    val encryptionState = if (state.header.isGroup) {
+        FlashEncryptionBadgeState.None
+    } else {
+        FlashEncryptionMath.badgeState(
+            isEncrypted = state.header.isEncrypted,
+            isVerified = isPeerTrusted,
+        )
+    }
 
     // UI-023: in-chat search state.
     var isSearchActive by remember { mutableStateOf(false) }
@@ -316,6 +340,8 @@ fun FlashConversationScreen(
                                     }
                                 },
                                 onSearchClick = { isSearchActive = true },
+                                encryptionState = encryptionState,
+                                onEncryptionClick = { showEncryptionSheet = true },
                             )
                             // UI-030 connection banner — hidden while fully connected.
                             AnimatedVisibility(
@@ -441,6 +467,12 @@ fun FlashConversationScreen(
                 onFileClick = { _, file ->
                     onOpenAttachment(file.localUri, file.mimeType, file.name)
                 },
+                onAcceptOffer = { _, file ->
+                    onAcceptOffer(file.id)
+                },
+                onDeclineOffer = { _, file ->
+                    onDeclineOffer(file.id)
+                },
                 highlightedMessageId = highlightedMessageId,
                 peerTypingName = state.header.typingMemberNames.firstOrNull()
                     ?: if (state.header.presence == FlashPeerPresence.Typing) state.header.title else null,
@@ -534,6 +566,14 @@ fun FlashConversationScreen(
             onDismiss = { showPeerDetails = false },
             isTrusted = isPeerTrusted,
             onRevokeTrust = onRevokePeerTrust,
+        )
+    }
+
+    // UI-031 encryption trust sheet
+    if (showEncryptionSheet) {
+        FlashEncryptionSheet(
+            state = encryptionState,
+            onDismiss = { showEncryptionSheet = false },
         )
     }
 

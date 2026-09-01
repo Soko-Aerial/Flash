@@ -1,58 +1,274 @@
 # Current Handoff
 
-## 2026-09-01 — Phase 03 complete; starting chat UI bugs + voice/video
+## 2026-09-01 — Bug 6 PHYSICALLY VERIFIED on Samsung; Infinix failure re-attributed to 4% battery power policy; next = EXP-003 (charged Infinix re-test), then voice/video calling
 
 ### Current branch
-`dev`
+`dev` (work is UNCOMMITTED in the working tree; HEAD `9e94a2d`)
 
 ### Last verified build
-da4fba6 (Phase 03 — logging abstraction)
+- `:app:assembleDebug` → **BUILD SUCCESSFUL** (2026-08-31 (b) changeset, unchanged since)
+- **Physical verification 2026-09-01:** Samsung SM-G986U1 (~90% battery) stays ONLINE with
+  screen off / app left — peer sees it online, messages arrive, no FGS exceptions. **Bug 6
+  fix verified working.** Infinix X6882B (~4% battery) still goes offline within seconds —
+  attributed to low-battery power policy (battery saver / OEM auto-kill), NOT the fixed bug.
+  See `logs/experiments.md` EXP-002 and `logs/errors.md` ERROR-020 (updated).
 
 ### Current phase
-Phase 03 complete. Next migration phase: 06 (KMP pilot). But the immediate priority is fixing 7 chat UI bugs + adding voice/video calling modules before resuming the KMP migration.
+Chat UI bug fixes (track 1): **all 7 bugs implemented; Bug 6 physically verified on Samsung.**
+Infinix low-battery behavior is a device power-policy finding, not an open code bug.
+Voice/video calling (track 1 remainder) is next. KMP migration stays de-prioritized.
 
-### Working features
-- Phase 03 logging abstraction (`FlashLog`/`FlashLogSink`/`FlashPlatformLogSink`) committed and tested
-- All 7 `android.util.Log` call sites in `core/network` and `core/transfer` routed through `FlashLog`
-- All 9 migration decisions (D1–D9) recorded; D7 chose recommendation (shared platform shims via SnackbarHost + FileKit + expect/actual permissions)
-- PHASE-21/22 corrections documented (not implemented — desktop module doesn't exist yet)
+### Working features (NEW since last handoff)
+- **Bug 6 VERIFIED (physical):** Samsung at 90% battery stays online through screen-off /
+  leave-app. The FGS + wake-lock + crash-proof sticky-restart stack works as designed.
+- **Bug 7 (notifications):** implemented 2026-08-31 (b) — device checklist pass still pending
+  (suppression, tap-to-open, dedupe, screen-off arrival).
+- **Research finding (how WhatsApp does it):** WhatsApp-class apps use FCM (Google's shared
+  Doze-exempt push channel) — impossible for Flash (LAN P2P, no cloud). Our sanctioned
+  equivalent is the battery-optimization exemption via the Settings "Background transfers"
+  toggle; the official Doze acceptable-use-case table explicitly covers "can't use FCM /
+  Doze breaks core function" apps. Recorded in `docs/android-platform-notes.md` 2026-09-01.
 
 ### In progress
-- **Bug 1:** Fix single-tap opening actions overlay (`FlashMessageBubble.kt:185-199`)
-- Subsequent bugs 2–7
-- Voice/video calling (WebRTC) modules
+- **EXP-003 (decisive, owner-driven):** charge the Infinix above ~20%, grant the
+  battery-optimization exemption (Settings → Background transfers ON), repeat the
+  screen-off test. Stays online → low-battery policy confirmed, document, done. Still
+  offline → OEM auto-kill; needs manual OEM exemption (Settings → Battery → Flash → allow
+  background activity) and possibly an in-app guidance screen.
+- Bug 7 device checklist pass (`docs/ui/notification-ui.md`).
 
 ### Broken
-- Bug 1: Single tap on message opens actions (not just long-press)
-- Bug 2: Reactions don't work on voice/files/video
-- Bug 3: Receiver must go to transfers page to accept (no in-bubble accept)
-- Bug 4: Splash animation not reusable
-- Bug 5: Offline messages don't send on peer reconnect
-- Bug 6: App shows offline when backgrounded (FGS not auto-started)
-- Bug 7: No message notifications
+- Nothing new. (Pre-existing timing-flaky test note below.)
 
 ### Last change
-da4fba6 — Phase 03 logging abstraction committed. 13 files changed, 171 insertions, 68 deletions.
+Documentation-only session (2026-09-01): recorded EXP-002 differential test results,
+updated ERROR-020 to RESOLVED-verified, added 2026-09-01 platform-notes entry (battery
+saver supersedes FGS priority; FCM research; exemption unblocks sticky-restart promotion).
+No code changes.
 
 ### Last test
-`./gradlew :core:common:testDebugUnitTest :core:network:testDebugUnitTest :core:transfer:testDebugUnitTest` — BUILD SUCCESSFUL
+Physical two-phone differential test (EXP-002): Samsung 90% PASS, Infinix 4% FAIL →
+re-attributed to low-battery power policy. No code changes this session, so no new build.
 
 ### Known blockers
-- Gradle metadata cache corruption: if `metadata-2.107\module-metadata.bin` errors, delete `F:\AndroidDev\Gradle\caches\modules-2\metadata-2.107` and rebuild
-- Known flaky test: `RealFlashChatRepositoryTest.kt:493` — timing-sensitive drain test, unrelated
+- Kotlin daemon flakiness: treat "BUILD SUCCESSFUL" as success; don't trust exit code alone
+- Gradle metadata cache corruption (hit AGAIN this session): `gradlew --stop`, `taskkill //F //IM java.exe`,
+  delete `E:\AndroidDev\Gradle\caches\modules-2\metadata-2.107`, rebuild
+- Build env: `E:\` hosts SDK (`E:\AndroidDev\SDK`), Gradle home (`E:\AndroidDev\Gradle`), JBR
+  (`E:\AndroidDev\AndroidStudio\android-studio\jbr`) — install command at the bottom of this file's
+  current section is authoritative
+- The messaging backoff timing test PASSED this session (whole class green) but remains
+  inherently timing-sensitive; deterministic cleanup still worthwhile
 - PHASE-21/22 depend on Phases 06–20 groundwork that does not exist yet; deferred
 - KMP migration is DE-prioritized until chat UI bugs + calling modules are done
 
 ### Recommended next task
-**Bug 1:** Fix `FlashMessageBubble.kt:185-199` — remove `onOpenActions()` from `combinedClickable.onClick`, keep only in `onLongClick`.
+1. **EXP-003** (owner-driven): charged Infinix + exemption granted → repeat screen-off test;
+   record in `logs/experiments.md`.
+2. Then voice/video calling modules (WebRTC, `shepeliev/webrtc-kmp`, signaling over the WS mesh).
 
 ### Files most relevant to next task
-- `ui/chat/src/main/java/com/transfer/flash/ui/chat/FlashMessageBubble.kt`
-- `ui/chat/src/main/java/com/transfer/flash/ui/chat/FlashConversationScreen.kt`
-- `app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt`
-- `core/messaging/src/main/java/com/transfer/flash/core/messaging/RealFlashChatRepository.kt`
-- `app/src/main/java/com/transfer/flash/MainActivity.kt`
+- `logs/experiments.md` (EXP-002 recorded; EXP-003 template ready)
 - `app/src/main/java/com/transfer/flash/debug/FlashBackgroundService.kt`
+- `app/src/main/java/com/transfer/flash/MainActivity.kt` (battery-exemption wiring)
+- `docs/ui/notification-ui.md` (Bug 7 device checklist)
+
+### Remaining work summary (for next AI)
+1. EXP-003 charged-Infinix re-test (owner-driven)
+2. Bug 7 device checklist pass
+3. **Voice/video calling:** `core:calling` + `ui:calling` with WebRTC (`shepeliev/webrtc-kmp`),
+   WireFrame types, signaling over WS mesh, call UI overlay
+4. Deterministic cleanup of the messaging backoff timing test
+5. Then: commit all bug-fix work (with `Co-authored-by: Copilot` trailer), resume KMP migration
+
+### Install command (PowerShell, authoritative)
+```powershell
+Set-Location "C:\Users\KaliOxygen\Downloads\Flash"
+$env:JAVA_HOME = "E:\AndroidDev\AndroidStudio\android-studio\jbr"
+$env:GRADLE_USER_HOME = "E:\AndroidDev\Gradle"
+$env:JAVA_TOOL_OPTIONS = "-Djdk.net.unixdomain.tmpdir=Z:\nope"
+$env:Path = "$env:JAVA_HOME\bin;$env:Path"
+& .\gradlew.bat :app:installDebug --no-configuration-cache --console=plain
+```
+Git-Bash equivalent: prefix with `JAVA_HOME="E:/AndroidDev/AndroidStudio/android-studio/jbr" GRADLE_USER_HOME="E:/AndroidDev/Gradle" JAVA_TOOL_OPTIONS="-Djdk.net.unixdomain.tmpdir=Z:/nope"` and forward slashes; adb at `"E:\AndroidDev\SDK\platform-tools\adb.exe"` (quote it in Git Bash).
+
+## 2026-08-31 (b) — Bugs 1–7 ALL IMPLEMENTED; Bug 6 root-caused & re-fixed; next = physical two-phone verification, then voice/video calling
+
+### Current branch
+`dev` (work is UNCOMMITTED in the working tree; HEAD `9e94a2d`)
+
+### Last verified build
+- `:core:messaging:testDebugUnitTest --tests *RealFlashChatRepositoryTest*` → **BUILD SUCCESSFUL**, XML `failures="0"` (whole class incl. the previously-flaky backoff test AND the two new Bug 7 callback regression tests).
+- `:app:assembleDebug` → **BUILD SUCCESSFUL** (after fixing one compile iteration: battery-exemption callback hoisted through `FlashApp`/`FlashShell` as `onEnableBackgroundTransfers`).
+
+### Current phase
+Chat UI bug fixes (track 1): **all 7 bugs implemented**. Bug 6 was REOPENED after the owner's
+physical test ("still goes offline after a few seconds") and the REAL root cause was found on
+device — see ERROR-020. Voice/video calling (track 1 remainder) is next. KMP migration stays
+de-prioritized.
+
+### Working features (NEW since last handoff)
+- **Bug 6 RE-FIXED (code-level, ERROR-020):** on-device logcat proved a sticky-restart crash
+  loop — `ForegroundServiceStartNotAllowedException` uncaught in
+  `FlashBackgroundService.onCreate → startAsForeground` killed the process EVERY time the
+  system restarted the START_STICKY service while backgrounded (7 FATALs captured).
+  Fix: `startAsForeground()` catches everything and returns Boolean; `onCreate` order is now
+  locks → screen receiver → engine start → foreground promotion; refusal → log + `stopSelf()`
+  (mesh keeps running in-process, no crash loop). Plus `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`
+  wired to the Settings "Background transfers" toggle (user-initiated AOSP Doze exemption).
+- **ERROR-021 fixed:** `drainMutex` NPE (declared below the `init` block that launches the
+  drain coroutine → init-order race → uncaught NPE process death) — moved above with a
+  comment locking the ordering constraint.
+- **Bug 7 IMPLEMENTED (notifications):** `docs/ui/notification-ui.md` filled to DESIGNED first
+  (§34), then: `FlashNotificationManager` (`flash_messages` channel, per-conversation ids,
+  immutable PendingIntent → `MainActivity` with `EXTRA_CONVERSATION_ID`), monochrome
+  `ic_notification_flash.xml`, library-safe defaulted callbacks
+  (`onInboundTextMessage`/`onInboundAttachment`) fired only on real inserts (replay-proof),
+  foreground+open-conversation suppression, notification-tap → conversation via
+  `pendingNotificationConversation` flow consumed in `FlashShell` (engine-ready gated).
+- WifiLock finding (API 34+): HIGH_PERF is remapped to LOW_LATENCY and LOW_LATENCY is only
+  active foreground+screen-on — NO WifiLock mode keeps the radio up in background on modern
+  Android. Lock retained for the foreground hot path only. Full dumpsys evidence in
+  `docs/android-platform-notes.md` 2026-08-31 (b).
+
+### In progress
+- Physical two-phone verification of Bug 6 + Bug 7 (THE decisive pending step)
+
+### Broken
+- Nothing new. (Pre-existing timing-flaky test note below.)
+
+### Last change
+Bug 6 re-fix + Bug 7 implementation, both built green. Files: `FlashBackgroundService.kt`,
+`RealFlashChatRepository.kt` (drainMutex order + callbacks), `DiscoveryEngineHolder.kt`
+(callback wiring), `MainActivity.kt` (foreground state, onNewIntent, battery exemption,
+pending-conversation flow), `FlashNotificationManager.kt` (NEW), `ic_notification_flash.xml`
+(NEW), `AndroidManifest.xml` (permission), `notification-ui.md` (DESIGNED),
+`RealFlashChatRepositoryTest.kt` (2 new tests), platform-notes/errors/progress updated.
+
+### Last test
+- See Last verified build above. Also: editor diagnostics clean on all changed files.
+- Physical verification PENDING: (1) background/screen-off phone A >45s → phone B still sees
+  it online, message arrives, logcat has NO `ForegroundServiceStartNotAllowedException`/FATAL;
+  (2) toggle ON "Background transfers", grant the exemption dialog, repeat;
+  (3) Bug 7 checklist in `docs/ui/notification-ui.md` (suppression, tap-to-open, dedupe,
+  screen-off arrival). On this Infinix also check OEM "Phone Master"/battery manager — may
+  need a manual background-activity exemption (AOSP exemption does not control it).
+
+### Known blockers
+- Kotlin daemon flakiness: treat "BUILD SUCCESSFUL" as success; don't trust exit code alone
+- Gradle metadata cache corruption (hit AGAIN this session): `gradlew --stop`, `taskkill //F //IM java.exe`,
+  delete `E:\AndroidDev\Gradle\caches\modules-2\metadata-2.107`, rebuild
+- Build env: `E:\` hosts SDK (`E:\AndroidDev\SDK`), Gradle home (`E:\AndroidDev\Gradle`), JBR
+  (`E:\AndroidDev\AndroidStudio\android-studio\jbr`) — install command at the bottom of this file's
+  current section is authoritative
+- The messaging backoff timing test PASSED this session (whole class green) but remains
+  inherently timing-sensitive; deterministic cleanup still worthwhile
+- PHASE-21/22 depend on Phases 06–20 groundwork that does not exist yet; deferred
+- KMP migration is DE-prioritized until chat UI bugs + calling modules are done
+
+### Recommended next task
+1. Physical two-phone verification above (owner-driven). Record results in `logs/experiments.md`.
+2. Then voice/video calling modules (WebRTC, `shepeliev/webrtc-kmp`, signaling over the WS mesh).
+
+### Files most relevant to next task
+- `app/src/main/java/com/transfer/flash/debug/FlashBackgroundService.kt`
+- `app/src/main/java/com/transfer/flash/notifications/FlashNotificationManager.kt`
+- `app/src/main/java/com/transfer/flash/MainActivity.kt`
+- `core/messaging/src/main/java/com/transfer/flash/core/messaging/RealFlashChatRepository.kt`
+- `docs/ui/notification-ui.md`, `logs/errors.md` (ERROR-020/021)
+
+### Remaining work summary (for next AI)
+1. Physical verification (Bug 6 + Bug 7 checklists)
+2. **Voice/video calling:** `core:calling` + `ui:calling` with WebRTC (`shepeliev/webrtc-kmp`),
+   WireFrame types, signaling over WS mesh, call UI overlay
+3. Deterministic cleanup of the messaging backoff timing test
+4. Then: commit all bug-fix work (with `Co-authored-by: Copilot` trailer), resume KMP migration
+
+### Install command (PowerShell, authoritative)
+```powershell
+Set-Location "C:\Users\KaliOxygen\Downloads\Flash"
+$env:JAVA_HOME = "E:\AndroidDev\AndroidStudio\android-studio\jbr"
+$env:GRADLE_USER_HOME = "E:\AndroidDev\Gradle"
+$env:JAVA_TOOL_OPTIONS = "-Djdk.net.unixdomain.tmpdir=Z:\nope"
+$env:Path = "$env:JAVA_HOME\bin;$env:Path"
+& .\gradlew.bat :app:installDebug --no-configuration-cache --console=plain
+```
+Git-Bash equivalent: prefix with `JAVA_HOME="E:/AndroidDev/AndroidStudio/android-studio/jbr" GRADLE_USER_HOME="E:/AndroidDev/Gradle" JAVA_TOOL_OPTIONS="-Djdk.net.unixdomain.tmpdir=Z:/nope"` and forward slashes; adb at `"E:\AndroidDev\SDK\platform-tools\adb.exe"` (quote it in Git Bash).
+
+## 2026-08-31 — Bugs 1-6 IMPLEMENTED; next = Bug 7, then voice/video calling [SUPERSEDED — Bug 6 root cause turned out to be the sticky-restart crash loop, see the (b) section above and ERROR-020]
+
+### Current branch
+`dev` (work is UNCOMMITTED in the working tree)
+
+### Last verified build
+`:app:assembleDebug` → **BUILD SUCCESSFUL** (2m 40s) with Bugs 1–6 on disk. The Bug 5 reconnect regression test also passes in isolation. HEAD remains `9e94a2d`; the full bug-fix changeset is uncommitted in the working tree.
+
+### Current phase
+Chat UI bug fixes (track 1 of the 2-track plan: 7 bugs → then voice/video calling modules). KMP migration is DE-prioritized until both tracks land.
+
+### Working features (NEW)
+- **Bug 1 DONE:** Single tap no longer opens the actions overlay (`FlashMessageBubble.kt:194-205` — onClick only toggles selection in selection mode; onLongClick is the exclusive actions trigger)
+- **Bug 2 DONE:** Reactions/actions overlay now works on voice/files/video/images (`FlashFileMessageCard.kt`, `FlashImageGrid.kt` — added onLongPress propagation)
+- **Bug 3 DONE:** Per-MIME auto-download of inbound offers, complete end-to-end:
+  - Engine: `DiscoveryEngineHolder.kt` — `@Volatile` `autoDownloadVoice/Image/Video/File` mirrors + `onIncomingOffer` policy lambda (auto-accepts voice+image by default, video+file ask in-bubble) + hook in `handleInboundBinary`
+  - Settings: `FlashSettingsScreen.kt` 4 SwitchRows + `FlashSettingsDataStore.kt` 4 keys/flows/setters
+  - Wiring: `AppEngine.kt` mirrors DataStore → holder; `MainActivity.kt` collects/persists/wires
+  - Shared parity: `core/engine/Flash.kt` `attachmentProgress` now maps `Offered → AwaitingAcceptance`
+- **Bug 4 DONE:** Splash animation extracted into a reusable theme composable:
+  - `ui:theme/.../FlashBrandAnimation.kt` — the bolt + discovery rings + glow + breathing loop,
+    now honors `FlashTheme.motion.reduceMotion` (static bolt at rest), draws an optional dark
+    gradient `background`, and is size-driven by its `modifier`
+  - `app/.../ui/splash/FlashSplashScreen.kt` — now a thin delegate to `FlashBrandAnimation`
+    (visual launch splash unchanged)
+  - `ui/chat/.../ui/transfers/FlashTransfersScreen.kt` — `LoadingRows` reuses it as a compact
+    branded loading mark above the skeleton rows (`background=false`, 96dp box)
+- **Bug 5 DONE:** peer session-up resets pending outbox backoff and drains immediately; reconnect regression test passes in isolation.
+- **Bug 6 DONE (code-level):** visible `MainActivity.onStart` launches the connected-device FGS; it stays alive after `onStop` so background mesh presence/receiving can continue. Physical two-phone verification pending.
+- Phase 03 logging abstraction (`FlashLog`) committed & tested (`da4fba6`)
+- All 9 KMP migration decisions (D1–D9) recorded
+- In-bubble Accept/Decline buttons on inbound file offers (`FlashFileMessageCard.kt:214-228`)
+
+### In progress
+- Bug 7 (see `### Broken` below) — NOT started
+- Voice/video calling (WebRTC) — NOT started
+
+### Broken
+- Bug 7: No message notifications — needs `FlashNotificationManager.kt`
+
+### Last change
+Bug 6 implemented (ERROR-020): `MainActivity.onStart()` is now the sole owner that launches `FlashBackgroundService` while the activity is visible; the delayed launch was removed from `DiscoveryEngineHolder.ensureStarted`. The service stays running across `onStop`, uses `ContextCompat.startForegroundService` for API 24+, logs launch failures, and uses a LOW-importance notification channel. Also fixed Bug 5's pending explicit-API compile error (`public notifyPeerSessionUp`). Uncommitted.
+
+### Last test
+- `:app:assembleDebug` → **BUILD SUCCESSFUL** (2m 40s).
+- `:core:messaging:compileDebugKotlin --rerun-tasks` → **BUILD SUCCESSFUL**.
+- Bug 5 test `notifyPeerSessionUp flushes a queued outbox message stuck in backoff` → **PASS** in isolation.
+- Full `:core:messaging:testDebugUnitTest` is not green: the pre-existing timing-sensitive `failed outbox delivery backs off instead of retrying every tick` test fails, including in isolation. This is unrelated to Bug 6 and needs deterministic-test cleanup.
+- Physical Bug 6 verification remains: background one phone for >45 seconds and confirm the peer stays online and receives a message.
+
+### Known blockers
+- Kotlin daemon flakiness: treat "BUILD SUCCESSFUL" as success; don't trust exit code alone (non-daemon fallback compiles fine but exits 1)
+- Gradle metadata cache corruption: if `metadata-2.107\module-metadata.bin` errors, delete `E:\AndroidDev\Gradle\caches\modules-2\metadata-2.107` and rebuild (toolchain moved F: → E:)
+- Build tip: `E:\` hosts SDK (`E:\AndroidDev\SDK`), Gradle home (`E:\AndroidDev\Gradle`) and the JBR (`E:\AndroidDev\AndroidStudio\android-studio\jbr`)
+- Known failing timing test: `RealFlashChatRepositoryTest.kt:499` (`failed outbox delivery backs off instead of retrying every tick`) — currently fails even in isolation; unrelated to Bug 6
+- PHASE-21/22 depend on Phases 06–20 groundwork that does not exist yet; deferred
+- KMP migration is DE-prioritized until chat UI bugs + calling modules are done
+
+### Recommended next task
+**Bug 7:** Add message notifications via `FlashNotificationManager.kt`, using the existing Android 13+ notification permission flow and avoiding duplicate notifications for the currently open conversation.
+
+### Files most relevant to next task
+- `app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt` (inbound message framing/dispatch)
+- `core/messaging/src/main/java/com/transfer/flash/core/messaging/RealFlashChatRepository.kt` (inbound ingestion)
+- `app/src/main/java/com/transfer/flash/MainActivity.kt` (notification permission and current conversation host state)
+- `app/src/main/AndroidManifest.xml` (`POST_NOTIFICATIONS` already declared)
+- `docs/ui/notification-ui.md`
+
+### Remaining work summary (for next AI)
+1. **Bug 7:** Message notifications
+2. **Voice/video calling:** `core:calling` + `ui:calling` modules with WebRTC (`shepeliev/webrtc-kmp`), WireFrame types, signaling over WS mesh, call UI overlay
+3. Physical Bug 6 background-presence verification and deterministic cleanup of the existing messaging backoff test
+4. Then: commit all bug-fix work (with `Co-authored-by: Copilot` trailer), resume KMP migration
+
 
 
 - Created a separate formal logo proposal for the owner's AI logo competition. Entry point:

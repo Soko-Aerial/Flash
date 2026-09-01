@@ -9,6 +9,10 @@
     <!-- Keeps the CPU alive during screen-off/Doze so WebSocket keepalive pings keep firing
          and the mesh sessions/multicast survive (held for the FlashBackgroundService lifetime). -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Bug 6: user-initiated exemption dialog (ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS) so the
+         mesh survives Doze/App Standby while backgrounded. Fired only from the Settings
+         "Background transfers" toggle — never on install/startup. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <!-- P3.5/D-M4: background discovery host (connectedDevice FGS type). -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />

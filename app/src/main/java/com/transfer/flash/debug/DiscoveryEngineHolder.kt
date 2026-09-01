@@ -35,6 +35,7 @@ import com.transfer.flash.core.transfer.policy.RandomAccessChunkSink
 import com.transfer.flash.core.transfer.policy.RandomAccessSinkHandle
 import com.transfer.flash.core.common.result.FlashResult
 import com.transfer.flash.identity.AppIdentity
+import com.transfer.flash.notifications.FlashNotificationManager
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
@@ -117,6 +118,24 @@ object DiscoveryEngineHolder {
     /** Local device id, cached so [onScreenOn] can run a sweep without re-reading identity. */
     @Volatile
     private var localDeviceId: String? = null
+
+    // Bug 3: auto-download settings, mirrored from FlashSettingsDataStore by AppEngine
+    @Volatile
+    var autoDownloadVoice: Boolean = true
+    @Volatile
+    var autoDownloadImage: Boolean = true
+    @Volatile
+    var autoDownloadVideo: Boolean = false
+    @Volatile
+    var autoDownloadFile: Boolean = false
+
+    /**
+     * Bug 3: invoked by [handleInboundBinary] after [RealFlashTransferRepository.onIncomingOffered]
+     * so the auto-download policy can auto-accept known MIME types without user interaction.
+     * Set inside [ensureStarted] to capture the local [acceptOffer] lambda.
+     */
+    @Volatile
+    var onIncomingOffer: ((String) -> Unit)? = null
 
     // #16: recreatable so stopAll can cancel every collector/session job launched on it. A cancelled
     // CoroutineScope stays cancelled, so ensureStarted swaps in a fresh one when restarting.
@@ -378,6 +397,8 @@ object DiscoveryEngineHolder {
                             com.transfer.flash.core.transfer.model.FlashTransferState.Failed,
                             com.transfer.flash.core.transfer.model.FlashTransferState.Cancelled ->
                                 com.transfer.flash.core.messaging.model.FlashFileTransferStatus.Failed
+                            com.transfer.flash.core.transfer.model.FlashTransferState.Offered ->
+                                com.transfer.flash.core.messaging.model.FlashFileTransferStatus.AwaitingAcceptance
                             else ->
                                 com.transfer.flash.core.messaging.model.FlashFileTransferStatus.Transferring
                         },
@@ -386,6 +407,16 @@ object DiscoveryEngineHolder {
                         etaSeconds = t.etaSeconds.toInt(),
                     )
                 }
+            },
+            // Bug 7: inbound-event callbacks → system notifications. The repo fires these
+            // only for rows Room actually inserted, so replayed frames can't double-notify;
+            // FlashNotificationManager additionally suppresses the conversation the user
+            // is reading right now (foreground + open thread).
+            onInboundTextMessage = { conversationId, senderName, text ->
+                FlashNotificationManager.showMessage(appContext, conversationId, senderName, text)
+            },
+            onInboundAttachment = { conversationId, senderName, fileName, mimeType ->
+                FlashNotificationManager.showAttachment(appContext, conversationId, senderName, fileName, mimeType)
             },
             transportSink = { targetDeviceId, wireFrame ->
                 val session = networkImpl.activeSessions.value[FlashDeviceId(targetDeviceId)] as? WsSession
@@ -581,6 +612,27 @@ object DiscoveryEngineHolder {
             }
         }
 
+        // Bug 3: auto-download policy. AppEngine mirrors the per-MIME toggles into
+        // autoDownloadVoice/Image/Video/File; when an offer arrives whose MIME category is enabled,
+        // accept it immediately (same path as a manual Accept). Otherwise the offer stays pending
+        // for the user to accept/decline in the chat bubble.
+        onIncomingOffer = { transferId ->
+            val meta = incomingMeta[transferId]
+            if (meta != null) {
+                val mime = guessMimeType(meta.fileName)
+                val auto = when {
+                    mime.startsWith("audio/") -> autoDownloadVoice
+                    mime.startsWith("image/") -> autoDownloadImage
+                    mime.startsWith("video/") -> autoDownloadVideo
+                    else -> autoDownloadFile
+                }
+                if (auto) {
+                    Log.i(TAG_TRANSFER, "Auto-accepting '${meta.fileName}' (mime=$mime) transferId=$transferId")
+                    acceptOffer(transferId)
+                }
+            }
+        }
+
         // Declines a pending inbound OFFER (#5): drop the never-materialized session and local
         // bookkeeping. The repo already marked the row Cancelled and emitted a CANCEL to the sender.
         val declineOffer: (String) -> Unit = { transferId ->
@@ -652,6 +704,9 @@ object DiscoveryEngineHolder {
                         // pairing code the moment it taps Pair (see PairingFraming.Hello).
                         Log.i(TAG_WS, "Session up peer=${session.peer.friendlyName} id=${session.peerDeviceId.value} — sending pairing hello")
                         pairingCoordinator.onSessionUp(session.peerDeviceId.value)
+                        // Bug 5: a peer session is up (connect/reconnect) — flush the durable
+                        // outbox now so messages queued while this peer was offline send.
+                        chatImpl.notifyPeerSessionUp()
                         sessionJobs[session] = appScope.launch {
                             launch {
                                 session.incomingText.collect { text ->
@@ -723,9 +778,8 @@ object DiscoveryEngineHolder {
             }
         }
 
-        // Auto-start foreground service so screen-off or background doesn't kill the server
-        runCatching { FlashBackgroundService.start(appContext) }
-
+        // MainActivity.onStart owns foreground-service launch while the app is user-visible.
+        // Starting it here after asynchronous engine setup can violate Android 12+ background-start rules.
         return composite!!
     }
 
@@ -939,6 +993,10 @@ object DiscoveryEngineHolder {
                         peerName = peerLabel,
                         peerDeviceId = peerDeviceId,
                     )
+                    // Bug 3: auto-download hook. AppEngine sets onIncomingOffer to accept the offer
+                    // only when the file's MIME category is enabled in settings (voice/image default
+                    // on; video/file default off). When null or policy says no, it stays Offered.
+                    onIncomingOffer?.invoke(frame.transferId)
                     Log.i(TAG_TRANSFER, "Offered '${frame.fileName}' (${frame.totalBytes} bytes, ${frame.totalChunks} chunks) from $peerLabel — awaiting accept")
                 }
                 is ReceiveEvent.AckBatchReady -> {

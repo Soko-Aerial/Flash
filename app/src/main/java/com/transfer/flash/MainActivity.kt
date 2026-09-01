@@ -1,9 +1,13 @@
 package com.transfer.flash
 
 import android.Manifest
+import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -47,6 +51,7 @@ import com.transfer.flash.core.discovery.FlashDiscoveredEndpoint
 import com.transfer.flash.core.discovery.FlashDiscoveryState
 import com.transfer.flash.di.AppEngine
 import com.transfer.flash.debug.DevConsoleChip
+import com.transfer.flash.debug.FlashBackgroundService
 import com.transfer.flash.debug.FlashDevConsoleScreen
 import com.transfer.flash.ui.chat.FlashChatListScreen
 import com.transfer.flash.ui.chat.FlashConversationScreen
@@ -75,6 +80,7 @@ import com.transfer.flash.ui.transfers.FlashTransferState
 import com.transfer.flash.ui.transfers.TransfersUiState
 import com.transfer.flash.core.transfer.model.FlashTransfer
 import com.transfer.flash.core.transfer.model.FlashTransferId
+import com.transfer.flash.notifications.FlashNotificationManager
 import com.transfer.flash.ui.icons.FlashIcons
 import com.transfer.flash.core.messaging.model.FlashNetworkTransport
 import com.transfer.flash.ui.theme.FlashMaterialTheme
@@ -102,6 +108,14 @@ class MainActivity : ComponentActivity() {
     private val notificationPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* best-effort; no-op on denial */ }
 
+    /**
+     * Bug 7: conversation a notification-tap wants to open. Emitted from [onNewIntent] and
+     * from the cold-start intent in [onCreate]; consumed by [FlashShell] once the engine
+     * is ready (it needs the real repository + navigator), then nulled. A plain
+     * MutableStateFlow shared between the activity and the shell in the same process.
+     */
+    private val pendingNotificationConversation = MutableStateFlow<String?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         // Must be called before super.onCreate to take over the theme's splash window.
         // Keep the cold-start splash up for exactly as long as the engine takes to boot:
@@ -114,13 +128,70 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         maybeRequestNotificationPermission()
+        // Bug 7: a notification tap can cold-start the activity (no onNewIntent on cold
+        // start) — consume the launch intent here too.
+        pendingNotificationConversation.value =
+            intent?.getStringExtra(FlashNotificationManager.EXTRA_CONVERSATION_ID)
         // Boot the real WS mesh stack once, idempotently. The holder de-dupes against the Dev
         // Console / background service, so this never spins up a second server. Failures are
         // captured into appEngine.startError (permission gating lands in Phase 4).
         appEngine.start()
         val isDebuggable = (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
         setContent {
-            FlashApp(engine = appEngine, showDevConsoleEntry = isDebuggable)
+            FlashApp(
+                engine = appEngine,
+                showDevConsoleEntry = isDebuggable,
+                pendingNotificationConversation = pendingNotificationConversation,
+                onEnableBackgroundTransfers = ::requestIgnoreBatteryOptimizations,
+            )
+        }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        // Bug 6: launch while this activity is user-visible. Android 12+ rejects most foreground-
+        // service starts from the background, so engine startup must not launch this asynchronously.
+        // Do not stop in onStop: the service is what keeps discovery and mesh sessions alive there.
+        FlashBackgroundService.start(this)
+        // Bug 7: notifications must be suppressed only while we're genuinely on screen — not
+        // merely while the process lives (the service keeps the process alive across onStop).
+        FlashNotificationManager.appForeground = true
+    }
+
+    override fun onStop() {
+        super.onStop()
+        FlashNotificationManager.appForeground = false
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        // Bug 7: notification tap while the activity was alive (CLEAR_TOP|SINGLE_TOP resume).
+        pendingNotificationConversation.value =
+            intent.getStringExtra(FlashNotificationManager.EXTRA_CONVERSATION_ID)
+    }
+
+    /**
+     * Bug 6 (OEM kill layer): asks the system to exempt Flash from AOSP battery
+     * optimization (Doze/App Standby). Triggered by the existing Settings "Background
+     * transfers" toggle so the request is always user-initiated — the standard pattern
+     * for messengers/transfer apps. Note this covers AOSP only; Transsion/Infinix power
+     * managers ("Phone Master"/"Phoenix") apply their own auto-kill that may need a manual
+     * exemption (Settings → Battery → Flash → Allow background activity). See
+     * docs/android-platform-notes.md.
+     */
+    private fun requestIgnoreBatteryOptimizations() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val powerManager = getSystemService(PowerManager::class.java)
+            if (powerManager != null && !powerManager.isIgnoringBatteryOptimizations(packageName)) {
+                runCatching {
+                    startActivity(
+                        Intent(
+                            android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                            Uri.parse("package:$packageName"),
+                        ),
+                    )
+                }
+            }
         }
     }
 
@@ -157,7 +228,13 @@ object SettingsKeys {
 }
 
 @Composable
-fun FlashApp(engine: AppEngine, showDevConsoleEntry: Boolean = false) {
+fun FlashApp(
+    engine: AppEngine,
+    showDevConsoleEntry: Boolean = false,
+    pendingNotificationConversation: MutableStateFlow<String?> = MutableStateFlow(null),
+    /** Bug 6: fired when the user turns ON the Settings "Background transfers" toggle (host-owned). */
+    onEnableBackgroundTransfers: () -> Unit = {},
+) {
     // #14 / UI-049 wiring: Appearance/Haptics are only real if the host applies them, so the settings
     // model lives above the theme. ONE theme scope owns the whole shell — a nested
     // FlashTheme { } with default arguments would reset darkTheme to the OS value and silently
@@ -176,6 +253,11 @@ fun FlashApp(engine: AppEngine, showDevConsoleEntry: Boolean = false) {
     val hapticsEnabled by store.hapticsEnabled.collectAsState(initial = true)
     val backgroundTransfers by store.backgroundTransfers.collectAsState(initial = false)
     val displayNamePref by store.displayName.collectAsState(initial = "")
+    // Bug 3: per-MIME auto-download toggles
+    val autoDownloadVoice by store.autoDownloadVoice.collectAsState(initial = true)
+    val autoDownloadImage by store.autoDownloadImage.collectAsState(initial = true)
+    val autoDownloadVideo by store.autoDownloadVideo.collectAsState(initial = false)
+    val autoDownloadFile by store.autoDownloadFile.collectAsState(initial = false)
 
     val ready by engine.ready.collectAsState()
     val trustedFallback = remember { MutableStateFlow(emptyList<NearbyTrustedPeerUi>()) }
@@ -187,6 +269,10 @@ fun FlashApp(engine: AppEngine, showDevConsoleEntry: Boolean = false) {
         dynamicAccent = dynamicAccent,
         hapticsEnabled = hapticsEnabled,
         backgroundTransfers = backgroundTransfers,
+        autoDownloadVoice = autoDownloadVoice,
+        autoDownloadImage = autoDownloadImage,
+        autoDownloadVideo = autoDownloadVideo,
+        autoDownloadFile = autoDownloadFile,
         trustedPeerCount = trustedPeers.size,
         appVersion = engine.appVersionName,
         deviceIdShort = (if (ready) engine.localDeviceId else "").take(8).ifBlank { "00000000" },
@@ -201,6 +287,10 @@ fun FlashApp(engine: AppEngine, showDevConsoleEntry: Boolean = false) {
             if (updated.backgroundTransfers != settings.backgroundTransfers) {
                 store.setBackgroundTransfers(updated.backgroundTransfers)
             }
+            if (updated.autoDownloadVoice != settings.autoDownloadVoice) store.setAutoDownloadVoice(updated.autoDownloadVoice)
+            if (updated.autoDownloadImage != settings.autoDownloadImage) store.setAutoDownloadImage(updated.autoDownloadImage)
+            if (updated.autoDownloadVideo != settings.autoDownloadVideo) store.setAutoDownloadVideo(updated.autoDownloadVideo)
+            if (updated.autoDownloadFile != settings.autoDownloadFile) store.setAutoDownloadFile(updated.autoDownloadFile)
             if (updated.displayName != settings.displayName) store.setDisplayName(updated.displayName)
         }
     }
@@ -235,6 +325,8 @@ fun FlashApp(engine: AppEngine, showDevConsoleEntry: Boolean = false) {
                     showDevConsoleEntry = showDevConsoleEntry,
                     settings = settings,
                     onSettingsChange = onSettingsChange,
+                    pendingNotificationConversation = pendingNotificationConversation,
+                    onEnableBackgroundTransfers = onEnableBackgroundTransfers,
                 )
                 AnimatedVisibility(
                     visible = !dismissSplash,
@@ -254,6 +346,8 @@ private fun FlashShell(
     showDevConsoleEntry: Boolean,
     settings: FlashSettingsModel,
     onSettingsChange: (FlashSettingsModel) -> Unit,
+    pendingNotificationConversation: MutableStateFlow<String?>,
+    onEnableBackgroundTransfers: () -> Unit,
 ) {
     val nav = rememberFlashNavigationState()
     // Phase 3.1: Chats now bind to the real Room-backed repository once the engine has booted.
@@ -266,6 +360,33 @@ private fun FlashShell(
         (if (ready) engine.chats else null) ?: sampleChatRepository
     val conversationState by chatRepository.conversationState.collectAsState()
     val chatListState by chatRepository.chatListState.collectAsState()
+
+    // Bug 7: the shell mirrors the open conversation into the notification manager so it
+    // can suppress notifications for the thread being read right now (and clear that
+    // peer's notification). Derived from the live nav entry — the single source of truth —
+    // so every path (tap, back, tab switch, process restore) stays in sync.
+    val openConversationEntry = nav.current.destination.let { dest ->
+        if (dest == FlashDestination.Conversation) nav.current.conversationId else null
+    }
+    FlashNotificationManager.openConversationId = openConversationEntry
+    val notifyContext = LocalContext.current
+    LaunchedEffect(openConversationEntry) {
+        openConversationEntry?.let { FlashNotificationManager.clearConversation(notifyContext, it) }
+    }
+
+    // Bug 7: consume a notification-tap navigation request once the engine is ready (the
+    // real repository must exist to open the thread; navigating with the sample repo
+    // would show an empty conversation). Cleared after consuming so re-taps re-trigger.
+    val pendingConversation by pendingNotificationConversation.collectAsState()
+    LaunchedEffect(ready, pendingConversation) {
+        if (!ready || pendingConversation == null) return@LaunchedEffect
+        val conversationId = pendingConversation
+        if (conversationId != null) {
+            chatRepository.openConversation(conversationId)
+            nav.navigate(FlashDestination.Conversation, conversationId = conversationId)
+            pendingNotificationConversation.value = null
+        }
+    }
 
     var showDevConsole by remember { mutableStateOf(false) }
 
@@ -499,6 +620,18 @@ private fun FlashShell(
                                 }
                             }
                         },
+                        // Bug 3: accept/decline a pending inbound video/file offer directly from the
+                        // chat bubble. file.id == the wire transferId (set in applyAttachment).
+                        onAcceptOffer = { transferId ->
+                            engine.transfers?.let { repo ->
+                                scope.launch { repo.acceptIncoming(FlashTransferId(transferId)) }
+                            }
+                        },
+                        onDeclineOffer = { transferId ->
+                            engine.transfers?.let { repo ->
+                                scope.launch { repo.declineIncoming(FlashTransferId(transferId)) }
+                            }
+                        },
                     )
                     FlashDestination.Transfers -> FlashTransfersScreen(
                         state = transfersUi,
@@ -584,7 +717,22 @@ private fun FlashShell(
                             onSettingsChange(settings.copy(hapticsEnabled = it))
                         },
                         onBackgroundTransfersChanged = {
+                            // Bug 6: opting into background mesh = ask the system (AOSP Doze/
+                            // App Standby) to leave Flash alone. User-initiated by design.
+                            if (it) onEnableBackgroundTransfers()
                             onSettingsChange(settings.copy(backgroundTransfers = it))
+                        },
+                        onAutoDownloadVoiceChanged = {
+                            onSettingsChange(settings.copy(autoDownloadVoice = it))
+                        },
+                        onAutoDownloadImageChanged = {
+                            onSettingsChange(settings.copy(autoDownloadImage = it))
+                        },
+                        onAutoDownloadVideoChanged = {
+                            onSettingsChange(settings.copy(autoDownloadVideo = it))
+                        },
+                        onAutoDownloadFileChanged = {
+                            onSettingsChange(settings.copy(autoDownloadFile = it))
                         },
                         onEditDisplayName = { showRenameDialog = true },
                         modifier = Modifier.fillMaxSize(),

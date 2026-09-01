@@ -256,6 +256,8 @@ private class Wiring(
                             com.transfer.flash.core.transfer.model.FlashTransferState.Failed,
                             com.transfer.flash.core.transfer.model.FlashTransferState.Cancelled ->
                                 com.transfer.flash.core.messaging.model.FlashFileTransferStatus.Failed
+                            com.transfer.flash.core.transfer.model.FlashTransferState.Offered ->
+                                com.transfer.flash.core.messaging.model.FlashFileTransferStatus.AwaitingAcceptance
                             else ->
                                 com.transfer.flash.core.messaging.model.FlashFileTransferStatus.Transferring
                         },
@@ -340,6 +342,9 @@ private class Wiring(
                 }
                 sessions.values.forEach { session ->
                     if (session is WsSession && !sessionJobs.containsKey(session)) {
+                        // Bug 5: a peer session is up (first connect or reconnect) — flush the
+                        // durable outbox so messages queued while this peer was offline send now.
+                        chatImpl.notifyPeerSessionUp()
                         sessionJobs[session] = scope.launch {
                             launch {
                                 session.incomingText.collect { text ->

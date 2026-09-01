@@ -1,6 +1,128 @@
 ﻿
 # Error Log
 
+## ERROR-020 - Backgrounded mesh went offline (REOPENED: real root cause found; RESOLVED — verified on Samsung 2026-09-01; Infinix failure re-attributed to low-battery power policy, see EXP-002)
+
+### Date
+2026-08-31 (reopened), 2026-09-01 (physical verification results)
+
+### Area
+App lifecycle / `FlashBackgroundService` sticky restart / process death
+
+### Symptoms
+Owner report after the first fix: "it still goes offline after a few seconds if I leave the
+app and also if I turn screen off". Peers showed this device offline within seconds of
+backgrounding; it never came back on its own.
+
+### Environment
+- Target SDK: 36
+- Device: Infinix X6882B (Transsion), Android 15/16, Android 12+/API 31+ FGS rules apply
+- Service type: `connectedDevice`, `START_STICKY`
+
+### Error (captured via `adb logcat`)
+```text
+08-31 18:43:14.880 E AndroidRuntime: FATAL EXCEPTION: main
+08-31 18:43:14.880 E AndroidRuntime: Process: com.transfer.flash, PID: 1880
+java.lang.RuntimeException: Unable to create service com.transfer.flash.debug.FlashBackgroundService
+Caused by: android.app.ForegroundServiceStartNotAllowedException:
+  Service.startForeground() not allowed due to mAllowStartForeground false
+  at FlashBackgroundService.startAsForeground(FlashBackgroundService.kt:153)
+  at FlashBackgroundService.onCreate(FlashBackgroundService.kt:74)
+```
+Seven occurrences across 08-29→08-31 (fresh PIDs each time), incl. after the 18:54 reinstall.
+
+### Root cause (actual)
+The first fix moved the FGS *launch site* to `MainActivity.onStart` — necessary but not
+sufficient. The killer is the **sticky-restart path**: the OEM/Android kills the backgrounded
+Flash process → the system restarts the `START_STICKY` service with a null intent while the
+app is NOT TOP → `onCreate` called `startForeground()` **unconditionally and uncaught** →
+`ForegroundServiceStartNotAllowedException` → FATAL → process death → system restarts the
+sticky service again → **crash loop**. The mesh never recovers because every restart dies.
+Supporting evidence: `dumpsys wifi` showed the `WIFI_MODE_FULL_LOW_LATENCY` lock held but
+`isFg=false, isScreenExempt=false, is_low_latency_activated=false` — confirming the earlier
+theory that the WifiLock was doing nothing in the background was right, but that was a
+symptom-level concern, not the process-death cause.
+
+### Failed attempts
+1. Moving the FGS launch into `MainActivity.onStart` (previous fix) — correct for the
+   user-launch path but did nothing for the system's sticky-restart re-entry via `onCreate`,
+   which crashed before reaching any other code.
+2. WifiLock `WIFI_MODE_FULL_LOW_LATENCY` (and its HIGH_PERF fallback) — retained, but from
+   API 34 HIGH_PERF is remapped to LOW_LATENCY, and LOW_LATENCY is only active
+   foreground+screen-on. No WifiLock mode keeps the radio powered while backgrounded on
+   modern Android; the lock is not part of the fix.
+
+### Working fix (2026-08-31, Bug 6 final)
+1. `FlashBackgroundService.startAsForeground()` now returns Boolean and **catches all**
+   exceptions (broad catch: OEM framework variants throw more than the documented exception).
+2. `onCreate` order changed: `acquireLocks()` + screen receiver + **engine start** run FIRST,
+   then the foreground promotion is attempted; on refusal it logs and **`stopSelf()`** — the
+   mesh engine keeps running in-process (no crash, no crash-restart loop, and the 5-second
+   startForeground follow-up obligation is discharged by stopping).
+3. User-initiated `ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` (new permission
+   `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`) fired from the Settings "Background transfers"
+   toggle so the system stops killing the process in the first place.
+
+### Verification (2026-09-01 — physical, two phones)
+- **Samsung SM-G986U1 (~90% battery): PASS.** Screen off / leave app → peer stays online,
+  messages arrive, no FGS exceptions. The Bug 6 fix is **physically verified working**.
+- **Infinix X6882B (~4% battery): FAIL.** Still goes offline within seconds.
+- Differential conclusion: the Infinix failure is **not the fixed bug** — at 4% battery the
+  Transsion power manager and/or AOSP battery-saver kills background processes regardless of
+  FGS status (battery-saver restrictions supersede app standby buckets and FGS priority per
+  official power-management docs). Decisive follow-up = EXP-003: re-test the Infinix charged
+  (>20%) with the battery-optimization exemption granted.
+
+### Related files
+- `app/src/main/java/com/transfer/flash/debug/FlashBackgroundService.kt`
+- `app/src/main/java/com/transfer/flash/MainActivity.kt` (battery-exemption wiring)
+- `app/src/main/AndroidManifest.xml`
+- `docs/android-platform-notes.md` (2026-08-31 (b) entry — full dumpsys evidence)
+- `logs/experiments.md` (EXP-002 — differential test record)
+
+### Status
+RESOLVED (verified on Samsung 2026-09-01; Infinix low-battery behavior tracked in EXP-002/EXP-003)
+
+## ERROR-021 - Uncaught NPE killed the process from the outbox drain loop (drainMutex init order)
+
+### Date
+2026-08-31 (captured on device at 10:22; fixed same day)
+
+### Area
+`core/messaging` — `RealFlashChatRepository` construction vs coroutine startup race
+
+### Symptoms
+```text
+E AndroidRuntime: FATAL EXCEPTION: DefaultDispatcher-worker-2
+java.lang.NullPointerException: Attempt to invoke interface method
+  'kotlinx.coroutines.sync.Mutex.lock(...)' on a null object reference
+  at RealFlashChatRepository.drainOutboxOnce(RealFlashChatRepository.kt:1057)
+  at RealFlashChatRepository.drainOutboxLoop(RealFlashChatRepository.kt:648)
+```
+
+### Root cause
+Kotlin initializes properties and `init` blocks in **source order**. The class's `init`
+block launched `drainOutboxLoop()` (which reaches `drainMutex.withLock`), while `drainMutex`
+was declared ~500 lines BELOW that init block. The coroutine could begin executing on
+`Dispatchers.IO` before the constructor finished initializing `drainMutex` → null receiver →
+NPE → uncaught coroutine exception → **whole process death** (a second, independent Bug-6
+offline path).
+
+### Working fix
+Moved the `drainMutex` declaration above the `init` block, with a comment documenting the
+ordering constraint so nobody "tidies" it back down the file. All other constructor params
+with defaults keep existing call sites source-compatible.
+
+### Verification
+`RealFlashChatRepositoryTest` full class → `failures="0"`, including the outbox-drain tests
+and the two new inbound-callback tests added for Bug 7.
+
+### Related files
+- `core/messaging/src/main/java/com/transfer/flash/core/messaging/RealFlashChatRepository.kt`
+
+### Status
+RESOLVED (code-level; covered by the same physical re-test as ERROR-020)
+
 ## ERROR-015 - WS mesh transfer: receiver assembles files by append order; silent frame drops; handshake/glare races (RESOLVED)
 
 ### Date

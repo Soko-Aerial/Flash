@@ -87,6 +87,7 @@ public data class FlashQuotedReplyUi(
  */
 public enum class FlashFileTransferStatus {
     NotDownloaded,
+    AwaitingAcceptance,
     Transferring,
     Downloaded,
     Failed,
