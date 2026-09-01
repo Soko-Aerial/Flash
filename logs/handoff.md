@@ -3,7 +3,7 @@
 ## 2026-09-02 — Voice/video calling IMPLEMENTED across :core:calling / :ui:calling / :app; build verified; physical test pending
 
 ### Current branch
-`dev` (work is UNCOMMITTED in the working tree; HEAD `2c8514d`)
+`dev` (clean; HEAD `f344300`)
 
 ### Last verified build
 - `:app:compileDebugKotlin` → **BUILD SUCCESSFUL** (after CAMERA + RECORD_AUDIO runtime
