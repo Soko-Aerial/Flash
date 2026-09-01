@@ -3,7 +3,7 @@
 ## 2026-09-02 (c) — Nearby/discovery reconnect storm FIXED (connect-glare race, ERROR-023); calling + dual-band hypotheses ruled out; physical re-test pending
 
 ### Current branch
-`dev` (clean; HEAD <commit hash filled after commit>)
+`dev` (clean; HEAD `580628d`)
 
 ### Last verified build
 - `:core:network:testDebugUnitTest` → **4/4 PASS** (incl. new glare regression test
