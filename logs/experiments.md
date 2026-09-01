@@ -76,3 +76,35 @@ BASELINE recorded. No optimization conclusions valid until (1) exists.
 
 ## Notes
 Placeholder for future physical-device networking experiments (see AGENTS.md §9 format).
+
+## EXP-005 — Dual-band SSID hypothesis: RULED OUT as root cause of reconnect storm
+
+### Date
+2026-09-02 (analysis)
+
+### Hypothesis
+The 2-second "WS connecting" / "Session not admitted" reconnect storm was caused by
+one phone connected to the 2.4 GHz band and the other to the 5 GHz band of the same
+router, leading to intermittent reachability.
+
+### Analysis
+- **Logcat evidence**: Both phones showed IP addresses on the same subnet:
+  `192.168.0.107` and `192.168.0.185` — both in the `/24` DHCP range.
+- **Network handle**: Both phones logged the same `network=501621903373`, confirming
+  they were on the same network interface from the OS perspective.
+- **Router behavior**: Most consumer routers bridge 2.4 GHz and 5 GHz bands at L2,
+  so devices on different bands of the same SSID can still communicate via ARP.
+  Even if each phone was on a different band, L2 bridging would route traffic.
+
+### Conclusion
+Dual-band split is **not** the root cause. The storm was driven by a connect-glare
+race (ERROR-023): both phones repeatedly dialing each other simultaneously, each
+closing the other's socket because the tiebreaker was a non-deterministic coin flip.
+
+### Latent issue discovered
+`WsTransferClient.findLanNetwork()` used `allNetworks.firstOrNull { WIFI || ETHERNET }`,
+which is non-deterministic when multiple eligible networks exist. Fixed by sorting
+`networkHandle` so both devices independently pick the same network.
+
+### Status
+HYPOTHESIS REJECTED. Root cause is ERROR-023 (connect-glare race), fixed.

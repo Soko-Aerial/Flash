@@ -1,95 +1,96 @@
 # Current Handoff
 
-## 2026-09-02 — Voice/video calling IMPLEMENTED across :core:calling / :ui:calling / :app; build verified; physical test pending
+## 2026-09-02 (c) — Nearby/discovery reconnect storm FIXED (connect-glare race, ERROR-023); calling + dual-band hypotheses ruled out; physical re-test pending
 
 ### Current branch
-`dev` (clean; HEAD `f344300`)
+`dev` (clean; HEAD <commit hash filled after commit>)
 
 ### Last verified build
-- `:app:compileDebugKotlin` → **BUILD SUCCESSFUL** (after CAMERA + RECORD_AUDIO runtime
-  permission wiring for the conversation header call buttons + incoming-call accept)
-- `:core:calling:testDebugUnitTest` → **12/12 PASS** (CallFrameCodecTest)
-- `:core:calling:compileDebugKotlin` + `:ui:callui:compileDebugKotlin` → **PASS**
+- `:core:network:testDebugUnitTest` → **4/4 PASS** (incl. new glare regression test
+  `testConnectGlareConvergesOnSingleLivePair`)
+- `:app:compileDebugKotlin` → **BUILD SUCCESSFUL**
 
 ### Current phase
-**Voice/video calling (track 1 remainder): CODE COMPLETE — build verified, physical-device
-test pending.** WebRTC media engine (`:core:calling`, `shepeliev/webrtc-kmp`), Compose call
-screen (`:ui:calling`, UI-050), and full app integration (FGS `FlashCallService` with
-`Notification.CallStyle`, `FlashCallActionReceiver`, call overlay in FlashShell,
-conversation-header call buttons, runtime permissions) are all implemented and compiling.
-KMP migration stays de-prioritized.
+**Discovery/Nearby bug-fix (ERROR-023) — root-caused & fixed; build + unit tests verified;
+physical re-test pending.** The reconnect storm is a connect-glare race: both the gated 5s
+auto-connect sweep and the ungated #18 reconnect engine dial the same peer, both phones dial
+each other, and the equal-rank `KeepExisting` tie was a coin flip that ~50% of the time left
+both sides holding a dead socket → infinite 2s storm. Fixed with a deterministic originator
+tiebreaker in `WsFlashNetwork.registerSession` (both ends of a TCP pair compute the same
+winner from device ids). Voice/video calling remains code-complete with physical test
+pending; KMP migration stays de-prioritized.
 
 ### Working features (NEW since last handoff)
-- **Voice/video calling — `:core:calling`**: `FlashCallSession` (WebRTC PeerConnection,
-  getUserMedia audio+video, empty `iceServers` for LAN/hotspot), `CallCoordinator`
-  (one-call-at-a-time owner, StateFlow `activeCall`, suspend accept/decline/hangUp,
-  `onSignalingLost`), `CallFrameCodec`/`CallWireFrame` protocol (invite/accept/decline/
-  hangup/offer/answer/ice), `FlashCallModels` (FlashCallUiState, direction, state, end
-  reason). See ADR-025 in `docs/decisions.md` and the Calling section in `docs/protocol.md`.
-- **Voice/video calling — `:ui:calling`**: `FlashCallScreen` (full-screen overlay, remote
-  video via SurfaceViewRenderer, mute/speaker/camera/switch-camera controls, BackHandler
-  RINGING→decline / ENDED→dismiss / else→minimize). UI-050 DESIGNED in
-  `docs/ui/calling-ui.md`. 4 new icons: call_accept, camera_flip, hangup, speaker.
-- **Voice/video calling — `:app` integration**: `FlashCallService` (microphone|camera FGS,
-  `Notification.CallStyle` API 31+ with `Person`, NotificationCompat pre-31, started
-  while app foreground via `ContextCompat.startForegroundService`), `FlashCallActionReceiver`
-  (broadcast intents → coordinator accept/decline/hangUp), manifest permissions (CAMERA,
-  FOREGROUND_SERVICE_MICROPHONE/CAMERA) + service/receiver declarations, call overlay as
-  topmost FlashShell sibling, conversation-header call buttons (`onStartCall`/
-  `onStartVideoCall`), CAMERA + RECORD_AUDIO runtime permission launchers.
-- **Bug fixed**: `DiscoveryEngineHolder.kt` — local `val callCoordinator` shadowing the
-  field caused `'val' cannot be reassigned`; fixed with `this.callCoordinator`.
+- **Connect-glare resolution (ERROR-023)**: deterministic tiebreaker — keep the session
+  whose originator device id is lexicographically smaller. `WsSession.isOutbound` carries the
+  origin; `registerSession.resolveGlareTie` applies it when transport ranks are equal.
+- **Dial-engine dedup**: `runAutoConnectSweep` skips peers with an in-flight reconnect
+  (`isReconnectInFlight`) so the sweep and the #18 reconnect engine never race the same peer.
+- **Deterministic network pick**: `findLanNetwork()` sorts by `networkHandle` so both phones
+  independently select the same network when multiple are eligible.
+- **`enableOnBackInvokedCallback="true"`** in the manifest (silences the
+  "OnBackInvokedCallback is not enabled" warning).
+- **Calling hypotheses ruled out**: `CallFrameCodec.decode` returns null for non-FLASH_CALL
+  frames (exact-prefix `parseFields`) → the calling work cannot misroute chat/pairing frames.
+- **Dual-band hypothesis ruled out**: both phones on 192.168.0.x/24, same network handle
+  `501621903373`; see `logs/experiments.md` EXP-005.
 
 ### In progress
-- **Physical two-phone calling test** (THE decisive pending step — WebRTC negotiation, FGS
-  CallStyle notification buttons, audio routing, video rendering are untested on device).
+- **Physical two-phone re-test of the glare fix** (THE decisive step — confirm the storm
+  stops after a session drop).
+- Physical two-phone calling test (WebRTC negotiation, FGS CallStyle buttons, audio routing,
+  video rendering — still untested on device).
 - Bug 7 device checklist pass (`docs/ui/notification-ui.md`).
 
 ### Broken
-- Nothing new. (Pre-existing timing-flaky test note below.)
+- Nothing new. (Pre-existing timing-flaky messaging backoff test note below.)
 
 ### Last change
-Completed the calling feature's app-layer integration (2026-09-02): FlashCallService FGS,
-FlashCallActionReceiver, manifest permissions/service/receiver declarations, FlashShell
-call overlay + FGS lifecycle, conversation-header call buttons, CAMERA/RECORD_AUDIO
-runtime permission launchers. `:app:compileDebugKotlin` + `:core:calling` tests verified.
+Implemented the connect-glare fix (2026-09-02): `WsSession.isOutbound`, deterministic
+`resolveGlareTie` in `registerSession`, `isReconnectInFlight` accessor, sweep dedup,
+deterministic `findLanNetwork` sort, `enableOnBackInvokedCallback` manifest flag, and a
+glare regression test. `:core:network:testDebugUnitTest` 4/4 PASS +
+`:app:compileDebugKotlin` BUILD SUCCESSFUL.
 
 ### Last test
-- `:app:compileDebugKotlin` → BUILD SUCCESSFUL (shellId 118)
-- `:core:calling:testDebugUnitTest` → 12/12 PASS (shellId 121, XML failures="0")
+- `:core:network:testDebugUnitTest` → 4/4 PASS (incl. new glare regression test)
+- `:app:compileDebugKotlin` → BUILD SUCCESSFUL
 
 ### Known blockers
 - Kotlin daemon flakiness: treat "BUILD SUCCESSFUL" as success; don't trust exit code alone
-- Gradle metadata cache corruption (hit AGAIN this session): `gradlew --stop`, `taskkill //F //IM java.exe`,
+- Gradle metadata cache corruption: `gradlew --stop`, `taskkill //F //IM java.exe`,
   delete `E:\AndroidDev\Gradle\caches\modules-2\metadata-2.107`, rebuild
 - Build env: `E:\` hosts SDK (`E:\AndroidDev\SDK`), Gradle home (`E:\AndroidDev\Gradle`), JBR
-  (`E:\AndroidDev\AndroidStudio\android-studio\jbr`) — install command at the bottom of this file's
-  current section is authoritative
-- The messaging backoff timing test PASSED this session (whole class green) but remains
-  inherently timing-sensitive; deterministic cleanup still worthwhile
+  (`E:\AndroidDev\AndroidStudio\android-studio\jbr`) — install command below is authoritative
+- The messaging backoff timing test remains inherently timing-sensitive; deterministic
+  cleanup still worthwhile
 
 ### Recommended next task
-1. **Physical two-phone calling test** — verify invite → accept → active → hangup, audio
-   routing, video rendering, and the CallStyle notification buttons (answer/decline/hangup
-   from the FGS notification).
-2. Then return to the premium chat UI component sequence: **UI-011 composer** or **UI-007
-   selection** research next per `docs/ui/ui-research-index.md` (not started).
+1. **Physical two-phone re-test of the glare fix**: trigger a session drop (toggle Wi-Fi on
+   one phone or background the app), then watch logcat — expect ONE `Session up` pair, no
+   repeat "WS connecting" storm, no "cannot reach". Record in `logs/experiments.md`.
+2. Then the physical two-phone calling test (invite → accept → active → hangup, audio,
+   video, CallStyle notification buttons).
+3. Then return to the premium chat UI component sequence: **UI-011 composer** or **UI-007
+   selection** research next per `docs/ui/ui-research-index.md`.
 
 ### Files most relevant to next task
-- `core/calling/src/main/java/com/transfer/flash/core/calling/` (FlashCallSession, CallCoordinator, protocol)
-- `ui/callui/src/main/java/com/transfer/flash/ui/calling/FlashCallScreen.kt`
-- `app/src/main/java/com/transfer/flash/calling/FlashCallService.kt` + `FlashCallActionReceiver.kt`
-- `app/src/main/java/com/transfer/flash/MainActivity.kt` (call overlay + permission launchers)
-- `docs/ui/calling-ui.md` (UI-050 spec, device checklist to fill)
+- `core/network/src/main/java/com/transfer/flash/core/network/ws/WsFlashNetwork.kt`
+  (`registerSession` glare tiebreaker, `isReconnectInFlight`)
+- `core/network/src/main/java/com/transfer/flash/core/network/ws/WsSession.kt` (`isOutbound`)
+- `app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt` (sweep dedup)
+- `core/network/src/main/java/com/transfer/flash/core/network/ws/WsTransferClient.kt`
+  (`findLanNetwork` deterministic sort)
+- `core/network/src/test/java/com/transfer/flash/core/network/ws/WsFlashNetworkTest.kt`
+  (glare regression test)
 
 ### Remaining work summary (for next AI)
-1. **Physical two-phone calling test** (decisive) — WebRTC negotiation, FGS CallStyle buttons,
-   audio routing, video rendering; record results in `logs/experiments.md`
-2. EXP-003 charged-Infinix re-test (owner-driven, from prior session)
-3. Bug 7 device checklist pass
-4. Deterministic cleanup of the messaging backoff timing test
-5. Then: commit all calling work (with `Co-authored-by: Copilot` trailer), resume premium
-   chat UI component sequence (UI-011 composer or UI-007 selection research)
+1. **Physical two-phone re-test of the glare fix** (decisive) — record in `logs/experiments.md`
+2. **Physical two-phone calling test** (decisive for the calling track) — record results
+3. EXP-003 charged-Infinix re-test (owner-driven, from prior session)
+4. Bug 7 device checklist pass
+5. Deterministic cleanup of the messaging backoff timing test
+6. Then: resume premium chat UI component sequence (UI-011 composer or UI-007 selection research)
 
 ### Install command (PowerShell, authoritative)
 ```powershell

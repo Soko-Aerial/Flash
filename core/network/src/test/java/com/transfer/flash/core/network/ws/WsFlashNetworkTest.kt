@@ -7,6 +7,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -180,6 +181,80 @@ class WsFlashNetworkTest {
                 clientA.stop()
                 clientB.stop()
             }
+        }
+    }
+
+    /**
+     * Connect-glare regression (ERROR-023): A and B both run servers AND both dial each other
+     * simultaneously — the exact storm that produced the ~2s "WS connecting" flap loop on device.
+     *
+     * Pre-fix, each side kept whichever session registered first (a coin flip), and ~50% of the
+     * time the two ends cross-wired: A kept its outbound, B kept its outbound, both sockets dead →
+     * both schedules reconnect → glare again forever. The fix is a deterministic tiebreaker that
+     * converges both ends on ONE socket: keep the session whose ORIGINATOR id is lexicographically
+     * smaller (A's outbound IS B's inbound — the same TCP pair — so both sides compute the same winner).
+     *
+     * Asserts:
+     * - exactly one live session per side for the peer,
+     * - the surviving sessions are ONE pair (A keeps its outbound since A is the smaller id, so B
+     *   must end up holding the inbound — never two outbounds = the cross-wired dead pair),
+     * - a message still round-trips over the survivor (the socket is genuinely live).
+     */
+    @Test(timeout = 15_000L)
+    fun testConnectGlareConvergesOnSingleLivePair() {
+        runBlocking {
+            // "device-a" < "device-b" lexicographically, so the tiebreaker keeps A's outbound
+            // (originator A) on A and B's inbound (originator A, mirrored) on B.
+            val aId = "device-a-glare"
+            val bId = "device-b-glare"
+
+            serverNetwork = WsFlashNetwork(null, aId, "Phone A")
+            clientNetwork = WsFlashNetwork(null, bId, "Phone B")
+            val aPort = (serverNetwork!!.start(0) as FlashResult.Success).value
+            val bPort = (clientNetwork!!.start(0) as FlashResult.Success).value
+
+            // Simultaneous dials — both peers dial each other at the same moment.
+            val dialA = launch { serverNetwork!!.connectManual("127.0.0.1", bPort) }
+            val dialB = launch { clientNetwork!!.connectManual("127.0.0.1", aPort) }
+            dialA.join()
+            dialB.join()
+
+            // Settle: both sides must converge to exactly one session each, with the surviving
+            // sessions forming ONE socket pair (not two cross-wired outbounds).
+            var aSession: WsSession? = null
+            var bSession: WsSession? = null
+            withTimeout(5_000L) {
+                while (true) {
+                    val aSessions = serverNetwork!!.activeSessions.value
+                    val bSessions = clientNetwork!!.activeSessions.value
+                    if (aSessions.size == 1 && bSessions.size == 1) {
+                        aSession = aSessions.values.first() as WsSession
+                        bSession = bSessions.values.first() as WsSession
+                        // Anti-cross-wire check: A (smaller id) must hold the OUTBOUND side and B the
+                        // INBOUND side of the same TCP pair. Two outbounds = dead cross-wired pair.
+                        if (aSession!!.isOutbound && !bSession!!.isOutbound) break
+                    }
+                    delay(25)
+                }
+            }
+
+            assertEquals("device-b-glare", aSession!!.peerDeviceId.value)
+            assertEquals("device-a-glare", bSession!!.peerDeviceId.value)
+            assertTrue("A keeps the outbound side of the converged pair", aSession!!.isOutbound)
+            assertTrue("B holds the inbound side of the converged pair", !bSession!!.isOutbound)
+
+            // Liveness: the survivor must actually carry traffic.
+            var echoed: String? = null
+            val job = launch { echoed = bSession!!.incomingText.first() }
+            delay(20)
+            aSession!!.sendText("glare survivor")
+            withTimeout(2_000L) { job.join() }
+            assertEquals("glare survivor", echoed)
+
+            // And neither side rescheduled a redundant reconnect for the peer (no storm).
+            delay(200)
+            assertEquals(1, serverNetwork!!.activeSessions.value.size)
+            assertEquals(1, clientNetwork!!.activeSessions.value.size)
         }
     }
 }

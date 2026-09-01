@@ -906,3 +906,99 @@ connection-state drives the ACTIVE transition.
 
 ### Status
 RESOLVED (2026-09-02, verified build)
+
+## ERROR-023 — Connect-glare race: infinite reconnect storm between LAN peers
+
+### Date
+2026-09-01 (diagnosed), 2026-09-02 (fixed)
+
+### Area
+WS mesh connect / WsFlashNetwork.registerSession / DiscoveryEngineHolder.runAutoConnectSweep
+
+### Symptoms
+Repeated "WS connecting" log lines every ~2 seconds between two LAN peers,
+each producing a "Session up" / "Session not admitted" / reconnect cycle.
+Online/offline flickered, chat messages sometimes failed with "cannot reach",
+and the main thread saw frame skips (58+ skipped frames) from the repeated
+connection churn.
+
+### Environment
+- Android 16 (API 36)
+- Two phones on the same LAN (192.168.0.x/24, both 5GHz band — dual-band ruled out)
+- NSD discovery + WS mesh
+
+### Error log
+`
+09-01 17:02:54.704 WS: Auto-connect dialing peer=Flash Infinix X6882B at 192.168.0.185:45822
+09-01 17:02:54.705 WS: WS connecting address=192.168.0.185:45822
+09-01 17:02:59.910 WS: Session up peer=... — sending pairing hello
+09-01 17:02:59.913 WS: Pairing sendToPeer queued (hasSession=true)
+09-01 17:02:59.915 WS: Auto-connect result peer=... success=true
+09-01 17:03:04.010 WS: WS connecting address=192.168.0.185:45822   <-- 4s later, storm restarts
+`
+
+### Root cause
+Connect-glare race between two independent dial engines:
+1. **Auto-connect sweep** (5s periodic, gated by AutoConnectGate 15s suppress)
+2. **#18 reconnect engine** (ungated, backoff-based, fires on every unexpected session drop)
+
+After a session drop (e.g. brief network glitch), both engines dial the same peer
+simultaneously. Both devices dial each other at the same moment → classic glare.
+Each egisterSession runs under its own egistryLock (per-process, no cross-device
+coordination) → each admits its own outbound dial first; the peer's inbound dial hits
+SessionHardeningPolicy.resolveDuplicate with equal LAN rank (0 == 0) → KeepExisting
+→ inbound socket closed.
+
+**Why KeepExisting alone caused an infinite storm:** The tie was a coin flip. ~50% of
+the time the devices **cross-wired**: A kept its outbound (TCP pair #1), B kept its
+outbound (pair #2) — but pair #1 was B's inbound (B closed it) and pair #2 was A's
+inbound (A closed it). Both surviving "sessions" sat on dead sockets → both schedule
+reconnect → glare again → infinite 2s storm.
+
+### Failed attempts
+1. **KeepExisting + sweep dedup only** — would not fix the cross-wire coin flip.
+2. **Dual-band hypothesis** — ruled out: both phones on same /24, same network handle.
+
+### Working fix
+Three-part fix:
+
+1. **Deterministic glare tiebreaker** (primary fix): When both sessions have equal
+   transport rank (LAN == LAN), compare the session ORIGINATOR id. Outbound's originator
+   = localDeviceId; inbound's originator = peerDeviceId. Since A's outbound IS B's
+   inbound (same TCP pair), both ends compute the same winner from the only data both
+   devices share — the device IDs. The session whose originator is lexicographically
+   smaller wins. This converges both ends on ONE socket, eliminating the cross-wire
+   coin flip entirely.
+
+2. **Sweep dedup** (guard): unAutoConnectSweep skips peers that already have a
+   reconnect loop in flight (isReconnectInFlight), preventing redundant dials from
+   the sweep while the #18 engine is already backoff-dialing that peer.
+
+3. **indLanNetwork determinism** (latent fix): WsTransferClient.findLanNetwork
+   now sorts eligible networks by 
+etworkHandle so both devices independently pick
+   the same network when multiple eligible networks exist (dual-band SSID, cellular
+   + Wi-Fi, etc.).
+
+### Files changed
+- core/network/src/main/java/.../ws/WsFlashNetwork.kt — tiebreaker in egisterSession +
+  esolveGlareTie + isReconnectInFlight accessor
+- core/network/src/main/java/.../ws/WsSession.kt — isOutbound constructor param
+- pp/.../debug/DiscoveryEngineHolder.kt — sweep dedup skip
+- core/network/src/main/java/.../ws/WsTransferClient.kt — indLanNetwork deterministic sort
+- pp/src/main/AndroidManifest.xml — enableOnBackInvokedCallback="true"
+- core/network/src/test/.../ws/WsFlashNetworkTest.kt — glare regression test
+
+### Verification
+- :core:network:testDebugUnitTest — 4 tests pass (3 existing + new glare regression)
+- :app:compileDebugKotlin — SUCCESS
+- Glare test creates two networks that dial each other simultaneously and asserts:
+  exactly one session per side, A holds outbound (smaller id), B holds inbound,
+  message round-trips over the survivor, no reconnect storm.
+
+### Related files
+- docs/decisions.md — tiebreaker changes documented KeepExisting tie behavior
+- logs/experiments.md — dual-band analysis recorded for traceability
+
+### Status
+RESOLVED (2026-09-02, build + test verified)
