@@ -72,6 +72,9 @@ class AppEngine @Inject constructor(
     /** Device-to-device pairing coordinator (Nearby Pair/Chat + trust store), or null before [start]. */
     val pairing: com.transfer.flash.pairing.PairingCoordinator? get() = DiscoveryEngineHolder.currentPairing()
 
+    /** WebRTC voice/video call coordinator (C7 / ADR-025), or null before [start]. */
+    val calls: com.transfer.flash.core.calling.CallCoordinator? get() = DiscoveryEngineHolder.currentCallCoordinator()
+
     // Local identity is read from the same persisted store the holder advertises with, so the
     // Nearby "this device" card matches what peers actually see. Lazy: the store touches prefs.
     private val appIdentity by lazy { AppIdentity(context) }

@@ -12,6 +12,7 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
@@ -65,7 +66,11 @@ import com.transfer.flash.ui.nearby.NearbyPeerUi
 import com.transfer.flash.ui.nearby.NearbyTrustedPeerUi
 import com.transfer.flash.ui.nearby.NearbyUiState
 import com.transfer.flash.ui.chat.FlashPairingPhase
+import com.transfer.flash.core.calling.model.FlashCallUiState
+import com.transfer.flash.core.calling.model.FlashCallState
+import com.transfer.flash.calling.FlashCallService
 import com.transfer.flash.pairing.PairingUiModel
+import com.transfer.flash.ui.calling.FlashCallScreen
 import com.transfer.flash.ui.settings.FlashSettingsModel
 import com.transfer.flash.ui.settings.FlashSettingsMath
 import com.transfer.flash.ui.settings.FlashSettingsScreen
@@ -423,6 +428,26 @@ private fun FlashShell(
     val settingsScroll = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val reduceMotion = FlashTheme.motion.reduceMotion
+    // C7: CAMERA runtime permission launcher for video calls. webrtc-kmp's getUserMedia
+    // throws CameraPermissionException if CAMERA is not granted, so we check before startCall.
+    val callCtx = LocalContext.current
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            Toast.makeText(callCtx, "Camera ready — start video call", Toast.LENGTH_SHORT).show()
+        } else {
+            Toast.makeText(callCtx, "Camera permission is required for video calls", Toast.LENGTH_SHORT).show()
+        }
+    }
+    // C7: RECORD_AUDIO runtime permission launcher for voice/video calls.
+    val audioPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (!granted) {
+            Toast.makeText(callCtx, "Microphone permission is required for calls", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     // Phase 3.3: Transfers derives from the live transfer repository's activeTransfers. The fallback
     // flow is remembered UNCONDITIONALLY and swaps to the engine flow once booted (never remember
@@ -630,6 +655,45 @@ private fun FlashShell(
                         onDeclineOffer = { transferId ->
                             engine.transfers?.let { repo ->
                                 scope.launch { repo.declineIncoming(FlashTransferId(transferId)) }
+                            }
+                        },
+                        onStartCall = {
+                            val peerId = entry.conversationId
+                            if (peerId != null) {
+                                val hasAudio = ContextCompat.checkSelfPermission(
+                                    callCtx,
+                                    Manifest.permission.RECORD_AUDIO,
+                                ) == PackageManager.PERMISSION_GRANTED
+                                if (hasAudio) {
+                                    scope.launch {
+                                        engine.calls?.startCall(peerId, conversationState.header.title, video = false)
+                                    }
+                                } else {
+                                    audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                }
+                            }
+                        },
+                        onStartVideoCall = {
+                            val peerId = entry.conversationId
+                            if (peerId != null) {
+                                val hasAudio = ContextCompat.checkSelfPermission(
+                                    callCtx,
+                                    Manifest.permission.RECORD_AUDIO,
+                                ) == PackageManager.PERMISSION_GRANTED
+                                val hasCamera = ContextCompat.checkSelfPermission(
+                                    callCtx,
+                                    Manifest.permission.CAMERA,
+                                ) == PackageManager.PERMISSION_GRANTED
+                                if (hasAudio && hasCamera) {
+                                    scope.launch {
+                                        engine.calls?.startCall(peerId, conversationState.header.title, video = true)
+                                    }
+                                } else {
+                                    // Request whichever is missing. The user taps the video button
+                                    // again once permissions are granted.
+                                    if (!hasAudio) audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                    else cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                                }
                             }
                         },
                     )
@@ -848,6 +912,57 @@ private fun FlashShell(
                     onSettingsChange(settings.copy(displayName = newName))
                     showRenameDialog = false
                 },
+            )
+        }
+
+        // C7 (calling): full-screen call overlay. Topmost sibling so it renders above
+        // everything (nav bar, console, rename dialog). Driven by the engine's CallCoordinator.
+        // v1 has no minimize — the overlay stays until the coordinator clears the call
+        // (ENDED shows for 2s, then _activeCall nulls and this overlay disappears).
+        val callStateFlow = engine.calls?.activeCall ?: remember { MutableStateFlow(null) }
+        val callState by callStateFlow.collectAsState()
+        val callSession = engine.calls?.session
+        val activeCall = callState
+        val callContext = LocalContext.current
+        LaunchedEffect(activeCall) {
+            when (activeCall?.state) {
+                FlashCallState.DIALING, FlashCallState.RINGING -> {
+                    FlashCallService.start(callContext)
+                }
+                null -> FlashCallService.stop(callContext)
+                else -> { /* keep FGS running */ }
+            }
+        }
+        if (activeCall != null) {
+            FlashCallScreen(
+                state = activeCall,
+                session = callSession,
+                onAccept = {
+                    val hasAudio = ContextCompat.checkSelfPermission(
+                        callCtx, Manifest.permission.RECORD_AUDIO,
+                    ) == PackageManager.PERMISSION_GRANTED
+                    if (!hasAudio) {
+                        audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                        return@FlashCallScreen
+                    }
+                    if (activeCall.video) {
+                        val hasCamera = ContextCompat.checkSelfPermission(
+                            callCtx, Manifest.permission.CAMERA,
+                        ) == PackageManager.PERMISSION_GRANTED
+                        if (!hasCamera) {
+                            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                            return@FlashCallScreen
+                        }
+                    }
+                    scope.launch { engine.calls?.accept() }
+                },
+                onDecline = { scope.launch { engine.calls?.decline() } },
+                onHangUp = { scope.launch { engine.calls?.hangUp() } },
+                onToggleMute = { callSession?.toggleMute() },
+                onToggleSpeaker = { callSession?.setSpeaker(!activeCall.speakerOn) },
+                onToggleCamera = { callSession?.toggleCamera() },
+                onSwitchCamera = { scope.launch { callSession?.switchCamera() } },
+                onDismiss = { /* v1: no minimize — call always ends before dismiss. */ },
             )
         }
     }

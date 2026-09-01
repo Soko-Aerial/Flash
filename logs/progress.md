@@ -1,6 +1,47 @@
 # Progress Log
 
-## 2026-09-01 — Bug 6 physically VERIFIED on Samsung; Infinix failure re-attributed to 4% battery power policy
+## 2026-09-02 — Voice/video calling: :core:calling + :ui:calling + app-layer wiring COMPLETE (build verified)
+
+### Worked on
+Implemented the entire voice/video calling feature across three layers:
+- `:core:calling` — WebRTC call engine (FlashCallSession, CallCoordinator, FlashCallModels, CallFrameCodec/CallWireFrame protocol)
+- `:ui:calling` — Compose call screen (FlashCallScreen, UI-050), 4 new icons (call_accept, camera_flip, hangup, speaker)
+- `:app` — Full integration: FGS (FlashCallService with Notification.CallStyle), BroadcastReceiver (FlashCallActionReceiver), manifest permissions, call overlay in FlashShell, conversation header call buttons, CAMERA + RECORD_AUDIO runtime permission handling
+
+### Changed
+- **New modules**: `core/calling/`, `ui/callui/`, `app/src/main/java/com/transfer/flash/calling/` (FlashCallService, FlashCallActionReceiver)
+- **New docs**: `docs/ui/calling-ui.md` (UI-050, DESIGNED)
+- **New icons**: `flash_ic_call_accept.xml`, `flash_ic_camera_flip.xml`, `flash_ic_hangup.xml`, `flash_ic_speaker.xml`
+- **Modified**: `app/build.gradle.kts`, `AndroidManifest.xml`, `MainActivity.kt`, `DiscoveryEngineHolder.kt`, `AppEngine.kt`, `FlashConversationScreen.kt`, `FlashIcons.kt`, `settings.gradle.kts`, `gradle/libs.versions.toml`
+- **Docs**: `docs/decisions.md` (ADR-025), `docs/protocol.md` (Calling section), `docs/ui/ui-research-index.md` (UI-050), `logs/errors.md` (ERROR-022 → RESOLVED)
+- **Bug fix**: `DiscoveryEngineHolder.kt` line 793 — local `val callCoordinator` shadowing the field caused `'val' cannot be reassigned`
+
+### Verification
+- `:core:calling:testDebugUnitTest` — **12/12 tests pass** (CallFrameCodecTest: encode/decode/roundtrip/error for all CallWireFrame types)
+- `:core:calling:compileDebugKotlin` — PASS
+- `:ui:callui:compileDebugKotlin` — PASS
+- `:app:compileDebugKotlin` — BUILD SUCCESSFUL (final verification after CAMERA/ RECORD_AUDIO runtime permission wiring)
+- ERROR-022 updated to RESOLVED (build verified)
+
+### Key design decisions (ADR-025)
+- WebRTC via `shepeliev/webrtc-kmp:0.125.11` with empty `iceServers` (LAN/hotspot-only, host candidates suffice)
+- Signaling over the WS mesh as `FLASH_CALL` text frames (same FlashTextFraming as chat/pairing)
+- One-call-at-a-time `CallCoordinator` (app-side holder, mirroring DiscoveryEngineHolder pattern)
+- FGS with `microphone|camera` types, started while app foreground; `Notification.CallStyle` (API 31+) with `Person` for incoming/ongoing notifications
+- Call overlay (FlashCallScreen) renders as topmost sibling in FlashShell; v1 has no minimize
+- CAMERA + RECORD_AUDIO runtime permissions requested at call time; audio-only calls only need RECORD_AUDIO
+
+### Remaining
+- **Physical device testing**: the calling feature is code-complete and builds, but has NOT been tested on physical phones. WebRTC negotiation, FGS behavior, and CallStyle notification interaction need real-device verification.
+- **CAMERA runtime permission**: wiring complete (request → grant → user taps video button again), but UX flow not tested.
+- **Notification tap-to-answer**: FlashCallActionReceiver routes to CallCoordinator, but `bringAppToFront` behavior not tested.
+- **Performance benchmarking** (UI-042/UI-043): not yet started.
+
+### Next AI
+1. Physical two-phone calling test: verify invite → accept → active → hangup cycle, audio routing, and video rendering.
+2. Test FGS notification appearance (CallStyle buttons) during incoming/ongoing/ended states.
+3. Test CAMERA permission flow (deny → grant → retry).
+4. Then return to the premium chat UI component sequence (UI-011 composer or UI-007 selection research next per `docs/ui/ui-research-index.md`).
 
 ### Worked on
 Followed up on the owner's report that the phone "still goes offline when leaving the app /

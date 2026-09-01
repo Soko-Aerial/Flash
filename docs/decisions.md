@@ -631,3 +631,73 @@ A future feature genuinely needs a Room-backed trust store: reintroduce it as an
 (implementing a security-owned port), never by re-adding `persistence` to `core:security`.
 
 
+
+## ADR-025 - Voice/video calling: WebRTC media via shepeliev/webrtc-kmp, signaling over the WS mesh
+
+### Decision
+1. Add 1:1 voice/video calling as two new modules: `:core:calling` (headless call engine,
+   `explicitApi()`, compileSdk 35 per ADR-022) and `:ui:calling` (Compose call screen,
+   UI-050, see `docs/ui/calling-ui.md`).
+2. Media transport: WebRTC via `com.shepeliev:webrtc-kmp:0.125.11` (M125, MIT; wraps
+   `io.github.webrtc-sdk:android:125.6422.06.1`, BSD-3). Audio + video tracks over a
+   `PeerConnection` with **empty `iceServers`** - Flash is LAN/hotspot-only, so host
+   candidates suffice; no STUN/TURN is deployed or required.
+3. Signaling: SDP offers/answers and ICE candidates ride the existing WebSocket mesh as
+   text frames under a new `FLASH_CALL` prefix (see `docs/protocol.md` Calling section),
+   encoded with `FlashTextFraming` exactly like chat/pairing frames. ICE candidates are
+   trickled with buffering until the remote description is set (webrtc-kmp sample pattern).
+4. Call lifecycle: a `CallCoordinator` (app-side holder, mirroring the
+   `DiscoveryEngineHolder` pattern) owns one `CallSession` at a time; the state machine is
+   dialing -> ringing -> connecting -> active -> ended/failed. Calls are only allowed to
+   paired/trusted peers (AGENTS.md SS19 security rule).
+5. Android compliance: the call runs inside a dedicated foreground service with
+   `microphone|camera` types, started **while the app is foreground** (user taps call /
+   answers from the incoming-call notification) - the only legal way to start a
+   microphone/camera FGS under the while-in-use restrictions. `Notification.CallStyle`
+   (API 31+) styles incoming/ongoing call notifications; pre-31 falls back to a standard
+   FGS notification. CAMERA + RECORD_AUDIO runtime permissions are requested at call time
+   (webrtc-kmp throws `CameraPermissionException`/`RecordAudioPermissionException` from
+   `getUserMedia` if missing).
+6. Audio routing (speaker/earpiece) is app responsibility (webrtc-kmp ships no
+   AudioManager): v1 toggles `AudioManager` speakerphone on/off; no Bluetooth picker.
+
+### Context
+Flash's chat and file transfer already run over the WS mesh (ADR-016). Calling is the
+last major real-time feature. WebRTC is the only practical way to get Opus audio + VP8/H264
+video with jitter buffers, echo cancellation, and hardware codecs on Android without
+writing a media stack. ADR-016 deferred "WebRTC Data Channels" for *file transfer* because
+WS already covers it - that deferral stands; this ADR is about *media*, a different use
+case where WebRTC is the right tool and WS is only the signaling channel.
+
+### Alternatives considered
+- Raw audio over WS (PCM/G.711 chunks): rejected - no echo cancellation, no jitter
+  buffer, no video path, 10x the bitrate of Opus; would need a media engine anyway.
+- `webrtc-sdk:android` (prebuilt Google artifacts) directly: rejected - Java API only,
+  verbose SDP/callback plumbing; webrtc-kmp wraps the same native stack with suspend +
+  Flow APIs and multiplatform surface, MIT-licensed, actively maintained (M125, 2025-09).
+- `stream-io`/proprietary calling SDKs: rejected - ADR-003 clean-room rule; cloud
+  dependency contradicts Flash's serverless P2P premise.
+- SIP/RTP stacks (e.g. pjsip): rejected - far heavier, telephony-oriented, no video
+  story as clean as WebRTC's.
+
+### Consequences
+- New dependency `com.shepeliev:webrtc-kmp:0.125.11` (+ transitive
+  `io.github.webrtc-sdk:android:125.6422.06.1`, ~30 MB native ABIs). App-only consumers
+  of `:core:calling` pay this cost; the other core modules stay WebRTC-free.
+- webrtc-kmp auto-initializes via androidx.startup (`WebRtcInitializer`); no manual init
+  call needed. `WebRtc.rootEglBase` backs the video renderers.
+- Known dexing hazard with the WebRTC AAR (Egl14 `NoSuchMethodError`, Google issue
+  265195801): if `:app` dexing fails, add `android.useFullClasspathForDexingTransform=true`
+  to `gradle.properties`.
+- SDP offers are ~4-8 KB text frames - fits the WS text frame path fine (chat already
+  sends multi-KB messages).
+- The parallel `handleInboundText` implementations (app `DiscoveryEngineHolder` and
+  `core:engine` `Flash.kt`) both gain a `FLASH_CALL` branch and must stay in sync, same
+  as the existing chat/pairing frames.
+
+### Revisit when
+- Wi-Fi Direct transport lands: verify host-candidate ICE still connects over the P2P
+  group interface (expected yes; both peers are on-link).
+- Remote-relay or internet calling is ever considered: STUN/TURN and a rendezvous server
+  become mandatory; this ADR's LAN-only ICE assumption breaks.
+- Group calls: multi-peer topology (mesh vs SFU) needs its own ADR.

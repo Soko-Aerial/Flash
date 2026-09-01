@@ -876,3 +876,33 @@ intent.
 
 ### Status
 RESOLVED (2026-08-26) - load-induced flake; both tests verified green on isolated `--rerun-tasks`.
+
+## ERROR-022 - webrtc-kmp onTrack Flow: tuple destructuring + track kind check compile risk
+
+### Date
+2026-09-02
+
+### Area
+core:calling / WebRTC integration
+
+### Symptoms
+First FlashCallSession draft used `pc.onTrack.collect { (track, stream) -> }` destructuring
+and a locally re-declared `MediaStreamTrackKind` enum, risking API-shape mismatch with
+webrtc-kmp 0.125.11 (onTrack's emission type and MediaStreamTrack.kind typing were written
+from memory of the sample, not verified against the artifact source).
+
+### Root cause
+Drafted against remembered sample code instead of the published commonMain sources.
+
+### Working fix
+Verified against webrtc-kmp 0.125.11 sources before build: `MediaStreamTrack.kind` is
+`MediaStreamTrackKind` (Audio/Video) from the library; onTrack emits track+stream. Removed
+the local enum; kept the onTrack collector minimal (remote stream capture only) since
+connection-state drives the ACTIVE transition.
+
+### Verification
+`:core:calling:compileDebugKotlin` + `:core:calling:testDebugUnitTest` pass (12 tests, 0 failures).
+`:ui:callui:compileDebugKotlin` and `:app:compileDebugKotlin` also pass.
+
+### Status
+RESOLVED (2026-09-02, verified build)
