@@ -768,3 +768,51 @@ tiebreaker is layered on top for equal-rank duplicates specifically.
 ### Revisit when
 Cross-device session coordination (e.g. a connection-ownership frame) is ever built, or if
 a multi-link transport makes "same TCP pair" no longer the unit of comparison.
+
+## ADR-027 — Base64-encode SDP in call frames to harden the text-framing transport
+
+### Decision
+`CallFrameCodec` (the `FLASH_CALL` wire codec) base64-encodes the `sdp` field of
+Offer/Answer frames on encode and base64-decodes on decode. Encoding uses a new
+pure-Kotlin RFC 4648 codec in `core/common` (`Base64.kt`); decode tries base64 first and
+falls back to raw text for legacy pre-hardening peers. `FlashCallSession` additionally
+wraps every set-SDP flow in try/catch so a native failure ends the call cleanly instead
+of crashing the process.
+
+### Context
+Both phones crashed with `java.lang.RuntimeException: Setting SDP failed:
+SessionDescription is NULL.` the moment a call was accepted. Disassembly of webrtc-kmp
+0.125.11 (`PeerConnection$setSdpObserver$1.onSetFailure`) proved the message is
+libwebrtc's native JNI error, emitted when the `org.webrtc.SessionDescription`'s
+`description` is null/empty at JNI-call time or fails native SDP parse. Our API usage was
+correct (verified against the same bytecode). The SDP rides the WS mesh as a
+`FLASH_CALL` text frame through `FlashTextFraming`, which escapes only `%`/space/`=`
+and does `text.trim().split(' ')` — whitespace/multi-line SDP is precisely the payload
+that framing can corrupt (ERROR-024).
+
+### Alternatives considered
+- **Fix the framing layer (escape CR/LF, no global trim):** rejected as the primary fix —
+  `FlashTextFraming` is shared by chat/pairing frames and its quirks are load-bearing for
+  those; changing it risks regressing discovery/chat. Base64 isolates the fix to calling
+  with zero framing changes.
+- **`android.util.Base64` / `java.util.Base64`:** rejected — `core/common` is pure JVM
+  with `minSdk 24` + `explicitApi()`; Android's codec breaks JVM unit tests and
+  `java.util.Base64` requires API 26+. Pure-Kotlin base64 is the only option that keeps
+  `CallFrameCodec` tests running on the JVM.
+- **XML/JSON envelope for SDP:** rejected — far heavier for a LAN-only 4-8 KB payload;
+  base64 is whitespace-free by construction and trivially reversible.
+
+### Consequences
+- `CallFrameCodec` Offer/Answer frames carry base64 SDP; `decodeSdp` handles both base64
+  and legacy raw payloads (real SDP starts with `v=0`, not valid base64, so the fallback
+  is unambiguous in practice).
+- `FlashCallSession` SDP flows are exception-hardened: `CancellationException` rethrown,
+  everything else logged + `end(ERROR, notifyPeer=true)`.
+- Round-trip tests assert SDP survives encode→decode **byte-for-byte**.
+- Wire format is no longer backward-compatible for Offer/Answer SDP content, but legacy
+  peers still decode (raw fallback) — no coordination required to upgrade.
+
+### Revisit when
+A native set-SDP failure is reproduced on device with diagnostics and the real
+corruptor (if any framing edge case remains) is identified; or if the transfer protocol
+ever moves to binary frames (ADR-014-style) where SDP can ride as opaque bytes directly.

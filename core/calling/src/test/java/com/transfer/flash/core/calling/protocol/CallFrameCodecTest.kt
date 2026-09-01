@@ -110,4 +110,40 @@ class CallFrameCodecTest {
         assertNull(CallFrameCodec.decode("FLASH_CALL action=invite from=$from"))
         assertNull(CallFrameCodec.decode("FLASH_CALL action=offer callId=$callId from=$from"))
     }
-}
+
+        @Test
+        fun offer_sdp_round_trip_byte_for_byte() {
+            // Real SDP with CRLF, spaces, equals — must survive base64 encode/decode.
+            val sdp = "v=0\r\no=- 123 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1"
+            val frame = CallWireFrame.Offer(callId = callId, from = from, sdp = sdp)
+            val encoded = CallFrameCodec.encode(frame)
+            // Verify the wire format has base64 (not raw SDP).
+            assertTrue("encoded should contain sdp field: $encoded", encoded.contains("sdp="))
+            assertTrue("encoded should NOT contain 'v=0'", !encoded.contains("v=0"))
+            // Decode and verify full byte-for-byte match.
+            val decoded = CallFrameCodec.decode(encoded) as CallWireFrame.Offer
+            assertEquals(frame, decoded)
+            assertEquals(sdp, decoded.sdp)
+        }
+
+        @Test
+        fun answer_sdp_round_trip_byte_for_byte() {
+            val sdp = "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=rtpmap:111 opus/48000/2"
+            val frame = CallWireFrame.Answer(callId = callId, from = from, sdp = sdp)
+            val encoded = CallFrameCodec.encode(frame)
+            assertTrue(encoded.contains("sdp="))
+            assertTrue("encoded should NOT contain raw SDP", !encoded.contains("m=audio"))
+            val decoded = CallFrameCodec.decode(encoded) as CallWireFrame.Answer
+            assertEquals(frame, decoded)
+            assertEquals(sdp, decoded.sdp)
+        }
+
+        @Test
+        fun decode_legacy_raw_sdp_fallback() {
+            // Peers on old builds send raw SDP (not base64) — decodeSdp must fall back.
+                    // Note: %0d/%0a are NOT in the Flash escape set, so they pass through raw.
+                    val raw = "FLASH_CALL action=offer callId=$callId from=$from sdp=v=0%0d%0ao=-%20123%202%20IN%20IP4%20127.0.0.1"
+                    val decoded = CallFrameCodec.decode(raw) as CallWireFrame.Offer
+                    assertEquals("v=0%0d%0ao=- 123 2 IN IP4 127.0.0.1", decoded.sdp)
+                }
+    }

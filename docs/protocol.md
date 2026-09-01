@@ -126,9 +126,13 @@ FLASH_CALL action=answer callId=<uuid> from=<id> sdp=<escaped-sdp>
 
 - The caller sends `offer` immediately after `accept` arrives (caller is the offerer;
   glare is impossible because only the caller offers).
-- SDP is the full session description string (type is implied by the action), escaped
-  with the standard rules (`%25`, `%20`, `%3D`). Offers are ~4-8 KB - within text-frame
-  norms.
+- SDP is the full session description string (type is implied by the action). As of
+  ERROR-024/ADR-027 the `sdp` field is **base64-encoded** (RFC 4648, no whitespace, no
+  `=`/`%`/space characters that collide with the text-framing escape rules), so the
+  multi-line, whitespace-sensitive SDP survives the framing layer byte-for-byte.
+  `CallFrameCodec.decodeSdp` tries base64 first and falls back to raw escaped text for
+  legacy pre-hardening peers (a real SDP starts with `v=0`, which is not valid base64, so
+  the fallback is unambiguous in practice). Offers are ~4-8 KB - within text-frame norms.
 
 ### ICE frames (trickle)
 

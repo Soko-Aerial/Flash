@@ -24,6 +24,7 @@ import com.transfer.flash.core.calling.model.FlashCallEndReason
 import com.transfer.flash.core.calling.model.FlashCallState
 import com.transfer.flash.core.calling.model.FlashCallUiState
 import com.transfer.flash.core.calling.protocol.CallWireFrame
+import com.transfer.flash.core.common.logging.FlashLog
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -58,6 +59,7 @@ import kotlinx.coroutines.sync.withLock
  * - `VideoTrack.switchCamera()` is suspend.
  * - Permissions are checked at getUserMedia time (throws on missing).
  */
+@OptIn(com.transfer.flash.core.common.annotation.FlashInternalApi::class)
 public class FlashCallSession(
     public val callId: String,
     public val peerId: String,
@@ -241,42 +243,80 @@ public class FlashCallSession(
         }
         // Caller is the offerer (glare-free: only the caller offers — ADR-025).
         val pc = peerConnection ?: return
-        val offer = pc.createOffer(
-            OfferAnswerOptions(offerToReceiveAudio = true, offerToReceiveVideo = video),
-        )
-        pc.setLocalDescription(offer)
-        sendFrame(
-            CallWireFrame.Offer(
-                callId = callId,
-                from = localDeviceId,
-                sdp = offer.sdp,
-            ),
-        )
+        try {
+            val offer = pc.createOffer(
+                OfferAnswerOptions(offerToReceiveAudio = true, offerToReceiveVideo = video),
+            )
+            logSdp("local offer", offer.sdp)
+            pc.setLocalDescription(offer)
+            sendFrame(
+                CallWireFrame.Offer(
+                    callId = callId,
+                    from = localDeviceId,
+                    sdp = offer.sdp,
+                ),
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // Never crash on an SDP failure — tear the call down cleanly (ERROR-024).
+            FlashLog.e("CALL", "onAccept SDP flow failed: ${e.message}", e)
+            end(FlashCallEndReason.ERROR, notifyPeer = true)
+        }
     }
 
     private suspend fun onOffer(frame: CallWireFrame.Offer) {
         val pc = peerConnection
         if (pc == null || _state.value.state != FlashCallState.CONNECTING) return
-        pc.setRemoteDescription(SessionDescription(SessionDescriptionType.Offer, frame.sdp))
-        flushPendingIce()
-        val answer = pc.createAnswer(
-            OfferAnswerOptions(offerToReceiveAudio = true, offerToReceiveVideo = video),
-        )
-        pc.setLocalDescription(answer)
-        sendFrame(
-            CallWireFrame.Answer(
-                callId = callId,
-                from = localDeviceId,
-                sdp = answer.sdp,
-            ),
-        )
+        try {
+            logSdp("remote offer", frame.sdp)
+            pc.setRemoteDescription(SessionDescription(SessionDescriptionType.Offer, frame.sdp))
+            flushPendingIce()
+            val answer = pc.createAnswer(
+                OfferAnswerOptions(offerToReceiveAudio = true, offerToReceiveVideo = video),
+            )
+            logSdp("local answer", answer.sdp)
+            pc.setLocalDescription(answer)
+            sendFrame(
+                CallWireFrame.Answer(
+                    callId = callId,
+                    from = localDeviceId,
+                    sdp = answer.sdp,
+                ),
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            FlashLog.e("CALL", "onOffer SDP flow failed: ${e.message}", e)
+            end(FlashCallEndReason.ERROR, notifyPeer = true)
+        }
     }
 
     private suspend fun onAnswer(frame: CallWireFrame.Answer) {
         val pc = peerConnection ?: return
         if (_state.value.state != FlashCallState.CONNECTING) return
-        pc.setRemoteDescription(SessionDescription(SessionDescriptionType.Answer, frame.sdp))
-        flushPendingIce()
+        try {
+            logSdp("remote answer", frame.sdp)
+            pc.setRemoteDescription(SessionDescription(SessionDescriptionType.Answer, frame.sdp))
+            flushPendingIce()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            FlashLog.e("CALL", "onAnswer SDP flow failed: ${e.message}", e)
+            end(FlashCallEndReason.ERROR, notifyPeer = true)
+        }
+    }
+
+    /**
+     * Logs SDP diagnostics (length, first line, empty flag) without logging the full
+     * body — SDP contains IPs/candidates but no secrets; still, keep logs lean.
+     */
+    private fun logSdp(label: String, sdp: String) {
+        val firstLine = sdp.lineSequence().firstOrNull().orEmpty()
+        FlashLog.i(
+            "CALL",
+            "$label sdp len=${sdp.length} empty=${sdp.isEmpty()} first=${firstLine.take(80)}",
+        )
     }
 
     private suspend fun onIce(frame: CallWireFrame.IceCandidate) {
