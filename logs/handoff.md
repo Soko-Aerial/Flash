@@ -1,26 +1,36 @@
 # Current Handoff
 
-## 2026-09-02 (c) — Nearby/discovery reconnect storm FIXED (connect-glare race, ERROR-023); calling + dual-band hypotheses ruled out; physical re-test pending
+## 2026-09-02 (d) — Call-accept crash FIXED (ERROR-024): base64 SDP transport + try/catch hardening; physical call re-test pending
 
 ### Current branch
-`dev` (clean; HEAD `580628d`)
+`dev` (work UNCOMMITTED in working tree; HEAD `43b1c2c`)
 
 ### Last verified build
-- `:core:network:testDebugUnitTest` → **4/4 PASS** (incl. new glare regression test
-  `testConnectGlareConvergesOnSingleLivePair`)
-- `:app:compileDebugKotlin` → **BUILD SUCCESSFUL**
+- `:core:common:testDebugUnitTest` → **49 PASS** (incl. 7 new `Base64Test` cases)
+- `:core:calling:testDebugUnitTest` → **15 PASS** (incl. byte-for-byte Offer/Answer SDP round-trips + legacy raw-SDP fallback)
 
 ### Current phase
-**Discovery/Nearby bug-fix (ERROR-023) — root-caused & fixed; build + unit tests verified;
-physical re-test pending.** The reconnect storm is a connect-glare race: both the gated 5s
-auto-connect sweep and the ungated #18 reconnect engine dial the same peer, both phones dial
-each other, and the equal-rank `KeepExisting` tie was a coin flip that ~50% of the time left
-both sides holding a dead socket → infinite 2s storm. Fixed with a deterministic originator
-tiebreaker in `WsFlashNetwork.registerSession` (both ends of a TCP pair compute the same
-winner from device ids). Voice/video calling remains code-complete with physical test
-pending; KMP migration stays de-prioritized.
+**Call-accept crash (ERROR-024) root-caused & fixed; build + unit tests verified; physical
+two-phone re-test pending.** Both phones crashed with `Setting SDP failed: SessionDescription
+is NULL.` the moment a call was accepted. Root cause pinned by disassembling the webrtc-kmp
+0.125.11 AAR: `onSetFailure` rethrows libwebrtc's native JNI error verbatim (null/empty
+`SessionDescription.description` or native parse failure). API usage was correct; the suspect
+is the `FLASH_CALL` text-frame transport (`FlashTextFraming` escapes only `%`/space/`=` and
+does `trim().split(' ')` — exactly the wrong treatment for multi-line SDP). Fix: pure-Kotlin
+base64 SDP transport in `CallFrameCodec` (whitespace/delimiter-free) + try/catch safety nets
+in `FlashCallSession` so a native set-SDP failure ends the call instead of crashing the
+process. ERROR-023 glare fix and calling remain code-complete with physical test pending.
 
 ### Working features (NEW since last handoff)
+- **Base64 SDP transport (ERROR-024/ADR-027)**: `CallFrameCodec` base64-encodes Offer/Answer
+  `sdp` fields (pure-Kotlin RFC 4648 `Base64` in `core/common` — no `android.util`/
+  `java.util.Base64`, keeping JVM unit tests green at `minSdk 24` + `explicitApi()`).
+  `decodeSdp` tries base64 first, falls back to raw text for legacy peers. Base64 cannot be
+  corrupted by framing trim/escape/split.
+- **Call crash safety net**: `FlashCallSession` wraps `onAccept`/`onOffer`/`onAnswer` SDP
+  flows in try/catch (rethrow `CancellationException`; else log + `end(ERROR, notifyPeer =
+  true)`) + `logSdp()` diagnostics. A native set-SDP failure now ends the call, never kills
+  the process.
 - **Connect-glare resolution (ERROR-023)**: deterministic tiebreaker — keep the session
   whose originator device id is lexicographically smaller. `WsSession.isOutbound` carries the
   origin; `registerSession.resolveGlareTie` applies it when transport ranks are equal.
@@ -28,33 +38,29 @@ pending; KMP migration stays de-prioritized.
   (`isReconnectInFlight`) so the sweep and the #18 reconnect engine never race the same peer.
 - **Deterministic network pick**: `findLanNetwork()` sorts by `networkHandle` so both phones
   independently select the same network when multiple are eligible.
-- **`enableOnBackInvokedCallback="true"`** in the manifest (silences the
-  "OnBackInvokedCallback is not enabled" warning).
-- **Calling hypotheses ruled out**: `CallFrameCodec.decode` returns null for non-FLASH_CALL
-  frames (exact-prefix `parseFields`) → the calling work cannot misroute chat/pairing frames.
-- **Dual-band hypothesis ruled out**: both phones on 192.168.0.x/24, same network handle
-  `501621903373`; see `logs/experiments.md` EXP-005.
+- **`enableOnBackInvokedCallback="true"`** in the manifest.
+- **Calling + dual-band hypotheses ruled out** for the discovery storm (see ERROR-023/EXP-005).
 
 ### In progress
-- **Physical two-phone re-test of the glare fix** (THE decisive step — confirm the storm
-  stops after a session drop).
-- Physical two-phone calling test (WebRTC negotiation, FGS CallStyle buttons, audio routing,
-  video rendering — still untested on device).
+- **Physical two-phone calling re-test** (THE decisive step — the crash log precedes this fix;
+  reinstall the APK and confirm call accept + placement connect without a crash).
+- **Physical two-phone re-test of the glare fix** (confirm the storm stops after a session drop).
 - Bug 7 device checklist pass (`docs/ui/notification-ui.md`).
 
 ### Broken
 - Nothing new. (Pre-existing timing-flaky messaging backoff test note below.)
 
 ### Last change
-Implemented the connect-glare fix (2026-09-02): `WsSession.isOutbound`, deterministic
-`resolveGlareTie` in `registerSession`, `isReconnectInFlight` accessor, sweep dedup,
-deterministic `findLanNetwork` sort, `enableOnBackInvokedCallback` manifest flag, and a
-glare regression test. `:core:network:testDebugUnitTest` 4/4 PASS +
-`:app:compileDebugKotlin` BUILD SUCCESSFUL.
+Implemented the call-accept crash fix (2026-09-02): pure-Kotlin `Base64` in `core/common`,
+`CallFrameCodec` base64 SDP transport + legacy raw fallback, `FlashCallSession` try/catch
+safety nets + `logSdp()`, 7 new `Base64Test` + 3 new `CallFrameCodecTest` cases.
+`:core:common:testDebugUnitTest` 49 PASS + `:core:calling:testDebugUnitTest` 15 PASS.
 
 ### Last test
-- `:core:network:testDebugUnitTest` → 4/4 PASS (incl. new glare regression test)
-- `:app:compileDebugKotlin` → BUILD SUCCESSFUL
+- `:core:common:testDebugUnitTest` → 49 PASS (incl. Base64: empty, hello, binary, SDP
+  round-trip, invalid char, bad padding, padded round-trips)
+- `:core:calling:testDebugUnitTest` → 15 PASS (incl. byte-for-byte Offer/Answer SDP
+  round-trips + legacy raw-SDP fallback)
 
 ### Known blockers
 - Kotlin daemon flakiness: treat "BUILD SUCCESSFUL" as success; don't trust exit code alone
@@ -64,17 +70,28 @@ glare regression test. `:core:network:testDebugUnitTest` 4/4 PASS +
   (`E:\AndroidDev\AndroidStudio\android-studio\jbr`) — install command below is authoritative
 - The messaging backoff timing test remains inherently timing-sensitive; deterministic
   cleanup still worthwhile
+- **Stale installed APK**: the on-device APK predates even `580628d` (missing the
+  `enableOnBackInvokedCallback` manifest fix) — reinstall before any physical re-test.
 
 ### Recommended next task
-1. **Physical two-phone re-test of the glare fix**: trigger a session drop (toggle Wi-Fi on
+1. **Physical two-phone calling re-test** (decisive for ERROR-024): reinstall the APK on both
+   phones, invite → accept → confirm the call screen connects without a crash (audio, video,
+   FGS CallStyle buttons). If it still fails, `logSdp()` + the try/catch path now produce
+   diagnostics instead of a process death. Record in `logs/experiments.md` / `logs/progress.md`.
+2. **Physical two-phone re-test of the glare fix**: trigger a session drop (toggle Wi-Fi on
    one phone or background the app), then watch logcat — expect ONE `Session up` pair, no
    repeat "WS connecting" storm, no "cannot reach". Record in `logs/experiments.md`.
-2. Then the physical two-phone calling test (invite → accept → active → hangup, audio,
-   video, CallStyle notification buttons).
 3. Then return to the premium chat UI component sequence: **UI-011 composer** or **UI-007
    selection** research next per `docs/ui/ui-research-index.md`.
 
 ### Files most relevant to next task
+- `core/calling/src/main/java/com/transfer/flash/core/calling/protocol/CallFrameCodec.kt`
+  (base64 SDP transport)
+- `core/calling/src/main/java/com/transfer/flash/core/calling/FlashCallSession.kt`
+  (try/catch safety nets + `logSdp`)
+- `core/common/src/main/java/com/transfer/flash/core/common/protocol/Base64.kt` (new codec)
+- `core/calling/src/test/java/com/transfer/flash/core/calling/protocol/CallFrameCodecTest.kt`
+- `core/common/src/test/java/com/transfer/flash/core/common/protocol/Base64Test.kt`
 - `core/network/src/main/java/com/transfer/flash/core/network/ws/WsFlashNetwork.kt`
   (`registerSession` glare tiebreaker, `isReconnectInFlight`)
 - `core/network/src/main/java/com/transfer/flash/core/network/ws/WsSession.kt` (`isOutbound`)
@@ -85,8 +102,8 @@ glare regression test. `:core:network:testDebugUnitTest` 4/4 PASS +
   (glare regression test)
 
 ### Remaining work summary (for next AI)
-1. **Physical two-phone re-test of the glare fix** (decisive) — record in `logs/experiments.md`
-2. **Physical two-phone calling test** (decisive for the calling track) — record results
+1. **Physical two-phone calling re-test** (decisive for ERROR-024) — record in `logs/experiments.md`
+2. **Physical two-phone re-test of the glare fix** (decisive) — record in `logs/experiments.md`
 3. EXP-003 charged-Infinix re-test (owner-driven, from prior session)
 4. Bug 7 device checklist pass
 5. Deterministic cleanup of the messaging backoff timing test

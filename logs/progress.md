@@ -1,5 +1,73 @@
 # Progress Log
 
+## 2026-09-02 — Call-accept crash FIXED: base64 SDP transport + try/catch hardening (ERROR-024, ADR-027)
+
+### Worked on
+The owner reported both phones crash when a WebRTC call is accepted:
+`java.lang.RuntimeException: Setting SDP failed: SessionDescription is NULL.`
+at `com.shepeliev.webrtckmp.PeerConnection$setSdpObserver$1.onSetFailure`.
+Root-caused by disassembling the webrtc-kmp 0.125.11 AAR bytecode, traced the
+full SDP wire path (WS codec + host wiring verified clean), then implemented a
+two-part fix.
+
+### Root cause
+`onSetFailure` rethrows libwebrtc's native error string verbatim —
+`"SessionDescription is NULL."` comes from `JavaToNativeSessionDescription`
+when the Java `SessionDescription.description` is null/empty at JNI time or
+fails native SDP parse. `FlashCallSession`'s webrtc-kmp API usage is correct
+(verified against the AAR). The suspect is the `FLASH_CALL` text-frame
+transport: `FlashTextFraming` escapes only `%`/space/`=` and does
+`text.trim().split(' ')`, which is exactly the wrong treatment for multi-line,
+whitespace-sensitive SDP (trim strips the trailing CRLF; space-splitting can
+fragment SDP attribute lines).
+
+### Changed
+- `core/common/.../protocol/Base64.kt` — NEW pure-Kotlin RFC 4648 base64
+  (encode/decode/encodeUtf8/decodeUtf8, strict padding validation). Needed
+  because `core/common` is pure JVM with `minSdk 24` + `explicitApi()` —
+  `android.util.Base64` breaks JVM tests, `java.util.Base64` needs API 26+.
+- `core/calling/.../protocol/CallFrameCodec.kt` — SDP fields in Offer/Answer
+  frames are now base64-encoded on encode and decoded via `decodeSdp()` on
+  decode (base64 first, raw fallback for legacy peers). Base64 is whitespace-
+  and delimiter-free, so the framing layer can no longer corrupt SDP.
+- `core/calling/.../FlashCallSession.kt` — SDP flows (`onAccept`/`onOffer`/
+  `onAnswer`) wrapped in try/catch: rethrow `CancellationException`, otherwise
+  log + `end(FlashCallEndReason.ERROR, notifyPeer = true)`. Added `logSdp()`
+  diagnostic helper (length/empty/first-line). Class-level
+  `@OptIn(FlashInternalApi)`.
+- `core/common/.../Base64Test.kt` — NEW 7 tests (empty, hello, binary, SDP
+  round-trip, invalid char, bad padding, padded round-trips).
+- `core/calling/.../CallFrameCodecTest.kt` — 3 new tests: byte-for-byte Offer
+  and Answer SDP round-trips + legacy raw-SDP fallback. Fixed JUnit
+  `assertTrue` arg order in existing tests.
+
+### Verification
+- `:core:common:testDebugUnitTest` — BUILD SUCCESSFUL (49 tests incl. Base64).
+- `:core:calling:testDebugUnitTest` — BUILD SUCCESSFUL (15 tests incl. new
+  SDP round-trip tests).
+- Round-trip tests prove SDP survives encode→decode byte-for-byte, so the
+  framing layer cannot alter the session description anymore.
+
+### Problems encountered
+1. First Base64 padding check required the non-padding core to be `% 4 == 0`,
+   which broke valid inputs like `Zg==` — fixed to validate total length `% 4
+   == 0` with at most 2 trailing `=` pads.
+2. JUnit `assertTrue` arg order (message first, condition second) — fixed.
+3. Legacy fallback test initially expected `%0d`/`%0a` to be escaped; they are
+   NOT Flash escape sequences and pass through raw — test corrected.
+
+### Remaining
+- Physical two-phone call re-test (decisive). The crash log precedes the fix;
+  after install, accept a call and confirm the call screen connects without a
+  crash. If it still fails, `logSdp()` + the try/catch path now produce
+  diagnostics instead of a process death.
+
+### Next AI
+Reinstall the APK on both phones (stale APK predates even `580628d`), re-test
+call accept + call placement both directions, and record the result. If the
+crash is gone, the ERROR-024 status can be upgraded to on-device-verified and
+the FGS calling physical test checklist (docs/ui/calling-ui.md) can proceed.
+
 ## 2026-09-02 — Nearby/discovery reconnect storm ROOT-CAUSED & FIXED (connect-glare race, ERROR-023); calling + dual-band hypotheses ruled out
 
 ### Worked on

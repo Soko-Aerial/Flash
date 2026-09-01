@@ -1002,3 +1002,124 @@ etworkHandle so both devices independently pick
 
 ### Status
 RESOLVED (2026-09-02, build + test verified)
+
+## ERROR-024 — Accepting a call crashes both phones: "Setting SDP failed: SessionDescription is NULL"
+
+### Date
+2026-09-02
+
+### Area
+WebRTC calling / `:core:calling` / SDP transport
+
+### Symptoms
+Accepting a WebRTC voice/video call crashes BOTH phones almost immediately
+(~7 ms) after the callee processes the inbound Offer frame and calls
+`setRemoteDescription`. Each phone logs the `Accept` send, then an inbound call
+frame, then:
+
+```text
+FATAL EXCEPTION: DefaultDispatcher-worker-7
+java.lang.RuntimeException: Setting SDP failed: SessionDescription is NULL.
+    at com.shepeliev.webrtckmp.PeerConnection$setSdpObserver$1.onSetFailure(PeerConnection.kt:168)
+```
+
+No SDP text is ever logged (we never reached our diagnostics), and the crash
+kills the whole process, so the FGS call UI dies with it.
+
+### Environment
+- Android version: both phones on the same LAN (192.168.0.x/24), network handle
+  `501621903373`
+- Device: Flash Infinix X6882B (pid 18793 @ 192.168.0.185, id
+  `3d44c04d-a473-408f-a741-2647ce7365ab`); second phone @ 192.168.0.107, id
+  `ad35af74-0b6a-44e8-9151-340ad750c178`
+- webrtc-kmp: `com.shepeliev:webrtc-kmp:0.125.11` (wraps
+  `io.github.webrtc-sdk:android:125.6422.06.1`)
+- Branch `dev`, HEAD `43b1c2c` (pre-fix)
+
+### Error
+```text
+java.lang.RuntimeException: Setting SDP failed: SessionDescription is NULL.
+    at com.shepeliev.webrtckmp.PeerConnection$setSdpObserver$1.onSetFailure(PeerConnection.kt:168)
+    Suppressed: kotlinx.coroutines.internal.DiagnosticCoroutineContextException: [StandaloneCoroutine{Cancelling}@d4cbd1d, Dispatchers.Default]
+```
+
+### Root cause
+Definitively established by disassembling the webrtc-kmp 0.125.11 AAR bytecode
+(`PeerConnection$setSdpObserver$1.onSetFailure(String)`): the wrapper rethrows
+the native error string **verbatim** — `"Setting SDP failed: " + <native message>`.
+So `"SessionDescription is NULL."` is libwebrtc's own **native JNI error**,
+emitted by `JavaToNativeSessionDescription` when the Java
+`org.webrtc.SessionDescription`'s `description` field is null/empty at
+JNI-call time (or the SDP string fails native parse). `FlashCallSession` used
+the webrtc-kmp API correctly (verified against the same bytecode), so the
+fault is in what we fed across the wire, not in API misuse.
+
+The SDP rides the WS mesh as a text frame under the `FLASH_CALL` prefix,
+encoded with `FlashTextFraming`. That framing layer escapes only `%`→`%25`,
+space→`%20`, `=`→`%3D`; CR/LF pass through raw, and `parseFields` does
+`text.trim().split(' ')` on the whole frame. An SDP offer is a multi-line,
+whitespace-sensitive string, so two independent failure modes exist on the
+wire:
+1. **Whitespace corruption** — the outer `trim()` strips leading/trailing
+   whitespace and any field-splitting can alter embedded spaces/newlines;
+   libwebrtc's SDP parser is strict and rejects mangled session descriptions.
+2. **Delimiter ambiguity** — the frame format splits on spaces, so SDP lines
+   (e.g. `a=rtpmap:...`, `a=fingerprint:...`) can be fragmented by the framing
+   layer before they reach the decoder.
+
+The precise trigger (empty `description` vs parse failure) is masked by the
+laconic native message, but both paths point at the text-framing transport,
+not the WebRTC API call.
+
+### Failed attempts
+1. **API verification from docs/tutorials** — insufficient; the crash is native.
+   We disassembled the real AAR (`javap` on the extracted
+   `webrtc-kmp-android-0.125.11` AAR classes) to confirm our call sites were
+   correct and to pin down exactly where the native error string originates.
+2. **Suspecting the codec or host wiring** — ruled out. `CallFrameCodec.decode`
+   returns null for non-`FLASH_CALL` frames (exact-prefix `parseFields`), the
+   WS codec (`WebSocketCodec`) is a clean RFC 6455 implementation, and the host
+   wiring (`DiscoveryEngineHolder` sendFrame/inbound routing) passes frames
+   through byte-for-byte. The inbound frame *is* logged before the crash; the
+   SDP content itself was the problem.
+
+### Working fix
+Two-part hardening:
+
+1. **Base64 SDP transport (primary).** `CallFrameCodec` now base64-encodes the
+   `sdp` field of Offer/Answer frames on encode and base64-decodes on decode,
+   using a new pure-Kotlin RFC 4648 codec (`core/common` `Base64.kt` — no
+   `android.util.Base64`/`java.util.Base64` because `core/common` is pure JVM
+   with `minSdk 24` + `explicitApi()`). Base64 is whitespace-free and
+   delimiter-free, so no amount of trim/escape/split in `FlashTextFraming` can
+   corrupt it. `decodeSdp` tries base64 first and falls back to raw text for
+   legacy pre-hardening peers (real SDP starts with `v=0`, which is not valid
+   base64, so the fallback ambiguity is negligible).
+2. **Try/catch safety net (secondary).** `FlashCallSession` wraps the
+   `onAccept` / `onOffer` / `onAnswer` SDP flows in try/catch (rethrows
+   `CancellationException`, otherwise logs and `end(FlashCallEndReason.ERROR,
+   notifyPeer = true)`) so a native set-SDP failure can no longer take down the
+   whole process — it ends the call cleanly instead. A `logSdp()` helper logs
+   SDP length/empty/first-line for diagnostics.
+
+### Verification
+- `:core:common:testDebugUnitTest` — 49 PASS (incl. 7 new `Base64Test` cases:
+  empty, hello, binary, SDP round-trip, invalid char, bad padding, padded
+  round-trips).
+- `:core:calling:testDebugUnitTest` — 15 PASS (incl. byte-for-byte Offer and
+  Answer SDP round-trip tests + legacy raw-SDP fallback test).
+- Round-trip tests assert SDP survives encode→decode **byte-for-byte**, so the
+  framing layer can no longer alter the session description.
+
+### Related files
+- core/common/src/main/java/.../protocol/Base64.kt — NEW pure-Kotlin base64
+- core/common/src/test/java/.../protocol/Base64Test.kt — NEW
+- core/calling/src/main/java/.../protocol/CallFrameCodec.kt — base64 SDP
+- core/calling/src/main/java/.../FlashCallSession.kt — try/catch + logSdp
+- core/calling/src/test/java/.../protocol/CallFrameCodecTest.kt — round-trip tests
+- docs/decisions.md — ADR-027 (base64 SDP transport)
+- docs/protocol.md — Calling section (base64 SDP note)
+
+### Status
+RESOLVED (2026-09-02, build + unit tests verified; physical two-phone call
+re-test still pending)

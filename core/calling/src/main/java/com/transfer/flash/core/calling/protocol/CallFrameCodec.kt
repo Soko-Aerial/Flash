@@ -1,6 +1,7 @@
 package com.transfer.flash.core.calling.protocol
 
 import com.transfer.flash.core.common.annotation.FlashInternalApi
+import com.transfer.flash.core.common.protocol.Base64
 import com.transfer.flash.core.common.protocol.FlashTextFraming
 
 /**
@@ -16,6 +17,14 @@ import com.transfer.flash.core.common.protocol.FlashTextFraming
  * frame, so an SDP's final CRLF is lost in transit. libwebrtc's SDP parser splits
  * on CRLF and tolerates the missing terminator, so this is semantically harmless —
  * but callers comparing SDP strings byte-for-byte after a round trip must trim first.
+ *
+ * ### SDP transport hardening (ERROR-024, ADR-027)
+ *
+ * `sdp` fields in [CallWireFrame.Offer] / [CallWireFrame.Answer] are base64-encoded
+ * (RFC 4648, see [Base64]) before escaping. This makes SDP payloads immune to any
+ * whitespace/newline/escape artifact in the text-framing layer: the wire only ever
+ * carries `[A-Za-z0-9+/=]` for the SDP body. Older peers that still send raw SDP
+ * (pre-hardening builds) are handled by a fallback in [decode].
  */
 @OptIn(FlashInternalApi::class)
 public object CallFrameCodec {
@@ -51,13 +60,14 @@ public object CallFrameCodec {
                 "action" to "offer",
                 "callId" to frame.callId,
                 "from" to frame.from,
-                "sdp" to frame.sdp,
+                // Base64-encoded so no escape/trim artifact can corrupt the SDP (ERROR-024).
+                "sdp" to Base64.encodeUtf8(frame.sdp),
             )
             is CallWireFrame.Answer -> listOf(
                 "action" to "answer",
                 "callId" to frame.callId,
                 "from" to frame.from,
-                "sdp" to frame.sdp,
+                "sdp" to Base64.encodeUtf8(frame.sdp),
             )
             is CallWireFrame.IceCandidate -> listOf(
                 "action" to "ice",
@@ -94,12 +104,12 @@ public object CallFrameCodec {
             "offer" -> CallWireFrame.Offer(
                 callId = callId,
                 from = from,
-                sdp = fields["sdp"] ?: return null,
+                sdp = decodeSdp(fields["sdp"]) ?: return null,
             )
             "answer" -> CallWireFrame.Answer(
                 callId = callId,
                 from = from,
-                sdp = fields["sdp"] ?: return null,
+                sdp = decodeSdp(fields["sdp"]) ?: return null,
             )
             "ice" -> CallWireFrame.IceCandidate(
                 callId = callId,
@@ -109,6 +119,24 @@ public object CallFrameCodec {
                 candidate = fields["candidate"] ?: return null,
             )
             else -> null
+        }
+    }
+
+    /**
+     * Decodes a [raw] `sdp` field.
+     *
+     * Newer builds base64-encode the SDP (see [Base64]). Older builds send raw text.
+     * Try base64 first; if that fails (not valid base64), fall back to the raw value.
+     * Returns null if the field is absent or empty.
+     */
+    private fun decodeSdp(raw: String?): String? {
+        if (raw.isNullOrBlank()) return null
+        // Try base64 first (newer encoding).
+        try {
+            return Base64.decodeUtf8(raw)
+        } catch (_: IllegalArgumentException) {
+            // Not valid base64 — probably sent by a pre-hardening peer.
+            return raw
         }
     }
 }
