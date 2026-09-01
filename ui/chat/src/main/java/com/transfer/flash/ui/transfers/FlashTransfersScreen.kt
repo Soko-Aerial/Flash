@@ -49,6 +49,7 @@ import com.transfer.flash.ui.chat.FlashEmptyState
 import com.transfer.flash.ui.chat.FlashStateCopy
 import com.transfer.flash.ui.icons.FlashIcon
 import com.transfer.flash.ui.icons.FlashIcons
+import com.transfer.flash.ui.theme.FlashBrandAnimation
 import com.transfer.flash.ui.theme.FlashDimensions
 import com.transfer.flash.ui.theme.FlashHaptic
 import com.transfer.flash.ui.theme.FlashShapes
@@ -252,6 +253,19 @@ private fun ErrorPanel(modifier: Modifier) {
 @Composable
 private fun LoadingRows(modifier: Modifier) {
     Column(modifier.fillMaxWidth().padding(horizontal = FlashSpacing.space16)) {
+        // Branded loading mark (Bug 4 reuse): compact FlashBrandAnimation without the dark
+        // splash gradient, centered above the skeleton transfer rows.
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = FlashSpacing.space24, bottom = FlashSpacing.space12),
+            contentAlignment = Alignment.Center,
+        ) {
+            FlashBrandAnimation(
+                background = false,
+                modifier = Modifier.size(width = 96.dp, height = 96.dp),
+            )
+        }
         repeat(4) {
             Box(
                 Modifier

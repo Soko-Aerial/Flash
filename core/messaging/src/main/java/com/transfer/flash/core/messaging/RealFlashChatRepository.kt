@@ -102,6 +102,23 @@ public class RealFlashChatRepository(
      */
     private val attachmentProgress: Flow<Map<String, FlashAttachmentProgress>> =
         MutableStateFlow(emptyMap()),
+    /**
+     * Host callback fired when a brand-new inbound TEXT message row lands in Room (Room did
+     * NOT dedupe it — the insert result was a real row id, not -1). Lets the app post a
+     * system notification without the messaging library ever depending on Android UI.
+     * Default no-op keeps every existing constructor site (tests, shared engine) compiling
+     * unchanged. [conversationId] is the peer's device id (the local thread id),
+     * [senderName] the wire-carried author name (nullable), [text] the message body.
+     */
+    private val onInboundTextMessage: (conversationId: String, senderName: String?, text: String) -> Unit =
+        { _, _, _ -> },
+    /**
+     * Host callback fired when an inbound attachment row is newly inserted (accepted or
+     * auto-accepted offers only — a pending offer mints no row, so it fires nothing).
+     * Default no-op; see [onInboundTextMessage].
+     */
+    private val onInboundAttachment: (conversationId: String, senderName: String?, fileName: String, mimeType: String) -> Unit =
+        { _, _, _, _ -> },
 ) : FlashChatRepository {
 
     private val _chatListState = MutableStateFlow(FlashChatListUiState())
@@ -120,6 +137,14 @@ public class RealFlashChatRepository(
 
     private var activeConversationId: String? = null
     private var activeConversationJob: Job? = null
+
+    // Bug 6 / crash at drainOutboxOnce: MUST be declared before the init block below.
+    // Kotlin runs property initializers + init blocks in source order, and the init block
+    // launches a coroutine that can reach drainOutboxOnce() on Dispatchers.IO before the
+    // constructor finishes — if this val sits below the init block, the coroutine sees a
+    // null drainMutex and the resulting NPE is an uncaught coroutine exception that kills
+    // the whole process. Observed on device 2026-08-31 10:22 (AndroidRuntime FATAL).
+    private val drainMutex = Mutex()
 
     // Ephemeral in-memory typing state: conversationId -> (memberId -> memberName) currently typing.
     // Mirrored into [typingFlow] so the conversation UI can observe it (#11). Never persisted.
@@ -516,7 +541,9 @@ public class RealFlashChatRepository(
         scope.launch(ioDispatcher) {
             if (messageDao.existsAttachment(transferId)) return@launch
             val now = System.currentTimeMillis()
-            messageDao.insert(
+            // Same dedupe gate as text: existsAttachment guards the replay path, and a
+            // real insert result is what lets the host notify (Bug 7).
+            val insertedRowId = messageDao.insert(
                 MessageEntity(
                     localId = UUID.randomUUID().toString(),
                     conversationId = peerDeviceId,
@@ -540,6 +567,11 @@ public class RealFlashChatRepository(
                     sortOrder = now,
                 ),
             )
+            if (insertedRowId != -1L) {
+                runCatching {
+                    onInboundAttachment(peerDeviceId, peerNameResolver(peerDeviceId), fileName, mimeType)
+                }
+            }
         }
     }
 
@@ -567,7 +599,9 @@ public class RealFlashChatRepository(
                     replyToId = frame.replyToId,
                     replyToPreview = frame.replyToPreview,
                 )
-                messageDao.insert(entity)
+                // -1 == IGNORE-conflict: this localId already exists (replayed frame after a
+                // reconnect). Only a fresh row notifies (Bug 7 dedupe guarantee).
+                val insertedRowId = messageDao.insert(entity)
                 conversationDao.upsert(
                     ConversationEntity(
                         id = threadId,
@@ -578,6 +612,11 @@ public class RealFlashChatRepository(
                         sortOrder = frame.sentAt,
                     ),
                 )
+                if (insertedRowId != -1L) {
+                    runCatching {
+                        onInboundTextMessage(threadId, frame.senderName, frame.text)
+                    }
+                }
 
                 // Reply with a delivery receipt routed back to the message's AUTHOR. The sink's
                 // first argument is the transport routing key (a device id); `frame.senderId` is the
@@ -640,8 +679,6 @@ public class RealFlashChatRepository(
             }
         }
     }
-
-    private val drainMutex = Mutex()
 
     private suspend fun drainOutboxLoop() {
         while (true) {
@@ -718,6 +755,23 @@ public class RealFlashChatRepository(
     private fun backoffDelayMs(attempts: Int): Long {
         val shift = (attempts - 1).coerceIn(0, 16)
         return (OUTBOX_BASE_BACKOFF_MS shl shift).coerceAtMost(OUTBOX_MAX_BACKOFF_MS)
+    }
+
+    /**
+     * Bug 5: a peer session came up (first connect OR reconnect). Reset the durable outbox so
+     * every queued message is retryable right now (`attempts -> 0`, `nextAttemptAt -> now`) and
+     * immediately run one drain pass. Messages queued while the peer was offline therefore send
+     * the instant connectivity returns, instead of sitting out a backoff window or racing the
+     * [OUTBOX_MAX_ATTEMPTS] cap toward a permanent FAILED.
+     *
+     * Safe to call on every session-up from the network layer. Rows whose peer is still
+     * unreachable simply fail once more and re-enter backoff — no message is ever lost.
+     */
+    public fun notifyPeerSessionUp() {
+        scope.launch(ioDispatcher) {
+            outboxDao.makePendingDue(System.currentTimeMillis())
+            drainOutboxOnce()
+        }
     }
 
     override fun openAttachmentPicker() {}
@@ -927,7 +981,8 @@ public class RealFlashChatRepository(
                     ),
                 ),
             )
-            mime.startsWith("video/") -> base.copy(
+            mime.startsWith("video/") && status != FlashFileTransferStatus.AwaitingAcceptance &&
+                status != FlashFileTransferStatus.NotDownloaded -> base.copy(
                 images = listOf(
                     FlashImageAttachmentUi(
                         id = transferId,

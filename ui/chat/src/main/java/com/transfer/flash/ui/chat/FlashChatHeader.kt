@@ -58,6 +58,14 @@ fun FlashChatHeader(
     onMenuClick: () -> Unit = {},
     /** UI-028: group-only search-in-conversation action. */
     onSearchClick: () -> Unit = {},
+    /**
+     * UI-031: verification-aware encryption trust state for the status-line badge. When not
+     * [FlashEncryptionBadgeState.None], the tappable [FlashEncryptionBadge] replaces the static
+     * lock icon and [onEncryptionClick] opens the trust sheet. Defaults to None so callers that
+     * don't wire encryption (previews) keep the legacy static [state.isEncrypted] lock icon.
+     */
+    encryptionState: FlashEncryptionBadgeState = FlashEncryptionBadgeState.None,
+    onEncryptionClick: () -> Unit = {},
 ) {
     val colors = FlashTheme.colors
     val haptics = rememberFlashHaptics()
@@ -149,7 +157,11 @@ fun FlashChatHeader(
                     style = FlashTheme.typography.headingMedium,
                     color = colors.textPrimary,
                 )
-                FlashChatHeaderStatusLine(state = state)
+                FlashChatHeaderStatusLine(
+                    state = state,
+                    encryptionState = encryptionState,
+                    onEncryptionClick = onEncryptionClick,
+                )
             }
 
             FlashChatHeaderActions(
@@ -171,15 +183,19 @@ fun FlashChatHeader(
 }
 
 @Composable
-private fun FlashChatHeaderStatusLine(state: FlashChatHeaderUiState) {
+private fun FlashChatHeaderStatusLine(
+    state: FlashChatHeaderUiState,
+    encryptionState: FlashEncryptionBadgeState = FlashEncryptionBadgeState.None,
+    onEncryptionClick: () -> Unit = {},
+) {
     val colors = FlashTheme.colors
     val typography = FlashTheme.typography
     val statusKey = remember(
         state.presence, state.memberSummary, state.transport, state.isEncrypted,
-        state.memberCount, state.onlineCount, state.typingMemberNames,
+        state.memberCount, state.onlineCount, state.typingMemberNames, encryptionState,
     ) {
         "${state.presence}:${state.memberSummary}:${state.transport}:${state.isEncrypted}:" +
-            "${state.memberCount}:${state.onlineCount}:${state.typingMemberNames}"
+            "${state.memberCount}:${state.onlineCount}:${state.typingMemberNames}:$encryptionState"
     }
 
     val motion = FlashTheme.motion
@@ -240,7 +256,14 @@ private fun FlashChatHeaderStatusLine(state: FlashChatHeaderUiState) {
                         color = colors.textSecondary,
                     )
                     FlashChatHeaderTransportIcon(state.transport)
-                    if (state.isEncrypted) {
+                    // UI-031: verification-aware, tappable badge when the host wires encryption
+                    // state; otherwise fall back to the legacy static lock icon.
+                    if (encryptionState != FlashEncryptionBadgeState.None) {
+                        FlashEncryptionBadge(
+                            state = encryptionState,
+                            onClick = onEncryptionClick,
+                        )
+                    } else if (state.isEncrypted) {
                         FlashIcon(
                             icon = FlashIcons.Encryption,
                             contentDescription = "Encrypted",

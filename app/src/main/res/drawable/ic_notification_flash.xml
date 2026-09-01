@@ -1,0 +1,14 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!--
+      Notification small icon (Bug 7): the Flash bolt silhouette, solid white so the
+      system can alpha-mask + tint it in the status bar / shade. Master shape:
+      logo-claude/svg/flash-icon-pulse.svg (matches ic_launcher_monochrome).
+    -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M13.6,2.2 L4.2,13.9 L10.8,13.9 L9.4,21.8 L19.8,9.7 L13.2,9.7 Z" />
+</vector>

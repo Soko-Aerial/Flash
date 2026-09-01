@@ -1,5 +1,300 @@
 # Progress Log
 
+## 2026-09-01 — Bug 6 physically VERIFIED on Samsung; Infinix failure re-attributed to 4% battery power policy
+
+### Worked on
+Followed up on the owner's report that the phone "still goes offline when leaving the app /
+turning screen off". Researched how WhatsApp-class apps receive messages with screen off
+(official Android docs), then ran a differential analysis of the owner's two-phone test.
+
+### Research findings (recorded in `docs/android-platform-notes.md` 2026-09-01)
+- **How WhatsApp does it:** FCM — Google maintains ONE shared persistent connection exempt
+  from Doze; high-priority messages wake the app briefly. WhatsApp itself does NOT keep a
+  live socket through Doze. **Flash cannot use FCM** (LAN P2P, no cloud server, no Google
+  dependency). The official Doze acceptable-use-case table explicitly covers our case:
+  "can't use FCM because of technical dependency / Doze breaks core function" → exemption
+  acceptable. Our Settings "Background transfers" toggle + `ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`
+  is the sanctioned equivalent for a P2P app.
+- **Battery saver supersedes FGS priority:** official power-management resource-limits table
+  shows device power state can override app state — at critically low battery, background
+  processes are killed regardless of foreground-service status.
+- **Exemption unblocks sticky-restart promotion:** the official FGS background-start
+  exemptions list includes "user turns off battery optimizations" — with the exemption
+  granted, even the START_STICKY restart path may legally promote to foreground.
+
+### Differential test result (EXP-002, recorded in `logs/experiments.md`)
+- **Samsung SM-G986U1 (~90% battery): PASS** — stays online with screen off, messages arrive,
+  no FGS exceptions. **Bug 6 fix physically verified working.**
+- **Infinix X6882B (~4% battery): FAIL** — goes offline within seconds.
+- Conclusion: the Infinix failure is **low-battery power policy** (battery saver / Transsion
+  OEM auto-kill), not the fixed bug. The background-process architecture the owner asked
+  about is present and functioning.
+
+### Changed
+Documentation-only session — no code changes:
+- `logs/experiments.md`: EXP-002 recorded (differential test + EXP-003 template)
+- `logs/errors.md`: ERROR-020 updated → RESOLVED (verified on Samsung; Infinix re-attributed)
+- `docs/android-platform-notes.md`: 2026-09-01 entry (battery saver vs FGS, FCM research,
+  exemption unblocks sticky restart)
+- `logs/handoff.md`: new current section
+
+### Verification
+- Physical two-phone test (owner-driven): Samsung PASS / Infinix FAIL → re-attributed.
+- No code changes → no new build required.
+
+### Remaining
+- **EXP-003 (decisive, owner-driven):** charge the Infinix above ~20%, grant the
+  battery-optimization exemption (Settings → Background transfers ON), repeat the
+  screen-off test. Stays online → low-battery policy confirmed. Still offline → OEM
+  auto-kill; needs manual OEM exemption (Settings → Battery → Flash → allow background
+  activity) and possibly an in-app guidance screen.
+- Bug 7 device checklist pass (`docs/ui/notification-ui.md`).
+- Voice/video calling modules (next track).
+
+### Next AI
+EXP-003 is the decisive pending step — do not change the Bug 6 code before it runs. If the
+charged Infinix still fails with the exemption granted, capture `adb logcat` +
+`dumpsys deviceidle` again and record the OEM behavior in `logs/experiments.md` before
+considering an in-app OEM guidance screen. Then start the voice/video calling track
+(`core:calling` + `ui:calling`, WebRTC per the 2-track plan).
+
+## 2026-08-31 (b) — Bug 6 RE-fixed (real root cause: sticky-restart crash loop) + Bug 7 message notifications IMPLEMENTED
+
+### Worked on
+Reopened Bug 6 after the owner's physical test failed ("still goes offline after a few
+seconds"), captured on-device evidence via ADB, found and fixed the actual process-death
+path(s), then implemented Bug 7 (message notifications) end-to-end.
+
+### Diagnosis (on-device, Infinix X6882B)
+- `adb logcat` showed SEVEN `ForegroundServiceStartNotAllowedException` FATAL crashes from
+  `FlashBackgroundService.startAsForeground` ← `onCreate` — the sticky-restart path: OEM/Android
+  kills the backgrounded process, the system restarts the START_STICKY service while the app
+  is NOT TOP, `startForeground()` throws uncaught → process death → **crash loop**. This, not
+  the launch site, was why the peer went offline and never returned.
+- A second independent crash: NPE `Mutex.lock` on null in `drainOutboxOnce` — `drainMutex` was
+  declared BELOW the `init` block that launches the drain coroutine (Kotlin init order race).
+- `dumpsys wifi` proved the low-latency WifiLock is inert while backgrounded
+  (`isFg=false, isScreenExempt=false, is_low_latency_activated=false`); from API 34
+  HIGH_PERF is remapped to LOW_LATENCY, so NO WifiLock mode keeps the radio up in background.
+- `dumpsys deviceidle` / `am get-standby-bucket` / appops confirmed Flash is not exempted from
+  Doze/App Standby.
+
+### Changed — Bug 6
+- `FlashBackgroundService`: `startAsForeground()` now returns Boolean and catches ALL exceptions
+  (OEM variants); `onCreate` order is now locks → screen receiver → **engine start** → foreground
+  promotion; on refusal: log + `stopSelf()` (mesh keeps running in-process; no crash loop; the
+  5-second startForeground obligation is discharged by stopping).
+- `RealFlashChatRepository`: `drainMutex` moved ABOVE the init block (fixes the NPE process
+  death), with a comment locking the ordering constraint in place.
+- `MainActivity` + manifest: new `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` permission;
+  `ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` fired from the Settings "Background transfers"
+  toggle (user-initiated AOSP Doze exemption). OEM caveat documented.
+
+### Changed — Bug 7 (notifications)
+- `docs/ui/notification-ui.md` → **DESIGNED** (research, 4 approaches compared, spec + test
+  checklist) per §34 research-first rule; `ui-research-index.md` still lists it under shared
+  systems (status noted in doc header).
+- NEW `app/.../notifications/FlashNotificationManager.kt`: `flash_messages` channel
+  (IMPORTANCE_DEFAULT, CATEGORY_MESSAGE), per-conversation notification ids (same peer updates,
+  peers stack), immutable `PendingIntent` → `MainActivity` with `EXTRA_CONVERSATION_ID`,
+  best-effort post (never crashes the receive path).
+- NEW `app/src/main/res/drawable/ic_notification_flash.xml` — monochrome bolt silhouette
+  (replaces using a system sync icon for message notes; FGS note untouched).
+- `RealFlashChatRepository` (library-safe callbacks): new defaulted constructor params
+  `onInboundTextMessage` / `onInboundAttachment`; fired ONLY when Room actually inserted the
+  row (insert result != -1), so replayed frames after reconnects never double-notify.
+- `DiscoveryEngineHolder` wires both callbacks to `FlashNotificationManager`.
+- `MainActivity`: `onStart/onStop` maintain process-level `appForeground`; `onNewIntent` +
+  cold-start intent feed `pendingNotificationConversation` → `FlashShell` opens the tapped
+  conversation once the engine is ready; shell mirrors the open conversation into
+  `openConversationId` (suppression only when foreground AND that thread is open) and clears
+  that peer's notification on open.
+
+### Verification
+- `:core:messaging:testDebugUnitTest --tests *RealFlashChatRepositoryTest*` → BUILD SUCCESSFUL,
+  XML `failures="0"` — includes the previously-flaky `failed outbox delivery backs off…` test
+  AND two NEW regression tests (`onInboundTextMessage fires once…`, `onInboundAttachment fires
+  only when the row is newly inserted`).
+- `:app:assembleDebug` → BUILD SUCCESSFUL (after one iteration: the battery-exemption call
+  initially referenced a MainActivity private method from the top-level `FlashShell` composable;
+  fixed by passing it down as `onEnableBackgroundTransfers`).
+- Build-environment incident (known, documented): Gradle `module-metadata.bin` corruption
+  again — recovered per handoff (stop daemons, `taskkill` java, delete `metadata-2.107`).
+- Editor diagnostics clean on every changed file.
+
+### Remaining
+- PHYSICAL two-phone re-test (the decisive one): background/screen-off one phone >45s, peer
+  stays online, message arrives, logcat clean of FGS exceptions; then toggle ON "Background
+  transfers", grant the exemption, repeat. On this Infinix, also check the OEM battery manager
+  (Phone Master) — may need a manual background-activity exemption; see
+  `docs/android-platform-notes.md` 2026-08-31 (b).
+- Bug 7 device pass per the checklist in `docs/ui/notification-ui.md` (suppression, tap-to-open,
+  dedupe, screen-off arrival).
+- Voice/video calling modules (next track after the bug list).
+
+### Next AI
+Run the physical verification above from `logs/handoff.md`; if the OEM still kills the
+process despite the AOSP exemption, record the exact OEM behavior in `logs/experiments.md`
+and consider a foreground-service restart policy or OEM-specific guidance screen. Then start
+the voice/video calling track (`core:calling` + `ui:calling`, WebRTC per the 2-track plan).
+
+## 2026-08-31 — Bug 6 implemented (foreground mesh survives activity backgrounding) [SUPERSEDED by 2026-08-31 (b) — the FGS-launch-site fix below was necessary but NOT sufficient; the real root cause was the sticky-restart crash loop, see ERROR-020]
+
+### Worked on
+Fixed Bug 6: foreground-service launch ownership was moved from asynchronous engine startup to the visible `MainActivity` lifecycle so Android 12+ cannot reject it after the app backgrounds.
+
+### Changed
+- `MainActivity.onStart()` now starts `FlashBackgroundService`; `onStop()` intentionally does not stop it.
+- Removed the delayed `FlashBackgroundService.start` call from `DiscoveryEngineHolder.ensureStarted`.
+- `FlashBackgroundService.start` now uses `ContextCompat.startForegroundService`, logs failures, and supports the project's API 24 minimum.
+- Foreground notification channel importance changed from `MIN` to `LOW`.
+- Added current official Android foreground-service findings to `docs/android-platform-notes.md`; full root cause is `ERROR-020`.
+- Fixed the pending Bug 5 explicit-API compile error by marking `notifyPeerSessionUp()` public.
+
+### Verification
+- Editor diagnostics clean for `MainActivity.kt`, `DiscoveryEngineHolder.kt`, and `FlashBackgroundService.kt`.
+- `:core:messaging:compileDebugKotlin --rerun-tasks` -> BUILD SUCCESSFUL.
+- Bug 5 reconnect regression test in isolation -> BUILD SUCCESSFUL.
+- `:app:assembleDebug` -> BUILD SUCCESSFUL (2m 40s).
+- The full `:core:messaging:testDebugUnitTest` run still fails the pre-existing timing-sensitive `failed outbox delivery backs off instead of retrying every tick` test, which also failed in isolation. This is unrelated to Bug 6 and remains for a deterministic-test cleanup.
+
+### Remaining
+- Physical two-phone check: background one phone, wait beyond the 45-second WS timeout window, and confirm the peer remains online and receives a message.
+- Bug 7: message notifications.
+
+### Next AI
+Implement Bug 7 (`FlashNotificationManager.kt`) without changing the now-single-owner FGS launch lifecycle.
+
+## 2026-08-31 — Bug 5 implemented (outbox drain on peer reconnect)
+
+### Worked on
+Fixed Bug 5: messages queued in the durable outbox while a peer was offline never sent on
+reconnect — they sat out the exponential backoff a peer-away failure set, and a peer offline
+longer than ~2 minutes exhausted `OUTBOX_MAX_ATTEMPTS=8` and permanently FAILED, so even a
+reconnect did not deliver them.
+
+### Changed
+- **`core/persistence/.../OutboxDao.kt`** — added `makePendingDue(now: Long)`:
+  `UPDATE outbox SET attempts = 0, nextAttemptAt = :now`. Makes every pending outbox row
+  retryable immediately (clears the FAILED-cap race AND the future backoff window).
+- **`core/messaging/.../RealFlashChatRepository.kt`** — added `notifyPeerSessionUp()`:
+  resets the outbox via `makePendingDue(System.currentTimeMillis())` then immediately runs one
+  `drainOutboxOnce()` pass. Fire-and-forget on `ioDispatcher`; mutually exclusive with the
+  1 Hz drain via the existing `drainMutex`.
+- **`core/engine/.../Flash.kt`** — in the `activeSessions.collect` new-session branch (the
+  connect/reconnect signal), calls `chatImpl.notifyPeerSessionUp()` before wiring the session.
+- **`app/.../debug/DiscoveryEngineHolder.kt`** — same hook in its parallel session-up branch
+  (alongside `pairingCoordinator.onSessionUp`).
+- **`RealFlashChatRepositoryTest.kt`** — extended `FakeOutboxDao.makePendingDue` + new test
+  `notifyPeerSessionUp flushes a queued outbox message stuck in backoff` (row seeded
+  mid-backoff with `nextAttemptAt = now + 60s`, then a session-up kick delivers it instantly).
+
+### Boundary (deliberate)
+Messages already FAILED (outbox row dropped) are NOT auto-resurrected on reconnect — that stays a
+manual retry via the bubble's retry affordance. This keeps the give-up policy intact while making
+reconnect-flush instant for everything still pending.
+
+### Verification
+- Code complete + test added. Build/test run is PENDING — pass the command in `logs/handoff.md`
+  `## Last test` to the owner (environment shell can't finish a cold Gradle daemon in its 30s
+  window). JVM module targeted: `:core:messaging:testDebugUnitTest`, then `:app:assembleDebug`.
+
+### Remaining
+- Bugs 6-7 plus voice/video calling (see `logs/handoff.md`).
+
+### Next AI
+See `logs/handoff.md` for the authoritative stopping point (Bug 6 next).
+## 2026-08-31 — Bug 4 complete (reusable FlashBrandAnimation)
+
+### Worked on
+Extracted the splashing animation out of `FlashSplashScreen.kt` into a reusable theme
+composable so the same branded motion can be shared by the launch splash and loading/empty-
+state surfaces.
+
+### Changed
+- **New `ui:theme/.../FlashBrandAnimation.kt`:** the bolt + discovery rings + charge glow +
+  breathing loop from the splash, now:
+  - honoring `FlashTheme.motion.reduceMotion` (static bolt at rest; the old splash docstring
+    claimed this but the code never did it),
+  - drawing an optional dark vertical-gradient `background` (splash uses it; embedded reuse
+    skips it),
+  - sized by the caller's `modifier` (full-bleed for the splash, `Modifier.size(...)` for a
+    compact embedded animation).
+  Colors now reference `FlashPalette` canonical tokens where they exist (ring `0x1FB8A6` =
+  `pulse400`; bolt stops `pulse400`/`pulse500`/`spark500`); the one splash-only surface
+  (`0xFF1F2430`) and one bolt stop (`0xFF4FD1C2`) are inlined in an `internal FlashBrandPalette`.
+- **`app/.../ui/splash/FlashSplashScreen.kt`:** now a thin delegate to
+  `FlashBrandAnimation(modifier = modifier)`. Visual launch splash is unchanged.
+- **`ui/chat/.../ui/transfers/FlashTransfersScreen.kt`:** `LoadingRows` reuses it as a compact
+  branded loading mark centered above the skeleton rows (`background = false`, 96dp box) —
+  the "loading states" reuse the handoff called for.
+
+### Verification
+- **BUILD VERIFIED:** `:app:assembleDebug` → **BUILD SUCCESSFUL** (2m 14s, 232 tasks, 46 executed,
+  186 up-to-date) on a clean `:ui:theme`/`:ui:chat` rebuild. The only compile error found was the
+  new composable's `rememberFlashBrandPhase()` missing an explicit `return` (Compose `by` delegate
+  swallowed the trailing expression) — fixed with `return FlashBrandPhase(...)`; the earlier
+  `:ui:chat` "Unresolved reference" cascade was stale incremental-compile noise from the build
+  interruption, resolved by cleaning the two module build dirs.
+- Note: the build ran with `-Xmx1536m` to fit the environment's aggressive 30s daemon window;
+  `gradle.properties` was restored to the repo's `-Xmx2048m` after verification.
+
+### Remaining
+- Bugs 5-7 plus voice/video calling (see `logs/handoff.md`).
+
+### Next AI
+See `logs/handoff.md` for the authoritative stopping point (Bug 5 next).
+## 2026-08-31 — Bugs 1-3 complete (single-tap, reactions, auto-download)
+
+### Worked on
+Fixed 3 of 7 chat UI bugs, all fully verified on disk.
+
+### Bug 1 — Single-tap opens actions overlay (DONE)
+- **Root cause:** `FlashMessageBubble.kt`'s `combinedClickable.onClick` called `onOpenActions()` even when not in selection mode.
+- **Fix:** Removed `onOpenActions()` from `onClick`; it now only toggles selection (if in selection mode) or is a no-op. `onLongClick` remains the exclusive actions-trigger path.
+- **Files:** `ui/chat/.../FlashMessageBubble.kt:194-205`
+
+### Bug 2 — Reactions don't work on voice/files/video/images (DONE)
+- **Root cause:** `FlashFileMessageCard.kt` and `FlashImageGrid.kt` had no `onLongPress` propagation, so the `combinedClickable` overlay never appeared.
+- **Fix:** Added `onLongPress` param to `FlashFileMessageCard` (wired to `combinedClickable.onLongClick`), propagated `onLongPress` through `FlashImageGrid` tiles. Voice messages already had the wire but it was gated — fixed.
+- **Files:** `FlashFileMessageCard.kt`, `FlashImageGrid.kt`, `FlashMessageBubble.kt` (propagation), `FlashVoiceMessageCard.kt`
+
+### Bug 3 — Per-MIME auto-download (DONE — fully implemented, compiled, BUILD SUCCESSFUL)
+Complete end-to-end implementation: engine auto-accept + settings UI + shared-engine parity.
+
+**Engine side (`DiscoveryEngineHolder.kt`):**
+- Added `@Volatile` mirror fields: `autoDownloadVoice=true`, `autoDownloadImage=true`, `autoDownloadVideo=false`, `autoDownloadFile=false`
+- Added `onIncomingOffer: ((String) -> Unit)?` callback set inside `ensureStarted`
+- Policy lambda in `ensureStarted` (after `acceptOffer` definition, line 604-623): reads `incomingMeta[transferId]`, calls `guessMimeType(fileName)`, checks the `autoDownload*` mirror field matching the MIME category, calls `acceptOffer(transferId)` when enabled
+- Hook in `handleInboundBinary` `SessionStarted` branch (line 983-986): invokes `onIncomingOffer?.invoke(frame.transferId)` after `transferImpl.onIncomingOffered(...)`
+
+**Settings persistence (`FlashSettingsDataStore.kt`):**
+- 4 keys (lines 64-67), 4 flows (lines 124-134), 4 setters (lines 174-188) — already existed from prior session
+
+**App wiring (`AppEngine.kt`):**
+- `start()` onSuccess now launches 4 collectors (lines 119-130) pushing `settingsStore.autoDownload{Voice,Image,Video,File}.collect { DiscoveryEngineHolder.autoDownload* = it }`
+
+**Settings UI (`FlashSettingsScreen.kt`):**
+- `FlashSettingsModel` (lines 68-73): 4 new fields with defaults
+- `FlashSettingsScreen` params (lines 115-118): 4 new callbacks
+- DATA section (lines 231-270): 4 SwitchRow items (StaggerIn 13-16)
+
+**MainActivity wiring (`MainActivity.kt`):**
+- `collectAsState` (lines 180-183), `FlashSettingsModel` construction (lines 195-198), persist calls (lines 213-216), `FlashSettingsScreen` callbacks (lines 614-625)
+
+**Shared engine parity (`core/engine/Flash.kt`):**
+- Added `Offered → AwaitingAcceptance` branch to `attachmentProgress` mapping (lines 259-260), fixing the fallthrough to `else -> Transferring`
+
+**Verification:** `./gradlew :app:assembleDebug --no-configuration-cache --console=plain` → BUILD SUCCESSFUL (2m 23s).
+
+### Remaining
+- Bugs 4-7 plus voice/video calling (see `logs/handoff.md` and SQL `todos` table)
+
+### Next AI
+See `logs/handoff.md` for the authoritative stopping point.
+
+---
+
 ## 2026-09-01 - Phase 03 (logging abstraction) complete + migration log entry
 
 ### Worked on

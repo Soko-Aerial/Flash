@@ -14,6 +14,7 @@ import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -30,8 +31,9 @@ import kotlinx.coroutines.launch
  * while Flash is screened; actual background RECEIVING of messages/files is
  * deferred until C4 (always-on listener) + C5/C6 (receive pipeline) land.
  *
- * Started only from user-visible UI actions (Dev Console), which satisfies
- * background-start restrictions.
+ * Started from [com.transfer.flash.MainActivity.onStart] while the app is user-visible, which
+ * satisfies Android 12+ foreground-service start restrictions. It deliberately remains running
+ * after the activity stops so discovery and established mesh sessions survive in the background.
  */
 class FlashBackgroundService : Service() {
 
@@ -71,7 +73,16 @@ class FlashBackgroundService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        startAsForeground()
+        // Order matters (ERROR-020): locks + engine FIRST, foreground promotion LAST.
+        //
+        // When the system restarts this START_STICKY service after killing the process,
+        // the app is backgrounded and startForeground() throws
+        // ForegroundServiceStartNotAllowedException on Android 12+. The old code called
+        // startAsForeground() first with no catch, so every sticky restart was a FATAL
+        // crash that killed the whole mesh — the visible "goes offline after a few
+        // seconds" bug. Now the failure path is caught below: the engine is already up,
+        // the process stays alive, and we stop the service instance cleanly instead of
+        // crashing (which also stops the crash-restart loop).
         acquireLocks()
         registerReceiver(
             screenReceiver,
@@ -83,6 +94,10 @@ class FlashBackgroundService : Service() {
         scope.launch {
             runCatching { DiscoveryEngineHolder.ensureStarted(applicationContext) }
                 .onFailure { Log.w(TAG, "engine start failed in background service", it) }
+        }
+        if (!startAsForeground()) {
+            Log.w(TAG, "Foreground promotion refused (background start restriction) — stopping service instance; engine keeps running in-process")
+            stopSelf()
         }
     }
 
@@ -134,13 +149,19 @@ class FlashBackgroundService : Service() {
         wifiLock = null
     }
 
-    private fun startAsForeground() {
+    /**
+     * Promotes this service to foreground. Returns false (never throws) when Android
+     * 12+ rejects the promotion because the app is backgrounded — typically a sticky
+     * restart after the system/OEM killed the process. See [onCreate] for why throwing
+     * here was the Bug 6 killer.
+     */
+    private fun startAsForeground(): Boolean {
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(
             NotificationChannel(
                 CHANNEL_ID,
                 "Flash nearby presence",
-                NotificationManager.IMPORTANCE_MIN,
+                NotificationManager.IMPORTANCE_LOW,
             ),
         )
         val notification: Notification = Notification.Builder(this, CHANNEL_ID)
@@ -149,10 +170,19 @@ class FlashBackgroundService : Service() {
             .setSmallIcon(android.R.drawable.stat_notify_sync_noanim)
             .setOngoing(true)
             .build()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+            true
+        } catch (error: Exception) {
+            // ForegroundServiceStartNotAllowedException (API 31+) is the expected one;
+            // catch broadly so no OEM variant (SecurityException, IllegalStateException,
+            // RuntimeException subclasses from Transsion's framework) can crash the app.
+            Log.e(TAG, "startForeground refused", error)
+            false
         }
     }
 
@@ -164,8 +194,13 @@ class FlashBackgroundService : Service() {
         private const val WIFI_LOCK_TAG = "flash:ws-mesh-wifi"
 
         fun start(context: Context) {
-            val intent = Intent(context, FlashBackgroundService::class.java)
-            context.startForegroundService(intent)
+            val intent = Intent(context.applicationContext, FlashBackgroundService::class.java)
+            runCatching {
+                // ContextCompat falls back to startService below API 26 (the project supports API 24+).
+                ContextCompat.startForegroundService(context.applicationContext, intent)
+            }.onFailure { error ->
+                Log.e(TAG, "Unable to start background mesh foreground service", error)
+            }
         }
 
         fun stop(context: Context) {

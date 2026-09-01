@@ -72,6 +72,8 @@ fun FlashMessageBubble(
     onJumpToMessage: (String) -> Unit = {},
     onImageClick: (index: Int, image: com.transfer.flash.core.messaging.model.FlashImageAttachmentUi) -> Unit = { _, _ -> },
     onFileClick: (com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit = {},
+    onAcceptOffer: (com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit = {},
+    onDeclineOffer: (com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit = {},
     isHighlighted: Boolean = false,
     /** UI-023: when non-blank, matching substrings inside the message body are highlighted. */
     searchQuery: String? = null,
@@ -107,6 +109,8 @@ fun FlashMessageBubble(
                     onJumpToMessage = onJumpToMessage,
                     onImageClick = onImageClick,
                     onFileClick = onFileClick,
+                    onAcceptOffer = onAcceptOffer,
+                    onDeclineOffer = onDeclineOffer,
                     isHighlighted = isHighlighted,
                     deliveryStatus = deliveryStatus,
                     searchQuery = searchQuery,
@@ -137,6 +141,8 @@ private fun FlashBubbleSurface(
     onJumpToMessage: (String) -> Unit,
     onImageClick: (index: Int, image: com.transfer.flash.core.messaging.model.FlashImageAttachmentUi) -> Unit,
     onFileClick: (com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit,
+    onAcceptOffer: (com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit,
+    onDeclineOffer: (com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit,
     isHighlighted: Boolean,
     deliveryStatus: (@Composable () -> Unit)?,
     searchQuery: String?,
@@ -186,10 +192,11 @@ private fun FlashBubbleSurface(
                 interactionSource = interactionSource,
                 indication = null,
                 onClick = {
+                    // Bug 1 fix: a single tap must NOT open the actions overlay. It only
+                    // toggles selection while selection mode is active; otherwise it is a no-op
+                    // (the overlay is opened exclusively by onLongClick below).
                     if (inSelectionMode) {
                         onSelectToggle()
-                    } else {
-                        onOpenActions()
                     }
                 },
                 onLongClick = {
@@ -230,6 +237,10 @@ private fun FlashBubbleSurface(
                     images = message.images,
                     isMine = message.isMine,
                     onImageClick = onImageClick,
+                    onLongPress = {
+                        haptics(FlashHaptic.Confirm)
+                        onOpenActions()
+                    },
                 )
                 Spacer(modifier = Modifier.height(FlashSpacing.space4))
             } else if (message.hasImageGrid) {
@@ -243,6 +254,12 @@ private fun FlashBubbleSurface(
                         isParentOutgoing = message.isMine,
                         onCardClick = { onFileClick(file) },
                         onActionClick = { onFileClick(file) },
+                        onLongPress = {
+                            haptics(FlashHaptic.Confirm)
+                            onOpenActions()
+                        },
+                        onAccept = { onAcceptOffer(file) },
+                        onDecline = { onDeclineOffer(file) },
                     )
                     Spacer(modifier = Modifier.height(FlashSpacing.space4))
                 }

@@ -113,6 +113,21 @@ class AppEngine @Inject constructor(
                 val result = runCatching { DiscoveryEngineHolder.ensureStarted(context) }
                 result
                     .onSuccess {
+                        // Bug 3: mirror auto-download settings into the holder so the
+                        // auto-accept policy in handleInboundBinary can read them without
+                        // a reference to the DataStore.
+                        scope.launch {
+                            settingsStore.autoDownloadVoice.collect { DiscoveryEngineHolder.autoDownloadVoice = it }
+                        }
+                        scope.launch {
+                            settingsStore.autoDownloadImage.collect { DiscoveryEngineHolder.autoDownloadImage = it }
+                        }
+                        scope.launch {
+                            settingsStore.autoDownloadVideo.collect { DiscoveryEngineHolder.autoDownloadVideo = it }
+                        }
+                        scope.launch {
+                            settingsStore.autoDownloadFile.collect { DiscoveryEngineHolder.autoDownloadFile = it }
+                        }
                         _startError.value = null
                         _ready.value = true
                     }

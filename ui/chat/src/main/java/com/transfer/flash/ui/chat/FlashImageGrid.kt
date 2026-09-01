@@ -3,9 +3,11 @@ package com.transfer.flash.ui.chat
 import android.graphics.BitmapFactory
 import android.net.Uri
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -66,6 +68,7 @@ fun FlashImageGrid(
     modifier: Modifier = Modifier,
     isMine: Boolean = false,
     onImageClick: (index: Int, image: FlashImageAttachmentUi) -> Unit = { _, _ -> },
+    onLongPress: () -> Unit = {},
 ) {
     if (images.isEmpty()) return
 
@@ -83,6 +86,7 @@ fun FlashImageGrid(
                     image = images[0],
                     tileRadius = tileRadius,
                     onClick = { onImageClick(0, images[0]) },
+                    onLongPress = onLongPress,
                 )
             }
             2 -> {
@@ -91,6 +95,7 @@ fun FlashImageGrid(
                     gutter = gutter,
                     tileRadius = tileRadius,
                     onImageClick = onImageClick,
+                    onLongPress = onLongPress,
                 )
             }
             3 -> {
@@ -99,6 +104,7 @@ fun FlashImageGrid(
                     gutter = gutter,
                     tileRadius = tileRadius,
                     onImageClick = onImageClick,
+                    onLongPress = onLongPress,
                 )
             }
             4 -> {
@@ -107,6 +113,7 @@ fun FlashImageGrid(
                     gutter = gutter,
                     tileRadius = tileRadius,
                     onImageClick = onImageClick,
+                    onLongPress = onLongPress,
                 )
             }
             else -> {
@@ -115,6 +122,7 @@ fun FlashImageGrid(
                     gutter = gutter,
                     tileRadius = tileRadius,
                     onImageClick = onImageClick,
+                    onLongPress = onLongPress,
                 )
             }
         }
@@ -126,6 +134,7 @@ private fun FlashSingleImageTile(
     image: FlashImageAttachmentUi,
     tileRadius: RoundedCornerShape,
     onClick: () -> Unit,
+    onLongPress: () -> Unit = {},
 ) {
     val ratio = remember(image.width, image.height) {
         if (image.width > 0 && image.height > 0) {
@@ -145,6 +154,7 @@ private fun FlashSingleImageTile(
             image = image,
             shape = tileRadius,
             onClick = onClick,
+            onLongPress = onLongPress,
             modifier = Modifier.fillMaxSize(),
         )
     }
@@ -156,6 +166,7 @@ private fun FlashTwoImageGrid(
     gutter: Dp,
     tileRadius: RoundedCornerShape,
     onImageClick: (Int, FlashImageAttachmentUi) -> Unit,
+    onLongPress: () -> Unit = {},
 ) {
     Row(
         horizontalArrangement = Arrangement.spacedBy(gutter),
@@ -167,6 +178,7 @@ private fun FlashTwoImageGrid(
             image = images[0],
             shape = tileRadius,
             onClick = { onImageClick(0, images[0]) },
+            onLongPress = onLongPress,
             modifier = Modifier
                 .weight(1f)
                 .fillMaxHeight(),
@@ -175,6 +187,7 @@ private fun FlashTwoImageGrid(
             image = images[1],
             shape = tileRadius,
             onClick = { onImageClick(1, images[1]) },
+            onLongPress = onLongPress,
             modifier = Modifier
                 .weight(1f)
                 .fillMaxHeight(),
@@ -188,6 +201,7 @@ private fun FlashThreeImageGrid(
     gutter: Dp,
     tileRadius: RoundedCornerShape,
     onImageClick: (Int, FlashImageAttachmentUi) -> Unit,
+    onLongPress: () -> Unit = {},
 ) {
     Row(
         horizontalArrangement = Arrangement.spacedBy(gutter),
@@ -199,6 +213,7 @@ private fun FlashThreeImageGrid(
             image = images[0],
             shape = tileRadius,
             onClick = { onImageClick(0, images[0]) },
+            onLongPress = onLongPress,
             modifier = Modifier
                 .weight(1.2f)
                 .fillMaxHeight(),
@@ -213,6 +228,7 @@ private fun FlashThreeImageGrid(
                 image = images[1],
                 shape = tileRadius,
                 onClick = { onImageClick(1, images[1]) },
+                onLongPress = onLongPress,
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f),
@@ -221,6 +237,7 @@ private fun FlashThreeImageGrid(
                 image = images[2],
                 shape = tileRadius,
                 onClick = { onImageClick(2, images[2]) },
+                onLongPress = onLongPress,
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f),
@@ -235,6 +252,7 @@ private fun FlashFourImageGrid(
     gutter: Dp,
     tileRadius: RoundedCornerShape,
     onImageClick: (Int, FlashImageAttachmentUi) -> Unit,
+    onLongPress: () -> Unit = {},
 ) {
     Column(
         verticalArrangement = Arrangement.spacedBy(gutter),
@@ -252,6 +270,7 @@ private fun FlashFourImageGrid(
                 image = images[0],
                 shape = tileRadius,
                 onClick = { onImageClick(0, images[0]) },
+                onLongPress = onLongPress,
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxHeight(),
@@ -260,6 +279,7 @@ private fun FlashFourImageGrid(
                 image = images[1],
                 shape = tileRadius,
                 onClick = { onImageClick(1, images[1]) },
+                onLongPress = onLongPress,
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxHeight(),
@@ -275,6 +295,7 @@ private fun FlashFourImageGrid(
                 image = images[2],
                 shape = tileRadius,
                 onClick = { onImageClick(2, images[2]) },
+                onLongPress = onLongPress,
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxHeight(),
@@ -283,6 +304,7 @@ private fun FlashFourImageGrid(
                 image = images[3],
                 shape = tileRadius,
                 onClick = { onImageClick(3, images[3]) },
+                onLongPress = onLongPress,
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxHeight(),
@@ -291,12 +313,14 @@ private fun FlashFourImageGrid(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun FlashMultiImageGrid(
     images: List<FlashImageAttachmentUi>,
     gutter: Dp,
     tileRadius: RoundedCornerShape,
     onImageClick: (Int, FlashImageAttachmentUi) -> Unit,
+    onLongPress: () -> Unit = {},
 ) {
     val overflowCount = images.size - 3
 
@@ -316,6 +340,7 @@ private fun FlashMultiImageGrid(
                 image = images[0],
                 shape = tileRadius,
                 onClick = { onImageClick(0, images[0]) },
+                onLongPress = onLongPress,
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxHeight(),
@@ -324,6 +349,7 @@ private fun FlashMultiImageGrid(
                 image = images[1],
                 shape = tileRadius,
                 onClick = { onImageClick(1, images[1]) },
+                onLongPress = onLongPress,
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxHeight(),
@@ -339,6 +365,7 @@ private fun FlashMultiImageGrid(
                 image = images[2],
                 shape = tileRadius,
                 onClick = { onImageClick(2, images[2]) },
+                onLongPress = onLongPress,
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxHeight(),
@@ -352,6 +379,7 @@ private fun FlashMultiImageGrid(
                     image = images[3],
                     shape = tileRadius,
                     onClick = { onImageClick(3, images[3]) },
+                    onLongPress = onLongPress,
                     modifier = Modifier.fillMaxSize(),
                 )
                 Box(
@@ -360,7 +388,10 @@ private fun FlashMultiImageGrid(
                         .fillMaxSize()
                         .clip(tileRadius)
                         .background(Color(0x99000000))
-                        .clickable { onImageClick(3, images[3]) },
+                        .combinedClickable(
+                            onClick = { onImageClick(3, images[3]) },
+                            onLongClick = onLongPress,
+                        ),
                 ) {
                     Text(
                         text = "+$overflowCount",
@@ -377,12 +408,14 @@ private fun FlashMultiImageGrid(
 /**
  * Individual image tile rendering bitmap image or stylized gradient placeholder with tactile press.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun FlashImageTile(
     image: FlashImageAttachmentUi,
     modifier: Modifier = Modifier,
     shape: RoundedCornerShape = RoundedCornerShape(4.dp),
     onClick: () -> Unit = {},
+    onLongPress: () -> Unit = {},
 ) {
     val context = LocalContext.current
     var isPressed by remember { mutableStateOf(false) }
@@ -440,6 +473,7 @@ fun FlashImageTile(
                         isPressed = false
                     },
                     onTap = { onClick() },
+                    onLongPress = { onLongPress() },
                 )
             },
     ) {

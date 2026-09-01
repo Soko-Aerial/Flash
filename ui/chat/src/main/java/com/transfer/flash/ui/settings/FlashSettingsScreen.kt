@@ -65,6 +65,12 @@ data class FlashSettingsModel(
     val dynamicAccent: Boolean = false,
     val hapticsEnabled: Boolean = true,
     val backgroundTransfers: Boolean = false,
+    // Bug 3: per-MIME auto-download of inbound offers. Defaults: voice + images auto-download
+    // (true); videos + files ask before downloading (false).
+    val autoDownloadVoice: Boolean = true,
+    val autoDownloadImage: Boolean = true,
+    val autoDownloadVideo: Boolean = false,
+    val autoDownloadFile: Boolean = false,
     val trustedPeerCount: Int = 0,
     val saveLocationLabel: String? = null,
     val appVersion: String = "dev",
@@ -106,6 +112,10 @@ fun FlashSettingsScreen(
     onDynamicAccentChanged: (Boolean) -> Unit,
     onHapticsChanged: (Boolean) -> Unit,
     onBackgroundTransfersChanged: (Boolean) -> Unit,
+    onAutoDownloadVoiceChanged: (Boolean) -> Unit = {},
+    onAutoDownloadImageChanged: (Boolean) -> Unit = {},
+    onAutoDownloadVideoChanged: (Boolean) -> Unit = {},
+    onAutoDownloadFileChanged: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier,
     listState: LazyListState = rememberLazyListState(),
     /** Space the hanging shell bar occupies; content scrolls under it (UI-046). */
@@ -218,9 +228,49 @@ fun FlashSettingsScreen(
                 )
             }
         }
+        item(key = "auto-download-voice") {
+            StaggerIn(13) {
+                SwitchRow(
+                    title = "Auto-download voice",
+                    subtitle = "Accept incoming voice messages automatically",
+                    checked = model.autoDownloadVoice,
+                    onCheckedChange = onAutoDownloadVoiceChanged,
+                )
+            }
+        }
+        item(key = "auto-download-image") {
+            StaggerIn(14) {
+                SwitchRow(
+                    title = "Auto-download images",
+                    subtitle = "Accept incoming images automatically",
+                    checked = model.autoDownloadImage,
+                    onCheckedChange = onAutoDownloadImageChanged,
+                )
+            }
+        }
+        item(key = "auto-download-video") {
+            StaggerIn(15) {
+                SwitchRow(
+                    title = "Auto-download videos",
+                    subtitle = "Accept incoming videos automatically",
+                    checked = model.autoDownloadVideo,
+                    onCheckedChange = onAutoDownloadVideoChanged,
+                )
+            }
+        }
+        item(key = "auto-download-file") {
+            StaggerIn(16) {
+                SwitchRow(
+                    title = "Auto-download files",
+                    subtitle = "Accept incoming files automatically",
+                    checked = model.autoDownloadFile,
+                    onCheckedChange = onAutoDownloadFileChanged,
+                )
+            }
+        }
 
-        item(key = "about-label") { StaggerIn(13) { SectionLabel("ABOUT") } }
-        item(key = "about") { StaggerIn(14) { AboutCard(model) } }
+        item(key = "about-label") { StaggerIn(17) { SectionLabel("ABOUT") } }
+        item(key = "about") { StaggerIn(18) { AboutCard(model) } }
     }
 }
 

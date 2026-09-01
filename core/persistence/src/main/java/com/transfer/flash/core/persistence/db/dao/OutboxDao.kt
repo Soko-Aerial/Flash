@@ -25,6 +25,17 @@ public interface OutboxDao {
     )
     public suspend fun dueForDelivery(now: Long, limit: Int): List<OutboxEntity>
 
+    /**
+     * Reconnect reset (Bug 5): make every pending outbox row retryable immediately —
+     * `attempts -> 0`, `nextAttemptAt -> now` — so the drain flushes queued messages the
+     * instant a peer session returns, instead of waiting out the exponential backoff a
+     * peer-away failure set, or racing the [attempts] cap toward a permanent FAILED.
+     * Safe to call on every session-up: rows whose peer is still unreachable simply fail
+     * again on the next drain pass and re-enter backoff.
+     */
+    @Query("UPDATE outbox SET attempts = 0, nextAttemptAt = :now")
+    public suspend fun makePendingDue(now: Long)
+
     /** Single-statement atomic increment; safe under concurrent claimers. */
     @Query("UPDATE outbox SET attempts = attempts + 1 WHERE localId = :localId")
     public suspend fun incrementAttempts(localId: String)

@@ -223,7 +223,10 @@ Recommended: `expect suspend fun ensurePermission(...)` returning granted on des
 unconditionally, since desktop has no runtime permission model. Do **not** pull in a
 permissions library for one call site.
 
-**ANSWER:** _pending_
+**ANSWER:** Recommendation adopted (chosen 2026-08-31) — make all three platform shims **shared**:
+- **a)** Replace `Toast` (12 call sites in `FlashConversationScreen.kt`) with Material 3 `SnackbarHost` + `SnackbarHostState` (already available in common). Accepted: Android behaviour change from toast overlay to snackbar (bottom bar, dismissible, queueable).
+- **b)** Adopt **FileKit** (`vinceglb/FileKit`) for file picking/saving — cross-platform shared library using native pickers. Android keeps the system document picker; no UX change there.
+- **c)** Add `expect suspend fun ensurePermission(...)` — Android `actual` uses existing `RequestPermission` + `ContextCompat` internally; desktop returns granted unconditionally. No permissions library.
 
 ---
 

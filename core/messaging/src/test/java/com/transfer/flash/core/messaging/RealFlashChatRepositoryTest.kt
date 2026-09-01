@@ -187,6 +187,12 @@ class RealFlashChatRepositoryTest {
             }
         }
 
+        override suspend fun makePendingDue(now: Long) {
+            queue.keys.forEach { localId ->
+                queue[localId]?.let { queue[localId] = it.copy(attempts = 0, nextAttemptAt = now) }
+            }
+        }
+
         override suspend fun delete(localId: String) {
             queue.remove(localId)
             countFlow.value = queue.size
@@ -394,6 +400,112 @@ class RealFlashChatRepositoryTest {
     }
 
     @Test
+    fun `onInboundTextMessage fires once per new row and stays silent for replayed frames`() =
+        runBlocking {
+            val messageDao = FakeMessageDao()
+            val conversationDao = FakeConversationDao()
+            val outboxDao = FakeOutboxDao()
+            val receiptDao = FakeReceiptDao()
+            val draftDao = FakeDraftDao()
+            val recentSearchDao = FakeRecentSearchDao()
+            val reactionDao = FakeReactionDao()
+
+            val notified = java.util.Collections.synchronizedList(mutableListOf<Triple<String, String?, String>>())
+
+            val repository = RealFlashChatRepository(
+                localDeviceId = "my-device-id",
+                localDisplayName = "Kali",
+                messageDao = messageDao,
+                conversationDao = conversationDao,
+                outboxDao = outboxDao,
+                receiptDao = receiptDao,
+                draftDao = draftDao,
+                recentSearchDao = recentSearchDao,
+                reactionDao = reactionDao,
+                transportSink = null,
+                ioDispatcher = testDispatcher,
+                onInboundTextMessage = { conversationId, senderName, text ->
+                    notified.add(Triple(conversationId, senderName, text))
+                },
+            )
+
+            val frame = MessageWireFrame.TextMessage(
+                localId = "notify-1",
+                conversationId = "my-device-id",
+                senderId = "peer-device-id",
+                senderName = "Alex Chen",
+                text = "Ping while backgrounded",
+                sentAt = System.currentTimeMillis(),
+            )
+
+            // First sighting: row inserted → host notified (Bug 7 wiring).
+            repository.onInboundWireFrame(frame)
+            kotlinx.coroutines.delay(50)
+            assertEquals(1, notified.size)
+            assertEquals(Triple("peer-device-id", "Alex Chen", "Ping while backgrounded"), notified.first())
+
+            // Replay (peer reconnect redelivers the same localId): Room IGNORE-conflicts,
+            // so the notification callback must NOT fire again.
+            repository.onInboundWireFrame(frame)
+            repository.onInboundWireFrame(frame)
+            kotlinx.coroutines.delay(50)
+            assertEquals(1, notified.size)
+        }
+
+    @Test
+    fun `onInboundAttachment fires only when the attachment row is newly inserted`() =
+        runBlocking {
+            val messageDao = FakeMessageDao()
+            val conversationDao = FakeConversationDao()
+            val outboxDao = FakeOutboxDao()
+            val receiptDao = FakeReceiptDao()
+            val draftDao = FakeDraftDao()
+            val recentSearchDao = FakeRecentSearchDao()
+            val reactionDao = FakeReactionDao()
+
+            val notified = java.util.Collections.synchronizedList(mutableListOf<Pair<String, String>>())
+
+            val repository = RealFlashChatRepository(
+                localDeviceId = "my-device-id",
+                localDisplayName = "Kali",
+                messageDao = messageDao,
+                conversationDao = conversationDao,
+                outboxDao = outboxDao,
+                receiptDao = receiptDao,
+                draftDao = draftDao,
+                recentSearchDao = recentSearchDao,
+                reactionDao = reactionDao,
+                transportSink = null,
+                ioDispatcher = testDispatcher,
+                onInboundAttachment = { conversationId, _, fileName, _ ->
+                    notified.add(conversationId to fileName)
+                },
+            )
+
+            // First accept: row minted → notified.
+            repository.onInboundAttachment(
+                peerDeviceId = "peer-device-id",
+                transferId = "transfer-1",
+                fileName = "photo.jpg",
+                mimeType = "image/jpeg",
+                sizeBytes = 1024,
+            )
+            kotlinx.coroutines.delay(100)
+            assertEquals(listOf("peer-device-id" to "photo.jpg"), notified)
+
+            // Replay of the same transferId (existsAttachment guard): silent.
+            repository.onInboundAttachment(
+                peerDeviceId = "peer-device-id",
+                transferId = "transfer-1",
+                fileName = "photo.jpg",
+                mimeType = "image/jpeg",
+                sizeBytes = 1024,
+            )
+            kotlinx.coroutines.delay(100)
+            assertEquals(1, notified.size)
+        }
+
+    @Test
     fun `outbox drain preserves the composing conversationId after the active conversation changes`() =
         runBlocking {
             val messageDao = FakeMessageDao()
@@ -524,6 +636,53 @@ class RealFlashChatRepositoryTest {
         assertTrue("next attempt should be scheduled ahead", row.nextAttemptAt > now)
         // Not yet at the cap, so the message is still pending (not Failed).
         assertEquals("PENDING", messageDao.messages["m-bo"]!!.status)
+    }
+
+    @Test
+    fun `notifyPeerSessionUp flushes a queued outbox message stuck in backoff`() = runBlocking {
+        val messageDao = FakeMessageDao()
+        val outboxDao = FakeOutboxDao()
+        val sentFrames = mutableListOf<MessageWireFrame>()
+
+        val repository = RealFlashChatRepository(
+            localDeviceId = "my-device-id",
+            localDisplayName = "Kali",
+            messageDao = messageDao,
+            conversationDao = FakeConversationDao(),
+            outboxDao = outboxDao,
+            receiptDao = FakeReceiptDao(),
+            draftDao = FakeDraftDao(),
+            recentSearchDao = FakeRecentSearchDao(),
+            reactionDao = FakeReactionDao(),
+            // Sink is live again (peer reconnected): delivery now succeeds.
+            transportSink = MessageTransportSink { _, frame ->
+                sentFrames.add(frame)
+                true
+            },
+            ioDispatcher = testDispatcher,
+        )
+        val now = System.currentTimeMillis()
+        messageDao.insert(msg("m-retry", "conv-A", "queued while offline").copy(status = "PENDING"))
+        // Mid-backoff state: attempts accumulated, next attempt far in the future — the 1 Hz drain
+        // would skip this row (not due) and the FAILED cap was in reach.
+        outboxDao.enqueue(
+            OutboxEntity(
+                localId = "m-retry",
+                attempts = 3,
+                nextAttemptAt = now + 60_000L,
+                payloadJson = "queued while offline",
+                createdAt = now,
+            ),
+        )
+
+        // A peer session comes up: kick the outbox.
+        repository.notifyPeerSessionUp()
+        kotlinx.coroutines.delay(150)
+
+        // The row was reset to due + immediately drained and delivered.
+        assertEquals(0, outboxDao.queue.size)
+        assertEquals("SENT", messageDao.messages["m-retry"]!!.status)
+        assertEquals(1, sentFrames.size)
     }
 
     @Test

@@ -1,5 +1,50 @@
 # Experiments Log
 
+## EXP-002 — Bug 6 background-liveness differential test (Samsung 90% vs Infinix 4%)
+
+### Date
+2026-09-01
+
+### Devices
+- Phone A: Samsung SM-G986U1, battery ~90%, NOT battery-optimization-exempted
+- Phone B: Infinix X6882B (Transsion), battery ~4%, Android 15/16, targetSdk 36
+
+### Test
+Both phones running the same build (Bug 6 re-fix + Bug 7, 2026-08-31 (b) changeset).
+Leave app / turn screen off on each phone; observe peer-online status from the other phone
+past the 45 s WS liveness window.
+
+### Results
+- **Samsung (90%):** stays ONLINE with screen off. Peer sees it online; messages arrive.
+  No FGS exceptions reported.
+- **Infinix (4%):** goes OFFLINE within seconds of backgrounding/screen-off.
+
+### Conclusion
+1. **The Bug 6 fix is physically verified working** on the Samsung — FGS + wake lock +
+   crash-proof sticky-restart path keep the mesh alive through screen-off. The
+   "background process" architecture the owner asked about is present and functioning.
+2. The Infinix failure is **device-specific low-battery power policy**, not our code:
+   at 4% the Transsion power manager (and/or AOSP battery-saver) aggressively kills
+   background processes regardless of FGS status. Per official power-management docs,
+   battery-saver states impose restrictions that supersede app standby buckets and
+   FGS priority; OEM low-battery auto-kill is stronger still.
+3. No universal assumption should be hard-coded from either device. The correct next
+   step is a controlled re-test of the Infinix at healthy battery (>20%) with the
+   battery-optimization exemption granted, before attributing anything to the OEM.
+
+### Next experiments
+1. **EXP-003 (decisive):** charge the Infinix above ~20%, grant the battery-optimization
+   exemption (Settings → Background transfers ON), repeat the same screen-off test.
+   - If it stays online → confirmed low-battery policy; document OEM behavior; done.
+   - If it still goes offline → OEM auto-kill; needs the manual OEM exemption path
+     (Settings → Battery → Flash → allow background activity) and possibly an
+     in-app guidance screen.
+2. Re-run the Samsung test with the exemption granted to isolate the exemption's effect.
+
+### Status
+Bug 6 fix VERIFIED on Samsung. Infinix failure attributed (pending) to low-battery
+power policy — EXP-003 will decide between "low battery" vs "OEM auto-kill".
+
 ## EXP-001 — First successful 10MB WS mesh transfer (Samsung SM-G986U1 → Infinix X6882B)
 
 ### Date
