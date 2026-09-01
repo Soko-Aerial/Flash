@@ -116,6 +116,17 @@ fun FlashConversationScreen(
      * routes to the transfer repository's declineIncoming. Default no-op keeps previews inert.
      */
     onDeclineOffer: (transferId: String) -> Unit = {},
+    /**
+     * C7: start a voice call with the conversation's peer (1:1 only). The host (:app) routes this
+     * to the engine's CallCoordinator + starts the call foreground service. Default no-op keeps
+     * previews inert.
+     */
+    onStartCall: () -> Unit = {},
+    /**
+     * C7: start a video call with the conversation's peer (1:1 only). Default no-op keeps
+     * previews inert.
+     */
+    onStartVideoCall: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val motion = FlashTheme.motion
@@ -342,6 +353,8 @@ fun FlashConversationScreen(
                                 onSearchClick = { isSearchActive = true },
                                 encryptionState = encryptionState,
                                 onEncryptionClick = { showEncryptionSheet = true },
+                                onCallClick = onStartCall,
+                                onVideoCallClick = onStartVideoCall,
                             )
                             // UI-030 connection banner — hidden while fully connected.
                             AnimatedVisibility(

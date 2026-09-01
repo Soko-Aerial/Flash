@@ -19,6 +19,9 @@ import com.transfer.flash.core.network.ws.WsSession
 import com.transfer.flash.core.security.crypto.FlashFingerprint
 import com.transfer.flash.core.security.crypto.KeystoreFlashCrypto
 import com.transfer.flash.core.security.trust.AndroidPreferencesTrustStore
+import com.transfer.flash.core.calling.CallCoordinator
+import com.transfer.flash.core.calling.protocol.CallFrameCodec
+import com.transfer.flash.core.calling.protocol.CallWireFrame
 import com.transfer.flash.pairing.PairingCoordinator
 import com.transfer.flash.net.AutoConnectGate
 import com.transfer.flash.core.transfer.FlashTransferRepository
@@ -104,6 +107,9 @@ object DiscoveryEngineHolder {
     @Volatile
     private var pairing: PairingCoordinator? = null
 
+    @Volatile
+    private var callCoordinator: CallCoordinator? = null
+
     private var binderJob: Job? = null
     private var autoConnectJob: Job? = null
 
@@ -155,6 +161,8 @@ object DiscoveryEngineHolder {
     fun currentChats(): FlashChatRepository? = chatRepo
 
     fun currentPairing(): PairingCoordinator? = pairing
+
+    fun currentCallCoordinator(): CallCoordinator? = callCoordinator
 
     suspend fun ensureStarted(context: Context): CompositeDiscovery = lifecycleMutex.withLock {
         composite?.let { return it }
@@ -523,6 +531,32 @@ object DiscoveryEngineHolder {
             },
         )
 
+        // ---- calling (C7 / ADR-025 / UI-050): WebRTC voice/video, signaling over the same WS
+        // mesh text frames under the FLASH_CALL prefix. sendFrame is non-blocking (sendTextAsync),
+        // exactly like the pairing path: call control runs on the UI dispatcher when the user taps
+        // call/accept/decline and must never block on a socket write from the main thread.
+        //
+        // The destination peer is EXPLICIT (second lambda arg): call frames carry only callId +
+        // our own `from` on the wire, so routing by frame.from would send every frame to ourselves.
+        // The coordinator resolves the peer (live session peer, or a busy-decline's new inviter).
+        val callCoordinator = CallCoordinator(
+            localDeviceId = identity.deviceId.value,
+            localName = identity.friendlyName,
+            scope = appScope,
+            sendFrame = { frame, peerId ->
+                val encoded = CallFrameCodec.encode(frame)
+                val session = networkImpl.activeSessions.value[FlashDeviceId(peerId)] as? WsSession
+                if (session != null) {
+                    session.connection.sendTextAsync(encoded)
+                    Log.i(TAG_WS, "Call sendFrame action=${frame.javaClass.simpleName} peer=$peerId (hasSession=true)")
+                    true
+                } else {
+                    Log.i(TAG_WS, "Call sendFrame action=${frame.javaClass.simpleName} peer=$peerId no session")
+                    false
+                }
+            },
+        )
+
         // Observe active WebSocket sessions for incoming chat messages and binary file chunks.
         // Collector jobs are tracked per session and cancelled when the session leaves the map
         // (prevents zombie collectors double-handling frames after reconnect/glare).
@@ -696,6 +730,8 @@ object DiscoveryEngineHolder {
                     // The WS session is the authoritative "peer gone" signal: fail every inbound
                     // transfer still in flight for it so no handle/row is stranded (#4).
                     failInboundForPeer(stale.peerDeviceId.value, "peer disconnected")
+                    // A live call cannot survive its signaling session — end it (C7 / ADR-025).
+                    callCoordinator.onSignalingLost(stale.peerDeviceId.value)
                     Log.d(TAG_WS, "Cancelled collectors for stale session peer=${stale.peer.friendlyName}")
                 }
                 sessions.values.forEach { session ->
@@ -710,7 +746,7 @@ object DiscoveryEngineHolder {
                         sessionJobs[session] = appScope.launch {
                             launch {
                                 session.incomingText.collect { text ->
-                                    handleInboundText(chatImpl, transferImpl, pairingCoordinator, session.peerDeviceId.value, text)
+                                    handleInboundText(chatImpl, transferImpl, pairingCoordinator, callCoordinator, session.peerDeviceId.value, text)
                                 }
                             }
                             launch {
@@ -754,6 +790,7 @@ object DiscoveryEngineHolder {
         transferRepo = transferImpl
         chatRepo = chatImpl
         pairing = pairingCoordinator
+        this.callCoordinator = callCoordinator
         transferRef = transferImpl
         router.transfer = transferImpl
         transferForResume = transferImpl
@@ -856,9 +893,17 @@ object DiscoveryEngineHolder {
         chatImpl: RealFlashChatRepository,
         transferImpl: RealFlashTransferRepository,
         pairing: PairingCoordinator,
+        calling: CallCoordinator,
         peerDeviceId: String,
         text: String,
     ) {
+        // Calling signaling first — the most latency-sensitive frame class. Decode returns null
+        // for non-call text (and unknown call actions), so chat/pairing fall through untouched.
+        if (CallFrameCodec.decode(text) != null) {
+            Log.i(TAG_WS, "Inbound call frame from id=$peerDeviceId")
+            calling.onInboundText(peerDeviceId, text)
+            return
+        }
         if (FlashTextFraming.parseFields(text, PAIR_PREFIX) != null) {
             Log.i(TAG_WS, "Inbound pairing frame from id=$peerDeviceId")
             pairing.onInbound(peerDeviceId, text)
@@ -1151,6 +1196,7 @@ object DiscoveryEngineHolder {
             transferRepo = null
             chatRepo = null
             pairing = null
+            callCoordinator = null
         }
         binderJob?.cancel()
         binderJob = null

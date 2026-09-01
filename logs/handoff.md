@@ -1,54 +1,62 @@
 # Current Handoff
 
-## 2026-09-01 — Bug 6 PHYSICALLY VERIFIED on Samsung; Infinix failure re-attributed to 4% battery power policy; next = EXP-003 (charged Infinix re-test), then voice/video calling
+## 2026-09-02 — Voice/video calling IMPLEMENTED across :core:calling / :ui:calling / :app; build verified; physical test pending
 
 ### Current branch
-`dev` (work is UNCOMMITTED in the working tree; HEAD `9e94a2d`)
+`dev` (work is UNCOMMITTED in the working tree; HEAD `2c8514d`)
 
 ### Last verified build
-- `:app:assembleDebug` → **BUILD SUCCESSFUL** (2026-08-31 (b) changeset, unchanged since)
-- **Physical verification 2026-09-01:** Samsung SM-G986U1 (~90% battery) stays ONLINE with
-  screen off / app left — peer sees it online, messages arrive, no FGS exceptions. **Bug 6
-  fix verified working.** Infinix X6882B (~4% battery) still goes offline within seconds —
-  attributed to low-battery power policy (battery saver / OEM auto-kill), NOT the fixed bug.
-  See `logs/experiments.md` EXP-002 and `logs/errors.md` ERROR-020 (updated).
+- `:app:compileDebugKotlin` → **BUILD SUCCESSFUL** (after CAMERA + RECORD_AUDIO runtime
+  permission wiring for the conversation header call buttons + incoming-call accept)
+- `:core:calling:testDebugUnitTest` → **12/12 PASS** (CallFrameCodecTest)
+- `:core:calling:compileDebugKotlin` + `:ui:callui:compileDebugKotlin` → **PASS**
 
 ### Current phase
-Chat UI bug fixes (track 1): **all 7 bugs implemented; Bug 6 physically verified on Samsung.**
-Infinix low-battery behavior is a device power-policy finding, not an open code bug.
-Voice/video calling (track 1 remainder) is next. KMP migration stays de-prioritized.
+**Voice/video calling (track 1 remainder): CODE COMPLETE — build verified, physical-device
+test pending.** WebRTC media engine (`:core:calling`, `shepeliev/webrtc-kmp`), Compose call
+screen (`:ui:calling`, UI-050), and full app integration (FGS `FlashCallService` with
+`Notification.CallStyle`, `FlashCallActionReceiver`, call overlay in FlashShell,
+conversation-header call buttons, runtime permissions) are all implemented and compiling.
+KMP migration stays de-prioritized.
 
 ### Working features (NEW since last handoff)
-- **Bug 6 VERIFIED (physical):** Samsung at 90% battery stays online through screen-off /
-  leave-app. The FGS + wake-lock + crash-proof sticky-restart stack works as designed.
-- **Bug 7 (notifications):** implemented 2026-08-31 (b) — device checklist pass still pending
-  (suppression, tap-to-open, dedupe, screen-off arrival).
-- **Research finding (how WhatsApp does it):** WhatsApp-class apps use FCM (Google's shared
-  Doze-exempt push channel) — impossible for Flash (LAN P2P, no cloud). Our sanctioned
-  equivalent is the battery-optimization exemption via the Settings "Background transfers"
-  toggle; the official Doze acceptable-use-case table explicitly covers "can't use FCM /
-  Doze breaks core function" apps. Recorded in `docs/android-platform-notes.md` 2026-09-01.
+- **Voice/video calling — `:core:calling`**: `FlashCallSession` (WebRTC PeerConnection,
+  getUserMedia audio+video, empty `iceServers` for LAN/hotspot), `CallCoordinator`
+  (one-call-at-a-time owner, StateFlow `activeCall`, suspend accept/decline/hangUp,
+  `onSignalingLost`), `CallFrameCodec`/`CallWireFrame` protocol (invite/accept/decline/
+  hangup/offer/answer/ice), `FlashCallModels` (FlashCallUiState, direction, state, end
+  reason). See ADR-025 in `docs/decisions.md` and the Calling section in `docs/protocol.md`.
+- **Voice/video calling — `:ui:calling`**: `FlashCallScreen` (full-screen overlay, remote
+  video via SurfaceViewRenderer, mute/speaker/camera/switch-camera controls, BackHandler
+  RINGING→decline / ENDED→dismiss / else→minimize). UI-050 DESIGNED in
+  `docs/ui/calling-ui.md`. 4 new icons: call_accept, camera_flip, hangup, speaker.
+- **Voice/video calling — `:app` integration**: `FlashCallService` (microphone|camera FGS,
+  `Notification.CallStyle` API 31+ with `Person`, NotificationCompat pre-31, started
+  while app foreground via `ContextCompat.startForegroundService`), `FlashCallActionReceiver`
+  (broadcast intents → coordinator accept/decline/hangUp), manifest permissions (CAMERA,
+  FOREGROUND_SERVICE_MICROPHONE/CAMERA) + service/receiver declarations, call overlay as
+  topmost FlashShell sibling, conversation-header call buttons (`onStartCall`/
+  `onStartVideoCall`), CAMERA + RECORD_AUDIO runtime permission launchers.
+- **Bug fixed**: `DiscoveryEngineHolder.kt` — local `val callCoordinator` shadowing the
+  field caused `'val' cannot be reassigned`; fixed with `this.callCoordinator`.
 
 ### In progress
-- **EXP-003 (decisive, owner-driven):** charge the Infinix above ~20%, grant the
-  battery-optimization exemption (Settings → Background transfers ON), repeat the
-  screen-off test. Stays online → low-battery policy confirmed, document, done. Still
-  offline → OEM auto-kill; needs manual OEM exemption (Settings → Battery → Flash → allow
-  background activity) and possibly an in-app guidance screen.
+- **Physical two-phone calling test** (THE decisive pending step — WebRTC negotiation, FGS
+  CallStyle notification buttons, audio routing, video rendering are untested on device).
 - Bug 7 device checklist pass (`docs/ui/notification-ui.md`).
 
 ### Broken
 - Nothing new. (Pre-existing timing-flaky test note below.)
 
 ### Last change
-Documentation-only session (2026-09-01): recorded EXP-002 differential test results,
-updated ERROR-020 to RESOLVED-verified, added 2026-09-01 platform-notes entry (battery
-saver supersedes FGS priority; FCM research; exemption unblocks sticky-restart promotion).
-No code changes.
+Completed the calling feature's app-layer integration (2026-09-02): FlashCallService FGS,
+FlashCallActionReceiver, manifest permissions/service/receiver declarations, FlashShell
+call overlay + FGS lifecycle, conversation-header call buttons, CAMERA/RECORD_AUDIO
+runtime permission launchers. `:app:compileDebugKotlin` + `:core:calling` tests verified.
 
 ### Last test
-Physical two-phone differential test (EXP-002): Samsung 90% PASS, Infinix 4% FAIL →
-re-attributed to low-battery power policy. No code changes this session, so no new build.
+- `:app:compileDebugKotlin` → BUILD SUCCESSFUL (shellId 118)
+- `:core:calling:testDebugUnitTest` → 12/12 PASS (shellId 121, XML failures="0")
 
 ### Known blockers
 - Kotlin daemon flakiness: treat "BUILD SUCCESSFUL" as success; don't trust exit code alone
@@ -59,27 +67,29 @@ re-attributed to low-battery power policy. No code changes this session, so no n
   current section is authoritative
 - The messaging backoff timing test PASSED this session (whole class green) but remains
   inherently timing-sensitive; deterministic cleanup still worthwhile
-- PHASE-21/22 depend on Phases 06–20 groundwork that does not exist yet; deferred
-- KMP migration is DE-prioritized until chat UI bugs + calling modules are done
 
 ### Recommended next task
-1. **EXP-003** (owner-driven): charged Infinix + exemption granted → repeat screen-off test;
-   record in `logs/experiments.md`.
-2. Then voice/video calling modules (WebRTC, `shepeliev/webrtc-kmp`, signaling over the WS mesh).
+1. **Physical two-phone calling test** — verify invite → accept → active → hangup, audio
+   routing, video rendering, and the CallStyle notification buttons (answer/decline/hangup
+   from the FGS notification).
+2. Then return to the premium chat UI component sequence: **UI-011 composer** or **UI-007
+   selection** research next per `docs/ui/ui-research-index.md` (not started).
 
 ### Files most relevant to next task
-- `logs/experiments.md` (EXP-002 recorded; EXP-003 template ready)
-- `app/src/main/java/com/transfer/flash/debug/FlashBackgroundService.kt`
-- `app/src/main/java/com/transfer/flash/MainActivity.kt` (battery-exemption wiring)
-- `docs/ui/notification-ui.md` (Bug 7 device checklist)
+- `core/calling/src/main/java/com/transfer/flash/core/calling/` (FlashCallSession, CallCoordinator, protocol)
+- `ui/callui/src/main/java/com/transfer/flash/ui/calling/FlashCallScreen.kt`
+- `app/src/main/java/com/transfer/flash/calling/FlashCallService.kt` + `FlashCallActionReceiver.kt`
+- `app/src/main/java/com/transfer/flash/MainActivity.kt` (call overlay + permission launchers)
+- `docs/ui/calling-ui.md` (UI-050 spec, device checklist to fill)
 
 ### Remaining work summary (for next AI)
-1. EXP-003 charged-Infinix re-test (owner-driven)
-2. Bug 7 device checklist pass
-3. **Voice/video calling:** `core:calling` + `ui:calling` with WebRTC (`shepeliev/webrtc-kmp`),
-   WireFrame types, signaling over WS mesh, call UI overlay
+1. **Physical two-phone calling test** (decisive) — WebRTC negotiation, FGS CallStyle buttons,
+   audio routing, video rendering; record results in `logs/experiments.md`
+2. EXP-003 charged-Infinix re-test (owner-driven, from prior session)
+3. Bug 7 device checklist pass
 4. Deterministic cleanup of the messaging backoff timing test
-5. Then: commit all bug-fix work (with `Co-authored-by: Copilot` trailer), resume KMP migration
+5. Then: commit all calling work (with `Co-authored-by: Copilot` trailer), resume premium
+   chat UI component sequence (UI-011 composer or UI-007 selection research)
 
 ### Install command (PowerShell, authoritative)
 ```powershell

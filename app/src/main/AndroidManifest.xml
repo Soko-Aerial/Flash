@@ -19,6 +19,12 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- B9: voice-message capture via MediaRecorder (runtime-requested on first hold). -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- C7 (calling): camera for video calls (runtime-requested at call start). -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <!-- C7 (calling): microphone/camera foreground-service types for the in-call FGS
+         (Notification.CallStyle, Android 14+ setOngoing). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
 
     <application
         android:name=".di.FlashApplication"
@@ -46,6 +52,21 @@
             android:name=".debug.FlashBackgroundService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+
+        <!-- C7 (calling): in-call FGS with microphone (and camera for video calls).
+             The service is started while the app is foreground (user taps call / answers
+             from notification), which satisfies Android 12+ while-in-use restrictions.
+             The foregroundServiceType reflects the actual types used at runtime. -->
+        <service
+            android:name=".calling.FlashCallService"
+            android:exported="false"
+            android:foregroundServiceType="microphone|camera" />
+
+        <!-- C7 (calling): CallStyle notification action buttons (answer/decline/hang up)
+             route through this receiver to the in-process CallCoordinator. -->
+        <receiver
+            android:name=".calling.FlashCallActionReceiver"
+            android:exported="false" />
 
         <provider
             android:name="androidx.core.content.FileProvider"
