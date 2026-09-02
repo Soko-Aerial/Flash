@@ -1,0 +1,128 @@
+package com.transfer.flash.notifications
+
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.Context
+import android.content.Intent
+import android.os.Build
+import android.util.Log
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
+import com.transfer.flash.MainActivity
+import com.transfer.flash.R
+
+/**
+ * Bug 7: posts system notifications for inbound chat traffic (text messages and
+ * accepted/auto-accepted attachments). Design doc: `docs/ui/notification-ui.md` (DESIGNED).
+ *
+ * ## Wiring
+ * `DiscoveryEngineHolder` passes the repository's `onInboundTextMessage` /
+ * `onInboundAttachment` callbacks through to [showMessage] / [showAttachment]. The
+ * repository only fires them for rows Room actually INSERTED (insert result != -1), so
+ * replayed frames after a reconnect can never double-notify.
+ *
+ * ## Suppression
+ * [appForeground] + [openConversationId] are process-level state maintained by
+ * `MainActivity` (onStart/onStop) and the shell's conversation open/close path. A message
+ * for the conversation the user is currently reading on a foregrounded app is silent.
+ *
+ * ## Tap behavior
+ * Tapping opens [MainActivity] with [EXTRA_CONVERSATION_ID]; the activity routes it into
+ * the Compose shell which opens that conversation. No trampoline, no broadcast — a plain
+ * activity PendingIntent with `FLAG_IMMUTABLE`.
+ */
+object FlashNotificationManager {
+
+    private const val TAG = "NOTIFY"
+    private const val CHANNEL_ID = "flash_messages"
+    private const val NOTIFICATION_ID_BASE = 200
+
+    /** Set true in MainActivity.onStart, false in onStop. */
+    @Volatile
+    var appForeground: Boolean = false
+
+    /** The conversation currently open on screen, or null. Maintained by the shell. */
+    @Volatile
+    var openConversationId: String? = null
+
+    fun showMessage(context: Context, conversationId: String, senderName: String?, text: String) {
+        val title = senderName?.ifBlank { null } ?: conversationId
+        post(context, conversationId, title, text)
+    }
+
+    fun showAttachment(context: Context, conversationId: String, senderName: String?, fileName: String, mimeType: String) {
+        val title = senderName?.ifBlank { null } ?: conversationId
+        val kind = when {
+            mimeType.startsWith("image/") -> "Photo"
+            mimeType.startsWith("video/") -> "Video"
+            mimeType.startsWith("audio/") -> "Voice message"
+            else -> "File"
+        }
+        post(context, conversationId, title, "$kind: $fileName")
+    }
+
+    /** Clears the notification for a conversation (e.g. the user just opened it). */
+    fun clearConversation(context: Context, conversationId: String) {
+        runCatching {
+            NotificationManagerCompat.from(context).cancel(notificationIdFor(conversationId))
+        }
+    }
+
+    private fun post(context: Context, conversationId: String, title: String, body: String) {
+        // Suppression rule (see class doc): reading that exact conversation right now.
+        if (appForeground && openConversationId == conversationId) return
+
+        val appContext = context.applicationContext
+        createChannel(appContext)
+
+        val intent = Intent(appContext, MainActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            putExtra(EXTRA_CONVERSATION_ID, conversationId)
+        }
+        // Stable per-conversation request code so a re-post refreshes the same PendingIntent
+        // (FLAG_UPDATE_CURRENT) instead of stacking a second one.
+        val contentIntent = PendingIntent.getActivity(
+            appContext,
+            notificationIdFor(conversationId),
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+
+        val notification = NotificationCompat.Builder(appContext, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_notification_flash)
+            .setContentTitle(title)
+            .setContentText(body)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setAutoCancel(true)
+            .setContentIntent(contentIntent)
+            // Collapses this peer's previous notification instead of stacking N per conversation.
+            .build()
+
+        // Android 13+ can revoke POST_NOTIFICATIONS at any time; notify() then throws
+        // SecurityException. Best-effort by design — never crash the receive path.
+        runCatching {
+            NotificationManagerCompat.from(appContext).notify(notificationIdFor(conversationId), notification)
+        }.onFailure { Log.w(TAG, "Failed to post message notification", it) }
+    }
+
+    private fun createChannel(context: Context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val manager = context.getSystemService(NotificationManager::class.java) ?: return
+        val channel = NotificationChannel(
+            CHANNEL_ID,
+            "Messages",
+            NotificationManager.IMPORTANCE_DEFAULT,
+        ).apply {
+            description = "Incoming messages and files from nearby devices"
+        }
+        manager.createNotificationChannel(channel)
+    }
+
+    /** Stable id per conversation: same peer updates their own notification; peers stack. */
+    private fun notificationIdFor(conversationId: String): Int =
+        NOTIFICATION_ID_BASE + (conversationId.hashCode() and 0x7FFFFFFF) % 1000
+
+    /** Intent extra carrying the conversation to open on notification tap. */
+    const val EXTRA_CONVERSATION_ID = "com.transfer.flash.EXTRA_CONVERSATION_ID"
+}

@@ -92,11 +92,18 @@ public class WsTransferClient(
     }
 
     private fun findLanNetwork(): Network? {
-        return connectivityManager?.allNetworks?.firstOrNull { network ->
-            val capabilities = connectivityManager.getNetworkCapabilities(network)
-            capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true ||
-                capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) == true
-        }
+        return connectivityManager?.allNetworks
+            ?.filter { network ->
+                val capabilities = connectivityManager.getNetworkCapabilities(network)
+                capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true ||
+                    capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) == true
+            }
+            // Deterministic sort by network handle so both devices pick the same network when
+            // multiple eligible networks exist (e.g. dual-band SSID, cellular + Wi-Fi). Without
+            // this, non-deterministic platform ordering can cause each device to bind to a different
+            // network, making the socket unreachable from the peer's perspective.
+            ?.sortedBy { it.networkHandle }
+            ?.firstOrNull()
     }
 
     public companion object {

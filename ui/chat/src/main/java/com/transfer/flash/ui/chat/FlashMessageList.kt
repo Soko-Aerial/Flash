@@ -65,6 +65,8 @@ fun FlashMessageList(
     onJumpToMessage: (String) -> Unit = {},
     onImageClick: (message: FlashMessageUi, index: Int) -> Unit = { _, _ -> },
     onFileClick: (message: FlashMessageUi, file: com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit = { _, _ -> },
+    onAcceptOffer: (message: FlashMessageUi, file: com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit = { _, _ -> },
+    onDeclineOffer: (message: FlashMessageUi, file: com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit = { _, _ -> },
     highlightedMessageId: String? = null,
     peerTypingName: String? = null,
     listState: LazyListState = rememberLazyListState(),
@@ -190,6 +192,8 @@ fun FlashMessageList(
                 onJumpToMessage = onJumpToMessage,
                 onImageClick = { index, image -> onImageClick(message, index) },
                 onFileClick = { file -> onFileClick(message, file) },
+                onAcceptOffer = { file -> onAcceptOffer(message, file) },
+                onDeclineOffer = { file -> onDeclineOffer(message, file) },
                 isHighlighted = isHighlighted,
                 searchQuery = searchQuery,
                 modifier = Modifier

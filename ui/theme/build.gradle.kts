@@ -43,9 +43,7 @@ android {
 publishing {
     publications {
         register<MavenPublication>("release") {
-            groupId = "com.transfer.flash"
             artifactId = "ui-theme"
-            version = "1.0.0"
 
             afterEvaluate {
                 from(components["release"])

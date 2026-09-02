@@ -49,6 +49,7 @@ import com.transfer.flash.ui.chat.FlashEmptyState
 import com.transfer.flash.ui.chat.FlashStateCopy
 import com.transfer.flash.ui.icons.FlashIcon
 import com.transfer.flash.ui.icons.FlashIcons
+import com.transfer.flash.ui.theme.FlashBrandAnimation
 import com.transfer.flash.ui.theme.FlashDimensions
 import com.transfer.flash.ui.theme.FlashHaptic
 import com.transfer.flash.ui.theme.FlashShapes
@@ -83,6 +84,12 @@ data class FlashTransferItemUi(
     val transportLabel: String? = null,
     /** Local file path/URI for open & share actions (received file, or the sent source). */
     val localPath: String? = null,
+    /**
+     * Whether a [FlashTransferState.Failed] row can be retried. False for a cancelled/declined
+     * transfer, which shares the Failed section but has no session left to resume — showing it a
+     * Retry button made the button look broken.
+     */
+    val retryable: Boolean = true,
 )
 
 data class TransfersUiState(
@@ -252,6 +259,19 @@ private fun ErrorPanel(modifier: Modifier) {
 @Composable
 private fun LoadingRows(modifier: Modifier) {
     Column(modifier.fillMaxWidth().padding(horizontal = FlashSpacing.space16)) {
+        // Branded loading mark (Bug 4 reuse): compact FlashBrandAnimation without the dark
+        // splash gradient, centered above the skeleton transfer rows.
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = FlashSpacing.space24, bottom = FlashSpacing.space12),
+            contentAlignment = Alignment.Center,
+        ) {
+            FlashBrandAnimation(
+                background = false,
+                modifier = Modifier.size(width = 96.dp, height = 96.dp),
+            )
+        }
         repeat(4) {
             Box(
                 Modifier
@@ -361,11 +381,17 @@ private fun PopulatedSections(
                         fadeOutSpec = motion.messageFadeOutSpec(),
                     ),
                     trailing = {
-                        RowIcon(
-                            icon = FlashIcons.Retry,
-                            description = "Retry",
-                            onClick = { onRetryClick(item) },
-                        )
+                        // Retry is offered only where it can actually do something. A cancelled or
+                        // declined transfer lands in this section too (the UI has no Cancelled
+                        // bucket) and cannot be resumed — the counterpart tore its session down —
+                        // so it shows its label with no button rather than a dead one.
+                        if (item.retryable) {
+                            RowIcon(
+                                icon = FlashIcons.Retry,
+                                description = "Retry",
+                                onClick = { onRetryClick(item) },
+                            )
+                        }
                     },
                 )
             }

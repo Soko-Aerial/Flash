@@ -1,6 +1,9 @@
+@file:OptIn(FlashInternalApi::class)
+
 package com.transfer.flash.core.network.datachannel
 
-import android.util.Log
+import com.transfer.flash.core.common.annotation.FlashInternalApi
+import com.transfer.flash.core.common.logging.FlashLog
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.net.InetSocketAddress
@@ -70,10 +73,9 @@ public object DataChannelClient {
 
             val response = DataChannelFraming.readLine(input)
             if (!response.startsWith(DataChannelFraming.JOIN_OK)) {
-                Log.d(TAG, "join rejected channel=$channelId host=$host: $response")
+                FlashLog.i(TAG, "join rejected channel=$channelId host=$host: $response")
                 runCatching { socket.close() }
-                return null
-            }
+                return null            }
             socket.soTimeout = 0
 
             val channel = object : DataSendChannel {
@@ -90,7 +92,7 @@ public object DataChannelClient {
                                 true
                             }.onFailure { error ->
                                 if (!closed.get()) {
-                                    Log.w(TAG, "data write failed channel=$channelId", error)
+                                    FlashLog.w(TAG, "data write failed channel=$channelId", error)
                                     close()
                                 }
                             }.getOrDefault(false)
@@ -113,7 +115,7 @@ public object DataChannelClient {
                         try {
                             onFrame(payload)
                         } catch (e: Exception) {
-                            Log.w(TAG, "data client frame handler error channel=$channelId", e)
+                            FlashLog.w(TAG, "data client frame handler error channel=$channelId", e)
                         }
                     }
                 } catch (_: Exception) {
@@ -122,10 +124,10 @@ public object DataChannelClient {
                 channel.close()
             }
 
-            Log.d(TAG, "joined data channel=$channelId → $host:$port")
+            FlashLog.i(TAG, "joined data channel=$channelId → $host:$port")
             channel
         }.getOrElse { error ->
-            Log.d(TAG, "data connect failed host=$host:$port (${error.message})")
+            FlashLog.i(TAG, "data connect failed host=$host:$port (${error.message})")
             runCatching { socket.close() }
             null
         }

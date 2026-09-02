@@ -1,9 +1,10 @@
 package com.transfer.flash.ui.chat
 
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -53,18 +54,23 @@ import com.transfer.flash.ui.theme.rememberFlashHaptics
  * Rich in-bubble file card featuring color-coded file extension badge,
  * circular transfer progress ring, and real-time LAN/P2P throughput metrics.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun FlashFileMessageCard(
     attachment: FlashFileAttachmentUi,
     isParentOutgoing: Boolean,
     onCardClick: () -> Unit,
     onActionClick: () -> Unit,
+    onLongPress: () -> Unit = {},
+    onAccept: () -> Unit = {},
+    onDecline: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val colors = FlashTheme.colors
     val typography = FlashTheme.typography
     val motion = FlashTheme.motion
     val haptics = rememberFlashHaptics()
+    val isAwaiting = attachment.transferStatus == FlashFileTransferStatus.AwaitingAcceptance
 
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
@@ -110,6 +116,7 @@ fun FlashFileMessageCard(
                 }
             }
             FlashFileTransferStatus.NotDownloaded -> "$formattedSize • Tap to download"
+            FlashFileTransferStatus.AwaitingAcceptance -> "$formattedSize • Awaiting your acceptance"
             FlashFileTransferStatus.Downloaded -> {
                 if (extension.isNotEmpty()) "$formattedSize • ${extension.uppercase()}" else formattedSize
             }
@@ -121,70 +128,166 @@ fun FlashFileMessageCard(
         when (attachment.transferStatus) {
             FlashFileTransferStatus.Transferring -> "Transferring ${attachment.name}, $formattedSize"
             FlashFileTransferStatus.NotDownloaded -> "${attachment.name}, $formattedSize. Double-tap to download."
+            FlashFileTransferStatus.AwaitingAcceptance -> "${attachment.name}, $formattedSize. Waiting for you to accept the transfer."
             FlashFileTransferStatus.Downloaded -> "${attachment.name}, $formattedSize. Double-tap to open."
             FlashFileTransferStatus.Failed -> "Failed to transfer ${attachment.name}. Double-tap to retry."
         }
     }
 
-    Row(
+    Column(
         modifier = modifier
             .fillMaxWidth()
-            .graphicsLayer {
-                scaleX = pressScale
-                scaleY = pressScale
-            }
             .clip(FlashShapes.attachment)
             .background(surfaceBg)
             .border(
                 width = FlashDimensions.borderHairline,
                 color = colors.borderSubtle.copy(alpha = 0.5f),
                 shape = FlashShapes.attachment,
-            )
-            .clickable(
-                interactionSource = interactionSource,
-                indication = null,
-                onClick = {
-                    haptics(FlashHaptic.Tick)
-                    onCardClick()
-                },
-            )
-            .semantics {
-                role = Role.Button
-                contentDescription = a11yDesc
-            }
-            .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space8),
-        verticalAlignment = Alignment.CenterVertically,
+            ),
     ) {
-        // Leading action badge / progress ring
-        FlashFileIconBadge(
-            attachment = attachment,
-            extension = extension,
-            onActionClick = onActionClick,
-        )
-
-        Spacer(modifier = Modifier.width(FlashSpacing.space12))
-
-        // Center metadata
-        Column(
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.Center,
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .graphicsLayer {
+                    scaleX = if (isAwaiting) 1f else pressScale
+                    scaleY = if (isAwaiting) 1f else pressScale
+                }
+                .then(
+                    if (!isAwaiting) {
+                        Modifier.combinedClickable(
+                            interactionSource = interactionSource,
+                            indication = null,
+                            onClick = {
+                                haptics(FlashHaptic.Tick)
+                                onCardClick()
+                            },
+                            onLongClick = {
+                                haptics(FlashHaptic.Confirm)
+                                onLongPress()
+                            },
+                        )
+                    } else {
+                        Modifier
+                    }
+                )
+                .semantics {
+                    role = Role.Button
+                    contentDescription = a11yDesc
+                }
+                .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space8),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
-                text = attachment.name,
-                style = typography.bodyDefault.copy(fontWeight = FontWeight.Medium),
-                color = primaryTextColor,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
+            // Leading action badge / progress ring
+            FlashFileIconBadge(
+                attachment = attachment,
+                extension = extension,
+                onActionClick = onActionClick,
             )
 
-            Spacer(modifier = Modifier.height(2.dp))
+            Spacer(modifier = Modifier.width(FlashSpacing.space12))
 
+            // Center metadata
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.Center,
+            ) {
+                Text(
+                    text = attachment.name,
+                    style = typography.bodyDefault.copy(fontWeight = FontWeight.Medium),
+                    color = primaryTextColor,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+
+                Spacer(modifier = Modifier.height(2.dp))
+
+                Text(
+                    text = statusSubtitle,
+                    style = typography.captionEmphasis.copy(fontSize = 11.sp),
+                    color = secondaryTextColor,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+
+        // Accept/Decline buttons for inbound offers
+        if (isAwaiting) {
+            FlashFileOfferActions(
+                onAccept = {
+                    haptics(FlashHaptic.Tick)
+                    onAccept()
+                },
+                onDecline = {
+                    haptics(FlashHaptic.Tick)
+                    onDecline()
+                },
+                colors = colors,
+                typography = typography,
+            )
+        }
+    }
+}
+
+/**
+ * Accept / Decline action row shown on inbound file offers inside the chat bubble.
+ */
+@Composable
+private fun FlashFileOfferActions(
+    onAccept: () -> Unit,
+    onDecline: () -> Unit,
+    colors: com.transfer.flash.ui.theme.FlashColors,
+    typography: com.transfer.flash.ui.theme.FlashTypography,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = FlashSpacing.space12, end = FlashSpacing.space12, bottom = FlashSpacing.space8),
+        horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+    ) {
+        // Accept button
+        androidx.compose.material3.FilledTonalButton(
+            onClick = onAccept,
+            modifier = Modifier.weight(1f),
+            shape = FlashShapes.attachment,
+            colors = androidx.compose.material3.ButtonDefaults.filledTonalButtonColors(
+                containerColor = colors.accentPrimary.copy(alpha = 0.15f),
+                contentColor = colors.accentPrimary,
+            ),
+        ) {
+            FlashIcon(
+                icon = FlashIcons.Check,
+                contentDescription = null,
+                size = FlashDimensions.iconSm,
+            )
+            Spacer(modifier = Modifier.width(FlashSpacing.space4))
             Text(
-                text = statusSubtitle,
-                style = typography.captionEmphasis.copy(fontSize = 11.sp),
-                color = secondaryTextColor,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
+                text = "Accept",
+                style = typography.bodyDefault.copy(fontWeight = FontWeight.Medium),
+                color = colors.accentPrimary,
+            )
+        }
+
+        // Decline button
+        androidx.compose.material3.FilledTonalButton(
+            onClick = onDecline,
+            modifier = Modifier.weight(1f),
+            shape = FlashShapes.attachment,
+            colors = androidx.compose.material3.ButtonDefaults.filledTonalButtonColors(
+                containerColor = colors.textError.copy(alpha = 0.12f),
+                contentColor = colors.textError,
+            ),
+        ) {
+            FlashIcon(
+                icon = FlashIcons.Close,
+                contentDescription = null,
+                size = FlashDimensions.iconSm,
+            )
+            Spacer(modifier = Modifier.width(FlashSpacing.space4))
+            Text(
+                text = "Decline",
+                style = typography.bodyDefault.copy(fontWeight = FontWeight.Medium),
+                color = colors.textError,
             )
         }
     }
@@ -240,6 +343,15 @@ fun FlashFileIconBadge(
                 FlashIcon(
                     icon = FlashIcons.Download,
                     contentDescription = "Download file",
+                    tint = Color.White,
+                    size = FlashDimensions.iconMd,
+                )
+            }
+
+            FlashFileTransferStatus.AwaitingAcceptance -> {
+                FlashIcon(
+                    icon = FlashIcons.Clock,
+                    contentDescription = "Awaiting acceptance",
                     tint = Color.White,
                     size = FlashDimensions.iconMd,
                 )

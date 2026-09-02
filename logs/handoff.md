@@ -1,6 +1,304 @@
 # Current Handoff
 
-## 2026-08-27 -- Codex logo candidate added under `logo-codex/`
+## 2026-09-02 (d) — Call-accept crash FIXED (ERROR-024): base64 SDP transport + try/catch hardening; physical call re-test pending
+
+### Current branch
+`dev` (work UNCOMMITTED in working tree; HEAD `43b1c2c`)
+
+### Last verified build
+- `:core:common:testDebugUnitTest` → **49 PASS** (incl. 7 new `Base64Test` cases)
+- `:core:calling:testDebugUnitTest` → **15 PASS** (incl. byte-for-byte Offer/Answer SDP round-trips + legacy raw-SDP fallback)
+
+### Current phase
+**Call-accept crash (ERROR-024) root-caused & fixed; build + unit tests verified; physical
+two-phone re-test pending.** Both phones crashed with `Setting SDP failed: SessionDescription
+is NULL.` the moment a call was accepted. Root cause pinned by disassembling the webrtc-kmp
+0.125.11 AAR: `onSetFailure` rethrows libwebrtc's native JNI error verbatim (null/empty
+`SessionDescription.description` or native parse failure). API usage was correct; the suspect
+is the `FLASH_CALL` text-frame transport (`FlashTextFraming` escapes only `%`/space/`=` and
+does `trim().split(' ')` — exactly the wrong treatment for multi-line SDP). Fix: pure-Kotlin
+base64 SDP transport in `CallFrameCodec` (whitespace/delimiter-free) + try/catch safety nets
+in `FlashCallSession` so a native set-SDP failure ends the call instead of crashing the
+process. ERROR-023 glare fix and calling remain code-complete with physical test pending.
+
+### Working features (NEW since last handoff)
+- **Base64 SDP transport (ERROR-024/ADR-027)**: `CallFrameCodec` base64-encodes Offer/Answer
+  `sdp` fields (pure-Kotlin RFC 4648 `Base64` in `core/common` — no `android.util`/
+  `java.util.Base64`, keeping JVM unit tests green at `minSdk 24` + `explicitApi()`).
+  `decodeSdp` tries base64 first, falls back to raw text for legacy peers. Base64 cannot be
+  corrupted by framing trim/escape/split.
+- **Call crash safety net**: `FlashCallSession` wraps `onAccept`/`onOffer`/`onAnswer` SDP
+  flows in try/catch (rethrow `CancellationException`; else log + `end(ERROR, notifyPeer =
+  true)`) + `logSdp()` diagnostics. A native set-SDP failure now ends the call, never kills
+  the process.
+- **Connect-glare resolution (ERROR-023)**: deterministic tiebreaker — keep the session
+  whose originator device id is lexicographically smaller. `WsSession.isOutbound` carries the
+  origin; `registerSession.resolveGlareTie` applies it when transport ranks are equal.
+- **Dial-engine dedup**: `runAutoConnectSweep` skips peers with an in-flight reconnect
+  (`isReconnectInFlight`) so the sweep and the #18 reconnect engine never race the same peer.
+- **Deterministic network pick**: `findLanNetwork()` sorts by `networkHandle` so both phones
+  independently select the same network when multiple are eligible.
+- **`enableOnBackInvokedCallback="true"`** in the manifest.
+- **Calling + dual-band hypotheses ruled out** for the discovery storm (see ERROR-023/EXP-005).
+
+### In progress
+- **Physical two-phone calling re-test** (THE decisive step — the crash log precedes this fix;
+  reinstall the APK and confirm call accept + placement connect without a crash).
+- **Physical two-phone re-test of the glare fix** (confirm the storm stops after a session drop).
+- Bug 7 device checklist pass (`docs/ui/notification-ui.md`).
+
+### Broken
+- Nothing new. (Pre-existing timing-flaky messaging backoff test note below.)
+
+### Last change
+Implemented the call-accept crash fix (2026-09-02): pure-Kotlin `Base64` in `core/common`,
+`CallFrameCodec` base64 SDP transport + legacy raw fallback, `FlashCallSession` try/catch
+safety nets + `logSdp()`, 7 new `Base64Test` + 3 new `CallFrameCodecTest` cases.
+`:core:common:testDebugUnitTest` 49 PASS + `:core:calling:testDebugUnitTest` 15 PASS.
+
+### Last test
+- `:core:common:testDebugUnitTest` → 49 PASS (incl. Base64: empty, hello, binary, SDP
+  round-trip, invalid char, bad padding, padded round-trips)
+- `:core:calling:testDebugUnitTest` → 15 PASS (incl. byte-for-byte Offer/Answer SDP
+  round-trips + legacy raw-SDP fallback)
+
+### Known blockers
+- Kotlin daemon flakiness: treat "BUILD SUCCESSFUL" as success; don't trust exit code alone
+- Gradle metadata cache corruption: `gradlew --stop`, `taskkill //F //IM java.exe`,
+  delete `E:\AndroidDev\Gradle\caches\modules-2\metadata-2.107`, rebuild
+- Build env: `E:\` hosts SDK (`E:\AndroidDev\SDK`), Gradle home (`E:\AndroidDev\Gradle`), JBR
+  (`E:\AndroidDev\AndroidStudio\android-studio\jbr`) — install command below is authoritative
+- The messaging backoff timing test remains inherently timing-sensitive; deterministic
+  cleanup still worthwhile
+- **Stale installed APK**: the on-device APK predates even `580628d` (missing the
+  `enableOnBackInvokedCallback` manifest fix) — reinstall before any physical re-test.
+
+### Recommended next task
+1. **Physical two-phone calling re-test** (decisive for ERROR-024): reinstall the APK on both
+   phones, invite → accept → confirm the call screen connects without a crash (audio, video,
+   FGS CallStyle buttons). If it still fails, `logSdp()` + the try/catch path now produce
+   diagnostics instead of a process death. Record in `logs/experiments.md` / `logs/progress.md`.
+2. **Physical two-phone re-test of the glare fix**: trigger a session drop (toggle Wi-Fi on
+   one phone or background the app), then watch logcat — expect ONE `Session up` pair, no
+   repeat "WS connecting" storm, no "cannot reach". Record in `logs/experiments.md`.
+3. Then return to the premium chat UI component sequence: **UI-011 composer** or **UI-007
+   selection** research next per `docs/ui/ui-research-index.md`.
+
+### Files most relevant to next task
+- `core/calling/src/main/java/com/transfer/flash/core/calling/protocol/CallFrameCodec.kt`
+  (base64 SDP transport)
+- `core/calling/src/main/java/com/transfer/flash/core/calling/FlashCallSession.kt`
+  (try/catch safety nets + `logSdp`)
+- `core/common/src/main/java/com/transfer/flash/core/common/protocol/Base64.kt` (new codec)
+- `core/calling/src/test/java/com/transfer/flash/core/calling/protocol/CallFrameCodecTest.kt`
+- `core/common/src/test/java/com/transfer/flash/core/common/protocol/Base64Test.kt`
+- `core/network/src/main/java/com/transfer/flash/core/network/ws/WsFlashNetwork.kt`
+  (`registerSession` glare tiebreaker, `isReconnectInFlight`)
+- `core/network/src/main/java/com/transfer/flash/core/network/ws/WsSession.kt` (`isOutbound`)
+- `app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt` (sweep dedup)
+- `core/network/src/main/java/com/transfer/flash/core/network/ws/WsTransferClient.kt`
+  (`findLanNetwork` deterministic sort)
+- `core/network/src/test/java/com/transfer/flash/core/network/ws/WsFlashNetworkTest.kt`
+  (glare regression test)
+
+### Remaining work summary (for next AI)
+1. **Physical two-phone calling re-test** (decisive for ERROR-024) — record in `logs/experiments.md`
+2. **Physical two-phone re-test of the glare fix** (decisive) — record in `logs/experiments.md`
+3. EXP-003 charged-Infinix re-test (owner-driven, from prior session)
+4. Bug 7 device checklist pass
+5. Deterministic cleanup of the messaging backoff timing test
+6. Then: resume premium chat UI component sequence (UI-011 composer or UI-007 selection research)
+
+### Install command (PowerShell, authoritative)
+```powershell
+Set-Location "C:\Users\KaliOxygen\Downloads\Flash"
+$env:JAVA_HOME = "E:\AndroidDev\AndroidStudio\android-studio\jbr"
+$env:GRADLE_USER_HOME = "E:\AndroidDev\Gradle"
+$env:JAVA_TOOL_OPTIONS = "-Djdk.net.unixdomain.tmpdir=Z:\nope"
+$env:Path = "$env:JAVA_HOME\bin;$env:Path"
+& .\gradlew.bat :app:installDebug --no-configuration-cache --console=plain
+```
+Git-Bash equivalent: prefix with `JAVA_HOME="E:/AndroidDev/AndroidStudio/android-studio/jbr" GRADLE_USER_HOME="E:/AndroidDev/Gradle" JAVA_TOOL_OPTIONS="-Djdk.net.unixdomain.tmpdir=Z:/nope"` and forward slashes; adb at `"E:\AndroidDev\SDK\platform-tools\adb.exe"` (quote it in Git Bash).
+
+## 2026-08-31 (b) — Bugs 1–7 ALL IMPLEMENTED; Bug 6 root-caused & re-fixed; next = physical two-phone verification, then voice/video calling
+
+### Current branch
+`dev` (work is UNCOMMITTED in the working tree; HEAD `9e94a2d`)
+
+### Last verified build
+- `:core:messaging:testDebugUnitTest --tests *RealFlashChatRepositoryTest*` → **BUILD SUCCESSFUL**, XML `failures="0"` (whole class incl. the previously-flaky backoff test AND the two new Bug 7 callback regression tests).
+- `:app:assembleDebug` → **BUILD SUCCESSFUL** (after fixing one compile iteration: battery-exemption callback hoisted through `FlashApp`/`FlashShell` as `onEnableBackgroundTransfers`).
+
+### Current phase
+Chat UI bug fixes (track 1): **all 7 bugs implemented**. Bug 6 was REOPENED after the owner's
+physical test ("still goes offline after a few seconds") and the REAL root cause was found on
+device — see ERROR-020. Voice/video calling (track 1 remainder) is next. KMP migration stays
+de-prioritized.
+
+### Working features (NEW since last handoff)
+- **Bug 6 RE-FIXED (code-level, ERROR-020):** on-device logcat proved a sticky-restart crash
+  loop — `ForegroundServiceStartNotAllowedException` uncaught in
+  `FlashBackgroundService.onCreate → startAsForeground` killed the process EVERY time the
+  system restarted the START_STICKY service while backgrounded (7 FATALs captured).
+  Fix: `startAsForeground()` catches everything and returns Boolean; `onCreate` order is now
+  locks → screen receiver → engine start → foreground promotion; refusal → log + `stopSelf()`
+  (mesh keeps running in-process, no crash loop). Plus `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`
+  wired to the Settings "Background transfers" toggle (user-initiated AOSP Doze exemption).
+- **ERROR-021 fixed:** `drainMutex` NPE (declared below the `init` block that launches the
+  drain coroutine → init-order race → uncaught NPE process death) — moved above with a
+  comment locking the ordering constraint.
+- **Bug 7 IMPLEMENTED (notifications):** `docs/ui/notification-ui.md` filled to DESIGNED first
+  (§34), then: `FlashNotificationManager` (`flash_messages` channel, per-conversation ids,
+  immutable PendingIntent → `MainActivity` with `EXTRA_CONVERSATION_ID`), monochrome
+  `ic_notification_flash.xml`, library-safe defaulted callbacks
+  (`onInboundTextMessage`/`onInboundAttachment`) fired only on real inserts (replay-proof),
+  foreground+open-conversation suppression, notification-tap → conversation via
+  `pendingNotificationConversation` flow consumed in `FlashShell` (engine-ready gated).
+- WifiLock finding (API 34+): HIGH_PERF is remapped to LOW_LATENCY and LOW_LATENCY is only
+  active foreground+screen-on — NO WifiLock mode keeps the radio up in background on modern
+  Android. Lock retained for the foreground hot path only. Full dumpsys evidence in
+  `docs/android-platform-notes.md` 2026-08-31 (b).
+
+### In progress
+- Physical two-phone verification of Bug 6 + Bug 7 (THE decisive pending step)
+
+### Broken
+- Nothing new. (Pre-existing timing-flaky test note below.)
+
+### Last change
+Bug 6 re-fix + Bug 7 implementation, both built green. Files: `FlashBackgroundService.kt`,
+`RealFlashChatRepository.kt` (drainMutex order + callbacks), `DiscoveryEngineHolder.kt`
+(callback wiring), `MainActivity.kt` (foreground state, onNewIntent, battery exemption,
+pending-conversation flow), `FlashNotificationManager.kt` (NEW), `ic_notification_flash.xml`
+(NEW), `AndroidManifest.xml` (permission), `notification-ui.md` (DESIGNED),
+`RealFlashChatRepositoryTest.kt` (2 new tests), platform-notes/errors/progress updated.
+
+### Last test
+- See Last verified build above. Also: editor diagnostics clean on all changed files.
+- Physical verification PENDING: (1) background/screen-off phone A >45s → phone B still sees
+  it online, message arrives, logcat has NO `ForegroundServiceStartNotAllowedException`/FATAL;
+  (2) toggle ON "Background transfers", grant the exemption dialog, repeat;
+  (3) Bug 7 checklist in `docs/ui/notification-ui.md` (suppression, tap-to-open, dedupe,
+  screen-off arrival). On this Infinix also check OEM "Phone Master"/battery manager — may
+  need a manual background-activity exemption (AOSP exemption does not control it).
+
+### Known blockers
+- Kotlin daemon flakiness: treat "BUILD SUCCESSFUL" as success; don't trust exit code alone
+- Gradle metadata cache corruption (hit AGAIN this session): `gradlew --stop`, `taskkill //F //IM java.exe`,
+  delete `E:\AndroidDev\Gradle\caches\modules-2\metadata-2.107`, rebuild
+- Build env: `E:\` hosts SDK (`E:\AndroidDev\SDK`), Gradle home (`E:\AndroidDev\Gradle`), JBR
+  (`E:\AndroidDev\AndroidStudio\android-studio\jbr`) — install command at the bottom of this file's
+  current section is authoritative
+- The messaging backoff timing test PASSED this session (whole class green) but remains
+  inherently timing-sensitive; deterministic cleanup still worthwhile
+- PHASE-21/22 depend on Phases 06–20 groundwork that does not exist yet; deferred
+- KMP migration is DE-prioritized until chat UI bugs + calling modules are done
+
+### Recommended next task
+1. Physical two-phone verification above (owner-driven). Record results in `logs/experiments.md`.
+2. Then voice/video calling modules (WebRTC, `shepeliev/webrtc-kmp`, signaling over the WS mesh).
+
+### Files most relevant to next task
+- `app/src/main/java/com/transfer/flash/debug/FlashBackgroundService.kt`
+- `app/src/main/java/com/transfer/flash/notifications/FlashNotificationManager.kt`
+- `app/src/main/java/com/transfer/flash/MainActivity.kt`
+- `core/messaging/src/main/java/com/transfer/flash/core/messaging/RealFlashChatRepository.kt`
+- `docs/ui/notification-ui.md`, `logs/errors.md` (ERROR-020/021)
+
+### Remaining work summary (for next AI)
+1. Physical verification (Bug 6 + Bug 7 checklists)
+2. **Voice/video calling:** `core:calling` + `ui:calling` with WebRTC (`shepeliev/webrtc-kmp`),
+   WireFrame types, signaling over WS mesh, call UI overlay
+3. Deterministic cleanup of the messaging backoff timing test
+4. Then: commit all bug-fix work (with `Co-authored-by: Copilot` trailer), resume KMP migration
+
+### Install command (PowerShell, authoritative)
+```powershell
+Set-Location "C:\Users\KaliOxygen\Downloads\Flash"
+$env:JAVA_HOME = "E:\AndroidDev\AndroidStudio\android-studio\jbr"
+$env:GRADLE_USER_HOME = "E:\AndroidDev\Gradle"
+$env:JAVA_TOOL_OPTIONS = "-Djdk.net.unixdomain.tmpdir=Z:\nope"
+$env:Path = "$env:JAVA_HOME\bin;$env:Path"
+& .\gradlew.bat :app:installDebug --no-configuration-cache --console=plain
+```
+Git-Bash equivalent: prefix with `JAVA_HOME="E:/AndroidDev/AndroidStudio/android-studio/jbr" GRADLE_USER_HOME="E:/AndroidDev/Gradle" JAVA_TOOL_OPTIONS="-Djdk.net.unixdomain.tmpdir=Z:/nope"` and forward slashes; adb at `"E:\AndroidDev\SDK\platform-tools\adb.exe"` (quote it in Git Bash).
+
+## 2026-08-31 — Bugs 1-6 IMPLEMENTED; next = Bug 7, then voice/video calling [SUPERSEDED — Bug 6 root cause turned out to be the sticky-restart crash loop, see the (b) section above and ERROR-020]
+
+### Current branch
+`dev` (work is UNCOMMITTED in the working tree)
+
+### Last verified build
+`:app:assembleDebug` → **BUILD SUCCESSFUL** (2m 40s) with Bugs 1–6 on disk. The Bug 5 reconnect regression test also passes in isolation. HEAD remains `9e94a2d`; the full bug-fix changeset is uncommitted in the working tree.
+
+### Current phase
+Chat UI bug fixes (track 1 of the 2-track plan: 7 bugs → then voice/video calling modules). KMP migration is DE-prioritized until both tracks land.
+
+### Working features (NEW)
+- **Bug 1 DONE:** Single tap no longer opens the actions overlay (`FlashMessageBubble.kt:194-205` — onClick only toggles selection in selection mode; onLongClick is the exclusive actions trigger)
+- **Bug 2 DONE:** Reactions/actions overlay now works on voice/files/video/images (`FlashFileMessageCard.kt`, `FlashImageGrid.kt` — added onLongPress propagation)
+- **Bug 3 DONE:** Per-MIME auto-download of inbound offers, complete end-to-end:
+  - Engine: `DiscoveryEngineHolder.kt` — `@Volatile` `autoDownloadVoice/Image/Video/File` mirrors + `onIncomingOffer` policy lambda (auto-accepts voice+image by default, video+file ask in-bubble) + hook in `handleInboundBinary`
+  - Settings: `FlashSettingsScreen.kt` 4 SwitchRows + `FlashSettingsDataStore.kt` 4 keys/flows/setters
+  - Wiring: `AppEngine.kt` mirrors DataStore → holder; `MainActivity.kt` collects/persists/wires
+  - Shared parity: `core/engine/Flash.kt` `attachmentProgress` now maps `Offered → AwaitingAcceptance`
+- **Bug 4 DONE:** Splash animation extracted into a reusable theme composable:
+  - `ui:theme/.../FlashBrandAnimation.kt` — the bolt + discovery rings + glow + breathing loop,
+    now honors `FlashTheme.motion.reduceMotion` (static bolt at rest), draws an optional dark
+    gradient `background`, and is size-driven by its `modifier`
+  - `app/.../ui/splash/FlashSplashScreen.kt` — now a thin delegate to `FlashBrandAnimation`
+    (visual launch splash unchanged)
+  - `ui/chat/.../ui/transfers/FlashTransfersScreen.kt` — `LoadingRows` reuses it as a compact
+    branded loading mark above the skeleton rows (`background=false`, 96dp box)
+- **Bug 5 DONE:** peer session-up resets pending outbox backoff and drains immediately; reconnect regression test passes in isolation.
+- **Bug 6 DONE (code-level):** visible `MainActivity.onStart` launches the connected-device FGS; it stays alive after `onStop` so background mesh presence/receiving can continue. Physical two-phone verification pending.
+- Phase 03 logging abstraction (`FlashLog`) committed & tested (`da4fba6`)
+- All 9 KMP migration decisions (D1–D9) recorded
+- In-bubble Accept/Decline buttons on inbound file offers (`FlashFileMessageCard.kt:214-228`)
+
+### In progress
+- Bug 7 (see `### Broken` below) — NOT started
+- Voice/video calling (WebRTC) — NOT started
+
+### Broken
+- Bug 7: No message notifications — needs `FlashNotificationManager.kt`
+
+### Last change
+Bug 6 implemented (ERROR-020): `MainActivity.onStart()` is now the sole owner that launches `FlashBackgroundService` while the activity is visible; the delayed launch was removed from `DiscoveryEngineHolder.ensureStarted`. The service stays running across `onStop`, uses `ContextCompat.startForegroundService` for API 24+, logs launch failures, and uses a LOW-importance notification channel. Also fixed Bug 5's pending explicit-API compile error (`public notifyPeerSessionUp`). Uncommitted.
+
+### Last test
+- `:app:assembleDebug` → **BUILD SUCCESSFUL** (2m 40s).
+- `:core:messaging:compileDebugKotlin --rerun-tasks` → **BUILD SUCCESSFUL**.
+- Bug 5 test `notifyPeerSessionUp flushes a queued outbox message stuck in backoff` → **PASS** in isolation.
+- Full `:core:messaging:testDebugUnitTest` is not green: the pre-existing timing-sensitive `failed outbox delivery backs off instead of retrying every tick` test fails, including in isolation. This is unrelated to Bug 6 and needs deterministic-test cleanup.
+- Physical Bug 6 verification remains: background one phone for >45 seconds and confirm the peer stays online and receives a message.
+
+### Known blockers
+- Kotlin daemon flakiness: treat "BUILD SUCCESSFUL" as success; don't trust exit code alone (non-daemon fallback compiles fine but exits 1)
+- Gradle metadata cache corruption: if `metadata-2.107\module-metadata.bin` errors, delete `E:\AndroidDev\Gradle\caches\modules-2\metadata-2.107` and rebuild (toolchain moved F: → E:)
+- Build tip: `E:\` hosts SDK (`E:\AndroidDev\SDK`), Gradle home (`E:\AndroidDev\Gradle`) and the JBR (`E:\AndroidDev\AndroidStudio\android-studio\jbr`)
+- Known failing timing test: `RealFlashChatRepositoryTest.kt:499` (`failed outbox delivery backs off instead of retrying every tick`) — currently fails even in isolation; unrelated to Bug 6
+- PHASE-21/22 depend on Phases 06–20 groundwork that does not exist yet; deferred
+- KMP migration is DE-prioritized until chat UI bugs + calling modules are done
+
+### Recommended next task
+**Bug 7:** Add message notifications via `FlashNotificationManager.kt`, using the existing Android 13+ notification permission flow and avoiding duplicate notifications for the currently open conversation.
+
+### Files most relevant to next task
+- `app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt` (inbound message framing/dispatch)
+- `core/messaging/src/main/java/com/transfer/flash/core/messaging/RealFlashChatRepository.kt` (inbound ingestion)
+- `app/src/main/java/com/transfer/flash/MainActivity.kt` (notification permission and current conversation host state)
+- `app/src/main/AndroidManifest.xml` (`POST_NOTIFICATIONS` already declared)
+- `docs/ui/notification-ui.md`
+
+### Remaining work summary (for next AI)
+1. **Bug 7:** Message notifications
+2. **Voice/video calling:** `core:calling` + `ui:calling` modules with WebRTC (`shepeliev/webrtc-kmp`), WireFrame types, signaling over WS mesh, call UI overlay
+3. Physical Bug 6 background-presence verification and deterministic cleanup of the existing messaging backoff test
+4. Then: commit all bug-fix work (with `Co-authored-by: Copilot` trailer), resume KMP migration
+
+
+
 - Created a separate formal logo proposal for the owner's AI logo competition. Entry point:
   `logo-codex/preview/contact-sheet.png`; source notes: `logo-codex/README.md`.
 - Final mark: F-shaped transfer monogram using Flash Pulse teal, graphite, off-white, and a restrained spark
@@ -326,20 +624,19 @@
 - **Installed to Device:** Tested debug APK installed on physical phone via ADB.
 
 ## Current branch
-`main`
+`dev` — migration decisions committed as `0250a51` (D3=A, D4=A, D6=A, D9=A; D8=A earlier as `e742bec`; D1=B, D2=A, D5=C as `74367dd`)
 
 ## Last verified build
-Working tree at 2026-08-24 (ERROR-016 fix) — `testDebugUnitTest assembleDebug` BUILD SUCCESSFUL, 411 actionable tasks,
-**644 tests / 0 failures / 0 skipped**. `:core:transfer:testDebugUnitTest` alone: 70 tests green (was hanging).
-Previous reference point: commit `9060445` (411 tasks, 0 failures).
+Working tree at 2026-08-31 (migration decision recording + PHASE-21/22 log honesty correction) — documentation-only changes; no build required.
+Previous build reference: 644 tests / 0 failures (2026-08-24, ERROR-016 fix).
 
 ## Current phase
-**Phase 7 (Engine Facade) Complete + Unified WebSocket Transport Deployed.**
-- Ready for multi-device testing on Router / Hotspot networks and Phase 8 UI App Shell wiring (`docs/ui-page-plan.md`).
-- `:core:engine` module created and integrated into settings and app.
-- `FlashEngine` and `DefaultFlashEngine` facade binding all 6 subsystems (`chats`, `transfers`, `discovery`, `network`, `trustStore`, `settings`).
-- Full project build & test suite: 100% GREEN (411 Gradle tasks, `assembleDebug` + `testDebugUnitTest` successful with 0 failures).
-- Up next: **Phase 8 / App Shell & Pages Integration** (wiring UI navigation tabs and pages in `docs/ui-page-plan.md` to `FlashEngine`).
+**Migration planning docs complete (PHASE-00–PHASE-24); all human decisions D1–D9 recorded. Actual KMP implementation has NOT begun.**
+
+- All 25 phase files (PHASE-00 through PHASE-24) exist in `docs/migration/`.
+- **All 9 decisions answered** in `docs/migration/DECISIONS.md`: D1=B (strict commonMain), D2=A (keep core:*), D3=A (switch ui:* to org.jetbrains.compose), D4=A (expect fun flashDynamicColorScheme seam), D5=C (Room 3 KMP + encrypted desktop), D6=A (JmDNS), D7=**pending** (agent may proceed with recommendation — Toast→Snackbar, FileKit, expect ensurePermission), D8=A (desktop ships existing chat UI adaptively), D9=A (keep sample/consumer Android-only through Phase 23; add sample/consumer-desktop in Phase 24).
+- **HONESTY CORRECTION:** PHASE-21 and PHASE-22 log entries claimed an implemented `:desktop` module with PASS builds — **no such code exists** (verified: no `desktop/` dir, no `settings.gradle.kts` include). Those phases produced planning docs only and are **NOT done**. See corrections appended to `docs/migration/logs/migration.md`.
+- **Next execution step:** the migration is still documentation-only. Actual implementation must start from the beginning (Phase 06 groundwork per D1=B), then proceed in order. Do not attempt PHASE-21/22 implementation until Phases 06–20 land.
 
 ## Component status
 - **UI-034 (Adaptive layouts):** `IMPLEMENTED` in `ui/adaptive/FlashAdaptiveLayouts.kt` â€” two-pane not yet consumed by screens (integration pending).
@@ -395,6 +692,7 @@ Previous reference point: commit `9060445` (411 tasks, 0 failures).
 - LAN Discovery and experimental WebSocket multi-peer mesh Transfer.
 
 ## In progress
+- **KMP migration docs (docs/migration/):** PHASE-12–22 authored & grounded; PHASE-23 (interop matrix) and PHASE-24 (publishing) authored but NOT yet grounded/logged. D8=_pending_ (owner answer needed before any Option B desktop UI).
 - **UI-028 (Group header):** IMPLEMENTED â€” device verification pending.
 - **UI-025/026/027 (states):** device verification pending.
 - **UI-021/022, UI-020, UI-019:** device verification pending.
@@ -403,13 +701,10 @@ Previous reference point: commit `9060445` (411 tasks, 0 failures).
 - None.
 
 ## Last change
-ERROR-013 rewrite attempt REVERTED after findings: structured-concurrency dispatcher fixed symptoms but exposed entangled completion semantics (first-wins terminal guard vs late authoritative frames — racing-ACK regression); dedicated test dispatchers disproved pool starvation; thread dumps show claim/read lock as blocker. Next session: build completion state machine pure-first (PairingSessionStateMachine pattern), then thin executor. Tests remain @Ignore green-skipped.
+Authored + code-grounded migration docs **PHASE-21** (`:desktop` app shell) and **PHASE-22** (adaptive desktop screens). Verified every theme token, API call, and composable signature in PHASE-22 against actual source (FlashColors/Dimensions/Shapes/Typography/Text/Icons/Theme, FlashAdaptiveLayouts, FlashBottomNav, FlashNavigation, FlashTransfersScreen, FlashNearbyScreen, FlashChatListScreen, FlashConversationScreen, FlashSettingsScreen); fixed ~10+ ungrounded references. Appended PHASE-21 + PHASE-22 entries to `docs/migration/logs/migration.md` (previously zero entries).
 
 ## Last test
-testDebugUnitTest assembleDebug - BUILD SUCCESSFUL (2026-08-24); **644 tests / 0 failures / 0 skipped** across 11 test
-modules (app 1, core:common 42, core:discovery 79, core:engine 1, core:messaging 12, core:network 99,
-core:persistence 34, core:security 80, core:transfer 70, ui:chat 189, ui:theme 37).
-`MultiStreamDispatcherTest` additionally re-run 8x standalone (real threads) - 8/8 green, no flakiness.
+PHASE-22 grep sweep — no ungrounded tokens remain (tabActiveBg, surfaceApp, roundedMedium, iconMedium, labelMedium, bodyLarge, spec=, FlashBottomNav param mismatch all gone; only the correct inline 200.dp sidebarWidth constant remains). Docs are documentation-only; no Gradle build applies. Prior build reference: 644 tests / 0 failures (2026-08-24).
 
 ## Known blockers
 - **Environment (ERROR-017, WORKAROUND MANDATORY)**: Gradle cannot start at all in this environment without
@@ -437,7 +732,13 @@ All items below are absorbed into those two documents:
 - **Engine-side**: auto-retry/backoff indicator (UI-044), key-changed warning state (UI-031).
 
 ## Recommended next task
-**Owner device run (two phones):** Dev Console → Connect → Test 10MB on Router AND Hotspot. Expected sender log: chunks sent + "consumed by sender dispatcher" ACKs; expected receiver log: `Receiver destination opened file=...` → `Receiver completed transferId=... verified=true`, and a 10,485,760-byte file at `FlashReceived/<transferId>/test_10mb.bin`. Then Ping Msg both ways and Choose File & Send. If green, proceed to Phase 8 UI App Shell wiring (`docs/ui-page-plan.md`).
+**The migration is in planning-docs-only state; actual KMP implementation has not begun.** The first implementation phase is **PHASE-06 (KMP pilot)** — converting `core:common` to the first `commonMain` source set. But the user explicitly asked to continue from Phase 12. Since all decisions are now recorded, the next real step is to start the actual KMP migration implementation. The recommended order is:
+1. **PHASE-06** — KMP pilot (set up `commonMain` in `core:common` per D1=B)
+2. **PHASE-07** — Security KMP (crypto, TLS, pinning)
+3. ... through PHASE-20 in order
+4. PHASE-21 and PHASE-22 only after Phases 06–20 land (they are currently planning docs only; the log claims of implemented code are false and corrected)
+
+If the user wants to continue from Phase 12 as requested, start with **PHASE-12 (engine KMP implementation)** — but note that Phases 06–11 (KMP groundwork) have not been implemented, so Phase 12's dependencies may not be satisfied.
 
 ## 2026-08-22 - P3 NSD session note (agent handoff)
 - LAN MVP networking now has `nsd/NsdTransport.kt` (:core:discovery) implementing FlashRadioTransport C3.2-C3.4 (identity TXT advertise + self-filter, continuous browse w/ capped restarts, API>=34 ServiceInfoCallback vs <34 hardened NsdResolveQueue split, NetworkRequest-scoped discovery API 33+). `NsdFlashDiscovery` untouched (R4). NOT yet Gradle-verified (forbidden session) - run testDebugUnitTest first; tests: nsd/NsdTransportLogicTest.kt (pure-JVM, no coroutines-test dep in module).
@@ -474,11 +775,13 @@ Git Bash equivalent: `export JAVA_HOME=... GRADLE_USER_HOME=... JAVA_TOOL_OPTION
 then `./gradlew.bat testDebugUnitTest assembleDebug --console=plain`.
 
 ## Files most relevant to next task
-- `logs/handoff.md` testing backlog above (owner runs; lead fixes / marks VERIFIED)
-- `ui/chat/src/main/java/com/transfer/flash/ui/adaptive/FlashAdaptiveLayouts.kt` (two-pane consumption pending)
-- `ui/chat/src/main/java/com/transfer/flash/ui/chat/FlashStressTestScreen.kt` (entry-point wiring)
-- `docs/ui/performance.md` (device measurement plan for UI-042/043 numbers)
-- Integration files from Deferred block: FlashNavigation.kt, FlashNetworkSimSheet.kt, FlashEncryptionIndicators.kt, FlashPairingFlow.kt
+- `docs/migration/PHASE-06-kmp-pilot.md` (first actual KMP implementation phase — blocked by nothing; D1=B chosen)
+- `docs/migration/PHASE-12-engine-kmp.md` (engine KMP — where user asked to start)
+- `docs/migration/DECISIONS.md` — all 9 decisions recorded; D7 still pending (agent may proceed on recommendation)
+- `docs/migration/logs/migration.md` (phase log, with PHASE-21/22 honesty corrections appended)
+- `docs/migration/README.md` (phase table, verify rows 21/22)
+- `logs/handoff.md` testing backlog below (owner runs; lead fixes / marks VERIFIED)
+- `docs/migration/CONVENTIONS.md` (R1–R11 rules for every phase)
 
 ## 2026-08-22 - P3 pure-logic agent handoff (C3.3/C3.5/C3.9)
 - Created (ONLY these): `core/discovery/.../core/{StandardEndpointDirectory,TxtCodec,DiscoveryRetryPolicy,CompositeDiscovery}.kt` + 4 matching JUnit4 test classes under src/test. NO existing file touched; nsd/** untouched.

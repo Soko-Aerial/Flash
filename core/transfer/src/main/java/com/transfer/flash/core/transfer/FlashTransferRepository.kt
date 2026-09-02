@@ -3,7 +3,9 @@ package com.transfer.flash.core.transfer
 import com.transfer.flash.core.common.model.FlashDevice
 import com.transfer.flash.core.common.result.FlashResult
 import com.transfer.flash.core.transfer.model.FlashTransfer
+import com.transfer.flash.core.transfer.model.FlashTransferDirection
 import com.transfer.flash.core.transfer.model.FlashTransferId
+import com.transfer.flash.core.transfer.model.FlashTransferState
 import kotlinx.coroutines.flow.StateFlow
 
 /**
@@ -78,4 +80,27 @@ public interface FlashTransferRepository {
 
     /** Terminal failure for an inbound transfer (e.g. unrecoverable rejection). */
     public fun onIncomingFailed(transferId: String, reason: String): Unit = Unit
+
+    /**
+     * True when a fresh inbound FILE_START for [transferId] is a **retry** of a transfer this
+     * device already accepted, rather than a new offer that must pass the acceptance gate.
+     *
+     * A failed receive is torn down completely — sink closed, pipeline session dropped — so the
+     * sender's retry arrives as a brand-new session. Without this check the host would re-open the
+     * offer gate on a transfer the user already accepted: the sink stays deferred, every chunk is
+     * dropped, no ACK ever goes back and the row sits frozen. Hosts call it on the session-started
+     * edge and resolve the destination sink immediately when it is true.
+     *
+     * [FlashTransferState.Cancelled] is deliberately excluded — a declined offer must never be
+     * silently accepted because the sender tried again — and so are `Offered` (the normal gate)
+     * and `Completed` (nothing left to receive).
+     */
+    public fun isResumableInboundRetry(transferId: String): Boolean {
+        val transfer = activeTransfers.value.firstOrNull { it.id.value == transferId } ?: return false
+        if (transfer.direction != FlashTransferDirection.Receiving) return false
+        return transfer.state == FlashTransferState.Transferring ||
+            transfer.state == FlashTransferState.Verifying ||
+            transfer.state == FlashTransferState.Paused ||
+            transfer.state == FlashTransferState.Failed
+    }
 }

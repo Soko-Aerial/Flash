@@ -69,8 +69,18 @@ class AppEngine @Inject constructor(
     /** Composite discovery engine, or null before [start] completes. */
     val discovery: CompositeDiscovery? get() = DiscoveryEngineHolder.current()
 
+    /**
+     * Manual reconnect behind the chat connection banner's Retry button: restarts discovery
+     * browsing and forces an immediate auto-connect sweep of every discovered peer without a live
+     * session. Returns false when the stack has not booted yet (nothing to retry).
+     */
+    fun reconnectNow(): Boolean = DiscoveryEngineHolder.reconnectNow()
+
     /** Device-to-device pairing coordinator (Nearby Pair/Chat + trust store), or null before [start]. */
     val pairing: com.transfer.flash.pairing.PairingCoordinator? get() = DiscoveryEngineHolder.currentPairing()
+
+    /** WebRTC voice/video calling contract (C7 / ADR-025), or null before [start]. */
+    val calls: com.transfer.flash.core.calling.FlashCalling? get() = DiscoveryEngineHolder.currentCallCoordinator()
 
     // Local identity is read from the same persisted store the holder advertises with, so the
     // Nearby "this device" card matches what peers actually see. Lazy: the store touches prefs.
@@ -113,6 +123,28 @@ class AppEngine @Inject constructor(
                 val result = runCatching { DiscoveryEngineHolder.ensureStarted(context) }
                 result
                     .onSuccess {
+                        // Bug 3: mirror auto-download settings into the holder so the
+                        // auto-accept policy in handleInboundBinary can read them without
+                        // a reference to the DataStore.
+                        scope.launch {
+                            settingsStore.autoDownloadVoice.collect { DiscoveryEngineHolder.autoDownloadVoice = it }
+                        }
+                        scope.launch {
+                            settingsStore.autoDownloadImage.collect { DiscoveryEngineHolder.autoDownloadImage = it }
+                        }
+                        scope.launch {
+                            settingsStore.autoDownloadVideo.collect { DiscoveryEngineHolder.autoDownloadVideo = it }
+                        }
+                        scope.launch {
+                            settingsStore.autoDownloadFile.collect { DiscoveryEngineHolder.autoDownloadFile = it }
+                        }
+                        // ERROR-031 / D8: same mirroring for the call-quality preference, read by
+                        // CallCoordinator through a lambda so core:calling stays persistence-free.
+                        scope.launch {
+                            settingsStore.prioritiseVoiceQuality.collect {
+                                DiscoveryEngineHolder.prioritiseVoiceQuality = it
+                            }
+                        }
                         _startError.value = null
                         _ready.value = true
                     }

@@ -1,6 +1,7 @@
+@file:OptIn(com.transfer.flash.core.common.annotation.FlashInternalApi::class)
+
 package com.transfer.flash.core.common.logging
 
-import android.util.Log
 import com.transfer.flash.core.common.time.FlashTimeSource
 import com.transfer.flash.core.common.time.SystemTimeSource
 
@@ -25,9 +26,10 @@ import com.transfer.flash.core.common.time.SystemTimeSource
  *   https://mortoray.com/wait-free-queueing-and-ultra-low-latency-logging/ (wait-free rings are
  *   explicitly recommended against unless nanosecond latency matters).
  * - **Android forwarding:** `:core:common` is an Android library module (android.jar on the
- *   compile classpath), so `Log.println` compiles directly. On the JVM unit-test tier
- *   `android.util.Log` methods throw "not mocked"; the forward call is therefore wrapped so it
- *   can never break callers there — the in-memory buffer still records every entry.
+ *   compile classpath), so `Log.println` compiles directly in [FlashPlatformLogSink]. On the
+ *   JVM unit-test tier `android.util.Log` methods throw "not mocked"; the sink therefore
+ *   wraps the forward call so it can never break callers there — the in-memory buffer still
+ *   records every entry.
  * - **Structured tags:** callers pass one of the §24 tag constants (DISCOVERY, LAN,
  *   WIFI_DIRECT, CONNECTION, PAIRING, TLS, TRANSFER, CHUNK, STORAGE, DATABASE, SERVICE,
  *   PERFORMANCE). Never log secrets or sensitive user data (§24).
@@ -92,26 +94,18 @@ internal class FlashLogger(
             }
             buffer.addLast(entry)
         }
-        forwardToAndroidLog(level, entry.message, throwable)
+        forwardToSink(level, entry.message, throwable)
     }
 
-    private fun forwardToAndroidLog(level: FlashLogLevel, message: String, throwable: Throwable?) {
-        val priority = when (level) {
-            FlashLogLevel.INFO -> Log.INFO
-            FlashLogLevel.WARN -> Log.WARN
-            FlashLogLevel.ERROR -> Log.ERROR
-        }
-        try {
-            val fullMessage = if (throwable != null) {
-                "$message\n${Log.getStackTraceString(throwable)}"
-            } else {
-                message
-            }
-            Log.println(priority, tag, fullMessage)
-        } catch (_: Throwable) {
-            // JVM unit-test environment: android.util.Log is not mocked. The in-memory
-            // buffer above already recorded the entry; forwarding failures must never
-            // propagate into caller code paths.
+    private fun forwardToSink(
+        level: FlashLogLevel,
+        message: String,
+        throwable: Throwable?,
+    ) {
+        when (level) {
+            FlashLogLevel.INFO -> FlashLog.i(tag, message, throwable)
+            FlashLogLevel.WARN -> FlashLog.w(tag, message, throwable)
+            FlashLogLevel.ERROR -> FlashLog.e(tag, message, throwable)
         }
     }
 

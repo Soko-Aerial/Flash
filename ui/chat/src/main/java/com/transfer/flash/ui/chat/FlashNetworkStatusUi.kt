@@ -61,7 +61,7 @@ object FlashNetworkStatusMath {
 
     /**
      * Resolve conversation connection health.
-     * Precedence: no peers & no transport → Offline; handshake in flight → Connecting;
+     * Precedence: no peers → Offline; handshake in flight → Connecting; no transport → Offline;
      * direct transports with online presence → Connected; relay → Degraded;
      * peer gone or none discovered → Offline; anything else (e.g. relay + connecting peer) → Degraded.
      */
@@ -72,8 +72,12 @@ object FlashNetworkStatusMath {
     ): FlashConnectionHealth = when {
         // Nobody reachable at all — always offline regardless of transport.
         peerCount == 0 -> FlashConnectionHealth.Offline
-        transport == FlashNetworkTransport.Unknown -> FlashConnectionHealth.Offline
+        // Connecting outranks "no transport" (ERROR-031). A peer whose session just dropped has no
+        // transport to name yet — that is exactly the reconnect window, not idle searching — so
+        // testing Unknown first made the banner say "Searching for devices…" underneath a header
+        // already showing "Connecting…".
         peerPresence == FlashPeerPresence.Connecting -> FlashConnectionHealth.Connecting
+        transport == FlashNetworkTransport.Unknown -> FlashConnectionHealth.Offline
         (transport == FlashNetworkTransport.Lan || transport == FlashNetworkTransport.WifiDirect) &&
             peerPresence == FlashPeerPresence.Online -> FlashConnectionHealth.Connected
         // An unreachable peer is offline regardless of any relay path still being up.
