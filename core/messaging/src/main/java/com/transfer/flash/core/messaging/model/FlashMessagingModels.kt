@@ -87,6 +87,7 @@ public data class FlashQuotedReplyUi(
  */
 public enum class FlashFileTransferStatus {
     NotDownloaded,
+    AwaitingAcceptance,
     Transferring,
     Downloaded,
     Failed,
@@ -153,6 +154,58 @@ public data class FlashVoiceAttachmentUi(
     val transferStatus: FlashFileTransferStatus = FlashFileTransferStatus.Downloaded,
 )
 
+/**
+ * What a finished call looks like in a chat thread (UI-050).
+ *
+ * The four cases are the ones worth distinguishing visually; the wire protocol has no call-log
+ * frame, so each device derives its own row from state it already held when the call ended.
+ */
+public enum class FlashCallEventKind {
+    /** This device placed the call and media flowed. */
+    Outgoing,
+
+    /** The peer called and media flowed. */
+    Incoming,
+
+    /** The peer called and media never flowed — declined here, or the caller gave up. */
+    Missed,
+
+    /** This device called and the peer never answered or declined. */
+    Unanswered,
+}
+
+/**
+ * A call row in a conversation (UI-050) — the chat-side record of a voice or video call.
+ *
+ * Attached to a [FlashMessageUi] rather than being a message type of its own so a call row
+ * inherits bubble selection, long-press and timestamps for free.
+ */
+public data class FlashCallEventUi(
+    val kind: FlashCallEventKind,
+    val video: Boolean,
+    /** How long media actually flowed, ms. Zero when the call never connected. */
+    val durationMs: Long = 0L,
+) {
+    /** True for the one case that deserves a different colour: an incoming call with no media. */
+    public val missed: Boolean
+        get() = kind == FlashCallEventKind.Missed
+
+    /** `"7:04"` / `"1:02:11"`, or null when the call never connected. */
+    public val durationLabel: String?
+        get() {
+            if (durationMs <= 0L) return null
+            val totalSeconds = durationMs / 1000L
+            val seconds = totalSeconds % 60L
+            val minutes = (totalSeconds / 60L) % 60L
+            val hours = totalSeconds / 3600L
+            return if (hours > 0L) {
+                "%d:%02d:%02d".format(hours, minutes, seconds)
+            } else {
+                "%d:%02d".format(minutes, seconds)
+            }
+        }
+}
+
 public data class FlashMessageUi(
     val id: String,
     val senderName: String,
@@ -170,6 +223,8 @@ public data class FlashMessageUi(
     val deliveryStatus: FlashMessageStatus? = null,
     val groupPosition: FlashMessageGroupPosition = FlashMessageGroupPosition.SINGLE,
     val showSenderHeader: Boolean = true,
+    /** Non-null when this row is a call log entry instead of a text/attachment message. */
+    val callEvent: FlashCallEventUi? = null,
 )
 
 public data class FlashChatListItemUi(

@@ -1,6 +1,9 @@
+@file:OptIn(FlashInternalApi::class)
+
 package com.transfer.flash.core.network.ws
 
-import android.util.Log
+import com.transfer.flash.core.common.annotation.FlashInternalApi
+import com.transfer.flash.core.common.logging.FlashLog
 import com.transfer.flash.core.common.model.FlashDevice
 import com.transfer.flash.core.common.model.FlashDeviceId
 import com.transfer.flash.core.common.model.FlashTransportType
@@ -43,6 +46,12 @@ import kotlinx.coroutines.flow.consumeAsFlow
 public class WsSession(
     public val connection: WsConnection,
     override val peer: FlashDevice,
+    /**
+     * True when this session came from OUR outbound dial ([WsFlashNetwork.connectManual]);
+     * false when it was accepted as an inbound connection. Used by the deterministic
+     * connect-glare tiebreaker (ERROR-023) so both peers converge on the same socket.
+     */
+    public val isOutbound: Boolean = false,
     private val logTag: String = TAG,
     private val onDisconnected: (WsSession, String) -> Unit = { _, _ -> },
 ) : FlashSession {
@@ -107,14 +116,14 @@ public class WsSession(
     public fun onTextReceived(text: String) {
         val result = textChannel.trySendBlocking(text)
         if (result.isFailure && !result.isClosed) {
-            Log.w(logTag, "WS text frame dropped (buffer full) peer=${peer.friendlyName}")
+            FlashLog.w(logTag, "WS text frame dropped (buffer full) peer=${peer.friendlyName}")
         }
     }
 
     public fun onBinaryReceived(data: ByteArray) {
         val result = binaryChannel.trySendBlocking(data)
         if (result.isFailure && !result.isClosed) {
-            Log.w(logTag, "WS binary frame dropped (buffer full) peer=${peer.friendlyName}")
+            FlashLog.w(logTag, "WS binary frame dropped (buffer full) peer=${peer.friendlyName}")
         }
     }
 

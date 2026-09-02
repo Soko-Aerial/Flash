@@ -91,7 +91,87 @@ FLASH_FILE_ACK version=1 transferId=<id> received=<bytes-received> ok=<true|fals
 - Escaping matches the session protocol (`%25`, `%20`, `%3D`).
 - Known limits: no TLS, no trust/verification UX, no resume, no hash verification, no app-level heartbeat (relies on TCP failure surfacing).
 
+## Calling (C7, 2026-09-02)
+
+1:1 voice/video calls ride the WS mesh as text frames under the `FLASH_CALL` prefix,
+encoded with the same `FlashTextFraming` field rules as chat/pairing frames. Media itself
+travels over WebRTC (SRTP/DTLS, see ADR-025); these frames carry only signaling.
+
+All frames share `callId=<uuid>` (caller-generated) and `from=<escaped-device-id>`.
+Conversation identity is implicit: the WS session's peer device id *is* the conversation.
+
+### Call control frames
+
+```text
+FLASH_CALL action=invite callId=<uuid> from=<id> video=<true|false> name=<escaped-name>
+FLASH_CALL action=accept callId=<uuid> from=<id>
+FLASH_CALL action=decline callId=<uuid> from=<id>
+FLASH_CALL action=hangup callId=<uuid> from=<id>
+```
+
+- `invite`: caller -> callee. `video` declares audio-only vs video intent. Caller enters
+  `dialing`; callee enters `ringing` and shows the incoming-call UI/notification.
+- `accept`: callee -> caller after the user taps accept. Both sides proceed to SDP.
+- `decline`: callee -> caller (user tapped decline or auto-declined a second concurrent
+  call). Call ends on both sides.
+- `hangup`: either side, any state. Call ends on both sides. Also sent on local teardown
+  errors so the peer does not wait on a dead session.
+
+### SDP frames
+
+```text
+FLASH_CALL action=offer callId=<uuid> from=<id> sdp=<escaped-sdp>
+FLASH_CALL action=answer callId=<uuid> from=<id> sdp=<escaped-sdp>
+```
+
+- The caller sends `offer` immediately after `accept` arrives (caller is the offerer;
+  glare is impossible because only the caller offers).
+- SDP is the full session description string (type is implied by the action). As of
+  ERROR-024/ADR-027 the `sdp` field is **base64-encoded** (RFC 4648, no whitespace, no
+  `=`/`%`/space characters that collide with the text-framing escape rules), so the
+  multi-line, whitespace-sensitive SDP survives the framing layer byte-for-byte.
+  `CallFrameCodec.decodeSdp` tries base64 first and falls back to raw escaped text for
+  legacy pre-hardening peers (a real SDP starts with `v=0`, which is not valid base64, so
+  the fallback is unambiguous in practice). Offers are ~4-8 KB - within text-frame norms.
+
+### ICE frames (trickle)
+
+```text
+FLASH_CALL action=ice callId=<uuid> from=<id> mid=<escaped-mid> index=<n> candidate=<escaped-candidate>
+```
+
+- Trickled as local candidates appear. Receivers buffer candidates until the remote
+  description is set (signaling-state check), then apply - the webrtc-kmp sample pattern.
+- `iceServers` is empty on both sides: Flash is LAN/hotspot-only, host candidates connect
+  peer-to-peer on-link. No STUN/TURN.
+
+### Ordering and failure rules
+
+- Frames for one call are ordered by the single WS session (TCP); no reordering occurs.
+- If the WS session dies mid-call, the call fails immediately on both sides (media may
+  survive briefly, but Flash treats signaling loss as call loss - deterministic and simple).
+- Unknown `action` values are ignored (forward compatibility).
+- A device supports at most one active call; a second incoming `invite` while busy is
+  auto-declined with `reason` omitted (plain `decline`).
+
+### Call log rows: no wire frame
+
+There is deliberately **no** call-log frame. When a call ends, each device already holds every
+field a log row needs - call id, peer, direction, video flag, end reason, duration - so each
+writes its own row into the chat thread locally. The row is stored as ordinary message text
+under a `cmsg:` marker, which is a *storage* convention inside Flash's own database, not part of
+this protocol: a third-party consumer receives the same information as a `FlashCallLogEntry`
+callback and is free to persist it however it likes.
+
+The cost is that a locally-derived row only knows what that device observed. `missed` is
+therefore defined as "an incoming call that never carried media" rather than read off the wire,
+because a callee that declines and a callee whose caller gave up both end the call as `NORMAL` -
+`decline()` reports NORMAL locally, and an inbound `hangup` while RINGING does too. The
+distinction exists on the caller's side (an inbound `decline` ends as DECLINED, a dial timeout as
+NO_ANSWER) and is simply not recoverable on the callee's.
+
 ## Intended Full Protocol
+
 
 The production transfer protocol will run over TLS and will include:
 

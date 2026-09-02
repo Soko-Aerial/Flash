@@ -58,6 +58,24 @@ class FlashNetworkStatusLogicTest {
     }
 
     @Test
+    fun `connecting presence outranks an unnamed transport`() {
+        // ERROR-031: while a dropped session is being re-established the repository reports
+        // Connecting with no transport to name. That is the reconnect window, not idle searching —
+        // the banner must agree with the "Connecting…" the header is already showing.
+        assertEquals(
+            FlashConnectionHealth.Connecting,
+            FlashNetworkStatusMath.resolveHealth(
+                FlashNetworkTransport.Unknown,
+                FlashPeerPresence.Connecting,
+                peerCount = 1,
+            ),
+        )
+        // Sending is never blocked mid-reconnect: the message queues in the outbox and drains when
+        // the session returns, instead of the composer going dead.
+        assertFalse(FlashNetworkStatusMath.isBlockingState(FlashConnectionHealth.Connecting))
+    }
+
+    @Test
     fun `fallback branch resolves to degraded`() {
         // Relay + typing peers: alive but not direct → Degraded (else-branch).
         assertEquals(

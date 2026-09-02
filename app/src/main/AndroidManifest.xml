@@ -9,12 +9,32 @@
     <!-- Keeps the CPU alive during screen-off/Doze so WebSocket keepalive pings keep firing
          and the mesh sessions/multicast survive (held for the FlashBackgroundService lifetime). -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Bug 6: user-initiated exemption dialog (ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS) so the
+         mesh survives Doze/App Standby while backgrounded. Fired only from the Settings
+         "Background transfers" toggle — never on install/startup. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <!-- P3.5/D-M4: background discovery host (connectedDevice FGS type). -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- B9: voice-message capture via MediaRecorder (runtime-requested on first hold). -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- C7 (calling): camera for video calls (runtime-requested at call start). -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <!-- C7 (calling): microphone/camera foreground-service types for the in-call FGS
+         (Notification.CallStyle, Android 14+ setOngoing). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <!-- C7 (calling): FlashCallAudioRouter needs this for setMode(MODE_IN_COMMUNICATION),
+         setCommunicationDevice/setSpeakerphoneOn and startBluetoothSco. Install-time (normal)
+         permission, no runtime prompt. Without it every one of those calls is refused and a
+         call silently runs on the media audio path: no hardware AEC, long playout buffer, dead
+         speaker button. Routing to an already-connected Bluetooth headset needs no BLUETOOTH_*
+         permission, so none is requested. -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <!-- C7 (calling): FlashCallRinger vibrates for an incoming invite, honouring the ringer mode
+         and the user's "vibrate for calls" setting. Install-time (normal) permission. -->
+    <uses-permission android:name="android.permission.VIBRATE" />
 
     <application
         android:name=".di.FlashApplication"
@@ -29,6 +49,7 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:enableOnBackInvokedCallback="true"
             android:label="@string/app_name"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
@@ -42,6 +63,21 @@
             android:name=".debug.FlashBackgroundService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+
+        <!-- C7 (calling): in-call FGS with microphone (and camera for video calls).
+             The service is started while the app is foreground (user taps call / answers
+             from notification), which satisfies Android 12+ while-in-use restrictions.
+             The foregroundServiceType reflects the actual types used at runtime. -->
+        <service
+            android:name=".calling.FlashCallService"
+            android:exported="false"
+            android:foregroundServiceType="microphone|camera" />
+
+        <!-- C7 (calling): CallStyle notification action buttons (answer/decline/hang up)
+             route through this receiver to the in-process CallCoordinator. -->
+        <receiver
+            android:name=".calling.FlashCallActionReceiver"
+            android:exported="false" />
 
         <provider
             android:name="androidx.core.content.FileProvider"

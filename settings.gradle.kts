@@ -31,9 +31,11 @@ include(":core:discovery")
 include(":core:network")
 include(":core:transfer")
 include(":core:messaging")
+include(":core:calling")
 include(":core:engine")
 include(":ui:theme")
 include(":ui:chat")
+include(":ui:callui")
 
 // Test-harness consumers that reproduce a downstream compile classpath (Phase 2 Task 2.3).
 // NOT published — they have no maven-publish plugin. See docs/publishing/PHASE-02-dependency-scope.md.

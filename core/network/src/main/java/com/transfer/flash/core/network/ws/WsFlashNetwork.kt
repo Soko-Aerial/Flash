@@ -61,6 +61,27 @@ public class WsFlashNetwork(
     private val hardeningPolicy: SessionHardeningPolicy = SessionHardeningPolicy(),
     private val healthAggregator: ConnectionHealthAggregator = ConnectionHealthAggregator(),
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
+    /**
+     * Backoff floor for the **backup** redial loop the accepting side of a session runs
+     * (ERROR-026). Deliberately larger than the primary loop's base (ReconnectPolicy.DEFAULT_BASE_MS,
+     * 1 s) so the peer that originally dialed us gets first refusal and connect glare stays rare.
+     * Injectable so tests need not sleep seconds.
+     */
+    private val backupRedialBaseMs: Long = BACKUP_REDIAL_BASE_MS,
+    /** Clock for session-freshness checks ([hasLiveSession]); injectable so tests need not wait. */
+    private val nowMs: () -> Long = System::currentTimeMillis,
+    /**
+     * Called when the platform reports a usable network (Wi-Fi/Ethernet available), on the
+     * ConnectivityManager callback thread, just before the redial sweep below.
+     *
+     * The app layer uses it to retry a foreground-service promotion that was refused while the
+     * process was backgrounded (ERROR-031 / D7): a rejoin is one of the few moments the retry can
+     * succeed, and it is already being observed here. `core:network` knows nothing about foreground
+     * services, and its watcher is `internal`, so the moment is surfaced rather than duplicated by a
+     * second ConnectivityManager callback in `:app`. Must not throw; exceptions are swallowed so a
+     * host-side failure cannot cost the mesh its rejoin sweep.
+     */
+    private val onUsableNetwork: () -> Unit = {},
 ) : FlashNetwork, EndpointMemory, WsConnection.Listener {
 
     private val running = AtomicBoolean(false)
@@ -74,13 +95,15 @@ public class WsFlashNetwork(
 
     // ------------------------------------------------------------------
     // #18: outbound reconnect engine (wires the previously-dead ReconnectPolicy +
-    // AndroidNetworkWatcher into the live WS path). Only sessions WE dialed
-    // (connectManual) get a reconnect target — inbound peers dialed us and will
-    // redial themselves. On an unexpected drop we redial the last-known route with
-    // exponential-backoff-with-jitter; a fresh network (Wi-Fi rejoin) collapses the
-    // pending backoff to an immediate attempt. Heartbeat liveness is already handled
-    // at the connection layer (WsConnection PING + no-inbound watchdog, ADR-016), so
-    // the HeartbeatTracker state machine stays the TCP/LanSession path's concern.
+    // AndroidNetworkWatcher into the live WS path). Sessions WE dialed (connectManual)
+    // get a reconnect target and redial it with exponential-backoff-with-jitter; a fresh
+    // network (Wi-Fi rejoin) collapses the pending backoff to an immediate attempt.
+    // Inbound-only peers have no target, so ERROR-026 added a slower BACKUP loop for them
+    // off `knownEndpoints` — "the dialer will redial itself" is only true while the dialer's
+    // process is actually scheduled, which is exactly what screen-off/Doze breaks.
+    // Heartbeat liveness is already handled at the connection layer (WsConnection PING +
+    // no-inbound watchdog, ADR-016), so the HeartbeatTracker state machine stays the
+    // TCP/LanSession path's concern.
     // ------------------------------------------------------------------
 
     /** deviceId -> last route we dialed, kept so we can redial after an unexpected drop. */
@@ -91,6 +114,16 @@ public class WsFlashNetwork(
 
     /** deviceId -> its backoff counter; reset on a stable (re)connect. */
     private val reconnectPolicies = ConcurrentHashMap<String, ReconnectPolicy>()
+
+    /**
+     * Peers we tore down locally via [disconnect]. ERROR-026 gave the ACCEPTING side of a session a
+     * backup redial path, and that path must still honour an explicit local disconnect.
+     * [reconnectTargets] used to carry that intent implicitly — removing the target meant "do not
+     * redial" — but an inbound-only peer has no target to remove, so the intent is recorded here
+     * instead. Cleared whenever a session for the peer is admitted again (any successful connect, in
+     * either direction, means the peer is wanted).
+     */
+    private val localDisconnects = ConcurrentHashMap.newKeySet<String>()
 
     private var networkWatcher: AndroidNetworkWatcher? = null
 
@@ -168,6 +201,7 @@ public class WsFlashNetwork(
         reconnectJobs.clear()
         reconnectTargets.clear()
         reconnectPolicies.clear()
+        localDisconnects.clear()
 
         // Pending handshakes hold live sockets with active read loops — close, don't just forget.
         pendingHandshakes.keys.forEach { it.close("Network stopped") }
@@ -257,7 +291,6 @@ public class WsFlashNetwork(
         }
 
         pendingHandshakes.remove(connection)
-        earlyFrames.remove(connection)
 
         val peerDevice = when {
             // Timed out waiting for the peer HELLO.
@@ -278,13 +311,15 @@ public class WsFlashNetwork(
             else -> handshakeOutcome.getOrThrow()
         }
 
-            val session = WsSession(connection, peerDevice) { s, _ ->
+            val session = WsSession(connection, peerDevice, isOutbound = true) { s, _ ->
                 onSessionDisconnected(s)
             }
 
             if (!registerSession(session)) {
                 // Policy rejected (concurrency cap hit, or an equal/richer incumbent already holds
-                // this peer). Tear down our freshly-opened socket so it cannot keep pumping frames.
+                // this peer). Tear down our freshly-opened socket so it cannot keep pumping frames —
+                // but first move anything the peer already streamed on it to the surviving session.
+                handOffEarlyFrames(connection, session.peerDeviceId)
                 session.disconnect("Session not admitted")
                 return@withContext FlashResult.Failure(
                     FlashError.PeerUnavailable(peerDevice.id.value, "Session not admitted"),
@@ -307,7 +342,9 @@ public class WsFlashNetwork(
     override suspend fun disconnect(deviceId: FlashDeviceId): FlashResult<Unit> = withContext(Dispatchers.IO) {
         // #18: an explicit local disconnect is intentional — drop the reconnect target and cancel any
         // in-flight redial loop BEFORE closing the session, so onSessionDisconnected does not immediately
-        // reschedule the peer we just asked to leave.
+        // reschedule the peer we just asked to leave. ERROR-026: record the intent explicitly too, because
+        // an inbound-only peer has no reconnect target whose absence could encode it.
+        localDisconnects.add(deviceId.value)
         reconnectTargets.remove(deviceId.value)
         reconnectPolicies.remove(deviceId.value)
         reconnectJobs.remove(deviceId.value)?.cancel()
@@ -359,6 +396,7 @@ public class WsFlashNetwork(
                 onSessionDisconnected(s)
             }
             if (!registerSession(session)) {
+                handOffEarlyFrames(connection, session.peerDeviceId)
                 session.disconnect("Session not admitted")
             }
         }
@@ -376,48 +414,151 @@ public class WsFlashNetwork(
      *   incumbent (stability wins — no reconnect churn, no frame loss across a swap); a strictly
      *   richer new path supersedes it. This replaces the old unconditional "newer session wins",
      *   which tore down a healthy incumbent on every connect-glare event.
+     * - **Connect-glare tiebreaker (ERROR-023):** when a second LAN session for the SAME peer
+     *   arrives via the opposite direction (our inbound vs our outbound dial), rank is a tie
+     *   (LAN=LAN), and `KeepExisting` alone would leave each side keeping whichever registered
+     *   first — a coin flip that ~50% of the time cross-wires the two ends onto different sockets
+     *   of the same TCP pair, both of which then die and re-glare forever. Break the tie
+     *   DETERMINISTICALLY from the only data both devices share: keep the session whose originator
+     *   id (`isOutbound` ? local : peer) is lexicographically smaller. Because device A's outbound
+     *   IS device B's inbound (the same TCP pair), both ends compute the same winner and converge
+     *   on one live socket. The loser's socket is closed by the caller's "Session not admitted"
+     *   path on the accepting side, and on the dialing side by the local `registerSession`
+     *   returning false.
+     * - **Sequential reconnect, newest wins (ERROR-031):** two sessions for one peer in the SAME
+     *   direction are not glare at all — they are two different TCP pairs, and the originator has
+     *   already moved on to the newer one. The tiebreaker above cannot judge them (both sessions
+     *   have the same originator, so it always ties and always kept the incumbent), which let a
+     *   stale inbound session veto the peer's fully-handshaked reconnect indefinitely: the dot said
+     *   Online, writes into the dead socket "succeeded", and only force-stopping the app cleared it.
+     *   Same direction therefore always supersedes.
      *
      * The compound check-then-mutate runs under [registryLock] so a simultaneous inbound+outbound
      * glare for the same peer cannot both be admitted.
      */
     private fun registerSession(session: WsSession): Boolean {
+        var superseded: WsSession? = null
         synchronized(registryLock) {
             if (!hardeningPolicy.canAcceptSession(sessionsById.size)) {
                 return false
             }
             val existing = sessionsById[session.peerDeviceId]
             if (existing != null && existing !== session) {
-                val decision = hardeningPolicy.resolveDuplicate(
-                    SessionHardeningPolicy.transportRank(existing.transportType),
-                    SessionHardeningPolicy.transportRank(session.transportType),
-                )
-                if (decision == DuplicateSessionDecision.KeepExisting) {
+                val keepExisting = if (existing.transportType == session.transportType) {
+                    // Same rank: a deterministic tiebreak is meaningful only for real glare, i.e.
+                    // the two directions of ONE TCP pair. Same-direction duplicates are sequential
+                    // reconnects and the newcomer always wins.
+                    existing.isOutbound != session.isOutbound && resolveGlareTie(existing, session)
+                } else {
+                    hardeningPolicy.resolveDuplicate(
+                        SessionHardeningPolicy.transportRank(existing.transportType),
+                        SessionHardeningPolicy.transportRank(session.transportType),
+                    ) == DuplicateSessionDecision.KeepExisting
+                }
+                if (keepExisting) {
                     return false
                 }
-                // PreferNew: migrate to the richer path, closing the incumbent's socket.
-                sessionsById.remove(session.peerDeviceId)
+                superseded = existing
                 sessionByConnection.remove(existing.connection)
-                existing.disconnect("Superseded by richer path")
             }
 
             sessionsById[session.peerDeviceId] = session
             sessionByConnection[session.connection] = session
+            // ERROR-026: a live session means the peer is wanted again, so lift any stale
+            // local-disconnect veto — a later unexpected drop is then eligible for the backup redial.
+            localDisconnects.remove(session.peerDeviceId.value)
 
             // Flush any frames that arrived between handshake completion and registration.
-            earlyFrames.remove(session.connection)?.let { queued ->
-                queued.forEach { frame ->
-                    when (frame) {
-                        is String -> session.onTextReceived(frame)
-                        is ByteArray -> session.onBinaryReceived(frame)
-                    }
-                }
-            }
+            drainEarlyFrames(session.connection, session)
 
             _activeSessions.value = sessionsById.toMap()
+        }
+        // Close the incumbent only AFTER the newcomer is in the registry. WsSession.disconnect fires
+        // its onDisconnected callback synchronously, so onSessionDisconnected re-enters here; with
+        // the slot already refilled it correctly declines to schedule a redial against the session
+        // we just admitted.
+        superseded?.let { old ->
+            old.disconnect(
+                if (old.isOutbound == session.isOutbound) "Superseded by a newer connection"
+                else "Superseded by richer path",
+            )
         }
         refreshState()
         refreshHealthFromSessions()
         return true
+    }
+
+    /**
+     * Deterministic connect-glare tiebreaker (ERROR-023) for the two directions of ONE TCP pair.
+     * Returns true to keep [existing] and reject [candidate].
+     *
+     * Converges both devices on ONE socket by comparing the session ORIGINATOR ids, which are
+     * mirrored across the pair: A's outbound session (originator = A) is B's inbound session
+     * (originator = A too, because B sees the peer's id A in its inbound HELLO). Keeping the
+     * session whose originator id is lexicographically smaller therefore makes A and B both keep
+     * the SAME underlying TCP pair — no coin-flip cross-wiring, no reconnect storm.
+     *
+     * Only meaningful when the two sessions face opposite ways. Two same-direction sessions share an
+     * originator, so this always ties — and a tie kept the incumbent, which is how a stale session
+     * came to veto every reconnect the peer made (ERROR-031). [registerSession] therefore calls this
+     * only for `existing.isOutbound != candidate.isOutbound`.
+     */
+    private fun resolveGlareTie(existing: WsSession, candidate: WsSession): Boolean {
+        val existingOrigin = if (existing.isOutbound) localDeviceId else existing.peerDeviceId.value
+        val candidateOrigin = if (candidate.isOutbound) localDeviceId else candidate.peerDeviceId.value
+        // Prefer the session whose ORIGINATOR is the smaller id.
+        return existingOrigin <= candidateOrigin
+    }
+
+    /**
+     * Moves frames buffered on [connection] into [into], which has just taken ownership of them.
+     * Removes the queue: whoever calls this owns the frames from then on.
+     */
+    private fun drainEarlyFrames(connection: WsConnection, into: WsSession) {
+        val queued = earlyFrames.remove(connection) ?: return
+        queued.forEach { frame ->
+            when (frame) {
+                is String -> into.onTextReceived(frame)
+                is ByteArray -> into.onBinaryReceived(frame)
+            }
+        }
+    }
+
+    /**
+     * Rescues frames buffered on a connection that is about to be torn down, handing them to
+     * whichever session now owns [peerDeviceId].
+     *
+     * A candidate connection can already have carried real chat or signaling frames before the
+     * admission decision — the peer starts streaming as soon as ITS side registers — and dropping an
+     * inbound chat frame means the sender never receives a `DeliveryReceipt` and sits on a single
+     * tick forever (ERROR-031). Frames are per-peer, not per-socket, so the surviving session is the
+     * right consumer.
+     */
+    private fun handOffEarlyFrames(connection: WsConnection, peerDeviceId: FlashDeviceId) {
+        val survivor = sessionsById[peerDeviceId]
+        if (survivor == null || survivor.connection === connection) {
+            earlyFrames.remove(connection)
+            return
+        }
+        drainEarlyFrames(connection, survivor)
+    }
+
+    /**
+     * True while [deviceId] has a session that is not merely *present* but demonstrably carrying
+     * traffic — open, Connected, and with an inbound frame (any frame, including a keepalive PONG)
+     * inside [STALE_SESSION_AFTER_MS].
+     *
+     * Every recovery path used to gate on map presence alone, so a session whose socket had died
+     * without the watchdog noticing blocked its own replacement: the auto-connect gate refused to
+     * begin, the sweep skipped the peer, and the Wi-Fi-rejoin callback skipped it too (ERROR-031).
+     * Freshness is the honest question, and it is what [registerSession]'s same-direction supersede
+     * rule needs in order to ever be reached.
+     */
+    public fun hasLiveSession(deviceId: String): Boolean {
+        val session = sessionsById[FlashDeviceId(deviceId)] ?: return false
+        if (!session.connection.isOpen) return false
+        if (session.connectionState.value != FlashConnectionState.Connected) return false
+        return nowMs() - session.connection.lastInboundAtMs <= STALE_SESSION_AFTER_MS
     }
 
     private fun onSessionDisconnected(session: WsSession) {
@@ -433,14 +574,23 @@ public class WsFlashNetwork(
         refreshHealthFromSessions()
 
         // #18: an unexpected drop of a session WE dialed → schedule a backoff reconnect. Guards: the
-        // network is still running, we still hold a reconnect target for this peer (a local disconnect
-        // clears it), and no live session has since been re-established for the peer.
+        // network is still running, and no live session has since been re-established for the peer.
+        //
+        // ERROR-026: the ACCEPTING side used to get no recovery here at all. reconnectTargets is only
+        // ever written by connectManual, so over a Wi-Fi hotspot the host's sessions are all inbound
+        // and containsKey was false for every one of them — the host just waited for the dialer to
+        // notice and come back, which never happens if the dialer's process was frozen through the
+        // drop. It now runs a slower BACKUP loop off knownEndpoints (the discovery-fed route table),
+        // unless the teardown was a deliberate local disconnect.
+        //
+        // ERROR-031: the "already reconnected" guard asks whether the replacement is LIVE, not merely
+        // present. A stale session in the map used to suppress the very redial that would have
+        // replaced it.
         val peerId = session.peerDeviceId.value
-        if (running.get() &&
-            reconnectTargets.containsKey(peerId) &&
-            sessionsById[session.peerDeviceId] == null
-        ) {
-            scheduleReconnect(peerId, immediate = false)
+        if (!running.get() || hasLiveSession(peerId)) return
+        when {
+            reconnectTargets.containsKey(peerId) -> scheduleReconnect(peerId, immediate = false)
+            peerId !in localDisconnects -> scheduleReconnect(peerId, immediate = false, backup = true)
         }
     }
 
@@ -452,21 +602,32 @@ public class WsFlashNetwork(
      * (Re)launches the backoff redial loop for [deviceId]. At most one loop runs per peer; an existing
      * loop is cancelled and replaced (so a network-available "collapse to immediate" can pre-empt a
      * loop that is currently sleeping out its backoff). The loop exits as soon as the peer reconnects,
-     * the target is cleared (local disconnect / stop), or the network stops.
+     * its redial route disappears (local disconnect / stop / discovery forgot the route), or the
+     * network stops.
      *
      * @param immediate skip the first backoff delay (used by the network watcher on Wi-Fi rejoin).
+     * @param backup run as the accepting side's safety net (ERROR-026): dial the discovery-known
+     *   route instead of a remembered dial target, and start from the larger [backupRedialBaseMs]
+     *   floor so the original dialer's faster loop usually wins the race.
      */
-    private fun scheduleReconnect(deviceId: String, immediate: Boolean) {
+    private fun scheduleReconnect(deviceId: String, immediate: Boolean, backup: Boolean = false) {
         reconnectJobs.remove(deviceId)?.cancel()
         val job = scope.launch {
             var first = true
+            // ERROR-031: the exit condition is a LIVE session, not a session-shaped map entry. A
+            // socket that died without the watchdog noticing used to end this loop on its first
+            // iteration, and [registerSession]'s same-direction supersede — the thing that would
+            // have replaced it — was never reached.
             while (isActive &&
                 running.get() &&
-                reconnectTargets.containsKey(deviceId) &&
-                sessionsById[FlashDeviceId(deviceId)] == null
+                redialTargetOf(deviceId, backup) != null &&
+                !hasLiveSession(deviceId)
             ) {
                 val policy = reconnectPolicies.getOrPut(deviceId) {
-                    ReconnectPolicy(random01 = { ThreadLocalRandom.current().nextDouble() })
+                    ReconnectPolicy(
+                        baseMs = if (backup) backupRedialBaseMs else ReconnectPolicy.DEFAULT_BASE_MS,
+                        random01 = { ThreadLocalRandom.current().nextDouble() },
+                    )
                 }
                 if (!(first && immediate)) {
                     delay(policy.nextDelay())
@@ -474,8 +635,8 @@ public class WsFlashNetwork(
                 first = false
 
                 // Re-check after the sleep: state may have changed while we backed off.
-                if (!running.get() || sessionsById[FlashDeviceId(deviceId)] != null) break
-                val target = reconnectTargets[deviceId] ?: break
+                if (!running.get() || hasLiveSession(deviceId)) break
+                val target = redialTargetOf(deviceId, backup) ?: break
 
                 val result = runCatching { connectManual(target.host, target.port) }.getOrNull()
                 if (result is FlashResult.Success) {
@@ -489,6 +650,28 @@ public class WsFlashNetwork(
     }
 
     /**
+     * Route a redial loop should dial for [deviceId], or null to stop the loop.
+     *
+     * Primary loops consult only [reconnectTargets] — the route we actually dialed — so clearing the
+     * target still terminates them exactly as before. Backup loops (ERROR-026) fall back to
+     * [knownEndpoints], the discovery-maintained route table, and refuse to run once the peer has
+     * been locally disconnected.
+     */
+    private fun redialTargetOf(deviceId: String, backup: Boolean): Endpoint? = when {
+        !backup -> reconnectTargets[deviceId]
+        deviceId in localDisconnects -> null
+        else -> reconnectTargets[deviceId] ?: knownEndpoints[deviceId]
+    }
+
+    /**
+     * True while a backoff reconnect loop is currently (re)dialing [deviceId] — i.e. a reconnect
+     * is already in flight from the #18 engine. The auto-connect sweep uses this to skip peers it
+     * would otherwise redundantly dial at the same moment, cutting connect-glare re-entry
+     * (ERROR-023).
+     */
+    public fun isReconnectInFlight(deviceId: String): Boolean = reconnectJobs.containsKey(deviceId)
+
+    /**
      * Starts the [AndroidNetworkWatcher] (no-op when [context] is null, e.g. JVM tests). On a fresh
      * usable network (Wi-Fi/Ethernet available) it collapses every pending peer backoff to an
      * immediate attempt instead of waiting the loop out.
@@ -499,12 +682,24 @@ public class WsFlashNetwork(
         networkWatcher = AndroidNetworkWatcher(
             context = ctx,
             onAvailable = onAvailable@{
+                // Host hook first and unconditionally (D7): if the process lost its foreground
+                // service on the previous network, it should try to get it back now, whether or not
+                // the mesh itself is still running.
+                runCatching { onUsableNetwork() }
                 if (!running.get()) return@onAvailable
-                reconnectTargets.keys.forEach { deviceId ->
-                    if (sessionsById[FlashDeviceId(deviceId)] == null) {
-                        reconnectPolicies.remove(deviceId) // fresh network → restart backoff from base
-                        scheduleReconnect(deviceId, immediate = true)
-                    }
+                // ERROR-026: sweep discovery-known peers too, not just ones we dialed, so the
+                // accepting side also redials on a Wi-Fi rejoin. Peers we deliberately disconnected
+                // stay excluded (redialTargetOf enforces the same rule inside the loop).
+                //
+                // ERROR-031: a rejoin is exactly when a session held over from the OLD network is
+                // most likely to be a zombie, so skip only peers whose session is demonstrably
+                // carrying traffic.
+                (reconnectTargets.keys + knownEndpoints.keys).forEach { deviceId ->
+                    if (hasLiveSession(deviceId)) return@forEach
+                    if (deviceId in localDisconnects) return@forEach
+                    val backup = !reconnectTargets.containsKey(deviceId)
+                    reconnectPolicies.remove(deviceId) // fresh network → restart backoff from base
+                    scheduleReconnect(deviceId, immediate = !backup, backup = backup)
                 }
             },
         ).also { it.start() }
@@ -609,5 +804,22 @@ public class WsFlashNetwork(
         public const val PROTOCOL_VERSION: Int = 2
         private const val HELLO_PREFIX = "FLASH_WS_HELLO"
         private const val HANDSHAKE_TIMEOUT_MS = 6_000L
+
+        /**
+         * Backoff floor for the accepting side's backup redial (ERROR-026). Above the primary loop's
+         * 1 s base so the original dialer's first attempts land first, and below the app-level 5 s
+         * auto-connect sweep so recovery does not have to wait for the sweep.
+         */
+        private const val BACKUP_REDIAL_BASE_MS = 4_000L
+
+        /**
+         * How long a session may go without a single inbound frame before [hasLiveSession] stops
+         * vouching for it. Deliberately above the connection's own watchdog budget
+         * ([WsConnection.DEFAULT_LIVENESS_TIMEOUT_MS] plus its stall-confirm delay), so in the normal
+         * case the watchdog reaps a dead session before any recovery path has to second-guess it.
+         * This only catches the case the watchdog cannot: a keepalive coroutine Android never
+         * schedules again, whose session would otherwise sit in the registry forever (ERROR-031).
+         */
+        private const val STALE_SESSION_AFTER_MS = 45_000L
     }
 }

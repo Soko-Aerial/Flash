@@ -4,6 +4,8 @@ package com.transfer.flash.core.network.ws
 
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.io.InputStream
+import java.net.SocketTimeoutException
 import kotlin.random.Random
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -140,5 +142,89 @@ class WebSocketCodecTest {
         val output = ByteArrayOutputStream()
         WebSocketCodec.writeFrame(output, WebSocketCodec.OPCODE_CONTINUATION, "x".toByteArray(), masked = false)
         WebSocketCodec.readMessage(ByteArrayInputStream(output.toByteArray()))
+    }
+
+    // -- Retryable idle timeouts (ERROR-025) ---------------------------------
+
+    @Test
+    fun `read timeout before the first byte is a retryable IdleTimeout`() {
+        val thrown = runCatching {
+            WebSocketCodec.readMessage(TimeoutingStream(ByteArray(0)))
+        }.exceptionOrNull()
+
+        assertTrue("expected IdleTimeout, got $thrown", thrown is WebSocketCodec.IdleTimeout)
+        assertTrue((thrown as WebSocketCodec.IdleTimeout).cause is SocketTimeoutException)
+    }
+
+    @Test
+    fun `read timeout after the first byte is not retryable`() {
+        // Mid-frame the stream is desynchronized: retrying would misparse the remainder, so this
+        // must stay a plain timeout that tears the connection down.
+        val thrown = runCatching {
+            WebSocketCodec.readMessage(TimeoutingStream(byteArrayOf(0x81.toByte())))
+        }.exceptionOrNull()
+
+        assertTrue("expected a raw socket timeout, got $thrown", thrown is SocketTimeoutException)
+    }
+
+    @Test
+    fun `stream stays aligned across an idle timeout`() {
+        // The behaviour the read loop depends on: a frame-boundary timeout consumed nothing, so
+        // the very next read still finds an intact frame. A peer frozen by Doze is quiet, not dead.
+        val frame = ByteArrayOutputStream().also {
+            WebSocketCodec.writeFrame(it, WebSocketCodec.OPCODE_TEXT, "still here".toByteArray(), masked = true)
+        }.toByteArray()
+        val input = TimeoutThenFrameStream(frame)
+
+        val idle = runCatching { WebSocketCodec.readMessage(input) }.exceptionOrNull()
+        assertTrue("expected IdleTimeout, got $idle", idle is WebSocketCodec.IdleTimeout)
+
+        val message = WebSocketCodec.readMessage(input)
+        assertTrue(message is WebSocketCodec.Message.Text)
+        assertEquals("still here", (message as WebSocketCodec.Message.Text).text)
+    }
+
+    /** Serves [prefix], then behaves like a socket whose `soTimeout` expired. */
+    private class TimeoutingStream(private val prefix: ByteArray) : InputStream() {
+        private var index = 0
+
+        override fun read(): Int {
+            if (index >= prefix.size) throw SocketTimeoutException("Read timed out")
+            return prefix[index++].toInt() and 0xFF
+        }
+
+        override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+            if (index >= prefix.size) throw SocketTimeoutException("Read timed out")
+            val count = minOf(length, prefix.size - index)
+            System.arraycopy(prefix, index, buffer, offset, count)
+            index += count
+            return count
+        }
+    }
+
+    /** Times out once with nothing consumed, then delivers [frame] — a quiet peer that spoke up. */
+    private class TimeoutThenFrameStream(private val frame: ByteArray) : InputStream() {
+        private var timedOut = false
+        private var index = 0
+
+        override fun read(): Int {
+            if (!timedOut) {
+                timedOut = true
+                throw SocketTimeoutException("Read timed out")
+            }
+            return if (index >= frame.size) -1 else frame[index++].toInt() and 0xFF
+        }
+
+        override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+            if (!timedOut) {
+                timedOut = true
+                throw SocketTimeoutException("Read timed out")
+            }
+            if (index >= frame.size) return -1
+            val count = minOf(length, frame.size - index)
+            System.arraycopy(frame, index, buffer, offset, count)
+            index += count
+            return count
+        }
     }
 }

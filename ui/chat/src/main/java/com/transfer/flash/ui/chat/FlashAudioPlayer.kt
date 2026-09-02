@@ -9,9 +9,10 @@ import android.util.Log
 /**
  * B9: thin [MediaPlayer] wrapper backing real voice-note playback in [FlashVoiceMessageCard].
  *
- * Lazily prepares from a local `file://`/`content://` URI on first [play]. All calls are guarded so
- * a malformed/incomplete recording degrades to "nothing plays" rather than crashing the bubble.
- * Not thread-safe — drive from the composition's main thread.
+ * Lazily prepares from a local `file://`/`content://` URI — or a bare filesystem path, which is what
+ * a *received* note is (the transfer layer reports where it wrote the file, not a URI) — on first
+ * [play]. All calls are guarded so a malformed/incomplete recording degrades to "nothing plays"
+ * rather than crashing the bubble. Not thread-safe — drive from the composition's main thread.
  */
 class FlashAudioPlayer(
     private val context: Context,
@@ -25,7 +26,14 @@ class FlashAudioPlayer(
         player?.let { return it }
         return try {
             MediaPlayer().apply {
-                setDataSource(context, Uri.parse(uri))
+                // Uri.parse on "/storage/…/Voice message.m4a" yields a scheme-less URI, which only
+                // reaches the media server through setDataSource(Uri)'s undocumented last-ditch
+                // fallback. Pick the overload by shape instead of relying on that.
+                if (uri.startsWith("content://") || uri.startsWith("file://")) {
+                    setDataSource(context, Uri.parse(uri))
+                } else {
+                    setDataSource(uri)
+                }
                 prepare() // local file → cheap synchronous prepare
                 prepared = true
                 player = this

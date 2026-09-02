@@ -50,6 +50,7 @@ bouncycastle = { group = "org.bouncycastle", name = "bcprov-jdk18on", version = 
 bouncycastle-pkix = { group = "org.bouncycastle", name = "bcpkix-jdk18on", version = "1.81" }
 hilt-android = { group = "com.google.dagger", name = "hilt-android", version.ref = "hilt" }
 hilt-compiler = { group = "com.google.dagger", name = "hilt-compiler", version.ref = "hilt" }
+webrtc-kmp = { group = "com.shepeliev", name = "webrtc-kmp", version = "0.125.11" }
 
 [plugins]
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }

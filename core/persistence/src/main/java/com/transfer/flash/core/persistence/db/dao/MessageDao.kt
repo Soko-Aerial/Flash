@@ -54,8 +54,41 @@ public interface MessageDao {
     @Query("SELECT EXISTS(SELECT 1 FROM messages WHERE attachmentTransferId = :transferId)")
     public suspend fun existsAttachment(transferId: String): Boolean
 
+    /**
+     * Stamps the on-disk location of a finished attachment onto its row.
+     *
+     * Live transfer progress is in-memory only, so without this the received path is forgotten on
+     * process death: every photo, video and voice note in history reverts to a placeholder that has
+     * nothing to decode. The `IS NULL OR != :path` guard makes a repeat write a genuine no-op —
+     * SQLite's UPDATE trigger only fires for rows it actually changed, so Room does not re-emit
+     * `observeConversation` on every progress tick.
+     *
+     * @return rows changed: 0 means the row already holds [path] **or** does not exist yet, so a
+     *   caller that caches "already stamped" must tell those apart (see [existsAttachment]).
+     */
+    @Query(
+        "UPDATE messages SET attachmentPath = :path WHERE attachmentTransferId = :transferId " +
+            "AND (attachmentPath IS NULL OR attachmentPath != :path)",
+    )
+    public suspend fun updateAttachmentPath(transferId: String, path: String): Int
+
     @Query("UPDATE messages SET status = :status WHERE localId = :localId")
     public suspend fun updateStatus(localId: String, status: String)
+
+    /**
+     * Status write that cannot walk a delivery backwards.
+     *
+     * The outbox now keeps its row until the peer's `DeliveryReceipt` arrives rather than deleting it
+     * on a successful socket write (ERROR-031), so a resend can race a receipt that already landed.
+     * An unconditional `status = 'SENT'` would then turn a double-ticked bubble back into a single
+     * tick, and a give-up would mark an already-delivered message Failed. Excluding the two
+     * acknowledged states makes both writes safe under that race.
+     */
+    @Query(
+        "UPDATE messages SET status = :status WHERE localId = :localId " +
+            "AND status NOT IN ('DELIVERED', 'READ')",
+    )
+    public suspend fun updateStatusIfUnacknowledged(localId: String, status: String)
 
     /**
      * Read-receipt absorption (C6.3): when a peer reports it has read up to [upToMessageId], mark

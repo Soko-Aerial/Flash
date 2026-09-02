@@ -631,3 +631,246 @@ A future feature genuinely needs a Room-backed trust store: reintroduce it as an
 (implementing a security-owned port), never by re-adding `persistence` to `core:security`.
 
 
+
+## ADR-025 - Voice/video calling: WebRTC media via shepeliev/webrtc-kmp, signaling over the WS mesh
+
+### Decision
+1. Add 1:1 voice/video calling as two new modules: `:core:calling` (headless call engine,
+   `explicitApi()`, compileSdk 35 per ADR-022) and `:ui:callui` (Compose call screen,
+   UI-050, see `docs/ui/calling-ui.md`). Both publish, as `core-calling` and `ui-callui`. The
+   surface is two interfaces - `FlashCalling` (control plus the two signaling seams) and
+   `FlashCallMedia` (read-only tracks and live quality metrics) - enumerated in
+   `docs/architecture/public-api.md` SS7 and SS13.
+2. `:core:calling` sits **outside** the `:core:engine` facade: `FlashEngine` has no `calls`
+   property and `:core:engine` has no dependency on calling. A call needs a signaling channel
+   the host already owns, runtime mic/camera grants, and a `microphone|camera` foreground
+   service only an app's own manifest can declare - none of which `Flash.create` can supply.
+   It also keeps ~30 MB of native WebRTC per ABI out of every app that never calls.
+3. Media transport: WebRTC via `com.shepeliev:webrtc-kmp:0.125.11` (M125, MIT; wraps
+   `io.github.webrtc-sdk:android:125.6422.06.1`, BSD-3). Audio + video tracks over a
+   `PeerConnection` with **empty `iceServers`** - Flash is LAN/hotspot-only, so host
+   candidates suffice; no STUN/TURN is deployed or required.
+4. Signaling: SDP offers/answers and ICE candidates ride the existing WebSocket mesh as
+   text frames under a new `FLASH_CALL` prefix (see `docs/protocol.md` Calling section),
+   encoded with `FlashTextFraming` exactly like chat/pairing frames, with the SDP body
+   **base64-encoded** (RFC 4648) so no escaping or trimming artifact can corrupt it
+   (ERROR-024); decode accepts raw text too, for builds that predate the change. ICE
+   candidates are trickled with buffering until the remote description is set (webrtc-kmp
+   sample pattern).
+5. Call lifecycle: `CallCoordinator`, in `:core:calling`, is the `FlashCalling`
+   implementation - process-level, mirroring the `DiscoveryEngineHolder` holder pattern - and
+   owns one `FlashCallSession` at a time. States are DIALING -> RINGING -> CONNECTING ->
+   ACTIVE -> ENDED, where a failure is an `endReason` on ENDED rather than a separate state,
+   so the UI has one terminal branch to render. A second invite arriving while a call is live
+   is auto-declined "busy" rather than queued, so the other caller's UI never hangs on DIALING.
+6. Android compliance: the call runs inside a dedicated foreground service with
+   `microphone|camera` types, started **while the app is foreground** (user taps call /
+   answers from the incoming-call notification) - the only legal way to start a
+   microphone/camera FGS under the while-in-use restrictions. `Notification.CallStyle`
+   (API 31+) styles incoming/ongoing call notifications; pre-31 falls back to a standard
+   FGS notification. CAMERA + RECORD_AUDIO runtime permissions are requested at call time
+   (webrtc-kmp throws `CameraPermissionException`/`RecordAudioPermissionException` from
+   `getUserMedia` if missing).
+7. Audio routing is the app's job, not the module's (webrtc-kmp ships no `AudioManager`
+   policy), and it is load-bearing rather than cosmetic: `FlashCallAudioRouter` in `:app`
+   takes voice-communication focus, then sets `MODE_IN_COMMUNICATION`. Without the mode the
+   platform treats the call as media playback - no hardware AEC on capture, a long playout
+   buffer, and the earpiece is not even a routing candidate. Focus is requested *before* the
+   mode because from Android 12 an app owning neither focus nor a telecom call may not set it.
+   Routing priority with the speaker off is Bluetooth SCO -> BLE headset -> hearing aid -> USB
+   -> wired -> earpiece, re-applied from an `AudioDeviceCallback` so a mid-call hot-plug moves
+   the audio. Bluetooth is version-split: API 31+ uses `setCommunicationDevice` (which brings
+   SCO up as a side effect), below 31 SCO is started by hand and `setBluetoothScoOn(true)` is
+   deferred until the headset broadcasts CONNECTED - setting it early is the classic silent-
+   Bluetooth bug. The router is attached for every state except RINGING (exclusive focus would
+   silence the incoming-call ringtone) and ENDED, and every platform call is best-effort:
+   `MODIFY_AUDIO_SETTINGS` is required and OEM HALs refuse mode changes in undocumented states,
+   so a call with mediocre routing must still beat a crash.
+8. Latency and quality knobs, all of them chosen because the wrapper exposes no API for them:
+   the low-latency audio device module is configured once before any `PeerConnectionFactory`
+   exists (after that the default ADM is permanent for the process); SDP is rewritten
+   symmetrically on local *and* remote descriptions for Opus `ptime=10` + `minptime=10`, pinned
+   inband FEC and DTX off, plus `x-google-start/min/max-bitrate` at 2500/600/8000 kbps; capture
+   is requested at 1920x1080@30 with `DegradationPreference.MAINTAIN_FRAMERATE` and an explicit
+   sender bitrate window, so a constrained link sheds *resolution* (1080p -> 720p -> 540p) and
+   keeps 30 fps; `getStats()` is sampled once a second and published through
+   `FlashCallMedia.stats` for the in-call quality badge.
+9. Call log rows: when a session terminates the coordinator emits a `FlashCallLogEntry` through
+   an `onCallLog` callback and the host writes the chat row itself. Both devices already hold
+   every field when a call ends, so each derives its own row - no new wire frame, and no
+   `core:calling` -> `core:messaging` dependency (the ADR-024 inversion).
+
+### Context
+Flash's chat and file transfer already run over the WS mesh (ADR-016). Calling is the
+last major real-time feature. WebRTC is the only practical way to get Opus audio + VP8/H264
+video with jitter buffers, echo cancellation, and hardware codecs on Android without
+writing a media stack. ADR-016 deferred "WebRTC Data Channels" for *file transfer* because
+WS already covers it - that deferral stands; this ADR is about *media*, a different use
+case where WebRTC is the right tool and WS is only the signaling channel.
+
+### Alternatives considered
+- Raw audio over WS (PCM/G.711 chunks): rejected - no echo cancellation, no jitter
+  buffer, no video path, 10x the bitrate of Opus; would need a media engine anyway.
+- `webrtc-sdk:android` (prebuilt Google artifacts) directly: rejected - Java API only,
+  verbose SDP/callback plumbing; webrtc-kmp wraps the same native stack with suspend +
+  Flow APIs and multiplatform surface, MIT-licensed, actively maintained (M125, 2025-09).
+- `stream-io`/proprietary calling SDKs: rejected - ADR-003 clean-room rule; cloud
+  dependency contradicts Flash's serverless P2P premise.
+- SIP/RTP stacks (e.g. pjsip): rejected - far heavier, telephony-oriented, no video
+  story as clean as WebRTC's.
+
+### Consequences
+- New dependency `com.shepeliev:webrtc-kmp:0.125.11` (+ transitive
+  `io.github.webrtc-sdk:android:125.6422.06.1`, ~30 MB native ABIs). App-only consumers
+  of `:core:calling` pay this cost; the other core modules stay WebRTC-free.
+- webrtc-kmp auto-initializes via androidx.startup (`WebRtcInitializer`); no manual init
+  call needed. `WebRtc.rootEglBase` backs the video renderers.
+- Known dexing hazard with the WebRTC AAR (Egl14 `NoSuchMethodError`, Google issue
+  265195801): if `:app` dexing fails, add `android.useFullClasspathForDexingTransform=true`
+  to `gradle.properties`.
+- SDP offers are ~4-8 KB text frames - fits the WS text frame path fine (chat already
+  sends multi-KB messages), and base64 grows them by a third with no protocol change.
+- Only `:app` routes `FLASH_CALL` frames: `DiscoveryEngineHolder.handleInboundText` tries
+  `CallFrameCodec.decode` first (calling is the most latency-sensitive frame class) and hands
+  the text to `CallCoordinator.onInboundText`. `:core:engine`'s own `handleInboundText` has
+  **no** call branch and cannot have one - it does not depend on calling - so a library consumer
+  wiring calling on top of `Flash.create` must chain `onInboundText` itself, which is exactly
+  what that method's boolean return is for.
+- `FlashCallMedia` exposes webrtc-kmp's `VideoTrack` directly. This is the one place Flash
+  lets a third-party type through a published boundary: a renderer has to be handed the real
+  track, and any wrapper would have to expose it again to be useful. `:core:calling` therefore
+  `api()`s webrtc-kmp and `:ui:callui` `api()`s `:core:calling`, so both the type and
+  `SurfaceViewRenderer` resolve for a downstream consumer.
+- **Not implemented: the trust gate.** This ADR originally required calls only to
+  paired/trusted peers. Nothing in the shipped path checks trust - the call buttons live in the
+  conversation header, and inbound `FLASH_CALL` frames are routed for any peer with a live WS
+  session. The practical bound today is "reachable on the LAN and connected", not "paired".
+  Adding it means gating `startCall` and the inbound invite on `FlashTrustStore`, which
+  `:core:calling` cannot reach without a new port; until then the gap is real and stated here
+  rather than implied to be closed.
+
+### Revisit when
+- Wi-Fi Direct transport lands: verify host-candidate ICE still connects over the P2P
+  group interface (expected yes; both peers are on-link).
+- The trust gate is closed: decide whether `:core:calling` takes a trust port (a
+  `(peerId) -> Boolean` predicate consulted by `startCall` and the inbound invite) or whether
+  gating stays the host's job. A port keeps the policy testable on the JVM; leaving it to the
+  host keeps the module free of a security dependency.
+- Remote-relay or internet calling is ever considered: STUN/TURN and a rendezvous server
+  become mandatory; this ADR's LAN-only ICE assumption breaks.
+- Group calls: multi-peer topology (mesh vs SFU) needs its own ADR.
+
+## ADR-026 - Duplicate-session tiebreaker: deterministic originator-id comparison resolves connect glare
+
+### Decision
+When `WsFlashNetwork.registerSession` finds a duplicate session for the same peer with
+**equal** transport rank, the incumbent is no longer chosen by arbitrary arrival order (a
+coin flip from the two phones' perspective). Instead both ends of the same TCP pair apply
+the same deterministic rule:
+
+> Keep the session whose *originator device id* is lexicographically smaller. Originator is
+> `localDeviceId` for outbound sessions, `peerDeviceId` for inbound sessions.
+
+`WsSession` carries a new `isOutbound: Boolean = false` flag so the session manager knows
+which side originated the socket. Because A's outbound *is* B's inbound (same TCP pair),
+both phones observe the same two ids and compute the same winner, so the surviving socket
+stays live on both sides.
+
+The auto-connect sweep additionally skips peers with an in-flight reconnect
+(`isReconnectInFlight`) so the two dial engines (gated 5s sweep and the #18 reconnect
+engine) never race the same peer in the first place.
+
+### Context
+After a session drop, both the gated 5s auto-connect sweep and the ungated #18 reconnect
+engine dial the same peer; both phones dial each other → connect glare. Each
+`registerSession` runs under its own per-process `registryLock` (no cross-device
+coordination), so each admits its own outbound dial first; the peer's inbound dial hits
+`SessionHardeningPolicy.resolveDuplicate` with equal LAN rank (0=0) → `KeepExisting` → the
+inbound socket is closed. The tie was a coin flip: ~50% of the time A keeps its outbound
+(TCP pair #1) while B keeps its outbound (pair #2) — but pair #1 is B's inbound (B closed
+it) and pair #2 is A's inbound (A closed it). Both surviving "sessions" sat on dead sockets
+→ both scheduled reconnect → glare again → infinite ~2s storm ("WS connecting" storms,
+"cannot reach" errors, online/offline flicker). Full root cause in ERROR-023.
+
+### Alternatives considered
+- **Keep the coin flip (status quo):** rejected — it is the bug. No data existed to break
+  the tie deterministically.
+- **Prefer the inbound (newer) session unconditionally:** rejected — both devices would
+  then keep their *inbound* sockets (each device's inbound is the other's outbound, which
+  the other device closed) → the mirror-image dead-socket storm.
+- **Prefer the outbound unconditionally:** rejected — symmetric deadlock for the same
+  reason in reverse.
+- **Compare transport-level tiebreakers (port numbers, connection timestamps):** rejected —
+  not shared/consistent across both devices; only device ids are common to both endpoints
+  of a TCP pair.
+- **Coordinate glare across devices (e.g. a lock frame):** rejected — adds a round trip to
+  every connect and a failure mode (lock lost); the pure-deterministic rule needs no
+  coordination.
+
+### Why originator-id comparison was selected
+Device ids are the only datum both endpoints of a TCP pair share and agree on, and the
+comparison is stable across reconnects. Both ends compute the same winner with no extra
+wire traffic and no timing dependence. `SessionHardeningPolicy.resolveDuplicate` keeps its
+`KeepExisting` on equal-rank behavior (stability wins when there is no glare); the glare
+tiebreaker is layered on top for equal-rank duplicates specifically.
+
+### Consequences
+- `WsSession` gained `isOutbound`; `registerSession` applies `resolveGlareTie` for
+  equal-rank duplicates. `SessionHardeningPolicy` KDoc documents the layered rule.
+- The sweep dedup (`isReconnectInFlight` skip) reduces the number of simultaneous dials, so
+  glare becomes rarer even before the tiebreaker engages.
+- A glare regression test (`testConnectGlareConvergesOnSingleLivePair`) asserts exactly one
+  live session per side, A holds outbound (smaller id), B holds inbound, message
+  round-trips, no reconnect storm.
+
+### Revisit when
+Cross-device session coordination (e.g. a connection-ownership frame) is ever built, or if
+a multi-link transport makes "same TCP pair" no longer the unit of comparison.
+
+## ADR-027 — Base64-encode SDP in call frames to harden the text-framing transport
+
+### Decision
+`CallFrameCodec` (the `FLASH_CALL` wire codec) base64-encodes the `sdp` field of
+Offer/Answer frames on encode and base64-decodes on decode. Encoding uses a new
+pure-Kotlin RFC 4648 codec in `core/common` (`Base64.kt`); decode tries base64 first and
+falls back to raw text for legacy pre-hardening peers. `FlashCallSession` additionally
+wraps every set-SDP flow in try/catch so a native failure ends the call cleanly instead
+of crashing the process.
+
+### Context
+Both phones crashed with `java.lang.RuntimeException: Setting SDP failed:
+SessionDescription is NULL.` the moment a call was accepted. Disassembly of webrtc-kmp
+0.125.11 (`PeerConnection$setSdpObserver$1.onSetFailure`) proved the message is
+libwebrtc's native JNI error, emitted when the `org.webrtc.SessionDescription`'s
+`description` is null/empty at JNI-call time or fails native SDP parse. Our API usage was
+correct (verified against the same bytecode). The SDP rides the WS mesh as a
+`FLASH_CALL` text frame through `FlashTextFraming`, which escapes only `%`/space/`=`
+and does `text.trim().split(' ')` — whitespace/multi-line SDP is precisely the payload
+that framing can corrupt (ERROR-024).
+
+### Alternatives considered
+- **Fix the framing layer (escape CR/LF, no global trim):** rejected as the primary fix —
+  `FlashTextFraming` is shared by chat/pairing frames and its quirks are load-bearing for
+  those; changing it risks regressing discovery/chat. Base64 isolates the fix to calling
+  with zero framing changes.
+- **`android.util.Base64` / `java.util.Base64`:** rejected — `core/common` is pure JVM
+  with `minSdk 24` + `explicitApi()`; Android's codec breaks JVM unit tests and
+  `java.util.Base64` requires API 26+. Pure-Kotlin base64 is the only option that keeps
+  `CallFrameCodec` tests running on the JVM.
+- **XML/JSON envelope for SDP:** rejected — far heavier for a LAN-only 4-8 KB payload;
+  base64 is whitespace-free by construction and trivially reversible.
+
+### Consequences
+- `CallFrameCodec` Offer/Answer frames carry base64 SDP; `decodeSdp` handles both base64
+  and legacy raw payloads (real SDP starts with `v=0`, not valid base64, so the fallback
+  is unambiguous in practice).
+- `FlashCallSession` SDP flows are exception-hardened: `CancellationException` rethrown,
+  everything else logged + `end(ERROR, notifyPeer=true)`.
+- Round-trip tests assert SDP survives encode→decode **byte-for-byte**.
+- Wire format is no longer backward-compatible for Offer/Answer SDP content, but legacy
+  peers still decode (raw fallback) — no coordination required to upgrade.
+
+### Revisit when
+A native set-SDP failure is reproduced on device with diagnostics and the real
+corruptor (if any framing edge case remains) is identified; or if the transfer protocol
+ever moves to binary frames (ADR-014-style) where SDP can ride as opaque bytes directly.

@@ -30,6 +30,13 @@ public enum class DuplicateSessionDecision {
  * a reconnect handshake and risk frame loss across the swap with zero path
  * improvement; stability wins.
  *
+ * For equal-rank duplicate sessions (connect-glare), the owning session manager
+ * applies a deterministic originator tiebreaker instead of an arbitrary coin
+ * flip: keep the session whose originator device id is lexicographically
+ * smaller. Both ends of a TCP pair observe the same two ids, so both compute
+ * the same winner and the surviving socket stays live on both sides (see
+ * ERROR-023 / `WsFlashNetwork.registerSession`).
+ *
  * Pure logic — no sockets, no state; the owning session manager applies these
  * decisions atomically around its own lock.
  */

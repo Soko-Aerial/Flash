@@ -73,6 +73,12 @@ object FlashIcons {
     val Wifi = FlashIconSpec(R.drawable.flash_ic_wifi, "Wi-Fi")
     val WifiDirect = FlashIconSpec(R.drawable.flash_ic_wifi_direct, "Wi-Fi Direct")
 
+    /** Calling icons (UI-050, docs/ui/calling-ui.md). */
+    val Speaker = FlashIconSpec(R.drawable.flash_ic_speaker, "Speakerphone")
+    val Hangup = FlashIconSpec(R.drawable.flash_ic_hangup, "End call")
+    val CallAccept = FlashIconSpec(R.drawable.flash_ic_call_accept, "Accept call")
+    val CameraFlip = FlashIconSpec(R.drawable.flash_ic_camera_flip, "Switch camera")
+
     /** UI-046 bottom-navigation tab glyphs (docs/ui/bottom-nav.md). */
     val Chat = FlashIconSpec(R.drawable.flash_ic_chat, "Chats")
     val Transfer = FlashIconSpec(R.drawable.flash_ic_transfer, "Transfers")

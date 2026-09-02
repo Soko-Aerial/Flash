@@ -2,6 +2,7 @@ package com.transfer.flash.ui.settings
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -35,5 +36,43 @@ class FlashSettingsLogicTest {
     fun `explicit theme modes override the OS`() {
         assertFalse(FlashSettingsMath.resolveDarkTheme(FlashThemeMode.Light, systemDark = true))
         assertTrue(FlashSettingsMath.resolveDarkTheme(FlashThemeMode.Dark, systemDark = false))
+    }
+
+    /**
+     * ERROR-031 / D7. The restricted copy has to name the *consequence* — a user who reads
+     * "battery optimisation" has no way to connect it to messages not arriving overnight — and it
+     * has to be the one that asks for a tap, because the exempt state needs no action.
+     */
+    @Test
+    fun `the battery row explains the screen-off consequence and only asks for a tap when restricted`() {
+        val restricted = FlashSettingsMath.batteryExemptionSubtitle(exempt = false)
+        val exempt = FlashSettingsMath.batteryExemptionSubtitle(exempt = true)
+
+        assertNotEquals(exempt, restricted)
+        assertTrue("restricted copy must mention the screen: $restricted", restricted.contains("screen"))
+        assertTrue("exempt copy must mention the screen: $exempt", exempt.contains("screen"))
+        assertTrue("restricted copy must ask for a tap: $restricted", restricted.contains("tap"))
+        assertFalse("exempt copy must not ask for a tap: $exempt", exempt.contains("tap"))
+    }
+
+    @Test
+    fun `the battery row value states the exemption at a glance`() {
+        assertEquals("Allowed", FlashSettingsMath.batteryExemptionValue(exempt = true))
+        assertEquals("Restricted", FlashSettingsMath.batteryExemptionValue(exempt = false))
+    }
+
+    /**
+     * ERROR-031 / D8. Both halves have to say what the switch trades, because the honest question
+     * a user is asking here is "what do I lose" — and the answer differs by state, not just in
+     * tone: on, the picture degrades first; off, both streams compete.
+     */
+    @Test
+    fun `the voice priority row says which stream pays`() {
+        val on = FlashSettingsMath.prioritiseVoiceSubtitle(enabled = true)
+        val off = FlashSettingsMath.prioritiseVoiceSubtitle(enabled = false)
+
+        assertNotEquals(off, on)
+        assertTrue("on copy must name video: $on", on.contains("Video", ignoreCase = true))
+        assertTrue("off copy must name video: $off", off.contains("video", ignoreCase = true))
     }
 }

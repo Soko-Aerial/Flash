@@ -2,8 +2,8 @@
 
 package com.transfer.flash.core.network.tcp
 
-import android.util.Log
 import com.transfer.flash.core.common.annotation.FlashInternalApi
+import com.transfer.flash.core.common.logging.FlashLog
 import com.transfer.flash.core.common.model.FlashDevice
 import com.transfer.flash.core.common.model.FlashDeviceId
 import com.transfer.flash.core.common.model.FlashPeerPresence
@@ -44,21 +44,24 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Pluggable log sink so JVM unit tests can instantiate [LanSession] without
- * touching `android.util.Log` (which throws "not mocked" on the JVM).
- * Production default routes to [Log.println] exactly like before hardening.
+ * touching a platform logger (which throws "not mocked" on the JVM).
+ * Production default routes through [FlashLog] (see [ANDROID]).
  */
 public fun interface LanSessionLogger {
     public fun log(priority: Int, tag: String, message: String, error: Throwable?)
 
     public companion object {
         public val ANDROID: LanSessionLogger = LanSessionLogger { priority, tag, message, error ->
-            val text = if (error != null) "$message - ${Log.getStackTraceString(error)}" else message
-            Log.println(priority, tag, text)
+            val text = if (error != null) "$message - ${error.stackTraceToString()}" else message
+            when (priority) {
+                WARN -> FlashLog.w(tag, text, error)
+                else -> FlashLog.i(tag, text, error)
+            }
         }
 
-        public val DEBUG: Int = Log.DEBUG
-        public val INFO: Int = Log.INFO
-        public val WARN: Int = Log.WARN
+        public const val DEBUG: Int = 3
+        public const val INFO: Int = 4
+        public const val WARN: Int = 5
     }
 }
 
@@ -84,7 +87,7 @@ public class LanSession(
     public val heartbeatIntervalMs: Long = HeartbeatPolicy.DEFAULT_INTERVAL_MS,
     /** Missed pings before DeclareDead; see [heartbeatIntervalMs]. */
     public val heartbeatMissedThreshold: Int = HeartbeatPolicy.DEFAULT_MISSED_THRESHOLD,
-    /** Injected log sink (JVM-test seam); default is android.util.Log. */
+    /** Injected log sink (JVM-test seam); default is [LanSessionLogger.ANDROID] (routes via [FlashLog]). */
     private val logger: LanSessionLogger = LanSessionLogger.ANDROID,
 ) : FlashSession {
 

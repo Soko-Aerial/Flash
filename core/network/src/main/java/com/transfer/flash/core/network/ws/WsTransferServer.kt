@@ -2,8 +2,8 @@
 
 package com.transfer.flash.core.network.ws
 
-import android.util.Log
 import com.transfer.flash.core.common.annotation.FlashInternalApi
+import com.transfer.flash.core.common.logging.FlashLog
 import java.io.IOException
 import java.net.ServerSocket
 import java.net.Socket
@@ -18,20 +18,13 @@ import com.transfer.flash.core.network.tls.SecureSocketUpgrader
 import com.transfer.flash.core.network.tls.TlsOptions
 
 /**
- * JVM-test shim around [Log]: identical behaviour in production, silently no-ops when the
- * android.jar stubs are unmocked (plain unit tests). Never logs secrets (AGENTS.md §24).
+ * Thin alias around [FlashLog] so WS code keeps a local logging surface. The sink
+ * already swallows platform logging failures (never logs secrets, AGENTS.md §24).
  */
 internal object WsLog {
-    fun i(tag: String, message: String) = safe { Log.i(tag, message) }
-    fun w(tag: String, message: String, error: Throwable? = null) = safe { Log.w(tag, message, error) }
-    fun d(tag: String, message: String) = safe { Log.d(tag, message) }
-
-    private inline fun safe(block: () -> Unit) {
-        try {
-            block()
-        } catch (_: Throwable) {
-        }
-    }
+    fun i(tag: String, message: String) = FlashLog.i(tag, message)
+    fun w(tag: String, message: String, error: Throwable? = null) = FlashLog.w(tag, message, error)
+    fun d(tag: String, message: String) = FlashLog.i(tag, message)
 }
 
 /**

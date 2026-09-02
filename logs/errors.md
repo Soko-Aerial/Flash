@@ -1,6 +1,128 @@
 ﻿
 # Error Log
 
+## ERROR-020 - Backgrounded mesh went offline (REOPENED: real root cause found; RESOLVED — verified on Samsung 2026-09-01; Infinix failure re-attributed to low-battery power policy, see EXP-002)
+
+### Date
+2026-08-31 (reopened), 2026-09-01 (physical verification results)
+
+### Area
+App lifecycle / `FlashBackgroundService` sticky restart / process death
+
+### Symptoms
+Owner report after the first fix: "it still goes offline after a few seconds if I leave the
+app and also if I turn screen off". Peers showed this device offline within seconds of
+backgrounding; it never came back on its own.
+
+### Environment
+- Target SDK: 36
+- Device: Infinix X6882B (Transsion), Android 15/16, Android 12+/API 31+ FGS rules apply
+- Service type: `connectedDevice`, `START_STICKY`
+
+### Error (captured via `adb logcat`)
+```text
+08-31 18:43:14.880 E AndroidRuntime: FATAL EXCEPTION: main
+08-31 18:43:14.880 E AndroidRuntime: Process: com.transfer.flash, PID: 1880
+java.lang.RuntimeException: Unable to create service com.transfer.flash.debug.FlashBackgroundService
+Caused by: android.app.ForegroundServiceStartNotAllowedException:
+  Service.startForeground() not allowed due to mAllowStartForeground false
+  at FlashBackgroundService.startAsForeground(FlashBackgroundService.kt:153)
+  at FlashBackgroundService.onCreate(FlashBackgroundService.kt:74)
+```
+Seven occurrences across 08-29→08-31 (fresh PIDs each time), incl. after the 18:54 reinstall.
+
+### Root cause (actual)
+The first fix moved the FGS *launch site* to `MainActivity.onStart` — necessary but not
+sufficient. The killer is the **sticky-restart path**: the OEM/Android kills the backgrounded
+Flash process → the system restarts the `START_STICKY` service with a null intent while the
+app is NOT TOP → `onCreate` called `startForeground()` **unconditionally and uncaught** →
+`ForegroundServiceStartNotAllowedException` → FATAL → process death → system restarts the
+sticky service again → **crash loop**. The mesh never recovers because every restart dies.
+Supporting evidence: `dumpsys wifi` showed the `WIFI_MODE_FULL_LOW_LATENCY` lock held but
+`isFg=false, isScreenExempt=false, is_low_latency_activated=false` — confirming the earlier
+theory that the WifiLock was doing nothing in the background was right, but that was a
+symptom-level concern, not the process-death cause.
+
+### Failed attempts
+1. Moving the FGS launch into `MainActivity.onStart` (previous fix) — correct for the
+   user-launch path but did nothing for the system's sticky-restart re-entry via `onCreate`,
+   which crashed before reaching any other code.
+2. WifiLock `WIFI_MODE_FULL_LOW_LATENCY` (and its HIGH_PERF fallback) — retained, but from
+   API 34 HIGH_PERF is remapped to LOW_LATENCY, and LOW_LATENCY is only active
+   foreground+screen-on. No WifiLock mode keeps the radio powered while backgrounded on
+   modern Android; the lock is not part of the fix.
+
+### Working fix (2026-08-31, Bug 6 final)
+1. `FlashBackgroundService.startAsForeground()` now returns Boolean and **catches all**
+   exceptions (broad catch: OEM framework variants throw more than the documented exception).
+2. `onCreate` order changed: `acquireLocks()` + screen receiver + **engine start** run FIRST,
+   then the foreground promotion is attempted; on refusal it logs and **`stopSelf()`** — the
+   mesh engine keeps running in-process (no crash, no crash-restart loop, and the 5-second
+   startForeground follow-up obligation is discharged by stopping).
+3. User-initiated `ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` (new permission
+   `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`) fired from the Settings "Background transfers"
+   toggle so the system stops killing the process in the first place.
+
+### Verification (2026-09-01 — physical, two phones)
+- **Samsung SM-G986U1 (~90% battery): PASS.** Screen off / leave app → peer stays online,
+  messages arrive, no FGS exceptions. The Bug 6 fix is **physically verified working**.
+- **Infinix X6882B (~4% battery): FAIL.** Still goes offline within seconds.
+- Differential conclusion: the Infinix failure is **not the fixed bug** — at 4% battery the
+  Transsion power manager and/or AOSP battery-saver kills background processes regardless of
+  FGS status (battery-saver restrictions supersede app standby buckets and FGS priority per
+  official power-management docs). Decisive follow-up = EXP-003: re-test the Infinix charged
+  (>20%) with the battery-optimization exemption granted.
+
+### Related files
+- `app/src/main/java/com/transfer/flash/debug/FlashBackgroundService.kt`
+- `app/src/main/java/com/transfer/flash/MainActivity.kt` (battery-exemption wiring)
+- `app/src/main/AndroidManifest.xml`
+- `docs/android-platform-notes.md` (2026-08-31 (b) entry — full dumpsys evidence)
+- `logs/experiments.md` (EXP-002 — differential test record)
+
+### Status
+RESOLVED (verified on Samsung 2026-09-01; Infinix low-battery behavior tracked in EXP-002/EXP-003)
+
+## ERROR-021 - Uncaught NPE killed the process from the outbox drain loop (drainMutex init order)
+
+### Date
+2026-08-31 (captured on device at 10:22; fixed same day)
+
+### Area
+`core/messaging` — `RealFlashChatRepository` construction vs coroutine startup race
+
+### Symptoms
+```text
+E AndroidRuntime: FATAL EXCEPTION: DefaultDispatcher-worker-2
+java.lang.NullPointerException: Attempt to invoke interface method
+  'kotlinx.coroutines.sync.Mutex.lock(...)' on a null object reference
+  at RealFlashChatRepository.drainOutboxOnce(RealFlashChatRepository.kt:1057)
+  at RealFlashChatRepository.drainOutboxLoop(RealFlashChatRepository.kt:648)
+```
+
+### Root cause
+Kotlin initializes properties and `init` blocks in **source order**. The class's `init`
+block launched `drainOutboxLoop()` (which reaches `drainMutex.withLock`), while `drainMutex`
+was declared ~500 lines BELOW that init block. The coroutine could begin executing on
+`Dispatchers.IO` before the constructor finished initializing `drainMutex` → null receiver →
+NPE → uncaught coroutine exception → **whole process death** (a second, independent Bug-6
+offline path).
+
+### Working fix
+Moved the `drainMutex` declaration above the `init` block, with a comment documenting the
+ordering constraint so nobody "tidies" it back down the file. All other constructor params
+with defaults keep existing call sites source-compatible.
+
+### Verification
+`RealFlashChatRepositoryTest` full class → `failures="0"`, including the outbox-drain tests
+and the two new inbound-callback tests added for Bug 7.
+
+### Related files
+- `core/messaging/src/main/java/com/transfer/flash/core/messaging/RealFlashChatRepository.kt`
+
+### Status
+RESOLVED (code-level; covered by the same physical re-test as ERROR-020)
+
 ## ERROR-015 - WS mesh transfer: receiver assembles files by append order; silent frame drops; handshake/glare races (RESOLVED)
 
 ### Date
@@ -754,3 +876,1484 @@ intent.
 
 ### Status
 RESOLVED (2026-08-26) - load-induced flake; both tests verified green on isolated `--rerun-tasks`.
+
+## ERROR-022 - webrtc-kmp onTrack Flow: tuple destructuring + track kind check compile risk
+
+### Date
+2026-09-02
+
+### Area
+core:calling / WebRTC integration
+
+### Symptoms
+First FlashCallSession draft used `pc.onTrack.collect { (track, stream) -> }` destructuring
+and a locally re-declared `MediaStreamTrackKind` enum, risking API-shape mismatch with
+webrtc-kmp 0.125.11 (onTrack's emission type and MediaStreamTrack.kind typing were written
+from memory of the sample, not verified against the artifact source).
+
+### Root cause
+Drafted against remembered sample code instead of the published commonMain sources.
+
+### Working fix
+Verified against webrtc-kmp 0.125.11 sources before build: `MediaStreamTrack.kind` is
+`MediaStreamTrackKind` (Audio/Video) from the library; onTrack emits track+stream. Removed
+the local enum; kept the onTrack collector minimal (remote stream capture only) since
+connection-state drives the ACTIVE transition.
+
+### Verification
+`:core:calling:compileDebugKotlin` + `:core:calling:testDebugUnitTest` pass (12 tests, 0 failures).
+`:ui:callui:compileDebugKotlin` and `:app:compileDebugKotlin` also pass.
+
+### Status
+RESOLVED (2026-09-02, verified build)
+
+## ERROR-023 — Connect-glare race: infinite reconnect storm between LAN peers
+
+### Date
+2026-09-01 (diagnosed), 2026-09-02 (fixed)
+
+### Area
+WS mesh connect / WsFlashNetwork.registerSession / DiscoveryEngineHolder.runAutoConnectSweep
+
+### Symptoms
+Repeated "WS connecting" log lines every ~2 seconds between two LAN peers,
+each producing a "Session up" / "Session not admitted" / reconnect cycle.
+Online/offline flickered, chat messages sometimes failed with "cannot reach",
+and the main thread saw frame skips (58+ skipped frames) from the repeated
+connection churn.
+
+### Environment
+- Android 16 (API 36)
+- Two phones on the same LAN (192.168.0.x/24, both 5GHz band — dual-band ruled out)
+- NSD discovery + WS mesh
+
+### Error log
+`
+09-01 17:02:54.704 WS: Auto-connect dialing peer=Flash Infinix X6882B at 192.168.0.185:45822
+09-01 17:02:54.705 WS: WS connecting address=192.168.0.185:45822
+09-01 17:02:59.910 WS: Session up peer=... — sending pairing hello
+09-01 17:02:59.913 WS: Pairing sendToPeer queued (hasSession=true)
+09-01 17:02:59.915 WS: Auto-connect result peer=... success=true
+09-01 17:03:04.010 WS: WS connecting address=192.168.0.185:45822   <-- 4s later, storm restarts
+`
+
+### Root cause
+Connect-glare race between two independent dial engines:
+1. **Auto-connect sweep** (5s periodic, gated by AutoConnectGate 15s suppress)
+2. **#18 reconnect engine** (ungated, backoff-based, fires on every unexpected session drop)
+
+After a session drop (e.g. brief network glitch), both engines dial the same peer
+simultaneously. Both devices dial each other at the same moment → classic glare.
+Each egisterSession runs under its own egistryLock (per-process, no cross-device
+coordination) → each admits its own outbound dial first; the peer's inbound dial hits
+SessionHardeningPolicy.resolveDuplicate with equal LAN rank (0 == 0) → KeepExisting
+→ inbound socket closed.
+
+**Why KeepExisting alone caused an infinite storm:** The tie was a coin flip. ~50% of
+the time the devices **cross-wired**: A kept its outbound (TCP pair #1), B kept its
+outbound (pair #2) — but pair #1 was B's inbound (B closed it) and pair #2 was A's
+inbound (A closed it). Both surviving "sessions" sat on dead sockets → both schedule
+reconnect → glare again → infinite 2s storm.
+
+### Failed attempts
+1. **KeepExisting + sweep dedup only** — would not fix the cross-wire coin flip.
+2. **Dual-band hypothesis** — ruled out: both phones on same /24, same network handle.
+
+### Working fix
+Three-part fix:
+
+1. **Deterministic glare tiebreaker** (primary fix): When both sessions have equal
+   transport rank (LAN == LAN), compare the session ORIGINATOR id. Outbound's originator
+   = localDeviceId; inbound's originator = peerDeviceId. Since A's outbound IS B's
+   inbound (same TCP pair), both ends compute the same winner from the only data both
+   devices share — the device IDs. The session whose originator is lexicographically
+   smaller wins. This converges both ends on ONE socket, eliminating the cross-wire
+   coin flip entirely.
+
+2. **Sweep dedup** (guard): unAutoConnectSweep skips peers that already have a
+   reconnect loop in flight (isReconnectInFlight), preventing redundant dials from
+   the sweep while the #18 engine is already backoff-dialing that peer.
+
+3. **indLanNetwork determinism** (latent fix): WsTransferClient.findLanNetwork
+   now sorts eligible networks by 
+etworkHandle so both devices independently pick
+   the same network when multiple eligible networks exist (dual-band SSID, cellular
+   + Wi-Fi, etc.).
+
+### Files changed
+- core/network/src/main/java/.../ws/WsFlashNetwork.kt — tiebreaker in egisterSession +
+  esolveGlareTie + isReconnectInFlight accessor
+- core/network/src/main/java/.../ws/WsSession.kt — isOutbound constructor param
+- pp/.../debug/DiscoveryEngineHolder.kt — sweep dedup skip
+- core/network/src/main/java/.../ws/WsTransferClient.kt — indLanNetwork deterministic sort
+- pp/src/main/AndroidManifest.xml — enableOnBackInvokedCallback="true"
+- core/network/src/test/.../ws/WsFlashNetworkTest.kt — glare regression test
+
+### Verification
+- :core:network:testDebugUnitTest — 4 tests pass (3 existing + new glare regression)
+- :app:compileDebugKotlin — SUCCESS
+- Glare test creates two networks that dial each other simultaneously and asserts:
+  exactly one session per side, A holds outbound (smaller id), B holds inbound,
+  message round-trips over the survivor, no reconnect storm.
+
+### Related files
+- docs/decisions.md — tiebreaker changes documented KeepExisting tie behavior
+- logs/experiments.md — dual-band analysis recorded for traceability
+
+### Status
+RESOLVED (2026-09-02, build + test verified)
+
+## ERROR-024 — Accepting a call crashes both phones: "Setting SDP failed: SessionDescription is NULL"
+
+### Date
+2026-09-02
+
+### Area
+WebRTC calling / `:core:calling` / SDP transport
+
+### Symptoms
+Accepting a WebRTC voice/video call crashes BOTH phones almost immediately
+(~7 ms) after the callee processes the inbound Offer frame and calls
+`setRemoteDescription`. Each phone logs the `Accept` send, then an inbound call
+frame, then:
+
+```text
+FATAL EXCEPTION: DefaultDispatcher-worker-7
+java.lang.RuntimeException: Setting SDP failed: SessionDescription is NULL.
+    at com.shepeliev.webrtckmp.PeerConnection$setSdpObserver$1.onSetFailure(PeerConnection.kt:168)
+```
+
+No SDP text is ever logged (we never reached our diagnostics), and the crash
+kills the whole process, so the FGS call UI dies with it.
+
+### Environment
+- Android version: both phones on the same LAN (192.168.0.x/24), network handle
+  `501621903373`
+- Device: Flash Infinix X6882B (pid 18793 @ 192.168.0.185, id
+  `3d44c04d-a473-408f-a741-2647ce7365ab`); second phone @ 192.168.0.107, id
+  `ad35af74-0b6a-44e8-9151-340ad750c178`
+- webrtc-kmp: `com.shepeliev:webrtc-kmp:0.125.11` (wraps
+  `io.github.webrtc-sdk:android:125.6422.06.1`)
+- Branch `dev`, HEAD `43b1c2c` (pre-fix)
+
+### Error
+```text
+java.lang.RuntimeException: Setting SDP failed: SessionDescription is NULL.
+    at com.shepeliev.webrtckmp.PeerConnection$setSdpObserver$1.onSetFailure(PeerConnection.kt:168)
+    Suppressed: kotlinx.coroutines.internal.DiagnosticCoroutineContextException: [StandaloneCoroutine{Cancelling}@d4cbd1d, Dispatchers.Default]
+```
+
+### Root cause
+Definitively established by disassembling the webrtc-kmp 0.125.11 AAR bytecode
+(`PeerConnection$setSdpObserver$1.onSetFailure(String)`): the wrapper rethrows
+the native error string **verbatim** — `"Setting SDP failed: " + <native message>`.
+So `"SessionDescription is NULL."` is libwebrtc's own **native JNI error**,
+emitted by `JavaToNativeSessionDescription` when the Java
+`org.webrtc.SessionDescription`'s `description` field is null/empty at
+JNI-call time (or the SDP string fails native parse). `FlashCallSession` used
+the webrtc-kmp API correctly (verified against the same bytecode), so the
+fault is in what we fed across the wire, not in API misuse.
+
+The SDP rides the WS mesh as a text frame under the `FLASH_CALL` prefix,
+encoded with `FlashTextFraming`. That framing layer escapes only `%`→`%25`,
+space→`%20`, `=`→`%3D`; CR/LF pass through raw, and `parseFields` does
+`text.trim().split(' ')` on the whole frame. An SDP offer is a multi-line,
+whitespace-sensitive string, so two independent failure modes exist on the
+wire:
+1. **Whitespace corruption** — the outer `trim()` strips leading/trailing
+   whitespace and any field-splitting can alter embedded spaces/newlines;
+   libwebrtc's SDP parser is strict and rejects mangled session descriptions.
+2. **Delimiter ambiguity** — the frame format splits on spaces, so SDP lines
+   (e.g. `a=rtpmap:...`, `a=fingerprint:...`) can be fragmented by the framing
+   layer before they reach the decoder.
+
+The precise trigger (empty `description` vs parse failure) is masked by the
+laconic native message, but both paths point at the text-framing transport,
+not the WebRTC API call.
+
+### Failed attempts
+1. **API verification from docs/tutorials** — insufficient; the crash is native.
+   We disassembled the real AAR (`javap` on the extracted
+   `webrtc-kmp-android-0.125.11` AAR classes) to confirm our call sites were
+   correct and to pin down exactly where the native error string originates.
+2. **Suspecting the codec or host wiring** — ruled out. `CallFrameCodec.decode`
+   returns null for non-`FLASH_CALL` frames (exact-prefix `parseFields`), the
+   WS codec (`WebSocketCodec`) is a clean RFC 6455 implementation, and the host
+   wiring (`DiscoveryEngineHolder` sendFrame/inbound routing) passes frames
+   through byte-for-byte. The inbound frame *is* logged before the crash; the
+   SDP content itself was the problem.
+
+### Working fix
+Two-part hardening:
+
+1. **Base64 SDP transport (primary).** `CallFrameCodec` now base64-encodes the
+   `sdp` field of Offer/Answer frames on encode and base64-decodes on decode,
+   using a new pure-Kotlin RFC 4648 codec (`core/common` `Base64.kt` — no
+   `android.util.Base64`/`java.util.Base64` because `core/common` is pure JVM
+   with `minSdk 24` + `explicitApi()`). Base64 is whitespace-free and
+   delimiter-free, so no amount of trim/escape/split in `FlashTextFraming` can
+   corrupt it. `decodeSdp` tries base64 first and falls back to raw text for
+   legacy pre-hardening peers (real SDP starts with `v=0`, which is not valid
+   base64, so the fallback ambiguity is negligible).
+2. **Try/catch safety net (secondary).** `FlashCallSession` wraps the
+   `onAccept` / `onOffer` / `onAnswer` SDP flows in try/catch (rethrows
+   `CancellationException`, otherwise logs and `end(FlashCallEndReason.ERROR,
+   notifyPeer = true)`) so a native set-SDP failure can no longer take down the
+   whole process — it ends the call cleanly instead. A `logSdp()` helper logs
+   SDP length/empty/first-line for diagnostics.
+
+### Verification
+- `:core:common:testDebugUnitTest` — 49 PASS (incl. 7 new `Base64Test` cases:
+  empty, hello, binary, SDP round-trip, invalid char, bad padding, padded
+  round-trips).
+- `:core:calling:testDebugUnitTest` — 15 PASS (incl. byte-for-byte Offer and
+  Answer SDP round-trip tests + legacy raw-SDP fallback test).
+- Round-trip tests assert SDP survives encode→decode **byte-for-byte**, so the
+  framing layer can no longer alter the session description.
+
+### Related files
+- core/common/src/main/java/.../protocol/Base64.kt — NEW pure-Kotlin base64
+- core/common/src/test/java/.../protocol/Base64Test.kt — NEW
+- core/calling/src/main/java/.../protocol/CallFrameCodec.kt — base64 SDP
+- core/calling/src/main/java/.../FlashCallSession.kt — try/catch + logSdp
+- core/calling/src/test/java/.../protocol/CallFrameCodecTest.kt — round-trip tests
+- docs/decisions.md — ADR-027 (base64 SDP transport)
+- docs/protocol.md — Calling section (base64 SDP note)
+
+### Status
+RESOLVED (2026-09-02, build + unit tests verified; physical two-phone call
+re-test still pending)
+
+---
+
+## ERROR-025 — Peer flaps offline/online when the screen goes off or the app is backgrounded; text and calls fail in that window
+
+### Date
+2026-09-02
+
+### Area
+`:core:network` WS keepalive + `:core:discovery` NSD transport
+
+### Symptoms
+Three reports, one investigation:
+
+1. **Discovery latency is wildly inconsistent** — finding the other device takes
+   "approximately 2 to like 30 seconds", in visible steps rather than a smooth
+   spread.
+2. **The Infinix goes offline when its screen is turned off** (as seen by its
+   peer) and does not come back until something else forces a restart.
+3. **Pressing home makes it go offline, then online again** — and every chat
+   message and voice/video call attempt made during that window fails.
+
+Symptom 3 is the load-bearing one: the UI's online dot is the **WS session set**,
+not NSD discovery (`onlinePeerIds = networkImpl.activeSessions.map { … }` in both
+`DiscoveryEngineHolder` and `Flash`, consumed by
+`RealFlashChatRepository.isOnline`). A closed session *is* "offline" in the UI,
+and with no session `sendText` / `FLASH_CALL` signaling fail with
+`PeerUnavailable`. So the flap and the failures are the same bug, not two.
+
+### Environment
+- Devices: Flash Infinix X6882B + second Android phone, same LAN
+- Branch `dev`, HEAD `7040517` (pre-fix)
+- Transsion/Infinix "Phone Master" power management is aggressive about freezing
+  backgrounded processes, which is why this device surfaced it first — but the
+  bug is generic Android app-standby behaviour, not OEM-specific.
+
+### Root cause
+Three independent defects, one per symptom.
+
+**(3) The offline/online flap: two separate paths tore down healthy WS sessions
+whenever a phone was frozen.**
+
+Android freezes the process at will (screen off, app backgrounded, Doze), and
+both of the following judged the *peer* by a clock reading that actually measured
+the *process's* own sleep:
+
+- `WsConnection`'s keepalive loop did
+  `if (System.currentTimeMillis() - lastInboundAtMs > livenessTimeoutMs) close(…)`
+  as the first thing after `delay(pingIntervalMs)`. A `delay(10_000)` that
+  returns 60 s late made `silentForMs` ≈ 60 s on the very first resumed tick, so
+  the connection was closed **before a single PING was sent** to check. Both ends
+  ran the same loop and both woke at the same moment, so the teardown was
+  symmetric: each phone declared the other dead.
+- The 30 s socket `soTimeout` surfaced from `WebSocketCodec.readMessage` as a
+  generic `SocketTimeoutException`, indistinguishable in the read loop from "the
+  stream broke". Any peer quiet for longer than the read timeout — i.e. any
+  frozen peer — also lost its session this way. `LanSession` already carried the
+  equivalent fix for TCP (`catch (_: SocketTimeoutException) { continue }` inside
+  the read loop, ERROR-014); the WS path never received it.
+
+**(1) The 2 s-to-30 s discovery spread: the only retry for a failed resolve was
+the 10 s presence heartbeat.**
+
+`NsdTransport.startMonitor` recorded `monitoredServices[name] = false` on failure
+and left the retry entirely to `presenceTick`. That tick is a 10 s loop, so one
+failed resolve cost 10 s of latency, two cost 20 s, three cost 30 s — the exact
+stepped spread reported. Worse, on API ≥ 34 the platform reports
+`onServiceInfoCallbackRegistrationFailed` **asynchronously**, after
+`registerServiceInfoCallback` has already returned without throwing. The shared
+`MonitorEvents` instance could not attribute that callback to a service name, so
+it was logged and dropped — leaving the optimistic `monitoredServices[name] =
+true` in place forever. From then on the heartbeat neither retried the monitor
+(it only retries `false`) nor evicted the peer (it is still "monitored"), so the
+device stayed invisible until the next browse restart.
+
+**(2) The Infinix disappearing after screen-off: nothing ever re-armed
+advertising.**
+
+NSD offers no positive "still advertised" signal — only a failure or
+unregistration callback — and Android drops registrations for reasons an app
+cannot prevent: the mDNS daemon restarts, the interface the service was
+registered on goes away (Wi-Fi ↔ hotspot), or an OEM power manager freezes the
+process. Every one of those left `advertising = false` with **nothing anywhere in
+the codebase to put it back**: `CompositeDiscovery` watchdogs the *browse* only
+(`watchdogBrowsing` → `transport.restartBrowsing()`) and had no advertise-side
+counterpart. The peer's own presence heartbeat then evicted this device ~20-30 s
+later, which is precisely "goes offline when you turn the screen off". A failed
+`startAdvertising` additionally released the multicast lock and gave up.
+
+### Failed attempts / ruled out
+- **Blaming NSD discovery for the offline dot.** It is not the source: the dot is
+  `activeSessions`. Discovery latency and the online flap are different bugs with
+  different fixes, which is why (1) and (3) are both listed here.
+- **Raising `DEFAULT_LIVENESS_TIMEOUT_MS`.** Considered and rejected: no finite
+  window fixes a *clock reading that measured the wrong thing*. A 5-minute
+  freeze beats any threshold worth having, and inflating it would also delay
+  pruning genuinely dead peers. The fix has to be "do not judge on an
+  unmeasurable window", not "make the window bigger".
+- **Closing on the read timeout with a shorter `soTimeout`.** Also rejected: the
+  read timeout exists to keep the read loop from blocking forever so it can
+  re-check `closed`/`isActive`. Making it a liveness rule is what broke it.
+
+### Working fix
+
+**WS liveness (`:core:network`)**
+
+1. `WsKeepalive` (NEW) extracts the verdict into a pure function of (clock,
+   inbound traffic, tick arrivals). A tick also measures the gap since the
+   *previous* tick with the same clock; when that gap is ≥ `pingIntervalMs *
+   STALL_FACTOR` (2), the scheduler demonstrably did not run, so nothing about
+   the peer can be inferred: the silence window is rebased to now, a PING goes
+   out, and the verdict is deferred to a tick that ran on time. Backwards clocks
+   (NTP correction) and future-dated inbound stamps are forgiven the same way. A
+   genuinely dead link still closes within ~`livenessTimeoutMs` of the process
+   waking up.
+2. `WebSocketCodec.IdleTimeout` (NEW type) is raised when the read timeout
+   expires with **zero bytes of a frame consumed** — the stream is still exactly
+   on a frame boundary and, per the `SocketTimeoutException` contract, the socket
+   is still valid. `readMessage` tracks `atMessageStart` so a timeout raised
+   anywhere *after* the first byte stays a hard error (the stream is
+   desynchronized there; retrying would misparse the remainder).
+3. `WsConnection.readLoop` catches `IdleTimeout` and simply reads again. The
+   watchdog is now the *only* liveness authority. Every inbound frame of any kind
+   refreshes it (`keepalive.onInbound`).
+
+**NSD discovery (`:core:discovery`)**
+
+4. **Fast monitor retry.** `retryMonitorSoon` schedules a re-`startMonitor` after
+   `monitorRetryMs` (600 ms, linear backoff × attempt), collapsing duplicates per
+   service name and bounded by `maxMonitorRetries` (4) so a permanently
+   unresolvable service costs bounded work. The presence heartbeat remains the
+   slow backstop.
+5. **Per-service `MonitorEvents`** (`monitorEventsFor(name)`) so an async
+   `onRegistrationFailed` can be attributed: it demotes
+   `monitoredServices[name] = false` (only if still `true`, so a stale failure
+   cannot clobber a later successful re-register) and triggers the fast retry.
+   `onUpdated` keys its retry-counter reset off `data.serviceName`, because on the
+   `LEGACY_RESOLVE_QUEUE` path `RealNsdManagerBridge` captures whichever events
+   instance it was handed first and reuses it for every service.
+6. **Advertise watchdog.** `advertiseDesired` records intent, and
+   `startAdvertiseWatchdog()` reconciles wanted-vs-actual every
+   `advertiseWatchdogMs` (10 s), re-registering whenever `advertising` is false —
+   the missing counterpart to `CompositeDiscovery`'s browse watchdog. It is armed
+   on **both** the success and failure branches of `startAdvertising`, and a
+   failed start no longer drops `advertiseDesired` or the multicast lock
+   (`releaseMulticastLockIfIdle` now also holds for `advertiseDesired`).
+7. **Re-advertise on connectivity change.** `onNetworkChanged` now calls
+   `restartAdvertising()` before the browse restart, deliberately **not** gated on
+   `advertising`: a registration pinned to a vanished interface keeps reporting
+   itself healthy, which is exactly the claim not to trust there. This is the
+   advertise-side twin of `restartBrowsing()`. `startAdvertising` arms the
+   connectivity observer itself, so an advertise-only transport gets this too.
+
+All of (4)-(7) live inside `NsdTransport`; no transport interface or
+`CompositeDiscovery` change was needed.
+
+### Verification
+- `:core:network:testDebugUnitTest` — **115 PASS / 0 fail**, including:
+  - `WsKeepaliveTest` (NEW, 9 cases): on-time tick pings; measured silence closes
+    with the right `silentForMs`; busy connection stays open indefinitely; silence
+    exactly at the timeout is not yet fatal; a tick at the stall threshold is
+    forgiven **and rebased** (the follow-up tick proves the rebase); a 3-minute
+    screen-off freeze does not close a healthy session; a genuinely dead link
+    still closes 30 s after the wake; backwards clock forgiven; future-dated
+    inbound forgiven.
+  - `WebSocketCodecTest` (+3 cases, 14 total): a timeout before the first byte is
+    a retryable `IdleTimeout` carrying its `SocketTimeoutException` cause; a
+    timeout *after* the first byte is **not** retryable; and the stream stays
+    aligned across an idle timeout (the next `readMessage` on the same stream
+    returns the frame intact).
+- `:core:discovery:testDebugUnitTest` — **97 PASS / 0 fail**, including
+  `NsdTransportLogicTest` (+6 cases, 36 total): failed monitor start is retried
+  fast with no heartbeat configured at all; an async registration failure demotes
+  the service and re-monitors the same name; a resolved service schedules nothing;
+  the watchdog re-registers a dropped advertisement and leaves a healthy one
+  alone; it recovers from a registration failure **while keeping the multicast
+  lock**; a connectivity change re-registers an advertise-only transport that
+  still reports itself healthy.
+- Both modules compile clean — the only remaining warnings in `NsdTransport.kt`
+  (lines 249, 424) are pre-existing.
+- Physical two-phone re-test (screen off, home button, chat + call during the
+  window) still pending.
+
+### Related files
+- `core/network/src/main/java/.../ws/WsKeepalive.kt` — NEW (pure verdict logic)
+- `core/network/src/main/java/.../ws/WsConnection.kt` — injectable clock, verdict
+  loop, `IdleTimeout`-tolerant read loop, reworked companion KDoc
+- `core/network/src/main/java/.../ws/WebSocketCodec.kt` — `IdleTimeout` +
+  frame-boundary detection (`atMessageStart` / `retryableIdle`)
+- `core/network/src/test/java/.../ws/WsKeepaliveTest.kt` — NEW
+- `core/network/src/test/java/.../ws/WebSocketCodecTest.kt` — idle-timeout cases
+- `core/discovery/src/main/java/.../nsd/NsdTransport.kt` — fast monitor retry,
+  per-service `MonitorEvents`, advertise watchdog, re-advertise on network change
+- `core/discovery/src/test/java/.../nsd/NsdTransportLogicTest.kt` — harness knobs
+  (`monitorRetryMs`/`monitorRetrySleep`, `advertiseWatchdogMs`/
+  `advertiseWatchdogSleep`, `FakeBridge.fireMonitorRegistrationFailed` /
+  `fireAdvertiseUnregistered`) + 6 cases
+
+### Still open (not part of this fix)
+All three were fixed in **ERROR-026**, which is what the symptom report after this
+entry landed turned out to be:
+- `FlashBackgroundService` releases the wake/Wi-Fi locks on the
+  foreground-refused / sticky-restart path.
+- `onlinePeerIds` has no debounce, so a sub-second session swap still flaps the
+  UI dot.
+- `WsFlashNetwork.scheduleReconnect` only runs for peers in `reconnectTargets`,
+  so an inbound-only session (hotspot host) relies on the 5 s auto-connect sweep
+  plus the 15 s `AutoConnectGate` suppression to come back.
+
+### Status
+RESOLVED at code level (2026-09-02, build + 212 unit tests green across the two
+modules); physical two-phone verification pending
+
+---
+
+## ERROR-026 — The offline flap survives the ERROR-025 fix: power locks released on the foreground-refused path, no redial for inbound-only peers, and messages permanently FAILED after ~2 minutes
+
+### Date
+2026-09-02
+
+### Area
+`:app` (`FlashBackgroundService`, `DiscoveryEngineHolder`), `:core:network`
+(`WsFlashNetwork` reconnect engine), `:core:messaging`
+(`RealFlashChatRepository` outbox + presence display)
+
+### Symptoms
+Unchanged from ERROR-025 and reported again after it landed: the Infinix "still
+goes offline when u turn screen off and when i go to home it goes ofline and then
+online again and text and call doesnt go through when its doing that".
+
+Same load-bearing fact as ERROR-025: the UI dot is the **WS session set**
+(`onlinePeerIds = networkImpl.activeSessions.map { … }`), so the flap and the
+`PeerUnavailable` send/call failures are one bug. ERROR-025 fixed the two paths
+that *tore sessions down*; this entry covers the four that stopped them from
+**coming back** (or made the return invisible / too late to matter).
+
+### Environment
+- Devices: Flash Infinix X6882B + second Android phone, same LAN / Wi-Fi hotspot
+- Branch `dev`, HEAD `7040517` + the uncommitted ERROR-025 work
+- The hotspot topology matters for defect (2): the phone sharing the hotspot
+  accepts every session and dials none.
+
+### Root cause
+Four independent defects.
+
+**(A) The power locks died with the service instance — on exactly the path that
+needs them.**
+
+`FlashBackgroundService.onCreate` acquired a partial `WakeLock` and a
+`WIFI_MODE_FULL_LOW_LATENCY` `WifiLock`, then promoted itself to foreground. On
+Android 12+ a sticky restart after an OEM kill happens while the app is
+backgrounded, so `startForeground()` is refused
+(`ForegroundServiceStartNotAllowedException`); the catch calls `stopSelf()`, which
+runs `onDestroy()`, which released both locks. The engine kept running with the
+CPU free to idle and the Wi-Fi radio free to enter power save — i.e. the one
+situation the locks exist for was the one that disarmed them.
+
+**(B) The same path could also cancel engine startup half-way.**
+
+`ensureStarted` ran in the service's own `CoroutineScope`, and `stopSelf()` →
+`onDestroy()` → `scope.cancel()`. Cancelling mid-build could strand a bound server
+socket, a live NSD registration and an open SQLCipher handle while `composite`
+stayed null — so the next `ensureStarted` built a **second** stack on top of the
+orphaned one.
+
+**(C) Only the side that dialed could redial.**
+
+`reconnectTargets[peerId] = Endpoint(host, actualPort)` is written in exactly one
+place: `connectManual`. Over a Wi-Fi hotspot the host's sessions are therefore all
+inbound, `reconnectTargets` is empty for every one of them, and
+`onSessionDisconnected`'s `reconnectTargets.containsKey(peerId)` guard scheduled
+nothing at all. The design assumption "the dialer will notice and come back" only
+holds while the dialer's process is *scheduled* — which is precisely what
+screen-off and Doze suspend. The app-side `runAutoConnectSweep` (5 s) partly
+covered this, but it lives in `:app` only (the `:core:engine` path has no sweep)
+and it stands down for peers under `AutoConnectGate` or with a reconnect already
+in flight.
+
+**(D) The outbox declared defeat after ~2 minutes, and the dot had no
+hysteresis.**
+
+Give-up was an attempt cap (`attempts >= OUTBOX_MAX_ATTEMPTS`, 8) against a
+backoff of `1s shl (attempts-1)` capped at 60 s — a patience of roughly 2-3
+minutes, after which the row was deleted and the message marked `FAILED`
+permanently. A screen-off outage is routinely longer than that, so a message typed
+during the window was lost *even though the peer came back*. Attempt count was
+also the wrong quantity to measure: `makePendingDue` (the reconnect reset) zeroes
+`attempts`, so the cap was not a monotonic clock in the first place.
+
+Separately, `onlinePeerIds` maps `activeSessions` straight through with no
+debounce, so a sub-second session swap — glare convergence, a redial, a
+supersede-by-richer-path — renders in the UI as a full offline→online blink.
+
+### Failed attempts / ruled out
+- **"ERROR-025's keepalive fix makes (A) redundant."** No. Stall detection makes a
+  *late tick* survivable; it cannot recover packets a power-saving Wi-Fi radio
+  never received, and it cannot run at all while the CPU is idle. The locks are
+  what keep the socket serviceable; the keepalive fix is what stops a woken
+  process from misreading its own sleep. Different failure, both needed.
+- **A pre-loop grace `delay` before the backup redial** (so the original dialer
+  gets first refusal). Rejected: `isReconnectInFlight` is
+  `reconnectJobs.containsKey(deviceId)`, and the app's 5 s auto-connect sweep skips
+  peers it reports (ERROR-023 dedup). A grace period would claim "reconnect in
+  flight" while doing nothing, standing the sweep down for its whole duration and
+  making recovery **slower** than before the fix. A larger `ReconnectPolicy.baseMs`
+  buys the same spacing without lying about being in flight.
+- **Debouncing `onlinePeerIds` at the source** (`DiscoveryEngineHolder` / `Flash`).
+  Rejected: transfer send-gating and `CallCoordinator` must see raw session truth —
+  a held-open dot that lets a `FLASH_CALL` be attempted against a dead session
+  trades a cosmetic flicker for a real failure. The hold belongs in the
+  presentation layer, and inside `RealFlashChatRepository` both `onlinePeerIds`
+  consumers are display combines.
+- **Just raising `OUTBOX_MAX_ATTEMPTS`.** Rejected for the reason above: the cap is
+  resettable by `makePendingDue`, so no value of it bounds anything reliably.
+
+### Working fix
+
+**(A) Lock ownership follows the engine, not the service.** `DiscoveryEngineHolder`
+now holds `wakeLock` / `wifiLock`, acquires them inside `startEngineLocked` and
+releases them only in `stopAll()`. `FlashBackgroundService` has no lock fields at
+all, so its destruction — including the refused-promotion `stopSelf()` — cannot
+disarm a running engine. Stopping the service now only surrenders foreground
+priority, which is all it ever should have done.
+
+**(B) Startup is un-cancellable.** `ensureStarted` wraps `startEngineLocked` in
+`withContext(NonCancellable)`, so a dying service instance can no longer abandon a
+half-built engine. Ordering in `onCreate` is also inverted (engine first,
+foreground promotion last) and the promotion returns `false` instead of throwing.
+
+**(C) The accepting side gets a backup redial.** In `WsFlashNetwork`:
+- `redialTargetOf(deviceId, backup)` — primary loops still read only
+  `reconnectTargets`; backup loops fall back to `knownEndpoints`, the
+  discovery-maintained route table.
+- `localDisconnects` (a concurrent set) records explicit local teardown intent.
+  `reconnectTargets` used to encode it implicitly — no target meant "do not
+  redial" — which an inbound-only peer cannot express. Set by `disconnect`, cleared
+  by `registerSession` (a live session means the peer is wanted again), cleared
+  wholesale by `stop`.
+- `onSessionDisconnected` now falls through to
+  `scheduleReconnect(peerId, immediate = false, backup = true)` for a peer with no
+  target that was not locally disconnected.
+- Backup loops start from `BACKUP_REDIAL_BASE_MS` (4 s) instead of
+  `ReconnectPolicy.DEFAULT_BASE_MS` (1 s), so the original dialer's faster loop
+  usually wins and connect glare stays rare. Injectable as `backupRedialBaseMs` so
+  tests do not sleep seconds.
+- The `AndroidNetworkWatcher` `onAvailable` sweep covers
+  `reconnectTargets.keys + knownEndpoints.keys`, dialing known-route peers as
+  backup (non-immediate) and remembered-target peers immediately as before.
+
+**(D) Outbox patience is wall-clock; the dot has a falling-edge hold.**
+- `OUTBOX_GIVE_UP_AFTER_MS = 30 min`, measured as `now - item.createdAt`.
+  `OUTBOX_MAX_ATTEMPTS` is deleted; a young row that has failed 50 times keeps
+  retrying, and an old row fails once the budget expires regardless of attempts.
+  `createdAt` is untouched by `makePendingDue`, so the reconnect reset can no
+  longer extend a row's life.
+- `displayedOnlinePeerIds = onlinePeerIds.holdOfflineTransitions(OFFLINE_HOLD_MS)`
+  with a 6 s hold: rising edges (peer appears) emit immediately, falling edges are
+  deferred and cancelled if the peer returns within the window. 6 s because the
+  backup redial's own floor is 4 s plus handshake — a 4 s hold would expire just
+  before the recovery it exists to hide. `distinctUntilChanged` is applied to the
+  **upstream** so a repeated identical set cannot restart `transformLatest` and
+  defer a genuine offline transition indefinitely. Presentation only: the raw
+  `onlinePeerIds` still feeds send/call gating.
+
+### Verification
+- `:core:network:testDebugUnitTest` — **117 PASS / 0 fail** (`WsFlashNetworkTest`
+  4 → 6 cases):
+  - `testAcceptingSideBackupRedialRecoversInboundOnlySession` — the host is handed
+    the client's route via `rememberEndpoint`, the client dials (so the host's
+    session is asserted **inbound**), then the client leaves via `disconnect`, which
+    clears its own target and records its local-disconnect intent so it can never
+    redial. The host must regain the session by itself, and the regained session
+    must be **outbound** on the host — inbound would mean the client came back and
+    the test proved nothing. A text round-trip over the recovered socket proves it
+    is genuinely live, not merely registered.
+  - `testLocalDisconnectSuppressesBackupRedialOfInboundPeer` — the host drops its
+    inbound peer deliberately; no backup loop may be armed even though endpoint
+    memory still holds the route (asserted, so a suppressed loop cannot be a
+    missing route). Sequenced off `activeSessions` becoming empty, which only
+    `registerSession`/`onSessionDisconnected` publish, so the assertion is not
+    racing the disconnect callback.
+- `:core:messaging:testDebugUnitTest` — **20 PASS / 0 fail**
+  (`RealFlashChatRepositoryTest` 9 → 10 cases): the old
+  "gives up after max attempts" case became "gives up once the wall-clock budget
+  expires" (seeded `attempts = 1`, `createdAt = now - budget - 1`), and a new
+  "keeps retrying a young message that has failed many times" case (seeded
+  `attempts = 20`, `createdAt = now`) asserts the row stays queued and `PENDING`
+  while its attempt count climbs — the regression the attempt cap would fail.
+- `:core:discovery:testDebugUnitTest` — **97 PASS / 0 fail** (unchanged, run to
+  confirm no ERROR-025 regression).
+- `:app:compileDebugKotlin` — clean, which also compiles `:core:engine`,
+  `:ui:chat`, `:ui:callui` and `:core:transfer` against the changed APIs.
+- Physical two-phone re-test (screen off for several minutes, Home, then a chat
+  message and a call placed during the window) still pending — owner-device action.
+
+### Related files
+- `app/src/main/java/.../debug/DiscoveryEngineHolder.kt` — owns `wakeLock` /
+  `wifiLock`, `acquirePowerLocks` in `startEngineLocked`, `releasePowerLocks` in
+  `stopAll`, `ensureStarted` wrapped in `NonCancellable`
+- `app/src/main/java/.../debug/FlashBackgroundService.kt` — all lock code removed;
+  engine-first / promote-last ordering; refused promotion stops only the service
+- `core/network/src/main/java/.../ws/WsFlashNetwork.kt` — `localDisconnects`,
+  `redialTargetOf`, `backup` mode in `scheduleReconnect`, `backupRedialBaseMs` +
+  `BACKUP_REDIAL_BASE_MS`, `knownEndpoints` in the network-available sweep
+- `core/network/src/test/java/.../ws/WsFlashNetworkTest.kt` — 2 new cases
+- `core/messaging/src/main/java/.../RealFlashChatRepository.kt` — wall-clock
+  outbox give-up, `holdOfflineTransitions` + `displayedOnlinePeerIds`
+- `core/messaging/src/test/java/.../RealFlashChatRepositoryTest.kt` — rewritten
+  give-up case + new young-but-failing case
+- `core/persistence/src/main/java/.../db/dao/OutboxDao.kt` — `makePendingDue` KDoc
+  now states give-up is the caller's wall-clock budget from `createdAt`
+
+### Status
+RESOLVED at code level (2026-09-02; `:core:network` 117, `:core:messaging` 20,
+`:core:discovery` 97 unit tests green, `:app:compileDebugKotlin` clean); physical
+two-phone verification pending
+
+
+
+
+## ERROR-027 — Incoming and outgoing calls never ring: a NotificationChannel sound cannot be a ringtone
+
+### Date
+2026-09-02
+
+### Area
+`:app` (`FlashCallRinger` — new, `FlashCallService` notification channel,
+`DiscoveryEngineHolder` engine wiring, `AndroidManifest.xml`)
+
+### Symptoms
+Owner report, verbatim: "let there be ringing when there is a call for voice and
+videos". A Flash call was silent on both ends — the callee's phone showed the
+incoming-call notification without any ringtone or vibration (at best a single
+notification ding on the first build), and the caller heard no ringback, so an
+outgoing call was indistinguishable from a dead one until the callee answered.
+
+### Environment
+- Branch `dev`, HEAD `7040517` + the uncommitted calling work
+- Affects voice and video identically
+
+### Root cause
+The ring was delegated to the call notification, which structurally cannot do it.
+
+1. **A channel sound plays exactly once per notification.** Looping requires
+   `Notification.FLAG_INSISTENT`, which only the registered system dialer may set.
+   So the "ringtone" was at best one short ding at invite time.
+2. **A channel's sound and vibration are immutable after creation**, and the
+   platform remembers the settings of a channel it has already seen — including a
+   deleted one — so the original `flash_calls` channel could not be corrected in
+   place by any code change.
+3. **Even a working channel sound is the wrong mechanism:** it cannot be stopped
+   on the answer edge (it runs to the end of the audio file), cannot honour the
+   ringer mode's sound-vs-vibrate decision, and gives the caller no ringback at
+   all — ringback is call-stream audio, not a notification.
+
+### Working fix
+`FlashCallRinger` (new, `:app`) owns the ring, driven by call state:
+- **RINGING** → the user's actual default ringtone on a looping `MediaPlayer` with
+  `USAGE_NOTIFICATION_RINGTONE` (system ring volume, DND-suppressed for free) plus
+  a 1 s-on/1 s-off vibration waveform. Ringer mode decides: `SILENT` stays silent,
+  `VIBRATE` vibrates only, `NORMAL` rings and additionally vibrates when the
+  user's "Vibrate for calls" setting is on. An unreadable/deleted custom ringtone
+  falls back to `RingtoneManager.getValidRingtoneUri`; a default of "None" is
+  honoured rather than overridden.
+- **DIALING** → the supervisory ringback tone (`TONE_SUP_RINGTONE`, 425 Hz,
+  1 s on / 4 s off) on `STREAM_VOICE_CALL`, so it follows whatever route
+  `FlashCallAudioRouter` picked. Unconditional: a silenced *ringer* says nothing
+  about whether you may hear your own outgoing call.
+- **CONNECTING / ACTIVE / ENDED / null** → stop. CONNECTING is the accept edge on
+  both sides, so ringtone and ringback are both gone before media starts.
+
+Two details are load-bearing:
+- **Ring focus is `GAIN_TRANSIENT`, not exclusive**, and the overlay leaves
+  `FlashCallAudioRouter` detached while RINGING. Exclusive voice-communication
+  focus would silence the ring; instead the router's EXCLUSIVE request on answer
+  arrives here as `AUDIOFOCUS_LOSS` and stops the ring on the focus edge —
+  earlier than the CONNECTING state tick, so nothing overlaps the first moment of
+  call audio.
+- **The engine, not the UI and not `FlashCallService`, drives it**
+  (`DiscoveryEngineHolder` collects `callCoordinator.activeCall`): an invite
+  arriving with the app closed still has to ring, and a plain `MediaPlayer` on the
+  ring stream needs no foreground service, so the ring survives even a refused
+  FGS promotion (the ERROR-026 path). `collect`, not `collectLatest` — dropping an
+  intermediate emission could drop the edge that *stops* the ring.
+
+The call channel is now deliberately silent (`setSound(null, null)`,
+`enableVibration(false)`) under a new id `flash_calls_v2`, and the legacy
+`flash_calls` channel is deleted on create so users of an earlier build don't keep
+a stale duplicate in Settings. `IMPORTANCE_HIGH` still gives a heads-up banner
+with no sound, which is what a call notification wants. Pre-O has no channel, so
+`buildPreSNotification` asserts `setSilent(true)` directly.
+
+Manifest: `VIBRATE` added (install-time/normal, no runtime prompt), alongside
+`MODIFY_AUDIO_SETTINGS` for the router.
+
+Every platform call is best-effort and wrapped — a phone with no vibrator, a
+deleted ringtone or an OEM that refuses a `ToneGenerator` must still receive the
+call, just more quietly.
+
+### Verification
+- `:app:compileDebugKotlin` — clean.
+- On-device verification pending (owner action): place a call each way and confirm
+  ringtone + vibrate on the callee, ringback on the caller, and that both stop the
+  instant Answer is pressed. Also worth checking each ringer mode (normal /
+  vibrate / silent) and a DND profile that allows calls.
+
+### Known limitation (not fixed, by design for now)
+There is **no `setFullScreenIntent`** on the incoming-call notification and no
+`USE_FULL_SCREEN_INTENT` permission is requested, so on a **locked screen** an
+invite surfaces as a heads-up banner rather than a full-screen answer UI like the
+system dialer's. The **ring itself is unaffected** — `FlashCallRinger` is
+independent of the notification, so a locked phone still rings and vibrates; the
+user just taps the banner instead of getting a full-screen Answer/Decline. Adding
+it means `USE_FULL_SCREEN_INTENT` (auto-granted only to apps the user has set as a
+calling app on Android 14+; otherwise it degrades to a heads-up notification
+anyway) plus an activity that can show over the keyguard.
+
+### Related files
+- `app/src/main/java/.../calling/FlashCallRinger.kt` — new
+- `app/src/main/java/.../calling/FlashCallService.kt` — silent `flash_calls_v2`
+  channel, legacy channel deletion, pre-O `setSilent`
+- `app/src/main/java/.../debug/DiscoveryEngineHolder.kt` — ringer lifecycle bound
+  to the engine, `activeCall` collector
+- `app/src/main/java/.../MainActivity.kt` — router stays detached while RINGING
+- `app/src/main/AndroidManifest.xml` — `VIBRATE`, `MODIFY_AUDIO_SETTINGS`
+
+### Status
+RESOLVED at code level (2026-09-02; `:app:compileDebugKotlin` clean); on-device
+verification pending. Lock-screen full-screen UI intentionally out of scope.
+
+
+
+
+## ERROR-028 — "Retry in transfers dont work": a failed transfer's Retry button and its chat card's "Tap to retry" both did nothing
+
+### Date
+2026-09-02
+
+### Area
+`:core:transfer` (`RealFlashTransferRepository`, `FlashTransferRepository`),
+`:app` (`DiscoveryEngineHolder` receive-event host, `MainActivity` wiring,
+`TransfersUiMapper`), `:core:engine` (`Flash.kt`, the library host),
+`:ui:chat` (`FlashConversationScreen`, `FlashTransfersScreen`)
+
+### Symptoms
+Owner report, verbatim: "retry in transfers dont work". Observed shapes:
+- Transfers tab → a Failed row → Retry: both phones flipped to "Transferring"
+  and then sat there with **0 B/s and no progress**; nothing on the wire.
+- Chat bubble → a failed attachment card labelled "Failed (Tap to retry)" with a
+  Retry badge: tapping it tried to **open** the half-received file (a chooser
+  error or nothing at all), never retried.
+- Retry on a *cancelled/declined* row: no visible effect whatsoever.
+
+### Environment
+- Branch `dev`, HEAD `7040517` + the uncommitted calling / ERROR-025 / ERROR-026 work
+- Reproduces on the same two phones; direction-independent (either side's Retry)
+
+### Root cause
+Four independent defects in one chain — the retry could not have worked even if
+any single one were fixed.
+
+**(i) The chat card's tap was wired to "open", not "retry".**
+`FlashConversationScreen`'s `onFileClick` unconditionally called
+`onOpenAttachment(file.localUri, …)`. `FlashFileMessageCard` routes *both*
+`onCardClick` and the Retry badge's `onActionClick` into `onFileClick`, so the
+entire retry affordance on the busiest surface in the app resolved to opening a
+file that was never fully received.
+
+**(ii) A dead send could not be restarted by the peer's RESUME.**
+`onRemoteTransferControl`'s `ACTION_RESUME` / `Sending` arm was
+`runningDispatchers[transferId]?.setPaused(false)` followed by an unconditional
+state flip to `Transferring`. When the worker was already gone — which is exactly
+the state a *failed* send is in — the null-safe call was a no-op while the flip
+still claimed `Transferring`. Hence "both UIs say Transferring, nothing moves".
+`resumeTransfer`'s own `liveSender` test had the mirror-image bug: it keyed off
+`runningDispatchers[id] != null && runningJobs.containsKey(id)`, but
+`executeSend`'s `finally` only retires its **own** dispatcher/job pair
+(`if (runningDispatchers.remove(id, dispatcher))`), so a send that died *before*
+registering a dispatcher leaves a completed `Job` in the map. Presence is not
+liveness: a stale entry made Retry take the "just unpause" path forever.
+
+**(iii) Even once restarted, every chunk was dropped by the #5 acceptance gate.**
+A failed *receive* is torn down completely (`cleanupInbound`: sink closed and
+dropped, `receivePipeline.cancelSession`, row marked Failed), so the sender's
+relaunch arrives at the receiver as a **brand-new session** and emits
+`SessionStarted`. Both hosts answered that edge with `onIncomingOffered`, which
+re-parks the transfer on the offer gate with a *deferred* sink — chunks discarded,
+no ACKs, no progress, and `acceptIncoming` requires `state == Offered` so the user
+could not re-accept either. A deadlock: the sender streams into a void.
+(`awaiting = requireAcceptance && !fullySeeded` — only a fully seeded resume
+bypasses the gate, and a partially-received transfer is by definition not that.)
+
+**(iv) Cancelled rows advertised a Retry that cannot exist.**
+The UI has no `Cancelled` bucket, so cancelled/declined transfers render in the
+Failed section with a Retry button — but `resumeTransfer` early-returns for them
+(both sides tore the session down), so the button was dead by construction.
+
+### Failed attempts / ruled out
+- **First draft of the fix in (ii) used `runningJobs.containsKey`** and relaunched
+  whenever no dispatcher was registered. Wrong and worse than the bug:
+  `ACTION_RESUME` doubles as "the receiver accepted the offer" (#5), and that
+  accept can arrive **before** `sendFile`'s launched job registers its dispatcher
+  — so this version would have spawned a *duplicate* send for the same transferId
+  on the ordinary happy path. Replaced with `runningJobs[id]?.isActive == true`,
+  keeping the null-safe `setPaused(false)` for the accept-before-registration
+  window (dropping the pause intent is what un-parks it there).
+- **Making `Cancelled` retryable** was considered and rejected rather than
+  deferred: `onIncomingOffered` is a no-op for a row that already exists, so a
+  declined transfer's gate would never re-open; auto-accepting an offer the user
+  explicitly declined because the sender pressed Retry is wrong on its face; and
+  a partially-received-then-cancelled transfer would seed a resume vector against
+  a destination that was torn down. Re-sending the file (fresh transferId, clean
+  offer) is the correct path, so the UI now simply stops offering Retry there.
+
+### Working fix
+1. **`RealFlashTransferRepository.relaunchSend(transfer, notifyPeer)`** — one
+   shared restart path for "the worker is gone": clears the pending pause intent,
+   sets the row `Queued` with `errorMessage = null`, optionally emits `RESUME` to
+   the peer *before* relaunching (a receiver that paused its intake must re-open
+   the gate or the fresh dispatcher blocks on backpressure with nothing
+   draining), then launches `executeSend` reusing **`wireFileId`** and
+   **`sourceUri`** — never a fresh UUID or the display name, because the receiver
+   keys its session on `(transferId, fileId)` and treats an identical re-offer as
+   a resume restart that keeps accumulated progress. A different fileId would be
+   rejected as `SESSION_CONFLICT`.
+2. **Liveness is `isActive`, not presence**, in both `resumeTransfer`'s
+   `liveSender` and the remote-RESUME arm; the latter now falls through to
+   `relaunchSend(notifyPeer = false)` when no live worker remains.
+3. **`FlashTransferRepository.isResumableInboundRetry(transferId)`** — new
+   defaulted interface member: true when a fresh inbound FILE_START belongs to a
+   transfer this device already accepted (`Transferring`/`Verifying`/`Paused`/
+   `Failed`), excluding `Offered` (the normal gate), `Completed` (nothing left)
+   and `Cancelled` (never auto-accept a decline). Both hosts —
+   `DiscoveryEngineHolder` and `Flash.kt` — consult it on the `SessionStarted`
+   edge and call `receivePipeline.acceptSession` + `onIncomingStarted`
+   immediately instead of re-prompting. Safe by construction: `handleFileStart`
+   only emits `SessionStarted` when the receiver has no session for that id.
+4. **`onIncomingStarted` revives a `Failed` row** instead of leaving it terminal
+   (only `Cancelled` is still never downgraded). Without this the retry was
+   invisible: `onIncomingProgress` advances a `Transferring` row only, so a
+   working resume showed 0 % until it completed.
+5. **UI:** `FlashTransferItemUi.retryable` (default true, mapped as
+   `state != DomainState.Cancelled`) gates the Failed section's Retry icon; and
+   `FlashConversationScreen.onFileClick` now branches — `Failed` → new
+   `onRetryTransfer(file.id)` callback, everything else → `onOpenAttachment`.
+   `MainActivity` wires it to `repo.resumeTransfer(FlashTransferId(id))`, the
+   same entry point as the Transfers tab.
+
+Resulting end-to-end path (receiver-initiated): Retry → `resumeTransfer`
+Receiving branch (row → `Transferring`, `emitIncoming(RESUME)` un-gates intake,
+`emitOutgoing(RESUME)`) → sender sees no active job → `relaunchSend` → fresh
+`executeSend` on the same wire identity → receiver recognises the re-offer as a
+retry → `acceptSession` resolves the sink against the same deterministic
+destination (`FlashReceived/<transferId>/<fileName>`) → `receiverDoneIndexes`
+skips what is already on disk → chunks flow, progress visible. Sender-initiated
+is symmetric via `relaunchSend(notifyPeer = true)`.
+
+### Verification
+- `:core:transfer:test` — green (the existing remote-PAUSE-then-RESUME case still
+  takes the live-worker branch, proving the `isActive` change did not break the
+  #5 accept path).
+- `:app:compileDebugKotlin` — clean, which also compiles `:core:engine`,
+  `:ui:chat` and `:core:transfer` against the new interface member.
+- On-device two-phone retry test pending (owner action): fail a transfer mid-flight
+  (walk out of range / toggle Wi-Fi), then press Retry from **each** side in turn
+  and confirm progress resumes near where it stopped rather than at 0 %.
+
+### Related files
+- `core/transfer/src/main/java/.../RealFlashTransferRepository.kt` — `relaunchSend`,
+  `resumeTransfer` liveness, remote-RESUME relaunch, `onIncomingStarted` revival
+- `core/transfer/src/main/java/.../FlashTransferRepository.kt` —
+  `isResumableInboundRetry`
+- `app/src/main/java/.../debug/DiscoveryEngineHolder.kt` — retry branch on
+  `SessionStarted`
+- `core/engine/src/main/java/.../Flash.kt` — same branch for the library host
+- `ui/chat/src/main/java/.../ui/transfers/FlashTransfersScreen.kt` — `retryable`
+- `app/src/main/java/.../TransfersUiMapper.kt` — `retryable` mapping
+- `ui/chat/src/main/java/.../ui/chat/FlashConversationScreen.kt` — `onRetryTransfer`
+- `app/src/main/java/.../MainActivity.kt` — chat-bubble retry wiring
+- `docs/architecture/public-api.md` — §5 "Retry" contract for hosts
+
+### Status
+RESOLVED at code level (2026-09-02; `:core:transfer:test` green,
+`:app:compileDebugKotlin` clean); on-device retry verification pending
+
+---
+
+## ERROR-029 — "Preview for images doesnt work" and videos had none: a received photo rendered as a dead gradient and forgot its file on restart
+
+### Date
+2026-09-02
+
+### Area
+`:core:messaging` (`RealFlashChatRepository.applyAttachment`, new path-stamping
+collector), `:core:persistence` (`MessageDao.updateAttachmentPath`),
+`:ui:chat` (`FlashMediaDecoder` **new**, `FlashImageGrid`, `FlashMediaViewer`,
+`FlashConversationScreen`)
+
+### Symptoms
+Owner report, verbatim: "add preview for videos and also preview for images
+doesnt work". Observed shapes:
+- A **received** photo showed the seed-gradient placeholder forever, with no
+  Accept/Decline control and no progress — the file card it should have fallen
+  back to was gone.
+- A **video** attachment never showed any thumbnail, on either side.
+- A photo that *did* decode (a locally picked one, on the sending device) came out
+  **sideways** if it was a portrait camera shot, and portrait shots in a
+  single-image bubble were cropped top and bottom.
+- Previews that worked while the app stayed open were **placeholders again after a
+  restart**, on the receiving side only.
+- Swiping the full-screen viewer onto a video page showed "Couldn't load image".
+- A large photo showed a placeholder with **no crash and no log line**.
+
+### Environment
+- Branch `dev`, HEAD `7040517` + the uncommitted calling / ERROR-025 / ERROR-026 /
+  ERROR-027 / ERROR-028 work
+- `minSdk 24`, `compileSdk 37`; **no image-loading library in the project** (no
+  Coil, Glide, `exifinterface` or `media3`) — platform decode only
+
+### Root cause
+Six independent defects, which is why one report covered "images don't work" and
+"videos have no preview" at once.
+
+**(A) The image branch had no local-bytes gate.**
+`applyAttachment`'s `mime.startsWith("image/")` arm built
+`images = listOf(FlashImageAttachmentUi(uri = path, thumbUri = path, …))`
+unconditionally. For an inbound offer, `path` is null and `status` is
+`AwaitingAcceptance` — so the row became a tile with nothing to decode, *and* lost
+the file card, which is the only surface carrying Accept/Decline, progress, the
+byte counter and "Tap to retry". The video arm did guard the status
+(`!= AwaitingAcceptance && != NotDownloaded`) but never the path, so a video whose
+transfer had started but written nothing yet had the same hole.
+
+**(B) The received path was never persisted.**
+`attachmentPath` is stamped at *send* time and holds the sender's source URI; the
+receiver's on-disk location arrives only through `attachmentProgress`, which is
+in-memory. `applyAttachment` prefers the live path and falls back to the row — so
+once the process died, the fallback was null on the receiving device and every
+photo, clip and voice note in history reverted to a placeholder. The file was
+still on disk; nothing remembered where.
+
+**(C) A full-resolution decode whose OOM was swallowed.**
+`FlashImageTile` did `BitmapFactory.decodeStream(stream)` with no `inSampleSize`,
+inside `runCatching`. A 12 MP photo is ~48 MB as `ARGB_8888`, and `runCatching`
+catches `Throwable` — so `OutOfMemoryError` became "no bitmap", i.e. the gradient
+placeholder, silently. This is the reason the failure had no log line.
+
+**(D) `BitmapFactory` returns null for an mp4.**
+Both surfaces decoded video attachments as still bytes, so a clip had no thumbnail
+in the bubble and failed outright in the viewer. There was no video decode path in
+the project at all — the "add preview for videos" half of the report.
+
+**(E) EXIF orientation was ignored.**
+Phone cameras store a landscape frame plus a rotation tag. Neither surface read
+it, so portrait photos rendered sideways whenever they decoded at all.
+
+**(F) No decode cache.**
+A tile in a `LazyColumn` re-enters composition on every scroll pass, so an
+uncached decode re-ran constantly — expensive, and the direct cause of (C) firing
+under scroll pressure rather than on first draw.
+
+Two adjacent gaps, same report: the attachment sheet's **Gallery** filter was
+`arrayOf("image/*")`, so a video could only be sent through the generic *Files*
+action; and a **video page in the viewer** renders a still frame with no way to
+play it, reachable by swiping because a message's images and videos share one
+album.
+
+### Failed attempts
+1. **Adding a null-path check to the image arm alone** looked sufficient and was
+   not: the row then rendered a file card while the transfer ran and flipped to a
+   tile mid-flight on the *receiver*, before the file was complete — a decode of a
+   half-written file, which is a different placeholder for the same reason. The
+   predicate has to be a status test as well, and `Transferring` can only count as
+   renderable for `base.isMine`, where the path is the sender's own picked file.
+2. **Re-applying `METADATA_KEY_VIDEO_ROTATION` to the retrieved frame** put every
+   portrait clip on its side. `MediaMetadataRetriever` already returns an upright
+   frame — the same reason `ThumbnailUtils` needs no rotation step — so the video
+   path must *not* mirror the EXIF path.
+3. **Stamping the path from the transfer-completion event** instead of the progress
+   flow would have been cheaper, but the completion edge is handled in the host
+   (`DiscoveryEngineHolder` / `Flash.kt`), and duplicating it there means the two
+   hosts can disagree about history. It went in the repository, where both share it.
+4. **Caching "stamped" on any `updateAttachmentPath` return** silently dropped
+   transfers whose completion beat their own row insertion: 0 rows changed means
+   *either* the row already holds the path *or* the row does not exist yet, and
+   only the first is done. Disambiguated with `existsAttachment`.
+
+### Working fix
+- `ui/chat/.../FlashMediaDecoder.kt` (**new** `internal object`) — one decode path
+  for tiles and viewer: two-pass sample-size decode against a long-edge budget
+  (720 px tiles / the viewer's existing 4096 px page), `MediaMetadataRetriever`
+  frames at 200 ms with `OPTION_CLOSEST_SYNC` (time 0 is often a black lead-in),
+  `getScaledFrameAtTime` on API 27+ falling back through `getFrameAtTime` →
+  `frameAtTime`, EXIF rotation via `Matrix`, and an `LruCache` sized at one eighth
+  of the heap clamped to 4–24 MB. `memoize = false` for the viewer, so a
+  4096-edge bitmap cannot evict the entire thumbnail cache.
+- `core/messaging/.../RealFlashChatRepository.kt` — one `renderable` predicate now
+  gates a single merged image/video arm; new `init` collector stamps finished
+  attachment paths, keyed by an in-memory `stamped` set so a progress tick costs
+  no DB round-trip.
+- `core/persistence/.../MessageDao.kt` — `updateAttachmentPath`, whose
+  `attachmentPath IS NULL OR != :path` guard makes a repeat write a genuine no-op
+  so Room does not re-emit `observeConversation` on every tick.
+- `ui/chat/.../FlashImageGrid.kt` / `FlashMediaViewer.kt` — both call the shared
+  decoder; `isVideo` joins the `produceState` keys because it selects the decoder,
+  not just the source. Video pages gained a play badge (`onPlayVideo`).
+- `ui/chat/.../FlashConversationScreen.kt` — Gallery picker accepts `video/*`.
+
+### Verification
+- `:core:messaging:test` — green, with a new case walking an inbound image row
+  from `AwaitingAcceptance` to `Downloaded` and asserting file card → thumbnail in
+  that order (the (A) regression).
+- `:ui:chat:testDebugUnitTest` and `:app:compileDebugKotlin` — green / clean.
+- **Not** unit-verifiable: `BitmapFactory`, `MediaMetadataRetriever` and
+  `ExifInterface` are all stubbed to throw off-device, so (C), (D) and (E) can only
+  be confirmed on a phone. Pending owner test: photo and video each way, portrait
+  framing and orientation, then force-stop and reopen to exercise (B).
+
+### Related files
+- `ui/chat/src/main/java/.../ui/chat/FlashMediaDecoder.kt` — new shared decoder
+- `core/messaging/src/main/java/.../RealFlashChatRepository.kt` — `renderable`, stamping
+- `core/persistence/src/main/java/.../db/dao/MessageDao.kt` — `updateAttachmentPath`
+- `ui/chat/src/main/java/.../ui/chat/FlashImageGrid.kt` — tile decode, intrinsic ratio
+- `ui/chat/src/main/java/.../ui/chat/FlashMediaViewer.kt` — page decode, play badge
+- `ui/chat/src/main/java/.../ui/chat/FlashConversationScreen.kt` — picker, playback
+
+### Status
+RESOLVED at code level (2026-09-02; `:core:messaging:test` and
+`:ui:chat:testDebugUnitTest` green, `:app:compileDebugKotlin` clean); on-device
+preview verification pending
+
+---
+
+## ERROR-030 — UI sweep: three controls that looked live and did nothing, videos saved into the photo collection, portrait photos cropped, and image tiles invisible to TalkBack
+
+### Date
+2026-09-02
+
+### Area
+`:app` (`MainActivity` gallery save + share helpers, `DiscoveryEngineHolder`,
+`AppEngine`), `:ui:chat` (`FlashConversationScreen`, `FlashImageGrid`,
+`FlashMediaViewer`, `FlashAudioPlayer`)
+
+### Symptoms
+Found by inspection, not reported — the owner asked to "investigate ui and see if
+u can find other wierdness and bugs". Seven distinct user-visible defects:
+1. The conversation's **connection banner Retry** showed "Reconnecting…" and did
+   nothing; the peer came back only when the backoff engine got around to it.
+2. **Forward** raised "Forwarding N messages" / "Forwarding message" and dropped
+   the content — in both the selection toolbar and the focus overlay.
+3. Saving a **video** from the media viewer reported "Saved to Pictures/Flash" and
+   the gallery listed it among photos with a broken thumbnail.
+4. A **portrait photo** in a single-image bubble was cropped top and bottom.
+5. **TalkBack** could describe a chat photo but never open it.
+6. The media viewer's **⋮ button** was tappable and inert.
+7. Viewer copy said "Save image" / "Image not available yet" / "Couldn't load
+   image" on video pages.
+
+Plus one latent defect: a **received** voice note is a bare filesystem path, and
+`FlashAudioPlayer` fed it to `setDataSource(Context, Uri)`.
+
+### Environment
+Same tree as ERROR-029. Branch `dev`, HEAD `7040517` plus uncommitted work.
+
+### Root cause
+1–2. **Toast-only stubs.** The banner's `onRetry` and both `onForward` lambdas
+never called anything; they were placeholders from the UI-first build order that
+outlived the transport work behind them.
+
+3. **`saveImageToGallery` always inserted into `MediaStore.Images`** with
+`RELATIVE_PATH = "${Environment.DIRECTORY_PICTURES}/Flash"` — one code path for a
+viewer whose album has mixed photos and clips. The media scanner trusts the
+collection a row was filed under, not the bytes, so the clip was catalogued as a
+photo.
+
+4. **`FlashImageAttachmentUi.width`/`height` default to `0` and `applyAttachment`
+never populates them** (the repository never opens the file), so
+`FlashSingleImageTile`'s ratio fell to a hardcoded `4f / 3f` with
+`ContentScale.Crop`. Landscape by assumption, cropping the common case.
+
+5. **`detectTapGestures` produces no accessibility node.** The tile had a described
+`Image` inside but nothing activatable, so a screen reader could read the photo and
+had no gesture to open it.
+
+6. **A button with an empty `onClick`** — every action it could have hosted already
+sits in the viewer's bottom bar.
+
+7. **Hardcoded "image" strings** on a surface that pages through both media types.
+
+8. `Uri.parse("/storage/…/Voice message.m4a")` yields a scheme-less URI that only
+reaches the media server through `setDataSource(Uri)`'s undocumented last-ditch
+fallback — so received-note playback depended on AOSP behaviour no contract
+guarantees.
+
+### Failed attempts
+1. **Wiring the banner to `FlashNetwork.retryConnection()`** — the obvious hook,
+   and wrong. It is an interface method with a `false` default that only the legacy
+   `DefaultFlashNetwork` overrides; the live `WsFlashNetwork` inherits the default,
+   so every peer would report "nothing to retry" and the button would keep doing
+   nothing while *looking* wired. The real re-arm is discovery-side.
+2. **A fresh re-arm implementation for the button** duplicated `onScreenOn`, which
+   already solves precisely this problem (a stalled browse, or a dropped session
+   the backoff engine has not re-dialled yet). Extracted `reArm(reason)` and gave
+   both callers the same body, so they cannot drift.
+3. **`startDiscovery()` instead of `restartDiscovery()`** would have been a no-op
+   in the state that matters: it delegates to the transport's idempotent
+   `startBrowsing()`, which returns immediately while a Doze-stalled radio still
+   *believes* it is browsing.
+4. **In-app Forward needs a conversation picker that does not exist.** Rather than
+   build one unasked, both Forward paths route to the system chooser — which can
+   target Flash itself — matching the precedent the media viewer's Forward already
+   set.
+
+### Working fix
+- `app/.../debug/DiscoveryEngineHolder.kt` — `onScreenOn`'s body extracted to
+  `private fun reArm(reason: String): Boolean`, exposed as `reconnectNow()`. Returns
+  false only when the engine has not booted, so the caller can say "try again in a
+  moment" instead of lying. `app/.../di/AppEngine.kt` republishes it.
+- `app/.../MainActivity.kt` — `saveImageToGallery` → `saveMediaToGallery`: MIME
+  selects `MediaStore.Video` + `DIRECTORY_MOVIES` or `MediaStore.Images` +
+  `DIRECTORY_PICTURES`. Every `ContentValues` key moved to the shared
+  `MediaStore.MediaColumns`, so the two cases differ only in collection, directory
+  and copy. Pre-Q says "Saved to gallery" rather than naming a folder it could not
+  choose (`RELATIVE_PATH` is API 29+). New `shareText` ACTION_SEND helper;
+  `onRetryConnection` and `onShareText` wired at the conversation call site.
+- `ui/chat/.../FlashConversationScreen.kt` — two new params
+  (`onRetryConnection: () -> Boolean`, `onShareText: (String) -> Unit`, both
+  defaulted so previews stay inert); the selection toolbar forwards the selected
+  rows' text joined by newlines, the focus overlay forwards text or the message's
+  media stream; new `notReadyLabel(image)` for media-aware guard copy.
+- `ui/chat/.../FlashImageGrid.kt` — `.semantics(mergeDescendants = true)` with
+  `Role.Button`, `onClick("Open image" / "Play video")` and
+  `onLongClick("Message actions")`; merging pulls the inner `Image`'s
+  contentDescription up as the button's label. New `onIntrinsicRatio` reports the
+  decoded bitmap's shape and `FlashSingleImageTile` adopts it, keeping 4:3 only as
+  the pre-decode placeholder ratio.
+- `ui/chat/.../FlashMediaViewer.kt` — ⋮ replaced by a `Spacer` of
+  `FlashDimensions.minTouchTarget` so the page counter stays optically centred;
+  Save's contentDescription follows the media type.
+- `ui/chat/.../FlashAudioPlayer.kt` — `setDataSource` chosen by shape:
+  `content://`/`file://` through the `(Context, Uri)` overload, a bare absolute
+  path through the `String` overload.
+
+### Verification
+- `:core:messaging:test`, `:ui:chat:testDebugUnitTest` green;
+  `:app:compileDebugKotlin` clean.
+- Every item here is presentation or platform-integration, so none is unit-testable
+  in this project: MediaStore inserts, ACTION_SEND chooser resolution, TalkBack
+  semantics and `MediaPlayer` all need a device. Pending owner test: save a video
+  from the viewer → Movies/Flash and listed as a video; Forward from both surfaces
+  → a real chooser; force the banner up and press Retry; play a received voice
+  note; sweep the chat with TalkBack on; check a portrait photo is uncropped.
+
+### Related files
+- `app/src/main/java/.../debug/DiscoveryEngineHolder.kt` — `reArm` / `reconnectNow`
+- `app/src/main/java/.../di/AppEngine.kt` — `reconnectNow` seam
+- `app/src/main/java/.../MainActivity.kt` — `saveMediaToGallery`, `shareText`, wiring
+- `ui/chat/src/main/java/.../ui/chat/FlashConversationScreen.kt` — Retry, Forward, copy
+- `ui/chat/src/main/java/.../ui/chat/FlashImageGrid.kt` — a11y, intrinsic ratio
+- `ui/chat/src/main/java/.../ui/chat/FlashMediaViewer.kt` — dead control, labels
+- `ui/chat/src/main/java/.../ui/chat/FlashAudioPlayer.kt` — scheme-aware data source
+
+### Status
+RESOLVED at code level (2026-09-02; `:core:messaging:test` and
+`:ui:chat:testDebugUnitTest` green, `:app:compileDebugKotlin` clean); on-device
+verification pending
+
+## ERROR-031 — Zombie sessions: one peer stuck Offline, the other falsely Online, a message that ticked once and never arrived; plus no audio priority in video calls
+
+### Date
+2026-09-02
+
+### Area
+`:core:network` (`WsKeepalive`, `WsFlashNetwork`, `WsConnection`), `:core:messaging`
+(`RealFlashChatRepository`, new `PresenceHold`), `:core:persistence` (`MessageDao`,
+`FlashSettingsDataStore`), `:core:engine` (`AutoConnectGate` call site), `:core:calling`
+(`FlashCallSession`, `CallSdp`, `CallCoordinator`, new `CallQualityGovernor`), `:ui:chat`
+(`FlashConversationScreen`, `FlashSettingsScreen`), `:ui:callui` (`FlashCallScreen`), `:app`
+(`FlashBackgroundService`, `DiscoveryEngineHolder`, `AppEngine`, `MainActivity`)
+
+### Symptoms
+Owner report — four observations and a question:
+1. "the old bug of the infinix going offline still persists" — the ERROR-026 fix did not hold.
+2. Both phones left idle with the Samsung's app **not running**, and the Infinix showed the
+   Samsung **Online**.
+3. Sending from the Infinix in that state showed the **pending clock**, under an Online header —
+   the two indicators contradicted each other.
+4. Sending from the Samsung **ticked once** and never appeared on the Infinix. "i had to force
+   stop the apps before they started working."
+5. "do we have a priority for audio than video in the video call now" — investigated: **no**,
+   none, anywhere in the calling stack.
+
+### Environment
+Branch `dev`, HEAD `7040517` plus uncommitted work. Samsung SM-G986U1 ↔ Infinix X6882B over the
+Samsung's Wi-Fi hotspot. Both charged (so not EXP-002's low-battery policy).
+
+### Root cause
+Items 1–4 are **one causal chain**, not four bugs. A session can become a *zombie*: still present
+in `activeSessions`, dead on the wire. Seven defects conspire — one creates the zombie, one makes
+it un-replaceable, and five make its consequences user-visible and permanent.
+
+**D1 — unbounded stall forgiveness let the watchdog never render a verdict.**
+`WsKeepalive.onTick` correctly refuses to blame the peer for the app's own frozen scheduler
+(ERROR-025): a tick that arrives far later than the interval it asked for rebases
+`lastInboundAtMs` and returns `Ping`. But it did so on *every* stalled tick. On a device that
+throttles background coroutines hard enough that ticks are chronically late, the 25 s liveness
+window is reset before it can ever expire — so a session whose socket died is never closed,
+`onSessionDisconnected` never fires, and the redial that would replace it is never armed.
+
+**D2 — the glare tiebreaker made a stale session veto every reconnect (the force-stop cause).**
+`resolveGlareTie` breaks a duplicate-session tie by comparing session *originator* ids, which is
+exactly right for real connect glare: the two directions of one TCP pair share an originator
+mapping, so both devices compute the same winner and converge (ERROR-023). Two **same-direction**
+sessions, though, share the *same* originator — so the comparison always tied, and a tie kept the
+incumbent. A peer reconnecting after its own session died therefore completed a full handshake and
+was then **rejected**, forever, by the corpse of the previous one. The KDoc asserted ties "never
+[happen] in practice"; sequential reconnect is precisely that case, and it is the common one.
+This is what force-stopping fixed: it destroyed the incumbent.
+
+**D3 — frames buffered on a connection were thrown away.** Frames that arrive between handshake
+completion and `registerSession` are parked in `earlyFrames`. `connectManual` cleared that queue on
+the success path *before* registration could flush it, and `onConnectionClosed` cleared it for a
+rejected connection — including a connection rejected by D2. A dropped inbound `TextMessage` means
+the sender never receives a `DeliveryReceipt`, which is the other half of "ticks once and never
+arrives".
+
+**D4 — `SENT` meant "the kernel accepted the bytes", and the outbox row died on that signal.**
+A write into a half-open socket succeeds: the bytes are buffered locally and no error ever
+surfaces. `drainOutboxOnce` deleted the outbox row the moment `sink.send` returned true, so a frame
+lost that way had no record left to retry from. One tick, permanently.
+
+**D5 — the presence hold latched Online.** The 6 s falling-edge grace lived inside
+`transformLatest { … delay(OFFLINE_HOLD_MS) }`, and `transformLatest` **cancels** the previous block
+on every upstream emission. A peer whose session churned every 1–4 s therefore restarted the delay
+before it could ever elapse: the dot stayed Online while `activeSessions` was empty. That is
+observation 2, and it is also why observation 3 looked self-contradictory — the clock was reading
+the transport, the dot was reading a stale timer.
+
+**D6 — nothing could heal a zombie, because every recovery path skipped peers that had one.**
+`AutoConnectGate.tryBegin` returned false when `hasSession`; `runAutoConnectSweep` skipped those
+peers; the Wi-Fi-rejoin callback skipped them (`if (sessionsById[…] != null) return@forEach`). All
+three asked "is there a session in the map", never "is it carrying traffic". So the only mechanism
+that could reap a zombie was D1's watchdog — the one D1 had disarmed.
+
+**D7 — a refused foreground promotion took the recovery hooks down with it.** On a sticky restart
+while backgrounded, `startForeground` is refused, the service calls `stopSelf()`, and `onDestroy`
+cancels the scope **and unregisters the screen-on receiver** — leaving the engine running with no
+FGS (so Doze network restrictions apply and the OEM LMK is free to kill it) and no way to notice
+the screen coming back on.
+
+**D8 — calls tuned video and ignored audio entirely (answer to question 5).** The audio
+`RtpSender` returned by `pc.addTrack(audio, stream)` was discarded, so nothing about the voice
+stream was ever configured. Video got the full treatment: `MAINTAIN_FRAMERATE`, an **8 Mbit/s**
+ceiling, a 600 kbit/s floor, `x-google-start-bitrate=2500`. There was no `bitratePriority`, no
+`networkPriority`, and nothing that stepped video down when audio degraded. On a phone hotspot —
+half-duplex, one radio, shared with every other client — 8 Mbit/s of video starves a 32 kbit/s
+voice stream, and the picture stays pretty while the call becomes unintelligible. Note that
+`BundlePolicy.MaxBundle` + `RtcpMuxPolicy.Require` put both media on **one 5-tuple**, so DSCP
+marking cannot separate them either; the priority has to be expressed in the bandwidth allocator.
+
+### Failed attempts
+1. **Capping stall forgiveness with a rebase counter** (`MAX_CONSECUTIVE_REBASES`, as planned).
+   Unreachable once forgiveness is scoped to a stall *episode*: the second stalled tick of an
+   episode already declines to rebase, so a count of consecutive rebases never exceeds one. Cut
+   rather than shipped as dead code.
+2. **Reaping on the stalled tick's verdict directly.** That tick had itself just resumed, and the
+   read loop resumes on its own dispatcher — a PONG already sitting in the socket buffer may not be
+   stamped yet, so the first post-freeze verdict can be wrong in the *other* direction. Added
+   `Verdict.Close.needsConfirmation` + `confirmClose(nowMs)`: the verdict is re-taken after a short
+   **awake** delay and withdrawn if the peer proved itself meanwhile.
+3. **Making same-direction supersede unconditional but leaving the ordering alone.**
+   `WsSession.disconnect` fires `onDisconnected` **synchronously**, so `onSessionDisconnected`
+   re-enters the registry while the peer's slot is still empty and schedules a redundant redial
+   against the session just admitted. Harmless while the path was cold; this change makes it hot.
+   Fixed by filling `sessionsById`/`sessionByConnection` **before** closing the incumbent.
+4. **Keeping the presence hold inside `transformLatest` and lengthening the delay.** Any delay
+   inside that operator is cancelled by the next emission — the bug is structural, not a tuning
+   problem. Extracted to `PresenceHold.withReconnectGrace`, which records when a peer *first* went
+   absent and expires the hold on a deadline upstream churn cannot postpone.
+5. **Gating recovery on `activeSessions.containsKey(...)`, more carefully.** Presence in a map is
+   not the question. Added `WsFlashNetwork.hasLiveSession(deviceId)` — open, `Connected`, **and** an
+   inbound frame within `STALE_SESSION_AFTER_MS` — and pointed all three recovery paths at it.
+6. **Pausing video through the existing `toggleCamera()` path** (as planned). It would have lied to
+   the UI: the camera button's own state would flip, so the user would see their camera "turned off"
+   by the app, and turning it back on would fight the governor. `encoding.active = false` stops the
+   sender without touching the track or the button.
+7. **Feeding the governor `FlashCallStats.packetLoss`.** That figure is **cumulative** over the
+   call, so it can only rise — a control loop reading it can degrade but can never recover. The
+   governor consumes a per-interval fraction computed from `packetsLost`/`packetsReceived` deltas.
+8. **Gating the 2.5 Mbit/s ceiling on the "Prioritise voice quality" toggle.** `CallSdp.tune()` is
+   applied symmetrically to the local *and* remote descriptions, so wire content must not depend on
+   which device happens to have a switch flipped. The ceiling is unconditional; the toggle governs
+   sender priorities and the governor.
+
+### Working fix
+**Bound the forgiveness (D1)** — `core/network/.../ws/WsKeepalive.kt`. A stall *episode* is
+forgiven exactly once: the first stalled tick rebases `lastInboundAtMs`, arms `probeArmedAtMs`, and
+PINGs; while that probe is outstanding a further stalled tick may re-PING but **may not** rebase, so
+the ordinary silence window keeps growing until it renders a verdict. Any inbound frame stamped
+after the probe was armed ends the episode, and the next stall is entitled to its own forgiveness.
+The two reap causes are distinguishable in logs (`REASON_SILENT` vs
+`REASON_STALL_PROBE = "No inbound frame after stall probe"`). A frozen peer is now reaped in
+~25–35 s instead of never, which is what re-arms redial.
+
+**Same-direction supersede (D2)** — `WsFlashNetwork.registerSession`. `resolveGlareTie` is now
+called only for genuine glare (`existing.isOutbound != session.isOutbound`); ERROR-023's
+deterministic originator comparison is untouched for that case. Same direction ⇒ the newcomer always
+wins, and the registry is updated **before** `existing.disconnect("Superseded by a newer
+connection")` so the synchronous disconnect callback sees a filled slot and declines to redial. The
+KDoc claim that ties never happen is replaced by the reason they do.
+
+**Never drop buffered frames (D3)** — `drainEarlyFrames` now owns the queue's removal, and the new
+`handOffEarlyFrames(connection, peerDeviceId)` hands frames from a connection being torn down to
+whichever session now owns that peer (frames are per-peer, not per-socket). Called from
+`onConnectionClosed` and `onSessionDisconnected`, which covers both rejection sites.
+
+**Deliver-or-retry outbox (D4)** — `RealFlashChatRepository.drainOutboxOnce`. A row's life now ends
+at **peer acknowledgement**: a successful write marks the message `SENT` (single tick, unchanged),
+bumps `attempts` and reschedules on the existing 1 s→60 s ladder, so the reschedule doubles as the
+resend timer; the `DeliveryReceipt` handler deletes the row. Resends are duplicate-free by
+construction — the receiver's insert is idempotent (IGNORE on `localId`) and it re-acks every
+`TextMessage` whether the row was new or a replay, so a redundant frame costs one packet and
+produces the receipt that clears the row. New `MessageDao.updateStatusIfUnacknowledged` so a resend
+cannot downgrade a message that has already been `DELIVERED`/`READ`. The give-up test moved
+**before** the send, so wall-clock `OUTBOX_GIVE_UP_AFTER_MS` (30 min) also bounds a row whose writes
+keep "succeeding" into a socket nobody reads; `FAILED` + the existing 1-tap Retry are unchanged.
+
+**Three-state presence (D5)** — new `core/messaging/.../PresenceHold.kt`
+(`Flow<Set<String>>.withReconnectGrace(holdMs)`), replacing the `transformLatest` hold. It records
+the instant a peer *first* went absent and expires on that deadline regardless of upstream churn, so
+a peer flapping every 2 s is `Connecting`, then `Offline` — never latched Online. During the hold
+the repository emits the already-existing `FlashPeerPresence.Connecting` (previously emitted by
+nothing) with `transport = Unknown`, so the header cannot claim `Lan` for a link it does not have.
+`FlashConversationScreen`'s `peerCount = 1` predicate counts `Connecting` too; without that a
+Connecting peer short-circuited the banner straight to Offline.
+
+**Un-skip the recovery paths (D6)** — new `public fun WsFlashNetwork.hasLiveSession(deviceId)`
+(open + `Connected` + inbound within `STALE_SESSION_AFTER_MS`), backed by a new
+`WsConnection.lastInboundAtMs` passthrough and an injectable `nowMs: () -> Long` so the freshness
+rule is testable without waiting. `AutoConnectGate.tryBegin` (called from `Flash.kt`),
+`runAutoConnectSweep` and the `startNetworkWatcher.onAvailable` callback all gate on it instead of
+map presence. This is what makes D2's supersede reachable: previously nothing even attempted the
+redial that D2 would have rejected.
+
+**Keep the process protected (D7)** — the screen-on / user-present receiver moved to application
+scope in `DiscoveryEngineHolder`, which already owns the engine's wake and Wi-Fi locks, so a refused
+promotion can no longer leave the engine with no way to notice the screen. New
+`FlashBackgroundService.retryPromotionIfRefused(context)` re-attempts promotion from `onScreenOn()`
+and from a new `WsFlashNetwork(onUsableNetwork = …)` hook on Wi-Fi rejoin — two moments when the app
+is plausibly allowed to start a foreground service again. The battery-optimisation exemption state
+is now visible in Settings (`FlashSettingsModel.ignoringBatteryOptimizations`, refreshed in
+`onResume`), reusing the existing `ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` intent path.
+
+**Audio priority in calls (D8)** — `core/calling`:
+- `FlashCallSession` now **keeps** the audio sender and tunes it: `networkPriority = Priority.HIGH`,
+  `bitratePriority = 4.0`, `maxBitrateBps = 32_000`. Video is explicitly demoted to
+  `Priority.LOW` / `bitratePriority = 0.5`, so the two streams are *ordered* in the allocator rather
+  than merely capped. Both knobs are required — either alone is a no-op.
+- `CallSdp`: video ceiling **8 Mbit/s → 2.5 Mbit/s**, start bitrate 2.5 → 1.2 Mbit/s, floor
+  unchanged at 600 kbit/s. Sized for a phone hotspot rather than for the camera.
+- New `CallQualityGovernor` — a pure, JVM-testable four-rung ladder (`FULL` →`REDUCED_BITRATE` →
+  `REDUCED_RESOLUTION` → `PAUSED`) driven off the existing 1 Hz `sampleStats` loop. Degrade after 2
+  consecutive bad samples, recover after 5 clean ones (asymmetric hysteresis, so the picture cannot
+  strobe); one rung per window, never several; a neutral sample forgets one bad sample rather than
+  all of them, so an every-other-second problem still adds up; an all-null sample is neutral, because
+  silence is not evidence of health. `reset()` runs only in `releaseMedia()` — resetting on ICE
+  restart would desync the rung from the encoder's live parameters and silently un-pause video.
+- Each rung publishes `FlashCallUiState.videoLimitReason`, rendered as a second line in
+  `FlashCallStatsBadge`: a picture that gets worse on purpose has to be distinguishable from a
+  picture that gets worse because the app is broken.
+- New default-**on** `prioritiseVoiceQuality` setting (`FlashSettingsDataStore` + a CALLS row in
+  Settings), mirrored through `DiscoveryEngineHolder` and injected into `CallCoordinator` as a
+  `prioritiseVoice: () -> Boolean` lambda, so `core:calling` stays persistence-free (ADR-024) and
+  flipping the switch mid-call takes effect on *that* call. Off ⇒ no priorities, no governor.
+
+### Verification
+`:core:network:testDebugUnitTest`, `:core:messaging:test`, `:core:calling:testDebugUnitTest`,
+`:ui:chat:testDebugUnitTest` green and `:app:compileDebugKotlin` clean (BUILD SUCCESSFUL in 1m 1s).
+Every one of the seven defects was made reachable from the JVM, which is the point of the
+extractions:
+- `WsKeepaliveTest` — a chronically late tick sequence now reaches `Close`; an inbound frame
+  mid-probe ends the episode and restores forgiveness; ERROR-025's single-stall case still passes.
+- `WsFlashNetworkTest` — inbound-then-inbound and outbound-then-outbound both admit the newcomer;
+  opposite-direction glare still converges to the same winner on both sides; `hasLiveSession` is
+  false for a stale session and true for a fresh one; early frames queued before registration are
+  delivered, and frames on a rejected connection reach the surviving session.
+- `PresenceHoldTest` — a peer flapping faster than the hold still expires; the hold is a deadline,
+  not a restartable timer.
+- `RealFlashChatRepositoryTest` — a successful write leaves the row and marks `SENT`; a
+  `DeliveryReceipt` deletes it; no receipt ⇒ resend on the ladder ⇒ `FAILED` at 30 min.
+- `CallQualityGovernorTest` (13 tests) — the ladder, both directions, hysteresis, the dead band,
+  intermittent trouble, blank samples, `reset()`, and the monotonicity of the rungs.
+- `CallSdpTest` — the literal new ceilings (2500 / 1200 / 600), still idempotent.
+
+**Pending owner test — the five-row two-phone matrix, each row without force-stopping:** screen off
+≥ 10 min then wake → Online again on both within seconds; kill one app → the other shows
+Reconnecting then Offline within ~6 s; send while the peer's app is down → clock → single tick →
+double tick once the peer returns, and the message arrives; send immediately after a wake cycle →
+arrives; video call on the hotspot with "Prioritise voice quality" on → voice stays intelligible
+while the picture degrades or pauses with a visible reason, and the old behaviour returns with the
+toggle off.
+
+### Related files
+- `core/network/src/main/java/.../ws/WsKeepalive.kt` — episode-scoped forgiveness, `confirmClose`
+- `core/network/src/main/java/.../ws/WsFlashNetwork.kt` — same-direction supersede, `hasLiveSession`,
+  `handOffEarlyFrames`, `nowMs`/`onUsableNetwork` ctor params
+- `core/network/src/main/java/.../ws/WsConnection.kt` — `lastInboundAtMs`
+- `core/messaging/src/main/java/.../PresenceHold.kt` — **new**, `withReconnectGrace`
+- `core/messaging/src/main/java/.../RealFlashChatRepository.kt` — ack-scoped outbox, `Connecting`
+- `core/persistence/src/main/java/.../db/dao/MessageDao.kt` — `updateStatusIfUnacknowledged`
+- `core/persistence/src/main/java/.../settings/FlashSettingsDataStore.kt` — `prioritiseVoiceQuality`
+- `core/engine/src/main/java/.../Flash.kt` — `AutoConnectGate` gated on freshness
+- `core/calling/src/main/java/.../CallQualityGovernor.kt` — **new**
+- `core/calling/src/main/java/.../FlashCallSession.kt` — audio sender, priorities, governor loop
+- `core/calling/src/main/java/.../CallSdp.kt` — hotspot-sized ceilings
+- `core/calling/src/main/java/.../CallCoordinator.kt` — `prioritiseVoice` lambda
+- `ui/chat/src/main/java/.../FlashConversationScreen.kt` — banner counts `Connecting`
+- `ui/chat/src/main/java/.../ui/settings/FlashSettingsScreen.kt` — battery + CALLS rows
+- `ui/callui/src/main/java/.../FlashCallScreen.kt` — `videoLimitReason` line
+- `app/src/main/java/.../debug/FlashBackgroundService.kt` — `retryPromotionIfRefused`
+- `app/src/main/java/.../debug/DiscoveryEngineHolder.kt` — app-scoped screen receiver, mirrors
+- `app/src/main/java/.../di/AppEngine.kt`, `app/src/main/java/.../MainActivity.kt` — settings wiring
+
+### Status
+RESOLVED at code level (2026-09-02; five-module test sweep green, `:app:compileDebugKotlin` clean);
+on-device verification of the two-phone matrix pending
+
+
+
+
+
+
+
+
