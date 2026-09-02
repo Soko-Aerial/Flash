@@ -2,7 +2,10 @@
 
 // Single source of truth for the published library version.
 // A release = bump this, commit, then `git tag vX.Y.Z` (tag must match).
-val flashLibraryVersion = "1.0.0"
+// A module's own `publishing { }` block must NOT set `version` or `groupId`: the three
+// ui/* modules did, so they silently published 1.0.0 for the whole 1.1.0 cycle while
+// every core module tracked this constant. Set artifactId there and nothing else.
+val flashLibraryVersion = "1.1.0"
 
 allprojects {
     version = flashLibraryVersion
