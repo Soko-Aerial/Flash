@@ -40,6 +40,8 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.core.content.ContextCompat
 import com.transfer.flash.core.common.model.FlashPeerPresence
 import com.transfer.flash.core.messaging.model.FlashConversationUiState
+import com.transfer.flash.core.messaging.model.FlashFileTransferStatus
+import com.transfer.flash.core.messaging.model.FlashImageAttachmentUi
 import com.transfer.flash.core.messaging.model.FlashMessageUi
 import com.transfer.flash.core.messaging.model.FlashQuotedReplyUi
 import com.transfer.flash.core.messaging.model.FlashReaction
@@ -117,6 +119,12 @@ fun FlashConversationScreen(
      */
     onDeclineOffer: (transferId: String) -> Unit = {},
     /**
+     * Retry a failed attachment transfer from its chat bubble. [transferId] is the attachment id;
+     * the host (:app) routes it to the transfer repository's resumeTransfer, which restarts the
+     * send from whatever the receiver already has. Default no-op keeps previews inert.
+     */
+    onRetryTransfer: (transferId: String) -> Unit = {},
+    /**
      * C7: start a voice call with the conversation's peer (1:1 only). The host (:app) routes this
      * to the engine's CallCoordinator + starts the call foreground service. Default no-op keeps
      * previews inert.
@@ -127,6 +135,18 @@ fun FlashConversationScreen(
      * previews inert.
      */
     onStartVideoCall: () -> Unit = {},
+    /**
+     * Re-arm the P2P link behind the connection banner's Retry button: the host (:app) restarts
+     * discovery browsing and re-dials known peers. Returns false when the engine has not booted, so
+     * the banner can say so instead of pretending. Default reports "nothing to retry".
+     */
+    onRetryConnection: () -> Boolean = { false },
+    /**
+     * Forward message text out of the app via the system chooser (ACTION_SEND). In-app forwarding
+     * needs a conversation picker that does not exist yet; sharing is the honest action behind a
+     * "Forward" button until it does. Default no-op keeps previews inert.
+     */
+    onShareText: (String) -> Unit = {},
 ) {
     val context = LocalContext.current
     val motion = FlashTheme.motion
@@ -234,11 +254,17 @@ fun FlashConversationScreen(
 
     val inSelectionMode = selectedMessageIds.isNotEmpty()
 
-    // UI-030: connection health derived from header state.
+    // UI-030: connection health derived from header state. A Connecting peer still counts as one
+    // known peer (ERROR-031): the repository now emits Connecting while a dropped session is being
+    // re-established, and counting only Online/Typing collapsed that window straight to the
+    // "Offline — no peers" banner, contradicting the "Connecting…" the header was showing.
     val connectionHealth = FlashNetworkStatusMath.resolveHealth(
         transport = state.header.transport,
         peerPresence = state.header.presence,
-        peerCount = if (state.header.presence == FlashPeerPresence.Online || state.header.presence == FlashPeerPresence.Typing) 1 else 0,
+        peerCount = when (state.header.presence) {
+            FlashPeerPresence.Online, FlashPeerPresence.Typing, FlashPeerPresence.Connecting -> 1
+            else -> 0
+        },
     )
 
     // Hardware back press exits media viewer → search → selection mode
@@ -310,7 +336,18 @@ fun FlashConversationScreen(
                                 selectedMessageIds = emptySet()
                             },
                             onForward = {
-                                Toast.makeText(context, "Forwarding ${selectedMessageIds.size} messages", Toast.LENGTH_SHORT).show()
+                                // Was a "Forwarding N messages" toast that forwarded nothing. There
+                                // is no in-app conversation picker yet, so hand the selection to the
+                                // system chooser — the same fallback the media viewer's Forward uses.
+                                val selectedTexts = localMessages
+                                    .filter { it.id in selectedMessageIds }
+                                    .map { it.text }
+                                    .filter { it.isNotBlank() }
+                                if (selectedTexts.isEmpty()) {
+                                    Toast.makeText(context, "Nothing to forward", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    onShareText(selectedTexts.joinToString("\n"))
+                                }
                                 selectedMessageIds = emptySet()
                             },
                             onDelete = {
@@ -365,7 +402,15 @@ fun FlashConversationScreen(
                                 FlashConnectionBanner(
                                     health = connectionHealth,
                                     onRetry = {
-                                        Toast.makeText(context, "Reconnecting…", Toast.LENGTH_SHORT).show()
+                                        // Used to be a bare "Reconnecting…" toast with no work behind
+                                        // it. Now it re-arms discovery + re-dials the peer, and says
+                                        // so only when there is an engine to do it.
+                                        val armed = onRetryConnection()
+                                        Toast.makeText(
+                                            context,
+                                            if (armed) "Reconnecting…" else "Still starting up — try again in a moment",
+                                            Toast.LENGTH_SHORT,
+                                        ).show()
                                     },
                                 )
                             }
@@ -478,7 +523,14 @@ fun FlashConversationScreen(
                     }
                 },
                 onFileClick = { _, file ->
-                    onOpenAttachment(file.localUri, file.mimeType, file.name)
+                    // A failed card advertises "Failed (Tap to retry)" and a Retry badge, so the
+                    // tap has to retry. It used to fall through to onOpenAttachment, i.e. try to
+                    // open a file that was never fully received — the retry affordance did nothing.
+                    if (file.transferStatus == FlashFileTransferStatus.Failed) {
+                        onRetryTransfer(file.id)
+                    } else {
+                        onOpenAttachment(file.localUri, file.mimeType, file.name)
+                    }
                 },
                 onAcceptOffer = { _, file ->
                     onAcceptOffer(file.id)
@@ -528,7 +580,20 @@ fun FlashConversationScreen(
                 copyToClipboard(context, msg.text)
             },
             onForward = {
-                Toast.makeText(context, "Forwarding message", Toast.LENGTH_SHORT).show()
+                // Was a "Forwarding message" toast that forwarded nothing. No in-app conversation
+                // picker exists yet, so route to the system chooser: text as text, a media/file
+                // message as its local stream (both fall back to the file card's localUri).
+                val image = msg.images.firstOrNull()
+                val file = msg.fileAttachments.firstOrNull()
+                val voice = msg.voiceAttachments.firstOrNull()
+                when {
+                    msg.text.isNotBlank() -> onShareText(msg.text)
+                    image?.uri != null -> onShareImage(image.uri, image.mimeType)
+                    voice?.uri != null -> onShareImage(voice.uri, voice.mimeType)
+                    file?.localUri != null -> onShareImage(file.localUri, file.mimeType)
+                    else -> Toast.makeText(context, "Nothing to forward yet", Toast.LENGTH_SHORT).show()
+                }
+                focusedMessage = null
             },
             onSelectMultiple = {
                 selectedMessageIds = setOf(msg.id)
@@ -549,7 +614,10 @@ fun FlashConversationScreen(
                 // Map the tapped palette action to a document-picker MIME filter and launch SAF.
                 // Camera has no picker (would need a capture intent); keep the existing hook for it.
                 val mimeTypes = when (action) {
-                    FlashAttachmentType.Gallery -> arrayOf("image/*")
+                    // Videos belong in the gallery picker: chat bubbles render video thumbnails and
+                    // the viewer plays them, but "Gallery" filtered to image/* meant a clip could
+                    // only be sent through the generic Files action.
+                    FlashAttachmentType.Gallery -> arrayOf("image/*", "video/*")
                     FlashAttachmentType.Audio -> arrayOf("audio/*")
                     FlashAttachmentType.Files, FlashAttachmentType.FlashTransfer -> arrayOf("*/*")
                     FlashAttachmentType.Camera -> null
@@ -610,7 +678,7 @@ fun FlashConversationScreen(
                     if (image?.uri != null) {
                         onSaveImage(image.uri, image.mimeType)
                     } else {
-                        Toast.makeText(context, "Image not available yet", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, notReadyLabel(image), Toast.LENGTH_SHORT).show()
                     }
                 },
                 onShare = { index ->
@@ -618,7 +686,7 @@ fun FlashConversationScreen(
                     if (image?.uri != null) {
                         onShareImage(image.uri, image.mimeType)
                     } else {
-                        Toast.makeText(context, "Image not available yet", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, notReadyLabel(image), Toast.LENGTH_SHORT).show()
                     }
                 },
                 onForward = { index ->
@@ -628,7 +696,19 @@ fun FlashConversationScreen(
                     if (image?.uri != null) {
                         onShareImage(image.uri, image.mimeType)
                     } else {
-                        Toast.makeText(context, "Image not available yet", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, notReadyLabel(image), Toast.LENGTH_SHORT).show()
+                    }
+                },
+                onPlayVideo = { index ->
+                    // Reachable by swiping: a message's images and videos share one album, and a
+                    // video page renders a still frame, so the badge hands playback to the system
+                    // player exactly as tapping the tile does.
+                    val item = mediaViewerItems.getOrNull(index)
+                    val uri = item?.image?.uri
+                    if (item != null && uri != null) {
+                        onOpenAttachment(uri, item.image.mimeType, item.senderName)
+                    } else {
+                        Toast.makeText(context, "Video not available yet", Toast.LENGTH_SHORT).show()
                     }
                 },
             )
@@ -676,6 +756,13 @@ private fun copyToClipboard(context: Context, text: String) {
     clipboard.setPrimaryClip(clip)
     Toast.makeText(context, "Copied to clipboard", Toast.LENGTH_SHORT).show()
 }
+
+/**
+ * Copy for a viewer action on a page whose bytes have not landed yet. The album mixes photos and
+ * clips, so a hardcoded "Image not available yet" was wrong on half its pages.
+ */
+private fun notReadyLabel(image: FlashImageAttachmentUi?): String =
+    if (image?.isVideo == true) "Video not available yet" else "Image not available yet"
 
 /**
  * UI-012: resolve a SAF content URI to its display name + byte size via [OpenableColumns].

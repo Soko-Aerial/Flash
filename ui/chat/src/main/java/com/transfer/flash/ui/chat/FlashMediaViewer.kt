@@ -1,7 +1,5 @@
 package com.transfer.flash.ui.chat
 
-import android.graphics.BitmapFactory
-import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
@@ -30,6 +28,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
@@ -47,7 +46,6 @@ import androidx.compose.ui.geometry.isSpecified
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
@@ -77,7 +75,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
 import kotlin.math.abs
 import kotlin.math.max
 
@@ -231,6 +228,12 @@ fun FlashMediaViewer(
     onShare: (Int) -> Unit = {},
     onSave: (Int) -> Unit = {},
     onForward: (Int) -> Unit = {},
+    /**
+     * Play the video on page [Int] in the platform player. Video pages show a frame like any other
+     * page, so without this the badge would be decoration and a clip reachable only by swiping
+     * (images and videos share one album) would be unplayable.
+     */
+    onPlayVideo: (Int) -> Unit = {},
 ) {
     if (items.isEmpty()) return
 
@@ -301,6 +304,7 @@ fun FlashMediaViewer(
                     item = item,
                     zoomState = zoomState,
                     onToggleChrome = { chromeVisible = !chromeVisible },
+                    onPlay = { onPlayVideo(page) },
                     onDismissDrag = { dragY -> dismissDragPx.value = dragY },
                     onDismissSettle = { dismissDragPx.value = 0f },
                     onDismissConfirm = {
@@ -340,12 +344,10 @@ fun FlashMediaViewer(
                     modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
                 )
                 Spacer(modifier = Modifier.weight(1f))
-                FlashIconButtonChrome(
-                    icon = FlashIcons.More,
-                    tint = colors.mediaViewerChromeText,
-                    contentDescription = FlashIcons.More.contentDescription,
-                    onClick = {},
-                )
+                // The overflow (⋮) slot held a button with an empty onClick — a control that looked
+                // live and did nothing. Every action it could host already sits in the bottom bar,
+                // so it is now a spacer that keeps the counter optically centred.
+                Spacer(modifier = Modifier.size(FlashDimensions.minTouchTarget))
             }
         }
 
@@ -373,7 +375,7 @@ fun FlashMediaViewer(
                     FlashIconButtonChrome(
                         icon = FlashIcons.Download,
                         tint = colors.mediaViewerChromeText,
-                        contentDescription = "Save image",
+                        contentDescription = if (currentItem.image.isVideo) "Save video" else "Save image",
                         onClick = { onSave(pagerState.currentPage) },
                     )
                     FlashIconButtonChrome(
@@ -399,13 +401,15 @@ private const val ChromeTextAlpha = 0.92f
 
 /**
  * One zoomable viewer page: bitmap decode with sample-size guard, seed-gradient loading
- * placeholder, failure state, pinch/double-tap zoom, pan, and un-zoomed dismiss drag.
+ * placeholder, failure state, pinch/double-tap zoom, pan, and un-zoomed dismiss drag. Video pages
+ * render a decoded frame plus a play badge that hands off to the platform player.
  */
 @Composable
 private fun FlashMediaPage(
     item: FlashMediaViewerItem,
     zoomState: FlashZoomState,
     onToggleChrome: () -> Unit,
+    onPlay: () -> Unit,
     onDismissDrag: (Float) -> Unit,
     onDismissSettle: () -> Unit,
     onDismissConfirm: () -> Unit,
@@ -416,43 +420,26 @@ private fun FlashMediaPage(
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
 
-    val decodeState = produceState(FlashMediaDecodeState(), key1 = item.image.uri, key2 = item.image.thumbUri) {
-        val uriStr = item.image.uri ?: item.image.thumbUri
-        if (uriStr.isNullOrBlank()) {
-            value = FlashMediaDecodeState(failed = true)
-            return@produceState
-        }
+    val decodeState = produceState(
+        FlashMediaDecodeState(),
+        key1 = item.image.uri,
+        key2 = item.image.thumbUri,
+        key3 = item.image.isVideo,
+    ) {
+        val source = item.image.uri ?: item.image.thumbUri
         value = withContext(Dispatchers.IO) {
-            runCatching {
-                val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                val bounded = when {
-                    uriStr.startsWith("content://") || uriStr.startsWith("file://") ->
-                        context.contentResolver.openInputStream(Uri.parse(uriStr))?.use { stream ->
-                            BitmapFactory.decodeStream(stream, null, options)
-                        } != null
-
-                    File(uriStr).exists() -> {
-                        BitmapFactory.decodeFile(uriStr, options)
-                        true
-                    }
-
-                    else -> false
-                }
-                if (!bounded || options.outWidth <= 0 || options.outHeight <= 0) {
-                    return@runCatching null
-                }
-                options.inSampleSize = FlashMediaViewerMath.computeInSampleSize(options.outWidth, options.outHeight)
-                options.inJustDecodeBounds = false
-                val decoded = when {
-                    uriStr.startsWith("content://") || uriStr.startsWith("file://") ->
-                        context.contentResolver.openInputStream(Uri.parse(uriStr))?.use { stream ->
-                            BitmapFactory.decodeStream(stream, null, options)
-                        }
-
-                    else -> BitmapFactory.decodeFile(uriStr, options)
-                }
-                decoded?.asImageBitmap()
-            }.getOrNull()?.let { FlashMediaDecodeState(bitmap = it) } ?: FlashMediaDecodeState(failed = true)
+            // Shared with the in-bubble tiles, which buys this page three things it lacked: an EXIF
+            // rotation pass (a portrait photo used to open sideways), a frame for video pages (a
+            // BitmapFactory decode of an mp4 returns null, so swiping onto a clip hit `failed`), and
+            // one code path for the sample-size guard. memoize = false because a 4096-edge bitmap
+            // would evict the entire thumbnail cache to store something nobody asks for twice.
+            FlashMediaDecoder.decode(
+                context = context,
+                source = source,
+                isVideo = item.image.isVideo,
+                maxLongEdge = FlashMediaViewerMath.MAX_DECODE_LONG_EDGE,
+                memoize = false,
+            )?.let { FlashMediaDecodeState(bitmap = it) } ?: FlashMediaDecodeState(failed = true)
         }
     }
 
@@ -594,7 +581,8 @@ private fun FlashMediaPage(
             result.bitmap != null -> {
                 Image(
                     bitmap = result.bitmap,
-                    contentDescription = item.image.caption ?: "Photo",
+                    contentDescription = item.image.caption
+                        ?: if (item.image.isVideo) "Video" else "Photo",
                     contentScale = ContentScale.Fit,
                     modifier = Modifier
                         .fillMaxSize()
@@ -620,7 +608,7 @@ private fun FlashMediaPage(
                         size = FlashDimensions.iconLg,
                     )
                     FlashText(
-                        text = "Couldn't load image",
+                        text = if (item.image.isVideo) "Couldn't load video" else "Couldn't load image",
                         style = FlashTheme.typography.metadataDefault,
                         color = FlashTheme.colors.mediaViewerChromeText.copy(alpha = ChromeTextAlpha),
                     )
@@ -632,6 +620,29 @@ private fun FlashMediaPage(
                     modifier = Modifier
                         .fillMaxSize()
                         .background(Brush.linearGradient(gradientColors)),
+                )
+            }
+        }
+
+        // A frame is a still: a video page needs an explicit "play" target, offered as soon as the
+        // decode settles either way — an undecodable frame says nothing about whether the clip
+        // plays. It sits above the page's own gesture scopes, so tapping the badge plays while
+        // tapping anywhere else still toggles chrome.
+        if (item.image.isVideo && (result.bitmap != null || result.failed)) {
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .size(FlashDimensions.minTouchTarget)
+                    .background(Color(0x99000000), CircleShape)
+                    .clickable(onClick = onPlay)
+                    .semantics { role = Role.Button },
+            ) {
+                FlashIcon(
+                    icon = FlashIcons.Play,
+                    tint = Color.White,
+                    contentDescription = "Play video",
+                    size = FlashDimensions.iconMd,
                 )
             }
         }

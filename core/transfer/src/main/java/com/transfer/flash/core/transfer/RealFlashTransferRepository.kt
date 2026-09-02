@@ -398,9 +398,12 @@ public class RealFlashTransferRepository(
         }
 
         val dispatcher = runningDispatchers[transferId.value]
+        // isActive, not mere presence: executeSend's finally only retires its OWN dispatcher/job
+        // pair, so a send that died before registering a dispatcher leaves a completed Job behind.
+        // Treating that as a live sender turns Retry into setPaused(false) on nothing — a no-op.
         val liveSender = transfer.direction == FlashTransferDirection.Sending &&
             dispatcher != null &&
-            runningJobs.containsKey(transferId.value)
+            runningJobs[transferId.value]?.isActive == true
         val wirePaused = liveSender &&
             (dispatcher!!.isPaused || pauseIntents.contains(transferId.value))
 
@@ -439,19 +442,42 @@ public class RealFlashTransferRepository(
             return FlashResult.Success(Unit)
         }
 
-        updateTransferState(transferId.value) {
+        // Outbound with no live worker — a Failed transfer being retried, or a resume issued after
+        // executeSend already retired its registrations. The only way back onto the wire is a fresh
+        // send job.
+        relaunchSend(transfer, notifyPeer = true)
+        return FlashResult.Success(Unit)
+    }
+
+    /**
+     * Restarts a send whose worker is gone: a Failed transfer being retried (from either side) or a
+     * resume that arrives after `executeSend` already retired its dispatcher and job.
+     *
+     * The receiver keys its session on `(transferId, fileId)` and treats an *identical* re-offer as
+     * a resume restart that keeps accumulated progress (ReceivePipeline.handleFileStart), so the
+     * wire identity and the file facts have to be reproduced exactly — [FlashTransfer.wireFileId]
+     * and [FlashTransfer.sourceUri], never a fresh UUID or the display name. Anything the receiver
+     * already persisted is skipped via its resume vector, so a retry costs only what is missing.
+     *
+     * @param notifyPeer false when the peer is the one that asked for the resume: echoing its own
+     *   RESUME straight back is pointless churn.
+     */
+    private fun relaunchSend(transfer: FlashTransfer, notifyPeer: Boolean) {
+        val transferId = transfer.id.value
+        // Clear the pending-pause intent first so the fresh dispatcher does not register paused.
+        pauseIntents.remove(transferId)
+        updateTransferState(transferId) {
             it.copy(state = FlashTransferState.Queued, errorMessage = null)
         }
-        store?.setStatus(transferId.value, FlashTransferState.Queued.name)
-
         // Tell the peer before the relaunch: a receiver that paused its own intake must re-open
         // the gate, otherwise the fresh dispatcher blocks on backpressure with nothing draining.
-        emitOutgoing(transferId.value, transfer.peerDeviceId, ACTION_RESUME)
-
-        // Re-launch transfer
+        if (notifyPeer) {
+            emitOutgoing(transferId, transfer.peerDeviceId, ACTION_RESUME)
+        }
         val job = repositoryScope.launch(workerDispatcher) {
+            store?.setStatus(transferId, FlashTransferState.Queued.name)
             executeSend(
-                transferId = transferId.value,
+                transferId = transferId,
                 // Stable wire identity: the receiver's session is keyed on (transferId, fileId);
                 // a fresh fileId here would be rejected as SESSION_CONFLICT.
                 fileId = transfer.wireFileId ?: UUID.randomUUID().toString(),
@@ -463,8 +489,7 @@ public class RealFlashTransferRepository(
                 peerDeviceId = transfer.peerDeviceId,
             )
         }
-        runningJobs[transferId.value] = job
-        return FlashResult.Success(Unit)
+        runningJobs[transferId] = job
     }
 
     override suspend fun cancelTransfer(transferId: FlashTransferId): FlashResult<Unit> {
@@ -532,9 +557,25 @@ public class RealFlashTransferRepository(
             ACTION_RESUME -> when (transfer.direction) {
                 FlashTransferDirection.Sending -> {
                     pauseIntents.remove(transferId)
-                    runningDispatchers[transferId]?.setPaused(false)
-                    updateTransferState(transferId) {
-                        it.copy(state = FlashTransferState.Transferring, errorMessage = null)
+                    // `isActive`, not mere presence: a send that died before registering a
+                    // dispatcher leaves a completed Job behind (executeSend's finally only retires
+                    // its own registration pair), and a stale entry must not block the relaunch.
+                    if (runningJobs[transferId]?.isActive == true) {
+                        // Live worker — streaming, or parked on the #5 offer gate waiting for this
+                        // very RESUME (the receiver's accept). Unpausing is all that is needed, and
+                        // the null-safe call covers the accept arriving before the dispatcher has
+                        // registered: the intent drop above is what un-parks it in that window.
+                        runningDispatchers[transferId]?.setPaused(false)
+                        updateTransferState(transferId) {
+                            it.copy(state = FlashTransferState.Transferring, errorMessage = null)
+                        }
+                    } else {
+                        // No worker left: the receiver is retrying a send that already died (its
+                        // Retry button emits RESUME). `runningDispatchers[id]?.setPaused(false)`
+                        // was a no-op here while the state flip still claimed Transferring, so
+                        // BOTH UIs sat at "Transferring" with nothing on the wire — the "retry
+                        // does nothing" report. A dead send can only come back as a fresh job.
+                        relaunchSend(transfer, notifyPeer = false)
                     }
                 }
                 FlashTransferDirection.Receiving -> {
@@ -708,19 +749,25 @@ public class RealFlashTransferRepository(
     ) {
         _activeTransfers.update { list ->
             if (list.any { it.id.value == transferId }) {
-                // Row already present (an accepted OFFER): keep its identity but fill in the now-
-                // resolved destination path and ensure it is Transferring. Never downgrade a
-                // terminal state (a decline that raced the sink resolution stays Cancelled).
+                // Row already present (an accepted OFFER, or a retry re-opening a session for a
+                // transfer that failed mid-flight): keep its identity but fill in the now-resolved
+                // destination path and ensure it is Transferring.
+                //
+                // Cancelled is the one state never downgraded — a decline that raced the sink
+                // resolution must stay declined. Failed IS revived on purpose: this callback only
+                // ever runs when a session just opened for writes, so the sender is streaming
+                // again, and leaving the row Failed made the retry invisible (onIncomingProgress
+                // only advances a Transferring row, so a resume showed zero progress until it
+                // completed).
                 list.map { existing ->
                     if (existing.id.value != transferId) {
                         existing
-                    } else if (existing.state == FlashTransferState.Cancelled ||
-                        existing.state == FlashTransferState.Failed
-                    ) {
+                    } else if (existing.state == FlashTransferState.Cancelled) {
                         existing
                     } else {
                         existing.copy(
                             state = FlashTransferState.Transferring,
+                            errorMessage = null,
                             localPath = localPath ?: existing.localPath,
                         )
                     }

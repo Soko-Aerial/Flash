@@ -154,6 +154,22 @@ FLASH_CALL action=ice callId=<uuid> from=<id> mid=<escaped-mid> index=<n> candid
 - A device supports at most one active call; a second incoming `invite` while busy is
   auto-declined with `reason` omitted (plain `decline`).
 
+### Call log rows: no wire frame
+
+There is deliberately **no** call-log frame. When a call ends, each device already holds every
+field a log row needs - call id, peer, direction, video flag, end reason, duration - so each
+writes its own row into the chat thread locally. The row is stored as ordinary message text
+under a `cmsg:` marker, which is a *storage* convention inside Flash's own database, not part of
+this protocol: a third-party consumer receives the same information as a `FlashCallLogEntry`
+callback and is free to persist it however it likes.
+
+The cost is that a locally-derived row only knows what that device observed. `missed` is
+therefore defined as "an incoming call that never carried media" rather than read off the wire,
+because a callee that declines and a callee whose caller gave up both end the call as `NORMAL` -
+`decline()` reports NORMAL locally, and an inbound `hangup` while RINGING does too. The
+distinction exists on the caller's side (an inbound `decline` ends as DECLINED, a dial timeout as
+NO_ANSWER) and is simply not recoverable on the callee's.
+
 ## Intended Full Protocol
 
 

@@ -2,8 +2,15 @@
 
 package com.transfer.flash.debug
 
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.net.wifi.WifiManager
+import android.os.Build
+import android.os.PowerManager
 import android.util.Log
+import androidx.core.content.ContextCompat
 import com.transfer.flash.core.common.model.FlashDeviceId
 import com.transfer.flash.core.common.protocol.FlashTextFraming
 import com.transfer.flash.core.discovery.core.CompositeDiscovery
@@ -20,8 +27,13 @@ import com.transfer.flash.core.security.crypto.FlashFingerprint
 import com.transfer.flash.core.security.crypto.KeystoreFlashCrypto
 import com.transfer.flash.core.security.trust.AndroidPreferencesTrustStore
 import com.transfer.flash.core.calling.CallCoordinator
+import com.transfer.flash.core.calling.FlashWebRtcEngine
+import com.transfer.flash.core.calling.model.FlashCallDirection
+import com.transfer.flash.core.calling.model.FlashCallState
 import com.transfer.flash.core.calling.protocol.CallFrameCodec
 import com.transfer.flash.core.calling.protocol.CallWireFrame
+import com.transfer.flash.calling.FlashCallRinger
+import com.transfer.flash.calling.FlashCallService
 import com.transfer.flash.pairing.PairingCoordinator
 import com.transfer.flash.net.AutoConnectGate
 import com.transfer.flash.core.transfer.FlashTransferRepository
@@ -48,6 +60,7 @@ import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
@@ -59,6 +72,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 /**
  * Process-wide engine holder for the debug Dev Console and background service.
@@ -110,8 +124,18 @@ object DiscoveryEngineHolder {
     @Volatile
     private var callCoordinator: CallCoordinator? = null
 
+    /**
+     * Owned here rather than by [FlashCallService] or the UI: a call has to ring even when the app
+     * is closed (no activity) and even if the platform refuses to promote the call service to the
+     * foreground. The engine outlives both, so the ring follows the call state machine for as long
+     * as signaling exists. Released only in [stopAll].
+     */
+    @Volatile
+    private var callRinger: FlashCallRinger? = null
+
     private var binderJob: Job? = null
     private var autoConnectJob: Job? = null
+    private var callRingJob: Job? = null
 
     /**
      * Attempt-bounding gate for the auto-connect sweep, hoisted to a field so the screen-on
@@ -125,6 +149,30 @@ object DiscoveryEngineHolder {
     @Volatile
     private var localDeviceId: String? = null
 
+    /**
+     * Application context, cached for the engine's lifetime so the hooks that fire *outside* a
+     * caller-supplied context — [onScreenOn]'s foreground-promotion retry and the Wi-Fi rejoin
+     * hook handed to [WsFlashNetwork] — can reach [FlashBackgroundService]. Cleared by [stopAll];
+     * an application context is a process-lifetime singleton, so holding it leaks nothing.
+     */
+    @Volatile
+    private var appContextRef: Context? = null
+
+    /**
+     * Screen-on / user-present re-arm receiver, registered for the ENGINE's lifetime (ERROR-031).
+     *
+     * It used to live in [FlashBackgroundService], registered in `onCreate` and unregistered in
+     * `onDestroy`. That service destroys its own instance when Android 12+ refuses its foreground
+     * promotion while deliberately leaving the engine running — so the refused path tore down the
+     * engine's only way to notice the screen coming back, leaving it with no foreground service AND
+     * no re-arm. Exactly the same reasoning that moved the power locks here.
+     *
+     * These broadcasts cannot be declared in the manifest, so runtime registration is the only
+     * option. Held from [startEngineLocked] until [stopAll].
+     */
+    @Volatile
+    private var screenReceiver: BroadcastReceiver? = null
+
     // Bug 3: auto-download settings, mirrored from FlashSettingsDataStore by AppEngine
     @Volatile
     var autoDownloadVoice: Boolean = true
@@ -134,6 +182,17 @@ object DiscoveryEngineHolder {
     var autoDownloadVideo: Boolean = false
     @Volatile
     var autoDownloadFile: Boolean = false
+
+    /**
+     * ERROR-031 / D8: "Prioritise voice quality", mirrored from FlashSettingsDataStore by AppEngine
+     * and read by [CallCoordinator] once a second for the life of a call.
+     *
+     * A mirrored `var` rather than a Flow handed to `core:calling`, for the same reason the
+     * auto-download flags above are: the calling module must not know that DataStore exists
+     * (ADR-024), and the coordinator only ever needs the value at the instant it asks.
+     */
+    @Volatile
+    var prioritiseVoiceQuality: Boolean = true
 
     /**
      * Bug 3: invoked by [handleInboundBinary] after [RealFlashTransferRepository.onIncomingOffered]
@@ -148,6 +207,30 @@ object DiscoveryEngineHolder {
     private var appScope = newAppScope()
 
     private fun newAppScope() = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    /**
+     * CPU wake lock keeping the mesh alive across screen-off / Doze. Without it the CPU is throttled,
+     * so the WebSocket keepalive pings stall and inbound frames are processed far too late.
+     *
+     * ERROR-026: these locks belong to the ENGINE's lifetime, not to a
+     * [FlashBackgroundService] instance. The service used to own them, which meant its
+     * foreground-refused path (`startForeground` rejected on a sticky restart while backgrounded,
+     * then `stopSelf`) released them in `onDestroy` while deliberately leaving the engine running
+     * in-process — disarming both power locks in precisely the situation they exist for. Held from
+     * [ensureStarted] until [stopAll].
+     */
+    @Volatile
+    private var wakeLock: PowerManager.WakeLock? = null
+
+    /**
+     * Keeps the Wi-Fi radio fully powered while backgrounded. In power-save the radio parks between
+     * beacons and physically drops packets our sockets and mDNS multicast reception depend on — a
+     * loss no software watchdog can forgive, unlike a late keepalive tick.
+     * `WIFI_MODE_FULL_LOW_LATENCY` (API 29+) additionally biases the radio toward low latency.
+     * See [wakeLock] for why the engine owns this rather than the service.
+     */
+    @Volatile
+    private var wifiLock: WifiManager.WifiLock? = null
 
     /** Serializes start/stop so racing callers cannot leak duplicate NSD engines/servers. */
     private val lifecycleMutex = Mutex()
@@ -164,12 +247,33 @@ object DiscoveryEngineHolder {
 
     fun currentCallCoordinator(): CallCoordinator? = callCoordinator
 
-    suspend fun ensureStarted(context: Context): CompositeDiscovery = lifecycleMutex.withLock {
+    /**
+     * Boots the whole stack once and returns the live discovery engine; later calls no-op.
+     *
+     * Runs [NonCancellable] on purpose (ERROR-026). Startup binds the WebSocket server socket,
+     * registers the NSD advertisement and opens the encrypted database BEFORE it publishes
+     * [composite], and every one of those side effects outlives the caller's coroutine scope. A
+     * caller whose scope died mid-startup — [FlashBackgroundService] calling `stopSelf` when Android
+     * 12+ refuses its foreground promotion, or an activity being destroyed — used to abort setup
+     * partway, leaving a bound socket, a live NSD registration and an open database behind while the
+     * holder still reported "not started". The next call then built a SECOND stack beside the
+     * orphan. Cancellation cannot help here: only finishing setup keeps the holder's state and the
+     * process's real resources in agreement. [stopAll] is the way to tear the engine down.
+     */
+    suspend fun ensureStarted(context: Context): CompositeDiscovery =
+        withContext(NonCancellable) { startEngineLocked(context) }
+
+    private suspend fun startEngineLocked(context: Context): CompositeDiscovery = lifecycleMutex.withLock {
         composite?.let { return it }
         // #16: a prior stopAll cancels appScope; a cancelled scope never runs new coroutines, so
         // start fresh before launching this session's collectors.
         if (!appScope.isActive) appScope = newAppScope()
         val appContext = context.applicationContext
+        appContextRef = appContext
+        // Power locks first: everything below (socket bind, NSD registration, first sessions) needs
+        // an awake CPU and a fully-powered radio, and they now outlive any single service instance.
+        acquirePowerLocks(appContext)
+        registerScreenReceiver(appContext)
         val identity0 = AppIdentity(appContext)
         val identity = FlashAdvertisedIdentity(
             deviceId = FlashDeviceId(
@@ -194,6 +298,12 @@ object DiscoveryEngineHolder {
             context = appContext,
             localDeviceId = identity.deviceId.value,
             localFriendlyName = identity.friendlyName,
+            // ERROR-031 / D7: a Wi-Fi rejoin is one of the few moments a foreground-service
+            // promotion that was refused while backgrounded can succeed, and core:network is
+            // already watching for it (its own watcher is `internal`, so :app cannot observe the
+            // same edge without a second, duplicate ConnectivityManager callback). No-op unless a
+            // promotion actually was refused.
+            onUsableNetwork = { FlashBackgroundService.retryPromotionIfRefused(appContext) },
         )
         binderJob = DiscoveryRouteBinder.observe(appScope, engine.discoveredEndpoints, networkImpl)
 
@@ -539,10 +649,19 @@ object DiscoveryEngineHolder {
         // The destination peer is EXPLICIT (second lambda arg): call frames carry only callId +
         // our own `from` on the wire, so routing by frame.from would send every frame to ourselves.
         // The coordinator resolves the peer (live session peer, or a busy-decline's new inviter).
+        //
+        // Installs the low-latency audio device module first. WebRtc.configure() throws once a
+        // PeerConnectionFactory exists, so this is the last safe moment: after it, the default ADM
+        // (useLowLatency = false, i.e. tens of ms of playout buffering) is permanent for the
+        // process. Best-effort — a device that refuses still gets a call on libwebrtc's defaults.
+        FlashWebRtcEngine.configureOnce(appContext)
         val callCoordinator = CallCoordinator(
             localDeviceId = identity.deviceId.value,
             localName = identity.friendlyName,
             scope = appScope,
+            // Read per sample, not captured once: flipping the switch mid-call has to take effect
+            // on that call, not the next one.
+            prioritiseVoice = { prioritiseVoiceQuality },
             sendFrame = { frame, peerId ->
                 val encoded = CallFrameCodec.encode(frame)
                 val session = networkImpl.activeSessions.value[FlashDeviceId(peerId)] as? WsSession
@@ -554,6 +673,27 @@ object DiscoveryEngineHolder {
                     Log.i(TAG_WS, "Call sendFrame action=${frame.javaClass.simpleName} peer=$peerId no session")
                     false
                 }
+            },
+            // Every terminated call becomes a row in the peer's thread (UI-050). No wire frame is
+            // involved: both devices already hold direction, duration and end reason locally, so
+            // each writes its own row — which is also why a declined or missed call still appears.
+            // Fires on whichever thread ended the call (possibly a WebRTC callback thread), and
+            // recordCallEvent only launches on the repository's IO scope, so it never blocks.
+            onCallLog = { entry ->
+                Log.i(
+                    TAG_WS,
+                    "Call log peer=${entry.peerId} video=${entry.video} " +
+                        "reason=${entry.endReason} durationMs=${entry.durationMs}",
+                )
+                chatImpl.recordCallEvent(
+                    peerDeviceId = entry.peerId,
+                    callId = entry.callId,
+                    peerName = entry.peerName,
+                    outgoing = entry.direction == FlashCallDirection.OUTGOING,
+                    video = entry.video,
+                    durationMs = entry.durationMs,
+                    endedAt = entry.endedAt,
+                )
             },
         )
 
@@ -815,6 +955,25 @@ object DiscoveryEngineHolder {
             }
         }
 
+        // C7 ringing: the engine — not the UI, not FlashCallService — drives the ringer and the
+        // call notification, because an invite that arrives with the app closed still has to ring.
+        // Ownership here also means the ring survives a refused foreground-service promotion: the
+        // ringtone is a plain MediaPlayer on the ring stream and needs no FGS at all.
+        //
+        // `collect`, not `collectLatest`: onCallState is a cheap synchronized state machine and
+        // dropping an intermediate emission could drop the very edge that stops the ring.
+        // FlashCallService.start is called on the ringing edges only; the service stops itself when
+        // activeCall goes null, and it de-duplicates repeated starts internally.
+        callRinger = FlashCallRinger(appContext)
+        callRingJob = appScope.launch {
+            callCoordinator.activeCall.collect { state ->
+                callRinger?.onCallState(state)
+                if (state?.state == FlashCallState.DIALING || state?.state == FlashCallState.RINGING) {
+                    FlashCallService.start(appContext)
+                }
+            }
+        }
+
         // MainActivity.onStart owns foreground-service launch while the app is user-visible.
         // Starting it here after asynchronous engine setup can violate Android 12+ background-start rules.
         return composite!!
@@ -834,11 +993,14 @@ object DiscoveryEngineHolder {
         gate: AutoConnectGate,
     ) {
         val endpoints = engine.discoveredEndpoints.value
-        val active = networkImpl.activeSessions.value
         for (ep in endpoints) {
             val id = ep.deviceId.value
             if (id == localId) continue
-            val hasSession = active.containsKey(ep.deviceId)
+            // ERROR-031: ask whether the peer's session is actually carrying traffic, not whether the
+            // registry happens to hold one. A session whose socket died without its watchdog noticing
+            // used to suppress this sweep indefinitely — the dot stayed Online, every send "succeeded"
+            // into the dead socket, and only a force-stop cleared it.
+            val hasSession = networkImpl.hasLiveSession(id)
             // ERROR-023 dedup: if the #18 reconnect engine is already backoff-dialing this peer
             // right now, don't fire a redundant dial from the sweep at the same moment — two
             // simultaneous outbound dials to the same peer only widen the glare window.
@@ -855,26 +1017,62 @@ object DiscoveryEngineHolder {
     }
 
     /**
-     * Screen-on / user-present re-arm, invoked by [FlashBackgroundService]'s screen receiver.
+     * Screen-on / user-present re-arm, driven by the engine-scoped [screenReceiver].
      *
      * Screen-off + Doze can silently drop WebSocket sessions and stall mDNS reception even with
-     * the service's wake/Wi-Fi locks held. When the screen returns we (1) restart discovery
+     * the engine's wake/Wi-Fi locks held. When the screen returns we (1) restart discovery
      * browsing so returning peers are re-found, and (2) force an immediate auto-connect sweep so
      * discovered/known peers are re-dialed at once rather than after the next periodic tick.
+     *
+     * It also retries a foreground-service promotion that was previously refused (ERROR-031 / D7).
+     * That retry is best-effort by nature: a runtime-registered `ACTION_SCREEN_ON` is **not** one of
+     * Android 12+'s foreground-service-start exemptions, so the attempt only succeeds when the app
+     * holds another one — in practice the battery-optimisation exemption, which is why Settings now
+     * surfaces it. `startAsForeground()` already swallows a refusal, so a failed retry costs nothing
+     * and the flag stays armed for the next opportunity.
      *
      * Safe to call when the engine has not started (no-op).
      */
     fun onScreenOn() {
-        val engine = composite ?: return
-        val networkImpl = network ?: return
-        val gate = autoConnectGate ?: return
-        val localId = localDeviceId ?: return
+        appContextRef?.let { FlashBackgroundService.retryPromotionIfRefused(it) }
+        reArm("Screen-on")
+    }
+
+    /**
+     * Manual re-arm behind the conversation's connection-banner Retry button.
+     *
+     * Same work as [onScreenOn]: the reasons a peer looks offline are identical whether the screen
+     * just came back or the user got tired of waiting — a stalled browse, or a dropped session that
+     * the backoff engine has not re-dialed yet. `FlashNetwork.retryConnection()` is not the entry
+     * point here: the WS mesh implementation inherits its `false` default (only the legacy LAN stack
+     * overrides it), so it would report "nothing to retry" for every peer.
+     *
+     * @return false when the engine has not booted yet, so the caller can tell the user that
+     *   tapping again is pointless rather than silently doing nothing.
+     */
+    fun reconnectNow(): Boolean = reArm("Manual retry")
+
+    /**
+     * Shared body of [onScreenOn] / [reconnectNow]; [reason] only tags the log line.
+     *
+     * Uses restartDiscovery(), not startDiscovery(): the latter delegates to the transport's
+     * idempotent startBrowsing(), which returns immediately while the transport still *believes*
+     * it is browsing — precisely the state a Doze-stalled radio is in. That made this re-arm a
+     * silent no-op exactly when it was needed. restartDiscovery() tears the browse down and
+     * re-arms it, so the platform re-delivers every service still present.
+     */
+    private fun reArm(reason: String): Boolean {
+        val engine = composite ?: return false
+        val networkImpl = network ?: return false
+        val gate = autoConnectGate ?: return false
+        val localId = localDeviceId ?: return false
         appScope.launch {
-            Log.i(TAG_DISCOVERY, "Screen-on: restarting discovery browsing and forcing auto-connect sweep")
-            runCatching { engine.startDiscovery() }
-                .onFailure { Log.w(TAG_DISCOVERY, "Screen-on discovery restart failed", it) }
+            Log.i(TAG_DISCOVERY, "$reason: restarting discovery browsing and forcing auto-connect sweep")
+            runCatching { engine.restartDiscovery() }
+                .onFailure { Log.w(TAG_DISCOVERY, "$reason discovery restart failed", it) }
             runAutoConnectSweep(engine, networkImpl, localId, gate)
         }
+        return true
     }
 
     /**
@@ -1030,6 +1228,27 @@ object DiscoveryEngineHolder {
                         incomingByPeer.getOrPut(pid) {
                             java.util.Collections.newSetFromMap(ConcurrentHashMap())
                         }.add(frame.transferId)
+                    }
+                    // A re-offer of a transfer this device already accepted is a RETRY, not a new
+                    // offer: the previous attempt's session was torn down with the transport (see
+                    // cleanupInbound), so the sender's relaunch arrives as a fresh FILE_START and
+                    // parks on the #5 acceptance gate with a deferred sink — every chunk dropped,
+                    // no ACKs, the row frozen. The user already said yes, so resolve the sink
+                    // immediately instead of prompting a second time. (Cancelled is excluded by
+                    // isResumableInboundRetry: a declined offer is never auto-accepted.)
+                    if (transferImpl.isResumableInboundRetry(frame.transferId)) {
+                        val opened = receivePipeline.acceptSession(frame.transferId)
+                        transferImpl.onIncomingStarted(
+                            transferId = frame.transferId,
+                            fileId = frame.fileId,
+                            fileName = frame.fileName,
+                            totalBytes = frame.totalBytes,
+                            peerName = peerLabel,
+                            peerDeviceId = peerDeviceId,
+                            localPath = receivedPaths[frame.transferId],
+                        )
+                        Log.i(TAG_TRANSFER, "Re-offer of accepted transfer '${frame.fileName}' from $peerLabel — resuming (sinkResolved=$opened)")
+                        continue
                     }
                     // #5: surface as a pending OFFER (Offered state, no sink/file, no chat bubble
                     // yet). Acceptance (incomingControl ACTION_ACCEPT) resolves the sink, flips it
@@ -1188,6 +1407,84 @@ object DiscoveryEngineHolder {
         }
     }
 
+    /**
+     * Acquires the CPU + Wi-Fi power locks for the engine's lifetime. Idempotent: both locks are
+     * non-reference-counted, and an already-held lock is left alone, so a second [ensureStarted]
+     * (or a service restart) cannot stack acquisitions. See [wakeLock] / [wifiLock].
+     */
+    private fun acquirePowerLocks(context: Context) {
+        if (wakeLock?.isHeld != true) {
+            wakeLock = runCatching {
+                context.getSystemService(PowerManager::class.java)
+                    .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKE_LOCK_TAG)
+                    .apply {
+                        setReferenceCounted(false)
+                        acquire()
+                    }
+            }.onFailure { Log.w(TAG_WS, "Wake lock unavailable", it) }.getOrNull()
+        }
+        if (wifiLock?.isHeld != true) {
+            val wifiMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+            } else {
+                @Suppress("DEPRECATION")
+                WifiManager.WIFI_MODE_FULL_HIGH_PERF
+            }
+            wifiLock = runCatching {
+                context.getSystemService(WifiManager::class.java)
+                    .createWifiLock(wifiMode, WIFI_LOCK_TAG)
+                    .apply {
+                        setReferenceCounted(false)
+                        acquire()
+                    }
+            }.onFailure { Log.w(TAG_WS, "Wi-Fi lock unavailable", it) }.getOrNull()
+        }
+        Log.i(TAG_WS, "Power locks held for mesh: wake=${wakeLock?.isHeld == true} wifi=${wifiLock?.isHeld == true}")
+    }
+
+    /** Releases both power locks. Only [stopAll] calls this — a stopping service must not. */
+    private fun releasePowerLocks() {
+        runCatching { wakeLock?.let { if (it.isHeld) it.release() } }
+        wakeLock = null
+        runCatching { wifiLock?.let { if (it.isHeld) it.release() } }
+        wifiLock = null
+    }
+
+    /**
+     * Registers the screen-on / user-present re-arm for the engine's lifetime. Idempotent: an
+     * already-registered receiver is left alone, so a second [ensureStarted] (or a service restart)
+     * cannot stack registrations. See [screenReceiver] for why this is not the service's job.
+     */
+    private fun registerScreenReceiver(context: Context) {
+        if (screenReceiver != null) return
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                when (intent?.action) {
+                    Intent.ACTION_SCREEN_ON, Intent.ACTION_USER_PRESENT -> {
+                        Log.i(TAG_WS, "Screen-on (${intent.action}) — re-arming discovery + auto-connect")
+                        onScreenOn()
+                    }
+                }
+            }
+        }
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_USER_PRESENT)
+        }
+        // NOT_EXPORTED: both actions are protected system broadcasts, and API 34+ requires an
+        // explicit export flag for every runtime registration.
+        runCatching { ContextCompat.registerReceiver(context, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED) }
+            .onSuccess { screenReceiver = receiver }
+            .onFailure { Log.w(TAG_WS, "Screen-on receiver registration failed", it) }
+    }
+
+    /** Counterpart of [registerScreenReceiver]; only [stopAll] calls it. */
+    private fun unregisterScreenReceiver() {
+        val receiver = screenReceiver ?: return
+        screenReceiver = null
+        runCatching { appContextRef?.unregisterReceiver(receiver) }
+    }
+
     /** Stops advertising/browsing, sessions, and releases the ephemeral port. Idempotent. */
     suspend fun stopAll() = lifecycleMutex.withLock {
         val currentEngine: CompositeDiscovery?
@@ -1206,6 +1503,12 @@ object DiscoveryEngineHolder {
         binderJob = null
         autoConnectJob?.cancel()
         autoConnectJob = null
+        // Silence the ring before the scope dies: appScope.cancel() below kills the collector, so
+        // nothing would ever deliver the stopping edge, and a MediaPlayer nobody holds keeps looping.
+        callRingJob?.cancel()
+        callRingJob = null
+        callRinger?.stop()
+        callRinger = null
         autoConnectGate = null
         localDeviceId = null
         dataServer?.stop()
@@ -1215,12 +1518,20 @@ object DiscoveryEngineHolder {
         // #16: cancel every collector/session job launched on appScope (incoming/outgoing control,
         // activeSessions, per-session readers, auto-connect). ensureStarted recreates the scope.
         appScope.cancel()
+        // Nothing left to keep awake, and nothing left to re-arm: this is the only place the
+        // engine's power locks are dropped and its screen-on receiver is torn down.
+        unregisterScreenReceiver()
+        releasePowerLocks()
+        appContextRef = null
     }
 
     const val TOTAL_TEST_BYTES: Long = 10L * 1024 * 1024
 
     /** Cadence of the background auto-connect sweep; per-peer attempts are gated by [AutoConnectGate]. */
     private const val AUTO_CONNECT_SWEEP_MS = 5_000L
+
+    private const val WAKE_LOCK_TAG = "flash:ws-mesh"
+    private const val WIFI_LOCK_TAG = "flash:ws-mesh-wifi"
 }
 
 /**

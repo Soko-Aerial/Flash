@@ -504,6 +504,19 @@ private class Wiring(
                     peerDeviceId?.let { pid ->
                         incomingByPeer.getOrPut(pid) { java.util.Collections.newSetFromMap(ConcurrentHashMap()) }.add(frame.transferId)
                     }
+                    // A re-offer of a transfer this device already accepted is a RETRY: the previous
+                    // attempt's session died with the transport, so the sender's relaunch arrives as
+                    // a fresh FILE_START and would park on the acceptance gate with a deferred sink —
+                    // chunks dropped, no ACKs, progress frozen. Resolve the sink instead of asking
+                    // again. Cancelled stays excluded: a declined offer is never auto-accepted.
+                    if (transferImpl.isResumableInboundRetry(frame.transferId)) {
+                        receivePipeline.acceptSession(frame.transferId)
+                        transferImpl.onIncomingStarted(
+                            frame.transferId, frame.fileId, frame.fileName, frame.totalBytes,
+                            peerLabel, peerDeviceId, receivedPaths[frame.transferId],
+                        )
+                        continue
+                    }
                     transferImpl.onIncomingOffered(frame.transferId, frame.fileId, frame.fileName, frame.totalBytes, peerLabel, peerDeviceId)
                     if (config.autoAcceptIncoming) acceptOffer?.invoke(frame.transferId)
                 }
@@ -657,11 +670,14 @@ private class Wiring(
     }
 
     private fun runAutoConnectSweep(engine: CompositeDiscovery, networkImpl: WsFlashNetwork, localId: String, gate: com.transfer.flash.core.engine.internal.AutoConnectGate) {
-        val active = networkImpl.activeSessions.value
         for (ep in engine.discoveredEndpoints.value) {
             val id = ep.deviceId.value
             if (id == localId) continue
-            if (!gate.tryBegin(id, active.containsKey(ep.deviceId), System.currentTimeMillis())) continue
+            // ERROR-031: "has a session" must mean a session that is demonstrably carrying traffic.
+            // Gating on map presence alone let a session whose socket had died — without its watchdog
+            // noticing — suppress the very sweep that would have replaced it, so the peer stayed
+            // Online-but-unreachable until the app was force-stopped.
+            if (!gate.tryBegin(id, networkImpl.hasLiveSession(id), System.currentTimeMillis())) continue
             scope.launch {
                 runCatching { networkImpl.connectManual(ep.hostAddress, ep.port) }
                 gate.end(id)

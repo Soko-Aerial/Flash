@@ -636,21 +636,34 @@ A future feature genuinely needs a Room-backed trust store: reintroduce it as an
 
 ### Decision
 1. Add 1:1 voice/video calling as two new modules: `:core:calling` (headless call engine,
-   `explicitApi()`, compileSdk 35 per ADR-022) and `:ui:calling` (Compose call screen,
-   UI-050, see `docs/ui/calling-ui.md`).
-2. Media transport: WebRTC via `com.shepeliev:webrtc-kmp:0.125.11` (M125, MIT; wraps
+   `explicitApi()`, compileSdk 35 per ADR-022) and `:ui:callui` (Compose call screen,
+   UI-050, see `docs/ui/calling-ui.md`). Both publish, as `core-calling` and `ui-callui`. The
+   surface is two interfaces - `FlashCalling` (control plus the two signaling seams) and
+   `FlashCallMedia` (read-only tracks and live quality metrics) - enumerated in
+   `docs/architecture/public-api.md` SS7 and SS13.
+2. `:core:calling` sits **outside** the `:core:engine` facade: `FlashEngine` has no `calls`
+   property and `:core:engine` has no dependency on calling. A call needs a signaling channel
+   the host already owns, runtime mic/camera grants, and a `microphone|camera` foreground
+   service only an app's own manifest can declare - none of which `Flash.create` can supply.
+   It also keeps ~30 MB of native WebRTC per ABI out of every app that never calls.
+3. Media transport: WebRTC via `com.shepeliev:webrtc-kmp:0.125.11` (M125, MIT; wraps
    `io.github.webrtc-sdk:android:125.6422.06.1`, BSD-3). Audio + video tracks over a
    `PeerConnection` with **empty `iceServers`** - Flash is LAN/hotspot-only, so host
    candidates suffice; no STUN/TURN is deployed or required.
-3. Signaling: SDP offers/answers and ICE candidates ride the existing WebSocket mesh as
+4. Signaling: SDP offers/answers and ICE candidates ride the existing WebSocket mesh as
    text frames under a new `FLASH_CALL` prefix (see `docs/protocol.md` Calling section),
-   encoded with `FlashTextFraming` exactly like chat/pairing frames. ICE candidates are
-   trickled with buffering until the remote description is set (webrtc-kmp sample pattern).
-4. Call lifecycle: a `CallCoordinator` (app-side holder, mirroring the
-   `DiscoveryEngineHolder` pattern) owns one `CallSession` at a time; the state machine is
-   dialing -> ringing -> connecting -> active -> ended/failed. Calls are only allowed to
-   paired/trusted peers (AGENTS.md SS19 security rule).
-5. Android compliance: the call runs inside a dedicated foreground service with
+   encoded with `FlashTextFraming` exactly like chat/pairing frames, with the SDP body
+   **base64-encoded** (RFC 4648) so no escaping or trimming artifact can corrupt it
+   (ERROR-024); decode accepts raw text too, for builds that predate the change. ICE
+   candidates are trickled with buffering until the remote description is set (webrtc-kmp
+   sample pattern).
+5. Call lifecycle: `CallCoordinator`, in `:core:calling`, is the `FlashCalling`
+   implementation - process-level, mirroring the `DiscoveryEngineHolder` holder pattern - and
+   owns one `FlashCallSession` at a time. States are DIALING -> RINGING -> CONNECTING ->
+   ACTIVE -> ENDED, where a failure is an `endReason` on ENDED rather than a separate state,
+   so the UI has one terminal branch to render. A second invite arriving while a call is live
+   is auto-declined "busy" rather than queued, so the other caller's UI never hangs on DIALING.
+6. Android compliance: the call runs inside a dedicated foreground service with
    `microphone|camera` types, started **while the app is foreground** (user taps call /
    answers from the incoming-call notification) - the only legal way to start a
    microphone/camera FGS under the while-in-use restrictions. `Notification.CallStyle`
@@ -658,8 +671,34 @@ A future feature genuinely needs a Room-backed trust store: reintroduce it as an
    FGS notification. CAMERA + RECORD_AUDIO runtime permissions are requested at call time
    (webrtc-kmp throws `CameraPermissionException`/`RecordAudioPermissionException` from
    `getUserMedia` if missing).
-6. Audio routing (speaker/earpiece) is app responsibility (webrtc-kmp ships no
-   AudioManager): v1 toggles `AudioManager` speakerphone on/off; no Bluetooth picker.
+7. Audio routing is the app's job, not the module's (webrtc-kmp ships no `AudioManager`
+   policy), and it is load-bearing rather than cosmetic: `FlashCallAudioRouter` in `:app`
+   takes voice-communication focus, then sets `MODE_IN_COMMUNICATION`. Without the mode the
+   platform treats the call as media playback - no hardware AEC on capture, a long playout
+   buffer, and the earpiece is not even a routing candidate. Focus is requested *before* the
+   mode because from Android 12 an app owning neither focus nor a telecom call may not set it.
+   Routing priority with the speaker off is Bluetooth SCO -> BLE headset -> hearing aid -> USB
+   -> wired -> earpiece, re-applied from an `AudioDeviceCallback` so a mid-call hot-plug moves
+   the audio. Bluetooth is version-split: API 31+ uses `setCommunicationDevice` (which brings
+   SCO up as a side effect), below 31 SCO is started by hand and `setBluetoothScoOn(true)` is
+   deferred until the headset broadcasts CONNECTED - setting it early is the classic silent-
+   Bluetooth bug. The router is attached for every state except RINGING (exclusive focus would
+   silence the incoming-call ringtone) and ENDED, and every platform call is best-effort:
+   `MODIFY_AUDIO_SETTINGS` is required and OEM HALs refuse mode changes in undocumented states,
+   so a call with mediocre routing must still beat a crash.
+8. Latency and quality knobs, all of them chosen because the wrapper exposes no API for them:
+   the low-latency audio device module is configured once before any `PeerConnectionFactory`
+   exists (after that the default ADM is permanent for the process); SDP is rewritten
+   symmetrically on local *and* remote descriptions for Opus `ptime=10` + `minptime=10`, pinned
+   inband FEC and DTX off, plus `x-google-start/min/max-bitrate` at 2500/600/8000 kbps; capture
+   is requested at 1920x1080@30 with `DegradationPreference.MAINTAIN_FRAMERATE` and an explicit
+   sender bitrate window, so a constrained link sheds *resolution* (1080p -> 720p -> 540p) and
+   keeps 30 fps; `getStats()` is sampled once a second and published through
+   `FlashCallMedia.stats` for the in-call quality badge.
+9. Call log rows: when a session terminates the coordinator emits a `FlashCallLogEntry` through
+   an `onCallLog` callback and the host writes the chat row itself. Both devices already hold
+   every field when a call ends, so each derives its own row - no new wire frame, and no
+   `core:calling` -> `core:messaging` dependency (the ADR-024 inversion).
 
 ### Context
 Flash's chat and file transfer already run over the WS mesh (ADR-016). Calling is the
@@ -690,14 +729,33 @@ case where WebRTC is the right tool and WS is only the signaling channel.
   265195801): if `:app` dexing fails, add `android.useFullClasspathForDexingTransform=true`
   to `gradle.properties`.
 - SDP offers are ~4-8 KB text frames - fits the WS text frame path fine (chat already
-  sends multi-KB messages).
-- The parallel `handleInboundText` implementations (app `DiscoveryEngineHolder` and
-  `core:engine` `Flash.kt`) both gain a `FLASH_CALL` branch and must stay in sync, same
-  as the existing chat/pairing frames.
+  sends multi-KB messages), and base64 grows them by a third with no protocol change.
+- Only `:app` routes `FLASH_CALL` frames: `DiscoveryEngineHolder.handleInboundText` tries
+  `CallFrameCodec.decode` first (calling is the most latency-sensitive frame class) and hands
+  the text to `CallCoordinator.onInboundText`. `:core:engine`'s own `handleInboundText` has
+  **no** call branch and cannot have one - it does not depend on calling - so a library consumer
+  wiring calling on top of `Flash.create` must chain `onInboundText` itself, which is exactly
+  what that method's boolean return is for.
+- `FlashCallMedia` exposes webrtc-kmp's `VideoTrack` directly. This is the one place Flash
+  lets a third-party type through a published boundary: a renderer has to be handed the real
+  track, and any wrapper would have to expose it again to be useful. `:core:calling` therefore
+  `api()`s webrtc-kmp and `:ui:callui` `api()`s `:core:calling`, so both the type and
+  `SurfaceViewRenderer` resolve for a downstream consumer.
+- **Not implemented: the trust gate.** This ADR originally required calls only to
+  paired/trusted peers. Nothing in the shipped path checks trust - the call buttons live in the
+  conversation header, and inbound `FLASH_CALL` frames are routed for any peer with a live WS
+  session. The practical bound today is "reachable on the LAN and connected", not "paired".
+  Adding it means gating `startCall` and the inbound invite on `FlashTrustStore`, which
+  `:core:calling` cannot reach without a new port; until then the gap is real and stated here
+  rather than implied to be closed.
 
 ### Revisit when
 - Wi-Fi Direct transport lands: verify host-candidate ICE still connects over the P2P
   group interface (expected yes; both peers are on-link).
+- The trust gate is closed: decide whether `:core:calling` takes a trust port (a
+  `(peerId) -> Boolean` predicate consulted by `startCall` and the inbound invite) or whether
+  gating stays the host's job. A port keeps the policy testable on the JVM; leaving it to the
+  host keeps the module free of a security dependency.
 - Remote-relay or internet calling is ever considered: STUN/TURN and a rendezvous server
   become mandatory; this ADR's LAN-only ICE assumption breaks.
 - Group calls: multi-peer topology (mesh vs SFU) needs its own ADR.

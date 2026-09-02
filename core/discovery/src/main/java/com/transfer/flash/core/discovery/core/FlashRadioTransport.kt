@@ -36,6 +36,10 @@ public data class FlashAdvertisedIdentity(
  * Semantics every implementation MUST honor:
  * - [Found] exactly once per peer per browsing session, then [Updated] on any
  *   address/name/version change.
+ * - [Presence] whenever the radio re-confirms an ALREADY-known peer with no
+ *   field change. Emitting this is MANDATORY for any transport whose consumer
+ *   ages peers out on a TTL: without it a live-but-quiet peer looks departed
+ *   (see [Presence] KDoc).
  * - [Lost] when the radio reports loss AND when the presence sweeper ages an
  *   endpoint out (plan C3.5) — consumers must treat both identically.
  * - Events are hot flows; subscribers see only live traffic (no replay).
@@ -43,7 +47,30 @@ public data class FlashAdvertisedIdentity(
 public sealed interface FlashTransportEvent {
     public data class Found(val endpoint: FlashDiscoveredEndpoint) : FlashTransportEvent
     public data class Updated(val endpoint: FlashDiscoveredEndpoint) : FlashTransportEvent
+
+    /**
+     * Liveness heartbeat: this peer is STILL here and nothing about it changed.
+     *
+     * Exists because presence and change are different signals. A directory
+     * dedups repeated sightings down to "no change" and therefore emits neither
+     * [Found] nor [Updated] — but a downstream TTL sweeper reads that silence as
+     * "gone" and evicts a perfectly healthy peer (the historical bug: a device
+     * appeared once, then vanished ~grace-window later and never returned,
+     * because every later sighting also deduped to no-change).
+     *
+     * Consumers MUST treat this as a presence refresh only: bump `lastSeenAt`,
+     * do NOT re-emit it as a user-visible transition. A consumer that has
+     * already dropped the peer MAY treat it as a re-[Found] to self-heal.
+     */
+    public data class Presence(val endpoint: FlashDiscoveredEndpoint) : FlashTransportEvent
     public data class Lost(val deviceId: FlashDeviceId, val serviceName: String?) : FlashTransportEvent
+
+    /**
+     * @param browsing whether THIS transport is currently browsing. Reported
+     *   truthfully (an advertising-only transport reports `false`) so consumers
+     *   can watchdog a radio that gave up; the human-readable [message] carries
+     *   the advertising detail.
+     */
     public data class StateChanged(val browsing: Boolean, val message: String) : FlashTransportEvent
 }
 
@@ -71,6 +98,19 @@ public interface FlashRadioTransport {
      * start failures restart with capped retries (plan C3.3).
      */
     public suspend fun startBrowsing(): FlashResult<Unit>
+
+    /**
+     * Forces a browse restart even when this transport believes it is already
+     * browsing. [startBrowsing] is idempotent by design (a no-op while active),
+     * which makes it useless for recovery: a radio whose browse died silently —
+     * Wi-Fi ↔ hotspot transition, doze, an OEM mDNS stack that stopped
+     * delivering — still reports itself as browsing and ignores the restart.
+     * Callers use this on a connectivity change / screen-on / watchdog tick.
+     *
+     * Default implementation delegates to [startBrowsing] for transports with
+     * no forced-restart concept.
+     */
+    public suspend fun restartBrowsing(): FlashResult<Unit> = startBrowsing()
 
     /** Stops advertising and browsing and releases radio resources. Idempotent. */
     public suspend fun stop(): FlashResult<Unit>
