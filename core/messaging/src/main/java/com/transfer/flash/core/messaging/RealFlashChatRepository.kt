@@ -2,6 +2,8 @@ package com.transfer.flash.core.messaging
 
 import com.transfer.flash.core.common.model.FlashPeerPresence
 import com.transfer.flash.core.messaging.model.FlashAttachmentProgress
+import com.transfer.flash.core.messaging.model.FlashCallEventKind
+import com.transfer.flash.core.messaging.model.FlashCallEventUi
 import com.transfer.flash.core.messaging.model.FlashChatHeaderUiState
 import com.transfer.flash.core.messaging.model.FlashChatListItemUi
 import com.transfer.flash.core.messaging.model.FlashChatListUiState
@@ -86,7 +88,8 @@ public class RealFlashChatRepository(
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     /**
      * Live set of peer device ids that currently have an active session (from the network layer).
-     * Drives the per-conversation online indicator. Defaults to a never-online flow for tests.
+     * Drives the per-conversation presence indicator, via the graced [displayedPresence].
+     * Defaults to a never-online flow for tests.
      */
     private val onlinePeerIds: Flow<Set<String>> = MutableStateFlow(emptySet()),
     /**
@@ -157,15 +160,35 @@ public class RealFlashChatRepository(
             .filterValues { it.isNotEmpty() }
     }
 
+    /**
+     * Presence as the UI shows it: [onlinePeerIds] split into Online / Connecting by a per-departure
+     * grace window (ERROR-026, ERROR-031). MUST be declared above the init block below, for the
+     * reason recorded on [drainMutex].
+     *
+     * The raw flow is the live WebSocket session set, so a session that drops and is redialed a
+     * second later would make the peer blink Offline → Online. Screen-off / Doze does exactly that,
+     * and the blink reads as "the app lost the device" while recovery is already under way. So a
+     * departing peer spends [OFFLINE_HOLD_MS] as *Connecting* first: a genuine departure is still
+     * honest (it merely arrives that much late) and an in-window reconnect is invisible, but the UI
+     * never claims a usable link it does not have. See [withReconnectGrace] for why the previous
+     * `transformLatest` hold could latch the dot Online with an empty session set.
+     *
+     * Presentation only. Send gating stays on the raw session set inside [MessageTransportSink] and
+     * call gating in the host's call coordinator, so a held-open dot can never make us route a frame
+     * into a socket that no longer exists: the send simply fails and the message waits in the outbox.
+     */
+    private val displayedPresence: Flow<PresenceSnapshot> =
+        onlinePeerIds.withReconnectGrace(OFFLINE_HOLD_MS)
+
     init {
         // Observe conversation list from Room, joined with live session presence + unread counts.
         scope.launch(ioDispatcher) {
             combine(
                 conversationDao.observeAll(),
-                onlinePeerIds,
+                displayedPresence,
                 messageDao.observeUnreadCounts(localDeviceId),
                 messageDao.observeLatestPreviews(),
-            ) { entities, online, unreadRows, previewRows ->
+            ) { entities, peers, unreadRows, previewRows ->
                 val unreadByConversation = unreadRows.associate { it.conversationId to it.unread }
                 val previewByConversation = previewRows.associate { it.conversationId to it.previewText }
                 entities.filter { !it.archived }.map { entity ->
@@ -179,14 +202,16 @@ public class RealFlashChatRepository(
                         avatarInitials = computeInitials(displayTitle),
                         // Real last-message text so the row is informative AND searchable (global
                         // search matches title OR previewText). Empty threads fall back to a hint.
-                        previewText = previewByConversation[entity.id]?.ifBlank { null }
+                        previewText = previewLabel(previewByConversation[entity.id])
                             ?: "Tap to view conversation",
                         timestamp = formatTimestamp(entity.sortOrder),
                         unreadCount = unreadByConversation[entity.id] ?: 0,
-                        presence = if (entity.id in online) {
-                            FlashPeerPresence.Online
-                        } else {
-                            FlashPeerPresence.Offline
+                        // Three honest states (ERROR-031): a peer whose session just dropped reads
+                        // as Connecting for the grace window rather than as a link we can use.
+                        presence = when {
+                            entity.id in peers.online -> FlashPeerPresence.Online
+                            entity.id in peers.connecting -> FlashPeerPresence.Connecting
+                            else -> FlashPeerPresence.Offline
                         },
                         isGroup = entity.isGroup,
                         isPinned = entity.pinned,
@@ -206,6 +231,35 @@ public class RealFlashChatRepository(
         // Background outbox drain worker
         scope.launch(ioDispatcher) {
             drainOutboxLoop()
+        }
+
+        // Stamp the on-disk path of every finished attachment onto its row. Live progress is
+        // in-memory only, so without this a restart strips the received file off the row and every
+        // photo, clip and voice note in history falls back to an undecodable placeholder — the
+        // attachment is on disk, but nothing remembers where.
+        scope.launch(ioDispatcher) {
+            // Coroutine-confined, so no synchronisation: one entry per (transfer, path) actually
+            // written. Progress emits many times a second and the DAO write is a no-op after the
+            // first, but a suspending DB round-trip per tick is not.
+            val stamped = HashSet<String>()
+            attachmentProgress.collect { byTransfer ->
+                byTransfer.forEach { (transferId, live) ->
+                    if (live.status != FlashFileTransferStatus.Downloaded) return@forEach
+                    val path = live.localPath?.ifBlank { null } ?: return@forEach
+                    if ("$transferId|$path" in stamped) return@forEach
+                    // A failed write leaves the row unstamped — the placeholder outcome it already
+                    // had — and must not cancel the collector for every later transfer.
+                    val written = runCatching {
+                        val changed = messageDao.updateAttachmentPath(transferId, path)
+                        // 0 rows changed is ambiguous: the row may already hold this path, or may not
+                        // exist yet (a completion that raced its own ingestion). Only the first is
+                        // done, so only the first may be cached — otherwise that transfer would
+                        // never be stamped at all.
+                        changed > 0 || messageDao.existsAttachment(transferId)
+                    }.getOrDefault(false)
+                    if (written) stamped.add("$transferId|$path")
+                }
+            }
         }
     }
 
@@ -265,7 +319,7 @@ public class RealFlashChatRepository(
                         replyTo = replyTo,
                         reactions = reactions,
                     )
-                    applyAttachment(base, entity, progressByTransfer)
+                    applyCallEvent(applyAttachment(base, entity, progressByTransfer), entity)
                 }
                 // entities are ordered newest-first, so the head is the latest message. Opening (or
                 // receiving while open) marks the thread read up to it, clearing the unread badge.
@@ -284,16 +338,24 @@ public class RealFlashChatRepository(
             // Outer combine (3 flows): join live presence + typing onto the header (#11).
             combine(
                 contentFlow,
-                onlinePeerIds,
+                displayedPresence,
                 typingFlow,
-            ) { content, online, typingByConversation ->
+            ) { content, peers, typingByConversation ->
                 // conversationId is the peer's device id; show the friendly name, not the UUID.
                 val title = peerNameResolver(conversationId)?.ifBlank { null } ?: conversationId
-                val isOnline = conversationId in online
+                val isOnline = conversationId in peers.online
+                val isConnecting = !isOnline && conversationId in peers.connecting
                 val typingNames = typingByConversation[conversationId].orEmpty()
                 val presence = when {
-                    typingNames.isNotEmpty() -> FlashPeerPresence.Typing
+                    // A typing indicator sticks until the peer clears it, so a session that died
+                    // mid-compose would otherwise leave "typing…" on screen forever. It may only
+                    // outrank a peer we still believe is reachable.
+                    typingNames.isNotEmpty() && (isOnline || isConnecting) -> FlashPeerPresence.Typing
                     isOnline -> FlashPeerPresence.Online
+                    // ERROR-031: the reconnect window is its own state. The header renders it as
+                    // "Connecting…" and the banner agrees, because resolveHealth tests Connecting
+                    // ahead of the (necessarily) Unknown transport below.
+                    isConnecting -> FlashPeerPresence.Connecting
                     else -> FlashPeerPresence.Offline
                 }
                 FlashConversationUiState(
@@ -303,7 +365,8 @@ public class RealFlashChatRepository(
                         presence = presence,
                         // Without a transport the header's resolveHealth() short-circuits Unknown ->
                         // Offline and shows "Searching for devices…" even when the peer has a live
-                        // session. An active session is our LAN/WS mesh link, so stamp Lan when online.
+                        // session. An active session is our LAN/WS mesh link, so stamp Lan when
+                        // online — and only when online: a peer mid-reconnect has no link to name.
                         transport = if (isOnline) {
                             FlashNetworkTransport.Lan
                         } else {
@@ -576,6 +639,65 @@ public class RealFlashChatRepository(
     }
 
     /**
+     * Records a finished voice/video call as a row in the peer's thread (UI-050). The host calls
+     * this once per terminated call, from `CallCoordinator.onCallLog`.
+     *
+     * Arguments are primitives because `core:calling` owns no messaging types and this module knows
+     * nothing about WebRTC (port/adapter inversion, ADR-024); the row's kind is derived here.
+     *
+     * [callId] doubles as the row's `localId`, and [MessageDao.insert] is IGNORE-on-conflict, so a
+     * call whose end is observed twice still produces exactly one row.
+     *
+     * Threaded under [peerDeviceId] like every other row. An outgoing call is attributed to this
+     * device so it renders on the right; an incoming one to the peer so it renders on the left, and
+     * so a missed call raises the thread's unread badge exactly like an unread message.
+     */
+    public fun recordCallEvent(
+        peerDeviceId: String,
+        callId: String,
+        peerName: String?,
+        outgoing: Boolean,
+        video: Boolean,
+        durationMs: Long,
+        endedAt: Long,
+    ) {
+        if (peerDeviceId.isBlank() || callId.isBlank()) return
+        // durationMs is zero unless media actually flowed, which is what separates a real
+        // conversation from a decline or an unanswered ring.
+        val connected = durationMs > 0L
+        val kind = when {
+            outgoing && connected -> FlashCallEventKind.Outgoing
+            outgoing -> FlashCallEventKind.Unanswered
+            connected -> FlashCallEventKind.Incoming
+            else -> FlashCallEventKind.Missed
+        }
+        val at = if (endedAt > 0L) endedAt else System.currentTimeMillis()
+        val resolvedPeerName = peerNameResolver(peerDeviceId)?.ifBlank { null }
+            ?: peerName?.ifBlank { null }
+        scope.launch(ioDispatcher) {
+            messageDao.insert(
+                MessageEntity(
+                    localId = callId,
+                    conversationId = peerDeviceId,
+                    senderId = if (outgoing) localDeviceId else peerDeviceId,
+                    senderName = if (outgoing) localDisplayName else resolvedPeerName,
+                    text = encodeCallMeta(kind, video, durationMs),
+                    sentAt = at,
+                    status = "DELIVERED",
+                ),
+            )
+            conversationDao.upsert(
+                ConversationEntity(
+                    id = peerDeviceId,
+                    title = resolvedPeerName ?: peerDeviceId,
+                    isGroup = false,
+                    sortOrder = at,
+                ),
+            )
+        }
+    }
+
+    /**
      * Ingests an inbound wire frame from the network layer.
      */
     public suspend fun onInboundWireFrame(frame: MessageWireFrame) {
@@ -642,6 +764,14 @@ public class RealFlashChatRepository(
                     ),
                 )
                 messageDao.updateStatus(frame.messageId, "DELIVERED")
+                // ERROR-031: this is the outbox row's commit point. The drain keeps the row alive
+                // through a successful socket write precisely so that a frame the kernel accepted
+                // but the peer never got is resent; the receipt is the only proof the peer actually
+                // has the message, so it is the only thing allowed to retire the row. Receipts are
+                // keyed by the author's own `localId` (the receiver echoes `frame.localId` back),
+                // which is the outbox row's primary key — no lookup needed. Idempotent: a replayed
+                // receipt deletes nothing the second time.
+                outboxDao.delete(frame.messageId)
             }
 
             is MessageWireFrame.ReadReceipt -> {
@@ -726,24 +856,43 @@ public class RealFlashChatRepository(
                     replyToId = message.replyToId,
                     replyToPreview = message.replyToPreview,
                 )
-                val success = sink.send(wireFrame.conversationId, wireFrame)
-                if (success) {
+                // ERROR-031: a row's life ends at PEER ACKNOWLEDGEMENT, not at socket write. A write
+                // into a half-open socket succeeds — the kernel buffers the bytes and no error ever
+                // surfaces — so deleting the row on that signal made every frame lost that way
+                // permanently unrecoverable: the bubble ticked once and the message never arrived,
+                // and force-stopping the app was the only way to get a working session back. The
+                // give-up budget therefore has to be tested BEFORE the send, so it also bounds a row
+                // whose writes keep "succeeding" into a socket nobody is reading.
+                //
+                // ERROR-026: that budget is WALL-CLOCK age, not attempt count. The old rule was 8
+                // attempts with 1s/2s/4s…60s spacing — roughly two minutes of patience — so any
+                // screen-off/Doze window longer than that (routine on Transsion/Xiaomi builds)
+                // permanently FAILED every queued message even though the peer came back fine a
+                // minute later. `attempts` now only picks the spacing. `createdAt` is stamped at
+                // enqueue by every producer.
+                val queuedForMs = now - item.createdAt
+                if (queuedForMs >= OUTBOX_GIVE_UP_AFTER_MS) {
+                    // Unacknowledged for the whole budget: mark the message Failed (surfaces a retry
+                    // affordance in the bubble) and drop the outbox row so it stops being re-claimed.
+                    messageDao.updateStatusIfUnacknowledged(item.localId, "FAILED")
                     outboxDao.delete(item.localId)
-                    messageDao.updateStatus(item.localId, "SENT")
                     continue
                 }
-                // Delivery failed (#21): back off instead of hammering the peer every tick, and give
-                // up after a bounded number of attempts so a permanently-unreachable peer can't wedge
-                // the drain forever. `item.attempts` is the count BEFORE this failed try.
-                val attemptsAfter = item.attempts + 1
-                if (attemptsAfter >= OUTBOX_MAX_ATTEMPTS) {
-                    // Exhausted retries: mark the message Failed (surfaces a retry affordance in the
-                    // bubble) and drop the outbox row so it stops being re-claimed.
-                    messageDao.updateStatus(item.localId, "FAILED")
-                    outboxDao.delete(item.localId)
-                } else {
-                    outboxDao.rescheduleAttempt(item.localId, now + backoffDelayMs(attemptsAfter))
+                val success = sink.send(wireFrame.conversationId, wireFrame)
+                if (success) {
+                    // Single tick, unchanged — the bytes are on the wire. The row itself survives
+                    // until the peer's DeliveryReceipt deletes it (see the DeliveryReceipt branch of
+                    // [onInboundWireFrame]), which makes the reschedule below double as the resend
+                    // timer for a frame that was written but never arrived.
+                    messageDao.updateStatusIfUnacknowledged(item.localId, "SENT")
                 }
+                // Both outcomes re-arm on the same ladder (#21): a refused send backs off instead of
+                // hammering the peer every tick, and an accepted-but-unacknowledged send resends on
+                // that same spacing. A redundant resend is harmless by construction — the receiver's
+                // insert is idempotent (IGNORE on localId) and it re-acks every TextMessage whether
+                // the row was new or a replay, so the extra frame is precisely what produces the
+                // receipt that clears this row.
+                outboxDao.rescheduleAttempt(item.localId, now + backoffDelayMs(item.attempts + 1))
             }
         }
     }
@@ -761,11 +910,11 @@ public class RealFlashChatRepository(
      * Bug 5: a peer session came up (first connect OR reconnect). Reset the durable outbox so
      * every queued message is retryable right now (`attempts -> 0`, `nextAttemptAt -> now`) and
      * immediately run one drain pass. Messages queued while the peer was offline therefore send
-     * the instant connectivity returns, instead of sitting out a backoff window or racing the
-     * [OUTBOX_MAX_ATTEMPTS] cap toward a permanent FAILED.
+     * the instant connectivity returns, instead of sitting out a backoff window.
      *
      * Safe to call on every session-up from the network layer. Rows whose peer is still
-     * unreachable simply fail once more and re-enter backoff — no message is ever lost.
+     * unreachable simply fail once more and re-enter backoff — no message is ever lost until its
+     * [OUTBOX_GIVE_UP_AFTER_MS] budget expires.
      */
     public fun notifyPeerSessionUp() {
         scope.launch(ioDispatcher) {
@@ -952,8 +1101,9 @@ public class RealFlashChatRepository(
 
     /**
      * Joins an attachment row with its live transfer progress and populates the rich UI attachment
-     * fields (B4). Image/video MIME renders an inline thumbnail (video adds a play overlay); anything
-     * else becomes a file card. Text-only rows return unchanged.
+     * fields (B4). Image/video MIME renders an inline thumbnail (video adds a play overlay) **once the
+     * bytes are local**; anything else — including media still awaiting acceptance or download —
+     * becomes a file card. Text-only rows return unchanged.
      */
     private fun applyAttachment(
         base: FlashMessageUi,
@@ -970,26 +1120,29 @@ public class RealFlashChatRepository(
         val status = live?.status
             ?: if (path != null) FlashFileTransferStatus.Downloaded else FlashFileTransferStatus.NotDownloaded
         val progress = live?.progress ?: if (status == FlashFileTransferStatus.Downloaded) 1f else 0f
+        // A media tile can only show bytes that already exist locally. An inbound offer has no path
+        // and no permission to fetch one until the user accepts, so it has to fall through to the
+        // file card — the only surface carrying Accept/Decline, progress and "Tap to retry". The
+        // video branch already guarded this; the image branch did not, which is why a received photo
+        // rendered as a dead gradient tile with no way to accept it and nothing to decode.
+        val renderable = path != null && when (status) {
+            FlashFileTransferStatus.Downloaded -> true
+            // Outbound rows point at the sender's own picked file, so it is on disk from the start.
+            FlashFileTransferStatus.Transferring -> base.isMine
+            FlashFileTransferStatus.NotDownloaded,
+            FlashFileTransferStatus.AwaitingAcceptance,
+            FlashFileTransferStatus.Failed,
+            -> false
+        }
         return when {
-            mime.startsWith("image/") -> base.copy(
+            renderable && (mime.startsWith("image/") || mime.startsWith("video/")) -> base.copy(
                 images = listOf(
                     FlashImageAttachmentUi(
                         id = transferId,
                         uri = path,
                         thumbUri = path,
                         mimeType = mime,
-                    ),
-                ),
-            )
-            mime.startsWith("video/") && status != FlashFileTransferStatus.AwaitingAcceptance &&
-                status != FlashFileTransferStatus.NotDownloaded -> base.copy(
-                images = listOf(
-                    FlashImageAttachmentUi(
-                        id = transferId,
-                        uri = path,
-                        thumbUri = path,
-                        mimeType = mime,
-                        isVideo = true,
+                        isVideo = mime.startsWith("video/"),
                     ),
                 ),
             )
@@ -1026,6 +1179,58 @@ public class RealFlashChatRepository(
                 ),
             )
         }
+    }
+
+    /**
+     * Turns a `cmsg:`-marked row into a call bubble; every other row passes through untouched.
+     *
+     * The marker lives in the `text` column (same trick as voice notes) so a call log costs no
+     * schema migration. Delivery ticks are cleared: a call is not a message in flight.
+     */
+    private fun applyCallEvent(base: FlashMessageUi, entity: MessageEntity): FlashMessageUi {
+        val event = decodeCallMeta(entity.text) ?: return base
+        return base.copy(text = "", deliveryStatus = null, callEvent = event)
+    }
+
+    /** Packs a call row into the (otherwise unused) text column: `cmsg:<kind>:<0|1>:<durationMs>`. */
+    private fun encodeCallMeta(
+        kind: FlashCallEventKind,
+        video: Boolean,
+        durationMs: Long,
+    ): String = "$CALL_META_PREFIX${kind.name}:${if (video) 1 else 0}:${durationMs.coerceAtLeast(0L)}"
+
+    /** Inverse of [encodeCallMeta]. Null for any row that is not a call row. */
+    private fun decodeCallMeta(text: String?): FlashCallEventUi? {
+        if (text == null || !text.startsWith(CALL_META_PREFIX)) return null
+        val parts = text.removePrefix(CALL_META_PREFIX).split(':')
+        if (parts.size < 3) return null
+        // Unknown kind name → not renderable; a future build's row must not crash this one.
+        val kind = FlashCallEventKind.values().firstOrNull { it.name == parts[0] } ?: return null
+        return FlashCallEventUi(
+            kind = kind,
+            video = parts[1] == "1",
+            durationMs = parts[2].toLongOrNull() ?: 0L,
+        )
+    }
+
+    /**
+     * Chat-list preview line for a raw `text` column value, or null when there is nothing to show.
+     *
+     * Rows whose text is a metadata marker have no human-readable body, so they get a label —
+     * otherwise `cmsg:`/`vmsg:` blobs leak straight into the chat list.
+     */
+    private fun previewLabel(raw: String?): String? {
+        val text = raw?.ifBlank { null } ?: return null
+        decodeCallMeta(text)?.let { event ->
+            val what = if (event.video) "Video call" else "Voice call"
+            return when (event.kind) {
+                FlashCallEventKind.Missed -> "Missed ${what.lowercase(Locale.getDefault())}"
+                FlashCallEventKind.Unanswered -> "$what, no answer"
+                else -> what
+            }
+        }
+        if (text.startsWith(VOICE_META_PREFIX)) return "Voice message"
+        return text
     }
 
     /** Packs a voice note's duration + waveform into the (otherwise empty) message text column. */
@@ -1080,12 +1285,22 @@ public class RealFlashChatRepository(
     private companion object {
         // Namespaced marker stored in a voice row's text column: "vmsg:<durationMs>:<csv amplitudes>".
         const val VOICE_META_PREFIX = "vmsg:"
+        // Namespaced marker stored in a call row's text column: "cmsg:<KIND>:<video 0|1>:<durationMs>".
+        const val CALL_META_PREFIX = "cmsg:"
         // Upper bound on full-history search hits scanned per query (#12); collapsed to conversations.
         const val SEARCH_RESULT_LIMIT = 200
-        // Outbox retry policy (#21): give up after this many failed sends (message → Failed), and
-        // back off exponentially from this base, capped at the max, between tries.
-        const val OUTBOX_MAX_ATTEMPTS = 8
+        // Outbox retry policy (#21): back off exponentially from this base, capped at the max,
+        // between tries. Give-up is a wall-clock budget (ERROR-026), not an attempt count: an
+        // undelivered message stays retryable for half an hour, which comfortably outlasts the
+        // screen-off/Doze windows that used to burn through an 8-attempt cap in ~2 minutes.
+        const val OUTBOX_GIVE_UP_AFTER_MS = 30 * 60 * 1000L
         const val OUTBOX_BASE_BACKOFF_MS = 1_000L
         const val OUTBOX_MAX_BACKOFF_MS = 60_000L
+
+        // Falling-edge hold for the presence dot (ERROR-026). Long enough to cover the WS layer's
+        // own recovery — the dialing side redials from a ~1 s base and the accepting side's backup
+        // loop from ~4 s, plus a ~0.2 s handshake — so a self-healing drop never reaches the UI.
+        // A peer that really left shows Offline this much later, which is fine for a LAN mesh.
+        const val OFFLINE_HOLD_MS = 6_000L
     }
 }

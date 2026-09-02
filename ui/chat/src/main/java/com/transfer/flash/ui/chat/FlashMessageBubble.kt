@@ -279,6 +279,13 @@ private fun FlashBubbleSurface(
                     Spacer(modifier = Modifier.height(FlashSpacing.space4))
                 }
             }
+            message.callEvent?.let { call ->
+                FlashCallEventRow(
+                    event = call,
+                    isParentOutgoing = message.isMine,
+                )
+                Spacer(modifier = Modifier.height(FlashSpacing.space4))
+            }
             if (message.text.isNotBlank()) {
                 val bodyColor = if (message.isMine) colors.chatTextOutgoing else colors.chatTextIncoming
                 if (searchQuery.isNullOrBlank()) {

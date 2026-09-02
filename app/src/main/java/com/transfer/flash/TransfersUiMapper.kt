@@ -42,6 +42,10 @@ fun FlashTransfer.toUiItem(): FlashTransferItemUi = FlashTransferItemUi(
     verified = state == DomainState.Completed,
     // Received file path when inbound; the source URI when outbound. Enables open & share.
     localPath = localPath ?: sourceUri,
+    // A cancelled/declined transfer shares the Failed section but cannot be resumed: both sides
+    // tore the session down, and resumeTransfer returns without doing anything. Flagging it here
+    // keeps the screen from rendering a Retry button that could only ever look broken.
+    retryable = state != DomainState.Cancelled,
 )
 
 /**

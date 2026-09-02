@@ -6,6 +6,7 @@ import java.io.EOFException
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
+import java.net.SocketTimeoutException
 import java.security.MessageDigest
 import java.security.SecureRandom
 
@@ -34,6 +35,20 @@ public object WebSocketCodec {
     private const val MAX_MESSAGE_BYTES = 512L * 1024L * 1024L
 
     private val random = SecureRandom()
+
+    /**
+     * A socket read timeout that expired with ZERO bytes of a frame consumed, i.e. the stream is
+     * still sitting exactly on a frame boundary and — per the `SocketTimeoutException` contract —
+     * the socket is still valid. Callers may simply read again.
+     *
+     * This is deliberately a distinct type from a plain [IOException]: "no frame arrived for 30 s"
+     * and "the stream broke" used to be indistinguishable in the read loop, so a peer that was
+     * merely frozen by Doze got its healthy session torn down. A timeout raised anywhere *after*
+     * the first byte is NOT this exception — the stream is desynchronized there and retrying would
+     * misparse the remainder.
+     */
+    public class IdleTimeout internal constructor(cause: SocketTimeoutException) :
+        IOException("No WebSocket frame within the read timeout", cause)
 
     public sealed interface Message {
         public data class Text(val text: String) : Message
@@ -100,12 +115,19 @@ public object WebSocketCodec {
         output.flush()
     }
 
-    /** Reads one complete WebSocket message, reassembling continuation frames. */
+    /**
+     * Reads one complete WebSocket message, reassembling continuation frames.
+     *
+     * @throws IdleTimeout when the read timeout expires before the first byte of the message —
+     *   retryable on the same stream (see [IdleTimeout]).
+     */
     public fun readMessage(input: InputStream): Message {
         val messageBuffer = ByteArrayOutputStream()
         var messageOpcode = -1
+        var atMessageStart = true
         while (true) {
-            val header = readFrameHeader(input)
+            val header = readFrameHeader(input, retryableIdle = atMessageStart)
+            atMessageStart = false
             val payload = readFramePayload(input, header)
             when (header.opcode) {
                 OPCODE_CLOSE -> {
@@ -208,8 +230,17 @@ public object WebSocketCodec {
         return result.toString()
     }
 
-    private fun readFrameHeader(input: InputStream): FrameHeader {
-        val first = readByte(input)
+    private fun readFrameHeader(input: InputStream, retryableIdle: Boolean): FrameHeader {
+        val first = if (retryableIdle) {
+            try {
+                readByte(input)
+            } catch (timeout: SocketTimeoutException) {
+                // Nothing consumed yet: the stream is intact and the caller can read again.
+                throw IdleTimeout(timeout)
+            }
+        } else {
+            readByte(input)
+        }
         val second = readByte(input)
         val fin = first and 0x80 != 0
         val opcode = first and 0x0F

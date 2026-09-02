@@ -32,6 +32,7 @@ import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -68,6 +69,7 @@ import com.transfer.flash.ui.nearby.NearbyUiState
 import com.transfer.flash.ui.chat.FlashPairingPhase
 import com.transfer.flash.core.calling.model.FlashCallUiState
 import com.transfer.flash.core.calling.model.FlashCallState
+import com.transfer.flash.calling.FlashCallAudioRouter
 import com.transfer.flash.calling.FlashCallService
 import com.transfer.flash.pairing.PairingUiModel
 import com.transfer.flash.ui.calling.FlashCallScreen
@@ -121,6 +123,16 @@ class MainActivity : ComponentActivity() {
      */
     private val pendingNotificationConversation = MutableStateFlow<String?>(null)
 
+    /**
+     * Whether the OS currently exempts Flash from battery optimisation (ERROR-031 / D7).
+     *
+     * Read here rather than in Compose because the value can only change while the user is away in
+     * the system prompt, so [onResume] is exactly the refresh point — and reading it from the
+     * activity avoids depending on a lifecycle-aware Compose API just to notice that. Shared with
+     * the shell the same way [pendingNotificationConversation] is: one MutableStateFlow, one process.
+     */
+    private val ignoringBatteryOptimizations = MutableStateFlow(false)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         // Must be called before super.onCreate to take over the theme's splash window.
         // Keep the cold-start splash up for exactly as long as the engine takes to boot:
@@ -148,8 +160,17 @@ class MainActivity : ComponentActivity() {
                 showDevConsoleEntry = isDebuggable,
                 pendingNotificationConversation = pendingNotificationConversation,
                 onEnableBackgroundTransfers = ::requestIgnoreBatteryOptimizations,
+                ignoringBatteryOptimizations = ignoringBatteryOptimizations,
             )
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // The exemption can only have changed while we were away in the system prompt (or in the
+        // OEM battery screen), so re-read it here — this is what makes the Settings row reflect
+        // reality instead of whatever was true at launch.
+        refreshBatteryOptimizationState()
     }
 
     override fun onStart() {
@@ -200,6 +221,19 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * Publishes the current battery-optimisation exemption for the Settings row (ERROR-031 / D7).
+     * Below API 23 there is no Doze to be exempt from, so report `true` rather than scaring the user
+     * about a restriction that does not exist on their build.
+     */
+    private fun refreshBatteryOptimizationState() {
+        ignoringBatteryOptimizations.value = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            getSystemService(PowerManager::class.java)?.isIgnoringBatteryOptimizations(packageName) ?: false
+        } else {
+            true
+        }
+    }
+
     /** Requests POST_NOTIFICATIONS on Android 13+ when not yet granted. Below API 33 the
      *  permission is install-time, so nothing to do. */
     private fun maybeRequestNotificationPermission() {
@@ -239,6 +273,8 @@ fun FlashApp(
     pendingNotificationConversation: MutableStateFlow<String?> = MutableStateFlow(null),
     /** Bug 6: fired when the user turns ON the Settings "Background transfers" toggle (host-owned). */
     onEnableBackgroundTransfers: () -> Unit = {},
+    /** ERROR-031 / D7: activity-published battery-optimisation exemption, refreshed on resume. */
+    ignoringBatteryOptimizations: MutableStateFlow<Boolean> = MutableStateFlow(false),
 ) {
     // #14 / UI-049 wiring: Appearance/Haptics are only real if the host applies them, so the settings
     // model lives above the theme. ONE theme scope owns the whole shell — a nested
@@ -263,6 +299,8 @@ fun FlashApp(
     val autoDownloadImage by store.autoDownloadImage.collectAsState(initial = true)
     val autoDownloadVideo by store.autoDownloadVideo.collectAsState(initial = false)
     val autoDownloadFile by store.autoDownloadFile.collectAsState(initial = false)
+    val prioritiseVoiceQuality by store.prioritiseVoiceQuality.collectAsState(initial = true)
+    val batteryExempt by ignoringBatteryOptimizations.collectAsState()
 
     val ready by engine.ready.collectAsState()
     val trustedFallback = remember { MutableStateFlow(emptyList<NearbyTrustedPeerUi>()) }
@@ -278,6 +316,8 @@ fun FlashApp(
         autoDownloadImage = autoDownloadImage,
         autoDownloadVideo = autoDownloadVideo,
         autoDownloadFile = autoDownloadFile,
+        ignoringBatteryOptimizations = batteryExempt,
+        prioritiseVoiceQuality = prioritiseVoiceQuality,
         trustedPeerCount = trustedPeers.size,
         appVersion = engine.appVersionName,
         deviceIdShort = (if (ready) engine.localDeviceId else "").take(8).ifBlank { "00000000" },
@@ -296,6 +336,9 @@ fun FlashApp(
             if (updated.autoDownloadImage != settings.autoDownloadImage) store.setAutoDownloadImage(updated.autoDownloadImage)
             if (updated.autoDownloadVideo != settings.autoDownloadVideo) store.setAutoDownloadVideo(updated.autoDownloadVideo)
             if (updated.autoDownloadFile != settings.autoDownloadFile) store.setAutoDownloadFile(updated.autoDownloadFile)
+            if (updated.prioritiseVoiceQuality != settings.prioritiseVoiceQuality) {
+                store.setPrioritiseVoiceQuality(updated.prioritiseVoiceQuality)
+            }
             if (updated.displayName != settings.displayName) store.setDisplayName(updated.displayName)
         }
     }
@@ -431,13 +474,30 @@ private fun FlashShell(
     // C7: CAMERA runtime permission launcher for video calls. webrtc-kmp's getUserMedia
     // throws CameraPermissionException if CAMERA is not granted, so we check before startCall.
     val callCtx = LocalContext.current
+    // C7: an accept blocked on a runtime permission resumes itself from the grant callback.
+    // Without this the user grants the mic and the ringing call just sits there until they
+    // think to tap Accept a second time.
+    var pendingCallAccept by remember { mutableStateOf(false) }
+    // C7: platform audio mode/focus/routing for the duration of a call. Declared here — ahead of
+    // the permission launchers — because a permission-resumed accept has to set the mode before
+    // media starts, same as the direct accept path. Survives recomposition so the same instance
+    // restores the mode it saved; onDispose is the safety net for the activity going away mid-call.
+    val audioRouter = remember(callCtx) { FlashCallAudioRouter(callCtx) }
+    DisposableEffect(audioRouter) {
+        onDispose { audioRouter.detach() }
+    }
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
     ) { granted ->
-        if (granted) {
-            Toast.makeText(callCtx, "Camera ready — start video call", Toast.LENGTH_SHORT).show()
-        } else {
+        if (!granted) {
+            pendingCallAccept = false
             Toast.makeText(callCtx, "Camera permission is required for video calls", Toast.LENGTH_SHORT).show()
+        } else if (pendingCallAccept) {
+            pendingCallAccept = false
+            audioRouter.attach(engine.calls?.activeCall?.value?.speakerOn == true)
+            scope.launch { engine.calls?.accept() }
+        } else {
+            Toast.makeText(callCtx, "Camera ready — start video call", Toast.LENGTH_SHORT).show()
         }
     }
     // C7: RECORD_AUDIO runtime permission launcher for voice/video calls.
@@ -445,7 +505,21 @@ private fun FlashShell(
         contract = ActivityResultContracts.RequestPermission(),
     ) { granted ->
         if (!granted) {
+            pendingCallAccept = false
             Toast.makeText(callCtx, "Microphone permission is required for calls", Toast.LENGTH_SHORT).show()
+            return@rememberLauncherForActivityResult
+        }
+        if (!pendingCallAccept) return@rememberLauncherForActivityResult
+        // A video call needs the camera too before accept can succeed — chain the prompts.
+        val needsCamera = engine.calls?.activeCall?.value?.video == true &&
+            ContextCompat.checkSelfPermission(callCtx, Manifest.permission.CAMERA) !=
+            PackageManager.PERMISSION_GRANTED
+        if (needsCamera) {
+            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+        } else {
+            pendingCallAccept = false
+            audioRouter.attach(engine.calls?.activeCall?.value?.speakerOn == true)
+            scope.launch { engine.calls?.accept() }
         }
     }
 
@@ -610,7 +684,7 @@ private fun FlashShell(
                         },
                         onDeleteMessage = { ids -> chatRepository.deleteMessages(ids) },
                         onOpenAttachment = { path, mime, _ -> openAttachment(toastContext, path, mime) },
-                        onSaveImage = { uri, mime -> saveImageToGallery(toastContext, uri, mime) },
+                        onSaveImage = { uri, mime -> saveMediaToGallery(toastContext, uri, mime) },
                         onShareImage = { uri, mime -> shareImageUri(toastContext, uri, mime) },
                         onSendVoiceMessage = { localPath, durationMs, amplitudes ->
                             // B9: a captured voice note rides the same P2P transfer pipeline as any
@@ -657,6 +731,13 @@ private fun FlashShell(
                                 scope.launch { repo.declineIncoming(FlashTransferId(transferId)) }
                             }
                         },
+                        // Tapping a failed card retries it, matching its "Tap to retry" label and
+                        // Retry badge. Same entry point as the Transfers tab's Retry button.
+                        onRetryTransfer = { transferId ->
+                            engine.transfers?.let { repo ->
+                                scope.launch { repo.resumeTransfer(FlashTransferId(transferId)) }
+                            }
+                        },
                         onStartCall = {
                             val peerId = entry.conversationId
                             if (peerId != null) {
@@ -696,6 +777,11 @@ private fun FlashShell(
                                 }
                             }
                         },
+                        // Connection-banner Retry: re-arm discovery browsing and force an immediate
+                        // auto-connect sweep. Returns false only before the engine has booted, which
+                        // is the one case where the banner should say "try again in a moment".
+                        onRetryConnection = { engine.reconnectNow() },
+                        onShareText = { text -> shareText(toastContext, text) },
                     )
                     FlashDestination.Transfers -> FlashTransfersScreen(
                         state = transfersUi,
@@ -798,7 +884,14 @@ private fun FlashShell(
                         onAutoDownloadFileChanged = {
                             onSettingsChange(settings.copy(autoDownloadFile = it))
                         },
+                        onPrioritiseVoiceQualityChanged = {
+                            onSettingsChange(settings.copy(prioritiseVoiceQuality = it))
+                        },
                         onEditDisplayName = { showRenameDialog = true },
+                        // ERROR-031 / D7: same system prompt the Background-transfers toggle fires,
+                        // reachable on its own so a user who already flipped that toggle (or who
+                        // revoked the exemption later) can still get to it.
+                        onOpenBatterySettings = onEnableBackgroundTransfers,
                         modifier = Modifier.fillMaxSize(),
                         listState = settingsScroll,
                         bottomInset = tabBottomInset,
@@ -916,12 +1009,12 @@ private fun FlashShell(
         }
 
         // C7 (calling): full-screen call overlay. Topmost sibling so it renders above
-        // everything (nav bar, console, rename dialog). Driven by the engine's CallCoordinator.
+        // everything (nav bar, console, rename dialog). Driven by the engine's FlashCalling.
         // v1 has no minimize — the overlay stays until the coordinator clears the call
         // (ENDED shows for 2s, then _activeCall nulls and this overlay disappears).
         val callStateFlow = engine.calls?.activeCall ?: remember { MutableStateFlow(null) }
         val callState by callStateFlow.collectAsState()
-        val callSession = engine.calls?.session
+        val callMedia = engine.calls?.media
         val activeCall = callState
         val callContext = LocalContext.current
         LaunchedEffect(activeCall) {
@@ -932,16 +1025,33 @@ private fun FlashShell(
                 null -> FlashCallService.stop(callContext)
                 else -> { /* keep FGS running */ }
             }
+            // Deliberately not attached while RINGING: FlashCallRinger holds transient ring focus
+            // for the ringtone, and exclusive voice-communication focus would silence it. The
+            // handover is the focus edge itself — attach()'s EXCLUSIVE request arrives at the ringer
+            // as AUDIOFOCUS_LOSS and stops the ring before media starts. attach() is idempotent and
+            // re-applies the speaker flag, so every state emission re-syncs the platform route with
+            // the UI toggle. (DIALING deliberately DOES attach: the ringback is call audio and has
+            // to follow the earpiece/speaker route.)
+            val audioState = activeCall
+            if (audioState == null ||
+                audioState.state == FlashCallState.RINGING ||
+                audioState.state == FlashCallState.ENDED
+            ) {
+                audioRouter.detach()
+            } else {
+                audioRouter.attach(audioState.speakerOn)
+            }
         }
         if (activeCall != null) {
             FlashCallScreen(
                 state = activeCall,
-                session = callSession,
+                session = callMedia,
                 onAccept = {
                     val hasAudio = ContextCompat.checkSelfPermission(
                         callCtx, Manifest.permission.RECORD_AUDIO,
                     ) == PackageManager.PERMISSION_GRANTED
                     if (!hasAudio) {
+                        pendingCallAccept = true
                         audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                         return@FlashCallScreen
                     }
@@ -950,18 +1060,26 @@ private fun FlashShell(
                             callCtx, Manifest.permission.CAMERA,
                         ) == PackageManager.PERMISSION_GRANTED
                         if (!hasCamera) {
+                            pendingCallAccept = true
                             cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
                             return@FlashCallScreen
                         }
                     }
+                    // Mode before media: accept() starts capture/playout, and a HAL that opened
+                    // the mic outside MODE_IN_COMMUNICATION never engages the platform AEC.
+                    audioRouter.attach(activeCall.speakerOn)
                     scope.launch { engine.calls?.accept() }
                 },
                 onDecline = { scope.launch { engine.calls?.decline() } },
                 onHangUp = { scope.launch { engine.calls?.hangUp() } },
-                onToggleMute = { callSession?.toggleMute() },
-                onToggleSpeaker = { callSession?.setSpeaker(!activeCall.speakerOn) },
-                onToggleCamera = { callSession?.toggleCamera() },
-                onSwitchCamera = { scope.launch { callSession?.switchCamera() } },
+                onToggleMute = { engine.calls?.toggleMute() },
+                onToggleSpeaker = {
+                    val next = !activeCall.speakerOn
+                    engine.calls?.setSpeaker(next)
+                    audioRouter.setSpeaker(next)
+                },
+                onToggleCamera = { engine.calls?.toggleCamera() },
+                onSwitchCamera = { scope.launch { engine.calls?.switchCamera() } },
                 onDismiss = { /* v1: no minimize — call always ends before dismiss. */ },
             )
         }
@@ -1113,39 +1231,88 @@ private fun shareImageUri(
 }
 
 /**
- * UI-018: copy a viewed image into the shared gallery via MediaStore (Pictures/Flash). Reads the
- * source through the content resolver so both content:// URIs and FileProvider-backed paths work,
- * and never needs WRITE_EXTERNAL_STORAGE on API 29+ (scoped storage / RELATIVE_PATH).
+ * Forwards message text out through the system chooser (ACTION_SEND, text/plain).
+ *
+ * Backs the chat's Forward actions, which used to only raise a "Forwarding message" toast and drop
+ * the text on the floor. Flash has no in-app conversation picker, so the system chooser (which can
+ * target Flash itself, plus any other messenger) is the honest destination.
  */
-private fun saveImageToGallery(
+private fun shareText(
+    context: android.content.Context,
+    text: String,
+) {
+    if (text.isBlank()) {
+        Toast.makeText(context, "Nothing to forward", Toast.LENGTH_SHORT).show()
+        return
+    }
+    val share = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(android.content.Intent.EXTRA_TEXT, text)
+    }
+    runCatching {
+        context.startActivity(
+            android.content.Intent.createChooser(share, "Forward message")
+                .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+        )
+    }.onFailure {
+        Toast.makeText(context, "No app to forward with", Toast.LENGTH_SHORT).show()
+    }
+}
+
+/**
+ * UI-018: copy a viewed photo *or video* into the shared gallery via MediaStore. Reads the source
+ * through the content resolver so both content:// URIs and FileProvider-backed paths work, and never
+ * needs WRITE_EXTERNAL_STORAGE on API 29+ (scoped storage / RELATIVE_PATH).
+ *
+ * The collection follows the MIME type. Saving a clip used to insert it into `MediaStore.Images`
+ * under Pictures/Flash — the scanner trusts the collection it was filed under rather than the bytes,
+ * so the video showed up as a broken photo. Every ContentValues key here lives on the shared
+ * [android.provider.MediaStore.MediaColumns], so only the target collection, the default directory
+ * and the confirmation copy differ between the two cases.
+ */
+private fun saveMediaToGallery(
     context: android.content.Context,
     ref: String?,
     mimeType: String,
 ) {
+    val isVideo = mimeType.startsWith("video/")
     val source = resolveShareableUri(context, ref)
     if (source == null) {
-        Toast.makeText(context, "Image not available yet", Toast.LENGTH_SHORT).show()
+        Toast.makeText(
+            context,
+            if (isVideo) "Video not available yet" else "Image not available yet",
+            Toast.LENGTH_SHORT,
+        ).show()
         return
     }
+    val failureLabel = if (isVideo) "Couldn't save video" else "Couldn't save image"
     val resolver = context.contentResolver
     val mime = mimeType.ifBlank { "image/jpeg" }
-    val ext = android.webkit.MimeTypeMap.getSingleton().getExtensionFromMimeType(mime) ?: "jpg"
+    val ext = android.webkit.MimeTypeMap.getSingleton().getExtensionFromMimeType(mime)
+        ?: if (isVideo) "mp4" else "jpg"
     val name = "flash_${System.currentTimeMillis()}.$ext"
+    val folder = if (isVideo) {
+        android.os.Environment.DIRECTORY_MOVIES
+    } else {
+        android.os.Environment.DIRECTORY_PICTURES
+    }
+    val scoped = android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q
     val values = android.content.ContentValues().apply {
-        put(android.provider.MediaStore.Images.Media.DISPLAY_NAME, name)
-        put(android.provider.MediaStore.Images.Media.MIME_TYPE, mime)
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-            put(
-                android.provider.MediaStore.Images.Media.RELATIVE_PATH,
-                "${android.os.Environment.DIRECTORY_PICTURES}/Flash",
-            )
-            put(android.provider.MediaStore.Images.Media.IS_PENDING, 1)
+        put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, name)
+        put(android.provider.MediaStore.MediaColumns.MIME_TYPE, mime)
+        if (scoped) {
+            put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, "$folder/Flash")
+            put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1)
         }
     }
-    val collection = android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+    val collection = if (isVideo) {
+        android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+    } else {
+        android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+    }
     val target = runCatching { resolver.insert(collection, values) }.getOrNull()
     if (target == null) {
-        Toast.makeText(context, "Couldn't save image", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, failureLabel, Toast.LENGTH_SHORT).show()
         return
     }
     val ok = runCatching {
@@ -1161,14 +1328,16 @@ private fun saveImageToGallery(
         runCatching { resolver.delete(target, null, null) }
         false
     }
-    if (ok && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+    if (ok && scoped) {
         values.clear()
-        values.put(android.provider.MediaStore.Images.Media.IS_PENDING, 0)
+        values.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0)
         runCatching { resolver.update(target, values, null, null) }
     }
+    // Pre-Q has no RELATIVE_PATH, so the folder promise only holds on the scoped-storage path.
+    val successLabel = if (scoped) "Saved to $folder/Flash" else "Saved to gallery"
     Toast.makeText(
         context,
-        if (ok) "Saved to Pictures/Flash" else "Couldn't save image",
+        if (ok) successLabel else failureLabel,
         Toast.LENGTH_SHORT,
     ).show()
 }

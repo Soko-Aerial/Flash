@@ -89,6 +89,22 @@ public class CompositeDiscovery(
      * aging MUST be driven internally, not left to callers).
      */
     private val sweepIntervalMs: Long = DEFAULT_SWEEP_INTERVAL_MS,
+    /**
+     * How long a transport may report `browsing = false` while this composite
+     * still wants it browsing before the sweeper forces a
+     * [FlashRadioTransport.restartBrowsing].
+     *
+     * Needed because a radio can stop browsing without anyone asking it to: the
+     * NSD transport exhausts its restart budget and gives up, or the platform
+     * silently stops delivering after a Wi-Fi ↔ hotspot switch. Nothing used to
+     * notice — `startDiscovery()` is a no-op while the transport still believes
+     * it is browsing — so discovery stayed dead until the process restarted.
+     *
+     * Must exceed [sweepIntervalMs] so a transient false (state event racing a
+     * start) cannot trigger a pointless radio teardown; it also rate-limits
+     * repeated attempts to one per window.
+     */
+    private val browseWatchdogMs: Long = DEFAULT_BROWSE_WATCHDOG_MS,
     private val delayFn: suspend (Long) -> Unit = { ms -> kotlinx.coroutines.delay(ms) },
     /** Determinism hook for JVM tests (same pattern as NsdTransport.maxDutyCycles). */
     private val maxSweepLoops: Int = Int.MAX_VALUE,
@@ -108,6 +124,13 @@ public class CompositeDiscovery(
          */
         public const val DEFAULT_SWEEP_INTERVAL_MS: Long = 5_000L
 
+        /**
+         * Default [browseWatchdogMs]: two sweep intervals. Long enough that an
+         * in-flight start/restart is never interrupted, short enough that a radio
+         * that gave up is back within ~15 s instead of never.
+         */
+        public const val DEFAULT_BROWSE_WATCHDOG_MS: Long = 10_000L
+
         /** Highest priority first; unknown names rank after these. */
         public val PRIORITY_ORDER: List<String> = listOf("LAN", "WIFI_DIRECT", "WIFI_AWARE", "BLE")
 
@@ -122,6 +145,20 @@ public class CompositeDiscovery(
     private val directories = HashMap<String, EndpointDirectory>()
     private val browsingByTransport = HashMap<String, Boolean>()
     private val advertisingByTransport = HashMap<String, Boolean>()
+
+    /**
+     * transportName → wall clock of the FIRST `browsing = false` report received
+     * while [desiredBrowsing]; cleared as soon as the transport reports browsing
+     * again. Drives the browse watchdog (see [browseWatchdogMs]).
+     */
+    private val browseStalledSince = HashMap<String, Long>()
+
+    /**
+     * Whether this composite currently WANTS its transports browsing. Separate
+     * from [browsingByTransport], which is what the radios actually report; the
+     * gap between the two is precisely what the watchdog repairs.
+     */
+    @Volatile private var desiredBrowsing = false
     private var collecting = false
     private var sweeperJob: kotlinx.coroutines.Job? = null
 
@@ -171,8 +208,41 @@ public class CompositeDiscovery(
     // ---------------------------------------------------------------------
 
     /** Starts continuous browsing on EVERY transport (aggregate result). */
-    override suspend fun startDiscovery(): FlashResult<Unit> = aggregate { transport ->
-        transport.startBrowsing().onSuccess { markBrowsing(transport.transportName, true) }
+    override suspend fun startDiscovery(): FlashResult<Unit> {
+        desiredBrowsing = true
+        val result = aggregate { transport ->
+            transport.startBrowsing().onSuccess {
+                markBrowsing(transport.transportName, true)
+                clearStall(transport.transportName)
+            }
+        }
+        // Browsing without the sweeper means nothing ages peers out and nothing
+        // watchdogs a dead radio; startAll() used to be the only path that armed it.
+        startSweeperLocked()
+        return result
+    }
+
+    /**
+     * Forces every transport to tear down and re-arm its browse
+     * ([FlashRadioTransport.restartBrowsing]), regardless of what it believes its
+     * own state is.
+     *
+     * [startDiscovery] cannot do this: it delegates to `startBrowsing()`, which is
+     * idempotent and therefore a no-op for a transport whose browse died silently
+     * (Wi-Fi ↔ hotspot switch, doze, an OEM mDNS stack that stopped delivering).
+     * Callers use this from connectivity changes / screen-on, where the whole point
+     * is to distrust the cached state.
+     */
+    public suspend fun restartDiscovery(): FlashResult<Unit> {
+        desiredBrowsing = true
+        val result = aggregate { transport ->
+            transport.restartBrowsing().onSuccess {
+                markBrowsing(transport.transportName, true)
+                clearStall(transport.transportName)
+            }
+        }
+        startSweeperLocked()
+        return result
     }
 
     /**
@@ -182,12 +252,14 @@ public class CompositeDiscovery(
      */
     override suspend fun stopDiscovery(): FlashResult<Unit> {
         val resumeAdvertising = _state.value.isAdvertising
+        desiredBrowsing = false
         val result = aggregate { transport ->
             transport.stop().onSuccess {
                 markBrowsing(transport.transportName, false)
                 markAdvertising(transport.transportName, false)
             }
         }
+        synchronized(lock) { browseStalledSince.clear() }
         refreshState()
         if (resumeAdvertising) {
             identity?.let { startAdvertisingInternal(advertisedPort, it) }
@@ -231,19 +303,17 @@ public class CompositeDiscovery(
 
     override suspend fun stopAll(): FlashResult<Unit> {
         stopSweeper()
+        desiredBrowsing = false
         val result = aggregate { transport ->
             transport.stop().onSuccess {
                 markBrowsing(transport.transportName, false)
                 markAdvertising(transport.transportName, false)
             }
         }
+        synchronized(lock) { browseStalledSince.clear() }
         refreshState()
         return result
     }
-
-    // ---------------------------------------------------------------------
-    // Plan C3.9 contract
-    // ---------------------------------------------------------------------
 
     // ---------------------------------------------------------------------
     // Plan C3.9 contract
@@ -265,6 +335,7 @@ public class CompositeDiscovery(
     public suspend fun startAll(port: Int, identity: FlashAdvertisedIdentity): FlashResult<Unit> {
         this.identity = identity
         this.advertisedPort = port
+        desiredBrowsing = true
         val failures = mutableListOf<String>()
         synchronized(lock) { collectingOrStart() }
         startSweeperLocked()
@@ -398,6 +469,16 @@ public class CompositeDiscovery(
         advertisingByTransport[name] = value
     }
 
+    /**
+     * Clears a transport's stall stamp because it was just (re)started BY REQUEST.
+     * Deliberately not folded into [markBrowsing]: the watchdog re-stamps before
+     * attempting its own restart, and that stamp is what rate-limits it to one
+     * attempt per [browseWatchdogMs] window.
+     */
+    private fun clearStall(name: String) = synchronized(lock) {
+        browseStalledSince.remove(name)
+    }
+
     private fun collectingOrStart() {
         if (collecting) return
         collecting = true
@@ -412,7 +493,9 @@ public class CompositeDiscovery(
      * Automatic presence aging while the engine runs (P3.5 stale-endpoint fix):
      * sweeps every [sweepIntervalMs] so departed peers converge to Lost at most
      * ~grace + interval after their last sighting, even when radios miss
-     * goodbye packets. Bounded by [maxSweepLoops] as a JVM-test hook.
+     * goodbye packets. The same tick drives [watchdogBrowsing], so a radio that
+     * silently stopped browsing is re-armed on the same schedule. Bounded by
+     * [maxSweepLoops] as a JVM-test hook.
      */
     private fun startSweeperLocked() {
         if (sweeperJob?.isActive == true) return
@@ -423,6 +506,7 @@ public class CompositeDiscovery(
             ) {
                 delayFn(sweepIntervalMs)
                 sweep(nowMs = clock())
+                watchdogBrowsing(nowMs = clock())
                 loops += 1
             }
         }
@@ -437,9 +521,82 @@ public class CompositeDiscovery(
         when (event) {
             is FlashTransportEvent.Found -> applySighting(transport, event.endpoint)
             is FlashTransportEvent.Updated -> applySighting(transport, event.endpoint)
+            is FlashTransportEvent.Presence -> applyPresence(transport, event.endpoint)
             is FlashTransportEvent.Lost -> applyLoss(transport, event.deviceId)
-            is FlashTransportEvent.StateChanged -> refreshState()
+            is FlashTransportEvent.StateChanged -> applyBrowseState(transport, event.browsing)
         }
+    }
+
+    /**
+     * Liveness refresh (see [FlashTransportEvent.Presence]). Bumps `lastSeenAt`
+     * so [sweep] stops aging out a peer that is demonstrably still there, and
+     * emits NOTHING user-visible — presence is not a transition.
+     *
+     * This is the fix for the "device appears, then disappears ~30 s later and
+     * never comes back" report: a stable peer produces one Found and then only
+     * deduped sightings, so the sweeper starved and evicted it, and the false
+     * Lost also unbound its network route. The self-heal branch covers the peers
+     * that were already evicted before this event existed (and any future radio
+     * that reports presence for a peer this composite has forgotten): a heartbeat
+     * for an unknown peer is promoted to a real sighting rather than discarded.
+     */
+    private fun applyPresence(transport: FlashRadioTransport, endpoint: FlashDiscoveredEndpoint) {
+        val known = synchronized(lock) {
+            directoryFor(transport.transportName).get(endpoint.deviceId) != null
+        }
+        if (!known) {
+            applySighting(transport, endpoint)
+            return
+        }
+        synchronized(lock) {
+            // Unchanged by construction, so no diff to publish and no snapshot
+            // rebuild: only lastSeenAt moves, and the snapshot's contents are
+            // identical (re-publishing would churn the UI list for nothing).
+            directoryFor(transport.transportName).applySeen(endpoint, clock())
+        }
+    }
+
+    /**
+     * Records what a transport reports about its OWN browse state, instead of
+     * trusting the flag this composite optimistically set when it called
+     * `startBrowsing()`. A radio that exhausted its restart budget, or whose
+     * platform browse died, reports `browsing = false` here — which is both what
+     * makes [state] honest and what arms the watchdog in [watchdogBrowsing].
+     */
+    private fun applyBrowseState(transport: FlashRadioTransport, browsing: Boolean) {
+        synchronized(lock) {
+            val name = transport.transportName
+            browsingByTransport[name] = browsing
+            if (browsing) {
+                browseStalledSince.remove(name)
+            } else if (desiredBrowsing && !browseStalledSince.containsKey(name)) {
+                browseStalledSince[name] = clock()
+            }
+        }
+        refreshState()
+    }
+
+    /**
+     * Re-arms transports that stopped browsing while this composite still wants
+     * them browsing (see [browseWatchdogMs]). Runs on the sweeper tick.
+     */
+    private suspend fun watchdogBrowsing(nowMs: Long) {
+        if (!desiredBrowsing) return
+        val stalled = synchronized(lock) {
+            browseStalledSince
+                .filterValues { since -> nowMs - since >= browseWatchdogMs }
+                .keys
+                .toList()
+        }
+        if (stalled.isEmpty()) return
+        for (name in stalled) {
+            val transport = transports.firstOrNull { it.transportName == name } ?: continue
+            // Re-stamp BEFORE the attempt: a failed restart then retries one full
+            // window later instead of hammering the radio every sweep.
+            synchronized(lock) { browseStalledSince[name] = nowMs }
+            transport.restartBrowsing().onSuccess { markBrowsing(name, true) }
+        }
+        refreshState()
     }
 
     private fun applySighting(transport: FlashRadioTransport, endpoint: FlashDiscoveredEndpoint) {

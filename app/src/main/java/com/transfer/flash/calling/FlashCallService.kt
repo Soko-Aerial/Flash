@@ -1,5 +1,6 @@
 package com.transfer.flash.calling
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -8,6 +9,7 @@ import android.app.Person
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
@@ -23,6 +25,7 @@ import com.transfer.flash.core.calling.model.FlashCallUiState
 import com.transfer.flash.debug.DiscoveryEngineHolder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.collectLatest
@@ -33,15 +36,24 @@ import kotlinx.coroutines.launch
  * call with a [Notification.CallStyle] notification (API 31+).
  *
  * ## Lifecycle
- * Started by the call overlay when a call transitions to RINGING (incoming) or
- * DIALING (outgoing). Stops itself when the call ends (the coordinator nulls
+ * Started on the RINGING (incoming) / DIALING (outgoing) edge by both the call overlay and
+ * [com.transfer.flash.debug.DiscoveryEngineHolder]'s ring collector — the latter because an invite
+ * that arrives with the app closed has no activity to start it. Repeated starts are harmless (see
+ * the collector guard in [onStartCommand]). Stops itself when the call ends (the coordinator nulls
  * [CallCoordinator.activeCall] after the 2-second ENDED display).
  *
+ * ## Ringing
+ * This service does **not** ring. Its channel is silent and [FlashCallRinger] — owned by the engine,
+ * so it works with no activity and no foreground-service promotion — plays the ringtone and
+ * ringback. See [createChannel] for why a channel sound cannot do the job.
+ *
  * ## FGS compliance
- * The service is started while the app is foreground (the user taps call / answers
- * from notification), which satisfies Android 12+ while-in-use restrictions for
- * [android.Manifest.permission.FOREGROUND_SERVICE_MICROPHONE] and
- * [android.Manifest.permission.FOREGROUND_SERVICE_CAMERA].
+ * On Android 14+ a `microphone`-typed foreground service is only allowed once
+ * [android.Manifest.permission.RECORD_AUDIO] is actually granted AND the app is in an
+ * eligible state. An incoming call starts this service while the invite is still
+ * RINGING — before the user has answered, so before the permission prompt — so the
+ * service claims only the types it currently holds (possibly none) and re-promotes
+ * itself with the fuller type on the next state tick once the user has answered.
  *
  * ## Notification.CallStyle
  * On API 31+ the notification uses [Notification.CallStyle] for system-styled
@@ -53,6 +65,12 @@ class FlashCallService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var coordinatorSnapshot: CallCoordinator? = null
     private var startForegroundCalled = false
+
+    /** The single [CallCoordinator.activeCall] collector; see the guard in [onStartCommand]. */
+    private var stateJob: Job? = null
+
+    /** FGS type bitmask this service is currently running with; -1 == not promoted yet. */
+    private var currentFgsType = -1
     private val notificationManager: NotificationManagerCompat by lazy {
         NotificationManagerCompat.from(this)
     }
@@ -74,14 +92,20 @@ class FlashCallService : Service() {
         }
         coordinatorSnapshot = coordinator
 
-        scope.launch {
-            coordinator.activeCall.collectLatest { state ->
-                if (state != null) {
-                    postCallNotification(state)
-                } else {
-                    // Call fully cleared (coordinator nulled _activeCall).
-                    stopForeground(STOP_FOREGROUND_REMOVE)
-                    stopSelf()
+        // One collector per service instance, not per start. Both MainActivity's LaunchedEffect and
+        // the engine's ring collector call start() on every ringing-state emission, and a started
+        // service is re-delivered to onStartCommand each time — without this guard each redelivery
+        // added another collector, so a single state tick posted (and re-promoted) N times over.
+        if (stateJob?.isActive != true) {
+            stateJob = scope.launch {
+                coordinator.activeCall.collectLatest { state ->
+                    if (state != null) {
+                        postCallNotification(state)
+                    } else {
+                        // Call fully cleared (coordinator nulled _activeCall).
+                        stopForeground(STOP_FOREGROUND_REMOVE)
+                        stopSelf()
+                    }
                 }
             }
         }
@@ -124,26 +148,82 @@ class FlashCallService : Service() {
                 buildPreSNotification(title, body, state, contentIntent)
             }
 
-            if (startForegroundCalled) {
-                // Already foreground: just update the notification content/actions.
-                runCatching { notificationManager.notify(NOTIFICATION_ID, notification) }
-                    .onFailure { Log.w(TAG, "notify failed", it) }
+            // The notification is posted unconditionally: the user must see a ringing or
+            // ongoing call even when the platform refuses to promote us to a foreground
+            // service (missing runtime grant, ineligible app state).
+            runCatching { notificationManager.notify(NOTIFICATION_ID, notification) }
+                .onFailure { Log.w(TAG, "notify failed", it) }
+
+            promoteToForeground(notification, state)
+        }
+
+        /**
+         * Enters (or upgrades) the foreground state with a service type the platform will
+         * actually accept.
+         *
+         * Claiming `microphone` before RECORD_AUDIO is granted throws SecurityException on
+         * Android 14+, which left the service never promoted at all — no call priority, and
+         * a pending `startForegroundService` deadline the system eventually kills the app
+         * for. So: claim what is granted, fall back to an untyped FGS, and re-promote when
+         * the granted set grows (the user answering the call is exactly that moment).
+         */
+        private fun promoteToForeground(notification: Notification, state: FlashCallUiState) {
+            val desiredType = grantedForegroundServiceType(state)
+            if (startForegroundCalled && desiredType == currentFgsType) {
                 return
             }
+            if (tryStartForeground(notification, desiredType)) {
+                startForegroundCalled = true
+                currentFgsType = desiredType
+                return
+            }
+            // Typed promotion refused — an untyped FGS still keeps the process alive and
+            // satisfies the startForegroundService deadline. Don't stopSelf: the call must
+            // continue even without FGS priority.
+            if (desiredType != FGS_TYPE_NONE && tryStartForeground(notification, FGS_TYPE_NONE)) {
+                startForegroundCalled = true
+                currentFgsType = FGS_TYPE_NONE
+            }
+        }
 
-            try {
+        private fun tryStartForeground(notification: Notification, type: Int): Boolean {
+            return try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+                    startForeground(NOTIFICATION_ID, notification, type)
                 } else {
                     startForeground(NOTIFICATION_ID, notification)
                 }
-                startForegroundCalled = true
+                true
             } catch (e: Exception) {
-                // ForegroundServiceStartNotAllowedException (API 31+) or OEM variants.
-                Log.w(TAG, "startForeground refused", e)
-                // Don't stopSelf — the call should continue even without FGS priority.
+                // SecurityException (ungranted type), ForegroundServiceStartNotAllowedException
+                // (API 31+ background start), IllegalArgumentException (type not in manifest),
+                // or an OEM variant.
+                Log.w(TAG, "startForeground(type=$type) refused", e)
+                false
             }
         }
+
+        /**
+         * The subset of the manifest's `microphone|camera` types this app currently holds
+         * the runtime permissions for. Camera is only claimed for video calls — an audio
+         * call has no camera in use, and claiming an unused type is itself a violation.
+         */
+        private fun grantedForegroundServiceType(state: FlashCallUiState): Int {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+                return FGS_TYPE_NONE
+            }
+            var type = FGS_TYPE_NONE
+            if (hasPermission(Manifest.permission.RECORD_AUDIO)) {
+                type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            }
+            if (state.video && hasPermission(Manifest.permission.CAMERA)) {
+                type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+            }
+            return type
+        }
+
+        private fun hasPermission(permission: String): Boolean =
+            ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
 
         @RequiresApi(Build.VERSION_CODES.S)
         private fun buildSPlusNotification(
@@ -159,6 +239,9 @@ class FlashCallService : Service() {
                 .setOngoing(state.state != FlashCallState.ENDED)
                 .setContentIntent(contentIntent)
                 .setCategory(Notification.CATEGORY_CALL)
+                // The body text changes on every state tick (Calling… → Connecting… → in progress);
+                // without this each edit re-pops the heads-up banner over the call UI.
+                .setOnlyAlertOnce(true)
 
             val person = Person.Builder().setName(title).build()
 
@@ -213,29 +296,63 @@ class FlashCallService : Service() {
                 .setOngoing(state.state != FlashCallState.ENDED)
                 .setContentIntent(contentIntent)
                 .setCategory(NotificationCompat.CATEGORY_CALL)
+                .setOnlyAlertOnce(true)
+                // Pre-O there is no channel to silence, so the ringer's exclusivity is asserted here.
+                .setSilent(true)
                 .build()
         }
 
+    /**
+     * The call channel is deliberately **silent**: [FlashCallRinger] owns the ring.
+     *
+     * A channel's sound plays exactly once per notification — looping needs `FLAG_INSISTENT`, which
+     * only the system dialer may set — so a channel sound can never be a ringtone, cannot be
+     * stopped the instant the call is answered, and cannot honour the ringer mode. Leaving it on top
+     * of the ringer would just add a stray ding under the ringtone.
+     *
+     * Sound and vibration are immutable after a channel is created, and the platform remembers the
+     * settings of a channel it has seen before (even a deleted one), so silencing the original
+     * `flash_calls` in place is impossible: this uses a new id and deletes the old channel so users
+     * who ran an earlier build don't keep a stale duplicate in Settings.
+     */
     private fun createChannel() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val manager = getSystemService(NotificationManager::class.java) ?: return
+        runCatching { manager.deleteNotificationChannel(LEGACY_CHANNEL_ID) }
         val channel = NotificationChannel(
             CHANNEL_ID,
             "Calls",
             NotificationManager.IMPORTANCE_HIGH,
         ).apply {
             description = "Incoming and ongoing voice/video calls"
+            // IMPORTANCE_HIGH still produces a heads-up banner with no sound, which is what a call
+            // notification needs: visible immediately, audible only via the ringer.
+            setSound(null, null)
+            enableVibration(false)
         }
         manager.createNotificationChannel(channel)
     }
 
     companion object {
         private const val TAG = "CALLSVC"
-        private const val CHANNEL_ID = "flash_calls"
+
+        /** Silent replacement for [LEGACY_CHANNEL_ID]; see [createChannel] for why the id changed. */
+        private const val CHANNEL_ID = "flash_calls_v2"
+
+        /** The pre-ringer channel, which played a one-shot notification ding. Deleted on create. */
+        private const val LEGACY_CHANNEL_ID = "flash_calls"
         private const val NOTIFICATION_ID = 42
         private const val REQUEST_ANSWER = 1001
         private const val REQUEST_DECLINE = 1002
         private const val REQUEST_HANGUP = 1003
+
+        /**
+         * `ServiceInfo.FOREGROUND_SERVICE_TYPE_NONE` (0), inlined to keep its platform
+         * deprecation out of the build log. It is the only type claimable with no runtime
+         * permission, and an untyped FGS beats never promoting at all: a service started
+         * with `startForegroundService` that never reaches `startForeground` is killed.
+         */
+        private const val FGS_TYPE_NONE = 0
 
         /** Start the call FGS — must be called while the app is foreground. */
         fun start(context: Context) {

@@ -4,17 +4,14 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
-import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.content.pm.ServiceInfo
-import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
-import android.os.PowerManager
 import android.util.Log
 import androidx.core.content.ContextCompat
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -39,41 +36,9 @@ class FlashBackgroundService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
-    /**
-     * Keeps the CPU running while the screen is off / device is dozing. Without it the CPU is
-     * throttled, the WebSocket 15s keepalive pings stall, the 45s read timeout fires, and every
-     * mesh session tears down and never recovers. Held for the whole service lifetime.
-     */
-    private var wakeLock: PowerManager.WakeLock? = null
-
-    /**
-     * Keeps the Wi-Fi radio fully powered while backgrounded. In power-save the radio parks
-     * between beacons, dropping packets that our sockets and mDNS multicast reception depend on.
-     * WIFI_MODE_FULL_LOW_LATENCY (API 29+) additionally biases the radio toward low latency,
-     * which suits the interactive mesh. Held for the whole service lifetime.
-     */
-    private var wifiLock: WifiManager.WifiLock? = null
-
-    /**
-     * Screen-on / user-present re-arm: screen-off + Doze can silently drop sessions and stall
-     * mDNS even with the locks held, so when the screen returns we restart discovery browsing
-     * and force an immediate auto-connect sweep so returning peers come back online at once.
-     * Registered at runtime (these broadcasts cannot be declared in the manifest).
-     */
-    private val screenReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) {
-            when (intent?.action) {
-                Intent.ACTION_SCREEN_ON, Intent.ACTION_USER_PRESENT -> {
-                    Log.i(TAG, "Screen-on (${intent.action}) — re-arming discovery + auto-connect")
-                    DiscoveryEngineHolder.onScreenOn()
-                }
-            }
-        }
-    }
-
     override fun onCreate() {
         super.onCreate()
-        // Order matters (ERROR-020): locks + engine FIRST, foreground promotion LAST.
+        // Order matters (ERROR-020): engine FIRST, foreground promotion LAST.
         //
         // When the system restarts this START_STICKY service after killing the process,
         // the app is backgrounded and startForeground() throws
@@ -83,20 +48,31 @@ class FlashBackgroundService : Service() {
         // seconds" bug. Now the failure path is caught below: the engine is already up,
         // the process stays alive, and we stop the service instance cleanly instead of
         // crashing (which also stops the crash-restart loop).
-        acquireLocks()
-        registerReceiver(
-            screenReceiver,
-            IntentFilter().apply {
-                addAction(Intent.ACTION_SCREEN_ON)
-                addAction(Intent.ACTION_USER_PRESENT)
-            },
-        )
+        //
+        // The CPU + Wi-Fi power locks deliberately do NOT live here (ERROR-026). This service
+        // instance can be destroyed while the engine keeps running — exactly what the refused path
+        // below does — and onDestroy releasing the locks disarmed the mesh in the one situation the
+        // locks exist for. DiscoveryEngineHolder now holds them for the engine's lifetime.
+        //
+        // The screen-on / user-present receiver is gone from here for the same reason (ERROR-031):
+        // it used to be registered in onCreate and unregistered in onDestroy, so the refused path
+        // below tore down the engine's only way to notice the screen coming back — leaving it with
+        // no foreground service AND no re-arm. DiscoveryEngineHolder registers it for the engine's
+        // lifetime instead.
+        // ensureStarted is NonCancellable inside the holder, so stopSelf() below cannot abort a
+        // half-built engine even though it cancels this scope.
         scope.launch {
             runCatching { DiscoveryEngineHolder.ensureStarted(applicationContext) }
                 .onFailure { Log.w(TAG, "engine start failed in background service", it) }
         }
-        if (!startAsForeground()) {
-            Log.w(TAG, "Foreground promotion refused (background start restriction) — stopping service instance; engine keeps running in-process")
+        if (startAsForeground()) {
+            promotionRefused.set(false)
+        } else {
+            // Remember the refusal so a later moment when the app is allowed to start a foreground
+            // service again ([retryPromotionIfRefused], driven by screen-on and Wi-Fi rejoin) can
+            // try once more instead of the process staying unprotected until the user next opens it.
+            promotionRefused.set(true)
+            Log.w(TAG, "Foreground promotion refused (background start restriction) — stopping service instance; engine keeps running in-process with its power locks held, promotion will be retried")
             stopSelf()
         }
     }
@@ -108,45 +84,10 @@ class FlashBackgroundService : Service() {
 
     override fun onDestroy() {
         scope.cancel()
-        runCatching { unregisterReceiver(screenReceiver) }
-        releaseLocks()
-        // Engine itself keeps running if the Dev Console wants it; stopping the
-        // service only releases foreground priority. Full stop is explicit.
+        // Engine itself keeps running (with its power locks and its screen-on receiver) if the Dev
+        // Console or a refused foreground promotion wants it; stopping the service only releases
+        // foreground priority. Full stop is explicit: DiscoveryEngineHolder.stopAll().
         super.onDestroy()
-    }
-
-    /**
-     * Acquires the CPU wake lock and Wi-Fi lock that keep the mesh alive across screen-off/Doze.
-     * See the [wakeLock]/[wifiLock] fields for the failure mode each one guards against. Both are
-     * released in [onDestroy].
-     */
-    private fun acquireLocks() {
-        val powerManager = getSystemService(PowerManager::class.java)
-        wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKE_LOCK_TAG).apply {
-            setReferenceCounted(false)
-            acquire()
-        }
-
-        val wifiManager = applicationContext.getSystemService(WifiManager::class.java)
-        val wifiMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            WifiManager.WIFI_MODE_FULL_LOW_LATENCY
-        } else {
-            @Suppress("DEPRECATION")
-            WifiManager.WIFI_MODE_FULL_HIGH_PERF
-        }
-        wifiLock = wifiManager.createWifiLock(wifiMode, WIFI_LOCK_TAG).apply {
-            setReferenceCounted(false)
-            acquire()
-        }
-        Log.i(TAG, "Acquired wake lock + Wi-Fi lock (mode=$wifiMode) for background mesh")
-    }
-
-    /** Releases both locks, guarding against double-release (only release if held). */
-    private fun releaseLocks() {
-        runCatching { wakeLock?.let { if (it.isHeld) it.release() } }
-        wakeLock = null
-        runCatching { wifiLock?.let { if (it.isHeld) it.release() } }
-        wifiLock = null
     }
 
     /**
@@ -190,8 +131,16 @@ class FlashBackgroundService : Service() {
         private const val TAG = "SERVICE"
         private const val CHANNEL_ID = "flash_discovery_bg"
         private const val NOTIFICATION_ID = 41
-        private const val WAKE_LOCK_TAG = "flash:ws-mesh"
-        private const val WIFI_LOCK_TAG = "flash:ws-mesh-wifi"
+
+        /**
+         * True while the process is running the mesh **without** foreground-service protection
+         * because a promotion attempt was refused (ERROR-031 / D7).
+         *
+         * Set by [onCreate]'s failure path, cleared as soon as a promotion succeeds. Lives in the
+         * companion, not the instance, precisely because the refused instance destroys itself:
+         * the fact that protection is missing has to outlive it.
+         */
+        private val promotionRefused = AtomicBoolean(false)
 
         fun start(context: Context) {
             val intent = Intent(context.applicationContext, FlashBackgroundService::class.java)
@@ -201,6 +150,25 @@ class FlashBackgroundService : Service() {
             }.onFailure { error ->
                 Log.e(TAG, "Unable to start background mesh foreground service", error)
             }
+        }
+
+        /**
+         * Best-effort second chance at foreground protection after a refused promotion.
+         *
+         * Called from [DiscoveryEngineHolder.onScreenOn] and from the Wi-Fi rejoin hook
+         * (`WsFlashNetwork(onUsableNetwork = …)`) — two moments where the app has plausibly become
+         * allowed to start a foreground service again. Starting the service creates a fresh
+         * instance, so `onCreate` re-runs `startAsForeground()`; if the platform refuses again the
+         * catch inside it turns that into `false` and the instance stops itself, so a failed retry
+         * costs nothing and the flag stays armed for the next attempt.
+         *
+         * No-op when protection is already held, so the hot paths that call this on every screen-on
+         * and every network change do not churn service instances.
+         */
+        fun retryPromotionIfRefused(context: Context) {
+            if (!promotionRefused.get()) return
+            Log.i(TAG, "Retrying refused foreground promotion")
+            start(context)
         }
 
         fun stop(context: Context) {

@@ -7,10 +7,12 @@ import com.transfer.flash.core.discovery.core.EndpointDirectory
 import com.transfer.flash.core.discovery.core.FlashAdvertisedIdentity
 import com.transfer.flash.core.discovery.core.FlashDiscoveryMode
 import com.transfer.flash.core.discovery.core.FlashTransportEvent
+import com.transfer.flash.core.discovery.core.StandardEndpointDirectory
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -104,15 +106,30 @@ class NsdTransportLogicTest {
         var advertiseResult = true
         var monitorResult = true
         var stopBrowseCalled = false
-        var stopBrowseCount = 0
         var monitorsCancelled = false
         var unadvertiseCalled = false
         var unadvertiseCount = 0
+
+        // Volatile: the connectivity re-arm path resumes on a scheduler thread
+        // (it uses a REAL delay for its debounce), so these are read cross-thread.
+        @Volatile var stopBrowseCount = 0
+
+        @Volatile var browseStartCount = 0
+
+        @Volatile var networkObserved = false
+        private var networkListener: (() -> Unit)? = null
 
         lateinit var browseEvents: BrowseEvents
             private set
         lateinit var monitorEvents: MonitorEvents
             private set
+
+        /** Per-service monitor callbacks, so a test can fail exactly one registration. */
+        val monitorEventsByName = mutableMapOf<String, MonitorEvents>()
+
+        /** Non-null makes [advertise] report an asynchronous registration failure. */
+        var advertiseFailureCode: Int? = null
+        private var advertiseEventsRef: AdvertiseEvents? = null
 
         override fun setMulticastLock(active: Boolean) {
             lockStates += active
@@ -120,7 +137,13 @@ class NsdTransportLogicTest {
 
         override fun advertise(request: AdvertiseRequest, events: AdvertiseEvents): Boolean {
             advertiseRequests += request
-            events.onRegistered(request.serviceName, request.port)
+            advertiseEventsRef = events
+            val failure = advertiseFailureCode
+            if (failure != null) {
+                events.onRegistrationFailed(failure)
+            } else {
+                events.onRegistered(request.serviceName, request.port)
+            }
             return advertiseResult
         }
 
@@ -132,6 +155,7 @@ class NsdTransportLogicTest {
         override fun startBrowse(request: BrowseRequest, events: BrowseEvents): Boolean {
             browseRequests += request
             browseEvents = events
+            browseStartCount += 1 // volatile write publishes browseRequests too
             return startBrowseResult
         }
 
@@ -143,6 +167,7 @@ class NsdTransportLogicTest {
         override fun monitor(request: MonitorRequest, events: MonitorEvents): Boolean {
             monitorRequests += request
             monitorEvents = events
+            monitorEventsByName[request.serviceName] = events
             return monitorResult
         }
 
@@ -150,10 +175,49 @@ class NsdTransportLogicTest {
             monitorsCancelled = true
         }
 
+        override fun observeNetworkChanges(onChanged: () -> Unit): Boolean {
+            networkListener = onChanged
+            networkObserved = true
+            return true
+        }
+
+        override fun stopObservingNetworkChanges() {
+            networkListener = null
+            networkObserved = false
+        }
+
+        fun fireNetworkChanged() = requireNotNull(networkListener) { "not observing" }.invoke()
+
         fun fireBrowseStartFailed(errorCode: Int) = browseEvents.onStartFailed(errorCode)
         fun fireServiceFound(name: String) = browseEvents.onServiceFound(name)
         fun fireMonitorUpdated(data: ResolvedServiceData) = monitorEvents.onUpdated(data)
         fun fireMonitorLost(name: String) = monitorEvents.onMonitorLost(name)
+
+        /** Async `onServiceInfoCallbackRegistrationFailed` for one specific service. */
+        fun fireMonitorRegistrationFailed(name: String, errorCode: Int) =
+            requireNotNull(monitorEventsByName[name]) { "no monitor for $name" }
+                .onRegistrationFailed(errorCode)
+
+        /** The framework dropped our advertisement (mDNS daemon restart, OEM freeze). */
+        fun fireAdvertiseUnregistered() =
+            requireNotNull(advertiseEventsRef) { "not advertising" }.onUnregistered()
+    }
+
+    /**
+     * Hand-cranked heartbeat pacing. The transport's `presenceSleep` parks on a
+     * rendezvous channel, so [tick] runs EXACTLY one heartbeat iteration
+     * synchronously (Unconfined resumes the parked coroutine inline) and the loop
+     * can never spin — the determinism the no-op `sleep` hook gives the browse loop.
+     */
+    private class ManualTicker {
+        private val gate = Channel<Unit>(Channel.RENDEZVOUS)
+        val waits = mutableListOf<Long>()
+        val sleep: suspend (Long) -> Unit = { ms ->
+            waits += ms
+            gate.receive()
+        }
+
+        fun tick() = runBlocking { gate.send(Unit) }
     }
 
     /** Collects transport events synchronously; handlers run inline on Dispatchers.Unconfined. */
@@ -170,7 +234,7 @@ class NsdTransportLogicTest {
 
     private fun newTransport(
         apiLevel: Int,
-        directory: FakeDirectory,
+        directory: EndpointDirectory,
         bridge: FakeBridge,
         maxRestarts: Int = 5,
         delays: MutableList<Long>? = null,
@@ -179,6 +243,21 @@ class NsdTransportLogicTest {
         idleWaits: MutableList<Long>? = null,
         slept: MutableList<Long>? = null,
         lostDebounceMs: Long = 0L,
+        nowMs: () -> Long = { 1_000L },
+        // 0 disables the heartbeat: tests that do not exercise it stay synchronous.
+        presenceHeartbeatMs: Long = 0L,
+        presenceSleep: (suspend (Long) -> Unit)? = null,
+        maxPresenceTicks: Int = Int.MAX_VALUE,
+        networkChangeDebounceMs: Long = 0L,
+        // 0 disables the fast monitor retry / advertise watchdog: tests that do not exercise them
+        // stay synchronous and spawn no loops.
+        monitorRetryMs: Long = 0L,
+        monitorRetrySleep: (suspend (Long) -> Unit)? = null,
+        maxMonitorRetries: Int = NsdTransport.DEFAULT_MAX_MONITOR_RETRIES,
+        advertiseWatchdogMs: Long = 0L,
+        advertiseWatchdogSleep: (suspend (Long) -> Unit)? = null,
+        maxAdvertiseWatchdogTicks: Int = Int.MAX_VALUE,
+        sweepResults: ((Long) -> List<EndpointDirectory.Diff.Lost>)? = null,
     ): NsdTransport {
         val recordedDelays = delays
         val recordedIdleWaits = idleWaits
@@ -187,7 +266,7 @@ class NsdTransportLogicTest {
             context = null,
             apiLevel = FakeApiLevel(apiLevel),
             directory = directory,
-            sweep = { _ -> emptyList() },
+            sweep = sweepResults ?: { _ -> emptyList() },
             retryDelayMs = { attempt ->
                 (1000L * attempt).also { recordedDelays?.add(it) }
             },
@@ -196,13 +275,23 @@ class NsdTransportLogicTest {
             initialModePolicy = modePolicy
                 ?: DiscoveryModePolicy.forMode(FlashDiscoveryMode.STANDARD),
             dispatcher = Dispatchers.Unconfined,
-            timeSourceMs = { 1_000L },
+            timeSourceMs = nowMs,
             sleep = { ms -> recordedSlept?.add(ms) /* no-op: deterministic, no virtual time */ },
             idleWaitOverride = { ms ->
                 recordedIdleWaits?.add(ms)
                 false // full gap elapsed; deterministic, no virtual time needed
             },
             lostDebounceMs = lostDebounceMs, // synchronous loss in tests unless a case opts into debounce
+            presenceHeartbeatMs = presenceHeartbeatMs,
+            presenceSleep = presenceSleep ?: { },
+            maxPresenceTicks = maxPresenceTicks,
+            monitorRetryMs = monitorRetryMs,
+            maxMonitorRetries = maxMonitorRetries,
+            monitorRetrySleep = monitorRetrySleep ?: { },
+            advertiseWatchdogMs = advertiseWatchdogMs,
+            advertiseWatchdogSleep = advertiseWatchdogSleep ?: { },
+            maxAdvertiseWatchdogTicks = maxAdvertiseWatchdogTicks,
+            networkChangeDebounceMs = networkChangeDebounceMs,
             logInfo = {},
             logWarn = {},
             bridgeOverride = bridge,
@@ -665,6 +754,387 @@ class NsdTransportLogicTest {
         runBlocking { transport.startBrowsing() }
         assertEquals(listOf(1_000L), delays)
         assertEquals(listOf(1_000L), slept)
+    }
+
+    // ------------------------------------------------------------------
+    // Presence liveness: the "peer appears, then vanishes ~30s later and
+    // never comes back" regression suite.
+    // ------------------------------------------------------------------
+
+    @Test
+    fun unchangedSighting_emitsPresence_insteadOfNothing() {
+        // A stable peer re-resolves to IDENTICAL data, which the directory dedups
+        // to Diff.Unchanged. That used to emit NOTHING, so a consumer aging peers
+        // out on a TTL saw one Found and then permanent silence for a peer sitting
+        // right there. Unchanged must surface as a liveness signal.
+        val bridge = FakeBridge()
+        val transport = newTransport(
+            apiLevel = 34,
+            directory = StandardEndpointDirectory(),
+            bridge = bridge,
+        )
+        runBlocking { transport.startBrowsing() }
+        val recorder = EventRecorder(transport)
+
+        bridge.fireServiceFound("Flash Peer")
+        bridge.fireMonitorUpdated(resolvedData())
+        bridge.fireMonitorUpdated(resolvedData()) // byte-identical re-resolution
+
+        assertEquals(1, recorder.received.filterIsInstance<FlashTransportEvent.Found>().size)
+        assertEquals(0, recorder.received.filterIsInstance<FlashTransportEvent.Updated>().size)
+        assertEquals(1, recorder.received.filterIsInstance<FlashTransportEvent.Presence>().size)
+        recorder.cancel()
+    }
+
+    @Test
+    fun restartBrowsing_forcesFreshBrowse_whereStartBrowsingIsANoOp() {
+        val bridge = FakeBridge()
+        val transport = newTransport(apiLevel = 34, directory = StandardEndpointDirectory(), bridge = bridge)
+
+        runBlocking { transport.startBrowsing() }
+        assertEquals(1, bridge.browseRequests.size)
+
+        // Idempotent by contract: a second start cannot recover a dead browse.
+        runBlocking { transport.startBrowsing() }
+        assertEquals(1, bridge.browseRequests.size)
+        assertEquals(0, bridge.stopBrowseCount)
+
+        // Forced restart tears the radio down and re-arms unconditionally, so the
+        // platform re-delivers onServiceFound for everything still present.
+        runBlocking { transport.restartBrowsing() }
+        assertEquals(2, bridge.browseRequests.size)
+        assertEquals(1, bridge.stopBrowseCount)
+        assertTrue(bridge.monitorsCancelled)
+    }
+
+    @Test
+    fun heartbeat_reAffirmsQuietPeer_andNeverEvictsIt() {
+        // THE field symptom: after the single Found, NSD delivers nothing at all
+        // for a peer that never moved (API 34+ ServiceInfoCallback fires on change
+        // only; pre-34 resolve is one-shot). Six ticks span 60s — twice the
+        // consumer grace window — and must produce liveness, never a Lost.
+        val ticker = ManualTicker()
+        val bridge = FakeBridge()
+        var now = 1_000L
+        val transport = newTransport(
+            apiLevel = 34,
+            directory = StandardEndpointDirectory(),
+            bridge = bridge,
+            nowMs = { now },
+            presenceHeartbeatMs = 1_000L,
+            presenceSleep = ticker.sleep,
+            maxPresenceTicks = 10,
+        )
+        runBlocking { transport.startBrowsing() }
+        val recorder = EventRecorder(transport)
+
+        bridge.fireServiceFound("Flash Peer")
+        bridge.fireMonitorUpdated(resolvedData())
+        assertEquals(1, recorder.received.filterIsInstance<FlashTransportEvent.Found>().size)
+
+        repeat(6) {
+            now += 10_000L
+            ticker.tick()
+        }
+
+        assertEquals(6, recorder.received.filterIsInstance<FlashTransportEvent.Presence>().size)
+        assertTrue(
+            "a monitored peer must never be evicted by the heartbeat",
+            recorder.received.filterIsInstance<FlashTransportEvent.Lost>().isEmpty(),
+        )
+        recorder.cancel()
+    }
+
+    @Test
+    fun heartbeat_retriesMonitorThatFailedToStart_thenStops() {
+        // A found-but-never-resolved service was invisible forever: nothing retried
+        // a failed monitor initiation, so the peer existed on the radio and nowhere
+        // else. The heartbeat is that retry.
+        val ticker = ManualTicker()
+        val bridge = FakeBridge().apply { monitorResult = false }
+        val transport = newTransport(
+            apiLevel = 34,
+            directory = StandardEndpointDirectory(),
+            bridge = bridge,
+            presenceHeartbeatMs = 1_000L,
+            presenceSleep = ticker.sleep,
+            maxPresenceTicks = 5,
+        )
+        runBlocking { transport.startBrowsing() }
+
+        bridge.fireServiceFound("Flash Peer")
+        assertEquals(1, bridge.monitorRequests.size)
+
+        bridge.monitorResult = true
+        ticker.tick()
+        assertEquals(2, bridge.monitorRequests.size)
+
+        // Once it takes, the heartbeat stops re-initiating it.
+        ticker.tick()
+        assertEquals(2, bridge.monitorRequests.size)
+    }
+
+    @Test
+    fun heartbeat_evictsPeerThePlatformStoppedVouchingFor_onlyAfterGraceTicks() {
+        val ticker = ManualTicker()
+        val bridge = FakeBridge()
+        var now = 1_000L
+        val transport = newTransport(
+            apiLevel = 34,
+            directory = StandardEndpointDirectory(),
+            bridge = bridge,
+            nowMs = { now },
+            presenceHeartbeatMs = 1_000L,
+            presenceSleep = ticker.sleep,
+            maxPresenceTicks = 10,
+        )
+        runBlocking { transport.startBrowsing() }
+        val recorder = EventRecorder(transport)
+        bridge.fireServiceFound("Flash Peer")
+        bridge.fireMonitorUpdated(resolvedData())
+        assertEquals(1, ticker.waits.size)
+
+        // Forced restart drops every vouch; the radio is silent afterwards (this
+        // peer really is gone), but the directory still holds it.
+        runBlocking { transport.restartBrowsing() }
+        assertEquals("restart must re-arm the heartbeat", 2, ticker.waits.size)
+
+        // Inside the post-restart grace: eviction is suppressed so a still-present
+        // peer that has not been re-announced YET is not falsely lost.
+        now = 2_500L
+        ticker.tick()
+        assertTrue(recorder.received.filterIsInstance<FlashTransportEvent.Lost>().isEmpty())
+
+        // Past the grace: now the silence is real.
+        now = 5_000L
+        ticker.tick()
+        val lost = recorder.received.filterIsInstance<FlashTransportEvent.Lost>()
+        assertEquals(1, lost.size)
+        assertEquals("peer-1", lost.single().deviceId.value)
+        assertEquals("Flash Peer", lost.single().serviceName)
+        recorder.cancel()
+    }
+
+    @Test
+    fun stop_drainsDirectory_soTheNextSessionRePublishesFound() {
+        // stop() used to leave the directory populated. The next browse session
+        // re-sighted the same peers, deduped them to Unchanged, and published
+        // nothing — physically present devices stayed invisible until one of their
+        // fields happened to change.
+        val bridge = FakeBridge()
+        val directory = StandardEndpointDirectory()
+        val transport = newTransport(apiLevel = 34, directory = directory, bridge = bridge)
+        runBlocking { transport.startBrowsing() }
+        val recorder = EventRecorder(transport)
+
+        bridge.fireServiceFound("Flash Peer")
+        bridge.fireMonitorUpdated(resolvedData())
+        assertEquals(1, recorder.received.filterIsInstance<FlashTransportEvent.Found>().size)
+
+        runBlocking { transport.stop() }
+        assertTrue(directory.snapshot().isEmpty())
+
+        runBlocking { transport.startBrowsing() }
+        bridge.fireServiceFound("Flash Peer")
+        bridge.fireMonitorUpdated(resolvedData())
+
+        assertEquals(2, recorder.received.filterIsInstance<FlashTransportEvent.Found>().size)
+        recorder.cancel()
+    }
+
+    @Test
+    fun connectivityChange_forcesBrowseRestart() {
+        // The browse is deliberately UNBOUND (so a hotspot host can see its
+        // clients), which also means it is network-blind: nothing else notices the
+        // interface it started on disappearing.
+        val bridge = FakeBridge()
+        val transport = newTransport(
+            apiLevel = 34,
+            directory = StandardEndpointDirectory(),
+            bridge = bridge,
+            networkChangeDebounceMs = 0L,
+        )
+        runBlocking { transport.startBrowsing() }
+        assertTrue("browsing must register a connectivity observer", bridge.networkObserved)
+        assertEquals(1, bridge.browseStartCount)
+
+        bridge.fireNetworkChanged()
+
+        // The debounce is a REAL delay (only the browse-loop sleep is stubbed), so
+        // the restart lands on a scheduler thread shortly after.
+        assertTrue(awaitTrue { bridge.browseStartCount >= 2 })
+        assertTrue(bridge.stopBrowseCount >= 1)
+        runBlocking { transport.stop() }
+        assertFalse(bridge.networkObserved)
+    }
+
+    // ------------------------------------------------------------------
+    // Fast monitor retry + advertise watchdog (discovery-latency fixes)
+    // ------------------------------------------------------------------
+
+    @Test
+    fun monitorStartFailure_isRetriedFast_notOnlyByTheHeartbeat() {
+        // The presence heartbeat used to be the only retry path, so one failed resolve cost a
+        // full 10s tick of discovery latency, two cost 20s, three cost 30s.
+        val ticker = ManualTicker()
+        val bridge = FakeBridge().apply { monitorResult = false }
+        val transport = newTransport(
+            apiLevel = 34,
+            directory = StandardEndpointDirectory(),
+            bridge = bridge,
+            presenceHeartbeatMs = 0L, // no heartbeat at all: the fast retry is the only path here
+            monitorRetryMs = 600L,
+            monitorRetrySleep = ticker.sleep,
+        )
+        runBlocking { transport.startBrowsing() }
+
+        bridge.fireServiceFound("Flash Peer")
+        assertEquals(1, bridge.monitorRequests.size)
+
+        bridge.monitorResult = true
+        ticker.tick()
+
+        assertEquals(2, bridge.monitorRequests.size)
+        assertEquals(listOf(600L), ticker.waits)
+        runBlocking { transport.stop() }
+    }
+
+    @Test
+    fun asyncMonitorRegistrationFailure_demotesTheService_andRetriesIt() {
+        // registerServiceInfoCallback did not throw, so the service was optimistically marked
+        // monitored; the platform then reported the failure asynchronously. That callback carried
+        // no service name, so it was logged and dropped — leaving the peer permanently "monitored"
+        // and therefore never retried and never evicted.
+        val ticker = ManualTicker()
+        val bridge = FakeBridge()
+        val transport = newTransport(
+            apiLevel = 34,
+            directory = StandardEndpointDirectory(),
+            bridge = bridge,
+            monitorRetryMs = 600L,
+            monitorRetrySleep = ticker.sleep,
+        )
+        runBlocking { transport.startBrowsing() }
+
+        bridge.fireServiceFound("Flash Peer")
+        assertEquals(1, bridge.monitorRequests.size)
+
+        bridge.fireMonitorRegistrationFailed("Flash Peer", errorCode = 3)
+        ticker.tick()
+
+        assertEquals(2, bridge.monitorRequests.size)
+        assertEquals("Flash Peer", bridge.monitorRequests.last().serviceName)
+        runBlocking { transport.stop() }
+    }
+
+    @Test
+    fun resolvedService_isNotRetried() {
+        val ticker = ManualTicker()
+        val bridge = FakeBridge()
+        val transport = newTransport(
+            apiLevel = 34,
+            directory = StandardEndpointDirectory(),
+            bridge = bridge,
+            monitorRetryMs = 600L,
+            monitorRetrySleep = ticker.sleep,
+        )
+        runBlocking { transport.startBrowsing() }
+
+        bridge.fireServiceFound("Flash Peer")
+        bridge.fireMonitorUpdated(resolvedData())
+
+        // A healthy monitor schedules nothing, so the retry sleep was never even entered.
+        assertEquals(1, bridge.monitorRequests.size)
+        assertTrue(ticker.waits.isEmpty())
+        runBlocking { transport.stop() }
+    }
+
+    @Test
+    fun advertiseWatchdog_reRegistersAnAdvertisementTheFrameworkDropped() {
+        // NSD offers no positive "still advertised" signal, and Android drops registrations for
+        // reasons an app cannot prevent (mDNS daemon restart, interface change, OEM freeze).
+        // Nothing used to put one back, so the device stayed invisible to every peer.
+        val ticker = ManualTicker()
+        val bridge = FakeBridge()
+        val transport = newTransport(
+            apiLevel = 34,
+            directory = StandardEndpointDirectory(),
+            bridge = bridge,
+            advertiseWatchdogMs = 10_000L,
+            advertiseWatchdogSleep = ticker.sleep,
+            maxAdvertiseWatchdogTicks = 2,
+        )
+        runBlocking { transport.startAdvertising(45821, identity()) }
+        assertEquals(1, bridge.advertiseRequests.size)
+
+        // A healthy registration is left alone.
+        ticker.tick()
+        assertEquals(1, bridge.advertiseRequests.size)
+
+        bridge.fireAdvertiseUnregistered()
+        ticker.tick()
+
+        assertEquals(2, bridge.advertiseRequests.size)
+        assertEquals(45821, bridge.advertiseRequests.last().port)
+        runBlocking { transport.stop() }
+    }
+
+    @Test
+    fun advertiseWatchdog_recoversFromARegistrationFailure_keepingTheMulticastLock() {
+        val ticker = ManualTicker()
+        val bridge = FakeBridge().apply { advertiseFailureCode = 3 } // NSD FAILURE_INTERNAL_ERROR
+        val transport = newTransport(
+            apiLevel = 34,
+            directory = StandardEndpointDirectory(),
+            bridge = bridge,
+            advertiseWatchdogMs = 10_000L,
+            advertiseWatchdogSleep = ticker.sleep,
+            maxAdvertiseWatchdogTicks = 1,
+        )
+        runBlocking { transport.startAdvertising(45821, identity()) }
+        assertEquals(1, bridge.advertiseRequests.size)
+        // Giving up the lock here would strand the retry below without multicast reception.
+        assertFalse("multicast lock must survive a registration failure", bridge.lockStates.contains(false))
+
+        bridge.advertiseFailureCode = null
+        ticker.tick()
+
+        assertEquals(2, bridge.advertiseRequests.size)
+        runBlocking { transport.stop() }
+    }
+
+    @Test
+    fun connectivityChange_reRegistersAdvertising_evenWhileItReportsHealthy() {
+        // A registration pinned to a vanished interface keeps reporting itself as healthy — the
+        // advertise-side twin of the dead-browse problem restartBrowsing() exists for. This is an
+        // advertise-only transport, which also proves startAdvertising arms the observer itself.
+        val bridge = FakeBridge()
+        val transport = newTransport(
+            apiLevel = 34,
+            directory = StandardEndpointDirectory(),
+            bridge = bridge,
+            networkChangeDebounceMs = 0L,
+        )
+        runBlocking { transport.startAdvertising(45821, identity()) }
+        assertTrue("advertising must register a connectivity observer", bridge.networkObserved)
+        assertEquals(1, bridge.advertiseRequests.size)
+
+        bridge.fireNetworkChanged()
+
+        assertEquals(2, bridge.advertiseRequests.size)
+        assertEquals(1, bridge.unadvertiseCount)
+        assertEquals(0, bridge.browseStartCount) // never browsing: no browse restart
+        runBlocking { transport.stop() }
+    }
+
+    /** Bounded spin for the one assertion that crosses a thread boundary. */
+    private fun awaitTrue(timeoutMs: Long = 5_000L, condition: () -> Boolean): Boolean {
+        val deadline = System.nanoTime() + timeoutMs * 1_000_000L
+        while (System.nanoTime() < deadline) {
+            if (condition()) return true
+            Thread.sleep(5)
+        }
+        return condition()
     }
 
     private fun endpointOf(id: String) = FlashDiscoveredEndpoint(

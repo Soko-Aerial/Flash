@@ -65,6 +65,8 @@ public class FlashSettingsDataStore(
         public val autoDownloadImage: Preferences.Key<Boolean> = booleanPreferencesKey("auto_download_image")
         public val autoDownloadVideo: Preferences.Key<Boolean> = booleanPreferencesKey("auto_download_video")
         public val autoDownloadFile: Preferences.Key<Boolean> = booleanPreferencesKey("auto_download_file")
+        public val prioritiseVoiceQuality: Preferences.Key<Boolean> =
+            booleanPreferencesKey("prioritise_voice_quality")
         public val saveLocationUri: Preferences.Key<String> = stringPreferencesKey("save_location_uri")
         public val retentionDays: Preferences.Key<Int> = intPreferencesKey("retention_days")
         public val displayName: Preferences.Key<String> = stringPreferencesKey("display_name")
@@ -133,6 +135,17 @@ public class FlashSettingsDataStore(
     public val autoDownloadFile: Flow<Boolean> =
         preferences.map { it[Keys.autoDownloadFile] ?: false }
 
+    /**
+     * Spend a congested link on voice before video in a video call. Default TRUE.
+     *
+     * Default-on because the failure it prevents is worse than the one it causes: a caller who
+     * cannot be understood has lost the call, whereas a caller whose picture went soft for a few
+     * seconds has not. Turning it off restores WebRTC's symmetric treatment of the two streams
+     * and disables the adaptive governor in `core:calling` entirely.
+     */
+    public val prioritiseVoiceQuality: Flow<Boolean> =
+        preferences.map { it[Keys.prioritiseVoiceQuality] ?: true }
+
     public val saveLocationUri: Flow<String?> =
         preferences.map { it[Keys.saveLocationUri] }
 
@@ -185,6 +198,10 @@ public class FlashSettingsDataStore(
 
     public suspend fun setAutoDownloadFile(value: Boolean) {
         dataStore.edit { it[Keys.autoDownloadFile] = value }
+    }
+
+    public suspend fun setPrioritiseVoiceQuality(value: Boolean) {
+        dataStore.edit { it[Keys.prioritiseVoiceQuality] = value }
     }
 
     public suspend fun setSaveLocationUri(value: String?) {

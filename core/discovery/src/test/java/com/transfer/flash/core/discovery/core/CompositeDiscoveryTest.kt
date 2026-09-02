@@ -10,6 +10,7 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.launch
@@ -60,6 +61,11 @@ private class FakeTransport(override val transportName: String) : FlashRadioTran
         return browseResult
     }
 
+    override suspend fun restartBrowsing(): FlashResult<Unit> {
+        calls += "restart"
+        return browseResult
+    }
+
     override suspend fun stop(): FlashResult<Unit> {
         calls += "stop"
         return stopResult
@@ -69,9 +75,30 @@ private class FakeTransport(override val transportName: String) : FlashRadioTran
         check(outgoing.tryEmit(FlashTransportEvent.Found(endpoint)))
     }
 
+    /** Liveness heartbeat: same peer, nothing changed (see FlashTransportEvent.Presence). */
+    fun presence(endpoint: FlashDiscoveredEndpoint) {
+        check(outgoing.tryEmit(FlashTransportEvent.Presence(endpoint)))
+    }
+
+    fun stateChanged(browsing: Boolean, message: String = "") {
+        check(outgoing.tryEmit(FlashTransportEvent.StateChanged(browsing, message)))
+    }
+
     fun lost(deviceId: String, serviceName: String? = null) {
         check(outgoing.tryEmit(FlashTransportEvent.Lost(FlashDeviceId(deviceId), serviceName)))
     }
+}
+
+/**
+ * Hand-cranked sweeper pacing: the composite's `delayFn` parks on a rendezvous
+ * channel, so [tick] runs EXACTLY one sweeper iteration (sweep + browse
+ * watchdog) synchronously on the caller's thread.
+ */
+private class TickGate {
+    private val gate = Channel<Unit>(Channel.RENDEZVOUS)
+    val delayFn: suspend (Long) -> Unit = { _ -> gate.receive() }
+
+    fun tick() = runBlocking { gate.send(Unit) }
 }
 
 private fun endpointOf(
@@ -455,5 +482,118 @@ class CompositeDiscoveryTest {
         assertTrue(state.isDiscovering)
         assertFalse(state.isAdvertising) // composite never claims visibility in GHOST
         assertTrue(state.statusMessage.startsWith("[GHOST] "))
+    }
+
+    // ------------------------------------------------------------------
+    // Presence liveness (the "peer vanishes ~30 s after it appears" fix)
+    // ------------------------------------------------------------------
+
+    @Test
+    fun presence_keepsQuietPeerAliveAcrossManyGraceWindows() = runBlocking {
+        // A stable NSD peer emits ONE Found and then only deduped sightings, which
+        // the transport now reports as Presence. Sixty seconds of heartbeats — two
+        // full grace windows — must not age it out, and must not churn the UI with
+        // fake transitions either.
+        harness = Harness("LAN")
+        harness.composite.startAll(40_000, identity)
+        harness.advance(100)
+        harness.lan.found(endpointOf("d1"))
+
+        repeat(6) {
+            harness.advance(10_000)
+            harness.lan.presence(endpointOf("d1"))
+            harness.composite.sweep(nowMs = harness.now)
+        }
+
+        assertTrue(
+            "presence heartbeats must feed the sweeper's TTL",
+            harness.events.none { it is FlashTransportEvent.Lost },
+        )
+        assertEquals(1, harness.composite.discoveredEndpoints.value.size)
+        assertEquals(1, harness.events.filterIsInstance<FlashTransportEvent.Found>().size)
+        assertEquals(0, harness.events.filterIsInstance<FlashTransportEvent.Updated>().size)
+    }
+
+    @Test
+    fun presence_forPeerNotYetKnown_selfHealsIntoFound() = runBlocking {
+        harness = Harness("LAN")
+        harness.composite.startDiscovery()
+        harness.advance(100)
+
+        // No prior Found for d1: a heartbeat for an unknown peer is promoted to a
+        // real sighting rather than dropped, so a peer that was wrongly evicted
+        // reappears on its own instead of staying invisible until it re-advertises.
+        harness.lan.presence(endpointOf("d1"))
+
+        assertEquals(1, harness.composite.discoveredEndpoints.value.size)
+        assertEquals(1, harness.events.filterIsInstance<FlashTransportEvent.Found>().size)
+    }
+
+    // ------------------------------------------------------------------
+    // Browse watchdog + forced restart
+    // ------------------------------------------------------------------
+
+    @Test
+    fun browseWatchdog_reArmsTransportThatStoppedBrowsing_rateLimited() = runBlocking {
+        val lan = FakeTransport("LAN")
+        var now = 0L
+        val gate = TickGate()
+        val scope = CoroutineScope(SupervisorJob() + DirectDispatcher)
+        val composite = CompositeDiscovery(
+            transports = listOf(lan),
+            scopeFactory = { scope },
+            clock = { now },
+            delayFn = gate.delayFn,
+            sweepIntervalMs = 5_000,
+            browseWatchdogMs = 10_000,
+            maxSweepLoops = 5,
+        )
+        try {
+            assertTrue(composite.startDiscovery() is FlashResult.Success)
+            assertEquals(listOf("browse"), lan.calls)
+
+            // The platform gave up (NSD onStopDiscoveryFailed / max retries). The
+            // transport says so truthfully, which stamps the stall at now = 0.
+            lan.stateChanged(browsing = false, message = "Browsing gave up after 5 attempts")
+            assertFalse(composite.state.value.isDiscovering)
+
+            // Half a watchdog window: too early, no restart yet.
+            now = 5_000
+            gate.tick()
+            assertEquals(listOf("browse"), lan.calls)
+
+            // At the window: the watchdog forces a restart (startBrowsing would be
+            // a no-op inside the transport, hence restartBrowsing).
+            now = 10_000
+            gate.tick()
+            assertEquals(listOf("browse", "restart"), lan.calls)
+            assertTrue(composite.state.value.isDiscovering)
+
+            // Still stalled per the transport, but rate-limited to one attempt per
+            // window so a dead radio cannot spin the restart path.
+            lan.stateChanged(browsing = false, message = "gave up again")
+            now = 15_000
+            gate.tick()
+            assertEquals(listOf("browse", "restart"), lan.calls)
+
+            now = 20_000
+            gate.tick()
+            assertEquals(listOf("browse", "restart", "restart"), lan.calls)
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun restartDiscovery_forcesFreshBrowseOnEveryTransport() = runBlocking {
+        harness = Harness("LAN", "WIFI_DIRECT")
+
+        assertTrue(harness.composite.startDiscovery() is FlashResult.Success)
+        assertTrue(harness.composite.restartDiscovery() is FlashResult.Success)
+
+        harness.transports.forEach { transport ->
+            assertEquals(listOf("browse", "restart"), transport.calls)
+        }
+        assertTrue(harness.composite.state.value.isDiscovering)
     }
 }

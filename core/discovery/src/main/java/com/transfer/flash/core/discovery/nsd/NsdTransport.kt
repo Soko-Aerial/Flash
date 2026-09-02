@@ -143,6 +143,26 @@ public interface NsdManagerBridge {
 
     /** Cancels all outstanding monitors/resolutions. */
     public fun cancelMonitors()
+
+    /**
+     * Registers a listener fired whenever the set of usable local networks
+     * changes (Wi-Fi connected/lost, hotspot/tether up or down).
+     *
+     * Needed because the browse is deliberately UNBOUND (see
+     * [RealNsdManagerBridge.startBrowse]): the unbound `discoverServices`
+     * overload is what makes a hotspot HOST able to see its clients, but unlike
+     * the API 33+ NetworkRequest overload it does NOT track networks, so a
+     * browse started on one interface keeps "running" against an interface that
+     * no longer exists. Nothing then re-arms it and discovery is silently dead
+     * until the process restarts.
+     *
+     * @return true when observation started. Default false for fakes/hosts with
+     *   no connectivity service — callers must degrade, not fail.
+     */
+    public fun observeNetworkChanges(onChanged: () -> Unit): Boolean = false
+
+    /** Stops [observeNetworkChanges]. Idempotent. */
+    public fun stopObservingNetworkChanges() {}
 }
 
 /**
@@ -163,14 +183,30 @@ public class RealNsdManagerBridge(
     private var advertiseListener: NsdManager.RegistrationListener? = null
     private var discoveryListener: NsdManager.DiscoveryListener? = null
 
-    /** Service infos stashed from onServiceFound so monitor() can hand them to NSD APIs. */
-    private val foundServices = mutableMapOf<String, NsdServiceInfo>()
+    /**
+     * Service infos stashed from onServiceFound so monitor() can hand them to NSD APIs.
+     *
+     * CONCURRENT by necessity: written from the NSD callback thread
+     * (ConnectivityThread, via [DIRECT_EXECUTOR]) and read/cleared from the
+     * transport's coroutine lane. A plain HashMap here loses writes and can
+     * throw ConcurrentModificationException mid-iteration, which shows up as a
+     * peer that is found but never resolves.
+     */
+    private val foundServices = java.util.concurrent.ConcurrentHashMap<String, NsdServiceInfo>()
 
     /** Lazily created: the hardened serialized resolver (ERROR-006). */
-    private var resolveQueue: NsdResolveQueue? = null
+    @Volatile private var resolveQueue: NsdResolveQueue? = null
 
-    /** Active ServiceInfoCallbacks keyed by service name (API 34+ path). */
-    private val infoCallbacks = mutableMapOf<String, NsdManager.ServiceInfoCallback>()
+    /** Active ServiceInfoCallbacks keyed by service name (API 34+ path). Concurrent: see [foundServices]. */
+    private val infoCallbacks =
+        java.util.concurrent.ConcurrentHashMap<String, NsdManager.ServiceInfoCallback>()
+
+    private val connectivityManager: android.net.ConnectivityManager? =
+        runCatching {
+            appContext.getSystemService(android.net.ConnectivityManager::class.java)
+        }.getOrNull()
+
+    private var networkCallback: android.net.ConnectivityManager.NetworkCallback? = null
 
     override fun setMulticastLock(active: Boolean) {
         runCatching {
@@ -284,14 +320,19 @@ public class RealNsdManagerBridge(
      * (https://developer.android.com/reference/kotlin/android/net/nsd/NsdManager.ServiceInfoCallback).
      */
     private fun monitorWithInfoCallback(info: NsdServiceInfo, events: MonitorEvents): Boolean {
+        val monitoredName = info.serviceName
         val callback = object : NsdManager.ServiceInfoCallback {
             override fun onServiceUpdated(serviceInfo: NsdServiceInfo) {
                 mapResolved(serviceInfo)?.let(events::onUpdated)
             }
 
             // API 34-36 abstract method — exists on every SDK this compiles against.
+            // The framework signature carries no service name, so we supply the one
+            // this callback was registered FOR. Reporting null here made the loss
+            // unattributable and the transport dropped it outright, leaving a
+            // departed peer pinned in the directory forever.
             override fun onServiceLost() {
-                events.onMonitorLost(null)
+                events.onMonitorLost(monitoredName)
             }
 
             // Forward-compat: SDK 37 (Android 17) re-typed ServiceInfoCallback with an
@@ -300,21 +341,30 @@ public class RealNsdManagerBridge(
             // Android 17 devices the matching JVM signature implements the newer
             // framework method at runtime. Harmless extra method on API <= 36.
             fun onServiceLost(serviceInfo: NsdServiceInfo) {
-                events.onMonitorLost(serviceInfo.serviceName)
+                events.onMonitorLost(serviceInfo.serviceName ?: monitoredName)
             }
 
             override fun onServiceInfoCallbackRegistrationFailed(errorCode: Int) {
+                infoCallbacks.remove(monitoredName)
                 events.onRegistrationFailed(errorCode)
             }
 
             override fun onServiceInfoCallbackUnregistered() {
+                infoCallbacks.remove(monitoredName)
                 events.onUnregistered()
             }
         }
+        // Registering a second callback for a name we are already monitoring leaks the
+        // first one (never unregistered) and duplicates the update stream. Retire the
+        // previous registration first so re-finds stay idempotent.
+        infoCallbacks.remove(monitoredName)?.let { stale ->
+            runCatching { nsdManager.unregisterServiceInfoCallback(stale) }
+                .onFailure { Log.w(tag, "Unable to retire stale ServiceInfoCallback for $monitoredName", it) }
+        }
         return runCatching {
             nsdManager.registerServiceInfoCallback(info, DIRECT_EXECUTOR, callback)
-            infoCallbacks[info.serviceName] = callback
-        }.onFailure { Log.w(tag, "registerServiceInfoCallback failed for ${info.serviceName}", it) }
+            infoCallbacks[monitoredName] = callback
+        }.onFailure { Log.w(tag, "registerServiceInfoCallback failed for $monitoredName", it) }
             .isSuccess
     }
 
@@ -344,6 +394,30 @@ public class RealNsdManagerBridge(
         infoCallbacks.clear()
         resolveQueue?.clear()
         foundServices.clear()
+    }
+
+    override fun observeNetworkChanges(onChanged: () -> Unit): Boolean {
+        val manager = connectivityManager ?: return false
+        stopObservingNetworkChanges()
+        val callback = object : android.net.ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: android.net.Network) = onChanged()
+            override fun onLost(network: android.net.Network) = onChanged()
+        }
+        return runCatching {
+            // No NetworkRequest filter: a hotspot HOST has no connected Wi-Fi/Ethernet
+            // network at all, and that transition is exactly the one we must react to.
+            manager.registerDefaultNetworkCallback(callback)
+            networkCallback = callback
+        }.onFailure { Log.w(tag, "Unable to observe network changes", it) }
+            .isSuccess
+    }
+
+    override fun stopObservingNetworkChanges() {
+        networkCallback?.let { callback ->
+            runCatching { connectivityManager?.unregisterNetworkCallback(callback) }
+                .onFailure { Log.w(tag, "Unable to stop observing network changes", it) }
+        }
+        networkCallback = null
     }
 
     private fun mapResolved(info: NsdServiceInfo): ResolvedServiceData? {
@@ -525,6 +599,52 @@ public class NsdTransport(
      * pending removal. JVM tests pass 0 for synchronous assertions.
      */
     private val lostDebounceMs: Long = DEFAULT_LOST_DEBOUNCE_MS,
+    /**
+     * Period of the presence heartbeat (see [presenceTick]). MUST stay well below
+     * the consumer's presence grace window (`CompositeDiscovery.DEFAULT_GRACE_MS`,
+     * 30 s) so a live peer is refreshed several times per window and a single
+     * missed tick never evicts it.
+     */
+    private val presenceHeartbeatMs: Long = DEFAULT_PRESENCE_HEARTBEAT_MS,
+    /**
+     * Heartbeat pacing. Deliberately NOT the [sleep] hook: JVM tests replace
+     * [sleep] with a no-op to keep the browse loop synchronous, which would spin
+     * the heartbeat forever. Tests that exercise the heartbeat inject here and
+     * bound it with [maxPresenceTicks].
+     */
+    private val presenceSleep: suspend (Long) -> Unit = { ms -> delay(ms) },
+    /** Bound on heartbeat ticks per browse session — determinism hook, mirrors [maxDutyCycles]. */
+    private val maxPresenceTicks: Int = Int.MAX_VALUE,
+    /**
+     * Delay before retrying a monitor/resolve that failed to start, multiplied by the attempt
+     * number (linear backoff). Sized well under [presenceHeartbeatMs]: the heartbeat used to be
+     * the ONLY retry, so a single failed resolve cost a full 10 s of discovery latency and three
+     * cost 30 s. Tests pass 0 to disable.
+     */
+    private val monitorRetryMs: Long = DEFAULT_MONITOR_RETRY_MS,
+    /** Consecutive fast retries per service before falling back to the heartbeat. */
+    private val maxMonitorRetries: Int = DEFAULT_MAX_MONITOR_RETRIES,
+    /** Pacing hook for [retryMonitorSoon]; separate from [sleep] for the same reason as [presenceSleep]. */
+    private val monitorRetrySleep: suspend (Long) -> Unit = { ms -> delay(ms) },
+    /**
+     * Period of the advertise watchdog (see [startAdvertiseWatchdog]). An NSD registration can be
+     * dropped by the framework or the OEM power manager without any recoverable signal beyond the
+     * `onRegistrationFailed`/`onUnregistered` callback, and nothing else in the stack re-registers:
+     * `CompositeDiscovery` watchdogs the browse only, and screen-on / connectivity re-arms restart
+     * browsing only. Without this loop a phone that lost its advertisement stayed invisible to
+     * every peer until the process restarted. Tests pass 0 to disable.
+     */
+    private val advertiseWatchdogMs: Long = DEFAULT_ADVERTISE_WATCHDOG_MS,
+    /** Pacing hook for the advertise watchdog; see [presenceSleep]. */
+    private val advertiseWatchdogSleep: suspend (Long) -> Unit = { ms -> delay(ms) },
+    /** Bound on advertise-watchdog ticks — determinism hook, mirrors [maxPresenceTicks]. */
+    private val maxAdvertiseWatchdogTicks: Int = Int.MAX_VALUE,
+    /**
+     * Debounce applied before a connectivity change forces a browse restart:
+     * Wi-Fi transitions arrive as bursts (lost → available → available) and each
+     * restart tears down the radio browse.
+     */
+    private val networkChangeDebounceMs: Long = DEFAULT_NETWORK_CHANGE_DEBOUNCE_MS,
     private val logInfo: (String) -> Unit = { Log.i(TAG, it) },
     private val logWarn: (String) -> Unit = { Log.w(TAG, it) },
     bridgeOverride: NsdManagerBridge? = null,
@@ -576,10 +696,55 @@ public class NsdTransport(
     private val deviceIdsByServiceName = HashMap<String, FlashDeviceId>()
 
     /**
+     * serviceName → true once [NsdManagerBridge.monitor] was successfully initiated for it.
+     *
+     * This is the transport's LIVENESS AUTHORITY, and it is deliberately not
+     * time-based. NSD gives no periodic positive re-sighting: on API ≥ 34
+     * `registerServiceInfoCallback` fires on registration and on change only, and
+     * pre-34 `resolveService` is one-shot. What the platform DOES give is an
+     * explicit goodbye (`onServiceLost`). So "the platform told us this service
+     * exists and has not told us it is gone" is the strongest presence signal
+     * available, and it is what [presenceTick] converts into heartbeats.
+     *
+     * A `false` value means the service was found but its monitor never started
+     * (bridge returned false / registration failed) — [presenceTick] retries
+     * those instead of leaving the peer permanently invisible.
+     */
+    private val monitoredServices = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+
+    /**
      * serviceName → in-flight debounced removal job (see [lostDebounceMs]). Touched only from the
      * [lane], so no external synchronization. A re-find cancels and removes the matching entry.
      */
     private val pendingLost = HashMap<String, Job>()
+
+    /** Presence heartbeat loop; one per browse session. */
+    @Volatile private var heartbeatJob: Job? = null
+
+    /** serviceName → in-flight fast monitor retry (see [retryMonitorSoon]). */
+    private val monitorRetryJobs = java.util.concurrent.ConcurrentHashMap<String, Job>()
+
+    /** serviceName → consecutive failed monitor starts, bounding [retryMonitorSoon]. */
+    private val monitorRetries = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
+    /** Advertise keepalive loop; re-registers a dropped advertisement (see [startAdvertiseWatchdog]). */
+    @Volatile private var advertiseWatchdogJob: Job? = null
+
+    /**
+     * Whether an advertisement is *wanted*, as opposed to [advertising] which is whether the radio
+     * currently has one. The two diverging with nothing to reconcile them is what made a phone
+     * disappear from its peers after a screen-off: the framework dropped the registration, the
+     * callback set `advertising = false`, and nothing ever registered again.
+     */
+    @Volatile private var advertiseDesired = false
+
+    /** Debounced connectivity-change restart. */
+    @Volatile private var networkChangeJob: Job? = null
+
+    @Volatile private var observingNetwork = false
+
+    /** Wall clock of the most recent browse (re)start; gates heartbeat eviction. */
+    @Volatile private var browseStartedAtMs: Long = 0L
 
     private var scope: CoroutineScope? = null
 
@@ -635,9 +800,13 @@ public class NsdTransport(
 
         override fun onServiceFound(serviceName: String) {
             val strategy = resolutionStrategy()
+            // The platform vouches for this service's existence from now until it
+            // reports the matching loss; record that BEFORE monitoring so a failed
+            // monitor is still retryable by the heartbeat.
+            monitoredServices.putIfAbsent(serviceName, false)
             scope?.launch(lane) {
                 if (!browsing) return@launch
-                bridge.monitor(MonitorRequest(serviceName, strategy), monitorEvents)
+                startMonitor(serviceName, strategy)
             }
         }
 
@@ -646,17 +815,87 @@ public class NsdTransport(
         }
     }
 
-    private val monitorEvents = object : MonitorEvents {
+    /**
+     * Initiates monitoring/resolution for one service and records whether it took.
+     * A false return used to be discarded, which is how a peer could be "found"
+     * by the radio and then never surface: nothing resolved it and nothing retried.
+     *
+     * A failure here is retried by [retryMonitorSoon] within [monitorRetryMs] rather than waiting
+     * for the next presence heartbeat. The heartbeat is a 10 s tick, so leaving it as the only
+     * retry path made one failed resolve cost 10 s of discovery latency, two cost 20 s and three
+     * cost 30 s — the "sometimes 2 seconds, sometimes half a minute" spread users actually saw.
+     */
+    private fun startMonitor(serviceName: String, strategy: ResolutionStrategy): Boolean {
+        val started = runCatching {
+            bridge.monitor(MonitorRequest(serviceName, strategy), monitorEventsFor(serviceName))
+        }
+            .getOrElse { error ->
+                logWarn("Monitor initiation threw for name=$serviceName: ${error.message}")
+                false
+            }
+        monitoredServices[serviceName] = started
+        if (!started) {
+            logWarn("Monitor initiation failed for name=$serviceName; fast-retrying in ${monitorRetryMs}ms")
+            retryMonitorSoon(serviceName)
+        }
+        return started
+    }
+
+    /**
+     * Schedules one short-delay monitor retry for [serviceName], collapsing duplicates so a
+     * repeatedly-failing name cannot accumulate retry jobs. Bounded by [maxMonitorRetries]; past
+     * that the presence heartbeat remains the (slow) backstop, so a permanently unresolvable
+     * service costs a bounded amount of work rather than spinning.
+     */
+    private fun retryMonitorSoon(serviceName: String) {
+        if (monitorRetryMs <= 0L) return
+        val attempts = monitorRetries.merge(serviceName, 1) { previous, one -> previous + one } ?: 1
+        if (attempts > maxMonitorRetries) return
+        val activeScope = scope ?: return
+        monitorRetryJobs.remove(serviceName)?.cancel()
+        monitorRetryJobs[serviceName] = activeScope.launch(lane) {
+            monitorRetrySleep(monitorRetryMs * attempts)
+            monitorRetryJobs.remove(serviceName)
+            if (!browsing) return@launch
+            // Gone (radio loss / eviction) or already resolved in the meantime: nothing to do.
+            if (monitoredServices[serviceName] != false) return@launch
+            startMonitor(serviceName, resolutionStrategy())
+        }
+    }
+
+    /**
+     * Per-service [MonitorEvents]. The shared instance this replaced could not attribute an
+     * asynchronous `onServiceInfoCallbackRegistrationFailed` to a service name, so the failure was
+     * logged and dropped: [monitoredServices] kept the optimistic `true` written when
+     * `registerServiceInfoCallback` merely did not throw, and from then on the presence heartbeat
+     * neither retried the monitor (step 1 only retries `false`) nor evicted the peer (it is still
+     * "monitored"). The peer stayed invisible until the next browse restart.
+     *
+     * [monitoredName] is used for attribution only. On the LEGACY_RESOLVE_QUEUE path the bridge's
+     * queue captures whichever instance it was handed first and reuses it for every service, so
+     * anything that must be per-service reads the name off the payload instead — and the two
+     * callbacks that cannot do that (`onRegistrationFailed`, `onUnregistered`) are INFO_CALLBACK
+     * only, where the instance really is per-service.
+     */
+    private fun monitorEventsFor(monitoredName: String): MonitorEvents = object : MonitorEvents {
         override fun onUpdated(data: ResolvedServiceData) {
+            monitorRetries.remove(data.serviceName)
             scope?.launch(lane) { handleServiceUpdated(data) }
         }
 
         override fun onMonitorLost(serviceName: String?) {
-            handleMonitorLost(serviceName)
+            handleMonitorLost(serviceName ?: monitoredName)
         }
 
         override fun onRegistrationFailed(errorCode: Int) {
-            logWarn("Service monitor registration failed error=$errorCode")
+            logWarn("Service monitor registration failed name=$monitoredName error=$errorCode")
+            scope?.launch(lane) {
+                // Only demote a registration we still believe in: a later successful re-register
+                // for the same name must not be clobbered by a stale failure callback.
+                if (monitoredServices[monitoredName] != true) return@launch
+                monitoredServices[monitoredName] = false
+                retryMonitorSoon(monitoredName)
+            }
         }
 
         override fun onUnregistered() {}
@@ -676,7 +915,27 @@ public class NsdTransport(
         }
         ensureScope()
         acquireMulticastLockIfNeeded()
+        advertiseDesired = true
+        // Connectivity observation is normally armed by startBrowsing(); an advertise-only
+        // transport needs it too, because the re-registration below is driven by it.
+        observeNetworkChangesIfNeeded()
 
+        val initiated = registerAdvertisement(port, identity)
+        return if (initiated) {
+            startAdvertiseWatchdog()
+            FlashResult.Success(Unit)
+        } else {
+            // Keep advertiseDesired: the watchdog is what turns a failed start into a retry
+            // instead of permanent invisibility. The multicast lock stays for the same reason.
+            startAdvertiseWatchdog()
+            FlashResult.Failure(
+                FlashError.NetworkUnavailable("Failed to initiate NSD service registration"),
+            )
+        }
+    }
+
+    /** Builds the request from [identity] and hands it to the radio. True when the call took. */
+    private fun registerAdvertisement(port: Int, identity: FlashAdvertisedIdentity): Boolean {
         val txt = NsdTxtCodec.encode(identity)
         val request = AdvertiseRequest(
             serviceName = "$instancePrefix ${identity.friendlyName.take(MAX_NAME_LENGTH)}",
@@ -684,16 +943,51 @@ public class NsdTransport(
             port = port,
             txtRecords = txt,
         )
-        val initiated = runCatching { bridge.advertise(request, advertiseEvents) }
-            .getOrElse { false }
-        return if (initiated) {
-            FlashResult.Success(Unit)
-        } else {
-            releaseMulticastLockIfIdle()
-            FlashResult.Failure(
-                FlashError.NetworkUnavailable("Failed to initiate NSD service registration"),
-            )
+        return runCatching { bridge.advertise(request, advertiseEvents) }.getOrElse { false }
+    }
+
+    /**
+     * Reconciles wanted-vs-actual advertising state on a fixed period.
+     *
+     * NSD gives no positive "still advertised" signal, only a failure or unregistration callback,
+     * and Android drops registrations for reasons an app cannot prevent: the mDNS daemon restarts,
+     * the interface the service was registered on goes away (Wi-Fi ↔ hotspot), or an OEM power
+     * manager freezes the process. Every one of those left [advertising] false with nothing to fix
+     * it, and a peer's own presence heartbeat then evicted this device ~20-30 s later. This loop is
+     * the missing counterpart to `CompositeDiscovery`'s browse watchdog.
+     */
+    private fun startAdvertiseWatchdog() {
+        if (advertiseWatchdogMs <= 0L) return
+        if (advertiseWatchdogJob?.isActive == true) return
+        advertiseWatchdogJob = scope?.launch(lane) {
+            var ticks = 0
+            while (coroutineContext.isActive && ticks < maxAdvertiseWatchdogTicks) {
+                advertiseWatchdogSleep(advertiseWatchdogMs)
+                ticks += 1
+                if (!advertiseDesired || !coroutineContext.isActive) return@launch
+                if (advertising) continue
+                val identity = lastAdvertisedIdentity ?: continue
+                logWarn("Advertisement is down; re-registering")
+                acquireMulticastLockIfNeeded()
+                registerAdvertisement(lastAdvertisedPort, identity)
+            }
         }
+    }
+
+    /**
+     * Forces a fresh registration even when [advertising] still reports true.
+     *
+     * A registration bound to an interface that no longer exists keeps reporting success — the
+     * advertise-side twin of the dead-browse problem [restartBrowsing] exists for. Used on
+     * connectivity changes, where "still advertising" is exactly the claim not to trust.
+     */
+    private suspend fun restartAdvertising() {
+        if (!advertiseDesired) return
+        val identity = lastAdvertisedIdentity ?: return
+        runCatching { bridge.unadvertise(advertiseEvents) }
+        advertising = false
+        acquireMulticastLockIfNeeded()
+        registerAdvertisement(lastAdvertisedPort, identity)
     }
 
     // -- Mode wiring (P3.5-B2) -------------------------------------------------
@@ -721,6 +1015,9 @@ public class NsdTransport(
     }
 
     private fun stopAdvertisingInternal() {
+        advertiseDesired = false
+        advertiseWatchdogJob?.cancel()
+        advertiseWatchdogJob = null
         runCatching { bridge.unadvertise(advertiseEvents) }
         advertising = false
         releaseMulticastLockIfIdle()
@@ -740,9 +1037,39 @@ public class NsdTransport(
         restartAttempt = 0
         dutyCyclesCompleted = 0
         acquireMulticastLockIfNeeded()
+        observeNetworkChangesIfNeeded()
+        browseStartedAtMs = timeSourceMs()
         emitState("Starting browse")
         scope?.launch(lane) { browseLoop() }
+        startHeartbeat()
         return FlashResult.Success(Unit)
+    }
+
+    /**
+     * Forced browse restart (see [FlashRadioTransport.restartBrowsing]).
+     *
+     * [startBrowsing] returns early while `browsing` is true, so it can never
+     * recover a browse that died without telling us — the exact failure mode of
+     * a Wi-Fi ↔ hotspot switch, and the reason the screen-on re-arm used to be a
+     * silent no-op. This tears the radio browse down unconditionally and starts a
+     * clean one, re-delivering `onServiceFound` for every service still present.
+     */
+    override suspend fun restartBrowsing(): FlashResult<Unit> {
+        val wasBrowsing = browsing
+        browsing = false
+        heartbeatJob?.cancel()
+        heartbeatJob = null
+        runCatching { bridge.stopBrowse() }
+        runCatching { bridge.cancelMonitors() }
+        monitoredServices.clear()
+        monitorRetryJobs.values.forEach { it.cancel() }
+        monitorRetryJobs.clear()
+        monitorRetries.clear()
+        // Deliberately NOT emitState() here: that would publish a transient
+        // browsing=false and let a consumer watchdog race this restart. The
+        // "Starting browse" transition from startBrowsing() is the observable one.
+        if (wasBrowsing) logInfo("Forced browse restart")
+        return startBrowsing()
     }
 
     /**
@@ -811,6 +1138,119 @@ public class NsdTransport(
         return browsing && coroutineContext.isActive
     }
 
+    // -- Presence heartbeat ----------------------------------------------------
+
+    /**
+     * Starts the per-browse-session presence heartbeat.
+     *
+     * WHY this exists: a directory dedups a repeated, unchanged sighting into
+     * "no change", so a stable peer produces exactly ONE Found and then silence.
+     * Any consumer that ages peers out on a TTL (CompositeDiscovery's 30 s grace)
+     * reads that silence as departure and evicts a peer that never left — and
+     * because the sighting still dedups to "no change" afterwards, nothing ever
+     * re-announces it. That is the "device shows up, disappears half a minute
+     * later, never comes back" symptom. The heartbeat republishes presence for
+     * everything the radio still vouches for, so silence now means something.
+     */
+    private fun startHeartbeat() {
+        if (presenceHeartbeatMs <= 0L) return
+        heartbeatJob?.cancel()
+        heartbeatJob = scope?.launch(lane) {
+            var ticks = 0
+            while (browsing && coroutineContext.isActive && ticks < maxPresenceTicks) {
+                presenceSleep(presenceHeartbeatMs)
+                if (!browsing || !coroutineContext.isActive) return@launch
+                presenceTick()
+                ticks += 1
+            }
+        }
+    }
+
+    /**
+     * One heartbeat tick, on the [lane]:
+     * 1. retry monitors that never started (a found-but-unresolved peer is
+     *    otherwise invisible forever — nothing else retries);
+     * 2. re-affirm every endpoint whose service the platform still vouches for
+     *    ([monitoredServices]) as [FlashTransportEvent.Presence];
+     * 3. evict endpoints whose service the platform has reported gone;
+     * 4. drain the injected [sweep] safety net.
+     *
+     * Step 3 is suppressed for one grace period after a browse (re)start: the
+     * radio needs a moment to re-deliver `onServiceFound` for services that are
+     * still there, and evicting during that window would recreate the very false
+     * Lost this heartbeat exists to prevent.
+     */
+    private suspend fun presenceTick() {
+        val strategy = resolutionStrategy()
+        for ((serviceName, monitorStarted) in monitoredServices.entries.toList()) {
+            if (!monitorStarted) startMonitor(serviceName, strategy)
+        }
+
+        val now = timeSourceMs()
+        val evictionArmed = now - browseStartedAtMs >= presenceHeartbeatMs * EVICTION_GRACE_TICKS
+        for (entry in directory.snapshot()) {
+            val serviceName = entry.endpoint.serviceName
+            when {
+                monitoredServices.containsKey(serviceName) -> {
+                    // Keep OUR lastSeen honest as well, so a transport-side sweep
+                    // (step 4) measures "last known alive", not "last field change".
+                    directory.applySeen(entry.endpoint, now)
+                    emitEvent(FlashTransportEvent.Presence(entry.endpoint))
+                }
+                evictionArmed && !pendingLost.containsKey(serviceName) -> {
+                    val deviceId = entry.endpoint.deviceId
+                    synchronized(deviceIdsByServiceName) { deviceIdsByServiceName.remove(serviceName) }
+                    directory.applyLost(deviceId)
+                    logInfo("Heartbeat evicting unmonitored peer name=$serviceName")
+                    emitEvent(FlashTransportEvent.Lost(deviceId, serviceName))
+                }
+            }
+        }
+
+        sweep(now).forEach { agedOut ->
+            val serviceName = findServiceNameFor(agedOut.deviceId)
+            if (serviceName != null) {
+                synchronized(deviceIdsByServiceName) { deviceIdsByServiceName.remove(serviceName) }
+                monitoredServices.remove(serviceName)
+            }
+            emitEvent(FlashTransportEvent.Lost(agedOut.deviceId, serviceName))
+        }
+    }
+
+    // -- Connectivity re-arm ---------------------------------------------------
+
+    private fun observeNetworkChangesIfNeeded() {
+        if (observingNetwork) return
+        observingNetwork = runCatching { bridge.observeNetworkChanges(::onNetworkChanged) }
+            .getOrElse { false }
+    }
+
+    /**
+     * Connectivity changed (Wi-Fi joined/dropped, hotspot toggled). The browse is
+     * unbound and therefore network-blind, so nothing else would notice that the
+     * interface it was started on is gone. Debounced because a single Wi-Fi
+     * transition arrives as a burst of callbacks.
+     *
+     * The advertisement is re-registered for the same reason and is deliberately NOT gated on
+     * `advertising`: a registration pinned to a vanished interface still reports itself as healthy,
+     * so trusting that flag here is what let a device keep "advertising" into a dead interface
+     * while every peer saw it drop off.
+     */
+    private fun onNetworkChanged() {
+        val activeScope = scope ?: return
+        networkChangeJob?.cancel()
+        networkChangeJob = activeScope.launch(lane) {
+            delay(networkChangeDebounceMs)
+            if (advertiseDesired) {
+                logInfo("Connectivity changed; re-registering NSD advertisement")
+                restartAdvertising()
+            }
+            if (!browsing) return@launch
+            logInfo("Connectivity changed; forcing NSD browse restart")
+            restartBrowsing()
+        }
+    }
+
     // -- Resolution handling (C3.4) + directory diff mapping (C3.5 groundwork) -
 
     private suspend fun handleServiceUpdated(data: ResolvedServiceData) {
@@ -864,10 +1304,15 @@ public class NsdTransport(
         synchronized(deviceIdsByServiceName) {
             deviceIdsByServiceName[data.serviceName] = deviceId
         }
+        // A successful resolution proves the platform is vouching for this exact
+        // (possibly renamed) instance, so register it under the name the directory
+        // keys off — otherwise the heartbeat could not match the entry back to a
+        // monitor and would eventually evict a live peer.
+        monitoredServices[data.serviceName] = true
         // The peer is back (or still here): cancel any debounced removal armed by a prior
         // transient loss so it never flaps out of the directory.
         pendingLost.remove(data.serviceName)?.cancel()
-        emitDiff(diff)
+        emitDiff(diff, endpoint)
     }
 
     private fun handleMonitorLost(serviceName: String?) {
@@ -883,6 +1328,10 @@ public class NsdTransport(
                 delay(lostDebounceMs)
                 if (!browsing) return@launch
                 pendingLost.remove(serviceName)
+                // The platform has withdrawn its vouch for this service: drop it from the
+                // liveness map BEFORE the directory bookkeeping, so a heartbeat racing this
+                // job cannot re-affirm a peer we are in the middle of evicting.
+                monitoredServices.remove(serviceName)
                 val deviceId = synchronized(deviceIdsByServiceName) {
                     deviceIdsByServiceName.remove(serviceName)
                 } ?: return@launch
@@ -911,14 +1360,23 @@ public class NsdTransport(
             deviceIdsByServiceName.entries.firstOrNull { it.value == deviceId }?.key
         }
 
-    private suspend fun emitDiff(diff: EndpointDirectory.Diff) {
+    /**
+     * Maps a directory diff onto the event flow.
+     *
+     * [EndpointDirectory.Diff.Unchanged] used to emit NOTHING, which is the bug
+     * that made stable peers vanish: a consumer aging peers out on a TTL saw one
+     * Found and then permanent silence for a peer that was sitting right there.
+     * It now emits [FlashTransportEvent.Presence] — same sighting, classified as
+     * liveness rather than change — so downstream TTLs are actually fed.
+     */
+    private suspend fun emitDiff(diff: EndpointDirectory.Diff, endpoint: FlashDiscoveredEndpoint) {
         when (diff) {
             is EndpointDirectory.Diff.Found -> emitEvent(FlashTransportEvent.Found(diff.entry.endpoint))
             is EndpointDirectory.Diff.Updated -> emitEvent(FlashTransportEvent.Updated(diff.entry.endpoint))
             is EndpointDirectory.Diff.Lost -> emitEvent(
                 FlashTransportEvent.Lost(diff.deviceId, findServiceNameFor(diff.deviceId)),
             )
-            EndpointDirectory.Diff.Unchanged -> Unit
+            EndpointDirectory.Diff.Unchanged -> emitEvent(FlashTransportEvent.Presence(endpoint))
         }
     }
 
@@ -927,16 +1385,38 @@ public class NsdTransport(
     override suspend fun stop(): FlashResult<Unit> {
         browsing = false
         advertising = false
+        advertiseDesired = false
         emitState("Stopped")
+        heartbeatJob?.cancel()
+        heartbeatJob = null
+        advertiseWatchdogJob?.cancel()
+        advertiseWatchdogJob = null
+        networkChangeJob?.cancel()
+        networkChangeJob = null
+        monitorRetryJobs.values.forEach { it.cancel() }
+        monitorRetryJobs.clear()
+        monitorRetries.clear()
         runCatching { bridge.stopBrowse() }
         runCatching { bridge.unadvertise(advertiseEvents) }
         runCatching { bridge.cancelMonitors() }
+        runCatching { bridge.stopObservingNetworkChanges() }
+        observingNetwork = false
         runCatching { bridge.setMulticastLock(false) }
         scope?.cancel()
         scope = null
+        // Scope is down, so nothing can touch these concurrently any more.
+        pendingLost.clear()
+        monitoredServices.clear()
         synchronized(deviceIdsByServiceName) { deviceIdsByServiceName.clear() }
+        // Drain the directory too. A stopped transport knows nothing; leaving entries
+        // behind meant the NEXT browse session re-sighted the same peers, deduped them
+        // to Unchanged, and (before Presence existed) published nothing at all — peers
+        // that were physically present stayed invisible until their fields happened to
+        // change. Restart must start from empty.
+        runCatching { directory.sweepExpired(graceWindowMs = 0L, nowMs = Long.MAX_VALUE) }
         restartAttempt = 0
         dutyCyclesCompleted = 0
+        browseStartedAtMs = 0L
         return FlashResult.Success(Unit)
     }
 
@@ -964,12 +1444,23 @@ public class NsdTransport(
     }
 
     private fun releaseMulticastLockIfIdle() {
-        if (advertising || browsing) return
+        // advertiseDesired counts: dropping the lock while the advertise watchdog is mid-recovery
+        // would take away the multicast reception the re-registration needs.
+        if (advertising || browsing || advertiseDesired) return
         bridge.setMulticastLock(false)
     }
 
+    /**
+     * Publishes the CURRENT browse state with a human-readable reason.
+     *
+     * [FlashTransportEvent.StateChanged.browsing] reports the browse flag only.
+     * It used to report `advertising || browsing`, which made "browsing" true for
+     * an advertise-only transport and, worse, kept it true after the browse gave
+     * up — so no consumer could ever detect a dead browse and re-arm it. The
+     * advertising detail stays in [message].
+     */
     private fun emitState(message: String) {
-        emitEvent(FlashTransportEvent.StateChanged(advertising || browsing, message))
+        emitEvent(FlashTransportEvent.StateChanged(browsing, message))
     }
 
     private fun emitEvent(event: FlashTransportEvent) {
@@ -994,6 +1485,55 @@ public class NsdTransport(
          * hotspot) is retained, while a genuinely departed peer clears within a few seconds.
          */
         public const val DEFAULT_LOST_DEBOUNCE_MS: Long = 6_000L
+
+        /**
+         * Presence heartbeat period (see the `presenceHeartbeatMs` constructor param).
+         * 10s is comfortably inside [CompositeDiscovery]'s 30s grace window, so a live
+         * peer is re-affirmed roughly three times before it could ever age out, and it
+         * costs nothing on the radio (the heartbeat republishes cached state; it does
+         * not transmit).
+         */
+        public const val DEFAULT_PRESENCE_HEARTBEAT_MS: Long = 10_000L
+
+        /**
+         * Base delay before retrying a monitor/resolve that failed to start (multiplied by the
+         * attempt number). Deliberately far below [DEFAULT_PRESENCE_HEARTBEAT_MS]: the heartbeat
+         * used to be the only retry path, so each failed resolve added a full 10 s to the time a
+         * peer took to appear — the difference between "found in 2 seconds" and "found in 30".
+         */
+        public const val DEFAULT_MONITOR_RETRY_MS: Long = 600L
+
+        /**
+         * Fast monitor retries per service before deferring to the presence heartbeat. Four
+         * attempts at a linear backoff cover ~6 s, which is longer than any transient mDNS
+         * resolve failure observed on a phone hotspot, without spinning on a name the radio
+         * genuinely cannot resolve.
+         */
+        public const val DEFAULT_MAX_MONITOR_RETRIES: Int = 4
+
+        /**
+         * Advertise watchdog period. Matches the presence heartbeat so a device that loses its
+         * registration re-registers well inside a peer's 30 s grace window and never actually
+         * disappears from that peer's list.
+         */
+        public const val DEFAULT_ADVERTISE_WATCHDOG_MS: Long = 10_000L
+
+        /**
+         * Debounce applied to connectivity callbacks before forcing a browse restart.
+         * One Wi-Fi transition arrives as a burst (lost → available → available), and
+         * restarting per callback would thrash the radio.
+         */
+        public const val DEFAULT_NETWORK_CHANGE_DEBOUNCE_MS: Long = 1_500L
+
+        /**
+         * Heartbeat ticks after a browse (re)start during which the heartbeat will NOT
+         * evict endpoints the platform has not (yet) re-announced. A fresh browse needs
+         * a moment to re-deliver `onServiceFound` for services that never went away;
+         * evicting inside that window would fabricate exactly the false Lost the
+         * heartbeat exists to prevent.
+         */
+        private const val EVICTION_GRACE_TICKS: Long = 2L
+
         private const val EVENT_BUFFER = 64
     }
 }

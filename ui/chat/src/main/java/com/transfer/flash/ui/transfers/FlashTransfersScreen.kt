@@ -84,6 +84,12 @@ data class FlashTransferItemUi(
     val transportLabel: String? = null,
     /** Local file path/URI for open & share actions (received file, or the sent source). */
     val localPath: String? = null,
+    /**
+     * Whether a [FlashTransferState.Failed] row can be retried. False for a cancelled/declined
+     * transfer, which shares the Failed section but has no session left to resume — showing it a
+     * Retry button made the button look broken.
+     */
+    val retryable: Boolean = true,
 )
 
 data class TransfersUiState(
@@ -375,11 +381,17 @@ private fun PopulatedSections(
                         fadeOutSpec = motion.messageFadeOutSpec(),
                     ),
                     trailing = {
-                        RowIcon(
-                            icon = FlashIcons.Retry,
-                            description = "Retry",
-                            onClick = { onRetryClick(item) },
-                        )
+                        // Retry is offered only where it can actually do something. A cancelled or
+                        // declined transfer lands in this section too (the UI has no Cancelled
+                        // bucket) and cannot be resumed — the counterpart tore its session down —
+                        // so it shows its label with no button rather than a dead one.
+                        if (item.retryable) {
+                            RowIcon(
+                                icon = FlashIcons.Retry,
+                                description = "Retry",
+                                onClick = { onRetryClick(item) },
+                            )
+                        }
                     },
                 )
             }

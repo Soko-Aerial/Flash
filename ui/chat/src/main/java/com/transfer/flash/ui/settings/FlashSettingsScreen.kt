@@ -71,6 +71,23 @@ data class FlashSettingsModel(
     val autoDownloadImage: Boolean = true,
     val autoDownloadVideo: Boolean = false,
     val autoDownloadFile: Boolean = false,
+    /**
+     * Whether the OS exempts Flash from battery optimisation (ERROR-031 / D7).
+     *
+     * On Transsion/Samsung builds this is the difference between the mesh surviving Doze and the
+     * process being killed minutes after the screen goes off — and it is also what lets a refused
+     * foreground-service promotion be retried at all, since the exemption *is* one of Android 12+'s
+     * FGS-start exemptions while a screen-on broadcast is not. Surfaced read-only next to
+     * "Background transfers"; tapping the row opens the system prompt.
+     */
+    val ignoringBatteryOptimizations: Boolean = false,
+    /**
+     * Spend a congested link on voice before video in a video call (ERROR-031 / D8). Default on.
+     *
+     * Off restores WebRTC's symmetric treatment of the two streams: video keeps its full share of
+     * the bandwidth estimate and nothing steps it down when the audio starts breaking up.
+     */
+    val prioritiseVoiceQuality: Boolean = true,
     val trustedPeerCount: Int = 0,
     val saveLocationLabel: String? = null,
     val appVersion: String = "dev",
@@ -103,6 +120,35 @@ object FlashSettingsMath {
         count == 1 -> "1 device verified"
         else -> "$count devices verified"
     }
+
+    /**
+     * Explains the battery-optimisation row (ERROR-031 / D7). Deliberately states the consequence
+     * rather than the setting's name: "restricted" is the state that silently kills the mesh after
+     * the screen goes off, and the user has no way to guess that from "battery optimisation".
+     */
+    fun batteryExemptionSubtitle(exempt: Boolean): String =
+        if (exempt) {
+            "Flash can stay connected while the screen is off"
+        } else {
+            "Android may disconnect Flash when the screen is off — tap to allow"
+        }
+
+    /** Trailing value for the same row: the state at a glance, with no jargon. */
+    fun batteryExemptionValue(exempt: Boolean): String = if (exempt) "Allowed" else "Restricted"
+
+    /**
+     * Explains the calls row (ERROR-031 / D8) in terms of the trade the user is actually making.
+     *
+     * Both halves have to name *video* as the thing that gives, because the switch's title only
+     * mentions voice: a user reading "Prioritise voice quality" cannot tell whether the cost is
+     * their video, their battery, or nothing at all.
+     */
+    fun prioritiseVoiceSubtitle(enabled: Boolean): String =
+        if (enabled) {
+            "Video quality drops first when a call gets choppy"
+        } else {
+            "Voice and video share bandwidth equally"
+        }
 }
 
 @Composable
@@ -116,6 +162,7 @@ fun FlashSettingsScreen(
     onAutoDownloadImageChanged: (Boolean) -> Unit = {},
     onAutoDownloadVideoChanged: (Boolean) -> Unit = {},
     onAutoDownloadFileChanged: (Boolean) -> Unit = {},
+    onPrioritiseVoiceQualityChanged: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier,
     listState: LazyListState = rememberLazyListState(),
     /** Space the hanging shell bar occupies; content scrolls under it (UI-046). */
@@ -124,6 +171,11 @@ fun FlashSettingsScreen(
     onOpenEncryption: () -> Unit = {},
     onOpenTrustedPeers: () -> Unit = {},
     onPickSaveLocation: () -> Unit = {},
+    /**
+     * Opens the system battery-optimisation prompt (ERROR-031 / D7). Host-side because the
+     * `ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` intent needs an Activity.
+     */
+    onOpenBatterySettings: () -> Unit = {},
 ) {
     LazyColumn(
         modifier = modifier.fillMaxSize().statusBarsPadding(),
@@ -228,8 +280,19 @@ fun FlashSettingsScreen(
                 )
             }
         }
-        item(key = "auto-download-voice") {
+        item(key = "battery-exemption") {
             StaggerIn(13) {
+                ValueRow(
+                    iconSpec = FlashIcons.Bolt,
+                    title = "Unrestricted battery",
+                    subtitle = FlashSettingsMath.batteryExemptionSubtitle(model.ignoringBatteryOptimizations),
+                    value = FlashSettingsMath.batteryExemptionValue(model.ignoringBatteryOptimizations),
+                    onClick = onOpenBatterySettings,
+                )
+            }
+        }
+        item(key = "auto-download-voice") {
+            StaggerIn(14) {
                 SwitchRow(
                     title = "Auto-download voice",
                     subtitle = "Accept incoming voice messages automatically",
@@ -239,7 +302,7 @@ fun FlashSettingsScreen(
             }
         }
         item(key = "auto-download-image") {
-            StaggerIn(14) {
+            StaggerIn(15) {
                 SwitchRow(
                     title = "Auto-download images",
                     subtitle = "Accept incoming images automatically",
@@ -249,7 +312,7 @@ fun FlashSettingsScreen(
             }
         }
         item(key = "auto-download-video") {
-            StaggerIn(15) {
+            StaggerIn(16) {
                 SwitchRow(
                     title = "Auto-download videos",
                     subtitle = "Accept incoming videos automatically",
@@ -259,7 +322,7 @@ fun FlashSettingsScreen(
             }
         }
         item(key = "auto-download-file") {
-            StaggerIn(16) {
+            StaggerIn(17) {
                 SwitchRow(
                     title = "Auto-download files",
                     subtitle = "Accept incoming files automatically",
@@ -269,8 +332,20 @@ fun FlashSettingsScreen(
             }
         }
 
-        item(key = "about-label") { StaggerIn(17) { SectionLabel("ABOUT") } }
-        item(key = "about") { StaggerIn(18) { AboutCard(model) } }
+        item(key = "calls-label") { StaggerIn(18) { SectionLabel("CALLS") } }
+        item(key = "prioritise-voice") {
+            StaggerIn(19) {
+                SwitchRow(
+                    title = "Prioritise voice quality",
+                    subtitle = FlashSettingsMath.prioritiseVoiceSubtitle(model.prioritiseVoiceQuality),
+                    checked = model.prioritiseVoiceQuality,
+                    onCheckedChange = onPrioritiseVoiceQualityChanged,
+                )
+            }
+        }
+
+        item(key = "about-label") { StaggerIn(20) { SectionLabel("ABOUT") } }
+        item(key = "about") { StaggerIn(21) { AboutCard(model) } }
     }
 }
 

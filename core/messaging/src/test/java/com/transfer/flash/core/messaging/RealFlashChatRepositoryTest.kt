@@ -1,5 +1,7 @@
 package com.transfer.flash.core.messaging
 
+import com.transfer.flash.core.messaging.model.FlashAttachmentProgress
+import com.transfer.flash.core.messaging.model.FlashFileTransferStatus
 import com.transfer.flash.core.messaging.protocol.MessageWireFrame
 import com.transfer.flash.core.persistence.db.dao.ConversationDao
 import com.transfer.flash.core.persistence.db.dao.ConversationPreview
@@ -26,6 +28,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -69,6 +72,14 @@ class RealFlashChatRepositoryTest {
                 messages[localId] = updated
                 flow.value = messages.values.toList().sortedByDescending { m -> m.sentAt }
             }
+        }
+
+        /** Mirrors the SQL guard `AND status NOT IN ('DELIVERED','READ')` (ERROR-031). */
+        override suspend fun updateStatusIfUnacknowledged(localId: String, status: String) {
+            val current = messages[localId] ?: return
+            if (current.status == "DELIVERED" || current.status == "READ") return
+            messages[localId] = current.copy(status = status)
+            flow.value = messages.values.toList().sortedByDescending { m -> m.sentAt }
         }
 
         override suspend fun newestLocalId(conversationId: String): String? =
@@ -115,6 +126,18 @@ class RealFlashChatRepositoryTest {
 
         override suspend fun existsAttachment(transferId: String): Boolean =
             messages.values.any { it.attachmentTransferId == transferId }
+
+        override suspend fun updateAttachmentPath(transferId: String, path: String): Int {
+            // Mirrors the SQL guard: only rows whose stored path actually differs are counted.
+            val stale = messages.values.filter {
+                it.attachmentTransferId == transferId && it.attachmentPath != path
+            }
+            stale.forEach { messages[it.localId] = it.copy(attachmentPath = path) }
+            if (stale.isNotEmpty()) {
+                flow.value = messages.values.toList().sortedByDescending { it.sentAt }
+            }
+            return stale.size
+        }
 
         override suspend fun markReadUpTo(conversationId: String, selfId: String, upToMessageId: String) {
             val threshold = messages[upToMessageId]?.sentAt ?: return
@@ -326,9 +349,24 @@ class RealFlashChatRepositoryTest {
         val frame = sentFrames.first() as MessageWireFrame.TextMessage
         assertEquals("Hello over LAN!", frame.text)
 
-        // Verify outbox was cleared after successful dispatch
-        assertEquals(0, outboxDao.queue.size)
+        // ERROR-031: a successful socket write does NOT retire the row. It stays claimed — single
+        // tick on screen, resend armed — until the peer's DeliveryReceipt proves the message really
+        // landed. A write into a half-open socket succeeds, so deleting the row here is what made
+        // that loss permanent (ticked once, never arrived, force-stop the only cure).
+        assertEquals(1, outboxDao.queue.size)
         assertEquals("SENT", stored.status)
+
+        // The receipt is the commit point: it retires the row and double-ticks the bubble.
+        repository.onInboundWireFrame(
+            MessageWireFrame.DeliveryReceipt(
+                messageId = frame.localId,
+                conversationId = "conv-alex",
+                memberId = "peer-device-id",
+                deliveredAt = System.currentTimeMillis(),
+            ),
+        )
+        assertEquals(0, outboxDao.queue.size)
+        assertEquals("DELIVERED", messageDao.messages[frame.localId]!!.status)
     }
 
     @Test
@@ -505,6 +543,80 @@ class RealFlashChatRepositoryTest {
             assertEquals(1, notified.size)
         }
 
+    /**
+     * The image branch of `applyAttachment` used to render a tile for any status, so a received photo
+     * arrived as a gradient placeholder with nothing to decode and — because a tile has no
+     * Accept/Decline row — no way to fetch the bytes either. It must behave like the video branch:
+     * file card until the file is local, tile afterwards, with the path stamped onto the row so the
+     * preview survives process death (live progress is in-memory only).
+     */
+    @Test
+    fun `an inbound image offer stays a file card until its bytes land, then becomes a thumbnail`() =
+        runBlocking {
+            val messageDao = FakeMessageDao()
+            val progress = MutableStateFlow<Map<String, FlashAttachmentProgress>>(emptyMap())
+
+            val repository = RealFlashChatRepository(
+                localDeviceId = "my-device-id",
+                localDisplayName = "Kali",
+                messageDao = messageDao,
+                conversationDao = FakeConversationDao(),
+                outboxDao = FakeOutboxDao(),
+                receiptDao = FakeReceiptDao(),
+                draftDao = FakeDraftDao(),
+                recentSearchDao = FakeRecentSearchDao(),
+                reactionDao = FakeReactionDao(),
+                transportSink = null,
+                ioDispatcher = testDispatcher,
+                attachmentProgress = progress,
+            )
+
+            repository.onInboundAttachment(
+                peerDeviceId = "peer-device-id",
+                transferId = "transfer-1",
+                fileName = "photo.jpg",
+                mimeType = "image/jpeg",
+                sizeBytes = 1024,
+            )
+            repository.openConversation("peer-device-id")
+            progress.value = mapOf(
+                "transfer-1" to FlashAttachmentProgress(
+                    progress = 0f,
+                    status = FlashFileTransferStatus.AwaitingAcceptance,
+                ),
+            )
+            kotlinx.coroutines.delay(200)
+
+            val offered = repository.conversationState.value.messages
+                .single { it.fileAttachments.isNotEmpty() || it.images.isNotEmpty() }
+            assertTrue("an un-accepted offer must not render as a tile", offered.images.isEmpty())
+            assertEquals(
+                FlashFileTransferStatus.AwaitingAcceptance,
+                offered.fileAttachments.single().transferStatus,
+            )
+
+            val received = "/storage/FlashReceived/transfer-1/photo.jpg"
+            progress.value = mapOf(
+                "transfer-1" to FlashAttachmentProgress(
+                    progress = 1f,
+                    status = FlashFileTransferStatus.Downloaded,
+                    localPath = received,
+                ),
+            )
+            kotlinx.coroutines.delay(200)
+
+            val downloaded = repository.conversationState.value.messages
+                .single { it.fileAttachments.isNotEmpty() || it.images.isNotEmpty() }
+            assertTrue("a received image must render as a tile", downloaded.fileAttachments.isEmpty())
+            assertEquals(received, downloaded.images.single().uri)
+            // Stamped on the row: without this the tile reverts to an undecodable placeholder as
+            // soon as the in-memory transfer list is gone.
+            assertEquals(
+                received,
+                messageDao.messages.values.single { it.attachmentTransferId == "transfer-1" }.attachmentPath,
+            )
+        }
+
     @Test
     fun `outbox drain preserves the composing conversationId after the active conversation changes`() =
         runBlocking {
@@ -563,7 +675,8 @@ class RealFlashChatRepositoryTest {
             assertEquals(1, dispatched.size)
             assertEquals("conv-A", dispatched.first().conversationId)
             assertEquals("message for A", dispatched.first().text)
-            assertEquals(0, outboxDao.queue.size)
+            // ERROR-031: the row outlives the successful write and waits for the peer's receipt.
+            assertTrue("row should await acknowledgement", outboxDao.queue.containsKey(dispatched.first().localId))
         }
 
     @Test
@@ -679,14 +792,16 @@ class RealFlashChatRepositoryTest {
         repository.notifyPeerSessionUp()
         kotlinx.coroutines.delay(150)
 
-        // The row was reset to due + immediately drained and delivered.
-        assertEquals(0, outboxDao.queue.size)
+        // The row was reset to due + immediately drained and delivered. ERROR-031: it stays claimed
+        // until the peer acknowledges, so the proof of the flush is the frame on the wire and the
+        // single tick — not an empty queue.
+        assertTrue("row should await acknowledgement", outboxDao.queue.containsKey("m-retry"))
         assertEquals("SENT", messageDao.messages["m-retry"]!!.status)
         assertEquals(1, sentFrames.size)
     }
 
     @Test
-    fun `outbox delivery gives up after max attempts and marks the message failed`() = runBlocking {
+    fun `outbox delivery gives up once the wall-clock budget expires and marks the message failed`() = runBlocking {
         val messageDao = FakeMessageDao()
         val outboxDao = FakeOutboxDao()
         val repository = RealFlashChatRepository(
@@ -704,10 +819,17 @@ class RealFlashChatRepositoryTest {
         )
         val now = System.currentTimeMillis()
         messageDao.insert(msg("m-cap", "conv-A", "never delivers").copy(status = "PENDING"))
-        // Seed one attempt short of the cap (OUTBOX_MAX_ATTEMPTS = 8), due immediately, so the very
-        // next failed drain trips the give-up path without waiting through the full backoff ladder.
+        // ERROR-026: give-up is a wall-clock budget, not an attempt count. Seed a row whose
+        // createdAt is already past the budget and due immediately, so the very next failed drain
+        // trips the give-up path. `attempts` is deliberately low — it must NOT be what decides.
         outboxDao.enqueue(
-            OutboxEntity(localId = "m-cap", attempts = 7, nextAttemptAt = now, payloadJson = "never delivers", createdAt = now),
+            OutboxEntity(
+                localId = "m-cap",
+                attempts = 1,
+                nextAttemptAt = now,
+                payloadJson = "never delivers",
+                createdAt = now - OUTBOX_GIVE_UP_BUDGET_MS - 1,
+            ),
         )
 
         val deadline = System.currentTimeMillis() + 4_000
@@ -719,6 +841,189 @@ class RealFlashChatRepositoryTest {
         assertEquals("FAILED", messageDao.messages["m-cap"]!!.status)
     }
 
+    @Test
+    fun `outbox keeps retrying a young message that has failed many times`() = runBlocking {
+        val messageDao = FakeMessageDao()
+        val outboxDao = FakeOutboxDao()
+        val repository = RealFlashChatRepository(
+            localDeviceId = "my-device-id",
+            localDisplayName = "Kali",
+            messageDao = messageDao,
+            conversationDao = FakeConversationDao(),
+            outboxDao = outboxDao,
+            receiptDao = FakeReceiptDao(),
+            draftDao = FakeDraftDao(),
+            recentSearchDao = FakeRecentSearchDao(),
+            reactionDao = FakeReactionDao(),
+            transportSink = MessageTransportSink { _, _ -> false },
+            ioDispatcher = testDispatcher,
+        )
+        val now = System.currentTimeMillis()
+        messageDao.insert(msg("m-young", "conv-A", "peer is dozing").copy(status = "PENDING"))
+        // The exact state the old 8-attempt cap turned into a permanent FAILED: a long screen-off
+        // window burns attempts fast, but the message is seconds old and the peer is coming back.
+        outboxDao.enqueue(
+            OutboxEntity(
+                localId = "m-young",
+                attempts = 20,
+                nextAttemptAt = now,
+                payloadJson = "peer is dozing",
+                createdAt = now,
+            ),
+        )
+
+        val deadline = System.currentTimeMillis() + 3_000
+        while ((outboxDao.queue["m-young"]?.attempts ?: 0) <= 20 && System.currentTimeMillis() < deadline) {
+            kotlinx.coroutines.delay(25)
+        }
+        // Still queued and still PENDING: attempts alone can no longer fail a message.
+        assertTrue("row should still be queued", outboxDao.queue.containsKey("m-young"))
+        assertEquals("PENDING", messageDao.messages["m-young"]!!.status)
+    }
+
+    @Test
+    fun `a written but unacknowledged message is resent until the peer acknowledges it`() = runBlocking {
+        val messageDao = FakeMessageDao()
+        val outboxDao = FakeOutboxDao()
+        // The sink reports success on every call — exactly what a half-open socket does: the kernel
+        // accepts the bytes and nothing ever surfaces an error, while the peer receives nothing.
+        val writes = java.util.concurrent.atomic.AtomicInteger(0)
+        val repository = RealFlashChatRepository(
+            localDeviceId = "my-device-id",
+            localDisplayName = "Kali",
+            messageDao = messageDao,
+            conversationDao = FakeConversationDao(),
+            outboxDao = outboxDao,
+            receiptDao = FakeReceiptDao(),
+            draftDao = FakeDraftDao(),
+            recentSearchDao = FakeRecentSearchDao(),
+            reactionDao = FakeReactionDao(),
+            transportSink = MessageTransportSink { _, _ -> writes.incrementAndGet(); true },
+            ioDispatcher = testDispatcher,
+        )
+        val now = System.currentTimeMillis()
+        messageDao.insert(msg("m-zombie", "conv-A", "into the void").copy(status = "PENDING"))
+        outboxDao.enqueue(
+            OutboxEntity(
+                localId = "m-zombie",
+                attempts = 0,
+                nextAttemptAt = now,
+                payloadJson = "into the void",
+                createdAt = now,
+            ),
+        )
+
+        // ERROR-031: the write "succeeds" and the bubble single-ticks, but with no receipt the row
+        // must stay claimed and go out again on the backoff ladder. Two writes prove the resend.
+        val deadline = System.currentTimeMillis() + 6_000
+        while (writes.get() < 2 && System.currentTimeMillis() < deadline) {
+            kotlinx.coroutines.delay(25)
+        }
+        assertTrue("frame should have been resent, got ${writes.get()} write(s)", writes.get() >= 2)
+        assertEquals("SENT", messageDao.messages["m-zombie"]!!.status)
+        assertTrue("row must survive an unacknowledged write", outboxDao.queue.containsKey("m-zombie"))
+
+        // The peer finally answers: the row retires and the bubble double-ticks.
+        repository.onInboundWireFrame(
+            MessageWireFrame.DeliveryReceipt(
+                messageId = "m-zombie",
+                conversationId = "conv-A",
+                memberId = "peer",
+                deliveredAt = System.currentTimeMillis(),
+            ),
+        )
+        assertFalse("receipt must retire the row", outboxDao.queue.containsKey("m-zombie"))
+        assertEquals("DELIVERED", messageDao.messages["m-zombie"]!!.status)
+
+        // And the resend stops: no further write once the row is gone.
+        val settled = writes.get()
+        kotlinx.coroutines.delay(1_500)
+        assertEquals(settled, writes.get())
+    }
+
+    @Test
+    fun `an unacknowledged message fails once the budget expires even though every write succeeded`() = runBlocking {
+        val messageDao = FakeMessageDao()
+        val outboxDao = FakeOutboxDao()
+        val writes = java.util.concurrent.atomic.AtomicInteger(0)
+        val repository = RealFlashChatRepository(
+            localDeviceId = "my-device-id",
+            localDisplayName = "Kali",
+            messageDao = messageDao,
+            conversationDao = FakeConversationDao(),
+            outboxDao = outboxDao,
+            receiptDao = FakeReceiptDao(),
+            draftDao = FakeDraftDao(),
+            recentSearchDao = FakeRecentSearchDao(),
+            reactionDao = FakeReactionDao(),
+            transportSink = MessageTransportSink { _, _ -> writes.incrementAndGet(); true },
+            ioDispatcher = testDispatcher,
+        )
+        val now = System.currentTimeMillis()
+        messageDao.insert(msg("m-stale", "conv-A", "written, never acked").copy(status = "SENT"))
+        // ERROR-031: keeping the row past a successful write must not make it immortal. The
+        // wall-clock budget is therefore tested BEFORE the send, so a row whose writes keep
+        // succeeding into a socket nobody reads still surfaces the 1-tap Retry after 30 minutes.
+        outboxDao.enqueue(
+            OutboxEntity(
+                localId = "m-stale",
+                attempts = 4,
+                nextAttemptAt = now,
+                payloadJson = "written, never acked",
+                createdAt = now - OUTBOX_GIVE_UP_BUDGET_MS - 1,
+            ),
+        )
+
+        val deadline = System.currentTimeMillis() + 4_000
+        while (outboxDao.queue.isNotEmpty() && System.currentTimeMillis() < deadline) {
+            kotlinx.coroutines.delay(25)
+        }
+        assertEquals(0, outboxDao.queue.size)
+        assertEquals("FAILED", messageDao.messages["m-stale"]!!.status)
+        // Give-up short-circuits ahead of the send, so the doomed frame is not re-transmitted.
+        assertEquals(0, writes.get())
+    }
+
+    @Test
+    fun `a resend can never walk an already delivered message back to SENT or FAILED`() = runBlocking {
+        val messageDao = FakeMessageDao()
+        val outboxDao = FakeOutboxDao()
+        val repository = RealFlashChatRepository(
+            localDeviceId = "my-device-id",
+            localDisplayName = "Kali",
+            messageDao = messageDao,
+            conversationDao = FakeConversationDao(),
+            outboxDao = outboxDao,
+            receiptDao = FakeReceiptDao(),
+            draftDao = FakeDraftDao(),
+            recentSearchDao = FakeRecentSearchDao(),
+            reactionDao = FakeReactionDao(),
+            transportSink = MessageTransportSink { _, _ -> true },
+            ioDispatcher = testDispatcher,
+        )
+        val now = System.currentTimeMillis()
+        // ERROR-031: rows now outlive the socket write, so a resend can race a receipt that already
+        // landed. An unconditional status write would turn a double-ticked bubble back into a single
+        // tick — and an expired budget would mark a delivered message Failed. Both are excluded.
+        messageDao.insert(msg("m-acked", "conv-A", "already delivered").copy(status = "DELIVERED"))
+        outboxDao.enqueue(
+            OutboxEntity(
+                localId = "m-acked",
+                attempts = 1,
+                nextAttemptAt = now,
+                payloadJson = "already delivered",
+                createdAt = now - OUTBOX_GIVE_UP_BUDGET_MS - 1,
+            ),
+        )
+
+        val deadline = System.currentTimeMillis() + 4_000
+        while (outboxDao.queue.isNotEmpty() && System.currentTimeMillis() < deadline) {
+            kotlinx.coroutines.delay(25)
+        }
+        assertEquals(0, outboxDao.queue.size)
+        assertEquals("DELIVERED", messageDao.messages["m-acked"]!!.status)
+    }
+
     private fun msg(localId: String, conversationId: String, text: String) = MessageEntity(
         localId = localId,
         conversationId = conversationId,
@@ -728,4 +1033,9 @@ class RealFlashChatRepositoryTest {
         sentAt = System.currentTimeMillis(),
         status = "DELIVERED",
     )
+
+    private companion object {
+        /** Mirrors `RealFlashChatRepository.OUTBOX_GIVE_UP_AFTER_MS` (private to the repository). */
+        const val OUTBOX_GIVE_UP_BUDGET_MS = 30 * 60 * 1000L
+    }
 }
