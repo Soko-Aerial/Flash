@@ -2,12 +2,19 @@
 # JitPack's default JDK is too old for AGP 9.3.1 — pin JDK 17 (the AGP floor).
 # Android SDK + ANDROID_HOME are provided by JitPack; no signing / no publish repo needed.
 #
-# Publish ONLY the supported v1 module set. core:engine api-depends on every other
-# core module (including core-messaging), so all eight must land in ~/.m2 or a
-# consumer of core-engine will fail to resolve a transitive dependency.
+# Publish every module the README lists in "Published modules" — all twelve. The set has to
+# be dependency-closed, not just "the ones a consumer names": core:engine api-depends on
+# every other core module, ui:callui api-depends on core:calling and uses ui:theme, and
+# ui:chat uses core:messaging + ui:theme. A module missing from ~/.m2 is a transitive
+# resolution failure for the consumer, not a missing feature.
+#
+# 1.1.0 added the last four (core:calling, ui:theme, ui:chat, ui:callui). The ui:* modules
+# build against compileSdk 37 while core:* stay on 35, so they are the ones to look at first
+# if a JitPack build starts failing on an SDK platform it cannot install.
+#
 # -x test -x lint keeps builds fast and avoids test-only deps (bouncycastle,
 # robolectric) failing the publish.
 jdk:
   - openjdk17
 install:
-  - ./gradlew :core:common:publishToMavenLocal :core:security:publishToMavenLocal :core:discovery:publishToMavenLocal :core:network:publishToMavenLocal :core:transfer:publishToMavenLocal :core:persistence:publishToMavenLocal :core:messaging:publishToMavenLocal :core:engine:publishToMavenLocal -x test -x lint
+  - ./gradlew :core:common:publishToMavenLocal :core:security:publishToMavenLocal :core:discovery:publishToMavenLocal :core:network:publishToMavenLocal :core:transfer:publishToMavenLocal :core:persistence:publishToMavenLocal :core:messaging:publishToMavenLocal :core:calling:publishToMavenLocal :core:engine:publishToMavenLocal :ui:theme:publishToMavenLocal :ui:chat:publishToMavenLocal :ui:callui:publishToMavenLocal -x test -x lint

@@ -1,6 +1,7 @@
 plugins {
     alias(libs.plugins.android.library)
     alias(libs.plugins.kotlin.compose)
+    `maven-publish`
 }
 
 android {
@@ -31,11 +32,33 @@ android {
     buildFeatures {
         compose = true
     }
+
+    publishing {
+        singleVariant("release") {
+            withSourcesJar()
+        }
+    }
+}
+
+publishing {
+    publications {
+        register<MavenPublication>("release") {
+            artifactId = "ui-callui"
+
+            afterEvaluate {
+                from(components["release"])
+            }
+        }
+    }
 }
 
 dependencies {
     implementation(project(":core:common"))
-    implementation(project(":core:calling"))
+    // api(), not implementation(): FlashCallScreen's signature exposes FlashCallUiState and
+    // FlashCallMedia, so a consumer of this module cannot call it without them on the compile
+    // classpath. This also re-exports webrtc-kmp transitively (:core:calling api()s it, ADR-025),
+    // which FlashVideoRenderer needs for SurfaceViewRenderer.
+    api(project(":core:calling"))
     implementation(project(":ui:theme"))
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)
