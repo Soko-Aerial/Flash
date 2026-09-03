@@ -686,7 +686,11 @@ private class Wiring(
     }
 
     private fun guessMimeType(fileName: String): String {
-        val ext = fileName.substringAfterLast('.', "").lowercase(Locale.getDefault())
+        // Locale.ROOT, not getDefault(): a file extension is machine data compared against
+        // lowercase ASCII literals below. Under a Turkish locale getDefault() folds 'I' to the
+        // dotless 'ı', so "TIFF"/"GIF"/"MIDI"/"JPI" would stop matching. Matches the precedent
+        // in core/discovery CompositeDiscovery.kt (uppercase(Locale.ROOT)).
+        val ext = fileName.substringAfterLast('.', "").lowercase(Locale.ROOT)
         return when (ext) {
             "jpg", "jpeg" -> "image/jpeg"
             "png" -> "image/png"

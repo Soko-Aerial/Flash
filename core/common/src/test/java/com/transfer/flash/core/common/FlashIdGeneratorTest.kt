@@ -1,3 +1,5 @@
+@file:OptIn(com.transfer.flash.core.common.annotation.FlashInternalApi::class)
+
 package com.transfer.flash.core.common
 
 import com.transfer.flash.core.common.id.FlashIdGenerator
