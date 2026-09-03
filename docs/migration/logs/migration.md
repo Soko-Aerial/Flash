@@ -1426,10 +1426,731 @@ in `commonMain`. Convert no `synchronized`, no `ConcurrentHashMap`, no atomics, 
 `atomicfu` — those are later phases, and the phase file is explicit that `DiscoveryEngineHolder.kt`
 is not to be cleaned up here.
 
+---
 
+## Phase 05 — Concurrency Primitives Audit
 
+| | |
+|---|---|
+| Phase file | `docs/migration/PHASE-05-concurrency.md` (187 lines) |
+| Precondition | Phase 04 committed and verified (`66b6628`) — met |
+| Code commit | `2339cb8` `refactor(concurrency): import kotlin.concurrent.Volatile at all 66 annotation sites` |
+| Files changed | 20 (import-only; +21 lines, −0) |
+| Verification | `:app:assembleDebug` + `testDebugUnitTest` → **863 tests, 12 failures, 0 skipped** — every per-module row identical to baseline, same 12 failures by name |
+| Inventory snapshot | `git`-tree state at `e85b3d5`/`66b6628`, i.e. what the phase inherited |
 
+### Goal
 
+Two separable things, and the phase file is careful to keep them apart:
+
+1. **Measure** every JVM-only concurrency primitive in production source, so the later
+   per-module KMP phases (07–10) know what they are walking into instead of discovering it
+   one compile error at a time.
+2. **Change exactly one thing** — make `@Volatile` resolve from `commonMain` — because it is
+   the only primitive in the inventory that has a drop-in common replacement with *identical*
+   JVM bytecode. Everything else is a design decision, not a mechanical edit, and belongs to
+   the phase that owns the module.
+
+The audit is the deliverable; the one-line-per-file edit is a side effect of it.
+
+### Step 1 — inventory
+
+Command, run from the repo root and scoped to production source only (`src/main`), so test
+fixtures and the two `sample/` consumers cannot inflate the numbers:
+
+```bash
+grep -rn --include=*.kt -E "java\.util\.concurrent|ConcurrentHashMap|CopyOnWriteArray|Atomic(Integer|Long|Boolean|Reference)|ReentrantLock|Executors|@Volatile|synchronized|Collections\.synchronized|ThreadLocal|Thread\(" core/*/src/main ui/*/src/main app/src/main
+```
+
+**Result: 270 matching lines across 39 files.** Raw output, spliced byte-exact:
+
+```text
+core/calling/src/main/java/com/transfer/flash/core/calling/CallCoordinator.kt:71:    @Volatile
+core/calling/src/main/java/com/transfer/flash/core/calling/FlashCallSession.kt:32:import java.util.concurrent.CopyOnWriteArrayList
+core/calling/src/main/java/com/transfer/flash/core/calling/FlashCallSession.kt:218:    private val deferredFrames = CopyOnWriteArrayList<CallWireFrame>()
+core/calling/src/main/java/com/transfer/flash/core/calling/FlashCallSession.kt:220:    private val eventJobs = CopyOnWriteArrayList<Job>()
+core/calling/src/main/java/com/transfer/flash/core/calling/FlashWebRtcEngine.kt:37:    @Volatile
+core/calling/src/main/java/com/transfer/flash/core/calling/FlashWebRtcEngine.kt:49:        synchronized(this) {
+core/common/src/main/java/com/transfer/flash/core/common/logging/FlashLog.kt:17:    @Volatile
+core/common/src/main/java/com/transfer/flash/core/common/logging/FlashLogger.kt:18: * - **Thread safety:** all buffer access is guarded by a single `synchronized` monitor over an
+core/common/src/main/java/com/transfer/flash/core/common/logging/FlashLogger.kt:23: *   guidance recommends synchronized/thread-safe structures for simple shared state:
+core/common/src/main/java/com/transfer/flash/core/common/logging/FlashLogger.kt:76:        synchronized(lock) {
+core/common/src/main/java/com/transfer/flash/core/common/logging/FlashLogger.kt:84:        synchronized(lock) {
+core/common/src/main/java/com/transfer/flash/core/common/logging/FlashLogger.kt:91:        synchronized(lock) {
+core/discovery/src/main/java/com/transfer/flash/core/discovery/core/CompositeDiscovery.kt:161:    @Volatile private var desiredBrowsing = false
+core/discovery/src/main/java/com/transfer/flash/core/discovery/core/CompositeDiscovery.kt:181:    @Volatile private var currentPolicy: DiscoveryModePolicy =
+core/discovery/src/main/java/com/transfer/flash/core/discovery/core/CompositeDiscovery.kt:262:        synchronized(lock) { browseStalledSince.clear() }
+core/discovery/src/main/java/com/transfer/flash/core/discovery/core/CompositeDiscovery.kt:313:        synchronized(lock) { browseStalledSince.clear() }
+core/discovery/src/main/java/com/transfer/flash/core/discovery/core/CompositeDiscovery.kt:340:        synchronized(lock) { collectingOrStart() }
+core/discovery/src/main/java/com/transfer/flash/core/discovery/core/CompositeDiscovery.kt:379:        synchronized(lock) { collectingOrStart() }
+core/discovery/src/main/java/com/transfer/flash/core/discovery/core/CompositeDiscovery.kt:397:        synchronized(lock) {
+core/discovery/src/main/java/com/transfer/flash/core/discovery/core/CompositeDiscovery.kt:414:            synchronized(lock) {
+core/discovery/src/main/java/com/transfer/flash/core/discovery/core/CompositeDiscovery.kt:436:        synchronized(lock) { collectingOrStart() }
+core/discovery/src/main/java/com/transfer/flash/core/discovery/core/CompositeDiscovery.kt:464:    private fun markBrowsing(name: String, value: Boolean) = synchronized(lock) {
+core/discovery/src/main/java/com/transfer/flash/core/discovery/core/CompositeDiscovery.kt:468:    private fun markAdvertising(name: String, value: Boolean) = synchronized(lock) {
+core/discovery/src/main/java/com/transfer/flash/core/discovery/core/CompositeDiscovery.kt:478:    private fun clearStall(name: String) = synchronized(lock) {
+core/discovery/src/main/java/com/transfer/flash/core/discovery/core/CompositeDiscovery.kt:544:        val known = synchronized(lock) {
+core/discovery/src/main/java/com/transfer/flash/core/discovery/core/CompositeDiscovery.kt:551:        synchronized(lock) {
+core/discovery/src/main/java/com/transfer/flash/core/discovery/core/CompositeDiscovery.kt:567:        synchronized(lock) {
+core/discovery/src/main/java/com/transfer/flash/core/discovery/core/CompositeDiscovery.kt:585:        val stalled = synchronized(lock) {
+core/discovery/src/main/java/com/transfer/flash/core/discovery/core/CompositeDiscovery.kt:596:            synchronized(lock) { browseStalledSince[name] = nowMs }
+core/discovery/src/main/java/com/transfer/flash/core/discovery/core/CompositeDiscovery.kt:603:        synchronized(lock) {
+core/discovery/src/main/java/com/transfer/flash/core/discovery/core/CompositeDiscovery.kt:623:        synchronized(lock) {
+core/discovery/src/main/java/com/transfer/flash/core/discovery/core/CompositeDiscovery.kt:691:    private fun refreshState() = synchronized(lock) {
+core/discovery/src/main/java/com/transfer/flash/core/discovery/group/FlashPeerGroupSession.kt:18:import java.util.concurrent.ConcurrentHashMap
+core/discovery/src/main/java/com/transfer/flash/core/discovery/group/FlashPeerGroupSession.kt:230:        val results = ConcurrentHashMap<String, Boolean>(targets.size)
+core/discovery/src/main/java/com/transfer/flash/core/discovery/nsd/NsdFlashDiscovery.kt:57:    @Volatile private var generation = 0
+core/discovery/src/main/java/com/transfer/flash/core/discovery/nsd/NsdFlashDiscovery.kt:225:        synchronized(lock) {
+core/discovery/src/main/java/com/transfer/flash/core/discovery/nsd/NsdFlashDiscovery.kt:234:        synchronized(lock) {
+core/discovery/src/main/java/com/transfer/flash/core/discovery/nsd/NsdResolveQueue.kt:21:        val next = synchronized(lock) {
+core/discovery/src/main/java/com/transfer/flash/core/discovery/nsd/NsdResolveQueue.kt:80:        val next = synchronized(lock) {
+core/discovery/src/main/java/com/transfer/flash/core/discovery/nsd/NsdResolveQueue.kt:90:        synchronized(lock) {
+core/discovery/src/main/java/com/transfer/flash/core/discovery/nsd/NsdTransport.kt:195:    private val foundServices = java.util.concurrent.ConcurrentHashMap<String, NsdServiceInfo>()
+core/discovery/src/main/java/com/transfer/flash/core/discovery/nsd/NsdTransport.kt:198:    @Volatile private var resolveQueue: NsdResolveQueue? = null
+core/discovery/src/main/java/com/transfer/flash/core/discovery/nsd/NsdTransport.kt:202:        java.util.concurrent.ConcurrentHashMap<String, NsdManager.ServiceInfoCallback>()
+core/discovery/src/main/java/com/transfer/flash/core/discovery/nsd/NsdTransport.kt:376:        val queue = synchronized(queueLock) {
+core/discovery/src/main/java/com/transfer/flash/core/discovery/nsd/NsdTransport.kt:450:        public val DIRECT_EXECUTOR: java.util.concurrent.Executor =
+core/discovery/src/main/java/com/transfer/flash/core/discovery/nsd/NsdTransport.kt:451:            java.util.concurrent.Executor { block -> block.run() }
+core/discovery/src/main/java/com/transfer/flash/core/discovery/nsd/NsdTransport.kt:670:    @Volatile private var ownDeviceId: FlashDeviceId? = null
+core/discovery/src/main/java/com/transfer/flash/core/discovery/nsd/NsdTransport.kt:671:    @Volatile private var advertising = false
+core/discovery/src/main/java/com/transfer/flash/core/discovery/nsd/NsdTransport.kt:672:    @Volatile private var browsing = false
+core/discovery/src/main/java/com/transfer/flash/core/discovery/nsd/NsdTransport.kt:673:    @Volatile private var restartAttempt = 0
+core/discovery/src/main/java/com/transfer/flash/core/discovery/nsd/NsdTransport.kt:674:    @Volatile private var advertisedPort: Int = 0
+core/discovery/src/main/java/com/transfer/flash/core/discovery/nsd/NsdTransport.kt:681:    @Volatile private var modePolicy: DiscoveryModePolicy = initialModePolicy
+core/discovery/src/main/java/com/transfer/flash/core/discovery/nsd/NsdTransport.kt:691:    @Volatile private var lastAdvertisedIdentity: FlashAdvertisedIdentity? = null
+core/discovery/src/main/java/com/transfer/flash/core/discovery/nsd/NsdTransport.kt:692:    @Volatile private var lastAdvertisedPort: Int = 0
+core/discovery/src/main/java/com/transfer/flash/core/discovery/nsd/NsdTransport.kt:693:    @Volatile private var dutyCyclesCompleted = 0
+core/discovery/src/main/java/com/transfer/flash/core/discovery/nsd/NsdTransport.kt:713:    private val monitoredServices = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+core/discovery/src/main/java/com/transfer/flash/core/discovery/nsd/NsdTransport.kt:722:    @Volatile private var heartbeatJob: Job? = null
+core/discovery/src/main/java/com/transfer/flash/core/discovery/nsd/NsdTransport.kt:725:    private val monitorRetryJobs = java.util.concurrent.ConcurrentHashMap<String, Job>()
+core/discovery/src/main/java/com/transfer/flash/core/discovery/nsd/NsdTransport.kt:728:    private val monitorRetries = java.util.concurrent.ConcurrentHashMap<String, Int>()
+core/discovery/src/main/java/com/transfer/flash/core/discovery/nsd/NsdTransport.kt:731:    @Volatile private var advertiseWatchdogJob: Job? = null
+core/discovery/src/main/java/com/transfer/flash/core/discovery/nsd/NsdTransport.kt:739:    @Volatile private var advertiseDesired = false
+core/discovery/src/main/java/com/transfer/flash/core/discovery/nsd/NsdTransport.kt:742:    @Volatile private var networkChangeJob: Job? = null
+core/discovery/src/main/java/com/transfer/flash/core/discovery/nsd/NsdTransport.kt:744:    @Volatile private var observingNetwork = false
+core/discovery/src/main/java/com/transfer/flash/core/discovery/nsd/NsdTransport.kt:747:    @Volatile private var browseStartedAtMs: Long = 0L
+core/discovery/src/main/java/com/transfer/flash/core/discovery/nsd/NsdTransport.kt:1202:                    synchronized(deviceIdsByServiceName) { deviceIdsByServiceName.remove(serviceName) }
+core/discovery/src/main/java/com/transfer/flash/core/discovery/nsd/NsdTransport.kt:1213:                synchronized(deviceIdsByServiceName) { deviceIdsByServiceName.remove(serviceName) }
+core/discovery/src/main/java/com/transfer/flash/core/discovery/nsd/NsdTransport.kt:1304:        synchronized(deviceIdsByServiceName) {
+core/discovery/src/main/java/com/transfer/flash/core/discovery/nsd/NsdTransport.kt:1335:                val deviceId = synchronized(deviceIdsByServiceName) {
+core/discovery/src/main/java/com/transfer/flash/core/discovery/nsd/NsdTransport.kt:1359:        synchronized(deviceIdsByServiceName) {
+core/discovery/src/main/java/com/transfer/flash/core/discovery/nsd/NsdTransport.kt:1410:        synchronized(deviceIdsByServiceName) { deviceIdsByServiceName.clear() }
+core/engine/src/main/java/com/transfer/flash/core/engine/Flash.kt:46:import java.util.concurrent.ConcurrentHashMap
+core/engine/src/main/java/com/transfer/flash/core/engine/Flash.kt:137:    private val openHandles = ConcurrentHashMap<String, RandomAccessSinkHandle>()
+core/engine/src/main/java/com/transfer/flash/core/engine/Flash.kt:138:    private val incomingMeta = ConcurrentHashMap<String, ChunkFrame.FileStart>()
+core/engine/src/main/java/com/transfer/flash/core/engine/Flash.kt:139:    private val receivedPaths = ConcurrentHashMap<String, String>()
+core/engine/src/main/java/com/transfer/flash/core/engine/Flash.kt:140:    private val incomingByPeer = ConcurrentHashMap<String, MutableSet<String>>()
+core/engine/src/main/java/com/transfer/flash/core/engine/Flash.kt:141:    private val dataPortCache = ConcurrentHashMap<String, Int>()
+core/engine/src/main/java/com/transfer/flash/core/engine/Flash.kt:144:    @Volatile private var dataPort: Int = 0
+core/engine/src/main/java/com/transfer/flash/core/engine/Flash.kt:145:    @Volatile private var transferRef: RealFlashTransferRepository? = null
+core/engine/src/main/java/com/transfer/flash/core/engine/Flash.kt:146:    @Volatile private var acceptOffer: ((String) -> Unit)? = null
+core/engine/src/main/java/com/transfer/flash/core/engine/Flash.kt:336:        val sessionJobs = ConcurrentHashMap<WsSession, kotlinx.coroutines.Job>()
+core/engine/src/main/java/com/transfer/flash/core/engine/Flash.kt:505:                        incomingByPeer.getOrPut(pid) { java.util.Collections.newSetFromMap(ConcurrentHashMap()) }.add(frame.transferId)
+core/engine/src/main/java/com/transfer/flash/core/engine/FlashEngine.kt:57:    private val closed = java.util.concurrent.atomic.AtomicBoolean(false)
+core/messaging/src/main/java/com/transfer/flash/core/messaging/RealFlashChatRepository.kt:41:import java.util.concurrent.ConcurrentHashMap
+core/messaging/src/main/java/com/transfer/flash/core/messaging/RealFlashChatRepository.kt:154:    private val typingStates = ConcurrentHashMap<String, ConcurrentHashMap<String, String>>()
+core/messaging/src/main/java/com/transfer/flash/core/messaging/RealFlashChatRepository.kt:791:                val convTyping = typingStates.computeIfAbsent(frame.conversationId) { ConcurrentHashMap() }
+core/network/src/main/java/com/transfer/flash/core/network/datachannel/DataChannelClient.kt:83:                private val closed = java.util.concurrent.atomic.AtomicBoolean(false)
+core/network/src/main/java/com/transfer/flash/core/network/datachannel/DataChannelClient.kt:91:                                synchronized(writeLock) { DataChannelFraming.writeFrame(output, payload) }
+core/network/src/main/java/com/transfer/flash/core/network/datachannel/DataChannelServer.kt:11:import java.util.concurrent.atomic.AtomicBoolean
+core/network/src/main/java/com/transfer/flash/core/network/datachannel/DataChannelServer.kt:40:    private val running = AtomicBoolean(false)
+core/network/src/main/java/com/transfer/flash/core/network/datachannel/DataChannelServer.kt:43:    @Volatile
+core/network/src/main/java/com/transfer/flash/core/network/datachannel/DataChannelServer.kt:117:                        synchronized(output) { DataChannelFraming.writeFrame(output, bytes) }
+core/network/src/main/java/com/transfer/flash/core/network/DefaultFlashNetwork.kt:28:import java.util.concurrent.atomic.AtomicBoolean
+core/network/src/main/java/com/transfer/flash/core/network/DefaultFlashNetwork.kt:67:    private val running = AtomicBoolean(false)
+core/network/src/main/java/com/transfer/flash/core/network/DefaultFlashNetwork.kt:78:    private val connectingAttempts = java.util.concurrent.atomic.AtomicInteger(0)
+core/network/src/main/java/com/transfer/flash/core/network/DefaultFlashNetwork.kt:82:    @Volatile
+core/network/src/main/java/com/transfer/flash/core/network/DefaultFlashNetwork.kt:131:        synchronized(lock) {
+core/network/src/main/java/com/transfer/flash/core/network/DefaultFlashNetwork.kt:152:        synchronized(lock) { knownEndpoints[deviceId] = Endpoint(host, port, 0L) }
+core/network/src/main/java/com/transfer/flash/core/network/DefaultFlashNetwork.kt:157:        val removed = synchronized(lock) { knownEndpoints.remove(deviceId) != null }
+core/network/src/main/java/com/transfer/flash/core/network/DefaultFlashNetwork.kt:166:        val endpoint = synchronized(lock) { knownEndpoints[device.id.value] }
+core/network/src/main/java/com/transfer/flash/core/network/DefaultFlashNetwork.kt:220:        val session = synchronized(lock) { sessionsById.remove(deviceId) }
+core/network/src/main/java/com/transfer/flash/core/network/DefaultFlashNetwork.kt:315:        synchronized(lock) {
+core/network/src/main/java/com/transfer/flash/core/network/DefaultFlashNetwork.kt:343:        synchronized(lock) {
+core/network/src/main/java/com/transfer/flash/core/network/DefaultFlashNetwork.kt:364:        synchronized(lock) { sessionsById.toMap() }
+core/network/src/main/java/com/transfer/flash/core/network/DefaultFlashNetwork.kt:373:            peerCountDiscovered = synchronized(lock) { knownEndpoints.size },
+core/network/src/main/java/com/transfer/flash/core/network/resilience/AndroidNetworkWatcher.kt:27:    @Volatile
+core/network/src/main/java/com/transfer/flash/core/network/resilience/BoundedSendQueue.kt:4:import java.util.concurrent.locks.ReentrantLock
+core/network/src/main/java/com/transfer/flash/core/network/resilience/BoundedSendQueue.kt:58:    private val lock = ReentrantLock()
+core/network/src/main/java/com/transfer/flash/core/network/resilience/BoundedSendQueue.kt:62:    @Volatile
+core/network/src/main/java/com/transfer/flash/core/network/resilience/ChaosNetworkHarness.kt:5:import java.util.concurrent.CopyOnWriteArrayList
+core/network/src/main/java/com/transfer/flash/core/network/resilience/ChaosNetworkHarness.kt:56:    val receivedFrames = CopyOnWriteArrayList<DeliveredFrame>()
+core/network/src/main/java/com/transfer/flash/core/network/resilience/ChaosSession.kt:11:import java.util.concurrent.ConcurrentHashMap
+core/network/src/main/java/com/transfer/flash/core/network/resilience/ChaosSession.kt:24:    private val seen: MutableSet<String> = Collections.newSetFromMap(ConcurrentHashMap())
+core/network/src/main/java/com/transfer/flash/core/network/resilience/ChaosSession.kt:108:    @Volatile
+core/network/src/main/java/com/transfer/flash/core/network/resilience/ChaosSession.kt:113:    @Volatile
+core/network/src/main/java/com/transfer/flash/core/network/resilience/ChaosSession.kt:117:    val disconnectEvents: MutableList<String> = Collections.synchronizedList(mutableListOf())
+core/network/src/main/java/com/transfer/flash/core/network/resilience/ChaosSession.kt:158:                synchronized(reorderBuffer) {
+core/network/src/main/java/com/transfer/flash/core/network/resilience/ChaosSession.kt:172:        synchronized(reorderBuffer) { flushReorderBufferLocked(nowMs) }
+core/network/src/main/java/com/transfer/flash/core/network/resilience/ChaosSession.kt:206:        synchronized(reorderBuffer) { reorderBuffer.clear() }
+core/network/src/main/java/com/transfer/flash/core/network/tcp/LanProbeServer.kt:12:import java.util.concurrent.atomic.AtomicBoolean
+core/network/src/main/java/com/transfer/flash/core/network/tcp/LanProbeServer.kt:29:    private val running = AtomicBoolean(false)
+core/network/src/main/java/com/transfer/flash/core/network/tcp/LanSession.kt:42:import java.util.concurrent.ConcurrentHashMap
+core/network/src/main/java/com/transfer/flash/core/network/tcp/LanSession.kt:43:import java.util.concurrent.atomic.AtomicBoolean
+core/network/src/main/java/com/transfer/flash/core/network/tcp/LanSession.kt:139:    private val pendingAcks = ConcurrentHashMap<String, CompletableDeferred<Unit>>()
+core/network/src/main/java/com/transfer/flash/core/network/tcp/LanSession.kt:151:    private val closed = AtomicBoolean(false)
+core/network/src/main/java/com/transfer/flash/core/network/tcp/LanSession.kt:196:                synchronized(writeLock) {
+core/network/src/main/java/com/transfer/flash/core/network/tcp/LanSession.kt:317:                        synchronized(heartbeatLock) { tracker.onPongReceived(nowMs()) }
+core/network/src/main/java/com/transfer/flash/core/network/tcp/LanSession.kt:349:        synchronized(heartbeatLock) { tracker.reset(nowMs()) }
+core/network/src/main/java/com/transfer/flash/core/network/tcp/LanSession.kt:353:            val action = synchronized(heartbeatLock) {
+core/network/src/main/java/com/transfer/flash/core/network/tcp/LanSession.kt:368:                        synchronized(heartbeatLock) { tracker.onPingSent(nowMs()) }
+core/network/src/main/java/com/transfer/flash/core/network/tcp/LanSession.kt:392:        synchronized(writeLock) {
+core/network/src/main/java/com/transfer/flash/core/network/tls/SecureSocketUpgrader.kt:226:        @Volatile
+core/network/src/main/java/com/transfer/flash/core/network/ws/WebSocketCodec.kt:47:     * the first byte is NOT this exception — the stream is desynchronized there and retrying would
+core/network/src/main/java/com/transfer/flash/core/network/ws/WsConnection.kt:10:import java.util.concurrent.atomic.AtomicBoolean
+core/network/src/main/java/com/transfer/flash/core/network/ws/WsConnection.kt:73:    private val closed = AtomicBoolean(false)
+core/network/src/main/java/com/transfer/flash/core/network/ws/WsConnection.kt:153:                synchronized(writeLock) {
+core/network/src/main/java/com/transfer/flash/core/network/ws/WsConnection.kt:166:            synchronized(writeLock) {
+core/network/src/main/java/com/transfer/flash/core/network/ws/WsFlashNetwork.kt:26:import java.util.concurrent.ConcurrentHashMap
+core/network/src/main/java/com/transfer/flash/core/network/ws/WsFlashNetwork.kt:27:import java.util.concurrent.ConcurrentLinkedQueue
+core/network/src/main/java/com/transfer/flash/core/network/ws/WsFlashNetwork.kt:28:import java.util.concurrent.ThreadLocalRandom
+core/network/src/main/java/com/transfer/flash/core/network/ws/WsFlashNetwork.kt:29:import java.util.concurrent.atomic.AtomicBoolean
+core/network/src/main/java/com/transfer/flash/core/network/ws/WsFlashNetwork.kt:30:import java.util.concurrent.atomic.AtomicInteger
+core/network/src/main/java/com/transfer/flash/core/network/ws/WsFlashNetwork.kt:87:    private val running = AtomicBoolean(false)
+core/network/src/main/java/com/transfer/flash/core/network/ws/WsFlashNetwork.kt:91:    private val knownEndpoints = ConcurrentHashMap<String, Endpoint>()
+core/network/src/main/java/com/transfer/flash/core/network/ws/WsFlashNetwork.kt:92:    private val sessionsById = ConcurrentHashMap<FlashDeviceId, WsSession>()
+core/network/src/main/java/com/transfer/flash/core/network/ws/WsFlashNetwork.kt:93:    private val sessionByConnection = ConcurrentHashMap<WsConnection, WsSession>()
+core/network/src/main/java/com/transfer/flash/core/network/ws/WsFlashNetwork.kt:94:    private val pendingHandshakes = ConcurrentHashMap<WsConnection, CompletableDeferred<FlashDevice>>()
+core/network/src/main/java/com/transfer/flash/core/network/ws/WsFlashNetwork.kt:110:    private val reconnectTargets = ConcurrentHashMap<String, Endpoint>()
+core/network/src/main/java/com/transfer/flash/core/network/ws/WsFlashNetwork.kt:113:    private val reconnectJobs = ConcurrentHashMap<String, Job>()
+core/network/src/main/java/com/transfer/flash/core/network/ws/WsFlashNetwork.kt:116:    private val reconnectPolicies = ConcurrentHashMap<String, ReconnectPolicy>()
+core/network/src/main/java/com/transfer/flash/core/network/ws/WsFlashNetwork.kt:126:    private val localDisconnects = ConcurrentHashMap.newKeySet<String>()
+core/network/src/main/java/com/transfer/flash/core/network/ws/WsFlashNetwork.kt:136:    private val earlyFrames = ConcurrentHashMap<WsConnection, ConcurrentLinkedQueue<Any>>()
+core/network/src/main/java/com/transfer/flash/core/network/ws/WsFlashNetwork.kt:152:    private val connectingAttempts = AtomicInteger(0)
+core/network/src/main/java/com/transfer/flash/core/network/ws/WsFlashNetwork.kt:158:     * admission gate. The maps stay [ConcurrentHashMap] for lock-free reads on the frame paths.
+core/network/src/main/java/com/transfer/flash/core/network/ws/WsFlashNetwork.kt:352:        val session = synchronized(registryLock) {
+core/network/src/main/java/com/transfer/flash/core/network/ws/WsFlashNetwork.kt:441:        synchronized(registryLock) {
+core/network/src/main/java/com/transfer/flash/core/network/ws/WsFlashNetwork.kt:565:        synchronized(registryLock) {
+core/network/src/main/java/com/transfer/flash/core/network/ws/WsFlashNetwork.kt:629:                        random01 = { ThreadLocalRandom.current().nextDouble() },
+core/network/src/main/java/com/transfer/flash/core/network/ws/WsKeepalive.kt:73:    @Volatile
+core/network/src/main/java/com/transfer/flash/core/network/ws/WsTransferServer.kt:50:    @Volatile
+core/transfer/src/main/java/com/transfer/flash/core/transfer/multistream/MultiStreamDispatcher.kt:26:import java.util.concurrent.atomic.AtomicBoolean
+core/transfer/src/main/java/com/transfer/flash/core/transfer/multistream/MultiStreamDispatcher.kt:27:import java.util.concurrent.atomic.AtomicInteger
+core/transfer/src/main/java/com/transfer/flash/core/transfer/multistream/MultiStreamDispatcher.kt:28:import java.util.concurrent.atomic.AtomicLong
+core/transfer/src/main/java/com/transfer/flash/core/transfer/multistream/MultiStreamDispatcher.kt:43: *   per-worker state is owned by exactly one coroutine. Tiny synchronized blocks guard snapshots.
+core/transfer/src/main/java/com/transfer/flash/core/transfer/multistream/MultiStreamDispatcher.kt:95:    private val confirmedBytes = AtomicLong(resumedBytes)
+core/transfer/src/main/java/com/transfer/flash/core/transfer/multistream/MultiStreamDispatcher.kt:96:    private val confirmedCount = AtomicInteger(resumeDone.size)
+core/transfer/src/main/java/com/transfer/flash/core/transfer/multistream/MultiStreamDispatcher.kt:97:    private val chunksSentTotal = AtomicInteger(0)
+core/transfer/src/main/java/com/transfer/flash/core/transfer/multistream/MultiStreamDispatcher.kt:98:    private val bytesSentTotal = AtomicLong(0L)
+core/transfer/src/main/java/com/transfer/flash/core/transfer/multistream/MultiStreamDispatcher.kt:99:    private val aliveWorkers = AtomicInteger(0)
+core/transfer/src/main/java/com/transfer/flash/core/transfer/multistream/MultiStreamDispatcher.kt:100:    private val started = AtomicBoolean(false)
+core/transfer/src/main/java/com/transfer/flash/core/transfer/multistream/MultiStreamDispatcher.kt:102:    @Volatile private var receiverVerifiedField: Boolean? = null
+core/transfer/src/main/java/com/transfer/flash/core/transfer/multistream/MultiStreamDispatcher.kt:103:    @Volatile private var coverageReachedAtMs: Long? = null
+core/transfer/src/main/java/com/transfer/flash/core/transfer/multistream/MultiStreamDispatcher.kt:104:    @Volatile private var resolvedDigest: String = ""
+core/transfer/src/main/java/com/transfer/flash/core/transfer/multistream/MultiStreamDispatcher.kt:106:    @Volatile private var ackDrainDeadlineMs: Long? = null
+core/transfer/src/main/java/com/transfer/flash/core/transfer/multistream/MultiStreamDispatcher.kt:112:    private val deadIds = java.util.Collections.synchronizedList(mutableListOf<Int>())
+core/transfer/src/main/java/com/transfer/flash/core/transfer/multistream/MultiStreamDispatcher.kt:115:    private val completeEmittedOnce = AtomicBoolean(false)
+core/transfer/src/main/java/com/transfer/flash/core/transfer/multistream/MultiStreamDispatcher.kt:116:    @Volatile private var completeFrameBytesHolder: ByteArray? = null
+core/transfer/src/main/java/com/transfer/flash/core/transfer/multistream/MultiStreamDispatcher.kt:124:    @Volatile private var externallyPaused = false
+core/transfer/src/main/java/com/transfer/flash/core/transfer/multistream/MultiStreamDispatcher.kt:127:    @Volatile private var plannedStreams: Int = 0
+core/transfer/src/main/java/com/transfer/flash/core/transfer/multistream/MultiStreamDispatcher.kt:192:            val ownFeedsOpen = AtomicInteger(effectiveStreams)
+core/transfer/src/main/java/com/transfer/flash/core/transfer/multistream/MultiStreamDispatcher.kt:260:                    synchronized(terminalLock) { deadIds.add(id) }
+core/transfer/src/main/java/com/transfer/flash/core/transfer/multistream/MultiStreamDispatcher.kt:267:                    synchronized(terminalLock) { deadIds.add(id) }
+core/transfer/src/main/java/com/transfer/flash/core/transfer/multistream/MultiStreamDispatcher.kt:301:        synchronized(terminalLock) { confirmedVector.doneIndexes() }
+core/transfer/src/main/java/com/transfer/flash/core/transfer/multistream/MultiStreamDispatcher.kt:304:    fun deadChannelsSnapshot(): List<Int> = synchronized(terminalLock) { deadIds.toList() }
+core/transfer/src/main/java/com/transfer/flash/core/transfer/multistream/MultiStreamDispatcher.kt:332:        synchronized(terminalLock) {
+core/transfer/src/main/java/com/transfer/flash/core/transfer/multistream/MultiStreamDispatcher.kt:383:                synchronized(terminalLock) { ackDrainDeadlineMs = null }
+core/transfer/src/main/java/com/transfer/flash/core/transfer/multistream/MultiStreamDispatcher.kt:387:            val deadline = synchronized(terminalLock) {
+core/transfer/src/main/java/com/transfer/flash/core/transfer/multistream/MultiStreamDispatcher.kt:413:            deadChannelIds = synchronized(terminalLock) { deadIds.toList() },
+core/transfer/src/main/java/com/transfer/flash/core/transfer/multistream/MultiStreamDispatcher.kt:421:            deadChannelIds = synchronized(terminalLock) { deadIds.toList() },
+core/transfer/src/main/java/com/transfer/flash/core/transfer/multistream/MultiStreamDispatcher.kt:467:        ownFeedsOpen: AtomicInteger,
+core/transfer/src/main/java/com/transfer/flash/core/transfer/multistream/MultiStreamDispatcher.kt:577:        synchronized(terminalLock) {
+core/transfer/src/main/java/com/transfer/flash/core/transfer/multistream/MultiStreamDispatcher.kt:589:        val allDead = synchronized(terminalLock) {
+core/transfer/src/main/java/com/transfer/flash/core/transfer/multistream/MultiStreamDispatcher.kt:603:            synchronized(terminalLock) {
+core/transfer/src/main/java/com/transfer/flash/core/transfer/multistream/MultiStreamReceiver.kt:56:        val events = synchronized(lock) { pipeline.onFrame(bytes) }
+core/transfer/src/main/java/com/transfer/flash/core/transfer/multistream/MultiStreamReceiver.kt:62:        synchronized(lock) { pipeline.flushPendingAck() }?.route(channelId)
+core/transfer/src/main/java/com/transfer/flash/core/transfer/multistream/MultiStreamReceiver.kt:65:        synchronized(lock) { pipeline.doneIndexes(transferId) }
+core/transfer/src/main/java/com/transfer/flash/core/transfer/multistream/MultiStreamReceiver.kt:68:        synchronized(lock) { pipeline.activeTransferIds() }
+core/transfer/src/main/java/com/transfer/flash/core/transfer/multistream/TransferCompletionStateMachine.kt:3:import java.util.concurrent.atomic.AtomicBoolean
+core/transfer/src/main/java/com/transfer/flash/core/transfer/multistream/TransferCompletionStateMachine.kt:34: * Thread-safety: internally synchronized (like [MultiStreamReceiver]); cheap critical sections
+core/transfer/src/main/java/com/transfer/flash/core/transfer/multistream/TransferCompletionStateMachine.kt:75:    private val emittedOnce = AtomicBoolean(false)
+core/transfer/src/main/java/com/transfer/flash/core/transfer/multistream/TransferCompletionStateMachine.kt:77:    val currentPhase: Phase get() = synchronized(lock) { phase }
+core/transfer/src/main/java/com/transfer/flash/core/transfer/multistream/TransferCompletionStateMachine.kt:78:    val confirmedCountSnapshot: Int get() = synchronized(lock) { confirmedCount }
+core/transfer/src/main/java/com/transfer/flash/core/transfer/multistream/TransferCompletionStateMachine.kt:84:    fun onConfirmedCount(newTotal: Int): Outcome = synchronized(lock) {
+core/transfer/src/main/java/com/transfer/flash/core/transfer/multistream/TransferCompletionStateMachine.kt:93:    fun onReceiverComplete(verified: Boolean): Outcome = synchronized(lock) {
+core/transfer/src/main/java/com/transfer/flash/core/transfer/multistream/TransferCompletionStateMachine.kt:100:    fun tryGraceExpire(): Outcome = synchronized(lock) {
+core/transfer/src/main/java/com/transfer/flash/core/transfer/multistream/TransferCompletionStateMachine.kt:108:    fun onAllChannelsDead(reason: String): Outcome = synchronized(lock) {
+core/transfer/src/main/java/com/transfer/flash/core/transfer/multistream/TransferCompletionStateMachine.kt:115:    fun snapshotVerified(): Boolean? = synchronized(lock) { receiverVerified }
+core/transfer/src/main/java/com/transfer/flash/core/transfer/policy/DestinationPolicy.kt:102:    @Volatile
+core/transfer/src/main/java/com/transfer/flash/core/transfer/RealFlashTransferRepository.kt:24:import java.util.concurrent.ConcurrentHashMap
+core/transfer/src/main/java/com/transfer/flash/core/transfer/RealFlashTransferRepository.kt:105:    private val runningJobs = ConcurrentHashMap<String, Job>()
+core/transfer/src/main/java/com/transfer/flash/core/transfer/RealFlashTransferRepository.kt:106:    private val runningDispatchers = ConcurrentHashMap<String, MultiStreamDispatcher>()
+core/transfer/src/main/java/com/transfer/flash/core/transfer/RealFlashTransferRepository.kt:119:    private val pauseIntents: MutableSet<String> = ConcurrentHashMap.newKeySet()
+core/transfer/src/main/java/com/transfer/flash/core/transfer/RealFlashTransferRepository.kt:642:    private val receiverDone = ConcurrentHashMap<String, MutableSet<Int>>()
+core/transfer/src/main/java/com/transfer/flash/core/transfer/RealFlashTransferRepository.kt:648:            receiverDone.getOrPut(row.transferId) { java.util.Collections.newSetFromMap(ConcurrentHashMap()) }
+core/transfer/src/main/java/com/transfer/flash/core/transfer/RealFlashTransferRepository.kt:665:            java.util.Collections.newSetFromMap(ConcurrentHashMap())
+ui/theme/src/main/java/com/transfer/flash/ui/theme/FlashSounds.kt:236:        synchronized(lock) {
+app/src/main/java/com/transfer/flash/calling/FlashCallRinger.kt:106:        synchronized(lock) {
+app/src/main/java/com/transfer/flash/calling/FlashCallRinger.kt:132:        synchronized(lock) {
+app/src/main/java/com/transfer/flash/calling/FlashCallRinger.kt:146:        synchronized(lock) { stopLocked() }
+app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:59:import java.util.concurrent.ConcurrentHashMap
+app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:106:    @Volatile
+app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:109:    @Volatile
+app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:112:    @Volatile
+app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:115:    @Volatile
+app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:118:    @Volatile
+app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:121:    @Volatile
+app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:124:    @Volatile
+app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:133:    @Volatile
+app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:145:    @Volatile
+app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:149:    @Volatile
+app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:158:    @Volatile
+app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:173:    @Volatile
+app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:177:    @Volatile
+app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:179:    @Volatile
+app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:181:    @Volatile
+app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:183:    @Volatile
+app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:194:    @Volatile
+app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:202:    @Volatile
+app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:222:    @Volatile
+app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:232:    @Volatile
+app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:334:        val openHandles = ConcurrentHashMap<String, RandomAccessSinkHandle>()
+app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:335:        val incomingMeta = ConcurrentHashMap<String, ChunkFrame.FileStart>()
+app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:338:        val receivedPaths = ConcurrentHashMap<String, String>()
+app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:341:        val incomingByPeer = ConcurrentHashMap<String, MutableSet<String>>()
+app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:347:        val dataPortCache = ConcurrentHashMap<String, Int>()
+app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:703:        val sessionJobs = ConcurrentHashMap<WsSession, Job>()
+app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:963:        // `collect`, not `collectLatest`: onCallState is a cheap synchronized state machine and
+app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:1197:        openHandles: ConcurrentHashMap<String, RandomAccessSinkHandle>,
+app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:1198:        incomingMeta: ConcurrentHashMap<String, ChunkFrame.FileStart>,
+app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:1199:        receivedPaths: ConcurrentHashMap<String, String>,
+app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:1200:        incomingByPeer: ConcurrentHashMap<String, MutableSet<String>>,
+app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:1229:                            java.util.Collections.newSetFromMap(ConcurrentHashMap())
+app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:1317:        private val openHandles: ConcurrentHashMap<String, RandomAccessSinkHandle>,
+app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:1318:        private val incomingMeta: ConcurrentHashMap<String, ChunkFrame.FileStart>,
+app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:1319:        private val receivedPaths: ConcurrentHashMap<String, String>,
+app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:1320:        private val incomingByPeer: ConcurrentHashMap<String, MutableSet<String>>,
+app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:1323:        @Volatile
+app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:1363:        incomingMeta: ConcurrentHashMap<String, ChunkFrame.FileStart>,
+app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:1495:        synchronized(this) {
+app/src/main/java/com/transfer/flash/debug/FlashBackgroundService.kt:14:import java.util.concurrent.atomic.AtomicBoolean
+app/src/main/java/com/transfer/flash/debug/FlashBackgroundService.kt:143:        private val promotionRefused = AtomicBoolean(false)
+app/src/main/java/com/transfer/flash/notifications/FlashNotificationManager.kt:42:    @Volatile
+app/src/main/java/com/transfer/flash/notifications/FlashNotificationManager.kt:46:    @Volatile
+app/src/main/java/com/transfer/flash/pairing/PairingCoordinator.kt:82:    @Volatile
+app/src/main/java/com/transfer/flash/pairing/PairingCoordinator.kt:109:                synchronized(fingerprints) { fingerprints[peerId] = inbound.fingerprintHex }
+app/src/main/java/com/transfer/flash/pairing/PairingCoordinator.kt:112:                val pending = synchronized(pendingLock) {
+app/src/main/java/com/transfer/flash/pairing/PairingCoordinator.kt:127:        synchronized(fingerprints) { fingerprints[peerId] }?.let { fingerprint ->
+app/src/main/java/com/transfer/flash/pairing/PairingCoordinator.kt:134:        synchronized(pendingLock) { pendingPair = peerId to peerName }
+app/src/main/java/com/transfer/flash/pairing/PairingCoordinator.kt:142:        val claimed = synchronized(pendingLock) {
+app/src/main/java/com/transfer/flash/pairing/PairingCoordinator.kt:175:            synchronized(fingerprints) { fingerprints[peerId] }?.let { return it }
+app/src/main/java/com/transfer/flash/pairing/PairingCoordinator.kt:178:        return synchronized(fingerprints) { fingerprints[peerId] }
+```
+
+Re-running the identical grep *after* Step 4 returns the same 270 lines across the same 39
+files, differing only in line numbers (+1, or +2 in `WsKeepalive.kt`). That is the intended
+result and worth stating explicitly: `import kotlin.concurrent.Volatile` matches none of the
+alternatives in the pattern — `@Volatile` requires the `@` — so the inventory is a stable
+measurement of this phase's *input*, not something Step 4 perturbed.
+
+### Step 2 — distribution
+
+**Per module.** "Lines" is inventory lines, which is the honest unit here: one line can hold
+two primitives, so lines under-count sites and over-count nothing.
+
+| Module | Inventory lines | Files | Heaviest file | Its lines |
+|---|---|---|---|---|
+| `core/network` | 74 | 15 | `WsFlashNetwork.kt` | 21 |
+| `core/discovery` | 58 | 5 | `NsdTransport.kt` | 30 |
+| `app` | 55 | 5 | `DiscoveryEngineHolder.kt` | 40 |
+| `core/transfer` | 55 | 5 | `MultiStreamDispatcher.kt` | 33 |
+| `core/engine` | 12 | 2 | `Flash.kt` | 11 |
+| `core/calling` | 6 | 3 | `FlashCallSession.kt` | 3 |
+| `core/common` | 6 | 2 | `FlashLogger.kt` | 5 |
+| `core/messaging` | 3 | 1 | `RealFlashChatRepository.kt` | 3 |
+| `ui/theme` | 1 | 1 | `FlashSounds.kt` | 1 |
+| **Total** | **270** | **39** | | |
+
+**Versus the phase file's Step 2 table**, which estimates a per-module *file* count totalling
+~27. Both columns are shown because the gap is informative, not because the phase file was
+careless:
+
+| Module | Phase file | Measured (files) | Δ |
+|---|---|---|---|
+| `core/network` | 11 | 15 | +4 |
+| `core/transfer` | 5 | 5 | 0 |
+| `core/discovery` | 4 | 5 | +1 |
+| `core/engine` | 2 | 2 | 0 |
+| `core/messaging` | 1 | 1 | 0 |
+| `core/common` | 1 | 2 | +1 |
+| `ui/theme` | 1 | 1 | 0 |
+| `app` | 2 | 5 | +3 |
+| `core/calling` | *absent* | 3 | +3 |
+| **Total** | **~27** | **39** | **+12** |
+
+`core:calling` is absent from the phase file entirely — the module was created after
+PHASE-05 was written. That single omission plus `core/network`'s four and `app`'s three
+account for ten of the twelve.
+
+**Per primitive.** This is the table the later phases actually need, because it says how much
+of the problem is mechanical and how much is design work:
+
+| Primitive | Sites | Files | `commonMain` equivalent? |
+|---|---|---|---|
+| `synchronized(...) { }` | 94 | 20 | **No.** Nearest is `Mutex`, which is `suspend` — not a drop-in for a non-suspending critical section |
+| `@Volatile` | 66 | 20 | **Yes** — `kotlin.concurrent.Volatile`, identical JVM bytecode. *This phase's one edit.* |
+| `ConcurrentHashMap(...)` instantiations | 30 | 8 | **No.** 58 total mentions once types and imports are counted |
+| `java.util.concurrent.*` imports | 25 | 18 | **No** |
+| `Atomic{Integer,Long,Boolean}(...)` | 20 | 11 | **Experimental only** — `kotlin.concurrent.atomics` is `@ExperimentalAtomicApi` at ERROR level |
+| `CopyOnWriteArray*` | 5 | 2 | **No** |
+| `ReentrantLock` | 2 | 1 | **No** (`kotlin.concurrent.withLock` is JVM-only too) |
+| `Collections.synchronized*` | 2 | 2 | **No** |
+| `ThreadLocalRandom` | 2 | 1 | **No** — `kotlin.random.Random` is the likely answer |
+| `AtomicReference` | 0 | 0 | — |
+| `Executors` | 0 | 0 | — |
+| `Thread(...)` | 0 | 0 | — |
+
+The last three rows are the good news and worth recording as a *negative* result: the codebase
+creates no raw threads and no executors anywhere in production source. Every background
+operation already goes through coroutines. That removes the single hardest category of JVM
+concurrency from the KMP problem before it starts.
+
+`synchronized` distribution, since it is now the largest remaining blocker:
+
+| File | Blocks |
+|---|---|
+| `core/discovery/…/core/CompositeDiscovery.kt` | 18 |
+| `core/transfer/…/multistream/MultiStreamDispatcher.kt` | 12 |
+| `core/network/…/DefaultFlashNetwork.kt` | 9 |
+| `core/discovery/…/nsd/NsdTransport.kt` | 7 |
+| `core/transfer/…/multistream/TransferCompletionStateMachine.kt` | 7 |
+| `app/…/pairing/PairingCoordinator.kt` | 7 |
+| `core/network/…/tcp/LanSession.kt` | 6 |
+| `core/transfer/…/multistream/MultiStreamReceiver.kt` | 4 |
+| `core/common/…/logging/FlashLogger.kt` | 3 |
+| `core/discovery/…/nsd/NsdResolveQueue.kt` | 3 |
+| `core/network/…/resilience/ChaosSession.kt` | 3 |
+| `core/network/…/ws/WsFlashNetwork.kt` | 3 |
+| `app/…/calling/FlashCallRinger.kt` | 3 |
+| `core/discovery/…/nsd/NsdFlashDiscovery.kt` | 2 |
+| `core/network/…/ws/WsConnection.kt` | 2 |
+| `core/calling/…/FlashWebRtcEngine.kt` | 1 |
+| `core/network/…/datachannel/DataChannelClient.kt` | 1 |
+| `core/network/…/datachannel/DataChannelServer.kt` | 1 |
+| `ui/theme/…/FlashSounds.kt` | 1 |
+| `app/…/debug/DiscoveryEngineHolder.kt` | 1 |
+
+Zero of the 94 are inside comments, and there are **no `@Synchronized` methods at all** — every
+one is a `synchronized(lock) { }` expression, which is the form that can actually be converted
+mechanically later if a decision is taken to convert it.
+
+`ConcurrentHashMap` instantiations, which is where the "shared mutable map" design decisions live:
+
+| File | Instantiations | Total mentions |
+|---|---|---|
+| `core/engine/…/Flash.kt` | 6 | 8 |
+| `core/network/…/ws/WsFlashNetwork.kt` | 6 | 11 |
+| `app/…/debug/DiscoveryEngineHolder.kt` | 6 | 17 |
+| `core/discovery/…/nsd/NsdTransport.kt` | 5 | 5 |
+| `core/transfer/…/RealFlashTransferRepository.kt` | 4 | 7 |
+| `core/discovery/…/group/FlashPeerGroupSession.kt` | 1 | 2 |
+| `core/messaging/…/RealFlashChatRepository.kt` | 1 | 4 |
+| `core/network/…/resilience/ChaosSession.kt` | 1 | 2 |
+| `core/network/…/tcp/LanSession.kt` | 0 | 2 |
+
+`LanSession.kt` is in the table with zero instantiations deliberately: it takes a
+`ConcurrentHashMap` as a *parameter type*, so it is a KMP blocker for that file even though it
+never constructs one. A count of constructor calls alone would have missed it.
+
+Distinct `java.util.concurrent` types imported repo-wide — the exact list any `commonMain`
+shim would have to cover:
+
+| Type | Import sites |
+|---|---|
+| `java.util.concurrent.atomic.AtomicBoolean` | 9 |
+| `java.util.concurrent.ConcurrentHashMap` | 8 |
+| `java.util.concurrent.CopyOnWriteArrayList` | 2 |
+| `java.util.concurrent.atomic.AtomicInteger` | 2 |
+| `java.util.concurrent.locks.ReentrantLock` | 1 |
+| `java.util.concurrent.ConcurrentLinkedQueue` | 1 |
+| `java.util.concurrent.ThreadLocalRandom` | 1 |
+| `java.util.concurrent.atomic.AtomicLong` | 1 |
+
+Eight types, 25 import sites. That is a small enough surface to be worth knowing precisely
+before Phase 10 argues about how to abstract it.
+
+### Step 3 — the D1 cost statement, with measured numbers
+
+The phase file asks for the D1 cost to be restated once the real inventory exists, and — on
+its own estimate of ~27 files — recommends **D1 = A** (a shared `jvmAndAndroidMain` source set,
+which keeps `java.util.concurrent` legal and makes this whole category a non-issue for Android
+and desktop). The owner has chosen **D1 = B**: strict `commonMain`, no shared JVM set. The
+recommendation is recorded as made, and superseded.
+
+What B actually costs, at measured numbers:
+
+| Category | Sites | Files | Cost under D1 = B |
+|---|---|---|---|
+| `@Volatile` | 66 | 20 | **Zero.** One import per file, identical bytecode. Paid in full by this phase. |
+| `synchronized` | 94 | 20 | Highest. No non-suspending common equivalent; every block needs a per-call-site decision |
+| `ConcurrentHashMap` | 30 (58 mentions) | 8–9 | High. Either a `Mutex`-guarded wrapper or a redesign toward confinement |
+| atomics | 20 | 11 | Medium. `kotlin.concurrent.atomics` covers the shape but is ERROR-level experimental, so it means an opt-in or `atomicfu` |
+| `CopyOnWriteArrayList` | 5 | 2 | Low, both sites are listener lists |
+| `ReentrantLock` | 2 | 1 | Low, one file (`BoundedSendQueue.kt`) |
+| `Collections.synchronized*` | 2 | 2 | Low |
+| `ThreadLocalRandom` | 2 | 1 | Low — `kotlin.random.Random` |
+| threads / executors | **0** | **0** | **None.** Already all coroutines |
+
+What B buys, and why it is defensible even at that cost: `jvmAndAndroidMain` would have made
+Linux desktop and Android share the primitives while leaving **iOS and every other
+Kotlin/Native target permanently outside** the shared code — the JVM set is not available
+there. The user's target is "linux and all platforms", which puts Kotlin/Native in scope, and
+under A every one of these 94 + 30 + 20 sites would have to be solved *anyway* the first time a
+Native target was added, except then it would be solved under deadline pressure rather than
+phase by phase. B front-loads a cost that A only defers.
+
+The practical consequence, and the reason it does not block phases 06–10: none of these sites
+have to move at once. A module keeps compiling with its primitives in `androidMain` until the
+declaration itself needs to be common. Only genuinely shared logic must be primitive-free, and
+`synchronized`-heavy files like `CompositeDiscovery.kt` (18 blocks) and `NsdTransport.kt`
+(7 blocks, 16 `@Volatile`) are Android-platform code that has an `androidMain` home regardless.
+
+### Step 4 — `import kotlin.concurrent.Volatile`
+
+One line added to each of the 20 files that carry `@Volatile`. Nothing else in any file was
+touched: no annotation moved, no field changed, no lock converted.
+
+Why it is safe, and why it is worth doing this early rather than during 07–10:
+
+- `kotlin.concurrent.Volatile` has been a common `expect annotation class` since Kotlin 1.9 and
+  needs **no opt-in** — it is not experimental. Verified against Kotlin 2.2.10 (R10 pin) by
+  compiling all 20 files.
+- Its JVM `actual` is `actual typealias Volatile = kotlin.jvm.Volatile`. A typealias to the same
+  annotation class emits the same annotation, so **the bytecode is byte-identical** on both
+  Android and desktop JVM today. There is no behavioural change to verify beyond the build.
+- Kotlin/JVM resolves a bare `@Volatile` to `kotlin.jvm.Volatile` with no import, which is why
+  none of these files imported anything and why the problem is invisible until a file moves.
+  `kotlin.jvm` does not exist in `commonMain`; all 66 sites would fail to resolve at once.
+- Doing it now keeps the source-set moves in 07–10 free of a mechanical 66-site edit that would
+  otherwise be interleaved with real `expect`/`actual` work and make those diffs unreviewable.
+
+All 20 files, with their `@Volatile` count:
+
+| File | `@Volatile` sites |
+|---|---|
+| `app/…/debug/DiscoveryEngineHolder.kt` | 21 |
+| `core/discovery/…/nsd/NsdTransport.kt` | 16 |
+| `core/transfer/…/multistream/MultiStreamDispatcher.kt` | 7 |
+| `core/engine/…/Flash.kt` | 3 |
+| `app/…/notifications/FlashNotificationManager.kt` | 2 |
+| `core/discovery/…/core/CompositeDiscovery.kt` | 2 |
+| `core/network/…/resilience/ChaosSession.kt` | 2 |
+| `app/…/pairing/PairingCoordinator.kt` | 1 |
+| `core/calling/…/CallCoordinator.kt` | 1 |
+| `core/calling/…/FlashWebRtcEngine.kt` | 1 |
+| `core/common/…/logging/FlashLog.kt` | 1 |
+| `core/discovery/…/nsd/NsdFlashDiscovery.kt` | 1 |
+| `core/network/…/DefaultFlashNetwork.kt` | 1 |
+| `core/network/…/datachannel/DataChannelServer.kt` | 1 |
+| `core/network/…/resilience/AndroidNetworkWatcher.kt` | 1 |
+| `core/network/…/resilience/BoundedSendQueue.kt` | 1 |
+| `core/network/…/tls/SecureSocketUpgrader.kt` | 1 |
+| `core/network/…/ws/WsKeepalive.kt` | 1 |
+| `core/network/…/ws/WsTransferServer.kt` | 1 |
+| `core/transfer/…/policy/DestinationPolicy.kt` | 1 |
+| **Total** | **66** |
+
+The set of files importing the annotation and the set carrying `@Volatile` were diffed and are
+**identical** — no file got an unused import, and no annotated file was missed. Verified with
+`diff` on two sorted `grep -rl` outputs rather than by eye.
+
+`kotlin.concurrent.Volatile` is `@Target(FIELD)` only, so the phase file's escape hatch — *"if
+the compiler rejects one, that site was annotating something else — leave it as
+`kotlin.jvm.Volatile` and record it"* — was budgeted for. **It was not needed: all 66 sites
+compiled.** Every one annotates a `var` property backed by a field.
+
+Three placements needed care and are recorded because they are the ones a re-run would get
+wrong:
+
+| File | Situation | Placement |
+|---|---|---|
+| `core/network/…/ws/WsKeepalive.kt` | **Zero imports** — the file went straight from `package` to KDoc | Inserted after `package`, followed by a blank line (+2 lines, the only file with 2) |
+| `core/network/…/resilience/BoundedSendQueue.kt` | Already imported `kotlin.concurrent.withLock` | Inserted *before* it — `Volatile` < `withLock` |
+| `app/…/debug/DiscoveryEngineHolder.kt` | 71 imports | Between `java.util.concurrent.ConcurrentHashMap` and `kotlinx.coroutines.CoroutineScope`, matching `Flash.kt` |
+
+All others slotted into the existing `java.*` → `kotlin.*` → `kotlinx.*` ordering unchanged.
+No file anywhere in the repo imports `kotlin.jvm.Volatile` explicitly, so there is no
+mixed-provenance case to reconcile.
+
+### What was deliberately not done
+
+The phase file carries an explicit Do-Not list. Every item was honoured, and the reason is
+recorded here so a later reader does not mistake restraint for an oversight:
+
+| Not done | Sites left alone | Why |
+|---|---|---|
+| `synchronized` → `Mutex` | 94 in 20 files | `Mutex.withLock` is `suspend`; these are non-suspending critical sections, several inside callbacks that cannot suspend. Converting them changes call-site colour and therefore behaviour |
+| Replace `ConcurrentHashMap` | 30 in 8 files | Each one is a shared-mutable-state design decision owned by the module's own phase |
+| Adopt `kotlin.concurrent.atomics` | 20 in 11 files | `@ExperimentalAtomicApi` at **ERROR** level — would mean an opt-in on 11 files for an API that may still change |
+| Add `atomicfu` | — | A new dependency and a compiler plugin. R10 forbids version churn; this is a Phase 10 decision |
+| Clean up `DiscoveryEngineHolder.kt` | 40 inventory lines, 21 `@Volatile`, 6 `ConcurrentHashMap`, 1 `synchronized` | The phase file names it explicitly. It is the heaviest concurrency file in the repo and a `:app` debug holder — refactoring it here would swamp a 20-line audit commit with the riskiest diff in the tree |
+
+`ChaosNetworkHarness.kt` and `ChaosSession.kt` were inventoried but **not otherwise touched**,
+per the same instruction, and the reason they appear in a production-source grep at all is
+worth recording: both are `internal` chaos/invariant **test infrastructure that lives in
+`src/main`** (`ChaosNetworkHarness` is `internal class`, as is `ChaosSession`) so that
+`core/network/src/test` can reach them across the `internal` boundary. Their 2
+`CopyOnWriteArrayList` uses, 1 `ConcurrentHashMap`, 1 `Collections.newSetFromMap` and 3
+`synchronized` blocks are therefore *not* production concurrency and should be discounted when
+Phase 10 sizes `core:network`. `ChaosSession.kt` did receive the Step 4 import, because it does
+carry 2 real `@Volatile` sites and would otherwise break the module's `commonMain` move.
+
+### Verification
+
+```bash
+./gradlew --stop >/dev/null 2>&1; sleep 8; \
+  ./gradlew :app:assembleDebug testDebugUnitTest \
+    --no-configuration-cache --continue --max-workers=2 --console=plain
+```
+
+```text
+> Task :app:assembleDebug
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':core:persistence:testDebugUnitTest'.
+> There were failing tests. See the report at: file:///C:/.../core/persistence/build/reports/tests/testDebugUnitTest/index.html
+
+BUILD FAILED in 2m 58s
+370 actionable tasks: 49 executed, 321 up-to-date
+```
+
+`:app:assembleDebug` **succeeded** — the APK packaged. The only failing task is
+`:core:persistence:testDebugUnitTest`, which is the known pre-existing failure set.
+
+| Module | Tests | Failures | Skipped | vs baseline |
+|---|---|---|---|---|
+| `app` | 31 | 0 | 0 | = |
+| `core/calling` | 55 | 0 | 0 | = |
+| `core/common` | 49 | 0 | 0 | = |
+| `core/discovery` | 97 | 0 | 0 | = |
+| `core/engine` | 1 | 0 | 0 | = |
+| `core/messaging` | 27 | 0 | 0 | = |
+| `core/network` | 126 | 0 | 0 | = |
+| `core/persistence` | 35 | **12** | 0 | = |
+| `core/security` | 80 | 0 | 0 | = |
+| `core/transfer` | 86 | 0 | 0 | = |
+| `ui/callui` | NO-SOURCE | — | — | = |
+| `ui/chat` | 239 | 0 | 0 | = |
+| `ui/theme` | 37 | 0 | 0 | = |
+| `sample/consumer-bundle` | NO-SOURCE | — | — | = |
+| `sample/consumer-granular` | NO-SOURCE | — | — | = |
+| **Total** | **863** | **12** | **0** | **= `BASELINE_TEST_TOTAL`** |
+
+Every per-module row matches, not just the total — a matching total can hide one module
+silently losing tests while another gains them.
+
+The 12 failures were re-enumerated **by name** from
+`core/persistence/build/test-results/testDebugUnitTest/*.xml` to prove membership is unchanged
+rather than just the count:
+
+1. `DiscoveryModeSettingTest > roundtrip for every valid mode`
+2. `FlashSettingsDataStoreTest > autoAcceptTrusted roundtrip`
+3. `FlashSettingsDataStoreTest > backgroundTransfers roundtrip`
+4. `FlashSettingsDataStoreTest > corrupted preferences file falls back to emptyPreferences`
+5. `FlashSettingsDataStoreTest > displayName roundtrip`
+6. `FlashSettingsDataStoreTest > dynamicAccent roundtrip`
+7. `FlashSettingsDataStoreTest > hapticsEnabled roundtrip`
+8. `FlashSettingsDataStoreTest > reduceMotionOverride roundtrip`
+9. `FlashSettingsDataStoreTest > retentionDays roundtrip`
+10. `FlashSettingsDataStoreTest > saveLocationUri roundtrip and clear-to-null`
+11. `FlashSettingsDataStoreTest > soundsEnabled roundtrip`
+12. `FlashSettingsDataStoreTest > themeMode roundtrip`
+
+Identical set to Phase 04. `--continue` is load-bearing in that command: without it these 12
+abort the run before `core/security`, `core/transfer`, `ui/chat` and `ui/theme` ever execute,
+and the per-module table cannot be filled in at all.
+
+### Deviations from the phase file
+
+1. **The Step 2 estimates are low by 12 files (~27 → 39).** Root cause is not sloppiness: the
+   phase file predates `core:calling` (3 files, entirely absent from its table). The rest is
+   `core/network` +4 and `app` +3. Logged both columns above rather than silently substituting
+   mine.
+2. **The Step 4 file list is stale in four ways**, all verified against the tree:
+   - It names `core/network/…/ws/WsConnection.kt` as having 1 `@Volatile`. It has **none** —
+     `WsConnection.kt` appears in the inventory only for 2 `synchronized` blocks, 1
+     `AtomicInteger` and 1 JUC import. Adding the import there would have produced an unused
+     import.
+   - It **omits 5 files that do** carry `@Volatile`: `WsKeepalive.kt`, `FlashLog.kt`,
+     `FlashWebRtcEngine.kt`, `CallCoordinator.kt`, `FlashNotificationManager.kt`.
+   - It **undercounts** `NsdTransport.kt` (9 → 16) and `DiscoveryEngineHolder.kt` (7 → 21).
+   - It **overcounts** `MultiStreamDispatcher.kt` (9 → 7).
+
+   Net: its "16 files / ~35 sites" is really **20 files / 66 sites**. Followed the measurement,
+   not the list, and verified completeness by set-diffing imports against annotations.
+3. **`ConcurrentHashMap` is ~30 instantiations, not the ~20 the phase file estimates** — and 58
+   mentions once parameter and property types are counted. Both figures are in the log because
+   the instantiation count alone misses `LanSession.kt`, which takes one as a parameter and is
+   a blocker regardless.
+4. **The Step 3 recommendation (D1 = A) is recorded as made and superseded.** The phase file
+   recommends A on cost grounds and it is right about the cost; the owner chose B, and the
+   reason B still wins is that A excludes Kotlin/Native — i.e. it excludes the stated target.
+   Written up in Step 3 rather than quietly dropped.
+5. **The verification command was run with `--continue --max-workers=2`**, which the phase
+   file's plain `./gradlew :app:assembleDebug testDebugUnitTest --no-configuration-cache` does
+   not include. `--continue` is required to reach the later modules' tests at all (see above);
+   `--max-workers=2` keeps the daemon inside its `-Xmx2048m` on this host. Same deviation as
+   Phase 04, same reason.
+
+### Known issues / deferred
+
+1. **94 `synchronized` blocks in 20 files remain**, and this is now the largest single
+   `commonMain` blocker in the repo. No cheap answer exists: `Mutex` is `suspend`. Deferred to
+   the owning module phases, which should decide per file whether the state can be confined to
+   a single dispatcher instead (several look like they can — `NsdResolveQueue`,
+   `TransferCompletionStateMachine`).
+2. **`CompositeDiscovery.kt` is the real `core/discovery` hotspot, not `NsdTransport.kt`.** It
+   has **18** `synchronized` blocks, more than any other file in the repo, but only 2
+   `@Volatile` — so a `@Volatile`-shaped view of the codebase (and the phase file's Step 4 list)
+   makes `NsdTransport.kt` look like the problem. Phase 09 should size from the `synchronized`
+   table, not the `@Volatile` one.
+3. **20 atomics in 11 files have no non-experimental common home.** `kotlin.concurrent.atomics`
+   is ERROR-level `@ExperimentalAtomicApi`; `atomicfu` is a compiler plugin plus a dependency.
+   Phase 10 must pick one, and 9 of the 20 are `AtomicBoolean` — the simplest shape, so a small
+   `expect`/`actual` of our own is a third option worth pricing.
+4. **`WsFlashNetwork.kt` uses `ThreadLocalRandom` (2 sites).** Almost certainly replaceable with
+   `kotlin.random.Random`, which is common — but it is a behaviour change in jitter generation,
+   so not a drive-by edit inside an audit phase.
+5. **`DiscoveryEngineHolder.kt` was deliberately left uncleaned** (40 inventory lines / 21
+   `@Volatile` / 6 `ConcurrentHashMap`), per the phase file. It is `:app` debug-holder code, so
+   it never needs to be `commonMain` — but it is worth stating that this file alone holds
+   roughly a seventh of the repo's entire concurrency surface, and any future estimate that
+   counts it as library work will be wrong.
+6. **`ChaosNetworkHarness.kt` / `ChaosSession.kt` are test infrastructure in `src/main`.**
+   Discount them from `core:network`'s KMP sizing (see above). They are `internal`, so the only
+   reason they are not under `src/test` is cross-source-set `internal` visibility — worth
+   revisiting whenever `core:network` gains a `commonTest`, since that is the natural home.
+7. **Everything from Phase 04's list is unchanged**: `FlashTimeSource` is still plain-`public`
+   next to an `@FlashInternalApi` `FlashIdGenerator` (ABI inconsistency, Phase 07 to settle);
+   16 `UUID.randomUUID()` and 40 `System.currentTimeMillis()` sites still unrewired across 21
+   files; `TransferManifest.kt:29` still has a clock in a data-class default argument;
+   `RealFlashChatRepository.kt:1272`/`:1281` still use `SimpleDateFormat`/`java.util.Date`;
+   `core/transfer` still declares two unused `androidx` dependencies.
+
+### Next step
+
+**Phase 06 — the `com.android.kotlin.multiplatform.library` pilot on `core:common`.** This is
+the highest-risk phase in the plan: it is the first one that changes a build script rather than
+source, and the first that can fail for reasons no amount of Kotlin knowledge predicts (plugin
+/ AGP 9.3.1 / Kotlin 2.2.10 interaction).
+
+Two things it must produce beyond a green build:
+
+1. **`ANDROID_UNIT_TEST_TASK` in `CONVENTIONS.md` R3.1**, which is still the literal placeholder
+   `<not yet discovered — Phase 06 must fill this in>`. The KMP Android plugin does not
+   necessarily keep the `testDebugUnitTest` name, and every verification command in every later
+   phase — plus the 863-test baseline table above — depends on it. Discover it empirically with
+   `./gradlew :core:common:tasks --all | grep -i test`, do not assume.
+2. **A CMP-version decision checked against Kotlin 2.2.10** (D3 = A), before any UI module is
+   in scope.
+
+`core:common` is the right pilot for a reason worth recording: after this phase it has exactly
+**2 concurrency files, 6 inventory lines, 1 `@Volatile` and 3 `synchronized` blocks** (all in
+`FlashLogger.kt`), so if the pilot breaks, it breaks on the build plugin — not on
+concurrency, not on `expect`/`actual`, and not on Room. That isolation is the whole point of
+piloting there.
 
 
 
