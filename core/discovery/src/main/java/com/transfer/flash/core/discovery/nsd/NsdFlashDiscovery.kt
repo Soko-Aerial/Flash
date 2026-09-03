@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import java.nio.charset.StandardCharsets
+import kotlin.concurrent.Volatile
 
 /**
  * Headless Android NSD (mDNS / DNS-SD) discovery and advertising engine.

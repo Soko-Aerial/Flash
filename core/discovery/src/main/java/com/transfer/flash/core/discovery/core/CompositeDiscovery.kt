@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import java.util.Locale
+import kotlin.concurrent.Volatile
 
 /**
  * Multi-radio discovery facade (plan C3.9). Implements the existing

@@ -26,6 +26,7 @@ import kotlinx.coroutines.selects.select
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.concurrent.Volatile
 
 /**
  * Send-side orchestrator for C5.7 MULTI-STREAM transfer — **v3**, modeled on proven segmented-

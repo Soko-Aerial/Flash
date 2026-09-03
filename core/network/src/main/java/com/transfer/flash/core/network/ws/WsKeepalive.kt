@@ -1,5 +1,7 @@
 package com.transfer.flash.core.network.ws
 
+import kotlin.concurrent.Volatile
+
 /**
  * Liveness bookkeeping for one [WsConnection]'s keepalive loop, extracted so the decision is a
  * pure function of (clock, inbound traffic, tick arrivals) and therefore JVM-testable without

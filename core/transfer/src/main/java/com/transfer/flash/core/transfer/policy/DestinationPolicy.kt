@@ -4,6 +4,7 @@ import java.io.Closeable
 import java.io.File
 import java.io.OutputStream
 import java.io.RandomAccessFile
+import kotlin.concurrent.Volatile
 
 /**
  * Storage destination type where a received file will land (C5.9).

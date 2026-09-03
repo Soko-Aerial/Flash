@@ -11,6 +11,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import com.transfer.flash.MainActivity
 import com.transfer.flash.R
+import kotlin.concurrent.Volatile
 
 /**
  * Bug 7: posts system notifications for inbound chat traffic (text messages and

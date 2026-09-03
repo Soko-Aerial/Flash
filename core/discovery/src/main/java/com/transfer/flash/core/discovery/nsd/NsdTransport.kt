@@ -37,6 +37,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.nio.charset.StandardCharsets
+import kotlin.concurrent.Volatile
 import kotlin.coroutines.coroutineContext
 
 // ---------------------------------------------------------------------------

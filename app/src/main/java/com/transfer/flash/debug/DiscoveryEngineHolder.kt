@@ -57,6 +57,7 @@ import java.io.InputStream
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.concurrent.Volatile
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job

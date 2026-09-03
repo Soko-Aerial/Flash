@@ -7,6 +7,7 @@ import com.transfer.flash.core.common.logging.FlashLog
 import java.io.IOException
 import java.net.ServerSocket
 import java.net.Socket
+import kotlin.concurrent.Volatile
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job

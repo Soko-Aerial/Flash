@@ -2,6 +2,7 @@ package com.transfer.flash.core.network.resilience
 
 import java.util.ArrayDeque
 import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.Volatile
 import kotlin.concurrent.withLock
 
 /**

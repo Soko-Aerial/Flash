@@ -5,6 +5,7 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import kotlin.concurrent.Volatile
 
 /**
  * Platform half of instant-reconnect (plan C4.2 upgrade 2): fires [onAvailable]

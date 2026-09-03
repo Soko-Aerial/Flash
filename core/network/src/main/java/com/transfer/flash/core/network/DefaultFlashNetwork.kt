@@ -26,6 +26,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.concurrent.Volatile
 
 /**
  * Concrete [FlashNetwork] over the LAN TCP stack (plan C4.5/C4.7 composition).

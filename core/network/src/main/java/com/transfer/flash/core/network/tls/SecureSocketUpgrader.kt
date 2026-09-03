@@ -7,6 +7,7 @@ import java.net.Socket
 import java.net.SocketAddress
 import javax.net.ssl.KeyManager
 import javax.net.ssl.SSLSocket
+import kotlin.concurrent.Volatile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 

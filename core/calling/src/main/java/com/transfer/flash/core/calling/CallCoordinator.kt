@@ -7,6 +7,7 @@ import com.transfer.flash.core.calling.model.FlashCallUiState
 import com.transfer.flash.core.calling.protocol.CallFrameCodec
 import com.transfer.flash.core.calling.protocol.CallWireFrame
 import java.util.UUID
+import kotlin.concurrent.Volatile
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow

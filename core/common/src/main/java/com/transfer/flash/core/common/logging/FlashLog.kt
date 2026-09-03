@@ -1,6 +1,7 @@
 package com.transfer.flash.core.common.logging
 
 import com.transfer.flash.core.common.annotation.FlashInternalApi
+import kotlin.concurrent.Volatile
 
 /**
  * Process-wide log entry point for Flash internals.

@@ -5,6 +5,7 @@ import android.media.AudioAttributes
 import android.media.MediaRecorder
 import com.shepeliev.webrtckmp.WebRtc
 import com.transfer.flash.core.common.logging.FlashLog
+import kotlin.concurrent.Volatile
 import org.webrtc.audio.JavaAudioDeviceModule
 
 /**

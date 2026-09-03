@@ -14,6 +14,7 @@ import com.transfer.flash.ui.chat.FlashPairingMath
 import com.transfer.flash.ui.chat.FlashPairingPhase
 import com.transfer.flash.ui.chat.FlashPairingRequestUi
 import com.transfer.flash.ui.nearby.NearbyTrustedPeerUi
+import kotlin.concurrent.Volatile
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay

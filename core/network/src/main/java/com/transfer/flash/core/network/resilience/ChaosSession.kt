@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.concurrent.Volatile
 
 /**
  * First-observation gate used by consumers to tolerate at-least-once
