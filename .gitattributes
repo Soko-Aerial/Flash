@@ -1,0 +1,22 @@
+# Normalize line endings for all text files. Prevents CRLF churn once source is
+# shared across commonMain/androidMain/jvmMain and edited on multiple platforms.
+* text=auto eol=lf
+
+# Windows-only scripts must keep CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Gradle wrapper
+gradlew text eol=lf
+gradlew.bat text eol=crlf
+
+# Explicit binary types — never touch these
+*.png binary
+*.webp binary
+*.jpg binary
+*.jpeg binary
+*.jar binary
+*.keystore binary
+*.jks binary
+*.so binary
+*.db binary
