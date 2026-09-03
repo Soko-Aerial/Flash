@@ -678,6 +678,220 @@ them is `internal` — so **no ADR is needed**, nothing public is removed — an
 `protocol/WsTransferMessages.kt` / `model/WsTransferModels.kt` are **live wire format** under
 R8 and must survive.
 
+---
+
+## Phase 02 — Delete `core/transfer/wslegacy/`
+
+- **Date:** 2026-09-03
+- **Agent/model:** Claude Opus 5 (Claude Code)
+- **Commit:** `275c704` — `chore(migration): delete dead core/transfer/wslegacy`, plus the
+  immediately following log-only commit carrying this entry.
+- **Decisions relied on:** none. (D1 = B is irrelevant here — this phase only deletes.)
+
+### Change
+Step 3 deleted the 5 tracked files of `core/transfer/.../wslegacy/` (931 lines), the legacy
+WebSocket transfer engine, after Step 1 confirmed nothing outside the package referenced it
+and Step 2 confirmed every top-level declaration in it was `internal`. Step 4 then removed
+the two project dependencies that the deletion orphaned. The point of the phase is the
+Android decoupling it buys: `core/transfer/src/main` went from 2 files / 6 `android.*`
+imports to **zero**, and `SystemClock` is now absent from the entire repo.
+
+### Files changed
+**Delete** (all 5 were tracked; `git rm -r` on the two package directories)
+- `core/transfer/src/main/.../transfer/wslegacy/WsTransferManager.kt` — 732 lines
+- `core/transfer/src/main/.../transfer/wslegacy/WsDiscovery.kt` — 79 lines
+- `core/transfer/src/main/.../transfer/wslegacy/WsPairingStore.kt` — 30 lines
+- `core/transfer/src/main/.../transfer/wslegacy/LegacyDiscoveredDevice.kt` — 24 lines
+- `core/transfer/src/test/.../transfer/wslegacy/WsPairingStoreTest.kt` — 66 lines, **3 tests**
+
+**Modify**
+- `core/transfer/build.gradle.kts` — removed `implementation(project(":core:security"))` and
+  `implementation(project(":core:discovery"))`; added a comment recording why, and why
+  `:core:network` stayed. One module's build file only (CONVENTIONS.md R4).
+
+**Kept deliberately** (the phase file's "Do NOT"): `protocol/WsTransferMessages.kt` and
+`model/WsTransferModels.kt`. The `Ws` prefix is misleading — these are the **live** wire
+format and are protected by R8.
+
+### Verification
+
+**Step 1 — re-verify the code is dead.** R11 exclusions applied (`media-downloader-main/`,
+`build/`, `docs/`); `LegacyTransportType` added to the phase file's symbol list because
+`LegacyDiscoveredDevice.kt` declares it too:
+
+```
+$ grep -rn --include=*.kt -E "WsTransferManager|WsDiscovery|WsPairingStore|LegacyDiscoveredDevice|LegacyTransportType" . \
+    --exclude-dir=media-downloader-main --exclude-dir=build --exclude-dir=.git --exclude-dir=docs \
+  | grep -v "/wslegacy/"
+(no output)
+```
+
+String/reflective references — the only hits were the package's own `package` declarations
+plus one KDoc line inside `LegacyDiscoveredDevice.kt` itself:
+
+```
+$ grep -rn --include=*.kt --include=*.pro --include=*.xml --include=*.kts -E "wslegacy" . \
+    --exclude-dir=media-downloader-main --exclude-dir=build --exclude-dir=.git --exclude-dir=docs
+./core/transfer/src/main/.../wslegacy/LegacyDiscoveredDevice.kt:1:package com.transfer.flash.core.transfer.wslegacy
+./core/transfer/src/main/.../wslegacy/LegacyDiscoveredDevice.kt:8: * `WsDiscoveredDevice` ... once the wslegacy engine
+./core/transfer/src/main/.../wslegacy/WsDiscovery.kt:1:package ...wslegacy
+./core/transfer/src/main/.../wslegacy/WsPairingStore.kt:1:package ...wslegacy
+./core/transfer/src/main/.../wslegacy/WsTransferManager.kt:3:package ...wslegacy
+./core/transfer/src/test/.../wslegacy/WsPairingStoreTest.kt:1:package ...wslegacy
+```
+
+ProGuard checked explicitly — `core/transfer/consumer-rules.pro`,
+`core/transfer/proguard-rules.pro` and `app/proguard-rules.pro` contain **no** keep rule
+naming any of these classes, so nothing had to be removed there.
+
+**Step 2 — public API surface.** `grep -rn "public" .../wslegacy/` returned **no output**.
+Every top-level declaration was `internal`:
+
+```
+LegacyDiscoveredDevice.kt:11: internal enum class LegacyTransportType
+LegacyDiscoveredDevice.kt:16: internal data class LegacyDiscoveredDevice
+WsDiscovery.kt:20:           internal class WsDiscovery
+WsPairingStore.kt:18:        internal class WsPairingStore
+WsTransferManager.kt:58:     internal class WsTransferManager
+WsPairingStoreTest.kt:16:    class WsPairingStoreTest   (test source, not API)
+```
+
+So **no ADR was appended** — nothing left the published ABI. This is the outcome the phase
+file's Step 2 treats as the good case, and it is recorded here rather than assumed.
+
+**Step 4 — dependency fallout, verified by grep, not guessed.** Counts are references from
+`core/transfer/src/**` *excluding* `wslegacy/`, i.e. what survives the deletion. The three
+modules' packages were enumerated first (`grep -rh "^package "`) to be sure the prefixes were
+complete — `core:security` declares 5 packages, `core:discovery` 4, `core:network` 8, all
+under `com.transfer.flash.core.<module>`:
+
+| Dependency | Refs surviving deletion | Action |
+|---|---|---|
+| `project(":core:security")` | **0** | **removed** — `WsPairingStore` was `FlashTrustStore`'s only consumer (also its only test consumer, via the deleted `WsPairingStoreTest.kt`) |
+| `project(":core:discovery")` | **0** | **removed** — `WsDiscovery` was the only consumer |
+| `project(":core:network")` | **1** — `model/WsTransferModels.kt:3` imports `...core.network.ws.WsTransferServer` | **kept** |
+| `project(":core:common")` | 19 | kept (`api`) |
+| `libs.kotlinx.coroutines.core` | — | kept (`api`; public `Flow`/`StateFlow` return types) |
+
+**Phase verification command:**
+
+```
+./gradlew :app:assembleDebug testDebugUnitTest --no-configuration-cache --continue --max-workers=2 --console=plain
+```
+
+Result: **PASS — against the Phase 00 baseline.**
+
+```
+> Task :app:assembleDebug
+...
+> Task :core:persistence:testDebugUnitTest FAILED
+
+BUILD FAILED in 2m 31s
+370 actionable tasks: 20 executed, 350 up-to-date
+EXIT=1
+```
+
+`:app:assembleDebug` executed and succeeded. Exactly one task failed and exactly 12
+individual tests failed — the same pre-existing `:core:persistence` set
+(`DiscoveryModeSettingTest.roundtrip for every valid mode` + 11 `FlashSettingsDataStoreTest`
+roundtrips) recorded in the Phase 00 and Phase 01 entries. No new failure, and no compile
+warning or error mentioning `core/transfer`.
+
+**Test-count check — the baseline moves in this phase, by exactly the amount deleted:**
+
+| Module | tests | prev | Δ |
+|---|---|---|---|
+| `core/transfer` | **86** | 89 | **−3** (the 3 `@Test`s in `WsPairingStoreTest.kt`) |
+| all other modules | unchanged | | 0 |
+| **TOTAL** | **863** (851 pass / 12 fail / 0 skip) | 866 | **−3** |
+
+> **`BASELINE_TEST_TOTAL` is now 863, not 866.** Every phase from 06 onward must compare
+> against **863**. The 3-test drop is fully accounted for by the deleted test file and is
+> the *only* legitimate reduction so far; any further drop is the R3 silent-under-run
+> failure mode, not a deletion.
+
+**Android-decoupling check** (the phase file's second verification):
+
+```
+$ grep -rn --include=*.kt -E "^import android\.|^import androidx\." core/transfer/src/main/
+(no output)
+```
+
+Before → after, measured both ways:
+
+| Metric | Before | After |
+|---|---|---|
+| Files in `core/transfer/src/main` with an `android.*`/`androidx.*` **import** | 2 (`WsDiscovery.kt`, `WsTransferManager.kt`) | **0** |
+| Individual such imports | 6 (`Context` ×2, `Uri`, `SystemClock`, `OpenableColumns`, `Log`) | **0** |
+| Files with **any** Android coupling incl. fully-qualified references | **2**, not the 3 the phase file predicts | **0**, not the 1 it predicts |
+
+```
+$ grep -rn --include=*.kt "SystemClock" core/ ui/ app/
+(no output)
+```
+
+### Deviations from the phase file
+
+1. **The "before 3 files → after 1 file" figure the phase file asks to record is stale.**
+   It assumed `RealFlashTransferRepository.kt` still held fully-qualified `android.util.Log`
+   calls ("that is Phase 03's job, not this one"). **Phase 03 already did that job** at
+   `da4fba6` — the file now imports `com.transfer.flash.core.common.logging.FlashLog`. So the
+   true measurement is 2 → 0, and `core/transfer/src/main` is now Android-free outright
+   rather than one file short. Recorded above as measured, not as predicted.
+
+2. **`LegacyTransportType` was added to Step 1's grep pattern.** The phase file lists four
+   symbols; `LegacyDiscoveredDevice.kt` declares a fifth (`internal enum class
+   LegacyTransportType`). Omitting it would have left a symbol unchecked for external
+   references. It had none.
+
+3. **Verification flags** `--continue --max-workers=2 --console=plain` were added, for the
+   same reasons recorded in the Phase 01 entry (`--continue` so the 12 known
+   `:core:persistence` failures do not abort the run before the per-module counts can be
+   read; `--max-workers=2` to stay inside the 2048 MB daemon heap).
+
+4. **Two commits, not one.** The phase's code change is `275c704` on its own, touching
+   nothing but `core/transfer`; this log entry is a separate log-only commit, because a
+   commit cannot reference its own sha. Same pattern as Phases 00 and 01.
+
+### Known issues
+
+- **`androidx.core.ktx` and `androidx.lifecycle.runtime.ktx` are unused in `core/transfer`
+  and were left in place.** `grep -rn -E "androidx\.core|androidx\.lifecycle"
+  core/transfer/src/` returns nothing — and returned nothing *before* the deletion too, so
+  they are pre-existing cruft rather than fallout from this phase. Step 4 scopes itself to
+  dependencies that "existed **only** for `wslegacy`", and R1 forbids also-fixing what is
+  outside the phase. **They are genuine `android.*` build-level coupling in a module whose
+  source is now Android-free, so removing them is a prerequisite for making `core:transfer`
+  KMP.** Whichever phase converts `core:transfer` (Phase 11/12 territory) should drop both.
+- **`core/transfer/proguard-rules.pro` and `consumer-rules.pro` were read but not audited
+  beyond the wslegacy symbol search.** They may hold other stale rules; out of scope.
+- **The phase-file inventories for Phases 04 and 05 are both stale**, discovered while
+  gathering evidence here and recorded now so the next two phases do not treat their own
+  correct output as a discrepancy:
+  - **`core/calling` does not appear in either inventory.** The module was added after both
+    phase files were written (commit `4bb1240`). It contributes 4 sites to Phase 04's
+    inventory (`CallCoordinator.kt:9,80,214`, `FlashCallSession.kt:857`) and 3 files to
+    Phase 05's.
+  - **Phase 04's grep pattern misses `System::currentTimeMillis`** (the method-reference
+    form). Four production sites use it, all already injected as a `() -> Long` default
+    parameter — `NsdTransport.kt:585`, `WsConnection.kt:64`, `WsFlashNetwork.kt:72`,
+    `MultiStreamDispatcher.kt:66`. That is why Phase 04's table lists
+    `WsConnection.kt:62,71,80,141` as `System.currentTimeMillis()` sites which **no longer
+    exist in that form**; the file was refactored onto a clock seam.
+  - **Phase 05's `@Volatile` figure of "~35 sites / 16 files" is now 66 sites / 20 files**
+    (all real annotations — zero were comment mentions). `DiscoveryEngineHolder.kt` alone
+    went 7 → 21.
+- **Everything still open from the Phase 00 and 01 entries remains open**, notably
+  CONVENTIONS.md R3.1 (`ANDROID_UNIT_TEST_TASK` unfilled), `BASELINE_THROUGHPUT_MBPS =
+  UNMEASURED`, the unperformed Phase 00 Step 5 on-device checks, the 12 `:core:persistence`
+  failures, and the detachable-E:-drive Gradle daemon hazard.
+
+### Next step
+**Phase 04 — time, IDs, locale** (Phase 03 is already done at `da4fba6`). Its two
+preconditions are met: Phase 02 is committed, and `SystemClock` is confirmed absent
+repo-wide. Note before starting that `Flash.kt`'s `Locale.getDefault()` site is at **line
+689**, not the 668 the phase file names.
+
 
 
 
