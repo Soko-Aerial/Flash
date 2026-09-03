@@ -1175,7 +1175,9 @@ private fun shareTransferredFile(
 
 /** Coarse MIME from a filename extension; falls back to a permissive wildcard for the chooser. */
 private fun guessMimeType(fileName: String): String {
-    val ext = fileName.substringAfterLast('.', "").lowercase(java.util.Locale.getDefault())
+    // Locale.ROOT, not getDefault(): MimeTypeMap keys are lowercase ASCII, and under a Turkish
+    // locale getDefault() folds 'I' to the dotless 'ı' so "TIFF"/"GIF"/"MIDI" stop resolving.
+    val ext = fileName.substringAfterLast('.', "").lowercase(java.util.Locale.ROOT)
     return android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: "*/*"
 }
 

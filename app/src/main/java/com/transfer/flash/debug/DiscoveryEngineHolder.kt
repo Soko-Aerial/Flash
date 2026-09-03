@@ -1381,7 +1381,10 @@ object DiscoveryEngineHolder {
      * an image/video/audio card vs. a generic file card (#1). Falls back to octet-stream.
      */
     private fun guessMimeType(fileName: String): String {
-        val ext = fileName.substringAfterLast('.', "").lowercase(Locale.getDefault())
+        // Locale.ROOT, not getDefault(): the extension is machine data matched against the
+        // lowercase ASCII literals below. Turkish getDefault() folds 'I' to dotless 'ı', which
+        // would silently break "TIFF"/"GIF"/"MIDI". Same fix as core/engine Flash.kt.
+        val ext = fileName.substringAfterLast('.', "").lowercase(Locale.ROOT)
         return when (ext) {
             "jpg", "jpeg" -> "image/jpeg"
             "png" -> "image/png"
