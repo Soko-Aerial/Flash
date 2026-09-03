@@ -892,6 +892,544 @@ preconditions are met: Phase 02 is committed, and `SystemClock` is confirmed abs
 repo-wide. Note before starting that `Flash.kt`'s `Locale.getDefault()` site is at **line
 689**, not the 668 the phase file names.
 
+---
+
+## Phase 04 — Time, IDs, Locale
+
+**Phase file:** `docs/migration/PHASE-04-time-uuid-locale.md` (247 lines)
+**Status:** complete
+**Commits:**
+
+| Commit | Subject |
+| --- | --- |
+| `254c474` | `refactor(common,engine): expose FlashIdGenerator cross-module and pin Locale.ROOT` |
+| `e85b3d5` | `fix(app): pin the two remaining extension-lowercasing sites to Locale.ROOT` |
+
+**Goal.** Inventory every JVM-only time / identity / locale primitive standing between the
+library modules and `commonMain`, then make the two small corrections the phase actually
+authorises: widen the `FlashIdGenerator` port so callers can depend on the abstraction, and
+pin machine-data locale handling to `Locale.ROOT`. The phase explicitly does **not** rewire
+the call sites — that is Phase 07's job, once `expect`/`actual` exists to rewire them onto.
+
+### Step 0 — Inventory
+
+Taken against the **pre-phase tree** — commit `255b22c`, i.e. `254c474~1` — so the numbers
+describe the problem this phase inherited rather than the state it left behind. Run with
+`git grep` at that commit (which already skips `build/` and `.git`, being untracked), with
+`media-downloader-main/` filtered out per R11 and `-- '*.kt'` as the pathspec. Raw output,
+unedited:
+
+**UUID.randomUUID**
+
+```
+$ git grep -n 'UUID\.randomUUID' <pre-phase> -- '*.kt'
+app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:280:                value = identity0.deviceId.ifBlank { UUID.randomUUID().toString() },
+core/calling/src/main/java/com/transfer/flash/core/calling/CallCoordinator.kt:80:            callId = UUID.randomUUID().toString(),
+core/common/src/main/java/com/transfer/flash/core/common/id/FlashIdGenerator.kt:12:/** UUID v4 generator backed by [java.util.UUID.randomUUID]. Production default. */
+core/common/src/main/java/com/transfer/flash/core/common/id/FlashIdGenerator.kt:14:    override fun newId(): String = java.util.UUID.randomUUID().toString()
+core/engine/src/main/java/com/transfer/flash/core/engine/Flash.kt:152:            deviceId = FlashDeviceId(stored.deviceId.value.ifBlank { UUID.randomUUID().toString() }),
+core/messaging/src/main/java/com/transfer/flash/core/messaging/RealFlashChatRepository.kt:427:        val localId = UUID.randomUUID().toString()
+core/messaging/src/main/java/com/transfer/flash/core/messaging/RealFlashChatRepository.kt:478:        val localId = UUID.randomUUID().toString()
+core/messaging/src/main/java/com/transfer/flash/core/messaging/RealFlashChatRepository.kt:548:        val localId = UUID.randomUUID().toString()
+core/messaging/src/main/java/com/transfer/flash/core/messaging/RealFlashChatRepository.kt:611:                    localId = UUID.randomUUID().toString(),
+core/network/src/main/java/com/transfer/flash/core/network/tcp/LanSession.kt:165:            _frameAcks.tryEmit(FrameAck(frameId = UUID.randomUUID().toString(), stage = FrameAckStage.SocketWritten, atMs = nowMs()))
+core/network/src/main/java/com/transfer/flash/core/network/tcp/LanSession.kt:192:            val frameId = UUID.randomUUID().toString()
+core/network/src/main/java/com/transfer/flash/core/network/ws/WsSession.kt:102:            _frameAcks.tryEmit(FrameAck(UUID.randomUUID().toString(), FrameAckStage.SocketWritten, System.currentTimeMillis()))
+core/network/src/main/java/com/transfer/flash/core/network/ws/WsSession.kt:92:            _frameAcks.tryEmit(FrameAck(UUID.randomUUID().toString(), FrameAckStage.SocketWritten, System.currentTimeMillis()))
+core/security/src/main/java/com/transfer/flash/core/security/identity/AndroidPreferencesIdentityStore.kt:26:            ?: UUID.randomUUID().toString().also { generated ->
+core/security/src/main/java/com/transfer/flash/core/security/pairing/FlashPairingProtocol.kt:344:        UUID.randomUUID().toString() + "-" + random.nextInt().toUInt().toString()
+core/transfer/src/main/java/com/transfer/flash/core/transfer/RealFlashTransferRepository.kt:151:        val transferIdString = UUID.randomUUID().toString()
+core/transfer/src/main/java/com/transfer/flash/core/transfer/RealFlashTransferRepository.kt:153:        val fileId = UUID.randomUUID().toString()
+core/transfer/src/main/java/com/transfer/flash/core/transfer/RealFlashTransferRepository.kt:483:                fileId = transfer.wireFileId ?: UUID.randomUUID().toString(),
+```
+
+**System.currentTimeMillis**
+
+```
+$ git grep -n 'System\.currentTimeMillis' <pre-phase> -- '*.kt'
+app/src/main/java/com/transfer/flash/MainActivity.kt:1293:    val name = "flash_${System.currentTimeMillis()}.$ext"
+app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:1008:            if (!gate.tryBegin(id, hasSession, System.currentTimeMillis())) continue
+app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:1123:                    sentAt = msgFields["sentAt"]?.toLongOrNull() ?: System.currentTimeMillis(),
+app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:1139:                    deliveredAt = receiptFields["deliveredAt"]?.toLongOrNull() ?: System.currentTimeMillis(),
+app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:1151:                    readAt = readFields["readAt"]?.toLongOrNull() ?: System.currentTimeMillis(),
+app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:1179:                    timestampMs = typingFields["timestampMs"]?.toLongOrNull() ?: System.currentTimeMillis(),
+app/src/main/java/com/transfer/flash/debug/FlashDevConsoleScreen.kt:155:            chatRepo.sendText("Hello from Flash Dev Console! Ping: ${System.currentTimeMillis()}")
+core/calling/src/main/java/com/transfer/flash/core/calling/CallCoordinator.kt:214:        val endedAt = System.currentTimeMillis()
+core/calling/src/main/java/com/transfer/flash/core/calling/FlashCallSession.kt:857:                            connectedAt = System.currentTimeMillis(),
+core/common/src/main/java/com/transfer/flash/core/common/time/FlashTimeSource.kt:13:/** Real clock backed by [System.currentTimeMillis]. Production default. */
+core/common/src/main/java/com/transfer/flash/core/common/time/FlashTimeSource.kt:15:    override fun nowMs(): Long = System.currentTimeMillis()
+core/common/src/test/java/com/transfer/flash/core/common/FlashTimeSourceTest.kt:48:        val before = System.currentTimeMillis()
+core/common/src/test/java/com/transfer/flash/core/common/FlashTimeSourceTest.kt:50:        val after = System.currentTimeMillis()
+core/discovery/src/main/java/com/transfer/flash/core/discovery/core/CompositeDiscovery.kt:85:    private val clock: () -> Long = { System.currentTimeMillis() },
+core/engine/src/main/java/com/transfer/flash/core/engine/Flash.kt:428:                    sentAt = f["sentAt"]?.toLongOrNull() ?: System.currentTimeMillis(),
+core/engine/src/main/java/com/transfer/flash/core/engine/Flash.kt:442:                    deliveredAt = f["deliveredAt"]?.toLongOrNull() ?: System.currentTimeMillis(),
+core/engine/src/main/java/com/transfer/flash/core/engine/Flash.kt:453:                    readAt = f["readAt"]?.toLongOrNull() ?: System.currentTimeMillis(),
+core/engine/src/main/java/com/transfer/flash/core/engine/Flash.kt:477:                    timestampMs = f["timestampMs"]?.toLongOrNull() ?: System.currentTimeMillis(),
+core/engine/src/main/java/com/transfer/flash/core/engine/Flash.kt:680:            if (!gate.tryBegin(id, networkImpl.hasLiveSession(id), System.currentTimeMillis())) continue
+core/messaging/src/main/java/com/transfer/flash/core/messaging/FlashChatRepository.kt:147:            id = "local-${System.currentTimeMillis()}",
+core/messaging/src/main/java/com/transfer/flash/core/messaging/FlashChatRepository.kt:215:                        sortOrder = System.currentTimeMillis(),
+core/messaging/src/main/java/com/transfer/flash/core/messaging/PresenceHold.kt:61:                val now = System.currentTimeMillis()
+core/messaging/src/main/java/com/transfer/flash/core/messaging/PresenceHold.kt:77:                val now = System.currentTimeMillis()
+core/messaging/src/main/java/com/transfer/flash/core/messaging/RealFlashChatRepository.kt:1047:            messageDao.markDeleted(localId, System.currentTimeMillis())
+core/messaging/src/main/java/com/transfer/flash/core/messaging/RealFlashChatRepository.kt:1275:        val now = System.currentTimeMillis()
+core/messaging/src/main/java/com/transfer/flash/core/messaging/RealFlashChatRepository.kt:400:                                readAt = System.currentTimeMillis(),
+core/messaging/src/main/java/com/transfer/flash/core/messaging/RealFlashChatRepository.kt:426:        val now = System.currentTimeMillis()
+core/messaging/src/main/java/com/transfer/flash/core/messaging/RealFlashChatRepository.kt:477:        val now = System.currentTimeMillis()
+core/messaging/src/main/java/com/transfer/flash/core/messaging/RealFlashChatRepository.kt:530:                        updatedAt = System.currentTimeMillis(),
+core/messaging/src/main/java/com/transfer/flash/core/messaging/RealFlashChatRepository.kt:547:        val now = System.currentTimeMillis()
+core/messaging/src/main/java/com/transfer/flash/core/messaging/RealFlashChatRepository.kt:606:            val now = System.currentTimeMillis()
+core/messaging/src/main/java/com/transfer/flash/core/messaging/RealFlashChatRepository.kt:674:        val at = if (endedAt > 0L) endedAt else System.currentTimeMillis()
+core/messaging/src/main/java/com/transfer/flash/core/messaging/RealFlashChatRepository.kt:753:                        deliveredAt = System.currentTimeMillis(),
+core/messaging/src/main/java/com/transfer/flash/core/messaging/RealFlashChatRepository.kt:822:            val now = System.currentTimeMillis()
+core/messaging/src/main/java/com/transfer/flash/core/messaging/RealFlashChatRepository.kt:921:            outboxDao.makePendingDue(System.currentTimeMillis())
+core/messaging/src/main/java/com/transfer/flash/core/messaging/RealFlashChatRepository.kt:976:                    timestampMs = System.currentTimeMillis(),
+core/messaging/src/test/java/com/transfer/flash/core/messaging/PresenceHoldTest.kt:113:        val deadline = System.currentTimeMillis() + timeoutMs
+core/messaging/src/test/java/com/transfer/flash/core/messaging/PresenceHoldTest.kt:114:        while (System.currentTimeMillis() < deadline) {
+core/messaging/src/test/java/com/transfer/flash/core/messaging/PresenceHoldTest.kt:28:        val departedAt = System.currentTimeMillis()
+core/messaging/src/test/java/com/transfer/flash/core/messaging/PresenceHoldTest.kt:36:        val absentAfterMs = System.currentTimeMillis() - departedAt
+core/messaging/src/test/java/com/transfer/flash/core/messaging/PresenceHoldTest.kt:54:        val flapStartedAt = System.currentTimeMillis()
+core/messaging/src/test/java/com/transfer/flash/core/messaging/PresenceHoldTest.kt:63:        val flappedForMs = System.currentTimeMillis() - flapStartedAt
+core/messaging/src/test/java/com/transfer/flash/core/messaging/PresenceHoldTest.kt:89:        val departedAt = System.currentTimeMillis()
+core/messaging/src/test/java/com/transfer/flash/core/messaging/PresenceHoldTest.kt:93:        while (System.currentTimeMillis() < churnUntil) {
+core/messaging/src/test/java/com/transfer/flash/core/messaging/RealFlashChatRepositoryTest.kt:1004:        val now = System.currentTimeMillis()
+core/messaging/src/test/java/com/transfer/flash/core/messaging/RealFlashChatRepositoryTest.kt:1019:        val deadline = System.currentTimeMillis() + 4_000
+core/messaging/src/test/java/com/transfer/flash/core/messaging/RealFlashChatRepositoryTest.kt:1020:        while (outboxDao.queue.isNotEmpty() && System.currentTimeMillis() < deadline) {
+core/messaging/src/test/java/com/transfer/flash/core/messaging/RealFlashChatRepositoryTest.kt:1033:        sentAt = System.currentTimeMillis(),
+core/messaging/src/test/java/com/transfer/flash/core/messaging/RealFlashChatRepositoryTest.kt:365:                deliveredAt = System.currentTimeMillis(),
+core/messaging/src/test/java/com/transfer/flash/core/messaging/RealFlashChatRepositoryTest.kt:410:            sentAt = System.currentTimeMillis(),
+core/messaging/src/test/java/com/transfer/flash/core/messaging/RealFlashChatRepositoryTest.kt:476:                sentAt = System.currentTimeMillis(),
+core/messaging/src/test/java/com/transfer/flash/core/messaging/RealFlashChatRepositoryTest.kt:670:            val deadline = System.currentTimeMillis() + 6_000
+core/messaging/src/test/java/com/transfer/flash/core/messaging/RealFlashChatRepositoryTest.kt:671:            while (dispatched.isEmpty() && System.currentTimeMillis() < deadline) {
+core/messaging/src/test/java/com/transfer/flash/core/messaging/RealFlashChatRepositoryTest.kt:735:        val now = System.currentTimeMillis()
+core/messaging/src/test/java/com/transfer/flash/core/messaging/RealFlashChatRepositoryTest.kt:742:        val deadline = System.currentTimeMillis() + 3_000
+core/messaging/src/test/java/com/transfer/flash/core/messaging/RealFlashChatRepositoryTest.kt:743:        while ((outboxDao.queue["m-bo"]?.attempts ?: 0) == 0 && System.currentTimeMillis() < deadline) {
+core/messaging/src/test/java/com/transfer/flash/core/messaging/RealFlashChatRepositoryTest.kt:777:        val now = System.currentTimeMillis()
+core/messaging/src/test/java/com/transfer/flash/core/messaging/RealFlashChatRepositoryTest.kt:820:        val now = System.currentTimeMillis()
+core/messaging/src/test/java/com/transfer/flash/core/messaging/RealFlashChatRepositoryTest.kt:835:        val deadline = System.currentTimeMillis() + 4_000
+core/messaging/src/test/java/com/transfer/flash/core/messaging/RealFlashChatRepositoryTest.kt:836:        while (outboxDao.queue.isNotEmpty() && System.currentTimeMillis() < deadline) {
+core/messaging/src/test/java/com/transfer/flash/core/messaging/RealFlashChatRepositoryTest.kt:861:        val now = System.currentTimeMillis()
+core/messaging/src/test/java/com/transfer/flash/core/messaging/RealFlashChatRepositoryTest.kt:875:        val deadline = System.currentTimeMillis() + 3_000
+core/messaging/src/test/java/com/transfer/flash/core/messaging/RealFlashChatRepositoryTest.kt:876:        while ((outboxDao.queue["m-young"]?.attempts ?: 0) <= 20 && System.currentTimeMillis() < deadline) {
+core/messaging/src/test/java/com/transfer/flash/core/messaging/RealFlashChatRepositoryTest.kt:904:        val now = System.currentTimeMillis()
+core/messaging/src/test/java/com/transfer/flash/core/messaging/RealFlashChatRepositoryTest.kt:918:        val deadline = System.currentTimeMillis() + 6_000
+core/messaging/src/test/java/com/transfer/flash/core/messaging/RealFlashChatRepositoryTest.kt:919:        while (writes.get() < 2 && System.currentTimeMillis() < deadline) {
+core/messaging/src/test/java/com/transfer/flash/core/messaging/RealFlashChatRepositoryTest.kt:932:                deliveredAt = System.currentTimeMillis(),
+core/messaging/src/test/java/com/transfer/flash/core/messaging/RealFlashChatRepositoryTest.kt:962:        val now = System.currentTimeMillis()
+core/messaging/src/test/java/com/transfer/flash/core/messaging/RealFlashChatRepositoryTest.kt:977:        val deadline = System.currentTimeMillis() + 4_000
+core/messaging/src/test/java/com/transfer/flash/core/messaging/RealFlashChatRepositoryTest.kt:978:        while (outboxDao.queue.isNotEmpty() && System.currentTimeMillis() < deadline) {
+core/network/src/main/java/com/transfer/flash/core/network/DefaultFlashNetwork.kt:203:                    lastRetryTarget = Endpoint(host, port, System.currentTimeMillis())
+core/network/src/main/java/com/transfer/flash/core/network/tcp/LanSession.kt:423:    private fun nowMs(): Long = System.currentTimeMillis()
+core/network/src/main/java/com/transfer/flash/core/network/ws/WsSession.kt:102:            _frameAcks.tryEmit(FrameAck(UUID.randomUUID().toString(), FrameAckStage.SocketWritten, System.currentTimeMillis()))
+core/network/src/main/java/com/transfer/flash/core/network/ws/WsSession.kt:92:            _frameAcks.tryEmit(FrameAck(UUID.randomUUID().toString(), FrameAckStage.SocketWritten, System.currentTimeMillis()))
+core/network/src/test/java/com/transfer/flash/core/network/DefaultFlashNetworkTest.kt:74:        val deadline = System.currentTimeMillis() + 5_000
+core/network/src/test/java/com/transfer/flash/core/network/DefaultFlashNetworkTest.kt:75:        while ((networkB.activeSessions.value.size < 1) && System.currentTimeMillis() < deadline) {
+core/network/src/test/java/com/transfer/flash/core/network/resilience/BoundedSendQueueTest.kt:119:        val deadline = System.currentTimeMillis() + 5_000
+core/network/src/test/java/com/transfer/flash/core/network/resilience/BoundedSendQueueTest.kt:120:        while (consumed.size < producerCount * perProducer && System.currentTimeMillis() < deadline) {
+core/network/src/test/java/com/transfer/flash/core/network/tcp/LanSessionHardenedTest.kt:151:        val deadline = System.currentTimeMillis() + timeoutMs
+core/network/src/test/java/com/transfer/flash/core/network/tcp/LanSessionHardenedTest.kt:152:        while (System.currentTimeMillis() < deadline) {
+core/network/src/test/java/com/transfer/flash/core/network/tls/SoftwareCertMaker.kt:38:        val now = System.currentTimeMillis()
+core/network/src/test/java/com/transfer/flash/core/network/ws/SecureWsTransferLoopbackTest.kt:171:        val deadline = System.currentTimeMillis() + timeoutMs
+core/network/src/test/java/com/transfer/flash/core/network/ws/SecureWsTransferLoopbackTest.kt:173:            if (System.currentTimeMillis() > deadline) fail("timed out waiting for $what")
+core/network/src/test/java/com/transfer/flash/core/network/ws/WsFlashNetworkTest.kt:537:            // System.currentTimeMillis(), so only an offset from that reading is meaningful.
+core/network/src/test/java/com/transfer/flash/core/network/ws/WsFlashNetworkTest.kt:538:            var fakeNow = System.currentTimeMillis()
+core/security/src/main/java/com/transfer/flash/core/security/crypto/KeystoreFlashCrypto.kt:110:        val now = System.currentTimeMillis()
+core/transfer/src/main/java/com/transfer/flash/core/transfer/manifest/TransferManifest.kt:29:    val createdAtMs: Long = System.currentTimeMillis(),
+core/transfer/src/test/java/com/transfer/flash/core/transfer/RealFlashTransferRepositoryTest.kt:54:        val deadline = System.currentTimeMillis() + timeoutMs
+core/transfer/src/test/java/com/transfer/flash/core/transfer/RealFlashTransferRepositoryTest.kt:56:            if (System.currentTimeMillis() > deadline) {
+core/transfer/src/test/java/com/transfer/flash/core/transfer/multistream/MultiStreamDispatcherTest.kt:232:        val deadline = System.currentTimeMillis() + timeoutMs
+core/transfer/src/test/java/com/transfer/flash/core/transfer/multistream/MultiStreamDispatcherTest.kt:234:            if (System.currentTimeMillis() > deadline) {
+ui/callui/src/main/java/com/transfer/flash/ui/calling/FlashCallScreen.kt:542:            val elapsedSec = ((System.currentTimeMillis() - startedAt) / 1000L).coerceAtLeast(0L)
+ui/chat/src/main/java/com/transfer/flash/ui/chat/FlashComposer.kt:128:                    id = "voice-${System.currentTimeMillis()}",
+ui/chat/src/main/java/com/transfer/flash/ui/chat/FlashVoiceRecorder.kt:34:        val file = File(context.cacheDir, "flash-voice-${System.currentTimeMillis()}.m4a")
+```
+
+**SystemClock**
+
+```
+$ git grep -n 'SystemClock' <pre-phase> -- '*.kt'
+(no matches)
+```
+
+**Locale.getDefault**
+
+```
+$ git grep -n 'Locale\.getDefault' <pre-phase> -- '*.kt'
+app/src/main/java/com/transfer/flash/MainActivity.kt:1178:    val ext = fileName.substringAfterLast('.', "").lowercase(java.util.Locale.getDefault())
+app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:1384:        val ext = fileName.substringAfterLast('.', "").lowercase(Locale.getDefault())
+core/engine/src/main/java/com/transfer/flash/core/engine/Flash.kt:689:        val ext = fileName.substringAfterLast('.', "").lowercase(Locale.getDefault())
+core/messaging/src/main/java/com/transfer/flash/core/messaging/RealFlashChatRepository.kt:1227:                FlashCallEventKind.Missed -> "Missed ${what.lowercase(Locale.getDefault())}"
+core/messaging/src/main/java/com/transfer/flash/core/messaging/RealFlashChatRepository.kt:1266:            parts.size == 1 -> parts[0].take(2).uppercase(Locale.getDefault())
+core/messaging/src/main/java/com/transfer/flash/core/messaging/RealFlashChatRepository.kt:1267:            else -> "${parts[0].first()}${parts[1].first()}".uppercase(Locale.getDefault())
+core/messaging/src/main/java/com/transfer/flash/core/messaging/RealFlashChatRepository.kt:1272:        SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(millis))
+core/messaging/src/main/java/com/transfer/flash/core/messaging/RealFlashChatRepository.kt:1281:            else -> SimpleDateFormat("MMM d", Locale.getDefault()).format(Date(millis))
+```
+
+Plus one pattern the phase file's grep misses entirely — the method-reference form, which
+is invisible to `grep 'System\.currentTimeMillis'`:
+
+```
+$ grep -rn "System::currentTimeMillis" --include=*.kt .
+core/discovery/src/main/java/com/transfer/flash/core/discovery/nsd/NsdTransport.kt:585:    private val timeSourceMs: () -> Long = System::currentTimeMillis,
+core/network/src/main/java/com/transfer/flash/core/network/ws/WsConnection.kt:64:    private val nowMs: () -> Long = System::currentTimeMillis,
+core/network/src/main/java/com/transfer/flash/core/network/ws/WsFlashNetwork.kt:72:    private val nowMs: () -> Long = System::currentTimeMillis,
+core/transfer/src/main/java/com/transfer/flash/core/transfer/multistream/MultiStreamDispatcher.kt:66:    private val nowMs: () -> Long = System::currentTimeMillis,
+```
+
+These four are the *good* shape, not debt: each is already an injectable `() -> Long`
+constructor default, so Phase 07 changes only the default expression, never a call site.
+`CompositeDiscovery.kt:85` (`private val clock: () -> Long = { System.currentTimeMillis() }`)
+is the same pattern written as a lambda. Recording them here so a later phase's grep count
+does not look like a regression when these five stay behind after the rest are rewired.
+
+**Inventory summary** (all figures are grep *lines*, re-measured at commit `254c474`):
+
+| Primitive | Lines | Files | Notes |
+| --- | --- | --- | --- |
+| `UUID.randomUUID` | 18 total → **16** call sites | 9 | the other 2 lines are inside `FlashIdGenerator.kt` itself (one is a KDoc mention); 4 sites sit in `RealFlashChatRepository.kt` alone |
+| `System.currentTimeMillis` (call form) | **94** | 30 | splits **43 in `src/main` (19 files)** / **51 in `src/test` (11 files)** — the test half carries no KMP cost |
+| `System::currentTimeMillis` (method-ref form) | 4 | 4 | already injectable constructor defaults |
+| `SystemClock` | **0** | 0 | Android-only clock absent repo-wide — confirmed twice |
+| `Locale.getDefault` | 8 → **5** after this phase | 4 → 1 | 3 machine-data sites fixed, 5 display-text sites deliberately kept |
+
+`src/main` distribution of the 43 production `currentTimeMillis` lines, by module:
+
+```
+17  core/messaging      2  ui/chat        1  ui/callui
+ 7  app                 2  core/common    1  core/transfer
+ 5  core/engine         2  core/calling   1  core/security
+ 4  core/network                          1  core/discovery
+```
+
+Three of those 43 are not really debt: `core/common`'s two are `FlashTimeSource.kt`'s own
+KDoc and implementation (the port), and `core/discovery`'s one is `CompositeDiscovery.kt:85`'s
+injectable `clock: () -> Long` default. So the real Phase 07 workload is **40 production call
+sites**, over half of them (17) in a single file, `RealFlashChatRepository.kt`.
+
+Two facts worth carrying forward. First, `SystemClock` returning zero matches is the single
+biggest piece of good news in this phase: `android.os.SystemClock` has no `commonMain`
+equivalent at all, and had the codebase leaned on `elapsedRealtime()` for its timeout logic
+every one of those sites would have needed a monotonic-clock `expect`. It does not.
+
+Second, `core/common/.../time/FlashTimeSource.kt` **already exists** with the exact port
+shape Phase 07 needs — `public interface FlashTimeSource { public fun nowMs(): Long }` plus
+`public object SystemTimeSource : FlashTimeSource` as the production default. Phase 04
+therefore has no port to create for time — only one for identity, and that turned out to
+exist too. Both ports predate this migration; what was missing was visibility, which is
+Step 1.
+
+One thing that fell out of reading the time port: it is plain `public`, whereas Step 1 makes
+the identity port `@FlashInternalApi public`. Two sibling C0.4 ports in the same package
+tree now sit on opposite sides of the published-ABI line. That is inconsistent, but fixing it
+either way is an ABI decision outside this phase's mandate, so it is left alone and logged
+under Known issues for Phase 07 to settle deliberately.
+
+### Step 1 — `FlashIdGenerator`: `internal` → `@FlashInternalApi public`
+
+`core/common/src/main/java/com/transfer/flash/core/common/id/FlashIdGenerator.kt`. Before,
+both declarations were `internal`, so nothing outside `:core:common` could name the port —
+which is why all 16 call sites reach for `java.util.UUID` directly. After:
+
+```kotlin
+@FlashInternalApi
+public interface FlashIdGenerator {
+    /** Returns a fresh, unique identifier string. */
+    public fun newId(): String
+}
+
+@FlashInternalApi
+public object UuidIdGenerator : FlashIdGenerator {
+    override fun newId(): String = java.util.UUID.randomUUID().toString()
+}
+```
+
+`@FlashInternalApi` rather than plain `public` because the point is cross-*module* visibility,
+not cross-*artifact* visibility: a consumer of the published `core-common` should never see
+this seam (CONVENTIONS.md R7). The KDoc on `UuidIdGenerator` was also updated to say what
+happens to it under KMP — `java.util.UUID` exists on Android and desktop JVM but **not** on
+Kotlin/Native, and D1 = B rules out a shared `jvmAndAndroidMain` shortcut, so this object
+moves to `androidMain`/`jvmMain` as the `actual` side of an `expect` declared in `commonMain`.
+That is the whole reason call sites must depend on the interface and never on the object.
+
+Verification greps — no `internal` form survives anywhere under `core/`:
+
+```
+$ grep -rn "internal interface FlashIdGenerator\|internal object UuidIdGenerator" core/
+(no matches)
+```
+
+### Step 2 — `Locale.ROOT` for machine data
+
+The phase names one site. The inventory found three, all the same bug: lowercase a file
+extension with the *user's* locale, then compare it against lowercase ASCII literals. Under a
+Turkish locale `getDefault()` folds `I` to the dotless `ı`, so `TIFF` / `GIF` / `MIDI` stop
+matching and an inbound image renders as a generic file card.
+
+| File | Line (pre-fix) | Consumer of `ext` | Commit |
+| --- | --- | --- | --- |
+| `core/engine/.../Flash.kt` | 689 | `when (ext)` MIME table | `254c474` |
+| `app/.../debug/DiscoveryEngineHolder.kt` | 1384 | literal copy of the same `when (ext)` block | `e85b3d5` |
+| `app/.../MainActivity.kt` | 1178 | `MimeTypeMap.getMimeTypeFromExtension(ext)` | `e85b3d5` |
+
+The `:app` pair is split into its own commit because those two are not KMP blockers — `:app`
+is never going multiplatform — they are the same latent defect found by the same grep, and
+leaving a known clone in place would only mean re-finding it later. `Flash.kt`'s fix carries
+the full rationale as a comment; the clones point back at it.
+
+Post-fix state, all three now `Locale.ROOT`:
+
+```
+$ grep -rn "substringAfterLast('\.', \"\").lowercase" --include=*.kt .
+app/src/main/java/com/transfer/flash/MainActivity.kt:1180:    val ext = fileName.substringAfterLast('.', "").lowercase(java.util.Locale.ROOT)
+app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt:1387:        val ext = fileName.substringAfterLast('.', "").lowercase(Locale.ROOT)
+core/engine/src/main/java/com/transfer/flash/core/engine/Flash.kt:693:        val ext = fileName.substringAfterLast('.', "").lowercase(Locale.ROOT)
+```
+
+The five surviving `Locale.getDefault()` calls are all in `RealFlashChatRepository.kt` and are
+all **correct as-is** — they format text a human reads, so they must stay locale-sensitive:
+
+```
+1227:  FlashCallEventKind.Missed -> "Missed ${what.lowercase(Locale.getDefault())}"
+1266:  parts.size == 1 -> parts[0].take(2).uppercase(Locale.getDefault())        // avatar initials
+1267:  else -> "${parts[0].first()}${parts[1].first()}".uppercase(Locale.getDefault())
+1272:  SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(millis))
+1281:  else -> SimpleDateFormat("MMM d", Locale.getDefault()).format(Date(millis))
+```
+
+(Those two `SimpleDateFormat` sites *are* a KMP problem — `java.text.SimpleDateFormat` has no
+`commonMain` equivalent — but that is a formatting concern for the UI phases, not a locale
+correctness bug, and `RealFlashChatRepository` is not on Phase 07's list.)
+
+### Step 3 — call-site rewiring: deliberately not done
+
+The phase forbids it and so does R1. Neither the 16 `UUID.randomUUID()` sites nor the 40
+production `System.currentTimeMillis()` sites are touched. Rewiring them before
+`expect`/`actual` exists would mean threading two new constructor parameters through **21
+`src/main` files** in service of an abstraction that cannot yet vary by platform — a large,
+untestable diff whose only observable effect would be churn. Phase 07 does it against a real
+`expect`. The 21-file work list, computed as the union of both greps minus the two port files
+themselves, so Phase 07 does not have to rediscover it:
+
+```
+app/MainActivity.kt                          core/messaging/RealFlashChatRepository.kt
+app/debug/DiscoveryEngineHolder.kt           core/network/DefaultFlashNetwork.kt
+app/debug/FlashDevConsoleScreen.kt           core/network/tcp/LanSession.kt
+core/calling/CallCoordinator.kt              core/network/ws/WsSession.kt
+core/calling/FlashCallSession.kt             core/security/crypto/KeystoreFlashCrypto.kt
+core/discovery/core/CompositeDiscovery.kt    core/security/identity/AndroidPreferencesIdentityStore.kt
+core/engine/Flash.kt                         core/security/pairing/FlashPairingProtocol.kt
+core/messaging/FlashChatRepository.kt        core/transfer/RealFlashTransferRepository.kt
+core/messaging/PresenceHold.kt               core/transfer/manifest/TransferManifest.kt
+                                             ui/callui/FlashCallScreen.kt
+                                             ui/chat/FlashComposer.kt
+                                             ui/chat/FlashVoiceRecorder.kt
+```
+
+Three of the 21 are in `:app`, which is never going multiplatform. The remaining 18 are
+library modules — **15 under `core/`** and 3 under `ui/` (`ui/callui`, `ui/chat` ×2). One of
+the 15, `core/transfer/manifest/TransferManifest.kt:29`, is the awkward case to plan for:
+`val createdAtMs: Long = System.currentTimeMillis()` is a **default argument on a data
+class**, so it cannot take an injected `FlashTimeSource` without either adding a constructor
+parameter to the manifest or pushing the default out to every call site.
+
+### Verification
+
+Standard R3 command (`--continue` mandatory, else the 12 known `:core:persistence` failures
+abort the run before later modules' tests execute and the table below cannot be filled):
+
+```bash
+./gradlew --stop >/dev/null 2>&1; sleep 8; ./gradlew :app:assembleDebug testDebugUnitTest \
+  --no-configuration-cache --continue --max-workers=2 --console=plain
+```
+
+Result:
+
+```
+> Task :app:packageDebug
+> Task :app:assembleDebug
+> Task :core:persistence:testDebugUnitTest FAILED
+BUILD FAILED in 2m 40s
+370 actionable tasks: 50 executed, 320 up-to-date
+EXIT=1
+```
+
+Exactly one `FAILED` task, no `e:` compile errors, and no `ClassFormatError` — the wedged-daemon
+failure mode from Phase 01 did not recur.
+
+| Module | Tests | Failures | Skipped |
+| --- | --- | --- | --- |
+| `app` | 31 | 0 | 0 |
+| `core/calling` | 55 | 0 | 0 |
+| `core/common` | 49 | 0 | 0 |
+| `core/discovery` | 97 | 0 | 0 |
+| `core/engine` | 1 | 0 | 0 |
+| `core/messaging` | 27 | 0 | 0 |
+| `core/network` | 126 | 0 | 0 |
+| `core/persistence` | 35 | **12** | 0 |
+| `core/security` | 80 | 0 | 0 |
+| `core/transfer` | 86 | 0 | 0 |
+| `ui/callui` | — | — | — |
+| `ui/chat` | 239 | 0 | 0 |
+| `ui/theme` | 37 | 0 | 0 |
+| `samples/*` | — | — | — |
+| **TOTAL** | **863** | **12** | **0** |
+
+`863 / 12 / 0` matches `BASELINE_TEST_TOTAL` — the value Phase 02 re-derived — **exactly, and
+so does every individual module row**. That per-module match is the part that matters: a
+correct total can hide a module that silently under-ran while another gained tests.
+
+The 12 failures are the known pre-existing `:core:persistence` DataStore set, unchanged in
+both membership and count (read from the JUnit XML, not the HTML report):
+
+```
+DiscoveryModeSettingTest  > roundtrip for every valid mode
+FlashSettingsDataStoreTest > retentionDays roundtrip
+FlashSettingsDataStoreTest > backgroundTransfers roundtrip
+FlashSettingsDataStoreTest > dynamicAccent roundtrip
+FlashSettingsDataStoreTest > corrupted preferences file falls back to emptyPreferences
+FlashSettingsDataStoreTest > themeMode roundtrip
+FlashSettingsDataStoreTest > displayName roundtrip
+FlashSettingsDataStoreTest > soundsEnabled roundtrip
+FlashSettingsDataStoreTest > autoAcceptTrusted roundtrip
+FlashSettingsDataStoreTest > reduceMotionOverride roundtrip
+FlashSettingsDataStoreTest > saveLocationUri roundtrip and clear-to-null
+FlashSettingsDataStoreTest > hapticsEnabled roundtrip
+```
+
+The `:app` locale commit (`e85b3d5`) landed after that full run, so it was verified separately
+with `:app:compileDebugKotlin :app:testDebugUnitTest` — `BUILD SUCCESSFUL`, 31 tests, 0
+failures. The `FlashIdGenerator.kt` KDoc was also touched after the full run; `:core:common`
+was recompiled (`BUILD SUCCESSFUL in 3s`) to keep the green claim honest rather than assume a
+comment-only edit was safe.
+
+### Deviations
+
+**Deviation 1 — the phase file's central claim about `FlashIdGeneratorTest.kt` is false, and
+applying the phase as written breaks the build.**
+
+The phase file states:
+
+> `FlashIdGeneratorTest.kt` must pass **unmodified**. It is in the same module, so widening
+> `internal`→`public` cannot break it. Do not edit it.
+
+The reasoning is sound but the conclusion is wrong, because the change is not *only* a
+widening. Applying the phase's own code verbatim, `:core:common:compileDebugUnitTestKotlin`
+**failed with 8 errors**:
+
+```
+FlashIdGeneratorTest.kt:15:32  This is an internal Flash API and should not be used outside the Flash library modules.
+FlashIdGeneratorTest.kt:15:48  (same)
+FlashIdGeneratorTest.kt:27:22  (same)
+FlashIdGeneratorTest.kt:27:38  (same)
+FlashIdGeneratorTest.kt:34:24  (same)
+FlashIdGeneratorTest.kt:34:43  (same)
+FlashIdGeneratorTest.kt:36:20  (same)
+FlashIdGeneratorTest.kt:36:30  (same)
+```
+
+`internal` → `public` is indeed harmless to a same-module test. What breaks it is the
+`@FlashInternalApi` annotation arriving alongside. It is declared at
+`core/common/.../annotation/FlashAnnotations.kt:13` as:
+
+```kotlin
+@RequiresOptIn(
+    level = RequiresOptIn.Level.ERROR,
+    message = "This is an internal Flash API and should not be used outside the Flash library modules."
+)
+@Retention(AnnotationRetention.BINARY)
+@Target(AnnotationTarget.CLASS, AnnotationTarget.FUNCTION, AnnotationTarget.PROPERTY, AnnotationTarget.CONSTRUCTOR)
+public annotation class FlashInternalApi
+```
+
+`RequiresOptIn` at `Level.ERROR` is enforced **inside the declaring module too** — the
+"outside the Flash library modules" wording in the message is aspirational, not the compiler's
+actual rule. The test's 8 references to the two symbols therefore became hard errors. The
+phase file conflates "visibility" with "usability" and so did not anticipate this.
+
+Fix: one line, following a precedent that is already pervasive — **25 files repo-wide** carry
+`@file:OptIn(...FlashInternalApi::class)`, including two other test files in this very module
+(`FlashEnvelopeTest.kt`, `FlashLoggerTest.kt`):
+
+```kotlin
+@file:OptIn(com.transfer.flash.core.common.annotation.FlashInternalApi::class)
+
+package com.transfer.flash.core.common
+```
+
+Nothing else in the file changed — all 3 `@Test`s and every assertion are byte-identical, and
+`:core:common` still reports 49 tests / 0 failures. Rejected alternatives: plain `public`
+without the annotation would widen the published library ABI, contradicting R7 *and* the
+phase file's own stated rationale for choosing `@FlashInternalApi`; stubbing or deleting the
+test is forbidden by R2.
+
+**Deviation 2 — two paths and one line number in the phase file are wrong.**
+
+| Phase file says | Reality |
+| --- | --- |
+| test at `core/common/src/test/.../common/id/FlashIdGeneratorTest.kt` | no `id/` segment — it is at `core/common/src/test/java/com/transfer/flash/core/common/FlashIdGeneratorTest.kt` |
+| annotation in `.../annotation/FlashInternalApi.kt` | declared in `.../annotation/FlashAnnotations.kt:13` |
+| `Flash.kt` locale site at line 668 | line **689** pre-fix (693 post-fix) |
+
+Line-number drift is expected in a plan written against an older tree and is not itself a
+problem; it is recorded only so a later phase does not read a failed `sed -n '668p'` as
+evidence the site is missing.
+
+**Deviation 3 — scope widened by two files, deliberately.**
+
+The phase lists one `Locale.getDefault()` site. The inventory grep found three instances of
+the identical defect. Fixing only the one the plan happened to name would have left two known
+clones in the tree. Both extras are in `:app`, are committed separately (`e85b3d5`), and are
+verified separately — so the library-scoped commit stays reviewable on its own and the
+widening is auditable rather than smuggled in.
+
+**Deviation 4 — the phase's `currentTimeMillis` grep undercounts by design.**
+
+`grep 'System\.currentTimeMillis'` cannot see `System::currentTimeMillis`, and four production
+files use exactly that form as an injectable constructor default. They are listed in Step 0.
+They are also the *least* urgent sites in the codebase, since they are already abstracted;
+a future phase comparing raw grep counts should expect them to persist.
+
+### Known issues / deferred
+
+1. **The two C0.4 ports disagree on visibility.** `FlashTimeSource` / `SystemTimeSource` are
+   plain `public` (in the published ABI); `FlashIdGenerator` / `UuidIdGenerator` are now
+   `@FlashInternalApi public` (not in it). Both are the same kind of seam — an injectable
+   platform primitive that exists for testability — so one of the two classifications is
+   wrong. Changing either is an ABI decision and out of Phase 04's mandate. **Phase 07 must
+   settle it**, and the likelier answer is that the time port should also be
+   `@FlashInternalApi`, which would be a *narrowing* of the published surface and therefore
+   needs a deliberate call rather than a drive-by edit.
+2. **16 `UUID.randomUUID()` and 40 production `System.currentTimeMillis()` call sites remain
+   unrewired**, across the 21-file list in Step 3. Intentional: the ports cannot vary by
+   platform until `expect`/`actual` exists.
+3. **`TransferManifest.kt:29`** puts `System.currentTimeMillis()` in a data-class default
+   argument, which no amount of constructor injection reaches cleanly. Flagged now so Phase 07
+   budgets for it instead of discovering it mid-refactor.
+4. **`SimpleDateFormat` / `java.util.Date`** at `RealFlashChatRepository.kt:1272` and `:1281`
+   have no `commonMain` equivalent. Out of scope here (they are correct, locale-sensitive
+   display code, not a locale bug), but they are a real KMP blocker for that file whenever
+   `core:messaging` is converted — `kotlinx-datetime` is the likely answer.
+5. **`core/transfer` still carries `androidx.core.ktx` and `androidx.lifecycle.runtime.ktx`**
+   with zero source references (noted in Phase 02, unchanged). Build-level Android coupling
+   that must go before that module can be KMP.
+
+### Next step
+
+**Phase 05 — concurrency.** Its precondition is met (Phase 04 committed and verified). The
+inventory is already collected: **66 real `@Volatile` annotation sites across 20 files**, and
+39 files total in the concurrency sweep — versus the ~27 the phase file estimates, because it
+predates `core:calling` and undercounts `DiscoveryEngineHolder.kt` (21 sites in that one file)
+and `NsdTransport.kt` (16).
+
+Because D1 = B, **Step 4 must be performed**: add `import kotlin.concurrent.Volatile` to all
+20 files, since the `kotlin.jvm.@Volatile` that Kotlin/JVM resolves implicitly does not exist
+in `commonMain`. Convert no `synchronized`, no `ConcurrentHashMap`, no atomics, and add no
+`atomicfu` — those are later phases, and the phase file is explicit that `DiscoveryEngineHolder.kt`
+is not to be cleaned up here.
+
+
+
+
+
 
 
 
