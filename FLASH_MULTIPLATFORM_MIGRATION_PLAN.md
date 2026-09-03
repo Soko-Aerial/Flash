@@ -10,16 +10,29 @@
 
 ## The goal
 
+> **SCOPE CHANGE 2026-09-03.** The human's stated target is **"Linux and all platforms"**. The
+> three paragraphs below originally said "Android and Windows desktop (JVM)" and "iOS /
+> Kotlin-Native is out of scope". Both are **struck**. The goal as restated here is the current
+> one; **D1 = Option B** (strict `commonMain`) is settled and load-bearing, not open.
+
 Evolve Flash from an Android-only Kotlin library into a **Kotlin Multiplatform** library that
-runs on **Android and Windows desktop (JVM)**, *without rewriting the working Android
-implementation*. Flash's protocol and transfer engine become the shared foundation; platform
-networking, discovery, filesystem, and lifecycle stay at the edges.
+runs on **Android, desktop JVM (Linux, Windows, macOS), and Kotlin/Native targets including
+iOS**, *without rewriting the working Android implementation*. Flash's protocol and transfer
+engine become the shared foundation; platform networking, discovery, filesystem, and lifecycle
+stay at the edges.
+
+Note that one `jvm()` target covers all three desktops — Linux does **not** get its own target
+and there is no `linuxMain`. Code in `jvmMain` must be OS-neutral (see the CONVENTIONS.md
+amendment). It is **iOS/Native**, not Linux, that forces the strict-`commonMain` rewrites.
 
 "Done" is **interop**, not "the desktop app opens":
-Android↔Android, Android↔Windows, Windows↔Windows — one protocol, encryption on.
+Android↔Android, Android↔desktop, desktop↔desktop — one protocol, encryption on. Native
+targets join the matrix as their `actual`s land; Phase 23 owns the matrix definition.
 
-iOS / Kotlin-Native is **out of scope** unless decision **D1** decides otherwise
-(see [DECISIONS.md](docs/migration/DECISIONS.md)).
+iOS / Kotlin-Native is **in scope** as of 2026-09-03. That is what `D1 = B` buys and pays for:
+`java.*`/`javax.*` are unavailable in shared code, so the JCA crypto layer, the blocking-socket
+transport, and the JVM-only concurrency primitives are all rewritten rather than shared
+(see [DECISIONS.md](docs/migration/DECISIONS.md) D1, and PHASE-05 for the cost inventory).
 
 ## Where the work actually is
 
@@ -40,8 +53,10 @@ These carried over from the original plan and remain load-bearing:
 
 1. **Do not rewrite the working Android implementation.** The migration is incremental; Android
    must build and pass its tests after every phase (CONVENTIONS.md R3).
-2. **Do not move code to `commonMain` just to make it compile** (R2). Prefer `jvmAndAndroidMain`
-   — both targets are JVM, so `java.*`/`javax.*` shared code needs no rewrite (decision **D1=A**).
+2. **Do not move code to `commonMain` just to make it compile** (R2). Under **D1 = B** there is
+   no `jvmAndAndroidMain` tier to fall back to, so the escalation is: leave the code where it
+   is, or add an `expect`/`actual` seam with a real `actual` per target. Never delete an API,
+   weaken encryption, or stub a function to force a `commonMain` compile.
 3. **Do not disable or weaken encryption** to make the desktop port easier (R8, D5).
 4. **Do not duplicate the protocol or the transfer engine** for desktop. One shared implementation.
 5. **Preserve the public API** (`Flash.create(...)`, `engine.transfers.*`, …) where reasonable.

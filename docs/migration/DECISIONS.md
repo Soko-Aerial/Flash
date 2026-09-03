@@ -62,6 +62,24 @@ roadmap item, Option B is the honest choice and the schedule must grow according
 
 **ANSWER:** Option B (chosen 2026-08-31) — strict `commonMain`: stdlib + coroutines only. Rewrites the transport onto Ktor/okio and replaces the JCA crypto layer with a multiplatform crypto library; re-verifies every security property. Buys iOS/Native capability. This materially grows the schedule for Phase 06 and the security-critical phases.
 
+**REAFFIRMED 2026-09-03** — the human's stated target is *"linux and all platforms"*. That
+settles the question this decision asks, and it settles it for B:
+
+- **Linux desktop alone would not have required B.** Linux, Windows and macOS desktop all run
+  the JVM, so a single `jvm()` target covers all three and Option A would have sufficed for
+  them. It is **iOS / Kotlin-Native** — the "all platforms" half of the instruction — that makes
+  a strict `commonMain` mandatory, because `java.*` and `javax.*` do not exist there at all.
+- Therefore the JCA crypto rewrite, the Ktor/okio transport rewrite, and the
+  `kotlin.concurrent` / `Mutex` concurrency rewrite are all **in scope and required**, not
+  optional hardening. PHASE-05's "Recommend D1 = A" assessment was written for an
+  Android-plus-desktop-JVM product and no longer describes the product being built; its
+  **cost** analysis stays valid and is the schedule input.
+- Consequence for source-set layout: **`jvmAndAndroidMain` is not created.** CONVENTIONS.md R2
+  step 2 and the R5 table row naming it are void — see the amendment recorded at the top of
+  CONVENTIONS.md.
+- Consequence for D5: Option C's encrypted-desktop-storage requirement now extends past the
+  JVM. A Kotlin/Native SQLCipher story must be evaluated in Phase 09, not assumed.
+
 ---
 
 ## D2 — Rename `core:*` modules to `flash-*`?

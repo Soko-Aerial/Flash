@@ -4,6 +4,28 @@ Every agent working on this migration MUST follow these rules. They exist becaus
 this migration is executed incrementally by multiple agents, some of which have
 limited context. Violating them silently breaks later phases.
 
+> ## AMENDMENT 2026-09-03 — D1 = B, and the target is every platform
+>
+> The human's stated target is **Linux and all platforms**, not Android + Windows desktop.
+> **D1 = Option B** (strict `commonMain`) is reaffirmed and is now load-bearing rather than
+> merely chosen. Two rules below were written assuming D1 = A and are hereby **void**:
+>
+> - **R2 step 2 ("Put it in `jvmAndAndroidMain`") is void.** That source set is not created.
+>   The escalation is now: (1) leave it where it is, (2) `expect`/`actual` with per-target
+>   `actual`s. There is no JVM-only shared tier to hide `java.*` in.
+> - **The `jvmAndAndroidMain` row in R5's table is void.** Do not create the directory.
+>
+> Everything else in R5 stands, plus: `jvm()` is one target that covers **Windows, Linux and
+> macOS desktop** — there is no separate Linux target and no `linuxMain`. Desktop code in
+> `jvmMain` must therefore be OS-neutral: no hardcoded `C:\` paths, no backslash path
+> literals, no `%USERPROFILE%`. Use `java.nio.file.Path`, `File.separator`, and
+> `System.getProperty("user.home")`. Phases 13–15 and 21 are written with Windows examples;
+> read them as "desktop JVM", and treat a Windows-only assumption in them as a bug in the
+> phase file (report it under **Known issues**, per R1).
+>
+> Kotlin/Native targets (iOS, and any others added later) get their own `actual`s. A phase that
+> writes an `expect` must not assume the only `actual`s are JVM ones.
+
 ## R1 — One phase per session, one commit per phase
 
 Do exactly the phase you were asked to do. Do not "also fix" things you notice.
