@@ -2152,6 +2152,459 @@ Two things it must produce beyond a green build:
 concurrency, not on `expect`/`actual`, and not on Room. That isolation is the whole point of
 piloting there.
 
+---
+
+## Phase 06 — KMP pilot on `core:common`
+
+| | |
+|---|---|
+| Phase file | `docs/migration/PHASE-06-kmp-pilot.md` (1097 lines) |
+| Precondition | Phase 05 committed and verified (`2339cb8`, log `fd8d130`) — met |
+| Decisions in force | **D1 = Option B** (strict `commonMain`, iOS/Kotlin-Native in scope, reaffirmed 2026-09-03); **D2 = Option A** (keep the `core:*` module names, so no rename blocks this phase) |
+| Code commit | `83232f4` `refactor(common): convert :core:common to Kotlin Multiplatform (Phase 06 pilot)` |
+| Files changed | 42 staged — 27 `git mv` renames, 12 new seam files, 1 deletion (`FlashPlatformLogSink.kt`), 3 build files |
+| Verification | `compileKotlinJvm` + `assembleAndroidMain` green; `:core:common:testAndroidHostTest` **49/49**, file-for-file identical to the pre-conversion 49; repo-wide **863 tests / 12 failures / 0 skipped** = `BASELINE_TEST_TOTAL` exactly; `:app:assembleDebug` green; `explicitApi()` probe still errors; `publishToMavenLocal` emits all three coordinates with resolving URLs |
+| Outcome | **The toolchain is ready.** Concluding otherwise was an allowed result; it is not the result. |
+
+### Goal
+
+Convert one module — the smallest and least platform-coupled one — from
+`com.android.library` to Kotlin Multiplatform, and in doing so answer the questions that
+every later phase depends on. The build output matters less than the facts extracted, because
+phases 07–12 repeat this conversion nine more times against progressively harder modules
+(JCA crypto, NSD, Room/SQLCipher, OkHttp).
+
+Three things had to be true at the end, and all three are:
+
+1. **`commonMain` is provably Android-free.** Not "we think it is" — the `jvm()` target's
+   `compileKotlinJvm` task cannot see `android.jar` at all, so a green compile is a proof
+   rather than an assertion.
+2. **Nothing downstream changed.** Nine modules still on `com.android.library` consume
+   `:core:common` as a project dependency, and `app` consumes two of its objects directly.
+   Not one of their build files or source files was touched.
+3. **The published coordinates still work.** `com.transfer.flash:core-common:1.1.0` must keep
+   resolving for existing 1.1.0 consumers, now transparently redirecting per platform.
+
+### Step 1 — the plugins are mutually exclusive, not additive
+
+The first correction to the phase file. `com.android.library` is **incompatible** with
+`org.jetbrains.kotlin.multiplatform` under AGP 9+; a converted module *swaps* its plugin block
+rather than adding to it:
+
+```kotlin
+plugins {
+    alias(libs.plugins.kotlin.multiplatform)
+    alias(libs.plugins.android.kotlin.multiplatform.library)
+    `maven-publish`
+}
+```
+
+`libs.plugins.android.library` stays in the catalog regardless — nine modules still use it, and
+will until Phase 12.
+
+### Steps 2–3 — catalog and root registration
+
+`gradle/libs.versions.toml`, after `android-library`:
+
+```toml
+android-kotlin-multiplatform-library = { id = "com.android.kotlin.multiplatform.library", version.ref = "agp" }
+kotlin-multiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
+```
+
+Both reuse the existing `agp` / `kotlin` version refs, so R10 (do not bump the toolchain)
+holds by construction.
+
+Root `build.gradle.kts` needs both registered with **`apply false`**. Omitting it produces a
+"plugin already on the classpath" conflict in the module that does apply them:
+
+```kotlin
+alias(libs.plugins.android.kotlin.multiplatform.library) apply false
+alias(libs.plugins.kotlin.multiplatform) apply false
+```
+
+### Step 4b — reading the API instead of bisecting it
+
+The `android { }` block inside `kotlin { }` is **not** the AGP `android { }` block. Five
+spellings were unknown, and a Kotlin build script aborts at the *first* unresolved reference —
+so bisecting one line at a time would have cost one 15–60 s Gradle run per unknown, with each
+run only able to reveal one answer.
+
+Instead, all five were read off the API surface at once:
+
+```bash
+unzip -o -q -d /tmp/gapi "$GRADLE_USER_HOME/caches/.../gradle-api-9.3.1.jar"
+javap -classpath /tmp/gapi ...KotlinMultiplatformAndroidLibraryExtension
+```
+
+That produced the exact confirmed spellings in a single pass, and one probe run validated all
+five together. The answers:
+
+| Unknown | AGP 9.3.1 answer |
+|---|---|
+| DSL shape | `kotlin { android { … }; jvm { … } }` (`KMP_ANDROID_DSL_SHAPE = 2`) |
+| `minSdk` | direct property of the target — **not** inside `defaultConfig { }`, which does not exist |
+| consumer ProGuard | `optimization { consumerKeepRules.apply { file("consumer-rules.pro"); publish = true } }` |
+| build types | `localDependencySelection { selectBuildTypeFrom.set(listOf("release")) }` replaces `buildTypes { release { } }` |
+| Java/Kotlin level | per-target `compilerOptions { jvmTarget.set(JvmTarget.JVM_11) }` replaces `compileOptions { }` |
+| host tests | `withHostTest { }` (`KMP_HOST_TEST_BLOCK`); `withHostTestBuilder { }` also resolves but is for *renaming* the compilation, not configuring it |
+| device tests | `withDeviceTest { instrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }` |
+
+Two of these are traps worth restating for phases 07–12:
+
+- **`consumerProguardFiles` does not exist on this target, and the rules are dropped in
+  SILENCE if the replacement block is omitted.** `core/common`'s own `consumer-rules.pro` holds
+  nothing but comments, so the pilot would have passed either way — but
+  `core/persistence`'s does not. A phase that forgets this block ships a library whose
+  consumers lose their keep rules, with no warning at any point.
+- **`consumerKeepRules` is a read-only getter with no Action-taking overload.** Writing
+  `consumerKeepRules { … }` fails twice over (a Closure-receiver mismatch on `file(...)` plus
+  "Unresolved reference 'publish'"); property access with `.apply` is the working form.
+
+### Interlude — a zombie daemon, not a migration failure
+
+Mid-phase, every Gradle invocation started dying in 1–4 s with no stack trace even under
+`--stacktrace`:
+
+```text
+Incompatible magic value 1784772193 in class file java/util/zip/DataFormatException
+```
+
+and on the next run a different value and a different class (`2015314641`,
+`sun/nio/cs/ISO_8859_1$Encoder`). Decoded in python, `0x6a617661` is literally `b'java'`
+followed by random binary — a *different* JDK class corrupted each run.
+
+**The suspicion had to be tested before anything was deleted.** Two independent bisections:
+restoring `core/common/build.gradle.kts` from its backup failed identically, and then also
+reverting root `build.gradle.kts` to `HEAD` failed identically in 1 s. So no Phase 06 edit was
+implicated. Ruled out in turn: the E: drive being absent (present), the Adoptium 25 JDK being
+corrupt (`-Xshare:off -version` fine, `jimage info` reads all 30473 resources), the
+`dependencies-accessors` cache (all 164 `.class` files start with `CAFEBABE`), and a bad
+download (zero jars written into `modules-2` that day).
+
+`--debug` placed the failure immediately after 'Evaluate settings'/'Load build' and named the
+serving daemon `pid=16000`. Disabling the instrumentation agent
+(`-Dorg.gradle.internal.instrumentation.agent=false`) made the class-file error vanish and
+exposed what was underneath it:
+
+```text
+Timeout waiting to lock Build Output Cleanup Cache … Owner PID: 16000
+```
+
+`./gradlew --stop` claimed to stop 3 daemons in both contexts, yet `tasklist` still showed
+`java.exe PID 16000` holding 1.5 GB. Fix:
+
+```bash
+taskkill //F //PID 16000
+rm -rf .gradle
+```
+
+The next build succeeded in 1 m 31 s.
+
+Recorded because the reflex remedy would have been actively harmful here: `GRADLE_USER_HOME`
+is `E:\AndroidDev\Gradle`, an external drive **shared with MovieAura, ClassLedger and
+Foundation**, and this host has a known offline-cache gap — "clear the caches" would have
+destroyed unrelated projects' artifacts, possibly unrecoverably, and would not have fixed
+anything. Only disposable state was touched: one zombie process and the project-local
+`.gradle` directory. **A build failure that survives reverting your own changes is an
+environment failure. Prove which one you have before you delete anything.**
+
+### Step 5 — measure the coupling before restructuring
+
+`core/common`'s platform coupling was enumerated exhaustively first, because guessing here is
+what turns a conversion into an open-ended compile-error loop. It is **exactly five sites**:
+
+| Site | Primitive | Resolution |
+|---|---|---|
+| `FlashPlatformLogSink.kt` | `android.util.Log` | `internal expect fun platformLogSink()` |
+| `FlashTimeSource.kt:15` | `System.currentTimeMillis()` | `internal expect fun currentTimeMillisPlatform()` |
+| `FlashIdGenerator.kt:28` | `java.util.UUID` | `internal expect fun randomUuidString()` |
+| `FlashLogger.kt:76/84/91` | `synchronized` ×3 | `internal expect class PlatformLock` |
+| `Base64.kt:87/109` | `java.io.ByteArrayOutputStream`, `Charsets.UTF_8` | rewritten in common Kotlin |
+
+`FlashLog.kt`'s `@Volatile` needed **no seam at all** — that is Phase 05's payoff realised, and
+the only reason this phase had four seams instead of five. Everything else in the module
+(`StringBuilder`, `require`, `joinToString`, `encodeToByteArray`) was already common-safe.
+
+Two of those five were **missing from the phase file's own classification table**, and both
+matter:
+
+- **`Base64.kt` was not classified at all**, and is not pure Kotlin despite its KDoc's first
+  line. It is also **wire-format code** (it carries SDP bodies inside Flash text-framed
+  messages), which directly contradicts the phase file's Do-NOT list claiming no wire formats
+  live in `core:common`. The fix stayed inside R8: `encode()` untouched, `decode()`'s
+  accumulator swapped for a preallocated `ByteArray((dataLength * 3) / 4)` plus a write index —
+  hand-verified exact for `dataLength ∈ {2,3,4,6,8}` — and `decodeUtf8`'s JVM-only
+  `toString(Charsets.UTF_8)` swapped for `decodeToString()`, which substitutes U+FFFD on
+  malformed input exactly as `String(bytes, UTF_8)` does. `Base64Test`'s 7 tests guard it and
+  all 7 still pass.
+- **`Charsets.UTF_8` is JVM-only**, contrary to the working assumption carried into the phase.
+  `kotlin.text.Charsets`, `ByteArray.toString(Charset)` and `String(bytes, Charset)` all live in
+  the JVM stdlib only; `decodeToString()` / `encodeToByteArray()` are the common forms. This is
+  now written into CONVENTIONS.md R6, because it is the kind of thing that looks common, reads
+  common, and fails only once a non-JVM target exists.
+
+The restructure itself was 27 `git mv`s — `src/main/java/…` → `src/commonMain/kotlin/…` (17
+files) and `src/test/java/…` → `src/androidHostTest/kotlin/…` (9 files, 1 fixture) — plus
+`git rm -q -f` for `FlashPlatformLogSink.kt` (plain `git rm` refuses a path the preceding
+`git mv` had already staged). `src/main` and `src/test` are gone; the module has no
+`AndroidManifest.xml` and no `res/`, which is why it converted cleanly.
+
+### The four seams, and why three are functions
+
+```text
+commonMain/…/logging/PlatformLogSink.kt      internal expect fun platformLogSink(): FlashLogSink
+commonMain/…/time/PlatformTime.kt            internal expect fun currentTimeMillisPlatform(): Long
+commonMain/…/id/PlatformUuid.kt              internal expect fun randomUuidString(): String
+commonMain/…/concurrent/PlatformLock.kt      internal expect class PlatformLock()
+```
+
+`expect`/`actual` **functions are stable**; `expect`/`actual` **classes are still Beta**
+(KT-61573) and emit a warning at the `expect` site *and* at every `actual`. So three seams are
+functions deliberately. `PlatformLock` cannot be — it has to carry per-platform state (a monitor
+object) — and it is suppressed at the module level:
+
+```kotlin
+kotlin {
+    compilerOptions { freeCompilerArgs.add("-Xexpect-actual-classes") }
+}
+```
+
+which is JetBrains' own recommendation in that issue and changes no codegen. Prefer functions;
+reach for a class only when state forces it. This is now CONVENTIONS.md R2.
+
+Each seam is `internal`, so **none of them widens the published ABI** — they are invisible to
+`explicitApi()`'s public surface and to consumers.
+
+Two ABI-preserving choices are worth stating explicitly, because the phase file's own KDoc
+suggested the opposite:
+
+- **`SystemTimeSource` and `UuidIdGenerator` stay in `commonMain`** and delegate to the
+  `expect fun`s, rather than becoming `expect object`s materialised per target. Their published
+  FQNs and shapes are therefore byte-for-byte unchanged, which is why
+  `app/src/main/java/com/transfer/flash/pairing/PairingCoordinator.kt` — the only cross-module
+  consumer of both — needed **zero edits**, as did `FlashTimeSourceTest` and
+  `FlashIdGeneratorTest`. Making them `expect object`s would have been an ABI change bought
+  for nothing.
+- **`FlashPlatformLogSink` went the other way**, from `public object` to `internal expect fun`.
+  That *is* a narrowing, and it is justified by a repo-wide grep proving its only references
+  were inside `core/common` itself. It was also the module's last `android.*` import.
+
+One behavioural detail the seam forced: `PlatformLock.withLock` cannot be `inline` (an `expect`
+member has no body), so a non-local `return` out of it does not compile.
+`FlashLogger.recent()` was rewritten to return the lock body's value instead:
+
+```kotlin
+return lock.withLock {
+    if (buffer.isEmpty() || limit == 0) emptyList() else buffer.takeLast(limit)
+}
+```
+
+Same semantics, and `FlashLoggerTest`'s 10 tests — including its `CountDownLatch`/`Executors`
+concurrency test — still pass unchanged.
+
+### Publication — the coordinates that 1.1.0 consumers already use
+
+KMP generates its own publications (a root `kotlinMultiplatform` plus one per target), so the
+module's old `register<MavenPublication>("release")` block **had to be deleted** — leaving it
+in place is a hard failure, not a duplicate. Their default artifactIds derive from the project
+name (`common`, `common-android`, `common-jvm`), so they are renamed in place:
+
+```kotlin
+publishing { publications { withType<MavenPublication>().configureEach {
+    artifactId = artifactId.replace("common", "core-common")
+} } }
+```
+
+`publishToMavenLocal` then produced exactly the intended layout:
+
+```text
+core-common/1.1.0/          .jar (682 B metadata) .module .pom -sources.jar kotlin-tooling-metadata.json
+core-common-android/1.1.0/  .aar .module .pom -sources.jar
+core-common-jvm/1.1.0/      .jar .module .pom -sources.jar
+```
+
+and the root module metadata redirects per platform, which is the whole point:
+
+```text
+androidApiElements-published  available-at → core-common-android
+jvmApiElements-published      available-at → core-common-jvm
+```
+
+**Every `files[].url` in all three `.module` files was checked to resolve to a file that
+exists.** This check is not decorative: the `files[].name` fields still read `common.aar`,
+`common-jvm-1.1.0.jar` and so on, from before the artifactId rename, while the `url` fields
+correctly read `core-common-android-1.1.0.aar` etc. `name` is cosmetic and `url` is what a
+consumer fetches — but seeing the stale `name` and stopping there would have looked like a
+broken publication. Verify `url`.
+
+An existing consumer writing `implementation("com.transfer.flash:core-common:1.1.0")` therefore
+keeps working untouched and now silently gets the AAR on Android and the jar on desktop.
+
+(One stale file to be aware of when eyeballing `~/.m2`: a `core-common-1.1.0.aar` dated the
+previous day sits in the root coordinate, left by the pre-KMP publish of 1.1.0. It is not
+referenced by the new `.module` and is not republished.)
+
+### Verification
+
+Five checks, all green, in the order they were run.
+
+**1. `commonMain` is Android-free.**
+
+```bash
+./gradlew :core:common:compileKotlinJvm :core:common:assembleAndroidMain
+```
+
+`BUILD SUCCESSFUL`, and after adding `-Xexpect-actual-classes` there are **zero `w:` warnings**.
+`compileKotlinJvm` is the proof task — no `android.jar` on that classpath.
+
+**2. Tests, per file against the pre-conversion baseline.**
+
+```text
+FlashDeviceTest       4    FlashResultTest       7
+FlashEnvelopeTest     8    FlashTextFramingTest  4
+FlashIdGeneratorTest  3    FlashTimeSourceTest   6
+FlashLoggerTest      10    protocol.Base64Test   7
+                                        TOTAL  49   fail=0  skip=0
+```
+
+`POST_CONVERSION_TEST_COUNT = 49 == BASELINE_TEST_COUNT = 49`, and identical file by file — not
+merely equal in total, which is the failure mode that a summed count would hide.
+
+**3. Repo-wide, nothing regressed.**
+
+```bash
+./gradlew --stop >/dev/null 2>&1; sleep 8; ./gradlew :app:assembleDebug testDebugUnitTest :core:common:testAndroidHostTest --no-configuration-cache --continue --max-workers=2 --console=plain
+```
+
+**863 tests / 12 failures / 0 skipped**, matching `BASELINE_TEST_TOTAL` exactly, every
+per-module row unchanged, and the 12 being the known pre-existing `:core:persistence`
+`FlashSettingsDataStoreTest` DataStore/`FileStorage.kt:121` failures by name. `--continue`
+remains load-bearing: without it those 12 abort the run before later modules execute.
+
+**`:core:common:testAndroidHostTest` must be named explicitly on that command line.** The
+unqualified `testDebugUnitTest` no longer reaches the converted module, and *this is the
+migration's most dangerous failure mode* — a green build with 49 tests silently not running,
+reporting 814 as if it were success. CONVENTIONS.md R3 now carries the corrected command, and
+each of phases 07–12 must append its own module to it.
+
+**4. `explicitApi()` strict survived the conversion.** A probe file with no visibility modifier
+and no return type was added to `commonMain`, and the compiler raised both as **errors**:
+
+```text
+e: …/ExplicitApiProbe.kt:6:1 Visibility must be specified in explicit API mode.
+e: …/ExplicitApiProbe.kt:6:5 Return type must be specified in explicit API mode.
+```
+
+Probe deleted immediately after. ADR-023 holds.
+
+**5. Downstream consumers are unaffected.** `:app:assembleDebug` `BUILD SUCCESSFUL`, 261 tasks.
+The nine modules still on `com.android.library` resolve the KMP module through
+`localDependencySelection`'s `release` selection with **no change to their own build files**.
+This is the result that makes phases 07–12 tractable: conversion is module-local.
+
+### Facts for phases 07–12
+
+```text
+KMP_ANDROID_DSL_SHAPE     = 2          kotlin { android { … }; jvm { … } }
+KMP_HOST_TEST_BLOCK       = withHostTest { }
+ANDROID_UNIT_TEST_TASK    = testAndroidHostTest        (also in CONVENTIONS.md R3.1)
+ANDROID_MAIN_COMPILE_TASK = compileAndroidMain
+JVM_COMPILE_TASK          = compileKotlinJvm           ← the "is commonMain clean" proof task
+```
+
+Note the asymmetry: it is `compileAndroidMain` but `compileKotlinJvm`. There is **no**
+`compileKotlinAndroid` — asking for it fails with "task not found", which cost one run.
+
+Other task names confirmed to exist on a converted module: `testAndroid`, `jvmTest`, `allTests`,
+`compileTestKotlinJvm`, `compileAndroidHostTest`, `compileAndroidDeviceTest`,
+`assembleAndroidMain` / `assembleAndroidHostTest` / `assembleAndroidDeviceTest`,
+`connectedAndroidDeviceTest`, `androidSourcesJar`, `jvmJar`, `jvmSourcesJar`, `allMetadataJar`,
+`metadataCommonMainClasses`, `jvmRun`.
+
+Source sets, as actually created (**correcting CONVENTIONS.md R5**, which was written before
+D1 was settled):
+
+```text
+commonMain  androidMain  jvmMain  commonTest  androidHostTest  androidDeviceTest  jvmTest
+```
+
+- **`androidHostTest`, not `androidUnitTest`.** The latter was the older KMP Android plugin's
+  name. R5's row has been corrected.
+- **`jvmAndAndroidMain` does not exist and must not be created** (D1 = B). R2 step 2 and R5's
+  row naming it are struck. Duplicated one-line `actual`s in `androidMain` and `jvmMain` are the
+  accepted, intentional cost of keeping iOS/Kotlin-Native reachable.
+- Language directory is `kotlin/`, never `java/`. Desktop is plain `jvm()`, never
+  `jvm("desktop")`.
+
+`core/common/build.gradle.kts` is the **template for phases 07–12** and is heavily commented at
+each point where the KMP DSL diverges from the `android { }` block it replaces. Copy it; do not
+re-derive it.
+
+Test placement stayed conservative on purpose: all 9 files went to `androidHostTest` on JUnit 4,
+so `POST_CONVERSION_TEST_COUNT` was comparable against a measured baseline. Converting them to
+`kotlin.test` in `commonTest` — which would additionally run them on the `jvm()` target — is
+Phase 07+ work and is **not** needed for the Android-free proof, since `compileKotlinJvm`
+already supplies that. `FlashLoggerTest` cannot move regardless: it is the one test file using
+`java.util.concurrent` (`CountDownLatch`, `Executors`, `TimeUnit`).
+
+### Deliberate non-changes
+
+- **`kotlin.time.Clock` and `kotlin.uuid.Uuid` were rejected**, though either would have removed
+  a seam outright. Both are still `@ExperimentalTime` / `@ExperimentalUuidApi` in Kotlin 2.2.10,
+  and these declarations reach the **published** ABI — a `@RequiresOptIn` API in a published
+  signature pushes the opt-in onto every consumer. Stable `expect`/`actual` instead. Revisit at
+  Phase 24 if they have stabilised.
+- **`implementation(libs.androidx.core.ktx)` was dropped** from the module. A grep proved
+  `core/common` has **zero** androidx references, so the dependency was inert — and keeping it
+  would have pinned an Android-only artifact onto a now-multiplatform module, breaking the
+  `jvm()` target for no benefit.
+- **The toolchain was not bumped** (R10): Gradle 9.5.0, AGP 9.3.1, Kotlin 2.2.10, KSP 2.3.11.
+  Both new catalog entries reuse the existing `agp` / `kotlin` version refs.
+
+### Known issues
+
+Per R1 these are recorded, not fixed:
+
+1. **`docs/architecture/library-first-migration-plan.md:299`** still lists stale coordinates
+   `com.transfer.flash:core-*:1.0.0`. Now more misleading than before, since `core-common` has
+   two additional real coordinates at 1.1.0.
+2. **`core/persistence` `FlashSettingsDataStoreTest` — 12 pre-existing failures**, unchanged and
+   unrelated: DataStore `FileStorage.kt:121` `IOException` plus one `CorruptionException`. They
+   are inside `BASELINE_TEST_TOTAL` and are the reason `--continue` is mandatory.
+3. **`core/common/build/test-results/testDebugUnitTest/`** holds stale pre-conversion XML. Any
+   tallying script must select the tier per module (`testAndroidHostTest` for converted modules)
+   or it will double-count. A `clean` clears it.
+4. **`core/transfer` still declares two unused `androidx` dependencies** (carried from Phase 05).
+5. **`Base64` is wire-format code living in `core:common`**, contradicting the phase file's
+   Do-NOT list. It was edited under R8 constraints with tests green, but the phase files'
+   assumption that `core:common` holds no wire formats is wrong and phases 07–12 should not rely
+   on it.
+6. **Owed by the owner, unchanged:** the on-device two-phone matrix for ERROR-031 and the older
+   backlog; Phase 00 Step 5's 8 functional checks; and a real `BASELINE_THROUGHPUT_MBPS`, still
+   the `UNMEASURED` sentinel.
+
+### Next step
+
+**Phase 07 — `:core:security` to KMP.** Materially harder than this pilot, and the first phase
+where D1 = B has teeth: the module is built on JCA (`javax.crypto`, `java.security`,
+`MessageDigest`, `KeyStore`), none of which exists outside the JVM. Under Option B that is not a
+`jvmAndAndroidMain` dump — it needs a real multiplatform crypto story, and R8 makes it
+non-negotiable that behaviour stays **bit-identical**, guarded by the module's 80 tests.
+
+The build-file half of that phase is now mechanical: copy `core/common/build.gradle.kts`, keep
+the `optimization { consumerKeepRules … }` block, add
+`:core:security:testAndroidHostTest` to the R3 command. The cryptography half is the phase.
+
+
+
+
+
+
+
+
+
+
+
 
 
 

@@ -36,8 +36,20 @@ log entry and stop there.
 
 If a file does not compile in `commonMain`, the correct actions are, in order:
 1. Leave it where it is and move on.
-2. Put it in `jvmAndAndroidMain` (see R5).
+2. ~~Put it in `jvmAndAndroidMain`~~ — **void.** D1 = Option B; that source set does not
+   exist. See R5.
 3. Put it in `androidMain` + `jvmMain` with an `expect`/`actual` seam.
+
+Prefer an `expect`/`actual` **function** over an `expect`/`actual` **class**: functions are
+stable, classes are still Beta (KT-61573) and emit a warning per declaration site. Use a class
+only when the seam must carry per-platform state, as `PlatformLock` does, and suppress the
+warning with `-Xexpect-actual-classes` in the module's `kotlin { compilerOptions { } }`.
+
+When a seam replaces the *body* of an already-published declaration, keep the declaration
+itself in `commonMain` and let it delegate to an `internal expect fun`. Phase 06 did this for
+`SystemTimeSource` and `UuidIdGenerator`: their published FQNs and shapes are unchanged, so
+cross-module callers such as `app`'s `PairingCoordinator` needed no edit at all. Turning them
+into `expect object`s per target would have been an ABI change for no benefit.
 
 Deleting an API, weakening encryption, or stubbing a function to force a
 `commonMain` compile is **forbidden**. If a phase seems to require it, stop and
@@ -60,22 +72,23 @@ before while still reporting success.
 This is the single most dangerous failure mode in this migration: green build, tests
 quietly not running.
 
-Phase 06 is responsible for discovering the replacement task name empirically
-(`./gradlew :core:common:tasks --all | grep -i test`) and recording it in
-`logs/migration.md` **and** in this file. Until that is recorded, every phase from 06
-onward must verify with:
+Phase 06 discovered the replacement task name empirically and recorded it in R3.1 below
+and in `logs/migration.md`. From Phase 06 onward the verification command is:
 
 ```bash
-./gradlew :app:assembleDebug --no-configuration-cache
+./gradlew --stop >/dev/null 2>&1; sleep 8; ./gradlew :app:assembleDebug testDebugUnitTest :core:common:testAndroidHostTest --no-configuration-cache --continue --max-workers=2 --console=plain
 ```
 
-```bash
-./gradlew build --no-configuration-cache
-```
+Every converted module must be **named explicitly** on that command line, because the
+unqualified `testDebugUnitTest` no longer reaches it. Add one `:module:testAndroidHostTest`
+per conversion as phases 07–12 land. `--continue` is load-bearing: without it the 12 known
+`:core:persistence` `FlashSettingsDataStoreTest` failures abort the run before later
+modules execute, and the total silently drops.
 
-and must additionally paste the **test count** from
-`*/build/reports/tests/**/index.html` compared against the Phase 00 baseline. A phase
-that cannot show its test count matches or exceeds baseline is not verified.
+Every phase must additionally paste the **test count** from
+`*/build/test-results/**/TEST-*.xml` compared against the Phase 00 baseline
+(`BASELINE_TEST_TOTAL = 863 / 12 failures / 0 skipped`). A phase that cannot show its
+test count matches or exceeds baseline is not verified.
 
 `--no-configuration-cache` is required because this project enables the
 configuration cache in `gradle.properties`, and KMP source-set wiring is a known
@@ -87,11 +100,20 @@ If verification fails, the phase is **not done**. Do not commit. Do not proceed.
 ### R3.1 — Verified test task name (filled in by Phase 06)
 
 ```
-ANDROID_UNIT_TEST_TASK = <not yet discovered — Phase 06 must fill this in>
+ANDROID_UNIT_TEST_TASK    = testAndroidHostTest
+ANDROID_MAIN_COMPILE_TASK = compileAndroidMain
+JVM_COMPILE_TASK          = compileKotlinJvm
 ```
 
-Phase 06 replaces that placeholder with the real Gradle task path. Every later phase
-reads it from here.
+Discovered 2026-09-03 on `:core:common` (Gradle 9.5.0 / AGP 9.3.1 / Kotlin 2.2.10).
+`testAndroidHostTest` is created by the `withHostTest { }` block inside `android { }` and
+writes its XML to `build/test-results/testAndroidHostTest/`. Note the deliberate asymmetry
+in the KMP task names: the Android target's compile task is `compileAndroidMain`, while the
+JVM target's is `compileKotlinJvm` — there is no `compileKotlinAndroid`.
+
+`compileKotlinJvm` is the **proof task** for R2: the `jvm()` target has no `android.jar` on
+its compile classpath, so a green `compileKotlinJvm` is what certifies `commonMain` is
+genuinely free of Android APIs. Run it on every converted module.
 
 
 ## R4 — Never edit two modules' build files in one commit unless the phase says to
@@ -101,29 +123,48 @@ isolated means `git revert` of a single commit always restores a working build.
 
 ## R5 — Source-set naming is fixed
 
-Use these exact names. Do not invent variants.
+Use these exact names. Do not invent variants. **Corrected by Phase 06** — the two rows
+struck below were written before D1 was settled and before the real AGP 9.3.1 task/source-set
+names were measured.
 
 | Source set | Contains |
 |---|---|
 | `commonMain` | Pure Kotlin. stdlib + coroutines + kotlinx only. No `java.*`. |
-| `jvmAndAndroidMain` | JVM-only code shared by Android and desktop: `java.*`, `javax.*`. |
-| `androidMain` | `android.*`, `androidx.*` |
-| `jvmMain` | Desktop-only JVM code |
-| `commonTest`, `jvmAndAndroidTest`, `androidUnitTest`, `jvmTest` | Test mirrors |
+| `androidMain` | `android.*`, `androidx.*`, and `java.*` used only on Android |
+| `jvmMain` | Desktop/Linux/CI JVM code, including its own `java.*` |
+| `commonTest`, `androidHostTest`, `androidDeviceTest`, `jvmTest` | Test mirrors |
 
-The Android unit-test source set is `androidUnitTest`, **not** `androidTest`.
-`androidTest` means instrumented tests and is a different thing.
+- **`jvmAndAndroidMain` does not exist and must not be created.** D1 = Option B (strict
+  `commonMain`, iOS/Kotlin-Native in scope) rules it out: a shared JVM-only parent would let
+  `java.*` leak back into code that Kotlin/Native has to compile. The cost is that one-line
+  `actual`s get duplicated in `androidMain` and `jvmMain` — that duplication is intentional,
+  not an oversight. R2 step 2 and the `jvmAndAndroidMain`/`jvmAndAndroidTest` rows are void.
+- **The Android unit-test source set is `androidHostTest`, not `androidUnitTest`.**
+  `androidUnitTest` was the name under the older KMP Android plugin;
+  `com.android.kotlin.multiplatform.library` 9.3.1 creates `androidHostTest` (host JVM tests,
+  task `testAndroidHostTest`) and `androidDeviceTest` (instrumented, task
+  `connectedAndroidDeviceTest`). Neither is called `androidTest`.
 
 The desktop target is declared as plain `jvm()`, giving `jvmMain`/`jvmTest`.
 Do **not** use `jvm("desktop")` — it would give `desktopMain` and every path in
 these phase files would be wrong.
 
+The language directory is `kotlin/`, never `java/`: e.g.
+`core/common/src/commonMain/kotlin/com/transfer/flash/core/common/`.
+
 ## R6 — `java.*` is not available in `commonMain`
 
 This is the single most common mistake. `java.util.UUID`, `java.io.File`,
 `java.security.MessageDigest`, `ConcurrentHashMap` — none of these exist in
-`commonMain`, even though both of our targets are JVM. They only become available
-in `jvmAndAndroidMain` or lower.
+`commonMain`, even though both of our current targets are JVM. They only become
+available in `androidMain` and `jvmMain`.
+
+Watch for the JVM-only parts of the **Kotlin** stdlib too, which look common but are not:
+`kotlin.synchronized`, `kotlin.text.Charsets`, `ByteArray.toString(Charset)`,
+`String(bytes, Charset)`, `String.format`, `@kotlin.jvm.Volatile`. The common replacements are
+`ByteArray.decodeToString()`, `String.encodeToByteArray()`, and `kotlin.concurrent.Volatile`
+(Phase 05 already migrated all 66 `@Volatile` sites). `kotlin.synchronized` has no common
+equivalent — Phase 06 added `core/common`'s `internal expect class PlatformLock` for it.
 
 ## R7 — Preserve `explicitApi()`
 
