@@ -1,3 +1,5 @@
+@file:OptIn(FlashInternalApi::class)
+
 package com.transfer.flash.core.common.logging
 
 import android.util.Log
@@ -7,13 +9,10 @@ import com.transfer.flash.core.common.annotation.FlashInternalApi
  * Forwards records to `android.util.Log`.
  *
  * On the JVM unit-test tier `android.util.Log` methods throw "not mocked", so every
- * call is wrapped — forwarding failures are swallowed by design.
- *
- * Phase 06 of the multiplatform migration splits this into `androidMain` (this
- * implementation) and `jvmMain` (writes to stderr). Do not add non-logging logic here.
+ * call is wrapped — forwarding failures are swallowed by design. Do not add non-logging
+ * logic here.
  */
-@FlashInternalApi
-public object FlashPlatformLogSink : FlashLogSink {
+private object AndroidLogSink : FlashLogSink {
     override fun write(
         level: FlashLogLevel,
         tag: String,
@@ -37,3 +36,5 @@ public object FlashPlatformLogSink : FlashLogSink {
         }
     }
 }
+
+internal actual fun platformLogSink(): FlashLogSink = AndroidLogSink

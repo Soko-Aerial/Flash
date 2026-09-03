@@ -2,6 +2,7 @@
 
 package com.transfer.flash.core.common.logging
 
+import com.transfer.flash.core.common.concurrent.PlatformLock
 import com.transfer.flash.core.common.time.FlashTimeSource
 import com.transfer.flash.core.common.time.SystemTimeSource
 
@@ -11,11 +12,11 @@ import com.transfer.flash.core.common.time.SystemTimeSource
  * Every entry is:
  * 1. Appended to a bounded ring buffer (default [DEFAULT_CAPACITY] entries; oldest evicted
  *    first) for later display in the debug sheet via [recent].
- * 2. Forwarded to `android.util.Log` when running on Android.
+ * 2. Forwarded to the platform's log sink via [FlashLog].
  *
  * ## Design notes
  *
- * - **Thread safety:** all buffer access is guarded by a single `synchronized` monitor over an
+ * - **Thread safety:** all buffer access is guarded by a single [PlatformLock] monitor over an
  *   [ArrayDeque]. For a low-frequency debug log (~512-entry bound) this is the right trade-off:
  *   `ConcurrentLinkedQueue` is lock-free but unbounded — it cannot enforce the eviction bound
  *   atomically without extra synchronization anyway — and lock-free ring buffers only pay off
@@ -25,11 +26,14 @@ import com.transfer.flash.core.common.time.SystemTimeSource
  *   Background: https://www.baeldung.com/java-ring-buffer and
  *   https://mortoray.com/wait-free-queueing-and-ultra-low-latency-logging/ (wait-free rings are
  *   explicitly recommended against unless nanosecond latency matters).
- * - **Android forwarding:** `:core:common` is an Android library module (android.jar on the
- *   compile classpath), so `Log.println` compiles directly in [FlashPlatformLogSink]. On the
- *   JVM unit-test tier `android.util.Log` methods throw "not mocked"; the sink therefore
- *   wraps the forward call so it can never break callers there — the in-memory buffer still
- *   records every entry.
+ *   Phase 06 note: this used `kotlin.synchronized` directly, which is JVM-only. [PlatformLock]
+ *   is the `expect`/`actual` seam that let this class move to `commonMain` unchanged in
+ *   behaviour. Because the seam is not `inline`, `recent` returns the lock body's value
+ *   instead of doing a non-local `return` out of it.
+ * - **Platform forwarding:** the sink is chosen per target (`android.util.Log` on Android,
+ *   stderr on the JVM) behind `platformLogSink()`. On the Android JVM unit-test tier
+ *   `android.util.Log` methods throw "not mocked"; the sink wraps the forward call so it can
+ *   never break callers there — the in-memory buffer still records every entry.
  * - **Structured tags:** callers pass one of the §24 tag constants (DISCOVERY, LAN,
  *   WIFI_DIRECT, CONNECTION, PAIRING, TLS, TRANSFER, CHUNK, STORAGE, DATABASE, SERVICE,
  *   PERFORMANCE). Never log secrets or sensitive user data (§24).
@@ -45,7 +49,7 @@ internal class FlashLogger(
         require(tag.isNotBlank()) { "FlashLogger tag must not be blank" }
     }
 
-    private val lock = Any()
+    private val lock = PlatformLock()
     private val maxCapacity: Int = capacity
     private val buffer = ArrayDeque<FlashLogEntry>(capacity)
 
@@ -73,22 +77,21 @@ internal class FlashLogger(
      */
     fun recent(limit: Int = DEFAULT_CAPACITY): List<FlashLogEntry> {
         require(limit >= 0) { "limit must be non-negative, was $limit" }
-        synchronized(lock) {
-            if (buffer.isEmpty() || limit == 0) return emptyList()
-            return buffer.takeLast(limit)
+        return lock.withLock {
+            if (buffer.isEmpty() || limit == 0) emptyList() else buffer.takeLast(limit)
         }
     }
 
     /** Drops all buffered entries. */
     fun clear() {
-        synchronized(lock) {
+        lock.withLock {
             buffer.clear()
         }
     }
 
     private fun log(level: FlashLogLevel, message: String, throwable: Throwable?) {
         val entry = FlashLogEntry(level, tag, message, timeSource.nowMs())
-        synchronized(lock) {
+        lock.withLock {
             if (buffer.size >= maxCapacity) {
                 buffer.removeFirst()
             }

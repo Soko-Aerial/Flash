@@ -10,7 +10,13 @@ public interface FlashTimeSource {
     public fun nowMs(): Long
 }
 
-/** Real clock backed by [System.currentTimeMillis]. Production default. */
+/**
+ * Real wall clock. Production default.
+ *
+ * The object stays in `commonMain`; only the clock read is a seam
+ * ([currentTimeMillisPlatform]), so the published FQN and shape are unchanged from the
+ * pre-KMP version and cross-module callers needed no edit.
+ */
 public object SystemTimeSource : FlashTimeSource {
-    override fun nowMs(): Long = System.currentTimeMillis()
+    override fun nowMs(): Long = currentTimeMillisPlatform()
 }

@@ -15,6 +15,12 @@ package com.transfer.flash.core.common.protocol
  * UTF-8 strings, strict validation, constant-time-ish lookup via a 256-entry table.
  * It is NOT a general-purpose base64 implementation; it exists solely so wire
  * transports can safely embed arbitrary binary/whitespace-heavy payloads.
+ *
+ * Phase 06 made "pure Kotlin" literally true so the file could live in `commonMain`:
+ * `decode` accumulated into a `java.io.ByteArrayOutputStream` (the output size is exactly
+ * `dataLength * 3 / 4`, so a preallocated [ByteArray] plus a write index is equivalent), and
+ * `decodeUtf8` used the JVM-only `toString(Charsets.UTF_8)` instead of `decodeToString()`.
+ * Both are behaviour-identical, including U+FFFD substitution for malformed UTF-8.
  */
 public object Base64 {
     private const val PAD = '='
@@ -84,7 +90,8 @@ public object Base64 {
             throw IllegalArgumentException("Invalid base64: length mod 4 == 1")
         }
 
-        val out = java.io.ByteArrayOutputStream((dataLength * 3) / 4)
+        val out = ByteArray((dataLength * 3) / 4)
+        var outIndex = 0
         var i = 0
         while (i < dataLength) {
             val c0 = decodeChar(input[i])
@@ -93,12 +100,12 @@ public object Base64 {
             val c3 = if (i + 3 < dataLength) decodeChar(input[i + 3]) else 0
 
             val triple = (c0 shl 18) or (c1 shl 12) or (c2 shl 6) or c3
-            out.write((triple ushr 16) and 0xFF)
-            if (i + 2 < dataLength) out.write((triple ushr 8) and 0xFF)
-            if (i + 3 < dataLength) out.write(triple and 0xFF)
+            out[outIndex++] = ((triple ushr 16) and 0xFF).toByte()
+            if (i + 2 < dataLength) out[outIndex++] = ((triple ushr 8) and 0xFF).toByte()
+            if (i + 3 < dataLength) out[outIndex++] = (triple and 0xFF).toByte()
             i += 4
         }
-        return out.toByteArray()
+        return out
     }
 
     /**
@@ -106,7 +113,7 @@ public object Base64 {
      *
      * @throws IllegalArgumentException on malformed input.
      */
-    public fun decodeUtf8(encoded: String): String = decode(encoded).toString(Charsets.UTF_8)
+    public fun decodeUtf8(encoded: String): String = decode(encoded).decodeToString()
 
     private fun decodeChar(c: Char): Int {
         val v = DECODE_TABLE[c.code]
