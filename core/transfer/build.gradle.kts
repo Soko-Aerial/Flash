@@ -57,12 +57,14 @@ dependencies {
     // Public API returns kotlinx.coroutines Flow/StateFlow (e.g. activeTransfers), so coroutines
     // must be `api` (implementation would keep those return types off a consumer's classpath).
     api(libs.kotlinx.coroutines.core)
-    implementation(project(":core:security"))
+    // Phase 02 (migration): `:core:security` and `:core:discovery` were removed here when
+    // `wslegacy/` was deleted — WsPairingStore was the only consumer of FlashTrustStore and
+    // WsDiscovery the only consumer of the discovery module. `:core:network` stays: it is still
+    // used by model/WsTransferModels.kt, which references WsTransferServer.
     implementation(project(":core:network"))
     // Phase 4 (ADR-024): transfer no longer depends on core:persistence. Storage is behind the
     // transfer-owned TransferStore port; core:engine's RoomTransferStore adapts Room to it. This
     // keeps Room/SQLCipher (4 native ABIs) off a lightweight core-transfer consumer's classpath.
-    implementation(project(":core:discovery"))
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     testImplementation(libs.junit)
