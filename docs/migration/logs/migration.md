@@ -469,6 +469,215 @@ Replace this with the real MB/s figure when the two-device session happens.
 precondition: `.gitattributes` does **not** exist at the repo root and
 `git config --get core.autocrlf` is `true`, so the churn this phase prevents is real.
 
+---
+
+## Phase 01 — Repo Hygiene
+
+- **Date:** 2026-09-03
+- **Agent/model:** Claude Opus 5 (Claude Code)
+- **Commit:** `c0c94e2` — `chore(migration): normalize line endings via .gitattributes`,
+  one file, 22 insertions, nothing else touched. Plus the immediately following log-only
+  commit that carries this entry (a commit cannot contain its own sha).
+- **Decisions relied on:** none. This phase has no decision dependencies (see the phase
+  file's "Decisions needed: none").
+
+### Change
+Step 2 created `.gitattributes` at the repo root with exactly the content the phase file
+specifies, so that `core.autocrlf = true` on this checkout can no longer produce CRLF churn
+once shared `commonMain` files start being edited from more than one platform. Step 3's
+`git add --renormalize .` staged **nothing**: the index and the worktree were *already*
+pure LF, so there was no historical churn to repair and this phase is purely preventative
+rather than corrective. Step 4's whitespace-ignoring diff was consequently empty by
+construction. No Kotlin source, no Gradle file and no git config was touched.
+
+### Files changed
+**Add**
+- `.gitattributes` (repo root, 22 lines) — `* text=auto eol=lf`; `*.bat` and `*.cmd` pinned
+  to `eol=crlf`; `gradlew` pinned to `eol=lf` and `gradlew.bat` to `eol=crlf`; and
+  `*.png *.webp *.jpg *.jpeg *.jar *.keystore *.jks *.so *.db` declared `binary`.
+
+**Modify:** none. **Delete:** none. **Move:** none.
+
+### Verification
+
+**Step 1 — confirm the problem.**
+
+```
+$ git config --get core.autocrlf
+true
+$ ls .gitattributes
+ls: cannot access '.gitattributes': No such file or directory
+```
+
+So the file did not exist and did not need merging; it was created outright.
+
+**Step 3 — renormalize.** Run before the commit and re-run after it to prove idempotence:
+
+```
+$ git add --renormalize .
+$ git status --short | head -20
+(no output)
+$ git diff --cached --stat | tail -5
+(no output)
+```
+
+**Step 4 — verify no content changed.**
+
+```
+$ git diff --cached --ignore-all-space --stat
+(no output)
+```
+
+Empty, which the phase file lists as the expected result.
+
+**Phase verification command** (CONVENTIONS.md R3, with the two flags Phase 00 established
+as mandatory on this host — `--continue` so one failing module does not mask the rest, and
+`--max-workers=2` to stay inside the 2048 MB daemon heap):
+
+```
+./gradlew :app:assembleDebug testDebugUnitTest --no-configuration-cache --continue --max-workers=2 --console=plain
+```
+
+Result: **PASS — against the Phase 00 baseline.** The build exits 1, but with *exactly* the
+12 pre-existing `:core:persistence` failures and no others, which is the baseline condition
+this phase is measured against. `:app:assembleDebug` succeeded.
+
+```
+> Task :app:assembleDebug UP-TO-DATE
+...
+> Task :core:persistence:testDebugUnitTest FAILED
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':core:persistence:testDebugUnitTest'.
+> There were failing tests. See the report at: file:///C:/Users/KaliOxygen/Downloads/Flash/core/persistence/build/reports/tests/testDebugUnitTest/index.html
+
+BUILD FAILED in 1m 8s
+370 actionable tasks: 1 executed, 369 up-to-date
+EXIT=1
+```
+
+Exactly one task failed (`grep -E "^> Task .* FAILED"` returns one line) and exactly 12
+individual tests failed — the same `DiscoveryModeSettingTest.roundtrip for every valid mode`
+plus the 11 `FlashSettingsDataStoreTest` roundtrips recorded in the Phase 00 entry.
+
+**Test-count check against the Phase 00 baseline** (R3 requires this from Phase 06 on; doing
+it here too establishes that the harness for it works before it becomes load-bearing):
+
+| Module | tests | failures | baseline | match |
+|---|---|---|---|---|
+| `app` | 31 | 0 | 31 | ✅ |
+| `core/calling` | 55 | 0 | 55 | ✅ |
+| `core/common` | 49 | 0 | 49 | ✅ |
+| `core/discovery` | 97 | 0 | 97 | ✅ |
+| `core/engine` | 1 | 0 | 1 | ✅ |
+| `core/messaging` | 27 | 0 | 27 | ✅ |
+| `core/network` | 126 | 0 | 126 | ✅ |
+| `core/persistence` | 35 | 12 | 35 / 12 fail | ✅ |
+| `core/security` | 80 | 0 | 80 | ✅ |
+| `core/transfer` | 89 | 0 | 89 | ✅ |
+| `ui/chat` | 239 | 0 | 239 | ✅ |
+| `ui/theme` | 37 | 0 | 37 | ✅ |
+| `ui/callui`, `sample/*` | no report | — | NO-SOURCE | ✅ |
+| **TOTAL** | **866** | **12** | **866 / 854 pass / 12 fail / 0 skip** | ✅ |
+
+`BASELINE_TEST_TOTAL` = 866 is unchanged, so line-ending normalization affected no test.
+
+**Additional check specific to this phase — actual CR bytes on disk and in the index.**
+Counting CR characters directly rather than eyeballing `od -c` output (an `od -c | grep '\r'`
+probe is unreliable: it matches the literal `\n` tokens and any stray `r` in the dump):
+
+```
+$ for f in settings.gradle.kts gradle/libs.versions.toml \
+    core/common/src/main/java/com/transfer/flash/core/common/id/FlashIdGenerator.kt \
+    core/engine/src/main/java/com/transfer/flash/core/engine/Flash.kt; do
+    echo "$f worktree_CR=$(tr -dc '\r' < "$f" | wc -c) index_CR=$(git show ":$f" | tr -dc '\r' | wc -c)"
+  done
+settings.gradle.kts                    worktree_CR=0 index_CR=0
+gradle/libs.versions.toml              worktree_CR=0 index_CR=0
+.../core/common/.../FlashIdGenerator.kt worktree_CR=0 index_CR=0
+.../core/engine/.../Flash.kt            worktree_CR=0 index_CR=0
+```
+
+CR=0 on both sides, which is the direct evidence behind the "renormalize staged nothing"
+finding above.
+
+### Deviations from the phase file
+
+1. **Verification flags.** The phase file's command is bare
+   `./gradlew :app:assembleDebug testDebugUnitTest --no-configuration-cache`. Three flags
+   were added: `--continue` (otherwise the 12 known `:core:persistence` failures abort the
+   run before the remaining modules' tests execute, and the per-module count table above
+   could not be filled), `--max-workers=2` (Phase 00 Deviation 1: `org.gradle.jvmargs` is
+   `-Xmx2048m` and unbounded workers get the daemon OS-killed, which surfaces as a bare
+   `EXIT=127` with no `FAILURE:` line), and `--console=plain` for parseable output.
+
+2. **A wedged Gradle daemon had to be killed before verification could run at all.** The
+   first two attempts both died with
+   `java.lang.ClassFormatError: Incompatible magic value 16777216 in class file jdk/internal/math/FormattedFPDecimal`.
+   `--stacktrace` placed it in Gradle's own health reporting —
+   `org.gradle.launcher.daemon.server.health.DaemonHealthStats.getHealthInfo(DaemonHealthStats.java:89)`
+   → `String.format` → `Formatter$FormatSpecifier.printFloat` → lazy load of that
+   `java.base` class — i.e. nothing to do with this phase's change. Ruled out a corrupt JDK
+   (standalone Adoptium 25.0.3 formats floats fine; its `lib/modules` is 144 925 330 bytes)
+   and corrupt Gradle caches (no truncated jars under `caches/9.5.0`). `./gradlew --status`
+   then showed **PID 44180 in state `UNKNOWN`**, launched from
+   `E:\AndroidDev\Gradle\jdks\eclipse_adoptium-25-amd64-windows.2\bin\java.exe`. Killing it
+   (`Stop-Process -Id 44180 -Force`) fixed it outright; free RAM went from 3899 MB to
+   8901 MB of 20355 MB. No project file was changed to make the build pass. See Known
+   issues — this is a standing hazard, not a one-off.
+
+3. **Step 3 was re-run after Step 5's commit** to confirm idempotence (the phase file's
+   "Do NOT run `git add --renormalize` a second time in a later phase" is about later
+   phases; this was the same phase and it staged nothing both times).
+
+### Known issues
+
+- **The Gradle daemon JVM lives on a detachable drive, and that will bite again.**
+  `~/.gradle` is on `E:`, and `gradle/gradle-daemon-jvm.properties` sets
+  `toolchainVersion=25`, so the daemon runs
+  `E:\AndroidDev\Gradle\jdks\eclipse_adoptium-25-amd64-windows.2\bin\java.exe` while
+  `JAVA_HOME` is JBR 21.0.10. (That version mismatch is normal and is not the fault.) When
+  the drive is removed or a daemon is left in state `UNKNOWN`, stale handles to `lib/modules`
+  make `java.base` classes unreadable and the build fails with `ClassFormatError:
+  Incompatible magic value` — a message that looks like a compiler or dependency problem and
+  is not. **Recovery for later phases:** `./gradlew --status`, kill any daemon not in state
+  `IDLE`/`BUSY`, then re-run. Do not start editing source over this.
+- **Do not chain two heavy Gradle invocations in one shell.** The second dies instantly at
+  exit 127 while the first run's daemons still hold memory. Insert `./gradlew --stop` and a
+  short sleep. (Phase 00 Deviation 2; re-confirmed here.)
+- **`core.autocrlf = true` remains set in the user's git config** and was deliberately not
+  changed — the phase file's "Do NOT" list forbids it and project rules say leave git config
+  alone. `.gitattributes` now overrides it per-repo, which is the correct mechanism. Note
+  that git will still print `warning: in the working copy of '<file>', LF will be replaced by
+  CRLF the next time Git touches it` on commits from this checkout; that warning is expected
+  and is precisely the churn `.gitattributes` now bounds.
+- **`.gitattributes` does not cover `*.svg`, `*.ttf`, `*.otf`, `*.woff*` or `*.ico`.** The
+  phase file's list is what was written, verbatim, and font/vector assets will arrive in
+  Phase 17 (`ui` resources). `text=auto` will treat them heuristically. Phase 17 should add
+  the missing binary patterns; doing it here would violate R1.
+- **Everything still open from the Phase 00 entry is still open**, in particular:
+  CONVENTIONS.md R3.1 still reads
+  `ANDROID_UNIT_TEST_TASK = <not yet discovered — Phase 06 must fill this in>`;
+  `BASELINE_THROUGHPUT_MBPS = UNMEASURED`; Phase 00 Step 5's 8 on-device functional checks
+  were not performed (no device access from this environment); `core:engine` has exactly
+  1 test and `ui:callui` has none, so R3's count check barely protects either;
+  `Flash.kt`'s `Locale.getDefault()` site is at **line 689**, not the 668 Phase 04 claims.
+- **`--offline` is still unusable for multi-module sweeps** on this host
+  (`generateDebugUnitTestStubRFile` → "No cached version available for offline mode" for
+  `androidx.annotation:annotation-experimental:1.5.0`). Every command above ran online.
+
+### Next step
+**Phase 02 — delete `wslegacy`** (`docs/migration/PHASE-02-delete-wslegacy.md`). Preconditions
+already verified at this HEAD: the 5 deletion targets exist
+(`core/transfer/src/main/java/com/transfer/flash/core/transfer/wslegacy/{LegacyDiscoveredDevice,
+WsDiscovery,WsPairingStore,WsTransferManager}.kt` plus
+`core/transfer/src/test/.../wslegacy/WsPairingStoreTest.kt`), every top-level declaration in
+them is `internal` — so **no ADR is needed**, nothing public is removed — and
+`protocol/WsTransferMessages.kt` / `model/WsTransferModels.kt` are **live wire format** under
+R8 and must survive.
+
 
 
 
