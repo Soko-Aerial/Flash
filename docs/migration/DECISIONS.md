@@ -13,7 +13,7 @@
 | **D7** | **Phase 19** | UI platform shims. **Executed 2026-09-05 (`94a60a4`); D7b overridden on evidence** — a and c as written, but FileKit was **not** adopted. See the note under D7 below. |
 | **D8** | **Phase 22** | Whether the §15 desktop screens exist. |
 | **D9** | Phase 24 | Sample consumers; agent may proceed on the recommendation. |
-| **D10** | **Phases 13B-2, 13B-3, 15, 16** | What replaces `java.io.InputStream` in a `commonMain` signature. Added 2026-09-05 by the agent that reached Phase 13. **Answered 2026-09-05 = Option A**, with an explicit R8 authorisation for 13B-3's `ChunkFrame` rewrite (byte-identical output required). **Enacted as Okio 3.4.0 by 13B-2 (`732e7b5`, 2026-09-05); 13B-3 is next.** |
+| **D10** | **Phases 13B-2, 13B-3, 15, 16** | What replaces `java.io.InputStream` in a `commonMain` signature. Added 2026-09-05 by the agent that reached Phase 13. **Answered 2026-09-05 = Option A**, with an explicit R8 authorisation for 13B-3's `ChunkFrame` rewrite (byte-identical output required). **Enacted as Okio 3.4.0 by 13B-2 (`732e7b5`, 2026-09-05); spent again by 13B-3a (`5e4e9a5`) for SHA-256; 13B-3b — the R8 `ChunkFrame` rewrite — is next.** |
 | **D11** | **a new phase, number TBD** | Is the calling stack (`:core:calling` + `:ui:callui`) in desktop scope? Added 2026-09-05 — no phase file has ever mentioned `:core:calling`. **Answered 2026-09-05 = in scope, research first.** Does not block any existing phase. |
 
 **As of 2026-09-05 every decision D1–D11 is answered.** No phase in this plan is blocked on a decision
@@ -454,6 +454,14 @@ under R10. The alias points at the **root** multiplatform module, never `okio-jv
 the verification commands are in the `gradle/libs.versions.toml` comment; the ABI consequence
 (`RandomAccessSinkHandle`: `java.io.Closeable` → `kotlin.AutoCloseable`) is queued for Phase 24.
 **13B-3 is now unblocked** — its R8 authorisation above is still the only thing it needs.
+
+**PROGRESS 2026-09-05 (`5e4e9a5`): 13B-3 is being executed as five commits, and the first, 13B-3a, is
+done.** It moved `chunked/Sha256.kt` to `commonMain` on Okio's `HashingSink` — a second use of this
+decision's dependency, with no module edge, no new alias and no ABI break. It had to go first: the
+`ChunkFrame` this decision's R8 authorisation covers calls `Sha256.isValidHex`, `normalizeHex`,
+`HEX_LENGTH` and `RAW_LENGTH`, so the framing rewrite was gated on hashing rather than the reverse.
+**The R8 authorisation was therefore NOT spent by 13B-3a** — `chunked/ChunkFrame.kt` is byte-for-byte
+untouched, and 13B-3b is the sub-step that uses it, under the byte-identical criterion stated above.
 
 ---
 

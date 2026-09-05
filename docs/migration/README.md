@@ -39,9 +39,9 @@ Status is authoritative; each phase file's own preconditions section holds the d
 | 11 | [PHASE-11-repositories-kmp.md](PHASE-11-repositories-kmp.md) | **DONE** (`f96797e`) — `:core:transfer` + `:core:messaging` | high |
 | 12 | [PHASE-12-engine-kmp.md](PHASE-12-engine-kmp.md) | **DONE** (`4ac401b`) | high |
 | 13 | ~~[PHASE-13-desktop-fileio.md](PHASE-13-desktop-fileio.md)~~ | **SUPERSEDED** by 13B — its log entry is docs-only, no code | — |
-| 13B | [PHASE-13B-desktop-fileio.md](PHASE-13B-desktop-fileio.md) | **13B-1 DONE** (`fafd450`). **13B-2 DONE** (`732e7b5`, 2026-09-05) — D10 = Option A enacted as **Okio 3.4.0**; the four `java.io` seams are now `commonMain`, and `RandomAccessSinkHandle`'s supertype changed `Closeable` → `AutoCloseable` (Phase 24 release note). **13B-3 NEXT and authorised** — the human granted the explicit R8 exception to rewrite `chunked/ChunkFrame.kt` on 2026-09-05, **with byte-identical output as the hard acceptance criterion**; 13B-3 does not ship if any byte differs. | 13B-1 low, 13B-2/3 high |
+| 13B | [PHASE-13B-desktop-fileio.md](PHASE-13B-desktop-fileio.md) | **13B-1 DONE** (`fafd450`). **13B-2 DONE** (`732e7b5`, 2026-09-05) — D10 = Option A enacted as **Okio 3.4.0**; the four `java.io` seams are now `commonMain`, and `RandomAccessSinkHandle`'s supertype changed `Closeable` → `AutoCloseable` (Phase 24 release note). **13B-3a DONE** (`5e4e9a5`, 2026-09-05) — `Sha256`/`IncrementalSha256` are `commonMain` over Okio's `HashingSink`; no module edge, no new dependency, no ABI break. It went first because `ChunkFrame` calls four `Sha256` members, so the phase file's framing-then-hashing order was impossible; §13B-3 now carries the correction. **13B-3b NEXT** — the R8-authorised `ChunkFrame` rewrite, **with byte-identical output as the hard acceptance criterion**; it does not ship if any byte differs. Then 13B-3c resume, 13B-3d concurrency, 13B-3e pipelines. Note §13B-3's "big-endian" claim is **wrong** — the wire format is little-endian. | 13B-1 low, 13B-2/3a medium, 13B-3b–e high |
 | 14 | [PHASE-14-desktop-discovery.md](PHASE-14-desktop-discovery.md) | **DONE** (`75d86ef`) under D6=A (JmDNS). Was previously listed here as "12 + **D6**", which read as blocked; D6 was answered 2026-08-31 and the phase shipped. **Caveat: D6's mandated throwaway spike was never run**, and no real multicast was ever exercised — only a human with two machines on one LAN can discharge that. | high |
-| 15 | [PHASE-15-desktop-transport.md](PHASE-15-desktop-transport.md) | **WAITING ON 13B-3** — 13B-2 is done (`732e7b5`); the remaining pins are framing/hashing/atomics. No longer blocked on a decision (D10 = A answered 2026-09-05). 14 is satisfied. | high |
+| 15 | [PHASE-15-desktop-transport.md](PHASE-15-desktop-transport.md) | **WAITING ON 13B-3b–e** — 13B-2 (`732e7b5`) and 13B-3a (`5e4e9a5`) are done, so file I/O and hashing are both common; the remaining pins are framing, resume, atomics and the pipelines. No longer blocked on a decision (D10 = A answered 2026-09-05). 14 is satisfied. | high |
 | 16 | [PHASE-16-desktop-headless-interop.md](PHASE-16-desktop-headless-interop.md) | **WAITING ON 15** — no longer blocked on a decision | **gate** |
 | 17 | [PHASE-17-ui-resources.md](PHASE-17-ui-resources.md) | **DONE** (`a8d9d0d`, `23267ed`) | low |
 | 18 | [PHASE-18-ui-theme-kmp.md](PHASE-18-ui-theme-kmp.md) | **DONE** (`96e8799`) — read its STATUS box before reusing any of it; 14 of its steps were wrong | medium |
@@ -105,8 +105,8 @@ of that was **wrong** and is corrected here.
 **Their scope is now decided: `D11 = Option B` (2026-09-05) — they ARE in desktop scope, and the phase
 that handles them must open with a WebRTC-for-desktop-JVM research step and report its findings before
 proposing any conversion.** The phase file does not exist yet, and it must not be inserted ahead of
-13B-3/15/16: D10 = A has unblocked the critical path (13B-2 landed as `732e7b5`) and the Phase 16
-interop gate outranks calling.
+13B-3b–e/15/16: D10 = A has unblocked the critical path (13B-2 landed as `732e7b5`, 13B-3a as
+`5e4e9a5`) and the Phase 16 interop gate outranks calling.
 
 - **`:core:calling`** — grepping every file in `docs/migration/` for `core:calling` returns hits in
   `CONVENTIONS.md` and this README only. **No phase file mentions it at all.** It is still
@@ -155,8 +155,8 @@ That is Phase 19's doing — the seven shims it extracted were the only reason t
 **Every unblocked phase in this plan is complete, and as of 2026-09-05 the plan is no longer
 decision-blocked at all.** D10 = Option A and D11 = Option B were answered, and the R8 exception for
 13B-3's `ChunkFrame` rewrite was granted with byte-identical output as the hard acceptance criterion.
-**The critical path is open again: ~~13B-2~~ (done, `732e7b5`) → 13B-3 → 15 → 16 (gate) → 21 → 22 →
-23 (gate) → 24.**
+**The critical path is open again: ~~13B-2~~ (done, `732e7b5`) → ~~13B-3a~~ (done, `5e4e9a5`) →
+13B-3b (the R8 `ChunkFrame` rewrite) → 13B-3c/d/e → 15 → 16 (gate) → 21 → 22 → 23 (gate) → 24.**
 
 What is still outstanding is narrower than a decision:
 

@@ -5869,6 +5869,334 @@ After 13B-3: **15 → 16 (hard gate) → 21 → 22 → 23 (hard gate) → 24.** 
 authorised but still unwritten, and must **not** be inserted ahead of 15/16 — the Phase 16 interop gate
 outranks it.
 
+## Phase 13B-3a — SHA-256 moved to `commonMain` on Okio's `HashingSink`
+
+- **Date:** 2026-09-05
+- **Agent/model:** Claude (Opus 5), Claude Code
+- **Commit:** `5e4e9a5` (source), this entry (docs)
+- **Decisions relied on:** D10 = Option A (answered 2026-09-05, enacted as Okio 3.4.0 by 13B-2 —
+  this sub-step spends that dependency rather than adding one), D1 = Option B (strict `commonMain`,
+  no `jvmAndAndroidMain`). **The R8 authorisation for `ChunkFrame` was NOT used.**
+  `chunked/ChunkFrame.kt` is byte-for-byte untouched; that rewrite is 13B-3b.
+
+### Change
+
+13B-3 is the last sub-step of Phase 13B and the largest — six pins across nine files. It is being
+executed as five commits rather than one, in the order the code's own dependencies force. This entry
+covers the first, **13B-3a: hashing**.
+
+`chunked/Sha256.kt` moves `androidMain` → `commonMain`, re-based off `java.security.MessageDigest`
+onto okio 3.4.0's `HashingSink`. `Sha256Test.kt` moves `androidHostTest` → `commonTest`, converted
+JUnit 4 → `kotlin.test`, so its known-answer vectors now execute on the desktop `jvm()` target as
+well as on the Android host-test JVM (R3.1).
+
+**Why hashing had to go first, against the phase file's own ordering.** §13B-3 lists framing before
+hashing, and my first sketch of the sub-steps followed it. That order is impossible: `ChunkFrame`'s
+`init` validation and its parse path call `Sha256.isValidHex`, `Sha256.normalizeHex`,
+`Sha256.HEX_LENGTH` and `Sha256.RAW_LENGTH` (`ChunkFrame.kt:133,134,282,302`). A `commonMain`
+`ChunkFrame` cannot reference an `androidMain` `Sha256`, so the R8-authorised framing rewrite is
+gated on hashing, not the reverse. Recorded as Deviation 1 and corrected in the phase file.
+
+**Why okio and not the two options the phase file names.** Neither was usable, and this was measured
+rather than assumed:
+
+- `:core:security`'s Phase 07 seam declares `internal expect fun sha256(data: ByteArray): ByteArray`
+  (`crypto/PlatformCrypto.kt:30`) and `internal expect fun constantTimeBytesEqual(a: ByteArray, b:
+  ByteArray): Boolean` (`:56`). Both are **`internal`**, so `:core:transfer` could not call them even
+  if the module edge the phase file warns about were added — and `sha256` is **one-shot**, so it
+  cannot serve `IncrementalSha256`, whose entire purpose is hashing a whole file in a single
+  streaming pass without buffering it. Widening either to `public` is an ABI change to
+  `core/security/**`, which R8 places outside a phase authorised only for `ChunkFrame`.
+- "A common SHA-256" meaning a hand-rolled compression function is a non-starter: writing new crypto
+  primitives to satisfy a build constraint is exactly the class of change R2 and R8 exist to stop.
+
+okio was already on `commonMain`'s `api` classpath from 13B-2, so the third option costs nothing:
+**no module edge, no new dependency, no version move (R10), no `expect`/`actual`.**
+
+**Byte identity, which is the acceptance criterion.** Both digests this file produces are
+wire-visible — `CHUNK.chunkSha256` (32 raw bytes) and `FILE_START.fileSha256Hex` (64 ASCII hex) — so
+a changed digest is a changed wire format even though `Sha256.kt` is not itself an R8 file. Two
+independent arguments, both checked:
+
+1. `okio.HashingSink` on JVM/Android holds a `private final java.security.MessageDigest
+   messageDigest` field and a static `sha256(Sink)` factory. Verified with
+   `javap -p -classpath okio-jvm-3.4.0.jar okio.HashingSink`, not inferred from documentation. On
+   Android the digest therefore still comes from the same provider — and the same ARMv8 crypto
+   extensions — that the original D3 (docs/core-upgrade-plan.md §1) chose.
+2. SHA-256 is a fixed function, so a discrepancy could only be a bug, and a bug would show up as a
+   failed vector. The suite now asserts FIPS 180-2's "abc", the empty input, and the 448-bit
+   two-block message **on both targets**.
+
+**Three `java.*` seams could not simply be relocated.** Each was replaced deliberately:
+
+| Was | Now | Why this replacement |
+|---|---|---|
+| `MessageDigest.isEqual(a, b)` | a line-for-line port of that method's published algorithm | identity fast path, `lenB == 0` special case, `result \|= lenA - lenB`, then `((i - lenB) ushr 31) * i` index folding so an out-of-range read becomes index 0 instead of a branch. Ported rather than rewritten because the truth table is as load-bearing as the timing: a length mismatch has to reject through the same accumulator as a byte mismatch, or a caller can tell the two apart. |
+| `a.toByteArray(Charsets.US_ASCII)` | a private `asciiBytes()` | `Charsets` is on R6.1 scan 2 and cannot appear in `commonMain`. One byte per UTF-16 code unit, `0x3F` for unmappable units, which is the JDK encoder's substitution byte. Byte-identical for every BMP character. |
+| a long-lived `MessageDigest` | `HashingSink.sha256(blackholeSink())` + a `BufferedSink` | okio's digest consumes from `Buffer` segments, so the accumulator needs a buffered sink in front of it. `hash` reads through `digest.digest()`, which is what preserves the finish-and-reset semantics. |
+
+Two behaviour details worth pinning rather than leaving implicit, both now covered by tests:
+
+- **`digestRaw()`/`digestHex()` finish and empty the accumulator.** The KDoc this replaces said
+  "does not reset", which was never true of `MessageDigest.digest()` — the JDK contract resets on
+  finish. okio's `hash` getter calls `digest.digest()`, so the behaviour is identical and the
+  *comment* was the thing that was wrong. A second read returns the digest of no input.
+- **`reset()` rebuilds the `HashingSink`/`BufferedSink` pair**, because `HashingSink` has no
+  `reset()`. That discards buffered-but-unhashed bytes, which is what `MessageDigest.reset()` did.
+  `reset()` has no caller anywhere in the repo — it is `public` under `explicitApi()` and so cannot
+  be dropped (R2) — which is precisely why it needed a test rather than a reading.
+
+**One cost, disclosed rather than buried.** `IncrementalSha256.update` now buffers into okio segments
+before the digest sees the bytes: one segment-wise copy per update that
+`MessageDigest.update(ByteArray)` did not make. No public okio entry point hashes a caller's array in
+place (`ByteArray.toByteString()`, `Buffer.write`, `ByteString.of` all copy), so this is inherent to
+going common, not an implementation slip. It is not a new order of magnitude —
+`ChunkFrame.serialize` already copies every chunk through a `ByteArrayOutputStream`, and the receive
+path copies again on the way to the sink — but it is a real regression on the hot path and it belongs
+in the record.
+
+### Files changed
+
+**Moved + rewritten (2):**
+
+- `core/transfer/src/androidMain/…/chunked/Sha256.kt` → `core/transfer/src/commonMain/…/chunked/Sha256.kt`
+  (`git mv`, so the diff is a rename: 108 lines → 187). Public API unchanged: `HEX_LENGTH`,
+  `RAW_LENGTH`, `digest(vararg)`, `digestHex`, `hex`, `rawEqualsConstantTime`,
+  `hexEqualsConstantTime`, `isValidHex`, `normalizeHex` on the object; `update(ByteArray)`,
+  `update(ByteArray, Int, Int)`, `digestRaw`, `digestHex`, `reset` on `IncrementalSha256`. The added
+  lines are the `isEqual` port, `asciiBytes`, and KDoc recording each substitution.
+  `digest(vararg chunks)` now delegates to `IncrementalSha256` instead of duplicating the streaming
+  loop.
+- `core/transfer/src/androidHostTest/…/chunked/Sha256Test.kt` → `core/transfer/src/commonTest/…/chunked/Sha256Test.kt`
+  (60 lines → 171). 5 tests → 12. The 5 originals are preserved with `"abc".toByteArray()` changed to
+  `"abc".encodeToByteArray()` (`toByteArray(Charset)` is JVM-only) and `org.junit.Assert` swapped for
+  `kotlin.test` — where `assertEquals` takes its message **last**, the opposite of JUnit, which is a
+  silent trap on the 3-arg numeric overload. The 7 added tests are: the FIPS 180-2 two-block vector;
+  `digest(vararg)` concatenation; the finish-and-reset contract; `reset()`; the `isEqual` port's
+  identity / both-empty / either-empty / shorter-first-array cases; negative bytes through
+  `Byte.toInt()` sign extension; and `hex()` over all 256 byte values.
+
+**Modified — comments only, no code (5):** four sites named `Sha256` as a reason a file was still
+pinned to `androidMain`, which stopped being true with this commit —
+`androidMain/…/chunked/Chunker.kt:10`, `androidMain/…/chunked/ReceivePipeline.kt:346`,
+`commonMain/…/chunked/ChunkSink.kt:7`, `commonMain/…/chunked/ChunkSource.kt:9` — plus
+`core/transfer/build.gradle.kts` (the `jvm()` block's inventory of what is still Android-bound, and
+the two test-tier comments: `commonTest` gained Sha256's vectors, `androidHostTest` went from 13
+suites to 12). Only **one** module's build file is touched (R4) and no dependency or version changed
+(R10) — `libs.okio` has been `api()` in this module's `commonMain` since 13B-2.
+
+**No consumer needed an edit.** `core/engine/…/Flash.kt:646-657` and
+`app/…/debug/DiscoveryEngineHolder.kt:1343-1356` both import
+`com.transfer.flash.core.transfer.chunked.Sha256` and `.IncrementalSha256`; the package is unchanged
+and a `commonMain` class is on the Android classpath exactly as an `androidMain` one was. **No ABI
+break, so nothing is queued for Phase 24 from this sub-step** — unlike 13B-2, which owes it the
+`Closeable` → `AutoCloseable` change.
+
+**File counts after this commit**, measured with `find`: `:core:transfer` production is **14
+`commonMain` + 12 `androidMain` + 1 `jvmMain`** (13 + 13 + 1 before). Tests are **4 `commonTest` +
+12 `androidHostTest`**; `src/jvmTest` still has no sources of its own, so `jvmTest` runs exactly the
+`commonTest` set.
+
+### Verification
+
+**Step 1 — targeted, both targets plus both test tiers.**
+
+```
+./gradlew :core:transfer:compileKotlinJvm :core:transfer:compileAndroidMain \
+  :core:transfer:jvmTest :core:transfer:testAndroidHostTest \
+  --no-configuration-cache --max-workers=2 --console=plain
+```
+
+```
+> Task :core:transfer:compileAndroidMain
+> Task :core:transfer:compileAndroidHostTest
+> Task :core:transfer:testAndroidHostTest
+BUILD SUCCESSFUL in 45s
+29 actionable tasks: 9 executed, 20 up-to-date
+```
+
+`compileKotlinJvm` succeeding is what proves the digest is reachable from the desktop target;
+`jvmTest` passing is what proves it is *correct* there, which compilation alone never showed.
+
+**Step 2 — the vectors ran on both targets, not just one.** The whole point of moving the suite is
+that a single XML would prove half of it, so both were read:
+
+```
+core/transfer/build/test-results/jvmTest:
+  Sha256Test[jvm] tests=12 failures=0 errors=0 skipped=0
+core/transfer/build/test-results/testAndroidHostTest:
+  com.transfer.flash.core.transfer.chunked.Sha256Test tests=12 failures=0 errors=0 skipped=0
+```
+
+**Step 3 — the full R3 command.** `--continue` is load-bearing: without it the known
+`:core:persistence` failures abort the run and the totals silently come out low.
+
+```
+./gradlew --stop; sleep 8; ./gradlew :app:assembleDebug testDebugUnitTest \
+  :core:common:testAndroidHostTest :core:security:testAndroidHostTest :core:security:jvmTest \
+  :core:discovery:testAndroidHostTest :core:discovery:jvmTest :core:network:testAndroidHostTest \
+  :core:network:jvmTest :core:transfer:testAndroidHostTest :core:transfer:jvmTest \
+  :core:messaging:testAndroidHostTest :core:messaging:jvmTest :core:engine:testAndroidHostTest \
+  :core:engine:jvmTest :core:persistence:testAndroidHostTest :core:persistence:jvmTest \
+  :ui:theme:testAndroidHostTest :ui:theme:jvmTest :ui:platform-shims:testAndroidHostTest \
+  :ui:platform-shims:jvmTest :ui:chat:testAndroidHostTest :ui:chat:jvmTest \
+  --no-configuration-cache --continue --max-workers=2 --console=plain
+```
+
+```
+> Task :app:assembleDebug
+FAILURE: Build failed with an exception.
+* What went wrong:
+Execution failed for task ':core:persistence:testAndroidHostTest'.
+> There were failing tests.
+BUILD FAILED in 1m 55s
+352 actionable tasks: 18 executed, 334 up-to-date
+```
+
+`:core:persistence:testAndroidHostTest` is the **only** failing task, and it is the known
+pre-existing one. Tally:
+
+```
+XMLs: 178
+tests=1351 failures=12 errors=0
+
+failing suites:
+com.transfer.flash.core.persistence.settings.DiscoveryModeSettingTest   tests=6  failures=1 errors=0
+com.transfer.flash.core.persistence.settings.FlashSettingsDataStoreTest tests=13 failures=11 errors=0
+```
+
+Against the 13B-2 baseline of **1332 / 12 / 0 across 177**, the deltas are both accounted for:
+**+19 tests** = 12 tests × 2 targets − the 5 android-only tests they replace; **+1 XML** = the new
+`commonTest` suite appearing under `jvmTest` (on the `androidHostTest` side it replaces the one that
+left, so that directory stays at 16). Failures and errors are unchanged, which is the actual gate.
+
+All 12 failures are the same tests as in the 13B-2 entry, untouched per R1 — 11 in
+`FlashSettingsDataStoreTest` (`retentionDays roundtrip`, `backgroundTransfers roundtrip`,
+`dynamicAccent roundtrip`, `corrupted preferences file falls back to emptyPreferences`,
+`themeMode roundtrip`, `displayName roundtrip`, `soundsEnabled roundtrip`,
+`autoAcceptTrusted roundtrip`, `reduceMotionOverride roundtrip`,
+`saveLocationUri roundtrip and clear-to-null`, `hapticsEnabled roundtrip`) and 1 in
+`DiscoveryModeSettingTest` (`roundtrip for every valid mode`).
+
+**Step 4 — the three R6.1 gate scans.** Scan 1 (no `java`/`javax`/`android`/`androidx` in any
+`commonMain`) and scan 3 (every `@Volatile` file imports `kotlin.concurrent.Volatile`) both printed
+nothing. Scan 2 printed its established baseline and nothing new:
+
+```
+core/common/…/logging/FlashLog.kt:21:    @Volatile
+core/discovery/…/core/CompositeDiscovery.kt:172:    @Volatile private var desiredBrowsing = false
+core/discovery/…/core/CompositeDiscovery.kt:192:    @Volatile private var currentPolicy: DiscoveryModePolicy =
+core/messaging/…/model/FlashMessagingModels.kt:202:  "%d:%02d:%02d".format(hours, minutes, seconds)
+core/messaging/…/model/FlashMessagingModels.kt:204:  "%d:%02d".format(minutes, seconds)
+core/network/…/ws/WsKeepalive.kt:75:    @Volatile
+core/transfer/…/policy/RandomAccessSinkHandle.kt:82:    @Volatile
+ui/chat/…/FlashFileMessageCard.kt:113,413,415,417   (4 × .format()
+ui/chat/…/FlashStressTestScreen.kt:253              (1 × .format()
+ui/chat/…/FlashVoiceMessageCard.kt:81               (1 × .format()
+```
+
+That is the same 5 `@Volatile` sites and same 8 allowlisted `.format(` calls as before this commit,
+with **no new intrinsic** — and one *fewer* intrinsic class in play overall, since the `Charsets`
+usage that lived in the old `Sha256.kt` is gone rather than relocated. `Charsets` never appeared in a
+`commonMain` scan because the file it was in was `androidMain`; it would have appeared the moment the
+file moved, which is why `asciiBytes()` exists.
+
+**Step 5 — consistency sweep.** `grep -rnE '\b(Incremental)?Sha256\b'` across `core`, `app`, `ui`,
+`sample` (excluding `build/`) returns 94 hits in 20 files, all still resolving to the same package;
+the four stale "`Sha256` is 13B-3 scope" comments are the only ones that needed rewording, and after
+the edit no comment in the repo still claims `Sha256` is Android-bound.
+
+### Deviations from the phase file
+
+1. **Sub-step order is reversed relative to §13B-3.** That section lists `ByteBuffer`/framing first
+   and hashing second. Framing cannot go first — `ChunkFrame.kt:133,134,282,302` call four `Sha256`
+   members. Hashing is therefore 13B-3a and framing 13B-3b. §13B-3 now carries a CORRECTION saying
+   so, along with the executed five-step order (a hashing → b framing → c resume → d concurrency →
+   e pipelines).
+2. **Neither of the phase file's two suggested hashing answers was used, because neither works.**
+   `PlatformCrypto`'s two functions are `internal` *and* `sha256` is one-shot; a hand-rolled SHA-256
+   is not something a migration phase should be writing. okio — already present from 13B-2 — was the
+   answer, and it added no module edge, which was the specific cost the phase file worried about.
+   Recorded in §13B-3's CORRECTION.
+3. **§13B-3 says the `ChunkFrame` port needs "hand-rolled big-endian `ByteArray` arithmetic". That is
+   wrong and would produce a broken wire format.** `ChunkFrame`'s documented layout is *all
+   multi-byte scalars LITTLE-endian*: `PAYLOAD_LENGTH` is uint32 LE, a `string` is uint16 LE
+   byte-length + UTF-8, and the header is built with `ByteBuffer.allocate(…).order(LITTLE_ENDIAN)`.
+   The file even contains a hand-rolled `readI32Le` already. Found while reading `ChunkFrame.kt` in
+   full to plan 13B-3b; corrected in the phase file before it could mislead. This is exactly the
+   failure mode the byte-identical criterion is there to catch, but catching it at the plan stage is
+   cheaper than at the vector stage.
+4. **§*Why this is not one phase* item 3 over-scoped R8.** It groups `Sha256.kt` with
+   `ChunkFrame.kt` as code "R8 says not to touch without being told to". `Sha256.kt` is not in
+   `core/security/**` and is not one of R8's seven named wire formats, so it moved under ordinary
+   rules. Its *output* is wire-visible, which is why byte identity was still treated as the
+   criterion. Annotated in place.
+5. **The suite moved source sets, which the phase file does not discuss at all.** §13B-3 says nothing
+   about tests. Moving `Sha256Test.kt` to `commonTest` is R3.1's standing instruction ("any phase
+   that writes an `actual` should put at least one behavioural assertion in `commonTest`") applied by
+   analogy: this sub-step writes no `actual`, but it does move production code onto a new target, and
+   a vector that runs only on Android would leave the desktop digest unproven.
+
+### Known issues
+
+- **The 12 `:core:persistence` failures stay failing.** Pre-existing, temp-file related, out of
+  scope (R1). If the count ever changes, that is a regression, not progress.
+- **13B-3b–e remain**, and the two `.buffer().inputStream()` bridges in `Chunker.kt:184` and its
+  `ChunkStream` constructor are still the marker for when 13B-3e is done: they are the last
+  `java.io` types in the send path.
+- **`IncrementalSha256` costs one extra segment-wise copy per `update`** versus
+  `MessageDigest.update(ByteArray)`. Inherent to okio's segment-based digest; no public okio entry
+  point hashes an array in place. Not a new order of magnitude given the copies already in
+  `ChunkFrame.serialize`, but it is on the per-chunk hot path and a future performance pass should
+  know it is there rather than rediscover it.
+- **`asciiBytes()` differs from the JDK `US_ASCII` encoder in exactly one case**: a surrogate PAIR
+  yields two `'?'` bytes where the JDK emits one, because the port works per UTF-16 code unit rather
+  than per code point. Unreachable from either production call site — both pass `normalizeHex` or
+  `hex` output, i.e. 64 hex characters — and documented in the function's KDoc. It is a latent
+  difference, not a live one, but a future caller that hands arbitrary strings to
+  `hexEqualsConstantTime` would meet it.
+- **`OkioRandomAccessSinkHandle` still has no test coverage on the desktop target**, carried over
+  unchanged from the 13B-2 entry: positional `writeAt` at a non-zero offset, an unwritten hole, and
+  `resize` pre-allocation are all unasserted. 13B-3e or Phase 15 should close it. This sub-step did
+  not touch that file.
+- **The eight allowlisted `.format(` calls** in `commonMain` are unchanged and remain a precondition
+  of any Kotlin/Native-target phase (they need rounding tests, not a `sed`: Java's `Formatter` is
+  HALF_UP over the decimal value while `kotlin.math.round` is half-away-from-zero over the binary
+  double, and they disagree at inputs like 0.35).
+- **`compileCommonMainKotlinMetadata` is SKIPPED in this repo**, so no build task certifies that a
+  `commonMain` file uses only the *common* API surface of a dependency — with `android()` and `jvm()`
+  both being JVM platform types, the KMP plugin does not run metadata compilation at all. This
+  independently confirms R6.1's reasoning and closes off what looked like a cheap gate. The technique
+  that *does* answer the question, used here before writing any code: unzip the published metadata
+  artifact (`okio-metadata-3.4.0-all.jar`) and grep its `commonMain/default/linkdata/package_okio/*.knm`
+  for the symbol. `HashingSink`, `HashingSource`, `blackholeSink`, `sha256`, `hex`, `FileHandle` and
+  the `read/writeIntLe|LongLe|ShortLe` family are all confirmed present in okio 3.4.0's `commonMain`
+  — the last group matters for 13B-3b, which needs them to replace `ByteBuffer`.
+
+### Next step
+
+**Phase 13B-3b — the `ChunkFrame` rewrite**, the R8-authorised centrepiece. It is now unblocked in
+both directions: the human granted the exception on 2026-09-05, and `Sha256` is `commonMain` as of
+this commit so `ChunkFrame`'s four references to it resolve.
+
+The acceptance criterion is unchanged and hard: **byte-identical output. Golden hex vectors captured
+from the current `ByteBuffer` implementation and asserted against it *first* — proving the vectors
+faithful before anything is rewritten — then the same vectors asserted against the common
+implementation, with the suite in `commonTest` so both targets run it. 13B-3b does not ship if any
+byte differs.**
+
+Three things 13B-3a hands it. First, the endianness: **little**, not the big-endian §13B-3 claims,
+and `readI32Le` in the existing file is the pattern to extend. Second, `Sha256.HEX_LENGTH`,
+`RAW_LENGTH`, `isValidHex` and `normalizeHex` are now common, so no bridging is needed. Third, the
+one hazard the vectors must cover rather than be reasoned about: `ChunkFrame`'s `string` encoder uses
+`String.toByteArray(Charsets.UTF_8)`, whose replacement is `String.encodeToByteArray()`, and the two
+can disagree on an **unpaired surrogate** — the JDK encoder substitutes `'?'` (0x3F) while Kotlin's
+common encoder emits the U+FFFD replacement character's UTF-8 bytes. A frame carrying a filename with
+a lone surrogate is unlikely but not impossible, and it is one captured vector's worth of work to
+settle it empirically. `asciiBytes()` in this commit is the same class of problem solved the same way.
+
+After 13B-3: **15 → 16 (hard gate) → 21 → 22 → 23 (hard gate) → 24.**
+
 ## Phase 14 — Desktop mDNS for `:core:discovery`
 
 - **Date:** 2026-09-05

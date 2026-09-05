@@ -1,12 +1,17 @@
 # Phase 13B — Desktop file I/O for `:core:transfer`, re-scoped after measurement (D10)
 
-> **Status: 13B-1 EXECUTED (`fafd450`, 2026-09-05). 13B-2 and 13B-3 BLOCKED on D10.** Authored
+> **Status: 13B-1 EXECUTED (`fafd450`). 13B-2 EXECUTED (`732e7b5`). 13B-3a EXECUTED (`5e4e9a5`).
+> 13B-3b–e REMAIN.** All 2026-09-05. Authored
 > 2026-09-05 by the agent that reached Phase 13 and found `PHASE-13-desktop-fileio.md` unexecutable;
 > the working tree at authoring time was clean at `d8af05c`, and no source or build file had been
 > touched for Phase 13 or 13B at that point. **13B-1 has since been executed and verified against all
 > seven of its gates** — see `logs/migration.md` § *Phase 13B-1*. Its five steps below are kept as
-> written, as the record of what was done; do not re-run them. **13B-2 and 13B-3 remain untouched**,
-> and 13B-3 additionally needs an explicit R8 authorisation to rewrite `chunked/ChunkFrame.kt`.
+> written, as the record of what was done; do not re-run them. ~~**13B-2 and 13B-3 remain untouched**,
+> and 13B-3 additionally needs an explicit R8 authorisation to rewrite `chunked/ChunkFrame.kt`.~~
+> **D10 was answered Option A on 2026-09-05 and enacted as Okio 3.4.0 by 13B-2; the R8 authorisation
+> for `ChunkFrame` was granted the same day with byte-identical output as a hard acceptance
+> criterion. Nothing in this file is decision-blocked any more.** 13B-3 is being executed in five
+> sub-steps — see the CORRECTION in §13B-3, which also fixes two wrong rows in that section's table.
 >
 > **This file supersedes `PHASE-13-desktop-fileio.md`.** That document is written for **D1 = A**:
 > it requires a `jvmAndAndroidMain` source set holding the entire transfer pipeline, which
@@ -39,9 +44,17 @@ Three things are true at once:
    builds the CHUNK wire frame with `java.nio.ByteBuffer`/`ByteOrder`, and `ChunkFrame` is named in
    R8's untouchable list. `chunked/Sha256.kt` uses `java.security.MessageDigest`. Neither can move
    to `commonMain` without rewriting code R8 says not to touch without being told to.
+   **Half of this turned out to be over-cautious: `Sha256.kt` is not an R8 file — it is a helper in
+   `:core:transfer`, not `core/security/**` and not one of the seven named wire formats — so 13B-3a
+   moved it under the ordinary rules. Its digests are wire-visible, which is why byte identity was
+   still the acceptance criterion, discharged by FIPS 180-2 known-answer vectors now running on both
+   targets. `ChunkFrame` genuinely is an R8 file and did need the instruction.**
 
-~~Execute **13B-1**.~~ **13B-1 is done (`fafd450`).** Do not start 13B-2 or 13B-3 until D10 is
-answered and, for 13B-3, until the human has explicitly authorised touching `ChunkFrame`.
+~~Execute **13B-1**.~~ **13B-1 is done (`fafd450`), 13B-2 is done (`732e7b5`), 13B-3a is done
+(`5e4e9a5`).** ~~Do not start 13B-2 or 13B-3 until D10 is
+answered and, for 13B-3, until the human has explicitly authorised touching `ChunkFrame`.~~ **Both
+conditions were met on 2026-09-05.** The next executable unit is **13B-3b**, the `ChunkFrame`
+rewrite.
 
 ---
 
@@ -433,26 +446,58 @@ real `FileTarget`/`UriTarget` pair, and note that `jvmMain` must be **OS-neutral
 2026-09-03 amendment — `System.getProperty("java.io.tmpdir")` is fine, a `C:\` literal or
 `%USERPROFILE%` is not.
 
-## 13B-3 — framing, hashing, concurrency. **Blocked on D10 *and* an explicit R8 instruction.**
+## 13B-3 — framing, hashing, concurrency. ~~**Blocked on D10 *and* an explicit R8 instruction.**~~ **UNBLOCKED 2026-09-05** (D10 = Option A; R8 exception granted, byte-identical output required). **13B-3a DONE — `5e4e9a5`.**
 
 What is left after 13B-2, with the known common answer for each:
 
 | Pin | File(s) | Common answer |
 |---|---|---|
-| `java.nio.ByteBuffer` / `ByteOrder` | `chunked/ChunkFrame.kt` | hand-rolled big-endian `ByteArray` arithmetic, as `protocol/WsTransferMessages.kt` already does in `commonMain` |
-| `java.security.MessageDigest` | `chunked/Sha256.kt` | `:core:security`'s Phase 07 `PlatformCrypto` seam, or a common SHA-256 — **adds a module edge**, `:core:transfer` does not depend on `:core:security` today |
+| `java.nio.ByteBuffer` / `ByteOrder` | `chunked/ChunkFrame.kt` | hand-rolled ~~big-endian~~ **little-endian** `ByteArray` arithmetic, as `protocol/WsTransferMessages.kt` already does in `commonMain` — **see the endianness correction below** |
+| `java.security.MessageDigest` | `chunked/Sha256.kt` | ~~`:core:security`'s Phase 07 `PlatformCrypto` seam, or a common SHA-256 — **adds a module edge**, `:core:transfer` does not depend on `:core:security` today~~ **DONE in 13B-3a (`5e4e9a5`): okio's `HashingSink`. No module edge was added — see the correction below.** |
 | `java.util.concurrent.atomic.*` | `multistream/MultiStreamDispatcher.kt`, `multistream/TransferCompletionStateMachine.kt` | `kotlin.concurrent.Atomic*` (still `@ExperimentalAtomicApi` at Kotlin 2.2.10), `kotlinx.atomicfu`, or `PlatformLock` + plain vars |
 | `ConcurrentHashMap`, `Collections.{newSetFromMap,synchronizedList}` | `RealFlashTransferRepository.kt`, `MultiStreamDispatcher.kt` | `PlatformLock` + plain `MutableMap`/`MutableList` — the pattern already used three times |
 | `java.util.UUID` | `RealFlashTransferRepository.kt` | `:core:common`'s Phase 06 `UuidIdGenerator` |
 | `java.util.BitSet` | `chunked/ResumeBitVector.kt` | a `LongArray` bitset in common Kotlin |
 
+> **CORRECTION (2026-09-05, after executing 13B-3a — `5e4e9a5`).** Two rows of the table above were
+> wrong, and the sub-step order this section implies is wrong.
+>
+> - **Endianness.** The `ByteBuffer` row says "hand-rolled **big-endian**". `ChunkFrame`'s own
+>   documented layout is *"all multi-byte scalars LITTLE-endian"*: `PAYLOAD_LENGTH` is a uint32 LE,
+>   `string` is a uint16 LE byte-length plus UTF-8, and the header is built with
+>   `ByteBuffer.allocate(HEADER_SIZE + body.size).order(ByteOrder.LITTLE_ENDIAN)`. The file already
+>   contains a hand-rolled `readI32Le`. An agent that took this row at face value would emit
+>   byte-swapped frames and fail the R8 acceptance criterion on the first vector. `WsTransferMessages`
+>   is still the right precedent for *how*, just not for *which order*.
+> - **The hashing answer.** Neither option in the `MessageDigest` row was usable.
+>   `:core:security`'s `PlatformCrypto` declares `internal expect fun sha256(data: ByteArray)` and
+>   `internal expect fun constantTimeBytesEqual(...)` — both `internal`, so `:core:transfer` could not
+>   call them even with the module edge added, and `sha256` is one-shot so it cannot serve
+>   `IncrementalSha256`'s streaming whole-file pass. Making them public is an ABI change to
+>   `core/security/**`, which R8 puts outside this phase. What 13B-3a used instead is the library D10
+>   already brought in: okio 3.4.0's `HashingSink.sha256(blackholeSink())`, whose JVM/Android
+>   implementation holds a `java.security.MessageDigest` (verified with `javap`), so the digest bytes
+>   are unchanged on Android. **No module edge, no new dependency, no `expect`/`actual`.**
+> - **Order.** This section lists framing before hashing, and 13B-3 was sketched that way.
+>   `ChunkFrame` cannot move first: its `init` validation and parse path call `Sha256.isValidHex`,
+>   `Sha256.normalizeHex`, `Sha256.HEX_LENGTH` and `Sha256.RAW_LENGTH`. **Hashing must land first**,
+>   which is why `5e4e9a5` is 13B-3**a** and the framing rewrite is 13B-3**b**.
+>
+> Executed order: **a** hashing (`5e4e9a5`) → **b** framing (`ChunkFrame`, R8) → **c** resume
+> (`ResumeBitVector`) → **d** concurrency (atomics, `ConcurrentHashMap`, `UUID`) → **e** the pipelines
+> (`Chunker`/`ChunkStream`, `ReceivePipeline`, `SendPipeline`, `MultiStreamReceiver`, which is where
+> the two `.buffer().inputStream()` bridges 13B-2 left behind get deleted). `policy/DestinationPolicy.kt`
+> and `model/WsTransferModels.kt` stay in `androidMain`; neither is a 13B-3 pin.
+
 **`ChunkFrame` is named in R8's untouchable list** (*"Wire formats: `FlashEnvelope`, `FlashProtocol`,
 `ChunkFrame`, …"*), and rewriting its `ByteBuffer` framing is unavoidable here. R8 says such a change
 needs an explicit instruction; R2 says a phase that seems to require a forbidden edit must stop and
-report. So 13B-3 must not begin until the human has said, in words, that rewriting `ChunkFrame`'s
-serialisation in common Kotlin is authorised — with the obvious acceptance criterion that the emitted
-bytes stay identical, provable by a `commonTest` round-trip against frames captured from the current
-Android implementation.
+report. ~~So 13B-3 must not begin until the human has said, in words, that rewriting `ChunkFrame`'s
+serialisation in common Kotlin is authorised~~ — **the human said exactly that on 2026-09-05** — with
+the obvious acceptance criterion that the emitted bytes stay identical, provable by a `commonTest`
+round-trip against frames captured from the current Android implementation. **That criterion is
+hard: 13B-3b does not ship if any byte differs.** Note that the authorisation covers `ChunkFrame`
+alone; the other six wire formats R8 names are still untouchable.
 
 ---
 
