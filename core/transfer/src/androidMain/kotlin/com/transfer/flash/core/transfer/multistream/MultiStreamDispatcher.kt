@@ -1,5 +1,8 @@
+@file:OptIn(ExperimentalAtomicApi::class)
+
 package com.transfer.flash.core.transfer.multistream
 
+import com.transfer.flash.core.common.time.SystemTimeSource
 import com.transfer.flash.core.transfer.chunked.ChunkFrame
 import com.transfer.flash.core.transfer.chunked.ChunkPlan
 import com.transfer.flash.core.transfer.chunked.ChunkSource
@@ -8,6 +11,7 @@ import com.transfer.flash.core.transfer.chunked.ChunkStream
 import com.transfer.flash.core.transfer.chunked.FileMeta
 import com.transfer.flash.core.transfer.chunked.ResumeBitVector
 import com.transfer.flash.core.transfer.chunked.Sha256
+import com.transfer.flash.core.transfer.concurrent.PlatformLock
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -23,10 +27,13 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.selects.select
-import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.Volatile
+import kotlin.concurrent.atomics.AtomicBoolean
+import kotlin.concurrent.atomics.AtomicInt
+import kotlin.concurrent.atomics.AtomicLong
+import kotlin.concurrent.atomics.ExperimentalAtomicApi
+import kotlin.concurrent.atomics.decrementAndFetch
+import kotlin.concurrent.atomics.incrementAndFetch
 
 /**
  * Send-side orchestrator for C5.7 MULTI-STREAM transfer — **v3**, modeled on proven segmented-
@@ -41,7 +48,7 @@ import kotlin.concurrent.Volatile
  * - **Single materializer** owns all [ChunkStream] reading (streams are strictly sequential),
  *   eliminating read-under-lock and double-materialization races.
  * - **Lock-free hot path**: confirmed bytes/chunks live in atomics touched by ACK ingestion;
- *   per-worker state is owned by exactly one coroutine. Tiny synchronized blocks guard snapshots.
+ *   per-worker state is owned by exactly one coroutine. Tiny [PlatformLock] blocks guard snapshots.
  * - **Throttled progress publisher job** (10 ms) — same shape as SegmentedDownloader's.
  * - **Receiver-authoritative completion**: resolution happens on the receiver's COMPLETE frame
  *   (`verified`), with fallbacks: local-coverage grace expiry, all-channels-dead fail-fast.
@@ -64,7 +71,7 @@ internal class MultiStreamDispatcher(
     doneIndexes: Collection<Int> = emptyList(),
     @Suppress("UNUSED_PARAMETER") endGameChunks: Int = END_GAME_CHUNKS,
     private val speedWindowMs: Long = MultiStreamProgress.DEFAULT_WINDOW_MS,
-    private val nowMs: () -> Long = System::currentTimeMillis,
+    private val nowMs: () -> Long = SystemTimeSource::nowMs,
     private val workerDispatcher: CoroutineDispatcher = Dispatchers.Default,
     private val onCompleteFrame: ((ByteArray) -> Unit)? = null,
     /** Local-coverage fallback delay before resolving without the receiver COMPLETE frame. */
@@ -94,10 +101,10 @@ internal class MultiStreamDispatcher(
 
     private val confirmedVector = ResumeBitVector(plan.totalChunks).also { it.reconcile(resumeDone) }
     private val confirmedBytes = AtomicLong(resumedBytes)
-    private val confirmedCount = AtomicInteger(resumeDone.size)
-    private val chunksSentTotal = AtomicInteger(0)
+    private val confirmedCount = AtomicInt(resumeDone.size)
+    private val chunksSentTotal = AtomicInt(0)
     private val bytesSentTotal = AtomicLong(0L)
-    private val aliveWorkers = AtomicInteger(0)
+    private val aliveWorkers = AtomicInt(0)
     private val started = AtomicBoolean(false)
 
     @Volatile private var receiverVerifiedField: Boolean? = null
@@ -107,10 +114,17 @@ internal class MultiStreamDispatcher(
     @Volatile private var ackDrainDeadlineMs: Long? = null
 
     // Terminal bookkeeping: tiny critical sections, never held across I/O.
-    private val terminalLock = Any()
+    private val terminalLock = PlatformLock()
     private var terminalResult: MultiStreamResult? = null
     private var terminalDeferred: CompletableDeferred<MultiStreamResult>? = null
-    private val deadIds = java.util.Collections.synchronizedList(mutableListOf<Int>())
+
+    /**
+     * Guarded by [terminalLock] — all seven accesses (two open-failure paths, [markDead],
+     * [shouldRedistribute], [deadChannelsSnapshot] and the two result builders) already ran inside
+     * it, so the `java.util.Collections.synchronizedList` wrapper this replaced in 13B-3d was
+     * redundant double-locking. No import line revealed that pin: it was fully qualified.
+     */
+    private val deadIds = mutableListOf<Int>()
 
     private val rateMeter = RollingRateMeter(nowMs, speedWindowMs)
     private val completeEmittedOnce = AtomicBoolean(false)
@@ -182,7 +196,7 @@ internal class MultiStreamDispatcher(
             }
 
             val effectiveStreams = streamCount.coerceIn(1, pendingIndexes.size)
-            aliveWorkers.set(effectiveStreams)
+            aliveWorkers.store(effectiveStreams)
             plannedStreams = effectiveStreams
 
             // BOUNDED (AGENTS §18): the materializer paces with the network instead of
@@ -190,7 +204,7 @@ internal class MultiStreamDispatcher(
             // attempt hold its entire remaining file on the heap → OOM by the third try.
             val feeds = List(effectiveStreams) { Channel<PreparedFrame>(FEED_BUFFER_FRAMES) }
             val shared = Channel<PreparedFrame>(SHARED_BUFFER_FRAMES)
-            val ownFeedsOpen = AtomicInteger(effectiveStreams)
+            val ownFeedsOpen = AtomicInt(effectiveStreams)
 
             // Watcher: throttled progress publishing + non-inline resolutions
             // (local-coverage grace expiry, all-channels-dead fail-fast).
@@ -258,14 +272,14 @@ internal class MultiStreamDispatcher(
                     null
                 }
                 if (channel == null) {
-                    synchronized(terminalLock) { deadIds.add(id) }
+                    terminalLock.withLock { deadIds.add(id) }
                     return@map Pair(DeadStreamChannel(id), false)
                 }
                 val startOk = runCatching {
                     channel.sendFrame(ChunkFrame.serialize(chunker.fileStart(meta, plan, resolvedDigest)))
                 }.getOrDefault(false)
                 if (!startOk) {
-                    synchronized(terminalLock) { deadIds.add(id) }
+                    terminalLock.withLock { deadIds.add(id) }
                 }
                 Pair(channel, startOk)
             }
@@ -295,21 +309,21 @@ internal class MultiStreamDispatcher(
         }
 
     /** Snapshot: distinct chunk indexes the receiver has confirmed so far. */
-    fun confirmedCountSnapshot(): Int = confirmedCount.get()
+    fun confirmedCountSnapshot(): Int = confirmedCount.load()
 
     /** Snapshot: all receiver-confirmed chunk indexes (resume bit-vector mirror). */
     fun confirmedIndexesSnapshot(): List<Int> =
-        synchronized(terminalLock) { confirmedVector.doneIndexes() }
+        terminalLock.withLock { confirmedVector.doneIndexes() }
 
     /** Snapshot: channel ids marked dead during the session. */
-    fun deadChannelsSnapshot(): List<Int> = synchronized(terminalLock) { deadIds.toList() }
+    fun deadChannelsSnapshot(): List<Int> = terminalLock.withLock { deadIds.toList() }
 
     // ---- inbound feedback -------------------------------------------------------------------------
 
     private fun ingestAckBatch(frame: ChunkFrame.AckBatch): Boolean {
         if (frame.transferId != meta.transferId || frame.fileId != meta.fileId) return false
         markRangeConfirmed(frame.indexes)
-        val covered = confirmedCount.get() >= plan.totalChunks
+        val covered = confirmedCount.load() >= plan.totalChunks
         if (covered && completeGraceMs == 0L) {
             emitCompleteFrameOnce(receiverVerifiedField ?: true)
         }
@@ -330,15 +344,15 @@ internal class MultiStreamDispatcher(
     }
 
     private fun markRangeConfirmed(indexes: List<Int>) {
-        synchronized(terminalLock) {
+        terminalLock.withLock {
             indexes.forEach { idx ->
                 if (!confirmedVector.isReceived(idx)) {
                     confirmedVector.markReceived(idx)
-                    confirmedBytes.addAndGet(chunkBytes(idx))
-                    confirmedCount.incrementAndGet()
+                    confirmedBytes.addAndFetch(chunkBytes(idx))
+                    confirmedCount.incrementAndFetch()
                 }
             }
-            if (confirmedCount.get() >= plan.totalChunks && coverageReachedAtMs == null) {
+            if (confirmedCount.load() >= plan.totalChunks && coverageReachedAtMs == null) {
                 coverageReachedAtMs = nowMs()
             }
         }
@@ -352,13 +366,13 @@ internal class MultiStreamDispatcher(
         forceCoverageResolve: Boolean,
     ) {
         if (deferred.isCompleted) return
-        val covered = confirmedCount.get() >= plan.totalChunks
+        val covered = confirmedCount.load() >= plan.totalChunks
         val coverageAge = coverageReachedAtMs?.let { nowMs() - it } ?: 0L
 
         val completed = when {
-            covered && receiverVerifiedField != null -> resolvedCompleted(chunksSentTotal.get())
+            covered && receiverVerifiedField != null -> resolvedCompleted(chunksSentTotal.load())
             covered && (forceCoverageResolve || coverageAge >= completeGraceMs) ->
-                resolvedCompleted(chunksSentTotal.get(), verified = receiverVerifiedField)
+                resolvedCompleted(chunksSentTotal.load(), verified = receiverVerifiedField)
             else -> null
         }
         if (completed != null) {
@@ -370,10 +384,10 @@ internal class MultiStreamDispatcher(
         // outstanding ACK_BATCH/COMPLETE before declaring failure — instant failure here
         // misreported healthy transfers ("all channels failed" at first-ACK ~20%) whenever
         // the last chunks left the socket buffer after the final worker finished.
-        if (!covered && aliveWorkers.get() <= 0) {
+        if (!covered && aliveWorkers.load() <= 0) {
             // Nothing ever reached a wire (every channel failed on its first frame): there is no
             // ACK in flight, so waiting out the drain grace would only stall a certain failure.
-            if (chunksSentTotal.get() == 0) {
+            if (chunksSentTotal.load() == 0) {
                 deferred.complete(failedLocked("all channels failed"))
                 return
             }
@@ -381,11 +395,11 @@ internal class MultiStreamDispatcher(
             // deliberately stops draining and ACKing, so the missing ACKs are expected, not a
             // fault. Disarm the deadline so resuming starts a fresh grace window.
             if (externallyPaused) {
-                synchronized(terminalLock) { ackDrainDeadlineMs = null }
+                terminalLock.withLock { ackDrainDeadlineMs = null }
                 return
             }
             val now = nowMs()
-            val deadline = synchronized(terminalLock) {
+            val deadline = terminalLock.withLock {
                 (ackDrainDeadlineMs ?: now.also { ackDrainDeadlineMs = it }) + ACK_DRAIN_GRACE_MS
             }
             if (now >= deadline) {
@@ -407,11 +421,11 @@ internal class MultiStreamDispatcher(
             totalChunks = plan.totalChunks,
             chunksSent = chunksSent,
             chunksSkippedResume = plan.totalChunks - pendingIndexes.size,
-            bytesSent = bytesSentTotal.get(),
+            bytesSent = bytesSentTotal.load(),
             bytesSkippedResume = resumedBytes,
             fileSha256Hex = resolvedDigest,
             verified = verified,
-            deadChannelIds = synchronized(terminalLock) { deadIds.toList() },
+            deadChannelIds = terminalLock.withLock { deadIds.toList() },
             completeFrameBytes = completeFrameBytesHolder,
         )
     }
@@ -419,7 +433,7 @@ internal class MultiStreamDispatcher(
     private fun failedLocked(reason: String): MultiStreamResult.Failed =
         MultiStreamResult.Failed(
             reason = reason,
-            deadChannelIds = synchronized(terminalLock) { deadIds.toList() },
+            deadChannelIds = terminalLock.withLock { deadIds.toList() },
             unconfirmedIndexes = confirmedVector.missingIndexes(),
         )
 
@@ -465,7 +479,7 @@ internal class MultiStreamDispatcher(
         id: Int,
         ownFeed: Channel<PreparedFrame>,
         shared: Channel<PreparedFrame>,
-        ownFeedsOpen: AtomicInteger,
+        ownFeedsOpen: AtomicInt,
         deferred: CompletableDeferred<MultiStreamResult>,
         wire: StreamChannel,
         startOk: Boolean,
@@ -480,7 +494,7 @@ internal class MultiStreamDispatcher(
         fun releaseOwnFeed() {
             if (!ownFeedReleased) {
                 ownFeedReleased = true
-                if (ownFeedsOpen.decrementAndGet() == 0) shared.close()
+                if (ownFeedsOpen.decrementAndFetch() == 0) shared.close()
             }
         }
 
@@ -488,7 +502,7 @@ internal class MultiStreamDispatcher(
         fun releaseAlive() {
             if (!aliveReleased) {
                 aliveReleased = true
-                aliveWorkers.decrementAndGet()
+                aliveWorkers.decrementAndFetch()
                 failIfAllChannelsDead(deferred)
             }
         }
@@ -532,13 +546,13 @@ internal class MultiStreamDispatcher(
                     continue
                 }
 
-                chunksSentTotal.incrementAndGet()
-                bytesSentTotal.addAndGet(chunkBytes(prepared.index))
+                chunksSentTotal.incrementAndFetch()
+                bytesSentTotal.addAndFetch(chunkBytes(prepared.index))
                 val ok = runCatching { wire.sendFrame(prepared.frameBytes) }.getOrDefault(false)
                 if (ok) continue
 
-                chunksSentTotal.decrementAndGet()
-                bytesSentTotal.addAndGet(-chunkBytes(prepared.index))
+                chunksSentTotal.decrementAndFetch()
+                bytesSentTotal.addAndFetch(-chunkBytes(prepared.index))
                 dead = true
                 markDead(id)
                 // Retire the wire before handing the frame back: all-dead detection must see this
@@ -575,7 +589,7 @@ internal class MultiStreamDispatcher(
     }
 
     private fun markDead(id: Int) {
-        synchronized(terminalLock) {
+        terminalLock.withLock {
             if (!deadIds.contains(id)) deadIds.add(id)
         }
     }
@@ -586,29 +600,29 @@ internal class MultiStreamDispatcher(
      */
     private fun shouldRedistribute(deferred: CompletableDeferred<MultiStreamResult>): Boolean {
         if (deferred.isCompleted) return false
-        if (aliveWorkers.get() <= 0) return false
-        val allDead = synchronized(terminalLock) {
+        if (aliveWorkers.load() <= 0) return false
+        val allDead = terminalLock.withLock {
             (0 until plannedStreams).all { deadIds.contains(it) }
         }
         return !allDead
     }
 
     private fun failIfAllChannelsDead(deferred: CompletableDeferred<MultiStreamResult>) {
-        val alive = aliveWorkers.get()
+        val alive = aliveWorkers.load()
         if (alive == 0 && !deferred.isCompleted) {
             // Do NOT fail instantly: sends are fire-and-forget, ACKs lag behind worker exit.
             // Arm the bounded ack-drain deadline; the watcher resolves (covered → Completed,
             // expiry → ack-drain-timeout failure). Skipped while paused — the grace is armed on
             // resume instead, so a long pause cannot time the transfer out.
             if (externallyPaused) return
-            synchronized(terminalLock) {
+            terminalLock.withLock {
                 if (ackDrainDeadlineMs == null) ackDrainDeadlineMs = nowMs()
             }
         }
     }
 
     private fun publishProgress() {
-        val done = confirmedBytes.get()
+        val done = confirmedBytes.load()
         rateMeter.record(done)
         // Paused transfers report a hard zero instead of a decaying rolling average: the sender is
         // deliberately idle, so "slowing down" telemetry (and an ETA extrapolated from it) is a lie.

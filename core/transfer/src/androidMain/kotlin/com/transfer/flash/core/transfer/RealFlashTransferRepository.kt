@@ -3,6 +3,7 @@
 package com.transfer.flash.core.transfer
 
 import com.transfer.flash.core.common.annotation.FlashInternalApi
+import com.transfer.flash.core.common.id.UuidIdGenerator
 import com.transfer.flash.core.common.logging.FlashLog
 import com.transfer.flash.core.common.model.FlashDevice
 import com.transfer.flash.core.common.result.FlashError
@@ -11,6 +12,7 @@ import com.transfer.flash.core.transfer.chunked.ChunkSource
 import com.transfer.flash.core.transfer.chunked.Chunker
 import com.transfer.flash.core.transfer.chunked.FileMeta
 import com.transfer.flash.core.transfer.chunked.Sha256
+import com.transfer.flash.core.transfer.concurrent.PlatformLock
 import com.transfer.flash.core.transfer.model.FlashTransfer
 import com.transfer.flash.core.transfer.model.FlashTransferDirection
 import com.transfer.flash.core.transfer.model.FlashTransferId
@@ -19,8 +21,6 @@ import com.transfer.flash.core.transfer.multistream.MultiStreamDispatcher
 import com.transfer.flash.core.transfer.multistream.MultiStreamResult
 import com.transfer.flash.core.transfer.multistream.StreamChannelFactory
 import com.transfer.flash.core.transfer.store.TransferStore
-import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -99,12 +99,30 @@ public class RealFlashTransferRepository(
         public const val ACTION_DECLINE: String = "decline"
     }
 
-    private val runningJobs = ConcurrentHashMap<String, Job>()
-    private val runningDispatchers = ConcurrentHashMap<String, MultiStreamDispatcher>()
+    /**
+     * Guards the three per-transfer registry maps below ([runningJobs], [runningDispatchers],
+     * [pauseIntents]), which were `ConcurrentHashMap` / `ConcurrentHashMap.newKeySet()` before
+     * Phase 13B-3d. `java.util.concurrent` has no `commonMain` equivalent, so the concurrent
+     * collections become plain ones behind a [PlatformLock].
+     *
+     * Two rules keep it deadlock-free, and both are load-bearing:
+     *  * **No suspension inside a critical section.** `PlatformLock.withLock` cannot be `inline`
+     *    (it is an `expect class` member), so the compiler enforces this for us.
+     *  * **No call-out inside a critical section.** `MultiStreamDispatcher.setPaused`,
+     *    `Job.cancel` and `MultiStreamDispatcher.onInboundFrame` all take locks of their own and
+     *    the last can reach a host callback, so this lock is released before every one of them —
+     *    read or remove under the lock, then act on the returned value.
+     *
+     * [receiverDone] deliberately gets its own lock, not this one: the two sets of state are never
+     * touched together, and the inbound-chunk path must not queue behind the send-side registry.
+     */
+    private val registryLock = PlatformLock()
+    private val runningJobs = mutableMapOf<String, Job>()
+    private val runningDispatchers = mutableMapOf<String, MultiStreamDispatcher>()
 
     /**
      * Transfer ids whose transmission should be paused, recorded independently of whether a
-     * dispatcher exists yet.
+     * dispatcher exists yet. Guarded by [registryLock].
      *
      * `sendFile` returns as soon as the send coroutine is launched, but the dispatcher only lands
      * in [runningDispatchers] after the resume-chunk DAO query and dispatcher construction have
@@ -113,7 +131,7 @@ public class RealFlashTransferRepository(
      * "could not pause" at all. The intent survives that race and is applied the moment the
      * dispatcher is registered.
      */
-    private val pauseIntents: MutableSet<String> = ConcurrentHashMap.newKeySet()
+    private val pauseIntents = mutableSetOf<String>()
 
     /** Emits a wire control intent, logging drops instead of losing them silently. */
     private fun emitOutgoing(transferId: String, peerDeviceId: String?, action: String) {
@@ -145,9 +163,9 @@ public class RealFlashTransferRepository(
         displayName: String,
         fileSize: Long,
     ): FlashResult<FlashTransferId> {
-        val transferIdString = UUID.randomUUID().toString()
+        val transferIdString = UuidIdGenerator.newId()
         val transferId = FlashTransferId(transferIdString)
-        val fileId = UUID.randomUUID().toString()
+        val fileId = UuidIdGenerator.newId()
 
     val initialTransfer = FlashTransfer(
         id = transferId,
@@ -169,7 +187,7 @@ public class RealFlashTransferRepository(
     // out. A RESUME that beats dispatcher registration clears the intent and the sender streams
     // immediately; either ordering is safe.
     if (requireReceiverAcceptance) {
-        pauseIntents.add(transferIdString)
+        registryLock.withLock { pauseIntents.add(transferIdString) }
     }
 
     _activeTransfers.update { it + initialTransfer }
@@ -190,7 +208,7 @@ public class RealFlashTransferRepository(
                 peerDeviceId = targetDevice.id.value,
             )
         }
-        runningJobs[transferIdString] = job
+        registryLock.withLock { runningJobs[transferIdString] = job }
 
         return FlashResult.Success(transferId)
     }
@@ -224,7 +242,7 @@ public class RealFlashTransferRepository(
             workerDispatcher = workerDispatcher,
             peerDeviceId = peerDeviceId,
         )
-        runningDispatchers[transferId] = dispatcher
+        registryLock.withLock { runningDispatchers[transferId] = dispatcher }
 
         // Honour a pause requested before this dispatcher existed (see [pauseIntents]).
         applyPendingPauseOrStart(transferId, dispatcher)
@@ -307,9 +325,19 @@ public class RealFlashTransferRepository(
             // have registered a replacement dispatcher/job under the same key, and blindly
             // removing here would orphan the live transfer (pause/resume/cancel would stop
             // reaching it).
-            if (runningDispatchers.remove(transferId, dispatcher)) {
-                runningJobs.remove(transferId)
-                pauseIntents.remove(transferId)
+            //
+            // The identity check was `ConcurrentHashMap.remove(key, value)` — `ConcurrentMap`'s
+            // two-arg compare-and-remove — before 13B-3d. Under [registryLock] the check and all
+            // three removals are one critical section, so the retirement is now atomic as a
+            // *trio* rather than atomic per map. That is strictly stronger than what it replaces
+            // (no observer can catch a half-retired transfer); it is a consequence of the
+            // conversion, not a fix this sub-step went looking for.
+            registryLock.withLock {
+                if (runningDispatchers[transferId] === dispatcher) {
+                    runningDispatchers.remove(transferId)
+                    runningJobs.remove(transferId)
+                    pauseIntents.remove(transferId)
+                }
             }
         }
     }
@@ -334,22 +362,25 @@ public class RealFlashTransferRepository(
             store?.setStatus(transferId, FlashTransferState.Paused.name)
         }
 
-        if (pauseIntents.contains(transferId)) {
+        // Each probe takes [registryLock] on its own rather than wrapping the block: `enterPaused`
+        // suspends, and a non-inline `withLock` cannot contain a suspension point.
+        if (registryLock.withLock { transferId in pauseIntents }) {
             enterPaused()
             return
         }
         updateTransferState(transferId) { it.copy(state = FlashTransferState.Transferring) }
         store?.setStatus(transferId, FlashTransferState.Transferring.name)
-        if (pauseIntents.contains(transferId)) enterPaused()
+        if (registryLock.withLock { transferId in pauseIntents }) enterPaused()
     }
 
     override suspend fun pauseTransfer(transferId: FlashTransferId): FlashResult<Unit> {
         val transfer = _activeTransfers.value.find { it.id == transferId }
             ?: return FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Transfer not found: ${transferId.value}"))
+        val jobPresent = registryLock.withLock { transferId.value in runningJobs }
         runCatching {
             FlashLog.i(
                 "TRANSFER",
-                "pauseTransfer id=${transferId.value} direction=${transfer.direction} state=${transfer.state} jobPresent=${runningJobs.containsKey(transferId.value)}",
+                "pauseTransfer id=${transferId.value} direction=${transfer.direction} state=${transfer.state} jobPresent=$jobPresent",
             )
         }
 
@@ -371,8 +402,15 @@ public class RealFlashTransferRepository(
         // The intent is recorded FIRST and unconditionally: when the dispatcher is still being
         // constructed there is nothing to flip yet, and executeSend applies the intent as soon as
         // it registers (previously this branch pause was silently overwritten by Transferring).
-        pauseIntents.add(transferId.value)
-        runningDispatchers[transferId.value]?.setPaused(true)
+        //
+        // Recording the intent and reading the dispatcher in ONE critical section is what makes
+        // "first" mean first: `executeSend`'s registration can no longer slip between them.
+        // `setPaused` itself is a call-out and runs after the lock is released.
+        val paused = registryLock.withLock {
+            pauseIntents.add(transferId.value)
+            runningDispatchers[transferId.value]
+        }
+        paused?.setPaused(true)
         updateTransferState(transferId.value) {
             it.copy(state = FlashTransferState.Paused, speedBytesPerSec = 0L, etaSeconds = -1L)
         }
@@ -394,15 +432,17 @@ public class RealFlashTransferRepository(
             return FlashResult.Success(Unit)
         }
 
-        val dispatcher = runningDispatchers[transferId.value]
+        val dispatcher = registryLock.withLock { runningDispatchers[transferId.value] }
         // isActive, not mere presence: executeSend's finally only retires its OWN dispatcher/job
         // pair, so a send that died before registering a dispatcher leaves a completed Job behind.
         // Treating that as a live sender turns Retry into setPaused(false) on nothing — a no-op.
         val liveSender = transfer.direction == FlashTransferDirection.Sending &&
             dispatcher != null &&
-            runningJobs[transferId.value]?.isActive == true
+            registryLock.withLock { runningJobs[transferId.value] }?.isActive == true
+        // `isPaused` is a plain @Volatile read on the dispatcher, but it is still a call-out and
+        // stays outside [registryLock]; only the intent probe is guarded.
         val wirePaused = liveSender &&
-            (dispatcher!!.isPaused || pauseIntents.contains(transferId.value))
+            (dispatcher!!.isPaused || registryLock.withLock { transferId.value in pauseIntents })
 
         // A live dispatcher that is actually paused MUST be resumable regardless of the tracked
         // state: bailing out on a state mismatch left the wire paused with no way back.
@@ -415,7 +455,7 @@ public class RealFlashTransferRepository(
 
         // Clear the pending-pause intent first so a dispatcher registering concurrently (or a
         // relaunch below) does not start paused again.
-        pauseIntents.remove(transferId.value)
+        registryLock.withLock { pauseIntents.remove(transferId.value) }
 
         if (transfer.direction == FlashTransferDirection.Receiving) {
             // Resume draining the inbound channel; buffered chunks flow, ACKs resume,
@@ -462,7 +502,7 @@ public class RealFlashTransferRepository(
     private fun relaunchSend(transfer: FlashTransfer, notifyPeer: Boolean) {
         val transferId = transfer.id.value
         // Clear the pending-pause intent first so the fresh dispatcher does not register paused.
-        pauseIntents.remove(transferId)
+        registryLock.withLock { pauseIntents.remove(transferId) }
         updateTransferState(transferId) {
             it.copy(state = FlashTransferState.Queued, errorMessage = null)
         }
@@ -477,7 +517,7 @@ public class RealFlashTransferRepository(
                 transferId = transferId,
                 // Stable wire identity: the receiver's session is keyed on (transferId, fileId);
                 // a fresh fileId here would be rejected as SESSION_CONFLICT.
-                fileId = transfer.wireFileId ?: UUID.randomUUID().toString(),
+                fileId = transfer.wireFileId ?: UuidIdGenerator.newId(),
                 // Resume MUST re-read the original source, not the display name.
                 fileUri = transfer.sourceUri ?: transfer.fileName,
                 displayName = transfer.fileName,
@@ -486,16 +526,16 @@ public class RealFlashTransferRepository(
                 peerDeviceId = transfer.peerDeviceId,
             )
         }
-        runningJobs[transferId] = job
+        registryLock.withLock { runningJobs[transferId] = job }
     }
 
     override suspend fun cancelTransfer(transferId: FlashTransferId): FlashResult<Unit> {
         val transfer = _activeTransfers.value.find { it.id == transferId }
-        val job = runningJobs.remove(transferId.value)
+        val job = registryLock.withLock { runningJobs.remove(transferId.value) }
         // Drop the pause intent BEFORE unpausing: a dispatcher registering concurrently must not
         // re-enter the paused state and swallow the cancellation.
-        pauseIntents.remove(transferId.value)
-        val dispatcher = runningDispatchers.remove(transferId.value)
+        registryLock.withLock { pauseIntents.remove(transferId.value) }
+        val dispatcher = registryLock.withLock { runningDispatchers.remove(transferId.value) }
         dispatcher?.setPaused(false) // unpause so cancellation lands at the next suspension point
         job?.cancel()
 
@@ -526,8 +566,11 @@ public class RealFlashTransferRepository(
                 FlashTransferDirection.Sending -> {
                     // Recorded as an intent too: the peer can pause us before our dispatcher is
                     // registered (it sees FILE_START from the first opened channel).
-                    pauseIntents.add(transferId)
-                    runningDispatchers[transferId]?.setPaused(true)
+                    val paused = registryLock.withLock {
+                        pauseIntents.add(transferId)
+                        runningDispatchers[transferId]
+                    }
+                    paused?.setPaused(true)
                     updateTransferState(transferId) {
                         it.copy(
                             state = FlashTransferState.Paused,
@@ -553,16 +596,16 @@ public class RealFlashTransferRepository(
             }
             ACTION_RESUME -> when (transfer.direction) {
                 FlashTransferDirection.Sending -> {
-                    pauseIntents.remove(transferId)
+                    registryLock.withLock { pauseIntents.remove(transferId) }
                     // `isActive`, not mere presence: a send that died before registering a
                     // dispatcher leaves a completed Job behind (executeSend's finally only retires
                     // its own registration pair), and a stale entry must not block the relaunch.
-                    if (runningJobs[transferId]?.isActive == true) {
+                    if (registryLock.withLock { runningJobs[transferId] }?.isActive == true) {
                         // Live worker — streaming, or parked on the #5 offer gate waiting for this
                         // very RESUME (the receiver's accept). Unpausing is all that is needed, and
                         // the null-safe call covers the accept arriving before the dispatcher has
                         // registered: the intent drop above is what un-parks it in that window.
-                        runningDispatchers[transferId]?.setPaused(false)
+                        registryLock.withLock { runningDispatchers[transferId] }?.setPaused(false)
                         updateTransferState(transferId) {
                             it.copy(state = FlashTransferState.Transferring, errorMessage = null)
                         }
@@ -587,11 +630,11 @@ public class RealFlashTransferRepository(
             }
             ACTION_CANCEL -> when (transfer.direction) {
                 FlashTransferDirection.Sending -> {
-                    pauseIntents.remove(transferId)
+                    registryLock.withLock { pauseIntents.remove(transferId) }
                     // Unpause first (as local cancelTransfer does): a paused worker parks in a
                     // poll loop, and leaving the flag set risks re-parking before teardown.
-                    runningDispatchers.remove(transferId)?.setPaused(false)
-                    runningJobs.remove(transferId)?.cancel()
+                    registryLock.withLock { runningDispatchers.remove(transferId) }?.setPaused(false)
+                    registryLock.withLock { runningJobs.remove(transferId) }?.cancel()
                     updateTransferState(transferId) {
                         it.copy(
                             state = FlashTransferState.Cancelled,
@@ -618,8 +661,14 @@ public class RealFlashTransferRepository(
     }
 
     override fun onInboundFrame(bytes: ByteArray): Boolean {
+        // Snapshot under the lock, fan out after releasing it. `MultiStreamDispatcher.onInboundFrame`
+        // takes the dispatcher's own locks and can reach a host callback, so holding [registryLock]
+        // across the loop would nest this lock underneath every dispatcher's — the one ordering
+        // this class never establishes anywhere else. A one-shot copy is also the closest match to
+        // the weakly-consistent `ConcurrentHashMap.values` iteration it replaces.
+        val dispatchers = registryLock.withLock { runningDispatchers.values.toList() }
         var handled = false
-        runningDispatchers.values.forEach { dispatcher ->
+        dispatchers.forEach { dispatcher ->
             if (dispatcher.onInboundFrame(0, bytes)) {
                 handled = true
             }
@@ -635,21 +684,36 @@ public class RealFlashTransferRepository(
      * the receive pipeline can seed a resumed FILE_START's bit-vector synchronously (no blocking
      * DAO read under its lock). Mirrors the send-side persistence into the same `transfer_chunks`
      * table; ids are role-scoped so send/receive rows never collide on one device.
+     *
+     * Guarded by [receiverDoneLock] since 13B-3d; it was a `ConcurrentHashMap` of
+     * `java.util.Collections.newSetFromMap(ConcurrentHashMap())` sets — a pin no import line
+     * revealed, because the outer-map import covered the inner one and `Collections` was fully
+     * qualified at both call sites. Its own lock rather than [registryLock]: the inbound-chunk path
+     * must not queue behind the send-side registry, and the two are never touched together, so the
+     * two locks are never nested in either order.
      */
-    private val receiverDone = ConcurrentHashMap<String, MutableSet<Int>>()
+    private val receiverDoneLock = PlatformLock()
+    private val receiverDone = mutableMapOf<String, MutableSet<Int>>()
 
     /** Warms [receiverDone] from persisted chunk rows. Call once during transport startup. */
     public suspend fun preloadReceiverProgress() {
+        // The suspending DAO read stays outside the lock — a non-inline `withLock` cannot contain a
+        // suspension point at all, which is exactly the discipline we want here.
         val rows = store?.allDoneChunks() ?: return
-        for (row in rows) {
-            receiverDone.getOrPut(row.transferId) { java.util.Collections.newSetFromMap(ConcurrentHashMap()) }
-                .add(row.chunkIndex)
+        receiverDoneLock.withLock {
+            for (row in rows) {
+                receiverDone.getOrPut(row.transferId) { mutableSetOf() }.add(row.chunkIndex)
+            }
         }
     }
 
     /** Synchronous resume seed for the receive pipeline; empty when nothing was persisted. */
     public fun receiverDoneIndexes(transferId: String): List<Int> =
-        receiverDone[transferId]?.sorted() ?: emptyList()
+        // `sorted()` copies, so the returned list is safe to hand out after the lock is released.
+        // It is also now a *consistent* snapshot: iterating a `newSetFromMap(ConcurrentHashMap())`
+        // is only weakly consistent, so a concurrent [onIncomingChunkConfirmed] could previously
+        // tear this seed. Strictly stronger, and a consequence of the conversion rather than a fix.
+        receiverDoneLock.withLock { receiverDone[transferId]?.sorted() ?: emptyList() }
 
     /**
      * Records receiver-confirmed chunks (#20): updates the in-memory set immediately (so a
@@ -658,10 +722,14 @@ public class RealFlashTransferRepository(
      */
     public fun onIncomingChunkConfirmed(transferId: String, indexes: List<Int>) {
         if (indexes.isEmpty()) return
-        val set = receiverDone.getOrPut(transferId) {
-            java.util.Collections.newSetFromMap(ConcurrentHashMap())
+        // `getOrPut` and the freshness filter are ONE critical section. `getOrPut` is Kotlin's
+        // read-then-put extension, not `computeIfAbsent`, so even on a `ConcurrentHashMap` two
+        // first-touches for the same transferId could each build a set and discard one — dropping
+        // the indexes it had absorbed from the resume seed until a later call re-added them.
+        val fresh = receiverDoneLock.withLock {
+            val set = receiverDone.getOrPut(transferId) { mutableSetOf() }
+            indexes.filter { set.add(it) }
         }
-        val fresh = indexes.filter { set.add(it) }
         if (fresh.isEmpty()) return
         val activeStore = store ?: return
         repositoryScope.launch(workerDispatcher) {

@@ -1,6 +1,6 @@
 package com.transfer.flash.core.transfer.multistream
 
-import java.util.concurrent.atomic.AtomicBoolean
+import com.transfer.flash.core.transfer.concurrent.PlatformLock
 
 /**
  * Pure, single-threaded completion state machine for multi-stream transfers (ERROR-013 fix).
@@ -31,7 +31,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  *   on the FIRST resolution that needs a coordination frame.
  * - Resolution is absorbing; every event on a resolved machine returns [Outcome.None].
  *
- * Thread-safety: internally synchronized (like [MultiStreamReceiver]); cheap critical sections
+ * Thread-safety: internally guarded by a [PlatformLock] (13B-3d — the multiplatform stand-in for
+ * `synchronized`, since `@Synchronized` has no `commonMain` equivalent); cheap critical sections
  * only, so callers may hold it across their own bookkeeping via returned outcomes.
  *
  * Determinism: time enters ONLY through explicit [nowMs] reads compared against injected
@@ -66,23 +67,29 @@ internal class TransferCompletionStateMachine(
         data class ResolvedFailed(val reason: String) : Outcome
     }
 
-    private val lock = Any()
+    private val lock = PlatformLock()
     private var phase: Phase = Phase.COLLECTING
     private var confirmedCount: Int = 0
     private var receiverVerified: Boolean? = null
     private var coverageAtMs: Long? = null
     private var failedReason: String? = null
-    private val emittedOnce = AtomicBoolean(false)
 
-    val currentPhase: Phase get() = synchronized(lock) { phase }
-    val confirmedCountSnapshot: Int get() = synchronized(lock) { confirmedCount }
+    /**
+     * Guarded by [lock] — every path that reads or writes it runs inside [lock], so a plain flag is
+     * exactly as strong as the `AtomicBoolean` CAS it replaced in 13B-3d (see
+     * [resolveCompletedLocked]).
+     */
+    private var emittedOnce = false
+
+    val currentPhase: Phase get() = lock.withLock { phase }
+    val confirmedCountSnapshot: Int get() = lock.withLock { confirmedCount }
 
     /**
      * Call after marking [newTotal] chunks confirmed locally (ACK ingestion or reconcile).
      * Triggers coverage transition when [newTotal] reaches [totalChunks].
      */
-    fun onConfirmedCount(newTotal: Int): Outcome = synchronized(lock) {
-        if (phase == Phase.RESOLVED) return Outcome.None
+    fun onConfirmedCount(newTotal: Int): Outcome = lock.withLock {
+        if (phase == Phase.RESOLVED) return@withLock Outcome.None
         require(newTotal in 0..totalChunks) { "confirmed count out of range: $newTotal" }
         confirmedCount = maxOf(confirmedCount, newTotal)
         if (confirmedCount >= totalChunks && phase == Phase.COLLECTING) enterCoverageLocked()
@@ -90,29 +97,30 @@ internal class TransferCompletionStateMachine(
     }
 
     /** Receiver COMPLETE frame ingested: authoritative verification; upgrades late arrivals. */
-    fun onReceiverComplete(verified: Boolean): Outcome = synchronized(lock) {
-        if (phase == Phase.RESOLVED) return upgradeLateCompleteLocked(verified)
+    fun onReceiverComplete(verified: Boolean): Outcome = lock.withLock {
+        if (phase == Phase.RESOLVED) return@withLock upgradeLateCompleteLocked(verified)
         receiverVerified = verified
         resolveCompletedLocked(upgradedFromUnknown = false)
     }
 
     /** Watcher poll: resolves after the grace window expires in AWAITING_RECEIVER_COMPLETE. */
-    fun tryGraceExpire(): Outcome = synchronized(lock) {
-        if (phase != Phase.AWAITING_RECEIVER_COMPLETE) return Outcome.None
-        val elapsed = nowMs() - (coverageAtMs ?: return Outcome.None)
-        if (elapsed < graceMs) return Outcome.None
+    fun tryGraceExpire(): Outcome = lock.withLock {
+        if (phase != Phase.AWAITING_RECEIVER_COMPLETE) return@withLock Outcome.None
+        val elapsed = nowMs() - (coverageAtMs ?: return@withLock Outcome.None)
+        if (elapsed < graceMs) return@withLock Outcome.None
         resolveCompletedLocked(upgradedFromUnknown = true)
     }
 
     /** Every channel died while coverage is incomplete: hard failure. */
-    fun onAllChannelsDead(reason: String): Outcome = synchronized(lock) {
-        if (phase == Phase.RESOLVED) return Outcome.None
-        if (confirmedCount >= totalChunks) return Outcome.None // coverage wins over death race
+    fun onAllChannelsDead(reason: String): Outcome = lock.withLock {
+        if (phase == Phase.RESOLVED) return@withLock Outcome.None
+        // coverage wins over death race
+        if (confirmedCount >= totalChunks) return@withLock Outcome.None
         phase = Phase.RESOLVED
         Outcome.ResolvedFailed(reason)
     }
 
-    fun snapshotVerified(): Boolean? = synchronized(lock) { receiverVerified }
+    fun snapshotVerified(): Boolean? = lock.withLock { receiverVerified }
 
     // ---- internals ------------------------------------------------------------------------------
 
@@ -130,8 +138,12 @@ internal class TransferCompletionStateMachine(
         val verified = verifiedOverride ?: receiverVerified
         if (!wasResolved || upgradedFromUnknown) {
             // First resolution OR a legitimate late upgrade emits/refreshes the coordination
-            // frame exactly once (CAS guards against duplicate emissions across upgrades).
-            if (emittedOnce.compareAndSet(false, true)) {
+            // frame exactly once. Every caller of this function already holds [lock]
+            // (onConfirmedCount → enterCoverageLocked, onReceiverComplete, tryGraceExpire), so
+            // the plain flag is exactly as strong as the AtomicBoolean CAS it replaced: the
+            // read-modify-write below cannot interleave.
+            if (!emittedOnce) {
+                emittedOnce = true
                 onEmitCompleteFrame?.invoke(verified ?: true)
             }
         }

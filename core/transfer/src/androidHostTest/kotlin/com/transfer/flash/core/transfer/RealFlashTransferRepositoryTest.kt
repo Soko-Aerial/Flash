@@ -434,4 +434,124 @@ class RealFlashTransferRepositoryTest {
         assertTrue("cannot decline an accepted offer", repo.declineIncoming(FlashTransferId("tx-2x")) is FlashResult.Failure)
         Unit
     }
+
+    // ---- #20 receiver done-set (added by Phase 13B-3d) --------------------------------------
+    //
+    // `preloadReceiverProgress` / `onIncomingChunkConfirmed` / `receiverDoneIndexes` had NO test
+    // before this sub-step, and 13B-3d converts the state they share from a `ConcurrentHashMap` of
+    // `Collections.newSetFromMap(ConcurrentHashMap())` sets to plain collections behind a
+    // `PlatformLock`. Converting lock-free state to locked state with nothing exercising it would
+    // have been the worst of both worlds, so the coverage lands with the conversion.
+
+    /** Records what the repository persists and replays a seeded `allDoneChunks()`. */
+    private class RecordingStore(
+        private val seed: List<TransferStore.ChunkRef> = emptyList(),
+    ) : TransferStore {
+        val marked = java.util.concurrent.CopyOnWriteArrayList<Pair<String, List<Int>>>()
+        override suspend fun insertTransfer(transferId: String, totalBytes: Long, status: String) = Unit
+        override suspend fun setBytesDone(transferId: String, bytesDone: Long) = Unit
+        override suspend fun setStatus(transferId: String, status: String) = Unit
+        override suspend fun doneChunks(transferId: String): List<Int> = emptyList()
+        override suspend fun markChunksDone(transferId: String, indexes: List<Int>) {
+            marked.add(transferId to indexes)
+        }
+        override suspend fun allDoneChunks(): List<TransferStore.ChunkRef> = seed
+    }
+
+    private fun receiveRepo(store: TransferStore?): RealFlashTransferRepository =
+        RealFlashTransferRepository(
+            chunker = Chunker(),
+            streamChannelFactory = StreamChannelFactory { channelId, _ ->
+                object : StreamChannel {
+                    override val id: Int = channelId
+                    override suspend fun sendFrame(frameBytes: ByteArray): Boolean = true
+                }
+            },
+            fileSourceOpener = { Buffer().write(ByteArray(0)) },
+            store = store,
+            repositoryScope = newScope(),
+            workerDispatcher = testDispatcher,
+            defaultStreams = 1,
+        )
+
+    @Test
+    fun `preloadReceiverProgress warms the done-set per transfer and seeds it sorted`() = runBlocking {
+        val store = RecordingStore(
+            seed = listOf(
+                TransferStore.ChunkRef("rx-a", 7),
+                TransferStore.ChunkRef("rx-b", 1),
+                TransferStore.ChunkRef("rx-a", 2),
+                TransferStore.ChunkRef("rx-a", 7), // duplicate row: the set absorbs it
+                TransferStore.ChunkRef("rx-b", 0),
+            ),
+        )
+        val repo = receiveRepo(store)
+        assertEquals("nothing is seeded before the warm-up", emptyList<Int>(), repo.receiverDoneIndexes("rx-a"))
+
+        repo.preloadReceiverProgress()
+
+        // Ids are role-scoped, so rows must not leak between transfers, and the seed the receive
+        // pipeline consumes has to be ascending regardless of row order.
+        assertEquals(listOf(2, 7), repo.receiverDoneIndexes("rx-a"))
+        assertEquals(listOf(0, 1), repo.receiverDoneIndexes("rx-b"))
+        assertEquals("an unknown transfer seeds empty, never null", emptyList<Int>(), repo.receiverDoneIndexes("rx-ghost"))
+        assertTrue("warming reads, it must not write back", store.marked.isEmpty())
+    }
+
+    @Test
+    fun `preloadReceiverProgress without a store is a no-op`() = runBlocking {
+        val repo = receiveRepo(store = null)
+        repo.preloadReceiverProgress()
+        assertEquals(emptyList<Int>(), repo.receiverDoneIndexes("rx-none"))
+    }
+
+    @Test
+    fun `onIncomingChunkConfirmed persists only fresh indexes and ignores repeats`() = runBlocking {
+        val store = RecordingStore()
+        val repo = receiveRepo(store)
+
+        repo.onIncomingChunkConfirmed("rx-c", listOf(3, 1, 2))
+        awaitUntil(describe = { "first batch never persisted" }) { store.marked.size == 1 }
+        assertEquals(listOf(3, 1, 2), store.marked[0].second)
+        assertEquals(listOf(1, 2, 3), repo.receiverDoneIndexes("rx-c"))
+
+        // Overlapping batch: only 4 is new, so only 4 is persisted.
+        repo.onIncomingChunkConfirmed("rx-c", listOf(2, 3, 4))
+        awaitUntil(describe = { "second batch never persisted" }) { store.marked.size == 2 }
+        assertEquals(listOf(4), store.marked[1].second)
+        assertEquals(listOf(1, 2, 3, 4), repo.receiverDoneIndexes("rx-c"))
+
+        // Fully redundant batch: no DB round-trip at all.
+        repo.onIncomingChunkConfirmed("rx-c", listOf(1, 4))
+        repo.onIncomingChunkConfirmed("rx-c", emptyList())
+        Thread.sleep(200)
+        assertEquals("a redundant batch must not reach the store", 2, store.marked.size)
+    }
+
+    @Test
+    fun `concurrent onIncomingChunkConfirmed claims every index exactly once`() {
+        val store = RecordingStore()
+        val repo = receiveRepo(store)
+        val batch = (0 until 500).toList()
+
+        // Eight callers confirm the SAME 500 indexes at once, so they also race on the very first
+        // `getOrPut("rx-race")`. The invariant: an index is "fresh" for exactly one caller, so the
+        // union of everything persisted is the batch with no duplicates. Before 13B-3d the inner
+        // set's own `add` was the atomic that guaranteed this; now it is `receiverDoneLock`.
+        runBlocking(testDispatcher) {
+            repeat(8) { launch { repo.onIncomingChunkConfirmed("rx-race", batch) } }
+        }
+
+        assertEquals("the seed must hold every index once", batch, repo.receiverDoneIndexes("rx-race"))
+        awaitUntil(describe = { "persisted ${store.marked.sumOf { it.second.size }} of 500" }) {
+            store.marked.sumOf { it.second.size } == batch.size
+        }
+        val persisted = store.marked.flatMap { it.second }
+        assertEquals(
+            "no index may be persisted twice: ${persisted.groupBy { it }.filterValues { it.size > 1 }.keys}",
+            batch.size,
+            persisted.distinct().size,
+        )
+        assertTrue("every batch reached the right transfer", store.marked.all { it.first == "rx-race" })
+    }
 }
