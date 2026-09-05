@@ -1,10 +1,8 @@
 package com.transfer.flash.core.transfer.policy
 
-import java.io.Closeable
 import java.io.File
 import java.io.OutputStream
-import java.io.RandomAccessFile
-import kotlin.concurrent.Volatile
+import okio.Path.Companion.toOkioPath
 
 /**
  * Storage destination type where a received file will land (C5.9).
@@ -66,68 +64,15 @@ internal interface DestinationPolicy {
 }
 
 /**
- * A seekable write handle that can write chunks at arbitrary byte offsets.
- */
-public interface RandomAccessSinkHandle : Closeable {
-    /**
-     * Writes [data] at the specified [byteOffset].
-     */
-    public fun writeAt(byteOffset: Long, data: ByteArray)
-
-    /**
-     * Flushes buffered writes to underlying storage.
-     */
-    public fun flush()
-
-    /**
-     * Returns true if the sink handle is valid and ready for writes.
-     */
-    public val isOpen: Boolean
-}
-
-/**
- * JVM / standard filesystem implementation of [RandomAccessSinkHandle] using [RandomAccessFile].
+ * Android-side convenience over [OkioRandomAccessSinkHandle], kept for the `java.io.File`-shaped
+ * constructor its two external consumers already call — `core/engine/.../Flash.kt:198` and
+ * `app/.../debug/DiscoveryEngineHolder.kt:362`, both building one over a `File`. Phase 13B-2's
+ * brief was explicit that those call sites must need no edit, so the signature
+ * `(File, Long)` and the supertype `RandomAccessSinkHandle` are both unchanged; only the
+ * implementation moved, and interface delegation is used rather than inheritance so the
+ * multiplatform class stays final.
  */
 public class FileRandomAccessSinkHandle(
-    private val file: File,
-    private val expectedTotalBytes: Long,
-) : RandomAccessSinkHandle {
-
-    private val raf: RandomAccessFile = RandomAccessFile(file, "rw").apply {
-        // Pre-allocate file length if needed to avoid fragmentation on sparse writes
-        if (length() < expectedTotalBytes) {
-            setLength(expectedTotalBytes)
-        }
-    }
-
-    @Volatile
-    private var _isOpen = true
-
-    override val isOpen: Boolean
-        get() = _isOpen
-
-    @Synchronized
-    override fun writeAt(byteOffset: Long, data: ByteArray) {
-        check(_isOpen) { "Sink handle for ${file.name} is already closed" }
-        raf.seek(byteOffset)
-        raf.write(data)
-    }
-
-    @Synchronized
-    override fun flush() {
-        if (_isOpen) {
-            raf.fd.sync()
-        }
-    }
-
-    @Synchronized
-    override fun close() {
-        if (_isOpen) {
-            _isOpen = false
-            try {
-                raf.fd.sync()
-            } catch (_: Exception) {}
-            raf.close()
-        }
-    }
-}
+    file: File,
+    expectedTotalBytes: Long,
+) : RandomAccessSinkHandle by OkioRandomAccessSinkHandle(file.toOkioPath(), expectedTotalBytes)

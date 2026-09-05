@@ -1,6 +1,7 @@
 package com.transfer.flash.core.transfer.chunked
 
 import com.transfer.flash.core.transfer.chunked.ReceiveEvent
+import okio.Buffer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -26,7 +27,7 @@ class ReceivePipelineTest {
         }
     }
 
-    private fun source() = ChunkSource { ByteArray(totalBytes.toInt()) { (it % 7).toByte() }.inputStream() }
+    private fun source() = ChunkSource { Buffer().write(ByteArray(totalBytes.toInt()) { (it % 7).toByte() }) }
 
     private fun startFrame(): ChunkFrame.FileStart =
         Chunker().fileStart(meta, Chunker().plan(meta, chunkSize), fileHash)

@@ -56,6 +56,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import okio.source
 
 /**
  * Consumer-facing knobs for [Flash.create]. Every field has a sensible default, so
@@ -222,7 +223,11 @@ private class Wiring(
 
         val transferImpl = RealFlashTransferRepository(
             streamChannelFactory = { channelId, peerDeviceId -> openStreamChannel(channelId, peerDeviceId, networkImpl, localId) },
-            fileSourceOpener = { uriString -> openSource(uriString) },
+            // Phase 13B-2: FileSourceOpener.open() now returns okio.Source, so the ContentResolver
+            // stream is bridged with okio's `InputStream.source()`. openSource() itself is
+            // unchanged — it stays an InputStream producer because that is what ContentResolver
+            // hands back.
+            fileSourceOpener = { uriString -> openSource(uriString).source() },
             store = if (config.enableResume) RoomTransferStore(db.transferDao(), db.transferChunkDao()) else null,
             repositoryScope = scope,
             requireReceiverAcceptance = true,

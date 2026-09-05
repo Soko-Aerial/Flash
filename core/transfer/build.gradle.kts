@@ -68,10 +68,13 @@ kotlin {
     // (FlashTransferRepository, the FlashTransfer model, the ADR-024 TransferStore port,
     // StreamChannel, the FLSH v2 control-frame format, and since 13B-1 the rate meter and the
     // transfer manifest) are Android-free.
-    // It still carries NO desktop transfer implementation: the chunking, hashing, resume,
-    // multi-stream dispatch and destination-policy machinery all stay in androidMain until D10 is
-    // answered (see docs/migration/PHASE-13B-desktop-fileio.md). jvmMain holds one file, the
-    // PlatformLock `actual`.
+    // 13B-2 (D10 = Option A) landed the first *file I/O* on this target: the four re-typed seams
+    // (ChunkSource, ChunkSink, FileSourceOpener, RandomAccessSinkHandle) plus a working
+    // OkioRandomAccessSinkHandle are all commonMain, so desktop can already open a destination
+    // file and write chunks at arbitrary offsets. What is still androidMain is the machinery
+    // *around* them — chunking/hashing (ChunkFrame, Sha256), resume, multi-stream dispatch and
+    // DestinationPolicy — which is 13B-3's scope. jvmMain still holds exactly one file, the
+    // PlatformLock `actual`; the okio implementation did not need a second one.
     jvm {
         compilerOptions {
             jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11)
@@ -85,6 +88,15 @@ kotlin {
             // coroutines must be `api` (implementation would keep those return types off a
             // consumer's classpath).
             api(libs.kotlinx.coroutines.core)
+            // Phase 13B-2 (D10 = Option A). `api`, not `implementation`: okio.Source is the return
+            // type of ChunkSource.open() and FileSourceOpener.open(), and okio.Path/FileSystem are
+            // OkioRandomAccessSinkHandle's constructor parameters — all public under explicitApi()
+            // (R7), so a consumer cannot compile against this module without okio on its own
+            // classpath. Resolution-neutral: `:app` already resolves okio 3.4.0 transitively via
+            // androidx.datastore, and this declares that same version (R10). Chosen over
+            // kotlinx-io because only okio has FileHandle/positional writes, which
+            // RandomAccessSinkHandle.writeAt() requires — see the catalog comment.
+            api(libs.okio)
         }
         androidMain.dependencies {
             // Phase 02 (migration): `:core:security` and `:core:discovery` were removed here when

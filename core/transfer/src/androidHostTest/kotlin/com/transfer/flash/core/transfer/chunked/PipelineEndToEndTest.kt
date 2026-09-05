@@ -1,6 +1,7 @@
 package com.transfer.flash.core.transfer.chunked
 
 import kotlinx.coroutines.runBlocking
+import okio.Buffer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -21,7 +22,7 @@ class PipelineEndToEndTest {
 
     private val payload = ByteArray(totalBytes.toInt()) { ((it * 31) + (it ushr 5)).toByte() }
 
-    private fun source() = ChunkSource { payload.inputStream() }
+    private fun source() = ChunkSource { Buffer().write(payload) }
 
     private fun meta(transferId: String = "e2e") =
         FileMeta(transferId, "file-1", "holiday photos.zip", totalBytes)

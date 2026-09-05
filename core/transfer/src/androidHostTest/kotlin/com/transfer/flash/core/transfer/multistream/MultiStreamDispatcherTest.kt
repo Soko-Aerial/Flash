@@ -15,6 +15,7 @@ import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import okio.Buffer
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -217,7 +218,7 @@ class MultiStreamDispatcherTest {
         fun build(): MultiStreamDispatcher = MultiStreamDispatcher(
             chunker = Chunker(),
             meta = meta,
-            source = ChunkSource { payload.inputStream() },
+            source = ChunkSource { Buffer().write(payload) },
             factory = StreamChannelFactory { id, _ -> channels.firstOrNull { it.id == id } },
             streamCount = streamCount,
             requestedChunkSize = chunkSize,
@@ -350,7 +351,7 @@ class MultiStreamDispatcherTest {
         val dispatcher = MultiStreamDispatcher(
             chunker = Chunker(),
             meta = meta,
-            source = ChunkSource { payload.inputStream() },
+            source = ChunkSource { Buffer().write(payload) },
             factory = StreamChannelFactory { _, _ -> null }, // every open refuses
             streamCount = 3,
             requestedChunkSize = chunkSize,
@@ -381,7 +382,7 @@ class MultiStreamDispatcherTest {
         dispatcher = MultiStreamDispatcher(
             chunker = Chunker(),
             meta = meta,
-            source = ChunkSource { payload.inputStream() },
+            source = ChunkSource { Buffer().write(payload) },
             factory = StreamChannelFactory { id, _ -> channels.firstOrNull { it.id == id } },
             streamCount = 3,
             requestedChunkSize = chunkSize,
@@ -437,7 +438,7 @@ class MultiStreamDispatcherTest {
         val dispatcher = MultiStreamDispatcher(
             chunker = Chunker(),
             meta = meta,
-            source = ChunkSource { payload.inputStream() },
+            source = ChunkSource { Buffer().write(payload) },
             factory = StreamChannelFactory { _, _ -> null },
             streamCount = 1,
             requestedChunkSize = chunkSize,
@@ -488,7 +489,7 @@ class MultiStreamDispatcherTest {
         val dispatcher = MultiStreamDispatcher(
             chunker = Chunker(),
             meta = meta,
-            source = ChunkSource { payload.inputStream() },
+            source = ChunkSource { Buffer().write(payload) },
             factory = StreamChannelFactory { id, _ -> dummyChannels.firstOrNull { it.id == id } },
             streamCount = 2,
             requestedChunkSize = chunkSize,
@@ -591,7 +592,7 @@ class MultiStreamDispatcherTest {
         val dispatcher = MultiStreamDispatcher(
             chunker = Chunker(),
             meta = meta,
-            source = ChunkSource { payload.inputStream() },
+            source = ChunkSource { Buffer().write(payload) },
             factory = StreamChannelFactory { _, _ -> silentChannel },
             streamCount = 1,
             requestedChunkSize = chunkSize,

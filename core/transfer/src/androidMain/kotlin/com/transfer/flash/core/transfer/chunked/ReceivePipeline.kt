@@ -341,11 +341,10 @@ public class ReceivePipeline(
     }
 }
 
-/** Destination abstraction: persists one verified chunk at [index]. */
-public fun interface ChunkSink {
-
-    public fun write(index: Int, data: ByteArray)
-}
+// [ChunkSink] — the destination abstraction this pipeline writes verified chunks through — moved
+// to `commonMain/chunked/ChunkSink.kt` in Phase 13B-2. Its signature needed no re-typing; only
+// the file it lived in was Android-bound. The pipeline itself stays here (`ChunkFrame`, `Sha256`,
+// `ResumeBitVector`, `sortedSetOf`: all 13B-3 scope).
 
 /**
  * Optional whole-file digest seam for final re-checks (e.g. hashing the assembled destination

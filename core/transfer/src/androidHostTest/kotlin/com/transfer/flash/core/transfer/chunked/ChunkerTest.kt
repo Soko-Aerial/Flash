@@ -1,5 +1,6 @@
 package com.transfer.flash.core.transfer.chunked
 
+import okio.Buffer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
@@ -145,7 +146,7 @@ class ChunkerTest {
 
     private fun meta(totalBytes: Long) = FileMeta("t", "f", "file.bin", totalBytes)
 
-    private fun sourceOf(bytes: ByteArray) = ChunkSource { bytes.inputStream() }
+    private fun sourceOf(bytes: ByteArray) = ChunkSource { Buffer().write(bytes) }
 
     private fun collectFrames(data: ByteArray, chunkSize: Int): List<ChunkFrame.Chunk> {
         val meta = meta(data.size.toLong())

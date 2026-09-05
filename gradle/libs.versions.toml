@@ -44,6 +44,38 @@ jmdns = "3.5.12"
 # exact CMP version against Kotlin 2.2.10") and Phase 06 never performed.
 jetbrainsCompose = "1.9.3"
 
+# Phase 13B-2 (enacts D10 = Option A). The multiplatform I/O library that replaces the four
+# `java.io.InputStream` / `RandomAccessFile` seams in `:core:transfer`, chosen over `kotlinx-io`
+# on verified evidence rather than taste. Both candidates were inspected in the Gradle cache:
+#
+#   kotlinx-io-core 0.8.2  -> `kotlinx.io.files.FileSystem` offers only SEQUENTIAL access:
+#                             `source(Path)` and `sink(Path, append)`. There is no `FileHandle`,
+#                             no positional read/write, nothing equivalent to `RandomAccessFile`.
+#                             `RandomAccessSinkHandle.writeAt(byteOffset, data)` — the seam this
+#                             phase exists to re-type — cannot be expressed on it at all.
+#   okio 3.x               -> `okio.FileHandle` has `read(Long, ByteArray, Int, Int)`,
+#                             `write(Long, ByteArray, Int, Int)`, `resize(Long)`, `size()`,
+#                             `flush()`. That is exactly the seam's shape.
+#
+# It is also pre-1.0 (0.8.x) versus stable 3.x, and these types enter a PUBLISHED ABI
+# (JitPack; Phase 24 still pending), so the pre-1.0 candidate loses twice.
+#
+# 3.4.0, not the newest 3.17.0, and deliberately so: `androidx.datastore-preferences:1.1.7`
+# ALREADY drags `com.squareup.okio:okio:3.4.0` onto `:app`'s runtime classpath through
+# `datastore-core-okio-jvm` (verified with `:app:dependencyInsight --dependency okio`).
+# Declaring 3.4.0 is therefore resolution-NEUTRAL — no version anywhere moves, which is what
+# R10 requires of a phase that is not a version bump. Declaring 3.17.0 would have raised okio
+# for every consumer that also uses DataStore. okio guarantees binary compatibility across 3.x,
+# so a consumer already on a later 3.x still links against an ABI compiled here.
+#
+# Verified safe against the frozen toolchain (the trap Phase 17 hit with CMP):
+#   okio 3.4.0  -> requires kotlin-stdlib 1.8.0, far BELOW this repo's Kotlin 2.2.10, so the
+#                  stdlib is not bumped and a 2.2.10 compiler reads its metadata fine.
+#   okio 3.17.0 -> requires kotlin-stdlib 2.1.21 (also safe, but see the resolution note above).
+# Its Gradle metadata publishes `native` and `wasm` variants alongside `jvm`, so the
+# Kotlin/Native target CONVENTIONS.md R6.1 has recommended since Phase 07 is not foreclosed.
+okio = "3.4.0"
+
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
 androidx-core-splashscreen = { group = "androidx.core", name = "core-splashscreen", version.ref = "coreSplashscreen" }
@@ -90,6 +122,13 @@ webrtc-kmp = { group = "com.shepeliev", name = "webrtc-kmp", version = "0.125.11
 # maven-metadata.xml). `javax.jmdns:jmdns` also exists but is abandoned at 3.4.1.
 # Brings one transitive compile dependency: org.slf4j:slf4j-api:2.0.7.
 jmdns = { group = "org.jmdns", name = "jmdns", version.ref = "jmdns" }
+# Phase 13B-2 (D10 = A). The ROOT multiplatform module, never `okio-jvm`: Gradle's
+# variant-aware resolution hands the `jvm` variant to both the android and the jvm() target,
+# and would hand a klib to a future native target. `okio-jvm` would pin JVM-only and break
+# that. Declared `api` in `:core:transfer`'s commonMain because `okio.Source` and
+# `okio.FileHandle` appear in public signatures (ChunkSource, FileSourceOpener,
+# RandomAccessSinkHandle) — `implementation` would keep them off a consumer's classpath.
+okio = { group = "com.squareup.okio", name = "okio", version.ref = "okio" }
 
 [plugins]
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }

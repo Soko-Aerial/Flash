@@ -74,6 +74,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import okio.source
 
 /**
  * Process-wide engine holder for the debug Dev Console and background service.
@@ -466,7 +467,9 @@ object DiscoveryEngineHolder {
                 }
             },
             fileSourceOpener = { uriString ->
-                openSource(uriString, appContext)
+                // Phase 13B-2: FileSourceOpener.open() returns okio.Source; openSource() still
+                // yields the ContentResolver's InputStream, bridged here with `.source()`.
+                openSource(uriString, appContext).source()
             },
             store = RoomTransferStore(db.transferDao(), db.transferChunkDao()),
             // #5: park every outbound send after FILE_START until the receiver accepts (a RESUME).

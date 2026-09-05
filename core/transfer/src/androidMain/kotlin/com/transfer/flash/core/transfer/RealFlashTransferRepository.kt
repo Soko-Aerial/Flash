@@ -19,7 +19,6 @@ import com.transfer.flash.core.transfer.multistream.MultiStreamDispatcher
 import com.transfer.flash.core.transfer.multistream.MultiStreamResult
 import com.transfer.flash.core.transfer.multistream.StreamChannelFactory
 import com.transfer.flash.core.transfer.store.TransferStore
-import java.io.InputStream
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineDispatcher
@@ -34,12 +33,10 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-/**
- * Functional stream source provider returning an [InputStream] given a source URI / descriptor.
- */
-public fun interface FileSourceOpener {
-    public fun open(fileUri: String): InputStream
-}
+// [FileSourceOpener] — the URI → stream seam this repository is constructed with — moved to
+// `commonMain/FileSourceOpener.kt` in Phase 13B-2 and its `open()` now returns `okio.Source`.
+// Same package, so no import is needed here and no consumer's `fileSourceOpener = { … }` lambda
+// changes shape; the two out-of-module ones each gained a `.source()` bridge call.
 
 /**
  * Concrete implementation of [FlashTransferRepository] (C5.2).

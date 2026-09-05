@@ -10,7 +10,6 @@ import com.transfer.flash.core.transfer.model.FlashTransferId
 import com.transfer.flash.core.transfer.model.FlashTransferState
 import com.transfer.flash.core.transfer.multistream.StreamChannel
 import com.transfer.flash.core.transfer.multistream.StreamChannelFactory
-import java.io.ByteArrayInputStream
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -24,6 +23,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import okio.Buffer
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -102,7 +102,7 @@ class RealFlashTransferRepositoryTest {
         repo = RealFlashTransferRepository(
             chunker = Chunker(),
             streamChannelFactory = factory,
-            fileSourceOpener = { ByteArrayInputStream(payload) },
+            fileSourceOpener = { Buffer().write(payload) },
             workerDispatcher = testDispatcher,
             defaultStreams = 1,
         )
@@ -183,7 +183,7 @@ class RealFlashTransferRepositoryTest {
         repo = RealFlashTransferRepository(
             chunker = Chunker(),
             streamChannelFactory = factory,
-            fileSourceOpener = { ByteArrayInputStream(eightChunkPayload) },
+            fileSourceOpener = { Buffer().write(eightChunkPayload) },
             store = dao,
             repositoryScope = newScope(),
             workerDispatcher = testDispatcher,
@@ -249,7 +249,7 @@ class RealFlashTransferRepositoryTest {
         repo = RealFlashTransferRepository(
             chunker = Chunker(),
             streamChannelFactory = factory,
-            fileSourceOpener = { ByteArrayInputStream(eightChunkPayload) },
+            fileSourceOpener = { Buffer().write(eightChunkPayload) },
             repositoryScope = newScope(),
             workerDispatcher = testDispatcher,
             defaultStreams = 1,
@@ -301,7 +301,7 @@ class RealFlashTransferRepositoryTest {
         repo = RealFlashTransferRepository(
             chunker = Chunker(),
             streamChannelFactory = factory,
-            fileSourceOpener = { ByteArrayInputStream(eightChunkPayload) },
+            fileSourceOpener = { Buffer().write(eightChunkPayload) },
             store = dao,
             repositoryScope = newScope(),
             workerDispatcher = testDispatcher,
@@ -348,7 +348,7 @@ class RealFlashTransferRepositoryTest {
                 override suspend fun sendFrame(frameBytes: ByteArray): Boolean = true
             }
         },
-        fileSourceOpener = { ByteArrayInputStream(ByteArray(0)) },
+        fileSourceOpener = { Buffer().write(ByteArray(0)) },
         repositoryScope = newScope(),
         workerDispatcher = testDispatcher,
         defaultStreams = 1,

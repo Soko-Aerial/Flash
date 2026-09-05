@@ -2,20 +2,12 @@ package com.transfer.flash.core.transfer.chunked
 
 import java.io.Closeable
 import java.io.InputStream
+import okio.buffer
 
-/**
- * Splits an injected byte source into CHUNK frames with per-chunk SHA-256 plus a whole-file
- * SHA-256, single pass, constant memory — never a whole file in RAM (AGENTS.md §18). C5.4.
- */
-public fun interface ChunkSource {
-
-    /**
-     * Opens a fresh stream over the source bytes. MUST be callable multiple times: the send
-     * pipeline opens once for hashing and once for chunking (and again per resume attempt).
-     * Implementations over `ContentResolver`/SAF satisfy this naturally.
-     */
-    public fun open(): InputStream
-}
+// [ChunkSource] — the re-openable byte source this file chunks — moved to
+// `commonMain/chunked/ChunkSource.kt` in Phase 13B-2 and its `open()` now returns `okio.Source`.
+// The two call sites below bridge it back to the `java.io.InputStream` that [ChunkStream] still
+// reads, because [ChunkStream] depends on `ChunkFrame`/`Sha256` and cannot move until 13B-3.
 
 /** Identity + declared size of one outgoing file. */
 public data class FileMeta(
@@ -160,7 +152,7 @@ public class Chunker {
      * whole-file digest for `FILE_START`.
      */
     public fun hashOnly(source: ChunkSource): String {
-        source.open().use { stream ->
+        source.open().buffer().inputStream().use { stream ->
             val digest = IncrementalSha256()
             val buffer = ByteArray(DEFAULT_CHUNK_SIZE_BYTES)
             while (true) {
@@ -189,7 +181,7 @@ public class Chunker {
         plan: ChunkPlan,
         expectFileSha256Hex: String? = null,
     ): ChunkStream =
-        ChunkStream(source.open(), meta, plan, expectFileSha256Hex)
+        ChunkStream(source.open().buffer().inputStream(), meta, plan, expectFileSha256Hex)
 }
 
 /**

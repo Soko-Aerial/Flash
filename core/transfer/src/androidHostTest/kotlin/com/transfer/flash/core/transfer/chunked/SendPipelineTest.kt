@@ -1,6 +1,7 @@
 package com.transfer.flash.core.transfer.chunked
 
 import kotlinx.coroutines.runBlocking
+import okio.Buffer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -15,7 +16,7 @@ class SendPipelineTest {
     private val payload = ByteArray(totalBytes.toInt()) { (it % 13).toByte() }
     private val fileHash = Sha256.digestHex(payload)
 
-    private fun source() = ChunkSource { payload.inputStream() }
+    private fun source() = ChunkSource { Buffer().write(payload) }
 
     @Test
     fun `abort before FILE_START surfaces zero progress`() = runBlocking {
@@ -115,7 +116,7 @@ class SendPipelineTest {
         var opens = 0
         val countingSource = ChunkSource {
             opens++
-            payload.inputStream()
+            Buffer().write(payload)
         }
         val outbound = ArrayDeque<ByteArray>()
         val pipeline = SendPipeline(Chunker()) { outbound.addLast(it); true }
