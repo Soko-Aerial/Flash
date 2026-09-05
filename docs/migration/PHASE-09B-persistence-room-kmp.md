@@ -1,9 +1,12 @@
 # Phase 09B — `:core:persistence` re-platform onto Room KMP (D5 = C)
 
-> **Status: AUTHORED, NOT EXECUTED.** Written 2026-09-05 by the agent that reached Phase 09
-> and found `PHASE-09-persistence-kmp.md` unexecutable. No source file, build file, or version
-> catalog entry has been touched for Phase 09 or 09B. The working tree at authoring time was
-> clean at `55cdc9c`.
+> **Status: 09B-1 EXECUTED 2026-09-05** at `328c553` + `24435bd` + `8b5fa5a`; all 7 verification
+> gates pass. **09B-2 and 09B-3 remain BLOCKED** on the human decisions in *Decisions this phase
+> needs*. Read **Execution amendments (09B-1)** at the bottom of this file before trusting any
+> instruction above it — six statements in this document turned out to be wrong, one of them a
+> verification gate that cannot fail. Authored 2026-09-05 by the agent that reached Phase 09 and
+> found `PHASE-09-persistence-kmp.md` unexecutable; the working tree at authoring time was clean
+> at `55cdc9c`.
 >
 > **This file supersedes `PHASE-09-persistence-kmp.md`.** That document is a *file-move* plan
 > written for **D1 = A + D5 = A**. The repo is **D1 = B + D5 = C**. Its own D5 gate says:
@@ -552,4 +555,75 @@ catalog edit is repo-wide rather than module-scoped.
 - [bloomberg/selekt](https://github.com/bloomberg/selekt) · [s0d3s/SQLCipherMultiplatform](https://github.com/s0d3s/SQLCipherMultiplatform) · [skolson/KmpSqlencrypt](https://github.com/skolson/KmpSqlencrypt)
 - [Zetetic SQLCipher (commercial editions)](https://www.zetetic.net/sqlcipher/)
 - [KMP desktop Room + SQLiteConnection: stale Flow report](https://stackoverflow.com/questions/79885775/kmp-desktop-room-sqliteconnection)
+
+## Execution amendments (09B-1)
+
+Written by the agent that executed 09B-1 on 2026-09-05. Full evidence is in
+`logs/migration.md` under *Phase 09B-1*; this section exists so nobody re-executing or reviewing
+this document is misled by the six statements above that turned out to be wrong.
+
+**1. Verification 6 as specified cannot fail — it was replaced.** The gate is
+`git diff --stat -- core/persistence/schemas/`, expected empty. Room's processor writes to
+`room.internal.schemaOutput` **only when the schema it computes differs from
+`room.internal.schemaInput`**, so an unchanged working tree is also what "export never ran" looks
+like. `> Task :core:persistence:copyRoomSchemas NO-SOURCE` and an empty
+`build/intermediates/room/schemas/` are the plugin's **success** signal, not a misconfiguration — I
+lost four builds to that reading and removed the Room Gradle plugin before working it out.
+
+The gate was discharged with positive evidence instead: temporarily set
+`ksp { arg("room.schemaLocation", "$projectDir/build/schema-probe") }` (a plain
+`room.schemaLocation` takes precedence over the plugin's internal pair), run `kspKotlinJvm` and
+`kspAndroidMain` separately with `--rerun-tasks`, and `cmp` each result against the committed
+`3.json`. **Both byte-identical, 16324 bytes.** That is what discharges Obstacle B's R8 exception.
+Any future re-run of this gate must do the same; the `git diff` form is decoration.
+
+**2. The `@ConstructedBy` R8 exception is discharged**, quoted verbatim in the log entry as
+Obstacle B requires. One line plus one import on `FlashDatabase.kt`; `DATABASE_VERSION` still 3;
+no `@Entity`, `@Dao` or `FlashMigrations` file edited (they appear in `8b5fa5a` as pure renames).
+
+**3. The flagged open question is answered: KSP generates both `actual object`s.** No stub was
+hand-written and none should be. Both
+`build/generated/ksp/{android/androidMain,jvm/jvmMain}/kotlin/…/FlashDatabaseConstructor.kt` contain
+`actual override fun initialize(): FlashDatabase = …FlashDatabase_Impl()`. The `expect object` needs
+`@Suppress("NO_ACTUAL_FOR_EXPECT")` — the compiler diagnostic. `KotlinNoActualForExpect` is the IDE
+inspection id and does **not** silence a build.
+
+**4. Two aliases, not three.** `androidx-sqlite-core` and `androidx-sqlite-bundled`, plus the
+`androidx-room` plugin alias. The commit plan's third library alias counted a dependency for the
+Room Gradle plugin, which has no separate coordinate. No version changed (R10 held).
+
+**5. `":memory:"` is not needed and does not appear.** `Room.inMemoryDatabaseBuilder` passes
+`name = null`. The hard constraint is still satisfied — more strictly than written, since there is no
+path-shaped string in the module at all. **The load-bearing detail this document does not mention:**
+that builder's `factory` parameter defaults to a *reflective* `findAndInstantiateDatabaseImpl`, so a
+suite that omits `factory = FlashDatabaseConstructor::initialize` passes even if `@ConstructedBy`
+does nothing and no `actual` exists. Pass it explicitly or the phase's own subject goes untested.
+
+**6. Verification 3's predicted `androidx.sqlite.SQLiteDriver` hits do not exist.** Only generated
+`_Impl` code names driver types and that is not under `src/`. The grep returns 69 hits, all
+`androidx.room.*` imports, all from `core/persistence/src/commonMain`.
+
+**7. Verification 4's numbers were stale.** The predicted `897 → 906` used a Phase 08 baseline.
+Real baseline **1005 / 12 / 0 across 133 XMLs** (Phase 14) → **1018 / 12 / 0 across 135**. The `+9`
+reasoning was right; the document forgot to count the 4 new db tests. Its command also names only
+four modules — it must name `:core:network`, `:core:transfer`, `:core:messaging` and `:core:engine`
+as well, or four converted modules go unrun. Use CONVENTIONS.md R3's command, which now includes the
+two `:core:persistence` tasks. Delete the orphaned
+`core/persistence/build/test-results/testDebugUnitTest/` before tallying: it survives the plugin swap
+and double-counts 35 tests.
+
+**8. `jvmMain` was never created** for this module, so the "no `BundledSQLiteDriver` outside
+`jvmTest`" constraint has no `jvmMain` to check. The desktop target therefore **cannot persist
+anything yet** — correct under D5's charter, but it is a state, not a finished port. 09B-2 is what
+ends it.
+
+**9. `room-runtime` had to become `api`, not `implementation`.** With `FlashDatabase`, 11 `@Dao`
+interfaces and 11 `@Entity` classes all public, a consumer cannot touch this module's surface
+without `androidx.room` on its compile classpath. Verified by `:sample:consumer:compileDebugKotlin`
+and by `room-runtime-jvm` appearing at `compile` scope in the published `core-persistence-jvm` POM.
+
+**10. Stale comments left behind deliberately.** `:core:engine`'s and `:core:messaging`'s build
+files still say `:core:persistence` "is still `com.android.library`". R4 forbids editing another
+module's build file here and R1 forbids drive-by fixes; whichever phase next touches those files
+should correct them.
 

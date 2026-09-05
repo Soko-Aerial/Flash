@@ -28,7 +28,7 @@ self-contained and states its own preconditions.
 | 07 | [PHASE-07-security-kmp.md](PHASE-07-security-kmp.md) | 06 | medium |
 | 08 | [PHASE-08-discovery-kmp.md](PHASE-08-discovery-kmp.md) | 06 | medium |
 | 09 | ~~[PHASE-09-persistence-kmp.md](PHASE-09-persistence-kmp.md)~~ **SUPERSEDED** | — | — |
-| 09B | [PHASE-09B-persistence-room-kmp.md](PHASE-09B-persistence-room-kmp.md) | 06 + **D5 = C**; 09B-2 also needs the driver choice | high |
+| 09B | [PHASE-09B-persistence-room-kmp.md](PHASE-09B-persistence-room-kmp.md) | **09B-1 DONE (`328c553`, `24435bd`, `8b5fa5a`)**; 09B-2 blocked on D5 = C's driver choice, 09B-3 on the settings ABI option | 09B-1 done, 09B-2/3 high |
 | 10 | [PHASE-10-network-kmp.md](PHASE-10-network-kmp.md) | 07, 08 | high |
 | 11 | [PHASE-11-repositories-kmp.md](PHASE-11-repositories-kmp.md) | 07, 08, 09B-1, 10 | high |
 | 12 | [PHASE-12-engine-kmp.md](PHASE-12-engine-kmp.md) | 07,08,09B-1,10,11 | high |

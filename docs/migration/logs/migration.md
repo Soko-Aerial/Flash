@@ -5946,6 +5946,482 @@ first. One thing the executing agent of 09B-1 must not miss — Obstacle B requi
 `@ConstructedBy` line on `FlashDatabase.kt` as an explicit narrow R8 exception in the log entry, quoting
 the phase file, and aborting if the schema-JSON gate shows any drift.
 
+---
+
+## Phase 09B-1 — Room KMP re-platform of `:core:persistence`, db tier only
+
+- **Date:** 2026-09-05
+- **Agent/model:** Claude (Opus 5), Claude Code
+- **Commits:** `328c553` (catalog), `24435bd` (build file), `8b5fa5a` (moves + code), this entry (docs)
+- **Decisions relied on:** **D5 = Option C**, answered by the human 2026-08-31 — Room stays, and the
+  desktop gets an encrypted driver. 09B-1 is the half of that which needs no further input: the
+  re-platform. **D5's charter is what confines `BundledSQLiteDriver` to `jvmTest`**, because the
+  charter's one prohibition is "B without C" — a desktop build that persists Flash data unencrypted.
+  Choosing *which* encrypted desktop driver is a sub-decision the human still owns and it belongs to
+  09B-2, which this phase does not touch. **D10 stays `_pending_`** and nothing here anticipates it.
+- **Module count:** `:core:persistence` is the 8th module converted. Still `com.android.library`:
+  `:core:calling`, `:ui:chat`, `:ui:theme`, `:app`, `:sample:consumer`.
+
+### Change
+
+30 production files, split 26/4.
+
+| Destination | Files |
+|---|---|
+| `commonMain` | 11 `@Entity` classes, 11 `@Dao` interfaces, 2 DAO projection data classes (`ConversationPreview`, `ConversationUnread`), `FlashDatabase`, `RetentionPolicy` — **26** |
+| `commonMain`, new | `db/FlashDatabaseConstructor.kt` — the `expect object` seam |
+| `androidMain` | `FlashMigrations`, `FlashDatabaseOpener`, `FlashSettingsDataStore`, `DiscoveryModeSetting` — **4** |
+| `commonTest` | `RetentionPolicyTest` (moved from the Android-only tier; JUnit 4 asserts → `kotlin.test`) |
+| `androidHostTest` | `FlashDatabaseInvariantTest`, `DiscoveryModeSettingTest`, `FlashSettingsDataStoreTest` |
+| `jvmTest`, new | `FlashDatabaseJvmTest` — 4 cases |
+| `jvmMain` | **does not exist.** This phase needed no desktop-specific production code. |
+
+The 26 that moved import only `androidx.room.*`, `kotlinx.coroutines.flow.Flow` and first-party
+types. Room 2.8.4 and `androidx.sqlite` 2.6.2 are full KMP libraries whose package names merely
+begin with `androidx.`, which is why the move is legal under D1 = B rather than a violation of it.
+
+The four that stayed cannot move, and I checked each rather than taking the phase's word:
+`FlashMigrations` overrides `migrate(db: SupportSQLiteDatabase)` — that is the Android-only Support
+layer, and the file was not edited at all (R8); `FlashDatabaseOpener` needs a `Context` and a
+`Class` literal for `Room.databaseBuilder`, and loads SQLCipher's JNI `.so`; the two settings files
+need `java.io.File` and `androidx.datastore`, and are 09B-3's problem because that phase also
+carries an ABI decision.
+
+### The one R8 exception, quoted and discharged
+
+PHASE-09B "Obstacle B" requires this paragraph to be quoted verbatim:
+
+> **The executing agent must record this as an explicit, narrow R8 exception in its log entry**,
+> quoting this paragraph, and must abort if gate 6 shows any schema drift. `@ConstructedBy` cannot be
+> avoided: without it Room's KSP processor will not generate an initializer for the `jvm()` target at
+> all.
+
+The exception is **one line** on `FlashDatabase.kt`:
+
+```kotlin
+@ConstructedBy(FlashDatabaseConstructor::class)
+```
+
+plus its import. It adds no column, no index and no SQL. `DATABASE_VERSION` stays **3**, the
+11-entity list is unchanged, `exportSchema` stays `true`. No `@Entity`, `@Dao` or `FlashMigrations`
+file was edited — verified by `git show --stat 8b5fa5a`, where every entity and DAO appears as a
+pure rename with zero content lines changed.
+
+**Discharged.** See gate 6 below: the schema Room exports from the moved sources is byte-identical
+to the committed `3.json`, on *both* targets, `cmp`-clean at 16324 bytes.
+
+### The seam, and the question the phase asked me to answer empirically
+
+PHASE-09B said: *"The two `actual object` declarations are the intentional D1 = B duplication (R5):
+Room's KSP processor emits the body, so each file is a one-liner. If AGP/KSP generates them
+automatically for both targets, delete the hand-written stubs — verify empirically, do not assume."*
+
+**KSP generates both. No stub was ever hand-written, and none is needed.**
+
+```
+$ find core/persistence/build/generated -name 'FlashDatabaseConstructor*'
+core/persistence/build/generated/ksp/android/androidMain/kotlin/…/db/FlashDatabaseConstructor.kt
+core/persistence/build/generated/ksp/jvm/jvmMain/kotlin/…/db/FlashDatabaseConstructor.kt
+
+$ cat core/persistence/build/generated/ksp/jvm/jvmMain/kotlin/…/db/FlashDatabaseConstructor.kt
+package com.transfer.flash.core.persistence.db
+
+import androidx.room.RoomDatabaseConstructor
+
+public actual object FlashDatabaseConstructor : RoomDatabaseConstructor<FlashDatabase> {
+  actual override fun initialize(): FlashDatabase = com.transfer.flash.core.persistence.db.FlashDatabase_Impl()
+}
+```
+
+The android one is byte-identical apart from living under `ksp/android/androidMain/`. The
+`expect object` therefore carries `@Suppress("NO_ACTUAL_FOR_EXPECT")` — the **compiler diagnostic**
+name. My first draft used `KotlinNoActualForExpect`, which is the IDE inspection id and does not
+silence a build.
+
+### The new `jvmTest` suite, and the vacuous pass it was designed to avoid
+
+PHASE-09B: the suite *"must open `FlashDatabase` on the desktop target via `FlashDatabaseConstructor`
+and round-trip at least one entity through one DAO, proving the generated jvm `_Impl` actually
+works."* Four cases:
+
+| Case | What breaks it |
+|---|---|
+| `trusted peer round-trips through the generated jvm _Impl` | insert → `isPinned` → `observeAll` → `revoke` → `isPinned`, with all four columns compared |
+| `all eleven tables exist on the jvm target` | one read per `@Dao`; a missing table makes SQLite raise |
+| `IGNORE conflict strategy returns minus one on a duplicate primary key` | the jvm code generator not honouring `OnConflictStrategy` |
+| `flow re-emits after a write, proving InvalidationTracker runs on jvm` | `InvalidationTracker` no-opping off-Android |
+
+**The load-bearing detail is `factory = FlashDatabaseConstructor::initialize`.** Read from
+`room-runtime-jvm-2.8.4-sources.jar`, `jvmMain/androidx/room/Room.jvm.kt`:
+
+```kotlin
+public inline fun <reified T : RoomDatabase> inMemoryDatabaseBuilder(
+    noinline factory: () -> T = { findAndInstantiateDatabaseImpl(T::class.java) },
+): RoomDatabase.Builder<T>
+```
+
+The default is a **reflective** lookup of `FlashDatabase_Impl`. Omitting the argument would make all
+four cases pass even if `@ConstructedBy` did nothing and no `actual` object existed — the whole
+subject of the phase would go untested. Passing the constructor reference is what routes the open
+through the seam.
+
+`name = null` (which is what `inMemoryDatabaseBuilder` passes) is also why there is **no `":memory:"`
+string literal anywhere in the module** — the phase's wording implies one is needed; it is not.
+
+The 4th case is written to be non-vacuous in the same spirit: it subscribes first, **asserts the
+first emission is the empty table** — which is what proves the subscription predates the write — then
+inserts and requires a *second* emission. Awaiting `isNotEmpty()` without that first assertion would
+be satisfied by the initial emission alone and would prove nothing. It also uses `runBlocking`, not
+`runTest`: `runTest`'s virtual clock would make the real-time `withTimeout` waits expire instantly.
+
+### How the Room Gradle plugin behaves, and the trap in reading its output
+
+This cost me four builds and is worth recording, because the next person to touch schema export will
+hit it.
+
+`> Task :core:persistence:copyRoomSchemas NO-SOURCE`, with an **empty**
+`build/intermediates/room/schemas/`, is the plugin's **success** signal. It is not a sign that export
+is misconfigured. The plugin passes Room two *internal* options —
+`room.internal.schemaInput` (the tracked `schemas/` directory) and `room.internal.schemaOutput` (a
+per-KSP-task staging directory) — and Room writes to the output **only when the schema it computed
+differs from the input**. No drift ⇒ nothing staged ⇒ nothing to copy.
+
+That makes the phase's gate 6 (`git diff --stat -- core/persistence/schemas/`, expected empty)
+**unfalsifiable**: it reports exactly the same thing whether the schema matched or export never ran.
+I first misread the empty staging directory as "the plugin does not support this KMP configuration",
+ripped the plugin out, and reproduced the same silence with a plain
+`ksp { arg("room.schemaLocation", "$projectDir/schemas") }` — which looked like confirmation but was
+the same artefact. What settled it was pointing KSP at a directory that did **not** already contain a
+schema; the file appeared immediately. The plugin was never broken. It is now restored, and the
+build file carries a comment explaining how to read `NO-SOURCE` and how to obtain positive evidence.
+
+The option names, read out of `room-compiler-2.8.4.jar`
+(`javap -c -constants androidx.room.processor.Context$ProcessorOptions`), are `room.schemaLocation`,
+`room.internal.schemaInput`, `room.internal.schemaOutput`. A plain `room.schemaLocation` takes
+precedence, which is what makes the probe in the build-file comment work.
+
+### Verification
+
+Every command below was run with
+`JAVA_HOME=…/jetbrains_s_r_o_-21-amd64-windows.2` and
+`JAVA_TOOL_OPTIONS='-Djdk.net.unixdomain.tmpdir=C:\Users\KaliOxygen\.gradle\afunix'`.
+
+**Gate 1 — Android compiles.** **Gate 2 — the `jvm()` target compiles**, which is the gate that
+actually certifies the move, because `compileKotlinJvm` has no `android.jar` on its classpath.
+
+```
+$ ./gradlew :core:persistence:compileAndroidMain :core:persistence:compileKotlinJvm --no-configuration-cache
+> Task :core:persistence:kspKotlinJvm
+> Task :core:persistence:kspAndroidMain
+> Task :core:persistence:copyRoomSchemas NO-SOURCE
+> Task :core:persistence:compileKotlinJvm
+> Task :core:persistence:compileAndroidMain
+BUILD SUCCESSFUL in 2m 35s
+8 actionable tasks: 7 executed, 1 up-to-date
+```
+
+**Gate 3 — R6.1 purity grep.** 69 hits, **all** of them `androidx.room.*` imports in
+`core/persistence/src/commonMain`, and no other module contributes a line. Thirteen distinct
+symbols: `Dao`, `Query`, `Upsert`, `Insert`, `OnConflictStrategy`, `Transaction`, `Entity`,
+`PrimaryKey`, `Index`, `Database`, `RoomDatabase`, `ConstructedBy`, `RoomDatabaseConstructor`. Every
+one is a Room annotation or base type from `room-common`/`room-runtime`, both of which are KMP —
+legitimate under the phase's own carve-out. **Zero `java.*`, zero `javax.*`, zero `android.*`, zero
+`androidx.datastore.*`, zero `androidx.sqlite.db.*`.** The 2 DAO projection data classes contribute
+no hits at all, being plain `data class`es.
+
+```
+$ grep -rnE '\b(java|javax|android|androidx)\.' --include=*.kt core/*/src/commonMain ui/*/src/commonMain 2>/dev/null | grep -vE ':[0-9]+:[[:space:]]*(\*|//|/\*)' | wc -l
+69
+$ … | grep -vc 'androidx\.room\.'
+0
+$ … | grep -vc '^core/persistence/'
+0
+```
+
+The phase predicted hits for `androidx.sqlite.SQLiteDriver` as well. There are none: no
+hand-written `commonMain` file names a driver type — only the generated `_Impl` does, and generated
+code is not in `src/`. That is a phase-file inaccuracy, not a finding.
+
+**Gate 4 — full R3 run.** The stale `core/persistence/build/test-results/testDebugUnitTest/` was
+deleted first, per R3's tallying rule; it survives the plugin swap and would have double-counted 35
+tests.
+
+```
+$ ./gradlew --stop >/dev/null 2>&1; sleep 8
+$ ./gradlew :app:assembleDebug testDebugUnitTest \
+    :core:common:testAndroidHostTest \
+    :core:security:testAndroidHostTest :core:security:jvmTest \
+    :core:discovery:testAndroidHostTest :core:discovery:jvmTest \
+    :core:network:testAndroidHostTest :core:network:jvmTest \
+    :core:transfer:testAndroidHostTest :core:transfer:jvmTest \
+    :core:messaging:testAndroidHostTest :core:messaging:jvmTest \
+    :core:engine:testAndroidHostTest :core:engine:jvmTest \
+    :core:persistence:testAndroidHostTest :core:persistence:jvmTest \
+    --no-configuration-cache --continue --max-workers=2 --console=plain
+
+DiscoveryModeSettingTest > roundtrip for every valid mode FAILED
+FlashSettingsDataStoreTest > retentionDays roundtrip FAILED
+FlashSettingsDataStoreTest > backgroundTransfers roundtrip FAILED
+FlashSettingsDataStoreTest > dynamicAccent roundtrip FAILED
+FlashSettingsDataStoreTest > corrupted preferences file falls back to emptyPreferences FAILED
+FlashSettingsDataStoreTest > themeMode roundtrip FAILED
+FlashSettingsDataStoreTest > displayName roundtrip FAILED
+FlashSettingsDataStoreTest > soundsEnabled roundtrip FAILED
+FlashSettingsDataStoreTest > autoAcceptTrusted roundtrip FAILED
+FlashSettingsDataStoreTest > reduceMotionOverride roundtrip FAILED
+FlashSettingsDataStoreTest > saveLocationUri roundtrip and clear-to-null FAILED
+FlashSettingsDataStoreTest > hapticsEnabled roundtrip FAILED
+35 tests completed, 12 failed
+
+> Task :core:persistence:testAndroidHostTest FAILED
+BUILD FAILED in 9m 6s
+```
+
+`:core:persistence:testAndroidHostTest` is the **only** failing task (`grep -E '^> Task .* FAILED'`
+returns that one line), `:app:assembleDebug` succeeded, and the 12 failures are the pre-existing set
+in exactly the split R3 records: **11 `FlashSettingsDataStoreTest` + 1 `DiscoveryModeSettingTest`**,
+all `java.io.IOException` out of DataStore's `FileStorage.kt:121` under Robolectric. Per PHASE-09B's
+"What must not happen" I did **not** touch them: *"Do not 'fix' the 12 known `:core:persistence` test
+failures. They are pre-existing and out of scope (R1). If the count changes, that is a regression,
+not progress."* They moved task, not state — before this phase they reported under
+`testDebugUnitTest`.
+
+Repo-wide tally: **1018 tests / 12 failures / 0 errors / 0 skipped across 135 XMLs.**
+
+```
+$ find . -path ./media-downloader-main -prune -o -path '*/build/test-results/*' -name 'TEST-*.xml' -print | wc -l
+135
+$ … | xargs grep -ho 'tests="[0-9]*" skipped="[0-9]*" failures="[0-9]*" errors="[0-9]*"' \
+    | awk -F'"' '{t+=$2;s+=$4;f+=$6;e+=$8} END{print "tests="t" skipped="s" failures="f" errors="e}'
+tests=1018 skipped=0 failures=12 errors=0
+```
+
+Arithmetic against the Phase 14 baseline: **1005 + 9 + 4 = 1018** and **133 + 2 = 135**. The +9 is
+`RetentionPolicyTest` now executing on the `jvm()` target as well as the Android host (R3.1 — an
+`actual` that is only compiled is not verified; here it is a shared expectation rather than an
+`actual`, but the principle is what motivated the move). The +4 is `FlashDatabaseJvmTest`. Two new
+XMLs: one per suite per new target.
+
+Per module, which R3 requires alongside the total:
+
+| Module / task | XMLs | Tests | Failures |
+|---|---|---|---|
+| `app` `testDebugUnitTest` | 6 | 31 | 0 |
+| `core:calling` `testDebugUnitTest` | 4 | 55 | 0 |
+| `core:common` `testAndroidHostTest` | 8 | 49 | 0 |
+| `core:discovery` `testAndroidHostTest` | 9 | 104 | 0 |
+| `core:discovery` `jvmTest` | 3 | 35 | 0 |
+| `core:engine` `testAndroidHostTest` | 2 | 9 | 0 |
+| `core:engine` `jvmTest` | 1 | 8 | 0 |
+| `core:messaging` `testAndroidHostTest` | 5 | 35 | 0 |
+| `core:messaging` `jvmTest` | 1 | 8 | 0 |
+| `core:network` `testAndroidHostTest` | 21 | 134 | 0 |
+| `core:network` `jvmTest` | 1 | 8 | 0 |
+| **`core:persistence` `testAndroidHostTest`** | **4** | **35** | **12** |
+| **`core:persistence` `jvmTest`** | **2** | **13** | **0** |
+| `core:security` `testAndroidHostTest` | 12 | 90 | 0 |
+| `core:security` `jvmTest` | 1 | 10 | 0 |
+| `core:transfer` `testAndroidHostTest` | 16 | 102 | 0 |
+| `core:transfer` `jvmTest` | 3 | 16 | 0 |
+| `ui:chat` `testDebugUnitTest` | 31 | 239 | 0 |
+| `ui:theme` `testDebugUnitTest` | 5 | 37 | 0 |
+| **Total** | **135** | **1018** | **12** |
+
+`:core:persistence` in detail — `testAndroidHostTest` 35 = `FlashDatabaseInvariantTest` 7 (all pass,
+so Robolectric + the Support/SQLCipher open path are intact) + `RetentionPolicyTest` 9 +
+`DiscoveryModeSettingTest` 6 (1 fail) + `FlashSettingsDataStoreTest` 13 (11 fail); `jvmTest` 13 =
+`FlashDatabaseJvmTest` 4 + `RetentionPolicyTest` 9, all passing:
+
+```
+$ cat core/persistence/build/test-results/jvmTest/TEST-…FlashDatabaseJvmTest.xml
+tests="4" skipped="0" failures="0" errors="0"
+  trusted peer round-trips through the generated jvm _Impl[jvm]
+  all eleven tables exist on the jvm target[jvm]
+  IGNORE conflict strategy returns minus one on a duplicate primary key[jvm]
+  flow re-emits after a write, proving InvalidationTracker runs on jvm[jvm]
+$ cat core/persistence/build/test-results/jvmTest/TEST-…RetentionPolicyTest.xml
+tests="9" skipped="0" failures="0" errors="0"
+```
+
+The desktop run also logs the native library load, which is worth keeping as evidence the bundled
+driver really executed rather than being resolved and ignored:
+
+```
+WARNING: java.lang.System::loadLibrary has been called by
+  androidx.sqlite.driver.bundled.NativeLibraryLoader … sqlite-bundled-jvm-2.6.2.jar
+```
+
+**Gate 5 — no unencrypted driver in product code.**
+
+```
+$ grep -rn --include=*.kt -E 'BundledSQLiteDriver|sqlite-bundled' \
+    core/persistence/src/commonMain core/persistence/src/jvmMain core/persistence/src/androidMain
+grep: core/persistence/src/jvmMain: No such file or directory
+```
+
+No hits in the two source sets that exist; `jvmMain` was never created. Every reference in the
+module is in `jvmTest`:
+
+```
+$ grep -rn --include=*.kt 'BundledSQLiteDriver' core/persistence/src/
+…/jvmTest/…/db/FlashDatabaseJvmTest.kt:4:  import androidx.sqlite.driver.bundled.BundledSQLiteDriver
+…/jvmTest/…/db/FlashDatabaseJvmTest.kt:41: * **The driver is [BundledSQLiteDriver], which is UNENCRYPTED.** …
+…/jvmTest/…/db/FlashDatabaseJvmTest.kt:59:     .setDriver(BundledSQLiteDriver())
+$ grep -rn 'sqlite.bundled\|sqlite-bundled' --include=*.kts --include=*.toml . | grep -v media-downloader-main | grep -v '/build/'
+./core/persistence/build.gradle.kts:138:            implementation(libs.androidx.sqlite.bundled)
+./gradle/libs.versions.toml:55:androidx-sqlite-bundled = { group = "androidx.sqlite", name = "sqlite-bundled", … }
+```
+
+Line 138 is inside `jvmTest.dependencies`. And there is no file path: the only `":memory:"` in the
+module is the word inside a KDoc sentence explaining that no such literal is used.
+
+**Gate 6 — schema byte-identical. This is what discharges the Obstacle B R8 exception.** The
+phase's command passes, but see the section above on why it cannot fail:
+
+```
+$ git status --porcelain core/persistence/schemas/
+$ git ls-files core/persistence/schemas/
+core/persistence/schemas/com.transfer.flash.core.persistence.db.FlashDatabase/1.json
+core/persistence/schemas/com.transfer.flash.core.persistence.db.FlashDatabase/3.json
+```
+
+**Strengthened, and this is the real gate.** I pointed KSP at a scratch directory that contained no
+schema, so Room had nothing to diff against and had to write, and ran each target separately:
+
+```
+$ # ksp { arg("room.schemaLocation", "$projectDir/build/schema-probe") }   [temporary]
+$ ./gradlew :core:persistence:kspKotlinJvm --rerun-tasks --no-configuration-cache
+BUILD SUCCESSFUL in 15s
+$ cmp core/persistence/schemas/…FlashDatabase/3.json core/persistence/build/schema-probe/…FlashDatabase/3.json
+BYTE-IDENTICAL          # 16324 bytes both sides
+
+$ rm -rf core/persistence/build/schema-probe
+$ ./gradlew :core:persistence:kspAndroidMain --rerun-tasks --no-configuration-cache
+BUILD SUCCESSFUL in 11s
+$ cmp core/persistence/schemas/…FlashDatabase/3.json core/persistence/build/schema-probe/…FlashDatabase/3.json
+ANDROID EXPORT BYTE-IDENTICAL TO COMMITTED
+```
+
+So the schema Room computes from the relocated sources, **with `@ConstructedBy` applied**, is
+identical byte-for-byte to the one the pre-KMP Android-only build committed on 2026-09-03 — from
+both targets independently. The probe config was reverted; the committed build file uses
+`room { schemaDirectory("$projectDir/schemas") }`.
+
+**Gate 7 — downstream compile classpath unchanged.**
+
+```
+$ ./gradlew :sample:consumer:compileDebugKotlin --no-configuration-cache
+> Task :core:engine:compileAndroidMain
+> Task :sample:consumer:compileDebugKotlin
+BUILD SUCCESSFUL in 40s
+```
+
+`:sample:consumer` depends on `:core:engine` **only** and is deliberately not published, so it
+reproduces a real consumer's classpath. It compiling is what certifies the `room-runtime`
+`implementation` → `api` widening did not drop `@Dao`/`@Entity` types.
+
+**Two checks beyond the phase's seven,** both cheap and both stronger than what was asked:
+
+`jvmJar` is Android-free and actually contains the generated tier —
+
+```
+$ jar tf core/persistence/build/libs/persistence-jvm-1.1.0.jar | wc -l
+85
+$ … | grep -c '^android/'
+0
+$ … | grep -E 'FlashDatabase_Impl|FlashDatabaseConstructor'
+com/transfer/flash/core/persistence/db/FlashDatabaseConstructor.class
+com/transfer/flash/core/persistence/db/FlashDatabase_Impl$createOpenDelegate$_openDelegate$1.class
+com/transfer/flash/core/persistence/db/FlashDatabase_Impl.class
+```
+
+and publication is intact, with the scope widening visible in the POM —
+
+```
+$ ./gradlew :core:persistence:publishToMavenLocal --no-configuration-cache
+BUILD SUCCESSFUL in 18s
+$ ls -d ~/.m2/repository/com/transfer/flash/*persistence*
+core-persistence   core-persistence-android   core-persistence-jvm
+$ grep -E '<artifactId>|<scope>' core-persistence-jvm-1.1.0.pom
+core-persistence-jvm
+core-common-jvm                compile
+kotlinx-coroutines-core-jvm    compile
+room-runtime-jvm               compile     # the api widening
+kotlin-stdlib                  compile
+sqlite-jvm                     runtime     # implementation, as intended
+```
+
+The `core-persistence` coordinate 1.1.0 consumers already use is preserved, with `-android` and
+`-jvm` joining it.
+
+### Deviations from the phase file, and phase-file errors found
+
+| # | Phase says | Reality |
+|---|---|---|
+| 1 | Commit plan: "3 new aliases + 1 new plugin alias" | **2** library aliases suffice (`androidx-sqlite-core`, `androidx-sqlite-bundled`) + the plugin alias. The third counted a library for the Room Gradle plugin that has no separate coordinate. |
+| 2 | Gate 3 expects `androidx.sqlite.SQLiteDriver` hits in `commonMain` | None exist. Only generated `_Impl` code names driver types, and that is not under `src/`. |
+| 3 | Gate 6 is `git diff --stat -- core/persistence/schemas/`, expected empty | Unfalsifiable as written — see above. Replaced with `git status --porcelain` (which also surfaces untracked files) **plus** a scratch-directory export + `cmp` per target. |
+| 4 | The `jvmTest` suite should use `":memory:"` | No literal is needed; `inMemoryDatabaseBuilder` passes `name = null`. |
+| 5 | Gate 4 expects **897 → 906 / 12 failures** | The 897 baseline is stale by four phases. Real baseline was **1005 / 12** (Phase 14); result is **1018 / 12**. The `+9` reasoning was right; the phase just did not count the new db suite. |
+| 6 | Gate 4's command names only `:core:common`, `:core:security`, `:core:discovery` and `:core:persistence` | It has to name `:core:network`, `:core:transfer`, `:core:messaging` and `:core:engine` too, or four converted modules go unrun. I used CONVENTIONS R3's list plus the two new persistence tasks. |
+
+None of these changed the shape of the work; all six are recorded rather than silently absorbed.
+
+Also deliberately **not** done, per R1 and R4: `:core:engine`'s and `:core:messaging`'s build files
+carry comments saying `:core:persistence` "is still `com.android.library`". Those are now stale. R4
+forbids editing a second module's build file in this phase and R1 forbids drive-by fixes, so they
+stay; whichever phase next touches those files should correct them.
+
+### What I could NOT verify (R9)
+
+- **No encrypted database was opened on desktop.** That is 09B-2 and it is blocked on a human
+  decision. Everything proven here about the desktop path used the unencrypted bundled driver in
+  memory. **The desktop cannot yet persist anything at all** — which is the safe state under D5's
+  charter, but it is a state, not a finished port.
+- **No file-backed database was opened on desktop, encrypted or not.** In-memory only. Anything
+  that only manifests against a real file — WAL behaviour, file locking, path handling across
+  Windows and Linux — is untested.
+- **The 4 Android-only files were compiled but their desktop equivalents do not exist**, so nothing
+  here says how `FlashDatabaseOpener`'s API should look off-Android.
+- **`FlashMigrations` was not exercised on desktop** and cannot be: it overrides a Support-layer
+  method. Whether desktop needs migration support at all is part of the 09B-2 decision.
+- **`androidHostTest`'s 12 failures were not investigated.** The phase forbids it (R1). I confirmed
+  the count, the split and the exception type, nothing more.
+- **The `jvm()` target has no Kotlin/Native sibling**, so R6's `java.*` prohibition in `commonMain`
+  is still enforced only by the gate-3 grep, not by the compiler. That remains an open item for a
+  human: adding one Native target would turn every R6 violation into a compile error.
+- **Only `3.json` was re-exported and compared.** `1.json` is historical and Room does not
+  regenerate it; `2.json` was never committed (pre-existing gap, noted by the phase file too).
+
+### Known issues
+
+- `copyRoomSchemas` reporting `NO-SOURCE` on every build is expected and means "no schema drift".
+  Anyone reading it as a misconfiguration will waste the same builds I did; the build file now says
+  so at the point of definition.
+- A `DATABASE_VERSION` bump will need `git status core/persistence/schemas/` to show a **new**
+  `4.json` appearing. If it does not, the export is genuinely broken — and unlike today, that
+  failure would be silent and would ship a version with no schema for `MigrationTestHelper` to read.
+- `:core:persistence` no longer has a `testDebugUnitTest` task. Any script or CI step invoking it
+  unqualified now runs 48 fewer tests in this module without saying so.
+
+### Next step
+
+**09B-2 and 09B-3 are both blocked on human decisions**, so the next executable phase is not in the
+09B family.
+
+| Work | State |
+|---|---|
+| 09B-2 (encrypted desktop driver) | **blocked** — needs D5 = C's sub-decision: *which* driver, whether a commercial licence is acceptable, and whether desktop needs SQLCipher file-format parity with Android |
+| 09B-3 (settings tier) | **blocked** — carries an ABI decision, option (a) or (b) |
+| 13B-2, 15, 16 | blocked on **D10** (the only `_pending_` decision); 16 is a hard gate |
+| 13B-3 | blocked on D10 **and** on explicit R8 authorisation to rewrite `chunked/ChunkFrame.kt` |
+| 17–24 | downstream of the Phase 16 gate |
+
+That leaves the remaining unconverted modules — `:core:calling`, `:ui:theme`, `:ui:chat`, `:app` —
+whose phases sit behind the Phase 16 gate, and **D10 is now the single decision unblocking the most
+work**. The migration has, for the first time since Phase 06, no phase that can be executed without
+a human answering something.
+
 
 
 

@@ -86,7 +86,7 @@ Phase 06 discovered the replacement task name empirically and recorded it in R3.
 and in `logs/migration.md`. From Phase 06 onward the verification command is:
 
 ```bash
-./gradlew --stop >/dev/null 2>&1; sleep 8; ./gradlew :app:assembleDebug testDebugUnitTest :core:common:testAndroidHostTest :core:security:testAndroidHostTest :core:security:jvmTest :core:discovery:testAndroidHostTest :core:discovery:jvmTest :core:network:testAndroidHostTest :core:network:jvmTest :core:transfer:testAndroidHostTest :core:transfer:jvmTest :core:messaging:testAndroidHostTest :core:messaging:jvmTest :core:engine:testAndroidHostTest :core:engine:jvmTest --no-configuration-cache --continue --max-workers=2 --console=plain
+./gradlew --stop >/dev/null 2>&1; sleep 8; ./gradlew :app:assembleDebug testDebugUnitTest :core:common:testAndroidHostTest :core:security:testAndroidHostTest :core:security:jvmTest :core:discovery:testAndroidHostTest :core:discovery:jvmTest :core:network:testAndroidHostTest :core:network:jvmTest :core:transfer:testAndroidHostTest :core:transfer:jvmTest :core:messaging:testAndroidHostTest :core:messaging:jvmTest :core:engine:testAndroidHostTest :core:engine:jvmTest :core:persistence:testAndroidHostTest :core:persistence:jvmTest --no-configuration-cache --continue --max-workers=2 --console=plain
 ```
 
 Every converted module must be **named explicitly** on that command line, because the
@@ -94,11 +94,16 @@ unqualified `testDebugUnitTest` no longer reaches it. Add one `:module:testAndro
 per conversion as each phase lands — **and one `:module:jvmTest` if the module has a
 `commonTest`/`jvmTest` suite**, as `:core:security` does since Phase 07, `:core:discovery`
 since Phase 08, `:core:network` since Phase 10, both `:core:transfer` and `:core:messaging`
-since Phase 11, and `:core:engine` since Phase 12. `--continue` is load-bearing: without it the
+since Phase 11, `:core:engine` since Phase 12, and `:core:persistence` since Phase 09B-1.
+`--continue` is load-bearing: without it the
 12 known `:core:persistence` failures abort the run before later modules execute, and the total
 silently drops. Those 12 are
 **11 in `FlashSettingsDataStoreTest` + 1 in `DiscoveryModeSettingTest`** (measured Phase 08;
-earlier entries attributed all 12 to the former).
+earlier entries attributed all 12 to the former). Since Phase 09B-1 they surface under
+`:core:persistence:testAndroidHostTest` rather than `testDebugUnitTest`, which is why that
+module now has to be named explicitly like every other converted one — before 09B-1 the
+unqualified `testDebugUnitTest` still reached it, and the failure was the visible sign the
+run had got that far.
 
 Every phase must additionally paste the **test count** from
 `*/build/test-results/**/TEST-*.xml` compared against the Phase 00 baseline
@@ -112,6 +117,13 @@ Phase 12 to **961 / 12 / 0 across 128 XMLs** (945 + 8 `jvmTest` + 8 `testAndroid
 `testDebugUnitTest` results directory the plugin swap orphans), and Phase 13B-1 to
 **977 / 12 / 0 across 132 XMLs** (961 + 8 new `commonTest` cases × 2 targets; 128 + 4 XMLs, because
 two new suites each produce one XML per target).
+Phase 14 took it to **1005 / 12 / 0 across 133 XMLs** (977 + 28 desktop-only `jvmTest` cases in
+one new XML — that figure was pasted in the log entry but not carried up to this list at the time).
+Phase 09B-1 took it to **1018 / 12 / 0 across 135 XMLs** (1005 + 9 for `RetentionPolicyTest`
+now running on the `jvm()` target as well as the Android host + 4 for the new
+`FlashDatabaseJvmTest`; 133 + 2 XMLs. The orphaned `:core:persistence` `testDebugUnitTest`
+results directory was deleted before tallying, per the paragraph below — it held the same 35
+tests that now report under `testAndroidHostTest` and would have inflated the total to 1053).
 Compare **per module** as well as in total: a total that still matches while one
 module's suite has silently stopped running is exactly the failure mode R3 exists to catch.
 Show the arithmetic, not just the number — a phase that adds N tests to a `commonTest` suite must
