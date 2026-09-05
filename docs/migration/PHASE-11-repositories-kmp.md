@@ -1,503 +1,428 @@
 # Phase 11 — KMP conversion: `core:transfer` + `core:messaging`
 
-**Blocked by:** Phases 06 (pilot), 07 (security), 08 (discovery), 09 (persistence), 10 (network).
-**D1 must be `A`.** Written for **D1 = A** (`jvmAndAndroidMain`).
-**Risk: HIGH** — two core modules, the first place where the **transfer wire format** (FLSH v2
-frames) has to keep compiling for desktop JVM, plus **three dead project dependencies** that must be
-relocated (not deleted) and **two orphaned `Ws*` files** whose fate I must flag explicitly rather
-than silently decide. Like 07/08/09/10, under D1 = A this is a **pure file-move with zero content
-edits** — no `expect`/`actual`, no rewrites. The work is in *placement*.
+> ## REWRITTEN 2026-09-05 for D1 = B, and re-measured
+>
+> The original said so on its own line 4: **"D1 must be `A`."** D1 is **B** (CONVENTIONS.md
+> amendment 2026-09-03), so `jvmAndAndroidMain` — the tier the old file routed 14 of
+> `:core:transfer`'s files into — does not exist and must not be created. Phases 07, 08 and 10
+> each rewrote their own file for the same reason; this is that rewrite.
+>
+> Re-measuring found the inventory had drifted and **six** of the old file's factual claims were
+> wrong. They are listed under *Six claims measurement disproved* rather than quietly corrected,
+> because four of them change what this phase does — including one that the old file called out
+> as a judgment call requiring an ADR, and which D1 = B dissolves entirely.
+>
+> **Blocked by:** Phases 06, 07, 08, 10. **NOT blocked by Phase 09** — see the next section.
+> **Risk: MEDIUM.** 26 files move; two lines of content change.
 
-> ⚠️ **Two adjacent phases each "own" one of these files' Android coupling.** Phase 03
-> (logging) removes `android.util.Log` from `RealFlashTransferRepository.kt`; Phase 09 pins
-> persistence types to `androidMain`. Read both before you place a single file, or you will
-> misplace `RealFlashTransferRepository.kt` (transfer) — it is **not** androidMain-bound by
-> Phase 11; it is bound by the **JDK** (`java.io.InputStream`, `java.util.UUID`,
-> `java.util.concurrent.ConcurrentHashMap`) and therefore belongs in `jvmAndAndroidMain`. See the
-> Log note in Phase 10 for the same reasoning applied to `:core:network`.
+## The Phase 09 exception — read this before the preconditions
+
+The old file's precondition 1 demanded Phase 09 (persistence → KMP) be complete, because
+`:core:messaging` depends on `:core:persistence` and `RealFlashChatRepository` consumes 16 Room
+types (7 DAOs, 7 entities, 2 DAO projections). **Phase 09 is blocked** — D5 is the human's decision, see
+`PHASE-09B-persistence-room-kmp.md` — so `:core:persistence` is still `com.android.library`
+today.
+
+That does not block Phase 11, for the same reason that makes the dependency safe:
+`RealFlashChatRepository` is an **`androidMain`** file, so `:core:persistence` is an
+**`androidMain` dependency**, and the KMP Android target resolves a variant-ful Android library
+through `localDependencySelection { selectBuildTypeFrom.set(listOf("release")) }` exactly as
+`:app` resolves one. Nothing in `commonMain` and nothing on the `jvm()` target ever sees Room.
+Gate 1 is the proof: a green `compileKotlinJvm` means no Room type reached the desktop
+classpath, because the desktop target has no `:core:persistence` edge at all.
+
+So this is a **precondition the old file got wrong**, not a precondition being skipped. Phase 12
+(engine) will not get off this lightly: `:core:engine`'s `RoomTransferStore` is an *adapter*
+whose whole job is to touch Room, and it needs the same androidMain treatment.
 
 ## What this phase is actually for
 
-Convert both `:core:transfer` and `:core:messaging` from `com.android.library` to the KMP plugin with
-an Android target and a desktop `jvm()` target, moving files into source sets **unedited**. When done:
+Convert both modules to `org.jetbrains.kotlin.multiplatform` +
+`com.android.kotlin.multiplatform.library` with an `android { }` target and a desktop `jvm()`
+target, and place their production files across `commonMain` and `androidMain`. When done:
 
-- `:core:transfer:compileKotlinJvm` compiles — proving the **shared transfer surface** builds for
-  desktop: the repository contract (`FlashTransferRepository`), the pure transfer model
-  (`FlashTransfer`, `FlashTransferId`), the **FLSH v2 wire format** (`WsTransferMessages`,
-  `MessageWireFrame` counterpart) and its chunk codec (`ChunkFrame`), the chunking + hashing +
-  resume machinery (`Chunker`, `Sha256`, `ResumeBitVector`), the pipeline/policy/transfer-store
-  layer, and the multi-stream engine's **interfaces** plus its JVM-backed state machines.
-- `:core:messaging:compileKotlinJvm` compiles — proving the **shared messaging surface** builds for
-  desktop: the chat repository contract + sample impls, the messaging UI models, the grouping/util
-  helpers, and the message wire frame.
-- The Android host tests still run and still pass **at the same counts** — **86 `@Test` across 13
-  classes** for `:core:transfer`, **16 `@Test` across 3 classes** for `:core:messaging`.
-- Both modules still publish as `core-transfer` / `core-messaging`; `:app:assembleDebug` still
-  resolves them.
+- `:core:transfer:compileKotlinJvm` is green, proving the **shared transfer contract** builds
+  off Android: `FlashTransferRepository`, the `FlashTransfer`/`FlashTransferId` model, the
+  `TransferStore` port (ADR-024), the `StreamChannel` interface, and the **FLSH v2 control-frame
+  wire format** (`WsTransferMessages`).
+- `:core:messaging:compileKotlinJvm` is green, proving the **shared messaging contract** builds
+  off Android: `FlashChatRepository` + its sample implementation, the whole messaging UI model
+  set (20 types — what Phases 17–20 render), the grouping/preview helpers, and
+  `MessageWireFrame`.
+- Both Android host suites are unregressed at their measured baselines, and both modules still
+  publish `core-transfer` / `core-messaging` at the root coordinate.
 
-**What this phase does NOT do:** it does not give desktop a *runnable* transfer or messaging
-implementation. `RealFlashTransferRepository` (transfer) and `RealFlashChatRepository` (messaging)
-are the *concrete* repos, and they stay `jvmAndAndroidMain` / `androidMain` respectively because they
-are bound to JDK types, Room DAOs/entities, and platform timing. Desktop-facing concrete adapters are
-built later (Phase 09's Room port, Phase 12's engine `RoomTransferStore`) against the same contracts.
-Phase 11 only proves the shared half compiles off Android — exactly the 07/10 pattern.
+**What this phase does NOT do:** it does not give desktop a runnable transfer or chat. The
+chunking/hashing/resume machinery, the multi-stream engine, the destination policies and both
+concrete repositories stay Android-only. That is Phase 15's work, and R2 step 1 is why — see
+*Why 5 of 20*.
 
-## Why `core:transfer` splits 5 / 14 / 0 (read before placing files)
+## Six claims measurement disproved (2026-09-05)
 
-> The **5 / 14 / 0** split is the *post-Phase-02* state. Phase 02 already deleted five `wslegacy`
-> files (`WsTransferManager`, `WsDiscovery`, `WsPairingStore`, `LegacyDiscoveredDevice` + the
-> `WsPairingStoreTest`). This phase receives a **20-file** production tree and must further account
-> for **two orphaned `Ws*` files** that Phase 02 left behind but whose only consumer Phase 02 just
-> deleted. Re-read the `WsTransferModels` / `WsTransferMessages` notes before placing them.
->
-> The **authoritative split is 5 commonMain / 14 jvmAndAndroidMain / 0 androidMain.** The `multistream/`
-> package is the reason the count is easy to get wrong: only `StreamChannel.kt` is pure (commonMain),
-> while the other four files in that package (`MultiStreamProgress`, `MultiStreamDispatcher`,
-> `MultiStreamReceiver`, `TransferCompletionStateMachine`) are all JVM-backed
-> (`@Synchronized`/`Atomic*`/`synchronized(lock)`) and belong in jvmAndAndroidMain.
+**1. `:core:messaging` is 6 production / 4 test files, not 5 / 3.** `PresenceHold.kt` (95 lines)
+and `PresenceHoldTest.kt` (3 tests) arrived with the ERROR-031 presence work after the old file
+was written. `PresenceHold` is the one file in messaging whose placement the old file could not
+have reasoned about, and it does not go where the old file's pattern would have put it — see
+*Why `PresenceHold` is androidMain*.
 
-- **commonMain (5):** the repository **interface** and pure models + the one transport contract
-  that is pure-Kotlin. `FlashTransferRepository` is an interface referencing only `:core:common`
-  types/`StateFlow`; `FlashTransfer` is a pure model with `@JvmInline`; `WsTransferMessages` is the
-  R8 wire format (see orphan note); `TransferStore` is the ADR-024 storage port (interface);
-  `StreamChannel` is a pure single-purpose interface. These reference nothing JDK or Android.
-- **jvmAndAndroidMain (14):** everything that needs `java.*`/`java.util.concurrent.*` but **not**
-  `android.*` — the hashing/codec/chunking layer (`MessageDigest`, `ByteArrayOutputStream`,
-  `ByteBuffer`, `BitSet`, `InputStream`, `Closeable`), the JDK-backed state machines
-  (`Atomic*`/`@Synchronized`/`@Volatile`), the policies (`RandomAccessFile`, `Closeable`),
-  `RealFlashTransferRepository` (`InputStream`/`UUID`/`ConcurrentHashMap`),
-  `manifest/TransferManifest` (`System.currentTimeMillis`), and the four JVM-backed `multistream/`
-  files (see below).
-- **androidMain (0):** none, after Phase 02. (Phase 03 will, if anything, *reduce* this — it removes
-  the only remaining `android.util.Log` reference in `RealFlashTransferRepository` — but that does
-  not change Phase 11's placement, which is JDK-driven.)
+**2. messaging's test baseline is 27 `@Test` in 4 classes, not 16 in 3.** Measured:
+`FlashMessageContentSummaryTest 5`, `FlashMessageGroupingTest 5`, `PresenceHoldTest 3`,
+`RealFlashChatRepositoryTest 14`. Gate 4 asserts 27, not 16.
 
-## Why `core:messaging` splits 4 / 0 / 1
+**3. `FlashChatRepository.kt` is NOT commonMain-clean.** The old file lists it as commonMain
+row 1 with no edit. It has two `System.currentTimeMillis()` calls — lines 147 and 215, both
+inside `SampleFlashChatRepository` — which is a CONVENTIONS R6 stdlib trap that no import line
+reveals. Following the old file verbatim would have produced a red `compileKotlinJvm`… **no**:
+it would have produced a *green* one, because R6.1 says nothing in the build enforces R6 while
+both targets are JVM. It would have shipped a `java.*`-dependent `commonMain`, undetected until
+a Kotlin/Native target existed. This is exactly the leak R6.1 was written for.
 
-- **commonMain (4):** the repository **interface** + sample impls, the messaging UI models, the
-  grouping/util helpers, and the message wire frame. `FlashChatRepository` references
-  `FlashPeerPresence`/`StateFlow`; `FlashMessagingModels` references `FlashDeviceId`/
-  `FlashPeerPresence`; `FlashMessagingUtils` references commonMain types; `MessageWireFrame` has no
-  imports (pure serialization).
-- **jvmAndAndroidMain (0):** none.
-- **androidMain (1):** `RealFlashChatRepository` — bound to `SimpleDateFormat`/`Date`/`Locale`/
-  `UUID`/`ConcurrentHashMap` (JDK, but Phase 09 **pins** it to androidMain because it wires seven
-  Room `Dao`s and eight Room `Entity`s that are themselves androidMain under Phase 09). Do **not**
-  pull it down to `jvmAndAndroidMain`: the Room persistence types are `androidMain` in Phase 09, so
-  this class cannot compile for `jvm()` without dragging Room into the desktop target — which Phase
-  09 explicitly avoided. It stays `androidMain`.
+**4. transfer's `:core:security` and `:core:discovery` dependencies do not exist.** The old file
+instructs relocating them into `androidMain`. Phase 02 already deleted them and left a comment
+in the build file recording it. Only the androidx pair (`core-ktx`, `lifecycle-runtime-ktx`) is
+dead in transfer.
 
-## Preconditions — do not start until all are true
+**5. transfer's `:core:network` edge is LIVE, not dead.** The old file lists it for relocation as
+unused. `core/transfer/build.gradle.kts` says, in its own words: *"`:core:network` stays: it is
+still used by model/WsTransferModels.kt, which references WsTransferServer."* Confirmed by grep:
+`WsTransferModels.kt` reads `WsTransferServer.PREFERRED_PORT`. It must stay, and it becomes an
+**`androidMain`** dependency, because `WsTransferServer` is `androidMain` in `:core:network` as
+of Phase 10.
 
-1. **Phases 06, 07, 08, 09, 10 complete and logged.** This phase reuses Phase 06's five DSL facts and
-   depends on `core:common` (06), `core:discovery` (08), `core:persistence` (09), and `core:network`
-   (10) being KMP. Specifically verify in the 06/08/09/10 logs that these are **commonMain**:
-   `FlashDevice`, `FlashDeviceId`, `FlashTransportType`, `FlashPeerPresence`, `FlashResult`,
-   `FlashError`, `FlashInternalApi`, `FlashTextFraming` (all `core:common`); `FlashDiscoveredEndpoint`
-   (`core:discovery`); and — critically for messaging — that the **Messaging Kotlin** types
-   (`FlashMessageUi`, `FlashConversationUiState`, etc.) are in **commonMain**. If any is NOT
-   commonMain upstream, a commonMain file here will not compile — stop and reconcile with that
-   module's phase before moving anything.
-2. **D1 = `A`** in `DECISIONS.md`.
-3. **Clean working tree** on the migration branch.
-4. **Phase 02 (delete wslegacy) is fully applied and committed.** If the five `wslegacy` files are
-   still present, the 20-file inventory and the `WsTransferModels` judgment call both shift — stop
-   and apply Phase 02 first.
+**6. `WsTransferModels.kt`'s "no legal source-set home" was a D1 = A artifact.** The old file
+concludes this file cannot be placed, recommends deleting it, and demands an ADR for the
+deletion. That conclusion follows only from D1 = A: under A the file's own content is
+common-clean, so leaving it out of the shared tier looked arbitrary, while putting it in meant
+dragging an Android-only `WsTransferServer` reference into shared code. Under **D1 = B**,
+`androidMain` is simply the correct home — its one cross-module reference is androidMain, so it
+lands next to it. **No deletion, no ADR.** Removing dead code is a cleanup-phase job (R1).
 
-## Verified starting state (read this, do not assume) — confirmed 2026-08-30
+### One more finding, recorded not acted on
 
-### `core/transfer/build.gradle.kts` (the parts that matter)
+`manifest/TransferManifest.kt` (42 lines) has **zero consumers anywhere in the repo** — no
+production reference, no test, not in `:app`, `:core:engine` or `:ui:chat`. It is dead code, not
+merely orphaned. It moves to `androidMain` with everything else (it calls
+`System.currentTimeMillis()` at line 29). Deleting it is out of scope; it goes under **Known
+issues** in the log entry.
 
-```kotlin
-plugins { alias(libs.plugins.android.library); `maven-publish` }
+## Preconditions
 
-android {
-    namespace = "com.transfer.flash.core.transfer"
-    compileSdk = 35
-    defaultConfig { minSdk = 24; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        consumerProguardFiles("consumer-rules.pro") }
-    buildTypes { release { isMinifyEnabled = false /* + proguardFiles */ } }
-    compileOptions { sourceCompatibility = JavaVersion.VERSION_11; targetCompatibility = JavaVersion.VERSION_11 }
-    publishing { singleVariant("release") { withSourcesJar() } }
-}
-kotlin { explicitApi() }
-dependencies {
-    api(project(":core:common"))
-    api(libs.kotlinx.coroutines.core)                 // public Flow/StateFlow → api
-    implementation(project(":core:security"))          // <-- ZERO imports in src/main (dead dep)
-    implementation(project(":core:network"))           // <-- ZERO imports in src/main (dead dep)
-    implementation(project(":core:discovery"))         // <-- ZERO imports in src/main (dead dep)
-    implementation(libs.androidx.core.ktx)             // <-- ZERO androidx imports in src/main (dead)
-    implementation(libs.androidx.lifecycle.runtime.ktx)// <-- ZERO androidx imports in src/main (dead)
-    testImplementation(libs.junit)
-}
+1. Phases 06, 07, 08, 10 committed. Both modules consume `FlashSession`, which reached
+   `commonMain` in Phase 10 (`428154d`) — that was the actual blocker.
+2. **Phase 09 is NOT a precondition.** See *The Phase 09 exception* above.
+3. Working tree clean. `git status --short` empty before starting.
+4. Every Gradle command in this file runs with the recorded environment and
+   `--no-configuration-cache` (R3):
+
+```bash
+export JAVA_HOME="/c/Users/KaliOxygen/.gradle/jdks/jetbrains_s_r_o_-21-amd64-windows.2" && export JAVA_TOOL_OPTIONS='-Djdk.net.unixdomain.tmpdir=C:\Users\KaliOxygen\.gradle\afunix'
 ```
 
-### `core/messaging/build.gradle.kts` (the parts that matter)
+## Measured baselines — capture these before touching anything
 
-```kotlin
-plugins { alias(libs.plugins.android.library); `maven-publish` }
-
-android { /* identical shape; namespace = "com.transfer.flash.core.messaging" */ }
-kotlin { explicitApi() }
-dependencies {
-    api(project(":core:common"))
-    api(libs.kotlinx.coroutines.core)                 // public Flow/StateFlow → api
-    implementation(project(":core:security"))          // <-- ZERO imports in src/main (dead dep)
-    implementation(project(":core:network"))           // <-- ZERO imports in src/main (dead dep)
-    implementation(project(":core:persistence"))       // LIVE — Room DAOs/Entities in RealFlashChatRepository
-    implementation(libs.androidx.core.ktx)             // <-- ZERO androidx imports in src/main (dead)
-    implementation(libs.androidx.lifecycle.runtime.ktx)// <-- ZERO androidx imports in src/main (dead)
-    testImplementation(libs.junit)
-}
+```bash
+./gradlew :core:transfer:testDebugUnitTest :core:messaging:testDebugUnitTest --no-configuration-cache --console=plain
 ```
 
-**Dependency-usage findings (grep of `src/main`, R11 hygiene — excludes `build/`, `.git/`, `docs/`,
-and the already-deleted `wslegacy/`):**
+Measured 2026-09-05, `BUILD SUCCESSFUL in 55s`:
 
-**`core:transfer`:**
-
-- `:core:security` — **ZERO imports** (`grep '^import com.transfer.flash.core.security'` = none).
-  Dead. Its only prior consumer was `wslegacy` code (deleted Phase 02). Relocate to
-  `jvmAndAndroidMain.dependencies` for parity and flag `TODO(cleanup)`. **Do not delete here.**
-- `:core:network` — **ZERO imports** in `src/main`. Between Phase 02's wslegacy deletion and Phase
-  10 converting `:core:network` itself, transfer no longer references any network type by import.
-  (The one cross-reference — `WsTransferModels.kt` importing `WsTransferServer` — is inside the
-  orphaned/dead file; see the orphan note. It is **not** a live consumer and must not be used to
-  justify keeping this dependency.) Relocate to `jvmAndAndroidMain` as a dead dep + flag.
-- `:core:discovery` — **ZERO imports** in `src/main`. Dead. Relocate to `jvmAndAndroidMain`, flag.
-- `:core:common` — used everywhere, including commonMain files → **commonMain `api`**.
-- `androidx.core.ktx` / `androidx.lifecycle.runtime.ktx` — **ZERO `import androidx.*`** in
-  `src/main`. Dead AARs; relocate to `androidMain.dependencies`, flag.
-- `libs.junit` — test-only → `androidHostTest.dependencies`.
-
-**`core:messaging`:**
-
-- `:core:security` — **ZERO imports**. Dead. Relocate to `androidMain` (parity with its concrete
-  repo tier; messaging's concrete repo is androidMain) — or, more precisely, to the tier where it
-  *would* live if used. Since `RealFlashChatRepository` is the only concrete class and it is
-  androidMain, `androidMain.dependencies` is the parity placement. Flag `TODO(cleanup)`.
-- `:core:network` — **ZERO imports**. Dead. Same parity placement: `androidMain`. Flag.
-- `:core:persistence` — **LIVE**. `RealFlashChatRepository.kt` imports 7 DAOs + 8 Entities. Since
-  that class is androidMain, `:core:persistence` → **androidMain `implementation`** (it must not
-  leak into the shared surface). Verify `:core:persistence` is already KMP (Phase 09) with its Room
-  types in **androidMain** before placing this.
-- `:core:common` — used everywhere, including commonMain files → **commonMain `api`**.
-- `androidx.core.ktx` / `androidx.lifecycle.runtime.ktx` — **ZERO `import androidx.*`** in
-  `src/main`. Dead AARs; relocate to `androidMain.dependencies`, flag.
-- `libs.junit` — test-only → `androidHostTest.dependencies`.
-
-> **Rule that governs every dead-dep relocation here:** this is a move-only phase. Deleting a
-> dependency is a content decision with its own blast radius (it changes the published POM). Relocate
-> each dead dep to the tier it *would* live in if used, and leave a `// TODO(cleanup): grep-unused as
-> of Phase 11` marker. A dedicated cleanup phase deletes them after the migration is green.
-
-### Directory facts
-
-**`core:transfer`** production under
-`core/transfer/src/main/java/com/transfer/flash/core/transfer/` — **24 `.kt`** in packages: root,
-`chunked/`, `manifest/`, `model/`, `multistream/`, `policy/`, `protocol/`, `store/`, `wslegacy/`.
-Phase 02 removes the five `wslegacy/` files (4 production + 1 test), leaving **20 production `.kt`**:
-after the orphan judgment, **5 commonMain / 14 jvmAndAndroidMain / 0 androidMain / 1 deletion
-(`model/WsTransferModels.kt`, recommended)**. Tests under `src/test/java/.../transfer/` — **14
-files** (one of which, `wslegacy/WsPairingStoreTest.kt`, is deleted by Phase 02), leaving **13 test
-files / `androidHostTest`** (incl. `protocol/WsTransferMessagesTest.kt`, which stays live — see orphan
-note). The 13 test files carry **86 `@Test`** (89 counted in the tree minus `WsPairingStoreTest`'s 3).
-
-**`core:messaging`** production under `core/messaging/src/main/java/.../messaging/` — **5 `.kt`** in
-packages: root, `model/`, `protocol/`, `util/`. Tests under `src/test/java/.../messaging/` — **3
-files**.
-
-**Neither module** has an `AndroidManifest.xml`, `res/`, or `assets/` under `src/`, and **neither
-module's host tests use Robolectric** — so **no `isIncludeAndroidResources`** is needed in either.
-
-## Source-set strategy (D1 = A) — the exact wiring
-
-Three source sets, identical topology to Phases 07/08/09/10. Copy `KMP_ANDROID_DSL_SNIPPET` and
-`KMP_JVM_TARGET_DSL` from the Phase 06 log verbatim; the source-set graph is:
-
-```kotlin
-kotlin {
-    explicitApi()
-    androidLibrary { /* PASTE KMP_ANDROID_DSL_SNIPPET: namespace, compileSdk=35, minSdk=24,
-                        withHostTest { }  + consumerProguardFiles */ }
-    jvm()                                   // plain jvm(), NEVER jvm("desktop")
-    sourceSets {
-        val jvmAndAndroidMain = create("jvmAndAndroidMain")
-        jvmAndAndroidMain.dependsOn(getByName("commonMain"))
-        getByName("androidMain").dependsOn(jvmAndAndroidMain)
-        getByName("jvmMain").dependsOn(jvmAndAndroidMain)
-        // ... dependency blocks (see build rewrites below)
-    }
-}
-```
-
-**Rules that do not change between phases (re-state them so a weak model cannot drift):**
-
-- Always `getByName("commonMain")` / `getByName("androidMain")` / `getByName("jvmMain")` — **never**
-  the typed accessors. Typed accessors are not registered for a hand-created intermediate set.
-- The intermediate set is created with `create("jvmAndAndroidMain")` and wired with three explicit
-  `dependsOn` calls. Do not rename it; do not use `jvmMain`/`androidMain` as the shared tier.
-- KMP source roots are `src/<sourceSet>/kotlin/…`, **not** `src/<sourceSet>/java/…`.
-- Unit tests live in **`androidHostTest`** — there is no `jvmTest` in this phase. The 86/16 `@Test`
-  suites stay one suite each.
-- `@JvmInline` **works in commonMain** (proven by `core:common` `FlashDeviceId.kt:6`). Do not move
-  `FlashTransfer.kt` down just because of `@JvmInline`.
-
-## Placement table — `core:transfer` (19 production files: 5 / 14 / 0) + 1 orphan deletion
-
-Move files **unedited.** The R8-sensitive wire/codec files (`ChunkFrame`, `WsTransferMessages`) are
-flagged; you may relocate them but must not touch a byte of their content (CONVENTIONS.md R8).
-
-**commonMain — 5** (`src/commonMain/kotlin/com/transfer/flash/core/transfer/`):
-
-| # | File (relative to package root) | Why commonMain |
-|---|---|---|
-| 1 | `FlashTransferRepository.kt` | repository **interface**; imports `FlashDevice`/`FlashResult`/`FlashTransfer`/`FlashTransferId`/`StateFlow` — all commonMain |
-| 2 | `model/FlashTransfer.kt` | pure model with `@JvmInline`; no JDK/Android imports (`@JvmInline` is commonMain-safe) |
-| 3 | `protocol/WsTransferMessages.kt` | **R8 wire** (FLSH v2 frame text); imports `FlashInternalApi` + `FlashTextFraming` (both commonMain). ⚠️ Orphaned-but-tested — see orphan note |
-| 4 | `store/TransferStore.kt` | ADR-024 storage **port** (interface); no imports |
-| 5 | `multistream/StreamChannel.kt` | pure single-purpose **interface** + `fun interface StreamChannelFactory`; no JDK/Android imports |
-
-**jvmAndAndroidMain — 14** (`src/jvmAndAndroidMain/kotlin/com/transfer/flash/core/transfer/`):
-
-| # | File | Why this tier (JDK, not `android.*`) |
-|---|---|---|
-| 1 | `chunked/Sha256.kt` | `java.security.MessageDigest` |
-| 2 | `chunked/ChunkFrame.kt` | **R8 wire**; `java.io.ByteArrayOutputStream`/`java.nio.ByteBuffer`/`java.nio.ByteOrder` |
-| 3 | `chunked/Chunker.kt` | `java.io.Closeable`/`InputStream`; contains `ChunkSource`(10)/`FileMeta`(21)/`ChunkPlan`(36)/`Chunker`(78)/`ChunkStream`(199) — all in one file |
-| 4 | `chunked/ResumeBitVector.kt` | `java.util.BitSet` |
-| 5 | `chunked/ReceivePipeline.kt` | `@Synchronized` (lines 100–165); contains `ChunkSink`(345)/`WholeFileDigestProvider`(354)/`ReceiveEvent`(359) |
-| 6 | `chunked/SendPipeline.kt` | references `Chunker`/`ChunkFrame`/`Sha256`/`FileMeta` (all JVM tier); no JDK annotation of its own but pulls JVM types |
-| 7 | `policy/DestinationPolicy.kt` | `java.io.*` + `@Volatile`/`@Synchronized` (lines 102–122) |
-| 8 | `policy/RandomAccessChunkSink.kt` | wraps `ChunkSink` (jvmAndAndroidMain) |
-| 9 | `RealFlashTransferRepository.kt` | `java.io.InputStream`/`java.util.UUID`/`java.util.concurrent.ConcurrentHashMap`. (Phase 03 removed its 4 fully-qualified `android.util.Log` calls; it is a **JDK** file here, not Android.) |
-| 10 | `manifest/TransferManifest.kt` | `System.currentTimeMillis()` (line 29) is the only JDK call → jvmAndAndroidMain, **not** commonMain |
-| 11 | `multistream/MultiStreamProgress.kt` | `@Synchronized` (lines 54/70/79) — **contains** the `MultiStreamResult` sealed interface at line 101 (there is **no** standalone `MultiStreamResult.kt`) |
-| 12 | `multistream/MultiStreamDispatcher.kt` | `AtomicInteger`/`AtomicLong`/`AtomicBoolean`, `@Volatile`, `synchronized` |
-| 13 | `multistream/MultiStreamReceiver.kt` | `synchronized(lock)` |
-| 14 | `multistream/TransferCompletionStateMachine.kt` | JVM-backed state machine (`@Synchronized`/locking); **must not** be missed — it is the fourteenth row |
-
-**androidMain — 0.** None, after Phase 02.
-
-**The two extra `multistream/` files folded into the count above:** `StreamChannel.kt` is the only pure
-file in the `multistream/` package (commonMain); the remaining four (`MultiStreamProgress`,
-`MultiStreamDispatcher`, `MultiStreamReceiver`, `TransferCompletionStateMachine`) are all JVM-backed
-and are rows 11–14. There is **no** separate `StreamChannelFactory.kt` file — it is
-declared alongside `StreamChannel` in `StreamChannel.kt`. `MultiStreamResult` is a sealed interface
-declared *inside* `MultiStreamProgress.kt`, not its own file.
-
-> **Use this 5 / 14 / 0 split as the authoritative `git mv` target.** The header says **19**
-> production files (5 + 14) because the post-Phase-02 tree is 20 live files minus the
-> `model/WsTransferModels.kt` orphan — 20 − 1 = 19, matching the 19 rows exactly once you stop
-> double-counting `TransferCompletionStateMachine`. The `WsTransferModels.kt` orphan is **not** part
-> of the 19; it is handled separately below (recommend delete + ADR).
-
-## Placement table — `core:messaging` (5 production files: 4 / 0 / 1)
-
-**commonMain — 4** (`src/commonMain/kotlin/com/transfer/flash/core/messaging/`):
-
-| # | File | Why commonMain |
-|---|---|---|
-| 1 | `FlashChatRepository.kt` | repository **interface** + sample impls; imports commonMain types + `StateFlow`/util |
-| 2 | `model/FlashMessagingModels.kt` | imports `FlashDeviceId`/`FlashPeerPresence` (commonMain) |
-| 3 | `util/FlashMessagingUtils.kt` | imports commonMain types only |
-| 4 | `protocol/MessageWireFrame.kt` | **R8 wire**; no imports (pure serialization) |
-
-**androidMain — 1** (`src/androidMain/kotlin/com/transfer/flash/core/messaging/`):
-
-| # | File | Why pinned to Android |
-|---|---|---|
-| 1 | `RealFlashChatRepository.kt` | Phase 09 pins it to androidMain via 7 Room `Dao`s + 8 Room `Entity`s; also `SimpleDateFormat`/`Date`/`Locale`/`UUID`/`ConcurrentHashMap`. Do **not** pull to jvmAndAndroidMain (Room types are androidMain in Phase 09). |
-
-## The two orphaned `Ws*` files — the judgment call this phase must NOT bury
-
-Phase 02's **"do NOT delete `WsTransferMessages.kt` / `WsTransferModels.kt`"** warning
-(`PHASE-02-delete-wslegacy.md:118–120`) is now **OUTDATED** for one of them. Phase 02 deleted the
-only consumer (`WsTransferManager.kt`), so the warning that they are "live protocol, not legacy" no
-longer holds for `WsTransferModels.kt`. Treat the two differently, and **do not silently decide**:
-
-### `WsTransferMessages.kt` — orphaned-but-tested → **commonMain**
-
-- Imports only `FlashInternalApi` + `FlashTextFraming` (both commonMain) → **commonMain-eligible**.
-- Its only production reference was `wslegacy/WsTransferManager.kt` (deleted Phase 02).
-- **But `WsTransferMessagesTest.kt` is LIVE** (6 `@Test`) and tests the wire format directly.
-- **Placement: commonMain.** It is the R8 wire format that CONVENTIONS.md R8 protects; the live test
-  keeps it load-bearing. Flag: *orphaned in production, kept because it is tested + R8-protected.*
-  A later cleanup phase may delete it *after* deciding whether the desktop wire format needs it.
-
-### `WsTransferModels.kt` — fully dead → **judgment call, needs an ADR note**
-
-- Line 45 references `WsTransferServer.PREFERRED_PORT`, and **`WsTransferServer` is androidMain-only
-  (Phase 10, row 12)**. Every `WsTransferModels` symbol (`WsPeer`, `WsTransferItem`,
-  `WsDiscoveredDevice`, `WsTransferUiState`, enums) is `internal` and referenced **only** by
-  `wslegacy/WsTransferManager.kt` (deleted Phase 02) and `LegacyDiscoveredDevice.kt`'s doc comment
-  (also deleted Phase 02).
-- **It cannot go to commonMain** (references an androidMain type) nor **jvmAndAndroidMain** (would
-  break the `jvm()` compile under D1 = A, because `WsTransferServer` is Android-only). Under a
-  move-only phase it is **orphaned dead code with no legal source-set home.**
-- **Recommendation: delete it in Phase 11** (it has zero live references and cannot compile in any
-  KMP tier), with an **ADR note** in `docs/decisions.md` stating that the Phase 02 "keep it" warning
-  is superseded because its only consumer was deleted. This is a deliberate, documented deviation
-  from the "move-only" rule — it removes dead code that has no KMP home, rather than leaving an
-  uncompilable file that would fail `compileKotlinJvm`.
-- **Do NOT silently pick.** If you choose to keep it (e.g., to preserve history), you must instead
-  place it in `androidMain` AND accept that it drags `WsTransferServer` transitively — which is
-  wrong (it is `internal` dead code). The clean resolution is deletion + ADR. Confirm with the owner
-  if there is any doubt, but the technical facts point one way.
-
-## Cross-module dependency placement — the tricky part of this phase
-
-**`core:transfer`:**
-
-| Dependency | Old scope | New tier + scope | Reason |
+| Module | `@Test` | classes | failures |
 |---|---|---|---|
-| `:core:common` | `api` | **commonMain `api`** | used by commonMain files |
-| `libs.kotlinx.coroutines.core` | `api` | **commonMain `api`** | public `Flow`/`StateFlow` in signatures |
-| `:core:security` | `implementation` | **jvmAndAndroidMain `implementation`** | **DEAD** (0 imports); flag |
-| `:core:network` | `implementation` | **jvmAndAndroidMain `implementation`** | **DEAD** (0 imports); flag |
-| `:core:discovery` | `implementation` | **jvmAndAndroidMain `implementation`** | **DEAD** (0 imports); flag |
-| `libs.androidx.core.ktx` | `implementation` | **androidMain `implementation`** | **DEAD**; flag |
-| `libs.androidx.lifecycle.runtime.ktx` | `implementation` | **androidMain `implementation`** | **DEAD**; flag |
-| `libs.junit` | `testImplementation` | **androidHostTest `implementation`** | host tests |
+| `:core:transfer` | **86** | 13 | 0 |
+| `:core:messaging` | **27** | 4 | 0 |
 
-**`core:messaging`:**
+Per class — transfer: `RealFlashTransferRepositoryTest 8`, `chunked.ChunkFrameTest 8`,
+`chunked.ChunkerTest 10`, `chunked.PipelineEndToEndTest 2`, `chunked.ReceivePipelineTest 15`,
+`chunked.ResumeBitVectorTest 6`, `chunked.SendPipelineTest 6`, `chunked.Sha256Test 5`,
+`model.FlashTransferModelTest 2`, `multistream.MultiStreamDispatcherTest 13`,
+`multistream.MultiStreamReceiverTest 3`, `policy.DestinationPolicyTest 2`,
+`protocol.WsTransferMessagesTest 6`. Messaging: see disproved claim 2.
 
-| Dependency | Old scope | New tier + scope | Reason |
-|---|---|---|---|
-| `:core:common` | `api` | **commonMain `api`** | used by commonMain files |
-| `libs.kotlinx.coroutines.core` | `api` | **commonMain `api`** | public `Flow`/`StateFlow` in signatures |
-| `:core:security` | `implementation` | **androidMain `implementation`** | **DEAD** (0 imports); parity with concrete-repo tier |
-| `:core:network` | `implementation` | **androidMain `implementation`** | **DEAD** (0 imports); parity |
-| `:core:persistence` | `implementation` | **androidMain `implementation`** | **LIVE** — Room DAOs/Entities in androidMain `RealFlashChatRepository` |
-| `libs.androidx.core.ktx` | `implementation` | **androidMain `implementation`** | **DEAD**; flag |
-| `libs.androidx.lifecycle.runtime.ktx` | `implementation` | **androidMain `implementation`** | **DEAD**; flag |
-| `libs.junit` | `testImplementation` | **androidHostTest `implementation`** | host tests |
+Baseline POM dependency sets (`publishToMavenLocal`, both at `1.1.0`):
 
-**Why `:core:common` and `coroutines.core` must be `api`, not `implementation`:** both repositories
-expose `Flow`/`StateFlow` (and `FlashTransfer`/`FlashChatRepository` return `:core:common` types) in
-their public signatures. `api` was already correct in the current builds — preserve it, do not
-"tidy" it to `implementation`.
+```
+core-transfer:  compile{core-common, kotlinx-coroutines-core, kotlin-stdlib}
+                runtime{core-network, core-ktx 1.10.1, lifecycle-runtime-ktx 2.6.1}
+core-messaging: compile{core-common, kotlinx-coroutines-core, kotlin-stdlib}
+                runtime{core-security, core-network, core-persistence, core-ktx,
+                        lifecycle-runtime-ktx}
+```
 
-**Why `:core:network` in transfer is dead but `:core:network` is the *same module* Phase 10
-converted:** transfer never called network by import in live code; the only reference was inside the
-orphaned `WsTransferModels.kt`. Phase 10 converted `:core:network` for its own sake (it is consumed
-directly by `:app` and `:core:engine`); transfer's edge to it is a leftover. Relocate it as dead +
-flag, do not let it leak into commonMain.
+## `:core:transfer` — 20 production files, 5 commonMain / 15 androidMain
 
-## The target `build.gradle.kts` files (full, paste-ready)
+### commonMain (5)
 
-Fill the `/* PASTE … */` regions from the Phase 06 log (`KMP_ANDROID_DSL_SNIPPET`,
-`KMP_HOST_TEST_BLOCK`). Everything else is literal.
+| File | Lines | Why it is clean |
+|---|---|---|
+| `FlashTransferRepository.kt` | 106 | Interface + `FlashTransferProgress`. coroutines `Flow` only. |
+| `model/FlashTransfer.kt` | 51 | `@JvmInline value class FlashTransferId` + data class + enum. `@JvmInline` is available in `commonMain` — `:core:common`'s `FlashDeviceId` already proves it. |
+| `protocol/WsTransferMessages.kt` | 116 | **R8 wire format.** Pure string framing via `:core:common`'s `FlashTextFraming`. Zero `java.*`. Moves byte-identical. |
+| `store/TransferStore.kt` | 36 | The ADR-024 port. Suspend functions over model types. |
+| `multistream/StreamChannel.kt` | 48 | Interface + `StreamId` value class. No implementation. |
 
-### `core/transfer/build.gradle.kts`
+### androidMain (15)
+
+| File | Lines | Blocking reason (R2 step 1) |
+|---|---|---|
+| `RealFlashTransferRepository.kt` | 841 | `java.io.InputStream`, `java.util.Collections.newSetFromMap`, `java.util.UUID`, `ConcurrentHashMap` |
+| `chunked/ChunkFrame.kt` | 466 | **R8 wire.** `ByteArrayOutputStream`, `ByteBuffer`, `ByteOrder`, `Charsets` |
+| `chunked/Chunker.kt` | 306 | `Closeable`, `IOException`, `InputStream` |
+| `chunked/ReceivePipeline.kt` | 421 | `@Synchronized` |
+| `chunked/ResumeBitVector.kt` | 160 | `java.util.BitSet` |
+| `chunked/SendPipeline.kt` | 216 | No trap of its own — pulled down by importing `Chunker`, `ChunkFrame`, `Sha256`, `FileMeta` |
+| `chunked/Sha256.kt` | 108 | `java.security.MessageDigest`, `Charsets` |
+| `manifest/TransferManifest.kt` | 42 | `System.currentTimeMillis()` (line 29). Also dead code — see above. |
+| `model/WsTransferModels.kt` | 51 | References `WsTransferServer` (androidMain in `:core:network`) |
+| `multistream/MultiStreamDispatcher.kt` | 675 | `AtomicBoolean/Integer/Long`, `Collections.synchronizedList`, `@Volatile`, `synchronized`, `System.currentTimeMillis` (line 67) |
+| `multistream/MultiStreamProgress.kt` | 131 | `@Synchronized` |
+| `multistream/MultiStreamReceiver.kt` | 109 | `synchronized(lock)` |
+| `multistream/TransferCompletionStateMachine.kt` | 147 | `AtomicBoolean`, `synchronized` |
+| `policy/DestinationPolicy.kt` | 133 | `java.io.File`, `OutputStream`, `RandomAccessFile`, `Closeable`, `@Volatile`, `@Synchronized` |
+| `policy/RandomAccessChunkSink.kt` | 24 | Clean itself; references `ChunkSink` (in `ReceivePipeline.kt`) and `RandomAccessSinkHandle` (in `DestinationPolicy.kt`), both androidMain |
+
+**Zero content edits in `:core:transfer`.** Note the consequence for R8: because `ChunkFrame.kt`
+and `Sha256.kt` are androidMain anyway, their `Charsets` usage needs no replacement, so both wire
+files move with not a byte changed. Do not "improve" them to `encodeToByteArray()` — that is a
+Phase 15 concern and it is a wire-format edit (R8).
+
+### Why 5 of 20
+
+That ratio looks bad until you name what the 5 are. They are the module's **entire published
+contract**: the repository interface, the model, the ADR-024 port, the stream abstraction, and the
+control-frame wire format. The 15 are one 841-line concrete repository plus the chunking, hashing,
+resume, multi-stream and destination-policy machinery — every one of which is a file whose job is
+to touch bytes on a disk or a socket. R2 step 1 says leave those where they are; R2 step 3
+(`expect`/`actual`) would mean writing a second implementation of each, which is Phase 15's brief,
+not this one. Phase 15 gets `commonMain` interfaces to implement against precisely because this
+phase moves the 5.
+
+The two files worth arguing about, and the answers:
+
+- **`ChunkFrame.kt` (466 lines, R8 wire).** Tempting to move: it is a codec, and Phase 10 found
+  `WebSocketCodec` in the same position. Answer: no. It is `ByteBuffer`/`ByteOrder` throughout,
+  and rewriting binary framing by hand in common Kotlin is a wire-format change under R8 even if
+  the output happens to match. `WsTransferMessages` is the codec that moves, because it is
+  *text* framing that was already `java.*`-free.
+- **`ResumeBitVector.kt` (160 lines).** `java.util.BitSet` has no common equivalent, and a
+  hand-rolled `LongArray` replacement would change resume behaviour at the edges. Leave it.
+
+## `:core:messaging` — 6 production files, 4 commonMain / 2 androidMain
+
+### commonMain (4)
+
+| File | Lines | Note |
+|---|---|---|
+| `FlashChatRepository.kt` | 276 | **Needs the one edit** — see below. Interface (lines 20–114) is already clean; the two traps are in `SampleFlashChatRepository`. |
+| `model/FlashMessagingModels.kt` | 308 | 20 types. `@JvmInline` value classes only, no `java.*`. This is what Phases 17–20 render. |
+| `protocol/MessageWireFrame.kt` | 73 | **R8 wire.** Clean already — moves byte-identical. |
+| `util/FlashMessagingUtils.kt` | 269 | Grouping + preview helpers. Clean. |
+
+### androidMain (2)
+
+| File | Lines | Blocking reason |
+|---|---|---|
+| `PresenceHold.kt` | 95 | `System.currentTimeMillis()` ×2 **and** `HashMap.putIfAbsent` |
+| `RealFlashChatRepository.kt` | 1306 | `SimpleDateFormat`, `Date`, `Locale`, `UUID`, `ConcurrentHashMap`, plus 16 Room types from `:core:persistence` (7 DAOs, 7 entities, 2 DAO projections) |
+
+### Why `PresenceHold` is androidMain and not an edit
+
+It has the same `System.currentTimeMillis()` trap as `FlashChatRepository.kt`, and this file gets
+moved while that one gets edited. The difference is `MutableMap.putIfAbsent`, which is a JVM
+default method with no `commonMain` equivalent — so an edit could not stop at the clock and would
+have to restructure the map logic. Weigh that against what moving costs: `PresenceHold` is
+`internal`, and its only consumers are `RealFlashChatRepository` and `PresenceHoldTest`, both of
+which are androidMain-tier already. Moving it loses nothing and touches no bytes. R2 step 1.
+
+### The one content edit
+
+`core/messaging/src/commonMain/kotlin/.../FlashChatRepository.kt`, two lines, both inside
+`SampleFlashChatRepository` (the preview/sample implementation — **not** the interface):
+
+```kotlin
+// line 147, in sendText:
+id = "local-${System.currentTimeMillis()}",
+// line 215, in updateListPreview:
+sortOrder = System.currentTimeMillis(),
+```
+
+Replace both with `SystemTimeSource.nowMs()` from `:core:common`, adding one import:
+
+```kotlin
+import com.transfer.flash.core.common.time.SystemTimeSource
+```
+
+Unlike Phase 10's `toByteArray(Charsets.UTF_8)` → `encodeToByteArray()` change — which has one
+divergent input class (unpaired surrogates) — **this one is a true identity on both current
+targets.** Both actuals are literally the call being replaced:
+
+```kotlin
+// core/common/src/androidMain/.../time/PlatformTime.android.kt
+internal actual fun currentTimeMillisPlatform(): Long = System.currentTimeMillis()
+// core/common/src/jvmMain/.../time/PlatformTime.jvm.kt
+internal actual fun currentTimeMillisPlatform(): Long = System.currentTimeMillis()
+```
+
+`currentTimeMillisPlatform()` is `internal expect`, so it is not callable across modules;
+`SystemTimeSource.nowMs()` is the public route and `:core:common` is already an `api` dependency.
+
+## Test placement — all 17 existing files go to `androidHostTest`, unchanged
+
+Every existing suite in both modules is **JUnit 4** (`org.junit.Test`, `org.junit.Assert.*`,
+`@Rule TemporaryFolder`, `@Ignore`) and most use `java.*` directly: `ByteArrayInputStream`,
+`File`, `Collections`, `CompletableFuture`, `Executors`, `TimeUnit`, `AtomicBoolean/Integer`,
+`ConcurrentHashMap`, plus `runBlocking`. There is **no `kotlinx-coroutines-test`, no Robolectric
+and no Room** in either module's tests.
+
+They all move to `androidHostTest` with zero content changes. The only test dependency either
+module needs there is `libs.junit`, exactly as today.
+
+## Two new `commonTest` suites — required, not optional
+
+CONVENTIONS R3.1: *"Any phase that writes an `actual` should put at least one behavioural
+assertion in `commonTest` so both platforms run it."* Neither module writes an `actual`, but the
+same reasoning applies to a converted module with an empty `commonTest`: `jvmTest` running zero
+tests means the desktop target is **compiled but unproven**. Phase 10 set the precedent with
+`FlashSessionSendTextTest`.
+
+Both suites are **additive**. Neither modifies an existing test, and neither touches an R8 file.
+Use underscored test names, not backticks: backticked names are illegal on Kotlin/Native, and
+`commonTest` is the one tier a future native target will compile.
+
+### `core/transfer/src/commonTest/kotlin/.../protocol/WsTransferMessagesWireFormatTest.kt`
+
+The existing `androidHostTest` suite round-trips the four frames (encode → parse → compare). The
+common suite does something the round-trip cannot: it pins the **literal wire text**, so a change
+to `FlashTextFraming`'s escaping that happens to be symmetric — and therefore invisible to a
+round-trip test — fails the build on both targets. Derived from `FlashTextFraming.escape`
+(`%`→`%25`, ` `→`%20`, `=`→`%3D`, applied in that order):
+
+```
+FLASH_WS_HELLO version=1 deviceId=device-1234 name=Kali%20Phone%20%3D%20Pro
+FLASH_FILE_START version=1 transferId=ab12cd34 name=my%20100%25%20file%20(final).zip size=987654321
+FLASH_FILE_END version=1 transferId=ab12cd34 bytes=42
+FLASH_FILE_ACK version=1 transferId=ab12cd34 received=42 ok=true
+```
+
+8 tests: the four literals, `PROTOCOL_VERSION == 1`, a CJK+emoji friendly name round-trip (the
+case where a per-target string difference would actually show), a value containing a literal
+`%20` (which only survives because `unescape` undoes `%25` **last**), and cross-prefix rejection.
+
+`WsTransferMessages` is `internal`, which a `commonTest` in the same module can see — test source
+sets are associated with the main compilation. The file needs
+`@file:OptIn(FlashInternalApi::class)` for `FlashTextFraming`, same as the existing suite.
+
+### `core/messaging/src/commonTest/kotlin/.../SampleFlashChatRepositoryTest.kt`
+
+Pins the file this phase **edits**. 8 tests over `SampleFlashChatRepository`: `sendText` appends a
+mine-message and assigns `local-<millis>`; the id's numeric suffix parses and is `>=` a clock
+reading taken before the call (this is the assertion that proves `SystemTimeSource.nowMs()`
+behaves like the `System.currentTimeMillis()` it replaced, **on both targets**); the list
+preview's `sortOrder` is likewise refreshed from the shared clock; blank text is ignored; a
+`sendText` with no open conversation is a no-op; an unknown `openConversation` id is ignored;
+`archiveConversation` drops the item; `toggleListSelection` adds then removes.
+
+Find list items by `id`, never by index — `sortedChatListItems` reorders on every preview update.
+Valid sample ids: `conv-false-school` (pinned), `conv-alex`, `conv-design`, `conv-transfer`,
+`conv-offline`. `sendText` is **not** a suspend function, so this suite needs no
+`kotlinx-coroutines-test`; `kotlin("test")` alone is enough.
+
+### Expected test arithmetic
+
+| Task | Before | After |
+|---|---|---|
+| `:core:transfer:testAndroidHostTest` | 86 | **94** (86 + 8 common) |
+| `:core:transfer:jvmTest` | — | **8** |
+| `:core:messaging:testAndroidHostTest` | 27 | **35** (27 + 8 common) |
+| `:core:messaging:jvmTest` | — | **8** |
+| **Repo total** | 913 | **945** (+32 = 8 × 2 targets × 2 modules) |
+
+## `core/transfer/build.gradle.kts` — replace the file with this
+
+The DSL block inside `kotlin { }` is **`android { }`**, not `androidLibrary { }`. The old file's
+examples used the latter; it does not resolve under AGP 9.3.1. Everything here mirrors
+`core/network/build.gradle.kts` as committed in Phase 10.
 
 ```kotlin
 plugins {
+    // `com.android.library` is INCOMPATIBLE with the Kotlin Multiplatform plugin under
+    // AGP 9+. A converted module swaps it for these two rather than adding to it.
     alias(libs.plugins.kotlin.multiplatform)
     alias(libs.plugins.android.kotlin.multiplatform.library)
     `maven-publish`
 }
 
 kotlin {
+    // Phase 3 Task 3.2, unchanged by the conversion: strict explicit-API mode.
     explicitApi()
 
-    androidLibrary {
+    // NOTE: deliberately NO `-Xexpect-actual-classes`. This module declares no expect/actual.
+
+    android {
         namespace = "com.transfer.flash.core.transfer"
         compileSdk = 35
-        minSdk = 24
-        // PASTE KMP_HOST_TEST_BLOCK from the Phase 06 log (withHostTest { } enabling the
-        // Android host unit-test compilation + task). core:transfer needs NO Android resources,
-        // so do NOT add isIncludeAndroidResources (no Robolectric-resource test here).
-        // PASTE consumer-proguard wiring: consumerProguardFiles("consumer-rules.pro")
+        minSdk = 24                       // NOT inside defaultConfig — the target is variant-free
+
+        optimization {                    // was defaultConfig { consumerProguardFiles(...) }
+            consumerKeepRules.apply {
+                file("consumer-rules.pro")
+                publish = true
+            }
+        }
+
+        localDependencySelection {        // was buildTypes { release { … } }
+            selectBuildTypeFrom.set(listOf("release"))
+        }
+
+        compilerOptions {                 // was compileOptions { source/targetCompatibility }
+            jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11)
+        }
+
+        withHostTest { }                  // creates androidHostTest + testAndroidHostTest
+        withDeviceTest {
+            instrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        }
     }
 
-    jvm()   // plain jvm() — desktop JVM target. NEVER jvm("desktop").
-
-    sourceSets {
-        val jvmAndAndroidMain = create("jvmAndAndroidMain")
-        jvmAndAndroidMain.dependsOn(getByName("commonMain"))
-        getByName("androidMain").dependsOn(jvmAndAndroidMain)
-        getByName("jvmMain").dependsOn(jvmAndAndroidMain)
-
-        getByName("commonMain").dependencies {
-            api(project(":core:common"))
-            api(libs.kotlinx.coroutines.core)
-        }
-        getByName("jvmAndAndroidMain").dependencies {
-            // All three are grep-unused (0 imports) as of Phase 11 — the wslegacy-only consumers
-            // were deleted in Phase 02. Relocated for parity; do NOT delete here.
-            // TODO(cleanup): grep-unused as of Phase 11 — a later phase may delete these.
-            implementation(project(":core:security"))
-            implementation(project(":core:network"))
-            implementation(project(":core:discovery"))
-        }
-        getByName("androidMain").dependencies {
-            // Both AARs are grep-unused (0 androidx imports). TODO(cleanup): relocated, not deleted.
-            implementation(libs.androidx.core.ktx)
-            implementation(libs.androidx.lifecycle.runtime.ktx)
-        }
-        getByName("androidHostTest").dependencies {
-            implementation(libs.junit)
+    // Desktop/Linux/CI. Plain `jvm()`, never `jvm("desktop")` — R5. Carries the transfer
+    // CONTRACT only; every byte-moving implementation stays in androidMain until Phase 15.
+    jvm {
+        compilerOptions {
+            jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11)
         }
     }
-}
-
-publishing {
-    publications {
-        withType<MavenPublication>().configureEach {
-            // Keep the root coordinate stable for existing Android consumers resolving core-transfer.
-            artifactId = artifactId.replace(project.name, "core-transfer")
-        }
-    }
-}
 ```
-
-### `core/messaging/build.gradle.kts`
 
 ```kotlin
-plugins {
-    alias(libs.plugins.kotlin.multiplatform)
-    alias(libs.plugins.android.kotlin.multiplatform.library)
-    `maven-publish`
-}
-
-kotlin {
-    explicitApi()
-
-    androidLibrary {
-        namespace = "com.transfer.flash.core.messaging"
-        compileSdk = 35
-        minSdk = 24
-        // PASTE KMP_HOST_TEST_BLOCK (withHostTest { }). NO isIncludeAndroidResources.
-        // PASTE consumer-proguard wiring: consumerProguardFiles("consumer-rules.pro")
-    }
-
-    jvm()   // plain jvm().
-
     sourceSets {
-        val jvmAndAndroidMain = create("jvmAndAndroidMain")
-        jvmAndAndroidMain.dependsOn(getByName("commonMain"))
-        getByName("androidMain").dependsOn(jvmAndAndroidMain)
-        getByName("jvmMain").dependsOn(jvmAndAndroidMain)
-
-        getByName("commonMain").dependencies {
+        commonMain.dependencies {
             api(project(":core:common"))
+            // FlashTransferRepository.activeTransfers is a public Flow, so coroutines stays `api`.
             api(libs.kotlinx.coroutines.core)
         }
-        getByName("androidMain").dependencies {
-            // :core:persistence is LIVE — Room DAOs/Entities consumed by RealFlashChatRepository
-            // (androidMain). It must stay androidMain so Room/SQLCipher stays off the desktop target.
-            implementation(project(":core:persistence"))
-            // :core:security and :core:network are grep-unused (0 imports). TODO(cleanup): relocated,
-            // not deleted, under the move-only rule.
-            implementation(project(":core:security"))
+        androidMain.dependencies {
+            // LIVE edge, not dead: model/WsTransferModels.kt reads WsTransferServer.PREFERRED_PORT,
+            // and WsTransferServer is androidMain in :core:network as of Phase 10. The build file's
+            // pre-existing comment about Phase 02 removing :core:security and :core:discovery is
+            // preserved below because it documents an absence a reader will otherwise re-add.
             implementation(project(":core:network"))
-            // Both AARs are grep-unused (0 androidx imports). TODO(cleanup): relocated, not deleted.
+            // TODO(cleanup): both are dead — grep finds zero androidx references in this module.
+            // Parked here rather than deleted so core-transfer-android's POM keeps the two
+            // runtime-scope entries that 1.1.0 consumers resolve today (Phase 10 precedent).
             implementation(libs.androidx.core.ktx)
             implementation(libs.androidx.lifecycle.runtime.ktx)
         }
+
+        // Runs on BOTH the Android host-test JVM and the desktop jvm() target, so the FLSH v2
+        // control-frame format is executed on each rather than merely compiled (R3.1).
+        commonTest.dependencies {
+            implementation(kotlin("test"))
+        }
+        // The 13 pre-existing suites are JUnit 4 and use java.io/java.util.concurrent and
+        // TemporaryFolder, so they stay on the Android host-test tier, byte-for-byte unchanged.
         getByName("androidHostTest").dependencies {
+            implementation(libs.junit)
+        }
+        jvmTest.dependencies {
             implementation(libs.junit)
         }
     }
@@ -505,379 +430,302 @@ kotlin {
 
 publishing {
     publications {
+        // KMP generates the publications itself (root `kotlinMultiplatform` + one per target), so
+        // a converted module must NOT register<MavenPublication>("release") any more. Default
+        // artifactIds derive from the project name (`transfer`, `transfer-android`,
+        // `transfer-jvm`); rename in place to keep the coordinates 1.1.0 consumers already use.
         withType<MavenPublication>().configureEach {
-            artifactId = artifactId.replace(project.name, "core-messaging")
+            artifactId = artifactId.replace("transfer", "core-transfer")
         }
     }
 }
 ```
 
-**What changed vs. the old files, and why each change is safe:**
+Two notes on what is deliberately absent. There is no `dependencies { }` block at the top level
+any more — KMP puts them in `sourceSets`. And `:core:persistence` is still absent from transfer:
+Phase 04's ADR-024 inversion put storage behind the `TransferStore` port, and this phase does not
+reopen that.
 
-- `com.android.library` → `com.android.kotlin.multiplatform.library` + `kotlin.multiplatform` (AGP 9
-  requirement; `com.android.library` is incompatible with the KMP plugin).
-- Deleted `buildTypes`/`singleVariant`/`compileOptions`/`testInstrumentationRunner` — none exist in
-  the KMP Android DSL. Host tests are enabled by `withHostTest { }` (omitting it = 0 tests silently
-  pass, the classic trap). `consumerProguardFiles` moves inside `androidLibrary { }`.
-- No `isIncludeAndroidResources` — neither module has `res/`/assets and no Robolectric-resource test.
-- The publication block switches to the KMP
-  `withType<MavenPublication>().configureEach { artifactId = …replace(project.name, "core-transfer") }`
-  form (same rewrite every converted module uses; root coordinates stay `core-transfer` /
-  `core-messaging`).
+## `core/messaging/build.gradle.kts` — same shape, different dependency split
 
-## Steps (do them in order; every Gradle command uses `--no-configuration-cache`)
+Identical to the transfer file above except for `namespace`, the `artifactId` rename token, and
+the source-set dependencies:
 
-### Step 1 — Record the baselines (paste the outputs into the log)
+```kotlin
+    sourceSets {
+        commonMain.dependencies {
+            api(project(":core:common"))
+            // chatListState / conversationState are public StateFlows — coroutines stays `api`.
+            api(libs.kotlinx.coroutines.core)
+        }
+        androidMain.dependencies {
+            // RealFlashChatRepository consumes 16 Room types — 7 DAOs, 7 entities and the 2 DAO
+            // projections ConversationPreview/ConversationUnread. This is the module's one
+            // genuinely load-bearing Android edge, and it is why that 1306-line file is
+            // androidMain. :core:persistence is still `com.android.library` (Phase 09 blocked),
+            // so this is a KMP androidMain target consuming a variant-ful Android library — it
+            // resolves through the `localDependencySelection { selectBuildTypeFrom }` above,
+            // the same mechanism :app uses. Gate 1 proves none of it reaches the desktop target.
+            implementation(project(":core:persistence"))
+            // TODO(cleanup): :core:security, :core:network and both androidx entries are dead —
+            // grep finds zero references to any of them in main or test. Parked, not deleted, so
+            // core-messaging-android's POM keeps the runtime-scope entries 1.1.0 consumers
+            // resolve today (Phase 10 precedent, which logged the same for :core:network).
+            implementation(project(":core:security"))
+            implementation(project(":core:network"))
+            implementation(libs.androidx.core.ktx)
+            implementation(libs.androidx.lifecycle.runtime.ktx)
+        }
 
-Before touching anything, capture the two numbers each phase must preserve. Run from repo root:
-
-```bash
-./gradlew :core:transfer:testDebugUnitTest --no-configuration-cache
-./gradlew :core:messaging:testDebugUnitTest --no-configuration-cache
+        commonTest.dependencies {
+            implementation(kotlin("test"))
+        }
+        // The 4 pre-existing suites are JUnit 4; RealFlashChatRepositoryTest and PresenceHoldTest
+        // exercise androidMain types. Unchanged.
+        getByName("androidHostTest").dependencies {
+            implementation(libs.junit)
+        }
+        jvmTest.dependencies {
+            implementation(libs.junit)
+        }
+    }
 ```
 
-Record the **exact `@Test` count** each runs. The verified baselines are **86 tests across 13
-classes** (transfer) and **16 tests across 3 classes** (messaging); if either reports a different
-number, STOP — the inventory drifted and the placement table must be re-derived before moving files.
-Also capture the current publish coordinates:
+and
 
-```bash
-./gradlew :core:transfer:publishToMavenLocal --no-configuration-cache
-./gradlew :core:messaging:publishToMavenLocal --no-configuration-cache
+```kotlin
+        withType<MavenPublication>().configureEach {
+            artifactId = artifactId.replace("messaging", "core-messaging")
+        }
 ```
 
-Confirm each emits `core-transfer` / `core-messaging` (root artifactId) today.
+`:core:security` is dead in messaging as well — that is measured, not assumed (`grep -rnE
+'com\.transfer\.flash\.core\.(security|network)' core/messaging/src` returns nothing). All four
+dead edges are parked in `androidMain` together, which is also the only tier where a dead
+`com.android.library` edge can legally sit now.
 
-### Step 2 — Create the KMP source-set directories
+## Procedure
 
-KMP uses `kotlin/`, not `java/`. Create the roots (production) plus the host-test root for **each**
-module:
+R4 normally forbids editing two modules' build files in one commit. **This phase is the
+exception it names** — it converts two modules, and both build files are rewritten in the same
+commit. Keep it to those two modules and nothing else.
 
-**`core:transfer`:**
-
-```bash
-cd core/transfer/src
-mkdir -p commonMain/kotlin/com/transfer/flash/core/transfer
-mkdir -p jvmAndAndroidMain/kotlin/com/transfer/flash/core/transfer
-mkdir -p androidMain/kotlin/com/transfer/flash/core/transfer
-mkdir -p androidHostTest/kotlin/com/transfer/flash/core/transfer
-```
-
-Create the sub-package dirs as needed by the `git mv` targets below (`chunked/`, `manifest/`,
-`model/`, `multistream/`, `policy/`, `protocol/`, `store/`).
-
-**`core:messaging`:**
+### Step 1 — create the directories
 
 ```bash
-cd core/messaging/src
-mkdir -p commonMain/kotlin/com/transfer/flash/core/messaging
-mkdir -p androidMain/kotlin/com/transfer/flash/core/messaging
-mkdir -p androidHostTest/kotlin/com/transfer/flash/core/messaging
+cd core/transfer/src && mkdir -p commonMain/kotlin/com/transfer/flash/core/transfer/{model,multistream,protocol,store} \
+  androidMain/kotlin/com/transfer/flash/core/transfer/{chunked,manifest,model,multistream,policy} \
+  commonTest/kotlin/com/transfer/flash/core/transfer/protocol \
+  androidHostTest/kotlin/com/transfer/flash/core/transfer/{chunked,model,multistream,policy,protocol} && cd -
+cd core/messaging/src && mkdir -p commonMain/kotlin/com/transfer/flash/core/messaging/{model,protocol,util} \
+  androidMain/kotlin/com/transfer/flash/core/messaging \
+  commonTest/kotlin/com/transfer/flash/core/messaging \
+  androidHostTest/kotlin/com/transfer/flash/core/messaging && cd -
 ```
 
-Create the sub-package dirs (`model/`, `protocol/`, `util/`).
+`kotlin/`, never `java/` (R5). No `jvmMain` directory is created for either module: both are
+empty by design, and Gradle does not require the directory to exist.
 
-### Step 3 — Rewrite both `build.gradle.kts` files
+### Step 2 — `git mv` every file
 
-Replace each with the paste-ready target above. Do this **before** moving files so the IDE/Gradle sees
-the new source sets when it re-syncs. Do not run a build yet — the files are still in `src/main`.
+Use `git mv` so rename detection keeps the history; a delete-plus-add makes the diff unreadable
+and hides whether content changed. 43 files: 20 + 13 in transfer, 6 + 4 in messaging.
 
-### Step 4 — `git mv` the transfer production files (5 commonMain / 14 jvmAndAndroidMain / 0 androidMain)
+Transfer commonMain (5): `FlashTransferRepository.kt`, `model/FlashTransfer.kt`,
+`protocol/WsTransferMessages.kt`, `store/TransferStore.kt`, `multistream/StreamChannel.kt`.
+Transfer androidMain (15): everything else under `src/main/java/`.
+Transfer androidHostTest (13): everything under `src/test/java/`.
+Messaging commonMain (4): `FlashChatRepository.kt`, `model/FlashMessagingModels.kt`,
+`protocol/MessageWireFrame.kt`, `util/FlashMessagingUtils.kt`.
+Messaging androidMain (2): `PresenceHold.kt`, `RealFlashChatRepository.kt`.
+Messaging androidHostTest (4): all four test files.
 
-`git mv` preserves history. Source root is
-`core/transfer/src/main/java/com/transfer/flash/core/transfer/`; abbreviate as `$SRC` and the two
-destinations as `$COMMON`, `$JVMAND`:
+Afterwards `src/main/java` and `src/test/java` must be **gone** in both modules:
 
 ```bash
-cd core/transfer
-SRC=src/main/java/com/transfer/flash/core/transfer
-COMMON=src/commonMain/kotlin/com/transfer/flash/core/transfer
-JVMAND=src/jvmAndAndroidMain/kotlin/com/transfer/flash/core/transfer
-mkdir -p $COMMON/model $COMMON/protocol $COMMON/store $COMMON/multistream
-mkdir -p $JVMAND/chunked $JVMAND/policy $JVMAND/multistream $JVMAND/model $JVMAND/manifest
+find core/transfer/src core/messaging/src -type d -name java
 ```
 
-**commonMain (5):**
+Expected output: nothing. A leftover `src/main/java` is not harmless — the KMP Android target
+does not read it, so any file left behind silently stops compiling while the build stays green.
+
+### Step 3 — rewrite both build files, then make the one content edit
+
+Both build files per the sections above. Then the two `System.currentTimeMillis()` lines in
+`commonMain/.../FlashChatRepository.kt`, plus the `SystemTimeSource` import. Nothing else.
+
+### Step 4 — add the two `commonTest` suites
+
+Per *Two new `commonTest` suites* above.
+
+## Gates — all nine must pass, and the log entry must paste each one's output (R9)
+
+**Gate 1 — desktop compile, the R2 proof (both modules).**
 
 ```bash
-git mv $SRC/FlashTransferRepository.kt           $COMMON/FlashTransferRepository.kt
-git mv $SRC/model/FlashTransfer.kt               $COMMON/model/FlashTransfer.kt
-git mv $SRC/protocol/WsTransferMessages.kt       $COMMON/protocol/WsTransferMessages.kt
-git mv $SRC/store/TransferStore.kt               $COMMON/store/TransferStore.kt
-git mv $SRC/multistream/StreamChannel.kt         $COMMON/multistream/StreamChannel.kt
+./gradlew :core:transfer:compileKotlinJvm :core:messaging:compileKotlinJvm --no-configuration-cache --console=plain
 ```
 
-**jvmAndAndroidMain (14):**
+Green means no `android.*` and no Room reached the shared tier. Per R6.1 it certifies nothing
+about `java.*` — that is Gate 7's job.
+
+**Gate 2 — Android compile (both modules).**
 
 ```bash
-git mv $SRC/chunked/Sha256.kt                    $JVMAND/chunked/Sha256.kt
-git mv $SRC/chunked/ChunkFrame.kt                $JVMAND/chunked/ChunkFrame.kt
-git mv $SRC/chunked/Chunker.kt                   $JVMAND/chunked/Chunker.kt
-git mv $SRC/chunked/ResumeBitVector.kt           $JVMAND/chunked/ResumeBitVector.kt
-git mv $SRC/chunked/ReceivePipeline.kt           $JVMAND/chunked/ReceivePipeline.kt
-git mv $SRC/chunked/SendPipeline.kt              $JVMAND/chunked/SendPipeline.kt
-git mv $SRC/policy/DestinationPolicy.kt          $JVMAND/policy/DestinationPolicy.kt
-git mv $SRC/policy/RandomAccessChunkSink.kt      $JVMAND/policy/RandomAccessChunkSink.kt
-git mv $SRC/RealFlashTransferRepository.kt       $JVMAND/RealFlashTransferRepository.kt
-git mv $SRC/manifest/TransferManifest.kt         $JVMAND/manifest/TransferManifest.kt
-git mv $SRC/multistream/MultiStreamProgress.kt      $JVMAND/multistream/MultiStreamProgress.kt
-git mv $SRC/multistream/MultiStreamDispatcher.kt    $JVMAND/multistream/MultiStreamDispatcher.kt
-git mv $SRC/multistream/MultiStreamReceiver.kt      $JVMAND/multistream/MultiStreamReceiver.kt
-git mv $SRC/multistream/TransferCompletionStateMachine.kt $JVMAND/multistream/TransferCompletionStateMachine.kt
+./gradlew :core:transfer:compileAndroidMain :core:messaging:compileAndroidMain --no-configuration-cache --console=plain
 ```
 
-**the orphaned/dead `model/WsTransferModels.kt`:** see the orphan note. If you follow the deletion
-recommendation, `rm` (or `git rm`) `$SRC/model/WsTransferModels.kt` **with an ADR note** (it cannot
-compile in any KMP tier and has zero live references). If instead you keep it, you must address the
-compile break; the record above explains why keeping it is wrong. `TransferManifest.kt` is already in
-the jvmAndAndroidMain block above — its placement note follows.
+Any pre-existing warning must reappear with its path rewritten to `androidMain/` and must not
+change in count. A *new* warning means a file landed in the wrong tier.
 
-> **Placement-note for `TransferManifest.kt`:** the *only* JDK call is `System.currentTimeMillis()`
-> at line 29. Its `internal` data classes are self-referenced only. Under any JDK-tier placement it
-> compiles; it must **not** go to commonMain (JDK `System`). → **jvmAndAndroidMain.**
-
-**Count check — the load-bearing assertion (post-Phase-02, 19 production renames + 1 deletion):**
+**Gate 3 — desktop tests actually execute.**
 
 ```bash
-git status --short | grep '^R' | wc -l      # expect 19 production renames (5 commonMain + 14
-                                           # jvmAndAndroidMain) if WsTransferModels is deleted
-git status --short | grep '^D' | wc -l      # expect 1 (the git-rm'd model/WsTransferModels.kt), or
-                                           # 6 if you also count the 5 Phase-02 deletions still staged
-find $SRC -name '*.kt' | wc -l              # expect 0 — src/main must be empty of .kt
+./gradlew :core:transfer:jvmTest :core:messaging:jvmTest --no-configuration-cache --console=plain
 ```
 
-If `src/main` still has `.kt` files, you missed one. (If you do NOT delete `WsTransferModels.kt`, cast
-the find against the leftover — but see the orphan note for why that is not a valid end state.)
+**8 tests each, 0 failures.** A result of 0 tests means `commonTest` did not reach the desktop
+target and the gate has failed even though Gradle reports success.
 
-### Step 5 — `git mv` the messaging production files (4 commonMain / 0 jvmAndAndroid / 1 androidMain)
+**Gate 4 — Android host suites unregressed.**
 
 ```bash
-cd core/messaging
-SRC=src/main/java/com/transfer/flash/core/messaging
-COMMON=src/commonMain/kotlin/com/transfer/flash/core/messaging
-ANDROID=src/androidMain/kotlin/com/transfer/flash/core/messaging
-mkdir -p $COMMON/model $COMMON/protocol $COMMON/util
-git mv $SRC/FlashChatRepository.kt            $COMMON/FlashChatRepository.kt
-git mv $SRC/model/FlashMessagingModels.kt     $COMMON/model/FlashMessagingModels.kt
-git mv $SRC/util/FlashMessagingUtils.kt       $COMMON/util/FlashMessagingUtils.kt
-git mv $SRC/protocol/MessageWireFrame.kt      $COMMON/protocol/MessageWireFrame.kt
-git mv $SRC/RealFlashChatRepository.kt        $ANDROID/RealFlashChatRepository.kt
+./gradlew :core:transfer:testAndroidHostTest :core:messaging:testAndroidHostTest --no-configuration-cache --console=plain
 ```
 
-**Count check:**
+**94 and 35**, 0 failures. Compare per class against the measured baselines above — a matching
+total with a missing class is the exact failure R3 exists to catch.
+
+**Gate 5 — publication coordinates unchanged.**
 
 ```bash
-git status --short | grep '^R' | wc -l        # expect 5 production renames
-find $SRC -name '*.kt' | wc -l                # expect 0 — src/main must be empty of .kt
+./gradlew :core:transfer:publishToMavenLocal :core:messaging:publishToMavenLocal --no-configuration-cache --console=plain
+ls ~/.m2/repository/com/transfer/flash/{core-transfer,core-messaging}*/1.1.0/
 ```
 
-### Step 6 — `git mv` the test files to `androidHostTest`
+The group is **`com.transfer.flash`** (root `build.gradle.kts:12`), *not* `com.github.<user>` — the
+JitPack coordinate consumers type is not the Maven group the build writes. Measured 2026-09-05;
+this line originally guessed the JitPack form and the `ls` silently returned nothing while the
+build itself reported SUCCESS.
 
-Both modules keep **one** test suite each (no `jvmTest` split). Move the whole tree by sub-package.
+Three publications per module: `core-transfer`, `core-transfer-android`, `core-transfer-jvm` (and
+the messaging trio). Paste both `-jvm` POMs' dependency lists and confirm neither carries a dead
+`:core:network` / `:core:persistence` / androidx entry — those are `androidMain`-scoped now, so a
+desktop consumer must not see them.
 
-**`core:transfer` (13 files — `wslegacy/WsPairingStoreTest.kt` is already deleted by Phase 02):**
+**Gate 6 — the whole app still builds.**
 
 ```bash
-cd core/transfer
-TSRC=src/test/java/com/transfer/flash/core/transfer
-THOST=src/androidHostTest/kotlin/com/transfer/flash/core/transfer
-mkdir -p $THOST
-# move every .kt under the test package tree, preserving sub-package dirs:
-git mv $TSRC $THOST/..
+./gradlew :app:assembleDebug --no-configuration-cache --console=plain
 ```
 
-If Git refuses the directory move (some Windows builds do), move per-subpackage then the root
-`.kt`. After the move:
+`:app`, `:core:engine` and `:ui:chat` consume these modules. All are Android, so androidMain
+placement breaks nothing — but `:core:engine` declares both as `api`, so a mis-tiered file shows
+up here rather than in Gates 1–5.
+
+**Gate 7 — R6.1 purity grep.**
 
 ```bash
-find src/test -name '*.kt' | wc -l            # expect 0 — src/test emptied
-find $THOST -name '*.kt' | wc -l              # expect 13
+grep -rnE '\b(java|javax|android|androidx)\.' --include=*.kt core/*/src/commonMain ui/*/src/commonMain 2>/dev/null | grep -vE ':[0-9]+:[[:space:]]*(\*|//|/\*)'
 ```
 
-**`core:messaging` (3 files):**
+Expected: nothing. Then re-scan by hand for the stdlib traps no import reveals —
+`System.currentTimeMillis`, `synchronized`, `@Synchronized`, `Charsets`, `String.format`,
+`putIfAbsent`, `::class.java`, `@kotlin.jvm.Volatile` — across both new `commonMain` trees.
+
+**Gate 8 — repo-wide R3 tally.** Run the full CONVENTIONS R3 command with `:core:transfer` and
+`:core:messaging` added (see *CONVENTIONS edit* below). `BUILD FAILED` is the **expected**
+outcome: the 12 known `:core:persistence` failures (11 `FlashSettingsDataStoreTest` + 1
+`DiscoveryModeSettingTest`) are pre-existing. Then tally:
 
 ```bash
-cd core/messaging
-TSRC=src/test/java/com/transfer/flash/core/messaging
-THOST=src/androidHostTest/kotlin/com/transfer/flash/core/messaging
-mkdir -p $THOST
-git mv $TSRC $THOST/..
-find src/test -name '*.kt' | wc -l            # expect 0
-find $THOST -name '*.kt' | wc -l              # expect 3
+find . -path '*/build/test-results/*' -name 'TEST-*.xml' -not -path './media-downloader-main/*' | wc -l
 ```
 
-### Step 7 — Compile the shared surface for desktop JVM
-
-This is the proof the phase exists for — the shared half of both modules builds off Android:
+Expect **945 / 12 failures / 0 errors / 0 skipped**. **Delete the dead results directories first**
+— `core/transfer/build/test-results/testDebugUnitTest/` and the messaging one survive the plugin
+swap and will be double-counted (Phase 07 and Phase 10 both hit this):
 
 ```bash
-./gradlew :core:transfer:compileKotlinJvm --no-configuration-cache
-./gradlew :core:messaging:compileKotlinJvm --no-configuration-cache
+rm -rf core/transfer/build/test-results/testDebugUnitTest core/messaging/build/test-results/testDebugUnitTest
 ```
 
-Must be **BUILD SUCCESSFUL**. If it fails:
+**Gate 9 — no leftover `java/` source roots.** `find core/transfer/src core/messaging/src -type d
+-name java` returns nothing.
 
-- `Unresolved reference: FlashTransfer` / `FlashPeerPresence` / `FlashInternalApi` (any `:core:common`
-  type in a commonMain file) ⇒ that upstream type is **not** commonMain — return to Preconditions #1
-  and fix the upstream module, don't move the file down to "solve" it.
-- `Unresolved reference: android` / `Log` in a jvmAndAndroidMain or commonMain file ⇒ a file was
-  placed too low; it belongs in androidMain. **But note:** `RealFlashChatRepository` is androidMain
-  and references Room — if it appears in a jvmAndAndroidMain compiler error, you have placed it wrong.
-- `Unresolved reference: java`/`javax` in a **commonMain** file ⇒ that file needs the JDK; move it to
-  jvmAndAndroidMain.
-- `Unresolved reference: WsTransferServer` (the orphaned `WsTransferModels`) ⇒ exactly why it cannot
-  be placed in commonMain or jvmAndAndroidMain. If you kept it, this is the proof it must go —
-  resolve per the orphan note (delete + ADR).
+## CONVENTIONS edit (goes in the docs commit, not the code commit)
 
-### Step 8 — Run the Android host test suites; assert the baseline counts
+Add to R3's verification command:
 
-```bash
-./gradlew :core:transfer:testAndroidHostTest --no-configuration-cache
-./gradlew :core:messaging:testAndroidHostTest --no-configuration-cache
+```
+:core:transfer:testAndroidHostTest :core:transfer:jvmTest
+:core:messaging:testAndroidHostTest :core:messaging:jvmTest
 ```
 
-Must be **BUILD SUCCESSFUL running exactly the Step 1 baselines — 86 `@Test` / 13 classes** (transfer)
-and **16 `@Test` / 3 classes** (messaging). A green build running 0 tests means `withHostTest { }` was
-omitted or the tests did not land in `androidHostTest` — that is the silent-failure trap, not a pass.
+and change *"as phases 11–12 land"* to *"as phase 12 lands"*. Update the baseline note to record
+**945 / 12 / 0** after Phase 11 (+32 over Phase 10's 913: two 8-test `commonTest` suites, each
+running once per target).
 
-### Step 9 — Publish to Maven Local; confirm the coordinates + variants
+## Prohibitions
 
-```bash
-./gradlew :core:transfer:publishToMavenLocal --no-configuration-cache
-./gradlew :core:messaging:publishToMavenLocal --no-configuration-cache
-```
+- **Do NOT create `jvmAndAndroidMain`**, and do not achieve it by another name: a `srcDir` shared
+  between `androidMain` and `jvmMain` is the same thing and re-decides D1, which `DECISIONS.md`
+  reserves for the human.
+- **Do NOT introduce `expect`/`actual` in this phase.** Neither module needs one. The 15 + 2
+  androidMain files are R2 step 1, not step 3.
+- **Do NOT change a byte of `WsTransferMessages.kt`, `MessageWireFrame.kt` or `ChunkFrame.kt`**
+  (R8). No reformatting, no import reordering, no visibility tweaks, and specifically no
+  `Charsets` → `encodeToByteArray()` "cleanup" in `ChunkFrame`/`Sha256`.
+- **Do NOT delete `WsTransferModels.kt` or `TransferManifest.kt`.** Both are dead-ish; both move
+  to `androidMain`. Deleting them is a cleanup phase's job (R1). No ADR is needed for either — see
+  disproved claim 6.
+- **Do NOT delete the four dead dependency edges.** Park them in `androidMain` with
+  `TODO(cleanup)`, matching Phase 10.
+- **Do NOT pull `RealFlashChatRepository` or `RealFlashTransferRepository` toward `commonMain`,**
+  and do not stub, weaken or delete anything to make a file compile there (R2).
+- **Do NOT downgrade `:core:common` or `kotlinx-coroutines-core` from `api` to
+  `implementation`** in either module — public signatures return `Flow`/`StateFlow`.
+- **Do NOT change the `core-transfer` / `core-messaging` root coordinates**, and do not set
+  `group` or `version` in either module's `publishing { }` — both come from the root build file.
+- **Do NOT** use `jvm("desktop")`, `androidLibrary { }`, typed source-set accessors, or
+  `src/**/java/` roots. **Do NOT** omit `withHostTest { }`. **Do NOT** add
+  `isIncludeAndroidResources`.
+- **Do NOT** run any Gradle command without `--no-configuration-cache` (R3), and do not upgrade a
+  single dependency version (R10).
 
-Inspect `~/.m2/repository/<group>/`. Confirm the **root** `core-transfer` / `core-messaging`
-coordinates are still emitted (matching Step 1), now alongside `-android` and `-jvm` variants with
-`.module` metadata.
+## Commits
 
-### Step 10 — Prove the Android app still resolves and builds
+Two, following Phase 10's precedent:
 
-```bash
-./gradlew :app:assembleDebug --no-configuration-cache
-```
+1. `refactor(transfer,messaging): convert :core:transfer and :core:messaging to Kotlin
+   Multiplatform (Phase 11)` — the 43 moves, both build files, the one content edit, the two new
+   suites. `core/transfer/**` and `core/messaging/**` only.
+2. `docs(migration): Phase 11 repositories KMP logged; CONVENTIONS R3 + PHASE-11 rewritten for
+   D1 = B` — this file, the log entry, and the R3 edit.
 
-Must be **BUILD SUCCESSFUL**. `:app` consumes both modules via the root coordinates and must get the
-`-android` variants transparently. A failure here means an Android variant's API surface changed — it
-must not have (move-only).
+Splitting them means `git revert` of commit 1 alone restores a working build (R4).
 
-## Verification gate — all relevant greens (paste outputs into the log)
+## Log entry
 
-1. `:core:transfer:compileKotlinJvm` — **BUILD SUCCESSFUL** (shared transfer surface builds off
-   Android, incl. the FLSH v2 wire format). — `:core:messaging:compileKotlinJvm` — **BUILD SUCCESSFUL**.
-2. `:core:transfer:testAndroidHostTest` — **BUILD SUCCESSFUL, exactly 86 `@Test` / 13 classes**
-   (equal to Step 1 baseline; a 0-test "pass" is a failure). —
-   `:core:messaging:testAndroidHostTest` — **BUILD SUCCESSFUL, exactly 16 `@Test` / 3 classes**.
-3. `:core:transfer:publishToMavenLocal` — root `core-transfer` **plus** `-android` **and** `-jvm`
-   variants with `.module` metadata. — `:core:messaging:publishToMavenLocal` — root `core-messaging`
-   **plus** `-android` **and** `-jvm`.
-4. `:app:assembleDebug` — **BUILD SUCCESSFUL** (both Android consumers unregressed).
+Append to `docs/migration/logs/migration.md` with the six standard sections — `### Change`,
+`### Files changed`, `### Verification`, `### Deviations from the phase file`, `### Known issues`,
+`### Next step`. Paste **all nine gates' actual output**, not a claim that they passed (R9). The
+entry must state the honest share: **9 of 26 production files reached `commonMain`** (5 of 20 in
+transfer, 4 of 6 in messaging), and why — not the old file's 9-of-26-plus-14-in-a-tier-that-does-
+not-exist.
 
-Any red ⇒ do not log PASS and do not proceed to Phase 12. Fix the owning cause (placement / upstream
-commonMain / build DSL) and re-run.
+Known issues to carry forward, at minimum: `TransferManifest.kt` is fully dead code; messaging's
+`:core:security`, `:core:network` and both androidx edges are dead; transfer's two androidx edges
+are dead; `RandomAccessChunkSink.kt` is androidMain only by reference-transitivity and would move
+to `commonMain` for free the day `ChunkSink` and `RandomAccessSinkHandle` are extracted from their
+host files; and Phase 12's `:core:engine` conversion inherits the `TlsOptions` blocker Phase 10
+logged.
 
-## Do NOT
+## Next step
 
-- **Do NOT edit file contents.** This is a move-only phase. The **R8-sensitive wire/codec files**
-  (`WsTransferMessages`, `MessageWireFrame`, `ChunkFrame`) must not have a byte of content changed. No
-  reformatting, no import reordering, no visibility tweaks.
-- **Do NOT introduce an `expect`/`actual`** for anything here. If a file cannot be placed, resolve it
-  by placement or (for the dead orphan) documented deletion, not by inventing a platform abstraction.
-- **Do NOT pull `RealFlashChatRepository` (messaging) down to `jvmAndAndroidMain`.** It is pinned to
-  androidMain by Phase 09's Room types. Attempting it drags Room into the desktop target.
-- **Do NOT put `RealFlashTransferRepository` (transfer) in androidMain.** Its remaining coupling is
-  JDK (`InputStream`/`UUID`/`ConcurrentHashMap`), and Phase 03 removed its `android.util.Log`. It is
-  a **jvmAndAndroidMain** file. Only if Phase 03 was **not** yet applied would it still carry
-  `android.util.Log` — in that case keep it in **androidMain** and do Phase 03 first. (Read Phase 03
-  before proceeding.)
-- **Do NOT delete the dead dependencies** (`:core:security`, `:core:network`, `:core:discovery` in
-  transfer; `:core:security`, `:core:network` in messaging; the two `androidx` AARs in each).
-  Relocate + flag `TODO(cleanup)`; a later phase deletes them.
-- **Do NOT delete `WsTransferMessages.kt`** — it is R8-protected and has a live test. Handle it via the
-  orphan note. (The warning that was *outdated* is only about `WsTransferModels.kt`.)
-- **Do NOT downgrade `:core:common` / `coroutines.core` from `api` to `implementation`.** They are in
-  public signatures; `api` is load-bearing for transitive consumers.
-- **Do NOT use `jvm("desktop")`, typed source-set accessors, or `src/**/java/` roots.**
-- **Do NOT omit `withHostTest { }`** — omitting it produces a green build running 0 tests. And do NOT
-  add `isIncludeAndroidResources` — neither module has Android resources or a Robolectric-resource
-  test.
-- **Do NOT change the `core-transfer` / `core-messaging` root coordinates.**
-- **Do NOT run mid-migration Gradle without `--no-configuration-cache`.**
-- **Do NOT silently pick a fate for `WsTransferModels.kt`.** It is a documented deviation
-  (delete + ADR) — record it, do not bury it.
+**Phase 12 — `:core:engine`.** It is the last `core/*` module before the desktop work, it
+`api`-depends on both modules this phase converted, and its `RoomTransferStore` is the ADR-024
+adapter — so unlike messaging's Room edge, that one exists *to* touch Room and cannot be reasoned
+away. Read `PHASE-12-*.md` for a D1 = A header first; four phases in a row have needed the same
+rewrite.
 
-## Completion checklist
-
-- [ ] Both `build.gradle.kts` rewritten to the KMP form (plugins, `androidLibrary`, `jvm()`, three
-      source sets wired with `getByName`, dependency tiers per the tables, `withHostTest`, no
-      `isIncludeAndroidResources`, KMP publication rewrites).
-- [ ] `core:transfer`: 19 production files moved (5 commonMain / 14 jvmAndAndroidMain / 0 androidMain) + `WsTransferModels.kt` handled
-      + `model/WsTransferModels.kt` resolved per the orphan note (deleted + ADR, or documented keep);
-      `src/main` empty of `.kt`.
-- [ ] `core:messaging`: 5 production files moved (4 commonMain / 0 jvmAndAndroidMain / 1 androidMain);
-      `src/main` empty of `.kt`.
-- [ ] `core:transfer`: 13 test files moved to `androidHostTest`; `src/test` empty.
-- [ ] `core:messaging`: 3 test files moved to `androidHostTest`; `src/test` empty.
-- [ ] `:core:transfer:compileKotlinJvm` green; `:core:messaging:compileKotlinJvm` green.
-- [ ] `:core:transfer:testAndroidHostTest` green at **86 tests**; `:core:messaging:testAndroidHostTest`
-      green at **16 tests**.
-- [ ] Both `publishToMavenLocal` emit root + `-android` + `-jvm` with `.module`.
-- [ ] `:app:assembleDebug` green.
-- [ ] Dead deps relocated + `TODO(cleanup)` flagged, not deleted.
-- [ ] `WsTransferModels.kt` fate documented in `docs/decisions.md` (ADR) if deleted; the outdated
-      Phase 02 warning cross-referenced.
-- [ ] `WsTransferMessages.kt` orphaned-but-tested status recorded in the log (kept in commonMain).
-- [ ] Log entry appended to `docs/migration/logs/migration.md` (append-only) with pasted outputs.
-
-## Rollback
-
-Move-only + build-DSL change, so rollback is mechanical and total (for each module):
-
-```bash
-git restore --staged core/transfer core/messaging
-git checkout -- core/transfer core/messaging
-git clean -fd core/transfer/src/commonMain core/transfer/src/jvmAndAndroidMain \
-               core/transfer/src/androidMain core/transfer/src/androidHostTest \
-               core/messaging/src/commonMain core/messaging/src/androidMain \
-               core/messaging/src/androidHostTest
-```
-
-This un-stages the renames, restores the original `build.gradle.kts` and `src/main`/`src/test` trees,
-and removes the empty KMP source-set dirs. If `WsTransferModels.kt` was deleted, `git restore` brings
-it back. If `publishToMavenLocal` ran, stale `~/.m2/repository/.../core-transfer*` /
-`core-messaging*` entries are harmless (overwritten on the next real publish).
-
-## Log entry (mandatory)
-
-Append **one** entry to `docs/migration/logs/migration.md` (append-only, newest at the bottom —
-never edit an earlier entry; never write PASS without pasted command output). Include:
-
-- The Step 1 **baselines** (`testDebugUnitTest` counts = 86/13 classes for transfer, 16/3 for
-  messaging) and the current publish coordinates (`core-transfer`, `core-messaging`), with pasted
-  output.
-- Confirmation of the split moved: **transfer 5 commonMain / 14 jvmAndAndroidMain / 0 androidMain**
-  + 1 deletion (`model/WsTransferModels.kt`) (post-Phase-02), **messaging 4 commonMain /
-  0 jvmAndAndroidMain / 1 androidMain**; `src/main` empty (paste the `find … | wc -l` = 0 and
-  `git status --short | grep -c '^R'` = 19 / `grep -c '^D'` = 1 counts).
-- Test moves: transfer 13 `androidHostTest`, messaging 3 `androidHostTest`.
-- The four verification-gate outputs pasted: both `compileKotlinJvm` SUCCESS; both `testAndroidHostTest`
-  SUCCESS **at the stated counts** (86 / 16, not just "passed"); both `publishToMavenLocal` emitting
-  root + `-android` + `-jvm`; `:app:assembleDebug` SUCCESS.
-- The dead dependencies relocated + flagged (transfer → jvmAndAndroidMain: `:core:security`,
-  `:core:network`, `:core:discovery`; messaging → androidMain: `:core:security`, `:core:network`;
-  both → androidMain: `androidx.core.ktx`, `androidx.lifecycle.runtime.ktx`), explicitly noted as
-  grep-unused and **not** deleted.
-- **`WsTransferModels.kt`** — the explicit judgment call: state its fate (recommend delete + ADR),
-  cite that its only consumer (`WsTransferManager.kt`) was deleted in Phase 02, state that Phase 02's
-  "keep it" warning (lines 118–120) is now superseded, and cross-reference the ADR.
-- **`WsTransferMessages.kt`** — orphaned-but-tested: kept in commonMain because it is R8-protected
-  and its 6-test suite is live.
-- **`TransferManifest.kt`** — note the `System.currentTimeMillis()` line 29 as the JDK pin and that
-  it went to jvmAndAndroidMain.
-- The final statement: **`core:transfer` and `core:messaging` are KMP; the shared transfer surface
-  (repository contract, FLSH v2 wire format + chunk codec, chunking/hashing/resume machinery, the
-  multi-stream engine interfaces, the store port) compiles for desktop JVM; the shared messaging
-  surface (repository contract + sample impls, messaging UI models, grouping/util, message wire
-  frame) compiles for desktop JVM; the Android host suites are unregressed at 86 + 16 tests; the
-  concrete repos stay bound to JDK/Room (`RealFlashTransferRepository` jvmAndAndroidMain,
-  `RealFlashChatRepository` androidMain) and desktop-facing adapters are deferred to Phase 12 + 09.**

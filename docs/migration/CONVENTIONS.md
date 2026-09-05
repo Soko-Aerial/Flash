@@ -76,14 +76,15 @@ Phase 06 discovered the replacement task name empirically and recorded it in R3.
 and in `logs/migration.md`. From Phase 06 onward the verification command is:
 
 ```bash
-./gradlew --stop >/dev/null 2>&1; sleep 8; ./gradlew :app:assembleDebug testDebugUnitTest :core:common:testAndroidHostTest :core:security:testAndroidHostTest :core:security:jvmTest :core:discovery:testAndroidHostTest :core:discovery:jvmTest :core:network:testAndroidHostTest :core:network:jvmTest --no-configuration-cache --continue --max-workers=2 --console=plain
+./gradlew --stop >/dev/null 2>&1; sleep 8; ./gradlew :app:assembleDebug testDebugUnitTest :core:common:testAndroidHostTest :core:security:testAndroidHostTest :core:security:jvmTest :core:discovery:testAndroidHostTest :core:discovery:jvmTest :core:network:testAndroidHostTest :core:network:jvmTest :core:transfer:testAndroidHostTest :core:transfer:jvmTest :core:messaging:testAndroidHostTest :core:messaging:jvmTest --no-configuration-cache --continue --max-workers=2 --console=plain
 ```
 
 Every converted module must be **named explicitly** on that command line, because the
 unqualified `testDebugUnitTest` no longer reaches it. Add one `:module:testAndroidHostTest`
-per conversion as phases 11–12 land — **and one `:module:jvmTest` if the module has a
+per conversion as phase 12 lands — **and one `:module:jvmTest` if the module has a
 `commonTest`/`jvmTest` suite**, as `:core:security` does since Phase 07, `:core:discovery`
-since Phase 08 and `:core:network` since Phase 10. `--continue` is load-bearing: without it the
+since Phase 08, `:core:network` since Phase 10 and both `:core:transfer` and `:core:messaging`
+since Phase 11. `--continue` is load-bearing: without it the
 12 known `:core:persistence` failures abort the run before later modules execute, and the total
 silently drops. Those 12 are
 **11 in `FlashSettingsDataStoreTest` + 1 in `DiscoveryModeSettingTest`** (measured Phase 08;
@@ -94,7 +95,8 @@ Every phase must additionally paste the **test count** from
 (`BASELINE_TEST_TOTAL = 863 / 12 failures / 0 skipped`). A phase that cannot show its
 test count matches or exceeds baseline is not verified. Conversions may legitimately *raise*
 the total — Phase 07 took it to **883 / 12 / 0** by adding a 10-test `commonTest` suite that runs
-once per target, and Phase 08 took it to **897 / 12 / 0** the same way (7 tests × 2 targets).
+once per target, Phase 08 took it to **897 / 12 / 0** the same way (7 tests × 2 targets), Phase 10
+to **913 / 12 / 0**, and Phase 11 to **945 / 12 / 0** (two 8-test `commonTest` suites × 2 targets).
 Compare **per module** as well as in total: a total that still matches while one
 module's suite has silently stopped running is exactly the failure mode R3 exists to catch.
 

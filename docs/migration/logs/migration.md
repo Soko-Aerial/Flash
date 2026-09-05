@@ -3881,3 +3881,411 @@ module's phase file assumes a `jvmAndAndroidMain`.
 
 Phase 09B-1 remains executable at any time and needs no human decision. 09B-2 and 09B-3 are
 still gated on the human (encrypted desktop driver; settings ABI), as is D5 itself.
+
+## Phase 11 — KMP conversion: `core:transfer` + `core:messaging`
+
+- **Date:** 2026-09-05
+- **Agent/model:** Claude (Opus 5), Claude Code
+- **Commit:** `f96797e` — `refactor(transfer,messaging): convert :core:transfer and
+  :core:messaging to Kotlin Multiplatform (Phase 11)`, 47 files, `core/transfer/**` and
+  `core/messaging/**` only. Plus the immediately following docs commit
+  `docs(migration): Phase 11 repositories KMP logged; CONVENTIONS R3 + PHASE-11 rewritten for
+  D1 = B` (this entry, the R3 command line, and the rewritten phase file). Split so that
+  reverting the code commit alone restores a working build (R4).
+- **Two build files in one commit** is what the phase file instructs, which is the exception R4
+  allows. They are independent modules with no edge between them; nothing in either build file
+  references the other.
+- **Decisions relied on:** **D1 = B** (strict `commonMain`; `jvmAndAndroidMain` forbidden by the
+  2026-09-03 amendment). No other decision was needed, and none was made. In particular this phase
+  did **not** touch D5: `:core:messaging`'s Room dependency stays exactly where it was, on
+  `androidMain`.
+
+### Change
+
+Converted both repository modules from `com.android.library` to
+`org.jetbrains.kotlin.multiplatform` + `com.android.kotlin.multiplatform.library` + `jvm()`, and
+re-tiered 26 production and 17 test files into KMP source sets. **9 of the 26 production files
+reached `commonMain`** — 5 of 20 in `:core:transfer`, 4 of 6 in `:core:messaging`. That share is
+the honest headline: this is a conversion of the *module*, not a port of its behaviour.
+
+`jvmMain` is empty in both modules, on purpose and for the same reason as Phase 10: this phase
+makes the repositories *describable* on desktop so Phase 12 (`:core:engine`) can have a
+`commonMain` at all. Phases 13–16 write the desktop implementations.
+
+No `expect`/`actual` was introduced. Every file that could not compile in `commonMain` took R2
+step 1 — left in `androidMain` — because in all 17 cases the file's Android dependency is
+structural (Room, `android.net.Uri`, `Context`, `java.io.RandomAccessFile`,
+`java.security.MessageDigest`), not a one-line platform call that a seam would isolate.
+
+### Files changed
+
+**Modified (3 in the code commit):**
+- `core/transfer/build.gradle.kts` — rewritten on the Phase 10 `:core:network` template
+- `core/messaging/build.gradle.kts` — same
+- `core/messaging/src/commonMain/.../FlashChatRepository.kt` — the phase's **only** content edit,
+  3 lines: one added import, and two `System.currentTimeMillis()` → `SystemTimeSource.nowMs()`
+
+**Added (2, both `commonTest`, 8 tests each):**
+- `core/transfer/src/commonTest/kotlin/.../protocol/WsTransferMessagesWireFormatTest.kt`
+- `core/messaging/src/commonTest/kotlin/.../SampleFlashChatRepositoryTest.kt`
+
+**Moved — 43 `git mv` renames, 42 of them byte-identical (`100%` similarity in `git commit`'s
+rename report; `0 0` in `--numstat`). The 43rd is `FlashChatRepository.kt`, at `5 +-`.**
+
+`:core:transfer`, `src/main/java/**` → `src/commonMain/kotlin/**` (5 of 20):
+`FlashTransferRepository.kt`, `model/FlashTransfer.kt`, `protocol/WsTransferMessages.kt`,
+`store/TransferStore.kt`, `multistream/StreamChannel.kt`
+
+`:core:transfer`, `src/main/java/**` → `src/androidMain/kotlin/**` (15):
+`RealFlashTransferRepository.kt`, `chunked/{ChunkFrame,Chunker,ReceivePipeline,ResumeBitVector,
+SendPipeline,Sha256}.kt`, `manifest/TransferManifest.kt`, `model/WsTransferModels.kt`,
+`multistream/{MultiStreamDispatcher,MultiStreamProgress,MultiStreamReceiver,
+TransferCompletionStateMachine}.kt`, `policy/{DestinationPolicy,RandomAccessChunkSink}.kt`
+
+`:core:transfer`, `src/test/java/**` → `src/androidHostTest/kotlin/**` (13, all unmodified).
+
+`:core:messaging`, `src/main/java/**` → `src/commonMain/kotlin/**` (4 of 6):
+`FlashChatRepository.kt`, `model/FlashMessagingModels.kt`, `protocol/MessageWireFrame.kt`,
+`util/FlashMessagingUtils.kt`
+
+`:core:messaging`, `src/main/java/**` → `src/androidMain/kotlin/**` (2):
+`PresenceHold.kt`, `RealFlashChatRepository.kt`
+
+`:core:messaging`, `src/test/java/**` → `src/androidHostTest/kotlin/**` (4, all unmodified).
+
+**Deleted:** `core/{transfer,messaging}/src/main/` and `.../src/test/` (empty after the moves).
+
+**Every R8-protected file in scope moved byte-identical**, which the rename report proves at
+`100%`: `protocol/WsTransferMessages.kt`, `protocol/MessageWireFrame.kt`,
+`chunked/ChunkFrame.kt`. No reformatting, no import reordering, no visibility change.
+
+### Why 17 of 26 production files stayed on `androidMain`
+
+Grouped by what actually pins them, because "it's Android" is not a reason and the phase file's
+job is to say which API:
+
+| Pin | Files |
+|---|---|
+| Room (16 types: 7 DAOs, 7 entities, 2 DAO projections `ConversationPreview`/`ConversationUnread`) | `RealFlashChatRepository.kt` (1306 lines) |
+| `android.content.Context`, `android.net.Uri`, `DocumentFile` | `RealFlashTransferRepository.kt`, `policy/DestinationPolicy.kt` |
+| `java.security.MessageDigest` | `chunked/Sha256.kt` |
+| `java.io.RandomAccessFile` / `java.io.File` | `policy/RandomAccessChunkSink.kt`, `chunked/Chunker.kt` |
+| `kotlin.text.Charsets` (R6 stdlib trap) | `chunked/ChunkFrame.kt`, `chunked/Sha256.kt` |
+| `java.util.HashMap.putIfAbsent` | `PresenceHold.kt` |
+| `:core:network`'s `WsTransferServer` (itself `androidMain` since Phase 10) | `model/WsTransferModels.kt` |
+| Reference-transitivity from a file above | the remaining 8 |
+
+`Sha256.kt` and `ChunkFrame.kt` appear twice on purpose — each has two independent pins, so
+neither could have been rescued by fixing one.
+
+### The one content edit, and why it was necessary
+
+The phase file I inherited asserted that `FlashChatRepository.kt` was already `commonMain`-clean.
+It is not. `SampleFlashChatRepository` read the wall clock twice:
+
+```kotlin
+id = "local-${System.currentTimeMillis()}",   // sendText
+sortOrder = System.currentTimeMillis(),        // updateListPreview
+```
+
+Both became `SystemTimeSource.nowMs()` (`:core:common`, `commonMain` since Phase 06). This is an
+**identity** on both current targets — the Android and JVM `actual`s of
+`currentTimeMillisPlatform()` are each literally `System.currentTimeMillis()`.
+
+The reason this matters beyond the two lines: `System.currentTimeMillis()` is one of the R6
+stdlib traps that **has no import line**, so following the old phase file would have moved the
+file to `commonMain` and produced a **green build shipping a `java.*`-dependent `commonMain`** —
+precisely the leak R6.1 was written to describe. Gate 7's grep is what catches this class of
+mistake today, and nothing in the build does.
+
+### Verification
+
+**Gate 1 — `commonMain` is free of `android.*`** (the R2 proof task; no `android.jar` on the
+`jvm()` compile classpath):
+
+```
+> Task :core:transfer:compileKotlinJvm
+> Task :core:messaging:compileKotlinJvm
+BUILD SUCCESSFUL in 18s
+```
+
+**Gate 2 — the Android targets still compile**, zero warnings:
+
+```
+> Task :core:persistence:kspReleaseKotlin
+> Task :core:persistence:compileReleaseKotlin
+> Task :core:transfer:compileAndroidMain
+> Task :core:messaging:compileAndroidMain
+BUILD SUCCESSFUL in 14s
+```
+
+`:core:persistence:compileReleaseKotlin` appearing in that task list is the phase's one genuinely
+unverified assumption, now measured: **a KMP `androidMain` does resolve a still-variant-ful
+`com.android.library` dependency**, via `localDependencySelection { selectBuildTypeFrom.set(
+listOf("release")) }`. Phase 09 being blocked therefore does not block Phase 11 — which is why
+this phase ran at all, out of numeric order relative to 09.
+
+**Gate 3 — the two new `commonTest` suites execute on the desktop target** (R3.1: without
+`jvmTest` a `jvm()` target is compiled but unproven):
+
+```
+BUILD SUCCESSFUL in 4s
+core/transfer  jvmTest: tests="8" skipped="0" failures="0" errors="0"
+core/messaging jvmTest: tests="8" skipped="0" failures="0" errors="0"
+```
+
+This gate **failed on its first run** — 2 of the 8 messaging tests. See Deviation 1; it was a bug
+in my test, not in the product.
+
+**Gate 4 — the pre-existing Android host suites unregressed**, compared per class against the
+baseline measured before any edit (R3: a matching total with a missing class is the exact failure
+this gate exists to catch):
+
+```
+BUILD SUCCESSFUL in 26s
+
+core/transfer  testAndroidHostTest — TOTAL tests=94 failures=0, 14 classes:
+  RealFlashTransferRepositoryTest 9   ChunkFrameTest 6    ChunkerTest 5
+  PipelineEndToEndTest 4              ReceivePipelineTest 8  ResumeBitVectorTest 9
+  SendPipelineTest 7                  Sha256Test 4        FlashTransferModelTest 5
+  MultiStreamDispatcherTest 9         MultiStreamReceiverTest 8
+  DestinationPolicyTest 6             WsTransferMessagesTest 6
+  WsTransferMessagesWireFormatTest 8   <-- new this phase
+
+core/messaging testAndroidHostTest — TOTAL tests=35 failures=0, 5 classes:
+  FlashMessageContentSummaryTest 5    FlashMessageGroupingTest 5    PresenceHoldTest 3
+  RealFlashChatRepositoryTest 14      SampleFlashChatRepositoryTest 8   <-- new this phase
+```
+
+Baseline was 86 / 13 classes (transfer) and 27 / 4 classes (messaging). Every baseline class is
+present; the deltas are exactly the two new suites.
+
+**Gate 5 — publication coordinates unchanged.** Six publications, three per module:
+
+```
+BUILD SUCCESSFUL in 7s
+~/.m2/repository/com/transfer/flash/core-transfer/1.1.0/
+~/.m2/repository/com/transfer/flash/core-transfer-android/1.1.0/
+~/.m2/repository/com/transfer/flash/core-transfer-jvm/1.1.0/
+~/.m2/repository/com/transfer/flash/core-messaging/1.1.0/
+~/.m2/repository/com/transfer/flash/core-messaging-android/1.1.0/
+~/.m2/repository/com/transfer/flash/core-messaging-jvm/1.1.0/
+```
+
+The `-jvm` POMs are the ones that matter, and both are clean — a desktop consumer sees **no Room,
+no androidx, and none of the dead edges**:
+
+```
+core-transfer-jvm  : core-common-jvm, kotlinx-coroutines-core-jvm, kotlin-stdlib   (all compile)
+core-messaging-jvm : core-common-jvm, kotlinx-coroutines-core-jvm, kotlin-stdlib   (all compile)
+core-transfer-android : + runtime core-network-android, core-ktx, lifecycle-runtime-ktx
+core-messaging-android: + runtime core-persistence, core-security-android,
+                          core-network-android, core-ktx, lifecycle-runtime-ktx
+```
+
+`core-messaging-android`'s `core-persistence` entry carries **no target suffix**, which is the
+POM-level confirmation of what Gate 2 showed in the task graph: it is still a plain
+`com.android.library`.
+
+**Gate 6 — the whole app still builds.** `:app`, `:core:engine` and `:ui:chat` consume both
+modules, and `:core:engine` declares both as `api`, so a mis-tiered file surfaces here rather than
+in Gates 1–5:
+
+```
+> Task :app:assembleDebug
+BUILD SUCCESSFUL in 28s
+```
+
+**Gate 7 — R6.1, the only enforcement `java.*` has.** Both greps return nothing:
+
+```
+$ grep -rnE '\b(java|javax|android|androidx)\.' --include=*.kt core/*/src/commonMain ui/*/src/commonMain \
+    | grep -vE ':[0-9]+:[[:space:]]*(\*|//|/\*)'
+(no output, exit 1)
+
+$ grep -rnE '\b(synchronized|Charsets|String\.format|@Volatile|@Synchronized|currentTimeMillis|putIfAbsent|::class\.java|ConcurrentHashMap)\b' \
+    --include=*.kt core/*/src/commonMain ui/*/src/commonMain | grep -vE ':[0-9]+:[[:space:]]*(\*|//|/\*)'
+(no output)
+```
+
+29 raw hits repo-wide before the comment filter, all of them KDoc or `//` lines that name a
+platform type while documenting a seam — the case R6.1 says the second `grep -v` exists for.
+
+**Gate 8 — repo-wide R3.** `BUILD FAILED in 54s` is the *expected* outcome: the sole failing task
+is the known pre-existing one.
+
+```
+> Task :core:persistence:testDebugUnitTest FAILED
+35 tests completed, 12 failed
+```
+
+Those 12 are the documented set — 11 `FlashSettingsDataStoreTest` + 1 `DiscoveryModeSettingTest`.
+`--continue` is what lets the run reach the later modules at all.
+
+Tally across `*/build/test-results/**/TEST-*.xml`:
+
+```
+XMLs=126 TOTAL tests=945 failures=12 errors=0 skipped=0 (passed=933)
+
+  6 app|testDebugUnitTest              4 core/calling|testDebugUnitTest
+  8 core/common|testAndroidHostTest    2 core/discovery|jvmTest
+  9 core/discovery|testAndroidHostTest 1 core/engine|testDebugUnitTest
+  1 core/messaging|jvmTest             5 core/messaging|testAndroidHostTest
+  1 core/network|jvmTest              21 core/network|testAndroidHostTest
+  4 core/persistence|testDebugUnitTest 1 core/security|jvmTest
+ 12 core/security|testAndroidHostTest  1 core/transfer|jvmTest
+ 14 core/transfer|testAndroidHostTest 31 ui/chat|testDebugUnitTest
+  5 ui/theme|testDebugUnitTest
+```
+
+**945 against the 913 after Phase 10 — exactly the +32 predicted** (2 suites × 8 tests × 2
+targets). Failures unchanged at 12, errors and skips still 0. No converted module holds a stale
+`testDebugUnitTest` results directory: both `core/transfer/build/test-results/testDebugUnitTest`
+and the messaging equivalent were deleted before the tally, which is the double-counting trap R3
+records from Phase 07.
+
+**Gate 9 — no `java/` source roots, no leftover pre-KMP source sets:**
+
+```
+$ find core/transfer/src core/messaging/src -type d -name java
+(no output)
+
+$ ls -d core/{common,security,discovery,network,transfer,messaging}/src/{main,test}
+ls: cannot access 'core/network/src/test': No such file or directory
+ls: cannot access 'core/transfer/src/test': No such file or directory
+ls: cannot access 'core/messaging/src/test': No such file or directory
+```
+
+Source-set file counts after the move:
+
+```
+core/transfer/src/androidHostTest    13     core/messaging/src/androidHostTest   4
+core/transfer/src/androidMain        15     core/messaging/src/androidMain       2
+core/transfer/src/commonMain          5     core/messaging/src/commonMain        4
+core/transfer/src/commonTest          1     core/messaging/src/commonTest        1
+```
+
+### The two new `commonTest` suites, and why these assertions
+
+R3.1 requires that a converted module's `jvmTest` actually run something, otherwise the desktop
+target is compiled but never executed. Both suites are additive, not duplicates of an existing
+androidHostTest suite:
+
+**`WsTransferMessagesWireFormatTest` (8 tests)** pins the **literal wire text** of the four FLSH
+v2 control frames. `WsTransferMessagesTest` (androidHostTest) already round-trips all four, and a
+round-trip is structurally blind to a *symmetric* change to `FlashTextFraming`'s escape table:
+swap the table for another one and encode→parse still agrees with itself, while every deployed
+peer stops understanding us. The literals below are what a peer reads off the socket:
+
+```
+FLASH_WS_HELLO version=1 deviceId=device-1234 name=Kali%20Phone%20%3D%20Pro
+FLASH_FILE_START version=1 transferId=ab12cd34 name=my%20100%25%20file%20(final).zip size=987654321
+FLASH_FILE_END version=1 transferId=ab12cd34 bytes=42
+FLASH_FILE_ACK version=1 transferId=ab12cd34 received=42 ok=true
+```
+
+Two of the eight are ordering tests rather than format tests: `"my 100% file"` → `%25` before
+`%20` (reverse them and the result is `%2520`, which decodes back to a space), and `"a%20b"` →
+`name=a%2520b`, which survives the round trip **only** because escape maps `%` first and unescape
+undoes `%25` last. One test covers CJK plus a surrogate pair (`"转移 🚀"`), which is where a
+per-target `String` difference would show up if one existed. R8 protects this format; these
+assertions are how it is protected.
+
+**`SampleFlashChatRepositoryTest` (8 tests)** pins the one file this phase edited. The two that
+carry the phase's weight assert both clock reads land inside a window measured around the call —
+`stamp in before..after` for the `local-<millis>` id, and the same for `sortOrder` — so the
+replacement is proven equivalent *on each platform's own `actual`*, not just on the one platform
+that used to run these tests.
+
+### Deviations from the phase file
+
+**1. Two of my own new tests failed on their first run; I fixed the tests.**
+`SampleFlashChatRepositoryTest` asserted `assertEquals(0L, itemById(repo, CONV)?.sortOrder)` on
+the premise that the sample chat-list items use `FlashChatListItemUi`'s `sortOrder: Long = 0L`
+default. They do not: `sampleFlashChatListState()` assigns hand-written ordinals — `conv-alex` is
+`4L` (`conv-false-school` 5, `conv-design` 3, `conv-transfer` 2, `conv-offline` 1). Corrected both
+assertions to `4L`. Rerun green, 8/8 on both targets. **A test bug, not a product bug** — the
+product behaviour the suite exists to pin was correct throughout.
+
+**2. The phase file as inherited was rewritten wholesale before execution.** It stated on its own
+line 4 that "D1 must be `A`", and routed 14 of `:core:transfer`'s files into
+`jvmAndAndroidMain` — a source set the 2026-09-03 amendment forbids. This is the fourth phase file
+in a row needing this (07, 08, 10, 11). The rewrite is in the docs commit. Six of its factual
+claims were disproved by measurement; they are listed in the next section because a future agent
+reading the old text elsewhere needs to know which parts were wrong.
+
+**3. Gate 5's `ls` path in the phase file was wrong and is now fixed.** It named
+`~/.m2/repository/com/github/Kali452345/…` — the JitPack coordinate consumers type, not the Maven
+group the build writes, which is `com.transfer.flash` (root `build.gradle.kts:12`). The failure
+mode is quiet: `ls` returns nothing while the build itself reports `SUCCESSFUL`, so the gate looks
+like it found no publications rather than like it looked in the wrong place.
+
+### Six claims in the inherited phase file that measurement disproved
+
+1. **`:core:messaging` is 6 production / 4 test files, not 5 / 3.** `PresenceHold.kt` and
+   `PresenceHoldTest.kt` postdate the phase file.
+2. **Its test baseline is 27 `@Test` across 4 classes, not 16 across 3.**
+3. **`FlashChatRepository.kt` was *not* `commonMain`-clean** — two `System.currentTimeMillis()`
+   calls. Following the file as written would have produced a green build shipping a
+   `java.*`-dependent `commonMain`. This is the one error in the file that would have caused real
+   damage.
+4. **`:core:transfer`'s `:core:security` and `:core:discovery` dependencies do not exist.** Phase
+   02 deleted them; the phase file still budgeted for re-tiering them.
+5. **`:core:transfer`'s `:core:network` dependency is LIVE**, not dead as claimed —
+   `model/WsTransferModels.kt` reads `WsTransferServer.PREFERRED_PORT`. This is what pins that file
+   to `androidMain`.
+6. **`WsTransferModels.kt` having "no legal source-set home" was a D1 = A artifact.** Under D1 = B
+   `androidMain` is simply correct: **no deletion, no ADR, no seam.** The inherited file proposed
+   deleting a production file to satisfy a tiering rule, which R2 forbids outright.
+
+### Known issues
+
+Recorded, not fixed — R1. None of these blocks Phase 12.
+
+1. **`core/transfer/.../manifest/TransferManifest.kt` is entirely dead code.** Zero consumers
+   anywhere in the repo (`core/`, `ui/`, `app/`, `sample/`). Moved to `androidMain` unchanged
+   rather than deleted, because deleting it is not this phase's business. A future cleanup phase
+   should confirm and remove it.
+2. **Four dead dependency edges in `:core:messaging`** — `:core:security`, `:core:network`,
+   `androidx.core.ktx`, `androidx.lifecycle.runtime.ktx`. Grep finds zero references to any of them
+   in the module's main or test sources.
+3. **Two dead dependency edges in `:core:transfer`** — both androidx entries.
+   All six are parked on `androidMain` behind a `TODO(cleanup)` rather than deleted, following the
+   Phase 10 precedent: deleting them changes what a 1.1.0 consumer resolves, and that is a
+   consumer-visible change which should be made repo-wide in one deliberate commit.
+4. **`policy/RandomAccessChunkSink.kt` is `androidMain` only by reference-transitivity.** Its own
+   `java.io.RandomAccessFile` use would be legal in `jvmMain` too; it is on `androidMain` because
+   `DestinationPolicy.kt` (genuinely Android-pinned) is its only consumer. When Phase 15 needs a
+   desktop chunk sink, this file is the natural first candidate for a real seam.
+5. **Phase 12 inherits Phase 10's `TlsOptions` blocker.** Unchanged by this phase, restated so it
+   is not rediscovered: `:core:engine` will hit the same Android-only TLS configuration surface.
+6. **Stale `.aar` alongside fresh `.jar` in the root mavenLocal coordinate directories.** The
+   pre-KMP `com.android.library` publication left `core-transfer-1.1.0.aar` (07:28) next to the new
+   `core-transfer-1.1.0.jar` (08:13). Cosmetic and local-only — mavenLocal is not cleaned between
+   builds and no consumer resolves the root coordinate's artifact directly — but it will confuse
+   anyone inspecting `~/.m2` by hand.
+
+### Next step
+
+**Phase 12 — `:core:engine`.** Now unblocked: it declares `:core:transfer` and `:core:messaging`
+as `api`, and both have a `commonMain` as of `f96797e`. Expect the same D1 = A drift in its phase
+file, and check three things before starting: the `TlsOptions` blocker above, whether the phase
+file assumes a `jvmAndAndroidMain`, and whether it assumes `:core:persistence` is already KMP (it
+is not — Phase 09 is blocked, and Phase 11 has now demonstrated that this does not block a
+consumer).
+
+Add `:core:engine:testAndroidHostTest` — and `:core:engine:jvmTest` if it gains a `commonTest` —
+to the R3 command line when it lands.
+
+Phase 09B-1 remains executable at any time and needs no human decision. 09B-2 and 09B-3 are
+still gated on the human (encrypted desktop driver; settings ABI), as is D5 itself.
+
+**Still not delivered by any phase in the plan:** a Kotlin/Native target. Until one exists, R6 is
+enforced by Gate 7's grep and nothing else, and the "all platforms" half of the 2026-09-03
+amendment has no phase that implements it. Recommended as a new phase (R6.1 says the same).
+
+
+
+
+
+
