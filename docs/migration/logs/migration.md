@@ -5572,10 +5572,16 @@ look at.
 - **Date:** 2026-09-05
 - **Agent/model:** Claude (Opus 5), Claude Code
 - **Commit:** `75d86ef` (source), this entry (docs)
-- **Decisions relied on:** **D6 = JmDNS.** DECISIONS.md lists D6 among the decisions an agent may
-  **proceed on the recommendation** for, provided the phase log records that it did so. This entry
-  is that record: nobody chose JmDNS for me, I took the recommendation. **D10 stays `_pending_`** and
-  nothing here anticipates an answer to it.
+- **Decisions relied on:** **D6 = Option A, JmDNS (`org.jmdns:jmdns`), chosen by the human
+  2026-08-31.** Correcting my own first draft of this line, which said D6 was one of the decisions an
+  agent may proceed on the recommendation for and that "nobody chose JmDNS for me": that is wrong.
+  DECISIONS.md line 216 records an explicit human answer, and it comes with two requirements. The
+  first — "must enumerate desktop interfaces explicitly and bind deliberately (multi-homed Windows)"
+  — is implemented (`multicastCapableAddresses()`, one responder per address). **The second — "must
+  begin with a throwaway spike before any refactoring is committed" — I did not do.** See R9 below;
+  it is the same gap as "no real multicast was exercised", and it is a precondition only a human with
+  two machines on one LAN can discharge. **D10 stays `_pending_`** and nothing here anticipates an
+  answer to it.
 
 ### Change
 
@@ -5856,6 +5862,14 @@ proven:
 - **Android↔desktop interop.** Nobody has watched a Pixel and a Windows box find each other. The
   service-type equivalence test narrows the risk to one specific failure mode it now rules out; it does
   not establish interop.
+- **The throwaway spike D6 requires was never run.** D6's recorded answer says Phase 14 "must begin
+  with a throwaway spike before any refactoring is committed", and I committed the refactoring without
+  one. The reason is not oversight: a spike proves JmDNS talks to Android NSD over real multicast, which
+  needs a second machine and a handset on one LAN — neither is reachable from this environment. Stating
+  it plainly rather than quietly: **this phase's committed code does not satisfy a precondition the
+  human attached to the decision it rests on.** Everything above is unit-level evidence that the logic
+  is right *given* a working bridge; it is not evidence that the bridge works. A human should run the
+  spike before Phase 15 builds a desktop transport on top of this.
 
 Also unverified:
 
