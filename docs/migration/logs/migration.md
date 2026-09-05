@@ -2595,6 +2595,325 @@ The build-file half of that phase is now mechanical: copy `core/common/build.gra
 the `optimization { consumerKeepRules … }` block, add
 `:core:security:testAndroidHostTest` to the R3 command. The cryptography half is the phase.
 
+---
+
+## Phase 07 — `:core:security` to Kotlin Multiplatform
+
+- **Date:** 2026-09-05
+- **Agent/model:** Claude Opus 5 (Claude Code)
+- **Commit:** `fe5f9be` — `refactor(security): convert :core:security to Kotlin Multiplatform
+  (Phase 07)`, 39 files — plus the docs commit carrying this entry, the rewritten
+  `docs/migration/PHASE-07-security-kmp.md`, and the CONVENTIONS R3 / R3.1 / R6.1 edits.
+- **Decisions relied on:** **D1 = B** (strict `commonMain`; the 2026-09-03 amendment makes this
+  load-bearing rather than merely chosen), ADR-023 (`explicitApi()` strict, preserved), R8
+  (crypto behaviour bit-identical), R10 (no version bumps).
+
+### Change
+
+`:core:security` moved from `com.android.library` to
+`org.jetbrains.kotlin.multiplatform` + `com.android.kotlin.multiplatform.library` with
+`android { }` and `jvm { }` targets (phase file Steps 1–2). 17 production files went to
+`commonMain`, 4 stayed in `androidMain`, and 1 new file is the desktop half of the seam in
+`jvmMain` (Step 3). This is the first module where D1 = B has real cost: the module was built
+on JCA (`java.security`, `javax.crypto`, `MessageDigest`, `KeyStore`), none of which exists in
+`commonMain`, so the JVM surface was cut behind **ten `internal expect fun`s** in
+`crypto/PlatformCrypto.kt` plus one `internal expect interface PlatformEcPrivateKey` (Step 4).
+Under D1 = A this would have been a `jvmAndAndroidMain` dump and nearly a no-op; under B the
+two `actual` files are deliberately near-identical JCA code, and a Kotlin/Native `actual` set
+is now a mechanical (if large) addition rather than a redesign.
+
+One public API change, a **retype and not a deletion** (Step 5, R2):
+`FlashCrypto.identityPublicKey: java.security.PublicKey` → `identityPublicKeyEncoded: ByteArray`
+(X.509 SPKI — already exactly what every call site read via `.public.encoded`), and
+`java.security.KeyPair` → `FlashEcKeyPair`, which exposes only the public half as wire bytes and
+keeps the private half as an opaque `internal` handle. The private key is strictly *less*
+reachable than before; no algorithm, curve, nonce length, tag length, or wire byte changed. The
+rename is deliberate so any stale caller fails at compile time instead of silently. Its one
+consumer in the repo, `app`'s `DiscoveryEngineHolder`, was updated (two lines) — the only edit
+outside the module.
+
+A new 10-test `commonTest` parity suite (Step 6) is the first test source set in this migration
+that runs on **both** targets, which is the only way the `jvmMain` `actual`s are executed rather
+than merely compiled — Android runs Conscrypt, desktop runs SunJCE, and nothing else in the
+build would have caught a divergence between them.
+
+### The seam
+
+| `expect fun` (all `internal`) | JCA `actual` on both platforms |
+|---|---|
+| `sha256` | `MessageDigest.getInstance("SHA-256")` |
+| `hmacSha256` | `Mac.getInstance("HmacSHA256")` + `SecretKeySpec` |
+| `secureRandomBytes` | `SecureRandom().nextBytes` |
+| `constantTimeBytesEqual` | `MessageDigest.isEqual` |
+| `aesGcmSeal` / `aesGcmOpen` | `Cipher "AES/GCM/NoPadding"`, 12-byte IV, 128-bit tag |
+| `generateEcP256KeyPair` | `KeyPairGenerator("EC")` + `ECGenParameterSpec("secp256r1")` |
+| `ecP256Sign` / `ecP256Verify` | `Signature "SHA256withECDSA"` |
+| `ecdhSharedSecret` | `KeyAgreement("ECDH")` |
+| `expect interface PlatformEcPrivateKey` | `actual typealias … = java.security.PrivateKey` |
+
+Three seam choices are load-bearing and are argued in full in the phase file:
+
+- **`constantTimeBytesEqual` stayed a seam** instead of being reimplemented as a common
+  XOR-accumulate loop. Reimplementing it would have replaced a platform-audited primitive with
+  new hand-written comparison code inside the trust-pinning path — exactly what R8 forbids.
+- **`PlatformEcPrivateKey` is an `expect interface`, not an `expect class`.** The first build
+  failed with `'actual typealias PlatformEcPrivateKey = PrivateKey' has no corresponding
+  expected declaration / class kinds are different (class, interface, object, enum,
+  annotation)`: an `actual typealias` must match the classifier kind of what it expands to, and
+  `java.security.PrivateKey` is an interface. Aliasing rather than wrapping is also what lets
+  `KeystoreFlashCrypto` hand its non-exportable AndroidKeyStore `PrivateKey` straight to the
+  seam with no unwrap step that could copy key material; nothing outside the module can
+  implement it because the declaration is `internal`.
+- **`aesGcmOpen` lets each platform's own `AEADBadTagException` escape** rather than mapping it
+  to a common Flash exception type. Introducing a common type would change what
+  `E2eFrameCodec.decrypt` throws on Android today; keeping it platform-defined is why
+  `E2eFrameCodecTest`'s three `assertThrows` tests pass **unedited**. A Kotlin/Native `actual`
+  will have to make this decision explicitly — recorded as a known issue below.
+
+### R8 — the three rewrites, and why each is an identity
+
+1. **`Hkdf` streaming → one-shot HMAC.** `Mac.update()`-then-`doFinal()` over N chunks and
+   `hmacSha256(key, a + b + c)` are the same function by definition of HMAC. Pinned by the
+   existing RFC 5869 test vectors, which still pass byte-for-byte.
+2. **`String.format("%02x", b)` → `crypto/Hex.kt`.** `java.util.Formatter` sign-extends a
+   negative `Byte`, so the replacement masks with `toInt() and 0xFF`. The existing fixture
+   contains `0x82`, so a sign-extension regression fails a test rather than shipping.
+3. **`String.toByteArray()` → `encodeToByteArray()`.** Identical for UTF-8, which is the JVM
+   default the removed overload used; all inputs on this path are ASCII protocol labels.
+
+### Files changed
+
+**Modified (build):** `core/security/build.gradle.kts` — KMP + KMP-Android plugins,
+`explicitApi()` kept, `freeCompilerArgs += "-Xexpect-actual-classes"`,
+`android { namespace / compileSdk 35 / minSdk 24 / optimization { consumerKeepRules } /
+localDependencySelection / JVM_11 / withHostTest { } / withDeviceTest { } }`, `jvm { JVM_11 }`,
+per-source-set dependencies, and the `core-security` publication `artifactId` rewrite.
+
+**Added:**
+- `commonMain/…/crypto/PlatformCrypto.kt` — the 10 `expect fun`s
+- `commonMain/…/crypto/FlashEcKeyPair.kt` — `expect interface PlatformEcPrivateKey` +
+  `FlashEcKeyPair`
+- `commonMain/…/crypto/Hex.kt` — replaces `String.format("%02x")`
+- `androidMain/…/crypto/PlatformCrypto.android.kt` — JCA `actual`s
+- `jvmMain/…/crypto/PlatformCrypto.jvm.kt` — JCA `actual`s (115 lines; the diff against the
+  Android file is **two KDoc lines only — do not de-duplicate them**, R5)
+- `commonTest/…/crypto/PlatformCryptoParityTest.kt` — 10 tests, `kotlin.test` only
+
+**Moved (`git mv`, so blame survives):** 17 production files
+`src/main/java/…` → `src/commonMain/kotlin/…` (4 of them onward to `androidMain`:
+`KeystoreFlashCrypto`, `AndroidPreferencesIdentityStore`, `AndroidPreferencesTrustStore`, and
+the Android `PlatformCrypto` actual set), and all 13 test files
+`src/test/java/…` → `src/androidHostTest/kotlin/…`.
+
+**Modified (source):** `E2eFrameCodec`, `FlashCrypto`, `FlashFingerprint`, `Hkdf`,
+`SoftwareFlashCrypto`, `FlashPairingProtocol`, `NumericComparisonCode`, `TofuPolicy`,
+`KeystoreFlashCrypto` — all to route through the seam or the retyped API. 9 test files touched
+only where they name the retyped members.
+
+**Modified (outside the module):**
+`app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt` — two lines.
+
+**Docs:** `docs/migration/PHASE-07-security-kmp.md` rewritten for D1 = B (the file on disk was
+written for D1 = A and self-voided under B); `docs/migration/CONVENTIONS.md` gained **R6.1**,
+a `JVM_TEST_TASK` line in R3.1, the `jvmTest`-parity note, and the updated R3 command.
+
+**Not changed, deliberately:** `consumer-rules.pro` (comment-only, kept as-is), every wire
+format, every test assertion, and `androidx.core.ktx` / `androidx.lifecycle.runtime.ktx` — both
+grep-unused in this module but **relocated to `androidMain`, not deleted**, so the Android
+artifact's runtime classpath is byte-for-byte what it was. Pruning them is a later phase (R1).
+
+### Verification
+
+All commands were run with the project's only working Gradle environment (JBR 21 + the AF_UNIX
+tmpdir workaround; see the Phase 00 entry):
+
+```
+export JAVA_HOME="/c/Users/KaliOxygen/.gradle/jdks/jetbrains_s_r_o_-21-amd64-windows.2"
+export JAVA_TOOL_OPTIONS='-Djdk.net.unixdomain.tmpdir=C:\Users\KaliOxygen\.gradle\afunix'
+```
+
+**Gate 1–2 — compile.** `:core:security:compileKotlinJvm :core:security:compileAndroidMain
+--no-configuration-cache` → `BUILD SUCCESSFUL in 18s`. Gate 1 is the R2 proof task: the `jvm()`
+target has no `android.jar`, so a green `compileKotlinJvm` certifies `commonMain` is free of
+`android.*`.
+
+**Gate 3 — `:core:security:testAndroidHostTest` → 90 tests / 0 failures / 0 skipped.**
+`SECURITY_TEST_BASELINE` was 80 / 0 / 0. Every pre-existing class kept its **exact** count, which
+is the check that matters — a matching total with one class silently missing is the failure mode:
+
+```
+  4  FlashIdentityStoreTest              7  SoftwareFlashCryptoTest
+  3  FlashTrustStoreTest                 7  DefaultFlashPairingProtocolTest
+  7  E2eFrameCodecTest                   8  NumericComparisonCodeTest
+  6  FlashFingerprintTest               23  PairingSessionStateMachineTest
+  3  HkdfTest                            4  LegacyTrustMigrationTest
+ 10  PlatformCryptoParityTest (new)       8  TofuPolicyTest
+                                    = 80 baseline + 10 new = 90, 0 fail, 0 skip
+```
+
+**Gate 4 — `:core:security:jvmTest` → 10 tests / 0 failures / 0 skipped**
+(`PlatformCryptoParityTest[jvm]`). This is the gate that proves the desktop `actual`s *run*.
+
+**Gate 5 — `commonMain` purity grep (CONVENTIONS R6.1):**
+
+```bash
+grep -rnE '\b(java|javax|android|androidx)\.' --include=*.kt core/*/src/commonMain ui/*/src/commonMain 2>/dev/null | grep -vE ':[0-9]+:[[:space:]]*(\*|//|/\*)'
+```
+
+No output. Without the comment filter it returns 24 lines, all KDoc: 13 in `core/common` from
+Phase 06's seam documentation, and 11 in `core/security` — `Hex.kt` citing `java.util.Formatter`,
+`FlashEcKeyPair.kt` citing `java.security.PrivateKey`, `PlatformCrypto.kt` and `E2eFrameCodec.kt`
+citing `javax.crypto.AEADBadTagException`, and `FlashCrypto.kt` / `FlashFingerprint.kt` citing
+Android docs URLs. Naming a platform type when documenting a seam is exactly what R6.1's second
+filter exists to allow.
+
+**Gate 6 — the repo-wide R3 command:**
+
+```bash
+./gradlew --stop >/dev/null 2>&1; sleep 8; ./gradlew :app:assembleDebug testDebugUnitTest :core:common:testAndroidHostTest :core:security:testAndroidHostTest :core:security:jvmTest --no-configuration-cache --continue --max-workers=2 --console=plain
+```
+
+Gradle's own exit status was **FAILED**, and R9 requires the reason in full:
+
+```
+FAILURE: Build completed with 1 failure.
+1: Task failed with an exception.
+-----------
+* What went wrong:
+Execution failed for task ':core:persistence:testDebugUnitTest'.
+> There were failing tests.
+BUILD FAILED in 11m 32s
+354 actionable tasks: 331 executed, 23 up-to-date
+```
+
+That is the **known pre-existing** `FlashSettingsDataStoreTest` failure set (12 tests, DataStore's
+atomic rename versus Windows file locking). It is inside `BASELINE_TEST_TOTAL` and is the reason
+`--continue` is mandatory — every other module ran to completion. `:app:assembleDebug` produced a
+fresh `app/build/outputs/apk/debug/app-debug.apk` (66 MB, 03:59:23), so the nine modules still on
+`com.android.library` consume the converted module with no build-file change of their own.
+
+Live tally from `*/build/test-results/**/TEST-*.xml`:
+
+```
+   31  fail= 0  app [testDebugUnitTest]          126  fail= 0  core/network
+   55  fail= 0  core/calling                      35  fail=12  core/persistence
+   49  fail= 0  core/common [testAndroidHostTest] 10  fail= 0  core/security [jvmTest]
+   97  fail= 0  core/discovery                    90  fail= 0  core/security [testAndroidHostTest]
+    1  fail= 0  core/engine                       86  fail= 0  core/transfer
+   27  fail= 0  core/messaging                   239  fail= 0  ui/chat
+                                                  37  fail= 0  ui/theme
+
+TOTAL tests=883 failures=12 skipped=0     (BASELINE_TEST_TOTAL = 863 / 12 / 0)
+```
+
+**+20, fully accounted for:** the 10 parity tests run once per target (Android host JVM +
+desktop JVM). No module lost a test.
+
+**Publishing.** `:core:security:publishToMavenLocal` → `BUILD SUCCESSFUL`. Three coordinates,
+all keeping the `core-security` prefix: `core-security` (Gradle metadata root, with
+`available-at` redirects), `core-security-android` (`files[].url =
+core-security-android-1.1.0.aar`), `core-security-jvm` (`files[].url =
+core-security-jvm-1.1.0.jar`).
+
+### What I could NOT verify (R9)
+
+- **`androidDeviceTest` never ran.** `withDeviceTest { instrumentationRunner = … }` is configured
+  and `connectedAndroidDeviceTest` exists, but there is no device or emulator attached to this
+  machine. The instrumented tier is **unexercised** for this module.
+- **Resolution of the published coordinates from an actual repository.** `publishToMavenLocal`
+  writes correct-looking metadata, but every consumer in this repo uses a project dependency, so
+  nothing proves a `com.transfer.flash:core-security:1.1.0` *resolution* works end to end.
+  Phase 24's job.
+- **Release-variant behaviour.** R3 builds `assembleDebug` only, so the `consumer-rules.pro` /
+  `optimization { consumerKeepRules }` path and any release-only ProGuard interaction are
+  unverified here.
+- **`explicitApi()` was not re-probed this phase.** The setting is still in the build file and the
+  module compiles, but I did not deliberately introduce a visibility-less declaration to confirm
+  the strict diagnostic still fires under the KMP plugin — Phase 06 did that probe for this plugin
+  combination and I relied on it.
+
+### Deviations from the phase file
+
+The `PHASE-07-security-kmp.md` on disk was written **before D1 was settled**, assumed D1 = A, and
+told the reader to put the JCA code in `jvmAndAndroidMain` — a source set the 2026-09-03 amendment
+forbids. I rewrote the phase file for D1 = B before executing it, and the entry above describes
+what was actually done. Relative to the *old* file the deviations are:
+
+1. **No `jvmAndAndroidMain`.** Ten `expect`/`actual` seams and two duplicated `actual` files
+   instead (R5).
+2. **The old file claimed "no public API changes."** That is not achievable under B:
+   `java.security.PublicKey` and `KeyPair` cannot appear in `commonMain`. The retype described
+   above is the minimum change, and it is recorded loudly rather than hidden.
+3. **A `commonTest` source set was added**, which the old file did not contemplate. Under A the
+   `actual`s were one shared JVM implementation; under B there are two, and only `commonTest`
+   executes both.
+4. **The old file's "two transitive files" trap is a non-issue** under B and was dropped.
+5. **Risk rating raised from MEDIUM to HIGH** in the rewritten file, which is what a phase that
+   rewrites the body of every cryptographic primitive deserves.
+
+R4 was respected: exactly one module build file changed in the code commit. No root build file or
+version catalog change was needed — Phase 06 already registered both plugins, and R10 was
+honoured (no version moved).
+
+### Known issues
+
+Per R1 these are recorded, not fixed. Items 1 and 2 are the important ones — they are holes in the
+**plan**, not in this phase.
+
+1. **Nothing in the build enforces D1 = B. `java.*` in `commonMain` compiles green today.**
+   Measured, not assumed: putting
+   `internal fun zzProbe(): String = java.util.UUID.randomUUID().toString()` into
+   `core/common/src/commonMain/` and running
+   `:core:common:compileCommonMainKotlinMetadata :core:common:compileKotlinJvm --rerun-tasks`
+   gave `compileCommonMainKotlinMetadata` **SKIPPED**, `compileKotlinJvm` **succeeded**,
+   `BUILD SUCCESSFUL`. (Probe deleted.) With only `android()` and `jvm()` declared, every target
+   has a JVM classpath, so no compilation exists whose classpath lacks `java.*`, and the metadata
+   compilation that would check common code in isolation never runs. Written up as
+   CONVENTIONS **R6.1** with the grep that substitutes for the compiler; `compileKotlinJvm`
+   certifies only the absence of `android.*`.
+2. **No phase in the plan ever adds a Kotlin/Native target.** Phases 00–24 cover Android and
+   desktop JVM only, so (a) the "Linux and all platforms" goal has no phase that delivers the
+   Native half, and (b) issue 1 has no phase that closes it. Adding even `iosSimulatorArm64` with
+   no product intent would turn R6 from a review rule into a compiler error for every module
+   converted so far. **Recommended as a new phase**; deliberately not smuggled into this one.
+3. **`component.module` in the per-target `.module` files reads `core-security`, not
+   `core-security-android` / `-jvm`** — the `artifactId` rewrite runs after metadata generation.
+   Verified to be **pre-existing, not a Phase 07 regression**: Phase 06's `core-common-1.1.0.module`,
+   `core-common-android-1.1.0.module` and `core-common-jvm-1.1.0.module` all report
+   `component.module = core-common`. Consumers are routed by `files[].url` and the root module's
+   `available-at`, both of which are correct, so this is only suspicious-looking until Phase 24
+   resolves the coordinates for real.
+4. **A stale pre-KMP `core-security-1.1.0.aar` dated 09-02 sits in `~/.m2`** beside the 09-05 KMP
+   files from an earlier release dry run. Nothing references it (the new root `.module` does not),
+   but a local build that resolves that coordinate could pick up a pre-conversion artifact. Left
+   alone rather than deleted — cleaning a developer's `~/.m2` is not a phase's business.
+5. **`:core:common`'s three JVM `actual`s are never executed by any test.** `PlatformLock`,
+   `SystemTimeSource` and `UuidIdGenerator` have `jvmMain` `actual`s, but Phase 06 left all tests
+   in `androidHostTest`, so `core/common` has no `commonTest` and no `jvmTest` at all. They compile
+   and are never run. A small `commonTest` there would fix it; noted in R3.1.
+6. **12 pre-existing `:core:persistence` `FlashSettingsDataStoreTest` failures**, unchanged and
+   unrelated (DataStore atomic rename vs Windows locking). Inside `BASELINE_TEST_TOTAL`.
+7. **`core/security` still declares two unused androidx dependencies** (`androidx.core.ktx`,
+   `androidx.lifecycle.runtime.ktx`), now in `androidMain`. `core/transfer` has the same problem
+   from Phase 05. One later cleanup phase should prune all of them together.
+8. **Stale `build/test-results/testDebugUnitTest/` directories survive conversion** and will
+   double-count in any naive tally. Deleted for `core/security`; the trap is now written into R3.
+9. **Owed by the owner, unchanged:** the on-device two-phone matrix for ERROR-031/ERROR-032,
+   Phase 00 Step 5's 8 functional checks, and a real `BASELINE_THROUGHPUT_MBPS` (still the
+   `UNMEASURED` sentinel).
+
+### Next step
+
+**Phase 08 — `:core:discovery` to KMP.** Expect a different shape of problem from Phase 07: not
+cryptography but Android system services — NSD (`android.net.nsd.NsdManager`), multicast sockets,
+`WifiManager`, and `ConnectivityManager`. Under D1 = B those cannot be hidden in a shared JVM tier
+either, so the phase is a port/adapter split: the discovery *state machine* and TXT-record codec
+belong in `commonMain`, while every socket and system-service call goes behind an interface with an
+`androidMain` implementation. Note that `TxtCodec` is R8-protected wire format — it must move
+without a byte changing. Phase 14 later supplies the desktop discovery backend, so Phase 08 should
+leave a seam that Phase 14 can fill without redesign, and `:core:discovery:testAndroidHostTest`
+(plus `:core:discovery:jvmTest` if it gains a `commonTest`) joins the R3 command line.
+
 
 
 

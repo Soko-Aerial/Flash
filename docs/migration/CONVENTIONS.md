@@ -76,19 +76,27 @@ Phase 06 discovered the replacement task name empirically and recorded it in R3.
 and in `logs/migration.md`. From Phase 06 onward the verification command is:
 
 ```bash
-./gradlew --stop >/dev/null 2>&1; sleep 8; ./gradlew :app:assembleDebug testDebugUnitTest :core:common:testAndroidHostTest --no-configuration-cache --continue --max-workers=2 --console=plain
+./gradlew --stop >/dev/null 2>&1; sleep 8; ./gradlew :app:assembleDebug testDebugUnitTest :core:common:testAndroidHostTest :core:security:testAndroidHostTest :core:security:jvmTest --no-configuration-cache --continue --max-workers=2 --console=plain
 ```
 
 Every converted module must be **named explicitly** on that command line, because the
 unqualified `testDebugUnitTest` no longer reaches it. Add one `:module:testAndroidHostTest`
-per conversion as phases 07–12 land. `--continue` is load-bearing: without it the 12 known
-`:core:persistence` `FlashSettingsDataStoreTest` failures abort the run before later
-modules execute, and the total silently drops.
+per conversion as phases 07–12 land — **and one `:module:jvmTest` if the module has a
+`commonTest`/`jvmTest` suite**, as `:core:security` does since Phase 07. `--continue` is
+load-bearing: without it the 12 known `:core:persistence` `FlashSettingsDataStoreTest` failures
+abort the run before later modules execute, and the total silently drops.
 
 Every phase must additionally paste the **test count** from
 `*/build/test-results/**/TEST-*.xml` compared against the Phase 00 baseline
 (`BASELINE_TEST_TOTAL = 863 / 12 failures / 0 skipped`). A phase that cannot show its
-test count matches or exceeds baseline is not verified.
+test count matches or exceeds baseline is not verified. Conversions may legitimately *raise*
+the total — Phase 07 took it to **883 / 12 / 0** by adding a 10-test `commonTest` suite that runs
+once per target. Compare **per module** as well as in total: a total that still matches while one
+module's suite has silently stopped running is exactly the failure mode R3 exists to catch.
+
+When tallying, delete the dead results directory of any task the conversion removed
+(`<module>/build/test-results/testDebugUnitTest/` survives the plugin swap and will be
+double-counted otherwise — Phase 07 hit this).
 
 `--no-configuration-cache` is required because this project enables the
 configuration cache in `gradle.properties`, and KMP source-set wiring is a known
@@ -103,6 +111,7 @@ If verification fails, the phase is **not done**. Do not commit. Do not proceed.
 ANDROID_UNIT_TEST_TASK    = testAndroidHostTest
 ANDROID_MAIN_COMPILE_TASK = compileAndroidMain
 JVM_COMPILE_TASK          = compileKotlinJvm
+JVM_TEST_TASK             = jvmTest          # commonTest + jvmTest, on the desktop target
 ```
 
 Discovered 2026-09-03 on `:core:common` (Gradle 9.5.0 / AGP 9.3.1 / Kotlin 2.2.10).
@@ -113,7 +122,16 @@ JVM target's is `compileKotlinJvm` — there is no `compileKotlinAndroid`.
 
 `compileKotlinJvm` is the **proof task** for R2: the `jvm()` target has no `android.jar` on
 its compile classpath, so a green `compileKotlinJvm` is what certifies `commonMain` is
-genuinely free of Android APIs. Run it on every converted module.
+genuinely free of Android APIs. Run it on every converted module. It certifies **nothing about
+`java.*`** — Phase 07 measured that; see **R6.1**.
+
+`jvmTest` runs the module's `commonTest` sources against the desktop target's `actual`s. Without
+it, a `jvmMain` `actual` is only ever *compiled*, never *executed*: `:core:common`'s three JVM
+`actual`s (`PlatformLock`, `SystemTimeSource`, `UuidIdGenerator`) are in that position today,
+because Phase 06 left all its tests in `androidHostTest`. Any phase that writes an `actual`
+should put at least one behavioural assertion in `commonTest` so both platforms run it. Phase 07's
+parity suite found no divergence — but it is the only thing in the build that *would* have found
+one, since Android runs Conscrypt and the desktop JVM runs SunJCE.
 
 
 ## R4 — Never edit two modules' build files in one commit unless the phase says to
@@ -165,6 +183,42 @@ Watch for the JVM-only parts of the **Kotlin** stdlib too, which look common but
 `ByteArray.decodeToString()`, `String.encodeToByteArray()`, and `kotlin.concurrent.Volatile`
 (Phase 05 already migrated all 66 `@Volatile` sites). `kotlin.synchronized` has no common
 equivalent — Phase 06 added `core/common`'s `internal expect class PlatformLock` for it.
+
+### R6.1 — Nothing in the build enforces R6 yet. Grep for it. (measured by Phase 07)
+
+**`java.*` in `commonMain` currently compiles green.** Phase 07 proved this by putting
+
+```kotlin
+internal fun zzProbe(): String = java.util.UUID.randomUUID().toString()
+```
+
+into `core/common/src/commonMain/` and running
+`:core:common:compileCommonMainKotlinMetadata :core:common:compileKotlinJvm --rerun-tasks`.
+Result: `compileCommonMainKotlinMetadata` **SKIPPED**, `compileKotlinJvm` **succeeded**,
+`BUILD SUCCESSFUL`. (Probe deleted afterwards.) The reason is that with only `android()` and
+`jvm()` targets declared, every target sees a JVM classpath, so there is no compilation whose
+classpath lacks `java.*` and the metadata compilation that would check common code in isolation
+does not run at all.
+
+Consequence: `compileKotlinJvm` (R3.1) certifies only that `commonMain` is free of **`android.*`**.
+It says nothing about `java.*`. Until a Kotlin/Native target exists, R6 is enforced by review, so
+every converting phase must run this and paste the output:
+
+```bash
+grep -rnE '\b(java|javax|android|androidx)\.' --include=*.kt core/*/src/commonMain ui/*/src/commonMain 2>/dev/null | grep -vE ':[0-9]+:[[:space:]]*(\*|//|/\*)'
+```
+
+Expected output: nothing. The second `grep -v` drops KDoc and comment lines, which legitimately
+name platform types when documenting a seam (`PlatformCrypto`'s KDoc cites
+`javax.crypto.AEADBadTagException` deliberately). Also re-scan the stdlib traps listed above —
+those are plain Kotlin and no import line reveals them.
+
+**This is a hole in the plan, not just in a phase.** Phases 00–24 never add a Kotlin/Native
+target, so nothing in the current plan ever makes a `java.*` leak fail the build, and nothing
+delivers the Kotlin/Native half of "Linux and all platforms" (the 2026-09-03 amendment above).
+A phase that adds one native target — even `iosSimulatorArm64` with no product intent — would
+turn R6 from a review rule into a compiler error for every module converted so far. Recommended
+as a new phase; not in scope for any existing one (R1).
 
 ## R7 — Preserve `explicitApi()`
 
