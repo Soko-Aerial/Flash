@@ -1,7 +1,5 @@
 package com.transfer.flash.core.transfer.chunked
 
-import java.util.BitSet
-
 /**
  * Persistent per-transfer record of which chunk indexes have been received (and hash-verified),
  * the resume state primitive for C5.6.
@@ -24,11 +22,39 @@ import java.util.BitSet
  *
  * ## Serialization format (compact bit-vector)
  *
- * Backed by [BitSet] packed via [BitSet.toLongArray]: `int32 LE wordCount` followed by
- * `wordCount` × 8 bytes, each 64-bit word written little-endian. Bit `n` of the vector lives in
- * word `n / 64`, bit value `1L shl (n % 64)`. [fromSerialized] rejects words beyond the expected
- * count and ignores/clears padding bits at or above [totalChunks], so a hostile or stale payload
- * can never resurrect chunks that do not belong to the transfer.
+ * `int32 LE wordCount` followed by `wordCount` × 8 bytes, each 64-bit word written little-endian.
+ * Bit `n` of the vector lives in word `n / 64`, bit value `1L shl (n % 64)`. **Trailing all-zero
+ * words are not written**, so `wordCount` is `(highestSetBit / 64) + 1`, or 0 for an empty vector.
+ * [fromSerialized] rejects words beyond the expected count and ignores/clears padding bits at or
+ * above [totalChunks], so a hostile or stale payload can never resurrect chunks that do not belong
+ * to the transfer.
+ *
+ * ## Phase 13B-3c: `java.util.BitSet` → a [LongArray] bitset
+ *
+ * The backing store was `java.util.BitSet`, packed for serialization via `BitSet.toLongArray()`.
+ * That is the only `java.*` this file ever used, and the words it produced were already the wire
+ * format — so the replacement is the `LongArray` itself, with the bit arithmetic that `BitSet` was
+ * doing written out. Three of `BitSet`'s behaviours are load-bearing here and are reproduced
+ * deliberately rather than incidentally:
+ *
+ * - **`toLongArray()` trims trailing zero words.** Its length is `ceil(length() / 64)`, where
+ *   `length()` is the highest set bit plus one — not the capacity. A fixed-size dump would emit a
+ *   longer array for the same set of bits and change every serialized payload, so
+ *   [significantWordCount] reproduces the trim. This is what the golden vectors in
+ *   `ResumeBitVectorTest` exist to pin.
+ * - **`cardinality()` is a population count**, here `Long.countOneBits()` per word. Kept as a
+ *   computed property rather than a maintained counter: [fromSerialized] writes words wholesale,
+ *   and a counter would be one more thing that can drift out of step with the bits.
+ * - **`nextSetBit` skips empty words.** [doneIndexes] keeps that complexity with
+ *   `countTrailingZeroBits()` and the `w and (w - 1)` lowest-set-bit clear, so a mostly-empty
+ *   vector over a million chunks still costs one pass over 15,625 words and not a million bit
+ *   tests. [missingIndexes] was already O(totalChunks) by nature and is unchanged in shape.
+ *
+ * `BitSet(totalChunks)` was a capacity *hint* that grew on demand; the [LongArray] is exactly
+ * `ceil(totalChunks / 64)` words and cannot grow. Nothing is lost, because every mutator already
+ * bounds-checks against `[0, totalChunks)`: [markReceived] throws, [reconcile] filters silently,
+ * and [fromSerialized] masks. The wire format did not change — no field, no order, no width, no
+ * endianness — and the layout paragraph above is the text that was there before.
  */
 public class ResumeBitVector(public val totalChunks: Int) {
 
@@ -36,11 +62,15 @@ public class ResumeBitVector(public val totalChunks: Int) {
         require(totalChunks > 0) { "totalChunks must be > 0, was $totalChunks" }
     }
 
-    private val bits = BitSet(totalChunks)
+    private val words = LongArray((totalChunks + WORD_BITS - 1) / WORD_BITS)
 
     /** Number of distinct received (marked) chunk indexes. */
     public val receivedCount: Int
-        get() = bits.cardinality()
+        get() {
+            var n = 0
+            for (word in words) n += word.countOneBits()
+            return n
+        }
 
     /**
      * Marks [index] as received.
@@ -49,13 +79,16 @@ public class ResumeBitVector(public val totalChunks: Int) {
      */
     public fun markReceived(index: Int): Boolean {
         require(index in 0 until totalChunks) { "chunk index $index out of range [0,$totalChunks)" }
-        val was = bits.get(index)
-        bits.set(index)
+        val w = index / WORD_BITS
+        val mask = 1L shl (index % WORD_BITS)
+        val was = (words[w] and mask) != 0L
+        words[w] = words[w] or mask
         return !was
     }
 
     public fun isReceived(index: Int): Boolean =
-        index in 0 until totalChunks && bits.get(index)
+        index in 0 until totalChunks &&
+            (words[index / WORD_BITS] and (1L shl (index % WORD_BITS))) != 0L
 
     public fun isComplete(): Boolean = receivedCount == totalChunks
 
@@ -63,7 +96,7 @@ public class ResumeBitVector(public val totalChunks: Int) {
     public fun missingIndexes(): List<Int> {
         val out = ArrayList<Int>(totalChunks - receivedCount)
         for (i in 0 until totalChunks) {
-            if (!bits.get(i)) out.add(i)
+            if (!isReceived(i)) out.add(i)
         }
         return out
     }
@@ -71,10 +104,15 @@ public class ResumeBitVector(public val totalChunks: Int) {
     /** Ascending list of received chunk indexes (what a receiver reports back to a sender). */
     public fun doneIndexes(): List<Int> {
         val out = ArrayList<Int>(receivedCount)
-        var i = bits.nextSetBit(0)
-        while (i >= 0) {
-            out.add(i)
-            i = bits.nextSetBit(i + 1)
+        for (w in words.indices) {
+            var word = words[w]
+            val base = w * WORD_BITS
+            while (word != 0L) {
+                out.add(base + word.countTrailingZeroBits())
+                // Clears the lowest set bit, so the loop runs once per set bit and empty words cost
+                // nothing — this is what `BitSet.nextSetBit` was doing.
+                word = word and (word - 1L)
+            }
         }
         return out
     }
@@ -86,16 +124,19 @@ public class ResumeBitVector(public val totalChunks: Int) {
      */
     public fun reconcile(remoteDoneIndexes: Collection<Int>) {
         for (i in remoteDoneIndexes) {
-            if (i in 0 until totalChunks) bits.set(i)
+            if (i in 0 until totalChunks) {
+                val w = i / WORD_BITS
+                words[w] = words[w] or (1L shl (i % WORD_BITS))
+            }
         }
     }
 
     public fun toSerialized(): ByteArray {
-        val words = bits.toLongArray()
-        val out = ByteArray(4 + words.size * 8)
-        writeI32Le(out, 0, words.size)
-        for ((w, word) in words.withIndex()) {
-            var v = word
+        val wordCount = significantWordCount()
+        val out = ByteArray(4 + wordCount * 8)
+        writeI32Le(out, 0, wordCount)
+        for (w in 0 until wordCount) {
+            var v = words[w]
             val base = 4 + w * 8
             for (b in 0 until 8) {
                 out[base + b] = (v and 0xFFL).toByte()
@@ -103,6 +144,29 @@ public class ResumeBitVector(public val totalChunks: Int) {
             }
         }
         return out
+    }
+
+    /**
+     * Words that must be written, reproducing `BitSet.toLongArray().size` — the highest set bit's
+     * word index plus one, and 0 when nothing is set. Trailing zero words are not part of the
+     * format; emitting them would change every payload this class has ever written.
+     */
+    private fun significantWordCount(): Int {
+        var i = words.size
+        while (i > 0 && words[i - 1] == 0L) i--
+        return i
+    }
+
+    /**
+     * Clears bits at or above [totalChunks] in the final word. `BitSet.valueOf` accepted them and
+     * the old [fromSerialized] dropped them by copying only `0 until totalChunks`; masking is the
+     * same thing in one operation instead of `totalChunks` of them.
+     */
+    private fun clearPaddingBits() {
+        val used = totalChunks % WORD_BITS
+        if (used != 0 && words.isNotEmpty()) {
+            words[words.size - 1] = words[words.size - 1] and ((1L shl used) - 1L)
+        }
     }
 
     override fun toString(): String =
@@ -137,10 +201,9 @@ public class ResumeBitVector(public val totalChunks: Int) {
                 words[w] = v
             }
             val vector = ResumeBitVector(totalChunks)
-            val restored = BitSet.valueOf(words)
-            for (i in 0 until totalChunks) {
-                if (restored.get(i)) vector.bits.set(i)
-            }
+            // wordCount <= maxWords == vector.words.size, checked above, so this cannot overrun.
+            words.copyInto(vector.words)
+            vector.clearPaddingBits()
             return vector
         }
 

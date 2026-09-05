@@ -343,9 +343,9 @@ public class ReceivePipeline(
 
 // [ChunkSink] — the destination abstraction this pipeline writes verified chunks through — moved
 // to `commonMain/chunked/ChunkSink.kt` in Phase 13B-2. Its signature needed no re-typing; only
-// the file it lived in was Android-bound. The pipeline itself stays here (`ChunkFrame`,
-// `ResumeBitVector`, `sortedSetOf`: all 13B-3 scope). `Sha256` — which the calls above use
-// heavily — is `commonMain` as of 13B-3 and no longer one of the reasons this file cannot move.
+// the file it lived in was Android-bound. The pipeline itself stays here, but the list of reasons
+// has shrunk to one: `Sha256` moved to `commonMain` in 13B-3a, `ChunkFrame` in 13B-3b and
+// `ResumeBitVector` in 13B-3c, leaving `sortedSetOf` — and this file — for 13B-3e.
 
 /**
  * Optional whole-file digest seam for final re-checks (e.g. hashing the assembled destination
