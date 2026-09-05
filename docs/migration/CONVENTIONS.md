@@ -86,20 +86,21 @@ Phase 06 discovered the replacement task name empirically and recorded it in R3.
 and in `logs/migration.md`. From Phase 06 onward the verification command is:
 
 ```bash
-./gradlew --stop >/dev/null 2>&1; sleep 8; ./gradlew :app:assembleDebug testDebugUnitTest :core:common:testAndroidHostTest :core:security:testAndroidHostTest :core:security:jvmTest :core:discovery:testAndroidHostTest :core:discovery:jvmTest :core:network:testAndroidHostTest :core:network:jvmTest :core:transfer:testAndroidHostTest :core:transfer:jvmTest :core:messaging:testAndroidHostTest :core:messaging:jvmTest :core:engine:testAndroidHostTest :core:engine:jvmTest :core:persistence:testAndroidHostTest :core:persistence:jvmTest :ui:theme:testAndroidHostTest --no-configuration-cache --continue --max-workers=2 --console=plain
+./gradlew --stop >/dev/null 2>&1; sleep 8; ./gradlew :app:assembleDebug testDebugUnitTest :core:common:testAndroidHostTest :core:security:testAndroidHostTest :core:security:jvmTest :core:discovery:testAndroidHostTest :core:discovery:jvmTest :core:network:testAndroidHostTest :core:network:jvmTest :core:transfer:testAndroidHostTest :core:transfer:jvmTest :core:messaging:testAndroidHostTest :core:messaging:jvmTest :core:engine:testAndroidHostTest :core:engine:jvmTest :core:persistence:testAndroidHostTest :core:persistence:jvmTest :ui:theme:testAndroidHostTest :ui:theme:jvmTest --no-configuration-cache --continue --max-workers=2 --console=plain
 ```
 
-`:ui:theme:testAndroidHostTest` was added by Phase 17. It has **no** `:ui:theme:jvmTest`
-companion yet: the module's five suites are still `androidHostTest`-only, so the task exists but
-runs zero tests. **Phase 18 must add it** — that is the phase that moves those suites to
-`commonTest`.
+`:ui:theme:testAndroidHostTest` was added by Phase 17, and **`:ui:theme:jvmTest` was added by
+Phase 18**, which moved the module's five suites from `androidHostTest` into `commonTest`. Both now
+run the same 37 tests — Android host and desktop — which is what makes `:ui:theme`'s three desktop
+`actual`s verified rather than merely compiled (R3.1).
 
 Every converted module must be **named explicitly** on that command line, because the
 unqualified `testDebugUnitTest` no longer reaches it. Add one `:module:testAndroidHostTest`
 per conversion as each phase lands — **and one `:module:jvmTest` if the module has a
 `commonTest`/`jvmTest` suite**, as `:core:security` does since Phase 07, `:core:discovery`
 since Phase 08, `:core:network` since Phase 10, both `:core:transfer` and `:core:messaging`
-since Phase 11, `:core:engine` since Phase 12, and `:core:persistence` since Phase 09B-1.
+since Phase 11, `:core:engine` since Phase 12, `:core:persistence` since Phase 09B-1, and
+`:ui:theme` since Phase 18.
 `--continue` is load-bearing: without it the
 12 known `:core:persistence` failures abort the run before later modules execute, and the total
 silently drops. Those 12 are
@@ -134,6 +135,10 @@ the total *unchanged*: it added no test and only relocated `:ui:theme`'s five su
 XML each) from `testDebugUnitTest/` to `testAndroidHostTest/`. In that case the **per-module table
 is the only thing that proves anything**, because an unchanged total is also what a silently
 dropped suite looks like.
+Phase 18 took it to **1055 / 12 / 0 across 140 XMLs** (1018 + the same 37 tests now running a second
+time on the desktop target; 135 + 5 XMLs, one per suite per target). Phase 17's log predicted that
+figure to the digit *before* the move — "anything less means a suite stopped running" — which is the
+cheapest form this check takes: state the arithmetic first, then measure.
 Compare **per module** as well as in total: a total that still matches while one
 module's suite has silently stopped running is exactly the failure mode R3 exists to catch.
 Show the arithmetic, not just the number — a phase that adds N tests to a `commonTest` suite must

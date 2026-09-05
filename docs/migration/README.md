@@ -38,8 +38,8 @@ self-contained and states its own preconditions.
 | 15 | [PHASE-15-desktop-transport.md](PHASE-15-desktop-transport.md) | 13B-2 (so **D10**), 14 | high |
 | 16 | [PHASE-16-desktop-headless-interop.md](PHASE-16-desktop-headless-interop.md) | 15 | **gate** |
 | 17 | [PHASE-17-ui-resources.md](PHASE-17-ui-resources.md) | **DONE (`a8d9d0d`, `23267ed`)** | low |
-| 18 | [PHASE-18-ui-theme-kmp.md](PHASE-18-ui-theme-kmp.md) | 17 — **satisfied**; 17 already did 18's plugin/target work | medium |
-| 19 | [PHASE-19-ui-platform-shims.md](PHASE-19-ui-platform-shims.md) | 18 + **D7** | medium |
+| 18 | [PHASE-18-ui-theme-kmp.md](PHASE-18-ui-theme-kmp.md) | **DONE (`96e8799`)** — read its STATUS box before reusing any of it; 14 of its steps were wrong | medium |
+| 19 | [PHASE-19-ui-platform-shims.md](PHASE-19-ui-platform-shims.md) | 18 — **satisfied**; + **D6**/**D7** (agent may proceed on the recommendation and record it; D6's spike has never been run) | medium |
 | 20 | [PHASE-20-ui-chat-kmp.md](PHASE-20-ui-chat-kmp.md) | 19 | high |
 | 21 | [PHASE-21-desktop-app-shell.md](PHASE-21-desktop-app-shell.md) | 16,20 | medium |
 | 22 | [PHASE-22-adaptive-desktop-screens.md](PHASE-22-adaptive-desktop-screens.md) | 21 + **D8** | medium |
@@ -85,10 +85,12 @@ The table above covers every module **except two**, and both are real:
 
 - **`:ui:callui`** — depends on `:ui:theme` (`ui/callui/build.gradle.kts:62`) and names
   `FlashIconSpec` (`FlashCallScreen.kt:486`), so it sits inside the blast radius of Phase
-  17 (done), 18 and 19, yet no phase converts it or even compiles it as a gate. Phases
-  17's and 09B-1's verification runs added `:ui:callui:compileDebugKotlin` by hand for
-  exactly that reason. **Whether calling is in scope for desktop at all is a human
-  decision** — WebRTC on desktop is not a small assumption to make silently.
+  17 (done), 18 (done) and 19, yet no phase converts it or even compiles it as a gate. The
+  verification runs for 09B-1, 17 and 18 added `:ui:callui:compileDebugKotlin` by hand for
+  exactly that reason — and as of Phase 18 it is compiling against a `:ui:theme` that is now
+  multiplatform, so the gap is widening rather than holding still. **Whether calling is in
+  scope for desktop at all is a human decision** — WebRTC on desktop is not a small
+  assumption to make silently.
 - **`:sample:consumer-granular`** — never mentioned anywhere in the plan.
 
 Do not treat their absence as "already handled". Phase 17's log entry records this as an

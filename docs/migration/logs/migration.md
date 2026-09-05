@@ -6758,3 +6758,305 @@ New for the human decision queue after this phase: **current CMP is unreachable 
 bump.** CMP 1.11+ requires Kotlin 2.3, R10 freezes Kotlin at 2.2.10, so this repo is on CMP 1.9.3
 until someone authorises a Kotlin version bump. That is a decision, not an oversight, and it will
 resurface at Phase 20 if any newer CMP API is wanted.
+
+---
+
+## Phase 18 — `:ui:theme` KMP conversion proper
+
+- **Date:** 2026-09-05
+- **Agent/model:** Claude Opus 5 (Claude Code)
+- **Commits:** `96e8799` (move + `expect`/`actual` split + test conversion + build file), plus this docs commit
+- **Decisions relied on:** D1=B (strict `commonMain`; **no** `jvmAndAndroidMain`, no `androidMain`↔`jvmMain` `dependsOn`), D3=A (answered by a human on 2026-08-31; the CMP-version verification it demanded was discharged in Phase 17), **D4=A** (answered 2026-08-31 — `expect fun flashDynamicColorScheme(dark: Boolean): ColorScheme?`, Monet on Android, `null` on desktop, static Flash palette as fallback; implemented exactly as worded, with the seam `internal` and `@Composable` because `LocalContext` can only be read from a composable). **Nothing was picked for the human in this phase.**
+
+### Change
+
+Steps 1–8 of PHASE-18. The 24 Kotlin files that Phase 17 deliberately left at their pre-KMP paths
+behind two `srcDir` shims move into real KMP source sets: **18** to `commonMain/kotlin`, **1**
+(`FlashThemeSwatches.kt`) to `androidMain/kotlin`, **5** suites to `commonTest/kotlin`. Four
+`commonMain` files shed their `android.*` imports through **three** `expect` declarations with
+**six** `actual`s (3 Android, 3 desktop), and `FlashSoundPolicy`'s two Android constant defaults
+become `javap`-verified literals. Both `srcDir` shims are deleted in the same commit as the move —
+Phase 17's log was explicit that they had to change together — and `src/main` / `src/test` no longer
+exist. `jvm()`, declared empty by Phase 17 purely to make its `Res` accessor gate real, now compiles
+18 shared files and runs all 37 tests, so **`:ui:theme:jvmTest` exists for the first time**.
+
+### Files changed
+
+**Moved to `commonMain/kotlin/com/transfer/flash/ui/` (18)**
+- `icons/FlashIcons.kt`, `avatar/FlashAvatar.kt`
+- `theme/`: `Color.kt`, `FlashBrandAnimation.kt`, `FlashColors.kt`, `FlashDimensions.kt`,
+  `FlashElevation.kt`, `FlashFeedback.kt`, `FlashInteraction.kt`, `FlashShapes.kt`,
+  `FlashSpacing.kt`, `FlashText.kt`, `FlashTypography.kt`, `Type.kt` — pure moves, 100% similarity,
+  not one character changed.
+- `theme/FlashMotion.kt` (91%), `theme/FlashSounds.kt` (64%), `theme/FlashTheme.kt` (71%),
+  `theme/Theme.kt` (67%) — moved **and** split; itemised under **Modified**.
+
+**Moved to `androidMain/kotlin/.../theme/` (1)**
+- `FlashThemeSwatches.kt` — 100% similarity. **Not** `commonMain`, against the phase's own
+  inventory; see Deviations.
+
+**Added — `androidMain/kotlin/.../theme/` (3)**
+- `FlashMotion.android.kt` — `actual fun isReduceMotionOnPlatform()` reading
+  `Settings.Global.ANIMATOR_DURATION_SCALE` plus the T+ `AccessibilityManager.isReduceMotionEnabled`
+  reflection, and `fun FlashMotion.Companion.isReduceMotionEnabled(context)` moved verbatim off the
+  companion. `remember(context)` lives here, not in common, so desktop does not pay for a slot it
+  never reads.
+- `FlashSounds.android.kt` — `actual fun rememberFlashSounds()` plus `internal object
+  FlashSoundPlayer` verbatim: the `AudioTrack.Builder` pipeline,
+  `USAGE_ASSISTANCE_SONIFICATION`, `MODE_STATIC`, the `tracks` cache, `releaseLocked()`, and the
+  real `AudioManager.RINGER_MODE_NORMAL` / `NotificationManager.INTERRUPTION_FILTER_ALL` reads.
+- `FlashTheme.android.kt` — `actual fun flashDynamicColorScheme(dark)`: the SDK-31 gate plus
+  `dynamicDarkColorScheme` / `dynamicLightColorScheme`.
+
+**Added — `jvmMain/kotlin/.../theme/` (3)**
+- `FlashMotion.jvm.kt` → `false`; `FlashSounds.jvm.kt` → `remember { { } }`;
+  `FlashTheme.jvm.kt` → `null`. Each carries the argument for why it is a deliberate absence and
+  not an R2 stub; repeated under Known issues so it is not lost.
+
+**Modified**
+- `commonMain/.../FlashMotion.kt` — every `android.*` and `LocalContext` import gone; the
+  companion's `isReduceMotionEnabled` / `isReduceMotionEnabledCompat` deleted; new
+  `internal expect @Composable fun isReduceMotionOnPlatform()`, which `rememberFlashMotion()` now
+  reads. The ~355 lines of duration/easing/spring tokens are untouched.
+- `commonMain/.../FlashSounds.kt` — five private `const val`s replace the `android.media` /
+  `android.app` constants in `FlashSoundPolicy.shouldPlay`'s default arguments; `internal object
+  FlashSoundPlayer` removed to `androidMain`; the file now ends in
+  `expect @Composable fun rememberFlashSounds(): (FlashSound) -> Unit`. `enum class FlashSound` (8
+  entries), `data class ToneSegment`, `object FlashSoundSettings` and `object FlashSoundSynth` are
+  untouched — the phase's "Do NOT rewrite `FlashSoundSynth`" is honoured literally.
+- `commonMain/.../FlashTheme.kt` — `Build`, `dynamicDarkColorScheme`, `dynamicLightColorScheme`,
+  `LocalContext` out; `androidx.compose.material3.ColorScheme` in; new
+  `internal expect @Composable fun flashDynamicColorScheme(dark: Boolean): ColorScheme?` and
+  `internal const val DYNAMIC_ACCENT_MIN_SDK = 31`. `LocalFlashColors` / `LocalFlashTypography` /
+  `LocalFlashMotion`, `object FlashTheme` and `resolveAccent` itself are unchanged.
+- `commonMain/.../Theme.kt` — same four imports out; the `when`'s
+  `dynamicColor && SDK_INT >= S` branch folds into
+  `dynamicColor -> flashDynamicColorScheme(...) ?: authored`.
+- `ui/theme/build.gradle.kts` — both `srcDir` shims deleted; `commonMain` gains the `compose.*`
+  tier; new `commonTest` / `androidHostTest` / `jvmTest` dependency blocks; two stale Phase-17
+  header comments corrected to say the shims are gone and that `jvm()` now has sources.
+- The five suites — JUnit 4 → `kotlin.test` (see Deviations), 84–97% similarity, except
+  `FlashThemeTokensTest.kt` which git recorded as delete+add because 7 `kotlin.assert` lines out of
+  ~40 changed, dropping it under the rename threshold.
+
+**Deleted**
+- `ui/theme/src/main/` and `ui/theme/src/test/`. Nothing tracked remained in either; this discharges
+  the phase's *"Do NOT delete `src/main/java/` yet — verify the build works first, then clean up the
+  empty directory."*
+
+### Verification
+
+Every command needs the R3 env preamble — `JAVA_HOME` does not survive between shells here, and
+`JAVA_TOOL_OPTIONS` carries the AF_UNIX loopback fix without which the daemon cannot start:
+
+```
+export JAVA_HOME="/c/Users/KaliOxygen/.gradle/jdks/jetbrains_s_r_o_-21-amd64-windows.2"
+export JAVA_TOOL_OPTIONS='-Djdk.net.unixdomain.tmpdir=C:\Users\KaliOxygen\.gradle\afunix'
+./gradlew :ui:theme:compileKotlinJvm --no-configuration-cache
+./gradlew :ui:theme:compileAndroidMain --no-configuration-cache
+./gradlew :ui:theme:testAndroidHostTest :ui:theme:jvmTest --no-configuration-cache
+./gradlew :ui:chat:compileDebugKotlin :ui:callui:compileDebugKotlin \
+          :sample:consumer:compileDebugKotlin --no-configuration-cache
+./gradlew :app:assembleDebug --no-configuration-cache
+```
+
+Result: **PASS** — all five invocations, first try, no failure at any point in the phase.
+
+| Gate | Task | Result |
+|---|---|---|
+| desktop compile (step 7, the phase's critical gate) | `:ui:theme:compileKotlinJvm` | BUILD SUCCESSFUL in 43s |
+| Android compile | `:ui:theme:compileAndroidMain` | BUILD SUCCESSFUL in 15s |
+| Android host tests | `:ui:theme:testAndroidHostTest` | 5 XMLs, `tests=37 failures=0 errors=0 skipped=0` |
+| desktop tests (**new in this phase**) | `:ui:theme:jvmTest` | 5 XMLs, `tests=37 failures=0 errors=0 skipped=0` |
+| downstream consumers | `:ui:chat` + `:ui:callui` + `:sample:consumer` `compileDebugKotlin` | BUILD SUCCESSFUL, only pre-existing deprecation warnings |
+| app | `:app:assembleDebug` | BUILD SUCCESSFUL in 47s |
+
+Repo-wide R3 command with `:ui:theme:jvmTest` appended:
+
+```
+1055 tests, 12 failures, 0 skipped, across 140 XML files
+```
+
+Phase 17's log set that target and this hits it exactly: *"Moving suites to `commonTest` should take
+this to 37 Android + 37 JVM = **74**, i.e. repo-wide 1018 → 1055 across 135 → 140 XMLs. Anything
+less means a suite stopped running."* Per-module tally behind the 1055 — `:app` 31, `:core:calling`
+55, `:core:common` 49, `:core:discovery` 35+104, `:core:engine` 8+9, `:core:messaging` 8+35,
+`:core:network` 8+134, `:core:persistence` 13+35, `:core:security` 10+90, `:core:transfer` 16+102,
+`:ui:chat` 239, `:ui:theme` **37+37**.
+
+The 12 failures are the known pre-existing `:core:persistence` set, unchanged in count *and*
+identity — 11 `FlashSettingsDataStoreTest` + 1 `DiscoveryModeSettingTest`, all
+`java.io.IOException: Unable to rename C:\Users\KaliOxygen\AppData\Local\Temp\junit…\settings--8131969`.
+PHASE-09B is explicit that fixing them is out of scope and that *"if the count changes, that is a
+regression, not progress."* It did not change.
+
+For the first time in four modules **no orphaned `testDebugUnitTest` results directory appeared** for
+the converted module: Phase 17 already deleted `ui/theme/build/{test-results,reports/tests}/testDebugUnitTest/`
+when it swapped the plugins, and nothing regenerated it. The remaining legitimate ones are `:app`,
+`:core:calling` and `:ui:chat` — the unconverted modules with unit tests.
+
+Additional checks specific to this phase (all greps over `ui/theme/src`, R11 exclusions applied):
+
+| Check | Expected | Result |
+|---|---|---|
+| `android\.` in `commonMain` | 0 real | **7 matches, every one inside a comment or KDoc** — 0 real imports or references |
+| `android\.` in `jvmMain` | 0 | 0 |
+| `tooling` in `commonMain` | 0 | 0 |
+| `org\.junit` in `commonTest` | 0 | 0 |
+| `expect` declarations | 3 | 3 |
+| `actual` declarations | 6 | 6 (3 `androidMain`, 3 `jvmMain`) |
+
+The five mirrored platform constants were read out of `E:\AndroidDev\SDK\platforms\android-37.0\android.jar`
+with `javap -constants`, not from memory or documentation:
+`RINGER_MODE_SILENT=0`, `RINGER_MODE_VIBRATE=1`, `RINGER_MODE_NORMAL=2`,
+`INTERRUPTION_FILTER_UNKNOWN=0`, `INTERRUPTION_FILTER_ALL=1`. `FlashSoundsTest` hardcodes the same
+five numbers independently, so production and test are two witnesses to the same values and a
+platform renumbering would have to be accepted deliberately in both places.
+
+### Deviations from the phase file
+
+PHASE-18 could not be followed literally. Fourteen defects, on top of the nine already in its
+AMENDED box from Phase 17. Each is followed by what was done instead.
+
+1. **Step 5 and *"Do NOT change test imports"* are mutually incompatible.** `commonTest` cannot see
+   `org.junit`, and step 5 puts all five suites in `commonTest`. Both instructions cannot be obeyed.
+   The suites were converted to `kotlin.test` — what `:core:security` and `:core:discovery` both did
+   — because per R3.1 that is the only way the three `actual`s are *executed* on both targets rather
+   than merely compiled. Two JVM-only stdlib leaks came out with them, which is more than an import
+   swap and is therefore also a deviation: `"%.2f".format(ratio)` in `FlashDarkPaletteTest` (that is
+   `kotlin.text.String.format`, JVM-family only) became exact integer scaling, and seven
+   `kotlin.assert(…)` calls in `FlashThemeTokensTest` became `assertTrue(…)`, which is both
+   multiplatform *and* unconditional — strictly stronger than what it replaced, since `assert` needs
+   `-ea`.
+2. **`FlashThemeSwatches.kt` is not pin-free.** The inventory lists it as *"None → commonMain"*. It
+   has seven `@Preview` functions using `name`, `showBackground`, `widthDp` and `fontScale`; CMP
+   1.9.3's `org.jetbrains.compose.ui.tooling.preview.Preview` takes **no arguments**, so moving the
+   file to `commonMain` would have silently dropped every one of those. It stays in `androidMain`,
+   and `libs.androidx.compose.ui.tooling.preview` is thereby load-bearing rather than vestigial.
+3. **Step 1b marks `rememberFlashSounds` `internal actual`.** It is published 1.1.0 public API;
+   narrowing it is an API deletion, which R2 forbids outright. It stays `public expect`/`actual`.
+4. **Step 1a's `isReduceMotionOnPlatform()` cannot compile as written** — its `actual` calls
+   `LocalContext.current` from a non-`@Composable` function. The `expect` is `@Composable` here.
+5. **Step 1b calls `FlashSoundPolicy` *"pure JVM — uses compile-time constants only"*.** True of the
+   bytecode, false of the source: the constants were `android.media.AudioManager.RINGER_MODE_NORMAL`
+   and `android.app.NotificationManager.INTERRUPTION_FILTER_ALL`. Five private `const val`s replace
+   them, `javap`-verified as above, with the public signature and its default *values* unchanged.
+6. **Step 1c's `FlashTheme.android.kt` omits the `androidx.compose.material3.ColorScheme` import**
+   its own return type needs. Added.
+7. **Step 6's build file is pre-AGP-9 throughout.** It uses `androidLibrary { }` (the real block is
+   `android { }`), asserts `consumerProguardFiles` *"are removed"* when Phase 17 preserved them via
+   `optimization { consumerKeepRules { … } }`, declares
+   `register<MavenPublication>("release") { from(components["release"]) }` which a KMP module must
+   not do, and hardcodes `version = "1.0.0"` — the exact bug that silently published 1.0.0 for the
+   whole 1.1.0 cycle. Phase 17's build file was kept and extended instead of being replaced.
+8. **Four dependency errors in step 6.** `compose.animation` is missing and mandatory —
+   `FlashMotion` and `FlashBrandAnimation` import `EnterTransition`, `fadeIn`, `Animatable`,
+   `CubicBezierEasing`, `spring`, none of which `compose.foundation` carries.
+   `compose.components.resources` is downgraded to `implementation`, re-breaking what Phase 17
+   fixed (`DrawableResource` is the declared type of the public `FlashIconSpec.drawableRes`), so it
+   stays `api`. `libs.androidx.compose.ui.tooling.preview` and `libs.androidx.lifecycle.runtime.ktx`
+   are moved to `commonMain`, where Android-only AARs cannot resolve for `jvm()`; both stay in
+   `androidMain`. And `libs.junit` is put in `commonTest`, a source set that must stay platform-free;
+   it is declared in `androidHostTest` and `jvmTest` instead, because `kotlin("test")` resolves to
+   `kotlin-test-junit` on both JVM tiers and needs JUnit 4 at runtime for its runner.
+9. **Step 6 hoists `project(":core:common")` to `commonMain`.** The module has zero references to
+   `com.transfer.flash.core.common` anywhere, so hoisting would only add a dependency to the *new*
+   `ui-theme-jvm` POM. It stays in `androidMain` exactly where Phase 17 left it, alongside
+   `libs.androidx.core.ktx` and `libs.androidx.lifecycle.runtime.ktx`, which are also unreferenced.
+   Deleting a published runtime dependency is a separate decision from converting a module (R1).
+10. **Steps 7–8 and the gate table name three tasks that do not exist.** `compileKotlinDesktop` →
+    `compileKotlinJvm` (R5 mandates plain `jvm()`; this is the same correction R3.1 already carries
+    for `:core:*`); `compileDebugKotlin` → `compileAndroidMain` (the KMP Android target is
+    variant-free); and `allTests`, which is not how this repo tallies — R3's command line is.
+11. **The gate table's counts need restating.** Files: **18** `commonMain`, **4** `androidMain`
+    (1 moved + 3 `actual`), **3** `jvmMain`, **5** `commonTest`. Its `^internal expect fun` grep
+    expects 3 and matches **2**, because `rememberFlashSounds` is public per deviation 3; its
+    `^internal actual fun` grep over `jvmMain` matches **2**, not 3, for the same reason.
+12. **File naming.** The phase names platform files `X.desktop.kt`; the repo convention established
+    in Phases 08/10/11/12/13B-1/14 is `X.jvm.kt`. Repo convention wins.
+13. **Two call-site rewrites the phase never mentions**, both argued to behavioural identity in the
+    code rather than asserted. `FlashTheme` used to pass `Build.VERSION.SDK_INT` into `resolveAccent`
+    and now passes `dynamicScheme?.let { DYNAMIC_ACCENT_MIN_SDK } ?: 0` — a non-null scheme *proves*
+    the device is ≥ 31 and a null one leaves the predicate false either way, so the resolved colors
+    are identical for every `(dynamicAccent, sdkInt)` pair the old code could see. The gate is kept
+    because `resolveAccent` is the unit-tested seam the 5 `FlashDynamicAccentTest` cases drive
+    directly. `Theme.kt`'s `when` folds `dynamicColor && SDK_INT >= S` into
+    `dynamicColor -> flashDynamicColorScheme(...) ?: authored`, where null now means "no dynamic
+    scheme on this platform" — SDK-30 phone or any desktop — and falls through to the same authored
+    scheme the old branch chose.
+14. **The production file table still undercounts, as Phase 17 flagged.** It lists 18 files under
+    `ui/theme/src/main/java/com/transfer/flash/ui/`; there are **19**, `FlashBrandAnimation.kt`
+    being absent from the table. 19 = 18 `commonMain` + 1 `androidMain`, which is where the counts
+    in deviation 11 come from.
+
+Everything on the phase's "Do NOT" list was honoured: `FlashFeedback.kt` unchanged, `FlashIcons.kt`
+not moved back to `main/java`, `composeResources/` not moved, `org.jetbrains.compose` not added to
+`:ui:chat` or `:app`, `FlashAvatar.kt` not touched beyond its move, `FlashSoundSynth` not rewritten,
+and `src/main/java/` deleted only after the build was verified. No `jvmAndAndroidMain` was created
+and no `androidMain`↔`jvmMain` `dependsOn` was added (D1=B, R5). `explicitApi()` was again **not**
+added — the three `ui/*` modules were never in the ADR-023 rollout and R1/R7 say to preserve what is
+there, not to extend it.
+
+### Known issues
+
+**Two more ABI breaks on the published `ui-theme` coordinate, both source-compatible.** Neither has
+an in-repo caller, and there is still no BCV `.api` file to update — ADR-023 removed BCV repo-wide.
+- `FlashMotion.Companion.isReduceMotionEnabled(Context)` is now an **extension on the companion**,
+  declared in `androidMain`. A `commonMain` class cannot gain a companion member from a platform
+  source set, so this was the only shape that kept the call syntax. Every existing source call site
+  compiles verbatim; the JVM symbol moves from `FlashMotion$Companion.isReduceMotionEnabled` to a
+  static in `FlashMotion_androidKt`.
+- `rememberFlashSounds`'s facade class moves from `FlashSoundsKt` to `FlashSounds_androidKt`, because
+  it is now an `expect`/`actual`.
+
+With Phase 17's `FlashIconSpec.drawableRes: Int → DrawableResource`, that is **three** breaks
+needing one Phase 24 release note.
+
+**The three `@Composable` actuals are not executed as Compose (R9).** They are executed only insofar
+as their non-`@Composable` logic is. This repo has no Compose UI-test harness, no device or emulator
+run happened, and no desktop window was launched. So dynamic-color tinting, reduce-motion detection
+and Android sound playback are **compile-verified only**. Adding a Compose test harness is a real
+decision (it pulls `compose.uiTest` and, on Android, an instrumentation or Robolectric tier) and was
+not taken unilaterally in a conversion phase.
+
+**Icon rendering is still unverified**, carried forward from Phase 17 unchanged: the first device run
+of any branch containing `23267ed` should eyeball the chat chrome icons. `96e8799` does not touch
+`FlashIcons` or the drawables, so it neither helps nor worsens this.
+
+**Desktop sound playback and desktop reduce-motion detection are deliberately unimplemented.**
+Neither is an R2 stub, and the distinction matters for anyone auditing this later:
+- Sound: `FlashSoundSynth` still renders the PCM in `commonMain` and its 16 tests now run on
+  `jvmTest`; only the *output device* is missing. Sounds are opt-in with
+  `FlashSoundSettings.soundsEnabled` default **OFF**, so every caller already tolerates silence.
+- Reduce motion: there is no `ANIMATOR_DURATION_SCALE` equivalent and no cross-platform
+  accessibility query in the JVM/AWT stack, so `false` is the honest answer rather than a placeholder
+  for a value that could be computed. The real answer needs Windows `SPI_GETCLIENTAREAANIMATION` or
+  macOS `accessibilityDisplayShouldReduceMotion` through JNA — a platform shim, i.e. Phase 19.
+
+Both are one-line `actual` changes when a shim exists, and every `FlashMotion` member still honours
+its `reduceMotion` flag, so nothing downstream needs revisiting.
+
+**`proguard-rules.pro` remains unreferenced** and `:ui:callui` / `:sample:consumer-granular` still
+have no phase file and no README row — both carried forward from Phase 17, both untouched here (R1).
+The `:ui:callui` gap is now more pressing, not less: it compiles against a `:ui:theme` that has just
+become multiplatform, and whether calling is in scope for desktop at all is a **human decision**.
+
+### Next step
+
+**Phase 19 — UI platform shims.** It is unblocked: `:ui:theme` is fully converted, and 19 is where
+the two deliberate desktop absences above (reduce-motion, sound output) actually belong. D6 and D7
+are unanswered but are decisions an agent may proceed on with the recommendation, provided it records
+having done so in the phase log — and D6's spike has never been run, which Phase 19 should do first
+rather than inherit as an assumption.
+
+| Work | State |
+|---|---|
+| **19** | **executable now** — plus **D6**/**D7** on the recommendation, and D6's unrun spike |
+| 09B-2 | **blocked** — D5 = C sub-decisions: which encrypted desktop driver, commercial licence acceptable?, SQLCipher file-format parity? |
+| 09B-3 | **blocked** — settings-tier ABI option (a) or (b) |
+| 13B-2, 15, 16 | **blocked on D10** (still the only `_pending_` decision); 16 is a hard gate |
+| 13B-3 | D10 **and** explicit R8 authorisation to rewrite `chunked/ChunkFrame.kt` |
+| 20 (`:ui:chat`) | after 19; will hit the CMP 1.9.3 ceiling if it wants any newer CMP API |
+| 21–24 | downstream of 20 and the Phase 16 / 23 gates |
+| `:ui:callui`, `:sample:consumer-granular` | **no plan** — needs a human scope decision |
+
