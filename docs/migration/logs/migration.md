@@ -5567,6 +5567,362 @@ Windows host returns an arbitrary adapter.
 migration has no unblocked work left. That is now the single most important thing for the human to
 look at.
 
+## Phase 14 — Desktop mDNS for `:core:discovery`
+
+- **Date:** 2026-09-05
+- **Agent/model:** Claude (Opus 5), Claude Code
+- **Commit:** `75d86ef` (source), this entry (docs)
+- **Decisions relied on:** **D6 = JmDNS.** DECISIONS.md lists D6 among the decisions an agent may
+  **proceed on the recommendation** for, provided the phase log records that it did so. This entry
+  is that record: nobody chose JmDNS for me, I took the recommendation. **D10 stays `_pending_`** and
+  nothing here anticipates an answer to it.
+
+### Change
+
+Three new files in `:core:discovery`, two edited. No existing Kotlin file was touched, and
+`androidMain` was not read-modified at all (PHASE-14's first Do-NOT).
+
+| File | Change |
+|---|---|
+| `jvmMain/…/discovery/jmdns/JmdnsBridge.kt` | **new.** `JmdnsBridge` seam + three neutral DTOs + `RealJmdnsBridge`. |
+| `jvmMain/…/discovery/jmdns/JmdnsTransport.kt` | **new.** `JmdnsTransport : FlashRadioTransport`, plus `internal` `JmdnsTxtCodec` and `JmdnsRestartPolicy`. |
+| `jvmTest/…/discovery/jmdns/JmdnsTransportTest.kt` | **new.** 28 cases through a fake bridge. First file this module has ever had in `jvmTest`. |
+| `core/discovery/build.gradle.kts` | one `jvmMain.dependencies { implementation(libs.jmdns) }` block + a `jvmTest` JUnit 4 dependency. |
+| `gradle/libs.versions.toml` | `jmdns = "3.5.12"` and `jmdns = { group = "org.jmdns", … }`. |
+
+Net: `jvmMain` 1 → 3 files, `jvmTest` 0 → 1. One module's build file (R4); the catalog edit is
+unavoidable for a new dependency and is the only thing outside `core/discovery/`.
+
+### The phase file is wrong in about 25 places
+
+I ran the Phase 13 method — measure the module before executing the steps — and it found
+`PHASE-14-desktop-discovery.md` inaccurate on nearly every concrete claim. Recorded here under R1
+("if a phase seems to require something forbidden, report it") rather than fixed in the phase file.
+
+**Source-set and build claims (7).** `commonMain` has 13 files, not 7. `androidMain` has 5, not 4.
+`jvmMain` already existed (`PlatformLock.jvm.kt`), so "create jvmMain" was already done.
+`jvmAndAndroidMain` **does not exist and must never be created** — the CONVENTIONS 2026-09-03
+amendment voids R2 step 2 — so step 2's `dependsOn(getByName("jvmAndAndroidMain"))` had to be
+dropped. The phase names `com.android.library` and an `androidLibrary { }` block; this module uses
+`com.android.kotlin.multiplatform.library` and `android { }`. It also tells me to apply
+`kotlin("plugin.android")`, which is not a plugin this build uses.
+
+**Dependency claims (2).** PHASE-14 specifies `io.jmdns:jmdns`. That coordinate **does not exist** —
+Maven Central returns 404 for its `maven-metadata.xml`. The live artifact is `org.jmdns:jmdns`
+(`javax.jmdns:jmdns` also exists but is abandoned at 3.4.1). The phase also does not mention that
+JmDNS brings a transitive `org.slf4j:slf4j-api:2.0.7`, which is otherwise absent from this repo.
+
+**Sample code that cannot compile (7).** `FlashResult.Error` is used four times; the type is
+`FlashResult.Failure`. `FlashDiscoveredEndpoint` is constructed with nine invented parameters; it has
+four. `info.txtMap` does not exist on `ServiceInfo` — verified with `javap` against
+`jmdns-3.5.12.jar`; TXT data comes from `getPropertyNames()` + `getPropertyString(key)`.
+`event.jmDNS` should be `event.dns`. `TxtCodec.decode` is called with a `ServiceInfo`, not the
+`Map<String, String>` it takes. The sample's `events` is a `callbackFlow` nothing ever emits into,
+while an unrelated `MutableStateFlow<List<…>>` grows without bound. And its address filter
+(`is Inet4Address || is Inet6Address`) is vacuous — every `InetAddress` is one or the other.
+
+**Contract violations (8).** The sample never emits `Presence`, never emits `StateChanged`, never
+overrides `restartBrowsing`, has no self-advertisement filter and no protocol-version gate. It names
+a `FlashDiscoveryManager` that does not exist in this codebase, sets
+`transportName = "jmds-lan"`, and spells its class `JmmsFlashDiscovery`.
+
+Every one of those eight compiles perfectly and produces a transport whose failure mode on real
+hardware is "the peer appears, then disappears about thirty seconds later, and never comes back".
+
+### Deviations from the phase file, and why each was mandatory
+
+PHASE-14's Do-NOT list forbids exactly the three obligations the interfaces in this module require.
+R2 forbids stubbing a function to force a compile, so shipping without them was not an option; R1's
+"report it under Known issues" is the sanctioned way to record the override.
+
+1. **`Presence` is emitted** (phase: "Do NOT add … presence detection"). `FlashTransportEvent`'s own
+   KDoc: *"Emitting this is MANDATORY for any transport whose consumer ages peers out on a TTL."*
+   `CompositeDiscovery` sweeps every 5 s and evicts at a 30 s grace window. A transport that emits
+   `Found` once and then goes quiet has its peers evicted while they are sitting there advertising.
+2. **`restartBrowsing()` is overridden** (phase: no override). `CompositeDiscovery.watchdogBrowsing()`
+   calls it on a stall. The `FlashRadioTransport` default delegates to `startBrowsing()`, whose first
+   line is `if (browsing) return FlashResult.Success(Unit)` — so inheriting the default makes the
+   watchdog a silent no-op that reports success. Test
+   `restartBrowsingIsNotSwallowedByTheStartBrowsingEarlyReturn` pins this.
+3. **`StateChanged` is emitted** (phase: never emits it). It is the only input to
+   `CompositeDiscovery.applyBrowseState()`, which sets `state.isDiscovering` and the stall stamps the
+   watchdog reads.
+
+Four further deviations, smaller:
+
+4. **`transportName = "jmdns"`, not `"jmds-lan"` and not `"LAN"`.** My first plan was `"LAN"`, on the
+   reasoning that `CompositeDiscovery.priorityRank()` looks the uppercased name up in
+   `PRIORITY_ORDER = ["LAN","WIFI_DIRECT","WIFI_AWARE","BLE"]` and returns worst-rank on a miss.
+   Reading `NsdTransport` killed that: Android's own value is `"nsd"`, which **also** misses. Naming
+   the desktop `"LAN"` would rank desktop first and Android last *for the same radio* — precisely the
+   cross-platform asymmetry the Phase 16 interop gate exists to catch. Matching the sibling's shape
+   was the correct call; that `PRIORITY_ORDER` never matches either LAN transport is a pre-existing
+   `androidMain` defect, out of scope (R1), recorded below.
+5. **`org.jmdns` instead of `io.jmdns`**, forced by the 404 above. R10 is respected: the *version* is
+   the one PHASE-14 names (3.5.12), even though 3.6.3 exists.
+6. **No `dependsOn(getByName("jvmAndAndroidMain"))`**, forced by the D1 = B amendment. Nothing was
+   lost: `jvmMain` already sees `commonMain` **including its `internal` declarations**, since they are
+   the same Gradle module, so `TxtCodec`, `EndpointDirectory` and `CompositeDiscovery` are all
+   reachable with no wiring at all.
+7. **ECO duty-cycling is not implemented.** `DiscoveryModePolicy.browseDutyCycleMs` /
+   `idleDutyCycleMs` are honoured only insofar as `restartBackoffBaseMs` scales the retry delay; the
+   transport does not park and re-arm the browse on an ECO cycle the way `NsdTransport` does. GHOST
+   (advertise suppression) *is* implemented and tested. Scoped out deliberately — it is behaviour the
+   phase file never asks for, and adding it would be an R1 violation.
+
+### The two duplications this phase was forced into
+
+`androidMain` and `jvmMain` are **siblings with no `dependsOn` edge**; only `commonMain` is a common
+ancestor. So `androidMain`'s `internal object NsdTxtCodec` and `internal object NsdRestartPolicy` are
+invisible from `jvmMain`, and the desktop needed its own copy of both. This is the same forced
+duplication as `PlatformLock`, for the same structural reason.
+
+It matters more than it looks for the codec, because the shared `commonMain` `TxtCodec` is **strict**:
+`decode` returns null when `device_id` is blank *or* `proto` is unparseable. `NsdTxtCodec` is
+**tolerant**: a missing `proto` degrades to our own version so a pre-P3.5 advertiser stays visible.
+Had the desktop simply called the shared strict codec — the obvious reading of "reuse `TxtCodec`" —
+it would have **hidden peers Android displays**, on a wire format R8 forbids touching. `JmdnsTxtCodec`
+therefore mirrors `NsdTxtCodec`'s tolerance exactly, and
+`missingProtocolFallsBackToOurVersionAndIsAccepted` pins it. Hoisting the tolerant decoder into
+`commonMain` would mean editing an `androidMain` file, which PHASE-14 forbids outright, so it is
+logged below instead of done.
+
+### Desktop-specific problems JmDNS creates and how each is handled
+
+- **Multi-homed hosts.** `InetAddress.getLocalHost()` — and equally `JmDNS.create()` with no argument,
+  which resolves the local host internally — returns **one arbitrary adapter**. On a laptop with
+  Wi-Fi + Ethernet + a VPN or a Hyper-V switch that is routinely the wrong one, and the responder then
+  answers on a network no peer is on. `RealJmdnsBridge` enumerates `NetworkInterface` itself (up,
+  non-loopback, multicast-capable, IPv4, non-link-local) and binds **one responder per address**, with
+  an unbound `JmDNS.create()` as a last resort so a plain single-NIC box still works.
+- **A `ServiceInfo` remembers the `JmDNS` that registered it**, so handing the same object to a second
+  responder throws `IllegalStateException`. `register()` builds one per responder.
+- **Duplicate announcements.** N responders can each announce the same peer. Left to
+  `EndpointDirectory` dedup → `Diff.Unchanged` → `Presence`, never a second `Found`.
+- **JmDNS has no NSD-style continuous monitor.** A `vouchedServices` set — added on a successful
+  resolve, withdrawn when a debounced removal fires — is the desktop analogue of
+  `NsdTransport.monitoredServices`, and it is what keeps the heartbeat honest: a tick re-affirms only
+  peers the radio actually confirmed, never every row in the directory.
+  `presenceTickReAffirmsOnlyServicesTheRadioStillVouchesFor` pins that a goodbye withdraws the vouch.
+- **`requestServiceInfo` blocks on the calling thread.** It is always called via `requestResolveOffLane`
+  on `dispatcher` — never on a JmDNS callback thread (deadlock against its own responder) and never on
+  the serial lane (it would stall every directory update).
+- **A responder bound to an address that has gone away reports itself healthy** while receiving
+  nothing. So `restartBrowsing()` is a full `stopBrowse` → `close` → `open` → `startBrowse` rebind that
+  re-enumerates interfaces, plus re-registration of the advertisement the `close()` destroyed. Two
+  tests pin the call order and the re-registration.
+- **OS-neutrality (R5/D1 = B).** `jvmMain` must run on Windows, Linux and macOS: no path literals, no
+  `%USERPROFILE%`, and no reverse-DNS lookup — the mDNS hostname is derived from the bound address
+  (`flash-192-168-1-20`), because `InetAddress.getHostName()` can block for seconds on a host with an
+  unreachable DNS server.
+
+### The one open risk from the previous session, now measured
+
+`DEFAULT_SERVICE_TYPE` is `"_flash-transfer._tcp.local."` while Android's `NsdTransport` uses
+`"_flash-transfer._tcp."` and lets `NsdManager` append the domain. I had *assumed* JmDNS normalises
+both to the same type. `theServiceTypeConstantDenotesTheSameServiceAsTheAndroidForm` now asserts it
+against the real JmDNS parser (`ServiceInfo.create` needs no multicast), and it passes: both forms
+yield `type == "_flash-transfer._tcp.local."`. The two platforms therefore browse the same service, and
+a JmDNS upgrade that changed the normalisation would now fail a test instead of silently splitting the
+network.
+
+### Verification
+
+**Gate 1 — `:core:discovery:compileKotlinJvm`.** `BUILD SUCCESSFUL in 2m 10s`. This is the R2 proof
+task: its classpath has no `android.jar`, so it certifies the new `jvmMain` code is Android-free.
+
+**Gate 2 — `:core:discovery:jvmTest`.** `BUILD SUCCESSFUL`. Per-suite XML:
+
+```
+PlatformLockTest              tests="3"  failures="0" errors="0" skipped="0"
+CompositeDiscoveryCommonTest  tests="4"  failures="0" errors="0" skipped="0"
+JmdnsTransportTest            tests="28" failures="0" errors="0" skipped="0"
+```
+
+Module `jvmTest` total 7 → **35**, XMLs 2 → 3. All 28 case names are listed in the results XML; the
+suite covers Found/Updated/Presence classification, the presence tick, self-filter, protocol gate,
+tolerant decode, address-less resolve, debounced `Lost` (including a re-resolve cancelling one), sweep
+and `pollSweep` drains, the rebind order, `NetworkUnavailable` on a bind failure, GHOST enter/leave,
+TXT keys and instance-name truncation, `transportName`, and the service-type equivalence above.
+
+**Gate 3 — `:core:discovery:jvmJar`.** `BUILD SUCCESSFUL`.
+`jar tf discovery-jvm-1.1.0.jar | grep -c '^android/'` → **0**.
+`… | grep -c 'javax/jmdns'` → **0** (JmDNS is a dependency, not shaded).
+
+**Gate 4 — `:core:discovery:publishToMavenLocal`.** `BUILD SUCCESSFUL`. Three coordinates, each with a
+Gradle `.module`:
+
+```
+core-discovery/1.1.0/         core-discovery-1.1.0.{jar,aar,module,pom,-sources.jar}
+core-discovery-android/1.1.0/ core-discovery-android-1.1.0.{aar,module,pom,-sources.jar}
+core-discovery-jvm/1.1.0/     core-discovery-jvm-1.1.0.{jar,module,pom,-sources.jar}
+```
+
+`core-discovery-jvm-1.1.0.pom` dependencies: `core-common-jvm` (compile),
+`kotlinx-coroutines-core-jvm` (compile), `kotlin-stdlib` (compile), **`org.jmdns:jmdns` (runtime)**.
+Runtime scope is the point of using `implementation`: no JmDNS type reaches a consumer's compile
+classpath, which is checkable because the bridge exposes only neutral DTOs.
+
+**Gate 5 — R3 repo-wide.** The CONVENTIONS R3 command verbatim, `--continue`, 13m 34s.
+`BUILD FAILED`, and the *only* failing task is the expected one:
+
+```
+* What went wrong:
+Execution failed for task ':core:persistence:testDebugUnitTest'.
+```
+
+Totals across `*/build/test-results/**/TEST-*.xml`:
+
+```
+tests=1005  failures=12  errors=0  skipped=0   (133 XMLs)
+```
+
+Arithmetic against the Phase 13B-1 baseline of **977 / 12 / 0 across 132 XMLs**: 977 + 28 = 1005, and
+132 + 1 = 133. One XML, not two, because `JmdnsTransportTest` lives in `jvmTest` rather than
+`commonTest` — a desktop-only radio has nothing to run on the Android target.
+
+Per-module, so a module that silently stopped running would show up as a zero rather than hide inside
+the total (`tests`/`XMLs`):
+
+| Module / tier | tests | XMLs |
+| --- | --- | --- |
+| `app` | 31 | 6 |
+| `core:calling` | 55 | 4 |
+| `core:common` androidHostTest | 49 | 8 |
+| **`core:discovery` jvmTest** | **35** | **3** |
+| `core:discovery` androidHostTest | 104 | 9 |
+| `core:engine` jvmTest / androidHostTest | 8 / 9 | 1 / 2 |
+| `core:messaging` jvmTest / androidHostTest | 8 / 35 | 1 / 5 |
+| `core:network` jvmTest / androidHostTest | 8 / 134 | 1 / 21 |
+| `core:persistence` (still `com.android.library`) | 35 | 4 |
+| `core:security` jvmTest / androidHostTest | 10 / 90 | 1 / 12 |
+| `core:transfer` jvmTest / androidHostTest | 16 / 102 | 3 / 16 |
+| `ui:chat` | 239 | 31 |
+| `ui:theme` | 37 | 5 |
+
+Sums to 1005 / 133. Every converted module still reports on both tiers; `core:discovery` jvmTest is the
+only row that moved.
+
+**Gate 6 — the three R6.1 greps** (R11 exclusions applied: `media-downloader-main/`, `build/`, `docs/`).
+
+1. Platform imports in any `commonMain` — `grep -rn -E '^import (android|java|javax)\.'` over
+   `*/src/commonMain`: **no output**.
+2. JVM-only stdlib traps in `commonMain` — the R6.1 pattern set: **only the four lines already
+   documented as legal**, all of them `@Volatile` with the `kotlin.concurrent` import —
+   `core/common/.../log/FlashLog.kt:21`, `core/discovery/.../core/CompositeDiscovery.kt:172`,
+   `core/discovery/.../core/CompositeDiscovery.kt:192`, `core/network/.../ws/WsKeepalive.kt:75`.
+3. Files using `@Volatile` without `import kotlin.concurrent.Volatile` — **empty**. (Written without a
+   `\b` before the `@`, per the CONVENTIONS warning; `\b@` matches nothing.)
+
+Two compile errors were hit and fixed while writing the suite, both worth knowing for the next module
+that adds a `jvmTest`:
+
+- `EndpointDirectory` and `StandardEndpointDirectory` are `@FlashInternalApi`, so the test file needs
+  `@file:OptIn(com.transfer.flash.core.common.annotation.FlashInternalApi::class)` **above** the
+  package declaration — 10 errors from one missing line.
+- The harness lambda first declared its event list as `List<FlashTransportEvent>`, which turns
+  `seen.clear()` into a `StringBuilder.clear()` receiver mismatch at 8 call sites. `MutableList` fixes
+  it; the error message never mentions the real cause.
+
+Two tests were also strengthened after review, because both would have passed against broken code:
+
+- `restartBrowsingReRegistersAnAdvertisementTheRebindDropped` passed vacuously while
+  `FakeJmdnsBridge.close()` kept `registered` set. `close()` now nulls it, matching what closing a real
+  responder does to its records — that is the only reason the test can fail if the re-register is lost.
+- The two absence-asserting debounce tests use a bespoke harness, so each now carries a positive
+  control (`assertEquals(1, seen.filterIsInstance<Found>().size)`) proving the pipeline is live before
+  asserting that no `Lost` arrived. Without it a dead transport is indistinguishable from a working
+  debounce.
+
+### What I could NOT verify (R9)
+
+**No real multicast was exercised — this is the big one.** Every one of the 28 tests drives
+`FakeJmdnsBridge`. That is deliberate (CI has no multicast, and the bridge seam exists precisely so the
+transport is testable without one), but it means the following are written and compiled and *not*
+proven:
+
+- `RealJmdnsBridge` — never instantiated by a test. Its `open()`, `register()`, `startBrowse()`,
+  `requestServiceInfo()` and `close()` paths have zero coverage.
+- `multicastCapableAddresses()` — the `NetworkInterface` enumeration, the `isUp`/`supportsMulticast`
+  guarding, the IPv4 filter and the APIPA exclusion are all unexercised. On a host where this returns
+  an empty list the unbound `JmDNS.create()` fallback runs; that fallback is also untested.
+- Per-address responder binding on a multi-homed host, and the claim that duplicate announcements from
+  several responders collapse to `Diff.Unchanged` → `Presence`. The dedup logic is covered by
+  `firstResolveEmitsFoundAndRepeatResolveEmitsPresence`, but *that several responders actually produce
+  the duplicate* is not.
+- `ServiceInfo.toNeutral()` — the TXT `propertyNames`/`getPropertyString` walk and the IPv4-before-IPv6
+  address preference. `javap` against `jmdns-3.5.12.jar` confirmed the methods exist and that
+  PHASE-14's `info.txtMap` does not; nothing confirms the mapping is *right* at runtime.
+- **Android↔desktop interop.** Nobody has watched a Pixel and a Windows box find each other. The
+  service-type equivalence test narrows the risk to one specific failure mode it now rules out; it does
+  not establish interop.
+
+Also unverified:
+
+- `androidDeviceTest` / `connectedAndroidDeviceTest` — not run, no device attached. Unchanged from
+  every prior phase; there is no `src/androidTest` in this module.
+- ECO duty-cycling — not implemented (see deviation 7), so there is nothing to test. `DiscoveryModePolicy`
+  is consulted for GHOST only.
+- The `slf4j-api` transitive — I read it out of jmdns's POM, I did not resolve it into a runtime
+  classpath or run anything against it. JmDNS logs through SLF4J, so a desktop consumer with no binding
+  on the classpath will see SLF4J's "no providers" warning on stderr the first time the radio logs.
+- `jvmMain`'s OS-neutrality is enforced by inspection (no path literals, no `%USERPROFILE%`, no reverse
+  DNS), not by running on Linux or macOS. Only Windows was ever executed.
+- No Kotlin/Native target exists in this repo, so none of the R6 `commonMain` constraints are compiler-
+  enforced anywhere — they hold only because the greps and review say so. This is a standing gap, not a
+  Phase 14 one.
+
+### Known issues
+
+Carried forward, unchanged by this phase:
+
+- **The 12 `:core:persistence` failures** — 11 in `FlashSettingsDataStoreTest`, 1 in
+  `DiscoveryModeSettingTest`. Pre-existing, same 12 since Phase 00, and `:core:persistence` is still on
+  `com.android.library` because Phase 09 is blocked on D5.
+- **`PlatformLock` now has four copies** (`androidMain`, `jvmMain` × the modules that need it) and no
+  phase in the plan hoists them. Every future module that needs a lock adds two more.
+- **`CompositeDiscovery.PRIORITY_ORDER` never matches either LAN transport.** Pre-existing `androidMain`
+  defect found in Phase 08; still unfixed because fixing it is not in any phase (R1).
+- **R6 is enforced by review, not the compiler** — see the last R9 bullet.
+
+New with this phase:
+
+- **`JmdnsTxtCodec` and `JmdnsRestartPolicy` duplicate `NsdTxtCodec` and `NsdRestartPolicy`.** Forced,
+  not chosen: those are `internal` to `androidMain`, and `jvmMain` is a *sibling* source set, so it
+  cannot see them. Hoisting them to `commonMain` means editing `androidMain`, which PHASE-14's Do-Not
+  list forbids. This needs its own phase, and until it exists the two TXT decoders can drift — which
+  matters, because they are two ends of one wire format (R8 territory).
+- **`org.jmdns:jmdns` lands at `runtime` scope in `core-discovery-jvm`'s POM** and pulls
+  `slf4j-api:2.0.7` transitively. To be precise about where that comes from: it arrives through
+  **jmdns's own POM, not Flash's** — Flash declares only jmdns. A consumer who wants the logs silenced
+  supplies `slf4j-nop`; nothing Flash publishes forces a binding.
+- **The phase file itself.** PHASE-14 is wrong in roughly 25 places (enumerated above). Phase 10 needed
+  14 of 35 steps corrected, Phase 11 six, Phase 12 eight, Phase 13 fifteen. The phase files are a
+  sketch, not a spec, and the divergence is growing rather than shrinking.
+
+### Next step
+
+**There is none that is unblocked.** Phase 14 was the last phase in the plan that does not depend on a
+human decision:
+
+- **13B-2, 13B-3, 15 and 16 are blocked on D10**, and **Phase 16 is a hard gate** — nothing after it
+  runs until it does.
+- **13B-3 additionally needs explicit R8 authorisation** to rewrite `chunked/ChunkFrame.kt`, which is on
+  R8's do-not-touch list. An agent cannot grant that.
+- **Phase 09 is blocked on D5** (and carries the separate Room 2.8.4 finding from PHASE-09B).
+- **Phase 19 needs D7, Phase 22 needs D8.**
+
+So the migration now stops here and waits. The single most valuable thing a human can do is decide
+**D10**; everything else in the queue is downstream of it. The full list of accumulated decisions and
+authorisations is in the report accompanying this entry.
+
+
+
+
+
+
+
+
 
 
 
