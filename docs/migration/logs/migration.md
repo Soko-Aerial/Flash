@@ -4284,6 +4284,577 @@ still gated on the human (encrypted desktop driver; settings ABI), as is D5 itse
 enforced by Gate 7's grep and nothing else, and the "all platforms" half of the 2026-09-03
 amendment has no phase that implements it. Recommended as a new phase (R6.1 says the same).
 
+---
+
+## Phase 12 — KMP conversion: `core:engine`
+
+- **Date:** 2026-09-05
+- **Agent/model:** Claude (Opus 5), Claude Code
+- **Commit:** `4ac401b` — `refactor(engine): convert :core:engine to Kotlin Multiplatform
+  (Phase 12)`, **12 files changed, 351 insertions(+), 61 deletions(-)**, zero paths outside
+  `core/engine/`. Plus the immediately following docs commit (this entry, the R2/R3/R3.1/R6.1
+  amendments, and the rewritten phase file). Split so that reverting the code commit alone
+  restores a working build (R4).
+- **Decisions relied on:** **D1 = B** (strict `commonMain`; `jvmAndAndroidMain` forbidden by the
+  2026-09-03 amendment). **D5 was not needed and was not touched** — the inherited phase file
+  claims "D5 must be `A`" and lists Phase 09 as a hard precondition; both are wrong, see
+  correction 2 below. `:core:persistence` stays a plain `com.android.library` and stays on
+  `androidMain`.
+
+### Change
+
+Converted the facade module from `com.android.library` to
+`org.jetbrains.kotlin.multiplatform` + `com.android.kotlin.multiplatform.library` + `jvm()`, and
+re-tiered its 5 production files, 1 test file and 1 Android resource into KMP source sets.
+**1 of the 5 production files reached `commonMain`** — the split is **2 / 4 / 1**: two files in
+`commonMain` (`AutoConnectGate.kt` plus the new `PlatformLock` `expect`), four in `androidMain`,
+one `actual` in `jvmMain`.
+
+That 1-of-5 is the honest headline, and for this module it is the expected one. `:core:engine` is
+the assembly point: `Flash.kt` wires six repositories to a `Context`, a Room database and an
+Android keystore. Nothing about this phase ports that wiring to desktop — Phases 13–16 do. What it
+buys is that `:core:engine` now *has* a `jvm()` target and a `commonMain` at all, so a desktop
+module can depend on the coordinate.
+
+One content edit in the whole phase, and it was not optional: `AutoConnectGate`'s two
+`@Synchronized` annotations. See below.
+
+### Files changed
+
+**Modified (2):**
+- `core/engine/build.gradle.kts` — rewritten on the Phase 10/11 template, **197 changed lines**
+- `core/engine/src/commonMain/.../internal/AutoConnectGate.kt` — the only content edit,
+  `27 +-` (rename detected at **55%** similarity, the only move under 100%)
+
+**Added (4):**
+- `commonMain/.../engine/concurrent/PlatformLock.kt` — `internal expect class`, 32 lines
+- `androidMain/.../engine/concurrent/PlatformLock.android.kt` — 7 lines
+- `jvmMain/.../engine/concurrent/PlatformLock.jvm.kt` — 7 lines, byte-identical body
+- `commonTest/.../engine/internal/AutoConnectGateTest.kt` — 142 lines, **8 tests**
+
+**Moved — 6 `git mv` renames, all 6 byte-identical (`100%` in the rename report, `0 0` in
+`--numstat`):**
+
+`src/main/java/**` → `src/androidMain/kotlin/**` (4): `Flash.kt`, `FlashEngine.kt`,
+`store/KeystorePassphraseProvider.kt`, `store/RoomTransferStore.kt`
+`src/main/res/**` → `src/androidMain/res/**` (1): `drawable/flash_bolt.xml`
+`src/test/java/**` → `src/androidHostTest/kotlin/**` (1): `DefaultFlashEngineTest.kt`
+
+**Deleted:** `core/engine/src/main/` and `core/engine/src/test/` (empty after the moves).
+
+Source-set file counts after the move — `androidMain`'s 6 are the 4 production files plus the
+`actual` plus the resource:
+
+```
+core/engine/src/androidHostTest    1     core/engine/src/commonTest    1
+core/engine/src/androidMain        6     core/engine/src/jvmMain       1
+core/engine/src/commonMain         2
+```
+
+### The 2 / 4 / 1 placement, and the pin for each `androidMain` file
+
+"It's Android" is not a reason; the API is:
+
+| File | What pins it to `androidMain` |
+|---|---|
+| `Flash.kt` (714 lines) | `android.content.Context`, `android.util.Log`, `java.util.Locale`, `java.util.UUID`, `java.util.concurrent.ConcurrentHashMap`, `android.net.Uri`/`ContentResolver` (fully qualified, line 669) — **and** six `:core:transfer` types Phase 11 measured as `androidMain` (`Sha256`, `ReceivePipeline`, `IncrementalSha256`, `RandomAccessChunkSink`, `FileRandomAccessSinkHandle`, `RandomAccessSinkHandle`), so it is pinned twice over |
+| `FlashEngine.kt` | `java.io.Closeable`, `java.util.concurrent.atomic.AtomicBoolean`, and `FlashSettingsDataStore` in the **public** interface (`val settings`) |
+| `store/KeystorePassphraseProvider.kt` | Android Keystore (`java.security.KeyStore` with the `AndroidKeyStore` provider) + `javax.crypto` |
+| `store/RoomTransferStore.kt` | Room DAO and entity types |
+| `res/drawable/flash_bolt.xml` | Android resource by definition |
+
+`Flash.kt` already imported `kotlin.concurrent.Volatile` — the legal common form — so Phase 05's
+`@Volatile` sweep needed no follow-up here.
+
+Both `commonMain` files are new-or-edited, which is worth stating plainly: **without the content
+edit below, this module's `commonMain` would have been empty and Gate 1 would have certified
+nothing.** An empty `commonMain` compiles green and proves nothing about anything.
+
+### The one content edit, and why the inherited file was wrong to forbid it
+
+The inherited phase file said four separate times that this is a **"pure file-move with zero
+content edits"**, that `AutoConnectGate.kt` is *"pure stdlib types (`HashMap`/`HashSet`/
+`@Synchronized`), zero imports beyond `kotlin.*`"*, and *"**Do NOT introduce an `expect`/`actual`**
+for anything here"*. `@Synchronized` is **`kotlin.jvm.Synchronized`**. Following those instructions
+literally produces a green build shipping a `commonMain` that depends on `kotlin.jvm` — and no task
+in the build reports it (R6.1).
+
+Before:
+
+```kotlin
+@Synchronized
+fun tryBegin(deviceId: String, hasSession: Boolean, nowMs: Long): Boolean {
+    if (hasSession) { lastAttemptMs.remove(deviceId); inFlight.remove(deviceId); return false }
+    if (deviceId in inFlight) return false
+    …
+}
+
+@Synchronized
+fun end(deviceId: String) { inFlight.remove(deviceId) }
+```
+
+After:
+
+```kotlin
+private val lock = PlatformLock()
+
+fun tryBegin(deviceId: String, hasSession: Boolean, nowMs: Long): Boolean = lock.withLock {
+    if (hasSession) { lastAttemptMs.remove(deviceId); inFlight.remove(deviceId); return@withLock false }
+    if (deviceId in inFlight) return@withLock false
+    …
+}
+
+fun end(deviceId: String) { lock.withLock { inFlight.remove(deviceId) } }
+```
+
+**The critical section is unchanged** — in both methods it is the whole body, before and after. The
+only observable difference is the monitor's identity, which moves from `this` to a private `Any()`.
+Nothing outside the file ever locked on a gate instance, and `lastAttemptMs`/`inFlight` are both
+private, so no caller can distinguish the two. Three mechanical consequences, all recorded in the
+phase file for the next agent:
+
+1. `withLock` cannot be `inline` on an `expect class`, so the three early `return false` had to
+   become `return@withLock false`. Missing one changes the method's semantics silently.
+2. No `suspend` call may appear inside the block. None does here.
+3. The module needs `freeCompilerArgs.add("-Xexpect-actual-classes")` or the build fails — loudly,
+   so this one is self-correcting.
+
+### This is the THIRD `PlatformLock`, and it was copied on purpose
+
+`:core:common` (Phase 06), `:core:discovery` (Phase 08), and now `:core:engine`. The Phase 08 log
+asked for a dedicated phase to hoist it *"before phases 09–12 make further copies"*; that phase was
+never written, so Phase 12 made the copy the Phase 08 log predicted.
+
+Copying again rather than hoisting was deliberate, not an oversight:
+
+- `:core:common`'s copy is `internal`, and **`internal` does not cross a Gradle module boundary**.
+- Promoting it to `public` adds a lock to `core-common`'s **published ABI** under `explicitApi()`
+  (R7) — a consumer-visible API addition, made as a side effect of an unrelated phase.
+- It would also mean editing a second module's build file in this commit (R4) and doing work
+  outside the phase (R1).
+
+Both `actual`s are 7 lines and identical:
+
+```kotlin
+internal actual class PlatformLock {
+    private val monitor = Any()
+    actual fun <T> withLock(block: () -> T): T = synchronized(monitor) { block() }
+}
+```
+
+Re-filed under **Known issues**; R2 in CONVENTIONS.md now records the duplication as the intended
+pattern so the next agent does not "fix" it mid-phase.
+
+### The new `commonTest` suite, and why these assertions
+
+8 tests, in `commonTest` so **both** `actual`s are executed rather than merely compiled (R3.1).
+`DefaultFlashEngineTest` could not have covered any of this: it lives in `androidHostTest`, has one
+`@Test`, and never touches the gate.
+
+- **Five semantic cases** mirror `app/src/test/.../net/AutoConnectGateTest.kt`, which tests the
+  app's **independent duplicate** of this class. `core:engine`'s copy had *no test at all* before
+  this phase, so a divergence between the two copies was invisible. The five:
+  `firstAttempt_admitted_thenSuppressedWithinWindow`, `retryAdmitted_afterWindowElapses`,
+  `concurrentAttempt_forSamePeer_rejectedUntilEnded`,
+  `havingSession_clearsWindow_soDropReArmsImmediately`, `distinctPeers_areIndependent`.
+- **`defaultWindow_is15s`** pins `DEFAULT_SUPPRESS_MS`. `Flash.kt`'s auto-connect sweep relies on
+  the default rather than passing one (call sites `Flash.kt:390` and `Flash.kt:673`), so the
+  constant is part of the contract.
+- **Two contention cases** are what make the lock swap verified rather than asserted.
+  `contendedTryBegin_admitsExactlyOnePerPeer` races 512 coroutines (64 peers × 8 workers) on
+  `Dispatchers.Default` and requires **exactly one** admission per peer;
+  `concurrent_tryBegin_and_end_keepBookkeepingConsistent` runs 8 × 2000 rounds with
+  `suppressMs = 0L`, so every rejection is an in-flight rejection and both private collections are
+  mutated as fast as the dispatcher allows.
+
+One of those two tests was **unsound on its first draft and was fixed before it ever ran**, which
+matters enough to record: it counted admissions into a shared per-peer `IntArray` slot
+(`admitted[peer] += 1`). If the lock had leaked and two callers were admitted, their racing `+= 1`
+could still land on 1 — the test would have passed in precisely the case it exists to catch. It now
+uses `BooleanArray(PEERS * WORKERS)` with each coroutine writing **its own** slot, and the per-peer
+counting happens afterwards on a single thread.
+
+### Verification — nine gates
+
+Environment for every command (this is the only Gradle invocation form that works in this repo;
+`JAVA_HOME` does **not** persist between tool calls):
+
+```bash
+export JAVA_HOME="/c/Users/KaliOxygen/.gradle/jdks/jetbrains_s_r_o_-21-amd64-windows.2"
+export JAVA_TOOL_OPTIONS='-Djdk.net.unixdomain.tmpdir=C:\Users\KaliOxygen\.gradle\afunix'
+```
+
+**Gate 1 — `commonMain` is free of `android.*`.** The R2 proof task; the `jvm()` target has no
+`android.jar` on its compile classpath:
+
+```
+> Task :core:engine:compileKotlinJvm
+BUILD SUCCESSFUL
+```
+
+**Gate 2 — the Android target still compiles, and resources are actually processed:**
+
+```
+> Task :core:engine:parseAndroidMainLocalResources
+> Task :core:engine:packageAndroidMainResources
+> Task :core:engine:compileAndroidMain
+BUILD SUCCESSFUL
+```
+
+Those two resource tasks appearing is the gate. With `androidResources { enable = true }` omitted
+they simply **do not appear** and the build still reports SUCCESS — that is the silent failure this
+module is uniquely exposed to.
+
+**Gate 3 — both suites execute, read from the XMLs rather than trusting the exit code:**
+
+```
+BUILD SUCCESSFUL
+core/engine/build/test-results/jvmTest/TEST-…internal.AutoConnectGateTest.xml
+  <testsuite name="AutoConnectGateTest[jvm]" tests="8" skipped="0" failures="0" errors="0"
+core/engine/build/test-results/testAndroidHostTest/TEST-…DefaultFlashEngineTest.xml
+  <testsuite name="…DefaultFlashEngineTest" tests="1" skipped="0" failures="0" errors="0"
+core/engine/build/test-results/testAndroidHostTest/TEST-…internal.AutoConnectGateTest.xml
+  <testsuite name="…internal.AutoConnectGateTest" tests="8" skipped="0" failures="0" errors="0"
+```
+
+Three XMLs, 17 tests, 0 failures. A **fourth** one existed and had to be deleted first —
+`core/engine/build/test-results/testDebugUnitTest/TEST-…DefaultFlashEngineTest.xml` survives the
+plugin swap even though the task no longer exists, and would have double-counted that test in the
+repo tally. R3 documents the trap from Phase 07; `:core:engine` is the only converted module that
+had one, because it is the only one whose Android unit test predates its conversion *and* whose
+results directory was still on disk:
+
+```bash
+rm -rf core/engine/build/test-results/testDebugUnitTest core/engine/build/reports/tests/testDebugUnitTest
+```
+
+**Gate 4 — repo-wide R3.** `BUILD FAILED` is the **expected** outcome; the only failing task is the
+known pre-existing one, and `--continue` is what lets the run reach the later modules:
+
+```
+> Task :core:persistence:testDebugUnitTest FAILED
+35 tests completed, 12 failed
+> Task :app:assembleDebug
+BUILD FAILED
+```
+
+Those 12 are the documented set — **11 `FlashSettingsDataStoreTest` + 1 `DiscoveryModeSettingTest`**
+— unchanged in count and identity. A fresh `app-debug.apk` was produced, so the app consumes the
+converted module unedited.
+
+Tally across every `*/build/test-results/**/TEST-*.xml`:
+
+```
+XMLs=128 TOTAL tests=961 failures=12 errors=0 skipped=0 (passed=949)
+
+   6 app|testDebugUnitTest              4 core/calling|testDebugUnitTest
+   8 core/common|testAndroidHostTest    2 core/discovery|jvmTest
+   9 core/discovery|testAndroidHostTest 1 core/engine|jvmTest
+   2 core/engine|testAndroidHostTest    1 core/messaging|jvmTest
+   5 core/messaging|testAndroidHostTest 1 core/network|jvmTest
+  21 core/network|testAndroidHostTest   4 core/persistence|testDebugUnitTest
+   1 core/security|jvmTest             12 core/security|testAndroidHostTest
+   1 core/transfer|jvmTest             14 core/transfer|testAndroidHostTest
+  31 ui/chat|testDebugUnitTest          5 ui/theme|testDebugUnitTest
+```
+
+The only rows that moved versus Phase 11's breakdown: `core/engine|jvmTest` (1) and
+`core/engine|testAndroidHostTest` (2) are new, and `core/engine|testDebugUnitTest` (1) is **gone**.
+The other 16 rows are identical to what Phase 11 recorded — which is the per-module comparison R3
+demands, and the check that would catch a module whose suite silently stopped running behind an
+unchanged total.
+
+**Running series: 863 (Phase 00 baseline) → 883 (07) → 897 (08) → 913 (10) → 945 (11) → 961 (12).**
+The arithmetic, shown because the number alone hides the deletion:
+
+```
+945  after Phase 11
+ -1  stale core/engine testDebugUnitTest results directory, deleted
+ +8  AutoConnectGateTest on jvmTest
+ +8  AutoConnectGateTest on testAndroidHostTest
+ +1  DefaultFlashEngineTest, now counted under testAndroidHostTest instead of testDebugUnitTest
+---
+961
+```
+
+XML count moves the same way: 126 − 1 + 3 = **128**. `core/engine|testDebugUnitTest` is absent from
+the breakdown above, which is the positive confirmation that the deletion held.
+
+**Gate 5 — publication coordinates unchanged.** Three publications under the real Maven group
+(`com.transfer.flash`, root `build.gradle.kts:12` — *not* the JitPack `com.github.<user>` form a
+consumer types):
+
+```
+~/.m2/repository/com/transfer/flash/core-engine/1.1.0/
+~/.m2/repository/com/transfer/flash/core-engine-android/1.1.0/
+~/.m2/repository/com/transfer/flash/core-engine-jvm/1.1.0/
+```
+
+**Gate 6 — AAR parity against the actual pre-KMP artifact.** The pre-KMP
+`core-engine-1.1.0.aar` (Sep 2 23:28, 85,447 bytes) was still in mavenLocal, so this is a real
+comparison rather than an assertion. Entry lists **identical**, 8 entries each:
+
+```
+$ diff <(jar tf core-engine-1.1.0.aar | sort) <(jar tf core-engine-android-1.1.0.aar | sort)
+(no output — identical)
+
+R.txt
+AndroidManifest.xml
+classes.jar
+proguard.txt
+res/
+res/drawable/
+res/drawable/flash_bolt.xml          <-- present in the PUBLISHED artifact
+META-INF/com/android/build/gradle/aar-metadata.properties
+```
+
+**`res/drawable/flash_bolt.xml` is in the published AAR.** This is the single claim this gate
+exists for: `androidResources { enable = true }` is what keeps it there, and omitting that line
+drops it while the build still reports SUCCESS. Also byte-compared and identical: `AndroidManifest.xml`,
+the 528-byte `proguard.txt`, and `R.txt` (`int drawable flash_bolt 0x0`). `classes.jar` differs by
+**exactly two added entries, both `PlatformLock`** — nothing removed, nothing renamed.
+
+**Gate 7 — POM tiers.** All three, dumped from the published POMs:
+
+```
+core-engine-android : core-persistence, core-common-android, core-security-android,
+                      core-discovery-android, core-network-android, core-transfer-android,
+                      core-messaging-android, kotlin-stdlib          [compile]
+                      room-runtime-android, core-ktx, lifecycle-runtime-ktx   [runtime]
+
+core-engine-jvm     : core-common-jvm, core-security-jvm, core-discovery-jvm, core-network-jvm,
+                      core-transfer-jvm, core-messaging-jvm, kotlin-stdlib    [compile]
+                      (no Room, no androidx, no persistence)
+
+core-engine (root)  : core-common, core-security, core-discovery, core-network, core-transfer,
+                      core-messaging, kotlin-stdlib                  [runtime]
+```
+
+`core-engine-android`'s `core-persistence` entry carries **no target suffix**, the POM-level
+confirmation that it is still a plain `com.android.library`. The root POM listing everything at
+`runtime` rather than `compile` is the normal KMP root-POM shape, not a regression — `core-transfer`'s
+root POM does the same, and Gradle consumers read `.module` metadata and see `api`.
+
+And what a desktop consumer actually gets — the whole of `core-engine-jvm-1.1.0.jar`, 5,576 bytes:
+
+```
+META-INF/MANIFEST.MF
+META-INF/engine.kotlin_module
+com/transfer/flash/core/engine/concurrent/PlatformLock.class
+com/transfer/flash/core/engine/internal/AutoConnectGate$Companion.class
+com/transfer/flash/core/engine/internal/AutoConnectGate.class
+```
+
+Three classes, both of them `internal`. That is an honest measure of what this phase delivers to
+desktop: the coordinate exists and resolves, and nothing else. Recorded as a Known issue so nobody
+reads "`:core:engine` is KMP" as "the engine runs on desktop".
+
+**Gate 8 — R6.1 leak scan**, the only enforcement `java.*` has until a Kotlin/Native target exists.
+Run with the corrected commands now in CONVENTIONS.md R6.1, across **all seven** converted
+`commonMain`s and not just this module's:
+
+```
+$ grep -rnE '\b(java|javax|android|androidx)\.' --include=*.kt core/*/src/commonMain ui/*/src/commonMain \
+    | grep -vE ':[0-9]+:[[:space:]]*(\*|//|/\*)'
+(no output, exit 1)
+
+$ grep -rnE '(@Synchronized|@Volatile|@JvmStatic|@JvmOverloads|@JvmField|@Throws|\bsynchronized[[:space:]]*\(|\bCharsets\b|String\.format|\bcurrentTimeMillis\b|\bputIfAbsent\b|\bcomputeIfAbsent\b|::class\.java|\bConcurrentHashMap\b|\bLocale\b|\bSystem\.)' \
+    --include=*.kt core/*/src/commonMain ui/*/src/commonMain | grep -vE ':[0-9]+:[[:space:]]*(\*|//|/\*)'
+core/common/src/commonMain/.../logging/FlashLog.kt:21:                    @Volatile
+core/discovery/src/commonMain/.../core/CompositeDiscovery.kt:172:    @Volatile private var desiredBrowsing = false
+core/discovery/src/commonMain/.../core/CompositeDiscovery.kt:192:    @Volatile private var currentPolicy: DiscoveryModePolicy =
+core/network/src/commonMain/.../ws/WsKeepalive.kt:75:                     @Volatile
+
+$ grep -rln '@Volatile' --include=*.kt core/*/src/commonMain | xargs -r grep -L 'import kotlin.concurrent.Volatile'
+(no output, exit 0)
+```
+
+Those four `@Volatile` hits are the **legal** common form — the third command proves every one of
+their files imports `kotlin.concurrent.Volatile`, not `kotlin.jvm.Volatile`. Zero code-level leaks
+across all seven converted modules.
+
+**The trap scan was defective for two phases and this phase is why we know.** Phases 10 and 11 both
+ran a regex of the form `\b@Synchronized\b`, which **can never match**: `\b` requires a word/non-word
+transition, and both the preceding space and `@` are non-word characters. That is why the first trap
+scan of `:core:engine` reported **zero hits on a file carrying two `@Synchronized` annotations**. The
+corrected command was then re-run against every converted `commonMain` and came back clean, so no
+leak actually escaped phases 06–11 — but the gate itself was broken and nobody noticed. R6.1 now
+carries the working command plus an explicit warning against the broken form.
+
+**Gate 9 — no `java/` roots, no leftover pre-KMP source sets:**
+
+```
+$ find core/engine/src -type d -name java
+(no output)
+
+$ ls -d core/engine/src/main core/engine/src/test
+ls: cannot access 'core/engine/src/main': No such file or directory
+ls: cannot access 'core/engine/src/test': No such file or directory
+
+$ ls -1 core/engine/src
+androidHostTest  androidMain  commonMain  commonTest  jvmMain
+```
+
+### Deviations from the phase file
+
+**1. The phase file was rewritten wholesale, and this time *after* execution rather than before.**
+The five previous conversion phases each rewrote the inherited file first and then still had to
+correct the rewrite (Phase 11's Gate 5 mavenLocal path). This phase measured and executed first, then
+wrote the file to match verified reality. The rewrite is in the docs commit.
+
+**2. The phase's central instruction was disobeyed, deliberately.** The inherited file forbade
+content edits and forbade `expect`/`actual` in this module. Both had to be broken, for the reason in
+"The one content edit" above. R2's escalation ladder was followed explicitly: step 1 (leave
+`AutoConnectGate.kt` in `androidMain`) was **rejected** because it makes `commonMain` empty and
+Gate 1 vacuous; step 2 (`expect`/`actual`) was taken. Nothing was deleted, stubbed or weakened, which
+is the line R2 actually draws.
+
+**3. `-Xexpect-actual-classes` was added to this module's `compilerOptions`.** Required by the seam;
+same wiring as `:core:common` (Phase 06) and `:core:discovery` (Phase 08). Not a version change (R10).
+
+**4. Four small fixes to my own work, caught before commit and recorded for honesty (R9):** the
+unsound contention test described above; a build-file comment that claimed the root POM preserves
+`compile` scope when measurement shows `runtime`; a dangling `[PlatformLock]` KDoc link in the new
+test (the class is not imported there, so the link would not resolve); and `git status --porcelain`
+showing `AutoConnectGate.kt`'s rename staged while its content edit was **not** — the exact Phase 11
+trap, fixed with `git add core/engine` and re-verified before committing.
+
+### Eight claims in the inherited phase file that measurement disproved
+
+Item 1 is the consequential one; the other seven cost time, not correctness.
+
+1. **"`AutoConnectGate.kt` — pure stdlib types (`HashMap`/`HashSet`/`@Synchronized`), zero imports
+   beyond `kotlin.*`"**, reinforced by *"a pure file-move with zero content edits"*, *"Do NOT edit
+   file contents"* and *"Do NOT introduce an `expect`/`actual`"*. `@Synchronized` **is**
+   `kotlin.jvm.Synchronized`. Same class of error as Phase 11's `FlashChatRepository` claim, and the
+   same root cause: an analysis that scanned `import` lines rather than the code.
+2. **"D5 must be `A`"**, and **Phase 09 listed as a hard precondition**. Neither holds — D5 is
+   undecided, Phase 09 is blocked, and this phase completed anyway. The inherited file never mentions
+   `localDependencySelection`, which is the line that makes a variant-ful `:core:persistence`
+   resolvable from a KMP `androidMain`.
+3. **`androidLibrary { }`** as the DSL block, throughout. The block inside `kotlin { }` is
+   `android { }`.
+4. **`val jvmAndAndroidMain = create("jvmAndAndroidMain")`** plus a whole
+   `### jvmAndAndroidMain — 0` section. Void under D1 = B (R5); harmless here only because the count
+   was 0.
+5. **"jar contains only `AutoConnectGate.class`"**. Wrong even without the new seam —
+   `AutoConnectGate$Companion.class` is emitted for the `private companion object`. Measured: three
+   classes.
+6. **"Do NOT use typed source-set accessors"**. Every module from Phase 06 onward uses
+   `commonMain.dependencies { }`, and they work. Only `androidHostTest` needs `getByName`, because it
+   has no typed accessor.
+7. **"`Flash.kt` (33 KB … 688 lines)"**. Measured: **714 lines / 36,393 bytes**. Its import list also
+   does not contain `android.net.Uri` or `ContentResolver` as claimed — both are used, fully qualified
+   at line 669. The substance was right; the evidence cited for it was not.
+8. **Precondition 1's expectations for `:core:transfer`** — six types listed as "commonMain or
+   jvmAndAndroidMain" that Phase 11 had already measured as `androidMain`.
+
+**And the one it got right:** `androidResources { enable = true; resourcePrefix = "flash_" }`,
+including the warning that omitting it silently drops the AAR's resources. Confirmed by `javap`
+against `gradle-api-9.3.1.jar` *before* it was written — `LibraryAndroidResources` declares exactly
+`getEnable`/`setEnable(boolean)` and `getResourcePrefix`/`setResourcePrefix(String)`, and
+`resourcePrefix` is **not** on `KotlinMultiplatformAndroidLibraryExtension`, so the two settings
+cannot be separated. First inherited claim in five phase files that measurement confirmed rather than
+corrected — worth recording precisely because the base rate has been so poor.
+
+### Known issues
+
+Recorded, not fixed — R1. None of these blocks Phase 13.
+
+1. **The third `PlatformLock` is still un-hoisted.** Phase 08's log asked for a dedicated phase
+   *"before phases 09–12 make further copies"*; none was written, and Phase 12 made the copy it
+   predicted. Three identical `expect class`es now exist in `:core:common`, `:core:discovery` and
+   `:core:engine`. A hoist means promoting one to `public` in a shared module, which is an
+   `explicitApi()` ABI addition (R7) and a second module's build file (R4) — legitimate, but its own
+   phase. **Phases 13–16 will likely want a fourth copy;** R2 now records copying as the intended
+   pattern so the next agent does not improvise a hoist mid-phase.
+2. **The repo is inconsistent about dead `androidx` dependencies, and this phase made it worse by one
+   module.** Phase 08 **deleted** the dead `androidx.core.ktx` / `androidx.lifecycle.runtime.ktx`
+   edges from `:core:discovery`; Phases 10, 11 and now 12 **parked** them behind `TODO(cleanup)`.
+   `:core:engine` has both, and grep finds zero `androidx.core` / `androidx.lifecycle` references in
+   its main or test sources. Parking follows the later precedent because deleting them changes what a
+   1.1.0 consumer resolves — but the repo now has one module where they are gone and four where they
+   are not, which is worse than either choice made consistently. This wants one deliberate repo-wide
+   commit.
+3. **`core-engine-jvm-1.1.0.jar` contains three classes, all `internal`.** `PlatformLock`,
+   `AutoConnectGate`, `AutoConnectGate$Companion`. A desktop consumer can resolve the coordinate and
+   do nothing with it: there is no `FlashEngine`, no `Flash`, no store. This is what the phase was
+   scoped to deliver, but "`:core:engine` is KMP" should not be read as "the engine runs on desktop".
+4. **`res/drawable/flash_bolt.xml` has zero first-party consumers.** Grep across `core/`, `ui/`,
+   `app/` and `sample/` finds no `@drawable/flash_bolt` or `R.drawable.flash_bolt` reference — the only
+   non-`build/` hits are the build file's own comment and the resource's own header, which reads
+   *"Bundled with core:engine so consumers can reference `@drawable/flash_bolt`"*. So it exists for
+   **external** consumers by design, and whether any 1.1.0 consumer uses it cannot be checked from
+   here. It is preserved because dropping a resource from a published AAR is a consumer-visible change
+   and this phase's job was parity, not cleanup — but the `androidResources` block that keeps it there
+   is currently protecting a resource nothing in this repo uses.
+5. **Phase 10's `TlsOptions` blocker is still open and Phase 13 inherits it.** Unchanged by this
+   phase, restated so it is not rediscovered: the Android-only TLS configuration surface has no
+   desktop equivalent yet, and a desktop `FlashEngine` cannot be assembled without resolving it.
+6. **Stale `.aar` beside the fresh `.jar` in the root mavenLocal coordinate directory.** The pre-KMP
+   publication left `core-engine-1.1.0.aar` (Sep 2 23:28, 85,447 bytes) next to the new 737-byte
+   `core-engine-1.1.0.jar` (Sep 5 09:01). Cosmetic and local-only — mavenLocal is not cleaned between
+   builds and no consumer resolves the root coordinate's artifact directly — but it will confuse
+   anyone inspecting `~/.m2` by hand. Same issue Phase 11 recorded for `core-transfer`. In this phase
+   it was also **useful**: that stale AAR is what made Gate 6 a real diff instead of an assertion.
+7. **`app/src/main/java/com/transfer/flash/net/AutoConnectGate.kt` is still an independent duplicate**
+   of the class this phase moved. Both now have test suites, and this phase's five semantic cases were
+   written to mirror the app's so a divergence becomes visible — but there are still two copies of the
+   admission logic, and only convention keeps them in step.
+
+### CONVENTIONS.md changes made by this phase
+
+In the docs commit, all narrow and all justified by something this phase measured:
+
+- **R2** — records `PlatformLock`'s per-module duplication as the **intended** pattern, with the
+  reasons (`internal` does not cross a module boundary; a hoist is an `explicitApi()` ABI addition
+  under R7 and a second build file under R4), so a future agent copies rather than improvising a hoist.
+- **R3** — `:core:engine:testAndroidHostTest :core:engine:jvmTest` appended to the verification
+  command line; the running total series extended to **961 / 12 / 0 across 128 XMLs** with the
+  −1/+17 arithmetic spelled out; "as phase 12 lands" corrected to "as each phase lands"; a new
+  requirement to *show* the arithmetic rather than just the number; and the stale-results-directory
+  trap extended to name `build/reports/tests/testDebugUnitTest/` as well.
+- **R3.1** — the claim that `:core:discovery`'s contention case is *"the only test in the repo that
+  asserts a lock actually excludes"* is now stale and was corrected: `PlatformLockTest` and this
+  phase's `AutoConnectGateTest` are both such tests, and both run on both targets.
+- **R6.1** — the prose *"also re-scan the stdlib traps listed above"* replaced by a concrete
+  command, plus the `@Volatile`-import verification command (`xargs -r grep -L`, where `-r` is
+  load-bearing: without it an empty first grep leaves `grep -L` reading stdin and the command hangs),
+  plus the blockquote warning against `\b@Synchronized\b`.
+
+### Next step
+
+**Phase 13 — desktop.** Every `:core:*` module except `:core:persistence` and `:core:calling` now has
+a `jvm()` target, and `:core:engine` publishes `core-engine-jvm`. Three things to check before
+starting, all recorded above rather than left to be rediscovered:
+
+1. **The `TlsOptions` blocker** (Known issue 5, inherited from Phase 10). A desktop `FlashEngine`
+   cannot be assembled without a desktop TLS configuration surface.
+2. **What `core-engine-jvm` actually contains** (Known issue 3): three `internal` classes. Phase 13
+   starts from approximately nothing on the desktop side, not from a working engine.
+3. **Whether the phase file assumes `jvmAndAndroidMain`, `androidLibrary { }`, or that
+   `:core:persistence` is already KMP.** Six phase files in a row have assumed at least one. It is
+   not — Phase 09 is blocked, and Phases 11 and 12 have now both demonstrated that this does not
+   block a consumer, via `localDependencySelection`.
+
+Phase 09B-1 remains executable at any time and needs no human decision. 09B-2 and 09B-3 are still
+gated on the human (which encrypted desktop driver; the settings ABI choice), as is D5 itself.
+
+**Still not delivered by any phase in the plan:** a Kotlin/Native target. Until one exists, R6 is
+enforced by Gate 8's grep and nothing else — a gate this phase proved had been silently broken for
+two phases — and the "all platforms" half of the 2026-09-03 amendment has no phase that implements
+it. Recommended as a new phase; R6.1 says the same.
+
+
+
+
+
+
+
+
+
+
+
 
 
 

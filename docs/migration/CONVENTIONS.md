@@ -45,6 +45,13 @@ stable, classes are still Beta (KT-61573) and emit a warning per declaration sit
 only when the seam must carry per-platform state, as `PlatformLock` does, and suppress the
 warning with `-Xexpect-actual-classes` in the module's `kotlin { compilerOptions { } }`.
 
+`PlatformLock` is deliberately **duplicated per module** — `:core:common` (Phase 06),
+`:core:discovery` (Phase 08), `:core:engine` (Phase 12) — because it is `internal` and `internal`
+does not cross a Gradle module boundary. A phase that needs it in a fourth module should copy it
+again rather than hoist: promoting `:core:common`'s copy to `public` would add a lock to
+`core-common`'s published ABI under `explicitApi()` (R7) and edit a second module's build file (R4).
+The hoist is a legitimate cleanup, but it is its own phase and no phase in the plan performs it.
+
 When a seam replaces the *body* of an already-published declaration, keep the declaration
 itself in `commonMain` and let it delegate to an `internal expect fun`. Phase 06 did this for
 `SystemTimeSource` and `UuidIdGenerator`: their published FQNs and shapes are unchanged, so
@@ -76,15 +83,15 @@ Phase 06 discovered the replacement task name empirically and recorded it in R3.
 and in `logs/migration.md`. From Phase 06 onward the verification command is:
 
 ```bash
-./gradlew --stop >/dev/null 2>&1; sleep 8; ./gradlew :app:assembleDebug testDebugUnitTest :core:common:testAndroidHostTest :core:security:testAndroidHostTest :core:security:jvmTest :core:discovery:testAndroidHostTest :core:discovery:jvmTest :core:network:testAndroidHostTest :core:network:jvmTest :core:transfer:testAndroidHostTest :core:transfer:jvmTest :core:messaging:testAndroidHostTest :core:messaging:jvmTest --no-configuration-cache --continue --max-workers=2 --console=plain
+./gradlew --stop >/dev/null 2>&1; sleep 8; ./gradlew :app:assembleDebug testDebugUnitTest :core:common:testAndroidHostTest :core:security:testAndroidHostTest :core:security:jvmTest :core:discovery:testAndroidHostTest :core:discovery:jvmTest :core:network:testAndroidHostTest :core:network:jvmTest :core:transfer:testAndroidHostTest :core:transfer:jvmTest :core:messaging:testAndroidHostTest :core:messaging:jvmTest :core:engine:testAndroidHostTest :core:engine:jvmTest --no-configuration-cache --continue --max-workers=2 --console=plain
 ```
 
 Every converted module must be **named explicitly** on that command line, because the
 unqualified `testDebugUnitTest` no longer reaches it. Add one `:module:testAndroidHostTest`
-per conversion as phase 12 lands — **and one `:module:jvmTest` if the module has a
+per conversion as each phase lands — **and one `:module:jvmTest` if the module has a
 `commonTest`/`jvmTest` suite**, as `:core:security` does since Phase 07, `:core:discovery`
-since Phase 08, `:core:network` since Phase 10 and both `:core:transfer` and `:core:messaging`
-since Phase 11. `--continue` is load-bearing: without it the
+since Phase 08, `:core:network` since Phase 10, both `:core:transfer` and `:core:messaging`
+since Phase 11, and `:core:engine` since Phase 12. `--continue` is load-bearing: without it the
 12 known `:core:persistence` failures abort the run before later modules execute, and the total
 silently drops. Those 12 are
 **11 in `FlashSettingsDataStoreTest` + 1 in `DiscoveryModeSettingTest`** (measured Phase 08;
@@ -96,13 +103,20 @@ Every phase must additionally paste the **test count** from
 test count matches or exceeds baseline is not verified. Conversions may legitimately *raise*
 the total — Phase 07 took it to **883 / 12 / 0** by adding a 10-test `commonTest` suite that runs
 once per target, Phase 08 took it to **897 / 12 / 0** the same way (7 tests × 2 targets), Phase 10
-to **913 / 12 / 0**, and Phase 11 to **945 / 12 / 0** (two 8-test `commonTest` suites × 2 targets).
+to **913 / 12 / 0**, Phase 11 to **945 / 12 / 0** (two 8-test `commonTest` suites × 2 targets), and
+Phase 12 to **961 / 12 / 0 across 128 XMLs** (945 + 8 `jvmTest` + 8 `testAndroidHostTest` + 1 for
+`DefaultFlashEngineTest` now counted under `testAndroidHostTest`, − 1 for the stale
+`testDebugUnitTest` results directory the plugin swap orphans).
 Compare **per module** as well as in total: a total that still matches while one
 module's suite has silently stopped running is exactly the failure mode R3 exists to catch.
+Show the arithmetic, not just the number — a phase that adds N tests to a `commonTest` suite must
+account for **2N**, and a phase that converts a module carrying an existing Android unit test must
+account for the orphaned results directory too.
 
 When tallying, delete the dead results directory of any task the conversion removed
 (`<module>/build/test-results/testDebugUnitTest/` survives the plugin swap and will be
-double-counted otherwise — Phase 07 hit this).
+double-counted otherwise — Phase 07 hit this, and Phase 12 hit it again on `:core:engine`; delete
+`build/reports/tests/testDebugUnitTest/` alongside it so the HTML report does not mislead either).
 
 `--no-configuration-cache` is required because this project enables the
 configuration cache in `gradle.properties`, and KMP source-set wiring is a known
@@ -138,8 +152,9 @@ because Phase 06 left all its tests in `androidHostTest`. Any phase that writes 
 should put at least one behavioural assertion in `commonTest` so both platforms run it. Phase 07's
 parity suite found no divergence — but it is the only thing in the build that *would* have found
 one, since Android runs Conscrypt and the desktop JVM runs SunJCE. Phase 08 followed the rule for
-`:core:discovery`'s own duplicated `PlatformLock`: its contention case is the only test in the repo
-that asserts a lock actually excludes, and it runs on both targets.
+`:core:discovery`'s own duplicated `PlatformLock`, and Phase 12 for `:core:engine`'s third copy:
+between them, the contention cases in `PlatformLockTest` and `AutoConnectGateTest` are the only
+tests in the repo that assert a lock actually excludes, and both run on both targets.
 
 
 ## R4 — Never edit two modules' build files in one commit unless the phase says to
@@ -218,8 +233,36 @@ grep -rnE '\b(java|javax|android|androidx)\.' --include=*.kt core/*/src/commonMa
 
 Expected output: nothing. The second `grep -v` drops KDoc and comment lines, which legitimately
 name platform types when documenting a seam (`PlatformCrypto`'s KDoc cites
-`javax.crypto.AEADBadTagException` deliberately). Also re-scan the stdlib traps listed above —
-those are plain Kotlin and no import line reveals them.
+`javax.crypto.AEADBadTagException` deliberately).
+
+**The stdlib traps need their own command — they are plain Kotlin and no import line reveals
+them.** Phase 12 added it, because "also re-scan the stdlib traps" as prose is not a check and
+was in fact performed with a broken regex twice (see below):
+
+```bash
+grep -rnE '(@Synchronized|@Volatile|@JvmStatic|@JvmOverloads|@JvmField|@Throws|\bsynchronized[[:space:]]*\(|\bCharsets\b|String\.format|\bcurrentTimeMillis\b|\bputIfAbsent\b|\bcomputeIfAbsent\b|::class\.java|\bConcurrentHashMap\b|\bLocale\b|\bSystem\.)' --include=*.kt core/*/src/commonMain ui/*/src/commonMain 2>/dev/null | grep -vE ':[0-9]+:[[:space:]]*(\*|//|/\*)'
+```
+
+Expected output: nothing, **except** `@Volatile` lines whose file also carries
+`import kotlin.concurrent.Volatile` — that is the legal common form and the annotation is spelled
+identically. Verify the import rather than the annotation:
+
+```bash
+grep -rln '@Volatile' --include=*.kt core/*/src/commonMain | xargs -r grep -L 'import kotlin.concurrent.Volatile'
+```
+
+Expected output: nothing. Any file listed uses the JVM-only `kotlin.jvm.Volatile`. `xargs -r` is
+load-bearing: without it, an empty first grep leaves `grep -L` reading stdin and the command hangs.
+The check over-reports rather than under-reports — a file that only *mentions* `@Volatile` in a
+comment is listed — which is the safe direction.
+
+> **Do not put `\b` before `@`.** `\b@Synchronized\b` can never match: `\b` requires a
+> word/non-word transition, and both the preceding space and `@` are non-word characters. Phase 10
+> and Phase 11 both ran that form, and it is why the first trap scan of `:core:engine` reported
+> zero hits on a file carrying two `@Synchronized` annotations. No leak actually escaped phases
+> 06–11 — the corrected command was re-run against every converted `commonMain` in Phase 12 and
+> came back clean — but the gate was defective for two phases without anyone noticing.
+
 
 **This is a hole in the plan, not just in a phase.** Phases 00–24 never add a Kotlin/Native
 target, so nothing in the current plan ever makes a `java.*` leak fail the build, and nothing
