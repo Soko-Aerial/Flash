@@ -86,7 +86,7 @@ Phase 06 discovered the replacement task name empirically and recorded it in R3.
 and in `logs/migration.md`. From Phase 06 onward the verification command is:
 
 ```bash
-./gradlew --stop >/dev/null 2>&1; sleep 8; ./gradlew :app:assembleDebug testDebugUnitTest :core:common:testAndroidHostTest :core:security:testAndroidHostTest :core:security:jvmTest :core:discovery:testAndroidHostTest :core:discovery:jvmTest :core:network:testAndroidHostTest :core:network:jvmTest :core:transfer:testAndroidHostTest :core:transfer:jvmTest :core:messaging:testAndroidHostTest :core:messaging:jvmTest :core:engine:testAndroidHostTest :core:engine:jvmTest :core:persistence:testAndroidHostTest :core:persistence:jvmTest :ui:theme:testAndroidHostTest :ui:theme:jvmTest :ui:platform-shims:testAndroidHostTest :ui:platform-shims:jvmTest --no-configuration-cache --continue --max-workers=2 --console=plain
+./gradlew --stop >/dev/null 2>&1; sleep 8; ./gradlew :app:assembleDebug testDebugUnitTest :core:common:testAndroidHostTest :core:security:testAndroidHostTest :core:security:jvmTest :core:discovery:testAndroidHostTest :core:discovery:jvmTest :core:network:testAndroidHostTest :core:network:jvmTest :core:transfer:testAndroidHostTest :core:transfer:jvmTest :core:messaging:testAndroidHostTest :core:messaging:jvmTest :core:engine:testAndroidHostTest :core:engine:jvmTest :core:persistence:testAndroidHostTest :core:persistence:jvmTest :ui:theme:testAndroidHostTest :ui:theme:jvmTest :ui:platform-shims:testAndroidHostTest :ui:platform-shims:jvmTest :ui:chat:testAndroidHostTest :ui:chat:jvmTest --no-configuration-cache --continue --max-workers=2 --console=plain
 ```
 
 `:ui:theme:testAndroidHostTest` was added by Phase 17, and **`:ui:theme:jvmTest` was added by
@@ -108,6 +108,9 @@ per conversion as each phase lands — **and one `:module:jvmTest` if the module
 since Phase 08, `:core:network` since Phase 10, both `:core:transfer` and `:core:messaging`
 since Phase 11, `:core:engine` since Phase 12, `:core:persistence` since Phase 09B-1,
 `:ui:theme` since Phase 18, and `:ui:platform-shims` since Phase 19.
+**Both `:ui:chat` tasks were added by Phase 20.** They are deliberately **symmetric** — 239 tests on
+each tier — because that module's 31 test suites were already engine-free pure-logic tests and moved
+wholesale into `commonTest`, so the desktop tier re-runs the identical suite rather than a subset.
 `--continue` is load-bearing: without it the
 12 known `:core:persistence` failures abort the run before later modules execute, and the total
 silently drops. Those 12 are
@@ -146,11 +149,19 @@ Phase 18 took it to **1055 / 12 / 0 across 140 XMLs** (1018 + the same 37 tests 
 time on the desktop target; 135 + 5 XMLs, one per suite per target). Phase 17's log predicted that
 figure to the digit *before* the move — "anything less means a suite stopped running" — which is the
 cheapest form this check takes: state the arithmetic first, then measure.
-Phase 19 took it to **1093 / 12 / 0 across 146 XMLs** — the current total — by adding a whole new
+Phase 19 took it to **1093 / 12 / 0 across 146 XMLs** by adding a whole new
 module: 1055 + 4 `commonTest` contract tests × 2 targets + 30 desktop-only `jvmTest` cases (7 picker +
 10 decoder + 7 recorder + 6 audio); 140 + 2 XMLs for the contract suite (one per target) + 4 for the
 `jvm`-only suites. No orphaned results directory to delete this time — `:ui:platform-shims` was born
 KMP and never had the `com.android.library` plugin.
+Phase 20 took it to **1332 / 12 / 0 across 177 XMLs** — the current total — and is the largest single
+jump in the migration. The arithmetic has a **subtraction** in it, which is the part worth copying:
+1093 − 239 + 478. `:ui:chat` already had 239 Android unit tests reporting under `testDebugUnitTest`;
+those 239 move to `commonTest` and then run **twice** (239 `testAndroidHostTest` + 239 `jvmTest`), so
+the module's contribution goes 239 → 478 and the old figure must be *removed* first, not added to.
+XMLs: 146 − 31 + 62. Predicting "1093 + 478 = 1571" — adding without subtracting — is the specific
+error this note exists to prevent; it was made once mid-phase and caught by the orphaned-directory
+paragraph below, which is the same defect seen from the other side.
 Compare **per module** as well as in total: a total that still matches while one
 module's suite has silently stopped running is exactly the failure mode R3 exists to catch.
 Show the arithmetic, not just the number — a phase that adds N tests to a `commonTest` suite must
@@ -161,6 +172,17 @@ When tallying, delete the dead results directory of any task the conversion remo
 (`<module>/build/test-results/testDebugUnitTest/` survives the plugin swap and will be
 double-counted otherwise — Phase 07 hit this, and Phase 12 hit it again on `:core:engine`; delete
 `build/reports/tests/testDebugUnitTest/` alongside it so the HTML report does not mislead either).
+Phase 20 hit it a third time, on `:ui:chat`, where the orphan was the largest yet: 239 tests in 31
+XMLs, enough to have reported 1571 / 208 instead of 1332 / 177.
+
+Do **not** delete every `test-results/testDebugUnitTest/` you find, though — two of them are live.
+The command line's **unqualified** `testDebugUnitTest` still reaches every module that has kept the
+`com.android.library`/`com.android.application` plugin, which today means `:app` (31 tests, 6 XMLs)
+and `:core:calling` (55 tests, 4 XMLs). Those two directories are refreshed by the run and are part
+of the total; only a module that has *already been converted* can own an orphan. Tally from
+`<module>/build/test-results/<task>/TEST-*.xml` and ignore
+`build/intermediates/unit_test_results/` and `build/tmp/` — AGP keeps its own copies there, and they
+are not what any baseline in this file was measured from.
 
 `--no-configuration-cache` is required because this project enables the
 configuration cache in `gradle.properties`, and KMP source-set wiring is a known
@@ -285,12 +307,13 @@ them.** Phase 12 added it, because "also re-scan the stdlib traps" as prose is n
 was in fact performed with a broken regex twice (see below):
 
 ```bash
-grep -rnE '(@Synchronized|@Volatile|@JvmStatic|@JvmOverloads|@JvmField|@Throws|\bsynchronized[[:space:]]*\(|\bCharsets\b|String\.format|\bcurrentTimeMillis\b|\bputIfAbsent\b|\bcomputeIfAbsent\b|::class\.java|\bConcurrentHashMap\b|\bLocale\b|\bSystem\.)' --include=*.kt core/*/src/commonMain ui/*/src/commonMain 2>/dev/null | grep -vE ':[0-9]+:[[:space:]]*(\*|//|/\*)'
+grep -rnE '(@Synchronized|@Volatile|@JvmStatic|@JvmOverloads|@JvmField|@Throws|\bsynchronized[[:space:]]*\(|\bCharsets\b|\.format\(|\bcurrentTimeMillis\b|\bnanoTime\b|\bputIfAbsent\b|\bcomputeIfAbsent\b|::class\.java|\bConcurrentHashMap\b|\bLocale\b|\bMath\.|\bSystem\.)' --include=*.kt core/*/src/commonMain ui/*/src/commonMain 2>/dev/null | grep -vE ':[0-9]+:[[:space:]]*(\*|//|/\*)'
 ```
 
-Expected output: nothing, **except** `@Volatile` lines whose file also carries
+Expected output: nothing, **except** (a) `@Volatile` lines whose file also carries
 `import kotlin.concurrent.Volatile` — that is the legal common form and the annotation is spelled
-identically. Verify the import rather than the annotation:
+identically — and (b) the eight allowlisted `.format(` lines tabulated under Defect A below.
+For `@Volatile`, verify the import rather than the annotation:
 
 ```bash
 grep -rln '@Volatile' --include=*.kt core/*/src/commonMain | xargs -r grep -L 'import kotlin.concurrent.Volatile'
@@ -307,6 +330,79 @@ comment is listed — which is the safe direction.
 > zero hits on a file carrying two `@Synchronized` annotations. No leak actually escaped phases
 > 06–11 — the corrected command was re-run against every converted `commonMain` in Phase 12 and
 > came back clean — but the gate was defective for two phases without anyone noticing.
+
+#### Two further defects in these three commands (found by Phase 20)
+
+**Defect A — `String\.format` misses the form Kotlin actually uses.** The alternative matches the
+literal text `String.format`, i.e. the *static* Java spelling. Kotlin code almost never writes that;
+it writes the **extension on the receiver**: `"%.1f".format(x)`. The trap scan therefore returned
+zero `.format` hits on a `commonMain` containing eight of them. Add this alternative:
+
+```
+\.format\(
+```
+
+It over-reports slightly (`DateTimeFormatter.format(` and the like would match) which is the safe
+direction. Known hits at the time of writing, all pre-existing and **not** fixed by Phase 20 under
+R1 — this is the allowlist, and anything outside it is a new leak:
+
+| File | Lines | Form |
+| --- | --- | --- |
+| `core/messaging/.../model/FlashMessagingModels.kt` | 202, 204 | `"%d:%02d:%02d".format(…)`, `"%d:%02d".format(…)` |
+| `ui/chat/.../FlashFileMessageCard.kt` | 113, 413, 415, 417 | `"%.1f".format(…)` ×3, `"%.2f".format(…)` |
+| `ui/chat/.../FlashStressTestScreen.kt` | 253 | `"%02d:%02d".format(…)` |
+| `ui/chat/.../FlashVoiceMessageCard.kt` | 81 | `":%02d".format(…)` |
+
+The two `%02d`-only cases have an exact common equivalent already used elsewhere in this repo
+(`(x % 60L).toString().padStart(2, '0')` — `FlashMessagingUtils.kt:260`). The four decimal ones do
+**not**: reproducing `java.util.Formatter`'s `%.1f` rounding by hand changes user-visible size and
+speed strings on ties, which is a behaviour change, not a mechanical port. Both belong in the
+native-target phase recommended at the end of this section, with tests — not bolted onto a
+conversion phase whose charter forbids logic changes.
+
+**Defect B — scan 1 has no `androidx.compose.` exemption, so it is unusable on the UI track as
+written.** Compose Multiplatform declares the *same* `androidx.compose.*` package names on every
+target; `import androidx.compose.runtime.Composable` in `ui/*/src/commonMain` is correct common
+code, not a leak. Unfiltered, scan 1 reports several hundred such lines for `:ui:theme`,
+`:ui:platform-shims` and `:ui:chat` and buries any real hit. The filter has to exempt
+`androidx.compose.` **anywhere on the line, not just on `import` lines** — 16 of the hits are
+fully-qualified inline references such as `androidx.compose.ui.platform.LocalDensity.current`
+(`FlashComposer.kt:102`) and `androidx.compose.ui.unit.Dp` used as a parameter type
+(`FlashStateViews.kt:362-364`) — while still failing on the *Jetpack* preview package. `grep -E`
+has no negative lookahead, so use `awk` for the carve-out:
+
+```bash
+grep -rnE '\b(java|javax|android|androidx)\.' --include=*.kt core/*/src/commonMain ui/*/src/commonMain 2>/dev/null \
+  | grep -vE ':[0-9]+:[[:space:]]*(\*|//|/\*)' \
+  | grep -vE 'androidx\.room\.' \
+  | awk '{ if ($0 ~ /androidx\.compose\./ && $0 !~ /androidx\.compose\.ui\.tooling\.preview/) next; print }'
+```
+
+Expected output: nothing. The `awk` clause is what keeps the gate honest — a bare
+`grep -v 'androidx\.compose\.'` would also swallow
+`androidx.compose.ui.tooling.preview.Preview`, the **Jetpack** annotation, which is Android-only
+and must keep failing (`org.jetbrains.compose.ui.tooling.preview.Preview` is the common one, and
+the two differ by one package prefix — see Phase 18's and Phase 20's import swaps).
+`androidx.activity.compose.*` and `androidx.lifecycle.*` are outside the exemption by construction,
+since neither contains `androidx.compose.`. Do **not** exempt `androidx.compose.` in `core/*` — no
+`core` module applies the Compose plugins, so a hit there is a genuine leak; the command above is
+scoped by the exemption's own pattern rather than by path, which is safe only because no
+`core/*/src/commonMain` file references Compose at all (verified Phase 20).
+`:core:persistence`'s `androidx.room.*` lines in `commonMain` are legal for the separate reason
+recorded in Phase 09B-1's entry, and are the only non-Compose `androidx` exemption in the repo.
+
+**Defect C — `Math.` was not on the trap list at all.** `Math.floorMod`, `Math.abs`, `Math.min`
+and friends are `java.lang` but read like stdlib, and no other alternative in the regex catches
+them: `\bSystem\.` covers `System.nanoTime()`/`System.currentTimeMillis()`, and nothing covered
+`Math.`. Phase 20 found `Math.floorMod` in `ui/chat/.../FlashNetworkSimSheet.kt` by manual bare-type
+audit, not by the gate. `\bMath\.` is now in the command above, along with a redundant-but-harmless
+`\bnanoTime\b`. Common replacements: `Int.mod(Int)` for `Math.floorMod` (identical flooring
+semantics), and `kotlin.math.*` for the rest — `kotlin.math.abs`, `minOf`/`maxOf`, `kotlin.math.round`.
+
+The three commands are a review gate, and a review gate that has been wrong four times in fourteen
+phases (the `\b@` form, Defect A, Defect B, Defect C) is the argument for the native-target phase
+below, not a substitute for it. Every defect so far was found by a phase doing an exhaustive manual
+audit *in addition to* running the gate; a phase that only runs the gate proves less than it thinks.
 
 
 **This is a hole in the plan, not just in a phase.** Phases 00–24 never add a Kotlin/Native

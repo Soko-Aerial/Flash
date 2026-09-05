@@ -1,5 +1,89 @@
 # PHASE-20 — `ui:chat` → KMP module
 
+> ## STATUS: DONE — 2026-09-05, commit `c5abd5d`
+>
+> **Read this box before following anything below it.** Steps 1 and 2 must not be executed: Step 1 is
+> a no-op whose one substantive line is an R10 violation, and Step 2 is factually wrong in a way that
+> would have broken R5 and R3.1 across the whole UI track. Step 5's quoted build file is unbuildable.
+> Full account in `logs/migration.md` → "Phase 20 — `:ui:chat` to Kotlin Multiplatform".
+>
+> **The outcome, first, because it is better than this file expects:** the module is **100% common**.
+> 45 production files in `commonMain`, 31 test files in `commonTest`, and **no `androidMain`, no
+> `jvmMain`, no platform-specific source at all**. The `@Preview` problem this file and PHASE-19 both
+> braced for does not exist — see item 4.
+>
+> **Do not execute:**
+>
+> 1. **Step 1 is a no-op and its one real line is forbidden.** All three plugin aliases
+>    (`kotlin.multiplatform`, `android.kotlin.multiplatform.library`, `kotlin.compose`,
+>    `jetbrains.compose`) already exist in `gradle/libs.versions.toml`. Its proposed
+>    `org-jetbrains-compose = { version = "1.12.0" }` is both a wrong alias name and an **R10
+>    violation** — the toolchain is frozen at CMP 1.9.3. `libs.versions.toml` was not touched.
+> 2. **Step 2 is false.** It claims CMP "requires `jvm("desktop")`/`desktopMain`" and calls that an
+>    intentional R5 deviation for the UI track. CMP requires no such thing, and this repo disproves it:
+>    `:ui:theme` (Phase 18) and `:ui:platform-shims` (Phase 19) both ship on plain `jvm()` with
+>    `jvmMain`. Accepting it would also have renamed the R3.1 gate task to `compileKotlinDesktop`.
+>    `:ui:chat` uses plain `jvm()`. **R5 holds for the entire UI track.**
+> 3. **Step 5's build file cannot be used.** It sets `groupId`/`version` in the module's `publishing`
+>    block (forbidden by the root build file); keeps `register<MavenPublication>("release")`
+>    (impossible under KMP, which generates publications itself); drops `consumerProguardFiles`
+>    silently; uses raw `id("…")` instead of `libs.plugins` aliases; and puts
+>    `libs.androidx.compose.ui.tooling.preview` — an Android AAR — in `commonMain`, where `jvm()`
+>    cannot resolve it. The last one's *intent* is right and is realised with
+>    `compose.components.uiToolingPreview` (an accessor, pins nothing new, R10-safe).
+> 4. **Step 5's "`@Preview` needs to stay Android" concern, and PHASE-19's warning about it, are both
+>    obsolete.** `org.jetbrains.compose.ui.tooling.preview.Preview` in CMP 1.9.3 takes **seven**
+>    parameters (`name`, `group`, `widthDp`, `heightDp`, `locale`, `showBackground`,
+>    `backgroundColor`), not zero. All **69** previews are in `commonMain` with arguments intact. The
+>    comment at `ui/theme/build.gradle.kts:146-148` asserting the annotation "takes no arguments" is
+>    also wrong and is what propagated this.
+> 5. **Step 7's verification gate names tasks that do not exist.** `compileKotlinDesktop` (there is no
+>    `desktop` target) and `allTests`. Use R3.1's canonical names: `compileKotlinJvm`,
+>    `compileAndroidMain`, `jvmTest`, `testAndroidHostTest`.
+>
+> **Wrong counts and stale claims:**
+>
+> 6. **"46 production files" — it is 45. "31 test files" — correct, but a later section in this same
+>    file says 37. "71 lines" for `ui/chat/build.gradle.kts" — it was 74** (now 192). The 47-name root
+>    inventory is largely fictional.
+> 7. **Precondition 3's "all 8 shims" is wrong twice.** Phase 19 built **7** seams / 6 `expect`-`actual`
+>    pairs, and the names differ (`FlashTransientMessage` and `FlashDecodeImageBitmap` do not exist).
+> 8. **Step 6's change table is stale in four places.** `FlashAudioPlayer.kt` and `FlashVoiceRecorder.kt`
+>    are no longer in `:ui:chat` (Phase 19 moved both to `:ui:platform-shims`); there is **no
+>    `LocalContext` anywhere in `:ui:chat`**, so the claimed `LocalContext.current` at
+>    `FlashConversationScreen.kt:109` does not exist; and the file picker does not go "via FileKit" —
+>    D7b was overridden on evidence in Phase 19.
+> 9. **"Known issues" claims `:ui:theme` has `lifecycle-runtime-ktx` in `commonMain`.** It is in
+>    `androidMain`.
+>
+> **One "Do NOT" deliberately overridden:**
+>
+> 10. **"No logic changes, no refactoring" is overridden for five call sites**, because R6 forbids
+>     `java.lang` in `commonMain` and R2 forbids stubbing a function out to force a compile. Each got an
+>     exact equivalent already used elsewhere in this repo:
+>     `System.currentTimeMillis()` → `SystemTimeSource.nowMs()` (`FlashComposer.kt`);
+>     `System.nanoTime()` → `TimeSource.Monotonic` (`FlashStressTestScreen.kt`, `FlashStressLogicTest.kt`);
+>     `Math.floorMod(i, n)` → `i.mod(n)` (`FlashNetworkSimSheet.kt`).
+>     Four `kotlin.test` assertions were also reordered message-last — mechanically forced, not chosen,
+>     and three of the four were invisible to the compiler because `assertEquals(String, Double, Double)`
+>     resolves to the **tolerance** overload and silently produces a test that can never fail.
+>
+> **Six R6 violations found and deliberately NOT fixed (R1):** receiver-form `String.format` —
+> `FlashFileMessageCard.kt:113,413,415,417`, `FlashStressTestScreen.kt:253`,
+> `FlashVoiceMessageCard.kt:81`. R6.1's trap regex could not see them (it matched only the static
+> `String.format` spelling; fixed this phase). They compile and run on both current targets, and the
+> four decimal ones have **no exact common equivalent** — hand-rolling `%.1f` changes rounding on ties,
+> a user-visible behaviour change this file's own charter forbids. Allowlisted in R6.1 and made a
+> precondition of any Kotlin/Native-target phase.
+>
+> **Verification:** `:ui:chat:compileKotlinJvm` and `:ui:chat:compileAndroidMain` both
+> `BUILD SUCCESSFUL`; `jvmTest` **239 / 0 / 0 / 0** and `testAndroidHostTest` **239 / 0 / 0 / 0**;
+> `:app:assembleDebug` produces the APK. Repo-wide R3: **1332 / 12 / 0 across 177 XMLs** (was 1093 / 12
+> / 0 across 146; the arithmetic is `1093 − 239 + 478`, a **subtraction**, because those 239 tests
+> already existed under `testDebugUnitTest`). The 12 are the unchanged pre-existing `:core:persistence`
+> failures. The orphaned `ui/chat/build/test-results/testDebugUnitTest/` directory — 239 tests, 31 XMLs,
+> the largest orphan in the migration — was deleted before tallying.
+
 **Blocked by:** PHASE-17 (ui:resources), PHASE-18 (ui:theme KMP), PHASE-19 (ui:platform-shims)
 **Gated by:** D7 (platform shims: agent may proceed with recommendation per DECISIONS.md §instructions)
 **Risk:** HIGH — 46 production files, 31 test files, the largest single module migration

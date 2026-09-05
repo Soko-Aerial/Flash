@@ -7513,6 +7513,451 @@ problem that kept `FlashThemeSwatches.kt` in `androidMain` in Phase 18 — 29 of
 | desktop AAC / video frames / EXIF / reduce-motion / sound output | **no plan** — five library decisions (R10), no phase file owns them |
 | `:ui:callui`, `:sample:consumer-granular` | **no plan** — needs a human scope decision |
 
+---
+
+## Phase 20 — `:ui:chat` to Kotlin Multiplatform
+
+- **Date:** 2026-09-05
+- **Agent/model:** Claude Opus 5 (Claude Code)
+- **Commits:** `c5abd5d` (build file rewrite + 76 file moves + 5 common-safety fixes), plus this docs commit
+- **Decisions relied on:** D1=B (strict `commonMain`; **no** `jvmAndAndroidMain`, no `androidMain`↔`jvmMain` `dependsOn`), D3 (Compose Multiplatform for the UI track — proceeded on recommendation and recorded in Phase 17), D7a=Snackbar and D7c=composable helper as answered, D7b overridden on evidence in Phase 19. **Nothing was picked for the human on D1/D2/D5/D8/D10.**
+
+### Change
+
+Steps 3, 4, 5 and 7 of PHASE-20, with the deviations below. Steps 1 and 2 are rejected outright and
+Step 6's change table is stale — all three explained under *Deviations*.
+
+`:ui:chat` becomes the **twelfth** converted module and the last of the UI track's three. The
+headline is what the source tree looks like afterwards:
+
+```
+ui/chat/src/commonMain/kotlin/...   45 files
+ui/chat/src/commonTest/kotlin/...   31 files
+ui/chat/src/                        nothing else
+```
+
+**No `androidMain`. No `jvmMain`. No `androidHostTest` or `jvmTest` source directory.** Every file in
+the module is common. That is the strongest D1 = Option B outcome any module has reached — `:core:common`
+still carries `expect`/`actual` seams, `:ui:theme` carries three plus an `androidMain`-only swatch file,
+`:ui:platform-shims` is nothing *but* seams — and it is entirely Phase 19's doing. The seven shims it
+extracted were the only reason this module ever touched `android.*`, so by the time this phase started
+there was nothing platform-specific left to place.
+
+The corollary is that this phase is a Gradle rewrite plus five one-line source fixes, as PHASE-19's
+"Next step" predicted. What that prediction got wrong is the `@Preview` problem, which turned out not to
+exist: Phase 19 warned that "29 of the 45 files import `androidx.compose.ui.tooling.preview`" and that
+CMP 1.9.3's replacement annotation takes no arguments, which would have forced 69 previews into
+`androidMain`. **That premise was already disproven in Phase 18's log** —
+`org.jetbrains.compose.ui.tooling.preview.Preview` takes seven parameters (`name`, `group`, `widthDp`,
+`heightDp`, `locale`, `showBackground`, `backgroundColor`) — and Phase 19 had already made the 29 import
+swaps. All 69 previews are in `commonMain`, with their arguments intact.
+
+### The build file — `ui/chat/build.gradle.kts`, 74 → 192 lines
+
+Four plugins where there was one, and every Android DSL block relocated. The translations, all of
+which have precedent in an earlier phase except where noted:
+
+| Pre-KMP | KMP | Silent-failure risk |
+|---|---|---|
+| `com.android.library` | `org.jetbrains.kotlin.multiplatform` + `com.android.kotlin.multiplatform.library` | the two `com.android.*` plugins are mutually exclusive |
+| — | `org.jetbrains.kotlin.plugin.compose` | compiler plugin, tracks the Kotlin version |
+| — | `org.jetbrains.compose` | provides the `compose.*` accessors, CMP 1.9.3 |
+| `defaultConfig { consumerProguardFiles(…) }` | `optimization { consumerKeepRules { file(…); publish = true } }` | **rules are dropped in silence if omitted** |
+| `buildTypes { release { } }` | `localDependencySelection { selectBuildTypeFrom.set(listOf("release")) }` | |
+| `compileOptions { source/targetCompatibility }` | `compilerOptions { jvmTarget.set(JvmTarget.JVM_11) }` | |
+| `testInstrumentationRunner = …` | `withDeviceTest { instrumentationRunner = … }` | |
+| `publishing { singleVariant("release") { withSourcesJar() } }` + `register<MavenPublication>("release")` | both **disappear**; rename in place via `withType<MavenPublication>().configureEach { artifactId = … }` | KMP generates its own publications; `register` throws |
+
+Dependency placement follows `:ui:theme`'s Phase 18 shape exactly. `commonMain` takes the CMP
+accessors — `compose.runtime`, `.foundation`, `.material3`, `.ui`, `.animation`,
+`.components.uiToolingPreview` — and `androidMain` keeps the `androidx.compose.*` artifacts with the
+Compose BOM. Two notes worth carrying forward:
+
+- **`compose.animation` is not optional here.** `:ui:theme` did not need it; `:ui:chat` has **120**
+  `androidx.compose.animation.*` imports across the 45 files. Omitting it fails
+  `compileCommonMainKotlinMetadata`-adjacent resolution immediately, so this one is self-announcing —
+  unlike `consumerKeepRules` above.
+- **`compose.components.uiToolingPreview`** is the Gradle accessor for the common `@Preview`
+  annotation and pins nothing new (R10-safe). PHASE-20 Step 5 instead put
+  `libs.androidx.compose.ui.tooling.preview` in `commonMain`, which cannot work — it is an Android
+  AAR and will not resolve for the `jvm()` target. Same intent, wrong mechanism; see deviation 3.
+- **The Compose BOM in `androidMain` changes nothing on the Android compile classpath.** CMP 1.9.3
+  maps to Jetpack Compose 1.9.4, below the 1.10.0 that `composeBom = "2025.12.00"` pins, so the BOM
+  is a no-op that documents intent. This was already true in Phase 18 and is recorded again because
+  it is the sort of thing a future reader will otherwise try to "fix".
+- Four `androidx` dependencies with **zero** references in the module are kept —
+  `ui.tooling.preview`, `activity.compose`, `core.ktx`, `lifecycle.runtime.ktx` — for POM stability,
+  matching the precedent `:ui:theme` set. Dropping them is an ABI/POM change and belongs with the
+  other Phase 24 release-note items, not inside a conversion.
+
+### The five `java.lang` call sites
+
+R6 forbids `java.*` in `commonMain` and R2 forbids stubbing a function out to force a compile, so
+these five had to be *replaced*, not deleted and not left. Each substitution is one this repo already
+makes somewhere else — none was invented for this phase:
+
+| File | Was | Now | Precedent |
+|---|---|---|---|
+| `FlashComposer.kt` | `System.currentTimeMillis()` | `SystemTimeSource.nowMs()` | `:core:discovery`, `:core:messaging`, `:core:transfer` all did this in phases 08–11 |
+| `FlashStressTestScreen.kt` | `System.nanoTime()`, `/ 1_000_000L` | `TimeSource.Monotonic.markNow()`, `.elapsedNow().inWholeMilliseconds` | `core/transfer`'s `RollingRateMeterTest` |
+| `FlashStressLogicTest.kt` | `System.nanoTime()`, `/ 1_000_000L` | same | same, and that file is already in `commonTest` |
+| `FlashNetworkSimSheet.kt` | `Math.floorMod(index, size)` | `index.mod(size)` | new, but exact — see below |
+
+`SystemTimeSource` is `:core:common`'s public Phase 06 seam and is the *only* usable one: the
+underlying `internal expect fun currentTimeMillisPlatform()` is `internal`, so a different module
+cannot reach it. Its own KDoc explains why the seam exists at all — `kotlin.time.Clock` would remove
+the need for it but is still `@ExperimentalTime` in Kotlin 2.2.10.
+
+`Int.mod(Int)` is not merely similar to `Math.floorMod` — it is the same operation, a flooring
+remainder whose result takes the sign of the divisor, from the common stdlib. The call site is
+`healthFromIndex`, whose divisor is `FlashConnectionHealth.entries.size` (always 4, always positive),
+and `FlashNetworkSimLogicTest` already pins the behaviour on both sides of zero:
+`healthFromIndex(-1) == healthFromIndex(size - 1)` and `healthFromIndex(-size) == healthFromIndex(0)`.
+Those two assertions passing on both tiers is what makes this a port rather than a rewrite.
+
+`inWholeMilliseconds` truncates toward zero exactly as the previous `(nanos / 1_000_000L)` integer
+division did, so the stress screen's reported generation time is unchanged.
+
+### The four assertion reorderings, and why three of them were nearly missed
+
+JUnit 4's `assertEquals` is **message-first**; `kotlin.test`'s is **message-last**. Moving 31 test
+files from `src/test/java` to `commonTest` therefore silently changes the meaning of every three-argument
+assertion. Most such calls fail to compile — but not all, and that is the trap:
+
+```kotlin
+// kotlin.test also has assertEquals(expected: Double, actual: Double, absoluteTolerance: Double)
+assertEquals("some message", 1.0, 2.0)   // compiles. Tolerance = 2.0. Test can never fail.
+```
+
+Four sites needed reordering: `FlashEncryptionLogicTest.kt:29` and `:63`,
+`FlashNetworkSimLogicTest.kt:27`, `FlashNetworkStatusLogicTest.kt:43`. **Only the last was caught by
+the compiler** (its arguments were an enum and a `String`, which do not fit the `Double` overload,
+producing three `Argument type mismatch: … but 'Double' was expected` errors). The other three were
+multi-line calls that a per-line grep cannot see.
+
+They were found by writing a whole-file, depth- and string-aware assertion scanner — it reads each
+file as one record and walks it character by character, tracking `//` and `/* */` comments, `"`
+strings with `\"` escapes, `"""` raw strings, `'` char literals, and paren/bracket/brace depth, then
+emits `file:line assertName argc=N first=C`. Result over the 31 files: **663 assertion sites, 0 with
+four or more arguments, and 14 with `argc>=3` and a leading string** — all 14 confirmed by dumping
+the source to be two-argument calls with a trailing comma, which the scanner counts as an extra
+argument. The scanner was a throwaway and is not committed.
+
+Two things this establishes for later phases. First, a mechanical `assertEquals` reorder cannot be
+verified by the compiler alone; the float/double tolerance overload is a real hole and it is silent in
+the dangerous direction (a test that can never fail). Second, any scanner for it must be multi-line,
+because this repo's formatting puts long assertions across three or four lines as a matter of course.
+
+### Verification (R3, R9)
+
+Per-module, all with `--no-configuration-cache`:
+
+```
+:ui:chat:compileKotlinJvm       BUILD SUCCESSFUL in 1m 31s
+:ui:chat:compileAndroidMain     BUILD SUCCESSFUL in 48s
+:ui:chat:jvmTest                239 tests, 0 failures, 0 errors, 0 skipped   (31 XMLs)
+:ui:chat:testAndroidHostTest    239 tests, 0 failures, 0 errors, 0 skipped   (31 XMLs)
+:app:assembleDebug              app-debug.apk, 73,589,049 bytes
+```
+
+The task list was checked rather than assumed: `compileTestKotlinJvm`, `jvmTestClasses`,
+`compileAndroidHostTest`, `jvmTest` and `testAndroidHostTest` all *executed* on the first run — none
+reported `UP-TO-DATE` — which is the check R3 exists for. `:ui:callui:compileDebugKotlin` was not run
+separately because `:app:assembleDebug` builds it transitively and `:app` is the only consumer of
+`:ui:chat` (`app/build.gradle.kts:51`).
+
+Repo-wide gate, with `:ui:chat:testAndroidHostTest :ui:chat:jvmTest` appended to the R3 command line:
+
+```
+BUILD FAILED in 2m 48s          <- 1 task failed: :core:persistence:testAndroidHostTest
+352 actionable tasks: 26 executed, 326 up-to-date
+1332 tests / 12 failures / 0 errors / 0 skipped, across 177 XMLs
+```
+
+The 12 failures are the same pre-existing `:core:persistence` set and were enumerated to confirm it —
+11 in `FlashSettingsDataStoreTest` (`autoAcceptTrusted`, `backgroundTransfers`, corrupted-preferences
+fallback, `displayName`, `dynamicAccent`, `hapticsEnabled`, `reduceMotionOverride`, `retentionDays`,
+`saveLocationUri`, `soundsEnabled`, `themeMode`) plus 1 in `DiscoveryModeSettingTest` ("roundtrip for
+every valid mode"). Not fixed — R1, and PHASE-09B says explicitly that a changed count would be a
+regression, not progress.
+
+**The total's arithmetic contains a subtraction, and getting that wrong was this phase's one real
+mistake.** Mid-phase I predicted `1093 + 478 = 1571 across 154 XMLs`. That double-counts: `:ui:chat`
+already had 239 Android unit tests, reporting under `testDebugUnitTest`. Converting the module does not
+*add* 478 tests, it moves 239 and makes them run twice. Correct:
+
+```
+tests:  1093 − 239 + 478 = 1332
+XMLs:    146 −  31 +  62 =  177
+```
+
+Both measured figures match. CONVENTIONS.md's tallying paragraph now carries this example, because it is
+the same defect as the orphaned-results-directory one seen from the other side — and the orphan was
+here too, the largest yet: `ui/chat/build/test-results/testDebugUnitTest/` held 239 tests in 31 XMLs and
+would have reported **1571 / 208** had it not been deleted (`build/reports/tests/testDebugUnitTest/`
+deleted alongside it). Phase 07 hit this on `:core:security`, Phase 12 on `:core:engine`, and this is
+the third time.
+
+Per-module table, which is the part that actually proves nothing was dropped:
+
+| Module | task | tests | Δ |
+|---|---|---|---|
+| `:app` | `testDebugUnitTest` | 31 | — |
+| `:core:calling` | `testDebugUnitTest` | 55 | — |
+| `:core:common` | `testAndroidHostTest` | 49 | — |
+| `:core:discovery` | `jvmTest` / `testAndroidHostTest` | 35 / 104 | — |
+| `:core:engine` | `jvmTest` / `testAndroidHostTest` | 8 / 9 | — |
+| `:core:messaging` | `jvmTest` / `testAndroidHostTest` | 8 / 35 | — |
+| `:core:network` | `jvmTest` / `testAndroidHostTest` | 8 / 134 | — |
+| `:core:persistence` | `jvmTest` / `testAndroidHostTest` | 13 / 35 (12 fail) | — |
+| `:core:security` | `jvmTest` / `testAndroidHostTest` | 10 / 90 | — |
+| `:core:transfer` | `jvmTest` / `testAndroidHostTest` | 16 / 102 | — |
+| `:ui:platform-shims` | `jvmTest` / `testAndroidHostTest` | 34 / 4 | — |
+| `:ui:theme` | `jvmTest` / `testAndroidHostTest` | 37 / 37 | — |
+| **`:ui:chat`** | **`jvmTest` / `testAndroidHostTest`** | **239 / 239** | **was 239 `testDebugUnitTest`** |
+
+`:core:calling`'s 55 tests are worth a note for whoever tallies next: that module is still
+`com.android.library` and the command line's **unqualified** `testDebugUnitTest` reaches it, so its
+`test-results/testDebugUnitTest/` directory is *live*, not an orphan. Same for `:app`. Only an
+already-converted module can own an orphan — CONVENTIONS.md now says so, because "delete every
+`testDebugUnitTest` directory you find" is the obvious wrong reading of the old wording.
+
+**What is verified by execution, and what is not.** All 239 tests are pure-logic — the 31 suites test
+`*Math` objects and pure helpers, not composition — so a green `jvmTest` genuinely proves the desktop
+tier. What no task on this line touches: the 69 `@Preview` functions (no device, no emulator, no
+desktop window; and this repo still has no Compose UI-test harness, unchanged since Phase 19), and
+whether Android Studio's preview panel renders
+`org.jetbrains.compose.ui.tooling.preview.Preview` at all. The previews *compile* on both targets.
+Nothing here shows one has ever been drawn.
+
+### The R6.1 gate, and three defects found *in the gate*
+
+The three mandated scans were run and pasted. Scan 3 (`@Volatile` without
+`import kotlin.concurrent.Volatile`) is empty. Scan 2 returns the four legal `@Volatile` lines
+(`FlashLog.kt:21`, `CompositeDiscovery.kt:172` and `:192`, `WsKeepalive.kt:75`) plus eight `.format(`
+lines discussed below. Scan 1, filtered, is empty.
+
+Running them honestly required fixing them first. **Three defects, all now written into R6.1:**
+
+**A — `String\.format` misses the form Kotlin actually uses.** The trap regex matches the literal text
+`String.format`, the *static Java* spelling. Kotlin writes the extension on the receiver:
+`"%.1f".format(x)`. So the scan reported zero `.format` hits on a `commonMain` containing eight of
+them. The fix is the alternative `\.format\(`.
+
+**B — scan 1 has no `androidx.compose.` exemption, and is therefore unusable on the UI track.** CMP
+declares the same `androidx.compose.*` package names on every target, so
+`import androidx.compose.runtime.Composable` in `ui/*/src/commonMain` is correct common code. Unfiltered,
+scan 1 emits several hundred such lines across the three UI modules and buries anything real. Two
+subtleties the amended rule now records: the exemption must match **anywhere on the line, not just on
+`import` lines** — 16 of the hits are fully-qualified inline references such as
+`androidx.compose.ui.platform.LocalDensity.current` (`FlashComposer.kt:102`) and
+`androidx.compose.ui.unit.Dp` as a parameter type (`FlashStateViews.kt:362-364`) — and it must **not**
+swallow `androidx.compose.ui.tooling.preview`, the Jetpack annotation, which is Android-only and
+differs from the common one by a single package prefix. `grep -E` has no negative lookahead, so the
+recorded command uses `awk` for the carve-out.
+
+**C — `Math.` was not on the trap list at all.** `\bSystem\.` catches `System.nanoTime()`; nothing
+caught `Math.floorMod`. It was found by exhaustive manual bare-type audit, not by the gate. `\bMath\.`
+is now in the command.
+
+That is four defects in this gate over fourteen phases, counting the `\b@Synchronized` form Phase 12
+already documented. Every one was found by a phase that did a manual audit *as well as* running the
+gate — which is the argument for the Kotlin/Native-target phase R6.1 has recommended since Phase 07,
+not a substitute for it. **A phase that only runs the three scans proves less than it thinks.**
+
+#### The eight `.format(` calls: reported, deliberately not fixed
+
+Defect A exposes eight receiver-form `String.format` calls in `commonMain`, six of them in this
+module:
+
+| File | Lines | Form |
+|---|---|---|
+| `core/messaging/…/FlashMessagingModels.kt` | 202, 204 | `"%d:%02d:%02d".format(…)`, `"%d:%02d".format(…)` |
+| `ui/chat/…/FlashFileMessageCard.kt` | 113, 413, 415, 417 | `"%.1f".format(…)` ×3, `"%.2f".format(…)` |
+| `ui/chat/…/FlashStressTestScreen.kt` | 253 | `"%02d:%02d".format(hour, minute)` |
+| `ui/chat/…/FlashVoiceMessageCard.kt` | 81 | `":%02d".format(totalSeconds % 60L)` |
+
+`:core:messaging`'s two are out of scope (R1) — they shipped in Phase 11 and are not this module.
+
+**The six in `:ui:chat` were also left alone, which is a judgement call and deserves its reasoning.**
+They compile and run correctly on both current targets; `.format` is a JVM-only stdlib extension, so
+nothing breaks until a Kotlin/Native target exists, which no phase in the plan adds. Against that: R6
+names `String.format` as a trap, so these are genuine R6 violations, and I found them.
+
+What decided it is that the four decimal ones have **no exact common equivalent**. Reproducing
+`java.util.Formatter`'s `%.1f` by hand — scale, round, `padStart` the fraction — changes the result on
+ties, because `Formatter` is HALF_UP over the *decimal* value while `kotlin.math.round` is
+half-away-from-zero over the *binary* double, and the two disagree for inputs like `0.35` that are not
+exactly representable. That is a behaviour change in user-visible file-size and transfer-speed strings,
+and PHASE-20's charter says "no logic changes, no refactoring" for this module's sources. The five
+`java.lang` fixes above were admissible precisely because each had an exact equivalent *and* the gate
+detects them; these have neither property. (The two `%02d`-only cases *do* have an exact equivalent,
+`(x % 60L).toString().padStart(2, '0')`, already used at `FlashMessagingUtils.kt:260` — but fixing two
+of six leaves the module non-common-safe anyway, so it buys nothing while still being an out-of-scope
+edit.)
+
+They are recorded as an explicit allowlist in R6.1, so a future phase's scan can distinguish "the eight
+known" from a new leak, and they are added to the human-decision backlog below as a **precondition for
+any Kotlin/Native target** — that phase must fix all eight, with tests pinning the rounding.
+
+### The JVM-API audit was exhaustive, not sampled
+
+Because the gate cannot be trusted (previous section), every category was checked by hand across all
+76 files. Counts as measured:
+
+- `java.*` / `javax.*` imports: **0**.
+- `kotlin.jvm` imports, and `@JvmStatic` / `@JvmOverloads` / `@JvmField` / `@Throws` / `@Transient` /
+  `@Synchronized` / `@Volatile`: **0**.
+- Bare JVM type names: 14 `System`, 10 `File`, 1 `Thread`, 1 `Math` — of which **4 sites were real**
+  (the five fixes above minus the one in `commonTest`). The rest are `FlashThemeMode.System` enum
+  constants, `FlashIcons.Thread`, and preview names like `"File Card - …"`. This is why a bare-name
+  grep has to be read line by line rather than counted.
+- `Locale`, `toUpperCase`, `toLowerCase`: **0**.
+- `Collections`, `ConcurrentHashMap`, `Atomic*`, `WeakReference`, `Executors`, `CountDownLatch`: **0**.
+- `::class.java`, `javaClass`: **0**. The 16 `::class` matches are all `@OptIn(…::class)`.
+- `synchronized(`: **0** — so no `PlatformLock` was needed here.
+
+### Deviations from PHASE-20
+
+1. **Step 1 is a no-op and its content is wrong.** It adds three plugin aliases that already exist in
+   `gradle/libs.versions.toml`, and proposes `org-jetbrains-compose = { version = "1.12.0" }` — both a
+   wrong alias name and an R10 violation (the toolchain is frozen at CMP 1.9.3). Nothing was changed in
+   `libs.versions.toml` this phase.
+2. **Step 2 is rejected.** It asserts that "the UI track uses the Compose Multiplatform plugin which
+   **requires** `jvm("desktop")`/`desktopMain` for the desktop target" and calls that "an intentional
+   deviation from R5". CMP requires no such thing, and the claim is falsified by this repo: `:ui:theme`
+   (Phase 18) and `:ui:platform-shims` (Phase 19) both ship on plain `jvm()` with `jvmMain`. Accepting
+   it would also have broken R3.1's task names — `compileKotlinDesktop` instead of `compileKotlinJvm`.
+   `:ui:chat` uses plain `jvm()`. **R5 holds across the whole UI track.**
+3. **Step 5's quoted build file is not used.** Five separate problems: it sets `groupId` and `version`
+   inside the module's `publishing` block, which the root build file forbids; it keeps
+   `register<MavenPublication>("release")`, impossible under KMP; it drops `consumerProguardFiles`
+   silently; it uses raw `id("…")` instead of the `libs.plugins` aliases; and it places
+   `libs.androidx.compose.ui.tooling.preview` — an Android AAR — in `commonMain`, where the `jvm()`
+   target cannot resolve it. The intent behind that last one is realised with
+   `compose.components.uiToolingPreview` instead.
+4. **Step 6's change table is stale in four places.** It describes `FlashAudioPlayer.kt` and
+   `FlashVoiceRecorder.kt` as still living in `:ui:chat` (Phase 19 moved both to
+   `:ui:platform-shims`); it claims a `LocalContext.current` at `FlashConversationScreen.kt:109`, but
+   there is **no `LocalContext` anywhere in `:ui:chat`** (Phase 19 removed the last one); and it says
+   the file picker goes "via FileKit", which Phase 19 overrode on evidence.
+5. **Step 7's verification gate is unusable as written** — it names `compileKotlinDesktop` (does not
+   exist under plain `jvm()`) and `allTests`. Replaced with the R3.1 canonical task names.
+6. **"No logic changes, no refactoring" is overridden for five call sites.** R6 forbids `java.lang` in
+   `commonMain` and R2 forbids stubbing a function out to get a compile, so the only compliant option
+   was an exact-equivalent replacement. Recorded here, in the STATUS box, and in the commit message.
+   The four `assertEquals` reorderings are the same override, one layer down: mechanically forced by
+   `kotlin.test`'s argument order, not chosen.
+7. **PHASE-20's own counts are wrong in three places**, corrected for the STATUS box: "46 production
+   files" (it is **45**); "31 test files" contradicted by a later "37" in the same document (it is
+   **31**); "71 lines" for a build file that was **74**. Its root inventory of 47 names is largely
+   fictional. Its "Known issues" section also claims `:ui:theme` has `lifecycle-runtime-ktx` in
+   `commonMain`; it is in `androidMain`.
+
+### Carried forward untouched (R1)
+
+- **Eight CMP deprecation warnings**, unchanged and pre-existing: `rememberSwipeToDismissBoxState`'s
+  `confirmValueChange` (`FlashChatListRow.kt:71:24`) and `KeyframesSpec.KeyframeEntity<Float>.with(easing)`
+  (`FlashTypingIndicator.kt` lines 88, 89, 104, 105, 120, 121). Both compile targets emit the same eight.
+- The four zero-reference `androidx` dependencies, kept for POM stability (build-file section above).
+- `ui/chat/proguard-rules.pro` and `consumer-rules.pro` remain unreferenced by any rule — but
+  `consumer-rules.pro` is now wired through `consumerKeepRules { publish = true }`, so an empty file is
+  at least an *intentionally* empty one.
+- `:ui:callui` and `:sample:consumer-granular` still have no phase file and no README row.
+- Icon rendering still unverified on a device for any branch containing `23267ed`.
+
+### Human decisions outstanding — the full accumulated list
+
+Twelve of twenty-four phases are done and every remaining *unblocked* phase is now finished. This list
+has been growing across phases 09 through 20 and has never been consolidated in one place; putting it
+here is the point at which it stops being a footnote per entry. **Nothing on it has been decided by an
+agent.**
+
+**Blocking, in DECISIONS.md terms:**
+
+1. **D10 is the only `_pending_` decision** and it blocks Phases 13B-2, 13B-3, 15 and 16 — and 16 is a
+   hard gate for everything downstream. This is the single highest-value answer available.
+2. **Explicit R8 authorisation** for Phase 13B-3 to rewrite `chunked/ChunkFrame.kt`. R8 says wire
+   formats must not be touched without an explicit instruction; 13B-3's charter requires touching one.
+   An agent cannot grant itself this.
+3. **D5 = C's three sub-decisions**, blocking 09B-2: which encrypted desktop driver; is a commercial
+   licence acceptable; is SQLCipher file-format parity with Android required? D5's charter states
+   twice that encryption must not be weakened to make the desktop port easier, and the one forbidden
+   outcome is "B without C" — plaintext Flash data on desktop disk.
+4. **The 09B-3 settings-tier ABI option**, (a) or (b).
+5. **Whether to add a Kotlin/Native target.** R6.1 has recommended a phase for this since Phase 07 and
+   no phase owns it. Until one exists, R6 is enforced by four-times-defective grep (this entry).
+   **Precondition, new this phase:** that phase must fix the eight allowlisted `.format(` calls, with
+   tests pinning the rounding.
+6. **Whether `:ui:callui` and `:sample:consumer-granular` are in desktop scope at all.** No phase file,
+   no README row, and `:ui:callui` now compiles against three multiplatform modules.
+
+**Library decisions (R10), five of them, no phase file owns any:** desktop AAC decode (the one gap a
+user would notice — an Android voice note does not play on desktop), desktop video-frame extraction,
+desktop EXIF rotation, desktop reduce-motion detection, desktop sound output. The last two were
+described in Phase 18's log as "needs a shim, i.e. Phase 19", but PHASE-19 has no step for either.
+
+**Toolchain, and the reason it is not a small question:** CMP is pinned to 1.9.3, which caps FileKit at
+0.11.0 — and 0.11.0 still cannot express Flash's Android picker contract. **A Kotlin version bump is
+therefore the only route to either current CMP or any shared native-picker library.** R10 freezes
+versions outside phases that say to bump them, and no phase says to.
+
+**Unrun work that was assumed:** **D6's spike has still never been run.** Phase 14 shipped without it.
+
+**Deferred cleanups with no owner:** the `PlatformLock` four-copy hoist; the
+`JmdnsTxtCodec`/`JmdnsRestartPolicy` hoist; `FlashThemeSwatches.kt` can now move from `:ui:theme`'s
+`androidMain` to `commonMain`, since the no-argument-`@Preview` premise that kept it there is disproven;
+`:core:messaging`'s two `.format(` calls.
+
+**Phase 24 release notes — the ABI breaks, now six plus three new artifacts:**
+
+| Break | Phase |
+|---|---|
+| `FlashIconSpec.drawableRes: Int` → `DrawableResource` | 18 |
+| `FlashMotion.Companion.isReduceMotionEnabled` → static in `FlashMotion_androidKt` | 18 |
+| `rememberFlashSounds`'s facade → `FlashSounds_androidKt` | 18 |
+| `ui-chat` loses public `FlashAudioPlayer` | 19 |
+| `ui-chat` loses public `FlashVoiceRecorder` | 19 |
+| `ui-chat` → `ui-chat` + `ui-chat-android` + `ui-chat-jvm` | **20** |
+| new artifacts `ui-platform-shims`, `-android`, `-jvm` | 19 |
+
+Plus two accepted UX changes to mention: clipboard label `"Flash Message"` → Compose default, and
+Toast → Snackbar (accepted in D7a). ADR-023 removed BCV repo-wide, so there is no `.api` file to diff —
+this table is the only record.
+
+**Phase-file accuracy.** Every phase file from 10 onward has had material errors: Phase 10 (14 of 35
+claims), 11 (six), 12 (eight), 13 (fifteen), 14 (~25), 09B-1 (six), 17 (ten), 18 (fourteen), 19
+(twelve), 20 (seven, above). The pattern is stable enough to be a planning assumption rather than a
+surprise: **read the phase file for intent, verify every factual claim in it against the repo before
+acting.**
+
+### Next step
+
+**Phase 21 (desktop app shell) is the next phase in README order, and it is blocked** — it needs Phase
+16, which needs D10. With Phase 20 landed, **every unblocked phase in the plan is complete.** The
+migration is at a decision boundary, not a work boundary.
+
+| Work | State |
+|---|---|
+| 00–20 | **done** — 12 modules converted; `:core:calling`, `:ui:callui`, `:app`, `:sample:consumer`, `:sample:consumer-granular` still Android-only |
+| 21 | **blocked** — needs 16, which needs D10 |
+| 09B-2 | **blocked** — D5 = C sub-decisions: which encrypted desktop driver, commercial licence acceptable?, SQLCipher file-format parity? |
+| 09B-3 | **blocked** — settings-tier ABI option (a) or (b) |
+| 13B-2, 15, 16 | **blocked on D10** (still the only `_pending_` decision); 16 is a hard gate |
+| 13B-3 | D10 **and** explicit R8 authorisation to rewrite `chunked/ChunkFrame.kt` |
+| 22–24 | downstream of 21 and the Phase 23 gate |
+| Kotlin/Native target | **recommended since Phase 07, no phase file** — would turn R6 from grep into a compiler error; must fix the eight `.format(` calls |
+| desktop AAC / video frames / EXIF / reduce-motion / sound output | **no plan** — five library decisions (R10) |
+| `:ui:callui`, `:sample:consumer-granular` | **no plan** — needs a human scope decision |
+| D6 spike | **never run** — Phase 14 shipped without it |
+
+
+
+
+
+
+
+
 
 
 
