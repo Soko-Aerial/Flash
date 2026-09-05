@@ -39,8 +39,8 @@ self-contained and states its own preconditions.
 | 16 | [PHASE-16-desktop-headless-interop.md](PHASE-16-desktop-headless-interop.md) | 15 | **gate** |
 | 17 | [PHASE-17-ui-resources.md](PHASE-17-ui-resources.md) | **DONE (`a8d9d0d`, `23267ed`)** | low |
 | 18 | [PHASE-18-ui-theme-kmp.md](PHASE-18-ui-theme-kmp.md) | **DONE (`96e8799`)** — read its STATUS box before reusing any of it; 14 of its steps were wrong | medium |
-| 19 | [PHASE-19-ui-platform-shims.md](PHASE-19-ui-platform-shims.md) | 18 — **satisfied**; + **D6**/**D7** (agent may proceed on the recommendation and record it; D6's spike has never been run) | medium |
-| 20 | [PHASE-20-ui-chat-kmp.md](PHASE-20-ui-chat-kmp.md) | 19 | high |
+| 19 | [PHASE-19-ui-platform-shims.md](PHASE-19-ui-platform-shims.md) | **DONE (`94a60a4`)** — read its STATUS box before reusing any of it; 12 of its statements were wrong, D7b was overridden on evidence (no FileKit), and there are 7 shims not 8 | medium |
+| 20 | [PHASE-20-ui-chat-kmp.md](PHASE-20-ui-chat-kmp.md) | 19 — **satisfied**; `:ui:chat`'s 45 production files are already `android.*`-free, so what remains is the Gradle rewrite (and its own quoted copy of `ui/chat/build.gradle.kts` is wrong) | high |
 | 21 | [PHASE-21-desktop-app-shell.md](PHASE-21-desktop-app-shell.md) | 16,20 | medium |
 | 22 | [PHASE-22-adaptive-desktop-screens.md](PHASE-22-adaptive-desktop-screens.md) | 21 + **D8** | medium |
 | 23 | [PHASE-23-interop-matrix.md](PHASE-23-interop-matrix.md) | 22 | **gate** |
@@ -85,8 +85,8 @@ The table above covers every module **except two**, and both are real:
 
 - **`:ui:callui`** — depends on `:ui:theme` (`ui/callui/build.gradle.kts:62`) and names
   `FlashIconSpec` (`FlashCallScreen.kt:486`), so it sits inside the blast radius of Phase
-  17 (done), 18 (done) and 19, yet no phase converts it or even compiles it as a gate. The
-  verification runs for 09B-1, 17 and 18 added `:ui:callui:compileDebugKotlin` by hand for
+  17 (done), 18 (done) and 19 (done), yet no phase converts it or even compiles it as a gate. The
+  verification runs for 09B-1, 17, 18 and 19 added `:ui:callui:compileDebugKotlin` by hand for
   exactly that reason — and as of Phase 18 it is compiling against a `:ui:theme` that is now
   multiplatform, so the gap is widening rather than holding still. **Whether calling is in
   scope for desktop at all is a human decision** — WebRTC on desktop is not a small
@@ -94,8 +94,23 @@ The table above covers every module **except two**, and both are real:
 - **`:sample:consumer-granular`** — never mentioned anywhere in the plan.
 
 Do not treat their absence as "already handled". Phase 17's log entry records this as an
-open item; it is listed here so the next planning pass sees it without reading 6,900 lines
+open item; it is listed here so the next planning pass sees it without reading 7,500 lines
 of log.
+
+## Module conversion state (after Phase 19, 2026-09-05)
+
+**KMP (12):** `:core:common` (06), `:core:security` (07), `:core:discovery` (08 + 14),
+`:core:network` (10), `:core:transfer` + `:core:messaging` (11), `:core:engine` (12),
+`:core:persistence` (09B-1, db tier only), `:ui:theme` (17 shell + 18 proper), and
+**`:ui:platform-shims`** — created by Phase 19 and the first module in this repo that was **born
+KMP**, never having had the `com.android.library` plugin.
+
+**Still `com.android.library` / `com.android.application` (6):** `:core:calling`, `:ui:chat`,
+`:ui:callui`, `:app`, `:sample:consumer`, `:sample:consumer-granular`.
+
+`:ui:chat` is next (Phase 20) and is a special case: Phase 19 already moved all **45** of its
+production files off `android.*`, so nothing in its sources blocks the flip. Verify that claim with
+`grep -rn '^import android\.' ui/chat/src/main/java` before starting — it should be empty.
 
 ## Logging
 

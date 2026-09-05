@@ -10,7 +10,7 @@
 | **D4** | **Phase 18** | Dynamic-color replacement. Does **not** block Phase 06. |
 | **D5** | **Phase 09** | Desktop persistence strategy. |
 | **D6** | **Phase 14** | Desktop discovery implementation. |
-| **D7** | **Phase 19** | UI platform shims. |
+| **D7** | **Phase 19** | UI platform shims. **Executed 2026-09-05 (`94a60a4`); D7b overridden on evidence** — a and c as written, but FileKit was **not** adopted. See the note under D7 below. |
 | **D8** | **Phase 22** | Whether the §15 desktop screens exist. |
 | **D9** | Phase 24 | Sample consumers; agent may proceed on the recommendation. |
 | **D10** | **Phases 13B-2, 13B-3, 15, 16** | What replaces `java.io.InputStream` in a `commonMain` signature. Added 2026-09-05 by the agent that reached Phase 13. |
@@ -281,6 +281,47 @@ permissions library for one call site.
 - **a)** Replace `Toast` (12 call sites in `FlashConversationScreen.kt`) with Material 3 `SnackbarHost` + `SnackbarHostState` (already available in common). Accepted: Android behaviour change from toast overlay to snackbar (bottom bar, dismissible, queueable).
 - **b)** Adopt **FileKit** (`vinceglb/FileKit`) for file picking/saving — cross-platform shared library using native pickers. Android keeps the system document picker; no UX change there.
 - **c)** Add `expect suspend fun ensurePermission(...)` — Android `actual` uses existing `RequestPermission` + `ContextCompat` internally; desktop returns granted unconditionally. No permissions library.
+
+**EXECUTED — Phase 19, 2026-09-05 (`94a60a4`). (a) and (c) as answered; (b) overridden on evidence.**
+
+- **a) done as answered**, with two facts the answer did not have. It is **13** call sites, not the 12
+  this ANSWER says (the problem statement above says 13; grep confirms 13). And the `SnackbarHost`
+  could not go in the `Scaffold`'s `snackbarHost` slot: six of the 13 messages are raised from inside
+  the focus overlay and the media viewer, which are emitted *after* the Scaffold and paint over
+  anything it owns. It is the last sibling of the screen body instead, and every `showSnackbar` is
+  preceded by `currentSnackbarData?.dismiss()` so the newest message wins the way a Toast did.
+- **c) done as answered**, except that `ensureGranted` cannot be a *bare* `expect suspend fun`: the
+  Android `actual` needs an `ActivityResultLauncher`, which only `rememberLauncherForActivityResult`
+  can create, inside a composition. So the seam is `@Composable expect fun
+  rememberFlashPermissionRequester(): FlashPermissionRequester`, whose interface carries the
+  `suspend fun ensureGranted(FlashPermission): Boolean` the answer asks for.
+- **b) FileKit was NOT adopted.** Read at source level, not judged from its README, and ruled out on
+  three counts — each a silent behaviour change rather than a compile error:
+  1. **Toolchain.** FileKit 0.15.0 needs Kotlin 2.4.10 and CMP 1.11.1; this repo is frozen at 2.2.10 /
+     1.9.3 (CONVENTIONS R10), so the newest usable release is 0.11.0. The coordinates named above
+     (`com.vinceglb:filekit-compose`) do not exist at **any** version — the group is
+     `io.github.vinceglb` and the module is `filekit-dialogs-compose`.
+  2. **`audio/*` is not expressible.** `FileKitType.File(extensions)` maps each extension through
+     `MimeTypeMap.getMimeTypeFromExtension` and falls back to an all-files wildcard when the set is
+     empty. There is no wildcard-MIME path, so the composer's Audio filter would silently become
+     device-dependent or all-files.
+  3. **Gallery would lose its persistable grant.** `FileKitType.ImageAndVideo` routes to
+     `PickVisualMedia` — the Android photo picker, not SAF `OpenDocument`. Photo-picker URIs reject
+     `takePersistableUriPermission`, which Flash needs so the transfer engine can keep streaming a
+     picked file after the chat screen dies. This is a functional regression in the transfer path, not
+     a UX preference — and it contradicts this ANSWER's own *"Android keeps the system document
+     picker; no UX change there."*
+
+  What shipped instead is the ANSWER's stated alternative: a hand-rolled `expect`/`actual` —
+  `OpenDocument` on Android, `JFileChooser` on desktop (**not** AWT `FileDialog`, whose only filter
+  hook is `setFilenameFilter`, which Windows ignores outright — the Gallery and Audio filters would
+  become all-files with no warning). No dependency was added, so PHASE-19's Step 14 (`libs.versions.toml`
+  FileKit alias) is a no-op and R10 is untouched.
+
+  One objection to FileKit **was** cleared and is recorded so it is not re-raised: it auto-initialises
+  from `LocalActivityResultRegistryOwner`, so adopting it would not have required an `:app` change.
+  **Revisit after a Kotlin bump** — at a current CMP, only objections 2 and 3 remain, and both are
+  about Flash's specific picker contract rather than about FileKit's quality.
 
 ---
 

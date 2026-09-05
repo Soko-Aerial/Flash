@@ -86,7 +86,7 @@ Phase 06 discovered the replacement task name empirically and recorded it in R3.
 and in `logs/migration.md`. From Phase 06 onward the verification command is:
 
 ```bash
-./gradlew --stop >/dev/null 2>&1; sleep 8; ./gradlew :app:assembleDebug testDebugUnitTest :core:common:testAndroidHostTest :core:security:testAndroidHostTest :core:security:jvmTest :core:discovery:testAndroidHostTest :core:discovery:jvmTest :core:network:testAndroidHostTest :core:network:jvmTest :core:transfer:testAndroidHostTest :core:transfer:jvmTest :core:messaging:testAndroidHostTest :core:messaging:jvmTest :core:engine:testAndroidHostTest :core:engine:jvmTest :core:persistence:testAndroidHostTest :core:persistence:jvmTest :ui:theme:testAndroidHostTest :ui:theme:jvmTest --no-configuration-cache --continue --max-workers=2 --console=plain
+./gradlew --stop >/dev/null 2>&1; sleep 8; ./gradlew :app:assembleDebug testDebugUnitTest :core:common:testAndroidHostTest :core:security:testAndroidHostTest :core:security:jvmTest :core:discovery:testAndroidHostTest :core:discovery:jvmTest :core:network:testAndroidHostTest :core:network:jvmTest :core:transfer:testAndroidHostTest :core:transfer:jvmTest :core:messaging:testAndroidHostTest :core:messaging:jvmTest :core:engine:testAndroidHostTest :core:engine:jvmTest :core:persistence:testAndroidHostTest :core:persistence:jvmTest :ui:theme:testAndroidHostTest :ui:theme:jvmTest :ui:platform-shims:testAndroidHostTest :ui:platform-shims:jvmTest --no-configuration-cache --continue --max-workers=2 --console=plain
 ```
 
 `:ui:theme:testAndroidHostTest` was added by Phase 17, and **`:ui:theme:jvmTest` was added by
@@ -94,13 +94,20 @@ Phase 18**, which moved the module's five suites from `androidHostTest` into `co
 run the same 37 tests — Android host and desktop — which is what makes `:ui:theme`'s three desktop
 `actual`s verified rather than merely compiled (R3.1).
 
+**Both `:ui:platform-shims` tasks were added by Phase 19**, which created that module born-KMP. Its
+two tasks are deliberately **asymmetric** — `testAndroidHostTest` runs 4 tests and `jvmTest` runs 34 —
+and that is not a dropped suite: the 4 are the `commonTest` contract, and the other 30 are desktop-only
+because they drive the `jvm` `actual`s directly. The Android `actual`s of the same six seams need a
+device, which no task on this line provides; the log records that explicitly rather than letting a
+green line imply it.
+
 Every converted module must be **named explicitly** on that command line, because the
 unqualified `testDebugUnitTest` no longer reaches it. Add one `:module:testAndroidHostTest`
 per conversion as each phase lands — **and one `:module:jvmTest` if the module has a
 `commonTest`/`jvmTest` suite**, as `:core:security` does since Phase 07, `:core:discovery`
 since Phase 08, `:core:network` since Phase 10, both `:core:transfer` and `:core:messaging`
-since Phase 11, `:core:engine` since Phase 12, `:core:persistence` since Phase 09B-1, and
-`:ui:theme` since Phase 18.
+since Phase 11, `:core:engine` since Phase 12, `:core:persistence` since Phase 09B-1,
+`:ui:theme` since Phase 18, and `:ui:platform-shims` since Phase 19.
 `--continue` is load-bearing: without it the
 12 known `:core:persistence` failures abort the run before later modules execute, and the total
 silently drops. Those 12 are
@@ -139,6 +146,11 @@ Phase 18 took it to **1055 / 12 / 0 across 140 XMLs** (1018 + the same 37 tests 
 time on the desktop target; 135 + 5 XMLs, one per suite per target). Phase 17's log predicted that
 figure to the digit *before* the move — "anything less means a suite stopped running" — which is the
 cheapest form this check takes: state the arithmetic first, then measure.
+Phase 19 took it to **1093 / 12 / 0 across 146 XMLs** — the current total — by adding a whole new
+module: 1055 + 4 `commonTest` contract tests × 2 targets + 30 desktop-only `jvmTest` cases (7 picker +
+10 decoder + 7 recorder + 6 audio); 140 + 2 XMLs for the contract suite (one per target) + 4 for the
+`jvm`-only suites. No orphaned results directory to delete this time — `:ui:platform-shims` was born
+KMP and never had the `com.android.library` plugin.
 Compare **per module** as well as in total: a total that still matches while one
 module's suite has silently stopped running is exactly the failure mode R3 exists to catch.
 Show the arithmetic, not just the number — a phase that adds N tests to a `commonTest` suite must

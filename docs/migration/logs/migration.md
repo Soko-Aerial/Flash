@@ -7060,3 +7060,463 @@ rather than inherit as an assumption.
 | 21–24 | downstream of 20 and the Phase 16 / 23 gates |
 | `:ui:callui`, `:sample:consumer-granular` | **no plan** — needs a human scope decision |
 
+---
+
+## Phase 19 — `:ui:platform-shims`, and `:ui:chat` off `android.*`
+
+- **Date:** 2026-09-05
+- **Agent/model:** Claude Opus 5 (Claude Code)
+- **Commits:** `94a60a4` (new module + 9 migrated `:ui:chat` files + tests), plus this docs commit
+- **Decisions relied on:** D1=B (strict `commonMain`; **no** `jvmAndAndroidMain`, no `androidMain`↔`jvmMain` `dependsOn`), D7=**answered** with D7a=Snackbar / D7b=FileKit / D7c=composable helper. **D7b was overridden on evidence, not preference** — FileKit is unusable at this toolchain and cannot express Flash's Android picker contract at any version (three findings below, each verified against FileKit's own source). Overriding a *sub*-decision is more than DECISIONS.md's "proceed on the recommendation and record it", so it is called out here, in the phase file's STATUS box, and in the commit message. **Nothing was picked for the human on D1/D2/D5/D8/D10.**
+
+### Change
+
+Steps 1–14 of PHASE-19, with the deviations below. A new module `:ui:platform-shims` is created
+**born-KMP** — it never had a `com.android.library` phase — holding the platform seams `:ui:chat`
+reached through `android.*` imports, and all **nine** pinned `:ui:chat` files are migrated onto them.
+`:ui:chat` stays `com.android.library`; Phase 20 converts it. That ordering is the phase's own and it
+holds: the shims ship `androidMain` actuals that keep Android behaviour identical, so Phase 20
+inherits sources that are already platform-neutral and has only a Gradle rewrite left.
+
+**Seven seams, six `expect`/`actual` pairs** (`FlashClipboard` needs no actual — Compose's own
+clipboard API is already multiplatform):
+
+| Seam | Android actual | `jvm` actual |
+|---|---|---|
+| `FlashBackHandler` | `androidx.activity.compose.BackHandler` | deliberate no-op |
+| `FlashClipboard` | — pure `commonMain`, `LocalClipboardManager` — | |
+| `rememberFlashFilePickerLauncher` | `ActivityResultContracts.OpenDocument` + `takePersistableUriPermission` | `JFileChooser` |
+| `rememberFlashPermissionRequester` | `RequestPermission` + `ContextCompat.checkSelfPermission` | always granted |
+| `rememberFlashImageDecoder` | `BitmapFactory` + `MediaMetadataRetriever` | `javax.imageio` |
+| `rememberFlashAudioPlayer` | `android.media.MediaPlayer` | `javax.sound.sampled.Clip` |
+| `rememberFlashVoiceRecorder` | `android.media.MediaRecorder` | `javax.sound.sampled.TargetDataLine` |
+
+Verified counts, greps run after the commit: **6** `expect fun` in `commonMain`, **6** `actual fun` in
+`androidMain`, **6** in `jvmMain`; `:ui:chat/src/main` now has **0** `^import android.`, **0**
+`^import androidx.activity`, and **0** `LocalContext` or `ContextCompat` references anywhere. The only
+three surviving `Toast` matches are comments in `FlashConversationScreen.kt` (lines 154, 155, 728)
+explaining what the Snackbar replaced — which satisfies the phase's own gate, whose expected result is
+*"No matches (if D7a chose Snackbar)"*, for code.
+
+### Files changed
+
+33 files, +1939 / −177.
+
+**Added — `ui/platform-shims/build.gradle.kts`** (141 lines). Born-KMP pair
+`kotlin.multiplatform` + `android.kotlin.multiplatform.library` (never `com.android.library` — it is
+incompatible with the KMP plugin under AGP 9), plus **both** Compose plugins: `kotlin.compose` for the
+compiler and `jetbrains.compose` for the `compose.*` coordinates. `android { namespace; compileSdk =
+37; minSdk = 24; compilerOptions { JVM_11 }; withHostTest { } }`, plain `jvm()` (R5). No
+`withDeviceTest { }` and no `consumerKeepRules` — this module has neither `src/androidTest` nor a
+`consumer-rules.pro`, and declaring either would name something that does not exist. `maven-publish`
+is load-bearing, not boilerplate: see Known issues.
+
+**Added — `commonMain/kotlin/com/transfer/flash/ui/shims/` (7 files)**
+- `FlashBackHandler.kt` — `expect fun FlashBackHandler(enabled: Boolean = true, onBack: () -> Unit)`.
+- `FlashClipboard.kt` — `interface FlashClipboard { fun copy(text: String) }` +
+  `@Composable fun rememberFlashClipboard()`, no `expect`.
+- `FlashFilePicker.kt` — `data class FlashPickedFile(uri, name, size)`,
+  `interface FlashFilePickerLauncher { fun launch(mimeTypes: List<String>) }`, and the `expect`
+  factory. `resolveFileMetadata` is folded into the actuals, as the phase's Step 11 asks.
+- `FlashPermissions.kt` — `enum class FlashPermission { Microphone }`,
+  `interface FlashPermissionRequester { fun isGranted(…); suspend fun ensureGranted(…) }`.
+- `FlashImageDecoder.kt` — `interface FlashImageDecoder` with the blocking
+  `decode(source, isVideo, maxLongEdge, memoize, computeInSampleSize)` and
+  `companion object { const val TILE_LONG_EDGE_PX = 720 }`.
+- `FlashAudioPlayer.kt` — 7-member interface (`play`/`pause`/`seekTo`/`setSpeed`/`positionMs`/
+  `isPlaying`/`release`) + `expect fun rememberFlashAudioPlayer(uri: String?): FlashAudioPlayer?`.
+- `FlashVoiceRecorder.kt` — `isRecording`/`start`/`maxAmplitude`/`stop`/`cancel` + its `expect`.
+
+**Added — `androidMain/kotlin/.../shims/` (3 new + 3 moved)**
+- New: `FlashBackHandler.android.kt` (15 lines), `FlashFilePicker.android.kt` (73),
+  `FlashPermissions.android.kt` (66). The picker actual keeps `OpenDocument`,
+  `takePersistableUriPermission` and the `OpenableColumns` metadata query verbatim; the permission
+  actual bridges `rememberLauncherForActivityResult` to `suspend ensureGranted` through a
+  `CancellableContinuation`.
+- Moved, and git recorded all three as **renames**, so history follows the code:
+  `ui/chat/.../FlashAudioPlayer.kt` → `FlashAudioPlayer.android.kt`,
+  `ui/chat/.../FlashMediaDecoder.kt` → `FlashImageDecoder.android.kt`,
+  `ui/chat/.../FlashVoiceRecorder.kt` → `FlashVoiceRecorder.android.kt`. `MediaPlayer`,
+  `MediaRecorder`, `BitmapFactory`, `MediaMetadataRetriever`, the EXIF rotation and the LRU bitmap
+  cache are unchanged — PHASE-19's *"Do NOT change the behavior of `FlashAudioPlayer` or
+  `FlashVoiceRecorder` on Android"* is honoured; what changed is that each is now reached through an
+  interface and a `remember`ing factory.
+
+**Added — `jvmMain/kotlin/.../shims/` (6 files, 576 lines)**
+- `FlashBackHandler.jvm.kt` — a no-op, argued not stubbed: binding Esc or window-close would give
+  desktop a dismissal Android does not have, and would fire `onBack` for all three stacked overlays at
+  once.
+- `FlashFilePicker.jvm.kt` — `JFileChooser` plus `internal fun extensionFilterFor(mimeTypes)`, which
+  translates wildcard MIME families to extension sets.
+- `FlashPermissions.jvm.kt` — granted unconditionally; there is no OS gate to ask.
+- `FlashImageDecoder.jvm.kt` — `internal object JvmImageDecoder`, real `ImageIO` reader +
+  `ImageReadParam.setSourceSubsampling`, its own memoization keyed `"$source|$maxLongEdge"`.
+- `FlashAudioPlayer.jvm.kt` — `internal class JvmAudioPlayer` over `javax.sound.sampled.Clip`, plus
+  `internal fun resolveFile(uri)`.
+- `FlashVoiceRecorder.jvm.kt` — `internal class JvmVoiceRecorder` writing a real WAV through
+  `TargetDataLine`, plus the extracted pure `internal fun peakOf(buffer, length)`.
+
+**Added — tests (5 files, 534 lines)**
+- `commonTest/.../FlashShimContractTest.kt` — 4 tests, run on **both** targets: the `FlashPickedFile`
+  field contract and value equality, `TILE_LONG_EDGE_PX == 720`, and that `FlashPermission.entries` is
+  exactly `[Microphone]` so a new constant cannot be added without both actuals noticing.
+- `jvmTest/.../FlashFilePickerJvmTest.kt` (7), `FlashImageDecoderJvmTest.kt` (10),
+  `FlashVoiceRecorderJvmTest.kt` (7), `FlashAudioPlayerJvmTest.kt` (6) — 30 desktop-only tests
+  driving the `internal` implementations directly. Itemised under Verification.
+
+**Modified — `:ui:chat` (6 files)**
+- `FlashConversationScreen.kt` (192 lines changed, the bulk of the phase) — 8 `android.*` imports, 3
+  `androidx.activity.*`, `LocalContext` and `ContextCompat` all gone; 13 `Toast.makeText` calls become
+  one `SnackbarHostState`; `BackHandler` ×3 → `FlashBackHandler`; the inline picker launcher and its
+  `resolveFileMetadata` → `rememberFlashFilePickerLauncher`; `copyToClipboard`'s `ClipboardManager` →
+  `rememberFlashClipboard`; the mic-permission launcher → `rememberFlashPermissionRequester`.
+- `FlashImageGrid.kt`, `FlashMediaViewer.kt` — `BitmapFactory`/`Uri` → `rememberFlashImageDecoder`,
+  each passing `FlashMediaViewerMath::computeInSampleSize` in as the subsampling function.
+- `FlashMessageContextMenu.kt`, `FlashPairingFlow.kt` — one `BackHandler` import each.
+- `FlashVoiceMessageCard.kt` — `remember(attachment.id, attachment.uri, hasAudio) {
+  FlashAudioPlayer(context, uri) }` → `rememberFlashAudioPlayer(uri = if (hasAudio) attachment.uri
+  else null)`. Key-set narrowing recorded under Deviations.
+
+**Modified — build files (2)**
+- `ui/chat/build.gradle.kts` — one `implementation(project(":ui:platform-shims"))`, with the comment
+  explaining why `implementation` suffices but the shims module must still be published.
+- `settings.gradle.kts` — `include(":ui:platform-shims")`, placed between `:ui:theme` and `:ui:chat`
+  to mirror the build graph.
+
+**Deleted:** nothing. The three files that left `:ui:chat` left as renames.
+
+### Verification
+
+Every command needs the R3 env preamble — `JAVA_HOME` does not survive between shells here, and
+`JAVA_TOOL_OPTIONS` carries the AF_UNIX loopback fix without which the daemon cannot start:
+
+```
+export JAVA_HOME="/c/Users/KaliOxygen/.gradle/jdks/jetbrains_s_r_o_-21-amd64-windows.2"
+export JAVA_TOOL_OPTIONS='-Djdk.net.unixdomain.tmpdir=C:\Users\KaliOxygen\.gradle\afunix'
+./gradlew :ui:platform-shims:compileKotlinJvm :ui:platform-shims:compileAndroidMain \
+          :ui:platform-shims:jvmTest :ui:platform-shims:testAndroidHostTest \
+          :ui:chat:assembleDebug :ui:chat:testDebugUnitTest \
+          :ui:callui:compileDebugKotlin --no-configuration-cache --console=plain
+```
+
+Result: **PASS**, but **not first try** — two real failures happened and are itemised below, because
+R9 wants them in the log rather than a clean-looking summary. Final run:
+
+```
+BUILD SUCCESSFUL in 29s
+106 actionable tasks: 106 up-to-date
+```
+
+| Gate | Task | Result |
+|---|---|---|
+| desktop compile | `:ui:platform-shims:compileKotlinJvm` | BUILD SUCCESSFUL |
+| Android compile | `:ui:platform-shims:compileAndroidMain` | BUILD SUCCESSFUL |
+| desktop tests (**new module**) | `:ui:platform-shims:jvmTest` | 5 XMLs, `tests=34 failures=0 errors=0 skipped=0` |
+| Android host tests (**new module**) | `:ui:platform-shims:testAndroidHostTest` | 1 XML, `tests=4 failures=0 errors=0 skipped=0` |
+| the consumer, fully assembled | `:ui:chat:assembleDebug` | BUILD SUCCESSFUL |
+| the consumer's 31 suites | `:ui:chat:testDebugUnitTest` | 31 XMLs, `tests=239 failures=0` |
+| unaffected sibling | `:ui:callui:compileDebugKotlin` | BUILD SUCCESSFUL (UP-TO-DATE) |
+
+Repo-wide R3 command with the two new `:ui:platform-shims` tasks appended:
+
+```
+XMLs=146 tests=1093 failures=12 errors=0 skipped=0
+```
+
+**The arithmetic, per R3.** 1055 (Phase 18) + 4 `commonTest` tests × 2 targets + 30 `jvmTest`-only
+(7 picker + 10 decoder + 7 recorder + 6 audio) = **1093**. XMLs: 140 + 2 (the contract suite, one per
+target) + 4 (the `jvm`-only suites) = **146**. Per-module tally behind the 1093 — `:app` 31,
+`:core:calling` 55, `:core:common` 49, `:core:discovery` 35+104, `:core:engine` 8+9,
+`:core:messaging` 8+35, `:core:network` 8+134, `:core:persistence` 13+35, `:core:security` 10+90,
+`:core:transfer` 16+102, `:ui:chat` 239, `:ui:platform-shims` **34+4**, `:ui:theme` 37+37.
+
+The 12 failures are the known pre-existing `:core:persistence` set, unchanged in count *and* identity
+— a per-file `<failure>` count gives **11** in `FlashSettingsDataStoreTest` + **1** in
+`DiscoveryModeSettingTest`, all `java.io.IOException: Unable to rename
+C:\Users\KaliOxygen\AppData\Local\Temp\junit…\settings--8131969`. PHASE-09B is explicit that fixing
+them is out of scope and that *"if the count changes, that is a regression, not progress."* It did not
+change. No orphaned `testDebugUnitTest` results directory exists for the new module — it never had the
+`com.android.library` plugin, so there was never one to delete.
+
+**What the 30 desktop tests actually assert** — this matters because R3.1 says a compiled `actual` is
+not a verified one, and every public entry point in this module is `@Composable`:
+
+- **Picker (7).** `extensionFilterFor` maps `image/*` + `video/*` to 15 extensions with description
+  `"image/*, video/*"`; `audio/*` to 8 including both `m4a` (what Android's recorder writes) and `wav`
+  (what the desktop recorder writes); `image/png` to exactly `{png}`; the all-files wildcard, an empty
+  list, `application/*` and a malformed `image/` all to `null`, i.e. *show every file rather than
+  none*; and `IMAGE/*` to 8, which is the `lowercase()` normalisation — without it the Gallery filter
+  would silently degrade to all-files.
+- **Decoder (10).** A real 1600×800 PNG at `maxLongEdge = 400` decodes to **exactly** 400×200, which is
+  what proves `setSourceSubsampling` is wired rather than assumed; 120×90 at 720 stays 120×90 (sample
+  1 skips subsampling entirely); a `file:` URI and a bare path give the same result; `isVideo = true`,
+  a `content://` URI, a missing file, a zero-length file, `null`, `""` and a text file all give `null`;
+  the same key twice returns the **same instance** (`assertSame`) while a different `maxLongEdge`
+  returns a different one at 250 vs 1000 px wide, which is what proves the cache key is
+  `"$source|$maxLongEdge"` and not just the source; and `memoize = false` twice returns two instances.
+- **Recorder (7).** `peakOf` on little-endian PCM `(300, -1200, 5)` → 1200 — a lost sign extension
+  would give 64336 and a swapped byte order 20731, so the number distinguishes all three
+  implementations; it honours the line's returned length and clamps an overrun; an odd trailing byte
+  contributes nothing (read as a sample it would be 32512); silence, empty and length-0 → 0; `-32768`
+  → 32768, which has no positive counterpart and is why `maxAmplitude()`'s `/32767f` is then
+  `coerceIn`ed. Plus the two no-microphone lifecycle paths: a fresh recorder reports
+  `isRecording == false`, `maxAmplitude() == 0`, `stop() == null`, and a double `cancel()` then
+  `stop()` is silent.
+- **Audio (6).** `resolveFile` rejects `content://`, resolves a `file:` URI and a bare path to the same
+  canonical path, rejects a missing file, a zero-length file and a directory, and returns `null`
+  rather than throwing on the opaque URI `"file:"`. Then the whole degrade-to-silence battery —
+  `play`, `pause`, `seekTo`, `setSpeed`, double `release`, `isPlaying()`, `positionMs()` — twice: once
+  for an undecodable `voice.m4a` (the real AAC case, see Known issues) and once for a missing file.
+
+**Two build failures happened. Both are recorded here per R9, with what fixed them.**
+
+1. **`compileKotlinJvm` and `compileAndroidMain` both failed on a KDoc comment**, with a cascade of
+   *"Syntax error: Expecting a top level declaration"* pointing into
+   `commonMain/FlashFilePicker.kt`. Cause: the all-files MIME wildcard written as `"\*/\*"` inside a
+   `/** … */` block. The backslash trick only stops `/*` from *opening* a nested comment — Kotlin block
+   comments nest, so that part was needed — but the same string still contains the literal `*/`, which
+   **closes** the KDoc regardless of any backslash. No escape can hide the closing pair from the lexer.
+   Fixed by writing that wildcard out in prose in both places, and leaving a note in the file saying
+   why. Then swept the repo (`grep -rn '\*/\*' --include='*.kt'`, R11 exclusions applied, plus a
+   KDoc-continuation grep) and confirmed every other occurrence is inside a string literal or a `//`
+   line comment, both of which are inert.
+2. **`jvmTest` failed 6 of 34 on a missing native library**, and the failure mode is the exact one R3
+   exists to catch. The six were precisely the decoder tests that need a real `ImageBitmap`, and each
+   surfaced as a bare `AssertionError` because `JvmImageDecoder.decode` wraps the decode in
+   `runCatching`. Diagnosed with a throwaway `TempSkikoProbe.kt` that called
+   `BufferedImage.toComposeImageBitmap()` with no catch:
+   `java.lang.ExceptionInInitializerError` → `Caused by: org.jetbrains.skiko.LibraryLoadException:
+   Cannot find skiko-windows-x64.dll.sha256, proper native dependency missing.` `compose.ui` ships
+   skiko's **Java API** but not its platform `.dll`/`.so`. Fixed with
+   `implementation(compose.desktop.currentOs)` in **`jvmTest` only**; re-probed (skiko loaded from
+   `skiko-awt-0.9.22.2.jar`, with a benign JDK-21 *"A restricted method in java.lang.System has been
+   called"* warning), then the probe file was deleted before committing. Had the six tests been written
+   to assert `null`, they would have gone **green** while verifying nothing: `runCatching` turns
+   "skiko is missing" and "this image does not decode" into the same `null`.
+
+Additional checks specific to this phase (greps over `ui/chat/src/main` and `ui/platform-shims/src`,
+R11 exclusions applied):
+
+| Check | Expected | Result |
+|---|---|---|
+| `^import android\.` in `ui/chat/src/main` | 0 | **0** (was 8 in one file alone) |
+| `^import androidx\.activity` in `ui/chat/src/main` | 0 | **0** |
+| `LocalContext` or `ContextCompat` in `ui/chat/src/main` | 0 | **0** |
+| `Toast` in `ui/chat/src/main` | 0 in code | **3**, all comments |
+| `expect fun` in `commonMain` | 6 | **6** (a 7th match is a KDoc line) |
+| `actual fun` in `androidMain` / `jvmMain` | 6 / 6 | **6 / 6** |
+| `android\.` anywhere in `commonMain` or `jvmMain` | 0 real | **3 matches, all inside comments** — 2 in `FlashClipboard.kt`, 1 in `FlashAudioPlayer.jvm.kt`; 0 imports or references |
+| `android.util.Log` in `jvmMain` (phase forbids it) | 0 | **0** — the only match is the comment saying so; `println` is used, as instructed |
+| `org.junit` in `commonTest` | 0 | **0** |
+| `:ui:chat` production files | 48 − 3 moved = 45 | **45**; test files **31**, untouched |
+
+### Deviations from the phase file
+
+Twelve. Each is followed by what was done instead.
+
+1. **The seam shape is wrong throughout: every seam is a `@Composable` factory returning a handle, not
+   the bare `expect fun` the phase sketches.** Two independent reasons, and neither is stylistic.
+   `rememberDecodeImageBitmap` cannot be `@Composable`-and-return-a-bitmap because **both** call sites
+   decode inside `produceState`'s producer, which is a *suspend* lambda and not a composable scope — a
+   `@Composable` decode is uncallable from there. And `rememberFlashPermissionRequester` must be
+   composable because the Android actual needs an `ActivityResultLauncher`, which only
+   `rememberLauncherForActivityResult` can create, in a composition. So each seam splits: a
+   `@Composable` factory acquires the platform context once, and the returned handle exposes ordinary
+   blocking or `suspend` functions the caller invokes wherever it likes.
+2. **`expect class FlashAudioPlayer` / `expect class FlashVoiceRecorder` (the phase's own words) cannot
+   be written.** An `expect class` forces every actual to share one constructor signature; the Android
+   implementations need a `Context` and the desktop ones must not have one. Both are `interface` +
+   `expect fun remember…` instead. This is what costs `ui-chat` two public types — see Known issues.
+3. **D7b (FileKit) is overridden.** FileKit was read at source level, not judged from its README, and
+   ruled out on three counts, each a *silent behaviour change* rather than a compile error:
+   - **R10.** FileKit 0.15.0 needs kotlin-stdlib 2.4.10 and CMP 1.11.1; this repo is frozen at Kotlin
+     2.2.10 / CMP 1.9.3, so the newest usable release is **0.11.0**. D7b's coordinates
+     (`com.vinceglb:filekit-compose`) do not exist at any version — the group is `io.github.vinceglb`
+     and the module is `filekit-dialogs-compose`.
+   - **`audio/*` is not expressible.** `FileKitType.File(extensions)` maps each extension through
+     `MimeTypeMap.getMimeTypeFromExtension` and falls back to an all-files wildcard array when the set
+     is empty. There is no wildcard-MIME path, so the composer's Audio filter would become either
+     device-dependent or all-files, with no warning.
+   - **Gallery would lose its persistable grant.** `FileKitType.ImageAndVideo` routes to
+     `PickVisualMedia` — the Android photo picker, not SAF `OpenDocument`. Photo-picker URIs reject
+     `takePersistableUriPermission`, and Flash needs that grant so the engine can keep streaming a
+     picked file after this screen dies. This one is a functional regression in the transfer path, not
+     a UI nicety.
+
+   One objection *was* cleared and is recorded so nobody re-raises it: FileKit auto-initialises from
+   `LocalActivityResultRegistryOwner`, so adopting it would **not** have needed an `:app` change.
+   Revisit after a Kotlin bump. Because no library is added, **Step 14 is a no-op** — D7b's
+   `libs.versions.toml` alias was never created, and R10 is untouched.
+4. **`computeInSampleSize` is a *parameter* of `decode`, not logic inside the decoder.** The tested
+   implementation is `:ui:chat`'s `FlashMediaViewerMath.computeInSampleSize`, shared with the viewer's
+   zoom maths, and it lives in the module that *depends* on this one. Calling it from here is a
+   dependency cycle; copying it forks a function whose suite would then cover only one copy. The phase
+   file half-sees this at line 934 (*"pass `FlashMediaViewerMath.MAX_DECODE_LONG_EDGE` as
+   `maxSampleLongEdge`"*) but keeps the function itself on the wrong side of the boundary.
+5. **`context` *is* deleted from `FlashConversationScreen.kt`, against the phase's explicit "Do NOT".**
+   The instruction's stated reason — *"it is still used for image decode, file picker, voice
+   recorder"* — stops being true once those three go through shims that acquire the context
+   themselves. Nothing in the file references it afterwards, so keeping it would leave an
+   unused-variable warning plus a `LocalContext` reference Phase 20 would have to delete anyway. This
+   is a deliberate override of a numbered prohibition, hence its own item.
+6. **The Android-pinned inventory is short by two files: it is 9 of 48, not "7 of 46".**
+   `FlashMediaDecoder.kt` (**9** Android pins — `BitmapFactory`, `MediaMetadataRetriever`, `ExifInterface`,
+   an `LruCache`) is absent from the table *and from the entire phase file*, never mentioned once, even
+   though it is where `:ui:chat`'s decoding actually lived and is now the body of
+   `FlashImageDecoder.android.kt`. `FlashVoiceMessageCard.kt` (1 pin, `LocalContext`) is missing from
+   the table too, though the step text does reach it at lines 938/1090/1601. Counted by grep, not by
+   the table: 48 production files pre-phase, 9 with pins.
+7. **There are 7 shims, not 8.** The phase's list of 8 includes `showTransientMessage` (its item 3),
+   which D7a=Snackbar deletes: a Snackbar is not a shim, it is a `SnackbarHostState` in `:ui:chat`. The
+   phase file's own Option-B sketch for that shim is therefore unbuilt, and the "Risk" header's
+   *"8 distinct shims touch 7 files"* is wrong twice over.
+8. **The `SnackbarHost` placement is the phase's blind spot.** D7a's *"careful find-and-replace with
+   SnackbarHostState plumbing"* is done, all 13 sites, with `currentSnackbarData?.dismiss()` before each
+   `showSnackbar` so the newest message wins the way a Toast does (`SnackbarHostState` otherwise
+   queues, and a message raised during a transfer would appear seconds late). But the host is **not**
+   in the `Scaffold`'s `snackbarHost` slot: **six** of the 13 messages are raised from inside the focus
+   overlay and the media viewer, both emitted *after* the Scaffold and therefore painted over anything
+   it owns. The host is the last sibling of the screen body instead, with navigation-bar insets applied
+   so it sits where the Toast used to.
+9. **`rememberFlashAudioPlayer` narrows the `remember` key set.**
+   `remember(attachment.id, attachment.uri, hasAudio)` at the old call site becomes the shim's
+   `remember(context, uri)`, with `hasAudio` folded into a nullable `uri`. A `hasAudio` flip still
+   changes the key; what is dropped is `attachment.id`, so two attachments sharing one URI would now
+   share a player. Same file, same playback — recorded because it is a real narrowing, not because it
+   is known to matter.
+10. **File naming.** The phase names the desktop source set `desktopMain` and its files `X.desktop.kt`;
+    the repo convention from Phases 08/10/11/12/13B-1/14/18 is `jvmMain` and `X.jvm.kt`, and R5
+    mandates plain `jvm()`. Repo convention wins. The real task is `compileKotlinJvm`;
+    `compileKotlinDesktop` does not exist.
+11. **The phase's quoted `ui/chat/build.gradle.kts` is not this repo's, and two of its line counts are
+    stale.** The quote claims 71 lines, `compileSdk = 35`, `minSdk = 26`,
+    `JavaVersion.VERSION_17` and `id("maven-publish")`. The real file was **69** lines before this
+    phase (74 after) with `compileSdk = 37`, `minSdk = 24`, `VERSION_11`, a backticked
+    `` `maven-publish` ``, a `consumerProguardFiles` line, a `buildTypes { release { … } }` block and a
+    `publishing { singleVariant("release") { withSourcesJar() } }` block — none of which appear in the
+    quote. Anyone pasting the phase's version would silently drop the release config and lower both
+    SDK levels. Only the one `implementation` line was added. Likewise the appendix calls
+    `FlashConversationScreen.kt` *"686 lines"* (it was **803**, now 793) and `FlashAudioPlayer.kt`
+    *"85 lines"* (it was **93**), so its line-anchored tables cannot be navigated by number.
+12. **`libs.androidx.activity.compose` and `libs.androidx.core.ktx` stay in `:ui:chat`.** Both are now
+    unreferenced there — the three `BackHandler`/launcher uses and the one `ContextCompat` use moved
+    into the shims, which declare both dependencies themselves. They are left in place: `:ui:chat` is
+    still `com.android.library`, dropping a published runtime dependency is a separate decision from
+    routing code through a shim (R1), and Phase 20 rewrites that file wholesale anyway. Flagged there
+    for Phase 20 rather than removed here.
+
+Everything on PHASE-19's nine-item "Do NOT" list was honoured except item 7 (`context`), which is
+deviation 5 above and is argued rather than assumed: `:ui:chat` was **not** converted to KMP and keeps
+its `android { }` block and `com.android.library` plugin; no `android.util.Log` appears in any `jvmMain`
+file; Android `FlashAudioPlayer` / `FlashVoiceRecorder` behaviour is byte-identical, only reached
+differently; `Toast` was not silently swapped — D7a is answered and the replacement is the plumbed
+`SnackbarHostState` D7a asks for; no shim-only dependency was added to `:ui:chat`; no `package`
+declaration of an existing `:ui:chat` file changed; and nothing was version-bumped, FileKit included.
+No `jvmAndAndroidMain` and no `androidMain`↔`jvmMain` `dependsOn` (D1=B, R5). `explicitApi()` was
+again **not** added — the `ui/*` tier was never in the ADR-023 rollout and R1/R7 say to preserve what
+is there, not to extend it; every declaration in the new module is spelled `public` anyway, so turning
+it on later is a no-op.
+
+### Known issues
+
+**Two ABI breaks on the published `ui-chat` coordinate, and one new artifact.** There is still no BCV
+`.api` file to update — ADR-023 removed BCV repo-wide — so these live only in this log until Phase 24
+writes the release notes.
+- `com.transfer.flash.ui.chat.FlashAudioPlayer` (was a public class, 93 lines) and
+  `FlashVoiceRecorder` (public class, 119 lines) **no longer exist in `ui-chat`**. They reappear as
+  `com.transfer.flash.ui.shims.FlashAudioPlayer` / `FlashVoiceRecorder` **interfaces** in a new
+  `ui-platform-shims` artifact, constructed only through `rememberFlashAudioPlayer` /
+  `rememberFlashVoiceRecorder`. Deviation 2 explains why an `expect class` could not have kept the old
+  shape. Neither had an in-repo caller outside `:ui:chat` itself.
+- New published coordinates: `ui-platform-shims`, `-android`, `-jvm`. `maven-publish` on this module is
+  load-bearing, not habit: AGP writes `implementation(project(":ui:platform-shims"))` into `ui-chat`'s
+  POM as a runtime dependency, so leaving the module unpublished would give every consumer of the next
+  `ui-chat` an unresolvable POM entry. The KMP plugin generates its own publications, so there is no
+  `register<MavenPublication>("release")` and no `singleVariant` block; the default artifactIds
+  (`platform-shims*`) are renamed in place to `ui-platform-shims*` to match the `ui-` prefix the other
+  two `ui/*` modules publish under. No `version` or `groupId` is set there — that root-build rule is
+  the bug that silently published 1.0.0 through the whole 1.1.0 cycle.
+
+**The clipboard label changes.** `copyToClipboard` used
+`ClipData.newPlainText("Flash Message", text)`; the shim goes through Compose's
+`LocalClipboardManager.setText(AnnotatedString(text))`, which supplies its own label. The label is
+user-visible on Android 13+ in the copy confirmation toast the OS itself raises. Accepted — Compose's
+clipboard API exposes no label parameter, and the alternative is an `expect`/`actual` for a seam whose
+whole point is that it does not need one. The `@Suppress("DEPRECATION")` on
+`rememberFlashClipboard` is deliberate: the replacement `LocalClipboard` API arrived after CMP 1.9.3.
+
+**Toast → Snackbar is a visible Android UX change**, accepted in D7a and recorded here because it is
+the kind of thing a release note needs: messages now appear inside the app's own surface with its
+colours, they respect the navigation bar and keyboard, and they can be swiped away.
+
+**Three desktop capability gaps, documented rather than stubbed (R2).** None is an R2 stub — in each
+case the honest answer really is "not available", not a placeholder for something computable, and each
+needs a *library*, which is an R10 decision with no human answer yet:
+- **No video frame extraction** in `FlashImageDecoder.jvm.kt` — extracting one needs a demuxer the JDK
+  does not ship, so `isVideo = true` returns `null` and the tile falls back to the placeholder the UI
+  already draws for an undecodable source.
+- **No EXIF rotation** in the same file — `ImageIO` exposes the orientation tag only as a raw
+  per-format metadata tree, so a phone photo with a rotation tag displays unrotated on desktop.
+- **No AAC decode** in `FlashAudioPlayer.jvm.kt` — `javax.sound.sampled` has no AAC reader, so **an
+  Android voice note does not play on desktop**. The reverse direction works: the desktop recorder
+  writes WAV, which Android's `MediaPlayer` plays. This is the one gap a user would notice, and it is
+  the reason `FlashAudioPlayerJvmTest` runs its whole battery against an undecodable `voice.m4a` — the
+  contract being verified is *degrade to silence without throwing*, not *play*.
+
+**Phase 18's two deferred desktop absences are still absent, and PHASE-19 does not in fact pick them
+up.** Phase 18's log said reduce-motion detection *"needs a platform shim, i.e. Phase 19"*. PHASE-19's
+file has no step for it and none for desktop sound output either, and adding them was out of scope for
+a phase whose steps are enumerated. `FlashMotion.jvm.kt` still returns `false` and `FlashSounds.jvm.kt`
+is still a no-op lambda. Both want the same thing the three gaps above want: a decision about pulling
+JNA (Windows `SPI_GETCLIENTAREAANIMATION`, macOS `accessibilityDisplayShouldReduceMotion`) or a sound
+library. **This is a plan gap, not an implementation gap** — whichever phase owns it needs a file
+written first.
+
+**The `@Composable` actuals themselves are compile-verified only (R9).** All six `expect fun`s are
+`@Composable` factories, and this repo has no Compose UI-test harness — no device run, no emulator, no
+desktop window was launched. What the 34 tests execute is everything *reachable without a composition*:
+the `internal` implementation classes the factories return, and the shared contract in `commonTest`.
+Six `jvmMain` declarations are `internal` rather than `private` precisely so that is possible
+(`JvmImageDecoder`, `JvmAudioPlayer`, `JvmVoiceRecorder`, `extensionFilterFor`, `resolveFile`,
+`peakOf`), and `JvmVoiceRecorder`'s peak arithmetic was extracted into a top-level pure `peakOf` for
+the same reason — verifying it must not require a microphone. What remains unverified by execution: the
+Android side of all six seams, and on desktop the three bodies that need real hardware or a real
+window (the `JFileChooser` dialog, `TargetDataLine` capture, `Clip` playback). Adding a Compose test
+harness pulls `compose.uiTest` plus an instrumentation or Robolectric tier on Android, which is a real
+decision and was not taken unilaterally inside a conversion phase.
+
+**Carried forward untouched (R1).** `:ui:chat`'s two now-unreferenced dependencies (deviation 12);
+`ui/chat/proguard-rules.pro` and `consumer-rules.pro` still unreferenced by any rule;
+`:ui:callui` and `:sample:consumer-granular` still have no phase file and no README row — and
+`:ui:callui` now compiles against two multiplatform modules while nobody has decided whether calling
+is in desktop scope at all; icon rendering still unverified on a device for any branch containing
+`23267ed`.
+
+### Next step
+
+**Phase 20 — `:ui:chat` to KMP.** It is unblocked and, by design, mostly a Gradle rewrite: all 45
+production files are already platform-neutral, all 31 test suites were always pure logic, and the
+`ui/chat/build.gradle.kts` this phase leaves behind is the one Phase 20 must replace (its own quoted
+copy of that file is wrong — deviation 11). Two things to carry in: the two unreferenced dependencies
+to drop, and the fact that `:ui:chat`'s `@Preview` functions have the same CMP-1.9.3 no-argument
+problem that kept `FlashThemeSwatches.kt` in `androidMain` in Phase 18 — 29 of the 45 files import
+`androidx.compose.ui.tooling.preview`, so this is a much larger instance of it than Phase 18 faced.
+
+| Work | State |
+|---|---|
+| **20** (`:ui:chat`) | **executable now** — sources are platform-neutral; expect the `@Preview` problem at 29-file scale |
+| 09B-2 | **blocked** — D5 = C sub-decisions: which encrypted desktop driver, commercial licence acceptable?, SQLCipher file-format parity? |
+| 09B-3 | **blocked** — settings-tier ABI option (a) or (b) |
+| 13B-2, 15, 16 | **blocked on D10** (still the only `_pending_` decision); 16 is a hard gate |
+| 13B-3 | D10 **and** explicit R8 authorisation to rewrite `chunked/ChunkFrame.kt` |
+| 21–24 | downstream of 20 and the Phase 16 / 23 gates |
+| desktop AAC / video frames / EXIF / reduce-motion / sound output | **no plan** — five library decisions (R10), no phase file owns them |
+| `:ui:callui`, `:sample:consumer-granular` | **no plan** — needs a human scope decision |
+
+
+
+
+
+
+
+
