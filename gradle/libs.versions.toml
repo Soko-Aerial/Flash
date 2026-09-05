@@ -21,6 +21,28 @@ ksp = "2.3.11"
 # Phase 14 (desktop mDNS). Pinned to the version PHASE-14 names; 3.6.3 exists on
 # Maven Central but R10 authorises only what the phase specifies.
 jmdns = "3.5.12"
+# Phase 17 (enacts D3 = Option A). Compose Multiplatform: the `composeResources/`
+# directory, the generated `Res` accessors and the `painterResource(DrawableResource)`
+# overload all come from here.
+#
+# 1.9.3 is deliberately NOT the latest (1.12.0 is). It is the newest CMP whose published
+# artifacts still declare `kotlin-stdlib` at or BELOW this repo's frozen Kotlin 2.2.10.
+# Read from each version's `components-resources-<v>.module` on Maven Central:
+#   CMP 1.9.3   -> kotlin-stdlib 2.1.0   OK: below 2.2.10, so nothing is bumped
+#   CMP 1.10.3  -> kotlin-stdlib 2.2.20  would raise stdlib above the compiler
+#   CMP 1.11.1  -> kotlin-stdlib 2.3.20  built with Kotlin 2.3
+#   CMP 1.12.0  -> kotlin-stdlib 2.3.20  built with Kotlin 2.3
+# A 2.2.10 compiler cannot read metadata emitted by 2.3, so the two newest CMP releases
+# are unusable here until the Kotlin version moves — which R10 does not allow in this phase.
+#
+# It also holds Jetpack Compose exactly where it is. CMP 1.9.3 maps to Jetpack Compose
+# 1.9.4, which is BELOW the 1.10.0 that `composeBom = "2025.12.00"` pins, so Gradle keeps
+# 1.10.0 and the three Android-only Compose consumers (:ui:chat, :ui:callui, :app) see no
+# version change at all. CMP 1.10.3 would have pulled androidx.compose to 1.10.5.
+#
+# This is the verification D3 = A explicitly demanded ("Phase 06 must still verify the
+# exact CMP version against Kotlin 2.2.10") and Phase 06 never performed.
+jetbrainsCompose = "1.9.3"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -85,4 +107,10 @@ android-library = { id = "com.android.library", version.ref = "agp" }
 android-kotlin-multiplatform-library = { id = "com.android.kotlin.multiplatform.library", version.ref = "agp" }
 kotlin-multiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+# Phase 17 (D3 = A). The Compose Multiplatform Gradle plugin. It is NOT a replacement for
+# `kotlin-compose` above: since CMP 1.6 the Compose compiler ships with Kotlin itself, so a
+# CMP module applies BOTH — `org.jetbrains.kotlin.plugin.compose` (compiler, must match the
+# Kotlin version) and `org.jetbrains.compose` (the `compose` dependency DSL and the
+# `composeResources/` -> `Res` accessor generation, versioned independently).
+jetbrains-compose = { id = "org.jetbrains.compose", version.ref = "jetbrainsCompose" }
 
