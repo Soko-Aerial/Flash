@@ -5916,19 +5916,35 @@ New with this phase:
 
 ### Next step
 
-**There is none that is unblocked.** Phase 14 was the last phase in the plan that does not depend on a
-human decision:
+**Phase 09B-1** — the Room KMP re-platform of `:core:persistence`, db tier only.
 
-- **13B-2, 13B-3, 15 and 16 are blocked on D10**, and **Phase 16 is a hard gate** — nothing after it
-  runs until it does.
-- **13B-3 additionally needs explicit R8 authorisation** to rewrite `chunked/ChunkFrame.kt`, which is on
-  R8's do-not-touch list. An agent cannot grant that.
-- **Phase 09 is blocked on D5** (and carries the separate Room 2.8.4 finding from PHASE-09B).
-- **Phase 19 needs D7, Phase 22 needs D8.**
+Correcting my own first draft of this section, which claimed the migration had no unblocked work left
+and should stop and wait for the human. That was wrong on two counts, both checkable:
 
-So the migration now stops here and waits. The single most valuable thing a human can do is decide
-**D10**; everything else in the queue is downstream of it. The full list of accumulated decisions and
-authorisations is in the report accompanying this entry.
+- `PHASE-09B-persistence-room-kmp.md:230` heads its first sub-phase **"09B-1 — Room KMP re-platform, db
+  tier only (executable now)"**, and line 517, closing the list of decisions that remain the human's,
+  says **"None of these block 09B-1."** The five open items there all gate 09B-2 (driver choice, licence,
+  file-format parity) or 09B-3 (settings ABI).
+- I had listed D5, D7 and D8 as open. They are not: DECISIONS.md records answers for all three, chosen
+  2026-08-31 (D5 = Option C, D7 = shims shared, D8 = Option A). **D10 is the only `_pending_` line in
+  the file.** What blocks 09B-2 is the encrypted-driver sub-choice *inside* D5 = C, not D5 itself.
+
+So the accurate blocked/unblocked split after Phase 14 is:
+
+| Work | State |
+|---|---|
+| **09B-1** | **unblocked, next** |
+| 09B-2 | needs the encrypted desktop driver chosen (D5 = C's sub-decision) |
+| 09B-3 | needs the settings ABI option (a)/(b) |
+| 13B-2, 15, 16 | blocked on **D10**; 16 is a hard gate |
+| 13B-3 | blocked on D10 **and** on an explicit R8 authorisation to rewrite `chunked/ChunkFrame.kt` |
+| 17–24 | downstream of the Phase 16 gate |
+
+**D10 is still the single most valuable thing for a human to decide** — it is the only pending decision
+and four phases plus the gate sit behind it. But the migration does not stop for it yet: 09B-1 runs
+first. One thing the executing agent of 09B-1 must not miss — Obstacle B requires recording the single
+`@ConstructedBy` line on `FlashDatabase.kt` as an explicit narrow R8 exception in the log entry, quoting
+the phase file, and aborting if the schema-JSON gate shows any drift.
 
 
 
