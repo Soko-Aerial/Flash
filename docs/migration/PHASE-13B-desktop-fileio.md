@@ -3,7 +3,9 @@
 > **Status: 13B-1 EXECUTED (`fafd450`). 13B-2 EXECUTED (`732e7b5`). 13B-3a EXECUTED (`5e4e9a5`).
 > 13B-3b EXECUTED (`a3375e3`) — the R8 `ChunkFrame` rewrite, byte-identity proved on both targets and
 > against the verbatim old serializer; **that authorisation is now spent and `ChunkFrame` is R8-untouchable
-> again**. 13B-3c–e REMAIN.** All 2026-09-05. Authored
+> again**. 13B-3c EXECUTED (`d51206b`) — `ResumeBitVector` off `java.util.BitSet` onto a `LongArray`, no
+> library needed and the persisted format proved byte-identical by the same two-artefact method.
+> 13B-3d and 13B-3e REMAIN.** All 2026-09-05. Authored
 > 2026-09-05 by the agent that reached Phase 13 and found `PHASE-13-desktop-fileio.md` unexecutable;
 > the working tree at authoring time was clean at `d8af05c`, and no source or build file had been
 > touched for Phase 13 or 13B at that point. **13B-1 has since been executed and verified against all
@@ -53,11 +55,14 @@ Three things are true at once:
    targets. `ChunkFrame` genuinely is an R8 file and did need the instruction.**
 
 ~~Execute **13B-1**.~~ **13B-1 is done (`fafd450`), 13B-2 is done (`732e7b5`), 13B-3a is done
-(`5e4e9a5`), 13B-3b is done (`a3375e3`).** ~~Do not start 13B-2 or 13B-3 until D10 is
+(`5e4e9a5`), 13B-3b is done (`a3375e3`), 13B-3c is done (`d51206b`).** ~~Do not start 13B-2 or 13B-3 until D10 is
 answered and, for 13B-3, until the human has explicitly authorised touching `ChunkFrame`.~~ **Both
 conditions were met on 2026-09-05, and the `ChunkFrame` authorisation has been spent — no further edit
-to that file is permitted without a fresh one.** The next executable unit is **13B-3c**, moving
-`ResumeBitVector` off `java.util.BitSet`.
+to that file is permitted without a fresh one.** The next executable unit is **13B-3d**, the
+concurrency seams: the `java.util.concurrent.atomic` types in `multistream/MultiStreamDispatcher.kt`
+and `multistream/TransferCompletionStateMachine.kt`, plus `ConcurrentHashMap` and `UUID` in
+`RealFlashTransferRepository.kt`. 13B-3c's finding applies to it directly — see the third correction
+below.
 
 ---
 
@@ -101,7 +106,7 @@ there is no third tier. This is the whole of the blockage.
 | `chunked/ChunkFrame.kt` | — | `io.ByteArrayOutputStream`, `nio.ByteBuffer`, `nio.ByteOrder` |
 | `chunked/Chunker.kt` | — | `io.Closeable`, `io.IOException`, `io.InputStream` |
 | `chunked/ReceivePipeline.kt` | — | — (same-package `ChunkFrame`) |
-| `chunked/ResumeBitVector.kt` | — | `util.BitSet` |
+| `chunked/ResumeBitVector.kt` | — | ~~`util.BitSet`~~ **cleared by 13B-3c (`d51206b`) — now `commonMain`, no imports at all** |
 | `chunked/SendPipeline.kt` | — | — (same-package `ChunkSource`, `Chunker`, `ChunkFrame`) |
 | `chunked/Sha256.kt` | — | `security.MessageDigest` |
 | `manifest/TransferManifest.kt` | — | — (**`System.currentTimeMillis()`**, line 29) |
@@ -449,7 +454,7 @@ real `FileTarget`/`UriTarget` pair, and note that `jvmMain` must be **OS-neutral
 2026-09-03 amendment — `System.getProperty("java.io.tmpdir")` is fine, a `C:\` literal or
 `%USERPROFILE%` is not.
 
-## 13B-3 — framing, hashing, concurrency. ~~**Blocked on D10 *and* an explicit R8 instruction.**~~ **UNBLOCKED 2026-09-05** (D10 = Option A; R8 exception granted, byte-identical output required). **13B-3a DONE — `5e4e9a5`. 13B-3b DONE — `a3375e3`; the R8 authorisation is now spent.**
+## 13B-3 — framing, hashing, concurrency. ~~**Blocked on D10 *and* an explicit R8 instruction.**~~ **UNBLOCKED 2026-09-05** (D10 = Option A; R8 exception granted, byte-identical output required). **13B-3a DONE — `5e4e9a5`. 13B-3b DONE — `a3375e3`; the R8 authorisation is now spent. 13B-3c DONE — `d51206b`.**
 
 What is left after 13B-2, with the known common answer for each:
 
@@ -460,7 +465,7 @@ What is left after 13B-2, with the known common answer for each:
 | `java.util.concurrent.atomic.*` | `multistream/MultiStreamDispatcher.kt`, `multistream/TransferCompletionStateMachine.kt` | `kotlin.concurrent.Atomic*` (still `@ExperimentalAtomicApi` at Kotlin 2.2.10), `kotlinx.atomicfu`, or `PlatformLock` + plain vars |
 | `ConcurrentHashMap`, `Collections.{newSetFromMap,synchronizedList}` | `RealFlashTransferRepository.kt`, `MultiStreamDispatcher.kt` | `PlatformLock` + plain `MutableMap`/`MutableList` — the pattern already used three times |
 | `java.util.UUID` | `RealFlashTransferRepository.kt` | `:core:common`'s Phase 06 `UuidIdGenerator` |
-| `java.util.BitSet` | `chunked/ResumeBitVector.kt` | a `LongArray` bitset in common Kotlin |
+| `java.util.BitSet` | `chunked/ResumeBitVector.kt` | a `LongArray` bitset in common Kotlin — **DONE in 13B-3c (`d51206b`). This is the one row the table got exactly right, and the only one that needed no library at all. See the third correction below for what it still understated.** |
 
 > **CORRECTION (2026-09-05, after executing 13B-3a — `5e4e9a5`).** Two rows of the table above were
 > wrong, and the sub-step order this section implies is wrong.
@@ -487,7 +492,7 @@ What is left after 13B-2, with the known common answer for each:
 >   which is why `5e4e9a5` is 13B-3**a** and the framing rewrite is 13B-3**b**.
 >
 > Executed order: **a** hashing (`5e4e9a5`) → **b** framing (`ChunkFrame`, R8 — `a3375e3`) → **c** resume
-> (`ResumeBitVector`) → **d** concurrency (atomics, `ConcurrentHashMap`, `UUID`) → **e** the pipelines
+> (`ResumeBitVector` — `d51206b`) → **d** concurrency (atomics, `ConcurrentHashMap`, `UUID`) → **e** the pipelines
 > (`Chunker`/`ChunkStream`, `ReceivePipeline`, `SendPipeline`, `MultiStreamReceiver`, which is where
 > the two `.buffer().inputStream()` bridges 13B-2 left behind get deleted). `policy/DestinationPolicy.kt`
 > and `model/WsTransferModels.kt` stay in `androidMain`; neither is a 13B-3 pin.
@@ -512,6 +517,39 @@ What is left after 13B-2, with the known common answer for each:
 >   shapes plus 4000 random frames. Both temporary files were deleted; the golden vectors live in
 >   `commonTest`. Recorded here because it is the pattern any future R8 authorisation should copy.
 
+> **CORRECTION (2026-09-05, after executing 13B-3c — `d51206b`).** The `BitSet` row was right about the
+> answer and silent about the risk, and the sub-step turned up one finding that changes how 13B-3d
+> should be read.
+>
+> - **D10 does not have to cover every `java.util` type.** The sub-step was approached expecting Okio to
+>   supply the replacement, as it did for `java.io`, `java.nio` and `java.security`. Okio has no bitset
+>   and neither does kotlinx-io; the answer was Kotlin's own `Long.countOneBits()`,
+>   `Long.countTrailingZeroBits()` and `LongArray.copyInto()`, and the file ended with an **empty import
+>   block**. So D10 = Option A is scoped to I/O and should not be stretched: 13B-3d's atomics are the
+>   next test of the same question, and the answer there is `kotlin.concurrent.Atomic*`,
+>   `kotlinx.atomicfu` or `PlatformLock` — not Okio.
+> - **`java.util.UUID` needs no port either.** `:core:common` has carried `UuidIdGenerator` in
+>   `commonMain` since Phase 06 over a `PlatformUuid` `expect`/`actual` seam, and `:core:transfer`
+>   already declares `api(project(":core:common"))`, so the row above naming it is correct and 13B-3d's
+>   `UUID` work is a call-site swap. `kotlin.uuid.Uuid` exists at 2.2.10 but is `@ExperimentalUuidApi`
+>   (verified with `javap`); there is no reason to reach for it.
+> - **A data structure can be a wire format without looking like one.** `BitSet.toLongArray()` trims
+>   trailing all-zero words — its length is `ceil(length() / 64)` where `length()` is the highest set bit
+>   plus one, **not** the capacity. A fixed-size dump of `ceil(totalChunks / 64)` words would have changed
+>   the length of every payload `ResumeBitVector` has ever written, and **no round-trip test would have
+>   caught it**, because the new reader accepts what the new writer produced. `cardinality()` and
+>   `nextSetBit`'s word-skipping were the other two behaviours that had to be reproduced deliberately.
+>   The generalisation for 13B-3d/e: when replacing a `java.util` type, ask what its *observable output*
+>   is, not just what its API does.
+> - **13B-3b's two-artefact discipline was applied to a file R8 does not name.** `ResumeBitVector` is not
+>   on the untouchable list, so no authorisation was needed — but `toSerialized()` is reached from
+>   `ReceivePipeline.serializedProgress()`, which is `public` API on a published library whose whole
+>   purpose is to be written down now and read back by a later *build*. That is a stronger constraint
+>   than a wire format, not a weaker one. Seven golden vectors went into `commonTest`; a temporary
+>   `androidHostTest` differential test held the verbatim `BitSet` implementation and agreed with the new
+>   one over 2080 randomized done-sets, 20 trimming shapes, 320 cross-restores in both directions, 12
+>   hostile/padded payloads and randomized `reconcile` sweeps, then was deleted.
+
 **`ChunkFrame` is named in R8's untouchable list** (*"Wire formats: `FlashEnvelope`, `FlashProtocol`,
 `ChunkFrame`, …"*), and rewriting its `ByteBuffer` framing is unavoidable here. R8 says such a change
 needs an explicit instruction; R2 says a phase that seems to require a forbidden edit must stop and
@@ -525,7 +563,9 @@ alone; the other six wire formats R8 names are still untouchable.
 **SPENT 2026-09-05 (`a3375e3`).** The criterion was met — eleven golden vectors captured before the
 rewrite and asserted after it on **both** targets, plus a differential test against the verbatim old
 serializer. `ChunkFrame` is back under R8's ordinary protection from this point: 13B-3c, 13B-3d and
-13B-3e must not touch it, and any later edit needs a fresh authorisation.
+13B-3e must not touch it, and any later edit needs a fresh authorisation. **13B-3c (`d51206b`) honoured
+that: it touched `ChunkFrame.kt` not at all, and the only reference to it in the commit is a corrected
+comment in `ChunkSink.kt` naming it as already done.**
 
 ---
 

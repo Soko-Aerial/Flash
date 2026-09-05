@@ -6497,6 +6497,377 @@ inventory 13B-3c/d/e must clear — 11 files left in `androidMain` against 15 in
       1 import java.io.Closeable
 ```
 
+## Phase 13B-3c — `ResumeBitVector` moved to `commonMain` on a `LongArray` bitset
+
+- **Date:** 2026-09-05
+- **Agent/model:** Claude (Opus 5), Claude Code
+- **Commit:** `d51206b` (source), this entry (docs)
+- **Decisions relied on:** **D1 = Option B** for the strict-`commonMain` shape. **D10 = Option A**
+  is *not* relied on: this sub-step needed no I/O library at all, so the replacement for
+  `java.util.BitSet` is Kotlin's own common bit intrinsics and not Okio. No R8 authorisation is
+  involved — `ResumeBitVector` is not on R8's list, and the authorisation 13B-3b spent covered
+  `ChunkFrame` only and is closed.
+
+### Change
+
+`chunked/ResumeBitVector.kt` moved from `androidMain` to `commonMain` (git records a 52% rename) and
+its single `java.*` dependency, `java.util.BitSet`, was replaced by a `LongArray` with the bit
+arithmetic `BitSet` was doing written out. **No import replaced it** — `Long.countOneBits()`,
+`Long.countTrailingZeroBits()` and `LongArray.copyInto()` are Kotlin common stdlib, so the file's
+import block is now empty. That is worth stating plainly because it makes this the cheapest sub-step
+of 13B-3: no new dependency, no `expect`/`actual`, no platform seam.
+
+The serialization format did not change. `BitSet.toLongArray()` was already producing exactly the
+words the wire format specifies, so the replacement is the array itself rather than a translation
+layer, and `toSerialized()`/`fromSerialized()` still read and write `int32 LE wordCount` followed by
+`wordCount` little-endian 64-bit words.
+
+`ResumeBitVectorTest` moved with it, from `androidHostTest` to `commonTest`, and grew from 6 tests to
+12. The six that were there are unchanged in substance — JUnit's asserts re-pointed at `kotlin.test`'s
+with no argument reordering, because every call was a 1- or 2-argument form and both libraries are
+expected-first there. The six new ones are byte-level.
+
+Two comments elsewhere that named `ResumeBitVector` as pending 13B-3 work are corrected in the same
+commit, in `commonMain/chunked/ChunkSink.kt` and at the foot of `androidMain/chunked/ReceivePipeline.kt`.
+This is not an R1 "also fix": this change is what made them false, so leaving them would be shipping a
+comment that misdirects the agent executing 13B-3e.
+
+### The three `BitSet` behaviours that were load-bearing
+
+`BitSet` is a data structure, not an I/O API, so the risk profile of this sub-step is the opposite of
+13B-3b's: nothing about it *looks* like a wire format, and three of its behaviours silently were one.
+
+| `BitSet` behaviour | Reproduced by | What breaks if you don't |
+|---|---|---|
+| `toLongArray()` returns `ceil(length() / 64)` words, where `length()` is the **highest set bit plus one** — not the capacity. Trailing all-zero words are trimmed. | `significantWordCount()`: walk down from `words.size` while the top word is `0L`. | **Every payload the class has ever written changes length.** A 1000-chunk transfer with only chunk 3 received is 12 bytes today; a capacity-sized dump makes it 132. `fromSerialized` would still accept both, so nothing would fail — the format would just have silently forked. |
+| `cardinality()` is a population count over the words. | `Long.countOneBits()` summed per word, kept as a computed property. | A maintained `receivedCount` field would have to be updated by `fromSerialized`, which writes words wholesale via `copyInto`. That is a drift bug waiting for the first restore path that forgets. |
+| `nextSetBit(i)` skips empty words rather than testing bits one at a time. | `doneIndexes()` uses `countTrailingZeroBits()` for the position and `word and (word - 1L)` to clear the lowest set bit, looping once per set bit. | A naive `for (i in 0 until totalChunks)` scan is a complexity regression, not a correctness one: a mostly-empty million-chunk vector goes from one pass over 15,625 words to a million bit tests, on a call the receive pipeline makes per ACK batch. |
+
+A fourth difference is a deliberate narrowing rather than a reproduction. `BitSet(totalChunks)` is a
+capacity *hint* — the structure grows on demand, so `bits.set(5_000_000)` on a 1000-chunk vector would
+have worked. The `LongArray` is exactly `ceil(totalChunks / 64)` words and cannot grow, so the same
+call is an `IndexOutOfBoundsException`. Nothing is lost because no path can make that call: every
+mutator already bounds-checks `[0, totalChunks)` — `markReceived` throws via `require`, `reconcile`
+filters silently, and `fromSerialized` rejects an over-long `wordCount` before allocating. The growth
+was dead capability.
+
+`fromSerialized`'s padding handling changed shape while keeping its result. The old code built a
+throwaway `BitSet.valueOf(words)` and copied bit by bit for `0 until totalChunks`, which dropped
+anything above the range as a side effect of not copying it. The new code copies the words wholesale
+and then masks the top word once: `words[last] and ((1L shl (totalChunks % 64)) - 1L)`. Provably the
+same outcome — bits at or above `totalChunks` cannot be set by any other path — in one operation
+instead of `totalChunks` of them.
+
+### How byte identity was proved
+
+`ResumeBitVector` is **not** on R8's untouchable list, so no authorisation was needed and no
+authorisation was sought. It was nevertheless held to 13B-3b's acceptance criterion, because
+`toSerialized()` is a **persisted** format: it is reached from `ReceivePipeline.serializedProgress()`,
+which is `public` API on a published library, and its whole purpose is to be written down now and read
+back by a later process — possibly a later *build*. A payload written by 1.x has to keep restoring on
+1.y. That is a stronger constraint than a wire format, not a weaker one, since both ends of a wire
+handshake are usually the same release.
+
+13B-3b's log recorded that the criterion **needs two artefacts, not one**, and this sub-step is the
+first to apply that finding rather than discover it:
+
+**Artefact 1 — `commonTest/chunked/ResumeBitVectorTest.kt`, six new byte-level tests.** Seven golden
+vectors, each written as a labelled concatenation so the `wordCount` prefix and the words are separately
+legible on the page:
+
+| Case | Vector | Expected bytes |
+|---|---|---|
+| S1 | 8 chunks, nothing set | `00000000` |
+| S2 | 8 chunks, bit 0 | `01000000` + `0100000000000000` |
+| S3 | 8 chunks, bits 0–7 | `01000000` + `ff00000000000000` |
+| S4 | **70 chunks, bit 3 only** | `01000000` + `0800000000000000` |
+| S5 | 70 chunks, bit 69 only | `02000000` + `0000000000000000` + `2000000000000000` |
+| S6 | 128 chunks, bits 63 and 64 | `02000000` + `0000000000000080` + `0100000000000000` |
+| S7 | 1000 chunks, bits 0/63/64/512/999 | `10000000` + 16 words, eleven of them zero |
+
+S4 is the one that matters. Capacity 70 is two words wide, but the only set bit lives in word 0, so the
+correct payload is **one** word and 12 bytes. A fixed-size implementation writes `02000000` and 20 bytes
+and passes every round-trip test ever written, because it can read back what it wrote. S5 is its
+control: same capacity, bit in word 1, so two words are correct and the first one is all zeros. The pair
+pins the trim from both sides.
+
+Three further tests cover what a hand-written vector table cannot: an empty vector serializes to four
+bytes for `totalChunks` ∈ {1, 63, 64, 65, 1000, 1000000}; a trimmed payload (`wordCount` 1 into a
+16-word vector) restores with the high words clear; and a full word (`ffffffffffffffff`) and a top-bit-only
+word (`0000000000000080`) are both counted and walked correctly — bit 63 is the sign bit, and a
+reimplementation that treats it as a negative shift or a short word fails there and nowhere else.
+
+**Artefact 2 — a temporary differential test, deleted before the commit.** The golden hex above was
+derived by hand, so asserting it against the new code only proves the new code matches *my arithmetic*.
+`androidHostTest/chunked/LegacyResumeBitVectorParityTest.kt` held the verbatim pre-rewrite implementation
+— copied out of `git show HEAD:core/transfer/src/androidMain/.../ResumeBitVector.kt`, with only the class
+name changed and the KDoc stripped, still using `java.util.BitSet`, which is why it could not follow the
+suite into `commonTest` — and ran old and new side by side:
+
+- **2080 randomized done-sets** over 13 capacities (1, 2, 7, 8, 63, 64, 65, 70, 127, 128, 129, 1000,
+  4096) × 160 trials, with a density sweep from near-empty to near-full and a fixed seed, comparing
+  `toSerialized()` byte for byte plus `markReceived`'s return value, `receivedCount`, `doneIndexes()`,
+  `missingIndexes()` and `isComplete()` at every step.
+- **20 trimming edge shapes** the sweep would not reliably hit, including all five empty-vector
+  capacities and every single-bit position around a word boundary, plus `toString()`.
+- **Cross-restore in both directions**, 320 cases: old bytes into the new reader *and* new bytes into
+  the old reader, each re-serialized and compared again. This is the test that speaks to the actual risk
+  — a user upgrading, and a user who has not upgraded reading state a newer build wrote.
+- **12 hostile or padded payloads** no serializer produces: the five rejection shapes, plus padding bits
+  above `totalChunks` at 70/65/128/1, asserting the two implementations agree on *verdict* as well as
+  content, so masking and copy-only-in-range are confirmed equivalent rather than assumed.
+- **Randomized `reconcile` sweeps** with indexes drawn from `[-total, 2 × total)`, so the silent
+  out-of-range filter is exercised on both sides.
+
+All five tests passed, 0 failures, and the file was deleted before the code commit — as 13B-3b's parity
+test was. The proof lives in this entry and in the golden vectors it validated, not in the tree.
+
+### Files changed
+
+Five paths, one module, no build file touched (R4 is not in play — nothing about this sub-step needs a
+dependency).
+
+| Path | Change |
+|---|---|
+| `core/transfer/src/{androidMain → commonMain}/kotlin/.../chunked/ResumeBitVector.kt` | Moved (52% rename). `import java.util.BitSet` deleted, no import added. `private val bits = BitSet(totalChunks)` → `private val words = LongArray((totalChunks + 63) / 64)`. `receivedCount`, `markReceived`, `isReceived`, `doneIndexes`, `reconcile` and `toSerialized` re-expressed on words; `significantWordCount()` and `clearPaddingBits()` added; `missingIndexes`, `isComplete`, `toString`, `WORD_BITS`, `writeI32Le` and `readI32Le` unchanged. KDoc gains a §13B-3c section naming the three reproduced behaviours; the merge-rule section is untouched and the format section gains one sentence making the trim explicit. |
+| `core/transfer/src/{androidHostTest → commonTest}/kotlin/.../chunked/ResumeBitVectorTest.kt` | Moved. Six JUnit imports → six `kotlin.test` imports; the six existing tests otherwise byte-identical. Six new byte-level tests, a `serializedVectors()` table of seven vectors, and a `vector(total, vararg indexes)` builder. Git records this as delete + create rather than a rename, because the added half outweighs the moved half. |
+| `core/transfer/src/commonMain/kotlin/.../chunked/ChunkSink.kt` | Comment only: the list of reasons `ReceivePipeline` stays in `androidMain` now reads `ChunkFrame`/`ResumeBitVector`/`Sha256` as done and `sortedSetOf` as remaining. |
+| `core/transfer/src/androidMain/kotlin/.../chunked/ReceivePipeline.kt` | Comment only, same correction at the foot of the file. |
+| — | `LegacyResumeBitVectorParityTest.kt` existed in `androidHostTest` for the duration of the verification run and was deleted before the commit. It appears in no commit. |
+
+`git diff --cached --stat` for `d51206b`: 5 files, +379 / −145.
+
+### Verification
+
+`:core:transfer:compileKotlinJvm` and `:core:transfer:compileAndroidMain` (R3.1 names — there is no
+`compileKotlinDesktop` in this repo and no `compileCommonMainKotlinMetadata` that runs):
+
+```
+> Task :core:transfer:compileKotlinJvm
+> Task :core:transfer:compileAndroidMain
+
+BUILD SUCCESSFUL in 33s
+12 actionable tasks: 2 executed, 10 up-to-date
+```
+
+Both test targets, which is the whole point of the move — the suite must pass as `commonTest` compiled
+for Android *and* for JVM:
+
+```
+> Task :core:transfer:jvmTest
+> Task :core:transfer:compileAndroidHostTest
+> Task :core:transfer:testAndroidHostTest
+
+BUILD SUCCESSFUL in 40s
+29 actionable tasks: 7 executed, 22 up-to-date
+```
+
+Per-suite results, read out of the XMLs rather than trusted from the console — including the temporary
+parity suite, captured before it was deleted:
+
+```
+== core/transfer/build/test-results/jvmTest/TEST-...ResumeBitVectorTest.xml
+  suite=ResumeBitVectorTest[jvm] tests=12 failures=0 errors=0 skipped=0
+== core/transfer/build/test-results/testAndroidHostTest/TEST-...LegacyResumeBitVectorParityTest.xml
+  suite=...LegacyResumeBitVectorParityTest tests=5 failures=0 errors=0 skipped=0
+== core/transfer/build/test-results/testAndroidHostTest/TEST-...ResumeBitVectorTest.xml
+  suite=...ResumeBitVectorTest tests=12 failures=0 errors=0 skipped=0
+```
+
+The five parity tests by name and duration, since this is the artefact that no longer exists in the tree:
+
+```
+  serialized bytes are identical for the trimming edge cases             0.031s
+  serialized bytes are identical for a randomized sweep                  0.334s
+  reconcile agrees including out of range indexes                        0.008s
+  payloads cross restore between the two implementations                 0.031s
+  fromSerialized agrees on hostile and padded payloads                   0.001s
+```
+
+The twelve `commonTest` tests, `[jvm]` variant, showing the six new ones alongside the six moved:
+
+```
+  fromSerialized rejects structurally invalid payloads[jvm]              0.004s
+  every byte level vector round trips through fromSerialized[jvm]        0.006s
+  a full word and a top bit only word are counted and walked correctly[jvm] 0.016s
+  fromSerialized clears padding bits beyond totalChunks[jvm]             0.001s
+  reconcile unions remote progress monotonically and ignores foreign indexes[jvm] 0.001s
+  markReceived returns true only for new marks and rejects out of range[jvm] 0.002s
+  missingIndexes and doneIndexes are ascending complements[jvm]          0.001s
+  word aligned totals mask nothing and still reject foreign indexes[jvm] 0.001s
+  serialization roundtrips sparse high indexes[jvm]                      0.001s
+  a trimmed payload restores into a larger vector[jvm]                   0.001s
+  an empty vector serializes to four bytes for any size[jvm]             0.077s
+  serialized bytes match the byte level vectors[jvm]                     0.003s
+```
+
+Full R3 sweep, `--continue` as always so the 12 known `:core:persistence` failures do not abort the run
+and silently shrink the total:
+
+```
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':core:persistence:testAndroidHostTest'.
+> There were failing tests. See the report at: file:///C:/Users/KaliOxygen/Downloads/Flash-kmp/core/persistence/build/reports/tests/testAndroidHostTest/index.html
+
+BUILD FAILED in 2m 41s
+352 actionable tasks: 22 executed, 330 up-to-date
+```
+
+That is the expected failure and the only one. Tally:
+
+```
+XMLs: 181
+tests=1377 failures=12 errors=0
+--- failing suites and tests ---
+SUITE com.transfer.flash.core.persistence.settings.DiscoveryModeSettingTest
+  roundtrip for every valid mode
+SUITE com.transfer.flash.core.persistence.settings.FlashSettingsDataStoreTest
+  retentionDays roundtrip
+  backgroundTransfers roundtrip
+  dynamicAccent roundtrip
+  corrupted preferences file falls back to emptyPreferences
+  themeMode roundtrip
+  displayName roundtrip
+  soundsEnabled roundtrip
+  autoAcceptTrusted roundtrip
+  reduceMotionOverride roundtrip
+  saveLocationUri roundtrip and clear-to-null
+  hapticsEnabled roundtrip
+```
+
+**1377 / 12 / 0 across 181 XMLs**, from 13B-3b's **1359 / 12 / 0 across 180**. The arithmetic, shown as
+CONVENTIONS.md's R3 requires: the suite left `androidHostTest` at **6 tests in 1 XML** and arrived in
+`commonTest` at **12 tests, which run on both targets — 24 tests in 2 XMLs**. So Δtests = 24 − 6 = **+18**
+(1359 + 18 = 1377) and ΔXMLs = 2 − 1 = **+1** (180 + 1 = 181). The 12 failures are the pre-existing
+`:core:persistence` temp-file set, unchanged name for name and not touched (R1).
+
+All three R6.1 review scans. Scan 1, `java`/`javax`/`android`/`androidx` in any `commonMain`, is the one
+this sub-step is judged by — `java.util.BitSet` was the entry it had to remove, and the scan is empty:
+
+```
+=== SCAN 1: java/javax/android/androidx imports in commonMain ===
+(exit=0 — empty above means clean)
+```
+
+Scan 2 returns exactly the known inventory and nothing new — five `@Volatile` sites and the eight
+allowlisted `.format(` calls. `ResumeBitVector` contributed no `Math.`, no `System.`, no `::class.java`,
+no `@Synchronized`:
+
+```
+core/common/src/commonMain/.../logging/FlashLog.kt:21:    @Volatile
+core/discovery/src/commonMain/.../core/CompositeDiscovery.kt:172:    @Volatile private var desiredBrowsing = false
+core/discovery/src/commonMain/.../core/CompositeDiscovery.kt:192:    @Volatile private var currentPolicy: DiscoveryModePolicy =
+core/messaging/src/commonMain/.../model/FlashMessagingModels.kt:202:                "%d:%02d:%02d".format(hours, minutes, seconds)
+core/messaging/src/commonMain/.../model/FlashMessagingModels.kt:204:                "%d:%02d".format(minutes, seconds)
+core/network/src/commonMain/.../ws/WsKeepalive.kt:75:    @Volatile
+core/transfer/src/commonMain/.../policy/RandomAccessSinkHandle.kt:82:    @Volatile
+ui/chat/src/commonMain/.../FlashFileMessageCard.kt:113,413,415,417   (4 × .format)
+ui/chat/src/commonMain/.../FlashStressTestScreen.kt:253              (1 × .format)
+ui/chat/src/commonMain/.../FlashVoiceMessageCard.kt:81               (1 × .format)
+```
+
+Scan 3, `@Volatile` without the common import, is empty — all five carry
+`import kotlin.concurrent.Volatile`.
+
+The `java.*` inventory left in `core/transfer/src/androidMain`, which is the measure of 13B-3's progress.
+`java.util.BitSet` is gone; nine imports across five files remain, against **16 files in `commonMain` to
+10 in `androidMain`**:
+
+```
+      2 import java.util.concurrent.atomic.AtomicBoolean
+      1 import java.util.concurrent.atomic.AtomicLong
+      1 import java.util.concurrent.atomic.AtomicInteger
+      1 import java.util.concurrent.ConcurrentHashMap
+      1 import java.util.UUID
+      1 import java.io.OutputStream
+      1 import java.io.InputStream
+      1 import java.io.File
+      1 import java.io.Closeable
+```
+
+```
+core/transfer/src/androidMain/.../RealFlashTransferRepository.kt                 UUID, ConcurrentHashMap
+core/transfer/src/androidMain/.../chunked/Chunker.kt                            Closeable, InputStream
+core/transfer/src/androidMain/.../multistream/MultiStreamDispatcher.kt          AtomicBoolean, AtomicInteger, AtomicLong
+core/transfer/src/androidMain/.../multistream/TransferCompletionStateMachine.kt  AtomicBoolean
+core/transfer/src/androidMain/.../policy/DestinationPolicy.kt                   File, OutputStream
+```
+
+### Deviations from the phase file
+
+1. **§13B-3's table gave no answer for `BitSet`, and the answer turned out to be "no library".** The
+   sub-step was authorised on the assumption that D10's chosen library would supply the replacement, as
+   it did for the `java.io`, `java.nio` and `java.security` seams. Okio has no bitset. Neither does
+   kotlinx-io. The correct replacement was Kotlin's own `Long` intrinsics, which means **this sub-step
+   validates D10 by not needing it** — worth recording because it is evidence that D10 = Option A was
+   scoped to I/O and does not have to be stretched to cover every `java.util` type 13B-3d/e will hit.
+   `AtomicBoolean`/`AtomicInteger`/`AtomicLong` in 13B-3d are the next test of the same question, and
+   the answer there is `kotlin.concurrent.atomics` or the existing `PlatformLock`, not Okio.
+2. **The `commonTest` suite is 12 tests, not the 6 that moved.** §13B-3 asks only that the file move.
+   R3.1's rule — "any phase that writes an `actual` should put at least one behavioural assertion in
+   `commonTest`" — does not literally apply, since nothing here is `expect`/`actual`. The six added
+   tests were written anyway, because the trim behaviour is the kind of thing that has no natural test:
+   round-trip tests pass on a broken implementation, and nothing else in the repo reads these bytes yet.
+3. **Two comments outside the moved file were edited.** Listed in the Change section above rather than
+   silently; both are single comment blocks made false by this commit, in `ChunkSink.kt` and
+   `ReceivePipeline.kt`. No code line in either file changed.
+4. **`ChunkFrameTest` was again not moved**, unchanged from 13B-3b. It stays `androidHostTest` until
+   13B-3e takes `Chunker` across, because it constructs frames through pipeline helpers that are still
+   Android-bound.
+
+### Known issues
+
+1. **`markReceived`'s KDoc says `@throws IndexOutOfBoundsException`; `require` throws
+   `IllegalArgumentException`.** Pre-existing — the same mismatch was in the `BitSet` version, since
+   `require` was there too — and left alone under R1. It is a doc defect, not a behaviour change, and
+   fixing it in this commit would have made the rename diff harder to read for no benefit. Fix it in
+   13B-3e or a docs pass, not here.
+2. **`missingIndexes()` is still O(totalChunks) and now calls `receivedCount` (a full popcount pass)
+   once to size its `ArrayList`.** Both were true before. It is the one accessor that cannot skip empty
+   words, because it reports the complement. On a million-chunk transfer this is a million `isReceived`
+   calls, each of which is two array indices and a mask — measurable but not the bottleneck next to the
+   I/O it precedes. Flagged rather than optimised, again under R1.
+3. **Nothing in production reads `serializedProgress()` yet.** The persisted-resume path it exists for
+   is C5.6, still unbuilt: `ReceivePipeline.kt:129` is the only producer and there is no consumer. So
+   the byte-identity work above protects a format that no shipped build has yet written to disk — which
+   is the cheapest possible moment to get it right, and also means the cross-restore guarantee is
+   currently untested by reality.
+4. **`ResumeBitVector` is reachable from four `androidMain` files that have not moved** —
+   `ReceivePipeline`, `SendPipeline`, `MultiStreamDispatcher`, `MultiStreamReceiver`. A `commonMain`
+   class used only from `androidMain` is correct but unexercised on JVM outside its own test, so
+   13B-3e's move of those four is what actually puts it on a desktop code path.
+5. **The six items 13B-3a listed as unchanged remain unchanged**, plus 13B-3b's five, none of which this
+   sub-step touches: `ChunkFrameTest`'s Android-only rejection paths, `ChunkFrame.kt:460`'s bounds check
+   on a hypothetical zero-payload frame, the `MAX_CHUNK_DATA_BYTES` / KDoc "256 KB" mismatch, and no
+   frame having yet crossed the wire between two machines (Phase 16's gate).
+
+### Next step
+
+**13B-3d** — the concurrency seams: `java.util.concurrent.atomic.Atomic{Boolean,Integer,Long}` in
+`MultiStreamDispatcher` and `TransferCompletionStateMachine`, and `ConcurrentHashMap` + `UUID` in
+`RealFlashTransferRepository`. Note that this sub-step's finding applies directly: the replacement is
+Kotlin's own concurrency primitives (or the existing `PlatformLock`, or a `@Volatile` where the
+`Atomic*` was only ever used as a flag), not a library. `kotlin.concurrent.AtomicInt` and friends are
+still `@ExperimentalAtomicApi` at 2.2.10, so that choice is a judgement call R10's frozen-toolchain
+posture makes narrower than it looks — `PlatformLock` is already in `:core:transfer` and is the fourth
+copy of the same pattern, so it is the conservative answer.
+
+`UUID` needs no decision at all, and §13B-3's table already says so: `:core:common` has carried
+`UuidIdGenerator` in `commonMain` since Phase 06, backed by a `PlatformUuid` `expect`/`actual` seam, and
+`:core:transfer` already declares `api(project(":core:common"))`. So the `java.util.UUID` import in
+`RealFlashTransferRepository` is a call-site swap, not a port. `kotlin.uuid.Uuid` exists in stdlib
+2.2.10 but carries `@kotlin.uuid.ExperimentalUuidApi` (confirmed by `javap` on
+`kotlin/uuid/Uuid.class`), and there is no reason to reach for it when the seam is already built.
+
+Then **13B-3e** (the pipelines — `Chunker`, `ChunkStream`, `ReceivePipeline`, `SendPipeline`,
+`MultiStreamReceiver`, where the two `.buffer().inputStream()` bridges at `Chunker.kt:185` are deleted,
+`sortedSetOf` is replaced, and `ChunkFrameTest` follows `Chunker` into `commonTest`).
+`policy/DestinationPolicy.kt` and `model/WsTransferModels.kt` stay `androidMain`.
+
+After 13B-3: **15 → 16 (hard gate) → 21 → 22 → 23 (hard gate) → 24.**
+
 ## Phase 14 — Desktop mDNS for `:core:discovery`
 
 - **Date:** 2026-09-05

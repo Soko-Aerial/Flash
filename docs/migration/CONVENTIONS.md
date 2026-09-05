@@ -172,12 +172,18 @@ Phase 13B-2 held it at **1332 / 12 / 0 across 177 XMLs** — a re-typing phase t
 legitimately leaves the total alone. Phase 13B-3a took it to **1351 / 12 / 0 across 178 XMLs**
 (1332 + 19, where +19 = a 12-test `commonTest` suite × 2 targets − the 5 Android-only tests it
 replaces; +1 XML because the suite's `androidHostTest` XML replaces the one that left while its
-`jvmTest` XML is new). Phase 13B-3b took it to **1359 / 12 / 0 across 180 XMLs** — the current
-total — (1351 + 4 × 2 = 1359; 178 + 2 XMLs, one per target for the one new suite), and nothing was
+`jvmTest` XML is new). Phase 13B-3b took it to **1359 / 12 / 0 across 180 XMLs**
+(1351 + 4 × 2 = 1359; 178 + 2 XMLs, one per target for the one new suite), and nothing was
 displaced because the file it covers moved from `androidMain` to `commonMain` without any test moving
-with it. Both 13B-2's and 13B-3a's figures were pasted in their log entries but not carried up to this
-list at the time, the same lapse recorded above for Phase 14; carrying them up matters because a
-stale number here is what a later phase compares against.
+with it. Phase 13B-3c took it to **1377 / 12 / 0 across 181 XMLs** — the current total — and its
+arithmetic is the 13B-3a shape again, which is the one to copy when a suite *moves* rather than
+appearing: the suite left `androidHostTest` at 6 tests in 1 XML and arrived in `commonTest` at 12,
+which run on both targets, so 24 − 6 = **+18** (1359 + 18 = 1377) and 2 − 1 = **+1** XML
+(180 + 1 = 181). Predicting "+24" — adding the new figure without removing the old — is the same
+error the Phase 20 note above exists to prevent, one sub-step smaller. Both 13B-2's and 13B-3a's
+figures were pasted in their log entries but not carried up to this list at the time, the same lapse
+recorded above for Phase 14; carrying them up matters because a stale number here is what a later
+phase compares against.
 
 When tallying, delete the dead results directory of any task the conversion removed
 (`<module>/build/test-results/testDebugUnitTest/` survives the plugin swap and will be
