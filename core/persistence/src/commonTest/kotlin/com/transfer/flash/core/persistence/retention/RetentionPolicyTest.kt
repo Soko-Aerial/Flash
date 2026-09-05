@@ -1,9 +1,15 @@
 package com.transfer.flash.core.persistence.retention
 
+// Phase 09B-1: moved from the Android-only unit-test tier to commonTest, so these 9 cases now run
+// on BOTH the Android host-test JVM and the desktop jvm() target (CONVENTIONS.md R3.1 — an actual
+// that is only compiled is not verified). The only change is JUnit 4 asserts → kotlin.test, which
+// is what makes the file compile in common code; every assertion and every expected value is
+// unchanged, and `org.junit.Assert.assertEquals`/`assertNull` take their arguments in the same
+// order as their kotlin.test counterparts, so no call site needed rewriting.
 import kotlin.random.Random
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
-import org.junit.Test
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertNull
 
 class RetentionPolicyTest {
 
