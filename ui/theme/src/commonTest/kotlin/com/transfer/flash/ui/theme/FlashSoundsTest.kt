@@ -1,12 +1,14 @@
 package com.transfer.flash.ui.theme
 
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertTrue
-import org.junit.Test
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 /**
- * JVM tests for UI-040 pure logic: PCM synthesis math + playback policy.
+ * Tests for UI-040 pure logic: PCM synthesis math + playback policy. Runs on both the Android
+ * host JVM and desktop JVM — the synthesis half of the sound stack is `commonMain`, so desktop
+ * gets the same coverage even though its `rememberFlashSounds` actual plays nothing.
  * The AudioTrack backend (`FlashSoundPlayer`) is Android-dependent and covered by device QA.
  */
 class FlashSoundsTest {
@@ -19,7 +21,7 @@ class FlashSoundsTest {
     fun render_lengthMatchesSumOfSegmentDurations() {
         for (sound in FlashSound.entries) {
             val expected = (FlashSoundSynth.totalDurationMs(sound) * sampleRate / 1000L).toInt()
-            assertEquals("sound=$sound", expected, FlashSoundSynth.render(sound).size)
+            assertEquals(expected, FlashSoundSynth.render(sound).size, "sound=$sound")
         }
     }
 
@@ -33,7 +35,7 @@ class FlashSoundsTest {
     fun render_amplitudeNeverExceeds16BitRange() {
         for (sound in FlashSound.entries) {
             val maxAbs = FlashSoundSynth.render(sound).maxOf { kotlin.math.abs(it.toInt()) }
-            assertTrue("sound=$sound max=$maxAbs", maxAbs <= Short.MAX_VALUE.toInt())
+            assertTrue(maxAbs <= Short.MAX_VALUE.toInt(), "sound=$sound max=$maxAbs")
         }
     }
 
@@ -58,11 +60,11 @@ class FlashSoundsTest {
         for (sound in singleTone) {
             val samples = FlashSoundSynth.render(sound)
             val peaks = collectPositivePeaks(samples, startAt = attackFrames.toInt() + 1)
-            assertTrue("sound=$sound too few peaks: ${peaks.size}", peaks.size >= 5)
+            assertTrue(peaks.size >= 5, "sound=$sound too few peaks: ${peaks.size}")
             peaks.zipWithNext().forEach { (prev, next) ->
                 assertTrue(
-                    "sound=$sound non-monotonic decay: $prev -> $next",
                     next <= prev * 1.02,
+                    "sound=$sound non-monotonic decay: $prev -> $next",
                 )
             }
         }
@@ -74,7 +76,7 @@ class FlashSoundsTest {
         val seg1Frames = 130 * sampleRate / 1000
         val gapFrames = 60 * sampleRate / 1000
         for (i in seg1Frames until seg1Frames + gapFrames) {
-            assertEquals("index=$i", 0, samples[i].toInt())
+            assertEquals(0, samples[i].toInt(), "index=$i")
         }
     }
 
@@ -148,7 +150,10 @@ class FlashSoundsTest {
 
     // ---- Policy truth table -------------------------------------------------------------
     // Ringer/interruption values mirror AudioManager.RINGER_MODE_* and
-    // NotificationManager.INTERRUPTION_FILTER_* compile-time constants.
+    // NotificationManager.INTERRUPTION_FILTER_*. Since Phase 18 these are also mirrored as
+    // private literals inside `FlashSounds.kt` (commonMain cannot import `android.media`), so
+    // this block is now the independent second witness for those five values: if the platform
+    // ever renumbered them, production and test would have to be changed together, on purpose.
 
     private val ringerNormal = 2   // AudioManager.RINGER_MODE_NORMAL
     private val ringerSilent = 0   // AudioManager.RINGER_MODE_SILENT

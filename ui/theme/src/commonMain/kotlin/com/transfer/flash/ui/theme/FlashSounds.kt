@@ -1,15 +1,8 @@
 package com.transfer.flash.ui.theme
 
-import android.content.Context
-import android.media.AudioAttributes
-import android.media.AudioFormat
-import android.media.AudioManager
-import android.media.AudioTrack
-import android.app.NotificationManager
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import kotlin.math.PI
 import kotlin.math.exp
@@ -86,13 +79,26 @@ data class ToneSegment(val freqHz: Double, val durationMs: Int) {
     }
 }
 
+// `android.media.AudioManager.RINGER_MODE_*` and `android.app.NotificationManager
+// .INTERRUPTION_FILTER_*`, verified against `platforms/android-37.0/android.jar` with
+// `javap -constants`. They are `public static final int` in the platform and part of its
+// documented contract — the values cannot change without breaking every app that has ever
+// switch-ed on them — so mirroring them is safe. `FlashSoundsTest` asserts each of these
+// against the same literal a second time, which is the regression alarm if that ever stops
+// being true.
+private const val RINGER_MODE_SILENT = 0
+private const val RINGER_MODE_VIBRATE = 1
+private const val RINGER_MODE_NORMAL = 2
+private const val INTERRUPTION_FILTER_UNKNOWN = 0
+private const val INTERRUPTION_FILTER_ALL = 1
+
 /**
  * Pure decision logic for UI sounds (unit-tested in `FlashSoundsTest`) — primitive types only.
  *
  * Sounds play only when ALL of these hold:
  * 1. The user opted in ([soundsEnabled]; default OFF by owner decision).
  * 2. The device is not in SILENT/VIBRATE ringer mode (values from
- *    `AudioManager.RINGER_MODE_*`, compile-time constants so JVM tests need no Android runtime).
+ *    `AudioManager.RINGER_MODE_*`, mirrored below as `commonMain` literals).
  * 3. DND is not active — interruption filter must be ALL or UNKNOWN (values from
  *    `NotificationManager.INTERRUPTION_FILTER_*`). UNKNOWN means the filter could not be read;
  *    we allow playback because `USAGE_ASSISTANCE_SONIFICATION` is OS-classified
@@ -100,22 +106,30 @@ data class ToneSegment(val freqHz: Double, val durationMs: Int) {
  *
  * The policy is evaluated at every play attempt (never cached) so flipping silent mode or
  * the opt-in toggle takes effect immediately.
+ *
+ * The `Int` parameters are the Android platform's own encoding of ringer mode and interruption
+ * filter, but the comparisons are now against local literals: PHASE-18 calls this object "pure
+ * JVM — uses compile-time constants only", which was true of the *bytecode* and false of the
+ * *source*, since `android.media.AudioManager` and `android.app.NotificationManager` cannot be
+ * imported from `commonMain`. Callers on Android still pass the real
+ * `AudioManager.ringerMode` / `NotificationManager.currentInterruptionFilter`
+ * (see `FlashSounds.android.kt`); only the constant's *spelling* moved.
  */
 object FlashSoundPolicy {
 
     fun shouldPlay(
         soundsEnabled: Boolean,
-        ringerMode: Int = AudioManager.RINGER_MODE_NORMAL,
-        interruptionFilter: Int = NotificationManager.INTERRUPTION_FILTER_ALL,
+        ringerMode: Int = RINGER_MODE_NORMAL,
+        interruptionFilter: Int = INTERRUPTION_FILTER_ALL,
     ): Boolean {
         if (!soundsEnabled) return false
-        if (ringerMode == AudioManager.RINGER_MODE_SILENT ||
-            ringerMode == AudioManager.RINGER_MODE_VIBRATE
+        if (ringerMode == RINGER_MODE_SILENT ||
+            ringerMode == RINGER_MODE_VIBRATE
         ) {
             return false
         }
-        if (interruptionFilter != NotificationManager.INTERRUPTION_FILTER_ALL &&
-            interruptionFilter != NotificationManager.INTERRUPTION_FILTER_UNKNOWN
+        if (interruptionFilter != INTERRUPTION_FILTER_ALL &&
+            interruptionFilter != INTERRUPTION_FILTER_UNKNOWN
         ) {
             return false
         }
@@ -201,79 +215,13 @@ object FlashSoundSynth {
  *
  * Returns a stable lambda so call sites read e.g. `sound(FlashSound.MessageSent)`.
  * Playback is gated by [FlashSoundPolicy] (opt-in flag + system silent/DND state checked at
- * call time); when disabled this does zero work — no AudioTrack is ever created.
+ * call time); when disabled this does zero work — no audio device is ever opened.
+ *
+ * Android drives an `AudioTrack` per event; desktop currently swallows the call — see
+ * `FlashSounds.jvm.kt` for why, and note that a caller cannot tell the difference, because the
+ * pre-KMP contract was already "may legitimately play nothing" (opt-in default OFF, ringer mode,
+ * Zen mode). PHASE-18 step 1b marks this `internal actual`; it stays **public**, because it is
+ * published 1.1.0 API and narrowing it would be an R2 API deletion.
  */
 @Composable
-fun rememberFlashSounds(): (FlashSound) -> Unit {
-    val context = androidx.compose.ui.platform.LocalContext.current.applicationContext
-    return remember { { sound -> FlashSoundPlayer.play(context, sound) } }
-}
-
-/**
- * Internal AudioTrack backend. One MODE_STATIC track per event, created lazily on first
- * enabled play and reused via stop/reloadStaticData/play. USAGE_ASSISTANCE_SONIFICATION +
- * CONTENT_TYPE_SONIFICATION route tones to the system volume group and let the OS mute them
- * under Zen modes that disallow system sounds (belt-and-braces with [FlashSoundPolicy]).
- */
-internal object FlashSoundPlayer {
-
-    private val lock = Any()
-    private var appContextRef: Context? = null
-    private val tracks = HashMap<FlashSound, AudioTrack>()
-
-    fun play(context: Context, sound: FlashSound) {
-        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
-        val notificationManager =
-            context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
-        val allowed = FlashSoundPolicy.shouldPlay(
-            soundsEnabled = FlashSoundSettings.soundsEnabled,
-            ringerMode = audioManager?.ringerMode ?: AudioManager.RINGER_MODE_NORMAL,
-            interruptionFilter = notificationManager?.currentInterruptionFilter
-                ?: NotificationManager.INTERRUPTION_FILTER_ALL,
-        )
-        if (!allowed) return
-
-        synchronized(lock) {
-            appContextRef = context.applicationContext
-            try {
-                val track = tracks.getOrPut(sound) { createTrack(sound) }
-                track.stop()
-                track.reloadStaticData()
-                track.play()
-            } catch (_: IllegalStateException) {
-                releaseLocked(sound)
-            } catch (_: IllegalArgumentException) {
-                releaseLocked(sound)
-            }
-        }
-    }
-
-    private fun createTrack(sound: FlashSound): AudioTrack {
-        val pcm = FlashSoundSynth.render(sound)
-        val bytes = pcm.size * 2
-        val track = AudioTrack.Builder()
-            .setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                    .build(),
-            )
-            .setAudioFormat(
-                AudioFormat.Builder()
-                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                    .setSampleRate(FlashSoundSynth.SAMPLE_RATE_HZ)
-                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                    .build(),
-            )
-            .setTransferMode(AudioTrack.MODE_STATIC)
-            .setBufferSizeInBytes(bytes)
-            .build()
-        track.write(pcm, 0, pcm.size)
-        return track
-    }
-
-    private fun releaseLocked(sound: FlashSound) {
-        tracks.remove(sound)?.release()
-        if (tracks.isEmpty()) appContextRef = null
-    }
-}
+expect fun rememberFlashSounds(): (FlashSound) -> Unit

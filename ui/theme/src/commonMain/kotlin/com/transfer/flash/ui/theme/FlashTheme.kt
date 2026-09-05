@@ -1,16 +1,13 @@
 package com.transfer.flash.ui.theme
 
-import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
+import androidx.compose.material3.ColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 
 private val LocalFlashColors = compositionLocalOf { FlashColors.light() }
 private val LocalFlashTypography = compositionLocalOf { FlashTypography.default() }
@@ -58,17 +55,16 @@ fun FlashTheme(
     motion: FlashMotion = rememberFlashMotion(),
     content: @Composable () -> Unit,
 ) {
-    val context = LocalContext.current
-    val dynamicScheme =
-        if (dynamicAccent && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-        } else {
-            null
-        }
+    val dynamicScheme = if (dynamicAccent) flashDynamicColorScheme(dark = darkTheme) else null
     val resolvedColors = remember(colors, dynamicScheme) {
         resolveAccent(
             dynamicAccent = dynamicAccent,
-            sdkInt = Build.VERSION.SDK_INT,
+            // Was `Build.VERSION.SDK_INT`. [flashDynamicColorScheme] already returns null below
+            // SDK 31, so a non-null scheme *proves* the device is >= 31 and a null one leaves the
+            // predicate false either way — the resolved colors are identical for every
+            // (dynamicAccent, sdkInt) pair the old code could see. The check stays because
+            // [resolveAccent] is the unit-tested seam and its 5 tests drive `sdkInt` directly.
+            sdkInt = dynamicScheme?.let { DYNAMIC_ACCENT_MIN_SDK } ?: 0,
             dynamicPrimary = dynamicScheme?.primary,
             dynamicSecondary = dynamicScheme?.secondary,
             fallback = colors,
@@ -86,7 +82,21 @@ fun FlashTheme(
     )
 }
 
-/** [android.os.Build.VERSION_CODES.S] — kept as a literal so [resolveAccent] stays JVM-pure. */
+/**
+ * The system wallpaper-derived Material scheme, or `null` when the platform has none (UI-036).
+ *
+ * Android returns `dynamicDarkColorScheme`/`dynamicLightColorScheme` on SDK 31+ and `null`
+ * below it — so the SDK gate that used to live inline in [FlashTheme] now lives in the `actual`.
+ * Desktop always returns `null`: there is no OS wallpaper-palette API behind Compose Desktop, so
+ * `dynamicAccent = true` is simply inert there rather than an error.
+ *
+ * `@Composable` because the Android side needs `LocalContext`. Only accent slots are consumed
+ * from the result ([resolveAccent]); Flash never adopts a system scheme wholesale (ADR-005).
+ */
+@Composable
+internal expect fun flashDynamicColorScheme(dark: Boolean): ColorScheme?
+
+/** `android.os.Build.VERSION_CODES.S` — a literal, so [resolveAccent] stays platform-free. */
 internal const val DYNAMIC_ACCENT_MIN_SDK = 31
 
 /**

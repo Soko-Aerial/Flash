@@ -1,9 +1,5 @@
 package com.transfer.flash.ui.theme
 
-import android.content.Context
-import android.os.Build
-import android.provider.Settings
-import android.view.accessibility.AccessibilityManager
 import androidx.compose.animation.ContentTransform
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
@@ -28,7 +24,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.remember
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.IntOffset
 
 /**
@@ -384,39 +379,25 @@ class FlashMotion internal constructor(
         val Decelerate = CubicBezierEasing(0f, 0f, 0.2f, 1f)
         val Standard = CubicBezierEasing(0.4f, 0f, 0.2f, 1f)
         val Accelerate = CubicBezierEasing(0.4f, 0f, 1f, 1f)
-
-        fun isReduceMotionEnabled(context: Context): Boolean {
-            val scale = Settings.Global.getFloat(
-                context.contentResolver,
-                Settings.Global.ANIMATOR_DURATION_SCALE,
-                1f,
-            )
-            if (scale == 0f) {
-                return true
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                val accessibilityManager =
-                    context.getSystemService(Context.ACCESSIBILITY_SERVICE) as? AccessibilityManager
-                if (accessibilityManager != null && accessibilityManager.isReduceMotionEnabledCompat()) {
-                    return true
-                }
-            }
-            return false
-        }
-
-        private fun AccessibilityManager.isReduceMotionEnabledCompat(): Boolean {
-            return runCatching {
-                AccessibilityManager::class.java
-                    .getMethod("isReduceMotionEnabled")
-                    .invoke(this) as Boolean
-            }.getOrDefault(false)
-        }
     }
 }
 
+/**
+ * Whether the platform is asking UI to stop moving.
+ *
+ * Android reads `ANIMATOR_DURATION_SCALE` plus the SDK 33 `AccessibilityManager` flag — see
+ * `FlashMotion.Companion.isReduceMotionEnabled` in `FlashMotion.android.kt`, which is the
+ * pre-KMP body verbatim. Desktop has no equivalent query and reports `false`.
+ *
+ * `@Composable` because the Android side needs `LocalContext`; the pre-KMP
+ * [rememberFlashMotion] read it directly and cached the result with `remember(context)`, and the
+ * `actual` keeps that cache so the query still runs once per context rather than per recomposition.
+ */
+@Composable
+internal expect fun isReduceMotionOnPlatform(): Boolean
+
 @Composable
 fun rememberFlashMotion(): FlashMotion {
-    val context = LocalContext.current
-    val reduceMotion = remember(context) { FlashMotion.isReduceMotionEnabled(context) }
+    val reduceMotion = isReduceMotionOnPlatform()
     return remember(reduceMotion) { FlashMotion(reduceMotion = reduceMotion) }
 }

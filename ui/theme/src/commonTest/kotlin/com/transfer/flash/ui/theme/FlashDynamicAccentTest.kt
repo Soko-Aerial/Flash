@@ -1,8 +1,8 @@
 package com.transfer.flash.ui.theme
 
 import androidx.compose.ui.graphics.Color
-import org.junit.Assert.assertEquals
-import org.junit.Test
+import kotlin.test.Test
+import kotlin.test.assertEquals
 
 /** UI-036: pure decision logic for dynamic accent tinting (no Robolectric needed). */
 class FlashDynamicAccentTest {

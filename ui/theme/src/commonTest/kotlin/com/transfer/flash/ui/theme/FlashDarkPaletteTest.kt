@@ -1,13 +1,14 @@
 package com.transfer.flash.ui.theme
 
 import androidx.compose.ui.graphics.Color
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotEquals
-import org.junit.Assert.assertTrue
-import org.junit.Test
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.pow
+import kotlin.math.roundToInt
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertNotEquals
+import kotlin.test.assertTrue
 
 /**
  * UI-035: verifies the authored dark palette against the light palette.
@@ -92,9 +93,18 @@ class FlashDarkPaletteTest {
     private fun contrastGuard(foreground: Color, background: Color, minimum: Float) {
         val ratio = contrastRatio(foreground, background)
         assertTrue(
-            "Contrast ${"%.2f".format(ratio)}:1 < $minimum:1 for $foreground on $background",
             ratio >= minimum,
+            "Contrast ${ratio.toTwoDecimals()}:1 < $minimum:1 for $foreground on $background",
         )
+    }
+
+    // `"%.2f".format(x)` is `kotlin.text.String.format`, which exists only on JVM-family targets
+    // via `java.lang.String.format` — it would compile here today (both targets are JVM) and
+    // break the moment a Native target is added, which is exactly the leak R6.1 warns about.
+    // Ratios are always >= 1, so integer scaling is exact and needs no locale.
+    private fun Float.toTwoDecimals(): String {
+        val scaled = (this * 100f).roundToInt()
+        return "${scaled / 100}.${(scaled % 100).toString().padStart(2, '0')}"
     }
 
     private fun contrastRatio(a: Color, b: Color): Float {

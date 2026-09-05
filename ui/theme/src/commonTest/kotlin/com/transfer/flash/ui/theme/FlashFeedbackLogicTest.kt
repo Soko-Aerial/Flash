@@ -1,12 +1,12 @@
 package com.transfer.flash.ui.theme
 
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertTrue
-import org.junit.Test
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 /**
- * JVM tests for the pure haptic decision logic (UI-039).
+ * Tests for the pure haptic decision logic (UI-039), run on both Android host and desktop JVM.
  * Compose-dependent mapping lives in `rememberFlashHaptics` and is covered by device QA.
  */
 class FlashFeedbackLogicTest {
