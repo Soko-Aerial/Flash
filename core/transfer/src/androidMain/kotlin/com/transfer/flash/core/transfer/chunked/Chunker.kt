@@ -7,7 +7,8 @@ import okio.buffer
 // [ChunkSource] — the re-openable byte source this file chunks — moved to
 // `commonMain/chunked/ChunkSource.kt` in Phase 13B-2 and its `open()` now returns `okio.Source`.
 // The two call sites below bridge it back to the `java.io.InputStream` that [ChunkStream] still
-// reads, because [ChunkStream] depends on `ChunkFrame`/`Sha256` and cannot move until 13B-3.
+// reads, because [ChunkStream] depends on `ChunkFrame`, which is still Android-bound. `Sha256`
+// went common in 13B-3 and is no longer part of what pins this file.
 
 /** Identity + declared size of one outgoing file. */
 public data class FileMeta(

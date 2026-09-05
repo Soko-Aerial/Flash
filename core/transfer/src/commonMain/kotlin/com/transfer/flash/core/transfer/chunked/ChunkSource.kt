@@ -6,9 +6,10 @@ import okio.Source
  * Re-openable byte source for one outgoing file (C5.4).
  *
  * Phase 13B-2 (D10 = Option A) split this out of `Chunker.kt` — which stays in `androidMain`
- * because [ChunkStream] still depends on `ChunkFrame` and `Sha256`, both 13B-3 scope — and
- * re-typed `open()` from `java.io.InputStream` to [okio.Source]. That single type change is
- * what makes the send side of the transfer pipeline expressible in common code at all.
+ * because [ChunkStream] still depends on `ChunkFrame`, which is 13B-3 scope (`Sha256` was the
+ * other name in this sentence until 13B-3 moved it here) — and re-typed `open()` from
+ * `java.io.InputStream` to [okio.Source]. That single type change is what makes the send side of
+ * the transfer pipeline expressible in common code at all.
  */
 public fun interface ChunkSource {
 
