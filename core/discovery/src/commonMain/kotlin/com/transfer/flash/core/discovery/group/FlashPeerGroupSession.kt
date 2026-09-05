@@ -15,7 +15,6 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Per-peer link state machine for a multi-peer group session.
@@ -227,17 +226,25 @@ internal class FlashPeerGroupSession(
             .keys
             .toList()
         if (targets.isEmpty()) return true
-        val results = ConcurrentHashMap<String, Boolean>(targets.size)
+        // Was `ConcurrentHashMap<String, Boolean>(targets.size)` — `java.util.concurrent` is
+        // not available in commonMain. `targets` is a distinct key list, so giving each child
+        // its OWN index makes the writes disjoint and no synchronisation is needed at all,
+        // where a shared-key map did need it; the array is read only after `parent.join()`,
+        // which is the same happens-before edge the map read relied on. `null` means "this
+        // child never produced a result" (it threw or was cancelled) — exactly what an absent
+        // map entry meant, and `all { it == true }` treats it the same way `results[it] == true`
+        // did.
+        val results = arrayOfNulls<Boolean>(targets.size)
         val parent = scope.launch(start = CoroutineStart.LAZY) {
-            targets.forEach { endpointId ->
-                launch { results[endpointId] = runSend(endpointId, payloadSizeBytes) }
+            targets.forEachIndexed { index, endpointId ->
+                launch { results[index] = runSend(endpointId, payloadSizeBytes) }
             }
         }
         lifecycleMutex.withLock { sendJob = parent }
         parent.start()
         parent.join()
         lifecycleMutex.withLock { if (sendJob === parent) sendJob = null }
-        return targets.all { results[it] == true }
+        return results.all { it == true }
     }
 
     /**

@@ -4,9 +4,11 @@ import com.transfer.flash.core.common.model.FlashDeviceId
 import com.transfer.flash.core.common.result.FlashError
 import com.transfer.flash.core.common.result.FlashResult
 import com.transfer.flash.core.common.result.onSuccess
+import com.transfer.flash.core.common.time.SystemTimeSource
 import com.transfer.flash.core.discovery.FlashDiscovery
 import com.transfer.flash.core.discovery.FlashDiscoveryState
 import com.transfer.flash.core.discovery.FlashDiscoveredEndpoint
+import com.transfer.flash.core.discovery.concurrent.PlatformLock
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -15,7 +17,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
-import java.util.Locale
 import kotlin.concurrent.Volatile
 
 /**
@@ -83,7 +84,7 @@ public class CompositeDiscovery(
     private val transports: List<FlashRadioTransport>,
     private val directoryFactory: () -> EndpointDirectory = { StandardEndpointDirectory() },
     scopeFactory: () -> CoroutineScope = { CoroutineScope(SupervisorJob() + Dispatchers.Default) },
-    private val clock: () -> Long = { System.currentTimeMillis() },
+    private val clock: () -> Long = { SystemTimeSource.nowMs() },
     /**
      * Period between automatic presence sweeps while any transport runs
      * (P3.5 fix: radio goodbyes are routinely missed — RFC 6762 §10.1 — so
@@ -136,13 +137,22 @@ public class CompositeDiscovery(
         public val PRIORITY_ORDER: List<String> = listOf("LAN", "WIFI_DIRECT", "WIFI_AWARE", "BLE")
 
         public fun priorityRank(transportName: String): Int {
-            val idx = PRIORITY_ORDER.indexOf(transportName.uppercase(Locale.ROOT))
+            // `uppercase()` with no argument is the locale-independent overload added in
+            // Kotlin 1.5; on JVM it compiles to exactly the previous
+            // `toUpperCase(Locale.ROOT)`, so transport-name matching is unchanged.
+            val idx = PRIORITY_ORDER.indexOf(transportName.uppercase())
             return if (idx >= 0) idx else PRIORITY_ORDER.size
         }
     }
 
     private val scope: CoroutineScope = scopeFactory()
-    private val lock = Any()
+
+    /**
+     * Was `Any()` + `kotlin.synchronized`, which is JVM-only. [PlatformLock] is the
+     * `expect`/`actual` seam that replaces it; both current `actual`s are the same
+     * monitor, so the 18 critical sections below are unchanged in behaviour.
+     */
+    private val lock = PlatformLock()
     private val directories = HashMap<String, EndpointDirectory>()
     private val browsingByTransport = HashMap<String, Boolean>()
     private val advertisingByTransport = HashMap<String, Boolean>()
@@ -260,7 +270,7 @@ public class CompositeDiscovery(
                 markAdvertising(transport.transportName, false)
             }
         }
-        synchronized(lock) { browseStalledSince.clear() }
+        lock.withLock { browseStalledSince.clear() }
         refreshState()
         if (resumeAdvertising) {
             identity?.let { startAdvertisingInternal(advertisedPort, it) }
@@ -311,7 +321,7 @@ public class CompositeDiscovery(
                 markAdvertising(transport.transportName, false)
             }
         }
-        synchronized(lock) { browseStalledSince.clear() }
+        lock.withLock { browseStalledSince.clear() }
         refreshState()
         return result
     }
@@ -338,7 +348,7 @@ public class CompositeDiscovery(
         this.advertisedPort = port
         desiredBrowsing = true
         val failures = mutableListOf<String>()
-        synchronized(lock) { collectingOrStart() }
+        lock.withLock { collectingOrStart() }
         startSweeperLocked()
         for (transport in transports) {
             val advResult = transport.startAdvertising(port, identity)
@@ -377,7 +387,7 @@ public class CompositeDiscovery(
     public suspend fun setMode(mode: FlashDiscoveryMode) {
         currentPolicy = DiscoveryModePolicy.forMode(mode)
         _discoveryMode.value = mode
-        synchronized(lock) { collectingOrStart() }
+        lock.withLock { collectingOrStart() }
         for (transport in transports) {
             transport.setMode(currentPolicy)
         }
@@ -395,7 +405,7 @@ public class CompositeDiscovery(
      */
     public fun sweep(nowMs: Long, graceWindowMs: Long = DEFAULT_GRACE_MS) {
         val agedOut = mutableListOf<AgedOut>()
-        synchronized(lock) {
+        lock.withLock {
             val serviceNames = HashMap<FlashDeviceId, String>()
             for (transport in transports) {
                 directoryFor(transport.transportName).snapshot().forEach {
@@ -412,7 +422,7 @@ public class CompositeDiscovery(
             rebuildEndpointsLocked()
         }
         for (aged in agedOut) {
-            synchronized(lock) {
+            lock.withLock {
                 val representative = globalRepresentativeLocked(aged.deviceId)
                 if (representative != null) {
                     // Hysteresis: peer alive on a lower-priority radio — no Lost.
@@ -434,7 +444,7 @@ public class CompositeDiscovery(
     private suspend fun aggregate(
         action: suspend (FlashRadioTransport) -> FlashResult<Unit>,
     ): FlashResult<Unit> {
-        synchronized(lock) { collectingOrStart() }
+        lock.withLock { collectingOrStart() }
         val failures = mutableListOf<String>()
         for (transport in transports) {
             when (val result = action(transport)) {
@@ -462,11 +472,11 @@ public class CompositeDiscovery(
     private fun directoryFor(transportName: String): EndpointDirectory =
         directories.getOrPut(transportName) { directoryFactory() }
 
-    private fun markBrowsing(name: String, value: Boolean) = synchronized(lock) {
+    private fun markBrowsing(name: String, value: Boolean) = lock.withLock {
         browsingByTransport[name] = value
     }
 
-    private fun markAdvertising(name: String, value: Boolean) = synchronized(lock) {
+    private fun markAdvertising(name: String, value: Boolean) = lock.withLock {
         advertisingByTransport[name] = value
     }
 
@@ -476,7 +486,7 @@ public class CompositeDiscovery(
      * attempting its own restart, and that stamp is what rate-limits it to one
      * attempt per [browseWatchdogMs] window.
      */
-    private fun clearStall(name: String) = synchronized(lock) {
+    private fun clearStall(name: String) = lock.withLock {
         browseStalledSince.remove(name)
     }
 
@@ -542,14 +552,14 @@ public class CompositeDiscovery(
      * for an unknown peer is promoted to a real sighting rather than discarded.
      */
     private fun applyPresence(transport: FlashRadioTransport, endpoint: FlashDiscoveredEndpoint) {
-        val known = synchronized(lock) {
+        val known = lock.withLock {
             directoryFor(transport.transportName).get(endpoint.deviceId) != null
         }
         if (!known) {
             applySighting(transport, endpoint)
             return
         }
-        synchronized(lock) {
+        lock.withLock {
             // Unchanged by construction, so no diff to publish and no snapshot
             // rebuild: only lastSeenAt moves, and the snapshot's contents are
             // identical (re-publishing would churn the UI list for nothing).
@@ -565,7 +575,7 @@ public class CompositeDiscovery(
      * makes [state] honest and what arms the watchdog in [watchdogBrowsing].
      */
     private fun applyBrowseState(transport: FlashRadioTransport, browsing: Boolean) {
-        synchronized(lock) {
+        lock.withLock {
             val name = transport.transportName
             browsingByTransport[name] = browsing
             if (browsing) {
@@ -583,7 +593,7 @@ public class CompositeDiscovery(
      */
     private suspend fun watchdogBrowsing(nowMs: Long) {
         if (!desiredBrowsing) return
-        val stalled = synchronized(lock) {
+        val stalled = lock.withLock {
             browseStalledSince
                 .filterValues { since -> nowMs - since >= browseWatchdogMs }
                 .keys
@@ -594,18 +604,22 @@ public class CompositeDiscovery(
             val transport = transports.firstOrNull { it.transportName == name } ?: continue
             // Re-stamp BEFORE the attempt: a failed restart then retries one full
             // window later instead of hammering the radio every sweep.
-            synchronized(lock) { browseStalledSince[name] = nowMs }
+            lock.withLock { browseStalledSince[name] = nowMs }
             transport.restartBrowsing().onSuccess { markBrowsing(name, true) }
         }
         refreshState()
     }
 
     private fun applySighting(transport: FlashRadioTransport, endpoint: FlashDiscoveredEndpoint) {
-        synchronized(lock) {
+        lock.withLock {
             val deviceId = endpoint.deviceId
             val previousRepresentative = globalRepresentativeLocked(deviceId)
             when (directoryFor(transport.transportName).applySeen(endpoint, clock())) {
-                is EndpointDirectory.Diff.Unchanged -> return
+                // Was a non-local `return` from applySighting. `PlatformLock.withLock` is not
+                // `inline` (an `expect class` member cannot be), so a non-local return no
+                // longer compiles. Identical in effect here because the `withLock` call is the
+                // whole function body: returning from the lambda returns from the function.
+                is EndpointDirectory.Diff.Unchanged -> return@withLock
                 else -> Unit
             }
             val newRepresentative = globalRepresentativeLocked(deviceId)
@@ -621,7 +635,7 @@ public class CompositeDiscovery(
     }
 
     private fun applyLoss(transport: FlashRadioTransport, deviceId: FlashDeviceId) {
-        synchronized(lock) {
+        lock.withLock {
             val serviceName = directoryFor(transport.transportName)
                 .get(deviceId)?.endpoint?.serviceName
             when (directoryFor(transport.transportName).applyLost(deviceId)) {
@@ -689,7 +703,7 @@ public class CompositeDiscovery(
             .map { it.endpoint }
     }
 
-    private fun refreshState() = synchronized(lock) {
+    private fun refreshState() = lock.withLock {
         val anyBrowsing = browsingByTransport.values.any { it }
         // GHOST (P3.5-B3): transports report their suppressed advertise as
         // Success, so the raw flag would over-report visibility. The policy is
