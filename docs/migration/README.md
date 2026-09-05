@@ -9,42 +9,58 @@ That file is now a short charter. **All executable work lives here.**
 |---|---|---|
 | 1 | [CONVENTIONS.md](CONVENTIONS.md) | Rules every executing agent MUST follow. Non-negotiable. |
 | 2 | [AUDIT.md](AUDIT.md) | Verified ground truth about the repo. Supersedes any claim in the old plan. |
-| 3 | [DECISIONS.md](DECISIONS.md) | Open decisions D1–**D10** (D10 added by Phase 13). **Only D1 (and D2 if renaming) gate Phase 06**; the rest gate later phases — see the blocking-map table at the top of DECISIONS.md. **D10 is now on the critical path**: it blocks 13B-2, 13B-3, 15 and therefore the Phase 16 gate. |
+| 3 | [DECISIONS.md](DECISIONS.md) | Decisions D1–D10. **D1–D9 were all answered by the human on 2026-08-31. D10 (added by Phase 13) is the only one still `_pending_`** — re-verified 2026-09-05 by reading every `**ANSWER:**` line in the file. Ignore the older "only D1 (and D2) gate Phase 06" framing that used to sit in this cell: every decision that gated phases 00–20 is answered, and those phases are done. **D10 is now the entire critical path** — it blocks 13B-2, 13B-3, 15, the Phase 16 gate, and therefore 21–24. |
 
 ## Phases
 
 Execute in numeric order. Do not skip. Do not reorder. Each phase file is
 self-contained and states its own preconditions.
 
-| Phase | File | Blocked by | Risk |
+The **Status** column below was rebuilt on 2026-09-05 by reading every `## Phase` entry in
+`logs/migration.md` and confirming each cited commit exists with `git log -1 <sha>`. It used to be
+a "Blocked by" column that recorded *original* preconditions, which meant a done phase whose
+precondition happened to be a decision still read as blocked — Phase 14 was misreported that way.
+Status is authoritative; each phase file's own preconditions section holds the dependency detail.
+
+| Phase | File | Status (verified 2026-09-05) | Risk |
 |---|---|---|---|
-| 00 | [PHASE-00-baseline.md](PHASE-00-baseline.md) | — | none |
-| 01 | [PHASE-01-hygiene.md](PHASE-01-hygiene.md) | 00 | low |
-| 02 | [PHASE-02-delete-wslegacy.md](PHASE-02-delete-wslegacy.md) | 00 | low |
-| 03 | [PHASE-03-logging.md](PHASE-03-logging.md) | 00 | low |
-| 04 | [PHASE-04-time-uuid-locale.md](PHASE-04-time-uuid-locale.md) | 03 | low |
-| 05 | [PHASE-05-concurrency.md](PHASE-05-concurrency.md) | 04 | medium |
-| 06 | [PHASE-06-kmp-pilot.md](PHASE-06-kmp-pilot.md) | 05 + **D1** (+D2 if renaming) | **highest** |
-| 07 | [PHASE-07-security-kmp.md](PHASE-07-security-kmp.md) | 06 | medium |
-| 08 | [PHASE-08-discovery-kmp.md](PHASE-08-discovery-kmp.md) | 06 | medium |
-| 09 | ~~[PHASE-09-persistence-kmp.md](PHASE-09-persistence-kmp.md)~~ **SUPERSEDED** | — | — |
-| 09B | [PHASE-09B-persistence-room-kmp.md](PHASE-09B-persistence-room-kmp.md) | **09B-1 DONE (`328c553`, `24435bd`, `8b5fa5a`)**; 09B-2 blocked on D5 = C's driver choice, 09B-3 on the settings ABI option | 09B-1 done, 09B-2/3 high |
-| 10 | [PHASE-10-network-kmp.md](PHASE-10-network-kmp.md) | 07, 08 | high |
-| 11 | [PHASE-11-repositories-kmp.md](PHASE-11-repositories-kmp.md) | 07, 08, 09B-1, 10 | high |
-| 12 | [PHASE-12-engine-kmp.md](PHASE-12-engine-kmp.md) | 07,08,09B-1,10,11 | high |
-| 13 | ~~[PHASE-13-desktop-fileio.md](PHASE-13-desktop-fileio.md)~~ **SUPERSEDED** | — | — |
-| 13B | [PHASE-13B-desktop-fileio.md](PHASE-13B-desktop-fileio.md) | **13B-1 DONE (`fafd450`)**; 13B-2/13B-3 blocked on **D10**, and 13B-3 additionally on an explicit R8 authorisation to rewrite `ChunkFrame` | 13B-1 low, 13B-2/3 high |
-| 14 | [PHASE-14-desktop-discovery.md](PHASE-14-desktop-discovery.md) | 12 + **D6** | high |
-| 15 | [PHASE-15-desktop-transport.md](PHASE-15-desktop-transport.md) | 13B-2 (so **D10**), 14 | high |
-| 16 | [PHASE-16-desktop-headless-interop.md](PHASE-16-desktop-headless-interop.md) | 15 | **gate** |
-| 17 | [PHASE-17-ui-resources.md](PHASE-17-ui-resources.md) | **DONE (`a8d9d0d`, `23267ed`)** | low |
-| 18 | [PHASE-18-ui-theme-kmp.md](PHASE-18-ui-theme-kmp.md) | **DONE (`96e8799`)** — read its STATUS box before reusing any of it; 14 of its steps were wrong | medium |
-| 19 | [PHASE-19-ui-platform-shims.md](PHASE-19-ui-platform-shims.md) | **DONE (`94a60a4`)** — read its STATUS box before reusing any of it; 12 of its statements were wrong, D7b was overridden on evidence (no FileKit), and there are 7 shims not 8 | medium |
-| 20 | [PHASE-20-ui-chat-kmp.md](PHASE-20-ui-chat-kmp.md) | **DONE (`c5abd5d`)** — read its STATUS box before reusing any of it; Steps 1 and 2 must not be executed (Step 2's "CMP requires `jvm("desktop")`" is false and would break R5 across the UI track), Step 5's build file is unbuildable, and the module ended up **100% common** | high |
-| 21 | [PHASE-21-desktop-app-shell.md](PHASE-21-desktop-app-shell.md) | 16,20 — **20 satisfied, 16 blocked on D10** | medium |
-| 22 | [PHASE-22-adaptive-desktop-screens.md](PHASE-22-adaptive-desktop-screens.md) | 21 + **D8** | medium |
-| 23 | [PHASE-23-interop-matrix.md](PHASE-23-interop-matrix.md) | 22 | **gate** |
-| 24 | [PHASE-24-publishing.md](PHASE-24-publishing.md) | 23 | medium |
+| 00 | [PHASE-00-baseline.md](PHASE-00-baseline.md) | **DONE** (`8506036`) | none |
+| 01 | [PHASE-01-hygiene.md](PHASE-01-hygiene.md) | **DONE** (`c0c94e2`) | low |
+| 02 | [PHASE-02-delete-wslegacy.md](PHASE-02-delete-wslegacy.md) | **DONE** (`275c704`) | low |
+| 03 | [PHASE-03-logging.md](PHASE-03-logging.md) | **DONE** (`da4fba6`) | low |
+| 04 | [PHASE-04-time-uuid-locale.md](PHASE-04-time-uuid-locale.md) | **DONE** (`254c474`, `e85b3d5`) | low |
+| 05 | [PHASE-05-concurrency.md](PHASE-05-concurrency.md) | **DONE** (`2339cb8`) | medium |
+| 06 | [PHASE-06-kmp-pilot.md](PHASE-06-kmp-pilot.md) | **DONE** (`83232f4`) — ran under D1=B and D2=A | was **highest** |
+| 07 | [PHASE-07-security-kmp.md](PHASE-07-security-kmp.md) | **DONE** (`fe5f9be`) | medium |
+| 08 | [PHASE-08-discovery-kmp.md](PHASE-08-discovery-kmp.md) | **DONE** (`b879017`) | medium |
+| 09 | ~~[PHASE-09-persistence-kmp.md](PHASE-09-persistence-kmp.md)~~ | **SUPERSEDED** by 09B — its log entry is docs-only, no code | — |
+| 09B | [PHASE-09B-persistence-room-kmp.md](PHASE-09B-persistence-room-kmp.md) | **09B-1 DONE** (`328c553`, `24435bd`, `8b5fa5a`) — db tier only. **09B-2 BLOCKED** on D5=C's three unanswered sub-decisions (which encrypted desktop driver; is a commercial licence acceptable; SQLCipher file-format parity). **09B-3 BLOCKED** on the settings-tier ABI option (a) or (b). | 09B-1 done, 09B-2/3 high |
+| 10 | [PHASE-10-network-kmp.md](PHASE-10-network-kmp.md) | **DONE** (`428154d`) | high |
+| 11 | [PHASE-11-repositories-kmp.md](PHASE-11-repositories-kmp.md) | **DONE** (`f96797e`) — `:core:transfer` + `:core:messaging` | high |
+| 12 | [PHASE-12-engine-kmp.md](PHASE-12-engine-kmp.md) | **DONE** (`4ac401b`) | high |
+| 13 | ~~[PHASE-13-desktop-fileio.md](PHASE-13-desktop-fileio.md)~~ | **SUPERSEDED** by 13B — its log entry is docs-only, no code | — |
+| 13B | [PHASE-13B-desktop-fileio.md](PHASE-13B-desktop-fileio.md) | **13B-1 DONE** (`fafd450`). **13B-2 BLOCKED on D10.** **13B-3 BLOCKED on D10 *and* an explicit R8 authorisation to rewrite `chunked/ChunkFrame.kt`**, with byte-identical output as the acceptance criterion. | 13B-1 low, 13B-2/3 high |
+| 14 | [PHASE-14-desktop-discovery.md](PHASE-14-desktop-discovery.md) | **DONE** (`75d86ef`) under D6=A (JmDNS). Was previously listed here as "12 + **D6**", which read as blocked; D6 was answered 2026-08-31 and the phase shipped. **Caveat: D6's mandated throwaway spike was never run**, and no real multicast was ever exercised — only a human with two machines on one LAN can discharge that. | high |
+| 15 | [PHASE-15-desktop-transport.md](PHASE-15-desktop-transport.md) | **BLOCKED** — needs 13B-2, so **D10**. 14 is satisfied. | high |
+| 16 | [PHASE-16-desktop-headless-interop.md](PHASE-16-desktop-headless-interop.md) | **BLOCKED** — needs 15, so **D10** | **gate** |
+| 17 | [PHASE-17-ui-resources.md](PHASE-17-ui-resources.md) | **DONE** (`a8d9d0d`, `23267ed`) | low |
+| 18 | [PHASE-18-ui-theme-kmp.md](PHASE-18-ui-theme-kmp.md) | **DONE** (`96e8799`) — read its STATUS box before reusing any of it; 14 of its steps were wrong | medium |
+| 19 | [PHASE-19-ui-platform-shims.md](PHASE-19-ui-platform-shims.md) | **DONE** (`94a60a4`) — read its STATUS box before reusing any of it; 12 of its statements were wrong, D7b was overridden on evidence (no FileKit), and there are 7 shims not 8 | medium |
+| 20 | [PHASE-20-ui-chat-kmp.md](PHASE-20-ui-chat-kmp.md) | **DONE** (`c5abd5d`) — read its STATUS box before reusing any of it; Steps 1 and 2 must not be executed (Step 2's "CMP requires `jvm("desktop")`" is false and would break R5 across the UI track), Step 5's build file is unbuildable, and the module ended up **100% common** | high |
+| 21 | [PHASE-21-desktop-app-shell.md](PHASE-21-desktop-app-shell.md) | **BLOCKED** — needs 16, so **D10**. 20 is satisfied. **Its 2026-08-31 log entry claims a `:desktop` module that has never existed** — see the CORRECTION appended to it in `logs/migration.md`. | medium |
+| 22 | [PHASE-22-adaptive-desktop-screens.md](PHASE-22-adaptive-desktop-screens.md) | **BLOCKED** — needs 21. Was listed as "21 + **D8**"; **D8=A was answered 2026-08-31**, so no decision gates it. **Its 2026-08-31 log entry is also false** — same CORRECTION. | medium |
+| 23 | [PHASE-23-interop-matrix.md](PHASE-23-interop-matrix.md) | **BLOCKED** — needs 22 | **gate** |
+| 24 | [PHASE-24-publishing.md](PHASE-24-publishing.md) | **BLOCKED** — needs 23. Also owes `sample/consumer-desktop` per D9=A. | medium |
+
+### Two log entries near the top of `logs/migration.md` are false — do not trust them
+
+`logs/migration.md` opens with `## PHASE-21` and `## PHASE-22` entries dated 2026-08-31, both citing
+commit `ecb0c63` and both reporting PASS builds. `ecb0c63` is a **docs-only** commit (33 files, all
+under `docs/migration/` and `logs/`), `desktop/` has never existed on any branch
+(`git log --all -- desktop` is empty), and `settings.gradle.kts` has no `:desktop` include. One of the
+cited PASS tasks, `:ui:chat:compileKotlinDesktop`, cannot exist at all under CONVENTIONS R5. A
+**CORRECTION block was appended to each entry** on 2026-08-31 (`0250a51`); the false text is preserved
+above it because the log is append-only (R9). If you read that log top-down, read the corrections too.
 
 ## Ordering correction (2026-08-30) — read before touching phases 07–12
 
@@ -79,10 +95,15 @@ because they
 touch disjoint modules. Phase 17 only needs Phase 06. If you have one agent, do them
 in numeric order anyway.
 
-## Modules with no phase file (2026-09-05) — read before planning any further UI phase
+## Modules with no phase file (corrected 2026-09-05) — read before planning any further UI phase
 
-The table above covers every module **except two**, and both are real:
+The two modules the plan never covers are **`:core:calling` and `:ui:callui`** — the calling stack.
+An earlier version of this section named `:ui:callui` and `:sample:consumer-granular`; the second half
+of that was **wrong** and is corrected here.
 
+- **`:core:calling`** — grepping every file in `docs/migration/` for `core:calling` returns hits in
+  `CONVENTIONS.md` and this README only. **No phase file mentions it at all.** It is still
+  `com.android.library`, and it is the WebRTC module, so it is the substantive half of the problem.
 - **`:ui:callui`** — depends on `:ui:theme` (`ui/callui/build.gradle.kts:62`) and names
   `FlashIconSpec` (`FlashCallScreen.kt:486`), so it sits inside the blast radius of Phase
   17 (done), 18 (done) and 19 (done), yet no phase converts it or even compiles it as a gate. The
@@ -91,11 +112,19 @@ The table above covers every module **except two**, and both are real:
   multiplatform, so the gap is widening rather than holding still. **Whether calling is in
   scope for desktop at all is a human decision** — WebRTC on desktop is not a small
   assumption to make silently.
-- **`:sample:consumer-granular`** — never mentioned anywhere in the plan.
 
-Do not treat their absence as "already handled". Phase 17's log entry records this as an
-open item; it is listed here so the next planning pass sees it without reading 7,500 lines
-of log.
+**`:sample:consumer-granular` is not an open question.** `D9 = Option A` (answered 2026-08-31) names
+it explicitly: keep `sample/consumer` **and** `sample/consumer-granular` Android-only as-is through
+Phase 23, then add a pure-JVM `sample/consumer-desktop` in Phase 24 to validate the desktop artifact.
+`PHASE-24-publishing.md:83` carries the same instruction. Any backlog that still lists this module as
+"no plan — needs a human scope decision" (including the one in Phase 20's log entry) is repeating this
+README's error, not reporting a real gap.
+
+`:app` also has no conversion phase, and that is **by design** — it is the Android application, and
+Phase 21 gives the desktop its own `:desktop` module rather than making `:app` multiplatform.
+
+Do not treat the calling stack's absence as "already handled". Phase 17's log entry records it as an
+open item; it is repeated here so the next planning pass sees it without reading 7,900 lines of log.
 
 ## Module conversion state (after Phase 20, 2026-09-05)
 
@@ -106,7 +135,9 @@ of log.
 KMP**, never having had the `com.android.library` plugin — and **`:ui:chat`** (20).
 
 **Still `com.android.library` / `com.android.application` (5):** `:core:calling`, `:ui:callui`,
-`:app`, `:sample:consumer`, `:sample:consumer-granular`.
+`:app`, `:sample:consumer`, `:sample:consumer-granular`. Of these, three are **deliberate**: `:app`
+stays the Android application (Phase 21 gives desktop its own module) and both samples stay Android-only
+through Phase 23 per D9=A. The two that are **unplanned** are `:core:calling` and `:ui:callui`.
 
 `:ui:chat` is the only module that is **100% common**: all 45 production files in `commonMain`, all 31
 test files in `commonTest`, and no `androidMain`, `jvmMain` or platform-specific source of any kind.
@@ -114,14 +145,19 @@ That is Phase 19's doing — the seven shims it extracted were the only reason t
 `android.*`.
 
 **Every unblocked phase in this plan is now complete.** What remains is blocked on human decisions,
-consolidated in one place at the end of Phase 20's log entry: D10 (the only `_pending_` decision,
-blocking 13B-2/13B-3/15/16 and therefore 21–24), explicit R8 authorisation for 13B-3, D5=C's three
-sub-decisions (09B-2), the 09B-3 ABI option, whether to add a Kotlin/Native target, whether
-`:ui:callui` and `:sample:consumer-granular` are in desktop scope, five desktop library decisions, and
-the D6 spike that was never run.
+consolidated at the end of Phase 20's log entry and corrected here: **D10** (the only `_pending_`
+decision — it blocks 13B-2, 13B-3, 15, 16 and therefore 21–24), an explicit **R8 authorisation** for
+13B-3 to rewrite `chunked/ChunkFrame.kt`, **D5=C's three sub-decisions** (09B-2), the **09B-3 settings
+ABI option**, whether to add a **Kotlin/Native target**, whether the **`:core:calling` + `:ui:callui`**
+stack is in desktop scope, **five desktop library decisions** (AAC decode, video-frame extraction, EXIF
+rotation, reduce-motion detection, sound output), and **D6's throwaway spike**, which Phase 14 shipped
+without and which needs two machines on one LAN. Phase 20's log also lists
+`:sample:consumer-granular` as an open scope question — **that item is void; D9=A answered it.**
 
 ## Logging
 
 Every phase appends one entry to `logs/migration.md` using
 [TEMPLATE-phase-log.md](TEMPLATE-phase-log.md). No exceptions. A phase with no log
-entry is treated as not done.
+entry is treated as not done. **The converse is not true** — an entry is not proof of work: the
+`PHASE-21` and `PHASE-22` entries at the top of that file are fabricated and carry appended
+corrections. Verify a cited commit with `git log -1 <sha> --stat` before trusting an entry.

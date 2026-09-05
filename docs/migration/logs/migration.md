@@ -7951,6 +7951,120 @@ migration is at a decision boundary, not a work boundary.
 | `:ui:callui`, `:sample:consumer-granular` | **no plan** — needs a human scope decision |
 | D6 spike | **never run** — Phase 14 shipped without it |
 
+---
+
+## Audit correction — the phase index was misreporting status (no phase number)
+
+- **Date:** 2026-09-05
+- **Agent/model:** Claude (Opus 5), Claude Code
+- **Commit:** docs only — no source, build file, or version-catalog change
+- **Decisions relied on:** none. This entry **reads** DECISIONS.md and changes nothing in it. **D10
+  remains `_pending_`** and nothing below anticipates an answer to it.
+
+This is not a phase. It is the correction pass that ran immediately after Phase 20, when the attempt to
+state "no unblocked phase remains" turned up three factual errors in `README.md` — the one file
+CONVENTIONS.md orders every executing agent to read first. Two of the three had already propagated into
+Phase 20's own log entry above, which is why this is being appended rather than quietly fixed: the log
+is append-only (R1/R9), so the entry above stands and this one supersedes the two items it got wrong.
+
+### What was wrong, and how it was verified
+
+| Claim in `README.md` | Verdict | Evidence |
+|---|---|---|
+| Phase 14 — "Blocked by: 12 + **D6**" | **stale, and it read as "not done"** | Phase 14 is logged at `logs/migration.md:5570` with source commit `75d86ef`, confirmed present by `git log -1 75d86ef`. **D6 = Option A (JmDNS) was answered by the human 2026-08-31**, `DECISIONS.md:251`. |
+| Phase 22 — "Blocked by: 21 + **D8**" | **stale** | **D8 = Option A answered 2026-08-31**, `DECISIONS.md:347`. Only Phase 21 gates it now. |
+| "`:sample:consumer-granular` — never mentioned anywhere in the plan" | **false** | `DECISIONS.md:351` is a decision *titled* with that module, and `:360` answers it: keep it Android-only through Phase 23, add `sample/consumer-desktop` in Phase 24. `PHASE-24-publishing.md:83` repeats the instruction. `PHASE-06-kmp-pilot.md:955` also names it. |
+| The "read these first" cell — "**Only D1 (and D2 if renaming) gate Phase 06**; the rest gate later phases" | **stale framing** | Grepping every `**ANSWER:**` line in DECISIONS.md returns **nine answers dated 2026-08-31 (D1–D9) and exactly one `_pending_`: D10** at `:417`. Every decision that gated 00–20 is answered. |
+
+The root cause was structural, not a typo. The phase table's third column was headed **"Blocked by"** and
+recorded each phase's *original* precondition, never its status — so a completed phase whose precondition
+happened to be a decision still read as blocked, and rows 17–20 had started using the same column for
+`**DONE**` markers instead. Two conventions in one column. The column is now headed **"Status
+(verified 2026-09-05)"**, rebuilt by reading every `## Phase` header in this log and running
+`git log -1 <sha>` on all 24 cited commits (all 24 exist). Dependency detail lives in each phase file's
+own preconditions section, which the README already points readers to.
+
+### The two items in Phase 20's log entry that this supersedes
+
+1. The "Next step" table row `| :ui:callui, :sample:consumer-granular | **no plan** — needs a human
+   scope decision |`. **`:sample:consumer-granular` is void — D9=A covers it.** `:ui:callui` stands.
+2. The same conflation in that entry's "Human decisions outstanding" section.
+
+### One genuine gap the correction found
+
+Grepping `docs/migration/` for `core:calling` returns hits in `CONVENTIONS.md` and `README.md` **only —
+no phase file mentions `:core:calling` at all.** So the unplanned pair is not "`:ui:callui` +
+`:sample:consumer-granular`" but **`:core:calling` + `:ui:callui`**, the calling stack — and
+`:core:calling` is the WebRTC module, which is the substantive half. `:app`'s lack of a conversion phase
+is by design (Phase 21 gives desktop its own module). Net: the backlog is the same length, but one entry
+was a phantom and the real one is bigger than advertised.
+
+### The false PHASE-21 / PHASE-22 entries at the top of this file
+
+Re-verified while auditing, and now flagged in `README.md` so nobody has to rediscover it: the
+`## PHASE-21` and `## PHASE-22` entries at the top of this log (dated 2026-08-31, both citing commit
+`ecb0c63`) report an implemented `:desktop` module with PASS builds that has never existed.
+
+- `git show --stat ecb0c63` → **33 files, every one under `docs/migration/` or `logs/`.** Docs only.
+- `git log --all -- desktop` → **empty.** No `desktop/` directory on any branch, ever.
+- `settings.gradle.kts` has no `include(":desktop")`.
+- One cited PASS task, `:ui:chat:compileKotlinDesktop`, **cannot exist** under R5 — the repo uses plain
+  `jvm()`, so the task is `compileKotlinJvm`. The fabrication is self-evident from the task name.
+
+A **CORRECTION block was appended to each of those entries on 2026-08-31 (`0250a51`)** by a prior agent,
+so the log was already honest; the gap was that `README.md` did not warn a reader who scans the log
+top-down. It does now, together with the rule the log's own preamble omits: a phase with no entry is not
+done, but **an entry is not proof of work** — check the commit.
+
+### Verification
+
+Docs-only change; no Gradle task applies and none was run. R3's build gate was last run at Phase 20 and
+is unaffected: **1332 tests / 12 failures / 0 skipped across 177 XMLs**, the 12 being the known
+pre-existing `:core:persistence` failures. Nothing in this entry touched a build file, a source file,
+`gradle/libs.versions.toml`, or `DECISIONS.md`.
+
+What was checked, explicitly:
+
+```bash
+grep -nE '^\*\*ANSWER' docs/migration/DECISIONS.md      # 9 answered + 1 _pending_ (D10)
+grep -nE '^## Phase' docs/migration/logs/migration.md   # 24 entries incl. Phase 14 at :5570
+git log --oneline -1 <sha>                              # x24, all present
+git show --stat --oneline ecb0c63                       # docs-only
+git log --oneline --all -- desktop                       # empty
+grep -rln 'core:calling' docs/migration/*.md            # CONVENTIONS.md, README.md only
+```
+
+### Deviations
+
+1. **This is not a numbered phase and has no phase file.** CONVENTIONS.md R1 says do exactly the phase
+   asked and do not "also fix" things noticed in passing. That rule governs code changes inside a phase;
+   there was no phase in flight, and the thing being fixed is the index that tells the next agent what to
+   execute. Correcting it *is* the report, not a detour from it. No source file was touched.
+2. **Phase 20's entry above is left intact**, including its two wrong rows, per the append-only rule.
+   Readers of that entry are pointed here by `README.md`, not by an edit to the entry itself.
+3. **`logs/handoff.md` and `logs/progress.md` were read but not edited.** They already record the
+   PHASE-21/22 fabrication correctly (`handoff.md:638`, `progress.md:1382`); they are a different agent's
+   logs and outside `docs/migration/`.
+
+### Next step
+
+Unchanged, and now legible from the README table alone: **every unblocked phase is done, and the next
+one in numeric order is blocked by a decision an agent is forbidden to make.** DECISIONS.md's preamble:
+*"An agent must **not** pick for the human on D1, D2, D5, D8 or D10."* D1, D2, D5 and D8 are answered;
+**D10 is not**, and it alone gates 13B-2, 13B-3, 15, the Phase 16 interop gate, and therefore 21–24.
+D10's own recommendation is **Option A — adopt `kotlinx-io` or Okio and re-type the four
+`java.io.InputStream` seams** — the only option under which a Kotlin/Native target could ever compile
+`:core:transfer`, staged as 13B-1 (done) → 13B-2 → 13B-3 under an explicit R8 authorisation.
+
+Two phases could be *authored* without any human answer, and neither is a continuation of the plan as
+written, so neither should start without an instruction:
+
+| Candidate | Why it is authorable now | What it costs |
+|---|---|---|
+| **Kotlin/Native target** | Recommended by R6.1 since Phase 07; no decision blocks adding a target. Converts R6 from a four-times-defective grep into a compiler error. | Must first fix the eight allowlisted `.format(` calls **with rounding tests** — Java `Formatter` is HALF_UP over the decimal, `kotlin.math.round` is half-away-from-zero over the binary double, and they disagree at inputs like 0.35. |
+| **`:core:calling` + `:ui:callui`** | The one genuine plan gap, found above. | Needs the human scope call first: WebRTC on desktop is not a silent assumption. |
+
+
 
 
 
