@@ -1,9 +1,12 @@
 # Phase 13B — Desktop file I/O for `:core:transfer`, re-scoped after measurement (D10)
 
-> **Status: AUTHORED, NOT EXECUTED.** Written 2026-09-05 by the agent that reached Phase 13 and
-> found `PHASE-13-desktop-fileio.md` unexecutable. No source file, build file, or version-catalog
-> entry has been touched for Phase 13 or 13B. The working tree at authoring time was clean at
-> `d8af05c`.
+> **Status: 13B-1 EXECUTED (`fafd450`, 2026-09-05). 13B-2 and 13B-3 BLOCKED on D10.** Authored
+> 2026-09-05 by the agent that reached Phase 13 and found `PHASE-13-desktop-fileio.md` unexecutable;
+> the working tree at authoring time was clean at `d8af05c`, and no source or build file had been
+> touched for Phase 13 or 13B at that point. **13B-1 has since been executed and verified against all
+> seven of its gates** — see `logs/migration.md` § *Phase 13B-1*. Its five steps below are kept as
+> written, as the record of what was done; do not re-run them. **13B-2 and 13B-3 remain untouched**,
+> and 13B-3 additionally needs an explicit R8 authorisation to rewrite `chunked/ChunkFrame.kt`.
 >
 > **This file supersedes `PHASE-13-desktop-fileio.md`.** That document is written for **D1 = A**:
 > it requires a `jvmAndAndroidMain` source set holding the entire transfer pipeline, which
@@ -37,8 +40,8 @@ Three things are true at once:
    R8's untouchable list. `chunked/Sha256.kt` uses `java.security.MessageDigest`. Neither can move
    to `commonMain` without rewriting code R8 says not to touch without being told to.
 
-Execute **13B-1**. Do not start 13B-2 or 13B-3 until D10 is answered and, for 13B-3, until the
-human has explicitly authorised touching `ChunkFrame`.
+~~Execute **13B-1**.~~ **13B-1 is done (`fafd450`).** Do not start 13B-2 or 13B-3 until D10 is
+answered and, for 13B-3, until the human has explicitly authorised touching `ChunkFrame`.
 
 ---
 
@@ -196,7 +199,14 @@ wslegacy/ files" refers to nothing.
 
 ---
 
-## 13B-1 — the decision-free prefix. Executable today.
+## 13B-1 — the decision-free prefix. ~~Executable today.~~ **DONE — `fafd450`, 2026-09-05.**
+
+> Executed and verified against all seven gates. Measured net effect: `androidMain` 15 → 13,
+> `commonMain` 5 → 7, `jvmMain` 0 → 1, `transfer-jvm-1.1.0.jar` **15 → 25 classes** (the estimate
+> below said "~22"; the difference is `MultiStreamResult`'s two nested `data class`es and the two
+> `Companion`/`Sample` inner classes, which the estimate did not count), published ABI unchanged,
+> repo tests 961 → **977 / 12 / 0 across 132 XMLs**. Steps 1–5 below are the record of what was done —
+> do not re-run them. Full output: `logs/migration.md` § *Phase 13B-1*.
 
 **Goal:** move the two `androidMain` files that are pinned by stdlib traps rather than by `java.*`
 into `commonMain`, using seams this repo already has. Net effect: `androidMain` 15 → 13,
@@ -325,25 +335,37 @@ R3.1: *"Any phase that writes an `actual` should put at least one behavioural as
 `createdAtMs` is within a generous window of `SystemTimeSource.nowMs()` — so the clock swap is
 executed on both targets rather than only compiled.
 
-### 13B-1 verification gates
+### 13B-1 verification gates — **all seven passed, `fafd450`**
 
 R3's full command line, plus these module-local gates. `:core:transfer` is already named on the R3
 line (`testAndroidHostTest` + `jvmTest` since Phase 11), so no CONVENTIONS edit is needed for it.
 
+Measured results in **bold**; the pasted output for each is in `logs/migration.md` § *Phase 13B-1*.
+
 1. `:core:transfer:compileKotlinJvm` — **SUCCESSFUL**. The R2 proof task: `jvm()` has no
    `android.jar`, so this certifies the two moved files are free of `android.*`.
+   → **PASS, zero `w:` warnings** (which also proves `-Xexpect-actual-classes` took effect).
 2. `:core:transfer:compileAndroidMain` — **SUCCESSFUL**. Proves the 13 remaining `androidMain`
-   files still resolve the moved declarations from `commonMain`.
+   files still resolve the moved declarations from `commonMain`. → **PASS, zero warnings.**
 3. `:core:transfer:jvmTest` + `:core:transfer:testAndroidHostTest` — the new `commonTest` cases run
    **twice**, once per target. Count them; R3 requires the arithmetic, so a suite of N cases must
-   show +2N.
+   show +2N. → **PASS. `jvmTest` 8 → 16, `testAndroidHostTest` 94 → 102; 8 cases × 2 targets = +16.
+   Repo 961 → 977 tests, 128 → 132 XMLs.**
 4. R6.1 both greps, over `core/*/src/commonMain` — expected empty. Use the corrected trap regex;
    **do not** write `\b@Synchronized\b`, which can never match (R6.1's warning box).
+   → **PASS. Grep A empty; grep B returns 4 `@Volatile` lines, all proven legal because grep C
+   (`@Volatile` without `import kotlin.concurrent.Volatile`) is empty.**
 5. `:core:transfer:jvmJar` — class count rises from 15; no `android/` paths.
+   → **PASS. 47 905 bytes, 39 entries, 25 classes, 0 `android/` paths.**
 6. `publishToMavenLocal` — all three coordinates still emitted, and `transfer-jvm`'s POM still
-   carries no androidx and no `:core:network`.
+   carries no androidx and no `:core:network`. → **PASS. `core-transfer`, `core-transfer-android`,
+   `core-transfer-jvm`; jvm POM = `core-common-jvm` + `kotlinx-coroutines-core-jvm` + `kotlin-stdlib`.**
 7. `ls -1 core/transfer/src` → `androidHostTest androidMain commonMain commonTest jvmMain`, and no
-   `java/` language directory anywhere (R5).
+   `java/` language directory anywhere (R5). → **PASS, exactly those five.**
+
+An eighth check was performed that this file did not ask for: a **mutation probe** re-introducing the
+2026-08-24 rate bug, to confirm the new guard test actually fails on it. It does, at `t=2000 ms` and
+not at `t=1000 ms` — which is why that case asserts at every window boundary. See the log entry.
 
 ---
 

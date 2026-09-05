@@ -9,7 +9,7 @@ That file is now a short charter. **All executable work lives here.**
 |---|---|---|
 | 1 | [CONVENTIONS.md](CONVENTIONS.md) | Rules every executing agent MUST follow. Non-negotiable. |
 | 2 | [AUDIT.md](AUDIT.md) | Verified ground truth about the repo. Supersedes any claim in the old plan. |
-| 3 | [DECISIONS.md](DECISIONS.md) | Open decisions D1–D9. **Only D1 (and D2 if renaming) gate Phase 06**; the rest gate later phases — see the blocking-map table at the top of DECISIONS.md. |
+| 3 | [DECISIONS.md](DECISIONS.md) | Open decisions D1–**D10** (D10 added by Phase 13). **Only D1 (and D2 if renaming) gate Phase 06**; the rest gate later phases — see the blocking-map table at the top of DECISIONS.md. **D10 is now on the critical path**: it blocks 13B-2, 13B-3, 15 and therefore the Phase 16 gate. |
 
 ## Phases
 
@@ -33,7 +33,7 @@ self-contained and states its own preconditions.
 | 11 | [PHASE-11-repositories-kmp.md](PHASE-11-repositories-kmp.md) | 07, 08, 09B-1, 10 | high |
 | 12 | [PHASE-12-engine-kmp.md](PHASE-12-engine-kmp.md) | 07,08,09B-1,10,11 | high |
 | 13 | ~~[PHASE-13-desktop-fileio.md](PHASE-13-desktop-fileio.md)~~ **SUPERSEDED** | — | — |
-| 13B | [PHASE-13B-desktop-fileio.md](PHASE-13B-desktop-fileio.md) | 12; 13B-2/13B-3 also need **D10**, and 13B-3 an explicit R8 authorisation | 13B-1 low, 13B-2/3 high |
+| 13B | [PHASE-13B-desktop-fileio.md](PHASE-13B-desktop-fileio.md) | **13B-1 DONE (`fafd450`)**; 13B-2/13B-3 blocked on **D10**, and 13B-3 additionally on an explicit R8 authorisation to rewrite `ChunkFrame` | 13B-1 low, 13B-2/3 high |
 | 14 | [PHASE-14-desktop-discovery.md](PHASE-14-desktop-discovery.md) | 12 + **D6** | high |
 | 15 | [PHASE-15-desktop-transport.md](PHASE-15-desktop-transport.md) | 13B-2 (so **D10**), 14 | high |
 | 16 | [PHASE-16-desktop-headless-interop.md](PHASE-16-desktop-headless-interop.md) | 15 | **gate** |

@@ -46,11 +46,14 @@ only when the seam must carry per-platform state, as `PlatformLock` does, and su
 warning with `-Xexpect-actual-classes` in the module's `kotlin { compilerOptions { } }`.
 
 `PlatformLock` is deliberately **duplicated per module** — `:core:common` (Phase 06),
-`:core:discovery` (Phase 08), `:core:engine` (Phase 12) — because it is `internal` and `internal`
-does not cross a Gradle module boundary. A phase that needs it in a fourth module should copy it
-again rather than hoist: promoting `:core:common`'s copy to `public` would add a lock to
-`core-common`'s published ABI under `explicitApi()` (R7) and edit a second module's build file (R4).
+`:core:discovery` (Phase 08), `:core:engine` (Phase 12), `:core:transfer` (Phase 13B-1) — because it
+is `internal` and `internal` does not cross a Gradle module boundary. A phase that needs it in a
+fifth module should copy it again rather than hoist: promoting `:core:common`'s copy to `public`
+would add a lock to `core-common`'s published ABI under `explicitApi()` (R7) and edit a second
+module's build file (R4).
 The hoist is a legitimate cleanup, but it is its own phase and no phase in the plan performs it.
+The count is now **four**, which is the number Phase 08 warned about when it asked for the hoist
+"before phases 09–12 make further copies".
 
 When a seam replaces the *body* of an already-published declaration, keep the declaration
 itself in `commonMain` and let it delegate to an `internal expect fun`. Phase 06 did this for
@@ -103,10 +106,12 @@ Every phase must additionally paste the **test count** from
 test count matches or exceeds baseline is not verified. Conversions may legitimately *raise*
 the total — Phase 07 took it to **883 / 12 / 0** by adding a 10-test `commonTest` suite that runs
 once per target, Phase 08 took it to **897 / 12 / 0** the same way (7 tests × 2 targets), Phase 10
-to **913 / 12 / 0**, Phase 11 to **945 / 12 / 0** (two 8-test `commonTest` suites × 2 targets), and
+to **913 / 12 / 0**, Phase 11 to **945 / 12 / 0** (two 8-test `commonTest` suites × 2 targets),
 Phase 12 to **961 / 12 / 0 across 128 XMLs** (945 + 8 `jvmTest` + 8 `testAndroidHostTest` + 1 for
 `DefaultFlashEngineTest` now counted under `testAndroidHostTest`, − 1 for the stale
-`testDebugUnitTest` results directory the plugin swap orphans).
+`testDebugUnitTest` results directory the plugin swap orphans), and Phase 13B-1 to
+**977 / 12 / 0 across 132 XMLs** (961 + 8 new `commonTest` cases × 2 targets; 128 + 4 XMLs, because
+two new suites each produce one XML per target).
 Compare **per module** as well as in total: a total that still matches while one
 module's suite has silently stopped running is exactly the failure mode R3 exists to catch.
 Show the arithmetic, not just the number — a phase that adds N tests to a `commonTest` suite must
@@ -152,9 +157,10 @@ because Phase 06 left all its tests in `androidHostTest`. Any phase that writes 
 should put at least one behavioural assertion in `commonTest` so both platforms run it. Phase 07's
 parity suite found no divergence — but it is the only thing in the build that *would* have found
 one, since Android runs Conscrypt and the desktop JVM runs SunJCE. Phase 08 followed the rule for
-`:core:discovery`'s own duplicated `PlatformLock`, and Phase 12 for `:core:engine`'s third copy:
-between them, the contention cases in `PlatformLockTest` and `AutoConnectGateTest` are the only
-tests in the repo that assert a lock actually excludes, and both run on both targets.
+`:core:discovery`'s own duplicated `PlatformLock`, Phase 12 for `:core:engine`'s third copy, and
+Phase 13B-1 for `:core:transfer`'s fourth: between them, the contention cases in `PlatformLockTest`,
+`AutoConnectGateTest` and `RollingRateMeterTest` are the only tests in the repo that assert a lock
+actually excludes, and all three run on both targets.
 
 
 ## R4 — Never edit two modules' build files in one commit unless the phase says to

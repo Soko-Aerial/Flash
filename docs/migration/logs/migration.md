@@ -5115,6 +5115,467 @@ which D6 already answers with JmDNS and which an agent may proceed on per the DE
 R8 authorisation to rewrite `ChunkFrame`. Phase 16 is one of the migration's two hard gates, so D10
 is now on the critical path for everything past 14.
 
+## Phase 13B-1 — `:core:transfer`: rate meter and manifest to `commonMain`
+
+- **Date:** 2026-09-05
+- **Agent/model:** Claude (Opus 5), Claude Code
+- **Commit:** `fafd450` (source), this entry (docs)
+- **Decisions relied on:** none. 13B-1 is the slice of the desktop port that needs no decision —
+  **D10 stays `_pending_`** and nothing here anticipates an answer to it.
+
+### Change
+
+Two `androidMain` files moved to `commonMain`. Both were pinned to Android by **stdlib traps, not by
+`java.*` imports** — which is why the Phase 13 census flagged them and why they were reachable at
+all:
+
+| File | Pin | Replacement |
+|---|---|---|
+| `multistream/MultiStreamProgress.kt` | 3 × `@Synchronized` on `RollingRateMeter` (= `kotlin.jvm.Synchronized`) | a new module-local `PlatformLock` |
+| `manifest/TransferManifest.kt` | `createdAtMs = System.currentTimeMillis()` | `:core:common`'s `SystemTimeSource.nowMs()` |
+
+Eight files, one module (R4):
+
+| File | Change |
+|---|---|
+| `commonMain/…/transfer/concurrent/PlatformLock.kt` | **new.** `internal expect class`, fourth copy. |
+| `androidMain/…/transfer/concurrent/PlatformLock.android.kt` | **new.** `synchronized(monitor)`. |
+| `jvmMain/…/transfer/concurrent/PlatformLock.jvm.kt` | **new.** Identical. First file this module has ever had in `jvmMain`. |
+| `commonMain/…/multistream/MultiStreamProgress.kt` | moved from `androidMain`; `RollingRateMeter` re-guarded. |
+| `commonMain/…/manifest/TransferManifest.kt` | moved from `androidMain`; one default argument. |
+| `commonTest/…/multistream/RollingRateMeterTest.kt` | **new**, 7 cases. |
+| `commonTest/…/manifest/TransferManifestTest.kt` | **new**, 1 case. |
+| `core/transfer/build.gradle.kts` | `-Xexpect-actual-classes`; `libs.kotlinx.coroutines.test` in `commonTest`; two stale comments corrected. |
+
+`MultiStreamProgress` and `MultiStreamResult`, the other two declarations in the moved file, needed
+**no edit** — `ArrayDeque` is `kotlin.collections` and common since 1.4. `ManifestItem` likewise.
+
+Net: `androidMain` 15 → 13 files, `commonMain` 5 → 7, `jvmMain` 0 → 1.
+
+### The finding that matters most: `compileKotlinJvm` would have accepted these files unchanged
+
+`@Synchronized` resolves to `kotlin.jvm.Synchronized`. `System.currentTimeMillis()` resolves to
+`java.lang.System`. Neither needs an import line, because both are auto-imported into every JVM
+compilation — and both of this module's targets *are* JVM targets. So had I simply `git mv`'d the two
+files into `commonMain` and stopped, **every gate in the build would have gone green**:
+`compileKotlinJvm` compiles against a JVM classpath (R6.1), `compileAndroidMain` against
+`android.jar`, and both find `kotlin.jvm.Synchronized` and `java.lang.System` present.
+
+The first thing to notice the breakage would have been the first Kotlin/Native target anyone adds —
+i.e. Phase 20-something, or never, since no phase in the plan adds one. This is R6.1 restated on a
+file where it bites harder than on the `java.util.UUID` probe Phase 07 used, because there the
+offending token at least *looked* foreign. Here the source line is
+`@Synchronized fun record(cumulativeBytes: Long)` and there is nothing in it to see.
+
+The corrected trap grep (CONVENTIONS.md R6.1, the version without `\b` before `@`) is the only thing
+in this repo that finds these. I ran it as gate 5 below, on all of `core/*/src/commonMain` and not
+just the file I touched.
+
+### The fourth `PlatformLock`
+
+CONVENTIONS.md R2 already names this module in its list of copies, and already answers the obvious
+objection:
+
+> A phase that needs it in a fifth module should copy it again rather than hoist: promoting
+> `:core:common`'s copy to `public` would add a lock to `core-common`'s published ABI under
+> `explicitApi()` (R7) and edit a second module's build file (R4).
+
+So the copy is deliberate, and the count is now **four** — `:core:common` (06), `:core:discovery`
+(08), `:core:engine` (12), `:core:transfer` (13B-1). That is exactly the number Phase 08 warned about
+when it asked for the hoist *"before phases 09–12 make further copies"*. The hoist is still a
+legitimate cleanup and still has no phase. I did not perform it (R1).
+
+Two consequences of the seam being a class rather than a function, both of which cost real edits:
+
+- **`withLock` cannot be `inline`.** `expect`/`actual` members cannot be inline, so the lambda is a
+  real lambda and a non-local `return` from inside it does not compile. All three early exits in
+  `instantBytesPerSec` became `return@withLock`, and the expression body's final line is now the
+  value rather than a `return`.
+- **No `suspend` call may appear inside a `withLock` block.** Nothing in `RollingRateMeter` is
+  suspending, so this cost nothing here — but it is the constraint that makes the seam unusable for
+  the `androidMain` files 13B-2 and 13B-3 still have to deal with.
+
+`prune(now)` is left **unguarded** and is documented as such: it is only ever called from inside a
+`lock.withLock { }` block. Both current `actual`s wrap `synchronized`, which is reentrant on the JVM,
+so taking the lock inside `prune` would work today — and deadlock on any future target whose `actual`
+is not reentrant. Keeping the invariant in a KDoc comment rather than in the lock is the choice that
+survives a Kotlin/Native `actual`.
+
+### A test on a previously untested, field-reported regression
+
+`RollingRateMeter` had **no test at all** before this. Its own KDoc records a rate bug reported on
+device on 2026-08-24 — displayed speed climbing toward `totalBytes / window` regardless of real
+throughput, because the window kept the *first sample ever* as `oldest` while the time span stayed
+window-sized, so Δbytes grew without bound. Nothing in the repo guarded against it recurring.
+
+R3.1 requires a `commonTest` behavioural assertion whenever a phase writes an `actual`, so this suite
+had to exist anyway; the interesting part was making it discriminate the 2026-08-24 implementation.
+A constant-rate feed does that, but **only if the assertion runs after more than one window has
+elapsed** — at t = 1 s the buggy and correct implementations agree. So
+`rate_usesOldestSampleInWindow_notFirstEver` feeds 250 B every 250 ms (exactly 1 000 B/s, and
+cumulative bytes numerically equal to elapsed ms) for three full 1 000 ms windows and asserts at
+**every** window boundary: the buggy version reports 1 000 → 2 000 → 3 000 B/s. That reasoning is
+written into the test's comment, so the loop cannot later be "simplified" into a single assertion at
+t = 3 s or, worse, at t = 1 s.
+
+The other six cases cover the two-sample floor, bytes/s across a window, the backwards-clock reset,
+the stall sentinel (`-1.0`, not a faked `0.0`), `reset()`, and contention.
+
+`contention_recordAndReadDoNotCorrupt` is the one that makes the swapped-in lock's *exclusion*
+observable rather than assumed: 8 coroutines × 2 000 rounds on `Dispatchers.Default`, each writing
+its own slot of a `DoubleArray` so a lost write cannot mask a bad reading (the same reason Phase 12's
+`AutoConnectGateTest` uses a per-worker array). An unguarded `ArrayDeque` under that load does not
+merely lose an update on the JVM — it can throw from `removeFirst()` or read a half-written slot and
+yield `NaN`. The assertion is that every reading is either the stall sentinel or a finite positive
+rate. Its clock is `TimeSource.Monotonic.markNow()` / `elapsedNow()` rather than a shared `var`,
+because a plain `Long` read from several dispatcher threads is itself unsynchronised and would have
+made the test's own scaffolding the race.
+
+With `RollingRateMeterTest` added, the contention cases in `PlatformLockTest` (06/08),
+`AutoConnectGateTest` (12) and this one are the only tests in the repo that assert a lock actually
+excludes. All three run on both targets.
+
+### Verification
+
+All seven of PHASE-13B's 13B-1 gates, in order, with output.
+
+**Gate 1 — `compileKotlinJvm` (the R2/R6.1 proof task: no `android.jar` on the classpath).**
+
+```
+$ ./gradlew :core:transfer:compileKotlinJvm --no-configuration-cache
+BUILD SUCCESSFUL in 1m 2s
+39 actionable tasks: 12 executed, 27 up-to-date
+```
+
+Zero `w:` lines. That matters more than usual here: `-Xexpect-actual-classes` is present precisely so
+the four `expect`/`actual` declaration sites do **not** emit the KT-61573 Beta warning, and a missing
+flag would have shown up as warnings rather than as a failure.
+
+**Gate 2 — `compileAndroidMain`.**
+
+```
+$ ./gradlew :core:transfer:compileAndroidMain --no-configuration-cache
+BUILD SUCCESSFUL in 47s
+```
+
+Zero `w:` lines.
+
+**Gate 3 — both test targets execute the new `commonTest` cases.**
+
+```
+$ ./gradlew :core:transfer:jvmTest :core:transfer:testAndroidHostTest --no-configuration-cache
+BUILD SUCCESSFUL in 1m 15s
+
+jvmTest:             xmls=3  tests=16  failures=0 errors=0 skipped=0
+testAndroidHostTest: xmls=16 tests=102 failures=0 errors=0 skipped=0
+```
+
+The 8 new cases (7 + 1) appear **once per target**: `jvmTest` went 8 → 16 and gained
+`RollingRateMeterTest.xml` + `TransferManifestTest.xml`, and `testAndroidHostTest` went 94 → 102 with
+the same two XMLs. This is the R3.1 point — before 13B-1 this module's `jvmMain` was empty, so there
+was no `actual` to execute; now there is one and both targets run it.
+
+**Gate 4 — R3, the full repo-wide command from CONVENTIONS.md.**
+
+```
+$ ./gradlew --stop >/dev/null 2>&1; sleep 8
+$ ./gradlew :app:assembleDebug testDebugUnitTest \
+    :core:common:testAndroidHostTest \
+    :core:security:testAndroidHostTest :core:security:jvmTest \
+    :core:discovery:testAndroidHostTest :core:discovery:jvmTest \
+    :core:network:testAndroidHostTest :core:network:jvmTest \
+    :core:transfer:testAndroidHostTest :core:transfer:jvmTest \
+    :core:messaging:testAndroidHostTest :core:messaging:jvmTest \
+    :core:engine:testAndroidHostTest :core:engine:jvmTest \
+    --no-configuration-cache --continue --max-workers=2 --console=plain
+
+> Task :core:persistence:testDebugUnitTest FAILED
+35 tests completed, 12 failed
+BUILD FAILED in 1m 48s
+```
+
+`BUILD FAILED` is the **expected** R3 outcome: the 12 are the known pre-existing `:core:persistence`
+set (11 `FlashSettingsDataStoreTest` + 1 `DiscoveryModeSettingTest`), unchanged in count and identity
+since Phase 00. `--continue` is why the later modules still ran.
+
+Tally over `*/build/test-results/**/TEST-*.xml`:
+
+```
+REPO TOTAL: xmls=132 tests=977 failures=12 errors=0 skipped=0
+```
+
+The arithmetic, per R3's "show the arithmetic, not just the number":
+
+```
+tests:  961 (Phase 12)  + 8 new commonTest cases × 2 targets  = 977
+XMLs:   128 (Phase 12)  + 2 new suites        × 2 targets      = 132
+```
+
+Both new suites are in `commonTest`, so each produces one XML under `jvmTest` and one under
+`testAndroidHostTest` — 4 XMLs for 2 files. There was **no** stale-directory correction to make this
+time: no task was removed by this phase (the module was already KMP as of Phase 11), so no
+`testDebugUnitTest` results directory was orphaned. I checked for one anyway —
+`find core/*/build/test-results -maxdepth 1 -name testDebugUnitTest` returns only `core/calling` and
+`core/persistence`, the two still-`com.android.library` modules, which is correct.
+
+Per-module, against Phase 12, to catch the failure mode R3 exists for — a module whose suite silently
+stopped running while the total still matched:
+
+| Module | 12 | 13B-1 |
+|---|---|---|
+| `:core:transfer` `jvmTest` | 8 | **16** |
+| `:core:transfer` `testAndroidHostTest` | 94 | **102** |
+| every other module | unchanged | unchanged |
+
+**Gate 5 — R6.1, all three greps, over every converted `commonMain` and not just the two files.**
+
+Grep A, platform packages:
+
+```
+$ grep -rnE '\b(java|javax|android|androidx)\.' --include=*.kt core/*/src/commonMain ui/*/src/commonMain 2>/dev/null | grep -vE ':[0-9]+:[[:space:]]*(\*|//|/\*)'
+(no output)
+```
+
+Grep B, the stdlib traps — **with `@` unanchored**, since `\b@Synchronized` can never match and is why
+Phases 10 and 11 ran a defective gate:
+
+```
+$ grep -rnE '(@Synchronized|@Volatile|@JvmStatic|@JvmOverloads|@JvmField|@Throws|\bsynchronized[[:space:]]*\(|\bCharsets\b|String\.format|\bcurrentTimeMillis\b|\bputIfAbsent\b|\bcomputeIfAbsent\b|::class\.java|\bConcurrentHashMap\b|\bLocale\b|\bSystem\.)' --include=*.kt core/*/src/commonMain ui/*/src/commonMain 2>/dev/null | grep -vE ':[0-9]+:[[:space:]]*(\*|//|/\*)'
+core/discovery/src/commonMain/.../DiscoveryPresenceTracker.kt:NN:    @Volatile
+core/engine/src/commonMain/.../DefaultFlashEngine.kt:NN:    @Volatile
+core/engine/src/commonMain/.../DefaultFlashEngine.kt:NN:    @Volatile
+core/network/src/commonMain/.../FlashWebSocketClient.kt:NN:    @Volatile
+```
+
+Four hits, all `@Volatile`, which is the **documented exception** — the common
+`kotlin.concurrent.Volatile` is spelled identically to the JVM-only `kotlin.jvm.Volatile`, so the
+annotation text proves nothing and the import must be checked instead. Grep C does that:
+
+```
+$ grep -rln '@Volatile' --include=*.kt core/*/src/commonMain | xargs -r grep -L 'import kotlin.concurrent.Volatile'
+(no output)
+```
+
+Empty — every file carrying `@Volatile` also carries the common import. Note that grep B's zero
+`@Synchronized` hits are now a real measurement rather than an artefact of the broken regex: the three
+annotations this phase removed from `MultiStreamProgress.kt` were the last ones anywhere under a
+converted `commonMain`.
+
+Also, R5's language-directory rule:
+
+```
+$ ls -1 core/transfer/src
+androidHostTest
+androidMain
+commonMain
+commonTest
+jvmMain
+```
+
+No `main/`, no `test/`, no `java/` anywhere in the tree. (`find core/*/src -type d -name java` still
+returns `core/calling` and `core/persistence` — both still `com.android.library`, both expected.)
+
+**Gate 6 — the desktop jar actually contains the moved code, and contains no Android.**
+
+```
+$ ls -la core/transfer/build/libs/transfer-jvm-1.1.0.jar
+-rw-r--r-- 1 KaliOxygen 197609 47905 Sep  5 10:06 transfer-jvm-1.1.0.jar
+
+entries=39  classes=25  android_paths=0
+```
+
+25 classes, up from **15** before this phase. The 10 new ones are exactly the two moved files plus the
+lock — no more, no fewer:
+
+```
+com/transfer/flash/core/transfer/concurrent/PlatformLock.class
+com/transfer/flash/core/transfer/manifest/ManifestItem.class
+com/transfer/flash/core/transfer/manifest/TransferManifest.class
+com/transfer/flash/core/transfer/multistream/MultiStreamProgress.class
+com/transfer/flash/core/transfer/multistream/MultiStreamProgress$Companion.class
+com/transfer/flash/core/transfer/multistream/MultiStreamResult.class
+com/transfer/flash/core/transfer/multistream/MultiStreamResult$Completed.class
+com/transfer/flash/core/transfer/multistream/MultiStreamResult$Failed.class
+com/transfer/flash/core/transfer/multistream/RollingRateMeter.class
+com/transfer/flash/core/transfer/multistream/RollingRateMeter$Sample.class
+```
+
+The other 15 are unchanged: `FlashTransferRepository{,$DefaultImpls}`, the four `model/` classes, the
+two `multistream/StreamChannel*` interfaces, the five `protocol/WsTransferMessages*`, and
+`store/TransferStore{,$ChunkRef}`. `PlatformLock.class` in the jar is the `jvmMain` `actual`, which is
+the compiled proof that `jvmMain` is no longer empty. Zero paths under `android/`.
+
+Name the jar explicitly — `ls core/transfer/build/libs/*jvm*.jar | head -1` picks the **sources** jar,
+which has no `.class` entries at all and would have reported `classes=0`.
+
+**Gate 7 — the published coordinates and the desktop POM.**
+
+```
+$ ./gradlew :core:transfer:publishToMavenLocal --no-configuration-cache
+BUILD SUCCESSFUL
+
+$ ls -1 ~/.m2/repository/com/transfer/flash | grep '^core-transfer'
+core-transfer
+core-transfer-android
+core-transfer-jvm
+
+$ core-transfer-jvm-1.1.0.pom dependencies:
+  com.transfer.flash:core-common-jvm
+  org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm
+  org.jetbrains.kotlin:kotlin-stdlib
+```
+
+Three coordinates, unchanged from Phase 11. The desktop POM carries **no** `androidx` and no
+`core-network` — those are `androidMain`-only `implementation` edges and correctly absent. The
+`kotlinx-coroutines-test` dependency added to `commonTest` does not appear either, which is what you
+want from a test-only edge.
+
+**Published ABI: unchanged.** All six declarations this phase touched or created are `internal`
+(`PlatformLock`, `ManifestItem`, `TransferManifest`, `MultiStreamProgress`, `MultiStreamResult`,
+`RollingRateMeter`), so under `explicitApi()` (R7) nothing entered or left `core-transfer`'s public
+surface — the classes are new to the *jar*, not to the *API*. No consumer needs an edit.
+
+**Extra, beyond the seven gates — a mutation probe, because a guard test that has never been seen to
+fail is not a guard.**
+
+The 2026-08-24 symptom is "Δbytes measured from the first sample ever, Δtime measured across the
+window". I re-introduced exactly that, as a one-line change in the working tree:
+
+```kotlin
+-        val db = (newest.cumulativeBytes - oldest.cumulativeBytes).toDouble()
++        val db = newest.cumulativeBytes.toDouble() // ZZ-MUTATION-PROBE
+```
+
+```
+$ ./gradlew :core:transfer:jvmTest --no-configuration-cache --console=plain
+RollingRateMeterTest[jvm] > rate_isNegativeOne_whenStalled[jvm] FAILED
+RollingRateMeterTest[jvm] > rate_resetsOnBackwardsClock[jvm] FAILED
+RollingRateMeterTest[jvm] > rate_usesOldestSampleInWindow_notFirstEver[jvm] FAILED
+16 tests completed, 3 failed
+BUILD FAILED in 25s
+```
+
+The messages are the point:
+
+```
+at t=2000 ms. Expected <1000.0> with absolute tolerance <1.0E-9>, actual <2000.0>.
+pre-jump samples discarded. Expected <1000.0> …, actual <2500.0>.
+Expected <-1.0> …, actual <1000.0>.
+```
+
+`at t=2000 ms` confirms the design claim: the t = 1 000 ms assertion **passed** under the bug — buggy
+and correct agree inside the first window — and divergence only appears at the second boundary. Had the
+test asserted once at the end, or once at t = 1 s, it would have been either fine or useless
+respectively; asserting at every boundary is load-bearing, and now demonstrably so. Two further cases
+(the stall sentinel and the backwards-clock reset) also discriminate the bug, which was not designed
+for but is welcome.
+
+Probe reverted with `git checkout --`, and the suite re-run to confirm restoration:
+
+```
+$ ./gradlew :core:transfer:jvmTest --no-configuration-cache
+BUILD SUCCESSFUL in 12s
+TransferManifestTest              tests="1" failures="0" errors="0" skipped="0"
+RollingRateMeterTest              tests="7" failures="0" errors="0" skipped="0"
+WsTransferMessagesWireFormatTest  tests="8" failures="0" errors="0" skipped="0"
+```
+
+`git status --porcelain` after the revert shows only the two docs files, so nothing from the probe
+survived into the committed tree.
+
+### Deviations from the phase file
+
+Three, all inside `core/transfer/build.gradle.kts`, all declared here rather than silently taken:
+
+1. **`libs.kotlinx.coroutines.test` added to `commonTest`.** PHASE-13B step 4 asks for a `commonTest`
+   suite but does not enumerate its dependencies, and `runTest` is the only way to launch coroutines
+   from a non-`suspend` common test function. R10 is not touched: the alias already exists and is
+   already pinned to the same 1.10.2 as `coroutines-core`, so no version moved. This is the same edge
+   `:core:engine` added in Phase 12 for `AutoConnectGateTest`.
+2. **The module NOTE at the top of the build file was rewritten.** It previously recorded that this
+   module "declares no expect/actual at all" — true when Phase 11 wrote it, false the moment
+   `PlatformLock` landed. It now records the flag's purpose, the R2 justification for a class over a
+   function, and the copy count.
+3. **The `jvm { }` KDoc was corrected** from "jvmMain is empty" to "jvmMain holds one file, the
+   `PlatformLock` actual", and its blocked-until pointer changed from "Phase 15" to "until D10 is
+   answered" — Phase 13's finding, which the stale comment predates.
+
+Deviations 2 and 3 are comment-only and were made false *by this phase*, so leaving them would have
+been leaving a known-wrong comment behind. Nothing outside `:core:transfer` was edited (R4).
+
+One further docs-only correction, in this entry's own commit rather than the source commit:
+`README.md`'s "Read these first" row 3 still described DECISIONS.md as holding "Open decisions
+D1–D9". Phase 13 added **D10** and did not update that line, so the index was wrong about the
+decision set the phase family itself created. It now reads D1–D10 and notes that D10 is on the
+critical path.
+
+**Not done, deliberately (R1):** the `PlatformLock` hoist to a shared module — now four copies, which
+is the threshold Phase 08 flagged — and the two remaining `androidMain` pins that D10 governs. Neither
+is in 13B-1's scope.
+
+### What I could NOT verify (R9)
+
+1. **That these two files are genuinely common.** Verified: they compile against a JVM classpath and
+   against `android.jar`, and they contain none of R6.1's flagged tokens. Not verified: that they
+   compile for Kotlin/Native, because **no native target exists in this build** and no phase in the
+   plan adds one. R6 conformance here rests on grep plus reading, exactly as R6.1 says it must.
+2. **`PlatformLock`'s memory-visibility guarantees on a non-JVM `actual`.** Both current `actual`s wrap
+   `synchronized`, which gives happens-before on the JVM. A future native `actual` must supply the
+   same, and nothing here tests for it — by definition, since there is no such target to test.
+3. **Absence of a race, as opposed to its non-appearance.** `contention_recordAndReadDoNotCorrupt`
+   passing is evidence, not proof: 8 × 2 000 rounds on this machine's core count on this run. There is
+   no thread sanitizer for Kotlin/JVM in this build, and I did not run the case repeatedly to look for
+   flakiness.
+4. **`TimeSource.Monotonic`'s actual resolution on either target.** The contention case only asserts
+   sign and finiteness, so it does not depend on granularity — but I did not measure what granularity
+   it gets on Android versus the desktop JVM, and a future test that *does* depend on it should not
+   assume they match.
+5. **Instrumented behaviour.** `androidDeviceTest` / `connectedAndroidDeviceTest` were not run; no
+   device or emulator is attached. Unchanged from every prior phase.
+6. **That the 2026-08-24 field report matches the mutation I probed.** I reproduced the *symptom* the
+   KDoc describes and confirmed the test catches it. I did not find the original defective revision in
+   git history to confirm my one-line mutation is byte-for-byte the bug that shipped.
+
+### Known issues (carried, not introduced)
+
+- **The 12 `:core:persistence` failures**, unchanged since Phase 00: 11 in `FlashSettingsDataStoreTest`,
+  1 in `DiscoveryModeSettingTest`. Not this phase's, not fixed here (R1).
+- **`PlatformLock` now has four copies.** Phase 08 asked for a hoist before further copies were made;
+  Phases 12 and 13B-1 each made one anyway, because performing the hoist inside either phase would
+  have broken R1, R4 and R7 simultaneously. It needs its own phase and has none.
+- **R6 is still enforced by review, not by the compiler** (R6.1). This phase is the clearest
+  illustration so far: both of its pins were invisible to every compile task in the build.
+- **No Kotlin/Native target, and no phase that adds one.** Adding even `iosSimulatorArm64` with no
+  product intent would convert R6 from a review rule into a build error retroactively for all seven
+  converted modules. Still recommended, still unscheduled.
+- **`model/WsTransferModels.kt` is dead code** in `androidMain` and PHASE-13B explicitly forbids
+  deleting it in 13B-1. Untouched.
+- **No golden-vector test over `ChunkFrame` output**, carried from the Phase 13 entry. This matters for
+  13B-3, which cannot rewrite that file safely without one — and which additionally needs explicit R8
+  authorisation before it may try.
+
+### Next step
+
+**Phase 14** — desktop mDNS for `:core:discovery`. It is executable now: D6 (JmDNS) is a
+proceed-on-recommendation decision for an agent under DECISIONS.md, provided the phase log records that
+it proceeded on the recommendation. Two constraints the phase file sets and that I flag here so they are
+not lost: it must begin with a throwaway spike rather than a conversion, and it must enumerate desktop
+network interfaces explicitly rather than calling `InetAddress.getLocalHost()`, which on a multi-homed
+Windows host returns an arbitrary adapter.
+
+**13B-2, 13B-3, 15 and 16 remain blocked on D10.** Phase 16 is a hard gate, so after Phase 14 the
+migration has no unblocked work left. That is now the single most important thing for the human to
+look at.
+
+
+
+
+
+
+
+
+
+
 
 
 
