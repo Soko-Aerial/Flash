@@ -1,8 +1,7 @@
 package com.transfer.flash.core.transfer.chunked
 
-import java.io.ByteArrayOutputStream
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
+import okio.Buffer
+import okio.ByteString.Companion.toByteString
 
 /**
  * Framing v2 wire types for chunked, resumable transfers (C5.3), self-contained binary format.
@@ -11,6 +10,33 @@ import java.nio.ByteOrder
  * assert-on-handshake) but are **binary**, not JSON: CHUNK payloads are up to 256 KB of opaque
  * bytes and must not pay base64/JSON-escape overhead. The layout below is the single source of
  * truth; the Windows/Linux client and the future Rust bridge implement from this doc.
+ *
+ * ## Phase 13B-3b: `java.nio` → okio, under an explicit R8 authorisation
+ *
+ * This file is named on CONVENTIONS.md R8's untouchable list because it *is* a wire format. The
+ * human authorised the rewrite on 2026-09-05 with one acceptance criterion: **byte-identical
+ * output**. Golden hex vectors were captured from the previous `java.nio.ByteBuffer` implementation
+ * *before* any edit, asserted against it to prove the vectors faithful, and are asserted against
+ * this implementation from `commonTest` — see `ChunkFrameGoldenVectorTest`. The layout
+ * documentation below is unchanged because the layout is unchanged.
+ *
+ * Three seams were replaced. All three were checked by measurement, not assumed:
+ *
+ * - `ByteArrayOutputStream` + a little-endian `ByteBuffer` scratch → okio [Buffer], whose
+ *   `writeShortLe`/`writeIntLe`/`writeLongLe` are the same little-endian primitives. Assembling
+ *   header and payload with [Buffer.writeAll] *moves* segments instead of copying them, so this
+ *   costs one array copy per frame where the old code cost two.
+ * - `String.toByteArray(Charsets.UTF_8)` → [Buffer.writeUtf8]. `Charsets` is JVM-only. The reason
+ *   this is okio's encoder rather than Kotlin's `String.encodeToByteArray()` is **unpaired
+ *   surrogates**: a filename may legally contain one, and the byte it becomes is wire-visible.
+ *   okio emits `'?'` (0x3F) for one in a single `commonMain` implementation shared by every target.
+ *   `encodeToByteArray()` is an `expect`/`actual` whose JVM half is literally
+ *   `toByteArray(Charsets.UTF_8)` — identical today — but whose behaviour on a future
+ *   Kotlin/Native target is not fixed by anything this repo can see. Picking okio removes the
+ *   question instead of answering it for one platform. `V3` in the golden vectors pins the byte.
+ * - `String(bytes, Charsets.UTF_8)` → [okio.ByteString.utf8], and `String(bytes,
+ *   Charsets.US_ASCII)` → [asciiBytes]'s decoding counterpart in [Reader.fixedString]. Both
+ *   substitute U+FFFD for malformed input exactly as the JDK decoders with `REPLACE` did.
  *
  * ## Byte layout (all multi-byte scalars LITTLE-ENDIAN)
  *
@@ -240,14 +266,17 @@ public sealed class ChunkFrame {
                     payload.u8(if (frame.verified) 1 else 0)
                 }
             }
-            val body = payload.toByteArray()
-            val out = ByteBuffer.allocate(HEADER_SIZE + body.size).order(ByteOrder.LITTLE_ENDIAN)
-            out.put(MAGIC)
-            out.put(VERSION.toByte())
-            out.put(frame.type.code)
-            out.putInt(body.size)
-            out.put(body)
-            return out.array()
+            val body = payload.buffer()
+            val bodySize = body.size
+            require(bodySize <= Int.MAX_VALUE) { "payload too large: $bodySize" }
+            val out = Buffer()
+            out.write(MAGIC)
+            out.writeByte(VERSION)
+            out.writeByte(frame.type.code.toInt())
+            out.writeIntLe(bodySize.toInt())
+            // writeAll MOVES body's segments into out instead of copying their bytes.
+            out.writeAll(body)
+            return out.readByteArray()
         }
 
         /**
@@ -345,42 +374,50 @@ public sealed class ChunkFrame {
     }
 }
 
-/** Little-endian scalar/string writer used by [ChunkFrame.serialize]. */
+/**
+ * Little-endian scalar/string writer used by [ChunkFrame.serialize].
+ *
+ * okio's `writeShortLe`/`writeIntLe`/`writeLongLe` are the little-endian primitives the previous
+ * `java.nio.ByteBuffer(ByteOrder.LITTLE_ENDIAN)` scratch provided, so no byte order is hand-rolled
+ * here. [buffer] hands the accumulated payload to the caller so the frame header can be prefixed
+ * with [Buffer.writeAll], which moves segments rather than copying bytes.
+ */
 private class PayloadWriter {
 
-    private val out = ByteArrayOutputStream()
-    private val scratch = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)
+    private val out = Buffer()
 
-    fun u8(v: Int) = out.write(v and 0xFF)
+    fun u8(v: Int) {
+        out.writeByte(v and 0xFF)
+    }
 
     fun u16(v: Int) {
         require(v in 0..0xFFFF) { "u16 out of range: $v" }
-        scratch.clear()
-        scratch.putShort(v.toShort())
-        writeScratch(2)
+        out.writeShortLe(v)
     }
 
     fun i32(v: Int) {
-        scratch.clear()
-        scratch.putInt(v)
-        writeScratch(4)
+        out.writeIntLe(v)
     }
 
     fun i64(v: Long) {
-        scratch.clear()
-        scratch.putLong(v)
-        writeScratch(8)
+        out.writeLongLe(v)
     }
 
-    fun bytes(b: ByteArray) = out.write(b)
+    fun bytes(b: ByteArray) {
+        out.write(b)
+    }
 
     fun rawAscii(s: String) {
         require(s.length <= ChunkFrame.MAX_STRING_BYTES) { "string too long: ${s.length}" }
-        out.write(s.toByteArray(Charsets.US_ASCII))
+        out.write(asciiBytes(s))
     }
 
     fun string(s: String) {
-        val encoded = s.toByteArray(Charsets.UTF_8)
+        // The intermediate array is deliberate: measuring the encoded length and writing the
+        // payload must be the SAME bytes, so the u16 length prefix can never desynchronize from
+        // what follows it. `utf8Size(s)` + `writeUtf8(s)` would agree today; a wire format should
+        // not depend on two functions agreeing.
+        val encoded = Buffer().writeUtf8(s).readByteArray()
         require(encoded.size <= ChunkFrame.MAX_STRING_BYTES) {
             "string too long for framing: ${encoded.size} > ${ChunkFrame.MAX_STRING_BYTES}"
         }
@@ -388,11 +425,26 @@ private class PayloadWriter {
         out.write(encoded)
     }
 
-    private fun writeScratch(n: Int) {
-        out.write(scratch.array(), 0, n)
-    }
+    /** The accumulated payload. Consuming it (e.g. via [Buffer.writeAll]) empties this writer. */
+    fun buffer(): Buffer = out
+}
 
-    fun toByteArray(): ByteArray = out.toByteArray()
+/**
+ * US-ASCII encoder for the fixed-width hex digest field, replacing
+ * `String.toByteArray(Charsets.US_ASCII)` (`Charsets` is JVM-only).
+ *
+ * The JDK's US-ASCII encoder with `REPLACE` substitutes `'?'` (0x3F) for any character above
+ * 0x7F; this reproduces that byte for byte. Callers pass digest hex, which is ASCII by
+ * construction, so the substitution is unreachable in practice and exists only to keep the
+ * function total.
+ *
+ * `Sha256.kt` has a private helper doing the same thing. It is duplicated rather than shared
+ * because 13B-3a certified that file's byte-identity and this sub-step must not edit it; the two
+ * copies are four lines each.
+ */
+private fun asciiBytes(s: String): ByteArray = ByteArray(s.length) { i ->
+    val c = s[i].code
+    if (c <= 0x7F) c.toByte() else '?'.code.toByte()
 }
 
 /**
@@ -455,12 +507,36 @@ private class Reader(private val buf: ByteArray, start: Int, end: Int) {
         pos += 2
         val len = (b1 shl 8) or b0
         if (len > ChunkFrame.MAX_STRING_BYTES) throw IllegalArgumentException("string too long")
-        val raw = bytes(len) ?: throw IllegalArgumentException("truncated string")
-        return String(raw, Charsets.UTF_8)
+        need(len)
+        // ByteString.utf8() substitutes U+FFFD for malformed input, as `String(bytes,
+        // Charsets.UTF_8)` did — the golden vectors pin the clean cases and the probe run in
+        // 13B-3b confirmed the malformed ones byte for byte.
+        val decoded = buf.toByteString(pos, len).utf8()
+        pos += len
+        return decoded
     }
 
+    /**
+     * Strict US-ASCII decode of [n] bytes, replacing `String(bytes, Charsets.US_ASCII)`.
+     *
+     * The JDK's US-ASCII decoder with `REPLACE` maps every byte >= 0x80 to U+FFFD — verified by
+     * measurement in 13B-3b, not assumed: `byteArrayOf(0x41, 0xC3, 0x7F, 0x80)` decodes to
+     * `41 efbfbd 7f efbfbd` in UTF-8. Decoding as UTF-8 instead would be wrong here, since it
+     * would combine continuation bytes into one replacement char and change the string's length.
+     */
     fun fixedString(n: Int): String {
         val raw = bytes(n) ?: throw IllegalArgumentException("truncated fixed string")
-        return String(raw, Charsets.US_ASCII)
+        val sb = StringBuilder(raw.size)
+        for (b in raw) {
+            val v = b.toInt() and 0xFF
+            sb.append(if (v <= 0x7F) v.toChar() else REPLACEMENT_CHAR)
+        }
+        return sb.toString()
     }
 }
+
+/**
+ * U+FFFD REPLACEMENT CHARACTER, built from its code point rather than written as a literal so the
+ * bytes this decoder produces do not depend on the source file's own encoding.
+ */
+private val REPLACEMENT_CHAR: Char = Char(0xFFFD)
