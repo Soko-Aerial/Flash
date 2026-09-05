@@ -86,8 +86,13 @@ Phase 06 discovered the replacement task name empirically and recorded it in R3.
 and in `logs/migration.md`. From Phase 06 onward the verification command is:
 
 ```bash
-./gradlew --stop >/dev/null 2>&1; sleep 8; ./gradlew :app:assembleDebug testDebugUnitTest :core:common:testAndroidHostTest :core:security:testAndroidHostTest :core:security:jvmTest :core:discovery:testAndroidHostTest :core:discovery:jvmTest :core:network:testAndroidHostTest :core:network:jvmTest :core:transfer:testAndroidHostTest :core:transfer:jvmTest :core:messaging:testAndroidHostTest :core:messaging:jvmTest :core:engine:testAndroidHostTest :core:engine:jvmTest :core:persistence:testAndroidHostTest :core:persistence:jvmTest --no-configuration-cache --continue --max-workers=2 --console=plain
+./gradlew --stop >/dev/null 2>&1; sleep 8; ./gradlew :app:assembleDebug testDebugUnitTest :core:common:testAndroidHostTest :core:security:testAndroidHostTest :core:security:jvmTest :core:discovery:testAndroidHostTest :core:discovery:jvmTest :core:network:testAndroidHostTest :core:network:jvmTest :core:transfer:testAndroidHostTest :core:transfer:jvmTest :core:messaging:testAndroidHostTest :core:messaging:jvmTest :core:engine:testAndroidHostTest :core:engine:jvmTest :core:persistence:testAndroidHostTest :core:persistence:jvmTest :ui:theme:testAndroidHostTest --no-configuration-cache --continue --max-workers=2 --console=plain
 ```
+
+`:ui:theme:testAndroidHostTest` was added by Phase 17. It has **no** `:ui:theme:jvmTest`
+companion yet: the module's five suites are still `androidHostTest`-only, so the task exists but
+runs zero tests. **Phase 18 must add it** — that is the phase that moves those suites to
+`commonTest`.
 
 Every converted module must be **named explicitly** on that command line, because the
 unqualified `testDebugUnitTest` no longer reaches it. Add one `:module:testAndroidHostTest`
@@ -124,6 +129,11 @@ now running on the `jvm()` target as well as the Android host + 4 for the new
 `FlashDatabaseJvmTest`; 133 + 2 XMLs. The orphaned `:core:persistence` `testDebugUnitTest`
 results directory was deleted before tallying, per the paragraph below — it held the same 35
 tests that now report under `testAndroidHostTest` and would have inflated the total to 1053).
+Phase 17 left it at **1018 / 12 / 0 across 135 XMLs** — a conversion phase can legitimately leave
+the total *unchanged*: it added no test and only relocated `:ui:theme`'s five suites (37 tests, one
+XML each) from `testDebugUnitTest/` to `testAndroidHostTest/`. In that case the **per-module table
+is the only thing that proves anything**, because an unchanged total is also what a silently
+dropped suite looks like.
 Compare **per module** as well as in total: a total that still matches while one
 module's suite has silently stopped running is exactly the failure mode R3 exists to catch.
 Show the arithmetic, not just the number — a phase that adds N tests to a `commonTest` suite must

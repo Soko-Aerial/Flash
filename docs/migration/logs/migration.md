@@ -6427,40 +6427,334 @@ So the core+desktop track is now **fully blocked on human decisions**, and **D10
 decision unblocking the most work** (four phases plus the Phase 16 gate). The UI track is not
 blocked, which is where execution continues.
 
+---
 
+## Phase 17 — `:ui:theme` Compose Multiplatform resources
 
+- **Date:** 2026-09-05
+- **Agent/model:** Claude Opus 5 (Claude Code)
+- **Commits:** `a8d9d0d` (catalog), `23267ed` (module conversion + resource move + `FlashIcons`), plus this docs commit
+- **Decisions relied on:** D1=B (strict `commonMain`; no `jvmAndAndroidMain`), **D3=A** — already *answered* by a human on 2026-08-31, so nothing was picked here. What D3 left outstanding was the **verification** it demanded of Phase 06 and Phase 06 never performed: *"Phase 06 must still verify the exact CMP version against Kotlin 2.2.10."* That verification is discharged by this phase and recorded back into DECISIONS.md.
 
+### Change
 
+Steps 1–5 of PHASE-17: the 55 `flash_ic_*` vector XMLs move from
+`ui/theme/src/main/res/drawable/` to `ui/theme/src/commonMain/composeResources/drawable/`, and
+`FlashIcons` switches from `R.drawable.*` (`Int`) to CMP's generated `Res.drawable.*`
+(`org.jetbrains.compose.resources.DrawableResource`). `:ui:theme` becomes the tenth KMP module —
+**which the phase file says not to do**; see Deviations, because that deviation is the whole story
+of this phase. No Kotlin file moved: two `srcDir` shims keep every file at its pre-KMP path so
+PHASE-18's move table stays executable verbatim.
 
+### Files changed
 
+**Modified**
+- `gradle/libs.versions.toml` — new `[versions] jetbrainsCompose = "1.9.3"` and
+  `[plugins] jetbrains-compose`. R10-compliant: a new alias, and the one version this phase is
+  authorised to add. Root `build.gradle.kts` deliberately **not** touched — the Phase 09B-1
+  precedent (`androidx-room`) established that a catalog alias plus the module's own `plugins`
+  block is sufficient without a root `apply false`.
+- `ui/theme/build.gradle.kts` — rewritten from `com.android.library` to the KMP pair plus CMP.
+- `ui/theme/src/main/java/com/transfer/flash/ui/icons/FlashIcons.kt` — 54 `R.drawable.x` →
+  `Res.drawable.x`; `FlashIconSpec.drawableRes` `Int` → `DrawableResource`; imports swapped
+  (`androidx.annotation.DrawableRes`, `androidx.compose.ui.res.painterResource` and
+  `com.transfer.flash.ui.theme.R` out; the generated package plus
+  `org.jetbrains.compose.resources.{DrawableResource, painterResource}` in). Both `FlashIcon`
+  composable signatures, `FlashIconState.tint`, `mvpChatSet` (37 entries) and
+  `flashIconDefaultSize` are untouched, as the phase's "Do NOT" list requires.
 
+**Moved (55, via `git mv`, zero content change)**
+- `ui/theme/src/main/res/drawable/flash_ic_*.xml` →
+  `ui/theme/src/commonMain/composeResources/drawable/flash_ic_*.xml`.
+  `src/main/res/drawable/` and `src/main/res/` are now gone (empty).
 
+**Deleted**
+- Nothing tracked. Two orphaned build directories were removed before tallying (R3):
+  `ui/theme/build/test-results/testDebugUnitTest/` and
+  `ui/theme/build/reports/tests/testDebugUnitTest/`.
 
+### Verification
 
+Command run (the R3 command with `:ui:theme:testAndroidHostTest` appended):
 
+```
+./gradlew --stop; sleep 8; ./gradlew :app:assembleDebug testDebugUnitTest \
+  :core:common:testAndroidHostTest :core:security:testAndroidHostTest :core:security:jvmTest \
+  :core:discovery:testAndroidHostTest :core:discovery:jvmTest \
+  :core:network:testAndroidHostTest :core:network:jvmTest \
+  :core:transfer:testAndroidHostTest :core:transfer:jvmTest \
+  :core:messaging:testAndroidHostTest :core:messaging:jvmTest \
+  :core:engine:testAndroidHostTest :core:engine:jvmTest \
+  :core:persistence:testAndroidHostTest :core:persistence:jvmTest \
+  :ui:theme:testAndroidHostTest \
+  --no-configuration-cache --continue --max-workers=2 --console=plain
+```
 
+Result: **PASS** (the one failing task is the known pre-existing set).
 
+```
+> Task :core:persistence:testAndroidHostTest
+35 tests completed, 12 failed
+> Task :core:persistence:testAndroidHostTest FAILED
+...
+> Task :ui:theme:testAndroidHostTest
+...
+FAILURE: Build failed with an exception.
+* What went wrong:
+Execution failed for task ':core:persistence:testAndroidHostTest'.
+> There were failing tests.
+BUILD FAILED in 6m 8s
+319 actionable tasks: 97 executed, 222 up-to-date
+```
 
+Repo-wide tally: **1018 tests / 12 failures / 0 errors / 0 skipped across 135 XMLs.**
 
+Arithmetic — Phase 09B-1 left 1018 / 12 / 0 across 135. Phase 17 adds **no** test and deletes
+none; it only relocates `:ui:theme`'s five suites from `testDebugUnitTest/` to
+`testAndroidHostTest/` (37 tests either way, one XML each). 1018 + 0 − 0 = **1018**, 135 + 5 − 5 =
+**135**. An unchanged total is the *correct* result here, and the per-module table below is what
+proves it is unchanged for the right reason rather than because a suite stopped running:
 
+| Module | Task | XMLs | tests / fail / skip |
+|---|---|---|---|
+| `:app` | `testDebugUnitTest` | 6 | 31 / 0 / 0 |
+| `:core:calling` | `testDebugUnitTest` | 4 | 55 / 0 / 0 |
+| `:core:common` | `testAndroidHostTest` | 8 | 49 / 0 / 0 |
+| `:core:discovery` | `testAndroidHostTest` | 9 | 104 / 0 / 0 |
+| `:core:discovery` | `jvmTest` | 3 | 35 / 0 / 0 |
+| `:core:engine` | `testAndroidHostTest` | 2 | 9 / 0 / 0 |
+| `:core:engine` | `jvmTest` | 1 | 8 / 0 / 0 |
+| `:core:messaging` | `testAndroidHostTest` | 5 | 35 / 0 / 0 |
+| `:core:messaging` | `jvmTest` | 1 | 8 / 0 / 0 |
+| `:core:network` | `testAndroidHostTest` | 21 | 134 / 0 / 0 |
+| `:core:network` | `jvmTest` | 1 | 8 / 0 / 0 |
+| `:core:persistence` | `testAndroidHostTest` | 4 | 35 / **12** / 0 |
+| `:core:persistence` | `jvmTest` | 2 | 13 / 0 / 0 |
+| `:core:security` | `testAndroidHostTest` | 12 | 90 / 0 / 0 |
+| `:core:security` | `jvmTest` | 1 | 10 / 0 / 0 |
+| `:core:transfer` | `testAndroidHostTest` | 16 | 102 / 0 / 0 |
+| `:core:transfer` | `jvmTest` | 3 | 16 / 0 / 0 |
+| `:ui:chat` | `testDebugUnitTest` | 31 | 239 / 0 / 0 |
+| **`:ui:theme`** | **`testAndroidHostTest`** | **5** | **37 / 0 / 0** |
+| | | **135** | **1018 / 12 / 0** |
 
+The 12 are the known pre-existing `:core:persistence` failures — 11 in `FlashSettingsDataStoreTest`
++ 1 in `DiscoveryModeSettingTest`, `java.io.IOException` at DataStore `FileStorage.kt:121` under
+Robolectric. Not touched (R1: they are out of scope, and a change in the count would be a
+regression, not progress).
 
+**No `:ui:theme:jvmTest` on that command line.** R3 says to add one *"if the module has a
+`commonTest`/`jvmTest` suite"*. `:ui:theme` has neither: its five suites stay in `androidHostTest`
+until PHASE-18 moves them to `commonTest`. The task exists and is green, but it runs zero tests, so
+naming it would be theatre. **PHASE-18 must add it** — that is the phase that gives it sources.
 
+Additional checks specific to this phase:
 
+- **PHASE-17 step 5's "critical" gate** — `:ui:theme:compileKotlinJvm` +
+  `:ui:theme:compileAndroidMain` → `BUILD SUCCESSFUL in 7s`. This is what proves the
+  `Res.drawable.*` accessors compile for a target with no `android.jar`.
+- **Downstream consumers** — `:ui:chat:compileDebugKotlin` + `:ui:callui:compileDebugKotlin` +
+  `:ui:theme:testAndroidHostTest` → `BUILD SUCCESSFUL in 1m 11s`. Only pre-existing deprecation
+  warnings (`allNetworks`, `rememberSwipeToDismissBoxState`, `KeyframeEntity.with`).
+- **`:ui:theme:tasks --all`** → `BUILD SUCCESSFUL in 56s`, which is the first proof that
+  CMP 1.9.3 + `com.android.kotlin.multiplatform.library` (AGP 9.3.1) + `kotlin.plugin.compose`
+  (2.2.10) actually cooperate. It wires
+  `prepareComposeResourcesTaskFor{CommonMain,AndroidMain,JvmMain,CommonTest,JvmTest,AndroidHostTest,AndroidDeviceTest}`
+  and `copyAndroidMainComposeResourcesToAndroidAssets`.
+- **The icons actually ship.** `:app:assembleDebug` → `BUILD SUCCESSFUL`; APK
+  `app/build/outputs/apk/debug/app-debug.apk` is 66,182,205 bytes and contains:
+  - **55** entries matching
+    `^composeResources/com\.transfer\.flash\.ui\.theme\.generated\.resources/drawable/.*\.xml$`
+  - **55** occurrences of `flash_ic` in the whole archive — i.e. no second, aapt-compiled copy
+  - **0** `assets/` entries, and **0** `res/*flash_ic*` entries
+  - an extracted `flash_ic_send.xml` that `diff`s clean against
+    `ui/theme/src/commonMain/composeResources/drawable/flash_ic_send.xml`. They ship as **raw
+    XML**: aapt never sees them, so CMP's own parser is what reads them at runtime.
+- **Which reader finds them.** `DefaultAndroidResourceReader.getResourceAsStream` was
+  disassembled out of `components-resources-android-1.9.3`'s `library-release.aar`
+  (`javap -p -c`). Its exception table shows a three-step fallback:
+  `getAssets().open(path)` → the instrumented context's assets → `ClassLoader.getResourceAsStream(path)`,
+  throwing `MissingResourceException` only if all three miss. With 0 `assets/` entries and 55 at a
+  classloader-visible path equal to the prefix the generated `Res.readBytes`/`getUri` computes
+  (`"composeResources/com.transfer.flash.ui.theme.generated.resources/"`), the **third** branch is
+  what resolves them. This closes a limit an earlier draft of this entry declared unverifiable —
+  the first attempt to extract the AAR failed only because the cached file is named
+  `library-release.aar`, not `components-resources-android-1.9.3.aar`.
+- **The parser handles our XML subset.** `XmlVectorParserKt` from the same AAR was disassembled
+  for its recognised attribute names: `width, height, viewportWidth, viewportHeight, autoMirrored,
+  name, pathData, fillColor, fillAlpha, fillType, strokeColor, strokeAlpha, strokeWidth,
+  strokeLineCap, strokeLineJoin, strokeMiterLimit, trimPathStart, trimPathEnd, trimPathOffset,
+  rotation, pivotX, pivotY, scaleX, scaleY, translateX, translateY`. An audit of all 55 files
+  found exactly **2** element types (`<vector>` ×55, `<path>` ×96) and **11** attributes —
+  `strokeWidth`/`strokeLineJoin`/`strokeLineCap`/`strokeColor`/`pathData`/`fillColor` ×96 each,
+  `width`/`height`/`viewportWidth`/`viewportHeight` ×55 each, `autoMirrored` ×8. All 11 are in the
+  parser's set; there are no `<group>`s, no `<clip-path>`s and no `aapt:attr` gradients anywhere,
+  so nothing in the corpus depends on unsupported syntax.
+- **`FlashIcons` reference audit** — 0 `R.drawable` remaining, 54 `Res.drawable` references, 53
+  unique drawable names, and nothing referenced-but-absent from disk.
+- **CMP version choice** — see Deviations; this is the D3 = A verification Phase 06 skipped.
 
+### Deviations from the phase file
 
+1. **`:ui:theme` becomes a KMP module, which PHASE-17 step 4a explicitly forbids.** Step 4a's
+   snippet keeps `id("com.android.library")` and adds `id("org.jetbrains.compose")`; the phase's
+   own overview says it *"Does NOT switch the whole module to the `org.jetbrains.compose` plugin
+   (that's Phase 18's job)"*. **That combination cannot work.** Under AGP 9's built-in Kotlin an
+   Android-only module exposes no Kotlin Gradle extension — the same fact that forced BCV's
+   removal in ADR-023 — and CMP's resource generation hooks `KotlinProjectExtension`, so
+   `composeResources/` is simply never read. PHASE-17 precondition 1 (*"Phase 06 … `ui:theme` must
+   be a KMP module with a `commonMain` source set"*) records the assumption that made step 4a look
+   possible; Phase 06 converted `:core:common`, not `ui:theme`. Meanwhile PHASE-18 — the phase
+   that converts it — declares itself *"Blocked by: Phase 17"*. **That is a circular deadlock, and
+   one of the two phases had to break it.**
+2. **How it was broken, so PHASE-18 is not invalidated.** The module takes the full KMP shell
+   (`android { }` + `jvm()`) now, but **not one Kotlin file moved**. Two shims keep the old layout:
+   ```kotlin
+   getByName("androidMain").kotlin.srcDir("src/main/java")
+   getByName("androidHostTest").kotlin.srcDir("src/test/java")
+   ```
+   PHASE-18's move table (`src/main/java/com/transfer/flash/ui/...` → `commonMain/kotlin`, its new
+   `src/androidMain/kotlin/...`, its *"Do NOT delete `src/main/java/` yet"* and its final
+   *"Delete: `src/main/java/` (empty after move)"*) therefore still applies verbatim, and no file
+   is relocated twice. **PHASE-18 must delete those two `srcDir` lines as part of its move** — if
+   it does not, the moved files will be compiled from neither path.
+3. **`jvm()` is declared in 17, not 18.** PHASE-17 step 5 makes a desktop compile its critical
+   gate. A gate against a target that does not exist is not a gate, so the target is declared here.
+   `jvmMain` holds no Kotlin file; the only thing compiled for JVM is CMP's generated `Res` object
+   and resource collectors.
+4. **The task is `compileKotlinJvm`, not `compileKotlinDesktop`.** PHASE-17 step 5 and PHASE-18 both
+   name `compileKotlinDesktop`. R5 mandates plain `jvm()` (never `jvm("desktop")`), so that task
+   name does not exist anywhere in this repo. Confirmed against `:ui:theme:tasks --all`. Same
+   correction R3.1 already carries for the `:core:*` modules.
+5. **A star import of the generated package, not step 3d's `Res`-only import.** Step 3d prescribes
+   `import com.transfer.flash.ui.theme.generated.resources.Res` and appends *"⚠️ Verify this by
+   checking the generated sources after the build."* Verified — and it is wrong. The generated
+   `Res.kt` declares only `public object drawable`; every icon is an **extension property** on it,
+   emitted in `Drawable0.commonMain.kt` as
+   `internal val Res.drawable.flash_ic_archive: DrawableResource by lazy { … }`. Importing `Res`
+   alone left **54 unresolved references**. The fix is
+   `import com.transfer.flash.ui.theme.generated.resources.*`, and `FlashIcons.kt` carries a
+   comment saying why so nobody "tidies" it back.
+6. **`compose.resources { packageOfResClass = … }` added, which the phase never mentions.** CMP
+   defaults the accessor package to `<group>.<project name>.generated.resources` =
+   `com.transfer.flash.theme.generated.resources` — note the missing `ui`. Pinning it makes step
+   3d's mandated import literally correct instead of something to "verify and adjust".
+7. **`implementation(compose.runtime)` in `commonMain`, which the phase never mentions.** Without
+   it `compileKotlinJvm` dies:
+   ```
+   e: androidx.compose.compiler.plugins.kotlin.IncompatibleComposeRuntimeVersionException:
+   The Compose Compiler requires the Compose Runtime to be on the class path, but none could be
+   found. The compose compiler plugin you are using (version 1.5.14) expects a minimum runtime
+   version of 1.0.0.
+   ```
+   `compose.components.resources` does **not** expose the Compose runtime on a consumer's compile
+   classpath, and the Compose compiler plugin runs that check on **every** Kotlin compilation in
+   the module — even one whose only source is CMP's generated collectors, with zero `@Composable`.
+   The Android target never hit it because the androidx BOM supplies `androidx.compose.runtime`
+   transitively. `compose.components.resources` itself is `api`, not `implementation`, because
+   `DrawableResource` is the declared type of the public `FlashIconSpec.drawableRes` — same lesson
+   as room-runtime in 09B-1.
+8. **CMP is pinned to 1.9.3, and 1.12.0 (the latest stable) is unusable.** The phase names no
+   version. Read from each release's `components-resources-<v>.module` on Maven Central:
 
+   | CMP | declares `kotlin-stdlib` | usable at Kotlin 2.2.10? |
+   |---|---|---|
+   | **1.9.3** | **2.1.0** | **yes** |
+   | 1.10.3 | 2.2.20 | no — raises stdlib above the compiler |
+   | 1.11.1 | 2.3.20 | no — built with Kotlin 2.3 |
+   | 1.12.0 | 2.3.20 | no — built with Kotlin 2.3 |
 
+   A 2.2.10 compiler cannot read Kotlin 2.3 metadata, and R10 forbids bumping Kotlin here.
+   1.9.3 also leaves Jetpack Compose untouched: it maps to Jetpack Compose 1.9.4, *below* the
+   1.10.0 that `composeBom = "2025.12.00"` pins (material3 1.4.0), so Gradle keeps 1.10.0 and
+   `:ui:chat`, `:ui:callui` and `:app` see **no** version change. CMP 1.10.3 would have dragged
+   androidx.compose to 1.10.5. This is precisely the check **D3 = A demanded of Phase 06**
+   (*"Phase 06 must still verify the exact CMP version against Kotlin 2.2.10"*) and Phase 06
+   never performed.
+9. **Publication `artifactId`s renamed in the build file.** KMP generates its own publications
+   (root `kotlinMultiplatform` + one per target), so `register<MavenPublication>("release")` and
+   `android { publishing { singleVariant("release") { withSourcesJar() } } }` are both gone —
+   KMP publishes sources for every target itself. The defaults derive from the project name
+   (`theme`, `theme-android`, `theme-jvm`), so a `withType<MavenPublication>().configureEach { }`
+   rewrites them to `ui-theme*` to keep the coordinate 1.1.0 consumers already use. Version and
+   group now come only from the root build file; the `ui/*` modules used to set them locally and
+   **silently published 1.0.0 for the whole 1.1.0 cycle**.
+10. **`explicitApi()` was deliberately NOT added.** The three `ui/*` modules were never part of the
+    ADR-023 rollout. R1 and R7 say preserve what is there, not extend it in a resource phase.
 
+### Known issues
 
+**ABI break on a published coordinate.** `FlashIconSpec.drawableRes` changes from `Int` to
+`org.jetbrains.compose.resources.DrawableResource`. Any external consumer constructing a
+`FlashIconSpec` from an `R.drawable` int breaks at compile time. There is **no BCV `.api` file to
+update** — ADR-023 removed Binary Compatibility Validator repo-wide. `:ui:chat` and `:ui:callui`
+both compile clean because neither constructs one; `:ui:callui` only *names* the type
+(`FlashCallScreen.kt:486`). Phase 24 (publishing) is where this needs a release note.
 
+**Icon rendering is NOT verified (R9).** No device or emulator run happened, so no pixel was
+inspected. What *is* verified is everything up to the pixel: the files ship at a path the
+generated `Res` computes, the reader's third fallback branch reaches that path, and the parser
+recognises every attribute the files use. The residual risk is a rendering difference between
+aapt's binary-vector inflater (the old path) and CMP's `XmlVectorParserKt` (the new one) on
+input both accept — e.g. rounding of `strokeWidth="2"` without a unit. **The first device run of
+any branch containing `23267ed` should eyeball the chat chrome icons.**
 
+**PHASE-17's inventory is stale.** It says 51 drawables, 50 `Res.drawable` matches and one dead
+file. Actual: **55** drawables — it omits `flash_ic_call_accept`, `flash_ic_camera_flip`,
+`flash_ic_hangup`, `flash_ic_speaker`, the four UI-050 calling glyphs — **54** references, **53**
+unique names, and **two** dead-on-disk files: `flash_ic_arrow_left` (which the phase says not to
+delete) **and** `flash_ic_delivered`, unreferenced because `FlashIcons.Delivered` deliberately
+points at `flash_ic_read`. Neither was deleted (R1). The phase's gate table needs these four
+numbers corrected before anyone re-runs it as written.
 
+**`proguard-rules.pro` is now unreferenced.** The pre-KMP
+`buildTypes { release { isMinifyEnabled = false; proguardFiles(…) } }` had no effect anyway — a
+library only applies its own `proguardFiles` when minifying itself, and minification was off. The
+file is left on disk; deleting it is not this phase's job (R1). `consumer-rules.pro` **is** still
+live, via `optimization { consumerKeepRules { file("consumer-rules.pro"); publish = true } }` —
+those rules are dropped in **silence** if that block is omitted, which is the single easiest thing
+to lose in an AGP 9 KMP conversion.
 
+**PHASE-18's file table undercounts.** It lists 18 production files under
+`ui/theme/src/main/java/com/transfer/flash/ui/`; there are **19**. `FlashBrandAnimation.kt` is
+missing from the table.
 
+**`:ui:callui` and `:sample:consumer-granular` have no phase file and no README row.** The plan's
+UI track is 17 → 18 → 19 → 20 (`:ui:chat`) → 21 → 22, and `:ui:callui` appears in none of them —
+yet it depends on `:ui:theme` (`ui/callui/build.gradle.kts:62`) and names `FlashIconSpec`
+(`FlashCallScreen.kt:486`), so it is inside the blast radius of every remaining UI phase. Flagged
+in the 09B-1 entry too; still unaddressed, and it is a **human decision** whether calling is in
+scope for desktop at all.
 
+**An orphaned `testDebugUnitTest` results directory appeared for the tenth time.**
+`ui/theme/build/{test-results,reports/tests}/testDebugUnitTest/` survived the plugin swap and
+double-counted the five suites (74 instead of 37) until deleted. This is now the fourth module to
+hit the trap R3 documents. The remaining legitimate `test-results/testDebugUnitTest/` directories
+are `:app`, `:core:calling` and `:ui:chat` — the three unconverted modules with unit tests.
 
+### Next step
 
+**Phase 18 — `:ui:theme` KMP conversion proper.** Its precondition ("Blocked by: Phase 17") is now
+genuinely satisfied rather than circular, and Phase 17 has pre-paid the plugin/target work, so
+Phase 18 reduces to: move 14 files to `commonMain/kotlin` and 3–4 to `androidMain/kotlin`, write
+the three `expect`/`actual` pairs (`isReduceMotionOnPlatform()`, `rememberFlashSounds()`,
+`flashDynamicColorScheme(dark)`), move the five suites to `commonTest`, **delete the two `srcDir`
+shims**, **add `:ui:theme:jvmTest` to the R3 command**, and replace the androidx BOM tier with
+`compose.*` artifacts per D3 = A. Corrections it must absorb before being followed literally: its
+`compileKotlinDesktop` → `compileKotlinJvm`, and its 18-file table → 19 files.
 
+| Work | State |
+|---|---|
+| **18** | **executable now** — 17 is done, and 17 already did 18's plugin/target work |
+| 19 | after 18, plus **D6**/**D7** (agent may proceed on the recommendation and record it) |
+| 09B-2 | **blocked** — D5 = C sub-decisions: which encrypted desktop driver, commercial licence acceptable?, SQLCipher file-format parity? |
+| 09B-3 | **blocked** — settings-tier ABI option (a) or (b) |
+| 13B-2, 15, 16 | **blocked on D10** (still the only `_pending_` decision); 16 is a hard gate |
+| 13B-3 | D10 **and** explicit R8 authorisation to rewrite `chunked/ChunkFrame.kt` |
+| 20–24 | downstream of 19 and the Phase 16 / 23 gates |
+| `:ui:callui`, `:sample:consumer-granular` | **no plan** — needs a human scope decision |
 
-
+New for the human decision queue after this phase: **current CMP is unreachable without a Kotlin
+bump.** CMP 1.11+ requires Kotlin 2.3, R10 freezes Kotlin at 2.2.10, so this repo is on CMP 1.9.3
+until someone authorises a Kotlin version bump. That is a decision, not an oversight, and it will
+resurface at Phase 20 if any newer CMP API is wanted.

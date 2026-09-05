@@ -6,7 +6,7 @@
 |---|---|---|
 | **D1** | **Phase 06** | The KMP pilot cannot start until the source-set strategy is chosen. Highest-leverage decision in the migration. |
 | **D2** | **Phase 06** | Only if you choose to rename; if D2 = B, the rename is its own phase run **before** Phase 06. If D2 = A, non-blocking. |
-| **D3** | **Phase 18** | Compose dependency source. Does **not** block Phase 06. |
+| **D3** | **Phase 18** | Compose dependency source. Does **not** block Phase 06. **Bound Phase 17 as well** (2026-09-05): 17 could not add `composeResources/` without the CMP plugin, so it enacted D3 = A a phase early and discharged D3's outstanding CMP-version verification. |
 | **D4** | **Phase 18** | Dynamic-color replacement. Does **not** block Phase 06. |
 | **D5** | **Phase 09** | Desktop persistence strategy. |
 | **D6** | **Phase 14** | Desktop discovery implementation. |
@@ -126,6 +126,41 @@ plugin and its artifacts, drop the Android BOM for shared UI modules. The custom
 design system (`FlashColors`, `FlashTypography`, `FlashShapes`, `FlashIcons`) is
 Flash-owned and survives unchanged — only the dependency source changes, not the visual
 identity. Phase 06 must still verify the exact CMP version against Kotlin 2.2.10.
+
+**VERIFICATION DISCHARGED — Phase 17, 2026-09-05 (`a8d9d0d`).** Phase 06 never did it (it
+converted `:core:common`, which has no Compose). Result: **CMP 1.9.3**, and the ⚠️ above is
+wrong on the key point — *"the latest CMP is always compatible with the latest Kotlin"* is true
+but useless here, because this repo's Kotlin is **frozen at 2.2.10 by R10**, not latest. Read
+from each release's `components-resources-<v>.module` on Maven Central:
+
+| CMP | declares `kotlin-stdlib` | usable at Kotlin 2.2.10? |
+|---|---|---|
+| **1.9.3** | **2.1.0** | **yes — chosen** |
+| 1.10.3 | 2.2.20 | no — would raise stdlib above the compiler |
+| 1.11.1 | 2.3.20 | no — built with Kotlin 2.3 |
+| 1.12.0 | 2.3.20 | no — built with Kotlin 2.3 |
+
+A 2.2.10 compiler cannot read metadata emitted by 2.3, so **CMP 1.12.0 — the version this
+decision's text names — is unusable**, and so is 1.11.x. 1.9.3 also happens to leave every
+Android consumer untouched: it maps to Jetpack Compose 1.9.4, *below* the 1.10.0 that
+`composeBom = "2025.12.00"` pins (material3 1.4.0), so Gradle keeps 1.10.0 and `:ui:chat`,
+`:ui:callui` and `:app` see no version change at all. CMP 1.10.3 would have dragged
+androidx.compose to 1.10.5.
+
+Two mechanical facts D3's Option A text omits, both mandatory and both discovered by build
+failure rather than by reading docs:
+
+- A CMP module applies **both** `org.jetbrains.kotlin.plugin.compose` (the compiler, tracks the
+  Kotlin version) **and** `org.jetbrains.compose` (the `compose` DSL and `Res` generation,
+  versioned independently). They are not alternatives.
+- `compose.components.resources` does **not** put the Compose runtime on the compile classpath.
+  `implementation(compose.runtime)` is required or every Kotlin compilation in the module fails
+  with `IncompatibleComposeRuntimeVersionException` — including a source set with zero
+  `@Composable`, because the compiler plugin checks unconditionally.
+
+**Consequence for the human decision queue: current CMP is unreachable without a Kotlin bump.**
+Staying on 1.9.3 is fine today. If any phase from 20 onward wants a newer CMP API, the Kotlin
+version has to move first, and R10 makes that an explicit authorisation, not an agent's call.
 
 ---
 

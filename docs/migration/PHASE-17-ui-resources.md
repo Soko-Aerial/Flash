@@ -1,6 +1,59 @@
 # Phase 17 — UI resources (`ui:theme` icon drawables → CMP `composeResources`)
 
-**Blocked by:** Phase 06 (KMP pilot) — the `ui:theme` module must be a KMP module with a `commonMain` source set before its resources can be shared across platforms.
+> ## STATUS: DONE — 2026-09-05, commits `a8d9d0d` + `23267ed`
+>
+> **Read this box before following anything below it.** Six statements in this file are wrong,
+> and one of them makes step 4 impossible to execute as written. Full account in
+> `logs/migration.md` → "Phase 17 — `:ui:theme` Compose Multiplatform resources".
+>
+> 1. **Precondition 1 is false, and step 4a is impossible.** `ui:theme` was **not** a KMP module
+>    — Phase 06 converted `:core:common`, not this. Step 4a's `com.android.library` +
+>    `org.jetbrains.compose` combination **cannot work at all**: under AGP 9's built-in Kotlin an
+>    Android-only module exposes no Kotlin Gradle extension (the ADR-023/BCV fact), and CMP's
+>    resource generation hooks `KotlinProjectExtension`, so `composeResources/` is never read.
+>    Meanwhile PHASE-18 — the phase that converts the module — declares itself *"Blocked by:
+>    Phase 17"*. **Circular deadlock.** Phase 17 broke it by taking the full KMP shell
+>    (`android { }` + `jvm()`) now while leaving **every Kotlin file at its pre-KMP path** behind
+>    two `srcDir` shims, so PHASE-18's move table still applies verbatim. **PHASE-18 must delete
+>    those two shims as part of its move.**
+> 2. **The inventory is stale.** 55 drawables, not 51 — it omits the four UI-050 calling glyphs
+>    `flash_ic_call_accept`, `flash_ic_camera_flip`, `flash_ic_hangup`, `flash_ic_speaker`.
+>    **54** `Res.drawable` references, not 50. **53** unique names. And **two** dead-on-disk
+>    files, not one: `flash_ic_arrow_left` **and** `flash_ic_delivered` (unreferenced because
+>    `FlashIcons.Delivered` deliberately points at `flash_ic_read`). Neither was deleted. Every
+>    "51 / 50" in the gate table below is off by four.
+> 3. **Step 3d's import is insufficient.** Its own ⚠️ said to verify against the generated
+>    sources; verified, and `import …generated.resources.Res` alone leaves **54 unresolved
+>    references**. CMP emits each drawable as an **extension property** on `Res.drawable`
+>    (`internal val Res.drawable.flash_ic_send: DrawableResource by lazy { … }`), so the generated
+>    package must be star-imported.
+> 4. **Two things the phase never mentions are mandatory.** `compose.resources {
+>    packageOfResClass = "com.transfer.flash.ui.theme.generated.resources" }` — CMP otherwise
+>    defaults to `com.transfer.flash.theme.…`, without the `ui`, and step 3d's import is then
+>    wrong. And `implementation(compose.runtime)` in `commonMain` — `compose.components.resources`
+>    does not put the Compose runtime on the compile classpath, and the Compose compiler plugin
+>    fails **every** compilation in the module without it, even one with zero `@Composable`.
+> 5. **`compileKotlinDesktop` (step 5) does not exist.** R5 mandates plain `jvm()`, so the task is
+>    **`compileKotlinJvm`**. The `jvm()` target itself had to be declared in this phase rather
+>    than 18, because step 5 calls a desktop compile the critical gate and a gate against a
+>    nonexistent target is not a gate.
+> 6. **CMP is pinned to 1.9.3 and cannot go higher.** CMP 1.11+/1.12 declare `kotlin-stdlib`
+>    2.3.20 and a Kotlin 2.2.10 compiler cannot read 2.3 metadata. 1.9.3 maps to Jetpack Compose
+>    1.9.4, below the 1.10.0 that `composeBom 2025.12.00` pins, so no Android consumer sees a
+>    version change. **A Kotlin bump is the only route to current CMP** — a human decision.
+>
+> **ABI break to carry into Phase 24:** `FlashIconSpec.drawableRes` `Int` → `DrawableResource` on
+> the published `ui-theme` coordinate. No BCV `.api` file exists to record it (ADR-023 removed
+> BCV). The publications were also renamed `theme*` → `ui-theme*`.
+>
+> **Not verified (R9):** icon *rendering*. No device or emulator run happened. Everything short of
+> the pixel is verified — the 55 files ship in the APK at exactly the prefix the generated `Res`
+> computes, CMP's `DefaultAndroidResourceReader` third fallback branch
+> (`ClassLoader.getResourceAsStream`) is what reaches them, and `XmlVectorParserKt`'s recognised
+> attribute set covers all 11 attributes the corpus uses. **The first device run of any branch
+> containing `23267ed` should eyeball the chat chrome icons.**
+
+**Blocked by:** Phase 06 (KMP pilot) — the `ui:theme` module must be a KMP module with a `commonMain` source set before its resources can be shared across platforms. *(FALSE — see box item 1. It was not, and this phase made it one.)*
 
 **Decisions touched:** D3 (Compose dependency source). This phase requires the `org.jetbrains.compose` plugin and `compose.components.resources`, which are D3's domain. Per DECISIONS.md, D3 is in the "agent may proceed with the recommendation" class. **This phase is written assuming D3 Option A** (CMP `org.jetbrains.compose` plugin, `compose.components.resources`). If D3 is resolved differently, the dependency table below changes but the resource-move and signature-change remain the same.
 

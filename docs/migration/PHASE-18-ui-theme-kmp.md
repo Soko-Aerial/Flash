@@ -1,6 +1,46 @@
 # Phase 18 — `ui:theme` KMP conversion
 
-**Blocked by:** Phase 17 (icon resources in CMP `composeResources`) — the `composeResources/` directory and `compose.components.resources` dependency must be in place before the module can compile for `commonMain`.
+> ## AMENDED BY PHASE 17 — 2026-09-05 (`23267ed`). Read before executing.
+>
+> Phase 17 could not avoid doing part of this phase's work: its step 4a (keep
+> `com.android.library`, add `org.jetbrains.compose`) is **impossible** under AGP 9, while this
+> phase declares itself blocked by 17 — a circular deadlock. Phase 17 broke it by converting the
+> module and leaving every Kotlin file where it was. So:
+>
+> - **Already done, do not redo.** The plugin pair (`kotlin.multiplatform` +
+>   `android.kotlin.multiplatform.library`), `alias(libs.plugins.jetbrains.compose)`, the
+>   `android { }` block (namespace, compileSdk 37, minSdk 24, `optimization { consumerKeepRules }`,
+>   `localDependencySelection`, `compilerOptions.jvmTarget`, `withHostTest { }`,
+>   `withDeviceTest { }`), the **`jvm()` target**, `compose.resources { packageOfResClass }`, and
+>   the KMP publication rename (`theme*` → `ui-theme*`). `FlashIcons.kt` is already on
+>   `Res.drawable.*` / `DrawableResource` — **do not touch it** beyond moving the file.
+> - **You MUST delete these two lines** from `ui/theme/build.gradle.kts`, as part of the same
+>   commit that moves the files. If you move files and leave the shims, or delete the shims
+>   without moving, the module compiles from neither path:
+>   ```kotlin
+>   getByName("androidMain").kotlin.srcDir("src/main/java")
+>   getByName("androidHostTest").kotlin.srcDir("src/test/java")
+>   ```
+>   They exist precisely so this phase's move table below stays executable verbatim.
+> - **`compileKotlinDesktop` does not exist** anywhere in this repo. R5 mandates plain `jvm()`, so
+>   every occurrence below means **`compileKotlinJvm`**. The Android compile task is
+>   `compileAndroidMain`; the unit-test task is `testAndroidHostTest` (see CONVENTIONS R3.1).
+> - **The file table undercounts: there are 19 production files, not 18.**
+>   `FlashBrandAnimation.kt` is missing from it. Reconcile before trusting the
+>   "expect 14 commonMain / 3–4 androidMain" gate.
+> - **Add `:ui:theme:jvmTest` to the CONVENTIONS R3 command.** Phase 17 added only
+>   `:ui:theme:testAndroidHostTest`, because the five suites are still `androidHostTest`-only and
+>   `jvmTest` would run zero tests. This phase moves them to `commonTest`, so this phase is what
+>   makes `jvmTest` meaningful — and per R3.1, an `actual` that is only compiled is not verified.
+> - **CMP is 1.9.3 and cannot be raised.** 1.11+/1.12 need Kotlin 2.3; R10 freezes 2.2.10. When
+>   this phase replaces the androidx BOM tier with `compose.*` artifacts per D3 = A, note that
+>   `compose.runtime` is **already** in `commonMain` and is **not optional** — the Compose compiler
+>   plugin fails every compilation in the module without it, `@Composable` or not.
+> - **Baseline to preserve:** `:ui:theme:testAndroidHostTest` = 5 XMLs, **37 tests, 0 failures**.
+>   Moving suites to `commonTest` should take this to 37 Android + 37 JVM = **74**, i.e. repo-wide
+>   1018 → 1055 across 135 → 140 XMLs. Anything less means a suite stopped running.
+
+**Blocked by:** Phase 17 (icon resources in CMP `composeResources`) — **satisfied 2026-09-05**; and 17 pre-paid this phase's plugin/target work, so what remains is the file move, the three `expect`/`actual` pairs, the test move, the shim deletion and the dependency rewrite.
 
 **Gated by:** D3 (Compose dependency source — `org.jetbrains.compose` plugin) and D4 (dynamic color replacement — `expect fun flashDynamicColorScheme`). Per DECISIONS.md, both are in the "agent may proceed with the recommendation" class. **This phase is written assuming D3 Option A and D4 Option A.** If D3 is resolved differently, the build-plugin and dependency instructions change; if D4 is resolved differently, the `flashDynamicColorScheme` expect/actual is replaced with a simpler no-op.
 
