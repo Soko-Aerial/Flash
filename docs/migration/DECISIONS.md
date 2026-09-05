@@ -13,16 +13,26 @@
 | **D7** | **Phase 19** | UI platform shims. **Executed 2026-09-05 (`94a60a4`); D7b overridden on evidence** — a and c as written, but FileKit was **not** adopted. See the note under D7 below. |
 | **D8** | **Phase 22** | Whether the §15 desktop screens exist. |
 | **D9** | Phase 24 | Sample consumers; agent may proceed on the recommendation. |
-| **D10** | **Phases 13B-2, 13B-3, 15, 16** | What replaces `java.io.InputStream` in a `commonMain` signature. Added 2026-09-05 by the agent that reached Phase 13. |
+| **D10** | **Phases 13B-2, 13B-3, 15, 16** | What replaces `java.io.InputStream` in a `commonMain` signature. Added 2026-09-05 by the agent that reached Phase 13. **Answered 2026-09-05 = Option A**, with an explicit R8 authorisation for 13B-3's `ChunkFrame` rewrite (byte-identical output required). 13B-2 is now executable. |
+| **D11** | **a new phase, number TBD** | Is the calling stack (`:core:calling` + `:ui:callui`) in desktop scope? Added 2026-09-05 — no phase file has ever mentioned `:core:calling`. **Answered 2026-09-05 = in scope, research first.** Does not block any existing phase. |
+
+**As of 2026-09-05 every decision D1–D11 is answered.** No phase in this plan is blocked on a decision
+any more. What remains blocked is blocked on a *predecessor phase*, and two sub-items are blocked on
+narrower human input that is not a decision: 09B-2 needs D5=C's three implementation sub-answers (which
+encrypted desktop driver, is a commercial licence acceptable, SQLCipher file-format parity) and 09B-3
+needs the settings-tier ABI option (a) or (b).
 
 Earlier drafts said "D1–D4 block Phase 06." That was wrong: D3 and D4 are Compose
 decisions and cannot affect a pilot that converts a Compose-free module (`core:common`).
 Phase 06's own header states this; this table is the source of truth.
 
 Each decision lists options, consequences, and a recommendation. An agent must
-**not** pick for the human on D1, D2, D5, D8 or D10 — those change the shape of the
+**not** pick for the human on D1, D2, D5, D8, D10 or **D11** — those change the shape of the
 project. For D3, D4, D6, D7 an agent may proceed with the recommendation if the human
-has not answered, but must record that it did so in the phase log.
+has not answered, but must record that it did so in the phase log. **All of D1–D11 now carry a human
+answer**, so this rule is currently a rule about *future* decisions and about not re-litigating the
+existing ones: if a phase seems to need a decision changed, add a new numbered decision, do not edit an
+answered one.
 
 Record answers by editing this file: replace `**ANSWER:** _pending_` with the choice
 and the date.
@@ -414,4 +424,64 @@ output as the acceptance criterion. See `PHASE-13B-desktop-fileio.md` §13B-3.
 then adopt the I/O library in 13B-2, then do the framing/hashing/atomics port in 13B-3 under an
 explicit R8 authorisation.
 
-**ANSWER:** _pending_
+**ANSWER:** **Option A (chosen 2026-09-05)** — adopt a multiplatform I/O library and re-type the four
+seams. Staged exactly as recommended: 13B-1 (already done, `fafd450`) → 13B-2 adopts the library and
+re-types `ChunkSource.open()`, `FileSourceOpener.open(String)`, `RandomAccessSinkHandle` and
+`FileRandomAccessSinkHandle` → 13B-3 ports the framing, hashing and atomics. An Android-side `File`
+overload keeps first-party consumer edits at zero (`core/engine/…/Flash.kt`,
+`app/…/DiscoveryEngineHolder.kt`). This is the only option under which a Kotlin/Native target can ever
+compile `:core:transfer`, which is the same hole CONVENTIONS.md R6.1 has recorded since Phase 07.
+
+**R8 AUTHORISATION FOR 13B-3 (granted 2026-09-05):** the human has explicitly authorised the rewrite of
+`chunked/ChunkFrame.kt`, which builds the CHUNK wire frame with `java.nio.ByteBuffer` and is named on
+R8's untouchable list. **The acceptance criterion is byte-identical output** against the current Android
+implementation: golden vectors captured from the existing frames before the rewrite, asserted after it,
+and **13B-3 does not ship if any byte differs**. This authorisation covers `ChunkFrame` only. It does
+**not** extend to `FlashEnvelope`, `FlashProtocol`, `MessageWireFrame`, `WsTransferMessages`, `TxtCodec`
+or `FlashPairingFrames`, which remain untouchable under R8 without a separate authorisation.
+
+The choice between `kotlinx-io` and Okio is left to 13B-2 as an implementation detail, to be decided on
+evidence and recorded in its log entry. It is a new dependency, so it needs a new
+`gradle/libs.versions.toml` alias — permitted because R10 allows a phase that explicitly adds a
+dependency to add one, and 13B-2 is that phase.
+
+---
+
+## D11 — Is the calling stack (`:core:calling` + `:ui:callui`) in desktop scope?
+
+Added 2026-09-05, by the agent that finished Phase 20 and audited the phase index. **This decision
+exists because the plan never had one.** Grepping every file in `docs/migration/` for `core:calling`
+returns hits in `CONVENTIONS.md` and `README.md` only — **no phase file mentions `:core:calling` at
+all**, and none converts or gates `:ui:callui` either.
+
+**Today (measured 2026-09-05):** both modules are still `com.android.library`. `:ui:callui` depends on
+`:ui:theme` (`ui/callui/build.gradle.kts:62`) and names `FlashIconSpec` (`FlashCallScreen.kt:486`), so it
+sits inside the blast radius of Phases 17, 18 and 19 — all three of which are done. The verification runs
+for 09B-1, 17, 18 and 19 each added `:ui:callui:compileDebugKotlin` **by hand**, because nothing in the
+plan compiles it. Since Phase 18 it has been compiling against a `:ui:theme` that is multiplatform, so
+the gap widens with every UI phase instead of holding still. `:core:calling` is the WebRTC module and is
+the substantive half of the problem.
+
+**Option A — out of scope, documented.** Both stay Android-only permanently. Cheap and honest, but leaves
+`:ui:callui` structurally exposed to every future `:ui:theme` change with only a hand-added compile task
+as a net.
+
+**Option B — in scope, research first (RECOMMENDED, and chosen).** A new phase file whose **first step is
+a research step**, not a conversion step: which WebRTC implementation exists for desktop JVM, what it
+would pin against the frozen toolchain (R10: Gradle 9.5.0 / AGP 9.3.1 / Kotlin 2.2.10 / JVM_11), whether
+the existing signalling and `:core:messaging` seams survive it, and what the ABI consequences are. It
+reports before proposing any conversion. **WebRTC on desktop is not a small assumption to make
+silently** — that is exactly why this is a decision and not an agent judgement call.
+
+**Option C — defer, but wire the gate.** Add `:core:calling` and `:ui:callui` compile tasks to the
+documented R3 command line so the widening gap is *measured* rather than assumed, and decide later.
+
+**ANSWER:** **Option B (chosen 2026-09-05)** — **in desktop scope, research first.** The phase must open
+with the WebRTC-for-desktop-JVM investigation and report its findings before proposing any conversion
+work; it must not begin by converting either module. Option C's gate wiring should be folded in as a
+cheap side-effect regardless of what the research concludes, since it costs one line in the R3 command
+and turns an assumption into a measurement.
+
+**This decision blocks nothing that already exists.** It authorises a *new* phase, whose number is TBD
+and which must not be inserted ahead of 13B-2/15/16 — D10 = A has just unblocked the critical path, and
+the Phase 16 interop gate outranks calling.

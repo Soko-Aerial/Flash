@@ -9,7 +9,7 @@ That file is now a short charter. **All executable work lives here.**
 |---|---|---|
 | 1 | [CONVENTIONS.md](CONVENTIONS.md) | Rules every executing agent MUST follow. Non-negotiable. |
 | 2 | [AUDIT.md](AUDIT.md) | Verified ground truth about the repo. Supersedes any claim in the old plan. |
-| 3 | [DECISIONS.md](DECISIONS.md) | Decisions D1–D10. **D1–D9 were all answered by the human on 2026-08-31. D10 (added by Phase 13) is the only one still `_pending_`** — re-verified 2026-09-05 by reading every `**ANSWER:**` line in the file. Ignore the older "only D1 (and D2) gate Phase 06" framing that used to sit in this cell: every decision that gated phases 00–20 is answered, and those phases are done. **D10 is now the entire critical path** — it blocks 13B-2, 13B-3, 15, the Phase 16 gate, and therefore 21–24. |
+| 3 | [DECISIONS.md](DECISIONS.md) | Decisions D1–**D11**. **All eleven are answered** — D1–D9 on 2026-08-31, then **D10 = Option A** and the new **D11 = Option B** on 2026-09-05, together with an explicit **R8 authorisation** for 13B-3's `ChunkFrame` rewrite (byte-identical output required). Ignore any older framing about D1 gating Phase 06 or D10 being `_pending_`. **No phase is blocked on a decision any more**; what remains blocked is blocked on a predecessor phase. Two narrower human inputs are still open and are *not* decisions: D5=C's three implementation sub-answers (09B-2) and the settings-tier ABI option (09B-3). |
 
 ## Phases
 
@@ -39,18 +39,19 @@ Status is authoritative; each phase file's own preconditions section holds the d
 | 11 | [PHASE-11-repositories-kmp.md](PHASE-11-repositories-kmp.md) | **DONE** (`f96797e`) — `:core:transfer` + `:core:messaging` | high |
 | 12 | [PHASE-12-engine-kmp.md](PHASE-12-engine-kmp.md) | **DONE** (`4ac401b`) | high |
 | 13 | ~~[PHASE-13-desktop-fileio.md](PHASE-13-desktop-fileio.md)~~ | **SUPERSEDED** by 13B — its log entry is docs-only, no code | — |
-| 13B | [PHASE-13B-desktop-fileio.md](PHASE-13B-desktop-fileio.md) | **13B-1 DONE** (`fafd450`). **13B-2 BLOCKED on D10.** **13B-3 BLOCKED on D10 *and* an explicit R8 authorisation to rewrite `chunked/ChunkFrame.kt`**, with byte-identical output as the acceptance criterion. | 13B-1 low, 13B-2/3 high |
+| 13B | [PHASE-13B-desktop-fileio.md](PHASE-13B-desktop-fileio.md) | **13B-1 DONE** (`fafd450`). **13B-2 NEXT — unblocked 2026-09-05 by D10 = Option A** (adopt a multiplatform I/O library, `kotlinx-io` or Okio, and re-type the four `java.io.InputStream` seams). **13B-3 authorised** — the human granted the explicit R8 exception to rewrite `chunked/ChunkFrame.kt` on 2026-09-05, **with byte-identical output as the hard acceptance criterion**; 13B-3 does not ship if any byte differs. | 13B-1 low, 13B-2/3 high |
 | 14 | [PHASE-14-desktop-discovery.md](PHASE-14-desktop-discovery.md) | **DONE** (`75d86ef`) under D6=A (JmDNS). Was previously listed here as "12 + **D6**", which read as blocked; D6 was answered 2026-08-31 and the phase shipped. **Caveat: D6's mandated throwaway spike was never run**, and no real multicast was ever exercised — only a human with two machines on one LAN can discharge that. | high |
-| 15 | [PHASE-15-desktop-transport.md](PHASE-15-desktop-transport.md) | **BLOCKED** — needs 13B-2, so **D10**. 14 is satisfied. | high |
-| 16 | [PHASE-16-desktop-headless-interop.md](PHASE-16-desktop-headless-interop.md) | **BLOCKED** — needs 15, so **D10** | **gate** |
+| 15 | [PHASE-15-desktop-transport.md](PHASE-15-desktop-transport.md) | **WAITING ON 13B-2** — no longer blocked on a decision (D10 = A answered 2026-09-05). 14 is satisfied. | high |
+| 16 | [PHASE-16-desktop-headless-interop.md](PHASE-16-desktop-headless-interop.md) | **WAITING ON 15** — no longer blocked on a decision | **gate** |
 | 17 | [PHASE-17-ui-resources.md](PHASE-17-ui-resources.md) | **DONE** (`a8d9d0d`, `23267ed`) | low |
 | 18 | [PHASE-18-ui-theme-kmp.md](PHASE-18-ui-theme-kmp.md) | **DONE** (`96e8799`) — read its STATUS box before reusing any of it; 14 of its steps were wrong | medium |
 | 19 | [PHASE-19-ui-platform-shims.md](PHASE-19-ui-platform-shims.md) | **DONE** (`94a60a4`) — read its STATUS box before reusing any of it; 12 of its statements were wrong, D7b was overridden on evidence (no FileKit), and there are 7 shims not 8 | medium |
 | 20 | [PHASE-20-ui-chat-kmp.md](PHASE-20-ui-chat-kmp.md) | **DONE** (`c5abd5d`) — read its STATUS box before reusing any of it; Steps 1 and 2 must not be executed (Step 2's "CMP requires `jvm("desktop")`" is false and would break R5 across the UI track), Step 5's build file is unbuildable, and the module ended up **100% common** | high |
-| 21 | [PHASE-21-desktop-app-shell.md](PHASE-21-desktop-app-shell.md) | **BLOCKED** — needs 16, so **D10**. 20 is satisfied. **Its 2026-08-31 log entry claims a `:desktop` module that has never existed** — see the CORRECTION appended to it in `logs/migration.md`. | medium |
-| 22 | [PHASE-22-adaptive-desktop-screens.md](PHASE-22-adaptive-desktop-screens.md) | **BLOCKED** — needs 21. Was listed as "21 + **D8**"; **D8=A was answered 2026-08-31**, so no decision gates it. **Its 2026-08-31 log entry is also false** — same CORRECTION. | medium |
-| 23 | [PHASE-23-interop-matrix.md](PHASE-23-interop-matrix.md) | **BLOCKED** — needs 22 | **gate** |
-| 24 | [PHASE-24-publishing.md](PHASE-24-publishing.md) | **BLOCKED** — needs 23. Also owes `sample/consumer-desktop` per D9=A. | medium |
+| 21 | [PHASE-21-desktop-app-shell.md](PHASE-21-desktop-app-shell.md) | **WAITING ON 16** — no longer blocked on a decision. 20 is satisfied. **Its 2026-08-31 log entry claims a `:desktop` module that has never existed** — see the CORRECTION appended to it in `logs/migration.md`. | medium |
+| 22 | [PHASE-22-adaptive-desktop-screens.md](PHASE-22-adaptive-desktop-screens.md) | **WAITING ON 21.** D8=A was answered 2026-08-31, so no decision gates it. **Its 2026-08-31 log entry is also false** — same CORRECTION. | medium |
+| 23 | [PHASE-23-interop-matrix.md](PHASE-23-interop-matrix.md) | **WAITING ON 22** | **gate** |
+| 24 | [PHASE-24-publishing.md](PHASE-24-publishing.md) | **WAITING ON 23.** Also owes `sample/consumer-desktop` per D9=A. | medium |
+| TBD | *(no file yet)* — calling stack | **AUTHORISED, NOT WRITTEN.** **D11 = Option B** (2026-09-05): `:core:calling` + `:ui:callui` **are** in desktop scope, and the phase **must open with a WebRTC-for-desktop-JVM research step and report before proposing any conversion**. Must not be inserted ahead of 13B-2/15/16 — the Phase 16 interop gate outranks calling. | high |
 
 ### Two log entries near the top of `logs/migration.md` are false — do not trust them
 
@@ -101,17 +102,23 @@ The two modules the plan never covers are **`:core:calling` and `:ui:callui`** �
 An earlier version of this section named `:ui:callui` and `:sample:consumer-granular`; the second half
 of that was **wrong** and is corrected here.
 
+**Their scope is now decided: `D11 = Option B` (2026-09-05) — they ARE in desktop scope, and the phase
+that handles them must open with a WebRTC-for-desktop-JVM research step and report its findings before
+proposing any conversion.** The phase file does not exist yet, and it must not be inserted ahead of
+13B-2/15/16: D10 = A has just unblocked the critical path and the Phase 16 interop gate outranks calling.
+
 - **`:core:calling`** — grepping every file in `docs/migration/` for `core:calling` returns hits in
   `CONVENTIONS.md` and this README only. **No phase file mentions it at all.** It is still
-  `com.android.library`, and it is the WebRTC module, so it is the substantive half of the problem.
+  `com.android.library`, and it is the WebRTC module, so it is the substantive half of the problem —
+  and the reason D11 mandates research before conversion.
 - **`:ui:callui`** — depends on `:ui:theme` (`ui/callui/build.gradle.kts:62`) and names
   `FlashIconSpec` (`FlashCallScreen.kt:486`), so it sits inside the blast radius of Phase
   17 (done), 18 (done) and 19 (done), yet no phase converts it or even compiles it as a gate. The
   verification runs for 09B-1, 17, 18 and 19 added `:ui:callui:compileDebugKotlin` by hand for
   exactly that reason — and as of Phase 18 it is compiling against a `:ui:theme` that is now
-  multiplatform, so the gap is widening rather than holding still. **Whether calling is in
-  scope for desktop at all is a human decision** — WebRTC on desktop is not a small
-  assumption to make silently.
+  multiplatform, so the gap is widening rather than holding still. D11's answer also directs that the
+  compile gate be wired into the documented R3 command line as a cheap side-effect, so the gap is
+  measured rather than assumed, whatever the research concludes.
 
 **`:sample:consumer-granular` is not an open question.** `D9 = Option A` (answered 2026-08-31) names
 it explicitly: keep `sample/consumer` **and** `sample/consumer-granular` Android-only as-is through
@@ -144,15 +151,28 @@ test files in `commonTest`, and no `androidMain`, `jvmMain` or platform-specific
 That is Phase 19's doing — the seven shims it extracted were the only reason the module ever touched
 `android.*`.
 
-**Every unblocked phase in this plan is now complete.** What remains is blocked on human decisions,
-consolidated at the end of Phase 20's log entry and corrected here: **D10** (the only `_pending_`
-decision — it blocks 13B-2, 13B-3, 15, 16 and therefore 21–24), an explicit **R8 authorisation** for
-13B-3 to rewrite `chunked/ChunkFrame.kt`, **D5=C's three sub-decisions** (09B-2), the **09B-3 settings
-ABI option**, whether to add a **Kotlin/Native target**, whether the **`:core:calling` + `:ui:callui`**
-stack is in desktop scope, **five desktop library decisions** (AAC decode, video-frame extraction, EXIF
-rotation, reduce-motion detection, sound output), and **D6's throwaway spike**, which Phase 14 shipped
-without and which needs two machines on one LAN. Phase 20's log also lists
-`:sample:consumer-granular` as an open scope question — **that item is void; D9=A answered it.**
+**Every unblocked phase in this plan is complete, and as of 2026-09-05 the plan is no longer
+decision-blocked at all.** D10 = Option A and D11 = Option B were answered, and the R8 exception for
+13B-3's `ChunkFrame` rewrite was granted with byte-identical output as the hard acceptance criterion.
+**The critical path is open again: 13B-2 → 13B-3 → 15 → 16 (gate) → 21 → 22 → 23 (gate) → 24.**
+
+What is still outstanding is narrower than a decision:
+
+- **09B-2** — D5=C's three implementation sub-answers: which encrypted desktop driver, is a commercial
+  licence acceptable, SQLCipher file-format parity.
+- **09B-3** — the settings-tier ABI option (a) or (b).
+- **D6's throwaway spike** — mandated by D6=A and never run; Phase 14 shipped without it and no real
+  multicast has ever been exercised. Needs a human with two machines on one LAN.
+- **Five desktop library decisions** with no owner: AAC decode (the one gap a user would notice),
+  video-frame extraction, EXIF rotation, reduce-motion detection, sound output.
+- **A Kotlin/Native target**, recommended by CONVENTIONS R6.1 since Phase 07 and still unwritten. It
+  would turn R6 from a four-times-defective grep into a compiler error, and it is a **precondition** of
+  it that the eight allowlisted `.format(` calls be fixed with rounding tests first. D10 = A is what
+  makes this reachable for `:core:transfer` at all.
+- **Phase 24's release notes** owe six ABI breaks and three new artifacts.
+
+Phase 20's log entry also lists `:sample:consumer-granular` as an open scope question — **that item is
+void; D9=A answered it**, and `:core:calling`/`:ui:callui` are now settled by D11.
 
 ## Logging
 
