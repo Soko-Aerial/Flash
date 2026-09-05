@@ -610,11 +610,11 @@ object DiscoveryEngineHolder {
         // to SharedPreferences (AndroidPreferencesTrustStore), so paired peers survive restarts.
         val crypto = KeystoreFlashCrypto(appContext)
         val localFingerprintHex =
-            FlashFingerprint.formatHexGroups(FlashFingerprint.fingerprint(crypto.identityPublicKey.encoded))
+            FlashFingerprint.formatHexGroups(FlashFingerprint.fingerprint(crypto.identityPublicKeyEncoded))
         // (trustStore constructed above, shared with the chat repo.)
         // One ephemeral ECDH key reused for the lifetime of this engine (no session encryption is
         // wired yet — the key rides the handshake but is opaque to the current transport).
-        val ephemeralPublicKey = crypto.generateEphemeralEcdhKeyPair().public.encoded
+        val ephemeralPublicKey = crypto.generateEphemeralEcdhKeyPair().publicKeyEncoded
         val pairingCoordinator = PairingCoordinator(
             localFingerprintHex = localFingerprintHex,
             localDeviceId = identity.deviceId.value,
