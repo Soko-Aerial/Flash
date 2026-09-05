@@ -44,6 +44,15 @@ androidx-room-ktx = { group = "androidx.room", name = "room-ktx", version.ref = 
 androidx-room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "room" }
 androidx-room-testing = { group = "androidx.room", name = "room-testing", version.ref = "room" }
 androidx-sqlite = { group = "androidx.sqlite", name = "sqlite-ktx", version.ref = "sqliteKtx" }
+# Phase 09B-1. `androidx.sqlite:sqlite` is the MULTIPLATFORM driver interface tier
+# (SQLiteDriver/SQLiteConnection/SQLiteStatement) that Room 2.8.4's generated `_Impl` code targets;
+# `sqlite-ktx` above is the Android-only Support layer (`androidx.sqlite.db.*`) and is NOT a
+# substitute. Both are 2.6.2, so `sqliteKtx` is reused rather than a second version added (R10).
+androidx-sqlite-core = { group = "androidx.sqlite", name = "sqlite", version.ref = "sqliteKtx" }
+# TEST-ONLY, jvmTest only. BundledSQLiteDriver ships an UNENCRYPTED SQLite build. D5 = C forbids
+# plaintext Flash data on desktop disk ("B without C"), so this alias may only ever appear in a
+# jvmTest dependency block and only with `:memory:`. PHASE-09B verification gate 5 greps for it.
+androidx-sqlite-bundled = { group = "androidx.sqlite", name = "sqlite-bundled", version.ref = "sqliteKtx" }
 sqlcipher-android = { group = "net.zetetic", name = "sqlcipher-android", version.ref = "sqlcipher" }
 androidx-datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastore" }
 kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutinesTest" }
@@ -62,6 +71,11 @@ jmdns = { group = "org.jmdns", name = "jmdns", version.ref = "jmdns" }
 
 [plugins]
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
+# Phase 09B-1. The Room Gradle plugin, at the SAME 2.8.4 as the runtime and compiler (R10 — a new
+# alias at an existing version ref, not a version change). It exists so each KMP target gets its own
+# schema output: with a single global `ksp { arg("room.schemaLocation", …) }`, kspAndroid and kspJvm
+# write the same path and can race under --max-workers=2.
+androidx-room = { id = "androidx.room", version.ref = "room" }
 hilt = { id = "com.google.dagger.hilt.android", version.ref = "hilt" }
 android-application = { id = "com.android.application", version.ref = "agp" }
 android-library = { id = "com.android.library", version.ref = "agp" }
