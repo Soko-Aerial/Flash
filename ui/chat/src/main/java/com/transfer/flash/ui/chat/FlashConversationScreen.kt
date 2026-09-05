@@ -1,16 +1,5 @@
 package com.transfer.flash.ui.chat
 
-import android.Manifest
-import android.content.ClipData
-import android.content.ClipboardManager
-import android.content.Context
-import android.content.pm.PackageManager
-import android.net.Uri
-import android.provider.OpenableColumns
-import android.widget.Toast
-import androidx.activity.compose.BackHandler
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -19,9 +8,14 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -35,9 +29,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.tooling.preview.Preview
-import androidx.core.content.ContextCompat
 import com.transfer.flash.core.common.model.FlashPeerPresence
 import com.transfer.flash.core.messaging.model.FlashConversationUiState
 import com.transfer.flash.core.messaging.model.FlashFileTransferStatus
@@ -46,6 +38,12 @@ import com.transfer.flash.core.messaging.model.FlashMessageUi
 import com.transfer.flash.core.messaging.model.FlashQuotedReplyUi
 import com.transfer.flash.core.messaging.model.FlashReaction
 import com.transfer.flash.core.messaging.util.sampleFlashConversationState
+import com.transfer.flash.ui.shims.FlashBackHandler
+import com.transfer.flash.ui.shims.FlashPermission
+import com.transfer.flash.ui.shims.rememberFlashClipboard
+import com.transfer.flash.ui.shims.rememberFlashFilePickerLauncher
+import com.transfer.flash.ui.shims.rememberFlashPermissionRequester
+import com.transfer.flash.ui.shims.rememberFlashVoiceRecorder
 import com.transfer.flash.ui.theme.FlashSpacing
 import com.transfer.flash.ui.theme.FlashTheme
 import kotlinx.coroutines.delay
@@ -148,48 +146,45 @@ fun FlashConversationScreen(
      */
     onShareText: (String) -> Unit = {},
 ) {
-    val context = LocalContext.current
     val motion = FlashTheme.motion
     val coroutineScope = rememberCoroutineScope()
     val listState = rememberLazyListState()
 
-    // UI-012: system document picker for attachments. On result we resolve the display name + size
-    // from the content resolver (same as the Dev Console) and hand the URI to onSendFile, which
-    // kicks off a real P2P transfer to the conversation's peer over the existing pipeline.
-    val filePicker = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocument(),
-    ) { uri: Uri? ->
-        if (uri != null) {
-            // Persist read access so the transfer can stream the file even after this screen dies.
-            runCatching {
-                context.contentResolver.takePersistableUriPermission(
-                    uri,
-                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION,
-                )
-            }
-            val (name, size) = resolveFileMetadata(context, uri)
-            onSendFile(uri.toString(), name, size)
-            Toast.makeText(context, "Sending $name", Toast.LENGTH_SHORT).show()
+    // D7a: every transient message on this screen goes through one SnackbarHostState instead of the
+    // 13 Toast.makeText calls it used to make. Dismissing the current message before showing the next
+    // keeps Toast's newest-wins feel: SnackbarHostState otherwise queues, so a message raised while
+    // another was showing would surface seconds after the action that caused it.
+    val snackbarHostState = remember { SnackbarHostState() }
+    fun showMessage(text: String) {
+        coroutineScope.launch {
+            snackbarHostState.currentSnackbarData?.dismiss()
+            snackbarHostState.showSnackbar(message = text, duration = SnackbarDuration.Short)
         }
+    }
+
+    val clipboard = rememberFlashClipboard()
+    fun copyText(text: String) {
+        clipboard.copy(text)
+        showMessage("Copied to clipboard")
+    }
+
+    // UI-012: system document picker for attachments. The shim resolves the display name + size from
+    // the platform (content resolver on Android) and takes the persistable read grant, so the transfer
+    // can still stream the file after this screen dies; the callback fires only when a file was picked.
+    val filePicker = rememberFlashFilePickerLauncher { picked ->
+        onSendFile(picked.uri, picked.name, picked.size)
+        showMessage("Sending ${picked.name}")
     }
 
     // B9: real microphone capture for voice messages. The recorder lives at screen scope so its
     // encoder survives the composer's gesture recompositions; released when the screen leaves.
-    val voiceRecorder = remember { FlashVoiceRecorder(context) }
+    val voiceRecorder = rememberFlashVoiceRecorder()
     DisposableEffect(voiceRecorder) {
         onDispose { voiceRecorder.cancel() }
     }
-    // RECORD_AUDIO is requested lazily on the first hold. We can't retroactively start the capture
-    // the user just attempted, so a granted result simply enables the next hold to record.
-    val micPermissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission(),
-    ) { granted ->
-        if (granted) {
-            Toast.makeText(context, "Microphone ready — hold to record", Toast.LENGTH_SHORT).show()
-        } else {
-            Toast.makeText(context, "Microphone permission is required for voice messages", Toast.LENGTH_SHORT).show()
-        }
-    }
+    // Microphone access is requested lazily on the first hold. We can't retroactively start the
+    // capture the user just attempted, so a granted result simply enables the next hold to record.
+    val permissions = rememberFlashPermissionRequester()
 
     var localMessages by remember(state.messages) { mutableStateOf(state.messages) }
     var draft by remember { mutableStateOf("") }
@@ -268,13 +263,13 @@ fun FlashConversationScreen(
     )
 
     // Hardware back press exits media viewer → search → selection mode
-    BackHandler(enabled = mediaViewerVisible) {
+    FlashBackHandler(enabled = mediaViewerVisible) {
         mediaViewerVisible = false
     }
-    BackHandler(enabled = isSearchActive && !mediaViewerVisible) {
+    FlashBackHandler(enabled = isSearchActive && !mediaViewerVisible) {
         closeSearch()
     }
-    BackHandler(enabled = inSelectionMode && !isSearchActive && !mediaViewerVisible) {
+    FlashBackHandler(enabled = inSelectionMode && !isSearchActive && !mediaViewerVisible) {
         selectedMessageIds = emptySet()
     }
 
@@ -324,7 +319,7 @@ fun FlashConversationScreen(
                                 val selectedTexts = localMessages
                                     .filter { it.id in selectedMessageIds }
                                     .joinToString("\n") { it.text }
-                                copyToClipboard(context, selectedTexts)
+                                copyText(selectedTexts)
                                 selectedMessageIds = emptySet()
                             },
                             onReply = {
@@ -344,7 +339,7 @@ fun FlashConversationScreen(
                                     .map { it.text }
                                     .filter { it.isNotBlank() }
                                 if (selectedTexts.isEmpty()) {
-                                    Toast.makeText(context, "Nothing to forward", Toast.LENGTH_SHORT).show()
+                                    showMessage("Nothing to forward")
                                 } else {
                                     onShareText(selectedTexts.joinToString("\n"))
                                 }
@@ -406,11 +401,13 @@ fun FlashConversationScreen(
                                         // it. Now it re-arms discovery + re-dials the peer, and says
                                         // so only when there is an engine to do it.
                                         val armed = onRetryConnection()
-                                        Toast.makeText(
-                                            context,
-                                            if (armed) "Reconnecting…" else "Still starting up — try again in a moment",
-                                            Toast.LENGTH_SHORT,
-                                        ).show()
+                                        showMessage(
+                                            if (armed) {
+                                                "Reconnecting…"
+                                            } else {
+                                                "Still starting up — try again in a moment"
+                                            },
+                                        )
                                     },
                                 )
                             }
@@ -462,16 +459,24 @@ fun FlashConversationScreen(
                     if (path != null) {
                         onSendVoiceMessage(path, voice.durationMs, voice.amplitudes)
                     } else {
-                        Toast.makeText(context, "Recording too short", Toast.LENGTH_SHORT).show()
+                        showMessage("Recording too short")
                     }
                 },
                 onVoiceRecordStart = {
-                    val granted = ContextCompat.checkSelfPermission(
-                        context,
-                        Manifest.permission.RECORD_AUDIO,
-                    ) == PackageManager.PERMISSION_GRANTED
-                    if (!granted) {
-                        micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    if (!permissions.isGranted(FlashPermission.Microphone)) {
+                        // The request is asynchronous and this callback has to answer the composer
+                        // now, so the hold that triggered it cannot record; the result only decides
+                        // which message the user reads before their next attempt.
+                        coroutineScope.launch {
+                            val granted = permissions.ensureGranted(FlashPermission.Microphone)
+                            showMessage(
+                                if (granted) {
+                                    "Microphone ready — hold to record"
+                                } else {
+                                    "Microphone permission is required for voice messages"
+                                },
+                            )
+                        }
                         false
                     } else {
                         voiceRecorder.start()
@@ -571,13 +576,13 @@ fun FlashConversationScreen(
             onReactionSelect = { reaction ->
                 localMessages = toggleMessageReaction(localMessages, msg.id, reaction)
                 onToggleReaction(msg.id, reaction)
-                Toast.makeText(context, "Reacted $reaction", Toast.LENGTH_SHORT).show()
+                showMessage("Reacted $reaction")
             },
             onReply = {
                 replyingToMessage = msg
             },
             onCopy = {
-                copyToClipboard(context, msg.text)
+                copyText(msg.text)
             },
             onForward = {
                 // Was a "Forwarding message" toast that forwarded nothing. No in-app conversation
@@ -591,7 +596,7 @@ fun FlashConversationScreen(
                     image?.uri != null -> onShareImage(image.uri, image.mimeType)
                     voice?.uri != null -> onShareImage(voice.uri, voice.mimeType)
                     file?.localUri != null -> onShareImage(file.localUri, file.mimeType)
-                    else -> Toast.makeText(context, "Nothing to forward yet", Toast.LENGTH_SHORT).show()
+                    else -> showMessage("Nothing to forward yet")
                 }
                 focusedMessage = null
             },
@@ -617,9 +622,9 @@ fun FlashConversationScreen(
                     // Videos belong in the gallery picker: chat bubbles render video thumbnails and
                     // the viewer plays them, but "Gallery" filtered to image/* meant a clip could
                     // only be sent through the generic Files action.
-                    FlashAttachmentType.Gallery -> arrayOf("image/*", "video/*")
-                    FlashAttachmentType.Audio -> arrayOf("audio/*")
-                    FlashAttachmentType.Files, FlashAttachmentType.FlashTransfer -> arrayOf("*/*")
+                    FlashAttachmentType.Gallery -> listOf("image/*", "video/*")
+                    FlashAttachmentType.Audio -> listOf("audio/*")
+                    FlashAttachmentType.Files, FlashAttachmentType.FlashTransfer -> listOf("*/*")
                     FlashAttachmentType.Camera -> null
                 }
                 if (mimeTypes != null) {
@@ -678,7 +683,7 @@ fun FlashConversationScreen(
                     if (image?.uri != null) {
                         onSaveImage(image.uri, image.mimeType)
                     } else {
-                        Toast.makeText(context, notReadyLabel(image), Toast.LENGTH_SHORT).show()
+                        showMessage(notReadyLabel(image))
                     }
                 },
                 onShare = { index ->
@@ -686,7 +691,7 @@ fun FlashConversationScreen(
                     if (image?.uri != null) {
                         onShareImage(image.uri, image.mimeType)
                     } else {
-                        Toast.makeText(context, notReadyLabel(image), Toast.LENGTH_SHORT).show()
+                        showMessage(notReadyLabel(image))
                     }
                 },
                 onForward = { index ->
@@ -696,7 +701,7 @@ fun FlashConversationScreen(
                     if (image?.uri != null) {
                         onShareImage(image.uri, image.mimeType)
                     } else {
-                        Toast.makeText(context, notReadyLabel(image), Toast.LENGTH_SHORT).show()
+                        showMessage(notReadyLabel(image))
                     }
                 },
                 onPlayVideo = { index ->
@@ -708,11 +713,27 @@ fun FlashConversationScreen(
                     if (item != null && uri != null) {
                         onOpenAttachment(uri, item.image.mimeType, item.senderName)
                     } else {
-                        Toast.makeText(context, "Video not available yet", Toast.LENGTH_SHORT).show()
+                        showMessage("Video not available yet")
                     }
                 },
             )
         }
+    }
+
+    // D7a: the snackbar host is the LAST sibling of this screen, not the Scaffold's `snackbarHost`
+    // slot. Six of the messages raised here come from inside the focus overlay and the media viewer,
+    // both emitted after the Scaffold and therefore painted over anything the Scaffold owns — a host
+    // in that slot would have shown them underneath a full-screen overlay. An idle SnackbarHost
+    // composes nothing and this Box takes no pointer input, so it costs nothing when nothing is shown.
+    // The insets keep the message off the navigation bar and above the keyboard, where a Toast sat.
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .navigationBarsPadding()
+            .imePadding(),
+        contentAlignment = Alignment.BottomCenter,
+    ) {
+        SnackbarHost(hostState = snackbarHostState)
     }
 }
 
@@ -750,43 +771,12 @@ fun toggleMessageReaction(
     }
 }
 
-private fun copyToClipboard(context: Context, text: String) {
-    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-    val clip = ClipData.newPlainText("Flash Message", text)
-    clipboard.setPrimaryClip(clip)
-    Toast.makeText(context, "Copied to clipboard", Toast.LENGTH_SHORT).show()
-}
-
 /**
  * Copy for a viewer action on a page whose bytes have not landed yet. The album mixes photos and
  * clips, so a hardcoded "Image not available yet" was wrong on half its pages.
  */
 private fun notReadyLabel(image: FlashImageAttachmentUi?): String =
     if (image?.isVideo == true) "Video not available yet" else "Image not available yet"
-
-/**
- * UI-012: resolve a SAF content URI to its display name + byte size via [OpenableColumns].
- * Falls back to the URI's last path segment / 0 bytes when the provider omits the columns.
- */
-private fun resolveFileMetadata(context: Context, uri: Uri): Pair<String, Long> {
-    var name = uri.lastPathSegment ?: "file"
-    var size = 0L
-    runCatching {
-        context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-            if (cursor.moveToFirst()) {
-                val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                if (nameIndex >= 0 && !cursor.isNull(nameIndex)) {
-                    name = cursor.getString(nameIndex)
-                }
-                val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
-                if (sizeIndex >= 0 && !cursor.isNull(sizeIndex)) {
-                    size = cursor.getLong(sizeIndex)
-                }
-            }
-        }
-    }
-    return name to size
-}
 
 @Preview(showBackground = true, widthDp = 390, heightDp = 844)
 @Composable

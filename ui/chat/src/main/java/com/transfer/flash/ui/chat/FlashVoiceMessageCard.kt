@@ -55,6 +55,7 @@ import com.transfer.flash.core.messaging.model.FlashFileTransferStatus
 import com.transfer.flash.core.messaging.model.FlashVoiceAttachmentUi
 import com.transfer.flash.ui.icons.FlashIcon
 import com.transfer.flash.ui.icons.FlashIcons
+import com.transfer.flash.ui.shims.rememberFlashAudioPlayer
 import com.transfer.flash.ui.theme.FlashDimensions
 import com.transfer.flash.ui.theme.FlashHaptic
 import com.transfer.flash.ui.theme.FlashShapes
@@ -177,13 +178,14 @@ fun FlashVoiceMessageCard(
     val haptics = rememberFlashHaptics()
 
     // --- Playback state ---
-    // Real audio via [FlashAudioPlayer] when the note has a downloaded local file; otherwise the
-    // demo-mode ticker still drives previews / not-yet-downloaded cards.
-    val context = androidx.compose.ui.platform.LocalContext.current
+    // Real audio via [rememberFlashAudioPlayer] when the note has a downloaded local file; otherwise
+    // the demo-mode ticker still drives previews / not-yet-downloaded cards.
     val hasAudio = attachment.uri != null && attachment.transferStatus == FlashFileTransferStatus.Downloaded
-    val audioPlayer = remember(attachment.id, attachment.uri, hasAudio) {
-        if (hasAudio) FlashAudioPlayer(context, attachment.uri!!) else null
-    }
+    // A null uri yields a null player, which is how the shim expresses "nothing to play" without the
+    // caller having to make a @Composable call conditionally. The player's identity now follows the
+    // file rather than the attachment row: same file, same player, so a re-keyed row does not restart
+    // a note that is already playing.
+    val audioPlayer = rememberFlashAudioPlayer(uri = if (hasAudio) attachment.uri else null)
     DisposableEffect(audioPlayer) {
         onDispose { audioPlayer?.release() }
     }

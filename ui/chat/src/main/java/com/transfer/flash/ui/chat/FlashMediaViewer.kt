@@ -1,6 +1,5 @@
 package com.transfer.flash.ui.chat
 
-import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.fadeIn
@@ -51,7 +50,6 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.semantics.Role
@@ -66,6 +64,8 @@ import com.transfer.flash.core.messaging.model.FlashImageAttachmentUi
 import com.transfer.flash.ui.icons.FlashIcon
 import com.transfer.flash.ui.icons.FlashIconSpec
 import com.transfer.flash.ui.icons.FlashIcons
+import com.transfer.flash.ui.shims.FlashBackHandler
+import com.transfer.flash.ui.shims.rememberFlashImageDecoder
 import com.transfer.flash.ui.theme.FlashDimensions
 import com.transfer.flash.ui.theme.FlashMotion
 import com.transfer.flash.ui.theme.FlashText
@@ -259,7 +259,7 @@ fun FlashMediaViewer(
         scope.launch { onDismiss() }
     }
 
-    BackHandler { requestDismiss() }
+    FlashBackHandler { requestDismiss() }
 
     Box(
         modifier = modifier
@@ -414,7 +414,7 @@ private fun FlashMediaPage(
     onDismissSettle: () -> Unit,
     onDismissConfirm: () -> Unit,
 ) {
-    val context = LocalContext.current
+    val imageDecoder = rememberFlashImageDecoder()
     val motion = FlashTheme.motion
     val viewConfiguration = LocalViewConfiguration.current
     val density = LocalDensity.current
@@ -433,12 +433,12 @@ private fun FlashMediaPage(
             // BitmapFactory decode of an mp4 returns null, so swiping onto a clip hit `failed`), and
             // one code path for the sample-size guard. memoize = false because a 4096-edge bitmap
             // would evict the entire thumbnail cache to store something nobody asks for twice.
-            FlashMediaDecoder.decode(
-                context = context,
+            imageDecoder.decode(
                 source = source,
                 isVideo = item.image.isVideo,
                 maxLongEdge = FlashMediaViewerMath.MAX_DECODE_LONG_EDGE,
                 memoize = false,
+                computeInSampleSize = FlashMediaViewerMath::computeInSampleSize,
             )?.let { FlashMediaDecodeState(bitmap = it) } ?: FlashMediaDecodeState(failed = true)
         }
     }

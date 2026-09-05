@@ -1,14 +1,26 @@
-package com.transfer.flash.ui.chat
+package com.transfer.flash.ui.shims
 
 import android.content.Context
 import android.media.MediaRecorder
 import android.net.Uri
 import android.os.Build
 import android.util.Log
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalContext
 import java.io.File
+
+@Composable
+public actual fun rememberFlashVoiceRecorder(): FlashVoiceRecorder {
+    val context = LocalContext.current
+    return remember(context) { AndroidVoiceRecorder(context) }
+}
 
 /**
  * B9: real microphone capture backing the composer's press-and-hold voice recorder.
+ *
+ * Moved here from `:ui:chat` by Phase 19 with no behaviour change — same encoder settings (AAC/MPEG-4,
+ * 64 kbps, 44.1 kHz), same cache-file naming, same guards, same log tag.
  *
  * Wraps a single [MediaRecorder] writing AAC/MPEG-4 audio into the app cache. The composer drives
  * the gesture + UI; this owns the encoder lifecycle and exposes [maxAmplitude] so the on-screen
@@ -16,20 +28,14 @@ import java.io.File
  *
  * Not thread-safe — call from the main thread alongside the composer gesture callbacks.
  */
-class FlashVoiceRecorder(private val context: Context) {
+private class AndroidVoiceRecorder(private val context: Context) : FlashVoiceRecorder {
 
     private var recorder: MediaRecorder? = null
     private var outputFile: File? = null
 
-    /** True while a capture session is live (between [start] and [stop]/[cancel]). */
-    val isRecording: Boolean get() = recorder != null
+    override val isRecording: Boolean get() = recorder != null
 
-    /**
-     * Begins capturing to a fresh cache file. Returns false (and leaves nothing running) if the
-     * encoder cannot be prepared — caller should treat that as "recording did not start".
-     * Assumes RECORD_AUDIO is already granted; the host checks/requests permission first.
-     */
-    fun start(): Boolean {
+    override fun start(): Boolean {
         stopQuietly()
         val file = File(context.cacheDir, "flash-voice-${System.currentTimeMillis()}.m4a")
         @Suppress("DEPRECATION")
@@ -60,8 +66,7 @@ class FlashVoiceRecorder(private val context: Context) {
         }
     }
 
-    /** Current peak amplitude scaled to the waveform's 0..100 range; 0 when not recording. */
-    fun maxAmplitude(): Int {
+    override fun maxAmplitude(): Int {
         val rec = recorder ?: return 0
         return try {
             // MediaRecorder.getMaxAmplitude() peaks near 32767 (16-bit PCM).
@@ -71,11 +76,7 @@ class FlashVoiceRecorder(private val context: Context) {
         }
     }
 
-    /**
-     * Stops capture and returns a `file://` URI to the recording, or null if nothing usable was
-     * written (start never succeeded, or the encoder produced an empty/failed file).
-     */
-    fun stop(): String? {
+    override fun stop(): String? {
         val rec = recorder
         val file = outputFile
         recorder = null
@@ -99,8 +100,7 @@ class FlashVoiceRecorder(private val context: Context) {
         }
     }
 
-    /** Aborts capture and deletes the partial file (slide-to-cancel / too-short). */
-    fun cancel() {
+    override fun cancel() {
         val file = outputFile
         stopQuietly()
         file?.delete()

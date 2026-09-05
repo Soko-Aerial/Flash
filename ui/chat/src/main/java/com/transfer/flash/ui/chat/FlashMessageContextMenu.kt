@@ -50,11 +50,11 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
-import androidx.activity.compose.BackHandler
 import com.transfer.flash.core.messaging.model.FlashMessageUi
 import com.transfer.flash.ui.icons.FlashIcon
 import com.transfer.flash.ui.icons.FlashIconSpec
 import com.transfer.flash.ui.icons.FlashIcons
+import com.transfer.flash.ui.shims.FlashBackHandler
 import com.transfer.flash.ui.theme.FlashDimensions
 import com.transfer.flash.ui.theme.FlashHaptic
 import com.transfer.flash.ui.theme.FlashShapes
@@ -85,7 +85,7 @@ fun FlashMessageFocusOverlay(
     val colors = FlashTheme.colors
 
     // Hardware back closes the overlay before anything beneath it.
-    BackHandler(onBack = onDismiss)
+    FlashBackHandler(onBack = onDismiss)
 
     // Dimmed backdrop — any tap here dismisses on first contact.
     Box(

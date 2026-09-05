@@ -40,7 +40,6 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.onLongClick
@@ -54,6 +53,8 @@ import com.transfer.flash.core.messaging.model.FlashImageAttachmentUi
 import com.transfer.flash.core.messaging.model.FlashMessageStatus
 import com.transfer.flash.ui.icons.FlashIcon
 import com.transfer.flash.ui.icons.FlashIcons
+import com.transfer.flash.ui.shims.FlashImageDecoder
+import com.transfer.flash.ui.shims.rememberFlashImageDecoder
 import com.transfer.flash.ui.theme.FlashDimensions
 import com.transfer.flash.ui.theme.FlashMotion
 import com.transfer.flash.ui.theme.FlashSpacing
@@ -428,7 +429,7 @@ fun FlashImageTile(
     /** Reports the decoded bitmap's width/height ratio so a caller can size itself to the media. */
     onIntrinsicRatio: ((Float) -> Unit)? = null,
 ) {
-    val context = LocalContext.current
+    val imageDecoder = rememberFlashImageDecoder()
     var isPressed by remember { mutableStateOf(false) }
     val motion = FlashTheme.motion
     val scale by animateFloatAsState(
@@ -437,7 +438,7 @@ fun FlashImageTile(
         label = "tile_press_scale",
     )
 
-    // Decoding lives in FlashMediaDecoder: this used to be a full-resolution BitmapFactory decode
+    // Decoding lives behind FlashImageDecoder: this used to be a full-resolution BitmapFactory decode
     // wrapped in runCatching, which turned an OutOfMemoryError on a large photo into a silent
     // gradient placeholder, ignored EXIF rotation, and returned null for every video. isVideo is a
     // key because it selects the decoder (still bytes vs. a retrieved frame), not just the source.
@@ -449,7 +450,12 @@ fun FlashImageTile(
     ) {
         val source = image.uri ?: image.thumbUri
         value = withContext(Dispatchers.IO) {
-            FlashMediaDecoder.decode(context = context, source = source, isVideo = image.isVideo)
+            imageDecoder.decode(
+                source = source,
+                isVideo = image.isVideo,
+                maxLongEdge = FlashImageDecoder.TILE_LONG_EDGE_PX,
+                computeInSampleSize = FlashMediaViewerMath::computeInSampleSize,
+            )
         }
     }
 

@@ -1,23 +1,39 @@
-package com.transfer.flash.ui.chat
+package com.transfer.flash.ui.shims
 
 import android.content.Context
 import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
 import android.util.Log
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalContext
+
+@Composable
+public actual fun rememberFlashAudioPlayer(uri: String?): FlashAudioPlayer? {
+    val context = LocalContext.current
+    return remember(context, uri) {
+        if (uri != null) AndroidAudioPlayer(context, uri) else null
+    }
+}
 
 /**
- * B9: thin [MediaPlayer] wrapper backing real voice-note playback in [FlashVoiceMessageCard].
+ * B9: thin [MediaPlayer] wrapper backing real voice-note playback in `FlashVoiceMessageCard`.
+ *
+ * Moved here from `:ui:chat` by Phase 19 with no behaviour change — same lazy prepare, same guards,
+ * same log tag. Only the class name (it now implements the common [FlashAudioPlayer]) and its
+ * visibility differ; the constructor stays `(Context, String)`, which is why the seam is a factory and
+ * not an `expect class`.
  *
  * Lazily prepares from a local `file://`/`content://` URI — or a bare filesystem path, which is what
  * a *received* note is (the transfer layer reports where it wrote the file, not a URI) — on first
  * [play]. All calls are guarded so a malformed/incomplete recording degrades to "nothing plays"
  * rather than crashing the bubble. Not thread-safe — drive from the composition's main thread.
  */
-class FlashAudioPlayer(
+private class AndroidAudioPlayer(
     private val context: Context,
     private val uri: String,
-) {
+) : FlashAudioPlayer {
     private var player: MediaPlayer? = null
     private var prepared = false
     private var pendingSpeed = 1.0f
@@ -47,7 +63,7 @@ class FlashAudioPlayer(
         }
     }
 
-    fun play() {
+    override fun play() {
         val p = ensurePrepared() ?: return
         runCatching {
             setSpeed(pendingSpeed)
@@ -55,16 +71,16 @@ class FlashAudioPlayer(
         }
     }
 
-    fun pause() {
+    override fun pause() {
         runCatching { player?.let { if (it.isPlaying) it.pause() } }
     }
 
-    fun seekTo(ms: Long) {
+    override fun seekTo(ms: Long) {
         runCatching { player?.seekTo(ms.toInt()) }
     }
 
     /** Playback speed (1x/1.5x/2x). Requires API 23+ (minSdk 24) — always available here. */
-    fun setSpeed(speed: Float) {
+    override fun setSpeed(speed: Float) {
         pendingSpeed = speed
         val p = player ?: return
         runCatching {
@@ -77,11 +93,11 @@ class FlashAudioPlayer(
         }
     }
 
-    fun positionMs(): Long = runCatching { player?.currentPosition?.toLong() ?: 0L }.getOrDefault(0L)
+    override fun positionMs(): Long = runCatching { player?.currentPosition?.toLong() ?: 0L }.getOrDefault(0L)
 
-    fun isPlaying(): Boolean = runCatching { player?.isPlaying == true }.getOrDefault(false)
+    override fun isPlaying(): Boolean = runCatching { player?.isPlaying == true }.getOrDefault(false)
 
-    fun release() {
+    override fun release() {
         runCatching { player?.release() }
         player = null
         prepared = false

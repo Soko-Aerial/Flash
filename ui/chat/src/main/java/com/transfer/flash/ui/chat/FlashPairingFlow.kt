@@ -1,6 +1,5 @@
 package com.transfer.flash.ui.chat
 
-import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -50,6 +49,7 @@ import com.transfer.flash.core.messaging.model.FlashNetworkTransport
 import com.transfer.flash.ui.avatar.FlashAvatar
 import com.transfer.flash.ui.icons.FlashIcon
 import com.transfer.flash.ui.icons.FlashIcons
+import com.transfer.flash.ui.shims.FlashBackHandler
 import com.transfer.flash.ui.theme.FlashDimensions
 import com.transfer.flash.ui.theme.FlashShapes
 import com.transfer.flash.ui.theme.FlashSpacing
@@ -149,7 +149,7 @@ fun FlashPairingDialog(
     modifier: Modifier = Modifier,
 ) {
     val visible = request != null && phase != FlashPairingPhase.Idle
-    BackHandler(enabled = visible, onBack = onDismiss)
+    FlashBackHandler(enabled = visible, onBack = onDismiss)
     if (!visible) return
 
     val colors = FlashTheme.colors
