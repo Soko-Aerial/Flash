@@ -27,10 +27,11 @@ self-contained and states its own preconditions.
 | 06 | [PHASE-06-kmp-pilot.md](PHASE-06-kmp-pilot.md) | 05 + **D1** (+D2 if renaming) | **highest** |
 | 07 | [PHASE-07-security-kmp.md](PHASE-07-security-kmp.md) | 06 | medium |
 | 08 | [PHASE-08-discovery-kmp.md](PHASE-08-discovery-kmp.md) | 06 | medium |
-| 09 | [PHASE-09-persistence-kmp.md](PHASE-09-persistence-kmp.md) | 06 + **D5** | high |
+| 09 | ~~[PHASE-09-persistence-kmp.md](PHASE-09-persistence-kmp.md)~~ **SUPERSEDED** | — | — |
+| 09B | [PHASE-09B-persistence-room-kmp.md](PHASE-09B-persistence-room-kmp.md) | 06 + **D5 = C**; 09B-2 also needs the driver choice | high |
 | 10 | [PHASE-10-network-kmp.md](PHASE-10-network-kmp.md) | 07, 08 | high |
-| 11 | [PHASE-11-repositories-kmp.md](PHASE-11-repositories-kmp.md) | 07, 08, 09, 10 | high |
-| 12 | [PHASE-12-engine-kmp.md](PHASE-12-engine-kmp.md) | 07,08,09,10,11 | high |
+| 11 | [PHASE-11-repositories-kmp.md](PHASE-11-repositories-kmp.md) | 07, 08, 09B-1, 10 | high |
+| 12 | [PHASE-12-engine-kmp.md](PHASE-12-engine-kmp.md) | 07,08,09B-1,10,11 | high |
 | 13 | [PHASE-13-desktop-fileio.md](PHASE-13-desktop-fileio.md) | 12 | medium |
 | 14 | [PHASE-14-desktop-discovery.md](PHASE-14-desktop-discovery.md) | 12 + **D6** | high |
 | 15 | [PHASE-15-desktop-transport.md](PHASE-15-desktop-transport.md) | 13,14 | high |

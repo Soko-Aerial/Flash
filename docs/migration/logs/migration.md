@@ -3301,3 +3301,225 @@ Numeric order is the default and this log takes 09 next unless the sequencing is
 Whoever takes Phase 09 should read the R3 command in `CONVENTIONS.md` as amended by this phase: it
 now names `:core:discovery:testAndroidHostTest` and `:core:discovery:jvmTest` explicitly, and the
 per-module floor to beat is **897 / 12 / 0**.
+
+## Phase 09 — `:core:persistence`: BLOCKED, superseded by a new PHASE-09B
+
+- **Date:** 2026-09-05
+- **Agent/model:** Claude (Opus 5), Claude Code
+- **Commit:** docs only — no source, build file, or version-catalog change
+- **Decisions relied on:** D1 = B (chosen 2026-08-31, reaffirmed 2026-09-03), D5 = C (chosen
+  2026-08-31). Neither was picked by me; DECISIONS.md reserves D1/D2/D5/D8 for the human.
+
+### Change
+
+`PHASE-09-persistence-kmp.md` cannot be executed. It is written for **D1 = A + D5 = A** and says so
+in its own header; the repo is **D1 = B + D5 = C**. Concretely it prescribes `jvmAndAndroidMain`,
+which the 2026-09-03 amendment to `CONVENTIONS.md` R5 forbids creating at all, and it plans a pure
+file move where D5 = C requires a re-platform. Its own D5 gate is the instruction I followed:
+*"**`B` or `C`** → **STOP and switch documents.** … **Stop, tell the human B/C was chosen, and
+author a dedicated PHASE-09B rather than stretching this move-only document.**"*
+
+So: PHASE-09 is bannered SUPERSEDED, `PHASE-09B-persistence-room-kmp.md` is authored from measured
+ground truth, and `README.md` gains a 09B row. **No conversion work was started.** The working tree
+was clean at `55cdc9c` before this entry and the only changes are under `docs/migration/`.
+
+### Files changed
+
+Add:
+- `docs/migration/PHASE-09B-persistence-room-kmp.md`
+
+Modify:
+- `docs/migration/PHASE-09-persistence-kmp.md` — SUPERSEDED banner at the top; body untouched
+- `docs/migration/README.md` — 09 row struck through, 09B row added; phases 11 and 12 now list
+  `09B-1` rather than `09` as their blocker
+- `docs/migration/logs/migration.md` — this entry
+
+### The finding that matters most: D5's premise about Room is out of date
+
+D5's wording, and PHASE-09's D5 = B/C box, both assume that Room KMP requires migrating to
+`androidx.room3` 3.0.x. **It does not.** `androidx.room:room-runtime:2.8.4` — the version already
+pinned in `gradle/libs.versions.toml` and frozen by R10 — is already a full KMP library. From the
+Gradle module metadata in the local cache:
+
+```
+$ python -c "…json.load('room-runtime-2.8.4.module')… available-at"
+['room-runtime-android', 'room-runtime-iosarm64', 'room-runtime-iossimulatorarm64',
+ 'room-runtime-iosx64', 'room-runtime-jvm', 'room-runtime-linuxarm64', 'room-runtime-linuxx64',
+ 'room-runtime-macosarm64', 'room-runtime-macosx64', 'room-runtime-tvosarm64',
+ 'room-runtime-tvossimulatorarm64', 'room-runtime-tvosx64', 'room-runtime-watchosarm32',
+ 'room-runtime-watchosarm64', 'room-runtime-watchosdevicearm64',
+ 'room-runtime-watchossimulatorarm64', 'room-runtime-watchosx64']
+```
+
+Same for `androidx.sqlite:sqlite:2.6.2` (`sqlite-jvm`, `sqlite-linuxx64`, all Apple targets) and
+`androidx.datastore:datastore-preferences:1.1.7` (`datastore-preferences-jvm`,
+`datastore-preferences-core-jvm` are both in the cache already).
+
+This is reported as a **correction to a premise, not a decision.** D5's *choice* — Room KMP plus
+encrypted desktop storage — is unaffected and stands. What changes is the cost: 09B needs **no
+version change at all** (R10 stays clean, new catalog *aliases* only at existing version refs), and
+it avoids Room 3.0's breaking changes, every one of which would also have broken `:app`'s direct
+`FlashDatabaseOpener → FlashDatabase → *Dao` wiring: mandatory `suspend`/observable DAOs, removal
+of `SupportSQLiteDatabase`, `@TypeConverter` → `@ColumnTypeConverter`,
+`suspend fun migrate(connection: SQLiteConnection)`, removal of `InvalidationTracker.Observer`, and
+required `@DaoReturnTypeConverters`.
+
+### Other ground truth measured for 09B (all reproducible, all pasted in the phase file)
+
+- **The KSP output already targets the KMP driver API.** The `*_Impl.kt` files on disk import
+  `androidx.sqlite.SQLiteStatement` / `SQLiteConnection` / `execSQL`, not `SupportSQLite`. The
+  generated half of the Room stack needs nothing done to it.
+- **Only two production files reference a platform SQL type** — `FlashDatabaseOpener.kt`
+  (`net.zetetic…SupportOpenHelperFactory`) and `FlashMigrations.kt`
+  (`androidx.sqlite.db.SupportSQLiteDatabase`). `FlashDatabase.kt` is clean.
+- **All 63 DAO functions are already `suspend` or return `Flow`** (50 + 13; zero blocking). Room
+  KMP's hardest constraint on DAOs is pre-satisfied, which matters because R8 protects DAOs.
+- **`PreferenceDataStoreFactory.create(() -> java.io.File)` lives in datastore's own `jvmAndroid`
+  source set**; the common factory is `createWithPath(() -> okio.Path)`. `javap` on the 1.1.7
+  artifact reports `Compiled from "PreferenceDataStoreFactory.jvmAndroid.kt"`. So
+  `FlashSettingsDataStore`'s published `produceFile: () -> File` constructor is an ABI problem, not
+  a relocation — which is why the settings tier is split out of 09B-1.
+- **Test inventory: 35 tests** — 7 `FlashDatabaseInvariantTest` (Robolectric) + 9
+  `RetentionPolicyTest` + 6 `DiscoveryModeSettingTest` + 13 `FlashSettingsDataStoreTest`. The 12
+  known failures are 11 + 1 in the two **settings** suites, which is the main reason 09B-1 excludes
+  that tier: the db-tier work then cannot perturb the known-failure baseline.
+- **`androidx.room:androidx.room.gradle.plugin:2.8.4` and `androidx.sqlite:sqlite-bundled:2.6.2`
+  both exist on Google Maven** (HTTP 200), and `settings.gradle.kts` already admits `androidx.*`
+  into `pluginManagement`. Note these are on `dl.google.com/dl/android/maven2`, **not** Maven
+  Central — `repo1.maven.org` 404s for `sqlite-bundled`.
+
+### The encrypted desktop driver: evaluated, not adopted
+
+D5 requires the candidates be assessed *"for maintenance status + licence before adoption"*. Done,
+in the phase file's matrix. Summary of the disqualifications, because they are the useful part:
+
+- **`bloomberg/selekt`** — **requires JVM 25+** (Foreign Function & Memory API instead of JNI).
+  This project targets `JVM_11` and builds on JBR 21, so adopting it is an R10 toolchain change.
+  Independently, it *"moves the responsibility for deriving keys to the caller"*, deliberately
+  giving up SQLCipher's default per-key KDF cost to allow connection pooling — that is weakening
+  encryption, which **R2 forbids**. Excluded on grounds, not preference.
+- **`s0d3s/SQLCipherMultiplatform`** — 5 commits, 2 stars, 0 forks, no releases, and the README's
+  version is the literal placeholder `<latest-version>`. Baseline Kotlin 2.3.x vs our R10-frozen
+  2.2.10. Not adoptable for encryption-at-rest of user data.
+- **`skolson/KmpSqlencrypt`** — **no LICENSE file found**, and *"has not so far been published to
+  maven"* (consumption is two `publishToMavenLocal` artifacts; publishing all targets needs a Mac
+  host). Unlicensed and unpublished is disqualifying by itself.
+- **Zetetic SQLCipher for JDBC** — commercial; the most credible engineering and the only option
+  giving Android/desktop file-format parity, but it costs money, so it is the human's call.
+- **`io.github.willena:sqlite-jdbc:3.53.2.0`** (SQLite3MultipleCiphers; **not named in D5**) —
+  Apache-2.0 + BSD-2-Clause, 2 317 commits, 219 stars, natives for Windows/Linux/macOS, and a
+  stated maintenance contract (*"We follow every new version of SQLite and will release a
+  corresponding version of our driver"*). It is a JDBC driver, so we would own a ~200-line
+  `androidx.sqlite.SQLiteDriver` adapter confined to `jvmMain`. **Recommended**, unless the human
+  prefers to pay Zetetic.
+
+I did not choose. Recording a recommendation is not adoption, and D5 is the human's.
+
+### How 09B avoids "B without C" while still being executable now
+
+D5's charter forbids **B without C** — a desktop target without encryption *"would put plaintext
+Flash data on desktop disk, which R8 prohibits."* 09B is therefore split at the boundary of *does a
+database file get created on desktop*:
+
+- **09B-1 (executable today, no driver decision needed):** the db tier moves to `commonMain`, the
+  `jvm()` target compiles and runs a real `jvmTest` suite, and **no `jvmMain` code can open a
+  database file at all.** `BundledSQLiteDriver` — which is unencrypted — is allowed in `jvmTest`
+  only, in-memory only, with a grep gate proving it appears nowhere else. Nothing is written to
+  desktop disk, encrypted or otherwise, so this is not "B without C"; it is B with the desktop
+  product surface deliberately absent.
+- **09B-2 (blocked on the driver choice):** the encrypted file-backed opener, plus a test that
+  writes a known plaintext string, closes, reads the raw file bytes and asserts the string is
+  absent and the header is not `SQLite format 3 `.
+- **09B-3 (blocked on an ABI choice):** the settings tier.
+
+### Verification
+
+No build, compile, or test task was run, because **nothing was built**. This entry documents a
+blockage and a document; it makes no claim about the build. The R3 state is therefore unchanged from
+Phase 08: **897 / 12 failures / 0 skipped**, last measured 2026-09-03/04 under `55cdc9c`.
+
+Checks that were run, all read-only:
+
+```
+$ git status --short                       (before this entry: clean at 55cdc9c)
+$ grep -rn --include=*.kt -E '^import (java|javax|android|androidx)\.' core/persistence/src
+$ grep -rc '@Test' core/persistence/src/test/…
+$ javap -cp classes.jar androidx.datastore.preferences.core.PreferenceDataStoreFactory
+$ curl -sI dl.google.com/dl/android/maven2/androidx/{room,sqlite}/…               → 200 / 200
+$ python  → json.load(*.module)['variants'] for room-runtime 2.8.4, sqlite 2.6.2
+```
+
+Their output is pasted in `PHASE-09B-persistence-room-kmp.md` under **Ground truth**, rather than
+duplicated here.
+
+### Deviations from the phase file
+
+Executing PHASE-09 at all would have been the deviation. Following its own D5 gate is what produced
+this entry. Two deliberate choices inside 09B that a later agent might not expect:
+
+1. **09B is split into three sub-phases** rather than left as one blocked phase. PHASE-09 does not
+   prescribe a split; I chose the split point so that the largest tranche of work (the db tier) is
+   unblocked by the decision that D5 reserves for the human, and so that "no plaintext on desktop
+   disk" is structurally guaranteed rather than merely intended.
+2. **I evaluated a candidate D5 does not name** (`io.github.willena:sqlite-jdbc`) and recommended
+   it. D5 names three candidates; two of them fail its own maintenance/licence bar and the third is
+   commercial, so reporting "all three unsuitable" without a fourth would have been a dead end.
+
+### What I could NOT verify (R9)
+
+1. **That `@ConstructedBy` leaves the exported schema byte-identical.** This is 09B-1's gate 6 and
+   the condition on its narrow R8 exception. Unverified because nothing was built.
+2. **That `Room.databaseBuilder(context, FlashDatabase::class.java, name)` keeps working on Android
+   once `@ConstructedBy` is present.** I believe Room 2.8 keeps the reflective Android builder
+   alongside the generated-constructor path, but I did not compile it. If it does not, the Android
+   opener has to change, and that is a much larger phase.
+3. **That KSP does not need hand-written `actual object` stubs** for `FlashDatabaseConstructor` on
+   each target. 09B-1 tells the executing agent to check empirically and delete the stubs if the
+   processor emits them.
+4. **That `okio.IOException` is a `typealias` for `java.io.IOException` on JVM.** Asserted in 09B-3
+   from memory of okio's source, not measured against the artifact. It must be checked before
+   `DiscoveryModeSetting` moves.
+5. **Whether the two `room.schemaLocation` writers race.** 09B-1 adds the Room Gradle plugin to give
+   each target its own output; I confirmed the plugin exists at 2.8.4 but never ran it. The KSP-arg
+   fallback is documented.
+6. **SQLCipher file-format compatibility of SQLite3MultipleCiphers.** Implied by the fork's repo
+   topics, documented nowhere I could find. Argued in 09B as a non-requirement — Flash databases are
+   per-device and no `flash.db` crosses the wire — but the compatibility claim itself is unverified.
+7. **`io.github.willena:sqlite-jdbc`'s minimum Java version.** Not stated on its README; needs a
+   look at `pom.xml` before adoption, since `JVM_11` is what killed `selekt`.
+
+### Known issues
+
+1. **`PHASE-09-persistence-kmp.md` contains two factual errors**, now recorded in its banner rather
+   than fixed in place (R1): it claims the desktop `jvm()` target *"has no Room"* (it has), and its
+   schema path is one directory level too shallow (`schemas/com.transfer.flash.core.persistence.db.FlashDatabase/`).
+   `schemas/…/2.json` is also genuinely absent — only `1.json` and `3.json` exist, despite
+   `MIGRATION_1_2` implying a v2.
+2. **`FlashMigrations` pins the Android Support-SQLite layer permanently.** Its two `Migration`
+   objects override `migrate(db: SupportSQLiteDatabase)`, an Android-only type, and R8 forbids
+   editing them. 09B keeps the file in `androidMain`, which is correct — migrations serve *existing
+   Android installs* and desktop has none — but it means `:core:persistence` will never be a
+   single-source-set module.
+3. **D5's own wording will mislead the next reader.** It says to migrate to Room 3 KMP. 09B does
+   not, and explains why. Someone should decide whether DECISIONS.md gets an amendment note; I did
+   not edit it, since D5 is the human's and `docs/decisions.md` is append-only under R8.
+4. **The R6.1 purity grep stops being expected-empty at 09B-1.** `commonMain` will legitimately
+   contain `androidx.room.*` and `androidx.sqlite.SQLiteDriver` — both KMP libraries whose package
+   names merely start with `androidx.`. `CONVENTIONS.md` R6.1 currently says "Expected output:
+   nothing", which will be wrong from 09B-1 onward. 09B-1 requires the log to enumerate and justify
+   every hit; R6.1's wording should be amended **by the phase that first breaks it**, not now.
+5. **Still no Kotlin/Native target anywhere in phases 00–24.** Unchanged from Phase 07/08's entries,
+   but now sharper: Room, androidx.sqlite and datastore all publish native variants, so
+   `:core:persistence` could actually support one. Adding a single throwaway target would turn R6
+   from a review rule into a compiler error for every module converted so far.
+
+### Next step
+
+**Phase 10 — `:core:network`.** README lists it as blocked by 07 and 08 only; both are complete, and
+it does not depend on `:core:persistence`. Taking 10 now is not a reordering: 09 has been retired and
+09B is gated on human input that 10 does not need.
+
+09B-1 can be executed at any time in parallel and needs no decision. 09B-2 needs the driver choice;
+09B-3 needs the settings ABI choice. Both are listed under *Decisions that remain the human's* in
+`PHASE-09B-persistence-room-kmp.md`.
+

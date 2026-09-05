@@ -1,5 +1,30 @@
 # Phase 09 — KMP conversion: `core:persistence`
 
+> # ⛔ SUPERSEDED — DO NOT EXECUTE THIS FILE
+>
+> **2026-09-05.** This document is written for **D1 = A + D5 = A**. The repo is
+> **D1 = B + D5 = C** (see `DECISIONS.md`; D1 = B was reaffirmed 2026-09-03). Executing it would
+> violate CONVENTIONS.md R5 — it prescribes `jvmAndAndroidMain`, a source set that D1 = B forbids
+> and that must never be created.
+>
+> Its own D5 gate is the instruction that retired it: *"**`B` or `C`** → **STOP and switch
+> documents.** … **Stop, tell the human B/C was chosen, and author a dedicated PHASE-09B rather
+> than stretching this move-only document.**"*
+>
+> **→ Execute [PHASE-09B-persistence-room-kmp.md](PHASE-09B-persistence-room-kmp.md) instead.**
+>
+> Two further factual errors, measured 2026-09-05 and recorded here per R1 rather than fixed in
+> place:
+> - The header below says the desktop `jvm()` target *"has no Room"*. It does.
+>   `androidx.room:room-runtime:2.8.4` — the version already pinned — publishes `room-runtime-jvm`
+>   plus Kotlin/Native variants. Room KMP therefore needs **no** `androidx.room3` bump, contrary to
+>   this file's D5 = B/C box.
+> - Its schema path is one directory level too shallow, and `schemas/…/2.json` does not exist.
+>
+> Still-accurate and reused by 09B: **Fact 2** (`testOptions.unitTests.isIncludeAndroidResources`
+> becomes `withHostTest { isIncludeAndroidResources = true }`) and **Fact 3** (keep the schema
+> directory; drop the `test` asset wiring).
+
 **Blocked by:** Phase 06 (the pilot — DSL shape, host-test block, publication rewrite) **and
 Decision D5** (desktop persistence strategy). **D1 must already be `A`** (it gated Phase 06);
 this phase is written for **D1 = A + D5 = A**. If D5 is still `_pending_`, or is answered
