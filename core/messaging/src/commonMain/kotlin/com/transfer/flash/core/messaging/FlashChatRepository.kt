@@ -1,6 +1,7 @@
 package com.transfer.flash.core.messaging
 
 import com.transfer.flash.core.common.model.FlashPeerPresence
+import com.transfer.flash.core.common.time.SystemTimeSource
 import com.transfer.flash.core.messaging.model.FlashChatListUiState
 import com.transfer.flash.core.messaging.model.FlashConversationUiState
 import com.transfer.flash.core.messaging.model.FlashMessageUi
@@ -144,7 +145,7 @@ public class SampleFlashChatRepository(
         val conversationId = activeConversationId ?: return
         val current = _conversationState.value
         val newMessage = FlashMessageUi(
-            id = "local-${System.currentTimeMillis()}",
+            id = "local-${SystemTimeSource.nowMs()}",
             senderName = "You",
             senderInitials = "YO",
             timeLabel = "Now",
@@ -212,7 +213,7 @@ public class SampleFlashChatRepository(
                         timestamp = timestamp,
                         unreadCount = unreadCount,
                         isTyping = false,
-                        sortOrder = System.currentTimeMillis(),
+                        sortOrder = SystemTimeSource.nowMs(),
                     )
                 } else {
                     item
