@@ -5567,6 +5567,308 @@ Windows host returns an arbitrary adapter.
 migration has no unblocked work left. That is now the single most important thing for the human to
 look at.
 
+## Phase 13B-2 — the byte-stream seam: four `java.io` seams re-typed onto Okio
+
+- **Date:** 2026-09-05
+- **Agent/model:** Claude (Opus 5), Claude Code
+- **Commit:** `732e7b5` (source), this entry (docs)
+- **Decisions relied on:** **D10 = Option A**, answered by the human 2026-09-05 — adopt a
+  multiplatform I/O library and re-type the four seams, rather than `expect`/`actual` typealiases to
+  `java.*` (B), a duplicated `jvmMain` pipeline (C), or no desktop pipeline at all (D). D10's answer
+  left the library choice to this phase "to be decided on evidence and recorded in its log entry";
+  that evidence is below. **D1 = Option B** (strict `commonMain`) throughout — no
+  `jvmAndAndroidMain`, no `androidMain`↔`jvmMain` `dependsOn`. **The R8 authorisation for
+  `ChunkFrame` was NOT used.** `chunked/ChunkFrame.kt` is byte-for-byte untouched; that rewrite is
+  13B-3's, and doing it here would have made this commit unreviewable.
+
+### Change
+
+Executed §13B-2 of `PHASE-13B-desktop-fileio.md`. The four seams it named moved from `androidMain`
+into `commonMain`, re-typed off `java.io`:
+
+| Seam | Before | After |
+|---|---|---|
+| `chunked/ChunkSource.kt` (split out of `Chunker.kt`) | `open(): java.io.InputStream` | `open(): okio.Source` |
+| `chunked/ChunkSink.kt` (split out of `ReceivePipeline.kt`) | `write(Int, ByteArray)` | **unchanged** — only its file was Android-bound |
+| `FileSourceOpener.kt` (split out of `RealFlashTransferRepository.kt`) | `open(String): java.io.InputStream` | `open(String): okio.Source` |
+| `policy/RandomAccessSinkHandle.kt` (split out of `policy/DestinationPolicy.kt`) | `: java.io.Closeable`, impl over `RandomAccessFile` | `: kotlin.AutoCloseable`, plus a working **common** `OkioRandomAccessSinkHandle` |
+
+`policy/RandomAccessChunkSink.kt` came along verbatim although §13B-2 did not list it: every type in
+it was already common, and it is the join between the two relocated seams. Without it `commonMain`
+would hold a handle and a sink with no way to connect them — which is exactly what a desktop receive
+path needs in Phases 15/16.
+
+The handle is the only seam with real behaviour, so it is the only one where "re-typed" could have
+meant "quietly changed". It did not: `OkioRandomAccessSinkHandle` was written against okio 3.4.0's
+own bytecode (`javap` on the resolved jar), not against its documentation, and each operation maps
+onto the `RandomAccessFile` call it replaces — `FileSystem.openReadWrite(path)` →
+`RandomAccessFile(file, "rw")`, `FileHandle.size()`/`resize()` → `length()`/`setLength()`,
+`FileHandle.write(pos, …)` → `seek(pos)` + `write(…)`, `FileHandle.flush()` → `fd.sync()`. The
+pre-allocation on construction (`if (size() < expectedTotalBytes) resize(expectedTotalBytes)`) and
+the `check(_isOpen)` guard are carried over unchanged. `@Synchronized` could **not** come along — it
+is JVM-only and R6 forbids it in `commonMain` — so the three guarded methods now take `PlatformLock`,
+which is precisely the seam 13B-1 created for this; `isOpen` keeps its non-blocking `@Volatile` read
+(`import kotlin.concurrent.Volatile`, which R6.1's scan 3 checks for).
+
+### Library choice — okio 3.4.0, decided on evidence per D10's recorded answer
+
+**Okio, not kotlinx-io.** This was not a preference. `kotlinx-io-core` 0.8.2's `FileSystem` is
+**sequential-only** — it offers `source(Path)` and `sink(Path)` and has no `FileHandle`, no
+positional read, and no positional write — so it cannot express
+`RandomAccessSinkHandle.writeAt(byteOffset, data)` **at all**. Resume-with-holes is the whole point of
+that seam, so kotlinx-io was eliminated by capability, not by taste. Okio 3.x's `FileHandle` has
+`read(Long, …)`, `write(Long, …)`, `resize`, `size` and `flush`, which is a superset of what
+`RandomAccessFile` was doing. Secondary reasons, both recorded in the catalog comment: kotlinx-io is
+pre-1.0 and these types are entering a *published* ABI, and okio publishes `native`/`wasm` artifacts,
+so R6.1's recommended Kotlin/Native target is not foreclosed by this choice.
+
+**Version 3.4.0, not the current 3.17.0**, because `androidx.datastore-preferences:1.1.7` already
+drags `com.squareup.okio:okio:3.4.0` onto `:app` transitively via `datastore-core-okio-jvm`. Declaring
+3.4.0 is therefore **resolution-neutral** — it changes no version that Gradle was already going to
+pick, which is what R10's frozen toolchain requires of a phase that is permitted to add a dependency
+but not to move anything else. Verified with `:app:dependencyInsight --dependency okio` before
+declaring it. okio 3.4.0's own floor is kotlin-stdlib 1.8.0, comfortably below the frozen 2.2.10.
+
+The alias points at the **root** multiplatform module (`com.squareup.okio:okio`), never `okio-jvm`;
+pointing at `okio-jvm` would compile today and break the moment a native target is added. This is
+noted in the catalog comment so the next agent does not "simplify" it.
+
+`api(libs.okio)` rather than `implementation`, because okio types appear in `public` signatures under
+`explicitApi()` (R7) — `ChunkSource.open(): Source` is unusable by a consumer that cannot see
+`okio.Source`.
+
+### Files changed
+
+**Added (all `core/transfer/src/commonMain/kotlin/com/transfer/flash/core/transfer/`):**
+
+- `chunked/ChunkSource.kt` — `public fun interface ChunkSource { public fun open(): Source }`
+- `chunked/ChunkSink.kt` — `public fun interface ChunkSink { public fun write(index: Int, data: ByteArray) }`
+- `FileSourceOpener.kt` — `public fun interface FileSourceOpener { public fun open(fileUri: String): Source }`
+- `policy/RandomAccessSinkHandle.kt` — the interface (`writeAt`, `flush`, `isOpen`, now
+  `: AutoCloseable`) **plus** `public class OkioRandomAccessSinkHandle(path: Path,
+  expectedTotalBytes: Long, fileSystem: FileSystem = FileSystem.SYSTEM)`
+
+**Moved (`androidMain` → `commonMain`, git records a 65% rename):**
+
+- `policy/RandomAccessChunkSink.kt` — verbatim, not listed by the phase file; see Deviations.
+
+**Modified — `:core:transfer` `androidMain` (declarations removed, each replaced by a comment
+pointing at the new `commonMain` file so a future reader is not left guessing):**
+
+- `chunked/Chunker.kt` — `ChunkSource` deleted. `import okio.buffer` added; `java.io.Closeable`/
+  `InputStream` imports **kept**, because `ChunkStream` still needs them (13B-3 scope). Both call
+  sites bridge back: `source.open().buffer().inputStream().use { … }` and
+  `ChunkStream(source.open().buffer().inputStream(), …)`.
+- `chunked/ReceivePipeline.kt` — `ChunkSink` declaration deleted. The file still has **zero** import
+  lines; `WholeFileDigestProvider` untouched.
+- `RealFlashTransferRepository.kt` — `FileSourceOpener` declaration and `import java.io.InputStream`
+  deleted. `val source = ChunkSource { fileSourceOpener.open(fileUri) }` type-checks unchanged, both
+  sides having moved to `okio.Source` together.
+- `policy/DestinationPolicy.kt` — 77 lines removed: the old interface and the `RandomAccessFile`
+  implementation. `FileRandomAccessSinkHandle` **keeps its `(File, Long)` constructor and its
+  supertype list**, via interface delegation so the new common class can stay `final`:
+  `public class FileRandomAccessSinkHandle(file: File, expectedTotalBytes: Long) :
+  RandomAccessSinkHandle by OkioRandomAccessSinkHandle(file.toOkioPath(), expectedTotalBytes)`.
+  Its three consumers needed no edit, exactly as the phase file predicted.
+
+**Modified — build files (only `:core:transfer`'s, per R4):**
+
+- `gradle/libs.versions.toml` — `okio = "3.4.0"` under `[versions]` plus the `okio` library alias,
+  preceded by the ~32-line evidence comment summarised above.
+- `core/transfer/build.gradle.kts` — `api(libs.okio)` in `commonMain.dependencies`; the stale
+  `jvm { }` comment rewritten to say what is now true.
+
+**Modified — consumers outside `:core:transfer` (2 product sites, both forced by
+`FileSourceOpener`'s re-typing):**
+
+- `core/engine/src/androidMain/.../Flash.kt:230` — `fileSourceOpener = { uriString ->
+  openSource(uriString).source() }` (`import okio.source`). `openSource` itself, the
+  `FileRandomAccessSinkHandle`/`RandomAccessChunkSink` construction at `:199–201`, and the
+  `ConcurrentHashMap<String, RandomAccessSinkHandle>` at `:139` all needed no edit.
+- `app/src/main/java/.../debug/DiscoveryEngineHolder.kt:469` — same one-call bridge.
+
+**Modified — 6 test files, all in `androidHostTest`, all forced by the re-typing:**
+
+`chunked/ChunkerTest.kt`, `chunked/PipelineEndToEndTest.kt`, `chunked/SendPipelineTest.kt` (2 sites),
+`chunked/ReceivePipelineTest.kt`, `multistream/MultiStreamDispatcherTest.kt` (6 sites),
+`RealFlashTransferRepositoryTest.kt` (5 sites, and `import java.io.ByteArrayInputStream` removed).
+Every site became `Buffer().write(bytes)` — deliberately **not**
+`bytes.inputStream().source()`, which would also have compiled. `Buffer()` is multiplatform, so these
+suites can move to `commonTest` in 13B-3 without a second rewrite; the `InputStream` form would have
+pinned them to `androidHostTest` forever. `policy/DestinationPolicyTest.kt` needed **no** edit, which
+is the test-side proof that `FileRandomAccessSinkHandle`'s constructor really is unchanged.
+
+`:core:transfer` is now **13 `commonMain` + 13 `androidMain` + 1 `jvmMain`** production files —
+measured with `git ls-tree -r --name-only 732e7b5^`, it stood at **8 + 14 + 1** before this commit,
+so the delta is the 4 new seam files plus `RandomAccessChunkSink.kt` crossing over. Tests are
+unchanged at **3 `commonTest` + 13 `androidHostTest`**; `jvmTest` still has no sources.
+
+### Verification
+
+**Step 1 — cheap targeted build first**, so the expensive gate was not spent finding typos:
+
+```
+./gradlew :core:transfer:compileKotlinJvm :core:transfer:testAndroidHostTest :core:transfer:jvmTest --no-configuration-cache
+BUILD SUCCESSFUL in 2m 27s
+```
+
+`compileKotlinJvm` is the R3.1 canonical name — there is no `compileKotlinDesktop`, because R5 keeps
+the target as plain `jvm()`. This task passing is what proves the four seams are reachable from the
+desktop target at all, which is the entire point of 13B-2.
+
+**Step 2 — the full R3 gate.** Command run (`--continue` is load-bearing: without it the 12 known
+`:core:persistence` failures abort the run and the total silently drops):
+
+```
+./gradlew --stop; ./gradlew :app:assembleDebug testDebugUnitTest :core:common:testAndroidHostTest :core:security:testAndroidHostTest :core:security:jvmTest :core:discovery:testAndroidHostTest :core:discovery:jvmTest :core:network:testAndroidHostTest :core:network:jvmTest :core:transfer:testAndroidHostTest :core:transfer:jvmTest :core:messaging:testAndroidHostTest :core:messaging:jvmTest :core:engine:testAndroidHostTest :core:engine:jvmTest :core:persistence:testAndroidHostTest :core:persistence:jvmTest :ui:theme:testAndroidHostTest :ui:theme:jvmTest :ui:platform-shims:testAndroidHostTest :ui:platform-shims:jvmTest :ui:chat:testAndroidHostTest :ui:chat:jvmTest --no-configuration-cache --continue --max-workers=2 --console=plain
+```
+
+Result: **at the Phase 20 baseline exactly — not a pass in the abstract, the same numbers.**
+
+```
+$ find . -path ./media-downloader-main -prune -o -name 'TEST-*.xml' -print | grep -E '/build/test-results/' | grep -vE '/build/(intermediates|tmp)/' | sort | wc -l
+177
+$ awk -F'"' '/<testsuite / { … }' $(cat /tmp/r3xmls.txt)
+tests=1332 failures=12 errors=0
+```
+
+`:core:persistence:testAndroidHostTest` was the only failing task — exactly what `--continue` exists
+to let through. The 12 failures are enumerated, not assumed, and are the known pre-existing temp-file
+failures that R1 forbids "fixing":
+
+```
+core/persistence/…/TEST-…settings.FlashSettingsDataStoreTest.xml   tests=13 failures=11
+core/persistence/…/TEST-…settings.DiscoveryModeSettingTest.xml     tests=6  failures=1
+
+FlashSettingsDataStoreTest: retentionDays roundtrip · backgroundTransfers roundtrip ·
+  dynamicAccent roundtrip · corrupted preferences file falls back to emptyPreferences ·
+  themeMode roundtrip · displayName roundtrip · soundsEnabled roundtrip ·
+  autoAcceptTrusted roundtrip · reduceMotionOverride roundtrip ·
+  saveLocationUri roundtrip and clear-to-null · hapticsEnabled roundtrip
+DiscoveryModeSettingTest: roundtrip for every valid mode
+```
+
+**Step 3 — the three R6.1 gate scans, all clean.** R6.1 matters more than usual here, because
+`compileKotlinJvm` passing proves R2 (no `android.*` in `commonMain`) but **certifies nothing about
+`java.*`** — with only `android()` and `jvm()` declared, every compilation sees a JVM classpath, so a
+stray `java.io` import in `commonMain` would compile happily. Until a Kotlin/Native target exists,
+these greps *are* the enforcement.
+
+1. No `java`/`javax`/`android`/`androidx` in any `commonMain` (Room and non-preview Compose carved
+   out): **no output.** This is the scan that would have caught a lazy port — an `okio.Source` seam
+   with a `java.io` helper left behind next to it.
+2. No JVM-only intrinsics: output is **exactly** the pre-existing allowlist plus one expected new
+   line — 4 pre-existing `@Volatile` sites (`FlashLog.kt:21`, `CompositeDiscovery.kt:172,192`,
+   `WsKeepalive.kt:75`), **the one new one at `RandomAccessSinkHandle.kt:82`**, and the 8 allowlisted
+   `.format(` calls. **No new intrinsic, and no `@Synchronized` anywhere** — the `RandomAccessFile`
+   implementation's three `@Synchronized` methods became `PlatformLock.withLock`, which is the
+   substantive R6 change in this phase. (`732e7b5`'s commit message says "the 5 pre-existing
+   `@Volatile` sites plus the new one"; the count is 4 pre-existing + 1 new = 5 total. The scan output
+   above is the accurate one.)
+3. Every `@Volatile` file imports `kotlin.concurrent.Volatile`: **no output**, so the new site at
+   `RandomAccessSinkHandle.kt:82` carries the common import, not the JVM annotation.
+
+**Step 4 — consistency sweeps before committing.** Two repo-wide greps (the four seam names, and
+every `.open()` call site) to confirm no half-migrated caller survived, plus a targeted grep of
+`DestinationPolicy.kt` for `RandomAccessFile|FileRandomAccessSinkHandle|interface
+RandomAccessSinkHandle|Closeable|@Synchronized` — one hit, the delegating class, so no duplicate
+declaration was left behind by the 77-line deletion.
+
+### Deviations from the phase file
+
+Five, all substantive. `PHASE-13B-desktop-fileio.md` has been amended in the same docs commit so a
+future reader hits the correction at the point of use rather than only here.
+
+1. **§4's consumer table is wrong for `FileSourceOpener` — "0 consumers outside `:core:transfer`" is
+   false.** It is true of the *type name* only. `FileSourceOpener` is a `fun interface`, so every
+   consumer SAM-converts a lambda and the name never appears; `grep FileSourceOpener` cannot see them.
+   Grepping the *parameter* name finds `Flash.kt:230` and `DiscoveryEngineHolder.kt:469` in product
+   code plus 5 sites in `RealFlashTransferRepositoryTest.kt`. This phase had to edit all seven.
+2. **§4's `ChunkSink` "0" is wrong for the same reason** — `grep -rnE '\b(sink|sinkFactory) ='` finds
+   `Flash.kt:192,193` and `DiscoveryEngineHolder.kt:356,357` outside `:core:transfer`. It cost this
+   phase no edit only because `ChunkSink`'s signature did not change, **not** because nothing consumes
+   it. Recording it because if a later phase re-types `write(index, data)`, those four sites are the
+   blast radius, and the table currently promises none. **`ChunkSource`'s "0" does genuinely hold**:
+   the same grep outside the module returns only unrelated local `val source` declarations, because
+   every `ChunkSource` lambda is built inside `:core:transfer` and the two product call sites reach it
+   through `FileSourceOpener` — which is exactly why re-typing *that* seam is the one that leaked
+   outward. **Correcting my own first draft of this log entry**, which asserted both zeros held and
+   claimed a verification I had not yet run; the grep, once run, disproved half of it.
+3. **The predicted "three small `jvmMain` files" became one *common* implementation, and zero new
+   `jvmMain` files.** Not a shortcut — okio is itself multiplatform, so `OkioRandomAccessSinkHandle`
+   belongs in `commonMain` and a `jvmMain` copy would be dead weight that a native target would then
+   have to duplicate again. `jvmMain` still holds exactly the one file 13B-1 put there. The
+   OS-neutrality requirement for `jvmMain` (2026-09-03 amendment: `java.io.tmpdir` fine, `C:\` literal
+   not) is therefore vacuously satisfied — no new `jvmMain` code exists to violate it.
+4. **`policy/RandomAccessChunkSink.kt` was moved to `commonMain` although §13B-2 does not list it.**
+   Reason in Change above: it is the join between the handle and the sink, every type in it was already
+   common, and leaving it behind would have shipped a `commonMain` that cannot connect its own two
+   halves. Flagged rather than silently folded in, because R1 says do the phase you were asked to do.
+5. **An ABI break the phase file did not predict:** `RandomAccessSinkHandle`'s supertype changes from
+   `java.io.Closeable` to `kotlin.AutoCloseable`. `close()` and `use { }` keep working, and nothing in
+   this repo assigns a handle to a `Closeable` variable, so first-party cost is zero; a third party who
+   did is the one break. Queued for Phase 24's release notes. ADR-023 removed BCV repo-wide, so there
+   is no `.api` file to record it in — this log entry and Phase 24's notes are the only record.
+
+### Known issues
+
+Noticed, deliberately **not** fixed — each is either R1 out-of-scope or explicitly someone else's phase.
+
+- **The 12 `:core:persistence` failures are still there and must stay there.** Pre-existing temp-file
+  failures, enumerated above. R1 forbids fixing them here; if the count ever *changes*, that is a
+  regression, not progress.
+- **`Chunker.kt` and `ReceivePipeline.kt` stay in `androidMain`.** Their remaining pins —
+  `ChunkStream`, `ChunkFrame`, `Sha256`, `ResumeBitVector`, `sortedSetOf` — are 13B-3 scope. The two
+  `Chunker` call sites therefore bridge back with `.buffer().inputStream()`, which is a JVM-only okio
+  member and legal in `androidMain`. **Those two bridges are the marker for 13B-3**: when framing and
+  hashing go common, they delete, and `ChunkStream` stops needing `java.io` at all.
+- **`openSinkHandle` stays in `androidMain`** even though the handle it returns is now common. Not an
+  oversight: its `DestinationTarget` parameter is `internal`, and `explicitApi()` (R7) will not let a
+  `public` signature mention it. Moving it means promoting or restructuring `DestinationTarget`, which
+  is a `DestinationPolicy` decision, and PHASE-13B already assigns that file's port to 13B-3.
+- **`OkioRandomAccessSinkHandle` is `commonMain` code with no `commonTest` coverage.** It is exercised
+  only *indirectly*, on Android, through `FileRandomAccessSinkHandle` in
+  `policy/DestinationPolicyTest.kt` (`androidHostTest`), and `:core:transfer` still has **no `jvmTest`
+  sources at all** — so the desktop target compiles this class and never runs it. R3.1's `jvmTest`
+  guidance ("any phase that writes an `actual` should put at least one behavioural assertion in
+  `commonTest` so both platforms run it") does not strictly bite here, because 13B-2 wrote no new
+  `expect`/`actual` pair; it wrote common code over `PlatformLock`, an `actual` 13B-1 already added the
+  parity test for. But the spirit of the rule does bite, and the honest statement is that **positional-write behaviour on the desktop target is
+  untested**. The right home for that test is 13B-3 or Phase 15, whichever first gives `:core:transfer`
+  a `commonTest` file that can open a real temp file on both targets — `writeAt` at a non-zero offset,
+  a hole left unwritten, and `resize` pre-allocation are the three cases worth asserting.
+- **`policy/DestinationPolicy.kt` has an unused `import java.io.OutputStream`.** Pre-existing, left
+  alone per R1. There is no ktlint/detekt/spotless in this repo, so nothing will flag it.
+- **okio 3.4.0 is pinned to what `androidx.datastore` already resolves.** That is what made it
+  R10-neutral, and it is also a coupling: if a later phase bumps datastore and its okio floor rises,
+  this alias should be re-checked with `:app:dependencyInsight --dependency okio` rather than assumed
+  still-neutral. Phase 24 is the natural place.
+- **The 8 allowlisted `.format(` calls in `commonMain` are untouched and remain a hard precondition of
+  any Kotlin/Native-target phase** (`FlashMessagingModels.kt:202,204`;
+  `FlashFileMessageCard.kt:113,413,415,417`; `FlashStressTestScreen.kt:253`;
+  `FlashVoiceMessageCard.kt:81`). Worth restating because 13B-2 is the phase that made native
+  *conceivable* for `:core:transfer`: okio publishes native artifacts, so this module is no longer the
+  blocker — those eight calls are. They cannot be mechanically replaced: Java's `Formatter` rounds
+  HALF_UP over the decimal value while `kotlin.math.round` is half-away-from-zero over the binary
+  double, and they disagree at inputs like 0.35. Any replacement needs rounding tests, not a sed.
+
+### Next step
+
+**Phase 13B-3** — framing, hashing, concurrency. It is executable now: D10 = A is enacted, and the R8
+authorisation to rewrite `chunked/ChunkFrame.kt` was granted 2026-09-05 **with byte-identical output as
+the hard acceptance criterion — golden vectors captured from the current Android frames before the
+rewrite and asserted after it; 13B-3 does not ship if any byte differs.** That authorisation covers
+`ChunkFrame` and nothing else; `FlashEnvelope`, `FlashProtocol`, `MessageWireFrame`,
+`WsTransferMessages`, `TxtCodec` and `FlashPairingFrames` remain untouchable under R8.
+
+Two things 13B-2 hands it directly: the `.buffer().inputStream()` bridges in `Chunker.kt` are the
+exact call sites that should disappear, and `PlatformLock` is already proven in a `commonMain` hot path,
+so the `java.util.concurrent` atomics port has a precedent to follow rather than a decision to make.
+
+After 13B-3: **15 → 16 (hard gate) → 21 → 22 → 23 (hard gate) → 24.** The D11 calling-stack phase is
+authorised but still unwritten, and must **not** be inserted ahead of 15/16 — the Phase 16 interop gate
+outranks it.
+
 ## Phase 14 — Desktop mDNS for `:core:discovery`
 
 - **Date:** 2026-09-05

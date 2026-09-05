@@ -13,7 +13,7 @@
 | **D7** | **Phase 19** | UI platform shims. **Executed 2026-09-05 (`94a60a4`); D7b overridden on evidence** — a and c as written, but FileKit was **not** adopted. See the note under D7 below. |
 | **D8** | **Phase 22** | Whether the §15 desktop screens exist. |
 | **D9** | Phase 24 | Sample consumers; agent may proceed on the recommendation. |
-| **D10** | **Phases 13B-2, 13B-3, 15, 16** | What replaces `java.io.InputStream` in a `commonMain` signature. Added 2026-09-05 by the agent that reached Phase 13. **Answered 2026-09-05 = Option A**, with an explicit R8 authorisation for 13B-3's `ChunkFrame` rewrite (byte-identical output required). 13B-2 is now executable. |
+| **D10** | **Phases 13B-2, 13B-3, 15, 16** | What replaces `java.io.InputStream` in a `commonMain` signature. Added 2026-09-05 by the agent that reached Phase 13. **Answered 2026-09-05 = Option A**, with an explicit R8 authorisation for 13B-3's `ChunkFrame` rewrite (byte-identical output required). **Enacted as Okio 3.4.0 by 13B-2 (`732e7b5`, 2026-09-05); 13B-3 is next.** |
 | **D11** | **a new phase, number TBD** | Is the calling stack (`:core:calling` + `:ui:callui`) in desktop scope? Added 2026-09-05 — no phase file has ever mentioned `:core:calling`. **Answered 2026-09-05 = in scope, research first.** Does not block any existing phase. |
 
 **As of 2026-09-05 every decision D1–D11 is answered.** No phase in this plan is blocked on a decision
@@ -444,6 +444,16 @@ The choice between `kotlinx-io` and Okio is left to 13B-2 as an implementation d
 evidence and recorded in its log entry. It is a new dependency, so it needs a new
 `gradle/libs.versions.toml` alias — permitted because R10 allows a phase that explicitly adds a
 dependency to add one, and 13B-2 is that phase.
+
+**ENACTED 2026-09-05 by 13B-2 (`732e7b5`): Okio 3.4.0.** Not a preference — `kotlinx-io-core` 0.8.2's
+`FileSystem` is sequential-only (`source`/`sink`, no `FileHandle`, no positional write) and cannot
+express `RandomAccessSinkHandle.writeAt(byteOffset, data)` at all, so it was not a candidate once the
+handle seam was in scope. `3.4.0` rather than the current `3.17.0` because `androidx.datastore` already
+resolves `com.squareup.okio:okio:3.4.0` onto `:app`, which makes the declaration resolution-neutral
+under R10. The alias points at the **root** multiplatform module, never `okio-jvm`. Full evidence and
+the verification commands are in the `gradle/libs.versions.toml` comment; the ABI consequence
+(`RandomAccessSinkHandle`: `java.io.Closeable` → `kotlin.AutoCloseable`) is queued for Phase 24.
+**13B-3 is now unblocked** — its R8 authorisation above is still the only thing it needs.
 
 ---
 

@@ -155,17 +155,43 @@ type.
 
 | Type | Consumers outside `:core:transfer` | Where |
 |---|---|---|
-| `ChunkSource` | **0** | — |
-| `ChunkSink` | **0** | — |
-| `FileSourceOpener` | **0** | — |
+| `ChunkSource` | **0** | — (re-verified 2026-09-05, see below) |
+| `ChunkSink` | ~~**0**~~ **4 lambdas** | see the correction below |
+| `FileSourceOpener` | ~~**0**~~ **2 + 5 tests** | see the correction below |
 | `Chunker` | **0** | — |
 | `DestinationPolicy`, `DestinationTarget` | **0** | (`internal`) |
 | `RandomAccessSinkHandle` | 2 | `core/engine/…/Flash.kt:40,138`; `app/…/debug/DiscoveryEngineHolder.kt` |
 | `FileRandomAccessSinkHandle` | 2 | `core/engine/…/Flash.kt:38,198`; `app/…/debug/DiscoveryEngineHolder.kt:48,362` |
 | `RandomAccessChunkSink` | 2 | `core/engine/…/Flash.kt:39,200`; `app/…/debug/DiscoveryEngineHolder.kt:49,365` |
 
-Re-typing the three stream/sink seams with zero consumers is ABI-visible but breaks nothing
-first-party. The three `RandomAccess*` types each have exactly two callers, both Android-side, both
+> **CORRECTION (2026-09-05, from 13B-2's execution).** Two rows above are wrong, and
+> the grep at the head of this section is why. All three of `ChunkSource`, `ChunkSink` and
+> `FileSourceOpener` are `fun interface`es, so **a consumer SAM-converts a lambda and never writes
+> the type name** — `grep <TypeName>` cannot see it. Grepping the *parameter* name instead is what
+> the table should have done:
+>
+> - `FileSourceOpener` → `grep -rn fileSourceOpener` finds `core/engine/…/Flash.kt:230` and
+>   `app/…/DiscoveryEngineHolder.kt:469` in product code, plus 5 sites in
+>   `RealFlashTransferRepositoryTest.kt`. Its **0** is false; 13B-2 had to edit all seven. (Line
+>   numbers are post-`732e7b5`; before the phase they were `:225` and `:468`.)
+> - `ChunkSink` → `grep -rnE '\b(sink|sinkFactory) ='` finds four sites outside `:core:transfer`:
+>   `Flash.kt:192,193` and `DiscoveryEngineHolder.kt:356,357` (`sink =` is a direct SAM conversion;
+>   `sinkFactory =` is a lambda *returning* a `ChunkSink`). Its **0** is false too — it cost 13B-2 no
+>   edit only because `ChunkSink`'s signature did not change, not because nothing consumes it. If a
+>   later phase re-types `write(index, data)`, those four sites are the blast radius.
+> - `ChunkSource` → `grep -rn 'source ='` outside this module returns only unrelated local
+>   `val source` declarations (MainActivity, FlashCallScreen, FlashImageGrid, FlashMediaViewer,
+>   FlashImageDecoder, FlashWebRtcEngine). Its **0** genuinely holds: every `ChunkSource` lambda is
+>   built inside `:core:transfer`, and the two product call sites reach it through
+>   `FileSourceOpener`, which is why re-typing *that* seam is what leaked outward.
+>
+> Rule for later phases: for a `fun interface`, a type-name grep measures nothing. Grep the
+> parameter name, and treat the count as a lower bound until the module compiles.
+
+Re-typing the three stream/sink seams ~~with zero consumers~~ is ABI-visible but breaks nothing
+first-party (see the correction above: only `ChunkSource` truly had zero consumers; the other two
+were SAM-hidden, and 13B-2 edited every site it found). The three `RandomAccess*` types each have
+exactly two callers, both Android-side, both
 constructing a handle over a `java.io.File` — so a D10 option that keeps a `File`-shaped Android
 constructor costs zero consumer edits.
 
@@ -369,7 +395,7 @@ not at `t=1000 ms` — which is why that case asserts at every window boundary. 
 
 ---
 
-## 13B-2 — the byte-stream seam. **Blocked on D10.**
+## 13B-2 — the byte-stream seam. ~~**Blocked on D10.**~~ **DONE — `732e7b5`, 2026-09-05.**
 
 Every remaining pin routes through a `java.io` type in a **published** `public` signature:
 `ChunkSource.open(): InputStream`, `FileSourceOpener.open(String): InputStream`,
@@ -382,9 +408,23 @@ whether a Kotlin/Native target is ever viable.
 
 Once D10 is answered, 13B-2 is: re-type the four seams; split `ChunkSource` out of `Chunker.kt` and
 `ChunkSink` out of `ReceivePipeline.kt` into their own `commonMain` files; provide the desktop
-implementations PHASE-13 wanted — which at that point genuinely are three small `jvmMain` files —
+implementations PHASE-13 wanted — ~~which at that point genuinely are three small `jvmMain` files~~ —
 and keep an Android-side `File`-shaped constructor so the three `RandomAccess*` consumers in
 `core/engine/…/Flash.kt` and `app/…/DiscoveryEngineHolder.kt` need no edit.
+
+> **CORRECTION (2026-09-05, from 13B-2's execution).** D10 was answered **Option A**, enacted as
+> okio 3.4.0, and okio is itself multiplatform — so the "three small `jvmMain` files" prediction is
+> wrong in both the count and the source set. What 13B-2 actually produced is **one `commonMain`
+> implementation**, `policy/OkioRandomAccessSinkHandle`, and **zero** new `jvmMain` files (`jvmMain`
+> still holds exactly the one file 13B-1 put there). The Android-side `File`-shaped constructor was
+> kept as predicted, via interface delegation:
+> `class FileRandomAccessSinkHandle(file: File, expectedTotalBytes: Long) : RandomAccessSinkHandle by
+> OkioRandomAccessSinkHandle(file.toOkioPath(), expectedTotalBytes)` — so all three `RandomAccess*`
+> consumers needed no edit, as this section predicted. One ABI break the section did not predict:
+> `RandomAccessSinkHandle`'s supertype moves from `java.io.Closeable` to `kotlin.AutoCloseable`
+> (queued for Phase 24's release notes). `RandomAccessChunkSink.kt` also had to move to `commonMain`,
+> though this section did not list it — every type in it was already common, and without it
+> `commonMain` would hold a handle and a sink with no way to join them.
 
 The `DesktopDestinationPolicy` sketch in PHASE-13 is not reusable as written: it implements a
 member (`createSinkHandle`) that does not exist, over target arms (`File`/`Directory`/`Temp`) that
