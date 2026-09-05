@@ -32,9 +32,10 @@ self-contained and states its own preconditions.
 | 10 | [PHASE-10-network-kmp.md](PHASE-10-network-kmp.md) | 07, 08 | high |
 | 11 | [PHASE-11-repositories-kmp.md](PHASE-11-repositories-kmp.md) | 07, 08, 09B-1, 10 | high |
 | 12 | [PHASE-12-engine-kmp.md](PHASE-12-engine-kmp.md) | 07,08,09B-1,10,11 | high |
-| 13 | [PHASE-13-desktop-fileio.md](PHASE-13-desktop-fileio.md) | 12 | medium |
+| 13 | ~~[PHASE-13-desktop-fileio.md](PHASE-13-desktop-fileio.md)~~ **SUPERSEDED** | — | — |
+| 13B | [PHASE-13B-desktop-fileio.md](PHASE-13B-desktop-fileio.md) | 12; 13B-2/13B-3 also need **D10**, and 13B-3 an explicit R8 authorisation | 13B-1 low, 13B-2/3 high |
 | 14 | [PHASE-14-desktop-discovery.md](PHASE-14-desktop-discovery.md) | 12 + **D6** | high |
-| 15 | [PHASE-15-desktop-transport.md](PHASE-15-desktop-transport.md) | 13,14 | high |
+| 15 | [PHASE-15-desktop-transport.md](PHASE-15-desktop-transport.md) | 13B-2 (so **D10**), 14 | high |
 | 16 | [PHASE-16-desktop-headless-interop.md](PHASE-16-desktop-headless-interop.md) | 15 | **gate** |
 | 17 | [PHASE-17-ui-resources.md](PHASE-17-ui-resources.md) | 06 | low |
 | 18 | [PHASE-18-ui-theme-kmp.md](PHASE-18-ui-theme-kmp.md) | 17 | medium |

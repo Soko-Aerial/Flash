@@ -4845,6 +4845,282 @@ enforced by Gate 8's grep and nothing else — a gate this phase proved had been
 two phases — and the "all platforms" half of the 2026-09-03 amendment has no phase that implements
 it. Recommended as a new phase; R6.1 says the same.
 
+## Phase 13 — Desktop file I/O for `:core:transfer`: BLOCKED, superseded by a new PHASE-13B
+
+- **Date:** 2026-09-05
+- **Agent/model:** Claude (Opus 5), Claude Code
+- **Commit:** docs only — no source, build file, or version-catalog change
+- **Decisions relied on:** D1 = B (chosen 2026-08-31, reaffirmed 2026-09-03). This entry **adds**
+  D10 as `_pending_`; I did not pick it, and DECISIONS.md now reserves D10 for the human alongside
+  D1/D2/D5/D8.
+
+### Change
+
+`PHASE-13-desktop-fileio.md` cannot be executed. It asks for three small `jvmMain` adapter files —
+`DesktopFileSourceOpener`, `DesktopDestinationPolicy`, and three `java.io.File` extension functions
+— that implement `FileSourceOpener`, `ChunkSource` and `RandomAccessSinkHandle`. It states those
+three types live in `jvmAndAndroidMain`/`commonMain` and are therefore reachable from `jvmMain`.
+
+All three are in `androidMain`. `androidMain` and `jvmMain` are sibling source sets with no
+`dependsOn` edge; only `commonMain` is a common ancestor, and D1 = B forbids the shared JVM tier
+this file was written for. So the adapters cannot compile, and the phase has no executable content
+at all.
+
+I did not discover this by reading — I wrote the phase's own proposed code into
+`core/transfer/src/jvmMain/.../desktop/ZzPhase13Probe.kt` and compiled it. Output pasted under
+**Verification**. Probe deleted; `git status --porcelain` empty afterwards.
+
+Nothing was built, moved, or edited in `core/`. What this commit contains is one banner, one new
+phase file, one new decision, and this entry.
+
+### Files changed
+
+| File | Change |
+|---|---|
+| `docs/migration/PHASE-13-desktop-fileio.md` | ⛔ SUPERSEDED banner at the top. Body untouched (R1). |
+| `docs/migration/PHASE-13B-desktop-fileio.md` | **new.** The successor: 13B-1 executable now, 13B-2 gated on D10, 13B-3 gated on D10 + an explicit R8 authorisation. |
+| `docs/migration/DECISIONS.md` | **new D10**, `_pending_`; blocking-map row; D10 added to the "an agent must not pick" list. |
+| `docs/migration/README.md` | 13 struck through as SUPERSEDED, 13B added, Phase 15's blocked-by changed from `13,14` to `13B-2 (so D10), 14`. |
+| `docs/migration/logs/migration.md` | this entry. |
+
+No `CONVENTIONS.md` change. Nothing this phase measured contradicts a rule — R5 and R2 are exactly
+what make PHASE-13 unexecutable, and R2's new paragraph already predicted the fourth `PlatformLock`
+that 13B-1 needs.
+
+### The finding that matters most
+
+`:core:transfer`'s pipeline is **not Android code**. Its 15 `androidMain` files were counted, and
+**not one of them references `android.*` or `androidx.*`.** They are in `androidMain` for a single
+reason: they use `java.io`, `java.nio`, `java.security`, `java.util.concurrent`, `java.util.UUID`
+and `java.util.BitSet`, and under D1 = B there is no source set that can hold JVM code for both
+Android and desktop. `androidMain` was the only place Phase 11 could legally put them.
+
+That changes what Phase 13 is. It is not "write three adapters against an existing shared
+pipeline". It is "port a chunking/framing/hashing pipeline off `java.*`", which is a different size
+of job and needs a decision I am not allowed to make.
+
+Measured census — `core/transfer/src/`: **5 commonMain, 15 androidMain, 13 androidHostTest,
+1 commonTest, no `jvmMain` directory**.
+
+| androidMain file | what pins it |
+|---|---|
+| `RealFlashTransferRepository.kt` | `io.InputStream`, `util.Collections.newSetFromMap`, `util.UUID`, `util.concurrent.ConcurrentHashMap` |
+| `chunked/ChunkFrame.kt` | `io.ByteArrayOutputStream`, `nio.ByteBuffer`, `nio.ByteOrder` |
+| `chunked/Chunker.kt` | `io.Closeable`, `io.IOException`, `io.InputStream` |
+| `chunked/ReceivePipeline.kt` | same-package `ChunkFrame` |
+| `chunked/ResumeBitVector.kt` | `util.BitSet` |
+| `chunked/SendPipeline.kt` | same-package `ChunkSource`, `Chunker`, `ChunkFrame` |
+| `chunked/Sha256.kt` | `security.MessageDigest` |
+| `manifest/TransferManifest.kt` | `System.currentTimeMillis()` — **no import line reveals it** |
+| `model/WsTransferModels.kt` | `:core:network`'s androidMain `WsTransferServer.PREFERRED_PORT` |
+| `multistream/MultiStreamDispatcher.kt` | `util.Collections.synchronizedList`, `util.concurrent.atomic.{AtomicBoolean,AtomicInteger,AtomicLong}` |
+| `multistream/MultiStreamProgress.kt` | **3 × `@Synchronized`** — no import line reveals it |
+| `multistream/MultiStreamReceiver.kt` | same-package `ChunkFrame`, `ReceivePipeline` |
+| `multistream/TransferCompletionStateMachine.kt` | `util.concurrent.atomic.AtomicBoolean` |
+| `policy/DestinationPolicy.kt` | `io.Closeable`, `io.File`, `io.OutputStream`, `io.RandomAccessFile` |
+| `policy/RandomAccessChunkSink.kt` | same-package `ChunkSink`, `RandomAccessSinkHandle` |
+
+Two of those rows are the R6.1 hazard in the flesh: my `java.*` import regex reported
+`TransferManifest.kt` and `MultiStreamProgress.kt` as unpinned, and both are pinned by stdlib
+aliases that no import line shows. `compileKotlinJvm` would not have caught either — it compiles
+`java.*` happily. Grep-plus-read is the only check that works, exactly as R6.1 says.
+
+### The four seams, as they actually are
+
+PHASE-13 writes adapters against these. Each is quoted verbatim from the file it is really in, so
+13B does not have to re-measure.
+
+```kotlin
+// androidMain/…/chunked/Chunker.kt:10            — PHASE-13 says commonMain
+public fun interface ChunkSource { public fun open(): InputStream }
+
+// androidMain/…/RealFlashTransferRepository.kt:40 — PHASE-13 says jvmAndAndroidMain
+public fun interface FileSourceOpener { public fun open(fileUri: String): InputStream }
+
+// androidMain/…/chunked/ReceivePipeline.kt:345
+public fun interface ChunkSink { public fun write(index: Int, data: ByteArray) }
+
+// androidMain/…/policy/DestinationPolicy.kt:71    — PHASE-13 says jvmAndAndroidMain
+public interface RandomAccessSinkHandle : Closeable {
+    public fun writeAt(byteOffset: Long, data: ByteArray)
+    public fun flush()
+    public val isOpen: Boolean
+}
+public class FileRandomAccessSinkHandle(          // TWO ctor params, not one
+    private val file: File,
+    private val expectedTotalBytes: Long,
+) : RandomAccessSinkHandle
+```
+
+`java.io.InputStream` is in two *published* `public` signatures and `java.io.File`/`Closeable` in a
+third. That is the blocker in one sentence: **you cannot move these declarations to `commonMain`
+without changing a published ABI**, and choosing what replaces `InputStream` is D10.
+
+Consumer counts outside `:core:transfer` (`git grep`, excluding `build/`, `docs/`, and
+`media-downloader-main/` per R11):
+
+| type | consumers | where |
+|---|---|---|
+| `ChunkSource`, `ChunkSink`, `FileSourceOpener`, `Chunker`, `DestinationPolicy`, `DestinationTarget` | **0** | — |
+| `RandomAccessSinkHandle` | 2 | `core/engine/…/Flash.kt:40,138`; `app/…/debug/DiscoveryEngineHolder.kt:50,335,1198,1318` |
+| `FileRandomAccessSinkHandle` | 2 | `core/engine/…/Flash.kt:38,198`; `app/…/DiscoveryEngineHolder.kt:48,362` |
+| `RandomAccessChunkSink` | 2 | `core/engine/…/Flash.kt:39,200`; `app/…/DiscoveryEngineHolder.kt:49,365` |
+
+Both `RandomAccess*` call sites construct over a `java.io.File`, so under D10 = A an Android-side
+`File` overload keeps first-party consumer edits at **zero**. That is a measured fact about this
+repo, not a general claim about downstream users of the published artifact.
+
+`transfer-jvm-1.1.0.jar` today: 28,760 bytes, 27 entries, **15 `.class`**, zero `android/` paths —
+the 5 commonMain files and nothing else. That jar is what a desktop consumer gets: the
+`FlashTransferRepository` interface, the models, `StreamChannel`, `WsTransferMessages`,
+`TransferStore`. No chunker, no sink, no framing.
+
+### Verification
+
+**No build, compile or test task was run to verify a change, because nothing was changed.** This
+entry documents a blockage and four documents; it makes no claim about the build. The R3 state is
+unchanged from Phase 12: **961 tests / 12 failures / 0 errors / 0 skipped across 128 XMLs**, the 12
+being the known pre-existing `:core:persistence` set (11 `FlashSettingsDataStoreTest` +
+1 `DiscoveryModeSettingTest`).
+
+One task *was* run, and it was run to **prove the blockage**, not to verify a change. The probe file
+reproduced PHASE-13's own proposed adapter code in `jvmMain`:
+
+```
+$ ./gradlew :core:transfer:compileKotlinJvm --no-configuration-cache
+e: …/jvmMain/…/desktop/ZzPhase13Probe.kt:3:41 Unresolved reference 'FileSourceOpener'.
+e: …/jvmMain/…/desktop/ZzPhase13Probe.kt:4:41 Unresolved reference 'chunked'.
+e: …/jvmMain/…/desktop/ZzPhase13Probe.kt:5:41 Unresolved reference 'policy'.
+e: …/jvmMain/…/desktop/ZzPhase13Probe.kt:6:41 Unresolved reference 'policy'.
+e: …/jvmMain/…/desktop/ZzPhase13Probe.kt:7:41 Unresolved reference 'policy'.
+e: …/jvmMain/…/desktop/ZzPhase13Probe.kt:14:32 Unresolved reference 'FileSourceOpener'.
+e: …/jvmMain/…/desktop/ZzPhase13Probe.kt:15:5 'open' overrides nothing.
+e: …/jvmMain/…/desktop/ZzPhase13Probe.kt:18:38 Unresolved reference 'ChunkSource'.
+e: …/jvmMain/…/desktop/ZzPhase13Probe.kt:20:33 Unresolved reference 'RandomAccessSinkHandle'.
+e: …/jvmMain/…/desktop/ZzPhase13Probe.kt:20:58 Unresolved reference 'FileRandomAccessSinkHandle'.
+e: …/jvmMain/…/desktop/ZzPhase13Probe.kt:22:33 Unresolved reference 'DestinationTarget'.
+BUILD FAILED in 20s
+```
+
+Read the 4th–6th lines carefully: the **packages** `chunked` and `policy` are unresolved, not just
+the types inside them. From `jvmMain`, `com.transfer.flash.core.transfer.chunked` does not exist.
+There is no import, no `dependsOn`, and no visibility modifier that fixes that under D1 = B.
+
+Probe deleted afterwards. `ls -1 core/transfer/src` → `androidHostTest androidMain commonMain
+commonTest`, and `git status --porcelain` showed no `core/` entry, so the tree this commit sits on
+is byte-identical to `d8af05c` in everything but `docs/`.
+
+### Deviations from the phase file
+
+The whole of it. PHASE-13's five steps were: add `jvmMain` deps, write `DesktopFileSourceOpener`,
+write `DesktopDestinationPolicy`, add `File` extensions, run `compileKotlinJvm`. **None was
+performed.** R2 is explicit that a phase which cannot compile without deleting or stubbing an API
+must be reported as blocked rather than forced, and R3 forbids committing source when verification
+fails. Both point the same way.
+
+I also did not fix PHASE-13's body. R1 says do the phase you were asked to do; rewriting a
+superseded file in place would destroy the record of what was believed and when. The errors are
+tabulated in 13B instead — 15 rows — which is the same treatment Phase 09 gave PHASE-09.
+
+### D10, and why I did not answer it
+
+D10 asks: **what replaces `java.io.InputStream` in a `commonMain` signature?** Four options are
+written up in DECISIONS.md with measured consequences. The short form:
+
+- **A — adopt `kotlinx-io` (or Okio) and re-type the seams.** One new dependency, ABI change on four
+  `public` types of which three have zero first-party consumers. The only option under which a
+  Kotlin/Native target can ever compile this module. Recommended, staged.
+- **B — in-repo `public expect class PlatformInputStream` + `actual typealias` to `java.io.InputStream`
+  in both `androidMain` and `jvmMain`.** No dependency, no consumer edits, Android signatures
+  unchanged — but it is JVM-shaped multiplatform, and `java.nio.ByteBuffer` has no native analogue
+  at all, so it defers the problem instead of solving it.
+- **C — duplicate the pipeline in `jvmMain`.** Two independent implementations of a wire format is
+  what R8 exists to prevent, and the one duplicate this repo already has (`AutoConnectGate`) has
+  been filed as a Known issue twice. Listed for completeness only.
+- **D — desktop gets no transfer pipeline.** Honest description of doing nothing: Phase 15 carries
+  bytes for a pipeline that does not exist on the receiving side, and **Phase 16's headless interop
+  gate cannot pass.**
+
+I did not pick, for two reasons that are both written rules rather than caution. A and B change a
+published ABI at version 1.1.0 and A adds a dependency, which is a shape change; DECISIONS.md's
+preamble reserves shape changes for the human, and I amended it to name D10 explicitly. And **every
+one of A, B, C requires rewriting `chunked/ChunkFrame.kt`**, which R8 lists among the untouchable
+wire formats — `ByteBuffer`/`ByteOrder` framing has no common equivalent, so there is no version of
+this port that leaves that file alone. 13B-3 therefore needs a separate explicit authorisation with
+**byte-identical frame output** as its acceptance criterion, independent of which option wins.
+
+### What 13B-1 is
+
+13B is split so the phase is not purely a report. 13B-1 is the prefix that needs no decision, adds
+no dependency, and changes no published ABI — all six declarations it touches are `internal`:
+
+1. A **fourth `PlatformLock`** trio in `com.transfer.flash.core.transfer.concurrent`, copying the
+   `:core:engine` template. CONVENTIONS R2 predicted this one by name: *"Phases 13-16 will likely
+   want a fourth copy."*
+2. Replace `core/transfer/build.gradle.kts` lines 14–18 — currently a NOTE saying the module
+   *"declares no expect/actual at all"* — with `freeCompilerArgs.add("-Xexpect-actual-classes")`.
+3. `git mv multistream/MultiStreamProgress.kt` androidMain → commonMain, swapping `RollingRateMeter`'s
+   3 × `@Synchronized` for `lock.withLock { }`. **All three early returns become `return@withLock`**
+   because `withLock` cannot be `inline` on an `expect class`, and `private fun prune` stays
+   unguarded because it is only ever called from inside a locked block.
+4. `git mv manifest/TransferManifest.kt`, `System.currentTimeMillis()` → `SystemTimeSource.nowMs()`.
+5. A `commonTest` `RollingRateMeterTest` with 7 cases, including
+   `rate_usesOldestSampleInWindow_notFirstEver` — the 2026-08-24 field-reported regression the
+   class's own KDoc describes, which **currently has no test at all** — plus
+   `contention_recordAndReadDoNotCorrupt` and `manifest_defaultsCreatedAtToNow`.
+
+Net effect: androidMain 15 → 13, commonMain 5 → 7, the desktop jar 15 → ~22 classes, published ABI
+unchanged. It does not make desktop transfers work. Nothing does until D10 is answered.
+
+### What I could NOT verify (R9)
+
+- **That 13B-1 compiles.** It is authored, not executed. Every step is modelled on something already
+  in the repo (the `:core:engine` lock trio, `:core:common`'s `SystemTimeSource`), but "modelled on"
+  is not "compiled". 13B-1 has its own 7 verification gates and none has been run.
+- **That D10 = A leaves downstream consumers unbroken.** I measured *first-party* consumers only.
+  `transfer-android-1.1.0` is published at 1.1.0 under `com.transfer.flash`; whether anything outside
+  this repo binds to `ChunkSource.open(): InputStream` is not knowable from here.
+- **Whether `kotlinx-io` or Okio is the better choice.** I did not evaluate either against this
+  pipeline's needs (random-access writes at a byte offset, `RandomAccessFile`-style sparse sinks).
+  D10 = A names both; the evaluation belongs in 13B-2 and has not been done.
+- **Whether a `ChunkFrame` rewrite can be byte-identical.** I assert it must be, and I did not
+  attempt it, so I cannot report that it is achievable. There is currently no golden-vector test
+  over `ChunkFrame` output — `commonTest` holds exactly one file, `WsTransferMessagesWireFormatTest.kt`,
+  which covers the *WS* messages, not the CHUNK frame. Any 13B-3 attempt should add that fixture
+  **before** touching the framing, or the acceptance criterion is unmeasurable.
+- **`java.util.BitSet` and the atomics.** `ResumeBitVector` and three `java.util.concurrent.atomic`
+  users have common answers on paper (a `LongArray` bitset; `kotlin.concurrent.Atomic*`), but
+  `kotlin.concurrent.Atomic*` is still `@ExperimentalAtomicApi` at Kotlin 2.2.10 — I did not test
+  whether opting in is acceptable here, and it is a real cost of A and B alike.
+
+### Known issues (carried, not introduced)
+
+- 12 pre-existing `:core:persistence` failures. Unchanged, untouched, and blocked behind D5/Phase 09B.
+- `AutoConnectGate` is still duplicated between `:core:engine` and `app/`. Filed twice before; still
+  not a phase's job. It is cited in D10 = C as precedent for why duplication gets rejected.
+- `model/WsTransferModels.kt` — its 6 `internal` declarations have **zero** inbound references
+  repo-wide, so PHASE-13's "orphan" description of it is **correct**. Phase 11's note that it is
+  "live" is about the file's *outbound* import of `:core:network`'s `WsTransferServer.PREFERRED_PORT`.
+  Both are true, in opposite directions; deleting it is not this phase's call.
+- No Kotlin/Native target exists in any module, so R6 remains grep-enforced and never becomes a
+  compiler error. Every "this will not work on native" statement in this entry, including the core
+  argument for D10 = A, is therefore reasoned rather than compiled.
+
+### Next step
+
+**13B-1** — executable now, needs no decision. Then **Phase 14** (`:core:discovery` desktop mDNS),
+which D6 already answers with JmDNS and which an agent may proceed on per the DECISIONS.md preamble.
+
+13B-2, 13B-3, Phase 15 and Phase 16 are all blocked on **D10**, and 13B-3 additionally on an explicit
+R8 authorisation to rewrite `ChunkFrame`. Phase 16 is one of the migration's two hard gates, so D10
+is now on the critical path for everything past 14.
+
+
+
+
+
+
+
 
 
 

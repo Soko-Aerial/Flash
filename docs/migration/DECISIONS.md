@@ -13,13 +13,14 @@
 | **D7** | **Phase 19** | UI platform shims. |
 | **D8** | **Phase 22** | Whether the §15 desktop screens exist. |
 | **D9** | Phase 24 | Sample consumers; agent may proceed on the recommendation. |
+| **D10** | **Phases 13B-2, 13B-3, 15, 16** | What replaces `java.io.InputStream` in a `commonMain` signature. Added 2026-09-05 by the agent that reached Phase 13. |
 
 Earlier drafts said "D1–D4 block Phase 06." That was wrong: D3 and D4 are Compose
 decisions and cannot affect a pilot that converts a Compose-free module (`core:common`).
 Phase 06's own header states this; this table is the source of truth.
 
 Each decision lists options, consequences, and a recommendation. An agent must
-**not** pick for the human on D1, D2, D5, or D8 — those change the shape of the
+**not** pick for the human on D1, D2, D5, D8 or D10 — those change the shape of the
 project. For D3, D4, D6, D7 an agent may proceed with the recommendation if the human
 has not answered, but must record that it did so in the phase log.
 
@@ -282,3 +283,59 @@ Recommended: keep them Android-only as-is through Phase 23, then add a
 **ANSWER:** Option A (chosen 2026-08-31) — keep `sample/consumer` and
 `sample/consumer-granular` Android-only as-is through Phase 23; add
 `sample/consumer-desktop` (pure JVM) in Phase 24 to validate the desktop artifact.
+
+---
+
+## D10 — How does the desktop reach the `:core:transfer` pipeline?
+
+Added 2026-09-05, by the agent that reached Phase 13 and could not execute it. **This is a new
+decision, not a re-litigation of D1.** D1 chose strict `commonMain`; D10 is the consequence nobody
+costed at the time.
+
+**Today (measured, repo at `d8af05c`):** `:core:transfer` is 5 `commonMain` + 15 `androidMain` files.
+**Not one of the 15 references `android.*` or `androidx.*`.** They are `androidMain` because they use
+`java.io` byte streams, `java.nio.ByteBuffer` framing, `java.security.MessageDigest`,
+`java.util.concurrent` atomics and maps, `java.util.UUID` and `java.util.BitSet` — and under D1 = B
+there is no shared JVM tier to hold them. `androidMain` and `jvmMain` are siblings, so **nothing in
+`jvmMain` can see any of it**: a compile probe of Phase 13's own proposed adapters produced 11
+`Unresolved reference` errors, including the `chunked` and `policy` **packages** themselves.
+
+The blocker is specifically that `java.io.InputStream` appears in *published* `public` signatures:
+`ChunkSource.open(): InputStream`, `FileSourceOpener.open(String): InputStream`,
+`RandomAccessSinkHandle : Closeable`, `FileRandomAccessSinkHandle(File, Long)`.
+
+**Option A — adopt a multiplatform I/O library and re-type the seams (RECOMMENDED).**
+`kotlinx-io` (`kotlinx.io.Source`/`Sink`/`RawSource`) or Okio. One new dependency. ABI change on
+four `public` types, of which three have **zero** first-party consumers; the three `RandomAccess*`
+types have exactly two callers each (`core/engine/…/Flash.kt`, `app/…/DiscoveryEngineHolder.kt`),
+both constructing over a `java.io.File`, so an Android-side `File` overload keeps consumer edits at
+zero. The only option under which a Kotlin/Native target can ever compile this module — which is the
+same hole R6.1 records.
+
+**Option B — in-repo `expect`/`actual` typealiases to `java.*`.** `public expect class
+PlatformInputStream` with `actual typealias PlatformInputStream = java.io.InputStream` in both
+`androidMain` and `jvmMain`. No new dependency, no consumer edits, Android JVM signatures unchanged.
+But it is JVM-shaped multiplatform: a native target has nothing to alias to, and `java.nio.ByteBuffer`
+has no native analogue at all, so this defers the problem rather than solving it. Cheapest path to a
+working desktop transfer; dead end for "all platforms".
+
+**Option C — duplicate the pipeline in `jvmMain`.** No ABI change, no dependency, Android
+`ChunkFrame` stays byte-identical. Rejected on principle: two independent implementations of a wire
+format is exactly what R8 exists to prevent, and the one duplicate the repo already has
+(`AutoConnectGate`) has been filed as a Known issue twice. Listed for completeness.
+
+**Option D — desktop gets no transfer pipeline.** `:core:transfer`'s desktop artifact stays
+contract-only (15 interface/data classes, no chunker, no sink). Phase 13 becomes a documented no-op,
+Phase 15's desktop transport carries bytes for a pipeline that does not exist on the desktop side,
+and Phase 16's headless interop gate cannot pass. This is the honest description of doing nothing.
+
+**Constraint that applies to A, B and C alike:** `chunked/ChunkFrame.kt` builds the CHUNK wire frame
+with `java.nio.ByteBuffer`, and `ChunkFrame` is named in R8's untouchable list. Whichever option is
+chosen, the framing rewrite needs an explicit authorisation from the human, with byte-identical
+output as the acceptance criterion. See `PHASE-13B-desktop-fileio.md` §13B-3.
+
+**Recommendation:** **A**, staged. Run 13B-1 now (decision-free, no dependency, no ABI change),
+then adopt the I/O library in 13B-2, then do the framing/hashing/atomics port in 13B-3 under an
+explicit R8 authorisation.
+
+**ANSWER:** _pending_

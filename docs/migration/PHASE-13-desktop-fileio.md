@@ -1,5 +1,29 @@
 # Phase 13 — Desktop file I/O (`core:transfer`)
 
+> # ⛔ SUPERSEDED — DO NOT EXECUTE THIS FILE
+>
+> **2026-09-05.** This document is written for **D1 = A**. The repo is **D1 = B** (see
+> `DECISIONS.md`; reaffirmed 2026-09-03). It requires a `jvmAndAndroidMain` source set holding the
+> whole transfer pipeline — a source set `CONVENTIONS.md` R5 forbids creating at all — and its
+> premise that `FileSourceOpener`, `FileRandomAccessSinkHandle` and `ChunkSource` are reachable from
+> `jvmMain` is false. All three are `androidMain`, and `jvmMain` cannot resolve even their
+> **packages**; a compile probe of this file's own proposed code produced 11 `Unresolved reference`
+> errors and `BUILD FAILED`.
+>
+> **→ Execute [PHASE-13B-desktop-fileio.md](PHASE-13B-desktop-fileio.md) instead.** Its **13B-1** is
+> executable today with no decision; **13B-2** is blocked on the new **D10** (what replaces
+> `java.io.InputStream` in a `commonMain` signature), and **13B-3** additionally needs an explicit
+> R8 authorisation to rewrite `ChunkFrame`'s framing.
+>
+> Fifteen further factual errors — the file inventory, the `DestinationTarget` arms, the
+> `createSinkHandle` signature, the `:core:security`/`:core:discovery` edges, `androidUnitTest`, the
+> 22-class jar, the ban on typed source-set accessors — are measured and tabulated in 13B under
+> *"What PHASE-13 asserts, and what is actually true"*, recorded there rather than fixed here per R1.
+>
+> Still accurate and reused by 13B: the framing of the goal (*"a `java.io.File` → `ChunkSource`
+> adapter and a `DestinationTarget` → `RandomAccessSinkHandle` resolver"*), the warning against
+> building a "desktop file I/O framework", and the four-item shape of the verification gate.
+
 **Blocked by:** Phase 11 (core:transfer KMP conversion) — must have `commonMain` + `jvmAndAndroidMain` split and `jvm()` target registered.
 
 **Risk:** Medium. Adding a new source set to an already-converted module is low-risk, but the `jvmMain` files must be kept small to avoid dragging javax.net.ssl or other jvmAndAndroidMain types into the desktop-only path. The main risk is over-engineering: writing a "desktop file I/O framework" when all that's needed is a `java.io.File` → `ChunkSource` adapter and a `DestinationTarget` → `RandomAccessSinkHandle` resolver.
