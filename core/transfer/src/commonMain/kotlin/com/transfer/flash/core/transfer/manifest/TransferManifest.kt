@@ -1,5 +1,7 @@
 package com.transfer.flash.core.transfer.manifest
 
+import com.transfer.flash.core.common.time.SystemTimeSource
+
 /**
  * Manifest item representing one file in a multi-file transfer session (C5.10).
  */
@@ -21,12 +23,18 @@ internal data class ManifestItem(
 
 /**
  * Transfer manifest grouping one or more files under a single transfer session (C5.10).
+ *
+ * Phase 13B-1 moved this file from `androidMain` to `commonMain`. Its only pin was the
+ * [createdAtMs] default: `System.currentTimeMillis()` is `java.lang.System` and does not exist in
+ * common code. [SystemTimeSource] is `:core:common`'s Phase 06 seam over the same clock — same
+ * value, one indirection — and `:core:common` is already an `api` dependency of `commonMain`, so
+ * no build-file dependency edit was needed.
  */
 internal data class TransferManifest(
     val transferId: String,
     val senderDeviceId: String,
     val items: List<ManifestItem>,
-    val createdAtMs: Long = System.currentTimeMillis(),
+    val createdAtMs: Long = SystemTimeSource.nowMs(),
 ) {
     init {
         require(transferId.isNotBlank()) { "transferId cannot be blank" }

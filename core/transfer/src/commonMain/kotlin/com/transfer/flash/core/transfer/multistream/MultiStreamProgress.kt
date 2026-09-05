@@ -1,5 +1,7 @@
 package com.transfer.flash.core.transfer.multistream
 
+import com.transfer.flash.core.transfer.concurrent.PlatformLock
+
 /**
  * Aggregate transfer telemetry for one multi-stream session (C5.7), shaped for the UI-016 file
  * card: confirmed byte progress, live speed over a rolling window, ETA.
@@ -37,6 +39,12 @@ internal data class MultiStreamProgress(
  * only the FIRST sample ever while letting the time window slide — Δbytes grew unbounded while
  * Δtime stayed window-sized, so reported speed climbed continuously toward totalBytes/window
  * regardless of actual throughput (field-reported on device, 2026-08-24).
+ *
+ * Phase 13B-1 moved this class from `androidMain` to `commonMain`. The only edit it needed was
+ * mutual exclusion: three `@Synchronized` annotations became [PlatformLock] blocks, because
+ * `@Synchronized` resolves to `kotlin.jvm.Synchronized` and does not exist in common code. The
+ * monitor changed from `this` to a private object, which nothing can observe — the class is
+ * `internal` and no code anywhere synchronises on an instance of it.
  */
 internal class RollingRateMeter(
     private val nowMs: () -> Long,
@@ -50,9 +58,10 @@ internal class RollingRateMeter(
 
     private val samples = ArrayDeque<Sample>()
 
+    private val lock = PlatformLock()
+
     /** Records that cumulative progress reached [cumulativeBytes] at the injected "now". */
-    @Synchronized
-    fun record(cumulativeBytes: Long) {
+    fun record(cumulativeBytes: Long): Unit = lock.withLock {
         val t = nowMs()
         val last = samples.lastOrNull()
         if (last != null && t < last.atMs) {
@@ -67,8 +76,7 @@ internal class RollingRateMeter(
      * Discards every sample. Used when transmission pauses and resumes: a window that straddles
      * the paused gap divides real bytes by pause wall-clock and reports a bogus near-zero rate.
      */
-    @Synchronized
-    fun reset() {
+    fun reset(): Unit = lock.withLock {
         samples.clear()
     }
 
@@ -76,19 +84,26 @@ internal class RollingRateMeter(
      * Bytes/sec across the sliding window ending at [atMs]; `-1.0` when no forward progress is
      * visible inside the window (stall ⇒ ETA hidden, not faked).
      */
-    @Synchronized
-    fun instantBytesPerSec(atMs: Long): Double {
+    fun instantBytesPerSec(atMs: Long): Double = lock.withLock {
         prune(atMs)
-        if (samples.size < 2) return -1.0
+        // `withLock` cannot be `inline` on an `expect class`, so every early exit below is a
+        // `return@withLock`. A plain `return` does not compile here.
+        if (samples.size < 2) return@withLock -1.0
         val newest = samples.last()
         val oldest = samples.first()
         val dtMs = (newest.atMs - oldest.atMs).toDouble()
-        if (dtMs <= 0.0) return -1.0
+        if (dtMs <= 0.0) return@withLock -1.0
         val db = (newest.cumulativeBytes - oldest.cumulativeBytes).toDouble()
-        if (db <= 0.0) return -1.0
-        return db * 1000.0 / dtMs
+        if (db <= 0.0) return@withLock -1.0
+        db * 1000.0 / dtMs
     }
 
+    /**
+     * Drops samples older than the window. Deliberately **unguarded**: it is only ever called
+     * from inside a [lock] block. Both `actual`s use `synchronized`, which is reentrant on the
+     * JVM, so taking the lock here would work today — but it would deadlock on any future target
+     * whose `actual` is not reentrant, so the invariant is kept here instead of the lock.
+     */
     private fun prune(now: Long) {
         val cutoff = now - windowMs
         while (samples.size > 1 && samples.first().atMs < cutoff) {
