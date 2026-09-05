@@ -2914,17 +2914,390 @@ without a byte changing. Phase 14 later supplies the desktop discovery backend, 
 leave a seam that Phase 14 can fill without redesign, and `:core:discovery:testAndroidHostTest`
 (plus `:core:discovery:jvmTest` if it gains a `commonTest`) joins the R3 command line.
 
+---
 
+## Phase 08 — `:core:discovery` to Kotlin Multiplatform
 
+- **Date:** 2026-09-05
+- **Agent/model:** Claude Opus 5 (Claude Code)
+- **Commit:** `b879017` — `refactor(discovery): convert :core:discovery to Kotlin Multiplatform
+  (Phase 08)`, 29 files (23 `git mv` renames + 5 new + `build.gradle.kts`) — plus the docs commit
+  carrying this entry, the rewritten `docs/migration/PHASE-08-discovery-kmp.md`, and the
+  CONVENTIONS R3 / R3.1 edits.
+- **Decisions relied on:** **D1 = B** (strict `commonMain`; this phase resolves nothing new),
+  ADR-023 (`explicitApi()` strict, preserved), R8 (`TxtCodec` wire format untouched), R10 (no
+  version bumps).
 
+### Change
 
+`:core:discovery` moved from `com.android.library` to `org.jetbrains.kotlin.multiplatform` +
+`com.android.kotlin.multiplatform.library` with `android { }` and `jvm { }` targets. Of 16
+production files, **12 are now `commonMain`** and 4 stay in `androidMain`; 3 new files carry a
+module-private `PlatformLock` seam; the 7 existing test files moved byte-for-byte unchanged to
+`androidHostTest`; 2 new files are a `commonTest` suite.
 
+Phase 07's shape was "the module is built on an unavailable API, cut a seam." Phase 08's is the
+opposite: the Android surface was already isolated in four `nsd/` files, and the work was proving
+that everything else genuinely is portable. The prior Phase 07 log predicted a port/adapter split
+against `WifiManager`/`ConnectivityManager`/multicast sockets; that prediction was **wrong** for
+this module — grep found `android.*` in exactly the four `nsd/` files and nowhere else, and
+`FlashRadioTransport` was already the port. What actually blocked `commonMain` was four small
+JVM-isms, none of them a system service.
 
+That matters for Phase 14 specifically. The point of the phase is not that `NsdTransport` compiles
+somewhere; it is that `FlashRadioTransport` **and its consumer `CompositeDiscovery`** are now
+common, so a desktop radio implementing that interface gets the whole 713-line dedup /
+hysteresis / sweeping / watchdog state machine for free instead of needing a parallel copy.
+`compileKotlinJvm` is the proof: it has no `android.jar` on its classpath and it is green.
 
+### Placement
 
+| Source set | Files |
+|---|---|
+| `commonMain` (13) | `FlashDiscovery`, `FlashDiscoveryState`, `FlashDiscoveredEndpoint`, `core/{FlashDiscoveryMode, DiscoveryModePolicy, DiscoveryRetryPolicy, TxtCodec, FlashRadioTransport, EndpointDirectory, StandardEndpointDirectory, CompositeDiscovery}`, `group/FlashPeerGroupSession`, **new** `concurrent/PlatformLock.kt` |
+| `androidMain` (5) | `nsd/{NsdTransport, NsdResolveQueue, NsdApiLevel, NsdFlashDiscovery}`, **new** `concurrent/PlatformLock.android.kt` |
+| `jvmMain` (1) | **new** `concurrent/PlatformLock.jvm.kt` |
+| `androidHostTest` (7) | all 7 pre-existing suites, unchanged |
+| `commonTest` (2) | **new** `PlatformLockTest`, `CompositeDiscoveryCommonTest` |
 
+No `androidMain` dependency block exists. `androidx.core.ktx` and `androidx.lifecycle.runtime.ktx`
+were **deleted**, not relocated — see Deviations.
 
+### The four rewrites, and why each is an identity
 
+**1. `java.util.Locale` → nothing.** `CompositeDiscovery.priorityRank` ranked transports with
+`PRIORITY_ORDER.indexOf(transportName.uppercase(Locale.ROOT))`. The no-argument
+`String.uppercase()` (Kotlin 1.5+) *is* the locale-independent overload — on JVM it compiles to
+exactly `toUpperCase(Locale.ROOT)` — so this is a compile-visible identity, not a judgement call.
+It is also the one rewrite whose failure mode would be silent (a Turkish-locale device ranking
+`"lan"` as unknown and demoting the LAN transport below BLE), so it is pinned by a new
+`commonTest` case that checks upper-, lower- and mixed-case input for every known name on both
+targets.
 
+**2. `System.currentTimeMillis()` → `SystemTimeSource.nowMs()`.** Only the *body of the `clock`
+default argument* changes. `SystemTimeSource` is `:core:common`'s public `commonMain` object whose
+`nowMs()` delegates to the Phase 06 `internal expect fun currentTimeMillisPlatform()`, and both
+its `actual`s are literally `System.currentTimeMillis()` — so the value returned is the same call
+on both current targets. All five `CompositeDiscovery(` construction sites in the repo pass
+`clock` as a **named** argument, so no caller moved. `:core:discovery` already had
+`api(project(":core:common"))`, so no dependency was added either.
 
+**3. `kotlin.synchronized` ×18 → `PlatformLock.withLock`.** `CompositeDiscovery` guarded its
+directories, browse/advertise flags and stall stamps with `private val lock = Any()` and 18
+`synchronized(lock) { }` blocks. `kotlin.synchronized` is JVM-only. 17 sites were mechanical. The
+18th, `applySighting`, was not:
 
+```kotlin
+when (directoryFor(transport.transportName).applySeen(endpoint, clock())) {
+    is EndpointDirectory.Diff.Unchanged -> return   // non-local return
+    else -> Unit
+}
+```
+
+`kotlin.synchronized` is `inline`, so a non-local `return` was legal. `PlatformLock.withLock`
+cannot be `inline` — an `expect class` member function may not be — so that `return` no longer
+compiles and becomes `return@withLock`. It is behaviour-identical **only** because the `withLock`
+call is the entire function body, so returning from the lambda returns from the function; the
+comment at the call site records that, because the equivalence would break the moment a statement
+were added after the block. Two of the 18 sites sit inside `suspend` functions (`aggregate`,
+`watchdogBrowsing`); both were checked for suspend calls inside the critical section and have
+none, which is now enforced by the compiler rather than by review — a non-inline lambda cannot
+contain a suspension point, and holding a lock across one is a bug on every platform.
+
+Converting these to a kotlinx `Mutex` instead was ruled out and is worth recording: `Mutex.withLock`
+is `suspend`, while `sweep`, `refreshState`, `applySighting` and `markBrowsing` are not, and
+`sweep` is **public and directly tested**. Making it `suspend` would have been an API change
+dressed up as a migration.
+
+**4. `ConcurrentHashMap` → an index-disjoint array.** `FlashPeerGroupSession.sendToAll` collected
+per-peer results from N parallel children into `ConcurrentHashMap<String, Boolean>(targets.size)`.
+`targets` is `_peerStates.value.filterValues { it.kind == Online }.keys.toList()` — distinct keys
+by construction — so giving each child its own **index** into `arrayOfNulls<Boolean>(targets.size)`
+makes the writes disjoint and removes the need for any synchronisation, rather than replacing one
+form with another. `parent.join()` remains the single happens-before edge for the read, which is
+what the map read already relied on. A `null` slot means "this child threw or was cancelled",
+exactly what an absent key meant, and `results.all { it == true }` treats it the way
+`targets.all { results[it] == true }` did (`null == true` is `false`). The dropped
+`(targets.size)` initial-capacity argument is a performance hint with no semantics.
+
+The phase file originally specified `mutableMapOf` + a local `Mutex` here. That also works, but it
+puts a *suspending* call on the child's completion path immediately after `runSend`'s deliberate
+`currentCoroutineContext().ensureActive()` — giving cancellation a second, narrower window where
+the original plain map write had none. The array form has no such window.
+
+### Why `PlatformLock` is duplicated rather than reused
+
+`:core:common` already has this exact seam at `common/concurrent/PlatformLock.kt`, and
+`:core:discovery` depends on `:core:common` with `api`. It still could not be reused: that
+declaration is **`internal`**, and `internal` does not cross a Gradle module boundary. Promoting it
+to `public` would (a) overturn a decision recorded verbatim in its own KDoc — *"this is
+module-private plumbing, not published API"* — (b) add a lock to `core-common`'s published ABI
+under `explicitApi()`, permanently, and (c) require editing a second module's source in a phase
+that is not scoped to it (R1, R4, R7). So `:core:discovery` gets its own copy, three files, the
+`actual`s byte-identical to `:core:common`'s. This is a real cost and it will recur — see Known
+issues.
+
+### Tests
+
+The 7 pre-existing suites stayed on the Android host tier **unchanged**. They are JUnit 4
+(`org.junit.Assert.*`) and use `java.util.concurrent` for deterministic pacing; rewriting them onto
+`kotlin.test` would have been a second, larger change landing in the same commit as the conversion,
+and would have destroyed the only baseline available for checking the conversion itself.
+
+The `commonTest` suite is **mandatory, not optional** (R3.1): this phase writes two `actual`s, and
+without a `commonTest` the `jvmMain` one would be compiled and never executed — the position
+`:core:common`'s three JVM `actual`s are still in today. 7 tests, run once per target:
+
+- `PlatformLockTest` (3) — `withLock` returns the block's value; the lock is released when the
+  block **throws** and the exception propagates unchanged; and **contention**: 8 coroutines on
+  `Dispatchers.Default` each increment a shared `var` 5 000 times under the lock, total must be
+  exactly 40 000. Unsynchronised, that loses updates on any multicore JVM, so it is a genuine
+  mutual-exclusion assertion — the only one in the repo. Re-entrancy is deliberately **not**
+  asserted: it holds on both JVM targets because `synchronized` is reentrant, but it is not part
+  of the seam's contract and a Kotlin/Native `actual` need not provide it.
+- `CompositeDiscoveryCommonTest` (4) — Rewrite 1's case-insensitivity for every known name;
+  unknown names (including `""` and `"lan "`) ranking last; and Rewrite 2's clock returning epoch
+  millis and being non-decreasing.
+
+### Verification
+
+**Gate 1 — `compileKotlinJvm` (the R2/R3.1 proof task).** The `jvm()` target has no `android.jar`
+on its compile classpath, so this is what certifies that the 12 files moved to `commonMain` — most
+importantly `CompositeDiscovery` and `FlashPeerGroupSession` — are genuinely free of Android APIs
+rather than merely believed to be:
+
+```
+> Task :core:discovery:compileKotlinJvm
+BUILD SUCCESSFUL
+```
+
+**Gate 2 — `compileAndroidMain`.** SUCCESSFUL. The only warnings are the pre-existing NSD
+deprecation notices in `nsd/NsdTransport.kt` and `nsd/NsdFlashDiscovery.kt` (`registerService`,
+`discoverServices`, `resolveService` — deprecated in API 34, guarded by `NsdApiLevel`); they were
+present before the conversion and their count did not change.
+
+**Gate 3 — `:core:discovery:testAndroidHostTest` = 104 / 0 / 0.** Every pre-existing class is at
+its exact baseline count, which is the check R3 actually cares about — a total that still matches
+while one suite has silently stopped running is the failure mode this gate exists to catch:
+
+```
+com.transfer.flash.core.discovery.FlashDiscoveryModelTest              tests=2    failures=0   skipped=0
+com.transfer.flash.core.discovery.concurrent.PlatformLockTest          tests=3    failures=0   skipped=0
+com.transfer.flash.core.discovery.core.CompositeDiscoveryCommonTest    tests=4    failures=0   skipped=0
+com.transfer.flash.core.discovery.core.CompositeDiscoveryTest          tests=19   failures=0   skipped=0
+com.transfer.flash.core.discovery.core.DiscoveryRetryPolicyTest        tests=8    failures=0   skipped=0
+com.transfer.flash.core.discovery.core.StandardEndpointDirectoryTest   tests=11   failures=0   skipped=0
+com.transfer.flash.core.discovery.core.TxtCodecTest                    tests=14   failures=0   skipped=0
+com.transfer.flash.core.discovery.group.FlashPeerGroupSessionTest      tests=7    failures=0   skipped=0
+com.transfer.flash.core.discovery.nsd.NsdTransportLogicTest            tests=36   failures=0   skipped=0
+```
+
+97 pre-existing (2 + 19 + 8 + 11 + 14 + 7 + 36 — identical to the pre-conversion
+`testDebugUnitTest` run) + 7 new = 104. The dead
+`core/discovery/build/test-results/testDebugUnitTest/` directory was **deleted before tallying**;
+it survives the plugin swap and would otherwise have been counted twice (the trap Phase 07 hit).
+
+**Gate 4 — `:core:discovery:jvmTest` = 7 / 0 / 0.** The same `commonTest` sources executed against
+the desktop target's `actual`s, which is the whole point of R3.1:
+
+```
+PlatformLockTest[jvm]                 tests=3    failures=0   skipped=0
+CompositeDiscoveryCommonTest[jvm]     tests=4    failures=0   skipped=0
+```
+
+The `[jvm]` suffix is Kotlin's own target tag; the class names are the `commonTest` ones, so the
+JVM `actual` of `PlatformLock` is now **executed**, including the 8×5 000 contention case.
+
+**Gate 5 — published coordinates unchanged.** Read back from the generated POMs in
+`core/discovery/build/publications/`, which is the artifact that decides what a consumer resolves:
+
+```
+core/discovery/build/publications/kotlinMultiplatform/pom-default.xml
+  <groupId>com.transfer.flash</groupId>  <artifactId>core-discovery</artifactId>          <version>1.1.0</version>
+core/discovery/build/publications/android/pom-default.xml
+  <groupId>com.transfer.flash</groupId>  <artifactId>core-discovery-android</artifactId>  <version>1.1.0</version>
+core/discovery/build/publications/jvm/pom-default.xml
+  <groupId>com.transfer.flash</groupId>  <artifactId>core-discovery-jvm</artifactId>      <version>1.1.0</version>
+```
+
+`core-discovery` at `1.1.0` is byte-identical to the coordinate 1.1.0 consumers already use, so the
+`artifactId.replace("discovery", "core-discovery")` rename did its job; `-android` and `-jvm` are new
+and additive. Group and version still come from the root build file — the publication block sets
+neither.
+
+**Gate 6 — R6.1 purity grep.** Empty output, exit 1 (no matches), which is the expected result:
+
+```
+$ grep -rnE '\b(java|javax|android|androidx)\.' --include=*.kt core/*/src/commonMain ui/*/src/commonMain \
+    | grep -vE ':[0-9]+:[[:space:]]*(\*|//|/\*)'
+(no output)
+```
+
+The stdlib traps R6 lists are not visible to that grep, so they were scanned separately
+(`kotlin.jvm`, `synchronized(`, `String.format`, `Charsets.`, `toString(Charset)`,
+`String(bytes, Charset)`) across `core/discovery/src/commonMain`. One hit, in a KDoc line of
+`PlatformLock.kt` that names `kotlin.synchronized` while documenting why the seam exists; nothing in
+code. `@Volatile` in `CompositeDiscovery` was confirmed to resolve to `kotlin.concurrent.Volatile`
+(Phase 05 migrated all 66 sites), not `kotlin.jvm.Volatile`.
+
+**Gate 7 — repo-wide, the R3 command.** 897 / 12 / 0 errors / 0 skipped across 120 result XMLs,
+against `BASELINE_TEST_TOTAL = 863 / 12 / 0`:
+
+```
+TOTAL tests=897 failures=12 errors=0 skipped=0        (120 TEST-*.xml)
+```
+
+Per module, since R3 requires the comparison per module and not only in total:
+
+```
+app:testDebugUnitTest                  tests=31    failures=0
+core/calling:testDebugUnitTest         tests=55    failures=0
+core/common:testAndroidHostTest        tests=49    failures=0
+core/discovery:testAndroidHostTest     tests=104   failures=0    <- was 97 @ testDebugUnitTest
+core/discovery:jvmTest                 tests=7     failures=0    <- new
+core/engine:testDebugUnitTest          tests=1     failures=0
+core/messaging:testDebugUnitTest       tests=27    failures=0
+core/network:testDebugUnitTest         tests=126   failures=0
+core/persistence:testDebugUnitTest     tests=35    failures=12   <- known, pre-existing
+core/security:testAndroidHostTest      tests=90    failures=0
+core/security:jvmTest                  tests=10    failures=0
+core/transfer:testDebugUnitTest        tests=86    failures=0
+ui/chat:testDebugUnitTest              tests=239   failures=0
+ui/theme:testDebugUnitTest             tests=37    failures=0
+```
+
+The delta is **+14 over Phase 07's 883**, not +7: `commonTest`'s 7 tests are counted once per
+target (`testAndroidHostTest` + `jvmTest`), exactly as Phase 07's 10-test parity suite was. Every
+other module is unchanged from Phase 07.
+
+The 12 failures are the known pre-existing `:core:persistence` ones, and only those. Confirmed by
+listing every XML containing a `<failure` element:
+
+```
+core/persistence/build/test-results/testDebugUnitTest/TEST-…settings.FlashSettingsDataStoreTest.xml   (11)
+core/persistence/build/test-results/testDebugUnitTest/TEST-…settings.DiscoveryModeSettingTest.xml     (1)
+```
+
+11 + 1 — R3 previously attributed all 12 to `FlashSettingsDataStoreTest`; measured here, one belongs
+to `DiscoveryModeSettingTest`. R3 has been corrected in `CONVENTIONS.md`.
+
+Gradle's real exit, verbatim, from the R3 repo-wide invocation:
+
+```
+[Incubating] Problems report is available at: file:///C:/Users/KaliOxygen/Downloads/Flash-kmp/build/reports/problems/problems-report.html
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':core:persistence:testDebugUnitTest'.
+> There were failing tests. See the report at: file:///C:/Users/KaliOxygen/Downloads/Flash-kmp/core/persistence/build/reports/tests/testDebugUnitTest/index.html
+
+* Try:
+> Run with --scan to get full insights from a Build Scan (powered by Develocity).
+
+Deprecated Gradle features were used in this build, making it incompatible with Gradle 10.
+
+BUILD FAILED in 3m 35s
+347 actionable tasks: 44 executed, 303 up-to-date
+```
+
+`BUILD FAILED` is the **expected** outcome of the R3 command in this repo and always has been: with
+`--continue`, the 12 known `:core:persistence` failures still fail the build at the end. That is the
+whole reason R3 mandates an XML tally instead of trusting the exit code. Two honest qualifications
+about which tasks in that run actually *executed*:
+
+- `:core:discovery:testAndroidHostTest` and `:core:discovery:jvmTest` are reported **UP-TO-DATE**
+  in it, because gates 3 and 4 had invoked them directly ~2 minutes earlier; their XMLs are stamped
+  05:42, the run itself spans ~05:44–05:47:30.
+- `:core:common:testAndroidHostTest` and `:core:security:{testAndroidHostTest,jvmTest}` were also
+  UP-TO-DATE — nothing in either module changed this phase — so their 49 / 90 / 10 come from XMLs
+  written during Phase 07's verification (03:49 and 04:03), not re-executed at 05:47.
+
+`:app:assembleDebug` did execute in it: `app/build/outputs/apk/debug/app-debug.apk`, 66,267,575
+bytes, stamped 05:45:26, i.e. inside the run window.
+
+### Deviations from the phase file
+
+1. **`androidx.core.ktx` and `androidx.lifecycle.runtime.ktx` were DELETED, not relocated to
+   `androidMain`.** Phase 07 relocated the same two in `:core:security` because that module's
+   `androidMain` genuinely uses them. `:core:discovery` does not: grep found **zero** `androidx.*`
+   references in the whole module. They were inherited boilerplate. Moving unused dependencies into
+   `androidMain` would have preserved a lie about what this module needs and kept them on the
+   published `core-discovery-android` POM.
+2. **`PlatformLock` is duplicated rather than promoted from `:core:common`.** Reasoned above; the
+   alternative required a `public` API change in another module, in a phase not scoped to it.
+3. **Rewrite 4 shipped as an index-disjoint `arrayOfNulls`, not the `mutableMapOf` + `Mutex` this
+   phase file specified.** Reasoned above: the `Mutex` form adds a suspension point on the child's
+   completion path right after `runSend`'s deliberate `ensureActive()`, i.e. a cancellation window
+   the original had none of. The phase file has been amended in place with an
+   `> **Amended during execution.**` block so a later reader does not "restore" the `Mutex`.
+4. **The `commonTest` suite asserts lock contention, which this phase file said was unassertable in
+   common code.** That claim was wrong: `runTest` + `withContext(Dispatchers.Default)` gives real
+   parallelism from `commonTest` on both current targets, no `java.util.concurrent` and no
+   `runBlocking` needed. Consequence: the module needed `libs.kotlinx.coroutines.test` in
+   `commonTest`. That alias already exists in the catalog, already pinned to the same **1.10.2** as
+   `coroutines-core`, so no version moved and R10 is intact. The phase file carries an amendment
+   admitting the original claim.
+
+   `kotlinx.coroutines.runBlocking` was deliberately **not** used: it lives in coroutines' concurrent
+   (JVM + Native) source set, so referencing it from `commonTest` resolves today only because
+   metadata compilation is SKIPPED — the exact R6.1 trap — and would break the moment a Kotlin/Native
+   target lands.
+
+### What I could NOT verify (R9)
+
+- **`androidDeviceTest` never ran.** No device or emulator is attached, so
+  `connectedAndroidDeviceTest` was not invoked. `withDeviceTest { }` is declared and
+  `src/androidDeviceTest` does not exist, so there is nothing to run — but that is an argument, not
+  a measurement.
+- **The clock default is asserted at the seam, not through the constructor.** `CompositeDiscovery`
+  exposes no way to read its `clock` back, so `CompositeDiscoveryCommonTest` asserts
+  `SystemTimeSource.nowMs()` directly. That the *default argument* is wired to it is
+  compile-visible in the constructor and reviewed, not executed.
+- **Published-coordinate resolution is Phase 24.** Gate 5 reads the generated POMs; it does not
+  prove that a real consumer resolving `com.transfer.flash:core-discovery:1.1.0` gets a working
+  Android artifact through Gradle's variant-aware resolution. `:sample:consumer` was not re-run
+  against a published KMP artifact.
+- **The release / ProGuard path is unverified.** R3 builds `assembleDebug` only. The
+  `consumerKeepRules` block is preserved by inspection against the pre-KMP
+  `consumerProguardFiles("consumer-rules.pro")`; `core/discovery/consumer-rules.pro` is comment-only
+  today, so a silent drop would be invisible either way. Phase 24 owns this.
+- **`compileKotlinJvm` says nothing about `java.*`** (R6.1). Gate 6's grep is the only enforcement,
+  and greps are not compilers.
+
+### Known issues (R1 — noticed, not fixed)
+
+- **The `PlatformLock` copy will keep multiplying.** Two modules now carry an identical
+  `expect class PlatformLock` + two identical `actual`s, and phases 09–12 will each need the same
+  seam. Recommendation for a later phase (not this one): give `:core:common` a
+  `@RequiresOptIn` marker — `@FlashInternalApi` — make `PlatformLock` `public` but annotated, and have
+  every consuming module opt in. That converts N copies into one declaration without adding an
+  unannotated lock to the published ABI. Deciding this belongs to whichever phase first finds a
+  **third** module needing it; three copies is the point where the duplication stops being cheaper
+  than the annotation.
+- **`nsd/NsdFlashDiscovery.kt` is still dead code.** Nothing constructs it; `NsdTransport` +
+  `CompositeDiscovery` are the live path. It moved to `androidMain` verbatim because deleting it is
+  out of scope (R1), but it is 100% of the reason `androidMain` needs the deprecated
+  `resolveService` call sites to keep compiling.
+- **`android.util.Log` is used directly in three `nsd/` files** instead of routing through
+  `FlashLog`. That is a Phase 03 gap, not a KMP one, and it is invisible from `commonMain` now that
+  the files are in `androidMain` — which makes it *less* likely to be noticed, hence this note.
+- **R6.1 is still unenforced by the build.** Every phase from 06 on has to run the grep by hand.
+  The build cannot fail on a `java.*` leak in `commonMain` while every declared target is a JVM one.
+- **No phase in 00–24 adds a Kotlin/Native target**, so the plan as written never delivers the
+  Kotlin/Native half of "Linux and all platforms" (the 2026-09-03 amendment) and never turns R6 into
+  a compiler error. Adding one target — `iosSimulatorArm64` would do, with no product intent — would
+  retroactively verify every module converted so far. Still recommended as a new phase; still not in
+  scope for any existing one.
+
+### Next step
+
+**Phase 09 — `:core:persistence` (D5 = C).** Note that **Phase 10 (`:core:network`) could equally go
+first**: both depend only on `:core:common`, which has been KMP since Phase 06, and neither depends
+on the other. Phase 09 is the harder of the two (Room and DataStore are Android-only, and it is the
+module carrying the 12 known failures), so a reader who wants momentum may reasonably take 10 first.
+Numeric order is the default and this log takes 09 next unless the sequencing is revisited.
+
+Whoever takes Phase 09 should read the R3 command in `CONVENTIONS.md` as amended by this phase: it
+now names `:core:discovery:testAndroidHostTest` and `:core:discovery:jvmTest` explicitly, and the
+per-module floor to beat is **897 / 12 / 0**.

@@ -76,22 +76,25 @@ Phase 06 discovered the replacement task name empirically and recorded it in R3.
 and in `logs/migration.md`. From Phase 06 onward the verification command is:
 
 ```bash
-./gradlew --stop >/dev/null 2>&1; sleep 8; ./gradlew :app:assembleDebug testDebugUnitTest :core:common:testAndroidHostTest :core:security:testAndroidHostTest :core:security:jvmTest --no-configuration-cache --continue --max-workers=2 --console=plain
+./gradlew --stop >/dev/null 2>&1; sleep 8; ./gradlew :app:assembleDebug testDebugUnitTest :core:common:testAndroidHostTest :core:security:testAndroidHostTest :core:security:jvmTest :core:discovery:testAndroidHostTest :core:discovery:jvmTest --no-configuration-cache --continue --max-workers=2 --console=plain
 ```
 
 Every converted module must be **named explicitly** on that command line, because the
 unqualified `testDebugUnitTest` no longer reaches it. Add one `:module:testAndroidHostTest`
-per conversion as phases 07–12 land — **and one `:module:jvmTest` if the module has a
-`commonTest`/`jvmTest` suite**, as `:core:security` does since Phase 07. `--continue` is
-load-bearing: without it the 12 known `:core:persistence` `FlashSettingsDataStoreTest` failures
-abort the run before later modules execute, and the total silently drops.
+per conversion as phases 09–12 land — **and one `:module:jvmTest` if the module has a
+`commonTest`/`jvmTest` suite**, as `:core:security` does since Phase 07 and `:core:discovery`
+does since Phase 08. `--continue` is load-bearing: without it the 12 known `:core:persistence`
+failures abort the run before later modules execute, and the total silently drops. Those 12 are
+**11 in `FlashSettingsDataStoreTest` + 1 in `DiscoveryModeSettingTest`** (measured Phase 08;
+earlier entries attributed all 12 to the former).
 
 Every phase must additionally paste the **test count** from
 `*/build/test-results/**/TEST-*.xml` compared against the Phase 00 baseline
 (`BASELINE_TEST_TOTAL = 863 / 12 failures / 0 skipped`). A phase that cannot show its
 test count matches or exceeds baseline is not verified. Conversions may legitimately *raise*
 the total — Phase 07 took it to **883 / 12 / 0** by adding a 10-test `commonTest` suite that runs
-once per target. Compare **per module** as well as in total: a total that still matches while one
+once per target, and Phase 08 took it to **897 / 12 / 0** the same way (7 tests × 2 targets).
+Compare **per module** as well as in total: a total that still matches while one
 module's suite has silently stopped running is exactly the failure mode R3 exists to catch.
 
 When tallying, delete the dead results directory of any task the conversion removed
@@ -131,7 +134,9 @@ it, a `jvmMain` `actual` is only ever *compiled*, never *executed*: `:core:commo
 because Phase 06 left all its tests in `androidHostTest`. Any phase that writes an `actual`
 should put at least one behavioural assertion in `commonTest` so both platforms run it. Phase 07's
 parity suite found no divergence — but it is the only thing in the build that *would* have found
-one, since Android runs Conscrypt and the desktop JVM runs SunJCE.
+one, since Android runs Conscrypt and the desktop JVM runs SunJCE. Phase 08 followed the rule for
+`:core:discovery`'s own duplicated `PlatformLock`: its contention case is the only test in the repo
+that asserts a lock actually excludes, and it runs on both targets.
 
 
 ## R4 — Never edit two modules' build files in one commit unless the phase says to
