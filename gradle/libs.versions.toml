@@ -18,6 +18,9 @@ coroutines = "1.10.2"
 robolectric = "4.16.1"
 hilt = "2.60.1"
 ksp = "2.3.11"
+# Phase 14 (desktop mDNS). Pinned to the version PHASE-14 names; 3.6.3 exists on
+# Maven Central but R10 authorises only what the phase specifies.
+jmdns = "3.5.12"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -51,6 +54,11 @@ bouncycastle-pkix = { group = "org.bouncycastle", name = "bcpkix-jdk18on", versi
 hilt-android = { group = "com.google.dagger", name = "hilt-android", version.ref = "hilt" }
 hilt-compiler = { group = "com.google.dagger", name = "hilt-compiler", version.ref = "hilt" }
 webrtc-kmp = { group = "com.shepeliev", name = "webrtc-kmp", version = "0.125.11" }
+# Phase 14: desktop mDNS/DNS-SD. The group is `org.jmdns` — PHASE-14 specifies
+# `io.jmdns:jmdns`, which does NOT exist (Maven Central returns 404 for its
+# maven-metadata.xml). `javax.jmdns:jmdns` also exists but is abandoned at 3.4.1.
+# Brings one transitive compile dependency: org.slf4j:slf4j-api:2.0.7.
+jmdns = { group = "org.jmdns", name = "jmdns", version.ref = "jmdns" }
 
 [plugins]
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }

@@ -82,6 +82,19 @@ kotlin {
         // proves this module has zero `androidx.*` references. Phase 07 relocated the same two
         // in :core:security only because that module's androidMain genuinely uses them.
 
+        // Phase 14: desktop mDNS. `implementation`, not `api` — no JmDNS type appears in
+        // JmdnsTransport's or JmdnsBridge's signatures (the bridge deliberately exposes only
+        // neutral DTOs), so JmDNS must not land on a consumer's compile classpath.
+        //
+        // There is deliberately NO `dependsOn(getByName("jvmAndAndroidMain"))` here, contrary
+        // to PHASE-14 step 2: D1 = Option B means that source set does not exist (CONVENTIONS
+        // R5). `jvmMain` already sees `commonMain` — including its `internal` declarations,
+        // since they are the same Gradle module — so `TxtCodec`, `EndpointDirectory` and
+        // `CompositeDiscovery` are all reachable with no extra wiring.
+        jvmMain.dependencies {
+            implementation(libs.jmdns)
+        }
+
         // Runs on BOTH the Android host-test JVM and the desktop jvm() target, so the two
         // PlatformLock actuals are executed, not merely compiled (CONVENTIONS.md R3.1).
         commonTest.dependencies {
