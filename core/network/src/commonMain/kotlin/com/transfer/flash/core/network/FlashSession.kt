@@ -26,7 +26,18 @@ public interface FlashSession {
         get() = kotlinx.coroutines.flow.emptyFlow()
 
     public suspend fun send(message: ByteArray): FlashResult<Unit>
-    public suspend fun sendText(text: String): FlashResult<Unit> = send(text.toByteArray(Charsets.UTF_8))
+
+    /**
+     * UTF-8 encodes [text] and hands it to [send].
+     *
+     * Was `text.toByteArray(Charsets.UTF_8)` before the KMP conversion (Phase 10);
+     * `Charsets` and `String.toByteArray(Charset)` are JVM-only. The replacement is
+     * byte-identical for every well-formed string and differs only for unpaired
+     * surrogates, which the JVM encodes as `0x3F` ('?') and this encodes as the
+     * U+FFFD replacement character. No Flash caller produces those — text payloads
+     * are built by `FlashTextFraming`. Pinned by `FlashSessionSendTextTest`.
+     */
+    public suspend fun sendText(text: String): FlashResult<Unit> = send(text.encodeToByteArray())
     public fun disconnect(reason: String = "Normal disconnect")
 }
 
