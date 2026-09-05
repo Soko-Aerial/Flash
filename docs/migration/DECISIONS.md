@@ -13,7 +13,7 @@
 | **D7** | **Phase 19** | UI platform shims. **Executed 2026-09-05 (`94a60a4`); D7b overridden on evidence** — a and c as written, but FileKit was **not** adopted. See the note under D7 below. |
 | **D8** | **Phase 22** | Whether the §15 desktop screens exist. |
 | **D9** | Phase 24 | Sample consumers; agent may proceed on the recommendation. |
-| **D10** | **Phases 13B-2, 13B-3, 15, 16** | What replaces `java.io.InputStream` in a `commonMain` signature. Added 2026-09-05 by the agent that reached Phase 13. **Answered 2026-09-05 = Option A**, with an explicit R8 authorisation for 13B-3's `ChunkFrame` rewrite (byte-identical output required). **Enacted as Okio 3.4.0 by 13B-2 (`732e7b5`, 2026-09-05); spent again by 13B-3a (`5e4e9a5`) for SHA-256; 13B-3b — the R8 `ChunkFrame` rewrite — is next.** |
+| **D10** | **Phases 13B-2, 13B-3, 15, 16** | What replaces `java.io.InputStream` in a `commonMain` signature. Added 2026-09-05 by the agent that reached Phase 13. **Answered 2026-09-05 = Option A**, with an explicit R8 authorisation for 13B-3's `ChunkFrame` rewrite (byte-identical output required). **Enacted as Okio 3.4.0 by 13B-2 (`732e7b5`, 2026-09-05); spent again by 13B-3a (`5e4e9a5`) for SHA-256. The R8 authorisation was spent and discharged by 13B-3b (`a3375e3`) — byte-identity proved on both targets and against the verbatim old serializer — so `ChunkFrame` is untouchable again; 13B-3c/d/e remain and touch no wire format.** |
 | **D11** | **a new phase, number TBD** | Is the calling stack (`:core:calling` + `:ui:callui`) in desktop scope? Added 2026-09-05 — no phase file has ever mentioned `:core:calling`. **Answered 2026-09-05 = in scope, research first.** Does not block any existing phase. |
 
 **As of 2026-09-05 every decision D1–D11 is answered.** No phase in this plan is blocked on a decision
@@ -463,6 +463,38 @@ decision's dependency, with no module edge, no new alias and no ABI break. It ha
 **The R8 authorisation was therefore NOT spent by 13B-3a** — `chunked/ChunkFrame.kt` is byte-for-byte
 untouched, and 13B-3b is the sub-step that uses it, under the byte-identical criterion stated above.
 
+**THE R8 AUTHORISATION IS NOW SPENT. 2026-09-05 (`a3375e3`): 13B-3b executed it, and `ChunkFrame`
+returns to untouchable status.** `chunked/ChunkFrame.kt` is in `commonMain` on Okio, and the acceptance
+criterion was discharged twice over rather than argued:
+
+1. **Eleven golden hex vectors** captured from the shipping `java.nio.ByteBuffer` implementation
+   *before* a line was edited, now committed as `commonTest/…/ChunkFrameGoldenVectorTest.kt` so
+   `testAndroidHostTest` **and** `jvmTest` both assert them — one target agreeing would have proved
+   nothing, since the claim is that one implementation serves both.
+2. **A temporary differential test** holding the pre-rewrite serializer verbatim and asserting it
+   byte-for-byte against the new one over the eleven shapes plus 4000 pseudo-random frames
+   (`PARITY|unpairedSurrogatesExercised=2967`). This is what makes the golden hex faithful to the *old*
+   bytes rather than to a transcription of them: old == new mechanically, new == golden hex in the
+   committed suite. Deleted before the commit; never committed.
+
+Not a field, not an order, not a width, not the endianness changed, and no `public` signature moved, so
+there is nothing here for Phase 24's release notes. **Any future edit to `ChunkFrame` needs a fresh
+authorisation**, on the same footing as `FlashEnvelope`, `FlashProtocol`, `MessageWireFrame`,
+`WsTransferMessages`, `TxtCodec` and `FlashPairingFrames`, which were never in scope and are untouched.
+
+One correction this decision should carry, because it is the reason Okio rather than the stdlib was used
+for the encoder: 13B-3a predicted that `String.toByteArray(Charsets.UTF_8)` and
+`String.encodeToByteArray()` diverge on an unpaired surrogate. Measured, **they do not diverge on the
+JVM** — `kotlin-stdlib`'s JVM `actual` for `encodeToByteArray()` *is* `toByteArray(Charsets.UTF_8)`, so
+they are identical by construction, and all three candidate encoders emitted `0x3F`. The risk is real
+but lives on **Kotlin/Native**, whose `actual` no artifact in this environment can show. Okio's
+`commonWriteUtf8` is a single `commonMain` implementation whose surrogate branch is
+`writeByte('?'.code)`, so it removes the question instead of answering it for one platform. Full
+evidence in the 13B-3b log entry.
+
+**Remaining 13B-3 sub-steps, none of which touch a wire format:** 13B-3c (`java.util.BitSet`),
+13B-3d (atomics, `ConcurrentHashMap`, `UUID`), 13B-3e (the pipelines).
+
 ---
 
 ## D11 — Is the calling stack (`:core:calling` + `:ui:callui`) in desktop scope?
@@ -501,5 +533,6 @@ cheap side-effect regardless of what the research concludes, since it costs one 
 and turns an assumption into a measurement.
 
 **This decision blocks nothing that already exists.** It authorises a *new* phase, whose number is TBD
-and which must not be inserted ahead of 13B-2/15/16 — D10 = A has just unblocked the critical path, and
-the Phase 16 interop gate outranks calling.
+and which must not be inserted ahead of 13B-3c–e/15/16 — D10 = A has unblocked the critical path (13B-2
+`732e7b5`, 13B-3a `5e4e9a5`, 13B-3b `a3375e3` all landed 2026-09-05), and the Phase 16 interop gate
+outranks calling.

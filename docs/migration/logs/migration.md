@@ -6197,6 +6197,306 @@ settle it empirically. `asciiBytes()` in this commit is the same class of proble
 
 After 13B-3: **15 → 16 (hard gate) → 21 → 22 → 23 (hard gate) → 24.**
 
+## Phase 13B-3b — `ChunkFrame` framing moved to `commonMain` on Okio, under the R8 authorisation
+
+- **Date:** 2026-09-05
+- **Agent/model:** Claude (Opus 5), Claude Code
+- **Commit:** `a3375e3` (source), this entry (docs)
+- **Decisions relied on:** **D10 = Option A** (enacted as Okio 3.4.0 in 13B-2) and the **explicit R8
+  authorisation** for `chunked/ChunkFrame.kt`, granted by the human on 2026-09-05 with one acceptance
+  criterion — **byte-identical output**. D1 = Option B for the strict-`commonMain` shape. This is the
+  only sub-step of 13B that spends that authorisation; the other six wire formats on R8's list
+  (`FlashEnvelope`, `FlashProtocol`, `MessageWireFrame`, `WsTransferMessages`, `TxtCodec`,
+  `FlashPairingFrames`) are untouched and remain untouchable.
+
+### Change
+
+`chunked/ChunkFrame.kt` moved from `androidMain` to `commonMain` (git records a 72% rename) and its
+three `java.*` seams were replaced with Okio equivalents. **The wire layout did not change** — not a
+field, not an order, not a width, not the endianness — and the layout documentation in the class KDoc
+is byte-for-byte the text that was there before, because there was nothing in it to correct. What was
+added to that KDoc is a section naming the three seams and why each replacement is the one it is.
+
+A new `commonTest` suite, `ChunkFrameGoldenVectorTest`, pins eleven frames to the exact bytes the
+pre-rewrite implementation produced. It runs on both targets, which is the point: the sub-step's whole
+claim is that one implementation now serves Android and JVM, so one target agreeing proves nothing.
+
+This completes the `java.nio`/`Charsets` half of §13B-3. `Chunker`, `ReceivePipeline`, `SendPipeline`,
+`MultiStreamReceiver`, `ResumeBitVector` and the atomics remain in `androidMain` for 13B-3c/d/e.
+
+### The three seams
+
+| Was | Now | Why this replacement |
+|---|---|---|
+| `ByteArrayOutputStream` + `ByteBuffer.allocate(8).order(LITTLE_ENDIAN)` scratch | one Okio `Buffer` with `writeByte`/`writeShortLe`/`writeIntLe`/`writeLongLe` | Okio's `*Le` writers **are** the little-endian primitives the `ByteBuffer` scratch was configured to provide, so no byte order is hand-rolled. The frame header now prefixes the payload with `Buffer.writeAll`, which moves segments rather than copying bytes, so the assembled body is materialised once (at `readByteArray()`) where the old path materialised it twice (`BAOS.toByteArray()`, then `ByteBuffer.put`). |
+| `String.toByteArray(Charsets.UTF_8)` | `Buffer().writeUtf8(s).readByteArray()` | `Charsets` is JVM-only and is on R6.1's scan-2 list. See the next section for why this is Okio's encoder and not `String.encodeToByteArray()`. |
+| `String(bytes, Charsets.UTF_8)` and `String(bytes, Charsets.US_ASCII)` | `ByteString.utf8()` and a strict-ASCII loop emitting U+FFFD for every byte >= 0x80 | Both JDK decoders were configured with `REPLACE`. `ByteString.utf8()` substitutes U+FFFD identically. For the ASCII field, decoding as UTF-8 instead would be **wrong**: it would fold continuation bytes into a single replacement char and change the decoded string's length. Measured, not assumed — `byteArrayOf(0x41, 0xC3, 0x7F, 0x80)` under `US_ASCII` is `41 EFBFBD 7F EFBFBD`, one replacement char per byte. |
+
+`string()` deliberately keeps an intermediate `ByteArray` rather than using `utf8Size(s)` as the length
+prefix and `writeUtf8(s)` as the payload. Those two Okio functions do agree — the `'?'` substitution
+is counted as one byte in both — but a wire format should not be able to desynchronise its own length
+prefix from what follows it because two functions agree. `rawAscii()` gets a private top-level
+`asciiBytes()` in this file rather than sharing `Sha256.kt`'s private helper, because 13B-3a certified
+that file's byte-identity and this sub-step must not edit it; the two copies are four lines each.
+
+### How byte identity was proved, and a correction to 13B-3a's prediction
+
+The acceptance criterion is the whole sub-step, so it was discharged mechanically in two steps rather
+than argued.
+
+**Step 1 — capture from the old implementation.** Before any edit, a temporary `androidHostTest` probe
+serialized eleven frames through the shipping `ByteBuffer` implementation and printed the hex. The
+eleven were chosen to cover every branch and every risky width: ASCII minimal; a name mixing 2-, 3- and
+4-byte UTF-8 (`héllo-日本-😀.txt`); a name holding an **unpaired high surrogate**; `Long.MAX_VALUE` /
+`Int.MAX_VALUE` extremes with an **uppercase** digest to exercise `normalizeHex`; a 300-byte name so the
+uint16 length prefix passes 255; an empty CHUNK; a CHUNK of high-bit binary at `Int.MAX_VALUE` index; an
+empty ACK; an unsorted ACK **with a duplicate**; and COMPLETE in both states. Those exact strings are the
+expected values in `ChunkFrameGoldenVectorTest`, written as concatenations of labelled pieces — so
+`chunkSize = 65536` reads as `"00000100"` on the page and the little-endian claim is visible rather than
+buried in a blob.
+
+**Step 2 — differential test, old against new.** A second temporary `androidHostTest` file held the
+pre-rewrite serializer **verbatim** (`ByteArrayOutputStream`, the `ByteBuffer` scratch, both `Charsets`
+calls) and asserted it byte-for-byte against the new one. This is what makes the golden hex faithful to
+the *old* implementation instead of merely self-consistent with the new one: old == new here, new ==
+golden hex in the committed suite. It ran the eleven shapes plus **4000 pseudo-random frames** from a
+fixed seed, with file names built from random 16-bit code points precisely so unpaired surrogates occur
+in bulk; the test counts them and asserts a floor, and reported
+`PARITY|unpairedSurrogatesExercised=2967`. Both temporary files were deleted before the commit and
+neither was ever committed.
+
+**The correction.** 13B-3a's entry predicted a divergence: *"the JDK encoder substitutes `'?'` (0x3F)
+while Kotlin's common encoder emits the U+FFFD replacement character's UTF-8 bytes."* Measured, **that
+divergence does not exist on the JVM.** All three candidates agree on every case, including all four
+unpaired-surrogate shapes (`jdk=3f|kotlin=3f|okio=3f`), and all three decoders agree on every malformed
+input. The reason is in the stdlib source: `kotlin-stdlib-2.2.10-sources.jar`,
+`jvmMain/kotlin/text/StringsJVM.kt:255-257`, is literally
+
+```kotlin
+public actual fun String.encodeToByteArray(): ByteArray {
+    return this.toByteArray(Charsets.UTF_8)
+}
+```
+
+So on the JVM it is identical **by construction**. The prediction was not wrong about the *risk*, only
+about where it lives: it is a **Kotlin/Native** question, and the cached artifacts contain no Native
+`actual` to answer it with. That is the deciding argument for Okio here. `commonWriteUtf8` in
+`okio/internal/Buffer.kt:1030-1042` is a single `commonMain` implementation, read in source, whose
+surrogate branch is `writeByte('?'.code)` — so it is provably the same byte on every target that
+exists and every target that might. `encodeToByteArray()` would have been a bet on an `actual` nobody
+here can see. Picking Okio removes the question instead of answering it for one platform, and
+`ChunkFrameGoldenVectorTest` pins the byte with a dedicated test rather than a comment.
+
+### Files changed
+
+**Moved and modified (1):**
+- `core/transfer/src/androidMain/.../chunked/ChunkFrame.kt` →
+  `core/transfer/src/commonMain/.../chunked/ChunkFrame.kt` — 542 lines. Git records the rename at 72%
+  similarity: three imports dropped for two Okio ones, the header assembly, `PayloadWriter`, and
+  `Reader.string()`/`Reader.fixedString()` rewritten; `Reader`'s `i32()`/`i64()`/`bytes()` and the
+  companion's `readI32Le` untouched because they were already hand-rolled little-endian Kotlin.
+
+**Added (1):**
+- `core/transfer/src/commonTest/.../chunked/ChunkFrameGoldenVectorTest.kt` — 275 lines, 4 tests: the
+  eleven golden vectors; a parse-then-reserialize round trip over the same eleven golden byte arrays
+  (which also proves `parse` normalises an uppercase digest and a duplicate-bearing ACK to a fixed
+  point); the unpaired-surrogate byte; and a self-check that the 128-hex-character `HASH_ASCII` constant
+  really is `HASH_LOWER.encodeToByteArray()`, so it is not an unexplained blob repeated in nine vectors.
+
+**Created and deleted, never committed (2):**
+- `core/transfer/src/androidHostTest/.../chunked/Utf8EncoderProbe.kt` — the step-1 capture probe.
+- `core/transfer/src/androidHostTest/.../chunked/LegacyFramingParityTest.kt` — the step-2 differential
+  test.
+
+**Not moved, deliberately:** `core/transfer/src/androidHostTest/.../chunked/ChunkFrameTest.kt`
+(8 tests) stays where it is. It cannot compile in `commonTest` yet: it references
+`Chunker.MIN_CHUNK_SIZE_BYTES` at `ChunkFrameTest.kt:126` and `Chunker` is `androidMain` until 13B-3e,
+and it uses the JVM-only `String.toByteArray()`. It follows `Chunker` in 13B-3e. The new `commonTest`
+suite is what satisfies R3.1's "at least one behavioural assertion in `commonTest`" for this sub-step.
+
+**No build file was touched.** Okio arrived as a `commonMain` dependency in 13B-2 and `commonTest`
+already existed (13B-3a moved `Sha256Test` into it), so this sub-step adds no dependency, no module
+edge, and no source set.
+
+**No ABI change.** Every `public` signature in `ChunkFrame` is identical; only `private` internals moved.
+Nothing for Phase 24's release notes from this commit.
+
+### Verification
+
+Targeted compile of both targets:
+
+```
+./gradlew :core:transfer:compileKotlinJvm :core:transfer:compileAndroidMain --no-configuration-cache
+```
+
+Result: **PASS**
+
+```
+> Task :core:transfer:compileKotlinJvm
+> Task :core:transfer:compileAndroidMain
+BUILD SUCCESSFUL in 20s
+12 actionable tasks: 2 executed, 10 up-to-date
+```
+
+The golden vectors, on both targets — this is the R8 acceptance criterion:
+
+```
+--- core/transfer/build/test-results/jvmTest/TEST-...ChunkFrameGoldenVectorTest.xml
+ChunkFrameGoldenVectorTest[jvm] tests=4 failures=0 errors=0
+  the hash field piece is the ascii encoding of the digest hex[jvm]
+  every golden vector parses and reserializes to its own bytes[jvm]
+  an unpaired surrogate in a file name serializes as 0x3f[jvm]
+  serialized bytes are identical to the pre-rewrite golden vectors[jvm]
+--- core/transfer/build/test-results/testAndroidHostTest/TEST-...ChunkFrameGoldenVectorTest.xml
+com.transfer.flash.core.transfer.chunked.ChunkFrameGoldenVectorTest tests=4 failures=0 errors=0
+  the hash field piece is the ascii encoding of the digest hex
+  every golden vector parses and reserializes to its own bytes
+  an unpaired surrogate in a file name serializes as 0x3f
+  serialized bytes are identical to the pre-rewrite golden vectors
+```
+
+The temporary old-versus-new differential test, before it was deleted:
+
+```
+com.transfer.flash.core.transfer.chunked.LegacyFramingParityTest tests=2 failures=0 errors=0 skipped=0
+  legacy and okio serializers agree on a randomized sweep
+  legacy and okio serializers agree on the eleven captured shapes
+PARITY|unpairedSurrogatesExercised=2967
+```
+
+Full R3 (the `--continue` is load-bearing — without it the 12 known `:core:persistence` failures abort
+the run and the total silently drops):
+
+```
+BUILD FAILED in 3m 13s
+352 actionable tasks: 21 executed, 331 up-to-date
+* What went wrong:
+Execution failed for task ':core:persistence:testAndroidHostTest'.
+> There were failing tests.
+```
+
+```
+XMLs: 180
+tests=1359 failures=12 errors=0
+```
+
+That is **+2 XMLs and +8 tests** against 13B-3a's baseline of 178 / 1351 / 12 / 0, and the arithmetic
+closes exactly: the new 4-test suite runs on two targets. **Failures unchanged at 12, errors 0.** Every
+failure enumerated, and it is the known `:core:persistence` set to the test name (R1 — these are
+pre-existing temp-file failures and must not be "fixed"):
+
+```
+== core/persistence/.../TEST-...DiscoveryModeSettingTest.xml (failures=1)
+  roundtrip for every valid mode
+== core/persistence/.../TEST-...FlashSettingsDataStoreTest.xml (failures=11)
+  retentionDays roundtrip / backgroundTransfers roundtrip / dynamicAccent roundtrip
+  corrupted preferences file falls back to emptyPreferences / themeMode roundtrip
+  displayName roundtrip / soundsEnabled roundtrip / autoAcceptTrusted roundtrip
+  reduceMotionOverride roundtrip / saveLocationUri roundtrip and clear-to-null
+  hapticsEnabled roundtrip
+```
+
+`:app:assembleDebug` **PASS** (`app/build/outputs/apk/debug/app-debug.apk`, 66,373,093 bytes), and
+`:core:engine:compileKotlinJvm` **PASS** — the downstream JVM consumer of this module compiles against
+the moved file.
+
+Additional checks specific to this phase — the three R6.1 gate scans:
+
+- **Scan 1** (`java|javax|android|androidx` in any `commonMain`): **no output.** The three
+  `java.*` imports this sub-step existed to remove are gone, and nothing was smuggled in.
+- **Scan 2** (JVM-only idioms): only the known allowlist — the 5 `@Volatile` sites
+  (`FlashLog.kt:21`, `CompositeDiscovery.kt:172` and `:192`, `WsKeepalive.kt:75`,
+  `RandomAccessSinkHandle.kt:82`) and the 8 `.format(` calls (`FlashMessagingModels.kt:202,204`,
+  `FlashFileMessageCard.kt:113,413,415,417`, `FlashStressTestScreen.kt:253`,
+  `FlashVoiceMessageCard.kt:81`). **`Charsets` no longer appears anywhere in `commonMain`** — that is
+  the specific thing this sub-step existed to achieve, and it is now a measured fact rather than a plan.
+- **Scan 3** (`@Volatile` without `import kotlin.concurrent.Volatile`): **no output.**
+
+Not verifiable here, stated as such: `compileCommonMainKotlinMetadata` is SKIPPED in this repo because
+`android` and `jvm` are both JVM platform types, so **no build task certifies that this file uses only
+Okio's *common* API surface.** It was certified by hand instead, the same way 13B-2 and 13B-3a were: by
+unzipping `okio-metadata-3.4.0-all.jar` and grepping the five `commonMain` `.knm` linkdata files for
+each symbol used. `Buffer`, `ByteString`, `writeByte`, `writeShortLe`, `writeIntLe`, `writeLongLe`,
+`writeUtf8`, `writeAll`, `readByteArray`, `toByteString` and `utf8` are all present in `commonMain`.
+
+### Deviations from the phase file
+
+1. **§13B-3 says the framing is big-endian. It is little-endian.** 13B-3a's entry recorded the defect;
+   this sub-step is where it would have caused real damage, because "port the big-endian reader" would
+   have inverted every multi-byte field. The layout was re-derived by hand-decoding the captured vectors
+   before writing a line: V1's `61000000` is a payload length of 97, `00000100` is `chunkSize = 65536`,
+   and V4's `ffffffffffffff7f` is `Long.MAX_VALUE` with the sign bit in the **last** byte. The phase
+   file's §13B-3 already carries the correction from 13B-3a; nothing further was edited there.
+2. **The R8 acceptance criterion was discharged with two artefacts, not one.** The authorisation asks for
+   golden vectors captured before and asserted after. Captured-then-asserted alone proves the new
+   implementation matches *a transcription* of the old one's output. The temporary differential test
+   closes that gap mechanically — old serializer against new, 4011 frames — so the golden hex is
+   provably faithful to the pre-rewrite bytes and not to my typing. This is more than the phase file
+   asks for, in the one place where doing less would have left the criterion resting on eyesight.
+3. **`Charsets.US_ASCII` was replaced with a hand-written loop, not an Okio call.** The phase file's
+   §13B-3 says to move the file onto the chosen io library; it does not anticipate that one of the two
+   decoders has no equivalent in it. Okio has no strict-ASCII decoder, and `ByteString.utf8()` is not a
+   substitute — it is a *UTF-8* decoder, so it folds a multi-byte sequence into one char where
+   `US_ASCII` emits one `U+FFFD` per byte, which would change the decoded length of a corrupt digest
+   field. The `US_ASCII` behaviour being reproduced is the measurement recorded in the seams table above;
+   four lines of loop match it.
+4. **U+FFFD is built as `Char(0xFFFD)`, not written as a literal.** A literal replacement character in
+   the source would make this decoder's output depend on the source file's own encoding, which is a
+   silly thing for a wire format to depend on.
+5. **`ChunkFrameTest` was not moved to `commonTest`.** It cannot compile there until `Chunker` is common
+   (13B-3e). Recorded above under Files changed with the reason and the line number.
+
+### Known issues
+
+1. **`ChunkFrameTest` still only runs on Android** (`androidHostTest`, 8 tests). `parse`'s rejection
+   paths — bad magic, wrong version, unknown type, truncation, trailing garbage — are therefore
+   *unverified on the JVM target* until 13B-3e moves it. The committed `commonTest` suite covers the
+   happy path and the round trip on both targets, not the malformed-input matrix. This is a coverage
+   gap, not a defect, and 13B-3e closes it.
+2. **`Reader`'s bounds check rejects a zero-length payload.** `ChunkFrame.kt:460`'s `init` requires
+   `start in buf.indices`, so a frame whose payload length is 0 — `bytes.size == HEADER_SIZE` — makes
+   `start == buf.size`, fails the check, and `parse` returns null. Unreachable today, because every
+   frame type begins with two length-prefixed strings and so has a payload of at least 4 bytes.
+   **Pre-existing and untouched** (R1): it behaves exactly as it did before this commit, and changing it
+   would change `parse`'s contract, which R8's authorisation does not cover.
+3. **`MAX_CHUNK_DATA_BYTES` is 1 MiB while the class KDoc says CHUNK payloads are "up to 256 KB".**
+   Pre-existing, deliberate slack for untrusted input, untouched.
+4. **The desktop side of framing is still unexercised end to end.** `compileKotlinJvm` and `jvmTest`
+   prove the file compiles and serializes correctly on the JVM; nothing has yet sent a `ChunkFrame`
+   between two machines. That is Phase 16's gate, and it remains the real test.
+5. **Six items from 13B-3a's Known issues are unchanged** and are repeated only by reference:
+   `IncrementalSha256`'s extra per-`update` segment copy; `OkioRandomAccessSinkHandle`'s missing
+   non-zero-offset / hole / `resize` coverage; the eight `.format(` calls blocking Kotlin/Native; D6's
+   never-run multicast spike; 09B-2 and 09B-3; and Phase 24's outstanding ABI-break notes.
+
+### Next step
+
+**13B-3c** — `ResumeBitVector`'s `java.util.BitSet` to a common bitset. Then **13B-3d** (the
+`java.util.concurrent.atomic` and `ConcurrentHashMap`/`UUID` seams in `MultiStreamDispatcher`,
+`TransferCompletionStateMachine` and `RealFlashTransferRepository`) and **13B-3e** (the pipelines —
+`Chunker`, `ChunkStream`, `ReceivePipeline`, `SendPipeline`, `MultiStreamReceiver`, where the two
+`.buffer().inputStream()` bridges at `Chunker.kt:185` are deleted and `ChunkFrameTest` follows
+`Chunker` into `commonTest`). `policy/DestinationPolicy.kt` and `model/WsTransferModels.kt` stay
+`androidMain`.
+
+After 13B-3: **15 → 16 (hard gate) → 21 → 22 → 23 (hard gate) → 24.**
+
+Remaining `java.*` imports in `core/transfer/src/androidMain` after this commit, which is the exact
+inventory 13B-3c/d/e must clear — 11 files left in `androidMain` against 15 in `commonMain`:
+
+```
+      2 import java.util.concurrent.atomic.AtomicBoolean
+      1 import java.util.concurrent.atomic.AtomicLong
+      1 import java.util.concurrent.atomic.AtomicInteger
+      1 import java.util.concurrent.ConcurrentHashMap
+      1 import java.util.UUID
+      1 import java.util.BitSet
+      1 import java.io.OutputStream
+      1 import java.io.InputStream
+      1 import java.io.File
+      1 import java.io.Closeable
+```
+
 ## Phase 14 — Desktop mDNS for `:core:discovery`
 
 - **Date:** 2026-09-05

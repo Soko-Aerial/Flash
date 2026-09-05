@@ -1,7 +1,9 @@
 # Phase 13B — Desktop file I/O for `:core:transfer`, re-scoped after measurement (D10)
 
 > **Status: 13B-1 EXECUTED (`fafd450`). 13B-2 EXECUTED (`732e7b5`). 13B-3a EXECUTED (`5e4e9a5`).
-> 13B-3b–e REMAIN.** All 2026-09-05. Authored
+> 13B-3b EXECUTED (`a3375e3`) — the R8 `ChunkFrame` rewrite, byte-identity proved on both targets and
+> against the verbatim old serializer; **that authorisation is now spent and `ChunkFrame` is R8-untouchable
+> again**. 13B-3c–e REMAIN.** All 2026-09-05. Authored
 > 2026-09-05 by the agent that reached Phase 13 and found `PHASE-13-desktop-fileio.md` unexecutable;
 > the working tree at authoring time was clean at `d8af05c`, and no source or build file had been
 > touched for Phase 13 or 13B at that point. **13B-1 has since been executed and verified against all
@@ -51,10 +53,11 @@ Three things are true at once:
    targets. `ChunkFrame` genuinely is an R8 file and did need the instruction.**
 
 ~~Execute **13B-1**.~~ **13B-1 is done (`fafd450`), 13B-2 is done (`732e7b5`), 13B-3a is done
-(`5e4e9a5`).** ~~Do not start 13B-2 or 13B-3 until D10 is
+(`5e4e9a5`), 13B-3b is done (`a3375e3`).** ~~Do not start 13B-2 or 13B-3 until D10 is
 answered and, for 13B-3, until the human has explicitly authorised touching `ChunkFrame`.~~ **Both
-conditions were met on 2026-09-05.** The next executable unit is **13B-3b**, the `ChunkFrame`
-rewrite.
+conditions were met on 2026-09-05, and the `ChunkFrame` authorisation has been spent — no further edit
+to that file is permitted without a fresh one.** The next executable unit is **13B-3c**, moving
+`ResumeBitVector` off `java.util.BitSet`.
 
 ---
 
@@ -446,13 +449,13 @@ real `FileTarget`/`UriTarget` pair, and note that `jvmMain` must be **OS-neutral
 2026-09-03 amendment — `System.getProperty("java.io.tmpdir")` is fine, a `C:\` literal or
 `%USERPROFILE%` is not.
 
-## 13B-3 — framing, hashing, concurrency. ~~**Blocked on D10 *and* an explicit R8 instruction.**~~ **UNBLOCKED 2026-09-05** (D10 = Option A; R8 exception granted, byte-identical output required). **13B-3a DONE — `5e4e9a5`.**
+## 13B-3 — framing, hashing, concurrency. ~~**Blocked on D10 *and* an explicit R8 instruction.**~~ **UNBLOCKED 2026-09-05** (D10 = Option A; R8 exception granted, byte-identical output required). **13B-3a DONE — `5e4e9a5`. 13B-3b DONE — `a3375e3`; the R8 authorisation is now spent.**
 
 What is left after 13B-2, with the known common answer for each:
 
 | Pin | File(s) | Common answer |
 |---|---|---|
-| `java.nio.ByteBuffer` / `ByteOrder` | `chunked/ChunkFrame.kt` | hand-rolled ~~big-endian~~ **little-endian** `ByteArray` arithmetic, as `protocol/WsTransferMessages.kt` already does in `commonMain` — **see the endianness correction below** |
+| `java.nio.ByteBuffer` / `ByteOrder` | `chunked/ChunkFrame.kt` | ~~hand-rolled ~~big-endian~~ **little-endian** `ByteArray` arithmetic, as `protocol/WsTransferMessages.kt` already does in `commonMain`~~ **DONE in 13B-3b (`a3375e3`): Okio's `Buffer` with `writeShortLe`/`writeIntLe`/`writeLongLe` — the library D10 chose already *has* the little-endian primitives, so none were hand-rolled. See the second correction below.** |
 | `java.security.MessageDigest` | `chunked/Sha256.kt` | ~~`:core:security`'s Phase 07 `PlatformCrypto` seam, or a common SHA-256 — **adds a module edge**, `:core:transfer` does not depend on `:core:security` today~~ **DONE in 13B-3a (`5e4e9a5`): okio's `HashingSink`. No module edge was added — see the correction below.** |
 | `java.util.concurrent.atomic.*` | `multistream/MultiStreamDispatcher.kt`, `multistream/TransferCompletionStateMachine.kt` | `kotlin.concurrent.Atomic*` (still `@ExperimentalAtomicApi` at Kotlin 2.2.10), `kotlinx.atomicfu`, or `PlatformLock` + plain vars |
 | `ConcurrentHashMap`, `Collections.{newSetFromMap,synchronizedList}` | `RealFlashTransferRepository.kt`, `MultiStreamDispatcher.kt` | `PlatformLock` + plain `MutableMap`/`MutableList` — the pattern already used three times |
@@ -483,11 +486,31 @@ What is left after 13B-2, with the known common answer for each:
 >   `Sha256.normalizeHex`, `Sha256.HEX_LENGTH` and `Sha256.RAW_LENGTH`. **Hashing must land first**,
 >   which is why `5e4e9a5` is 13B-3**a** and the framing rewrite is 13B-3**b**.
 >
-> Executed order: **a** hashing (`5e4e9a5`) → **b** framing (`ChunkFrame`, R8) → **c** resume
+> Executed order: **a** hashing (`5e4e9a5`) → **b** framing (`ChunkFrame`, R8 — `a3375e3`) → **c** resume
 > (`ResumeBitVector`) → **d** concurrency (atomics, `ConcurrentHashMap`, `UUID`) → **e** the pipelines
 > (`Chunker`/`ChunkStream`, `ReceivePipeline`, `SendPipeline`, `MultiStreamReceiver`, which is where
 > the two `.buffer().inputStream()` bridges 13B-2 left behind get deleted). `policy/DestinationPolicy.kt`
 > and `model/WsTransferModels.kt` stay in `androidMain`; neither is a 13B-3 pin.
+
+> **CORRECTION (2026-09-05, after executing 13B-3b — `a3375e3`).** One more row above was more
+> pessimistic than it needed to be, and one thing this section does not mention turned out to matter.
+>
+> - **"Hand-rolled `ByteArray` arithmetic" was the wrong answer, not just the wrong endianness.** Once
+>   D10 = A landed as Okio, `writeShortLe`/`writeIntLe`/`writeLongLe` are `commonMain` primitives, so
+>   there was nothing to hand-roll: the `ByteBuffer` scratch was *configured* to be little-endian and
+>   Okio's `*Le` writers **are** that. Hand-rolling would have been more code and more risk under a
+>   byte-identity criterion. The existing hand-rolled `readI32Le` was left exactly as it was — it was
+>   already common Kotlin, and R8's criterion rewards touching less.
+> - **`Charsets.US_ASCII` has no Okio equivalent, and `ByteString.utf8()` is not one.** The `sha256hex`
+>   field is decoded strictly per byte; a UTF-8 decoder folds a multi-byte sequence into a single
+>   replacement char and would change the decoded length of a corrupt field. 13B-3b kept the JDK
+>   decoder's behaviour with a four-line loop. Any sub-step that meets a `Charsets.US_ASCII` should
+>   expect the same, rather than reaching for `utf8()`.
+> - **The acceptance criterion needed two artefacts, not one.** Capture-then-assert alone proves the new
+>   implementation matches a *transcription* of the old output. 13B-3b added a temporary differential
+>   test holding the pre-rewrite serializer verbatim and asserting it against the new one over the eleven
+>   shapes plus 4000 random frames. Both temporary files were deleted; the golden vectors live in
+>   `commonTest`. Recorded here because it is the pattern any future R8 authorisation should copy.
 
 **`ChunkFrame` is named in R8's untouchable list** (*"Wire formats: `FlashEnvelope`, `FlashProtocol`,
 `ChunkFrame`, …"*), and rewriting its `ByteBuffer` framing is unavoidable here. R8 says such a change
@@ -498,6 +521,11 @@ the obvious acceptance criterion that the emitted bytes stay identical, provable
 round-trip against frames captured from the current Android implementation. **That criterion is
 hard: 13B-3b does not ship if any byte differs.** Note that the authorisation covers `ChunkFrame`
 alone; the other six wire formats R8 names are still untouchable.
+
+**SPENT 2026-09-05 (`a3375e3`).** The criterion was met — eleven golden vectors captured before the
+rewrite and asserted after it on **both** targets, plus a differential test against the verbatim old
+serializer. `ChunkFrame` is back under R8's ordinary protection from this point: 13B-3c, 13B-3d and
+13B-3e must not touch it, and any later edit needs a fresh authorisation.
 
 ---
 

@@ -154,7 +154,7 @@ module: 1055 + 4 `commonTest` contract tests × 2 targets + 30 desktop-only `jvm
 10 decoder + 7 recorder + 6 audio); 140 + 2 XMLs for the contract suite (one per target) + 4 for the
 `jvm`-only suites. No orphaned results directory to delete this time — `:ui:platform-shims` was born
 KMP and never had the `com.android.library` plugin.
-Phase 20 took it to **1332 / 12 / 0 across 177 XMLs** — the current total — and is the largest single
+Phase 20 took it to **1332 / 12 / 0 across 177 XMLs** and is the largest single
 jump in the migration. The arithmetic has a **subtraction** in it, which is the part worth copying:
 1093 − 239 + 478. `:ui:chat` already had 239 Android unit tests reporting under `testDebugUnitTest`;
 those 239 move to `commonTest` and then run **twice** (239 `testAndroidHostTest` + 239 `jvmTest`), so
@@ -167,6 +167,17 @@ module's suite has silently stopped running is exactly the failure mode R3 exist
 Show the arithmetic, not just the number — a phase that adds N tests to a `commonTest` suite must
 account for **2N**, and a phase that converts a module carrying an existing Android unit test must
 account for the orphaned results directory too.
+
+Phase 13B-2 held it at **1332 / 12 / 0 across 177 XMLs** — a re-typing phase that adds no test
+legitimately leaves the total alone. Phase 13B-3a took it to **1351 / 12 / 0 across 178 XMLs**
+(1332 + 19, where +19 = a 12-test `commonTest` suite × 2 targets − the 5 Android-only tests it
+replaces; +1 XML because the suite's `androidHostTest` XML replaces the one that left while its
+`jvmTest` XML is new). Phase 13B-3b took it to **1359 / 12 / 0 across 180 XMLs** — the current
+total — (1351 + 4 × 2 = 1359; 178 + 2 XMLs, one per target for the one new suite), and nothing was
+displaced because the file it covers moved from `androidMain` to `commonMain` without any test moving
+with it. Both 13B-2's and 13B-3a's figures were pasted in their log entries but not carried up to this
+list at the time, the same lapse recorded above for Phase 14; carrying them up matters because a
+stale number here is what a later phase compares against.
 
 When tallying, delete the dead results directory of any task the conversion removed
 (`<module>/build/test-results/testDebugUnitTest/` survives the plugin swap and will be
