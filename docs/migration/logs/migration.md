@@ -6406,21 +6406,26 @@ stay; whichever phase next touches those files should correct them.
 
 ### Next step
 
-**09B-2 and 09B-3 are both blocked on human decisions**, so the next executable phase is not in the
-09B family.
+**Phase 17 — `:ui:resources`.** Not the next number, but the next *executable* one: the whole 09B
+family and everything behind D10 is blocked, while README.md's own gate note says *"Phases 17–20
+(UI) are deliberately parallel-capable with 07–16 (core + desktop), because they touch disjoint
+modules. **Phase 17 only needs Phase 06.**"* Phase 06 landed in Phase 06. The Phase 16 gate governs
+when desktop UI may be **merged**, not when the resource tier may be converted.
 
 | Work | State |
 |---|---|
+| **17** | **executable now** — blocked by 06 only, which is done |
+| 18 | after 17 |
+| 19 | after 18, plus **D6**/**D7** (an agent may proceed on the recommendation and record that it did — DECISIONS.md preamble) |
 | 09B-2 (encrypted desktop driver) | **blocked** — needs D5 = C's sub-decision: *which* driver, whether a commercial licence is acceptable, and whether desktop needs SQLCipher file-format parity with Android |
 | 09B-3 (settings tier) | **blocked** — carries an ABI decision, option (a) or (b) |
 | 13B-2, 15, 16 | blocked on **D10** (the only `_pending_` decision); 16 is a hard gate |
 | 13B-3 | blocked on D10 **and** on explicit R8 authorisation to rewrite `chunked/ChunkFrame.kt` |
-| 17–24 | downstream of the Phase 16 gate |
+| 20–24 | downstream of 19 / the Phase 16 and 23 gates |
 
-That leaves the remaining unconverted modules — `:core:calling`, `:ui:theme`, `:ui:chat`, `:app` —
-whose phases sit behind the Phase 16 gate, and **D10 is now the single decision unblocking the most
-work**. The migration has, for the first time since Phase 06, no phase that can be executed without
-a human answering something.
+So the core+desktop track is now **fully blocked on human decisions**, and **D10 is the single
+decision unblocking the most work** (four phases plus the Phase 16 gate). The UI track is not
+blocked, which is where execution continues.
 
 
 
