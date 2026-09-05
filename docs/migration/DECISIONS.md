@@ -13,7 +13,7 @@
 | **D7** | **Phase 19** | UI platform shims. **Executed 2026-09-05 (`94a60a4`); D7b overridden on evidence** — a and c as written, but FileKit was **not** adopted. See the note under D7 below. |
 | **D8** | **Phase 22** | Whether the §15 desktop screens exist. |
 | **D9** | Phase 24 | Sample consumers; agent may proceed on the recommendation. |
-| **D10** | **Phases 13B-2, 13B-3, 15, 16** | What replaces `java.io.InputStream` in a `commonMain` signature. Added 2026-09-05 by the agent that reached Phase 13. **Answered 2026-09-05 = Option A**, with an explicit R8 authorisation for 13B-3's `ChunkFrame` rewrite (byte-identical output required). **Enacted as Okio 3.4.0 by 13B-2 (`732e7b5`, 2026-09-05); spent again by 13B-3a (`5e4e9a5`) for SHA-256. The R8 authorisation was spent and discharged by 13B-3b (`a3375e3`) — byte-identity proved on both targets and against the verbatim old serializer — so `ChunkFrame` is untouchable again; 13B-3c/d/e remain and touch no wire format.** |
+| **D10** | **Phases 13B-2, 13B-3, 15, 16** | What replaces `java.io.InputStream` in a `commonMain` signature. Added 2026-09-05 by the agent that reached Phase 13. **Answered 2026-09-05 = Option A**, with an explicit R8 authorisation for 13B-3's `ChunkFrame` rewrite (byte-identical output required). **Enacted as Okio 3.4.0 by 13B-2 (`732e7b5`, 2026-09-05); spent again by 13B-3a (`5e4e9a5`) for SHA-256. The R8 authorisation was spent and discharged by 13B-3b (`a3375e3`) — byte-identity proved on both targets and against the verbatim old serializer — so `ChunkFrame` is untouchable again. 13B-3c (`d51206b`) and 13B-3d (`293f12b`) both needed no library at all, which is evidence that D10 is correctly scoped to I/O and should not be stretched over every `java.util` type: `BitSet` became Kotlin `Long` intrinsics and the atomics became `kotlin.concurrent.atomics`. Only 13B-3e remains, and no sub-step has touched a wire format.** |
 | **D11** | **a new phase, number TBD** | Is the calling stack (`:core:calling` + `:ui:callui`) in desktop scope? Added 2026-09-05 — no phase file has ever mentioned `:core:calling`. **Answered 2026-09-05 = in scope, research first.** Does not block any existing phase. |
 
 **As of 2026-09-05 every decision D1–D11 is answered.** No phase in this plan is blocked on a decision
@@ -492,8 +492,10 @@ but lives on **Kotlin/Native**, whose `actual` no artifact in this environment c
 `writeByte('?'.code)`, so it removes the question instead of answering it for one platform. Full
 evidence in the 13B-3b log entry.
 
-**Remaining 13B-3 sub-steps, none of which touch a wire format:** 13B-3c (`java.util.BitSet`),
-13B-3d (atomics, `ConcurrentHashMap`, `UUID`), 13B-3e (the pipelines).
+**Remaining 13B-3 sub-steps, none of which touch a wire format:** ~~13B-3c (`java.util.BitSet`),
+13B-3d (atomics, `ConcurrentHashMap`, `UUID`),~~ **13B-3c is done (`d51206b`) and 13B-3d is done
+(`293f12b`); neither opened `ChunkFrame.kt`.** Only **13B-3e** (the pipelines) remains, and it does not
+touch a wire format either.
 
 ---
 
@@ -533,6 +535,6 @@ cheap side-effect regardless of what the research concludes, since it costs one 
 and turns an assumption into a measurement.
 
 **This decision blocks nothing that already exists.** It authorises a *new* phase, whose number is TBD
-and which must not be inserted ahead of 13B-3c–e/15/16 — D10 = A has unblocked the critical path (13B-2
-`732e7b5`, 13B-3a `5e4e9a5`, 13B-3b `a3375e3` all landed 2026-09-05), and the Phase 16 interop gate
-outranks calling.
+and which must not be inserted ahead of 13B-3e/15/16 — D10 = A has unblocked the critical path (13B-2
+`732e7b5`, 13B-3a `5e4e9a5`, 13B-3b `a3375e3`, 13B-3c `d51206b`, 13B-3d `293f12b` all landed
+2026-09-05), and the Phase 16 interop gate outranks calling.

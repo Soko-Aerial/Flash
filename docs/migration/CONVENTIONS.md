@@ -175,7 +175,7 @@ replaces; +1 XML because the suite's `androidHostTest` XML replaces the one that
 `jvmTest` XML is new). Phase 13B-3b took it to **1359 / 12 / 0 across 180 XMLs**
 (1351 + 4 × 2 = 1359; 178 + 2 XMLs, one per target for the one new suite), and nothing was
 displaced because the file it covers moved from `androidMain` to `commonMain` without any test moving
-with it. Phase 13B-3c took it to **1377 / 12 / 0 across 181 XMLs** — the current total — and its
+with it. Phase 13B-3c took it to **1377 / 12 / 0 across 181 XMLs** — and its
 arithmetic is the 13B-3a shape again, which is the one to copy when a suite *moves* rather than
 appearing: the suite left `androidHostTest` at 6 tests in 1 XML and arrived in `commonTest` at 12,
 which run on both targets, so 24 − 6 = **+18** (1359 + 18 = 1377) and 2 − 1 = **+1** XML
@@ -184,6 +184,17 @@ error the Phase 20 note above exists to prevent, one sub-step smaller. Both 13B-
 figures were pasted in their log entries but not carried up to this list at the time, the same lapse
 recorded above for Phase 14; carrying them up matters because a stale number here is what a later
 phase compares against.
+
+Phase 13B-3d took it to **1409 / 12 / 0 across 183 XMLs** — the current total. Its arithmetic is the
+**purely additive** shape, and it is worth having one of those recorded next to the subtract-then-add
+ones so the difference is visible: nothing moved between source sets *that had a test*, so nothing was
+displaced. A new 14-test suite in `commonTest` runs on both targets (+28 tests, +2 XMLs — one per
+target, both new), and an existing `androidHostTest` suite grew 8 → 12 in place (+4 tests, +0 XMLs).
+1377 + 28 + 4 = **1409**; 181 + 2 = **183**. The trap in this shape is the mirror of the other one:
+here you must **not** subtract, because the `commonMain` class the new suite covers
+(`TransferCompletionStateMachine`) moved source sets in the very same commit while having **no
+existing test to leave behind**. "A file moved, so a suite must have moved with it" is the wrong
+inference — check whether a test existed before assuming one was displaced.
 
 When tallying, delete the dead results directory of any task the conversion removed
 (`<module>/build/test-results/testDebugUnitTest/` survives the plugin swap and will be

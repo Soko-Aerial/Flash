@@ -6868,6 +6868,479 @@ Then **13B-3e** (the pipelines — `Chunker`, `ChunkStream`, `ReceivePipeline`, 
 
 After 13B-3: **15 → 16 (hard gate) → 21 → 22 → 23 (hard gate) → 24.**
 
+## Phase 13B-3d — the concurrency seams onto Kotlin's own primitives
+
+- **Date:** 2026-09-05
+- **Agent/model:** Claude (Opus 5), Claude Code
+- **Commit:** `293f12b` (source), this entry (docs)
+- **Decisions relied on:** **D1 = Option B** for the strict-`commonMain` shape. **D10 = Option A is
+  again *not* relied on** — this sub-step needed no I/O library either, which is the second
+  consecutive confirmation of 13B-3c's finding that D10 is scoped to I/O and should not be stretched
+  to cover every `java.util` type. **R10** is load-bearing in the opposite direction: the frozen
+  toolchain is what ruled out the one library answer the phase file offered
+  (`kotlinx.atomicfu`). **No R8 authorisation is involved** — none of the three files is on R8's
+  list, and `chunked/ChunkFrame.kt` was not opened. The authorisation 13B-3b spent stays spent.
+
+### Change
+
+The three pin categories §13B-3's table assigns to this sub-step —
+`java.util.concurrent.atomic.Atomic{Boolean,Integer,Long}`, `ConcurrentHashMap` (with its
+`Collections.{newSetFromMap,synchronizedList}` companions) and `java.util.UUID` — are **gone from
+`:core:transfer` entirely**. No new dependency, no build-file edit (R4 satisfied trivially: one
+module, no build file in the commit), no ABI change, no wire format touched.
+
+Only one of the three files **moved**:
+
+| File | Disposition | Why |
+|---|---|---|
+| `multistream/TransferCompletionStateMachine.kt` | `androidMain` → **`commonMain`** (git records a rename) | Its `AtomicBoolean` was its only pin. |
+| `multistream/MultiStreamDispatcher.kt` | converted **in place**, stays `androidMain` | Also pinned by `Chunker`/`ChunkStream` — it can only move in 13B-3e. |
+| `RealFlashTransferRepository.kt` | converted **in place**, stays `androidMain` | Same: still reaches the chunk pipelines. |
+
+That split is deliberate and is the same one 13B-3a used when it freed hashing while `ChunkFrame`
+waited for 13B-3b: **clear the pin now, move the file when its last reference clears.** Converting
+in place is what makes 13B-3e a pure set of moves rather than a move-and-rewrite, and it is why this
+entry reports a `java.*` inventory that drops by six import lines while the `androidMain` file count
+drops by only one.
+
+### The three replacements, and why each one
+
+**1. `kotlin.concurrent.atomics` for the dispatcher's per-frame counters.** §13B-3's table offered
+three candidates for the atomics row; this is the one chosen, and the other two were rejected for
+recorded reasons rather than taste.
+
+- **`kotlinx.atomicfu` — rejected on R10.** It is a new dependency *and* a bytecode-rewriting
+  compiler plugin. R10 freezes the toolchain, and a plugin that transforms every `atomic { }` field
+  in the module is the largest possible reading of "toolchain change" for the smallest possible
+  benefit here.
+- **`PlatformLock` + plain vars — rejected on the hot path.** `chunksSentTotal.incrementAndFetch()`
+  and `bytesSentTotal.addAndFetch()` run **once per frame** on `Dispatchers.Default`, outside every
+  lock the dispatcher holds, and the class documents that path as lock-free on purpose. Wrapping two
+  counters in a monitor to avoid an experimental annotation would trade a documented performance
+  property for a documentation preference.
+- **`kotlin.concurrent.atomics` — chosen.** It costs exactly one line,
+  `@file:OptIn(ExperimentalAtomicApi::class)` before the `package` declaration, and **no build-file
+  edit** — which is what makes it R4- and R10-clean. The experimental surface reaches no ABI: every
+  atomic is a `private` field of an `internal` class.
+
+Two facts were verified rather than assumed, because both were guesses in earlier notes:
+
+- **The package is `kotlin.concurrent.atomics`, not `kotlin.concurrent`.** §13B-3's table row says
+  "`kotlin.concurrent.Atomic*`" and the 13B-3c log entry repeats it as `kotlin.concurrent.AtomicInt`.
+  Both are wrong — see the correction below. The classes are `AtomicInt` (not `AtomicInteger`),
+  `AtomicLong` and `AtomicBoolean`, and the increment/decrement helpers
+  (`incrementAndFetch`, `decrementAndFetch`, `fetchAndIncrement`, `fetchAndDecrement`) are
+  **extension functions and need their own imports** — a plain class import compiles and then fails
+  at the call site.
+- **Android bytecode is unchanged.** `javap` on the JVM `actual`s shows they are **typealiases to
+  `java.util.concurrent.atomic.AtomicInteger`/`AtomicLong`/`AtomicBoolean`**. So this row is not a
+  reimplementation with new performance characteristics; on Android it is the same class it always
+  was, reached through a common name.
+
+The member rename is mechanical and total — no overload survives under the old name, so nothing
+silently keeps calling the JDK method:
+
+| `java.util.concurrent.atomic` | `kotlin.concurrent.atomics` |
+|---|---|
+| `.get()` | `.load()` |
+| `.set(v)` | `.store(v)` |
+| `.addAndGet(d)` | `.addAndFetch(d)` |
+| `.incrementAndGet()` | `.incrementAndFetch()` |
+| `.decrementAndGet()` | `.decrementAndFetch()` |
+| `.compareAndSet(e, u)` | `.compareAndSet(e, u)` — unchanged |
+
+**2. `PlatformLock` for everything that was a monitor or a concurrent collection.** This is the
+module's **fourth** copy of the same `expect class` (`:core:common` at Phase 06, `:core:discovery` at
+08, `:core:engine` at 12, `:core:transfer` at 13B-1 for `MultiStreamProgress`), and 13B-1's
+`MultiStreamProgress` conversion is the precedent this one follows line for line. Both actuals are
+`synchronized(monitor) { block() }` over a `private val monitor = Any()`, so the lock is **reentrant
+and released on exception** — which is why the `IllegalArgumentException`-then-re-lock path in the
+new range-check test cannot hang. A bare `ReentrantLock.lock()` without `try/finally` would have.
+
+The one constraint that shaped every site: **`withLock` cannot be `inline`**, because an
+`expect class` member never can. Three consequences, all of them compile-enforced rather than
+review-enforced:
+
+- **No suspension point may appear inside a critical section.** The compiler forbids it outright.
+  This is a *feature* here — the discipline the repository most needs is the one it cannot violate.
+- **Every non-local `return` becomes `return@withLock`.** A plain `return` does not compile.
+- **A `val` declared outside cannot be assigned inside.** Definite-assignment analysis fails for a
+  non-inline lambda. This is what settled the `RealFlashTransferRepository` design — see below.
+
+**3. `UuidIdGenerator.newId()` for the three `UUID.randomUUID().toString()` calls.** The cheapest row
+in the table, exactly as it promised: `:core:common` has carried `UuidIdGenerator` in `commonMain`
+since Phase 06, `:core:transfer` already declares `api(project(":core:common"))`, and
+`RealFlashTransferRepository.kt:1` already carried `@file:OptIn(FlashInternalApi::class)`. Both
+`PlatformUuid` actuals are literally `UUID.randomUUID().toString()`, so **the value shape on the wire
+is identical on Android** — same 36-character lowercase hyphenated form, same v4 source. Nothing
+needed a golden vector because nothing about the output changed; `kotlin.uuid.Uuid` was not
+considered further, since it is experimental and the seam was already built.
+
+### Three redundant primitives, each proved redundant rather than assumed
+
+Replacing a primitive is the moment you find out whether it was doing anything. Three were not, and
+in each case the proof is a reachability argument that is now written into the code:
+
+1. **`TransferCompletionStateMachine.emittedOnce` drops from `AtomicBoolean` to a plain flag.**
+   `resolveCompletedLocked` is reachable from exactly three places — `onConfirmedCount` (via
+   `enterCoverageLocked`), `onReceiverComplete` and `tryGraceExpire` — and **all three already hold
+   the lock**. The CAS was guarding a read-modify-write that could not interleave. The plain flag
+   under the lock is exactly as strong, and the contention test asserts the property directly rather
+   than trusting the argument.
+2. **`MultiStreamDispatcher.deadIds` drops its `java.util.Collections.synchronizedList` wrapper.**
+   All **seven** accesses already ran inside `terminalLock`, so it was double-locking. Worth noting
+   how it hid: `Collections` was **fully qualified at the call site**, so no import line revealed the
+   pin and no `java.*` import census would have counted it. §13B-3's table row *did* name
+   `Collections.{newSetFromMap,synchronizedList}` — the table was right where the import-based
+   census (Ground truth 2) was blind.
+3. **`RealFlashTransferRepository.completeEmittedOnce` stays a real CAS, in contrast** — and this is
+   the control that shows the other two were not cargo-culted away. `emitCompleteFrameOnce` is
+   reached from three paths that hold **no** lock, so its `compareAndSet` is genuinely doing the
+   exclusion. It was converted to `kotlin.concurrent.atomics.AtomicBoolean`, not to a flag.
+
+### Two behaviour changes, recorded as consequences and not as fixes (R1)
+
+Both are **strictly stronger** than what they replace, which is why neither is reverted, and both are
+annotated in place so a later reader does not mistake them for intent:
+
+- **`executeSend`'s `finally` retirement is now atomic as a trio.** It used
+  `ConcurrentMap.remove(key, value)` — the two-arg compare-and-remove — on `runningDispatchers`, then
+  removed from `runningJobs` and `pauseIntents` separately. Under `registryLock` the identity check
+  and all three removals are one critical section, so no observer can catch a half-retired transfer.
+  Previously each map was atomic on its own and the trio was not.
+- **`receiverDoneIndexes` now returns a consistent snapshot.** It was `sorted()` over a
+  `Collections.newSetFromMap(ConcurrentHashMap())`, whose iteration is only **weakly consistent** —
+  so a concurrent `onIncomingChunkConfirmed` could tear the list this function seeds a resume with.
+  `sorted()` under the lock cannot.
+
+A third, narrower one is worth stating precisely because my own first draft of the code comment got
+it wrong. `onIncomingChunkConfirmed`'s freshness filter was **not** previously racy per index:
+`newSetFromMap(ConcurrentHashMap()).add()` *is* atomic, so exactly one caller won each index. The
+real original hazard is one level up and much narrower — Kotlin's `getOrPut` is a **read-then-put
+extension**, not `computeIfAbsent`, so two first-touches for the same `transferId` could each build a
+set and discard one, dropping whatever indexes the discarded set had already absorbed from the resume
+seed until a later call re-added them. Fusing `getOrPut` and the filter into one critical section
+closes that, and the comment in the file says this and not the stronger false thing.
+
+### The repository's locking discipline is two rules, and both are written on the lock
+
+`RealFlashTransferRepository` is an 838-line class whose registry is read from host callbacks, from
+coroutines on a worker dispatcher, and from `public` API called on any thread. Rather than convert
+site by site, the whole conversion reduces to two rules stated in `registryLock`'s KDoc:
+
+- **No suspension inside a critical section** — compiler-enforced, as above.
+- **No call-out inside a critical section.** `MultiStreamDispatcher.setPaused`, `Job.cancel` and
+  `MultiStreamDispatcher.onInboundFrame` all take locks of their own, and the last can reach a
+  **host callback**. Holding `registryLock` across any of them would nest this lock underneath a
+  dispatcher's — an ordering this class establishes nowhere else.
+
+Every site is then the same shape: **read or remove under the lock, act on the returned value after
+release.** Three places are worth reading in the diff because the shape has a wrinkle:
+
+- **`pauseTransfer` fuses the intent-record and the dispatcher lookup into one critical section**,
+  which is what makes "first" mean first — `executeSend`'s registration can no longer slip between
+  them — and calls `setPaused` after release.
+- **`resumeTransfer` deliberately keeps three *separate* `withLock` reads.** A fused read would have
+  needed a holder class to escape the captured-`val` constraint, which is extra surface on a `public
+  class` for no behavioural gain; separate reads also reproduce the original `ConcurrentHashMap`
+  interleaving exactly, which is the R1-faithful choice.
+- **`onInboundFrame` snapshots `runningDispatchers.values.toList()` and fans out after release.** A
+  one-shot copy is also the closest available match to the weakly-consistent
+  `ConcurrentHashMap.values` iteration it replaces.
+
+`receiverDone` gets **its own lock**, not `registryLock`: the two sets of state are never touched
+together, the inbound-chunk path must not queue behind the send-side registry, and — the point that
+matters for later phases — because they are never nested in either order, there is **no lock-ordering
+discipline for 13B-3e to get wrong.**
+
+### Tests
+
+**NEW — `commonTest/multistream/TransferCompletionStateMachineTest.kt`, 14 tests.** The class **had no
+test at all** before this commit. Two things follow from that, and both are the reason the suite was
+written rather than deferred:
+
+- It is why the redundant CAS survived: the class has **zero production call sites**. It is an
+  extracted-but-never-wired version of completion logic `MultiStreamDispatcher` still re-implements
+  inline, and `logs/progress.md:1469` records it as the "fourteenth" file Phase 11's placement table
+  missed. Nothing exercised it directly.
+- Moving a file with zero direct coverage into `commonMain` would be the worst of both worlds — a new
+  desktop code path certified by nothing. Being in `commonTest` means **`jvmTest` runs it too**, which
+  is what separates "the desktop lock compiles" from "the desktop lock excludes" (R3.1). 13B-1's
+  `RollingRateMeterTest` set this precedent.
+
+Time is injected (`nowMs: () -> Long`), so all thirteen state-machine transitions are deterministic;
+only `contention_racingCoverage_emitsExactlyOneCompleteFrame` is concurrent, and it asserts an
+**invariant** — exactly one caller may transition to `RESOLVED`, exactly one COMPLETE frame may be
+emitted — rather than a schedule. It races 8 workers × 500 rounds on `Dispatchers.Default`, each
+tallying its own resolutions in a per-worker `IntArray` so that a lost write cannot mask a double
+resolution (the same construction `RollingRateMeterTest` uses, and for the same reason).
+
+The 14 cover both ERROR-013 completion semantics end to end: coverage with zero grace resolving
+immediately; coverage with a grace window **parking without emitting**, because the receiver still
+owns the `verified` flag; an authoritative `false` being emitted verbatim rather than defaulted to
+`true`; grace expiry one millisecond short and then exactly on the boundary; the watcher polling
+outside `AWAITING_RECEIVER_COMPLETE` being a no-op in both directions; a receiver COMPLETE arriving
+from `COLLECTING` and resolving without full local coverage; a late COMPLETE being absorbed with no
+second emission and no rewrite of the recorded flag; resolution being **absorbing** against a storm of
+five further events; `onAllChannelsDead` resolving failed on incomplete coverage but being a no-op
+after full coverage (coverage wins that race); monotonic high-water-mark and range checks; constructor
+rejection; and a null emit callback staying a no-op instead of throwing.
+
+**`RealFlashTransferRepositoryTest` grew 8 → 12 tests.** The `preloadReceiverProgress` /
+`onIncomingChunkConfirmed` / `receiverDoneIndexes` trio had **no coverage at all**, and it is precisely
+the state this commit converts from lock-free to locked — so the coverage lands with the conversion
+rather than after it. A `RecordingStore` fake replays a seeded `allDoneChunks()` and records every
+`markChunksDone` write. The four:
+
+- **the warm-up seeds per transfer, sorted** — duplicate rows absorbed, ids role-scoped, ascending
+  order, unknown id → `emptyList()`, and warming must **not** write back to the store;
+- **no store is a no-op**, not a crash;
+- **only fresh indexes are persisted** — three batches: full, overlapping (only `[4]` reaches the DAO),
+  and fully redundant (no round-trip at all);
+- **8 callers × the same 500 indexes** race on the same first `getOrPut("rx-race")`, and every index
+  must be claimed **exactly once**: the union of everything persisted is the batch, with no
+  duplicates, and every batch reaches the right transfer id. `runBlocking(testDispatcher)` over the
+  suite's existing 8-thread pool gives real parallelism and joins children without a new import.
+
+### Verification (R3, full sweep)
+
+The measured tally, from `<module>/build/test-results/<task>/TEST-*.xml` per CONVENTIONS.md R3:
+
+```
+XMLs=183
+tests=1409 failures=12 errors=0
+```
+
+The arithmetic, which R3 requires shown rather than asserted. 13B-3c left **1377 / 181**:
+
+```
+new commonTest suite   14 tests × 2 targets            = +28 tests, +2 XMLs
+repository suite       8 → 12, same androidHostTest XML = +4  tests, +0 XMLs
+                                                          ------------------
+1377 + 28 + 4 = 1409                              181 + 2 = 183
+```
+
+No suite *moved*, so this is the additive shape and not 13B-3a/3c's subtract-then-add shape — the
+14-test suite is new (the class had no test to displace) and the repository suite stayed where it was.
+
+The **12 failures are the pre-existing `:core:persistence` temp-file set**, name for name identical to
+13B-3c's, untouched per R1 and PHASE-09B's explicit instruction not to "fix" them. Enumerated from the
+XMLs so the claim is checkable rather than asserted:
+
+```
+./core/persistence/.../TEST-...settings.DiscoveryModeSettingTest.xml
+  roundtrip for every valid mode
+./core/persistence/.../TEST-...settings.FlashSettingsDataStoreTest.xml
+  retentionDays roundtrip
+  backgroundTransfers roundtrip
+  dynamicAccent roundtrip
+  corrupted preferences file falls back to emptyPreferences
+  themeMode roundtrip
+  displayName roundtrip
+  soundsEnabled roundtrip
+  autoAcceptTrusted roundtrip
+  reduceMotionOverride roundtrip
+  saveLocationUri roundtrip and clear-to-null
+  hapticsEnabled roundtrip
+```
+
+The sweep therefore ends `BUILD FAILED` on `:core:persistence:testAndroidHostTest`
+(`35 tests completed, 12 failed`) exactly as every sweep since Phase 09B has. `--continue` is what
+keeps that from aborting the rest — without it the total silently drops and the baseline looks like
+progress. `:app:assembleDebug` and `:app:testDebugUnitTest` both completed.
+
+The four tasks that judge this sub-step, and the three suites that judge the conversions:
+
+```
+:core:transfer:compileAndroidMain      BUILD SUCCESSFUL
+:core:transfer:compileKotlinJvm        BUILD SUCCESSFUL
+:core:transfer:testAndroidHostTest     tests=137 failures=0 errors=0
+:core:transfer:jvmTest                 tests=58  failures=0 errors=0
+
+testAndroidHostTest/…MultiStreamDispatcherTest.xml             tests=13 failures=0 errors=0
+testAndroidHostTest/…RealFlashTransferRepositoryTest.xml       tests=12 failures=0 errors=0
+testAndroidHostTest/…TransferCompletionStateMachineTest.xml    tests=14 failures=0 errors=0
+jvmTest/…TransferCompletionStateMachineTest.xml                tests=14 failures=0 errors=0
+```
+
+The last two lines are the point of the whole sub-step: the same 14 assertions pass over the Android
+`actual` and the desktop `actual` of `PlatformLock`.
+
+`MultiStreamDispatcher` was compiled and tested **before** `RealFlashTransferRepository` was touched,
+deliberately. Validating the atomics rename and 12 `withLock` conversions against real contention —
+`MultiStreamDispatcherTest` includes `terminal COMPLETE frame is emitted exactly once under racing
+full-coverage ACKs` and `concurrent sessions - two peers transfer at the same time and both complete`
+— is what made it safe to apply the same patterns to an 838-line file in one pass.
+
+### The three R6.1 review scans
+
+R6.1 exists because `compileKotlinJvm` proves R2 (no `android.*` in `commonMain`) and certifies
+**nothing** about `java.*`, and because `compileCommonMainKotlinMetadata` is SKIPPED in this repo.
+Until a Kotlin/Native target exists these three greps are the whole gate.
+
+Scan 1 — `java`/`javax`/`android`/`androidx` in any `commonMain`. This is the scan
+`TransferCompletionStateMachine`'s move is judged by, and it is empty:
+
+```
+=== SCAN 1: java/javax/android/androidx imports in commonMain ===
+(exit=0 — empty above means clean)
+```
+
+Scan 2 — JVM-only idioms — returns **exactly the known inventory and nothing new**: five `@Volatile`
+sites and the eight allowlisted `.format(` calls. The three things this sub-step could plausibly have
+leaked are all absent: **no `ConcurrentHashMap`, no `synchronized(`, no `@Synchronized`, no `System.`,
+no `currentTimeMillis`**. `TransferCompletionStateMachine.kt` does not appear at all, which is the
+positive result — its seven `synchronized(lock)` blocks became `PlatformLock` and its `AtomicBoolean`
+became a lock-guarded flag, so it contributes no row:
+
+```
+core/common/src/commonMain/.../logging/FlashLog.kt:21:    @Volatile
+core/discovery/src/commonMain/.../core/CompositeDiscovery.kt:172:    @Volatile private var desiredBrowsing = false
+core/discovery/src/commonMain/.../core/CompositeDiscovery.kt:192:    @Volatile private var currentPolicy: DiscoveryModePolicy =
+core/messaging/src/commonMain/.../model/FlashMessagingModels.kt:202:                "%d:%02d:%02d".format(hours, minutes, seconds)
+core/messaging/src/commonMain/.../model/FlashMessagingModels.kt:204:                "%d:%02d".format(minutes, seconds)
+core/network/src/commonMain/.../ws/WsKeepalive.kt:75:    @Volatile
+core/transfer/src/commonMain/.../policy/RandomAccessSinkHandle.kt:82:    @Volatile
+ui/chat/src/commonMain/.../FlashFileMessageCard.kt:113,413,415,417   (4 × .format)
+ui/chat/src/commonMain/.../FlashStressTestScreen.kt:253              (1 × .format)
+ui/chat/src/commonMain/.../FlashVoiceMessageCard.kt:81               (1 × .format)
+```
+
+Scan 3 — `@Volatile` without `import kotlin.concurrent.Volatile` — is empty; all five carry the common
+import.
+
+### The `java.*` inventory in `core/transfer/src/androidMain`, which is 13B-3's actual measure
+
+This is the number that says whether 13B-3 is progressing. Ten import lines across five files at
+13B-3c; **four import lines across two files now**:
+
+```
+      1 import java.io.OutputStream
+      1 import java.io.InputStream
+      1 import java.io.File
+      1 import java.io.Closeable
+```
+
+```
+chunked/Chunker.kt              java.io.Closeable, java.io.InputStream
+policy/DestinationPolicy.kt     java.io.File, java.io.OutputStream
+```
+
+Every remaining pin is `java.io`, and **two of the four are `policy/DestinationPolicy.kt`, which
+§13B-3 says stays in `androidMain` by design** (it is an Android storage-location policy, not a
+pipeline file). So after 13B-3e clears `Chunker`'s two, the module's residual `java.*` surface is
+intentional rather than outstanding. Source-set census:
+
+```
+commonMain  17 files
+androidMain  9 files
+jvmMain      1 file
+```
+
+13B-3c measured 16/10. One file moved, and the six `java.util*` import lines went with three files —
+which is the in-place-conversion split described at the top of this entry, seen from the inventory
+side.
+
+A residue scan confirms the categories are cleared in **code**: every remaining occurrence of
+`ConcurrentHashMap`, `newKeySet`, `Collections.` or `UUID.randomUUID` anywhere in `:core:transfer` is
+KDoc or comment text explaining what was replaced (8 lines, all in the two converted files), and the
+only `atomics` imports left are the six `kotlin.concurrent.atomics.*` lines in `MultiStreamDispatcher`
+— the replacement, not the pin.
+
+### Deviations from the phase file
+
+1. **§13B-3's table names the wrong package for the atomics, and the 13B-3c log entry repeats it.**
+   The table says `kotlin.concurrent.Atomic*`; 13B-3c's "Next step" says `kotlin.concurrent.AtomicInt`.
+   The real package is **`kotlin.concurrent.atomics`**, the integer class is **`AtomicInt`** not
+   `AtomicInteger`, and the increment/decrement helpers are **extension functions requiring separate
+   imports**. Corrected in §13B-3's table in the same commit as this entry. This is the kind of error
+   that costs a compile cycle rather than correctness, but the phase file is the input to 13B-3e and
+   should not hand it a wrong import.
+2. **§13B-3's table offered `kotlinx.atomicfu` as a candidate; it is rejected, on R10.** Recorded here
+   rather than silently skipped, because a later phase re-reading the table would otherwise see three
+   live options where there are now two.
+3. **Only one of the three files moved.** §13B-3 does not say the sub-step must move anything — it
+   lists pins to clear — but the 13B-3a/3b/3c pattern has been "clear the pin, move the file", so the
+   in-place conversion of two files is a departure from the pattern and is explained above.
+4. **The new `commonTest` suite is not required by R3.1.** Nothing in this sub-step is
+   `expect`/`actual`, so R3.1's "any phase that writes an `actual` should put at least one behavioural
+   assertion in `commonTest`" does not literally bind. The suite was written anyway, for the reason
+   13B-3c gave for its own six extra tests: a file arriving in `commonMain` with no direct coverage is
+   a desktop code path certified by nothing.
+5. **`RealFlashTransferRepositoryTest` grew even though its file did not move.** The trio it now covers
+   is the state this commit converts from lock-free to locked. Adding tests to an unmoved file is the
+   sort of thing R1 discourages, so the justification is narrow and stated: this is not "also fixing"
+   something noticed in passing, it is coverage for the exact lines the commit rewrites.
+6. **`ChunkFrameTest` was again not moved**, unchanged from 13B-3b and 13B-3c. It stays
+   `androidHostTest` until 13B-3e takes `Chunker` across.
+
+### Known issues
+
+1. **`UuidIdGenerator` is called as an object, against its own KDoc.** `FlashIdGenerator`'s
+   documentation says *"Call sites should still depend on [FlashIdGenerator], never on this object"*,
+   and this commit does the opposite. Injecting one would add a constructor parameter to
+   `public class RealFlashTransferRepository` — a **binary-incompatible ABI change**, which this
+   sub-step is not authorised to make and which would belong in a Phase 24 release note. The object
+   reference is behaviourally identical; only testability is deferred. Carried to 13B-3e, which
+   already moves the file and is the natural place to decide whether the injection is worth an ABI
+   entry.
+2. **`ReceivePipeline.kt` carries 8 `@Synchronized` members that no plan note had enumerated.** Found
+   while scanning for 13B-3e's remaining scope, at lines **100, 112, 122, 127, 135, 144, 157, 165**.
+   Ground truth 2's census (§"The real placement…") flags `MultiStreamProgress.kt` in bold for its
+   3 `@Synchronized` but records `ReceivePipeline.kt` as *"— (same-package `ChunkFrame`)"* with **no
+   lock flag at all**, and earlier 13B-3e notes listed only `sortedSetOf` for that file. Corrected in
+   the census table and in §13B-3 in the same commit as this entry. **13B-3e therefore has 12 lock
+   sites to convert, not 4** — the 8 above plus `MultiStreamReceiver.kt`'s 4 `synchronized(lock)`
+   calls at lines 56/62/65/68. (`concurrent/PlatformLock.android.kt`'s single `synchronized` is the
+   `actual` itself and stays.) 13B-1's `MultiStreamProgress` conversion is the pattern for all
+   twelve.
+3. **Three unreachable branches in `TransferCompletionStateMachine` are left exactly as found (R1).**
+   The dead `private var failedReason: String?` field; `enterCoverageLocked`'s
+   `receiverVerified?.let { … }` early return; and `wasResolved == true` inside
+   `resolveCompletedLocked`. The last one is **why the `AtomicBoolean` was moot** — the only path that
+   could have re-entered the emission site cannot be reached — so it is load-bearing evidence for
+   simplification #1 above rather than mere dead code. Deleting them is a behaviour-preserving cleanup
+   this sub-step was not asked to do.
+4. **`TransferCompletionStateMachine` still has zero production call sites.** It is now a `commonMain`
+   class with a 14-test suite on both targets and nothing calling it, while `MultiStreamDispatcher`
+   re-implements the same contract inline. That duplication is not this sub-step's to resolve, but it
+   is the reason to be careful reading the new test count as coverage of shipping behaviour: the
+   *shipping* implementation of these semantics is the dispatcher's, and its coverage is
+   `MultiStreamDispatcherTest`'s 13.
+5. **The `kotlin.concurrent.atomics` opt-in is a stdlib experimental surface, tracked for Phase 24.**
+   It reaches no ABI (private fields of internal classes) and the JVM actuals are typealiases, so
+   there is no runtime risk today. If Kotlin stabilises or renames the API before the release phase,
+   the six imports and one `@file:OptIn` in `MultiStreamDispatcher` are the whole exposure.
+6. **The items 13B-3a/3b/3c listed as unchanged remain unchanged**, none of which this sub-step
+   touches: `ChunkFrameTest`'s Android-only rejection paths, `ChunkFrame.kt:460`'s bounds check on a
+   hypothetical zero-payload frame, the `MAX_CHUNK_DATA_BYTES` / KDoc "256 KB" mismatch,
+   `ResumeBitVector.markReceived`'s `@throws` doc naming the wrong exception type,
+   `missingIndexes()`'s O(totalChunks) scan, the fact that nothing in production reads
+   `serializedProgress()` yet, and **no frame having yet crossed the wire between two machines**
+   (Phase 16's gate).
+
+### Next step
+
+**13B-3e** — the pipelines, and the last sub-step of 13B-3. It is now the largest of the five, and
+this entry has enlarged it twice:
+
+- **Files that move to `commonMain`:** `chunked/Chunker.kt` (and `ChunkStream`) once its
+  `java.io.Closeable` / `java.io.InputStream` go and the two `.buffer().inputStream()` bridges at
+  `Chunker.kt:185` are deleted; `chunked/ReceivePipeline.kt`; `chunked/SendPipeline.kt`;
+  `multistream/MultiStreamReceiver.kt`; and then the two files **13B-3d converted but could not
+  move** — `multistream/MultiStreamDispatcher.kt` and `RealFlashTransferRepository.kt`. Both are
+  already pin-free apart from what they inherit from the pipelines, so they should follow for free
+  once the pipelines land.
+- **12 lock sites, not 4** — see known issue 2.
+- **`sortedSetOf`** in `ReceivePipeline` still needs a common replacement.
+- **`ChunkFrameTest` follows `Chunker` into `commonTest`**, finally.
+- **Staying in `androidMain`:** `policy/DestinationPolicy.kt` (2 of the module's remaining 4 `java.io`
+  imports, by design) and `model/WsTransferModels.kt` (reaches `:core:network`'s `androidMain`
+  `WsTransferServer`; dead code, and §13B's Do-NOT list forbids deleting it).
+- **Do not touch `chunked/ChunkFrame.kt`.** R8, and the authorisation is spent.
+
+After 13B-3: **15 → 16 (hard gate) → 21 → 22 → 23 (hard gate) → 24.**
+
 ## Phase 14 — Desktop mDNS for `:core:discovery`
 
 - **Date:** 2026-09-05

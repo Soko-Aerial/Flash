@@ -5,7 +5,11 @@
 > against the verbatim old serializer; **that authorisation is now spent and `ChunkFrame` is R8-untouchable
 > again**. 13B-3c EXECUTED (`d51206b`) — `ResumeBitVector` off `java.util.BitSet` onto a `LongArray`, no
 > library needed and the persisted format proved byte-identical by the same two-artefact method.
-> 13B-3d and 13B-3e REMAIN.** All 2026-09-05. Authored
+> 13B-3d EXECUTED (`293f12b`) — the atomics, `ConcurrentHashMap`/`Collections` and `UUID` pins are gone
+> from `:core:transfer`; `TransferCompletionStateMachine` moved to `commonMain` with a new 14-test
+> `commonTest` suite, while `MultiStreamDispatcher` and `RealFlashTransferRepository` were converted
+> **in place** because the pipelines still pin them. **Only 13B-3e REMAINS**, and it is bigger than
+> this file previously said — see the fourth correction in §13B-3. All 2026-09-05. Authored
 > 2026-09-05 by the agent that reached Phase 13 and found `PHASE-13-desktop-fileio.md` unexecutable;
 > the working tree at authoring time was clean at `d8af05c`, and no source or build file had been
 > touched for Phase 13 or 13B at that point. **13B-1 has since been executed and verified against all
@@ -55,14 +59,18 @@ Three things are true at once:
    targets. `ChunkFrame` genuinely is an R8 file and did need the instruction.**
 
 ~~Execute **13B-1**.~~ **13B-1 is done (`fafd450`), 13B-2 is done (`732e7b5`), 13B-3a is done
-(`5e4e9a5`), 13B-3b is done (`a3375e3`), 13B-3c is done (`d51206b`).** ~~Do not start 13B-2 or 13B-3 until D10 is
+(`5e4e9a5`), 13B-3b is done (`a3375e3`), 13B-3c is done (`d51206b`), 13B-3d is done (`293f12b`).**
+~~Do not start 13B-2 or 13B-3 until D10 is
 answered and, for 13B-3, until the human has explicitly authorised touching `ChunkFrame`.~~ **Both
 conditions were met on 2026-09-05, and the `ChunkFrame` authorisation has been spent — no further edit
-to that file is permitted without a fresh one.** The next executable unit is **13B-3d**, the
-concurrency seams: the `java.util.concurrent.atomic` types in `multistream/MultiStreamDispatcher.kt`
-and `multistream/TransferCompletionStateMachine.kt`, plus `ConcurrentHashMap` and `UUID` in
-`RealFlashTransferRepository.kt`. 13B-3c's finding applies to it directly — see the third correction
-below.
+to that file is permitted without a fresh one.** The next executable unit is **13B-3e**, the last of
+the five: the pipelines. It moves `chunked/Chunker.kt` (+ `ChunkStream`), `chunked/ReceivePipeline.kt`,
+`chunked/SendPipeline.kt` and `multistream/MultiStreamReceiver.kt` to `commonMain`, deletes the two
+`.buffer().inputStream()` bridges at `Chunker.kt:185`, replaces `sortedSetOf`, converts **12** lock
+sites (not 4 — see the fourth correction below), takes `ChunkFrameTest` into `commonTest`, and then
+carries `multistream/MultiStreamDispatcher.kt` and `RealFlashTransferRepository.kt` across, both of
+which 13B-3d already made pin-free but could not move. `policy/DestinationPolicy.kt` and
+`model/WsTransferModels.kt` stay in `androidMain`.
 
 ---
 
@@ -102,19 +110,19 @@ there is no third tier. This is the whole of the blockage.
 
 | `androidMain` file | `android.*` / `androidx.*` | `java.*` that pins it |
 |---|---|---|
-| `RealFlashTransferRepository.kt` | — | `io.InputStream`, `util.Collections.newSetFromMap`, `util.UUID`, `util.concurrent.ConcurrentHashMap` |
+| `RealFlashTransferRepository.kt` | — | ~~`io.InputStream`, `util.Collections.newSetFromMap`, `util.UUID`, `util.concurrent.ConcurrentHashMap`~~ **all cleared: `io.InputStream` by 13B-2 (`732e7b5`), the other three by 13B-3d (`293f12b`). Still `androidMain` — it reaches the chunk pipelines, so it moves in 13B-3e.** |
 | `chunked/ChunkFrame.kt` | — | `io.ByteArrayOutputStream`, `nio.ByteBuffer`, `nio.ByteOrder` |
 | `chunked/Chunker.kt` | — | `io.Closeable`, `io.IOException`, `io.InputStream` |
-| `chunked/ReceivePipeline.kt` | — | — (same-package `ChunkFrame`) |
+| `chunked/ReceivePipeline.kt` | — | — (same-package `ChunkFrame`) — **CENSUS DEFECT, corrected 2026-09-05: this file also carries 8 × `@Synchronized` (lines 100/112/122/127/135/144/157/165), which the bold-flag convention used for `MultiStreamProgress.kt` below should have caught and did not. See the fourth correction in §13B-3.** |
 | `chunked/ResumeBitVector.kt` | — | ~~`util.BitSet`~~ **cleared by 13B-3c (`d51206b`) — now `commonMain`, no imports at all** |
 | `chunked/SendPipeline.kt` | — | — (same-package `ChunkSource`, `Chunker`, `ChunkFrame`) |
 | `chunked/Sha256.kt` | — | `security.MessageDigest` |
 | `manifest/TransferManifest.kt` | — | — (**`System.currentTimeMillis()`**, line 29) |
 | `model/WsTransferModels.kt` | — | — (`:core:network`'s `androidMain` `WsTransferServer`) |
-| `multistream/MultiStreamDispatcher.kt` | — | `util.Collections.synchronizedList`, `util.concurrent.atomic.{AtomicBoolean,AtomicInteger,AtomicLong}` |
+| `multistream/MultiStreamDispatcher.kt` | — | ~~`util.Collections.synchronizedList`, `util.concurrent.atomic.{AtomicBoolean,AtomicInteger,AtomicLong}`~~ **cleared by 13B-3d (`293f12b`) — atomics onto `kotlin.concurrent.atomics`, the `synchronizedList` wrapper deleted as redundant double-locking. Still `androidMain` for the same reason as the repository; moves in 13B-3e.** |
 | `multistream/MultiStreamProgress.kt` | — | — (**3 × `@Synchronized`**, lines 54/70/79) |
-| `multistream/MultiStreamReceiver.kt` | — | — (imports `ChunkFrame`, `ReceivePipeline`) |
-| `multistream/TransferCompletionStateMachine.kt` | — | `util.concurrent.atomic.AtomicBoolean` |
+| `multistream/MultiStreamReceiver.kt` | — | — (imports `ChunkFrame`, `ReceivePipeline`) — **also 4 × `synchronized(lock)`, lines 56/62/65/68** |
+| `multistream/TransferCompletionStateMachine.kt` | — | ~~`util.concurrent.atomic.AtomicBoolean`~~ **cleared by 13B-3d (`293f12b`) — now `commonMain`; the `AtomicBoolean` was redundant (every caller already held the lock) and became a lock-guarded flag** |
 | `policy/DestinationPolicy.kt` | — | `io.Closeable`, `io.File`, `io.OutputStream`, `io.RandomAccessFile` |
 | `policy/RandomAccessChunkSink.kt` | — | — (imports `ChunkSink`, same-package `RandomAccessSinkHandle`) |
 
@@ -454,7 +462,7 @@ real `FileTarget`/`UriTarget` pair, and note that `jvmMain` must be **OS-neutral
 2026-09-03 amendment — `System.getProperty("java.io.tmpdir")` is fine, a `C:\` literal or
 `%USERPROFILE%` is not.
 
-## 13B-3 — framing, hashing, concurrency. ~~**Blocked on D10 *and* an explicit R8 instruction.**~~ **UNBLOCKED 2026-09-05** (D10 = Option A; R8 exception granted, byte-identical output required). **13B-3a DONE — `5e4e9a5`. 13B-3b DONE — `a3375e3`; the R8 authorisation is now spent. 13B-3c DONE — `d51206b`.**
+## 13B-3 — framing, hashing, concurrency. ~~**Blocked on D10 *and* an explicit R8 instruction.**~~ **UNBLOCKED 2026-09-05** (D10 = Option A; R8 exception granted, byte-identical output required). **13B-3a DONE — `5e4e9a5`. 13B-3b DONE — `a3375e3`; the R8 authorisation is now spent. 13B-3c DONE — `d51206b`. 13B-3d DONE — `293f12b`. Only 13B-3e remains.**
 
 What is left after 13B-2, with the known common answer for each:
 
@@ -462,9 +470,9 @@ What is left after 13B-2, with the known common answer for each:
 |---|---|---|
 | `java.nio.ByteBuffer` / `ByteOrder` | `chunked/ChunkFrame.kt` | ~~hand-rolled ~~big-endian~~ **little-endian** `ByteArray` arithmetic, as `protocol/WsTransferMessages.kt` already does in `commonMain`~~ **DONE in 13B-3b (`a3375e3`): Okio's `Buffer` with `writeShortLe`/`writeIntLe`/`writeLongLe` — the library D10 chose already *has* the little-endian primitives, so none were hand-rolled. See the second correction below.** |
 | `java.security.MessageDigest` | `chunked/Sha256.kt` | ~~`:core:security`'s Phase 07 `PlatformCrypto` seam, or a common SHA-256 — **adds a module edge**, `:core:transfer` does not depend on `:core:security` today~~ **DONE in 13B-3a (`5e4e9a5`): okio's `HashingSink`. No module edge was added — see the correction below.** |
-| `java.util.concurrent.atomic.*` | `multistream/MultiStreamDispatcher.kt`, `multistream/TransferCompletionStateMachine.kt` | `kotlin.concurrent.Atomic*` (still `@ExperimentalAtomicApi` at Kotlin 2.2.10), `kotlinx.atomicfu`, or `PlatformLock` + plain vars |
-| `ConcurrentHashMap`, `Collections.{newSetFromMap,synchronizedList}` | `RealFlashTransferRepository.kt`, `MultiStreamDispatcher.kt` | `PlatformLock` + plain `MutableMap`/`MutableList` — the pattern already used three times |
-| `java.util.UUID` | `RealFlashTransferRepository.kt` | `:core:common`'s Phase 06 `UuidIdGenerator` |
+| `java.util.concurrent.atomic.*` | `multistream/MultiStreamDispatcher.kt`, `multistream/TransferCompletionStateMachine.kt` | ~~`kotlin.concurrent.Atomic*` (still `@ExperimentalAtomicApi` at Kotlin 2.2.10), `kotlinx.atomicfu`, or `PlatformLock` + plain vars~~ **DONE in 13B-3d (`293f12b`): `kotlin.concurrent.atomics` — note the package name, this row had it wrong. `kotlinx.atomicfu` was rejected on R10 (new dependency *and* a bytecode-rewriting compiler plugin) and `PlatformLock` was rejected for the dispatcher's per-frame counters (documented lock-free hot path). The state machine's `AtomicBoolean` needed nothing at all — it was redundant. See the fourth correction below.** |
+| `ConcurrentHashMap`, `Collections.{newSetFromMap,synchronizedList}` | `RealFlashTransferRepository.kt`, `MultiStreamDispatcher.kt` | ~~`PlatformLock` + plain `MutableMap`/`MutableList` — the pattern already used three times~~ **DONE in 13B-3d (`293f12b`), exactly as written — two locks in the repository (`registryLock`, `receiverDoneLock`), and the dispatcher's `synchronizedList` deleted outright because all seven accesses already held `terminalLock`. This row was the one that caught a pin the import census missed, because `Collections` was fully qualified at both call sites.** |
+| `java.util.UUID` | `RealFlashTransferRepository.kt` | ~~`:core:common`'s Phase 06 `UuidIdGenerator`~~ **DONE in 13B-3d (`293f12b`): three call sites swapped to `UuidIdGenerator.newId()`. No port, no new dependency — the `api(project(":core:common"))` edge and the `PlatformUuid` seam were already there, and both actuals are literally `UUID.randomUUID().toString()`.** |
 | `java.util.BitSet` | `chunked/ResumeBitVector.kt` | a `LongArray` bitset in common Kotlin — **DONE in 13B-3c (`d51206b`). This is the one row the table got exactly right, and the only one that needed no library at all. See the third correction below for what it still understated.** |
 
 > **CORRECTION (2026-09-05, after executing 13B-3a — `5e4e9a5`).** Two rows of the table above were
@@ -550,6 +558,57 @@ What is left after 13B-2, with the known common answer for each:
 >   one over 2080 randomized done-sets, 20 trimming shapes, 320 cross-restores in both directions, 12
 >   hostile/padded payloads and randomized `reconcile` sweeps, then was deleted.
 
+> **CORRECTION (2026-09-05, after executing 13B-3d — `293f12b`).** One row above named the wrong
+> package, one offered a library that R10 forbids, and — the item that actually changes work still to
+> come — **Ground truth 2's census under-reports 13B-3e's lock sites by a factor of three.**
+>
+> - **The atomics package is `kotlin.concurrent.atomics`, not `kotlin.concurrent`.** The table said
+>   `kotlin.concurrent.Atomic*` and 13B-3c's log entry repeated it as `kotlin.concurrent.AtomicInt`.
+>   Verified against `kotlin-stdlib-2.2.10.jar`: the classes are **`AtomicInt`** (not `AtomicInteger`),
+>   `AtomicLong`, `AtomicBoolean`, `AtomicReference`; the members are `load()`/`store()`/`exchange()`/
+>   `compareAndSet()`/`compareAndExchange()`/`fetchAndAdd()`/`addAndFetch()`; and
+>   `incrementAndFetch()`/`decrementAndFetch()`/`fetchAndIncrement()`/`fetchAndDecrement()` are
+>   **extension functions that need their own imports** — importing only the class compiles and then
+>   fails at the call site. One `@file:OptIn(ExperimentalAtomicApi::class)` before `package` is the
+>   entire cost; **no build-file edit**, which is what keeps it R4- and R10-clean. `javap` confirms the
+>   JVM `actual`s are typealiases to `java.util.concurrent.atomic.AtomicInteger`/`AtomicLong`/
+>   `AtomicBoolean`, so **Android bytecode does not change**.
+> - **`kotlinx.atomicfu` is not an option under R10** and should be struck from the row rather than
+>   left as a live third choice: it is a new dependency *and* a bytecode-rewriting compiler plugin.
+> - **`PlatformLock` is not always the conservative answer.** 13B-3c's "Next step" note recommended it
+>   as such. For the dispatcher's per-frame counters it is the *wrong* answer:
+>   `chunksSentTotal.incrementAndFetch()` and `bytesSentTotal.addAndFetch()` run once per frame on
+>   `Dispatchers.Default` outside every lock, on a path the class documents as lock-free on purpose.
+>   The rule 13B-3e should carry forward is narrower than "prefer the lock": **prefer the lock unless
+>   the primitive sits on a documented lock-free path.**
+> - **Replacing a concurrency primitive is how you find out whether it was doing anything, and two of
+>   four were not.** `TransferCompletionStateMachine.emittedOnce` was an `AtomicBoolean` whose every
+>   caller already held the lock; `MultiStreamDispatcher.deadIds` was a `synchronizedList` whose all
+>   seven accesses already held `terminalLock`. Both became plain. `RealFlashTransferRepository`'s
+>   `completeEmittedOnce` stayed a real CAS, because its three callers hold no lock. **Prove
+>   reachability before simplifying, and prove it before keeping, too** — the asymmetry is the finding.
+> - **`withLock` cannot be `inline`, and that shapes the code, not just the syntax.** An `expect class`
+>   member never can be. So: no suspension point may appear inside a critical section (the compiler
+>   enforces the one discipline that matters most), every non-local `return` becomes `return@withLock`,
+>   and **a `val` declared outside cannot be assigned inside** — definite-assignment analysis fails for
+>   a non-inline lambda. That last one is why `RealFlashTransferRepository` uses several small
+>   `withLock` reads instead of one fused read into three `val`s; a holder class would have worked and
+>   was rejected as extra surface on a `public class`. 13B-3e will hit the same wall on
+>   `ReceivePipeline`.
+> - **The census in Ground truth 2 misses `ReceivePipeline.kt`'s 8 `@Synchronized` members** (lines
+>   100/112/122/127/135/144/157/165). The table flags `MultiStreamProgress.kt` in bold for its 3 and
+>   records `ReceivePipeline.kt` as *"— (same-package `ChunkFrame`)"*, and earlier 13B-3e notes listed
+>   only `sortedSetOf` for that file. Corrected in the table above. **13B-3e has 12 lock sites, not
+>   4**: those 8, plus `MultiStreamReceiver.kt`'s 4 `synchronized(lock)` calls at lines 56/62/65/68.
+>   (`concurrent/PlatformLock.android.kt`'s own `synchronized` is the `actual` and stays.) The general
+>   lesson is the one 13B-3d hit twice: **an import-based census cannot see a stdlib annotation or a
+>   fully-qualified call**, which is also how `Collections.synchronizedList` hid in the dispatcher.
+> - **"Clear the pin now, move the file when its last reference clears" is the pattern, and it is not
+>   optional.** `MultiStreamDispatcher` and `RealFlashTransferRepository` are now pin-free but still
+>   `androidMain`, because both still reach the chunk pipelines. 13B-3e inherits them as pure moves.
+>   The measurable effect: the module's `java.*` import inventory fell from 10 lines across 5 files to
+>   **4 lines across 2 files**, while the `androidMain` file count fell only 10 → 9.
+
 **`ChunkFrame` is named in R8's untouchable list** (*"Wire formats: `FlashEnvelope`, `FlashProtocol`,
 `ChunkFrame`, …"*), and rewriting its `ByteBuffer` framing is unavoidable here. R8 says such a change
 needs an explicit instruction; R2 says a phase that seems to require a forbidden edit must stop and
@@ -565,7 +624,8 @@ rewrite and asserted after it on **both** targets, plus a differential test agai
 serializer. `ChunkFrame` is back under R8's ordinary protection from this point: 13B-3c, 13B-3d and
 13B-3e must not touch it, and any later edit needs a fresh authorisation. **13B-3c (`d51206b`) honoured
 that: it touched `ChunkFrame.kt` not at all, and the only reference to it in the commit is a corrected
-comment in `ChunkSink.kt` naming it as already done.**
+comment in `ChunkSink.kt` naming it as already done. 13B-3d (`293f12b`) honoured it too — it did not
+open the file, and none of its five changed files is in `chunked/`.**
 
 ---
 
