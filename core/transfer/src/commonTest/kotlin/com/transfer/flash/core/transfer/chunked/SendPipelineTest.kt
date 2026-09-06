@@ -1,13 +1,24 @@
 package com.transfer.flash.core.transfer.chunked
 
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.runTest
 import okio.Buffer
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNull
-import org.junit.Assert.assertTrue
-import org.junit.Test
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
+/**
+ * Moved to `commonTest` in Phase 13B-3e with `SendPipeline.kt`, which was the one production file in
+ * this batch that needed no editing at all — it had no `java.*` import and no lock; it was pinned
+ * only by `Chunker`/`ChunkStream`.
+ *
+ * `runBlocking` → `runTest`: `kotlinx.coroutines.runBlocking` is JVM/native-only, and `runTest` is
+ * the common replacement. It was already available with no build-file change — 13B-1 added
+ * `kotlinx-coroutines-test` to this module's `commonTest` dependencies. The expression-body form
+ * (`fun x() = runTest { … }`) is required rather than incidental: a common coroutine test must
+ * return `TestResult`, which is `Unit` on JVM but not on every target.
+ */
 class SendPipelineTest {
 
     private val chunkSize = 16_384
@@ -19,7 +30,7 @@ class SendPipelineTest {
     private fun source() = ChunkSource { Buffer().write(payload) }
 
     @Test
-    fun `abort before FILE_START surfaces zero progress`() = runBlocking {
+    fun `abort before FILE_START surfaces zero progress`() = runTest {
         val pipeline = SendPipeline(Chunker()) { false }
         val result = pipeline.send(meta, source(), requestedChunkSize = chunkSize, fileSha256Hex = fileHash)
         val aborted = result as SendResult.Aborted
@@ -28,7 +39,7 @@ class SendPipelineTest {
     }
 
     @Test
-    fun `abort mid-file records failed index and sent count`() = runBlocking {
+    fun `abort mid-file records failed index and sent count`() = runTest {
         var chunksSent = 0
         val failingSend: suspend (ByteArray) -> Boolean = { bytes ->
             if (ChunkFrame.parse(bytes) is ChunkFrame.FileStart) {
@@ -50,7 +61,7 @@ class SendPipelineTest {
     }
 
     @Test
-    fun `resumeFrom skips done chunks - read and hashed but never sent`() = runBlocking {
+    fun `resumeFrom skips done chunks - read and hashed but never sent`() = runTest {
         val outbound = ArrayDeque<ByteArray>()
         val pipeline = SendPipeline(Chunker()) { bytes ->
             outbound.addLast(bytes)
@@ -80,7 +91,7 @@ class SendPipelineTest {
     }
 
     @Test
-    fun `ack batches merge into confirmed mirror driving pendingConfirmation`() = runBlocking {
+    fun `ack batches merge into confirmed mirror driving pendingConfirmation`() = runTest {
         val pipeline = SendPipeline(Chunker()) { true }
         val result = pipeline.send(meta, source(), requestedChunkSize = chunkSize, fileSha256Hex = fileHash)
         assertTrue(result is SendResult.Completed)
@@ -100,7 +111,7 @@ class SendPipelineTest {
     }
 
     @Test
-    fun `stale or foreign frames are ignored without crashing`() = runBlocking {
+    fun `stale or foreign frames are ignored without crashing`() = runTest {
         val pipeline = SendPipeline(Chunker()) { true }
         pipeline.send(meta, source(), requestedChunkSize = chunkSize, fileSha256Hex = fileHash)
 
@@ -112,7 +123,7 @@ class SendPipelineTest {
     }
 
     @Test
-    fun `hash-only prepass produces correct FILE_START digest`() = runBlocking {
+    fun `hash-only prepass produces correct FILE_START digest`() = runTest {
         var opens = 0
         val countingSource = ChunkSource {
             opens++

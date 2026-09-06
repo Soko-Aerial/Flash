@@ -1,17 +1,22 @@
 package com.transfer.flash.core.transfer.chunked
 
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.runTest
 import okio.Buffer
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertTrue
-import org.junit.Ignore
-import org.junit.Test
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
 
 /**
- * Deterministic JVM round-trip: SendPipeline -> in-memory wire -> ReceivePipeline -> ACK/COMPLETE
- * back-channel, with no coroutine test utilities (send lambdas never truly suspend).
+ * Deterministic round-trip: SendPipeline -> in-memory wire -> ReceivePipeline -> ACK/COMPLETE
+ * back-channel. The send lambdas never truly suspend, so `runTest`'s virtual clock is never
+ * advanced here — it is used only because a common test cannot call `runBlocking`.
+ *
+ * Moved to `commonTest` in Phase 13B-3e; before that the header said "JVM round-trip", which is now
+ * the point of the move: the same assertions run on Android and on the desktop JVM. An unused
+ * `org.junit.Ignore` import was dropped rather than translated to `kotlin.test.Ignore` — nothing in
+ * this file was ever annotated with it.
  */
 class PipelineEndToEndTest {
 
@@ -52,7 +57,7 @@ class PipelineEndToEndTest {
     }
 
     @Test
-    fun `happy path - sender to receiver over in-memory wire verifies complete`() = runBlocking {
+    fun `happy path - sender to receiver over in-memory wire verifies complete`() = runTest {
         val chunker = Chunker()
         val plan = chunker.plan(meta(), chunkSize)
 
@@ -98,11 +103,11 @@ class PipelineEndToEndTest {
         assertEquals(true, sender.receiverVerified)
         assertTrue((sendResult as SendResult.Completed).fileSha256Hex.isNotEmpty())
         assertTrue(sender.pendingConfirmation!!.isEmpty())
-        assertTrue("expected at least one batched ACK", ackBatches >= 1)
+        assertTrue(ackBatches >= 1, "expected at least one batched ACK")
     }
 
     @Test
-    fun `resume mid-file - kill after k chunks then finish from receiver done-set`() = runBlocking {
+    fun `resume mid-file - kill after k chunks then finish from receiver done-set`() = runTest {
         val chunker = Chunker()
         val meta = meta("resume-case")
         val plan = chunker.plan(meta, chunkSize)

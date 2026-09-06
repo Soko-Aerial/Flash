@@ -1,10 +1,17 @@
 package com.transfer.flash.core.transfer.chunked
 
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
-import org.junit.Assert.assertTrue
-import org.junit.Test
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
+/**
+ * Moved from `androidHostTest` to `commonTest` in Phase 13B-3e, so both the Android and the JVM
+ * target now run it. The JUnit 4 → `kotlin.test` conversion is mechanical, with one trap worth
+ * naming: `org.junit.Assert` takes its optional message FIRST and `kotlin.test` takes it LAST, so
+ * every message-carrying assertion had to have its arguments swapped. A missed swap does not fail
+ * to compile here — `assertNull(message, value)` would simply assert the wrong argument.
+ */
 class ChunkFrameTest {
 
     private val start = ChunkFrame.FileStart(
@@ -22,7 +29,7 @@ class ChunkFrameTest {
         fileId = "f-1",
         index = 41,
         data = ByteArray(1234) { (it * 7).toByte() },
-        chunkSha256 = Sha256.digest("chunk-payload".toByteArray()),
+        chunkSha256 = Sha256.digest("chunk-payload".encodeToByteArray()),
     )
 
     private val ack = ChunkFrame.AckBatch("t-1", "f-1", listOf(9, 0, 7, 8))
@@ -70,7 +77,7 @@ class ChunkFrameTest {
     fun `every truncation of a valid frame is rejected`() {
         val full = ChunkFrame.serialize(start)
         for (len in 0 until full.size) {
-            assertNull("length $len must not parse", ChunkFrame.parse(full.copyOf(len)))
+            assertNull(ChunkFrame.parse(full.copyOf(len)), "length $len must not parse")
         }
     }
 
@@ -109,8 +116,8 @@ class ChunkFrameTest {
         corruptStart[ChunkFrame.HEADER_SIZE] = 0x0F
         corruptStart[ChunkFrame.HEADER_SIZE + 1] = 0xFF.toByte()
         assertNull(
-            "oversized declared string length must be rejected",
             ChunkFrame.parse(corruptStart),
+            "oversized declared string length must be rejected",
         )
     }
 

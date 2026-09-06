@@ -1,5 +1,7 @@
 package com.transfer.flash.core.transfer.chunked
 
+import com.transfer.flash.core.transfer.concurrent.PlatformLock
+
 /**
  * Receive-side orchestration for chunked transfers (C5.5/C5.6). Pure logic — all I/O sits behind
  * the injected [ChunkSink] and optional [WholeFileDigestProvider]; zero Android types.
@@ -84,6 +86,21 @@ public class ReceivePipeline(
 
     private val sessions = LinkedHashMap<String, Session>()
 
+    /**
+     * Phase 13B-3e replaced eight `@Synchronized` annotations with [PlatformLock] blocks, because
+     * `@Synchronized` resolves to `kotlin.jvm.Synchronized` and does not exist in common code (the
+     * same substitution `multistream.MultiStreamProgress` made in 13B-1).
+     *
+     * The monitor changed with it: a `@Synchronized` *public* method locks on `this`, so an outside
+     * caller could in principle have contended with these methods via `synchronized(pipeline) { }`.
+     * A repo-wide scan found no such call site, which is what makes the swap to a private monitor
+     * behaviour-preserving rather than merely narrower. [PlatformLock.withLock] is a plain
+     * `synchronized(monitor)` on both actuals, so it stays reentrant and exception-safe; but it is
+     * not `inline` (an `expect class` member cannot be), so every non-local `return` inside one of
+     * these blocks had to become `return@withLock`.
+     */
+    private val lock = PlatformLock()
+
     /** Snapshot of per-transfer progress vectors keyed by transferId. */
     public val progressVectors: Map<String, ResumeBitVector>
         get() = sessions.mapValues { (_, s) -> s.vector }
@@ -97,9 +114,8 @@ public class ReceivePipeline(
      *
      * Thread-safe: frames may arrive concurrently from WebSocket and data-channel readers.
      */
-    @Synchronized
-    public fun onFrame(bytes: ByteArray): List<ReceiveEvent> {
-        return when (val frame = ChunkFrame.parse(bytes)) {
+    public fun onFrame(bytes: ByteArray): List<ReceiveEvent> = lock.withLock {
+        when (val frame = ChunkFrame.parse(bytes)) {
             null -> listOf(ReceiveEvent.Rejected(RejectReason.MALFORMED_FRAME, null))
             is ChunkFrame.FileStart -> handleFileStart(frame)
             is ChunkFrame.Chunk -> handleChunk(frame)
@@ -109,31 +125,31 @@ public class ReceivePipeline(
     }
 
     /** Emits (and clears) any pending partial ACK batch; null when nothing pending. */
-    @Synchronized
-    public fun flushPendingAck(): ReceiveEvent? {
+    public fun flushPendingAck(): ReceiveEvent? = lock.withLock {
         for ((transferId, session) in sessions) {
             if (!session.finished && session.pending.isNotEmpty()) {
-                return buildAck(session, transferId)
+                return@withLock buildAck(session, transferId)
             }
         }
-        return null
+        null
     }
 
-    @Synchronized
-    public fun doneIndexes(transferId: String): List<Int>? =
+    public fun doneIndexes(transferId: String): List<Int>? = lock.withLock {
         sessions[transferId]?.vector?.doneIndexes()
+    }
 
     /** Serialized bit-vector for persistence (C5.6 `TransferChunkEntity`); null if unknown id. */
-    @Synchronized
-    public fun serializedProgress(transferId: String): ByteArray? =
+    public fun serializedProgress(transferId: String): ByteArray? = lock.withLock {
         sessions[transferId]?.vector?.toSerialized()
+    }
 
     /**
      * Drops a receive session (remote CANCEL). Returns true when a live session existed.
      * The destination sink handle is closed by the HOST (it owns the handle map).
      */
-    @Synchronized
-    public fun cancelSession(transferId: String): Boolean = sessions.remove(transferId) != null
+    public fun cancelSession(transferId: String): Boolean = lock.withLock {
+        sessions.remove(transferId) != null
+    }
 
     /**
      * #5: accepts a pending offer — resolves the deferred destination sink (invoking
@@ -141,29 +157,26 @@ public class ReceivePipeline(
      * an awaiting session existed. If the session was already open (or fully-seeded resume), this
      * is a no-op returning false.
      */
-    @Synchronized
-    public fun acceptSession(transferId: String): Boolean {
-        val session = sessions[transferId] ?: return false
-        if (!session.awaitingAcceptance) return false
+    public fun acceptSession(transferId: String): Boolean = lock.withLock {
+        val session = sessions[transferId] ?: return@withLock false
+        if (!session.awaitingAcceptance) return@withLock false
         session.resolvedSink = sinkFactory?.invoke(session.start) ?: sink
         session.awaitingAcceptance = false
-        return true
+        true
     }
 
     /**
      * #5: declines a pending offer — drops the session. No sink was ever resolved, so nothing is
      * on disk to clean up. Returns true when an awaiting session existed.
      */
-    @Synchronized
-    public fun declineSession(transferId: String): Boolean {
-        val session = sessions[transferId] ?: return false
-        if (!session.awaitingAcceptance) return false
+    public fun declineSession(transferId: String): Boolean = lock.withLock {
+        val session = sessions[transferId] ?: return@withLock false
+        if (!session.awaitingAcceptance) return@withLock false
         sessions.remove(transferId)
-        return true
+        true
     }
 
-    @Synchronized
-    public fun clear(): Unit = sessions.clear()
+    public fun clear(): Unit = lock.withLock { sessions.clear() }
 
     private fun handleFileStart(frame: ChunkFrame.FileStart): List<ReceiveEvent> {
         val validationError = validateFileStart(frame)
@@ -277,7 +290,11 @@ public class ReceivePipeline(
     }
 
     private fun buildAck(session: Session, transferId: String): ReceiveEvent.AckBatchReady {
-        val indexes = session.pending.toList()
+        // `.sorted()` is what keeps this wire-identical after 13B-3e swapped [Session.pending] from
+        // a `sortedSetOf` (TreeSet) to a `HashSet`: these indexes become `ChunkFrame.AckBatch`
+        // bytes, and the documented contract on [ReceiveEvent.AckBatchReady] is "deduplicated
+        // ascending". The set still dedupes; the ordering moved here.
+        val indexes = session.pending.toList().sorted()
         session.pending.clear()
         return ReceiveEvent.AckBatchReady(
             ChunkFrame.AckBatch(transferId, session.start.fileId, indexes),
@@ -328,7 +345,12 @@ public class ReceivePipeline(
         var resolvedSink: ChunkSink?,
         var awaitingAcceptance: Boolean = false,
     ) {
-        val pending = sortedSetOf<Int>()
+        /**
+         * `HashSet` rather than the original `sortedSetOf` (`java.util.TreeSet`): the JDK
+         * sorted-set types have no common equivalent, and the sort order this set used to supply is
+         * applied in [buildAck] instead, where the bytes are actually built.
+         */
+        val pending = HashSet<Int>()
         var finished = false
     }
 
@@ -341,11 +363,11 @@ public class ReceivePipeline(
     }
 }
 
-// [ChunkSink] — the destination abstraction this pipeline writes verified chunks through — moved
-// to `commonMain/chunked/ChunkSink.kt` in Phase 13B-2. Its signature needed no re-typing; only
-// the file it lived in was Android-bound. The pipeline itself stays here, but the list of reasons
-// has shrunk to one: `Sha256` moved to `commonMain` in 13B-3a, `ChunkFrame` in 13B-3b and
-// `ResumeBitVector` in 13B-3c, leaving `sortedSetOf` — and this file — for 13B-3e.
+// Fully common since Phase 13B-3e, which cleared the last two reasons this file was Android-bound:
+// eight `@Synchronized` annotations (→ [PlatformLock], see the `lock` property) and `sortedSetOf`
+// (→ `HashSet` + an explicit `.sorted()` in `buildAck`, see [ReceivePipeline.Session.pending]).
+// Everything else it needs had already gone common: [ChunkSink] in 13B-2, `Sha256` in 13B-3a,
+// `ChunkFrame` in 13B-3b and `ResumeBitVector` in 13B-3c.
 
 /**
  * Optional whole-file digest seam for final re-checks (e.g. hashing the assembled destination

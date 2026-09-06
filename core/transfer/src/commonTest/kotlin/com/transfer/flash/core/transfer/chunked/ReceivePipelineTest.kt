@@ -2,13 +2,31 @@ package com.transfer.flash.core.transfer.chunked
 
 import com.transfer.flash.core.transfer.chunked.ReceiveEvent
 import okio.Buffer
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertNull
-import org.junit.Assert.assertTrue
-import org.junit.Test
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
+/**
+ * Moved to `commonTest` in Phase 13B-3e with `ReceivePipeline.kt`, whose eight `@Synchronized`
+ * methods became [com.transfer.flash.core.transfer.concurrent.PlatformLock] blocks and whose
+ * `sortedSetOf` done-set became a `HashSet`. Neither change is visible from here, which is the
+ * point: the ACK-ordering assertions below (`assertEquals(listOf(2, 4), ack.frame.indexes)`,
+ * `assertEquals(listOf(32, 32, 6), batchSizes)`) are exactly what proves the explicit `.sorted()`
+ * that replaced the TreeSet still puts ascending indexes on the wire. They now run on the desktop
+ * JVM as well as on Android.
+ *
+ * Twelve message-carrying assertions had their arguments swapped, since `kotlin.test` takes the
+ * message LAST and `org.junit.Assert` takes it first. That flip is silent — `assertNull(message,
+ * value)` compiles fine and asserts the wrong argument — so it was done mechanically and then
+ * re-checked by grepping for any remaining string literal in first position.
+ *
+ * `"assembled-differently".toByteArray()` became `encodeToByteArray()`: the former resolves to the
+ * JVM-only overload that takes a `java.nio.charset.Charset`. Both are UTF-8 here, so the digest the
+ * negative-verification case feeds in is unchanged.
+ */
 class ReceivePipelineTest {
 
     private val chunkSize = 16_384
@@ -106,7 +124,7 @@ class ReceivePipelineTest {
 
         val ack = pipeline.flushPendingAck() as ReceiveEvent.AckBatchReady
         assertEquals(listOf(0), ack.frame.indexes)
-        assertNull("pending cleared after flush", pipeline.flushPendingAck())
+        assertNull(pipeline.flushPendingAck(), "pending cleared after flush")
     }
 
     @Test
@@ -135,7 +153,7 @@ class ReceivePipelineTest {
         assertNotNull(completed)
         assertTrue(completed!!.verified)
         assertEquals((64 until frames.size).toList(), sink.indexesWritten.takeLast(6))
-        assertNull("nothing left pending after completion", pipeline.flushPendingAck())
+        assertNull(pipeline.flushPendingAck(), "nothing left pending after completion")
         assertEquals((0 until frames.size).toList(), sink.indexesWritten)
     }
 
@@ -199,7 +217,7 @@ class ReceivePipelineTest {
         assertTrue(okComplete.verified)
         assertEquals(frames.size, okSink.writes)
 
-        val (badComplete, _) = runWith(Sha256.digestHex("assembled-differently".toByteArray()))
+        val (badComplete, _) = runWith(Sha256.digestHex("assembled-differently".encodeToByteArray()))
         assertFalse(badComplete.verified)
 
         // Null digest from the provider must not claim verification either.
@@ -232,7 +250,7 @@ class ReceivePipelineTest {
             }
         }
 
-        assertNotNull("completion reached without re-sending seeded chunks", completed)
+        assertNotNull(completed, "completion reached without re-sending seeded chunks")
         // Only the non-seeded chunks were written; seeded chunks were never re-received.
         assertEquals((40 until frames.size).toList(), sink.indexesWritten)
     }
@@ -249,7 +267,7 @@ class ReceivePipelineTest {
 
         val events = pipeline.onFrame(ChunkFrame.serialize(startFrame()))
         val completed = events.filterIsInstance<ReceiveEvent.Completed>().singleOrNull()
-        assertNotNull("all-chunks-persisted resume finalizes immediately", completed)
+        assertNotNull(completed, "all-chunks-persisted resume finalizes immediately")
         assertEquals(0, sink.writes)
     }
 
@@ -292,14 +310,14 @@ class ReceivePipelineTest {
         val startEvents = pipeline.onFrame(ChunkFrame.serialize(startFrame()))
         // The offer is announced, but no destination is created before consent.
         assertEquals(1, startEvents.filterIsInstance<ReceiveEvent.SessionStarted>().size)
-        assertEquals("no sink resolved before acceptance", 0, sinkFactoryCalls)
+        assertEquals(0, sinkFactoryCalls, "no sink resolved before acceptance")
 
         // A chunk arriving before the user accepts is dropped, never written.
         val early = chunkFrames()[0]
         val rejected = pipeline.onFrame(ChunkFrame.serialize(early)).single() as ReceiveEvent.Rejected
         assertEquals(RejectReason.AWAITING_ACCEPTANCE, rejected.reason)
         assertEquals(0, sink.writes)
-        assertNull("nothing acked while awaiting acceptance", pipeline.flushPendingAck())
+        assertNull(pipeline.flushPendingAck(), "nothing acked while awaiting acceptance")
     }
 
     @Test
@@ -313,9 +331,9 @@ class ReceivePipelineTest {
         )
         pipeline.onFrame(ChunkFrame.serialize(startFrame()))
 
-        assertTrue("acceptSession opens an awaiting offer", pipeline.acceptSession(meta.transferId))
-        assertEquals("sink resolved exactly once on accept", 1, sinkFactoryCalls)
-        assertFalse("second accept is a no-op", pipeline.acceptSession(meta.transferId))
+        assertTrue(pipeline.acceptSession(meta.transferId), "acceptSession opens an awaiting offer")
+        assertEquals(1, sinkFactoryCalls, "sink resolved exactly once on accept")
+        assertFalse(pipeline.acceptSession(meta.transferId), "second accept is a no-op")
 
         val frames = chunkFrames()
         var completed: ChunkFrame.Complete? = null
@@ -325,7 +343,7 @@ class ReceivePipelineTest {
             }
             if (completed != null) break
         }
-        assertNotNull("accepted offer streams to completion", completed)
+        assertNotNull(completed, "accepted offer streams to completion")
         assertEquals(frames.size, sink.writes)
     }
 
@@ -340,7 +358,7 @@ class ReceivePipelineTest {
         pipeline.onFrame(ChunkFrame.serialize(startFrame()))
 
         assertTrue(pipeline.declineSession(meta.transferId))
-        assertFalse("declining a gone session returns false", pipeline.declineSession(meta.transferId))
+        assertFalse(pipeline.declineSession(meta.transferId), "declining a gone session returns false")
 
         val chunk = chunkFrames()[0]
         val rejected = pipeline.onFrame(ChunkFrame.serialize(chunk)).single() as ReceiveEvent.Rejected
@@ -362,7 +380,7 @@ class ReceivePipelineTest {
 
         val events = pipeline.onFrame(ChunkFrame.serialize(startFrame()))
         val completed = events.filterIsInstance<ReceiveEvent.Completed>().singleOrNull()
-        assertNotNull("a fully-persisted resume finalizes even under the offer gate", completed)
+        assertNotNull(completed, "a fully-persisted resume finalizes even under the offer gate")
         // No new destination is created for an already-complete resume, and accept is a no-op.
         assertEquals(0, sink.writes)
         assertFalse(pipeline.acceptSession(meta.transferId))

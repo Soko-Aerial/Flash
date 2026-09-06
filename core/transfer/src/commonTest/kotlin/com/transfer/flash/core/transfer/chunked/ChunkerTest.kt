@@ -1,12 +1,24 @@
 package com.transfer.flash.core.transfer.chunked
 
 import okio.Buffer
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertThrows
-import org.junit.Assert.assertTrue
-import org.junit.Test
-import java.util.NoSuchElementException
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
 
+/**
+ * Moved to `commonTest` in Phase 13B-3e together with `Chunker.kt` itself. Three conversions beyond
+ * the mechanical import swap:
+ *  * JUnit's `assertThrows` with a `::class.java` literal became `assertFailsWith<X> { }`, since
+ *    `::class.java` is JVM-only.
+ *  * `assertTrue(message, condition)` → `assertTrue(condition, message)` — `kotlin.test` puts the
+ *    message LAST where `org.junit.Assert` puts it first.
+ *  * the redundant `import java.util.NoSuchElementException` is gone; the name resolves to
+ *    `kotlin.NoSuchElementException`, which is what `ChunkStream.next()` now throws in common code.
+ *
+ * The `.use { }` blocks needed no change and are the reason [ChunkStream]'s supertype had to become
+ * `kotlin.AutoCloseable` rather than being dropped: `kotlin.io.use` is `java.io.Closeable`-only.
+ */
 class ChunkerTest {
 
     private val chunker = Chunker()
@@ -78,9 +90,9 @@ class ChunkerTest {
             sourceOf(bytes),
             meta,
             plan,
-            expectFileSha256Hex = Sha256.digestHex("different".toByteArray()),
+            expectFileSha256Hex = Sha256.digestHex("different".encodeToByteArray()),
         )
-        assertThrows(IllegalStateException::class.java) {
+        assertFailsWith<IllegalStateException> {
             while (stream.hasNext()) stream.next()
         }
         stream.close()
@@ -93,7 +105,7 @@ class ChunkerTest {
         val meta = meta(declared)
         val plan = chunker.plan(meta, 16_384)
         val stream = chunker.openChunkStream(sourceOf(actual), meta, plan)
-        assertThrows(IllegalStateException::class.java) {
+        assertFailsWith<IllegalStateException> {
             while (stream.hasNext()) stream.next()
         }
         stream.close()
@@ -108,7 +120,7 @@ class ChunkerTest {
             assertTrue(stream.hasNext())
             stream.next()
             assertTrue(!stream.hasNext())
-            assertThrows(NoSuchElementException::class.java) { stream.next() }
+            assertFailsWith<NoSuchElementException> { stream.next() }
         }
     }
 
@@ -127,7 +139,7 @@ class ChunkerTest {
             val size = Chunker.adaptiveSize(throughput)
             assertTrue(size in Chunker.MIN_CHUNK_SIZE_BYTES..Chunker.MAX_CHUNK_SIZE_BYTES)
             assertEquals(0, size % Chunker.SIZE_GRANULARITY_BYTES)
-            assertTrue("non-monotonic at $throughput", size >= previous)
+            assertTrue(size >= previous, "non-monotonic at $throughput")
             previous = size
             throughput *= 1.5
         }
@@ -138,8 +150,8 @@ class ChunkerTest {
         assertEquals(1, Chunker.totalChunks(1, 16_384))
         assertEquals(1, Chunker.totalChunks(16_384, 16_384))
         assertEquals(2, Chunker.totalChunks(16_385, 16_384))
-        assertThrows(IllegalArgumentException::class.java) { Chunker.totalChunks(0, 16_384) }
-        assertThrows(IllegalArgumentException::class.java) {
+        assertFailsWith<IllegalArgumentException> { Chunker.totalChunks(0, 16_384) }
+        assertFailsWith<IllegalArgumentException> {
             Chunker.totalChunks(Long.MAX_VALUE, Chunker.MIN_CHUNK_SIZE_BYTES)
         }
     }

@@ -1,14 +1,22 @@
 package com.transfer.flash.core.transfer.chunked
 
-import java.io.Closeable
-import java.io.InputStream
+import okio.BufferedSource
+import okio.IOException
 import okio.buffer
 
-// [ChunkSource] — the re-openable byte source this file chunks — moved to
-// `commonMain/chunked/ChunkSource.kt` in Phase 13B-2 and its `open()` now returns `okio.Source`.
-// The two call sites below bridge it back to the `java.io.InputStream` that [ChunkStream] still
-// reads, because [ChunkStream] depends on `ChunkFrame`, which is still Android-bound. `Sha256`
-// went common in 13B-3 and is no longer part of what pins this file.
+// Fully common since Phase 13B-3e. [ChunkSource] went common in 13B-2 with `open(): okio.Source`,
+// and the two `.buffer().inputStream()` bridges that used to adapt it back to `java.io.InputStream`
+// are gone: [ChunkStream] now reads an `okio.BufferedSource` directly. `Sha256` (13B-3a) and
+// `ChunkFrame` (13B-3b) had already gone common, which is what made this file movable at all.
+//
+// Two okio-3.4.0 constraints shaped the result, both verified against the published artifacts
+// rather than assumed:
+//  * `okio.Closeable` is an `expect interface` in okio's commonMain (its JVM actual is a typealias
+//    to `java.io.Closeable`), and `kotlin.AutoCloseable` is nowhere in okio's common surface — so
+//    `use { }` does NOT apply to a `BufferedSource` in common code. [Chunker.hashOnly] therefore
+//    closes in an explicit `finally`.
+//  * `okio.IOException` IS in that common surface, so the best-effort catch in [ChunkStream.close]
+//    stays a narrow catch rather than widening to `Exception`.
 
 /** Identity + declared size of one outgoing file. */
 public data class FileMeta(
@@ -151,9 +159,15 @@ public class Chunker {
     /**
      * Streaming hash-only pre-pass (constant memory). Used when the caller has no pre-computed
      * whole-file digest for `FILE_START`.
+     *
+     * Closes in an explicit `finally` rather than `use { }` — see the file header: okio 3.4.0's
+     * `Closeable` is not a `kotlin.AutoCloseable` in common code. The close is best-effort for the
+     * same reason [ChunkStream.close] is: this is a read-only pass, the digest is already computed
+     * by then, and a close failure must not mask a read failure.
      */
     public fun hashOnly(source: ChunkSource): String {
-        source.open().buffer().inputStream().use { stream ->
+        val stream = source.open().buffer()
+        try {
             val digest = IncrementalSha256()
             val buffer = ByteArray(DEFAULT_CHUNK_SIZE_BYTES)
             while (true) {
@@ -162,6 +176,12 @@ public class Chunker {
                 if (n > 0) digest.update(buffer, 0, n)
             }
             return digest.digestHex()
+        } finally {
+            try {
+                stream.close()
+            } catch (_: IOException) {
+                // Best-effort close.
+            }
         }
     }
 
@@ -182,19 +202,27 @@ public class Chunker {
         plan: ChunkPlan,
         expectFileSha256Hex: String? = null,
     ): ChunkStream =
-        ChunkStream(source.open().buffer().inputStream(), meta, plan, expectFileSha256Hex)
+        ChunkStream(source.open().buffer(), meta, plan, expectFileSha256Hex)
 }
 
 /**
  * Lazy pull-based CHUNK iterator (constant memory). Consume fully for a clean finish; always
  * [close] when aborting early (send failure, cancellation) to release the underlying stream.
+ *
+ * Phase 13B-3e re-typed the constructor parameter from `java.io.InputStream` to [BufferedSource]
+ * and the supertype from `java.io.Closeable` to [AutoCloseable] (`kotlin.AutoCloseable`, stable
+ * common API since Kotlin 2.0 and an actual typealias for `java.lang.AutoCloseable` on the JVM).
+ * The constructor is `internal`, so the parameter change is not an ABI break; the supertype change
+ * is, and it is the same one `policy.RandomAccessSinkHandle` took in 13B-2 — `close()` and `use { }`
+ * keep working for every consumer in this repo, but a third party who assigned a `ChunkStream` to a
+ * `java.io.Closeable` variable is broken. Recorded for Phase 24's release notes.
  */
 public class ChunkStream internal constructor(
-    private val stream: InputStream,
+    private val stream: BufferedSource,
     private val meta: FileMeta,
     private val plan: ChunkPlan,
     private val expectFileSha256Hex: String?,
-) : Iterator<ChunkFrame.Chunk>, Closeable {
+) : Iterator<ChunkFrame.Chunk>, AutoCloseable {
 
     private val buffer = ByteArray(plan.chunkSize)
     private val fileDigest = IncrementalSha256()
@@ -231,7 +259,7 @@ public class ChunkStream internal constructor(
             closed = true
             try {
                 stream.close()
-            } catch (_: java.io.IOException) {
+            } catch (_: IOException) {
                 // Best-effort close; abort paths must not mask the original failure.
             }
         }
@@ -282,9 +310,12 @@ public class ChunkStream internal constructor(
 
     private fun validateEnd() {
         if (endValidated) return
-        val extra = stream.read()
-        check(bytesRead == plan.totalBytes && extra < 0) {
-            "source length mismatch: read=$bytesRead expected=${plan.totalBytes} extraByte=${extra >= 0}"
+        // `BufferedSource.exhausted()` replaces the old single-byte `InputStream.read()` EOF probe:
+        // it reads at most one byte into the buffer and reports whether anything is there, so the
+        // check is the same one, without consuming a byte we would then have to describe.
+        val extraByte = !stream.exhausted()
+        check(bytesRead == plan.totalBytes && !extraByte) {
+            "source length mismatch: read=$bytesRead expected=${plan.totalBytes} extraByte=$extraByte"
         }
         val observed = fileDigest.digestHex()
         if (expectFileSha256Hex != null &&

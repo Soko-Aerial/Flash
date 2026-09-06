@@ -3,14 +3,26 @@ package com.transfer.flash.core.transfer.multistream
 import com.transfer.flash.core.transfer.chunked.ChunkFrame
 import com.transfer.flash.core.transfer.chunked.ChunkSink
 import com.transfer.flash.core.transfer.chunked.Sha256
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
-import org.junit.Assert.assertTrue
-import org.junit.Test
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /**
- * Deterministic JVM tests for the C5.7 receive side: N arrival channels feeding ONE pipeline,
+ * Deterministic tests for the C5.7 receive side: N arrival channels feeding ONE pipeline,
  * ACK/COMPLETE replies routed back down their ARRIVING channel id.
+ *
+ * Moved to `commonTest` in Phase 13B-3e with `MultiStreamReceiver.kt`, whose four
+ * `synchronized(Any())` blocks became
+ * [com.transfer.flash.core.transfer.concurrent.PlatformLock] ones. The header used to say
+ * "Deterministic JVM tests"; the word is dropped because these now run on Android and on the
+ * desktop JVM, and nothing in the file was ever JVM-specific beyond the JUnit imports. Six
+ * message-carrying assertions had their arguments swapped for `kotlin.test`'s message-last order.
+ *
+ * `assertEquals(listOf(0, 1, 2, 3), receiver.doneIndexes(transferId))` is unaffected by 13B-3e's
+ * `sortedSetOf` → `HashSet` swap in `ReceivePipeline`: that list comes from `ResumeBitVector`, which
+ * is a bit vector and therefore ascending by construction. The set that changed feeds only the ACK
+ * batches, whose order the two `ack.frame.indexes` assertions here pin down.
  */
 class MultiStreamReceiverTest {
 
@@ -69,16 +81,16 @@ class MultiStreamReceiverTest {
         assertTrue(receiver.onFrame(1, chunkBytes(1)).isEmpty())
         val completionEvents = receiver.onFrame(2, chunkBytes(2))
 
-        assertEquals("final partial ACK + COMPLETE", 2, completionEvents.size)
+        assertEquals(2, completionEvents.size, "final partial ACK + COMPLETE")
         val ack = completionEvents[0] as RoutedReceiveEvent.AckBatchReady
-        assertEquals("routed down ARRIVING channel", 2, ack.channelId)
-        assertEquals("final batch covers every verified index", listOf(0, 1, 2, 3), ack.frame.indexes)
+        assertEquals(2, ack.channelId, "routed down ARRIVING channel")
+        assertEquals(listOf(0, 1, 2, 3), ack.frame.indexes, "final batch covers every verified index")
         val complete = completionEvents[1] as RoutedReceiveEvent.Completed
         assertEquals(2, complete.channelId)
         assertTrue(complete.frame.verified)
         assertEquals(4, sink.writes)
         for (index in chunks.indices) {
-            assertTrue("chunk $index byte-identical", sink.parts[index]!!.contentEquals(chunks[index]))
+            assertTrue(sink.parts[index]!!.contentEquals(chunks[index]), "chunk $index byte-identical")
         }
 
         // Duplicate delivery on yet another channel: idempotent, no rewrite.
@@ -99,7 +111,7 @@ class MultiStreamReceiverTest {
         val firstBatch = receiver.onFrame(1, chunkBytes(1))
         assertEquals(1, firstBatch.size)
         val routed = firstBatch[0] as RoutedReceiveEvent.AckBatchReady
-        assertEquals("batch answers on the channel whose frame completed it", 1, routed.channelId)
+        assertEquals(1, routed.channelId, "batch answers on the channel whose frame completed it")
         assertEquals(listOf(0, 1), routed.frame.indexes)
         assertTrue(routed.frameBytes.isNotEmpty())
 
@@ -122,7 +134,7 @@ class MultiStreamReceiverTest {
 
         val flushed = receiver.flushPendingAck(5)
         val ack = flushed as RoutedReceiveEvent.AckBatchReady
-        assertEquals("flush routes down caller-specified live channel", 5, ack.channelId)
+        assertEquals(5, ack.channelId, "flush routes down caller-specified live channel")
         assertEquals(listOf(0), ack.frame.indexes)
         assertNull(receiver.flushPendingAck(5)) // drained
     }

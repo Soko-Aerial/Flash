@@ -5,6 +5,7 @@ import com.transfer.flash.core.transfer.chunked.ChunkSink
 import com.transfer.flash.core.transfer.chunked.ReceiveEvent
 import com.transfer.flash.core.transfer.chunked.ReceivePipeline
 import com.transfer.flash.core.transfer.chunked.RejectReason
+import com.transfer.flash.core.transfer.concurrent.PlatformLock
 
 /**
  * Receive-side counterpart of [MultiStreamDispatcher] (C5.7): accepts frames arriving over ANY of
@@ -46,26 +47,34 @@ internal class MultiStreamReceiver(
 ) {
 
     private val pipeline = ReceivePipeline(sink, ackEvery)
-    private val lock = Any()
+
+    /**
+     * Phase 13B-3e replaced `synchronized(Any())` with [PlatformLock] at all four call sites below;
+     * `kotlin.synchronized` is JVM-only. The nesting is unchanged and still one-directional —
+     * receiver lock, then the pipeline's own lock, never the reverse, and `ReceivePipeline` never
+     * calls back into this class — so there is no new deadlock edge. (It would be reentrant even if
+     * there were: both `PlatformLock` actuals are a plain `synchronized(monitor)`.)
+     */
+    private val lock = PlatformLock()
 
     /**
      * Processes one inbound frame from [channelId].
      * Returned events are already routed: feed each `frameBytes` back down `channelId`.
      */
     fun onFrame(channelId: Int, bytes: ByteArray): List<RoutedReceiveEvent> {
-        val events = synchronized(lock) { pipeline.onFrame(bytes) }
+        val events = lock.withLock { pipeline.onFrame(bytes) }
         return events.map { it.route(channelId) }
     }
 
     /** Forces any pending partial ACK batch; routed down [channelId]. Null when nothing pending. */
     fun flushPendingAck(channelId: Int): RoutedReceiveEvent? =
-        synchronized(lock) { pipeline.flushPendingAck() }?.route(channelId)
+        lock.withLock { pipeline.flushPendingAck() }?.route(channelId)
 
     fun doneIndexes(transferId: String): List<Int>? =
-        synchronized(lock) { pipeline.doneIndexes(transferId) }
+        lock.withLock { pipeline.doneIndexes(transferId) }
 
     fun activeTransferIds(): Set<String> =
-        synchronized(lock) { pipeline.activeTransferIds() }
+        lock.withLock { pipeline.activeTransferIds() }
 
     private fun ReceiveEvent.route(fromChannelId: Int): RoutedReceiveEvent = when (this) {
         is ReceiveEvent.SessionStarted -> RoutedReceiveEvent.SessionStarted(frame, fromChannelId)
