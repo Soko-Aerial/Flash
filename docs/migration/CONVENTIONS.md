@@ -185,7 +185,7 @@ figures were pasted in their log entries but not carried up to this list at the 
 recorded above for Phase 14; carrying them up matters because a stale number here is what a later
 phase compares against.
 
-Phase 13B-3d took it to **1409 / 12 / 0 across 183 XMLs** — the current total. Its arithmetic is the
+Phase 13B-3d took it to **1409 / 12 / 0 across 183 XMLs**. Its arithmetic is the
 **purely additive** shape, and it is worth having one of those recorded next to the subtract-then-add
 ones so the difference is visible: nothing moved between source sets *that had a test*, so nothing was
 displaced. A new 14-test suite in `commonTest` runs on both targets (+28 tests, +2 XMLs — one per
@@ -195,6 +195,17 @@ here you must **not** subtract, because the `commonMain` class the new suite cov
 (`TransferCompletionStateMachine`) moved source sets in the very same commit while having **no
 existing test to leave behind**. "A file moved, so a suite must have moved with it" is the wrong
 inference — check whether a test existed before assuming one was displaced.
+
+Phase 13B-3e took it to **1453 / 12 / 0 across 189 XMLs** — the current total. It is the cleanest
+example of the *pure relocation* shape, which is neither of the two above: **six suites moved from
+`androidHostTest` to `commonTest` and not one test was added, deleted or edited.** A moved suite keeps
+its Android run (`testAndroidHostTest` executes `commonTest` too) and gains a `jvmTest` run, so each
+contributes **+1 XML and +N tests**, where N is its own test count — never 2N, and never a subtraction,
+because the Android side neither leaves nor doubles. 8 + 10 + 2 + 15 + 6 + 3 = **+44** (1409 + 44 =
+1453) and **+6** XMLs (183 + 6 = 189). The confirming cross-check is the per-target split, and it is
+worth doing on any relocation phase: `testAndroidHostTest` must come back **unchanged** — it did, at
+137 tests across 18 suites — while `jvmTest` grows by exactly the moved total, 102 = 58 + 44. If the
+Android figure moves at all on a pure relocation, a suite was edited, not moved.
 
 When tallying, delete the dead results directory of any task the conversion removed
 (`<module>/build/test-results/testDebugUnitTest/` survives the plugin swap and will be

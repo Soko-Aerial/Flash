@@ -13,7 +13,7 @@
 | **D7** | **Phase 19** | UI platform shims. **Executed 2026-09-05 (`94a60a4`); D7b overridden on evidence** — a and c as written, but FileKit was **not** adopted. See the note under D7 below. |
 | **D8** | **Phase 22** | Whether the §15 desktop screens exist. |
 | **D9** | Phase 24 | Sample consumers; agent may proceed on the recommendation. |
-| **D10** | **Phases 13B-2, 13B-3, 15, 16** | What replaces `java.io.InputStream` in a `commonMain` signature. Added 2026-09-05 by the agent that reached Phase 13. **Answered 2026-09-05 = Option A**, with an explicit R8 authorisation for 13B-3's `ChunkFrame` rewrite (byte-identical output required). **Enacted as Okio 3.4.0 by 13B-2 (`732e7b5`, 2026-09-05); spent again by 13B-3a (`5e4e9a5`) for SHA-256. The R8 authorisation was spent and discharged by 13B-3b (`a3375e3`) — byte-identity proved on both targets and against the verbatim old serializer — so `ChunkFrame` is untouchable again. 13B-3c (`d51206b`) and 13B-3d (`293f12b`) both needed no library at all, which is evidence that D10 is correctly scoped to I/O and should not be stretched over every `java.util` type: `BitSet` became Kotlin `Long` intrinsics and the atomics became `kotlin.concurrent.atomics`. Only 13B-3e remains, and no sub-step has touched a wire format.** |
+| **D10** | **Phases 13B-2, 13B-3, 15, 16** | What replaces `java.io.InputStream` in a `commonMain` signature. Added 2026-09-05 by the agent that reached Phase 13. **Answered 2026-09-05 = Option A**, with an explicit R8 authorisation for 13B-3's `ChunkFrame` rewrite (byte-identical output required). **Enacted as Okio 3.4.0 by 13B-2 (`732e7b5`, 2026-09-05); spent again by 13B-3a (`5e4e9a5`) for SHA-256. The R8 authorisation was spent and discharged by 13B-3b (`a3375e3`) — byte-identity proved on both targets and against the verbatim old serializer — so `ChunkFrame` is untouchable again. 13B-3c (`d51206b`) and 13B-3d (`293f12b`) both needed no library at all, which is evidence that D10 is correctly scoped to I/O and should not be stretched over every `java.util` type: `BitSet` became Kotlin `Long` intrinsics and the atomics became `kotlin.concurrent.atomics`. FULLY ENACTED by 13B-3e (`fa95d74`, 2026-09-06), which is where the choice actually paid for itself — `ChunkStream` now takes an `okio.BufferedSource` and `:core:transfer` is 23 `commonMain` / 3 `androidMain` / 1 `jvmMain` with a desktop end-to-end round trip asserted. Phase 13B is complete and no sub-step touched a wire format. Three properties of okio's *common* surface had to be read out of the published metadata jar because `compileCommonMainKotlinMetadata` is SKIPPED in this repo: `okio.IOException` is common, `read(ByteArray,Int,Int)` still returns −1 at EOF, and `use { }` does NOT apply to a `BufferedSource` in common code (`okio.Closeable` is an `expect interface`, and `AutoCloseable` is absent from okio 3.4.0's commonMain metadata) — that last one is the only place Option A is more awkward in common code than on the JVM, and the cost is an explicit `try`/`finally`. Two `Closeable` → `AutoCloseable` ABI breaks are the total consumer-visible price so far (`RandomAccessSinkHandle` in 13B-2, `ChunkStream` in 13B-3e); both need Phase 24 release notes.** |
 | **D11** | **a new phase, number TBD** | Is the calling stack (`:core:calling` + `:ui:callui`) in desktop scope? Added 2026-09-05 — no phase file has ever mentioned `:core:calling`. **Answered 2026-09-05 = in scope, research first.** Does not block any existing phase. |
 
 **As of 2026-09-05 every decision D1–D11 is answered.** No phase in this plan is blocked on a decision
@@ -378,13 +378,16 @@ Added 2026-09-05, by the agent that reached Phase 13 and could not execute it. *
 decision, not a re-litigation of D1.** D1 chose strict `commonMain`; D10 is the consequence nobody
 costed at the time.
 
-**Today (measured, repo at `d8af05c`):** `:core:transfer` is 5 `commonMain` + 15 `androidMain` files.
+**When this decision was taken (measured, repo at `d8af05c`):** `:core:transfer` is 5 `commonMain` +
+15 `androidMain` files.
 **Not one of the 15 references `android.*` or `androidx.*`.** They are `androidMain` because they use
 `java.io` byte streams, `java.nio.ByteBuffer` framing, `java.security.MessageDigest`,
 `java.util.concurrent` atomics and maps, `java.util.UUID` and `java.util.BitSet` — and under D1 = B
 there is no shared JVM tier to hold them. `androidMain` and `jvmMain` are siblings, so **nothing in
 `jvmMain` can see any of it**: a compile probe of Phase 13's own proposed adapters produced 11
 `Unresolved reference` errors, including the `chunked` and `policy` **packages** themselves.
+*(That census is a snapshot of the problem, not of the repo. It is superseded — see* ***FULLY ENACTED
+2026-09-06*** *at the end of this decision for the figures after all five 13B-3 sub-steps landed.)*
 
 The blocker is specifically that `java.io.InputStream` appears in *published* `public` signatures:
 `ChunkSource.open(): InputStream`, `FileSourceOpener.open(String): InputStream`,
@@ -492,10 +495,67 @@ but lives on **Kotlin/Native**, whose `actual` no artifact in this environment c
 `writeByte('?'.code)`, so it removes the question instead of answering it for one platform. Full
 evidence in the 13B-3b log entry.
 
-**Remaining 13B-3 sub-steps, none of which touch a wire format:** ~~13B-3c (`java.util.BitSet`),
-13B-3d (atomics, `ConcurrentHashMap`, `UUID`),~~ **13B-3c is done (`d51206b`) and 13B-3d is done
-(`293f12b`); neither opened `ChunkFrame.kt`.** Only **13B-3e** (the pipelines) remains, and it does not
-touch a wire format either.
+~~**Remaining 13B-3 sub-steps, none of which touch a wire format:** 13B-3c (`java.util.BitSet`),
+13B-3d (atomics, `ConcurrentHashMap`, `UUID`), 13B-3e (the pipelines).~~ **There are none left.
+13B-3c (`d51206b`), 13B-3d (`293f12b`) and 13B-3e (`fa95d74`) are all done, and not one of the three
+opened `ChunkFrame.kt`** — the R8 authorisation was spent by 13B-3b and nothing after it needed the
+file.
+
+**FULLY ENACTED 2026-09-06 by 13B-3e (`fa95d74`).** Option A is finished, and the census that opens this
+decision is the right way to measure the result, because it is the same count taken again:
+
+| | At `d8af05c`, when D10 was asked | At `fa95d74`, with D10 enacted |
+|---|---|---|
+| `commonMain` | 5 | **23** |
+| `androidMain` | 15 | **3** |
+| `jvmMain` | 0 | **1** |
+| `commonTest` | 1 | **13** |
+| `androidHostTest` | 13 | **5** |
+| `jvmTest` | 0 | 0 |
+
+The three files still in `androidMain` are there for reasons that have nothing to do with this decision,
+and it is worth naming them so nobody reads "3" as unfinished work:
+
+1. **`concurrent/PlatformLock.android.kt`** — an `actual`. Its `jvmMain` sibling is the single `jvmMain`
+   file. A platform declaration is the *intended* end state, not a residue.
+2. **`policy/DestinationPolicy.kt`** — genuinely still Java-typed (`import java.io.File`,
+   `java.io.OutputStream`). It is the SAF/destination seam and it needs its own decision about what a
+   desktop destination even is; D10 was scoped to the *pipeline*, and moving this file would have been
+   R1 scope creep.
+3. **`model/WsTransferModels.kt`** — has **no** platform imports at all. It is dead code that
+   `PHASE-13B-desktop-fileio.md` explicitly forbids deleting, so it stayed where it was rather than
+   being moved for tidiness.
+
+`jvmTest` is 0 for `:core:transfer` and that is not a gap in this decision's sense: `commonTest`'s 13
+files run under **both** `testAndroidHostTest` and `jvmTest`, which is how the desktop target gets its
+102 tests. A file in `jvmTest` proper would be a desktop-*only* test, and 13B-3 had no reason to write
+one.
+
+**What Option A actually bought, stated so it can be checked:** a desktop JVM host can open a file,
+chunk it, hash it, frame it to FLSH v2, send it, receive it, verify it and resume it — in common code,
+with no `java.*` in any of it. That was impossible at `d8af05c`, when a compile probe of the same
+functionality returned 11 `Unresolved reference` errors on the `chunked` and `policy` packages.
+
+**What it cost, in full:** one new dependency (Okio 3.4.0, resolution-neutral), and **two**
+`java.io.Closeable` → `kotlin.AutoCloseable` ABI breaks on `public` types — `RandomAccessSinkHandle`
+(13B-2) and `ChunkStream` (13B-3e). Neither was predicted by the phase file; both are queued for Phase
+24's release notes, which now need a *list* rather than a sentence. Because ADR-023 removed binary
+compatibility validation repo-wide, the log entries and those release notes are the **only** record of
+these breaks — nothing mechanical will catch a third one.
+
+**One thing this decision could not verify, and Option A does not fix:** Okio's *common* surface had to
+be read out of the published `*-metadata-*-all.jar` by hand (`unzip` + `grep -a` over the `.knm` files,
+plus `javap` for the JVM signatures), because `compileCommonMainKotlinMetadata` is **SKIPPED** in this
+repo — android and jvm are both JVM platform type, so no Gradle task certifies that `commonMain` uses
+only a dependency's common API. Three properties mattered and all three were verified that way:
+`BufferedSource.exhausted()` and `read(ByteArray, Int, Int): Int` (−1 at EOF) are common,
+`okio.IOException` is common, and **`use { }` is not reachable on a `BufferedSource` in common code** —
+`okio.Closeable` *is* in okio's `commonMain`, but only as an `expect interface` whose JVM `actual` is a
+typealias to `java.io.Closeable`, and `AutoCloseable` is absent from okio 3.4.0's commonMain metadata
+altogether, so neither `kotlin.io.use` (`java.io.Closeable`) nor `kotlin.use` (`kotlin.AutoCloseable`)
+applies. 13B-3e uses explicit `try`/`finally`. When a phase's
+correctness rests on a third-party library's common surface, the metadata jar is the gate, and it must
+be opened by hand.
 
 ---
 
@@ -535,6 +595,7 @@ cheap side-effect regardless of what the research concludes, since it costs one 
 and turns an assumption into a measurement.
 
 **This decision blocks nothing that already exists.** It authorises a *new* phase, whose number is TBD
-and which must not be inserted ahead of 13B-3e/15/16 — D10 = A has unblocked the critical path (13B-2
-`732e7b5`, 13B-3a `5e4e9a5`, 13B-3b `a3375e3`, 13B-3c `d51206b`, 13B-3d `293f12b` all landed
-2026-09-05), and the Phase 16 interop gate outranks calling.
+and which must not be inserted ahead of 15/16 — D10 = A has unblocked the critical path and **the whole
+of Phase 13B is now done** (13B-2 `732e7b5`, 13B-3a `5e4e9a5`, 13B-3b `a3375e3`, 13B-3c `d51206b`,
+13B-3d `293f12b` all landed 2026-09-05; 13B-3e `fa95d74` on 2026-09-06), and the Phase 16 interop gate
+outranks calling. **Phase 15 is the next executable unit**, so this phase goes after 16 at the earliest.

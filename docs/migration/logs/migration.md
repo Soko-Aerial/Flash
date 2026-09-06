@@ -7341,6 +7341,406 @@ this entry has enlarged it twice:
 
 After 13B-3: **15 → 16 (hard gate) → 21 → 22 → 23 (hard gate) → 24.**
 
+## Phase 13B-3e — the transfer pipelines to `commonMain`, and the end of 13B-3
+
+- **Date:** 2026-09-06
+- **Agent/model:** Claude (Opus 5), Claude Code
+- **Commit:** `fa95d74` (source), this entry (docs)
+- **Decisions relied on:** **D1 = Option B** for the strict-`commonMain` shape — nothing here is
+  duplicated into `jvmMain` and no `jvmAndAndroidMain` exists. **D10 = Option A is relied on
+  directly**, for the first time since 13B-3b: `Chunker`/`ChunkStream` is the file where okio finally
+  replaces `java.io.InputStream`, and it is the *last* one in this module that needed it. **No R8
+  authorisation is involved** — `chunked/ChunkFrame.kt` was not opened, and 13B-3b's authorisation
+  stays spent. **R10** held with nothing to spend it on: no version, alias or dependency moved, and
+  the two libraries this sub-step leans on (`kotlin.test`, `kotlinx-coroutines-test`) were already in
+  `commonTest` from 13B-1. **R4** is satisfied trivially — one module, and its build file changes
+  only in comments.
+
+### Change
+
+`:core:transfer` is now **23 files in `commonMain`, 3 in `androidMain`, 1 in `jvmMain`**, and the
+three that remain in `androidMain` are the three §13B-3 always said would stay. Twelve files moved,
+six of them production:
+
+| File | Edit needed to make the move legal |
+|---|---|
+| `chunked/Chunker.kt` (+ `ChunkStream`) | re-typed onto `okio.BufferedSource`; supertype `java.io.Closeable` → `kotlin.AutoCloseable`; the two `.buffer().inputStream()` bridges deleted |
+| `chunked/ReceivePipeline.kt` | 8 `@Synchronized` → `PlatformLock`; `sortedSetOf` → `HashSet` + an explicit `.sorted()` |
+| `multistream/MultiStreamReceiver.kt` | 4 `synchronized(Any())` → `PlatformLock` |
+| `chunked/SendPipeline.kt` | **none** — moved byte-for-byte |
+| `multistream/MultiStreamDispatcher.kt` | **none** — 13B-3d cleared it in place |
+| `RealFlashTransferRepository.kt` | **none** — 13B-3d cleared it in place |
+
+The last two are 13B-3d's bet paying off exactly as that entry predicted: *"clear the pin now, move
+the file when its last reference clears."* Both are pure `R` renames with a zero-line diff, which is
+the strongest available evidence that the in-place conversion was complete rather than merely
+plausible.
+
+Six test suites followed their code from `androidHostTest` to `commonTest`: `ChunkFrameTest`,
+`ChunkerTest`, `SendPipelineTest`, `ReceivePipelineTest`, `PipelineEndToEndTest` and
+`MultiStreamReceiverTest`. `ChunkFrameTest` had been deferred three times (13B-3b, 3c, 3d each
+recorded "not moved, waiting for `Chunker`"); it moves here.
+
+The module's **entire** residual `java.*` surface is now two import lines, both in a file that is
+`androidMain` by design:
+
+```
+androidMain/…/policy/DestinationPolicy.kt   import java.io.File
+androidMain/…/policy/DestinationPolicy.kt   import java.io.OutputStream
+```
+
+That is the sentence 13B-3 was written to be able to write. There is no remaining `java.*` in
+`:core:transfer` that anyone intends to remove.
+
+### `Chunker` on okio, and three constraints that were verified rather than assumed
+
+`ChunkStream`'s constructor took a `java.io.InputStream` and `Chunker` produced one by calling
+`source.open().buffer().inputStream()` — an okio `Source` adapted *back* to `java.io` at the very
+seam 13B-2 had just re-typed. Both bridges are gone; `ChunkStream` now reads the `BufferedSource`
+directly. Three okio-3.4.0 facts shaped how, each checked against the published artifacts because
+each one is the sort of thing that is easy to get wrong from memory:
+
+1. **`use { }` does not apply to a `BufferedSource` in common code.** `okio.Closeable` is an
+   `expect interface` in okio's `commonMain` whose JVM `actual` is a typealias to
+   `java.io.Closeable`, and **`AutoCloseable` is absent from okio's common surface entirely**. So
+   `Chunker.hashOnly` closes in an explicit `try`/`finally` rather than the idiomatic `use { }`. This
+   is not a style choice and a future reader should not "simplify" it.
+2. **`okio.IOException` *is* in that common surface.** The best-effort catch around `close()` could
+   therefore stay a narrow `catch (_: IOException)` instead of widening to `Exception`, which would
+   have been a real behaviour change (it would swallow programming errors).
+3. **`BufferedSource.read(ByteArray, Int, Int): Int` returns `-1` at EOF, exactly like
+   `InputStream`.** Confirmed with `javap` on the artifact rather than inferred, which is why
+   `readFully` is untouched — the loop that reads a chunk is character-for-character the same code.
+
+`validateEnd`'s trailing-byte probe changed shape but not meaning: a single-byte `InputStream.read()`
+became `!stream.exhausted()`. `exhausted()` fills at most one byte into the buffer and reports
+whether anything arrived, so the "source is longer than declared" check is the same check, without
+consuming a byte the old code then had to account for.
+
+**One ABI break, recorded for Phase 24.** `ChunkStream`'s supertype moved from `java.io.Closeable` to
+`kotlin.AutoCloseable` (stable common API since Kotlin 2.0; an `actual typealias` for
+`java.lang.AutoCloseable` on the JVM). Every consumer in this repo keeps compiling — `close()` and
+`use { }` both still resolve — but a third party who assigned a `ChunkStream` to a `java.io.Closeable`
+variable is broken. It is the same break `policy.RandomAccessSinkHandle` took in 13B-2, and it is
+the *reason* the supertype had to be `AutoCloseable` rather than simply dropped: `ChunkerTest` has
+three `.use { }` blocks, one of them containing a non-local `return`, and `kotlin.io.use` is
+`java.io.Closeable`-only. The common `kotlin.use` is the `AutoCloseable` one. The constructor
+parameter also changed type, but the constructor is `internal`, so that half is not an ABI event.
+
+### Twelve lock sites, and two arguments that had to be made rather than assumed
+
+13B-3d's known issue 2 corrected the count from 4 to 12 — the 8 `@Synchronized` members on
+`ReceivePipeline` that no earlier plan note had enumerated, plus `MultiStreamReceiver`'s 4
+`synchronized(Any())` blocks. All twelve are now `PlatformLock.withLock { }`, following 13B-1's
+`MultiStreamProgress` conversion line for line. Two consequences needed evidence:
+
+**The monitor narrowed, and that is only safe because nothing was using the wide one.** A `public`
+`@Synchronized` method locks on `this`, so before this commit an outside caller could in principle
+have contended with `ReceivePipeline`'s internals by writing `synchronized(pipeline) { … }`. A
+private `PlatformLock` makes that impossible. A repo-wide scan found **no such call site**, which is
+what makes the swap behaviour-preserving rather than merely narrower; the argument is written into
+the `lock` property's KDoc so the next reader does not have to redo the scan.
+
+**`withLock` is not `inline`, and three members needed labelled returns.** An `expect class` member
+can never be `inline`, so a plain `return` inside one of these blocks does not compile.
+`flushPendingAck`, `acceptSession` and `declineSession` each contain an early exit and now use
+`return@withLock`. The compiler enforces this, so there is no silent-failure mode — but it is also
+why the conversion could not be a mechanical annotation deletion.
+
+`MultiStreamReceiver`'s lock nesting is unchanged and still provably free of new deadlock edges: it
+takes its own lock and then calls into `ReceivePipeline`, which takes the pipeline's lock; the order
+is never reversed, and `ReceivePipeline` never calls back into the receiver. Both `PlatformLock`
+actuals are a plain `synchronized(monitor)`, so the path would be reentrant even if it did.
+
+### The `sortedSetOf` removal is a wire-format question, and it was treated as one
+
+`ReceivePipeline.Session.pending` was `sortedSetOf<Int>()` — a `java.util.TreeSet`. The JDK's sorted-set
+types have no common equivalent, so it became a `HashSet<Int>`. That set is **not** an internal
+bookkeeping detail: `buildAck` calls `.toList()` on it and the result becomes
+`ChunkFrame.AckBatch.indexes`, which is serialised and goes on the wire. `ReceiveEvent.AckBatchReady`
+documents its contract as *"deduplicated ascending"*.
+
+A `HashSet` still dedupes; it does not sort. The ordering therefore moved to the place where the
+bytes are actually built — `buildAck` now does `.toList().sorted()` — so the frames are unchanged.
+R8 protects `ChunkFrame.kt` itself, which this sub-step never opened; this argument is what protects
+the frame's *contents*, which R8 also covers and which no build task checks.
+
+Three assertions pin it down, and all three now run on both targets:
+`ReceivePipelineTest`'s `assertEquals(listOf(2, 4), ack.frame.indexes)` (an ACK batch with a hole in
+it, from the corrupted-chunk case) and `assertEquals(listOf(32, 32, 6), batchSizes)`, plus
+`MultiStreamReceiverTest`'s `assertEquals(listOf(0, 1, 2, 3), ack.frame.indexes)` fed deliberately
+out of order across three arrival channels.
+
+`doneIndexes()` was checked separately and is unaffected: it comes from `ResumeBitVector`, which is a
+bit vector and therefore ascending by construction, not from the set that changed.
+
+### JUnit 4 → `kotlin.test`, and one silent trap
+
+The six moved suites convert to `kotlin.test`. The mechanical parts:
+
+| Conversion | Count | Why it was necessary |
+|---|---|---|
+| `assertThrows(X::class.java)` → `assertFailsWith<X>` | 5 | `::class.java` is JVM-only |
+| `= runBlocking { }` → `= runTest { }` | 8 | `kotlinx.coroutines.runBlocking` is JVM/native-only |
+| `String.toByteArray()` → `encodeToByteArray()` | 1 | the former resolves to the overload taking a `java.nio.charset.Charset` |
+| message argument moved from first to last | **22** | `kotlin.test` puts the optional message LAST; `org.junit.Assert` puts it first |
+| `import java.util.NoSuchElementException` deleted | 1 | the bare name resolves to `kotlin.NoSuchElementException`, which is what `ChunkStream.next()` throws in common code |
+| unused `import org.junit.Ignore` deleted | 1 | nothing in `PipelineEndToEndTest` was ever annotated with it |
+
+**The message flip is the one dangerous conversion in this whole sub-step**, and it deserves naming
+because it will recur in every remaining suite migration. `assertNull("some message", value)` and
+`assertNull(value, "some message")` **both compile**. The JUnit form asserts that the *message* is
+null, which it never is, so a missed flip turns a passing assertion into one that fails for the wrong
+reason — or, for `assertEquals`, silently compares the wrong pair. There is no compiler help. All 22
+were converted by a scoped `sed` and then re-verified by grepping for any remaining string literal in
+first position across all six files (zero hits), plus a hand check of the one multi-line case in
+`ChunkFrameTest` where the message sits on its own line and the pattern could not see it.
+
+`runBlocking` → `runTest` needed no build-file change: 13B-1 had already put
+`kotlinx-coroutines-test` in this module's `commonTest` dependencies for `RollingRateMeterTest`. The
+expression-body form (`fun x() = runTest { … }`) is required rather than incidental — a common
+coroutine test must return `TestResult`, which is `Unit` on the JVM but not on every target.
+`PipelineEndToEndTest`'s send lambdas never truly suspend, so `runTest`'s virtual clock is never
+advanced there; it is used only because a common test cannot call `runBlocking`.
+
+The suites keep their backticked test names verbatim. That was checked rather than assumed: **44
+`commonTest` files in this repo use backticked names with spaces and 13 use underscores**, so
+backticks are the house style and a rename would have been churn. (A previous session's scan had
+reported zero backticked names; that was a shell artifact — inside single quotes, `'fun \`'` reaches
+GNU grep as backslash-backtick, which BRE treats as the start-of-buffer anchor, so the pattern can
+never match. `grep -rc 'fun `'` gives the real counts.)
+
+### Verification
+
+The work was sequenced so that a failure could only have one cause: all twelve `git mv`s first (so
+the diff reads as renames), then the production edits, then a **production-only** compile with no
+test code in it, then the test conversions. The production compile passed on the first attempt:
+
+```
+> Task :core:transfer:compileKotlinJvm
+> Task :core:transfer:compileAndroidMain
+BUILD SUCCESSFUL in 28s
+12 actionable tasks: 2 executed, 10 up-to-date
+```
+
+`compileKotlinJvm` cannot see `android.jar`, so that single line is the R2/R6.1 evidence that all six
+moved production files are genuinely common. Then the module's tests on both targets:
+
+```
+> Task :core:transfer:jvmTest
+> Task :core:transfer:testAndroidHostTest
+BUILD SUCCESSFUL in 38s
+29 actionable tasks: 7 executed, 22 up-to-date
+```
+
+`testAndroidHostTest` runs **18 suites / 137 tests / 0 failures** (the 5 left in `androidHostTest`
+plus all 13 in `commonTest`, which the Android target also executes). `jvmTest` runs **13 suites /
+102 tests / 0 failures** — the six moved suites are the new ones there:
+
+```
+ChunkFrameTest[jvm]                    tests=8   failures=0 errors=0
+ChunkerTest[jvm]                       tests=10  failures=0 errors=0
+MultiStreamReceiverTest[jvm]           tests=3   failures=0 errors=0
+PipelineEndToEndTest[jvm]              tests=2   failures=0 errors=0
+ReceivePipelineTest[jvm]               tests=15  failures=0 errors=0
+SendPipelineTest[jvm]                  tests=6   failures=0 errors=0
+```
+
+Then the full R3 command line. It ends in `BUILD FAILED`, and the failing task is the expected one:
+
+```
+* What went wrong:
+Execution failed for task ':core:persistence:testAndroidHostTest'.
+> There were failing tests.
+BUILD FAILED in 2m 23s
+352 actionable tasks: 18 executed, 334 up-to-date
+```
+
+Tally: **189 XMLs / tests=1453 / failures=12 / errors=0.** The 12 are the pre-existing
+`:core:persistence` temp-file failures R1 forbids fixing, and they are still exactly the same 12 tests
+— `DiscoveryModeSettingTest.roundtrip for every valid mode` plus 11 in `FlashSettingsDataStoreTest`
+(`retentionDays`, `backgroundTransfers`, `dynamicAccent`, corrupted-preferences fallback, `themeMode`,
+`displayName`, `soundsEnabled`, `autoAcceptTrusted`, `reduceMotionOverride`, `saveLocationUri`,
+`hapticsEnabled`), all `java.io.IOException` at `FileStorage.kt:121`.
+
+The baseline moves **183 XMLs / 1409 tests → 189 / 1453**. Both deltas are fully accounted for by the
+move and nothing else: +6 XMLs is one per moved suite now also running on the desktop JVM, and +44
+tests is those suites' JVM copies (8 + 10 + 2 + 15 + 6 + 3). The Android total is unchanged at 137 —
+`testAndroidHostTest` runs the same suites it ran before, from a different source set. **No test was
+added, deleted or rewritten in this sub-step**, only relocated and re-imported, which is why the
+delta is arithmetic rather than a judgement call.
+
+All three R6.1 gate scans are clean. Scan 1 (`java|javax|android|androidx` across every `commonMain`)
+returns **no rows** through its documented filter chain. Two figures worth writing down so the next
+reader does not misread that as "there are no such strings anywhere": the same grep *without* the
+comment filter and the two carve-outs returns **1611** lines repo-wide, essentially all
+`androidx.compose.*` in `ui/*` and `androidx.room.*` in `:core:persistence`, which is exactly what the
+carve-outs exist for. Narrowed to this module, `core/transfer/src/commonMain` has **29** raw hits and
+**0** after the comment filter — i.e. every remaining `java.*`/`android*` mention in the module's
+common code is prose inside a KDoc or a `//` comment, spread over 12 files (`Chunker.kt` 6,
+`Sha256.kt` 5, `ChunkFrame.kt`/`ResumeBitVector.kt`/`RandomAccessSinkHandle.kt` 3 each, and so on).
+Not one is an import or a type reference.
+
+Scan 2's only hits are the known `@Volatile` sites and the eight allowlisted `.format(` calls; the
+allowlist is byte-for-byte the same eight lines as before (`FlashMessagingModels.kt:202,204`,
+`FlashFileMessageCard.kt:113,413,415,417`, `FlashStressTestScreen.kt:253`,
+`FlashVoiceMessageCard.kt:81`), so this sub-step added none. Scan 3 reports one file,
+`RealFlashTransferRepository.kt`, and that is a **false positive**: its single `@Volatile` occurrence
+is inside a comment at line 442 explaining that `isPaused` is a plain `@Volatile` read *on the
+dispatcher*. There is no annotation in the file. Scan 3 uses `grep -rln` and so cannot exclude
+comments, unlike scans 1 and 2 — worth noting for whoever runs it next rather than treating as a
+finding.
+
+The commonMain `@Volatile` inventory grows from 5 code sites to **12**, all with
+`import kotlin.concurrent.Volatile`: the previous five (`FlashLog.kt:21`, `CompositeDiscovery.kt:172`
+and `:192`, `WsKeepalive.kt:75`, `RandomAccessSinkHandle.kt:82`) plus `MultiStreamDispatcher.kt`'s
+seven at lines 110, 111, 112, 114, 131, 139 and 142. Those seven are not new annotations — 13B-3d
+wrote them while the file was still `androidMain`; they are new *to `commonMain`* because the file
+moved.
+
+### Deviations from the phase file
+
+1. **§13B-3's "still needs a common replacement" for `sortedSetOf` presumes a replacement type that
+   does not exist.** `kotlin.collections` has **no sorted-set type in `commonMain`** — `sortedSetOf`,
+   `TreeSet` and `SortedSet` are all JVM-only stdlib surface. So there is no drop-in: the choice is
+   between keeping order on *insert* (hand-roll a sorted structure) and keeping it on *read*. This
+   sub-step chose read, because the only consumer of that ordering is `buildAck`, which already
+   materialises the set with `.toList()`. Written down because the phrase "needs a common replacement"
+   will otherwise send the next reader looking for a class to import.
+2. **13B-3d's next-step bullet locates "the two `.buffer().inputStream()` bridges" at
+   `Chunker.kt:185`; there were two lines, 156 and 185.** Both are gone (`Chunker.kt:169` and `:205`
+   now read `source.open().buffer()` and hand a `BufferedSource` straight to `ChunkStream`). Same class
+   of error as the two census misses 13B-3d recorded — a count and a line number that disagree — and
+   harmless here only because the sub-step converts the whole file.
+3. **The census's `Chunker.kt` row named `java.io.Closeable` and `java.io.InputStream`; the file's
+   import block was exactly those two plus `okio.buffer`.** The row was right. Recording it because
+   three of the census's rows were wrong in 13B-3b/3c/3d and a reader should know which ones held.
+4. **`ChunkStream`'s supertype changed `java.io.Closeable` → `kotlin.AutoCloseable`, which the phase
+   file did not predict and which is an ABI break.** §13B-3e says only that the `Closeable` "goes". It
+   is the same break 13B-2 took on `RandomAccessSinkHandle`, and it is invisible to every consumer in
+   this repo — `close()` still exists, and `use { }` still resolves for Kotlin callers because
+   `kotlin.use` is declared on `AutoCloseable` (it is `kotlin.io.use` that is `java.io.Closeable`-only).
+   A third party who assigned a `ChunkStream` to a `java.io.Closeable` variable, or relied on
+   `close()`'s `throws IOException`, is broken. **Phase 24 release note.**
+5. **The deferred `FlashIdGenerator` injection is resolved as "no", not carried further.** 13B-3d's
+   known issue 1 handed the decision here on the grounds that this sub-step "already moves the file".
+   It does — and the move needed nothing, because `UuidIdGenerator` was already `commonMain`. Injecting
+   a `FlashIdGenerator` would add a constructor parameter to `public class RealFlashTransferRepository`
+   under `explicitApi()`: a **binary-incompatible ABI change** with no behavioural difference, which
+   belongs to Phase 24's release notes and not to a placement sub-step. The object reference stays,
+   still against its own KDoc, and the KDoc still stands as the guidance for *new* call sites.
+6. **Two test suites did not follow their production files.** The pattern since 13B-3a has been "the
+   test follows the file"; `MultiStreamDispatcherTest` (659 lines) and `RealFlashTransferRepositoryTest`
+   (557 lines) stayed in `androidHostTest` while `MultiStreamDispatcher.kt` and
+   `RealFlashTransferRepository.kt` moved to `commonMain`. They are the module's two largest suites and
+   they use `java.util.Collections`, `CompletableFuture`, `TimeUnit`, `Executors` and the
+   `java.util.concurrent.atomic` classes as *test scaffolding* — converting them is a real piece of
+   work, not a mechanical re-import like the six that did move. The load-bearing blocker is not the
+   assertion imports but that **both suites build real dispatchers**: each calls
+   `Executors.new…ThreadPool(n).asCoroutineDispatcher()` and drives the code under test from several
+   OS threads at once, and `asCoroutineDispatcher` is a JVM-only coroutines extension with no common
+   equivalent. Swapping in `runTest` would not port those tests, it would replace the thing they test
+   — real parallelism — with a single-threaded virtual clock. Deliberately deferred rather than rushed,
+   and recorded as known issue 1 below because it leaves a coverage gap.
+7. **This commit moves twelve files where 13B-3a–3d moved one, one, one and one.** R4 is satisfied
+   (single module, single build file), and R1's "do exactly the phase" is satisfied because §13B-3e
+   names all six production files. Noted only so the diff size is not read as scope creep.
+
+### Known issues
+
+1. **The two largest production files that moved have no desktop coverage.**
+   `MultiStreamDispatcher.kt` and `RealFlashTransferRepository.kt` are now `commonMain`, so
+   `compileKotlinJvm` proves they *compile* for the desktop JVM, and nothing proves they *run* there.
+   Their suites (`MultiStreamDispatcherTest` 659 lines / 13 tests, `RealFlashTransferRepositoryTest`
+   557 lines / 12 tests) stay in `androidHostTest` for the reason in deviation 6. This is the single
+   largest gap this sub-step opens, and it is worth stating plainly: **`jvmTest`'s 102 tests do not
+   touch the repository or the dispatcher at all.** Everything below them in the stack is covered
+   (framing, hashing, resume, chunking, both pipelines, the multi-stream receiver); the orchestration
+   on top is not. Both classes are pure Kotlin over `commonMain` types with no remaining platform
+   surface, so the risk is behavioural regression under real threads on a different JVM, not a missing
+   API. **Phase 16's two-machine gate is where that would surface**, which is an argument for treating
+   16 as the real proof rather than adding thread-pool scaffolding to `commonTest` now.
+2. **`RealFlashTransferRepository` puts two `Dispatchers.IO` references into `commonMain`.**
+   Lines 52 and 53. `Dispatchers.IO` is **not** declared in the coroutines `commonMain` source set — it
+   is JVM/Android/Native, absent on JS and Wasm. It compiles today because both of this module's
+   targets are JVM. There is shipped precedent (`ui/chat`'s `FlashImageGrid.kt:452` and
+   `FlashMediaViewer.kt:430`), so this is not new debt, but the count in `core/*` goes 0 → 2 and any
+   future JS/Wasm target must inject a dispatcher instead. A Kotlin/Native target is unaffected.
+3. **`ChunkStream`'s `Closeable` → `AutoCloseable` change is an unrecorded ABI break until Phase 24
+   writes it down.** ADR-023 removed binary-compatibility-validator repo-wide, so there is no `.api`
+   file and no build task that would fail on this. This log entry and deviation 4 are the only record.
+   It is now the **second** occurrence (`RandomAccessSinkHandle` in 13B-2 was the first), which means
+   Phase 24's release notes need a *list*, not a sentence.
+4. **`sortedSetOf` → `HashSet` moves an invariant from the type system into a call site.** Before, the
+   done-set could not be unsorted; now `buildAck`'s `.toList().sorted()` is the only thing keeping ACK
+   indexes ascending, and a future edit that adds a second reader of `Session.pending` would silently
+   emit unsorted indexes. Three assertions pin the current behaviour
+   (`ReceivePipelineTest`'s `listOf(2, 4)` and `listOf(32, 32, 6)`, `MultiStreamReceiverTest`'s
+   `listOf(0, 1, 2, 3)`), and they now run on both targets, so the regression would be caught — but by
+   a test, not by a compiler. `doneIndexes()` is unaffected: it reads `ResumeBitVector`, which is
+   ascending by construction.
+5. **`PlatformLock` now exists in four independent copies — 12 source files, plus one test.**
+   `:core:common`, `:core:discovery`, `:core:engine` and `:core:transfer` each declare their own
+   `internal expect class PlatformLock` with an `androidMain` and a `jvmMain` `actual` (4 × 3 = 12
+   files; only `:core:discovery` has a `PlatformLockTest`, so the other three seams' behaviour is
+   asserted only indirectly by the code that uses them). The cause is that `internal` does not cross a
+   Gradle module boundary. Promoting one copy to `public` in `:core:common` would delete nine files and
+   is an *additive* ABI change — plausible for Phase 24, out of scope here. Recorded because the
+   duplication is now large enough to look like an oversight rather than a deliberate consequence of
+   `internal`.
+6. **`ExperimentalAtomicApi` opt-in, unreachable branches, and the state machine's zero call sites are
+   all carried forward unchanged from 13B-3d** (its known issues 3, 4 and 5). Nothing in this sub-step
+   touched `MultiStreamDispatcher`'s six atomics imports, `TransferCompletionStateMachine`'s three dead
+   branches, or the fact that the dispatcher re-implements that class's contract inline while the class
+   itself has no production caller.
+7. **`OkioRandomAccessSinkHandle` still has no desktop test asserting a non-zero-offset `writeAt`, an
+   unwritten hole, or `resize` pre-allocation** — carried from 13B-2, and this sub-step did not add
+   one. The pipelines now exercised on `jvmTest` write through a `ChunkSink`, not through that handle,
+   so the round trip proven here does not close that gap.
+8. **No frame has yet crossed the wire between two machines.** Every claim in 13B-3a…3e is proven by
+   in-process tests and golden vectors. That is Phase 16's hard gate, and it remains the one thing the
+   whole of 13B cannot self-certify.
+
+### Next step
+
+**Phase 13B is done.** All five sub-steps of 13B-3 are complete (`5e4e9a5`, `a3375e3`, `d51206b`,
+`293f12b`, `fa95d74`), and with them the whole of 13B. What that buys, stated as the capability rather
+than the file list: **a desktop JVM host can now open a file, chunk it, hash it, frame it to FLSH v2,
+send it, receive it, verify it and resume it — in common code, with the round trip asserted on the
+desktop target.** `PipelineEndToEndTest` is the claim and `jvmTest`'s 102 passing tests are the
+evidence. What it does not buy is a way to move those bytes between two machines; that is Phase 15.
+
+**Next is Phase 15 — desktop transport (`:core:network`).** Two things about it should be said here,
+because they are visible from 13B's end and would otherwise be discovered late:
+
+1. **`PHASE-15-desktop-transport.md` was written before D1 = Option B and is stale in a way that
+   matters.** It requires the shared WS plumbing to be in *"`commonMain` or `jvmAndAndroidMain`"*, names
+   `jvmAndAndroidMain` as the destination for `LanProbeServer.kt` and for the classes
+   `JvmWsFlashNetwork` is to reuse, and treats `LanProbeServer`'s current placement there as a Phase 10
+   error to correct in place. **`jvmAndAndroidMain` does not exist and must not be created** (R5,
+   D1 = B), so every such instruction needs re-reading as "`commonMain`, or duplicated per target".
+   Phase 15 will need the same kind of correction block that §13B-3 accumulated — write it before
+   starting, not after.
+2. **The module is 14 `commonMain` / 21 `androidMain` / 0 `jvmMain` files, and all 21 `androidMain`
+   files import `java.*`, `javax.*`, `android.*` or `androidx.*`.** That is the largest
+   `androidMain` residue of any converted module, and unlike `:core:transfer`'s pins these are not
+   mostly `java.io` seams behind one interface — they are sockets, TLS and `ConnectivityManager`.
+   Phase 15's own header calls it **HIGH** risk and says it must *split* files rather than add
+   implementations behind existing interfaces. The 13B pattern that worked — clear one pin category per
+   sub-step, move a file only when its last reference clears, keep every sub-step independently
+   verifiable — is the pattern to reuse, and Phase 15 is big enough to need it.
+
+Two things 13B leaves on Phase 15's desk directly: `:core:transfer`'s `model/WsTransferModels.kt` is
+still `androidMain` **only** because it reads `WsTransferServer.PREFERRED_PORT` from `:core:network`'s
+`androidMain`, so whichever Phase 15 sub-step makes that constant common also unpins this file (it is
+dead code, and §13B's Do-NOT list forbids deleting it); and `:core:network` has **0 `jvmTest` files**
+against 21 in `androidHostTest`, so the desktop-coverage discipline R3.1 asks for starts from nothing
+there rather than from a set of movable suites.
+
+After 15: **16 (hard gate) → 21 → 22 → 23 (hard gate) → 24.** Phase 16 is where the two-machine claim
+finally gets tested, and every unproven assertion 13B-1…13B-3e recorded — byte-identical framing,
+resume across a restart, the ACK ordering, the whole-file digest — is a claim 16 either confirms on
+real hardware or falsifies.
 ## Phase 14 — Desktop mDNS for `:core:discovery`
 
 - **Date:** 2026-09-05

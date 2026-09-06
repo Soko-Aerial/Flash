@@ -1,6 +1,7 @@
 # Phase 13B — Desktop file I/O for `:core:transfer`, re-scoped after measurement (D10)
 
-> **Status: 13B-1 EXECUTED (`fafd450`). 13B-2 EXECUTED (`732e7b5`). 13B-3a EXECUTED (`5e4e9a5`).
+> **Status: PHASE 13B IS COMPLETE. 13B-1 EXECUTED (`fafd450`). 13B-2 EXECUTED (`732e7b5`). 13B-3a
+> EXECUTED (`5e4e9a5`).
 > 13B-3b EXECUTED (`a3375e3`) — the R8 `ChunkFrame` rewrite, byte-identity proved on both targets and
 > against the verbatim old serializer; **that authorisation is now spent and `ChunkFrame` is R8-untouchable
 > again**. 13B-3c EXECUTED (`d51206b`) — `ResumeBitVector` off `java.util.BitSet` onto a `LongArray`, no
@@ -8,8 +9,14 @@
 > 13B-3d EXECUTED (`293f12b`) — the atomics, `ConcurrentHashMap`/`Collections` and `UUID` pins are gone
 > from `:core:transfer`; `TransferCompletionStateMachine` moved to `commonMain` with a new 14-test
 > `commonTest` suite, while `MultiStreamDispatcher` and `RealFlashTransferRepository` were converted
-> **in place** because the pipelines still pin them. **Only 13B-3e REMAINS**, and it is bigger than
-> this file previously said — see the fourth correction in §13B-3. All 2026-09-05. Authored
+> **in place** because the pipelines still pin them. **13B-3e EXECUTED (`fa95d74`) — the pipelines
+> themselves: `Chunker`/`ChunkStream` re-typed onto `okio.BufferedSource`, all 12 lock sites onto
+> `PlatformLock`, `sortedSetOf` off the JVM-only stdlib, and six production files plus six test suites
+> moved. `:core:transfer` is now 23 files in `commonMain`, 3 in `androidMain`, 1 in `jvmMain`; the
+> module's entire residual `java.*` surface is two `java.io` imports in `policy/DestinationPolicy.kt`,
+> which is `androidMain` by design. A desktop JVM host can chunk, hash, frame, send, receive, verify
+> and resume a file end-to-end in common code, asserted on the `jvm()` target.** All 2026-09-05 except
+> 13B-3e (2026-09-06). Authored
 > 2026-09-05 by the agent that reached Phase 13 and found `PHASE-13-desktop-fileio.md` unexecutable;
 > the working tree at authoring time was clean at `d8af05c`, and no source or build file had been
 > touched for Phase 13 or 13B at that point. **13B-1 has since been executed and verified against all
@@ -18,8 +25,9 @@
 > and 13B-3 additionally needs an explicit R8 authorisation to rewrite `chunked/ChunkFrame.kt`.~~
 > **D10 was answered Option A on 2026-09-05 and enacted as Okio 3.4.0 by 13B-2; the R8 authorisation
 > for `ChunkFrame` was granted the same day with byte-identical output as a hard acceptance
-> criterion. Nothing in this file is decision-blocked any more.** 13B-3 is being executed in five
-> sub-steps — see the CORRECTION in §13B-3, which also fixes two wrong rows in that section's table.
+> criterion. Nothing in this file is decision-blocked any more.** 13B-3 was executed in five
+> sub-steps — see the CORRECTIONs in §13B-3, which also fix wrong rows in that section's table.
+> **Nothing in this file remains to be executed. The next phase is 15.**
 >
 > **This file supersedes `PHASE-13-desktop-fileio.md`.** That document is written for **D1 = A**:
 > it requires a `jvmAndAndroidMain` source set holding the entire transfer pipeline, which
@@ -59,18 +67,26 @@ Three things are true at once:
    targets. `ChunkFrame` genuinely is an R8 file and did need the instruction.**
 
 ~~Execute **13B-1**.~~ **13B-1 is done (`fafd450`), 13B-2 is done (`732e7b5`), 13B-3a is done
-(`5e4e9a5`), 13B-3b is done (`a3375e3`), 13B-3c is done (`d51206b`), 13B-3d is done (`293f12b`).**
+(`5e4e9a5`), 13B-3b is done (`a3375e3`), 13B-3c is done (`d51206b`), 13B-3d is done (`293f12b`),
+13B-3e is done (`fa95d74`) — and with it 13B-3, and with that the whole of Phase 13B.**
 ~~Do not start 13B-2 or 13B-3 until D10 is
 answered and, for 13B-3, until the human has explicitly authorised touching `ChunkFrame`.~~ **Both
 conditions were met on 2026-09-05, and the `ChunkFrame` authorisation has been spent — no further edit
-to that file is permitted without a fresh one.** The next executable unit is **13B-3e**, the last of
+to that file is permitted without a fresh one.** ~~The next executable unit is **13B-3e**, the last of
 the five: the pipelines. It moves `chunked/Chunker.kt` (+ `ChunkStream`), `chunked/ReceivePipeline.kt`,
 `chunked/SendPipeline.kt` and `multistream/MultiStreamReceiver.kt` to `commonMain`, deletes the two
 `.buffer().inputStream()` bridges at `Chunker.kt:185`, replaces `sortedSetOf`, converts **12** lock
 sites (not 4 — see the fourth correction below), takes `ChunkFrameTest` into `commonTest`, and then
 carries `multistream/MultiStreamDispatcher.kt` and `RealFlashTransferRepository.kt` across, both of
 which 13B-3d already made pin-free but could not move. `policy/DestinationPolicy.kt` and
-`model/WsTransferModels.kt` stay in `androidMain`.
+`model/WsTransferModels.kt` stay in `androidMain`.~~ **All of that was executed as written** — the two
+bridges were at `Chunker.kt:156` **and** `:185`, not one line; `sortedSetOf` became a `HashSet` plus an
+explicit `.sorted()` in `buildAck`, because `commonMain` has no sorted-set type at all; all 12 lock
+sites converted; and six suites, not just `ChunkFrameTest`, went to `commonTest`.
+`policy/DestinationPolicy.kt` and `model/WsTransferModels.kt` did stay in `androidMain`.
+**There is no next executable unit in this file. Go to `PHASE-15-desktop-transport.md`**, and read the
+"Next step" section of `logs/migration.md` § *Phase 13B-3e* first — it records two ways that phase file
+is stale (it predates D1 = Option B and asks for `jvmAndAndroidMain`, which R5 forbids).
 
 ---
 
@@ -110,18 +126,18 @@ there is no third tier. This is the whole of the blockage.
 
 | `androidMain` file | `android.*` / `androidx.*` | `java.*` that pins it |
 |---|---|---|
-| `RealFlashTransferRepository.kt` | — | ~~`io.InputStream`, `util.Collections.newSetFromMap`, `util.UUID`, `util.concurrent.ConcurrentHashMap`~~ **all cleared: `io.InputStream` by 13B-2 (`732e7b5`), the other three by 13B-3d (`293f12b`). Still `androidMain` — it reaches the chunk pipelines, so it moves in 13B-3e.** |
-| `chunked/ChunkFrame.kt` | — | `io.ByteArrayOutputStream`, `nio.ByteBuffer`, `nio.ByteOrder` |
-| `chunked/Chunker.kt` | — | `io.Closeable`, `io.IOException`, `io.InputStream` |
-| `chunked/ReceivePipeline.kt` | — | — (same-package `ChunkFrame`) — **CENSUS DEFECT, corrected 2026-09-05: this file also carries 8 × `@Synchronized` (lines 100/112/122/127/135/144/157/165), which the bold-flag convention used for `MultiStreamProgress.kt` below should have caught and did not. See the fourth correction in §13B-3.** |
+| `RealFlashTransferRepository.kt` | — | ~~`io.InputStream`, `util.Collections.newSetFromMap`, `util.UUID`, `util.concurrent.ConcurrentHashMap`~~ **all cleared: `io.InputStream` by 13B-2 (`732e7b5`), the other three by 13B-3d (`293f12b`). MOVED to `commonMain` by 13B-3e (`fa95d74`), byte-for-byte — it needed no edit at all once the pipelines landed.** |
+| `chunked/ChunkFrame.kt` | — | ~~`io.ByteArrayOutputStream`, `nio.ByteBuffer`, `nio.ByteOrder`~~ **cleared by 13B-3b (`a3375e3`) — Okio `Buffer` with `writeShortLe`/`writeIntLe`/`writeLongLe`; byte-identity proved. R8-untouchable again.** |
+| `chunked/Chunker.kt` | — | ~~`io.Closeable`, `io.IOException`, `io.InputStream`~~ **cleared by 13B-3e (`fa95d74`): `ChunkStream` takes an `okio.BufferedSource`, catches `okio.IOException` (which IS in okio's common surface — verified in the metadata jar, not assumed), and implements `kotlin.AutoCloseable`. That last one is an ABI break — see §13B-3e in the log.** |
+| `chunked/ReceivePipeline.kt` | — | — (same-package `ChunkFrame`) — **CENSUS DEFECT, corrected 2026-09-05: this file also carries 8 × `@Synchronized` (lines 100/112/122/127/135/144/157/165), which the bold-flag convention used for `MultiStreamProgress.kt` below should have caught and did not. See the fourth correction in §13B-3.** **All 8 converted to `PlatformLock` by 13B-3e (`fa95d74`), along with the `sortedSetOf` done-set → `HashSet` + an explicit `.sorted()` in `buildAck`. `commonMain` since.** |
 | `chunked/ResumeBitVector.kt` | — | ~~`util.BitSet`~~ **cleared by 13B-3c (`d51206b`) — now `commonMain`, no imports at all** |
-| `chunked/SendPipeline.kt` | — | — (same-package `ChunkSource`, `Chunker`, `ChunkFrame`) |
-| `chunked/Sha256.kt` | — | `security.MessageDigest` |
+| `chunked/SendPipeline.kt` | — | — (same-package `ChunkSource`, `Chunker`, `ChunkFrame`) — **MOVED to `commonMain` by 13B-3e (`fa95d74`) byte-for-byte, no edit. This row was right: the file was only ever pinned by its neighbours.** |
+| `chunked/Sha256.kt` | — | ~~`security.MessageDigest`~~ **cleared by 13B-3a (`5e4e9a5`) — okio `HashingSink.sha256`, whose JVM implementation holds a `MessageDigest`, so Android digests are unchanged. No module edge added.** |
 | `manifest/TransferManifest.kt` | — | — (**`System.currentTimeMillis()`**, line 29) |
 | `model/WsTransferModels.kt` | — | — (`:core:network`'s `androidMain` `WsTransferServer`) |
-| `multistream/MultiStreamDispatcher.kt` | — | ~~`util.Collections.synchronizedList`, `util.concurrent.atomic.{AtomicBoolean,AtomicInteger,AtomicLong}`~~ **cleared by 13B-3d (`293f12b`) — atomics onto `kotlin.concurrent.atomics`, the `synchronizedList` wrapper deleted as redundant double-locking. Still `androidMain` for the same reason as the repository; moves in 13B-3e.** |
-| `multistream/MultiStreamProgress.kt` | — | — (**3 × `@Synchronized`**, lines 54/70/79) |
-| `multistream/MultiStreamReceiver.kt` | — | — (imports `ChunkFrame`, `ReceivePipeline`) — **also 4 × `synchronized(lock)`, lines 56/62/65/68** |
+| `multistream/MultiStreamDispatcher.kt` | — | ~~`util.Collections.synchronizedList`, `util.concurrent.atomic.{AtomicBoolean,AtomicInteger,AtomicLong}`~~ **cleared by 13B-3d (`293f12b`) — atomics onto `kotlin.concurrent.atomics`, the `synchronizedList` wrapper deleted as redundant double-locking. MOVED to `commonMain` by 13B-3e (`fa95d74`), byte-for-byte, like the repository.** |
+| `multistream/MultiStreamProgress.kt` | — | — (**3 × `@Synchronized`**, lines 54/70/79) — **cleared by 13B-1 (`fafd450`), the first `PlatformLock` conversion in this module and the pattern the other 12 sites followed** |
+| `multistream/MultiStreamReceiver.kt` | — | — (imports `ChunkFrame`, `ReceivePipeline`) — **also 4 × `synchronized(lock)`, lines 56/62/65/68** — **all 4 converted to `PlatformLock` by 13B-3e (`fa95d74`); `commonMain` since** |
 | `multistream/TransferCompletionStateMachine.kt` | — | ~~`util.concurrent.atomic.AtomicBoolean`~~ **cleared by 13B-3d (`293f12b`) — now `commonMain`; the `AtomicBoolean` was redundant (every caller already held the lock) and became a lock-guarded flag** |
 | `policy/DestinationPolicy.kt` | — | `io.Closeable`, `io.File`, `io.OutputStream`, `io.RandomAccessFile` |
 | `policy/RandomAccessChunkSink.kt` | — | — (imports `ChunkSink`, same-package `RandomAccessSinkHandle`) |
@@ -462,7 +478,7 @@ real `FileTarget`/`UriTarget` pair, and note that `jvmMain` must be **OS-neutral
 2026-09-03 amendment — `System.getProperty("java.io.tmpdir")` is fine, a `C:\` literal or
 `%USERPROFILE%` is not.
 
-## 13B-3 — framing, hashing, concurrency. ~~**Blocked on D10 *and* an explicit R8 instruction.**~~ **UNBLOCKED 2026-09-05** (D10 = Option A; R8 exception granted, byte-identical output required). **13B-3a DONE — `5e4e9a5`. 13B-3b DONE — `a3375e3`; the R8 authorisation is now spent. 13B-3c DONE — `d51206b`. 13B-3d DONE — `293f12b`. Only 13B-3e remains.**
+## 13B-3 — framing, hashing, concurrency. ~~**Blocked on D10 *and* an explicit R8 instruction.**~~ **UNBLOCKED 2026-09-05** (D10 = Option A; R8 exception granted, byte-identical output required). **13B-3a DONE — `5e4e9a5`. 13B-3b DONE — `a3375e3`; the R8 authorisation is now spent. 13B-3c DONE — `d51206b`. 13B-3d DONE — `293f12b`. 13B-3e DONE — `fa95d74`. 13B-3 IS COMPLETE, and so is Phase 13B.**
 
 What is left after 13B-2, with the known common answer for each:
 
@@ -609,6 +625,55 @@ What is left after 13B-2, with the known common answer for each:
 >   The measurable effect: the module's `java.*` import inventory fell from 10 lines across 5 files to
 >   **4 lines across 2 files**, while the `androidMain` file count fell only 10 → 9.
 
+> **CORRECTION (2026-09-06, after executing 13B-3e — `fa95d74`). This is the last of the five and it
+> closes §13B-3.** Two of this section's remaining claims needed adjusting, and three constraints had to
+> be verified against artifacts rather than reasoned about.
+>
+> - **"`sortedSetOf` still needs a common replacement" presumes a type that does not exist.**
+>   `kotlin.collections` has **no sorted-set in `commonMain`** — `sortedSetOf`, `TreeSet` and `SortedSet`
+>   are all JVM-only stdlib. There is nothing to import. The choice is where to pay for the ordering:
+>   on insert (hand-roll) or on read. 13B-3e chose read — `HashSet` plus an explicit `.toList().sorted()`
+>   in `buildAck` — because `buildAck` was already materialising the set. The consequence is worth
+>   knowing before the next such swap: **this moves an invariant out of the type system and into a call
+>   site.** `Session.pending` can now hold an unsorted set, and only that one `.sorted()` keeps ACK
+>   indexes ascending on the wire. Three assertions pin it, on both targets.
+> - **The two `.buffer().inputStream()` bridges were at `Chunker.kt:156` and `:185`**, not just `:185`
+>   as 13B-3d's next-step bullet said. Both are gone.
+> - **`use { }` does not work on an okio `BufferedSource` in common code, and the reason is not obvious.**
+>   `okio.Closeable` is an `expect interface` whose JVM `actual` is a typealias to `java.io.Closeable`,
+>   and `AutoCloseable` is **absent from okio 3.4.0's commonMain metadata**. So `kotlin.io.use`
+>   (`java.io.Closeable`) is unavailable in common and `kotlin.use` (`kotlin.AutoCloseable`) does not
+>   apply to okio's own type. Explicit `try`/`finally` is the answer; R10 forbids bumping okio to look
+>   for a newer surface. **Verified by unzipping the published metadata jar and grepping the `.knm`
+>   files** — `compileCommonMainKotlinMetadata` is SKIPPED in this repo (both targets are JVM platform
+>   type), so no build task would have caught a wrong assumption here.
+> - **`okio.IOException` and `BufferedSource.read(ByteArray, Int, Int)` *are* common, and the latter
+>   still returns −1 at EOF.** Both were checked the same way (metadata jar; `javap` for the return
+>   contract) before `readFully` was left untouched. The general point for later phases: when a phase's
+>   correctness rests on a third-party library's *common* surface, this repo has no gate for that — the
+>   metadata jar is the gate, and it must be opened by hand.
+> - **`ChunkStream` gained an ABI break that no plan note predicted:** its supertype went
+>   `java.io.Closeable` → `kotlin.AutoCloseable`, the second occurrence in this phase after 13B-2's
+>   `RandomAccessSinkHandle`. Invisible in this repo, breaking for a third party who typed a variable as
+>   `java.io.Closeable`. **Phase 24 needs a list of these, not a sentence.**
+> - **Twelve lock sites was the right count** (the fourth correction's number held), and the shape of
+>   the work was what that correction predicted: `withLock` cannot be `inline`, so `flushPendingAck`,
+>   `acceptSession` and `declineSession` each needed `return@withLock` — five sites in all. One precision
+>   on that prediction: the wall 13B-3d expected `ReceivePipeline` to hit was the **`val`-assignment** one
+>   (the reason `RealFlashTransferRepository` uses several small `withLock` reads), and it did **not** hit
+>   that. Every one of its eight members is a whole-function critical section returning its own value, so
+>   the non-local `return` was the only consequence and no holder class was needed. One thing to add for
+>   anyone converting a receiver-plus-pipeline pair: check the **lock order** across the two objects.
+>   `MultiStreamReceiver` calls into `ReceivePipeline` while holding its own lock and never the reverse,
+>   so the order is one-directional and cannot deadlock — that had to be established by reading the call
+>   graph, not assumed from the fact that each lock is private.
+> - **Two test suites did not follow their files, and this is a real coverage gap, not a formality.**
+>   `MultiStreamDispatcherTest` (659 lines) and `RealFlashTransferRepositoryTest` (557 lines) each build
+>   real thread pools via `Executors.new…ThreadPool(n).asCoroutineDispatcher()` — JVM-only, with no
+>   common equivalent, and `runTest` would replace the parallelism they exist to test with a virtual
+>   clock. So the module's two largest `commonMain` files have **no `jvmTest` coverage**. Everything
+>   under them does. Phase 16's two-machine gate is the realistic place that gets proved.
+
 **`ChunkFrame` is named in R8's untouchable list** (*"Wire formats: `FlashEnvelope`, `FlashProtocol`,
 `ChunkFrame`, …"*), and rewriting its `ByteBuffer` framing is unavoidable here. R8 says such a change
 needs an explicit instruction; R2 says a phase that seems to require a forbidden edit must stop and
@@ -625,7 +690,19 @@ serializer. `ChunkFrame` is back under R8's ordinary protection from this point:
 13B-3e must not touch it, and any later edit needs a fresh authorisation. **13B-3c (`d51206b`) honoured
 that: it touched `ChunkFrame.kt` not at all, and the only reference to it in the commit is a corrected
 comment in `ChunkSink.kt` naming it as already done. 13B-3d (`293f12b`) honoured it too — it did not
-open the file, and none of its five changed files is in `chunked/`.**
+open the file, and none of its five changed files is in `chunked/`.** **13B-3e (`fa95d74`) honoured it as
+well, and it is the sub-step where that mattered most**, because it changed five production files *inside
+`chunked/`* — `ChunkSink`, `ChunkSource`, `Chunker`, `ReceivePipeline`, `SendPipeline` — while
+`ChunkFrame.kt` sat in the same package, and re-typed two of them onto okio. `chunked/ChunkFrame.kt` is
+not in the commit's file list, and `git diff a3375e3 fa95d74 -- '*chunked/ChunkFrame.kt'` is empty, so the
+emitted bytes are still the ones the golden vectors were captured against. The one `ChunkFrame`-matching
+path in the commit is `commonTest/…/chunked/ChunkFrameTest.kt`, which is that suite *moving* from
+`androidHostTest` to `commonTest`: 8 tests, `similarity index 85%`, and the whole diff is the JUnit 4 →
+`kotlin.test` import swap, two `assertNull` argument flips (message goes last, not first) and one
+`toByteArray()` → `encodeToByteArray()` in a fixture. **No assertion's meaning changed** — a test gaining
+a second target is the opposite of a wire-format edit. `ChunkFrameGoldenVectorTest.kt` is a different file
+and 13B-3e did not open it; it has been in `commonTest` since `a3375e3`.
+**§13B-3 is closed. Every further edit to this file needs a fresh authorisation.**
 
 ---
 
