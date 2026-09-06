@@ -1,9 +1,15 @@
 package com.transfer.flash.core.network
 
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Test
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 
+/**
+ * Moved to `commonTest` in Phase 15-1. [FlashNetworkState] and [FlashConnectionState] have been
+ * `commonMain` since Phase 10, so the desktop `jvm()` target compiled them without ever running an
+ * assertion against them. The only edit is the JUnit 4 → `kotlin.test` import swap: no assertion
+ * here carries a message, so no argument order moved.
+ */
 class FlashNetworkModelTest {
 
     @Test

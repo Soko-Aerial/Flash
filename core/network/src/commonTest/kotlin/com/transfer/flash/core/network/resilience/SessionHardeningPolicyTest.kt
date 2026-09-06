@@ -1,11 +1,17 @@
 package com.transfer.flash.core.network.resilience
 
 import com.transfer.flash.core.common.model.FlashTransportType
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertTrue
-import org.junit.Test
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
+/**
+ * Moved to `commonTest` in Phase 15-1. [FlashTransportType] is `commonMain` in `:core:common` and
+ * the policy is pure integer ranking, so only the JUnit 4 → `kotlin.test` import swap and one
+ * argument reorder were needed: the `tie at rank` assertion is a three-argument `assertEquals`,
+ * whose message moves from first to last.
+ */
 private fun transportRank(transport: FlashTransportType): Int =
     com.transfer.flash.core.network.resilience.SessionHardeningPolicy.transportRank(transport)
 
@@ -52,9 +58,9 @@ class SessionHardeningPolicyTest {
     fun `tie keeps existing - documented behavior`() {
         for (rank in listOf(0, 1, 2, 3, 99)) {
             assertEquals(
-                "tie at rank $rank must KeepExisting",
                 DuplicateSessionDecision.KeepExisting,
                 policy.resolveDuplicate(rank, rank),
+                "tie at rank $rank must KeepExisting",
             )
         }
         assertEquals(

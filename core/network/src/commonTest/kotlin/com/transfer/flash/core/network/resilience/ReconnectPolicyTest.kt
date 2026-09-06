@@ -1,11 +1,18 @@
 package com.transfer.flash.core.network.resilience
 
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertTrue
-import org.junit.Test
 import kotlin.random.Random
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
+/**
+ * Moved to `commonTest` in Phase 15-1. `kotlin.random.Random(seed)` is `commonMain` in the stdlib
+ * and the policy takes its `random01` source as a parameter, so the seeded 2 000-sample sweep runs
+ * identically on both targets. Beyond the JUnit 4 → `kotlin.test` import swap, the three
+ * message-carrying `assertTrue` calls had their arguments reordered: `kotlin.test` puts the message
+ * last, JUnit put it first, and a missed flip compiles silently into `assertTrue(nonEmptyString)`.
+ */
 class ReconnectPolicyTest {
 
     private fun seededPolicy(
@@ -50,11 +57,11 @@ class ReconnectPolicyTest {
                 min = minOf(min, d)
                 max = maxOf(max, d)
             }
-            assertTrue("attempt=$attempt min=$min < base", min >= 1000L)
-            assertTrue("attempt=$attempt max=$max > cap-bound $bound", max <= bound)
+            assertTrue(min >= 1000L, "attempt=$attempt min=$min < base")
+            assertTrue(max <= bound, "attempt=$attempt max=$max > cap-bound $bound")
             // Distribution actually spans the jitter range (not degenerate).
             if (bound > 1000L) {
-                assertTrue("attempt=$attempt range collapsed: [$min,$max]", max - min > (bound - 1000L) / 4)
+                assertTrue(max - min > (bound - 1000L) / 4, "attempt=$attempt range collapsed: [$min,$max]")
             }
         }
     }

@@ -3,11 +3,17 @@
 package com.transfer.flash.core.network.tcp
 
 import com.transfer.flash.core.common.annotation.FlashInternalApi
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertNull
-import org.junit.Test
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 
+/**
+ * Moved to `commonTest` in Phase 15-1. [LanProbeMessages] is `commonMain` (its `TxtCodec`-style
+ * escaping is pure string work), and the JUnit 4 → `kotlin.test` import swap was the only edit: the
+ * four `assertEquals` calls whose first argument is a string literal are comparing *values*, not
+ * carrying messages, so nothing was reordered.
+ */
 class LanProbeMessagesTest {
     @Test
     fun helloRoundTripPreservesEscapedFields() {

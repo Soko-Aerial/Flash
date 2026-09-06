@@ -1,9 +1,14 @@
 package com.transfer.flash.core.network.resilience
 
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
-import org.junit.Test
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
+/**
+ * Moved to `commonTest` in Phase 15-1. Every clock reading is passed in by the test, so the suite
+ * never touched a platform clock and the only edit is the JUnit 4 → `kotlin.test` import swap. The
+ * one `assertTrue` here takes no message, so no argument order moved.
+ */
 class HeartbeatTrackerTest {
 
     private val interval = 10_000L

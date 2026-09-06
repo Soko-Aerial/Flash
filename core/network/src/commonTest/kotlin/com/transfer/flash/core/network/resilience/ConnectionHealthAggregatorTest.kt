@@ -1,10 +1,15 @@
 package com.transfer.flash.core.network.resilience
 
 import com.transfer.flash.core.network.FlashConnectionHealth
-import org.junit.Assert.assertEquals
-import org.junit.Test
 import kotlinx.coroutines.flow.StateFlow
+import kotlin.test.Test
+import kotlin.test.assertEquals
 
+/**
+ * Moved to `commonTest` in Phase 15-1. The aggregator is a pure resolve-plus-`StateFlow` holder in
+ * `commonMain`, and `StateFlow` is `commonMain` in coroutines, so nothing here needed a platform
+ * JVM. The only edit is the JUnit 4 → `kotlin.test` import swap; no assertion carries a message.
+ */
 class ConnectionHealthAggregatorTest {
 
     private fun healthOf(
