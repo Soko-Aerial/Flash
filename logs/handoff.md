@@ -1,11 +1,11 @@
 # Current Handoff
 
-## 2026-09-08 (d) — Dev + KMP integration assembled and verified on `integration/dev-kmp`
+## 2026-09-08 (d) — Dev + KMP integration merged and verified on `dev`
 
 ### Current branch
-`integration/dev-kmp`. Dev checkpoint `268487f` preserves the original feature tree; the KMP merge
-is resolved and staged but not committed yet. `New folder/` and root CLI diagnostics remain unrelated
-untracked session data and must never be staged.
+`dev`, merge commit `530db70`. Dev checkpoint `268487f` preserves the original feature tree before
+the KMP integration. `New folder/` and root CLI diagnostics remain unrelated untracked session data
+and must never be staged.
 
 ### Last verified build
 `:app:assembleDebug` is green. Targeted Android/JVM suites are green across every converted module,
@@ -24,10 +24,8 @@ plus calling, call UI and app. Live results after removing obsolete pre-KMP XML 
 - UI/media optimizations remain behind platform shims; common UI stays Android-free.
 
 ### Recommended next task
-1. Review staged merge and create the merge commit when approved.
-2. Move the verified merge result to `dev`.
-3. Run the physical three-device group/media/sync regression matrix.
-4. Continue desktop transport from corrected `docs/migration/PHASE-15-desktop-transport.md`.
+1. Run the physical three-device group/media/sync regression matrix.
+2. Continue desktop transport from corrected `docs/migration/PHASE-15-desktop-transport.md`.
 
 ### Files most relevant to next task
 - `core/messaging/src/androidMain/.../RealFlashChatRepository.kt`
