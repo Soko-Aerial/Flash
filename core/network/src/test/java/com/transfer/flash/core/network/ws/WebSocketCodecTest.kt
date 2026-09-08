@@ -9,6 +9,7 @@ import java.net.SocketTimeoutException
 import kotlin.random.Random
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -65,6 +66,31 @@ class WebSocketCodecTest {
 
         assertTrue(message is WebSocketCodec.Message.Binary)
         assertArrayEquals(payload, (message as WebSocketCodec.Message.Binary).data)
+    }
+
+    @Test
+    fun `masked in place write mutates the payload and round trips`() {
+        val original = Random.nextBytes(70_000)
+        val payload = original.copyOf()
+        val output = ByteArrayOutputStream()
+        WebSocketCodec.writeFrame(output, WebSocketCodec.OPCODE_BINARY, payload, masked = true, maskPayloadInPlace = true)
+
+        // The ownership contract: the caller's array was masked, not copied.
+        assertFalse(original.contentEquals(payload))
+
+        val message = WebSocketCodec.readMessage(ByteArrayInputStream(output.toByteArray()))
+        assertTrue(message is WebSocketCodec.Message.Binary)
+        assertArrayEquals(original, (message as WebSocketCodec.Message.Binary).data)
+    }
+
+    @Test
+    fun `masked write with default copy semantics leaves the payload untouched`() {
+        val original = Random.nextBytes(1_000)
+        val payload = original.copyOf()
+        val output = ByteArrayOutputStream()
+        WebSocketCodec.writeFrame(output, WebSocketCodec.OPCODE_BINARY, payload, masked = true)
+
+        assertArrayEquals(original, payload)
     }
 
     @Test

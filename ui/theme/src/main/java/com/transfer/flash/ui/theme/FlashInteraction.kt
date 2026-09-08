@@ -1,7 +1,6 @@
 package com.transfer.flash.ui.theme
 
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.snap
 import androidx.compose.foundation.interaction.InteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.runtime.Composable
@@ -35,7 +34,7 @@ fun Modifier.flashPressScale(
     val pressed by interactionSource.collectIsPressedAsState()
     val scale = animateFloatAsState(
         targetValue = if (pressed) pressedScale else 1f,
-        animationSpec = if (motion.reduceMotion) snap() else motion.springSnappySpec(),
+        animationSpec = motion.springSnappySpec(),
         label = "flashPressScale",
     )
     return this.graphicsLayer {

@@ -24,7 +24,9 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.isActive
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 /** UI snapshot the Nearby pairing dialog binds to; null when no pairing is in flight. */
@@ -41,8 +43,9 @@ data class PairingUiModel(
  *
  * Owns the protocol instance so it can recreate it after a terminal outcome — the protocol's session
  * machine absorbs all events once terminal and exposes no public reset, so "pair again" (retry after
- * decline/expire, or pair a second device) requires a fresh instance. Recreation just swaps the field
- * and relaunches the two collectors; the 1 Hz ticker always reads the current instance.
+ * decline/expire, or pair a second device) requires a fresh instance. Recreation swaps the field and
+ * relaunches the collectors, the 1 Hz expiry ticker among them: it is a child of the same job, bound
+ * to the instance it was launched for, so a stale instance can never keep ticking.
  */
 class PairingCoordinator(
     private val localFingerprintHex: String,
@@ -83,20 +86,6 @@ class PairingCoordinator(
     @Volatile
     private var protocol: DefaultFlashPairingProtocol = newProtocol()
     private var collectorJob: Job = launchCollectors()
-
-    init {
-        // 1 Hz tick drives request/decision expiry and refreshes the countdown while active.
-        scope.launch {
-            while (isActive) {
-                val current = protocol
-                if (current.session.value.phase != PairingPhase.Idle) {
-                    current.onTick(timeSource.nowMs())
-                    recomputeUi(current.session.value)
-                }
-                delay(TICK_MS)
-            }
-        }
-    }
 
     /** A WebSocket session to [peerId] came up — announce our fingerprint so it can derive the code. */
     fun onSessionUp(peerId: String) {
@@ -246,7 +235,47 @@ class PairingCoordinator(
         return scope.launch {
             launch { p.session.collect { recomputeUi(it) } }
             launch { p.events.collect { handleEvent(it) } }
+            launch { tickWhileInFlight(p) }
         }
+    }
+
+    /**
+     * Drives request/decision expiry and refreshes the countdown at 1 Hz — but only while [p] has a
+     * pairing in flight. This was an unconditional `while (isActive) { …; delay(1s) }` launched from
+     * `init`, i.e. ~86,400 scheduler wake-ups a day to service a phase that is [PairingPhase.Idle]
+     * except during the few seconds a user spends pairing. An idle pass was cheap — a wake-up and a
+     * `StateFlow.value` read, not a query — but it was also unnecessary: the phase is already a flow,
+     * so the same edge that makes the tick necessary can start it.
+     *
+     * Bound to the instance passed in rather than to the `protocol` field, and launched as a child of
+     * [collectorJob] so [resetProtocol]'s existing `cancel()` is the ticker's teardown too. A ticker
+     * that outlived its instance would never stop: terminal phases absorb every event and never return
+     * to Idle, so its `!= Idle` gate would stay true forever — the very defect this fixes.
+     *
+     * The gate stays at `!= Idle` rather than narrowing to the three phases the reducer acts on. The
+     * narrower form is provably equivalent (the reducer returns early when terminal, and the dialog
+     * renders the countdown only while active) but it would duplicate, in `:app`, a rule owned by the
+     * state machine — worth less than the two recompositions it would save during the terminal linger.
+     *
+     * [distinctUntilChanged] is load-bearing: a pairing emits several session states, and without it
+     * every one would restart [collectLatest]'s block and thereby restart the `delay`, so a chatty
+     * handshake could starve the countdown and postpone expiry indefinitely. The `delay` comes before
+     * the work because the session emission that started the ticker has already run [recomputeUi] and
+     * expiry is 30 s out — so the first tick only decrements the displayed second, which now happens a
+     * full second after the dialog appears instead of wherever it fell on a process-wide 1 Hz grid.
+     */
+    private suspend fun tickWhileInFlight(p: DefaultFlashPairingProtocol) {
+        p.session
+            .map { it.phase != PairingPhase.Idle }
+            .distinctUntilChanged()
+            .collectLatest { inFlight ->
+                if (!inFlight) return@collectLatest
+                while (true) {
+                    delay(TICK_MS)
+                    p.onTick(timeSource.nowMs())
+                    recomputeUi(p.session.value)
+                }
+            }
     }
 
     private fun newProtocol(): DefaultFlashPairingProtocol = DefaultFlashPairingProtocol(

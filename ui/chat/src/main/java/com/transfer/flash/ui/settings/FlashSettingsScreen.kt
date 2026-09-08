@@ -42,6 +42,7 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import com.transfer.flash.core.common.perf.FlashPerformanceMode
 import com.transfer.flash.ui.icons.FlashIcon
 import com.transfer.flash.ui.icons.FlashIcons
 import com.transfer.flash.ui.theme.FlashDimensions
@@ -88,6 +89,22 @@ data class FlashSettingsModel(
      * the bandwidth estimate and nothing steps it down when the audio starts breaking up.
      */
     val prioritiseVoiceQuality: Boolean = true,
+    /**
+     * The tier the user pinned, or null for "Auto" — follow [detectedPerformanceMode] (ERROR-033).
+     *
+     * Null is the default and the normal state: the pin exists for the case auto-detect cannot see,
+     * which is the *link* rather than the handset. A phone with the silicon for 1080p still stutters
+     * behind a mesh AP that keeps handing it off, and only the person holding it knows that.
+     */
+    val performanceMode: FlashPerformanceMode? = null,
+    /**
+     * What auto-detect made of this device's RAM, cores, API level and codec support.
+     *
+     * Carried even when [performanceMode] pins a tier, because "Auto" has to be able to say which
+     * tier it would pick — a segment labelled only "Auto" tells the user nothing about what their
+     * device is actually doing.
+     */
+    val detectedPerformanceMode: FlashPerformanceMode = FlashPerformanceMode.HIGH,
     val trustedPeerCount: Int = 0,
     val saveLocationLabel: String? = null,
     val appVersion: String = "dev",
@@ -149,6 +166,36 @@ object FlashSettingsMath {
         } else {
             "Voice and video share bandwidth equally"
         }
+
+    /** Segment labels for the performance picker. Null is the Auto segment (ERROR-033). */
+    fun performanceModeLabel(mode: FlashPerformanceMode?): String = when (mode) {
+        null -> "Auto"
+        FlashPerformanceMode.LOW -> "Low"
+        FlashPerformanceMode.MEDIUM -> "Medium"
+        FlashPerformanceMode.HIGH -> "High"
+    }
+
+    /**
+     * Describes the tier that is actually in force, in the three terms the field testing turned on:
+     * capture resolution, how often the radio has to wake for voice, and whether the UI animates.
+     *
+     * Derived from the profile tokens rather than written out per tier, so the row cannot drift away
+     * from what the tier does. When nothing is pinned it names the tier auto-detect chose — "Auto"
+     * on its own would leave the user unable to tell a misdetected device from a slow link.
+     */
+    fun performanceModeSubtitle(
+        pinned: FlashPerformanceMode?,
+        detected: FlashPerformanceMode,
+    ): String {
+        val effective = pinned ?: detected
+        val parts = buildList {
+            if (pinned == null) add("Matched to this device: ${performanceModeLabel(effective)}")
+            add("video ${effective.video.label}")
+            add("${effective.voice.packetsPerSecond} voice packets/s")
+            if (effective.reduceMotion) add("animations off")
+        }
+        return parts.joinToString(" · ")
+    }
 }
 
 @Composable
@@ -163,6 +210,8 @@ fun FlashSettingsScreen(
     onAutoDownloadVideoChanged: (Boolean) -> Unit = {},
     onAutoDownloadFileChanged: (Boolean) -> Unit = {},
     onPrioritiseVoiceQualityChanged: (Boolean) -> Unit = {},
+    /** Pins a performance tier, or null to hand the choice back to auto-detect (ERROR-033). */
+    onPerformanceModeSelected: (FlashPerformanceMode?) -> Unit = {},
     modifier: Modifier = Modifier,
     listState: LazyListState = rememberLazyListState(),
     /** Space the hanging shell bar occupies; content scrolls under it (UI-046). */
@@ -234,9 +283,22 @@ fun FlashSettingsScreen(
             }
         }
 
-        item(key = "security-label") { StaggerIn(7) { SectionLabel("SECURITY") } }
-        item(key = "encryption") {
+        item(key = "performance-label") { StaggerIn(7) { SectionLabel("PERFORMANCE") } }
+        item(key = "performance-mode") {
             StaggerIn(8) {
+                SettingsCard {
+                    PerformanceModeSegmented(
+                        selected = model.performanceMode,
+                        detected = model.detectedPerformanceMode,
+                        onSelected = onPerformanceModeSelected,
+                    )
+                }
+            }
+        }
+
+        item(key = "security-label") { StaggerIn(9) { SectionLabel("SECURITY") } }
+        item(key = "encryption") {
+            StaggerIn(10) {
                 ValueRow(
                     iconSpec = FlashIcons.Encryption,
                     title = "Encryption",
@@ -247,7 +309,7 @@ fun FlashSettingsScreen(
             }
         }
         item(key = "trusted-peers") {
-            StaggerIn(9) {
+            StaggerIn(11) {
                 ValueRow(
                     iconSpec = FlashIcons.Verified,
                     title = "Trusted peers",
@@ -258,9 +320,9 @@ fun FlashSettingsScreen(
             }
         }
 
-        item(key = "data-label") { StaggerIn(10) { SectionLabel("DATA") } }
+        item(key = "data-label") { StaggerIn(12) { SectionLabel("DATA") } }
         item(key = "save-location") {
-            StaggerIn(11) {
+            StaggerIn(13) {
                 ValueRow(
                     iconSpec = FlashIcons.Download,
                     title = "Save location",
@@ -271,7 +333,7 @@ fun FlashSettingsScreen(
             }
         }
         item(key = "background") {
-            StaggerIn(12) {
+            StaggerIn(14) {
                 SwitchRow(
                     title = "Background transfers",
                     subtitle = "Keep sending when you leave the app",
@@ -281,7 +343,7 @@ fun FlashSettingsScreen(
             }
         }
         item(key = "battery-exemption") {
-            StaggerIn(13) {
+            StaggerIn(15) {
                 ValueRow(
                     iconSpec = FlashIcons.Bolt,
                     title = "Unrestricted battery",
@@ -292,7 +354,7 @@ fun FlashSettingsScreen(
             }
         }
         item(key = "auto-download-voice") {
-            StaggerIn(14) {
+            StaggerIn(16) {
                 SwitchRow(
                     title = "Auto-download voice",
                     subtitle = "Accept incoming voice messages automatically",
@@ -302,7 +364,7 @@ fun FlashSettingsScreen(
             }
         }
         item(key = "auto-download-image") {
-            StaggerIn(15) {
+            StaggerIn(17) {
                 SwitchRow(
                     title = "Auto-download images",
                     subtitle = "Accept incoming images automatically",
@@ -312,7 +374,7 @@ fun FlashSettingsScreen(
             }
         }
         item(key = "auto-download-video") {
-            StaggerIn(16) {
+            StaggerIn(18) {
                 SwitchRow(
                     title = "Auto-download videos",
                     subtitle = "Accept incoming videos automatically",
@@ -322,7 +384,7 @@ fun FlashSettingsScreen(
             }
         }
         item(key = "auto-download-file") {
-            StaggerIn(17) {
+            StaggerIn(19) {
                 SwitchRow(
                     title = "Auto-download files",
                     subtitle = "Accept incoming files automatically",
@@ -332,9 +394,9 @@ fun FlashSettingsScreen(
             }
         }
 
-        item(key = "calls-label") { StaggerIn(18) { SectionLabel("CALLS") } }
+        item(key = "calls-label") { StaggerIn(20) { SectionLabel("CALLS") } }
         item(key = "prioritise-voice") {
-            StaggerIn(19) {
+            StaggerIn(21) {
                 SwitchRow(
                     title = "Prioritise voice quality",
                     subtitle = FlashSettingsMath.prioritiseVoiceSubtitle(model.prioritiseVoiceQuality),
@@ -344,8 +406,8 @@ fun FlashSettingsScreen(
             }
         }
 
-        item(key = "about-label") { StaggerIn(20) { SectionLabel("ABOUT") } }
-        item(key = "about") { StaggerIn(21) { AboutCard(model) } }
+        item(key = "about-label") { StaggerIn(22) { SectionLabel("ABOUT") } }
+        item(key = "about") { StaggerIn(23) { AboutCard(model) } }
     }
 }
 
@@ -502,6 +564,78 @@ private fun ThemeModeSegmented(
 }
 
 private val SegmentTrackHeight = 40.dp
+
+/**
+ * Auto / Low / Medium / High tier picker (ERROR-033).
+ *
+ * Four segments rather than three because "Auto" is not a fourth tier — it is the absence of a pin,
+ * and it has to be reachable again after the user has pinned something. The subtitle underneath
+ * carries the consequences, since the labels themselves say nothing about what changes.
+ *
+ * No sliding indicator: the tiers this control exists for are the ones whose devices cannot afford
+ * one, and an animated selection on a handset picking "Low" because it drops frames would be a poor
+ * joke. The selected segment is painted directly.
+ */
+@Composable
+private fun PerformanceModeSegmented(
+    selected: FlashPerformanceMode?,
+    detected: FlashPerformanceMode,
+    onSelected: (FlashPerformanceMode?) -> Unit,
+) {
+    val colors = FlashTheme.colors
+    val haptics = rememberFlashHaptics()
+    val options: List<FlashPerformanceMode?> =
+        listOf(null, FlashPerformanceMode.LOW, FlashPerformanceMode.MEDIUM, FlashPerformanceMode.HIGH)
+
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .height(SegmentTrackHeight)
+                .clip(FlashShapes.bubbleGrouped)
+                .background(colors.backgroundSurfaceSubtle)
+                .selectableGroup(),
+        ) {
+            options.forEach { option ->
+                val isSelected = option == selected
+                val label = FlashSettingsMath.performanceModeLabel(option)
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .fillMaxSize()
+                        .padding(FlashSpacing.space4)
+                        .clip(FlashShapes.bubbleGrouped)
+                        .background(if (isSelected) colors.accentPrimary else colors.backgroundSurfaceSubtle)
+                        .selectable(
+                            selected = isSelected,
+                            role = Role.RadioButton,
+                            onClick = {
+                                if (!isSelected) {
+                                    haptics(FlashHaptic.Tick)
+                                    onSelected(option)
+                                }
+                            },
+                        )
+                        .semantics { contentDescription = "$label performance" },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    FlashText(
+                        text = label,
+                        style = FlashTheme.typography.captionEmphasis,
+                        color = if (isSelected) colors.textOnAccent else colors.textSecondary,
+                        maxLines = 1,
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(FlashSpacing.space8))
+        FlashText(
+            text = FlashSettingsMath.performanceModeSubtitle(pinned = selected, detected = detected),
+            style = FlashTheme.typography.captionDefault,
+            color = colors.textSecondary,
+        )
+    }
+}
 
 @Composable
 private fun SwitchRow(

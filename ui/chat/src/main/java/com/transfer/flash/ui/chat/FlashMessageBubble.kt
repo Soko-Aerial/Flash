@@ -10,14 +10,12 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -27,11 +25,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.tooling.preview.Preview
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.transfer.flash.core.messaging.model.FlashMessageGroupPosition
 import com.transfer.flash.core.messaging.model.FlashMessageUi
@@ -49,6 +47,30 @@ import com.transfer.flash.ui.theme.rememberFlashHaptics
 
 /** Press scale for bubble tap feedback (UI-005 — see message-bubble.md). */
 private const val BubblePressScale = 0.97f
+
+/**
+ * Caps the bubble at `min(fraction * available, absolute)` (UI-005). The content still decides how
+ * wide the bubble actually is; this only tightens the ceiling it may grow to.
+ *
+ * Replaces a per-bubble `BoxWithConstraints`. That is a `SubcomposeLayout`: it defers composing its
+ * children to the measure pass and carries a child slot table of its own, once per visible bubble in
+ * the conversation. Everything it was used for here was reading `maxWidth` to feed a single
+ * `widthIn(max = ...)`, and a measure-time constraint does that in one pass with no subcomposition.
+ * Identical geometry at every performance tier, to within the sub-pixel rounding difference between
+ * scaling a `Dp` and scaling the pixel constraint directly.
+ */
+private fun Modifier.bubbleWidthCap(): Modifier = layout { measurable, constraints ->
+    val absolute = FlashDimensions.bubbleMaxWidth.roundToPx()
+    val ceiling = if (constraints.hasBoundedWidth) {
+        minOf((constraints.maxWidth * FlashDimensions.bubbleMaxWidthFraction).toInt(), absolute)
+    } else {
+        absolute
+    }
+    val placeable = measurable.measure(
+        constraints.copy(minWidth = 0, maxWidth = ceiling.coerceAtLeast(0)),
+    )
+    layout(placeable.width, placeable.height) { placeable.place(0, 0) }
+}
 
 /**
  * Flash message bubble (UI-005 / UI-007).
@@ -77,6 +99,12 @@ fun FlashMessageBubble(
     isHighlighted: Boolean = false,
     /** UI-023: when non-blank, matching substrings inside the message body are highlighted. */
     searchQuery: String? = null,
+    /**
+     * Direct chats keep timestamps in-bubble and never show a sender header (UI-005). Passed as a
+     * flag rather than having the caller hand down a `message.copy(showSenderHeader = false)`, which
+     * cost a whole [FlashMessageUi] allocation per visible row per recomposition.
+     */
+    suppressSenderHeader: Boolean = false,
     deliveryStatus: (@Composable () -> Unit)? = null,
 ) {
     val alignment = if (message.isMine) Alignment.End else Alignment.Start
@@ -85,37 +113,30 @@ fun FlashMessageBubble(
         modifier = modifier.fillMaxWidth(),
         horizontalAlignment = alignment,
     ) {
-        if (message.showSenderHeader && !message.isMine) {
+        if (message.showSenderHeader && !suppressSenderHeader && !message.isMine) {
             FlashMessageSenderHeader(message = message)
         }
 
-        BoxWithConstraints {
-            val maxBubbleWidth = minOf(
-                maxWidth * FlashDimensions.bubbleMaxWidthFraction,
-                FlashDimensions.bubbleMaxWidth,
+        FlashSwipeToReplyContainer(
+            onReply = onReplySwipe,
+            enabled = !inSelectionMode,
+            isMine = message.isMine,
+        ) {
+            FlashBubbleSurface(
+                message = message,
+                onOpenActions = onOpenActions,
+                isSelected = isSelected,
+                inSelectionMode = inSelectionMode,
+                onSelectToggle = onSelectToggle,
+                onJumpToMessage = onJumpToMessage,
+                onImageClick = onImageClick,
+                onFileClick = onFileClick,
+                onAcceptOffer = onAcceptOffer,
+                onDeclineOffer = onDeclineOffer,
+                isHighlighted = isHighlighted,
+                deliveryStatus = deliveryStatus,
+                searchQuery = searchQuery,
             )
-            FlashSwipeToReplyContainer(
-                onReply = onReplySwipe,
-                enabled = !inSelectionMode,
-                isMine = message.isMine,
-            ) {
-                FlashBubbleSurface(
-                    message = message,
-                    maxBubbleWidth = maxBubbleWidth,
-                    onOpenActions = onOpenActions,
-                    isSelected = isSelected,
-                    inSelectionMode = inSelectionMode,
-                    onSelectToggle = onSelectToggle,
-                    onJumpToMessage = onJumpToMessage,
-                    onImageClick = onImageClick,
-                    onFileClick = onFileClick,
-                    onAcceptOffer = onAcceptOffer,
-                    onDeclineOffer = onDeclineOffer,
-                    isHighlighted = isHighlighted,
-                    deliveryStatus = deliveryStatus,
-                    searchQuery = searchQuery,
-                )
-            }
         }
 
         if (message.reactions.isNotEmpty()) {
@@ -133,7 +154,6 @@ fun FlashMessageBubble(
 @Composable
 private fun FlashBubbleSurface(
     message: FlashMessageUi,
-    maxBubbleWidth: Dp,
     onOpenActions: () -> Unit,
     isSelected: Boolean,
     inSelectionMode: Boolean,
@@ -160,7 +180,7 @@ private fun FlashBubbleSurface(
         label = "flashBubblePressScale",
     )
 
-    val shape = bubbleShapeFor(message)
+    val shape = bubbleShapeFor(message, FlashTheme.minimalChrome)
     val selectionBorder = if (isHighlighted) {
         BorderStroke(1.5.dp, colors.accentPrimary)
     } else if (isSelected) {
@@ -174,7 +194,7 @@ private fun FlashBubbleSurface(
     // Custom bubble surface — no Material Surface; clip + background + optional border stroke.
     Box(
         modifier = Modifier
-            .widthIn(max = maxBubbleWidth)
+            .bubbleWidthCap()
             .graphicsLayer {
                 scaleX = pressScale
                 scaleY = pressScale
@@ -243,10 +263,12 @@ private fun FlashBubbleSurface(
                     },
                 )
                 Spacer(modifier = Modifier.height(FlashSpacing.space4))
-            } else if (message.hasImageGrid) {
-                FlashAttachmentGrid(imageCountLabel = message.imageCountLabel)
-                Spacer(modifier = Modifier.height(FlashSpacing.space8))
             }
+            // ERROR-034: an `else if (message.hasImageGrid) FlashAttachmentGrid(...)` branch used to
+            // sit here. It fabricated coloured rectangles from a count label when a message claimed
+            // images it could not supply. Nothing in the app ever set `hasImageGrid`, so the branch
+            // was unreachable *and* a placeholder generator; both it and the two dead
+            // FlashMessageUi fields it read are gone. A message with images renders them above.
             if (message.fileAttachments.isNotEmpty()) {
                 message.fileAttachments.forEach { file ->
                     FlashFileMessageCard(
@@ -381,7 +403,18 @@ private fun FlashMessageTimestampRow(
     }
 }
 
-private fun bubbleShapeFor(message: FlashMessageUi): Shape {
+/**
+ * Bubble silhouette for [message]'s position in its sender run.
+ *
+ * [minimalChrome] (ERROR-033) drops the tail scoop. The scoop is an [androidx.compose.ui.graphics.
+ * Outline.Generic], and a generic outline cannot take the fast rounded-rect clip path — it clips
+ * through the path instead, once for `Modifier.clip` and again for the incoming bubble's
+ * `Modifier.border`. Most bubbles in a conversation are tailed (every SINGLE message plus the BOTTOM
+ * of every run), so below HIGH the whole list clips as round-rects. Same 20 dp corner radius either
+ * way; the only difference on screen is the 8 dp concave notch. HIGH is untouched.
+ */
+private fun bubbleShapeFor(message: FlashMessageUi, minimalChrome: Boolean): Shape {
+    if (minimalChrome) return FlashShapes.bubbleGrouped
     return when (message.groupPosition) {
         FlashMessageGroupPosition.SINGLE -> if (message.isMine) FlashShapes.bubbleOutgoingTail else FlashShapes.bubbleIncomingTail
         FlashMessageGroupPosition.TOP -> FlashShapes.bubbleGrouped

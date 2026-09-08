@@ -4,15 +4,22 @@ package com.transfer.flash.net
  * Pure admission gate for the engine's background auto-connector (JVM-testable; no Android types).
  *
  * The auto-connector proactively dials every discovered peer that has no live session, so a
- * full-duplex WebSocket exists in whichever direction the network permits. This is REQUIRED for
- * Wi-Fi-hotspot topologies: the SoftAP/gateway device cannot open a TCP connection to a client
- * station, so only the client can dial. Once the client's dial lands, pairing / chat / transfer
- * all ride that one session regardless of which side initiated — the host never has to dial back.
+ * full-duplex WebSocket exists in whichever direction succeeds first. Whoever wins, pairing / chat /
+ * transfer all ride that one session regardless of which side initiated, so a dial that loses the
+ * race costs nothing.
  *
- * The gate bounds attempts so a permanently-unreachable peer (e.g. the host trying to dial a
- * client) cannot be hammered: at most one attempt per [suppressMs] per peer, and never a second
- * concurrent attempt for the same peer. A peer that already has a session is cleared so a later
- * drop re-arms it immediately (reconnect-after-drop).
+ * Correction (ERROR-035): this KDoc used to state that a SoftAP/gateway device cannot open a TCP
+ * connection to a client station, and that only the client can dial. **There is no such platform
+ * rule.** The host is the client's gateway and has a directly connected route to it. What actually
+ * made every host-to-client dial fail was a bug on this side — `WsTransferClient` bound its socket to
+ * the first Wi-Fi network ConnectivityManager listed without checking whether the destination was
+ * on-link for it, and a tethered client never is. See `Ipv4Routing`. Dialling both ways is still
+ * worth doing, because either end may be the one whose discovery resolves first, but it is no longer
+ * a workaround for an imaginary restriction.
+ *
+ * The gate bounds attempts so a genuinely unreachable peer cannot be hammered: at most one attempt
+ * per [suppressMs] per peer, and never a second concurrent attempt for the same peer. A peer that
+ * already has a session is cleared so a later drop re-arms it immediately (reconnect-after-drop).
  */
 class AutoConnectGate(private val suppressMs: Long = DEFAULT_SUPPRESS_MS) {
 

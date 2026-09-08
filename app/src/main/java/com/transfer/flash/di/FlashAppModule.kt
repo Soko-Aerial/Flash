@@ -1,7 +1,5 @@
 package com.transfer.flash.di
 
-import com.transfer.flash.core.messaging.FlashChatRepository
-import com.transfer.flash.core.messaging.SampleFlashChatRepository
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -44,7 +42,10 @@ object FlashAppModule {
         @DefaultDispatcher defaultDispatcher: CoroutineDispatcher,
     ): CoroutineScope = CoroutineScope(SupervisorJob() + defaultDispatcher)
 
-    @Provides
-    @Singleton
-    fun chatRepository(): FlashChatRepository = SampleFlashChatRepository()
+    // ERROR-034: there was a `@Provides @Singleton fun chatRepository(): FlashChatRepository =
+    // SampleFlashChatRepository()` here. Nothing injects FlashChatRepository — the real one is built
+    // by DiscoveryEngineHolder and handed out through AppEngine.chats — so the binding was dead, but
+    // it was a live landmine: the first future `@Inject` of FlashChatRepository would have silently
+    // received fabricated sample conversations. Removed rather than repointed; add a binding here
+    // only when a real implementation can be supplied.
 }

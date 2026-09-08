@@ -2215,7 +2215,9 @@ marking cannot separate them either; the priority has to be expressed in the ban
 8. **Gating the 2.5 Mbit/s ceiling on the "Prioritise voice quality" toggle.** `CallSdp.tune()` is
    applied symmetrically to the local *and* remote descriptions, so wire content must not depend on
    which device happens to have a switch flipped. The ceiling is unconditional; the toggle governs
-   sender priorities and the governor.
+   sender priorities and the governor. *(Later: ERROR-033 split `tune()` into `tuneLocal`/`tuneRemote`
+   for per-device performance tiers. The conclusion here is unchanged — the two endpoints still
+   converge on identical parameters, now by reconciliation rather than by symmetry.)*
 
 ### Working fix
 **Bound the forgiveness (D1)** — `core/network/.../ws/WsKeepalive.kt`. A stall *episode* is
@@ -2350,6 +2352,601 @@ toggle off.
 RESOLVED at code level (2026-09-02; five-module test sweep green, `:app:compileDebugKotlin` clean);
 on-device verification of the two-phone matrix pending
 
+---
+
+## ERROR-032 — A rugged handset's calls connected with audio and the far end heard nothing: `AudioRecord` opened, verified, and delivered zero frames
+
+### Date
+2026-09-03
+
+### Area
+`:core:calling` (`FlashWebRtcEngine`)
+
+### Symptoms
+Calls to and from a BelFone SCP810 connected normally, `audio=1`, and the far end heard silence.
+Nothing refused anything: the session opened on `VOICE_COMMUNICATION` against `TYPE_BUILTIN_MIC` at
+48 kHz mono, `getState()` reported `INITIALIZED`, libwebrtc's own `verifyAudioConfig` logged **PASS**,
+and both hardware effects reported "is now: enabled". `read()` then never returned a frame. The only
+tells were libwebrtc's own lines — "Join of AudioRecordJavaThread timed out" (its 2 s join giving
+up), "AudioRecord.read failed: 0", and an "AudioRecord.stop failed: null" **8.2 s** later. Those
+blocking HAL calls also ANR'd the app (SIGQUIT trace, "Skipped 602 frames"), which looked like a
+second bug and is not one. Identical code was fine on Samsung and Infinix, so it presented as "works
+on normal phones".
+
+### Environment
+BelFone SCP810, Android 8.1 (API 27), qcom, rugged PoC/PTT handset with a vendor radio stack on the
+voice path. **Two units of the same model**, which turned out to matter. Branch `dev`.
+
+### Root cause
+`MediaRecorder.AudioSource.VOICE_COMMUNICATION` is a **request, not a contract**. An OEM HAL that
+carries its own radio stack on the voice path accepts it, reports every state healthy, and delivers
+zero frames — no exception, no `AudioRecordErrorCallback`, nothing to detect after the fact. The
+pre-granted `RECORD_AUDIO` (no prompt on the first call) was a red herring: `getUserMedia` would have
+thrown `RecordAudioPermissionException`, and nothing in the app depends on the prompt.
+### What was tried and rejected
+1. **Swapping the audio source per call.** Impossible by construction: `WebRtc.configure` builds the
+   `PeerConnectionFactory` immediately and throws if one already exists, so the ADM is process-wide
+   and permanent. `configureOnce` is the only window that exists.
+2. **Looking for a non-zero PCM sample as the pass criterion.** This cannot tell the failure apart
+   from a quiet room — a healthy mic on a desk in silence returns buffers of zeros, and the broken HAL
+   returns nothing, and **both score zero**. The two identical SCP810 units proved it: the one with
+   ambient noise fell back to `MIC` correctly, and the quiet one rejected all three candidates and
+   kept the source that does not work. The criterion is **frame delivery**, never loudness;
+   audibility is logged and never gated on.
+3. **Probing in `MODE_NORMAL`.** The stall is mode-dependent on this HAL, so measuring in
+   `MODE_NORMAL` would cache the source that is about to fail. The probe runs in
+   `MODE_IN_COMMUNICATION`, best-effort: from API 31 the platform refuses the mode change without
+   audio focus, and a probe that ends up measuring `MODE_NORMAL` is still no worse than not probing.
+4. **Relying on an `AudioRecordErrorCallback` to detect it.** One was added and is useful — a refused
+   open or a hard read error used to be invisible — but it does **not** catch this failure. No error
+   is ever raised. That is the whole reason a probe is needed.
+
+### Working fix
+`configureOnce` proves the source before handing it to the ADM. The probe opens the mic once, keeps
+the first source the HAL actually streams frames on (`VOICE_COMMUNICATION` → `MIC` → `DEFAULT`), and
+caches it for the life of the process. A source passes on **2400 frames (~50 ms at 48 kHz)**
+accumulated from `read()`.
+
+Hardware AEC/NS are now enabled **only** for `VOICE_COMMUNICATION`. On a raw `MIC` fallback there is
+no platform echo-cancellation path for them to attach to, and stacking them on one anyway is the known
+way to get a capture stream that is present but useless; libwebrtc's software APM does that work
+instead. Those effect lines double as the field tell for which source won: `enable: false` proves the
+probe fell back, `enable: true` proves it did not.
+
+**Known limitation:** the probe needs `RECORD_AUDIO`, and at engine construction the grant may not
+exist yet. It is then skipped, nothing is cached, and `VOICE_COMMUNICATION` is used as before — so a
+device that both prompts for the mic *and* needs the fallback gets it from the next process start
+rather than the first call.
+
+### Verification
+`:app:assembleDebug` + `:core:calling:testDebugUnitTest` green; `core:calling` 55 tests / 0 failures /
+0 skipped, matching the baseline row. On device, the working SCP810 logs `client audio source=MIC`
+with both effects disabled and a clean ~85 ms capture teardown, against the 8.2 s "AudioRecord.stop
+failed" before the fix.
+
+### Related files
+- `core/calling/src/main/java/.../FlashWebRtcEngine.kt` — `configureOnce` source probe, cached
+  verdict, effects gated on `VOICE_COMMUNICATION`, `AudioRecordErrorCallback`
+
+### Status
+RESOLVED (2026-09-03, commit `5b31785`); confirmed on device on both SCP810 units
+
+---
+
+## ERROR-033 — "a lot of lag connection lost and even supprising huge latencies" on a rugged handset; voice-only calls lagged at 25 kbit/s; and a mesh roam killed calls two other phones survived
+
+### Date
+2026-09-03
+
+### Area
+`:core:common` (new `perf` package: `FlashPerformanceMode`, `FlashVoiceProfile`,
+`FlashVideoProfile`, `FlashTransportProfile`, `FlashPerformanceClassifier`, `FlashMotionPolicy`),
+`:core:calling` (`CallSdp`, `FlashCallSession`, `CallCoordinator`, `FlashCalling`), `:core:network`
+(`WsFlashNetwork`, `AndroidNetworkWatcher`, new `resilience/LinkChangeTracker`),
+`:core:persistence` (`FlashSettingsDataStore`), `:ui:theme` (`FlashTheme`, `FlashMotion`),
+`:ui:chat` (`FlashSettingsScreen`, `FlashBottomNav`), `:app` (`AppEngine`,
+`AndroidDeviceProfile`, `DiscoveryEngineHolder`, `MainActivity`)
+
+### Symptoms
+Owner field report, three phones on one mesh network:
+1. Belfone SCP810 (rugged handset): "a lot of lag connection lost and even supprising huge
+   latencies."
+2. "even with only voice with 25kbps it still lags and latency" — the lag survived turning video
+   off entirely, so it was never a video-bandwidth problem.
+3. Pixel 7 and Infinix on the same network "worked fine at long distances."
+4. On the mesh — "different nodes working as one like it seems to change router" — "the pixel and
+   infinix recover fine but it doesnt for he belfone."
+
+### Environment
+Branch `dev`, HEAD `5b31785`. Wi-Fi mesh: several APs presenting one SSID, so a walking user roams
+between them. Belfone SCP810 (2 GB RAM, API 27, 480x640 display, 2.4 GHz b/g/n, no 802.11k/v/r
+fast transition) vs Pixel 7 and Infinix X6882B.
+
+### Root cause
+Three independent defects, one per symptom. Nothing here is a single tuning mistake, and no two of
+them share a fix — which is why "lower the bitrate" had never helped.
+
+**D1 — voice was priced per packet, and the code only ever counted bits.** `CallSdp` asked for
+`minptime=20` and wrote `a=ptime:20`, and WebRTC's own default of 20 ms was in practice 10 ms once
+`red`/FEC framing was accounted for; call it 50–100 packets per second per direction. Each packet
+carries RTP 12 + UDP 8 + IPv4 20 + SRTP auth tag 10 ≈ **50 bytes** of header. At 100 pps that is
+40 kbit/s of wrapping around 25 kbit/s of speech. Worse, 802.11 charges a largely *fixed* airtime
+price per frame — preamble, PHY header, inter-frame spacing, an ACK from the peer — on a half-duplex
+shared medium, so on a congested 2.4 GHz mesh the **packet rate**, not the bit rate, is what the
+link cannot afford. `usedtx=0` compounded it: silence was transmitted at full rate.
+
+**D2 — capture was 1920x1080@30 on every device, unconditionally.** On a 2 GB API-27 handset with a
+480x640 screen that is roughly **62 megapixel/s** of capture-side scale and colour conversion, paid
+on the CPU *before* the encoder sees a frame and paid regardless of what the encoder then decides to
+send. Neither adaptive mechanism already in `FlashCallSession` helps: `MAINTAIN_FRAMERATE`
+degradation and `CallQualityGovernor` (ERROR-031) both act on the **encoder**, downstream of the
+cost. The only way not to pay it is not to ask for the pixels.
+
+**D3 — a mesh roam is invisible to `ConnectivityManager` and used to be fatal to a call.** Android
+hands out one `Network` object per *network*, not per association, so an AP-to-AP handoff on one
+SSID keeps the same `Network`: `onAvailable`/`onLost` never fire and nothing re-probed the sockets.
+The session was left to die of its own 25 s watchdog and then be redialled by a backoff loop whose
+ceiling is 30 s — two seconds of radio outage becoming up to half a minute of "offline". On a client
+with no fast-transition support the roam itself is a full scan, reassociation and DHCP, which is why
+the Pixel and the Infinix crossed the same gap without noticing. And when the dead session was
+finally reaped, `DiscoveryEngineHolder` **ended the live call outright** ("A live call cannot survive
+its signaling session"), so the ICE restart that would have recovered it could never run.
+
+Underneath all three: the app had exactly one performance profile, and it was written for the phones
+in the developer's hand.
+
+### What was tried and rejected
+1. **Lowering the Opus bitrate again.** The bitrate was never the constraint — at 25 kbit/s of
+   speech the headers alone were 40. Halving the payload would have changed the airtime bill by
+   almost nothing, because the bill is per frame.
+2. **Leaving the Belfone to `CallQualityGovernor`.** It reads `getStats()` and steps the encoder
+   down. The capture-side megapixels are upstream of the encoder and are spent whether or not the
+   encoder sends a single byte.
+3. **Detecting roams with `NetworkCallback.onAvailable`/`onLost`.** Structurally cannot work for an
+   AP change within one SSID (D3). Replaced by `LinkChangeTracker`, which compares successive
+   `LinkProperties`/`NetworkCapabilities` snapshots and fires when the *link* moved under a
+   `Network` that never went away.
+4. **Reaping every session the moment a link change is seen.** A roam is not evidence that a session
+   is dead — most survive it. `probeSessionsAfterLinkChange()` gives each live session
+   `linkChangeProbeMs` to prove it still carries traffic and reaps only the ones that do not answer.
+5. **Persisting the detected tier on first run behind a first-run flag.** Rejected as a mechanism
+   that has to be maintained and can go stale: an **unset** preference already *is* auto, auto is
+   resolved on every boot, so a device that gains a capability — or an OEM update that fixes an
+   under-reported `totalMem` — is simply re-read. `FlashPerformanceMode.fromKey` maps both `"auto"`
+   and any token this build does not recognise to null, so a downgrade cannot strand a device on a
+   tier it can no longer name.
+6. **Treating the tier as one more vote in the reduce-motion decision.** Rejected: it is a
+   **floor**. On hardware that earns LOW, the animation *is* the jank, so the tier wins over both
+   the platform setting and the user's preference (`FlashMotionPolicy.resolveReduceMotion`).
+7. **Making `CallSdp.tune()` tier-aware in place.** It was applied symmetrically to the local and
+   the remote description, which stops working the moment the two endpoints have different tiers:
+   the *local* description must carry our own packetization, while the *remote* one must be read as
+   the peer's declaration and reconciled. Split into `tuneLocal` (asserts our tier) and `tuneRemote`
+   (takes the longer frame and the smaller ceiling of the two), so both endpoints converge on
+   byte-identical parameters whichever of them offered — pinned by a test.
+8. **A 4-segment picker with the sliding indicator the theme picker uses.** The devices this control
+   exists for are the ones that cannot afford a sliding indicator; the selected segment is painted
+   directly instead.
+
+### Working fix
+**One tier, four profiles (`:core:common/perf`).** `FlashPerformanceMode` is `LOW`/`MEDIUM`/`HIGH`,
+each exposing a `voice`, `video` and `transport` profile plus the two UI verdicts `reduceMotion` and
+`minimalChrome` (both `this != HIGH`). Every consumer reads it through a **lambda**, never a stored
+value, so a mid-session tier change reaches the next call and `:core:calling`/`:core:network` keep
+knowing nothing about DataStore (ADR-024).
+
+**D1 — packet rate is the knob (`FlashVoiceProfile`, `CallSdp`).** `ptimeMs` is 60/20/10 for
+LOW/MEDIUM/HIGH, i.e. 16/50/100 packets per second, and `useDtx` is on for LOW and MEDIUM so silence
+stops paying airtime. `CallSdp.tuneLocal` writes `a=ptime:` and merges `minptime`/`usedtx` into the
+existing Opus `a=fmtp:` line in place; `tuneRemote` reconciles the peer's declaration by taking the
+**longer** frame and the **smaller** ceiling, which is what makes a LOW↔HIGH call converge on one
+set of parameters at both ends. Non-Opus payload types, `red`, `rtx` and `ulpfec` are left alone.
+
+**D2 — stop asking for the pixels (`FlashVideoProfile`, `FlashCallSession.startMedia`).**
+`MediaDevices.getUserMedia` now requests `captureWidth`/`captureHeight`/`captureFps` from the tier:
+480x360@15 (LOW), 960x540@24 (MEDIUM), 1920x1080@30 (HIGH) — so the owner's "540p and below"
+requirement is the MEDIUM ceiling and LOW is below it. `x-google-{start,min,max}-bitrate` are seeded
+per tier on every video codec. The camera enumerator snaps the request to the nearest supported
+format, so a device without the mode degrades instead of failing.
+
+**D3 — see the roam, probe it, and let the call recover it (three layers).**
+- `LinkChangeTracker` (new, pure, JVM-tested) diffs successive link snapshots and reports a *move*
+  that `onAvailable` cannot see; `AndroidNetworkWatcher` gained `onLinkChanged` to drive it.
+- `WsFlashNetwork.probeSessionsAfterLinkChange()` PINGs every live session and reaps only those that
+  fail to answer within `linkChangeProbeMs`; the reconnect backoff ceiling `reconnectCapMs` drops to
+  **8 s** at LOW, which is the single most load-bearing number for "does this device come back".
+- `CallCoordinator.onSignalingLost` no longer ends the call: it opens a recovery window, and the new
+  `onSignalingRestored` closes it, so a roam that resolves in two seconds does not cost the full
+  grace period. `FlashCallSession` restarts ICE on that transition
+  (`armIceRecovery`/`recoverIce`/`attemptIceRestart`), rate-limited by `iceRestartMinIntervalMs`.
+  `DiscoveryEngineHolder` calls both from its `activeSessions` collector — **this is the wiring that
+  made the whole ICE-restart mechanism reachable at all**; without the `onSignalingRestored` call
+  the restart offer had no channel to travel on.
+
+**Auto-detection on first run (`FlashPerformanceClassifier`, `AndroidDeviceProfile`).** The tier is
+classified once per process from RAM, API level, screen pixels, CPU cores and codec support, with the
+deciding evidence carried in `FlashPerformanceVerdict.reason` and logged at boot. Two-stage: any one
+**hard gate** is conclusive for LOW (RAM < 2560 MB, API < 26, display < 500k px, cores <= 2), while
+the weaker signals only demote to MEDIUM once **two** of them agree — the asymmetry is deliberate,
+because MEDIUM disables animation and a single weak signal should not cost every user their UI.
+Unknown values never demote. There is no first-run flag: an unset preference is auto, and auto is
+re-resolved on every boot.
+
+**UI: LOW and MEDIUM stop animating and stop paying for ornament.** `FlashMotionPolicy`
+(`:core:common`, pure) resolves the three inputs — tier, user override, platform accessibility
+setting — with the tier as a floor. `MainActivity` feeds the single result into the one
+`FlashTheme(...)` in the app via the new `rememberFlashMotion(reduceMotion)`, which covers all ~26
+existing `FlashTheme.motion` call sites at once; `FlashMotion`'s constructor stays `internal`.
+`FlashTheme` also gained a `minimalChrome` flag and `FlashTheme.minimalChrome` accessor — distinct
+from reduce-motion because a drop-shadow costs the same on a still frame as on a moving one. First
+consumer: `FlashBottomNav` drops its 10.dp floating shadow to the hairline border alone.
+
+**A PERFORMANCE section in Settings.** An Auto/Low/Medium/High picker whose subtitle names the tier
+in force and what it costs — capture size, voice packets/s, and whether animations are off — derived
+from the profile tokens so the copy cannot drift from behaviour. On Auto it names the tier
+auto-detect chose, because a misclassified device and a bad link are otherwise indistinguishable from
+the outside and the pin is the only lever for the second case.
+
+### Verification
+`./gradlew testDebugUnitTest assembleDebug` — `:app:assembleDebug` succeeds; **911 live tests, 0
+skipped, 12 failures**, all 12 being the known Windows-only DataStore atomic-rename file-locking
+failures in `:core:persistence` (`DiscoveryModeSettingTest` 1 + `FlashSettingsDataStoreTest` 11),
+identical to baseline. Live total excludes the 49 stale pre-KMP
+`core/common/build/test-results/testDebugUnitTest` artifacts still on disk; the live `:core:common`
+results are `testAndroidHostTest` (75). Baseline moves **863 → 911**: `CallSdpTest` 16→24 (+8),
+`LinkChangeTrackerTest` (+10), `FlashPerformanceClassifierTest` (+23), `FlashMotionPolicyTest` (+3),
+`FlashSettingsLogicTest` (+4).
+
+**Pending owner test, on the mesh, per device and per tier:** place a voice-only call on the Belfone
+and walk between APs — the call must survive the roam (audio gap of a few seconds, not a drop) and
+the peer must return to Online in single-digit seconds, not ~30; check Settings shows
+`Auto · Matched to this device: Low` there and `High` on the Pixel 7; confirm LOW/MEDIUM do not
+animate anywhere and the nav bar has no shadow; place a Belfone↔Pixel video call and confirm both
+ends agree on 540p-or-below and that the picture, not the voice, is what degrades.
+
+### Related files
+- `core/common/src/commonMain/kotlin/.../perf/FlashPerformanceMode.kt` — **new**, the tier and its
+  four profiles, `fromKey`/`toKey`, `reduceMotion`, `minimalChrome`
+- `core/common/src/commonMain/kotlin/.../perf/FlashVoiceProfile.kt` — **new**, `ptimeMs`,
+  `packetsPerSecond`, `useDtx`, `PACKET_OVERHEAD_BYTES = 50`
+- `core/common/src/commonMain/kotlin/.../perf/FlashVideoProfile.kt` — **new**, capture size/fps and
+  the per-tier bitrate seeds
+- `core/common/src/commonMain/kotlin/.../perf/FlashTransportProfile.kt` — **new**, the eight timing
+  numbers (ping, liveness, reconnect cap, link probe, call grace, connect timeout, stats, ICE
+  restart floor)
+- `core/common/src/commonMain/kotlin/.../perf/FlashPerformanceClassifier.kt` — **new**, hard gates
+  plus the two-concern rule, and `FlashPerformanceVerdict.reason`
+- `core/common/src/commonMain/kotlin/.../perf/FlashDeviceProfile.kt` — **new**, the platform-free
+  input the classifier reads
+- `core/common/src/commonMain/kotlin/.../perf/FlashMotionPolicy.kt` — **new**, tier-as-floor
+  reduce-motion resolution
+- `core/common/src/androidMain/kotlin/.../perf/AndroidDeviceProfile.kt` — **new**, reads RAM, cores,
+  API, display and codec support
+- `core/calling/src/main/java/.../CallSdp.kt` — `tuneLocal`/`tuneRemote` split, in-place `fmtp`
+  merge, per-tier video bitrate seeds
+- `core/calling/src/main/java/.../FlashCallSession.kt` — profile-driven `getUserMedia` capture,
+  `armIceRecovery`/`recoverIce`/`attemptIceRestart`, tiered stats cadence
+- `core/calling/src/main/java/.../CallCoordinator.kt` — `onSignalingLost` opens a recovery window,
+  new `onSignalingRestored`, `performanceMode` lambda
+- `core/calling/src/main/java/.../FlashCalling.kt` — `performanceMode` reader threaded through
+- `core/network/src/main/java/.../resilience/LinkChangeTracker.kt` — **new**, pure link-snapshot diff
+- `core/network/src/main/java/.../resilience/AndroidNetworkWatcher.kt` — `onLinkChanged`
+- `core/network/src/main/java/.../ws/WsFlashNetwork.kt` — `probeSessionsAfterLinkChange()`, tiered
+  reconnect ceiling
+- `core/network/src/main/java/.../ws/WsKeepaliveTiming.kt` — **new**, the ping/liveness pair with an
+  `init` guard tying liveness to `STALL_FACTOR`
+- `core/network/src/main/java/.../ws/WsConnection.kt`, `WsTransferClient.kt`, `WsTransferServer.kt` —
+  per-connection keepalive cadence, defaulted so untiered callers are unchanged
+- `core/persistence/src/main/java/.../settings/FlashSettingsDataStore.kt` — `performanceMode` key,
+  flow and setter (null = auto)
+- `ui/theme/src/main/java/.../FlashMotion.kt` — `rememberSystemReduceMotion()` and the
+  `rememberFlashMotion(reduceMotion)` overload, the only way past the `internal` constructor
+- `ui/theme/src/main/java/.../FlashTheme.kt` — `minimalChrome` parameter, local and accessor
+- `ui/chat/src/main/java/.../ui/settings/FlashSettingsScreen.kt` — PERFORMANCE section,
+  `PerformanceModeSegmented`, `performanceModeLabel`/`performanceModeSubtitle`
+- `ui/chat/src/main/java/.../ui/shell/FlashBottomNav.kt` — shadow dropped under `minimalChrome`
+- `app/src/main/java/.../di/AppEngine.kt` — `detectedPerformance`, the resolved `performanceMode`
+  StateFlow, boot-time log of the verdict
+- `app/src/main/java/.../debug/DiscoveryEngineHolder.kt` — mirrors the tier, calls
+  `onSignalingLost`/`onSignalingRestored` from the `activeSessions` collector
+- `app/src/main/java/.../MainActivity.kt` — tier into the theme root and the settings model
+
+### Status
+RESOLVED at code level (2026-09-03; `:app:assembleDebug` clean, 911 live tests with only the 12
+known-baseline Windows DataStore failures); on-device verification of the mesh-roam and per-tier
+matrix pending
+
+---
+
+## ERROR-034 — Invented conversations appeared and then vanished during boot, and three tabs claimed "nothing here" before they could know
+
+### Date
+2026-09-04 (fix landed 2026-09-03)
+
+### Area
+`:core:messaging` (new `EmptyFlashChatRepository`, `FlashChatListUiState.hasLoaded`,
+`RealFlashChatRepository`, `FlashMessagingUtils`), `:ui:chat` (chat-list and conversation screens),
+`:app` (`MainActivity`, `FlashAppModule`, `AppEngine`, `TransfersUiMapper`)
+
+### Symptoms
+Owner field report: "it also seems the placeholder chats are still there because sometimes they show
+and then vanish."
+
+### Environment
+Branch `dev`, HEAD `5b31785`. Reproduces on the Belfone SCP810 (2 GB RAM, API 27) and not on a Pixel
+7 — the whole defect lives inside the boot window, and on a fast handset the splash screen covers it.
+
+### Root cause
+Two defects that produce the same visible flash, plus a family of "empty means nothing" claims made
+by code that had not yet been given access to the answer.
+
+**D1 — the pre-boot fallback was a sample repository.** `MainActivity` bound the chat tab to
+`SampleFlashChatRepository()` until `engine.ready` flipped, on the reasoning that "the shell is never
+empty". It rendered three fabricated threads (False School / Design Team / Flash Transfer) that
+disappeared the instant the real Room-backed repository arrived. The splash hides this — but the
+splash has a 6 s ceiling and a slow device's boot outlasts it, so the user watches invented
+conversations appear and disappear. A second, dormant copy of the same landmine sat in
+`FlashAppModule`: a `@Provides @Singleton fun chatRepository(): FlashChatRepository =
+SampleFlashChatRepository()`. Nothing injected `FlashChatRepository` (the real one is built by
+`DiscoveryEngineHolder` and handed out via `AppEngine.chats`), so the binding was dead code — and the
+first future `@Inject` of it would have silently received sample data.
+
+**D2 — an empty list was two different states wearing one face.** `FlashChatListUiState.items`
+being empty meant both "this device has no conversations" and "the query has not answered yet". The
+shell disambiguated with the engine's `ready` flag, but `ready` flips when the *transport stack*
+finishes booting, which is strictly earlier than the first Room emission. So a device that genuinely
+had conversations rendered the first-run "No conversations yet" panel and then crossfaded to real
+rows — the same flash as D1, from an unrelated cause, which is why removing the sample repository
+alone did not fix it.
+
+<!-- ERROR-034-CONTINUES -->
+
+**D3 — Loading and Error branches that nothing could reach.** The chat, Nearby and Transfers tabs all
+had three-state rendering (skeleton / empty / error) written and wired, and every one of them resolved
+to the empty state during boot because the only input was an empty collection. The Transfers tab was
+the clearest case: un-booted, it asserted "No transfers yet", a statement about this device's history
+made by code with no access to that history yet.
+
+**D4 — a retry button that looked inert.** `AppEngine.start()` cleared `startError` only on success.
+The chat tab renders its error state off that flow and offers a retry that calls back into `start()`,
+so the stale `Throwable` stayed set for the whole retry and the error panel never blinked.
+
+### Fix
+1. **Honest pre-boot repository.** `SampleFlashChatRepository` is replaced as the fallback by a new
+   `EmptyFlashChatRepository` in `:core:messaging`: no threads, no messages, every mutation a no-op.
+   The dead `FlashAppModule` binding is **removed** rather than repointed — a binding goes back only
+   when a real implementation can be supplied. `EmptyFlashChatRepositoryTest` is the regression guard.
+2. **`hasLoaded` on `FlashChatListUiState`.** True once the backing store has produced its first list,
+   *even if that list is empty*. Screens treat `!hasLoaded` as loading, not as empty. Sample datasets
+   set it true at construction — there is no query behind them to wait for, and leaving it false would
+   make every preview render a skeleton over the rows it exists to show.
+3. **Real state into the three tabs.** The chat tab reports skeleton (UI-026) / first-run empty
+   (UI-025) / error (UI-027) from `hasLoaded` and `startError` instead of from `ready`. Transfers gates
+   on `engine.transfers != null`, which is exactly the pre-boot window; once the repository exists an
+   empty list is the truth, because it is in-memory rather than queried. Nearby's Loading branch is
+   reachable for the first time.
+4. **Thread swaps clear first.** `RealFlashChatRepository` clears the previous thread *before* the new
+   collector runs, so there is no window in which the UI shows content belonging to another
+   conversation.
+5. **`startError` cleared on entry to `start()`**, not on success.
+
+### Verification
+`:app:assembleDebug` and `:app:assembleRelease` clean; `TransfersUiMapperTest`,
+`EmptyFlashChatRepositoryTest` and `RealFlashChatRepositoryTest` green.
+
+### Related files
+- `core/messaging/src/main/java/.../EmptyFlashChatRepository.kt` — **new**
+- `core/messaging/src/main/java/.../model/FlashMessagingModels.kt` — `FlashChatListUiState.hasLoaded`
+- `core/messaging/src/main/java/.../RealFlashChatRepository.kt` — first-emission semantics, thread
+  clear-before-collect
+- `core/messaging/src/main/java/.../util/FlashMessagingUtils.kt` — samples set `hasLoaded = true`
+- `app/src/main/java/.../MainActivity.kt` — empty fallback, three-state chat/Nearby/Transfers wiring
+- `app/src/main/java/.../TransfersUiMapper.kt` — `isLoading`/error inputs
+- `app/src/main/java/.../di/FlashAppModule.kt` — sample binding removed
+- `app/src/main/java/.../di/AppEngine.kt` — `startError` cleared before retry
+
+### Status
+RESOLVED and verified in debug and release builds (2026-09-03). No on-device confirmation that the
+Belfone's slow boot no longer shows a flash; the mechanism is removed rather than tuned, so the
+remaining risk is a fourth surface with the same "empty means nothing" assumption that has not been
+found yet.
+
+<!-- ERROR-035-PLACEHOLDER -->
+
+---
+
+## ERROR-035 — The app could not see three of the four ways a link changes; a hotspot host could never dial its own clients; and a roam-killed transfer sat Failed until a human tapped retry
+
+### Date
+2026-09-04
+
+### Area
+`:core:common` (new `net/LinkChangeTracker`, moved out of `:core:network`), `:core:discovery`
+(`nsd/NsdTransport`, `NsdManagerBridge`), `:core:network` (new `util/Ipv4Routing`,
+`ws/WsTransferClient`, `util/LocalNetworkAddresses`, `resilience/AndroidNetworkWatcher`),
+`:core:transfer` (new `policy/TransferReconnectResumePolicy`), `:core:engine` (`Flash`,
+`internal/AutoConnectGate`), `:app` (`debug/DiscoveryEngineHolder`, `net/AutoConnectGate`)
+
+### Symptoms
+Owner field report, two claims in one sentence: "the app or the library doesnt know how to handle a
+network change and also can it handle a device connected to a wifi also hotspoting another device can
+the device connected to the hotspot find anyother device."
+
+### Environment
+Branch `dev`, HEAD `5b31785`. Wi-Fi mesh (several APs, one SSID) plus a phone simultaneously joined to
+that mesh as a station and running its own hotspot. Belfone SCP810 at API 27, which rules out
+`TetheringManager.registerTetheringEventCallback` (API 30+) as a hotspot signal.
+
+### Root cause
+The *responses* to a link change were already correct — the transport probes sessions and drops
+accumulated backoff, NSD re-registers and restarts its browse. Four separate defects meant the
+responses mostly never ran, ran against the wrong route, or ran without telling the transfer layer.
+
+**D1 — three of the four link transitions produced no signal.** Availability callbacks
+(`onAvailable`/`onLost`) are the only ones the code watched, and they cover exactly one case:
+a network appearing or disappearing. They do not fire for a **mesh AP-to-AP roam**, because Android
+hands out one `Network` per *network* and not per association, so the object survives the handoff. They
+do not fire for a **hotspot coming up**, because a SoftAP interface is not a `Network` at all: the
+platform creates no `Network` object for `ap0`, no callback of any kind fires, and the default network
+never changes. And `registerDefaultNetworkCallback` misses a **Wi-Fi network appearing while cellular
+is still default**, which is the ordinary case on a phone with data.
+
+**D2 — the fingerprint collided across networks.** Both link observers kept a single
+capabilities/link-properties pair for *all* matching networks. With two networks reporting
+alternately, each report overwrote the other's fingerprint, so an unchanging link looked like a
+permanent roam — a probe round per peer, every rate-limit period, forever.
+
+<!-- ERROR-035-CONTINUES -->
+
+**D3 — the dial was destination-blind, and the codebase had written a platform rule to explain it.**
+`WsTransferClient` bound every socket to the first Wi-Fi `Network` `ConnectivityManager` listed,
+without asking whether the destination was reachable on it. A hotspot host is dual-homed: it is a
+station on the router LAN *and* the gateway for `192.168.43.0/24` behind `ap0`. Binding a dial to its
+own client to the router network puts the packet on a network where that address has no route, so
+every host-to-client attempt burned the full 4 s connect timeout. Clients dialled the host fine —
+they have exactly one network — and that asymmetry got explained, in three separate KDocs, as an
+Android/Linux rule that "a SoftAP or gateway device cannot open a TCP connection to a client station."
+**No such rule exists.** The host is the client's gateway and has a directly connected route to it.
+The bug was here.
+
+`LocalNetworkAddresses` had the mirror-image defect: `if (fromNetworks.isNotEmpty()) return
+fromNetworks` made its own interface-enumeration fallback unreachable in precisely the case it was
+written for, so a dual-homed device advertised only its router address and never the `192.168.43.1`
+its own clients needed.
+
+**D4 — byte-accurate resume existed and nothing ever called it.**
+`RealFlashTransferRepository.resumeTransfer` already accepted a `Failed` transfer as well as a
+`Paused` one, and `relaunchSend` already reproduced the original `wireFileId` and `sourceUri` exactly,
+so the receiver treats the re-offer as a continuation and keeps every chunk it has verified. But no
+code path invoked it on recovery. A send killed by a roam went to `Failed` and stayed there until a
+human noticed and tapped retry — on a device that walks between mesh APs mid-transfer, that is every
+transfer.
+
+### Fix
+**Triggers (D1, D2).** `LinkChangeTracker` moved from `:core:network` to `:core:common`, which is the
+only module both the transport and discovery paths can see (`:core:network` depends on
+`:core:discovery`, not the reverse). Both observers now key capabilities and link-properties
+fingerprints by `Network.networkHandle` in a `ConcurrentHashMap` and hash the sorted combination, so
+two networks can no longer alias. `NsdTransport` gained all three signals: a per-network
+`registerNetworkCallback` (a strict superset of `registerDefaultNetworkCallback` — a per-network
+callback still delivers `onLost` for the last network standing), a **link-shape** fingerprint over
+capabilities and link properties that catches a roam on a network that stayed, and a
+`linkFingerprint()` poll over `NetworkInterface.getNetworkInterfaces()` folded into the existing
+presence heartbeat, which is the only permission-free all-API-level way to notice a SoftAP. Cellular is
+registered but excluded from the shape half, so its constant bandwidth churn cannot storm browse
+restarts. The poll is IPv4-only (IPv6 privacy addresses rotate on their own timer and would fake a move
+every few hours), excludes non-LAN interfaces via CM's own transport→`interfaceName` mapping rather than
+OEM-varying name prefixes, and returns the *previous* value on enumeration failure so a transient
+`SocketException` cannot bill two spurious re-arms.
+
+Because BSSID needs `ACCESS_FINE_LOCATION` (redacted from `NetworkCapabilities` from API 31 without
+it), link *shape* is a substitute for association identity and false positives are certain. That is
+why the response is deliberately cheap: probe the sessions, do not reap them.
+
+<!-- ERROR-035-CONTINUES-2 -->
+
+**Routing (D3).** New `Ipv4Routing` (`internal object`, pure integer arithmetic, no platform types,
+no DNS) provides `parse` (strict dotted quad only), `onLink(local, prefixLength, destination)`,
+`isUsableLocalAddress` and `isPrivate`. `WsTransferClient.findLanNetwork()` is replaced by
+`chooseRoute(host)` with three outcomes: bind the network the destination is **on-link** for; bind
+**nothing** when an up, non-CM-managed interface is on-link for it, so the kernel's routing table —
+which knows `ap0` — decides; otherwise fall back to the first LAN network for a routed destination.
+Candidate networks are `sortedBy { networkHandle }`, and that determinism is load-bearing: two devices
+must not each bind a different network for the same peer. The "bind nothing" branch carries two
+independent guards — the interface must not be one CM maps to a non-LAN transport, *and* the local
+address must be RFC 1918 — so a cellular interface can never win it and let a dial leave over mobile
+data. The connect log line now carries the decision (`network=… via=on-link|routed-fallback|…`).
+`LocalNetworkAddresses.ipv4Addresses()` merges both sources instead of early-returning.
+
+**Auto-resume (D4).** New `TransferReconnectResumePolicy` in `:core:transfer` — pure, synchronized, no
+coroutines and no repository reference. On a peer's session-up edge it selects that peer's outbound
+`Failed` transfers with a usable `sourceUri` and returns their ids. `Paused` is excluded on purpose: a
+pause is a user decision and a network hiccup must not override it. The cap is per transfer and counts
+only attempts that achieved **nothing**: each attempt records `bytesDone`, and an attempt later found
+to have moved that number clears the count. A 2 GB file crossing ten APs therefore resumes ten times,
+while a transfer whose source is genuinely gone (file deleted, content-URI permission lapsed, storage
+full) gets three tries and is then left for the user — otherwise plentiful session up/down edges on a
+bad link turn an unfixable failure into an unbounded retry loop. Wired into both session-up collectors,
+`DiscoveryEngineHolder` and `Flash`'s `Wiring`, after a 750 ms settle: both ends dial and
+`WsFlashNetwork.registerSession` closes the loser, and a re-offer issued into the losing session would
+fail and spend an attempt, so the session is re-checked before resuming.
+
+**Documentation (D3, continued).** The three KDocs asserting the nonexistent platform rule are
+corrected in place rather than deleted — `app/net/AutoConnectGate`, `core:engine`'s
+`internal/AutoConnectGate`, and the `autoConnectJob` comment in `DiscoveryEngineHolder` — each now
+stating plainly that no such rule exists and pointing at `Ipv4Routing`. Dialling from both ends is
+still correct, because either end may be the one whose discovery resolves first; only the reason
+changed.
+
+### Deliberate revision to the plan
+`AndroidNetworkWatcher.start()` was **not** broadened past WIFI+ETHERNET, though the plan called for
+it. Widening cannot see a SoftAP — there is no `Network` to see — and would newly admit cellular, whose
+bandwidth reports on a walking device would cost a LAN redial sweep plus a foreground-service promotion
+retry each. The hotspot transition is caught on the discovery side instead, and its peers reach the
+transport through the auto-connect sweep.
+
+### The owner's literal question, answered
+**No.** A station joined to a phone's hotspot can reach that host and nothing else on the host's router
+LAN. mDNS multicast is not forwarded across the host's tethering NAT, discovery is the only source of
+routes, `HELLO` carries no third-party peer addresses, and `FlashTransportType.RELAY`/`MESH` are unused
+placeholders. Host-to-client and client-to-host both work after this fix; client-to-router-LAN-peer
+needs the host to relay, which is post-v1. What *is* fixed is the case that used to fail silently: the
+dual-homed host can now reach its own clients.
+
+<!-- ERROR-035-CONTINUES-3 -->
+
+### Verification
+Full sweep: `testDebugUnitTest assembleDebug :core:common:testAndroidHostTest --continue`. **944 live
+tests, 12 failures, 0 skipped** — the 12 are the known-baseline Windows DataStore atomic-rename
+failures in `:core:persistence` (`FlashSettingsDataStoreTest`, `DiscoveryModeSettingTest`), unrelated
+and unchanged. `app-debug.apk` builds. Zero compile errors or new warnings across `:app`,
+`:core:engine`, `:core:transfer`, `:core:network`, `:core:discovery`.
+
+New tests, 32 total:
+- `Ipv4RoutingTest` (9) — the four real topologies, including the exact bug: a host at
+  `192.168.1.20/24` is **not** on-link for its client at `192.168.43.31`, and `192.168.43.1/24`
+  **is**. Also non-/24 prefixes, `/0` and out-of-range prefixes never on-link, CGNAT (`100.64/10`)
+  and `172.15`/`172.32` boundaries not private, and all five standard tethering subnets private.
+- `NsdTransportLogicTest` 36→40 — a hotspot coming up while Wi-Fi stays connected re-arms discovery;
+  the seed tick does not; ten unchanged ticks never restart the browse; a flapping interface is rate
+  limited to one re-arm per two heartbeats; the baseline is forgotten on stop.
+- `TransferReconnectResumePolicyTest` (9) — the two bounds that matter are a broken source stopping
+  after the cap, and an attempt that moved bytes earning the next one.
+- `LinkChangeTrackerTest` (10, `:core:common:testAndroidHostTest`).
+
+Not verified: none of this is confirmed on hardware. The mesh roam, the dual-homed hotspot dial and
+the auto-resume all need the three-phone field setup. A stale pre-KMP
+`core/common/build/test-results/testDebugUnitTest/` directory that inflated raw aggregations by 49 was
+deleted as part of this work; `docs/migration/CONVENTIONS.md` now carries a measured per-module table
+instead of a hand-maintained delta, and records that the previous 911 figure does not reconcile to 944
+by one test.
+
+### Related files
+- `core/common/src/commonMain/kotlin/.../net/LinkChangeTracker.kt` — **new location**, moved from
+  `:core:network`; `onFingerprint` returns false for the first report ever, for no change, and for a
+  change inside the rate limit, while a suppressed change still updates the baseline
+- `core/network/src/main/java/.../util/Ipv4Routing.kt` — **new**
+- `core/network/src/main/java/.../ws/WsTransferClient.kt` — `chooseRoute`, `lanNetworks`, `isOnLink`,
+  `unmanagedInterfaceIsOnLink`, `nonLanInterfaceNames`
+- `core/network/src/main/java/.../util/LocalNetworkAddresses.kt` — merge instead of early return
+- `core/network/src/main/java/.../resilience/AndroidNetworkWatcher.kt` — per-network fingerprints,
+  narrow transport filter documented
+- `core/discovery/src/main/java/.../nsd/NsdTransport.kt` — `NsdManagerBridge.linkFingerprint()`,
+  per-network callback, shape fingerprints, interface poll in `presenceTick`
+- `core/transfer/src/main/java/.../policy/TransferReconnectResumePolicy.kt` — **new**
+- `app/src/main/java/.../debug/DiscoveryEngineHolder.kt` — `resumeRoamKilledSends`, corrected
+  `autoConnectJob` comment
+- `core/engine/src/main/java/.../Flash.kt` — same auto-resume in the library wiring
+- `app/src/main/java/.../net/AutoConnectGate.kt`,
+  `core/engine/src/main/java/.../internal/AutoConnectGate.kt` — false platform rule corrected
+
+### Status
+RESOLVED at code level (2026-09-04). On-device verification pending on all four defects. Known
+follow-ups deliberately not taken here: `FlashDiscoveredEndpoint.hostAddress` and
+`WsFlashNetwork.Endpoint` still hold a single address, so a multi-homed host cannot be represented and
+flaps `Diff.Updated`; `FlashDevConsoleScreen.kt:328` still probes a hardcoded `192.168.43.1`; and
+`app/.../lan/LanController.kt:94` never refreshes `LanUiState.localAddresses` after a roam (legacy TCP
+dev-console path).
 
 
 
@@ -2357,3 +2954,58 @@ on-device verification of the two-phone matrix pending
 
 
 
+
+
+
+
+## ERROR-036 — Creating a group killed both live sessions: `NetworkOnMainThreadException` from `createGroup`'s blocking WS sends
+
+### Date
+2026-09-08
+
+### Area
+`:core:messaging` (`RealFlashChatRepository.createGroup`), `:app` (`MainActivity` group sheet)
+
+### Symptoms
+First on-device group-creation run. Tapping Create produced:
+```text
+W WS: WS write failed remote=10.1.97.154:45822
+W WS: android.os.NetworkOnMainThreadException
+  at WebSocketCodec.writeFrame(WebSocketCodec.kt:118)
+  at WsConnection.sendText(WsConnection.kt:132)
+  at DiscoveryEngineHolder$chatImpl$4.send(DiscoveryEngineHolder.kt:660)
+  at RealFlashChatRepository.createGroup(RealFlashChatRepository.kt:573)
+  ... at AndroidUiDispatcher.performTrampolineDispatch(AndroidUiDispatcher.android.kt:79)
+```
+— once per member, and immediately after each: `Cancelled collectors for stale session peer=…`.
+Both live sessions dropped and re-dialed. Skipped-frame Choreographer warnings accompanied it.
+
+### Root cause
+The new group suspend functions (`createGroup`/`addGroupMembers`/`leaveGroup`/`groupMembers`)
+performed Room writes AND blocking `WsConnection.sendText` writes **directly on the caller's
+dispatcher**. The UI invokes `createGroup` from a coroutine on the main thread
+(`rememberCoroutineScope` → `AndroidUiDispatcher`), so every member send hit StrictMode's
+network-on-main guard. The failed writes then surfaced as connection errors to `WsConnection`,
+which closed the sessions — the same failure mode the pairing path documented years ago
+("MUST be non-blocking … a blocking socket write there throws NetworkOnMainThreadException,
+which WsConnection catches as a write failure and CLOSES the session", DiscoveryEngineHolder
+`sendToPeer` KDoc). `sendText`/`sendReply` never had the problem because they hop to
+`scope.launch(ioDispatcher)` internally; the group API I added skipped that hop.
+
+### Working fix
+Each group mutation is now `withContext(ioDispatcher) { …Locked(...) }` — the public suspend
+function hops to the repository's IO dispatcher before any DAO or socket touch, regardless of
+caller. `groupMembers` (a read, but cheap to hop) does the same. Regression pin:
+`group mutations never send from the caller's thread` asserts via reflection that the sink
+runs on the injected `ioDispatcher`, never on the calling thread.
+
+### Verification
+`:core:messaging:testDebugUnitTest` green (58 tests incl. the new pin); `:app:compileDebugKotlin`
+clean. On-device retest of create-group is part of the Phase 1A physical gate.
+
+### Related files
+- `core/messaging/src/main/java/.../RealFlashChatRepository.kt` — the four `withContext` hops
+- `core/messaging/src/test/java/.../RealFlashChatRepositoryTest.kt` — dispatch regression pin
+
+### Status
+RESOLVED at code level (2026-09-08); on-device confirmation folded into the Phase 1A gate.

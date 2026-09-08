@@ -142,6 +142,36 @@ public class WsConnection(
     }
 
     /**
+     * [sendBinary] for callers that transfer ownership of [data]: on a masking (client) connection
+     * the array is masked in place and must not be retained or reused afterwards. Intended for the
+     * transfer hot loop, whose frames are single-use `ChunkFrame.serialize` output — copying each
+     * 64 KB payload again under the write lock was pure churn (EXP-001).
+     */
+    public fun sendBinaryConsuming(data: ByteArray): Boolean {
+        return send(WebSocketCodec.OPCODE_BINARY, data, consumePayload = true)
+    }
+
+    /**
+     * Sends one keepalive PING out of band, off the watchdog's own schedule (ERROR-033).
+     *
+     * Used to *interrogate* a session rather than to keep it alive: after a suspected Wi-Fi roam,
+     * a session that is still carried by the new association answers with a PONG within a
+     * round-trip, and one that is not answers with nothing. The reply lands on [lastInboundAtMs]
+     * like any other inbound frame, so the caller compares that stamp before and after.
+     *
+     * Deliberately does not touch the watchdog's tick bookkeeping: an out-of-band probe must not
+     * be able to rebase the liveness window (that is precisely the stall-forgiveness abuse
+     * ERROR-031 closed). Fire-and-forget on the connection scope, so safe from any thread.
+     *
+     * @return false when the connection is already closed and nothing was sent.
+     */
+    public fun sendPing(): Boolean {
+        if (closed.get()) return false
+        scope.launch { send(WebSocketCodec.OPCODE_PING, ByteArray(0)) }
+        return true
+    }
+
+    /**
      * Closes the connection. The close frame and socket close run on the connection scope
      * so this is safe to call from any thread (StrictMode forbids network writes on main).
      * The listener callback fires immediately; the peer observes the close frame or EOF.
@@ -160,11 +190,11 @@ public class WsConnection(
         listener.onConnectionClosed(this, reason)
     }
 
-    private fun send(opcode: Int, payload: ByteArray): Boolean {
+    private fun send(opcode: Int, payload: ByteArray, consumePayload: Boolean = false): Boolean {
         if (closed.get()) return false
         return runCatching {
             synchronized(writeLock) {
-                WebSocketCodec.writeFrame(output, opcode, payload, maskOutboundFrames)
+                WebSocketCodec.writeFrame(output, opcode, payload, maskOutboundFrames, maskPayloadInPlace = consumePayload)
             }
         }.onFailure { error ->
             if (!closed.get()) {
@@ -192,7 +222,7 @@ public class WsConnection(
                 when (message) {
                     is WebSocketCodec.Message.Text -> listener.onTextMessage(this, message.text)
                     is WebSocketCodec.Message.Binary -> listener.onBinaryMessage(this, message.data)
-                    is WebSocketCodec.Message.Ping -> send(WebSocketCodec.OPCODE_PONG, message.payload)
+                    is WebSocketCodec.Message.Ping -> send(WebSocketCodec.OPCODE_PONG, message.payload, consumePayload = true)
                     is WebSocketCodec.Message.Pong -> Unit
                     is WebSocketCodec.Message.Close -> {
                         close(if (message.reason.isNotBlank()) message.reason else "Peer closed connection (${message.code})")

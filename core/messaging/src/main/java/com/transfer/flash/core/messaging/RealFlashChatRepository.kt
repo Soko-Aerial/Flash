@@ -1,6 +1,11 @@
+@file:OptIn(com.transfer.flash.core.common.annotation.FlashInternalApi::class)
+
 package com.transfer.flash.core.messaging
 
+import com.transfer.flash.core.common.logging.FlashLog
 import com.transfer.flash.core.common.model.FlashPeerPresence
+import com.transfer.flash.core.common.result.FlashError
+import com.transfer.flash.core.common.result.FlashResult
 import com.transfer.flash.core.messaging.model.FlashAttachmentProgress
 import com.transfer.flash.core.messaging.model.FlashCallEventKind
 import com.transfer.flash.core.messaging.model.FlashCallEventUi
@@ -10,18 +15,31 @@ import com.transfer.flash.core.messaging.model.FlashChatListUiState
 import com.transfer.flash.core.messaging.model.FlashConversationUiState
 import com.transfer.flash.core.messaging.model.FlashFileAttachmentUi
 import com.transfer.flash.core.messaging.model.FlashFileTransferStatus
+import com.transfer.flash.core.messaging.model.FlashGroupMemberUi
 import com.transfer.flash.core.messaging.model.FlashImageAttachmentUi
+import com.transfer.flash.core.messaging.model.FlashMemberRole
 import com.transfer.flash.core.messaging.model.FlashMessageStatus
 import com.transfer.flash.core.messaging.model.FlashMessageUi
 import com.transfer.flash.core.messaging.model.FlashNetworkTransport
 import com.transfer.flash.core.messaging.model.FlashQuotedReplyUi
 import com.transfer.flash.core.messaging.model.FlashReaction
 import com.transfer.flash.core.messaging.model.FlashVoiceAttachmentUi
+import com.transfer.flash.core.messaging.protocol.ChatWireFrame
+import com.transfer.flash.core.messaging.protocol.GroupMembershipVersion
+import com.transfer.flash.core.messaging.protocol.GroupPolicy
+import com.transfer.flash.core.messaging.protocol.GroupSyncCursor
+import com.transfer.flash.core.messaging.protocol.GroupSyncPolicy
+import com.transfer.flash.core.messaging.protocol.GroupSyncTier
+import com.transfer.flash.core.messaging.protocol.GroupWireFrame
 import com.transfer.flash.core.messaging.protocol.MessageWireFrame
+import com.transfer.flash.core.messaging.protocol.membershipUpdateWins
 import com.transfer.flash.core.messaging.util.computeMessageGroupPositions
 import com.transfer.flash.core.messaging.util.sortedChatListItems
+import com.transfer.flash.core.messaging.util.throttleLatest
 import com.transfer.flash.core.persistence.db.dao.ConversationDao
 import com.transfer.flash.core.persistence.db.dao.DraftDao
+import com.transfer.flash.core.persistence.db.dao.GroupDeliveryDao
+import com.transfer.flash.core.persistence.db.dao.GroupMemberDao
 import com.transfer.flash.core.persistence.db.dao.MessageDao
 import com.transfer.flash.core.persistence.db.dao.OutboxDao
 import com.transfer.flash.core.persistence.db.dao.ReactionDao
@@ -29,6 +47,8 @@ import com.transfer.flash.core.persistence.db.dao.ReceiptDao
 import com.transfer.flash.core.persistence.db.dao.RecentSearchDao
 import com.transfer.flash.core.persistence.db.entity.ConversationEntity
 import com.transfer.flash.core.persistence.db.entity.DraftEntity
+import com.transfer.flash.core.persistence.db.entity.GroupDeliveryEntity
+import com.transfer.flash.core.persistence.db.entity.GroupMemberEntity
 import com.transfer.flash.core.persistence.db.entity.MessageEntity
 import com.transfer.flash.core.persistence.db.entity.OutboxEntity
 import com.transfer.flash.core.persistence.db.entity.ReactionEntity
@@ -39,11 +59,14 @@ import java.util.Date
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.concurrent.Volatile
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -52,15 +75,22 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Functional wire transport provider for sending frames to a target conversation / peer.
  */
 public fun interface MessageTransportSink {
-    public suspend fun send(conversationId: String, frame: MessageWireFrame): Boolean
+    public suspend fun send(targetDeviceId: String, frame: MessageWireFrame): Boolean
+}
+
+/** Dedicated group transport seam; direct-message ABI and byte routing stay unchanged. */
+public fun interface GroupTransportSink {
+    public suspend fun send(targetDeviceId: String, frame: GroupWireFrame): Boolean
 }
 
 /**
@@ -83,6 +113,11 @@ public class RealFlashChatRepository(
     private val draftDao: DraftDao,
     private val recentSearchDao: RecentSearchDao,
     private val reactionDao: ReactionDao,
+    private val groupMemberDao: GroupMemberDao? = null,
+    private val groupDeliveryDao: GroupDeliveryDao? = null,
+    /** Only already-paired peers can create, join, or send group traffic. */
+    private val isTrustedPeer: (String) -> Boolean = { false },
+    private val groupTransportSink: GroupTransportSink? = null,
     private val transportSink: MessageTransportSink? = null,
     private val scope: CoroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
@@ -125,17 +160,24 @@ public class RealFlashChatRepository(
 ) : FlashChatRepository {
 
     private val _chatListState = MutableStateFlow(FlashChatListUiState())
+
+    /**
+     * Group Phase A: in-memory group titles, stamped the moment a group name is written
+     * (local create, inbound create). Lets [openConversation] seed a correct group header
+     * synchronously WITHOUT a Room read on the caller's thread — a blocking read there
+     * starved the shared test executor, and on the UI thread it would block main. A group
+     * opened cold from the chat list is corrected by the combine's first Room emission.
+     */
+    private val groupTitleCache = ConcurrentHashMap<String, String>()
+
+    /**
+     * F3: this device's performance tier as seen by the sync protocol — it paces pushes TO us
+     * (LOW returners get 5 msg/s). Read per request so a tier change takes effect immediately.
+     */
+    private val syncTier: () -> GroupSyncTier = { GroupSyncTier.MEDIUM }
     override val chatListState: StateFlow<FlashChatListUiState> = _chatListState.asStateFlow()
 
-    private val _conversationState = MutableStateFlow(
-        FlashConversationUiState(
-            header = FlashChatHeaderUiState(
-                title = "Messages",
-                avatarInitials = "FL",
-            ),
-            messages = emptyList(),
-        ),
-    )
+    private val _conversationState = MutableStateFlow(EMPTY_CONVERSATION)
     override val conversationState: StateFlow<FlashConversationUiState> = _conversationState.asStateFlow()
 
     private var activeConversationId: String? = null
@@ -148,6 +190,32 @@ public class RealFlashChatRepository(
     // null drainMutex and the resulting NPE is an uncaught coroutine exception that kills
     // the whole process. Observed on device 2026-08-31 10:22 (AndroidRuntime FATAL).
     private val drainMutex = Mutex()
+
+    /**
+     * Wake signal for [drainOutboxLoop], fed by the `outboxDao.observeCount()` collector launched
+     * from the init block below. That is a Room `Flow`, so it fires on any write to the `outbox`
+     * table — an enqueue from any send path, our own `rescheduleAttempt`, a delete on an inbound
+     * `DeliveryReceipt`.
+     *
+     * [Channel.CONFLATED] is load-bearing twice over: a burst of writes collapses into a single
+     * wake, and a wake that arrives *while* a drain pass is already running is retained rather than
+     * dropped, so the pass that could not see that row runs again immediately instead of leaving it
+     * to wait out a whole idle interval. Nothing here is a lost-wakeup risk.
+     *
+     * MUST be declared above the init block, for the reason recorded on [drainMutex].
+     */
+    private val drainWake = Channel<Unit>(Channel.CONFLATED)
+
+    /**
+     * Earliest retry deadline [drainOutboxOnce] has scheduled, or null when nothing is known to be
+     * pending. This is what [drainOutboxLoop] sleeps until; see [OutboxDrainSchedule].
+     *
+     * `@Volatile` because the writer is whichever thread happened to run the drain — a send path,
+     * `notifyPeerSessionUp`, or the loop itself — while the reader is always the loop's own thread.
+     * MUST be declared above the init block, for the reason recorded on [drainMutex].
+     */
+    @Volatile
+    private var outboxNextDueAt: Long? = null
 
     // Ephemeral in-memory typing state: conversationId -> (memberId -> memberName) currently typing.
     // Mirrored into [typingFlow] so the conversation UI can observe it (#11). Never persisted.
@@ -180,6 +248,37 @@ public class RealFlashChatRepository(
     private val displayedPresence: Flow<PresenceSnapshot> =
         onlinePeerIds.withReconnectGrace(OFFLINE_HOLD_MS)
 
+    /**
+     * [attachmentProgress] at a cadence a screen can use. MUST be declared above the init block
+     * below, for the reason recorded on [drainMutex] — the stamping collector it feeds is launched
+     * from there.
+     *
+     * The transfer layer's watcher publishes every 10 ms for the whole duration of a transfer, and
+     * this flow is an input to the conversation `combine`. So each of those 100 emissions a second
+     * used to re-derive the entire open thread: index rows by local id, group reaction rows, build a
+     * fresh `FlashMessageUi` per message (with a timestamp format and an initials derivation each),
+     * reverse the list, walk it again for group positions, rebuild the header, then deep-compare the
+     * result against the previous state. With a fifty-message window open that is tens of thousands
+     * of short-lived objects a second, and it is the *foreground* cost the user feels while a
+     * transfer runs — on the low-end hardware this is aimed at, it competes with the transfer itself.
+     *
+     * Every field this actually moves is coarser than the tick that produced it:
+     * - `progress` is driven by `bytesDone`, which only advances when an ACK_BATCH lands — one per
+     *   32 chunks, i.e. one per 2 MB at the default chunk size. Between batches it does not change
+     *   at all.
+     * - `speedMbps` renders as `"%.1f MB/s"`, so anything finer than 0.1 MB/s is invisible.
+     * - `etaSeconds` is whole seconds, and the file card does not render it at all today.
+     *
+     * So the 10 ms cadence carried no information the UI could show. The window is deliberately
+     * tier-independent rather than gated on the performance mode: a text label that
+     * changes 10 times a second is already faster than it can be read, and the progress bar is
+     * animated by `animateFloatAsState` against Compose's frame clock — its smoothness comes from
+     * the animation, not from how often a new target arrives. Nothing about the HIGH-tier look
+     * changes here, so there is nothing to gate.
+     */
+    private val pacedAttachmentProgress: Flow<Map<String, FlashAttachmentProgress>> =
+        attachmentProgress.throttleLatest(ATTACHMENT_PROGRESS_THROTTLE_MS)
+
     init {
         // Observe conversation list from Room, joined with live session presence + unread counts.
         scope.launch(ioDispatcher) {
@@ -192,10 +291,37 @@ public class RealFlashChatRepository(
                 val unreadByConversation = unreadRows.associate { it.conversationId to it.unread }
                 val previewByConversation = previewRows.associate { it.conversationId to it.previewText }
                 entities.filter { !it.archived }.map { entity ->
-                    // Prefer the authoritative friendly name (trust store) over whatever title the
-                    // row happens to hold — a local send may have stamped it with the raw device id.
-                    val displayTitle = peerNameResolver(entity.id)?.ifBlank { null }
-                        ?: entity.title.ifBlank { entity.id }
+                    // Group Phase A: a groupId is not a device id, so the trust-store lookup never
+                    // resolves for groups — use the stored title. For direct chats the friendly
+                    // name still wins (a local send may have stamped the raw device id).
+                    val displayTitle = if (entity.isGroup) {
+                        entity.title.ifBlank { entity.id }
+                    } else {
+                        peerNameResolver(entity.id)?.ifBlank { null }
+                            ?: entity.title.ifBlank { entity.id }
+                    }
+                    // Group aggregate presence (Phase A): a group is Online when any member has a
+                    // live session; the per-row peer check `entity.id in peers.online` can never
+                    // fire for a groupId, which pinned every group row to Offline forever.
+                    val presence: FlashPeerPresence
+                    val groupOnlineCount: Int
+                    if (entity.isGroup) {
+                        val onlineMembers = groupMemberDao
+                            ?.activeMembers(entity.id)
+                            .orEmpty()
+                            .count { it.deviceId in peers.online }
+                        groupOnlineCount = onlineMembers
+                        // Group aggregate presence (Phase A): a group is Online when any member
+                        // has a live session; the per-row peer check can never fire for a groupId.
+                        presence = if (onlineMembers > 0) FlashPeerPresence.Online else FlashPeerPresence.Offline
+                    } else {
+                        groupOnlineCount = 0
+                        presence = when {
+                            entity.id in peers.online -> FlashPeerPresence.Online
+                            entity.id in peers.connecting -> FlashPeerPresence.Connecting
+                            else -> FlashPeerPresence.Offline
+                        }
+                    }
                     FlashChatListItemUi(
                         id = entity.id,
                         title = displayTitle,
@@ -208,12 +334,9 @@ public class RealFlashChatRepository(
                         unreadCount = unreadByConversation[entity.id] ?: 0,
                         // Three honest states (ERROR-031): a peer whose session just dropped reads
                         // as Connecting for the grace window rather than as a link we can use.
-                        presence = when {
-                            entity.id in peers.online -> FlashPeerPresence.Online
-                            entity.id in peers.connecting -> FlashPeerPresence.Connecting
-                            else -> FlashPeerPresence.Offline
-                        },
+                        presence = presence,
                         isGroup = entity.isGroup,
+                        groupOnlineCount = groupOnlineCount,
                         isPinned = entity.pinned,
                         isMuted = entity.muted,
                         sortOrder = entity.sortOrder,
@@ -223,14 +346,26 @@ public class RealFlashChatRepository(
                 _chatListState.update { current ->
                     current.copy(
                         items = sortedChatListItems(items),
+                        // ERROR-034: the first emission is what turns "we don't know yet" into
+                        // "this is the list". Set unconditionally — an empty list from Room is a
+                        // real answer (a genuinely fresh install) and must be allowed to show the
+                        // first-run panel.
+                        hasLoaded = true,
                     )
                 }
             }
         }
 
-        // Background outbox drain worker
+        // Background outbox drain worker. Event-driven, not polled: see [drainOutboxLoop].
         scope.launch(ioDispatcher) {
             drainOutboxLoop()
+        }
+
+        // The wake signal that replaces the old 1 Hz grid. Kept as a separate collector rather than
+        // folded into the loop because the loop has to be free to be *asleep* while this stays
+        // subscribed — a Room Flow only invalidates for as long as something is collecting it.
+        scope.launch(ioDispatcher) {
+            outboxDao.observeCount().collect { drainWake.trySend(Unit) }
         }
 
         // Stamp the on-disk path of every finished attachment onto its row. Live progress is
@@ -242,7 +377,7 @@ public class RealFlashChatRepository(
             // written. Progress emits many times a second and the DAO write is a no-op after the
             // first, but a suspending DB round-trip per tick is not.
             val stamped = HashSet<String>()
-            attachmentProgress.collect { byTransfer ->
+            pacedAttachmentProgress.collect { byTransfer ->
                 byTransfer.forEach { (transferId, live) ->
                     if (live.status != FlashFileTransferStatus.Downloaded) return@forEach
                     val path = live.localPath?.ifBlank { null } ?: return@forEach
@@ -267,6 +402,42 @@ public class RealFlashChatRepository(
         activeConversationId = conversationId
         activeConversationJob?.cancel()
 
+        // ERROR-034: clear the previous thread *before* the new collector runs. The combine below
+        // emits asynchronously (Room + IO dispatcher), so without this reset the outgoing thread's
+        // header, messages and draft stay on screen under the incoming thread's route — open B
+        // straight after A and you read A's name, avatar and messages for a frame or three.
+        //
+        // The header is pre-seeded with the same title derivation the combine performs, so what is
+        // shown is correct from the first frame rather than blank-then-correct. Only the message
+        // list starts empty, which is the one thing we genuinely do not know yet.
+        //
+        // Group Phase A: a group is NOT a peer id — `peerNameResolver(groupId)` is always null and
+        // the raw UUID won. The seed cannot read Room synchronously (openConversation runs on the
+        // main thread, and a runBlocking read also starved the shared test executor), so a group
+        // name stamped in [groupTitleCache] seeds a correct group header instantly; anything else
+        // seeds the neutral derivation and the combine stamps DB truth on its first emission.
+        val cachedGroupTitle = groupTitleCache[conversationId]
+        if (cachedGroupTitle != null) {
+            _conversationState.value = FlashConversationUiState(
+                header = FlashChatHeaderUiState(
+                    title = cachedGroupTitle,
+                    avatarInitials = computeInitials(cachedGroupTitle),
+                    isGroup = true,
+                    showCallActions = false,
+                ),
+                messages = emptyList(),
+            )
+        } else {
+            val seedTitle = peerNameResolver(conversationId)?.ifBlank { null } ?: conversationId
+            _conversationState.value = FlashConversationUiState(
+                header = FlashChatHeaderUiState(
+                    title = seedTitle,
+                    avatarInitials = computeInitials(seedTitle),
+                ),
+                messages = emptyList(),
+            )
+        }
+
         // Track the newest message id we've already marked read so an unchanged head does not
         // rewrite the cursor (and needlessly re-emit the chat list) on every recomposition, plus
         // the newest INBOUND id we've already acked so we don't re-send the same read receipt.
@@ -279,7 +450,7 @@ public class RealFlashChatRepository(
             val contentFlow = combine(
                 messageDao.observeConversation(conversationId),
                 draftDao.observeDraft(conversationId),
-                attachmentProgress,
+                pacedAttachmentProgress,
                 reactionDao.observeForConversation(conversationId),
             ) { entities, draftEntity, progressByTransfer, reactionRows ->
                 // Index rows by local id so a reply can resolve its quoted message's author/side for
@@ -341,43 +512,41 @@ public class RealFlashChatRepository(
                 displayedPresence,
                 typingFlow,
             ) { content, peers, typingByConversation ->
-                // conversationId is the peer's device id; show the friendly name, not the UUID.
-                val title = peerNameResolver(conversationId)?.ifBlank { null } ?: conversationId
-                val isOnline = conversationId in peers.online
-                val isConnecting = !isOnline && conversationId in peers.connecting
-                val typingNames = typingByConversation[conversationId].orEmpty()
-                val presence = when {
-                    // A typing indicator sticks until the peer clears it, so a session that died
-                    // mid-compose would otherwise leave "typing…" on screen forever. It may only
-                    // outrank a peer we still believe is reachable.
-                    typingNames.isNotEmpty() && (isOnline || isConnecting) -> FlashPeerPresence.Typing
-                    isOnline -> FlashPeerPresence.Online
-                    // ERROR-031: the reconnect window is its own state. The header renders it as
-                    // "Connecting…" and the banner agrees, because resolveHealth tests Connecting
-                    // ahead of the (necessarily) Unknown transport below.
-                    isConnecting -> FlashPeerPresence.Connecting
-                    else -> FlashPeerPresence.Offline
-                }
-                FlashConversationUiState(
-                    header = FlashChatHeaderUiState(
-                        title = title,
-                        avatarInitials = computeInitials(title),
-                        presence = presence,
-                        // Without a transport the header's resolveHealth() short-circuits Unknown ->
-                        // Offline and shows "Searching for devices…" even when the peer has a live
-                        // session. An active session is our LAN/WS mesh link, so stamp Lan when
-                        // online — and only when online: a peer mid-reconnect has no link to name.
-                        transport = if (isOnline) {
-                            FlashNetworkTransport.Lan
-                        } else {
-                            FlashNetworkTransport.Unknown
+                // Group Phase A: a group thread derives its header from the member roster, not
+                // from a peer-name lookup (a groupId is not a device id — the UUID used to win).
+                val conversationEntity = conversationDao.get(conversationId)
+                if (conversationEntity?.isGroup == true) {
+                    val members = groupMemberDao?.activeMembers(conversationId).orEmpty()
+                    val memberIds = members.mapTo(HashSet()) { it.deviceId }
+                    val onlineMembers = members.count { it.deviceId in peers.online }
+                    val typingNames = typingByConversation[conversationId].orEmpty()
+                    val title = conversationEntity.title.ifBlank { conversationId }
+                    FlashConversationUiState(
+                        header = FlashChatHeaderUiState(
+                            title = title,
+                            avatarInitials = computeInitials(title),
+                            presence = if (onlineMembers > 0) FlashPeerPresence.Online else FlashPeerPresence.Offline,
+                            // Group members share our LAN/WS mesh when any of them is online.
+                            transport = if (onlineMembers > 0) FlashNetworkTransport.Lan else FlashNetworkTransport.Unknown,
+                            isGroup = true,
+                            memberInitials = members.take(4).map { computeInitials(it.displayName) },
+                            memberCount = members.size,
+                            onlineCount = onlineMembers,
+                            typingMemberNames = typingNames,
+                            // Phase 2 owns group voice; until then the buttons must not render —
+                            // tapping them called startCall(groupId) and the trust gate refused silently.
+                            showCallActions = false,
+                        ),
+                        messages = content.messages,
+                        draftText = content.draftText,
+                        members = members.map { member ->
+                            member.toMemberUi(isOnline = member.deviceId in peers.online)
                         },
-                        typingMemberNames = typingNames,
-                    ),
-                    messages = content.messages,
-                    // Restore any unsent composer text (#9); blank when there is no saved draft.
-                    draftText = content.draftText,
-                ) to Pair(content.newestMessageId, content.newestInboundId)
+                    ) to Pair(content.newestMessageId, content.newestInboundId)
+                } else {
+                    directHeaderState(content, peers, typingByConversation, conversationId)
+                        .let { it to Pair(content.newestMessageId, content.newestInboundId) }
+                }
             }.collectLatest { (state, cursors) ->
                 val (newestMessageId, newestInboundId) = cursors
                 _conversationState.value = state
@@ -406,6 +575,55 @@ public class RealFlashChatRepository(
         }
     }
 
+    /**
+     * The direct-chat header derivation, byte-identical to the pre-group combine body (group
+     * Phase A only branched it out). conversationId is the peer's device id; show the friendly
+     * name, not the UUID.
+     */
+    private fun directHeaderState(
+        content: ConversationContent,
+        peers: PresenceSnapshot,
+        typingByConversation: Map<String, List<String>>,
+        conversationId: String,
+    ): FlashConversationUiState {
+        val title = peerNameResolver(conversationId)?.ifBlank { null } ?: conversationId
+        val isOnline = conversationId in peers.online
+        val isConnecting = !isOnline && conversationId in peers.connecting
+        val typingNames = typingByConversation[conversationId].orEmpty()
+        val presence = when {
+            // A typing indicator sticks until the peer clears it, so a session that died
+            // mid-compose would otherwise leave "typing…" on screen forever. It may only
+            // outrank a peer we still believe is reachable.
+            typingNames.isNotEmpty() && (isOnline || isConnecting) -> FlashPeerPresence.Typing
+            isOnline -> FlashPeerPresence.Online
+            // ERROR-031: the reconnect window is its own state. The header renders it as
+            // "Connecting…" and the banner agrees, because resolveHealth tests Connecting
+            // ahead of the (necessarily) Unknown transport below.
+            isConnecting -> FlashPeerPresence.Connecting
+            else -> FlashPeerPresence.Offline
+        }
+        return FlashConversationUiState(
+            header = FlashChatHeaderUiState(
+                title = title,
+                avatarInitials = computeInitials(title),
+                presence = presence,
+                // Without a transport the header's resolveHealth() short-circuits Unknown ->
+                // Offline and shows "Searching for devices…" even when the peer has a live
+                // session. An active session is our LAN/WS mesh link, so stamp Lan when
+                // online — and only when online: a peer mid-reconnect has no link to name.
+                transport = if (isOnline) {
+                    FlashNetworkTransport.Lan
+                } else {
+                    FlashNetworkTransport.Unknown
+                },
+                typingMemberNames = typingNames,
+            ),
+            messages = content.messages,
+            // Restore any unsent composer text (#9); blank when there is no saved draft.
+            draftText = content.draftText,
+        )
+    }
+
     /** Intermediate holder for the content combine so the presence/typing combine stays ≤ 5 flows. */
     private data class ConversationContent(
         val messages: List<FlashMessageUi>,
@@ -419,6 +637,210 @@ public class RealFlashChatRepository(
         activeConversationId = null
     }
 
+    override suspend fun createGroup(name: String, memberIds: Set<String>): FlashResult<String> =
+        // Group mutations do Room writes AND blocking socket writes (WsConnection.sendText), so
+        // they must never run on the caller's dispatcher: the UI calls this from the main thread
+        // and a blocking send there is a NetworkOnMainThreadException that also tears the
+        // session down (observed on device 2026-09-08). Same rule as the drain loop's IO home.
+        withContext(ioDispatcher) { createGroupLocked(name, memberIds) }
+
+    private suspend fun createGroupLocked(
+        name: String,
+        memberIds: Set<String>,
+    ): FlashResult<String> {
+        val groupName = GroupPolicy.normalizedName(name)
+            ?: return FlashResult.Failure(FlashError.Unknown("Group name must be 1-${GroupPolicy.MAX_GROUP_NAME_LENGTH} characters"))
+        val allMembers = memberIds + localDeviceId
+        if (!GroupPolicy.validMemberIds(allMembers, localDeviceId)) {
+            return FlashResult.Failure(FlashError.Unknown("Groups support 2-${GroupPolicy.MAX_MEMBERS} unique members"))
+        }
+        if (memberIds.any { !isTrustedPeer(it) }) {
+            return FlashResult.Failure(FlashError.Unknown("Every group member must be trusted"))
+        }
+        val members = groupMemberDao
+            ?: return FlashResult.Failure(FlashError.Unknown("Group storage unavailable"))
+        val now = System.currentTimeMillis()
+        val groupId = UUID.randomUUID().toString()
+        val operationId = UUID.randomUUID().toString()
+        // Stamp before any suspend point that could race a fast openConversation().
+        groupTitleCache[groupId] = groupName
+        conversationDao.upsert(
+            ConversationEntity(
+                id = groupId,
+                title = groupName,
+                isGroup = true,
+                sortOrder = now,
+                groupCreatedBy = localDeviceId,
+                groupCreatedAt = now,
+            ),
+        )
+        allMembers.forEach { memberId ->
+            members.upsert(
+                GroupMemberEntity(
+                    groupId = groupId,
+                    deviceId = memberId,
+                    displayName = if (memberId == localDeviceId) localDisplayName else peerNameResolver(memberId) ?: memberId,
+                    role = if (memberId == localDeviceId) "owner" else "member",
+                    joinedAt = now,
+                    membershipVersion = now,
+                    operationId = operationId,
+                ),
+            )
+        }
+        val frame = GroupWireFrame.Create(
+            groupId = groupId,
+            from = localDeviceId,
+            operationId = operationId,
+            membershipVersion = now,
+            name = groupName,
+            memberIds = allMembers.sorted(),
+        )
+        memberIds.forEach { groupTransportSink?.send(it, frame) }
+        return FlashResult.Success(groupId)
+    }
+
+    override suspend fun addGroupMembers(groupId: String, memberIds: Set<String>): FlashResult<Unit> =
+        withContext(ioDispatcher) { addGroupMembersLocked(groupId, memberIds) }
+
+    private suspend fun addGroupMembersLocked(
+        groupId: String,
+        memberIds: Set<String>,
+    ): FlashResult<Unit> {
+        if (memberIds.isEmpty()) return FlashResult.Success(Unit)
+        if (memberIds.any { !isTrustedPeer(it) }) {
+            return FlashResult.Failure(FlashError.Unknown("Every group member must be trusted"))
+        }
+        val members = groupMemberDao
+            ?: return FlashResult.Failure(FlashError.Unknown("Group storage unavailable"))
+        val existing = members.activeMembers(groupId)
+        if (existing.none { it.deviceId == localDeviceId }) {
+            return FlashResult.Failure(FlashError.Unknown("You are not an active group member"))
+        }
+        if ((existing.map { it.deviceId }.toSet() + memberIds).size > GroupPolicy.MAX_MEMBERS) {
+            return FlashResult.Failure(FlashError.Unknown("Groups support at most ${GroupPolicy.MAX_MEMBERS} members"))
+        }
+        val now = System.currentTimeMillis()
+        val operationId = UUID.randomUUID().toString()
+        memberIds.forEach { memberId ->
+            val current = members.member(groupId, memberId)
+            val candidate = GroupMembershipVersion(now, operationId)
+            val existingVersion = current?.let { GroupMembershipVersion(it.membershipVersion, it.operationId) }
+            if (membershipUpdateWins(candidate, existingVersion)) {
+                members.upsert(
+                    GroupMemberEntity(
+                        groupId, memberId, peerNameResolver(memberId) ?: memberId, "member", now,
+                        now, operationId, true,
+                    ),
+                )
+            }
+        }
+        val frame = GroupWireFrame.Add(groupId, localDeviceId, operationId, now, memberIds.sorted())
+        // F2: existing members learn the Add; the NEWCOMERS instead receive a full State
+        // bootstrap — they have no local membership rows, so a bare Add would be dropped by
+        // their member gate (the owner's "added device never got the group" report).
+        val rosterAfter = members.activeMembers(groupId)
+        val stateFrame = GroupWireFrame.State(
+            groupId = groupId,
+            from = localDeviceId,
+            operationId = operationId,
+            membershipVersion = now,
+            name = conversationDao.get(groupId)?.title ?: groupId,
+            creatorId = conversationDao.get(groupId)?.groupCreatedBy ?: localDeviceId,
+            members = rosterAfter.map { member ->
+                GroupWireFrame.RosterEntry(
+                    deviceId = member.deviceId,
+                    displayName = member.displayName,
+                    role = member.role,
+                    joinedAt = member.joinedAt,
+                    membershipVersion = member.membershipVersion,
+                    operationId = member.operationId,
+                    isActive = member.isActive,
+                )
+            },
+        )
+        (rosterAfter.map { it.deviceId } - localDeviceId).forEach { target ->
+            if (target in memberIds) {
+                groupTransportSink?.send(target, stateFrame)
+            } else {
+                groupTransportSink?.send(target, frame)
+            }
+        }
+        return FlashResult.Success(Unit)
+    }
+
+    override suspend fun leaveGroup(groupId: String): FlashResult<Unit> =
+        withContext(ioDispatcher) { leaveGroupLocked(groupId) }
+
+    private suspend fun leaveGroupLocked(groupId: String): FlashResult<Unit> {
+        val members = groupMemberDao
+            ?: return FlashResult.Failure(FlashError.Unknown("Group storage unavailable"))
+        val current = members.member(groupId, localDeviceId)
+            ?: return FlashResult.Failure(FlashError.Unknown("Unknown group"))
+        val now = System.currentTimeMillis()
+        val operationId = UUID.randomUUID().toString()
+        members.upsert(current.copy(membershipVersion = now, operationId = operationId, isActive = false))
+        val frame = GroupWireFrame.Leave(groupId, localDeviceId, operationId, now, localDeviceId)
+        members.activeMembers(groupId).filter { it.deviceId != localDeviceId }.forEach { target ->
+            groupTransportSink?.send(target.deviceId, frame)
+        }
+        return FlashResult.Success(Unit)
+    }
+
+    override suspend fun groupMembers(groupId: String): List<FlashGroupMemberUi> =
+        withContext(ioDispatcher) {
+            groupMemberDao?.activeMembers(groupId)?.map { it.toMemberUi() }.orEmpty()
+        }
+
+    /** Phase B: one shared mapping so the sheet and the state carry identical rows. */
+    private fun GroupMemberEntity.toMemberUi(isOnline: Boolean = false): FlashGroupMemberUi =
+        FlashGroupMemberUi(
+            id = deviceId,
+            name = displayName,
+            initials = computeInitials(displayName),
+            isOnline = isOnline,
+            role = if (role == "owner") FlashMemberRole.Owner else FlashMemberRole.Member,
+        )
+
+    private suspend fun sendGroupText(
+        conversation: ConversationEntity,
+        text: String,
+        now: Long,
+        localId: String,
+        replyToId: String?,
+        replyToPreview: String?,
+    ) {
+        val members = groupMemberDao ?: return
+        val deliveries = groupDeliveryDao ?: return
+        val recipients = members.activeMembers(conversation.id)
+            .filter { it.deviceId != localDeviceId }
+        if (recipients.isEmpty()) return
+        messageDao.insert(
+            MessageEntity(
+                localId = localId,
+                conversationId = conversation.id,
+                senderId = localDeviceId,
+                senderName = localDisplayName,
+                text = text,
+                sentAt = now,
+                status = "PENDING",
+                replyToId = replyToId,
+                replyToPreview = replyToPreview,
+            ),
+        )
+        deliveries.insertAll(
+            recipients.map { recipient ->
+                GroupDeliveryEntity(
+                    messageId = localId,
+                    memberId = recipient.deviceId,
+                    nextAttemptAt = now,
+                )
+            },
+        )
+        draftDao.clear(conversation.id)
+        outboxDao.enqueue(OutboxEntity(localId, nextAttemptAt = now, payloadJson = text, createdAt = now))
+        drainOutboxOnce()
+    }
+
     override fun sendText(text: String) {
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return
@@ -427,6 +849,11 @@ public class RealFlashChatRepository(
         val localId = UUID.randomUUID().toString()
 
         scope.launch(ioDispatcher) {
+            val conversation = conversationDao.get(conversationId)
+            if (conversation?.isGroup == true) {
+                sendGroupText(conversation, trimmed, now, localId, replyToId = null, replyToPreview = null)
+                return@launch
+            }
             // 1. Write message row
             val messageEntity = MessageEntity(
                 localId = localId,
@@ -478,6 +905,11 @@ public class RealFlashChatRepository(
         val localId = UUID.randomUUID().toString()
 
         scope.launch(ioDispatcher) {
+            val conversation = conversationDao.get(conversationId)
+            if (conversation?.isGroup == true) {
+                sendGroupText(conversation, trimmed, now, localId, replyToId, replyToPreview)
+                return@launch
+            }
             // Mirrors sendText but stamps the reply columns so the row (and its outbound frame,
             // reconstructed from the row in the drain) carries the quote to the peer (#8).
             messageDao.insert(
@@ -555,6 +987,13 @@ public class RealFlashChatRepository(
             ""
         }
         scope.launch(ioDispatcher) {
+            // F1 interim gate (group Phase 1 plan): group attachments are unsupported until the
+            // F4 media path lands. Rejected with a log — never silently threaded into a group
+            // row, which used to clobber the conversation's identity (see [touchConversation]).
+            if (conversationDao.get(conversationId)?.isGroup == true) {
+                FlashLog.w("CHAT", "Group attachment rejected as unsupported (F4 pending): $fileName")
+                return@launch
+            }
             // Local chat row referencing the live transfer. The bytes travel over the transfer
             // pipeline (not the message outbox), so this row is informational — status SENT keeps it
             // out of the Pending spinner; live progress is joined in via [attachmentProgress].
@@ -574,14 +1013,7 @@ public class RealFlashChatRepository(
                     attachmentPath = localPath,
                 ),
             )
-            conversationDao.upsert(
-                ConversationEntity(
-                    id = conversationId,
-                    title = peerNameResolver(conversationId)?.ifBlank { null } ?: conversationId,
-                    isGroup = false,
-                    sortOrder = now,
-                ),
-            )
+            touchConversation(conversationId, now)
         }
     }
 
@@ -604,6 +1036,35 @@ public class RealFlashChatRepository(
         scope.launch(ioDispatcher) {
             if (messageDao.existsAttachment(transferId)) return@launch
             val now = System.currentTimeMillis()
+            // F4: a parked GroupMedia intro promotes this transfer to a GROUP attachment —
+            // threaded under the groupId with the sender's own messageId (re-pull dedup) and
+            // the wire-carried sender name. Consumed once.
+            val media = pendingGroupMedia.remove(transferId)
+            if (media != null) {
+                val insertedRowId = messageDao.insert(
+                    MessageEntity(
+                        localId = media.messageId,
+                        conversationId = media.groupId,
+                        senderId = media.from,
+                        senderName = media.senderName,
+                        text = "",
+                        sentAt = media.sentAt.takeIf { it > 0 } ?: now,
+                        status = "DELIVERED",
+                        attachmentTransferId = transferId,
+                        attachmentName = media.fileName.ifBlank { fileName },
+                        attachmentMime = media.mimeType.ifBlank { mimeType },
+                        attachmentSize = if (media.sizeBytes > 0) media.sizeBytes else sizeBytes,
+                        attachmentPath = null,
+                    ),
+                )
+                touchConversation(media.groupId, now)
+                if (insertedRowId != -1L) {
+                    runCatching {
+                        onInboundTextMessage(media.groupId, media.senderName, "")
+                    }
+                }
+                return@launch
+            }
             // Same dedupe gate as text: existsAttachment guards the replay path, and a
             // real insert result is what lets the host notify (Bug 7).
             val insertedRowId = messageDao.insert(
@@ -622,14 +1083,7 @@ public class RealFlashChatRepository(
                     attachmentPath = null,
                 ),
             )
-            conversationDao.upsert(
-                ConversationEntity(
-                    id = peerDeviceId,
-                    title = peerNameResolver(peerDeviceId)?.ifBlank { null } ?: peerDeviceId,
-                    isGroup = false,
-                    sortOrder = now,
-                ),
-            )
+            touchConversation(peerDeviceId, now)
             if (insertedRowId != -1L) {
                 runCatching {
                     onInboundAttachment(peerDeviceId, peerNameResolver(peerDeviceId), fileName, mimeType)
@@ -686,19 +1140,418 @@ public class RealFlashChatRepository(
                     status = "DELIVERED",
                 ),
             )
-            conversationDao.upsert(
-                ConversationEntity(
-                    id = peerDeviceId,
-                    title = resolvedPeerName ?: peerDeviceId,
-                    isGroup = false,
-                    sortOrder = at,
-                ),
-            )
+            touchConversation(peerDeviceId, at, directFallbackTitle = resolvedPeerName ?: peerDeviceId)
         }
     }
 
     /**
-     * Ingests an inbound wire frame from the network layer.
+     * Ingests a validated group frame. The host supplies the actual transport peer so a forged
+     * `from` field cannot claim another trusted member's identity.
+     */
+    public suspend fun onInboundGroupWireFrame(peerDeviceId: String, frame: GroupWireFrame) {
+        if (peerDeviceId != frame.from || !isTrustedPeer(peerDeviceId)) return
+        val members = groupMemberDao ?: return
+        when (frame) {
+            is GroupWireFrame.Create -> {
+                if (localDeviceId !in frame.memberIds ||
+                    !GroupPolicy.validMemberIds(frame.memberIds, frame.from) ||
+                    frame.memberIds.any { it != localDeviceId && !isTrustedPeer(it) }
+                ) return
+                val name = GroupPolicy.normalizedName(frame.name) ?: return
+                groupTitleCache[frame.groupId] = name
+                conversationDao.upsert(
+                    ConversationEntity(
+                        id = frame.groupId,
+                        title = name,
+                        isGroup = true,
+                        sortOrder = frame.membershipVersion,
+                        groupCreatedBy = frame.from,
+                        groupCreatedAt = frame.membershipVersion,
+                    ),
+                )
+                frame.memberIds.forEach { memberId ->
+                    applyMembership(
+                        members,
+                        GroupMemberEntity(
+                            frame.groupId, memberId,
+                            if (memberId == localDeviceId) localDisplayName else peerNameResolver(memberId) ?: memberId,
+                            if (memberId == frame.from) "owner" else "member",
+                            frame.membershipVersion, frame.membershipVersion, frame.operationId, true,
+                        ),
+                    )
+                }
+            }
+            is GroupWireFrame.Add -> {
+                if (!isActiveTrustedMember(members, frame.groupId, frame.from) ||
+                    frame.memberIds.any { !isTrustedPeer(it) && it != localDeviceId }
+                ) return
+                if (members.activeCount(frame.groupId) + frame.memberIds.filter { members.member(frame.groupId, it)?.isActive != true }.size > GroupPolicy.MAX_MEMBERS) return
+                frame.memberIds.forEach { memberId ->
+                    applyMembership(
+                        members,
+                        GroupMemberEntity(
+                            frame.groupId, memberId,
+                            if (memberId == localDeviceId) localDisplayName else peerNameResolver(memberId) ?: memberId,
+                            "member", frame.membershipVersion, frame.membershipVersion, frame.operationId, true,
+                        ),
+                    )
+                }
+            }
+            is GroupWireFrame.Leave -> {
+                if (frame.memberId != frame.from) return
+                val current = members.member(frame.groupId, frame.memberId) ?: return
+                applyMembership(
+                    members,
+                    current.copy(
+                        membershipVersion = frame.membershipVersion,
+                        operationId = frame.operationId,
+                        isActive = false,
+                    ),
+                )
+            }
+            is GroupWireFrame.State -> {
+                // F2 bootstrap: the joiner has no local record, so it cannot validate the
+                // sender via membership — the contract is instead (a) the transport peer is
+                // trusted (checked at the top), (b) the sender appears in the roster it
+                // claims, and (c) THIS device is in the roster. Anything else is a fabricated
+                // group and is dropped.
+                val roster = frame.members
+                if (localDeviceId !in roster.map { it.deviceId } ||
+                    roster.none { it.deviceId == frame.from && it.isActive } ||
+                    roster.map { it.deviceId }.size != roster.size
+                ) return
+                if (roster.size > GroupPolicy.MAX_MEMBERS) return
+                val name = GroupPolicy.normalizedName(frame.name) ?: return
+                groupTitleCache[frame.groupId] = name
+                conversationDao.upsert(
+                    ConversationEntity(
+                        id = frame.groupId,
+                        title = name,
+                        isGroup = true,
+                        sortOrder = frame.membershipVersion,
+                        groupCreatedBy = frame.creatorId,
+                        groupCreatedAt = frame.membershipVersion,
+                    ),
+                )
+                roster.forEach { entry ->
+                    applyMembership(
+                        members,
+                        GroupMemberEntity(
+                            groupId = frame.groupId,
+                            deviceId = entry.deviceId,
+                            displayName = if (entry.deviceId == localDeviceId) localDisplayName else entry.displayName,
+                            role = if (entry.deviceId == frame.creatorId) "owner" else entry.role,
+                            joinedAt = entry.joinedAt,
+                            membershipVersion = entry.membershipVersion,
+                            operationId = entry.operationId,
+                            isActive = entry.isActive,
+                        ),
+                    )
+                }
+            }
+            is GroupWireFrame.Message -> {
+                if (!isActiveTrustedMember(members, frame.groupId, frame.from) ||
+                    frame.text.length > GroupPolicy.MAX_MESSAGE_TEXT_LENGTH
+                ) return
+                val inserted = messageDao.insert(
+                    MessageEntity(
+                        localId = frame.messageId,
+                        conversationId = frame.groupId,
+                        senderId = frame.from,
+                        senderName = frame.senderName,
+                        text = frame.text,
+                        sentAt = frame.sentAt,
+                        status = "DELIVERED",
+                        replyToId = frame.replyToId,
+                        replyToPreview = frame.replyToPreview,
+                    ),
+                )
+                if (inserted != -1L) onInboundTextMessage(frame.groupId, frame.senderName, frame.text)
+                groupTransportSink?.send(
+                    frame.from,
+                    GroupWireFrame.Receipt(
+                        groupId = frame.groupId,
+                        messageId = frame.messageId,
+                        from = localDeviceId,
+                        deliveredAt = System.currentTimeMillis(),
+                    ),
+                )
+            }
+            is GroupWireFrame.Receipt -> {
+                if (!isActiveTrustedMember(members, frame.groupId, frame.from)) return
+                val deliveries = groupDeliveryDao ?: return
+                deliveries.markDelivered(frame.messageId, frame.from, frame.deliveredAt)
+                if (deliveries.pendingForMessage(frame.messageId).isEmpty()) {
+                    messageDao.updateStatusIfUnacknowledged(frame.messageId, "DELIVERED")
+                    outboxDao.delete(frame.messageId)
+                }
+            }
+            is GroupWireFrame.Read -> {
+                if (!isActiveTrustedMember(members, frame.groupId, frame.from)) return
+                // The existing cursor DAO is already per (conversation, member); UI read aggregation
+                // remains a Phase 1 UI follow-up while the durable monotonic record lands now.
+            }
+            is GroupWireFrame.Sync -> {
+                if (!isActiveTrustedMember(members, frame.groupId, frame.from)) return
+                when (frame) {
+                    is GroupWireFrame.SyncRequest -> handleSyncRequest(frame)
+                    is GroupWireFrame.SyncClaim -> handleSyncClaim(frame)
+                    is GroupWireFrame.SyncPush -> handleSyncPush(frame)
+                    is GroupWireFrame.SyncAck -> handleSyncAck(frame)
+                }
+            }
+            is GroupWireFrame.GroupMedia -> {
+                if (!isActiveTrustedMember(members, frame.groupId, frame.from)) return
+                // F4: park the group context; the chat row is minted at ACCEPT time (see
+                // [onInboundAttachment]), which also removes the WS/data-channel arrival race —
+                // the intro frame has the whole offer window to land.
+                pendingGroupMedia[frame.transferId] = frame
+            }
+        }
+    }
+
+    /**
+     * F4: group-media offers parked by inbound [GroupWireFrame.GroupMedia] frames, keyed by the
+     * per-member transferId. Consulted (and consumed) when the receiver accepts the transfer,
+     * so the attachment row threads into the GROUP conversation.
+     */
+    private val pendingGroupMedia = ConcurrentHashMap<String, GroupWireFrame.GroupMedia>()
+
+    /**
+     * F4 sender side: announces a group media attachment to [recipientDeviceId] (the
+     * FLASH_GMEDIA intro) and reports the wire identity + the chat-row id the host must pass
+     * to its per-member `sendFile(wireFileId = …)` call. The host owns the transfer loop —
+     * `:core:messaging` stays transfer-agnostic (ADR-024).
+     *
+     * @return the (messageId, wireFileId) pair to hand to `sendFile`, or null when the
+     *   recipient is not an active member (the intro is never sent to a non-member).
+     */
+    override suspend fun beginGroupAttachment(
+        groupId: String,
+        recipientDeviceId: String,
+        fileName: String,
+        mimeType: String,
+        sizeBytes: Long,
+        wireFileId: String,
+    ): Pair<String, String>? {
+        val members = groupMemberDao ?: return null
+        if (members.member(groupId, recipientDeviceId)?.isActive != true) return null
+        val messageId = UUID.randomUUID().toString()
+        groupTransportSink?.send(
+            recipientDeviceId,
+            GroupWireFrame.GroupMedia(
+                groupId = groupId,
+                messageId = messageId,
+                transferId = UUID.randomUUID().toString(),
+                wireFileId = wireFileId,
+                from = localDeviceId,
+                senderName = localDisplayName,
+                fileName = fileName,
+                mimeType = mimeType,
+                sizeBytes = sizeBytes,
+                sentAt = System.currentTimeMillis(),
+            ),
+        )
+        return messageId to wireFileId
+    }
+
+    // ------------------------------------------------------------------ F3: FLASH_GSYNC
+
+    /** One outstanding catch-up round this device participates in (as holder or requester). */
+    private class SyncRound(
+        val requestedAtMs: Long,
+        val requesterIsLow: Boolean,
+        val requesterMaxPerSecond: Int,
+        val messageIds: MutableSet<String>,
+        val claimants: MutableMap<String, GroupSyncTier>,
+        @Volatile var acked: Boolean = false,
+    )
+
+    /** syncId → round. Bounded by [GroupPolicy.MAX_PENDING_SYNC_MESSAGES] semantics via ack/TTL. */
+    private val syncRounds = ConcurrentHashMap<String, SyncRound>()
+
+    /**
+     * Requests catch-up for every group this device is an active member of. Called by the host
+     * on a session-up edge (and available for a manual re-sync): each known-but-offline member
+     * may hold messages this device missed while it was away.
+     *
+     * The request is unicast to the freshly connected peer — it is one holder among several,
+     * and the claim/elect protocol below fans the push out deterministically.
+     */
+    public fun sendGroupSyncRequests(peerDeviceId: String) {
+        scope.launch(ioDispatcher) {
+            val groupIds = groupMemberDao?.activeGroupIdsFor(localDeviceId).orEmpty()
+            for (groupId in groupIds) {
+                val newest = messageDao.historyBefore(groupId, Long.MAX_VALUE, "￿", limit = 1).firstOrNull()
+                val tier = syncTier()
+                val (maxPerSecond, maxTotal) = GroupPolicy.syncLimits(tier)
+                groupTransportSink?.send(
+                    peerDeviceId,
+                    GroupWireFrame.SyncRequest(
+                        groupId = groupId,
+                        syncId = UUID.randomUUID().toString(),
+                        from = localDeviceId,
+                        sinceSentAt = newest?.sentAt ?: 0L,
+                        sinceMessageId = newest?.localId ?: "",
+                        tier = tier,
+                        maxPerSecond = maxPerSecond,
+                        maxTotal = maxTotal,
+                    ),
+                )
+            }
+        }
+    }
+
+    /**
+     * Holder side of a SyncRequest: compute the messages this device owns that are newer than
+     * the requester's cursor (capped, TTL-bounded), record the round, and broadcast a claim so
+     * the co-holders can elect a single pusher deterministically. Rank 0 pushes after the
+     * claim window; rank 1 arms the backup timer; the rest stand down.
+     */
+    private suspend fun handleSyncRequest(frame: GroupWireFrame.SyncRequest) {
+        val (maxPerSecond, maxTotal) = GroupPolicy.syncLimits(frame.tier)
+        val owned = GroupSyncPolicy.ownedMessages(
+            messages = messageDao.historyAfter(
+                frame.groupId, frame.sinceSentAt, frame.sinceMessageId,
+                maxTotal.coerceAtMost(GroupPolicy.MAX_PENDING_SYNC_MESSAGES),
+            ),
+            cursor = GroupSyncCursor(frame.sinceSentAt, frame.sinceMessageId),
+            maxTotal = maxTotal,
+            nowMs = System.currentTimeMillis(),
+            sentAt = { it.sentAt },
+            messageId = { it.localId },
+            deletedAt = { it.deletedAt },
+        )
+        if (owned.isEmpty()) return
+        // The requester is who the pushes and the ack go back to.
+        syncRequesters[frame.syncId] = frame.from
+        val round = syncRounds.computeIfAbsent(frame.syncId) {
+            SyncRound(
+                requestedAtMs = System.currentTimeMillis(),
+                requesterIsLow = frame.tier == GroupSyncTier.LOW,
+                requesterMaxPerSecond = frame.maxPerSecond,
+                messageIds = ConcurrentHashMap.newKeySet(),
+                claimants = ConcurrentHashMap(),
+            )
+        }
+        owned.forEach { round.messageIds.add(it.localId) }
+        round.claimants[localDeviceId] = syncTier()
+        val claim = GroupWireFrame.SyncClaim(
+            groupId = frame.groupId,
+            syncId = frame.syncId,
+            from = localDeviceId,
+            messageIds = owned.map { it.localId },
+        )
+        groupMemberDao?.activeMembers(frame.groupId)
+            ?.filter { it.deviceId != localDeviceId }
+            ?.forEach { member -> groupTransportSink?.send(member.deviceId, claim) }
+        armBackupPush(frame.groupId, frame.syncId)
+    }
+
+    /**
+     * Co-holder claim for a round this device also holds: merge the claimant so the backup
+     * election below sees every contender, and record any message ids it claims that this
+     * device also owns.
+     */
+    private fun handleSyncClaim(frame: GroupWireFrame.SyncClaim) {
+        val round = syncRounds[frame.syncId] ?: return
+        round.claimants[frame.from] = frame.tier
+        frame.messageIds.forEach { if (it in round.messageIds) return@forEach }
+        round.acked.let { /* ack check happens at push time */ }
+    }
+
+    /**
+     * The deterministic fallback: after the claim window, if no batch ack arrived, elect one
+     * pusher per message over the observed claimants and push if this device wins rank 0.
+     * Paced to the requester's [SyncRound.requesterMaxPerSecond].
+     */
+    private fun armBackupPush(groupId: String, syncId: String) {
+        scope.launch(ioDispatcher) {
+            delay(GroupPolicy.BACKUP_DELAY_MS)
+            val round = syncRounds[syncId] ?: return@launch
+            if (round.acked) return@launch
+            val claimsWithSelf = round.claimants.toMap()
+            val ids = round.messageIds.toList()
+            val winners = ids.associateWith { msgId ->
+                GroupSyncPolicy.electRank(claimsWithSelf, msgId).firstOrNull()
+            }
+            val mine = winners.filterValues { it == localDeviceId }.keys
+            if (mine.isEmpty()) return@launch
+            val interval = GroupSyncPolicy.pushIntervalMs(round.requesterMaxPerSecond)
+            for (msgId in mine.sorted()) {
+                if (round.acked) return@launch
+                val message = messageDao.getByLocalId(msgId) ?: continue
+                groupTransportSink?.send(
+                    // The requester is the only non-claimant target the round knows.
+                    winners.entries.firstOrNull()?.let { _ -> syncRequesters[syncId] } ?: continue,
+                    GroupWireFrame.SyncPush(
+                        groupId = groupId,
+                        syncId = syncId,
+                        from = localDeviceId,
+                        message = message.toSyncMessage(),
+                    ),
+                )
+                delay(interval)
+            }
+        }
+    }
+
+    /** syncId → the device that requested the round (pushes and acks are unicast to it). */
+    private val syncRequesters = ConcurrentHashMap<String, String>()
+
+    private fun MessageEntity.toSyncMessage() = GroupWireFrame.Message(
+        groupId = conversationId,
+        messageId = localId,
+        from = senderId,
+        senderName = senderName ?: senderId,
+        sentAt = sentAt,
+        text = text,
+        replyToId = replyToId,
+        replyToPreview = replyToPreview,
+    )
+
+    /** Requester side: an elected holder pushed a message — ingest idempotently by msgId. */
+    private suspend fun handleSyncPush(frame: GroupWireFrame.SyncPush) {
+        val message = frame.message
+        val inserted = messageDao.insert(
+            MessageEntity(
+                localId = message.messageId,
+                conversationId = frame.groupId,
+                senderId = message.from,
+                senderName = message.senderName,
+                text = message.text,
+                sentAt = message.sentAt,
+                status = "DELIVERED",
+                replyToId = message.replyToId,
+                replyToPreview = message.replyToPreview,
+            ),
+        )
+        if (inserted != -1L) onInboundTextMessage(frame.groupId, message.senderName, message.text)
+    }
+
+    /** Requester side: a holder's batch ack retires the round and cancels every backup. */
+    private fun handleSyncAck(frame: GroupWireFrame.SyncAck) {
+        val round = syncRounds[frame.syncId] ?: return
+        round.acked = true
+        syncRounds.remove(frame.syncId)
+        syncRequesters.remove(frame.syncId)
+    }
+
+    private suspend fun isActiveTrustedMember(
+        members: GroupMemberDao,
+        groupId: String,
+        deviceId: String,
+    ): Boolean = isTrustedPeer(deviceId) && members.member(groupId, deviceId)?.isActive == true
+
+    private suspend fun applyMembership(members: GroupMemberDao, candidate: GroupMemberEntity) {
+        val current = members.member(candidate.groupId, candidate.deviceId)
+        val candidateVersion = GroupMembershipVersion(candidate.membershipVersion, candidate.operationId)
+        val currentVersion = current?.let { GroupMembershipVersion(it.membershipVersion, it.operationId) }
+        if (membershipUpdateWins(candidateVersion, currentVersion)) members.upsert(candidate)
+    }
+
+    /**
+     * Ingests an inbound direct-message wire frame from the network layer.
      */
     public suspend fun onInboundWireFrame(frame: MessageWireFrame) {
         when (frame) {
@@ -810,91 +1663,188 @@ public class RealFlashChatRepository(
         }
     }
 
+    /**
+     * The durable outbox's retry timer.
+     *
+     * Not the send path: every producer enqueues and then calls [drainOutboxOnce] itself, so a
+     * message's *first* delivery attempt never waits on this loop. All this loop exists to do is
+     * re-attempt rows whose `nextAttemptAt` deadline has come round, and notice rows enqueued by
+     * someone who did not drain.
+     *
+     * It used to be `while (true) { drainOutboxOnce(); delay(1000) }`. With a transport attached
+     * that was a `dueForDelivery` query against a SQLCipher database every second for the life of
+     * the process — on the order of 86,400 a day, almost all of them against a table that is empty
+     * — and, because a fixed 1 s grid has nothing to do with the ladder [backoffDelayMs] computes,
+     * it *also* left every retry up to a second late. Waking on the ladder is both cheaper and
+     * tighter: work can only appear by a write to the `outbox` table, and [drainWake] fires on every
+     * such write, so the only thing left for a timer to do is honour a deadline we already know.
+     *
+     * The one case neither signal covers is a row left future-dated by a previous process: its
+     * deadline was computed before this process existed, and there is no DAO query for "earliest
+     * `nextAttemptAt`" to recover it from. [OutboxDrainSchedule.IDLE_WAIT_MS] bounds that to a
+     * minute — and in practice `notifyPeerSessionUp` gets there first, because a cold start has no
+     * peer session yet and the `makePendingDue(now)` it runs on the first session-up makes every
+     * leftover row due immediately.
+     */
     private suspend fun drainOutboxLoop() {
         while (true) {
-            drainOutboxOnce()
-            kotlinx.coroutines.delay(1000)
+            val batchWasFull = drainOutboxOnce()
+            if (batchWasFull) {
+                // More rows were already due than one batch holds, so there is nothing to wait for.
+                // The floor is only here to keep a long backlog from becoming a hot loop.
+                delay(OutboxDrainSchedule.MIN_WAIT_MS)
+                continue
+            }
+            val waitMs = OutboxDrainSchedule.waitMs(outboxNextDueAt, System.currentTimeMillis())
+            // Whichever lands first: a write to the outbox table, or the earliest deadline we hold.
+            // Both resume the same next statement — another drain — so it does not matter which won,
+            // and a wake that races the timeout costs nothing even if the cancellation discards it.
+            withTimeoutOrNull(waitMs) { drainWake.receive() }
         }
     }
 
-    private suspend fun drainOutboxOnce() {
-        drainMutex.withLock {
-            val now = System.currentTimeMillis()
-            // A null sink can never deliver — bail without touching rows so we don't spin the loop
-            // or advance backoff on messages we have no way to send yet.
-            val sink = transportSink ?: return
-            val items = outboxDao.dueForDelivery(now, limit = 16)
-            for (item in items) {
-                // The outbox row stores only the payload, so recover the conversationId, sender name
-                // and original sentAt from the durable message row. Reconstructing the frame from
-                // `activeConversationId` instead (the old behaviour) mis-routed any message whose
-                // conversation was no longer the active one when the 1s drain fired — sending it to
-                // the wrong peer, to "general", or nowhere — because conversationId doubles as the
-                // transport routing key (see MessageTransportSink).
-                val message = messageDao.getByLocalId(item.localId)
-                if (message == null) {
-                    // No backing message: this row can never be delivered. Drop it so the drain
-                    // loop does not re-claim it every second forever. Not reachable in normal flow —
-                    // sendText inserts the message before enqueueing the outbox row.
-                    outboxDao.delete(item.localId)
-                    continue
-                }
-                if (message.deletedAt != null) {
-                    // Message was deleted after enqueueing but before it drained. Never transmit a
-                    // tombstoned message; drop the outbox row so the peer never sees it. (deleteMessage
-                    // also deletes the row, but the drain may have already claimed this batch.)
-                    outboxDao.delete(item.localId)
-                    continue
-                }
-                val wireFrame = MessageWireFrame.TextMessage(
-                    localId = item.localId,
-                    conversationId = message.conversationId,
-                    senderId = localDeviceId,
-                    senderName = localDisplayName,
-                    text = message.text,
-                    sentAt = message.sentAt,
-                    replyToId = message.replyToId,
-                    replyToPreview = message.replyToPreview,
-                )
-                // ERROR-031: a row's life ends at PEER ACKNOWLEDGEMENT, not at socket write. A write
-                // into a half-open socket succeeds — the kernel buffers the bytes and no error ever
-                // surfaces — so deleting the row on that signal made every frame lost that way
-                // permanently unrecoverable: the bubble ticked once and the message never arrived,
-                // and force-stopping the app was the only way to get a working session back. The
-                // give-up budget therefore has to be tested BEFORE the send, so it also bounds a row
-                // whose writes keep "succeeding" into a socket nobody is reading.
-                //
-                // ERROR-026: that budget is WALL-CLOCK age, not attempt count. The old rule was 8
-                // attempts with 1s/2s/4s…60s spacing — roughly two minutes of patience — so any
-                // screen-off/Doze window longer than that (routine on Transsion/Xiaomi builds)
-                // permanently FAILED every queued message even though the peer came back fine a
-                // minute later. `attempts` now only picks the spacing. `createdAt` is stamped at
-                // enqueue by every producer.
-                val queuedForMs = now - item.createdAt
-                if (queuedForMs >= OUTBOX_GIVE_UP_AFTER_MS) {
-                    // Unacknowledged for the whole budget: mark the message Failed (surfaces a retry
-                    // affordance in the bubble) and drop the outbox row so it stops being re-claimed.
-                    messageDao.updateStatusIfUnacknowledged(item.localId, "FAILED")
-                    outboxDao.delete(item.localId)
-                    continue
-                }
-                val success = sink.send(wireFrame.conversationId, wireFrame)
-                if (success) {
-                    // Single tick, unchanged — the bytes are on the wire. The row itself survives
-                    // until the peer's DeliveryReceipt deletes it (see the DeliveryReceipt branch of
-                    // [onInboundWireFrame]), which makes the reschedule below double as the resend
-                    // timer for a frame that was written but never arrived.
-                    messageDao.updateStatusIfUnacknowledged(item.localId, "SENT")
-                }
-                // Both outcomes re-arm on the same ladder (#21): a refused send backs off instead of
-                // hammering the peer every tick, and an accepted-but-unacknowledged send resends on
-                // that same spacing. A redundant resend is harmless by construction — the receiver's
-                // insert is idempotent (IGNORE on localId) and it re-acks every TextMessage whether
-                // the row was new or a replay, so the extra frame is precisely what produces the
-                // receipt that clears this row.
-                outboxDao.rescheduleAttempt(item.localId, now + backoffDelayMs(item.attempts + 1))
+    /**
+     * One drain pass. Returns true when the batch came back full — i.e. more rows are due *now* than
+     * [OUTBOX_BATCH_LIMIT] holds, so the caller should come straight back rather than sleep.
+     *
+     * Also records the earliest deadline it scheduled in [outboxNextDueAt], which is what
+     * [drainOutboxLoop] sleeps until.
+     */
+    private suspend fun drainOutboxOnce(): Boolean = drainMutex.withLock {
+        val now = System.currentTimeMillis()
+        // A repository may be configured for direct chat, group chat, or both. Do not let an
+        // absent direct sink suppress an otherwise deliverable group outbox.
+        if (transportSink == null && groupTransportSink == null) return@withLock false
+        val items = outboxDao.dueForDelivery(now, limit = OUTBOX_BATCH_LIMIT)
+        var earliestScheduled: Long? = null
+        for (item in items) {
+            // The outbox row stores only the payload, so recover the conversationId, sender name
+            // and original sentAt from the durable message row. Reconstructing the frame from
+            // `activeConversationId` instead (the old behaviour) mis-routed any message whose
+            // conversation was no longer the active one when the drain fired — sending it to
+            // the wrong peer, to "general", or nowhere — because conversationId doubles as the
+            // transport routing key (see MessageTransportSink).
+            val message = messageDao.getByLocalId(item.localId)
+            if (message == null) {
+                // No backing message: this row can never be delivered. Drop it so the drain
+                // loop does not re-claim it on every pass forever. Not reachable in normal flow —
+                // sendText inserts the message before enqueueing the outbox row.
+                outboxDao.delete(item.localId)
+                continue
             }
+            if (message.deletedAt != null) {
+                // Message was deleted after enqueueing but before it drained. Never transmit a
+                // tombstoned message; drop the outbox row so the peer never sees it. (deleteMessage
+                // also deletes the row, but the drain may have already claimed this batch.)
+                outboxDao.delete(item.localId)
+                continue
+            }
+            val conversation = conversationDao.get(message.conversationId)
+            val queuedForMs = now - item.createdAt
+            if (conversation?.isGroup == true) {
+                drainGroupMessage(item, message, now, queuedForMs)
+                continue
+            }
+            val wireFrame = MessageWireFrame.TextMessage(
+                localId = item.localId,
+                conversationId = message.conversationId,
+                senderId = localDeviceId,
+                senderName = localDisplayName,
+                text = message.text,
+                sentAt = message.sentAt,
+                replyToId = message.replyToId,
+                replyToPreview = message.replyToPreview,
+            )
+            // ERROR-031: a row's life ends at PEER ACKNOWLEDGEMENT, not at socket write. A write
+            // into a half-open socket succeeds — the kernel buffers the bytes and no error ever
+            // surfaces — so deleting the row on that signal made every frame lost that way
+            // permanently unrecoverable: the bubble ticked once and the message never arrived,
+            // and force-stopping the app was the only way to get a working session back. The
+            // give-up budget therefore has to be tested BEFORE the send, so it also bounds a row
+            // whose writes keep "succeeding" into a socket nobody is reading.
+            //
+            // ERROR-026: that budget is WALL-CLOCK age, not attempt count. The old rule was 8
+            // attempts with 1s/2s/4s…60s spacing — roughly two minutes of patience — so any
+            // screen-off/Doze window longer than that (routine on Transsion/Xiaomi builds)
+            // permanently FAILED every queued message even though the peer came back fine a
+            // minute later. `attempts` now only picks the spacing. `createdAt` is stamped at
+            // enqueue by every producer.
+            if (queuedForMs >= OUTBOX_GIVE_UP_AFTER_MS) {
+                // Unacknowledged for the whole budget: mark the message Failed (surfaces a retry
+                // affordance in the bubble) and drop the outbox row so it stops being re-claimed.
+                messageDao.updateStatusIfUnacknowledged(item.localId, "FAILED")
+                outboxDao.delete(item.localId)
+                continue
+            }
+            val success = transportSink?.send(wireFrame.conversationId, wireFrame) == true
+            if (success) {
+                // Single tick, unchanged — the bytes are on the wire. The row itself survives
+                // until the peer's DeliveryReceipt deletes it (see the DeliveryReceipt branch of
+                // [onInboundWireFrame]), which makes the reschedule below double as the resend
+                // timer for a frame that was written but never arrived.
+                messageDao.updateStatusIfUnacknowledged(item.localId, "SENT")
+            }
+            // Both outcomes re-arm on the same ladder (#21): a refused send backs off instead of
+            // hammering the peer on every pass, and an accepted-but-unacknowledged send resends on
+            // that same spacing. A redundant resend is harmless by construction — the receiver's
+            // insert is idempotent (IGNORE on localId) and it re-acks every TextMessage whether
+            // the row was new or a replay, so the extra frame is precisely what produces the
+            // receipt that clears this row.
+            val nextAttemptAt = now + backoffDelayMs(item.attempts + 1)
+            outboxDao.rescheduleAttempt(item.localId, nextAttemptAt)
+            earliestScheduled = earliestScheduled?.coerceAtMost(nextAttemptAt) ?: nextAttemptAt
         }
+        // Wake for the earliest deadline still ahead of us, which is not necessarily the earliest
+        // this pass set: a row that was not yet due carries a deadline this pass never saw, and
+        // overwriting it would sleep straight past that row. A deadline already in the past belongs
+        // to a row that has since been acknowledged and deleted, so it is dropped here rather than
+        // left to pin the loop at [OutboxDrainSchedule.MIN_WAIT_MS] forever.
+        outboxNextDueAt = listOfNotNull(outboxNextDueAt?.takeIf { it > now }, earliestScheduled).minOrNull()
+        items.size >= OUTBOX_BATCH_LIMIT
+    }
+
+    private suspend fun drainGroupMessage(
+        item: OutboxEntity,
+        message: MessageEntity,
+        now: Long,
+        queuedForMs: Long,
+    ) {
+        val deliveries = groupDeliveryDao ?: return
+        val sink = groupTransportSink ?: return
+        if (queuedForMs >= OUTBOX_GIVE_UP_AFTER_MS) {
+            messageDao.updateStatusIfUnacknowledged(item.localId, "FAILED")
+            outboxDao.delete(item.localId)
+            return
+        }
+        val pending = deliveries.pendingForMessage(item.localId)
+        if (pending.isEmpty()) {
+            messageDao.updateStatusIfUnacknowledged(item.localId, "DELIVERED")
+            outboxDao.delete(item.localId)
+            return
+        }
+        val frame = GroupWireFrame.Message(
+            groupId = message.conversationId,
+            messageId = message.localId,
+            from = localDeviceId,
+            senderName = localDisplayName,
+            sentAt = message.sentAt,
+            text = message.text,
+            replyToId = message.replyToId,
+            replyToPreview = message.replyToPreview,
+        )
+        var anySent = false
+        pending.forEach { delivery ->
+            val sent = sink.send(delivery.memberId, frame)
+            if (sent) anySent = true
+            deliveries.reschedule(
+                messageId = item.localId,
+                memberId = delivery.memberId,
+                state = if (sent) "SENT" else "PENDING",
+                nextAttemptAt = now + backoffDelayMs(item.attempts + 1),
+            )
+        }
+        if (anySent) messageDao.updateStatusIfUnacknowledged(item.localId, "SENT")
+        outboxDao.rescheduleAttempt(item.localId, now + backoffDelayMs(item.attempts + 1))
     }
 
     /**
@@ -916,9 +1866,14 @@ public class RealFlashChatRepository(
      * unreachable simply fail once more and re-enter backoff — no message is ever lost until its
      * [OUTBOX_GIVE_UP_AFTER_MS] budget expires.
      */
-    public fun notifyPeerSessionUp() {
+    public fun notifyPeerSessionUp(peerDeviceId: String? = null) {
         scope.launch(ioDispatcher) {
-            outboxDao.makePendingDue(System.currentTimeMillis())
+            val now = System.currentTimeMillis()
+            // Direct rows stay globally reset (Bug 5 unchanged); a named peer additionally makes
+            // that member's group deliveries retryable, so a returning member drains its backlog
+            // without waking deliveries for members that are still offline.
+            outboxDao.makePendingDue(now)
+            peerDeviceId?.let { groupDeliveryDao?.makePendingDueForMember(it, now) }
             drainOutboxOnce()
         }
     }
@@ -1011,6 +1966,37 @@ public class RealFlashChatRepository(
     /** Encodes reactor ids as a minimal JSON string array; ids are UUIDs (no escaping needed). */
     private fun encodeReactorIds(ids: List<String>): String =
         ids.joinToString(prefix = "[", postfix = "]", separator = ",") { "\"$it\"" }
+
+    /**
+     * F1: bumps a conversation's recency WITHOUT clobbering its identity. Attachment and call
+     * rows used to upsert a fresh `ConversationEntity(isGroup = false, title = <raw id>)`, and
+     * `@Upsert` is a full-row replace — observed on device: sending a voice note to a group
+     * rewrote the thread's title to the groupId and reset `isGroup`, which demoted the whole
+     * header back to a direct chat. A group row therefore updates `sortOrder` only; a direct
+     * chat keeps the exact prior derivation via [directFallbackTitle].
+     */
+    private suspend fun touchConversation(
+        conversationId: String,
+        now: Long,
+        directFallbackTitle: String? = null,
+    ) {
+        val existing = conversationDao.get(conversationId)
+        if (existing?.isGroup == true) {
+            conversationDao.upsert(existing.copy(sortOrder = now))
+            return
+        }
+        conversationDao.upsert(
+            ConversationEntity(
+                id = conversationId,
+                title = directFallbackTitle
+                    ?: peerNameResolver(conversationId)?.ifBlank { null }
+                    ?: conversationId,
+                isGroup = false,
+                sortOrder = now,
+            ),
+        )
+    }
+
 
     /** Extracts quoted values from a JSON string array; tolerant of null/blank/legacy rows. */
     private fun decodeReactorIds(json: String?): List<String> {
@@ -1283,6 +2269,23 @@ public class RealFlashChatRepository(
     }
 
     private companion object {
+        /**
+         * Neutral conversation state: no thread is open (ERROR-034).
+         *
+         * This used to be a fabricated `"Messages"` / `"FL"` header. Nothing in the app owns that
+         * name, so any window in which it was visible — before the first Room emission, or after
+         * [closeConversation] — put an invented identity on the screen. Blank with no call actions
+         * is the honest shape, and matches `EmptyFlashChatRepository.emptyConversation`.
+         */
+        val EMPTY_CONVERSATION = FlashConversationUiState(
+            header = FlashChatHeaderUiState(
+                title = "",
+                avatarInitials = "",
+                showCallActions = false,
+            ),
+            messages = emptyList(),
+        )
+
         // Namespaced marker stored in a voice row's text column: "vmsg:<durationMs>:<csv amplitudes>".
         const val VOICE_META_PREFIX = "vmsg:"
         // Namespaced marker stored in a call row's text column: "cmsg:<KIND>:<video 0|1>:<durationMs>".
@@ -1297,10 +2300,23 @@ public class RealFlashChatRepository(
         const val OUTBOX_BASE_BACKOFF_MS = 1_000L
         const val OUTBOX_MAX_BACKOFF_MS = 60_000L
 
+        // Rows claimed per drain pass. A bound, not a target: it keeps one pass from holding
+        // [drainMutex] across an unbounded number of socket writes, and a full batch is the signal
+        // [drainOutboxLoop] uses to come straight back instead of waiting on a deadline that has
+        // already passed.
+        const val OUTBOX_BATCH_LIMIT = 16
+
         // Falling-edge hold for the presence dot (ERROR-026). Long enough to cover the WS layer's
         // own recovery — the dialing side redials from a ~1 s base and the accepting side's backup
         // loop from ~4 s, plus a ~0.2 s handshake — so a self-healing drop never reaches the UI.
         // A peer that really left shows Offline this much later, which is fine for a LAN mesh.
         const val OFFLINE_HOLD_MS = 6_000L
+
+        // Minimum gap between attachment-progress values reaching the conversation mapper; see
+        // [pacedAttachmentProgress] for why this is 10× the transfer layer's 10 ms watcher tick and
+        // why it is not tiered. Ten updates a second is above what a text label can be read at and
+        // the progress bar is animated independently, so this is a pure work reduction: it buys a
+        // 10× cut in whole-thread re-derivations during a transfer with nothing given up on screen.
+        const val ATTACHMENT_PROGRESS_THROTTLE_MS = 100L
     }
 }

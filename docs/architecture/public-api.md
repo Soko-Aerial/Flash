@@ -496,6 +496,7 @@ signaling channel it already owns, runtime `RECORD_AUDIO`/`CAMERA` grants, and a
 
       public suspend fun onInboundText(peerId: String, text: String): Boolean
       public fun onSignalingLost(peerId: String)
+      public fun onSignalingRestored(peerId: String)
   }
   ```
 - **Why `Boolean` and not `FlashResult`:** every failure here is one of two things the caller
@@ -518,7 +519,14 @@ works. The module never opens a socket of its own; it is handed both directions:
   text handlers: `if (calling.onInboundText(id, t)) return`.
 
 `onSignalingLost(peerId)` closes the loop for transport death — without it a call sits waiting
-for frames that can no longer arrive. Call it from the transport's disconnect callback.
+for frames that can no longer arrive. Call it from the transport's disconnect callback. It opens a
+**recovery window** rather than ending the call (ERROR-033): a mesh Wi-Fi roam takes the signaling
+session down as a matter of course, and the transport redials it in seconds, so ending the call on
+the spot made a two-second radio outage indistinguishable from a hang-up. `onSignalingRestored`
+closes that window and lets the session renegotiate — the ICE restart offer that rebuilds the media
+path needs this channel to travel on, so a host that calls only `onSignalingLost` has a call that
+survives the grace period and then dies anyway. Call `onSignalingRestored` whenever a session comes
+up, not only after a loss.
 
 There is a **third, optional seam**: `CallCoordinator(prioritiseVoice: () -> Boolean = { true })`.
 It gates the audio-priority work of ERROR-031 / D8 — the audio sender's `Priority.HIGH` /
@@ -527,8 +535,19 @@ video down when audio degrades. It is a **lambda, not a value**, for two reasons
 must not depend on persistence (ADR-024), and it is read once per stats sample, so flipping the
 user's "Prioritise voice quality" switch takes effect on the call in progress rather than the next
 one. Default `{ true }`; returning false restores symmetric treatment of the two streams. The
-video bitrate ceiling is *not* gated on it — `CallSdp.tune()` is applied to the local and remote
-descriptions alike, so wire content must not depend on which device has a switch flipped.
+video bitrate ceiling is *not* gated on it — a ceiling is written into the description both ends
+must agree on, so wire content must not depend on which device has a switch flipped.
+
+And a **fourth**: `CallCoordinator(performanceMode: () -> FlashPerformanceMode = { HIGH })`
+(ERROR-033). Capture resolution, Opus packetization and the call-recovery windows all come from the
+tier, so a 2 GB API-27 handset stops asking for 1080p30 and stops paying ~100 packets/second of
+header overhead for 25 kbit/s of speech. A lambda for the same two reasons, read once per session,
+and defaulted to `HIGH` — whose profiles *are* the pre-tiering constants, so a caller that does not
+tier behaves exactly as before. Unlike `prioritiseVoice` this one **does** change wire content, which
+is why the SDP work is split in two: `CallSdp.tuneLocal` asserts our own tier into the description we
+send, and `tuneRemote` reads the peer's declaration and reconciles it by taking the longer frame and
+the smaller ceiling of the two. Both endpoints therefore converge on byte-identical parameters
+whichever of them offered, even when their tiers differ.
 
 ### `FlashCallMedia`
 - **Stability:** Experimental

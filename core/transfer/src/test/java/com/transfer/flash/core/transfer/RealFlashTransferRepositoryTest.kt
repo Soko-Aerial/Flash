@@ -434,4 +434,156 @@ class RealFlashTransferRepositoryTest {
         assertTrue("cannot decline an accepted offer", repo.declineIncoming(FlashTransferId("tx-2x")) is FlashResult.Failure)
         Unit
     }
+
+    // ---- send-side resume bookkeeping (EXP-008) --------------------------------------------
+
+    /** Records every write so a test can assert what the progress collector persisted. */
+    private class RecordingTransferStore(
+        private val preloadRows: List<TransferStore.ChunkRef> = emptyList(),
+    ) : TransferStore {
+        val chunkWrites = java.util.Collections.synchronizedList(mutableListOf<List<Int>>())
+        val byteWrites = java.util.Collections.synchronizedList(mutableListOf<Long>())
+        override suspend fun insertTransfer(transferId: String, totalBytes: Long, status: String) = Unit
+        override suspend fun setBytesDone(transferId: String, bytesDone: Long) {
+            byteWrites.add(bytesDone)
+        }
+        override suspend fun setStatus(transferId: String, status: String) = Unit
+        override suspend fun markChunksDone(transferId: String, indexes: List<Int>) {
+            chunkWrites.add(indexes.toList())
+        }
+        override suspend fun allDoneChunks(): List<TransferStore.ChunkRef> = preloadRows
+        override suspend fun doneChunks(transferId: String): List<Int> = emptyList()
+    }
+
+    private fun receiverRepo(store: TransferStore): RealFlashTransferRepository =
+        RealFlashTransferRepository(
+            chunker = Chunker(),
+            streamChannelFactory = StreamChannelFactory { channelId, _ ->
+                object : StreamChannel {
+                    override val id: Int = channelId
+                    override suspend fun sendFrame(frameBytes: ByteArray): Boolean = true
+                }
+            },
+            fileSourceOpener = { ByteArrayInputStream(ByteArray(0)) },
+            store = store,
+            repositoryScope = newScope(),
+            workerDispatcher = testDispatcher,
+            defaultStreams = 1,
+        )
+
+    @Test(timeout = 30_000)
+    fun `preloadReceiverProgress warms the receiver done-set ascending and survives a corrupt row`() = runBlocking {
+        val rows = listOf(
+            TransferStore.ChunkRef("rx-a", 5),
+            TransferStore.ChunkRef("rx-a", 0),
+            TransferStore.ChunkRef("rx-b", 130),
+            TransferStore.ChunkRef("rx-a", 64),
+            // A negative index cannot name a chunk. The old Set-backed map swallowed it; a BitSet
+            // would throw, so it must be dropped before the bit is set — startup runs this.
+            TransferStore.ChunkRef("rx-a", -1),
+        )
+        val repo = receiverRepo(RecordingTransferStore(preloadRows = rows))
+
+        repo.preloadReceiverProgress()
+
+        // Ascending regardless of row order, and spanning a BitSet word boundary (0, 5, 64).
+        assertEquals(listOf(0, 5, 64), repo.receiverDoneIndexes("rx-a"))
+        assertEquals(listOf(130), repo.receiverDoneIndexes("rx-b"))
+        assertEquals(emptyList<Int>(), repo.receiverDoneIndexes("rx-never-seen"))
+        Unit
+    }
+
+    @Test(timeout = 30_000)
+    fun `onIncomingChunkConfirmed persists only fresh indexes and never re-persists a known one`() = runBlocking {
+        val store = RecordingTransferStore(preloadRows = listOf(TransferStore.ChunkRef("rx-c", 1)))
+        val repo = receiverRepo(store)
+        repo.preloadReceiverProgress()
+
+        // 1 is already known from the preload; 3 appears twice in one call.
+        repo.onIncomingChunkConfirmed("rx-c", listOf(1, 2, 3, 3, -7))
+        awaitUntil(timeoutMs = 5_000, describe = { "writes=" + store.chunkWrites }) {
+            store.chunkWrites.isNotEmpty()
+        }
+        assertEquals(listOf(listOf(2, 3)), store.chunkWrites.toList())
+        assertEquals(listOf(1, 2, 3), repo.receiverDoneIndexes("rx-c"))
+
+        // A wholly redundant batch must not reach the store at all.
+        repo.onIncomingChunkConfirmed("rx-c", listOf(1, 2, 3))
+        Thread.sleep(200)
+        assertEquals(listOf(listOf(2, 3)), store.chunkWrites.toList())
+
+        repo.onIncomingChunkConfirmed("rx-c", listOf(3, 4))
+        awaitUntil(timeoutMs = 5_000, describe = { "writes=" + store.chunkWrites }) {
+            store.chunkWrites.size == 2
+        }
+        assertEquals(listOf(4), store.chunkWrites.toList()[1])
+        assertEquals(listOf(1, 2, 3, 4), repo.receiverDoneIndexes("rx-c"))
+        Unit
+    }
+
+    @Test(timeout = 60_000)
+    fun `resume bookkeeping persists each confirmed chunk once, in order, without a per-tick byte write`() = runBlocking {
+        val store = RecordingTransferStore()
+        lateinit var repo: RealFlashTransferRepository
+        val factory = StreamChannelFactory { channelId, _ ->
+            object : StreamChannel {
+                override val id: Int = channelId
+                override suspend fun sendFrame(frameBytes: ByteArray): Boolean {
+                    val parsed = ChunkFrame.parse(frameBytes)
+                    if (parsed is ChunkFrame.Chunk) {
+                        // Pace the wire so the transfer outlives several WATCH_POLL_MS ticks: the bug
+                        // this test guards is per-tick behaviour, so a transfer that finishes inside
+                        // one tick would not exercise it.
+                        delay(15)
+                        repo.onInboundFrame(
+                            ChunkFrame.serialize(
+                                ChunkFrame.AckBatch(parsed.transferId, parsed.fileId, listOf(parsed.index)),
+                            ),
+                        )
+                    }
+                    return true
+                }
+            }
+        }
+        repo = RealFlashTransferRepository(
+            chunker = Chunker(),
+            streamChannelFactory = factory,
+            fileSourceOpener = { ByteArrayInputStream(eightChunkPayload) },
+            store = store,
+            repositoryScope = newScope(),
+            workerDispatcher = testDispatcher,
+            defaultStreams = 1,
+        )
+
+        val transferId = (
+            repo.sendFile(peer, "content://media/resume.bin", "resume.bin", eightChunkPayload.size.toLong())
+                as FlashResult.Success
+            ).value
+        awaitUntil(describe = { "state=" + repo.snapshot(transferId).state }) {
+            repo.snapshot(transferId).state == FlashTransferState.Completed
+        }
+
+        // Trailing chunks can go unpersisted: executeSend cancels the collector the moment send()
+        // returns Completed, and a completed transfer never resumes. So the contract asserted here is
+        // about *how* what is written gets written, not about the set being exhaustive.
+        val persisted = store.chunkWrites.toList().flatten()
+        assertTrue("the collector persisted nothing at all", persisted.isNotEmpty())
+        assertTrue("persisted a chunk index outside the plan: " + persisted, persisted.all { it in 0..7 })
+        // Exactly once. The mirror bit-vector advances only after a write returns, so an index can
+        // never appear in two batches — the old whole-snapshot diff re-persisted everything it had
+        // already written whenever its Set copy lagged a tick behind.
+        assertEquals(persisted.size, persisted.distinct().size)
+        // Monotonic: single stream, in-order ACKs, so each batch starts above the previous one's max.
+        assertEquals(persisted.sorted(), persisted)
+        // bytesDone rides along with the chunk rows instead of firing on the 10 ms watcher tick. The
+        // gate is "the confirmed count changed", and with 8 chunks the count takes 9 distinct values
+        // (0..8), so the collector can write at most 9 times; executeSend's terminal write makes 10.
+        // The old code wrote once per emission — one Room transaction per 10 ms, all transfer long.
+        assertTrue(
+            "byte writes (" + store.byteWrites.size + ") exceed the confirmed-count bound of 10",
+            store.byteWrites.size <= 10,
+        )
+        assertEquals(eightChunkPayload.size.toLong(), repo.snapshot(transferId).bytesDone)
+        Unit
+    }
 }

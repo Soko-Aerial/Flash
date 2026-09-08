@@ -170,6 +170,67 @@ because a callee that declines and a callee whose caller gave up both end the ca
 distinction exists on the caller's side (an inbound `decline` ends as DECLINED, a dial timeout as
 NO_ANSWER) and is simply not recoverable on the callee's.
 
+## Groups (Phase 1, 2026-09-08)
+
+Ad-hoc text groups ride the WS mesh as text frames under four new prefixes, encoded with the
+same `FlashTextFraming` field rules. Every frame carries `groupId=<uuid>` and `from=<id>`;
+receivers MUST verify `from` equals the transport session's peer device id, that the peer is
+trusted (paired), and that the sender is an active member — otherwise the frame is dropped.
+Unknown `action`/`op` values are ignored (forward compatibility). `keyEpoch=<n>` is reserved on
+every message-family frame (always `0` in Phase 1) as the Phase 3 E2E hook.
+
+Membership is an operation log, not a set union: each membership frame carries
+`opId=<uuid>` + `version=<ms>`. A member row's state changes only when the candidate
+`(version, opId)` compares strictly greater than the stored one — a leave is a tombstone that a
+stale/replayed `add` cannot resurrect; only a strictly newer `add` reactivates it. Maximum
+membership is **6 including the creator**; only trusted (paired) peers may be added.
+
+### Membership frames
+
+```text
+FLASH_GROUP action=create groupId=<uuid> from=<id> opId=<uuid> version=<ms> name=<escaped> memberCount=<n> member0=<id> …
+FLASH_GROUP action=add    groupId=<uuid> from=<id> opId=<uuid> version=<ms> memberCount=<n> member0=<id> …
+FLASH_GROUP action=leave  groupId=<uuid> from=<id> opId=<uuid> version=<ms> memberId=<id>
+```
+
+- `create`: creator → every initial member. Recipients auto-join if the create passes the
+  bound/trust checks (local device in `member*`, ≤ 6 members, all trusted). Roles: creator
+  writes `owner` locally; everyone else `member` (Phase 3 activates admin).
+- `add`: any active member → all known members. Same versioned merge rule.
+- `leave`: a member → all active members. History is kept; the sender stops sending.
+
+### Chat and receipt frames
+
+```text
+FLASH_GMSG  groupId=<uuid> msgId=<uuid> from=<id> name=<escaped> sentAt=<ms> text=<escaped> replyTo=<id> replyPreview=<escaped> keyEpoch=0
+FLASH_GRCPT groupId=<uuid> msgId=<uuid> from=<id> deliveredAt=<ms> keyEpoch=0
+FLASH_GREAD groupId=<uuid> from=<id> upTo=<msgId> readAt=<ms> keyEpoch=0
+```
+
+- A group message is delivered per member: the sender keeps ONE durable outbox row and one
+  `group_deliveries` row per recipient. A socket write moves only that member to `SENT`; the
+  recipient's `FLASH_GRCPT` moves that member to `DELIVERED`. The message's bubble reads
+  DELIVERED only when every active recipient has acknowledged, at which point the outbox row
+  retires (ERROR-031's acknowledgement commit rule, generalized).
+- Resends/reconnects are idempotent: receivers dedup on `msgId` (IGNORE on conflict) and
+  re-ack replays, exactly like 1:1 `FLASH_MSG`.
+- Attachments are rejected with a logged `unsupported` in Phase 1; group media is Phase 3.
+
+### Offline catch-up (`FLASH_GSYNC`, Phase 1B — wire reserved, not yet sent)
+
+```text
+FLASH_GSYNC op=request groupId=<uuid> syncId=<uuid> from=<id> sinceAt=<ms> sinceId=<msgId> tier=<low|medium|high> maxPerSec=<n> maxTotal=<n> keyEpoch=0
+FLASH_GSYNC op=claim   groupId=<uuid> syncId=<uuid> from=<id> msgCount=<n> msg0=<id> … keyEpoch=0
+FLASH_GSYNC op=push    groupId=<uuid> syncId=<uuid> from=<id> msgId=<uuid> name=<escaped> sentAt=<ms> text=<escaped> replyTo=<id> replyPreview=<escaped> keyEpoch=0
+FLASH_GSYNC op=ack     groupId=<uuid> syncId=<uuid> from=<id> hasMore=<0|1> msgCount=<n> msg0=<id> … keyEpoch=0
+```
+
+- Cursor is `(sinceAt, sinceId)` — never a bare timestamp, so equal-`sentAt` messages cannot be
+  skipped. Holders claim only messages they actually store; deterministic rank over claimants
+  is `(tierRank, hash(deviceId + msgId))`; rank 0 pushes paced to `maxPerSec`, rank 1 arms a
+  2 s backup, others stand down; a broadcast batch `ack` cancels backups. Budgets: LOW
+  returner 5/sec · 100/round; MEDIUM/HIGH 20/sec · 500/round; TTL 24 h; ≤ 2 copies/message.
+
 ## Intended Full Protocol
 
 

@@ -6,6 +6,7 @@ import com.transfer.flash.core.calling.model.FlashCallLogEntry
 import com.transfer.flash.core.calling.model.FlashCallUiState
 import com.transfer.flash.core.calling.protocol.CallFrameCodec
 import com.transfer.flash.core.calling.protocol.CallWireFrame
+import com.transfer.flash.core.common.perf.FlashPerformanceMode
 import java.util.UUID
 import kotlin.concurrent.Volatile
 import kotlinx.coroutines.CoroutineScope
@@ -39,6 +40,12 @@ public class CallCoordinator(
      */
     private val sendFrame: suspend (CallWireFrame, peerId: String) -> Boolean,
     /**
+     * Closes the call trust gap (group Phase 0): when supplied, an outbound call to an untrusted
+     * peer is refused and an inbound invite from one is auto-declined without ever ringing. The
+     * default (everything trusted) preserves source compatibility for existing constructors.
+     */
+    private val isTrustedPeer: (peerId: String) -> Boolean = { true },
+    /**
      * Called once per finished call, with everything needed to write a call row into the
      * chat thread. Fired for every session that terminates, including declined and missed
      * ones, so a call log has no holes in it.
@@ -58,6 +65,21 @@ public class CallCoordinator(
      * (port/adapter inversion, ADR-024).
      */
     private val prioritiseVoice: () -> Boolean = { true },
+    /**
+     * Reads the device's performance tier for every session this coordinator creates (ERROR-033).
+     *
+     * Capture resolution, Opus packetization and the call-recovery windows all come from here, so a
+     * 2 GB API-27 handset stops trying to capture 1080p30 and stops paying 100 packets/second of
+     * header overhead for 25 kbit/s of speech.
+     *
+     * A lambda for the same two reasons as [prioritiseVoice]: a tier change (auto-detect resolving,
+     * or the user pinning a mode) must reach the next call without re-wiring anything, and
+     * `core:calling` must keep knowing nothing about DataStore (ADR-024).
+     *
+     * Defaults to [FlashPerformanceMode.HIGH], whose profiles are the pre-tiering constants, so a
+     * caller that does not tier behaves exactly as before.
+     */
+    private val performanceMode: () -> FlashPerformanceMode = { FlashPerformanceMode.HIGH },
 ) : FlashCalling {
     private val _activeCall = MutableStateFlow<FlashCallUiState?>(null)
     override val activeCall: StateFlow<FlashCallUiState?> = _activeCall.asStateFlow()
@@ -76,6 +98,7 @@ public class CallCoordinator(
 
     /** Outgoing call entry point (chat header call / video-call buttons). */
     override suspend fun startCall(peerId: String, peerName: String, video: Boolean): Boolean {
+        if (!isTrustedPeer(peerId)) return false // trust gate: only paired peers are callable
         if (currentSession != null) return false // one call at a time
         val session = newSession(
             callId = UUID.randomUUID().toString(),
@@ -104,6 +127,11 @@ public class CallCoordinator(
         val session = currentSession
         if (session == null) {
             if (frame is CallWireFrame.Invite) {
+                // Trust gate: an invite from an unpaired device is auto-declined, never rings.
+                if (!isTrustedPeer(peerId)) {
+                    sendFrame(CallWireFrame.Decline(callId = frame.callId, from = localDeviceId), peerId)
+                    return true
+                }
                 startIncoming(peerId = peerId, frame = frame)
                 return true
             }
@@ -160,6 +188,16 @@ public class CallCoordinator(
         }
     }
 
+    /**
+     * Host calls this when a WS signaling session to the call peer came up — on every session
+     * establishment, not only after an [onSignalingLost]. Harmless when no call is waiting on one.
+     */
+    override fun onSignalingRestored(peerId: String) {
+        if (currentSession?.peerId == peerId) {
+            currentSession?.onSignalingRestored()
+        }
+    }
+
     private fun newSession(
         callId: String,
         peerId: String,
@@ -180,6 +218,7 @@ public class CallCoordinator(
             // (CallWireFrame, peerId) signature is transparent to the session.
             sendFrame = { frame -> sendFrame(frame, peerId) },
             prioritiseVoice = prioritiseVoice,
+            performanceMode = performanceMode,
             onEnded = { ended ->
                 publishCallLog(ended)
                 if (currentSession === ended) {

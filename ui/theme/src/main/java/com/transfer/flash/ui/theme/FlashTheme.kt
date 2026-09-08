@@ -15,6 +15,7 @@ import androidx.compose.ui.platform.LocalContext
 private val LocalFlashColors = compositionLocalOf { FlashColors.light() }
 private val LocalFlashTypography = compositionLocalOf { FlashTypography.default() }
 private val LocalFlashMotion = compositionLocalOf { FlashMotion(reduceMotion = false) }
+private val LocalFlashMinimalChrome = compositionLocalOf { false }
 
 /**
  * Access Flash chat design tokens. Do not use MaterialTheme.colorScheme for chat-visible styling.
@@ -34,6 +35,20 @@ object FlashTheme {
         @Composable
         @ReadOnlyComposable
         get() = LocalFlashMotion.current
+
+    /**
+     * True when this device cannot afford decorative render work — drop-shadows, gradient washes,
+     * blur layers (ERROR-033).
+     *
+     * Distinct from [motion]'s `reduceMotion`, which removes *change over time*: a shadow costs the
+     * same on a still frame as on a moving one, so switching animations off does not pay for it.
+     * A call site should draw the flat equivalent, never nothing — this is a budget for ornament,
+     * not for information.
+     */
+    val minimalChrome: Boolean
+        @Composable
+        @ReadOnlyComposable
+        get() = LocalFlashMinimalChrome.current
 }
 
 /**
@@ -47,12 +62,16 @@ object FlashTheme {
  *   Flash-owned per ADR-005. Default false — Flash Pulse identity first.
  * @param hapticsEnabled UI-039/UI-049 user preference. False silences every
  *   [rememberFlashHaptics] call site in the subtree without touching the call sites.
+ * @param minimalChrome ERROR-033. True strips decorative render work from the subtree — see
+ *   [FlashTheme.minimalChrome]. The host derives it from the device performance tier
+ *   (`FlashPerformanceMode.minimalChrome`); default false keeps the full Flash Pulse look.
  */
 @Composable
 fun FlashTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     dynamicAccent: Boolean = false,
     hapticsEnabled: Boolean = true,
+    minimalChrome: Boolean = false,
     colors: FlashColors = if (darkTheme) FlashColors.dark() else FlashColors.light(),
     typography: FlashTypography = FlashTypography.default(),
     motion: FlashMotion = rememberFlashMotion(),
@@ -81,6 +100,7 @@ fun FlashTheme(
         LocalFlashColors provides resolvedColors,
         LocalFlashTypography provides rememberedTypography,
         LocalFlashMotion provides rememberedMotion,
+        LocalFlashMinimalChrome provides minimalChrome,
         LocalFlashHapticsEnabled provides hapticsEnabled,
         content = content,
     )

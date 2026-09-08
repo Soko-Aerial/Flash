@@ -95,10 +95,28 @@ public interface FlashCalling {
     public suspend fun onInboundText(peerId: String, text: String): Boolean
 
     /**
-     * Notifies the contract that the signaling channel to [peerId] died. Ends a call with that
-     * peer instead of leaving it stranded waiting for frames that can no longer arrive.
+     * Notifies the contract that the signaling channel to [peerId] died.
+     *
+     * Opens a recovery window rather than ending the call outright (ERROR-033). A mesh Wi-Fi roam
+     * takes the signaling session down as a matter of course — same radio, same association — and
+     * the transport layer redials it within seconds. Ending the call on the spot meant a two-second
+     * radio outage was indistinguishable from the peer hanging up. A call that is genuinely
+     * unreachable still ends, once the window closes.
+     *
+     * Pair this with [onSignalingRestored] or the window is the only thing keeping the call, and
+     * every roam costs the full grace period even when signaling came back immediately.
      */
     public fun onSignalingLost(peerId: String)
+
+    /**
+     * Notifies the contract that a signaling channel to [peerId] is live again — a host should
+     * call this whenever a session comes up, not only after an [onSignalingLost].
+     *
+     * Closes the window [onSignalingLost] opened and lets the call resume renegotiating: the media
+     * path still has to be rebuilt, and the ICE restart offer that does it needs this channel to
+     * travel on.
+     */
+    public fun onSignalingRestored(peerId: String)
 }
 
 /**

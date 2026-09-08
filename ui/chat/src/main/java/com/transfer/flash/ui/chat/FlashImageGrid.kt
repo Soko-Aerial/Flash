@@ -441,15 +441,31 @@ fun FlashImageTile(
     // wrapped in runCatching, which turned an OutOfMemoryError on a large photo into a silent
     // gradient placeholder, ignored EXIF rotation, and returned null for every video. isVideo is a
     // key because it selects the decoder (still bytes vs. a retrieved frame), not just the source.
+    //
+    // ERROR-033: below HIGH the tile is decoded smaller and at half the colour depth. It is a key
+    // too, not a value captured behind the decoder's back, so a tier that resolves after first
+    // composition re-decodes instead of leaving a stale bitmap on screen.
+    val minimalChrome = FlashTheme.minimalChrome
     val bitmapState = produceState<ImageBitmap?>(
-        initialValue = null,
-        key1 = image.uri,
-        key2 = image.thumbUri,
-        key3 = image.isVideo,
+        null,
+        image.uri,
+        image.thumbUri,
+        image.isVideo,
+        minimalChrome,
     ) {
         val source = image.uri ?: image.thumbUri
         value = withContext(Dispatchers.IO) {
-            FlashMediaDecoder.decode(context = context, source = source, isVideo = image.isVideo)
+            FlashMediaDecoder.decode(
+                context = context,
+                source = source,
+                isVideo = image.isVideo,
+                maxLongEdge = if (minimalChrome) {
+                    FlashMediaDecoder.TILE_LONG_EDGE_MINIMAL_PX
+                } else {
+                    FlashMediaDecoder.TILE_LONG_EDGE_PX
+                },
+                lowColorDepth = minimalChrome,
+            )
         }
     }
 

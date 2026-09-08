@@ -29,7 +29,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -38,6 +40,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
@@ -161,7 +164,11 @@ fun FlashMicButton(
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
 
-    val scale by animateFloatAsState(
+    // `scale` stays a State and is read inside `graphicsLayer` (EXP-013): the spring settles over
+    // ~400ms, and only the two colour animations below genuinely need composition (they feed
+    // `background()` and a tint parameter), so unwrapping this one would extend the recomposition
+    // window to the whole spring tail for no reason. Do not "simplify" it to match them.
+    val scale = animateFloatAsState(
         targetValue = if ((isPressed || isRecording) && !motion.reduceMotion) 0.90f else 1.0f,
         animationSpec = motion.springSnappySpec(),
         label = "mic_button_press_scale",
@@ -181,8 +188,8 @@ fun FlashMicButton(
         modifier = modifier
             .size(FlashSpacing.space40)
             .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
+                scaleX = scale.value
+                scaleY = scale.value
             }
             .clip(CircleShape)
             .background(backgroundColor)
@@ -248,16 +255,21 @@ fun FlashVoiceRecordingBar(
     val isLocked = phase == FlashRecordingPhase.Locked
 
     // Pulse the red dot while actively recording; static under reduce-motion.
-    val pulseAlpha: Float = if (motion.reduceMotion) {
-        if (isPaused) 0.35f else 1f
+    // Kept as a `State`, not unwrapped to a `Float` (EXP-013): the only consumer is a
+    // `graphicsLayer` block far below, so reading `.value` here subscribed this whole bar —
+    // the AnimatedContent mode swap, the amplitude strip, the timer and four buttons — to a
+    // 60 Hz clock for the entire duration of every recording. Read inside the layer it costs a
+    // re-draw of one 10dp dot and no recomposition at all.
+    val pulseAlpha: State<Float> = if (motion.reduceMotion) {
+        val resting = if (isPaused) 0.35f else 1f
+        remember(resting) { mutableFloatStateOf(resting) }
     } else {
-        val pulse by rememberInfiniteTransition(label = "recordDotPulse").animateFloat(
+        rememberInfiniteTransition(label = "recordDotPulse").animateFloat(
             initialValue = 1f,
             targetValue = if (isPaused) 0.35f else 0.45f,
             animationSpec = infiniteRepeatable(tween(motion.normalMillis)),
             label = "recordDotAlpha",
         )
-        pulse
     }
 
     Row(
@@ -299,7 +311,12 @@ fun FlashVoiceRecordingBar(
                     Box(
                         modifier = Modifier
                             .size(10.dp)
-                            .graphicsLayer { alpha = pulseAlpha }
+                            .graphicsLayer {
+                                alpha = pulseAlpha.value
+                                // One solid dot in this layer: modulating alpha into the draw is
+                                // identical and avoids the offscreen buffer Auto can allocate.
+                                compositingStrategy = CompositingStrategy.ModulateAlpha
+                            }
                             .clip(CircleShape)
                             .background(colors.textError),
                     )

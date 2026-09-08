@@ -2,11 +2,17 @@ package com.transfer.flash.core.messaging
 
 import com.transfer.flash.core.messaging.model.FlashAttachmentProgress
 import com.transfer.flash.core.messaging.model.FlashFileTransferStatus
+import com.transfer.flash.core.common.result.FlashResult
+import com.transfer.flash.core.messaging.GroupTransportSink
+import com.transfer.flash.core.messaging.model.FlashMemberRole
+import com.transfer.flash.core.messaging.protocol.GroupWireFrame
 import com.transfer.flash.core.messaging.protocol.MessageWireFrame
 import com.transfer.flash.core.persistence.db.dao.ConversationDao
 import com.transfer.flash.core.persistence.db.dao.ConversationPreview
 import com.transfer.flash.core.persistence.db.dao.ConversationUnread
 import com.transfer.flash.core.persistence.db.dao.DraftDao
+import com.transfer.flash.core.persistence.db.dao.GroupDeliveryDao
+import com.transfer.flash.core.persistence.db.dao.GroupMemberDao
 import com.transfer.flash.core.persistence.db.dao.MessageDao
 import com.transfer.flash.core.persistence.db.dao.OutboxDao
 import com.transfer.flash.core.persistence.db.dao.ReactionDao
@@ -14,6 +20,8 @@ import com.transfer.flash.core.persistence.db.dao.ReceiptDao
 import com.transfer.flash.core.persistence.db.dao.RecentSearchDao
 import com.transfer.flash.core.persistence.db.entity.ConversationEntity
 import com.transfer.flash.core.persistence.db.entity.DraftEntity
+import com.transfer.flash.core.persistence.db.entity.GroupDeliveryEntity
+import com.transfer.flash.core.persistence.db.entity.GroupMemberEntity
 import com.transfer.flash.core.persistence.db.entity.MessageEntity
 import com.transfer.flash.core.persistence.db.entity.OutboxEntity
 import com.transfer.flash.core.persistence.db.entity.ReactionEntity
@@ -23,12 +31,14 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -63,6 +73,19 @@ class RealFlashChatRepositoryTest {
             cursorLocalId: String,
             limit: Int,
         ): List<MessageEntity> = messages.values.filter { it.conversationId == conversationId }.take(limit)
+
+        override suspend fun historyAfter(
+            conversationId: String,
+            cursorSentAt: Long,
+            cursorLocalId: String,
+            limit: Int,
+        ): List<MessageEntity> = messages.values
+            .filter {
+                it.conversationId == conversationId && it.deletedAt == null &&
+                    (it.sentAt > cursorSentAt || (it.sentAt == cursorSentAt && it.localId > cursorLocalId))
+            }
+            .sortedBy { it.sentAt }
+            .take(limit)
 
         override suspend fun getByLocalId(localId: String): MessageEntity? = messages[localId]
 
@@ -161,6 +184,8 @@ class RealFlashChatRepositoryTest {
         }
 
         override fun observeAll(): Flow<List<ConversationEntity>> = flow
+
+        override suspend fun get(id: String): ConversationEntity? = conversations[id]
 
         override suspend fun setArchived(id: String, archived: Boolean) {
             conversations[id]?.let { conversations[id] = it.copy(archived = archived); flow.value = conversations.values.toList() }
@@ -617,6 +642,83 @@ class RealFlashChatRepositoryTest {
             )
         }
 
+    /**
+     * The transfer layer publishes progress on a 10 ms watcher tick for the whole duration of a
+     * transfer, and progress is an input to the conversation `combine` — so each of those hundred
+     * emissions a second used to re-derive every row in the open thread. `pacedAttachmentProgress`
+     * throttles that to one value per window.
+     *
+     * The failure mode a throttle can introduce is losing the LAST value, and here the last value is
+     * the one that matters most: it carries the received file's path, both to the bubble and to the
+     * row (live progress is in-memory only, so an unstamped row loses the file on restart). This
+     * drives a burst at the transfer layer's own cadence and then asserts the terminal value survived
+     * it on both surfaces.
+     */
+    @Test
+    fun `a burst of progress ticks still lands its terminal value on the row and on screen`() =
+        runBlocking {
+            val messageDao = FakeMessageDao()
+            val progress = MutableStateFlow<Map<String, FlashAttachmentProgress>>(emptyMap())
+
+            val repository = RealFlashChatRepository(
+                localDeviceId = "my-device-id",
+                localDisplayName = "Kali",
+                messageDao = messageDao,
+                conversationDao = FakeConversationDao(),
+                outboxDao = FakeOutboxDao(),
+                receiptDao = FakeReceiptDao(),
+                draftDao = FakeDraftDao(),
+                recentSearchDao = FakeRecentSearchDao(),
+                reactionDao = FakeReactionDao(),
+                transportSink = null,
+                ioDispatcher = testDispatcher,
+                attachmentProgress = progress,
+            )
+
+            repository.onInboundAttachment(
+                peerDeviceId = "peer-device-id",
+                transferId = "transfer-1",
+                fileName = "clip.bin",
+                mimeType = "application/octet-stream",
+                sizeBytes = 8_000_000,
+            )
+            repository.openConversation("peer-device-id")
+
+            // Speed changes on every tick even between ACK batches, which is exactly why the raw flow
+            // never went quiet: each of these would have re-mapped the whole conversation.
+            repeat(300) { i ->
+                progress.value = mapOf(
+                    "transfer-1" to FlashAttachmentProgress(
+                        progress = i / 300f,
+                        status = FlashFileTransferStatus.Transferring,
+                        speedMbps = 1f + i * 0.01f,
+                    ),
+                )
+                kotlinx.coroutines.delay(1)
+            }
+
+            val received = "/storage/FlashReceived/transfer-1/clip.bin"
+            progress.value = mapOf(
+                "transfer-1" to FlashAttachmentProgress(
+                    progress = 1f,
+                    status = FlashFileTransferStatus.Downloaded,
+                    localPath = received,
+                ),
+            )
+            kotlinx.coroutines.delay(600)
+
+            val file = repository.conversationState.value.messages
+                .single { it.fileAttachments.isNotEmpty() }
+                .fileAttachments
+                .single()
+            assertEquals(FlashFileTransferStatus.Downloaded, file.transferStatus)
+            assertEquals(received, file.localUri)
+            assertEquals(
+                received,
+                messageDao.messages.values.single { it.attachmentTransferId == "transfer-1" }.attachmentPath,
+            )
+        }
+
     @Test
     fun `outbox drain preserves the composing conversationId after the active conversation changes`() =
         runBlocking {
@@ -1023,6 +1125,518 @@ class RealFlashChatRepositoryTest {
         assertEquals(0, outboxDao.queue.size)
         assertEquals("DELIVERED", messageDao.messages["m-acked"]!!.status)
     }
+
+    // -----------------------------------------------------------------------------------------
+    // ERROR-034: no window in which the UI is shown content that isn't this thread's.
+    // -----------------------------------------------------------------------------------------
+
+    /**
+     * The constructor used to seed a `"Messages"` / `"FL"` header. Nothing in the app owns that
+     * name, so any frame it reached put an invented identity on screen.
+     */
+    @Test
+    fun `initial conversation state invents no identity`() {
+        val repository = newRepository()
+        val header = repository.conversationState.value.header
+        assertEquals("", header.title)
+        assertEquals("", header.avatarInitials)
+        assertFalse("no thread is open, so there is nobody to call", header.showCallActions)
+        assertTrue(repository.conversationState.value.messages.isEmpty())
+    }
+
+    /**
+     * The reset in [RealFlashChatRepository.openConversation] must land before the method returns.
+     * The Room combine that fills the new thread is asynchronous, so anything left behind is
+     * rendered under the *new* route: open B straight after A and you read A's name and messages.
+     * Asserted with no `delay` on purpose — the point is that the window does not exist.
+     */
+    @Test
+    fun `opening a second conversation never shows the first one's content`() = runBlocking {
+        val messageDao = FakeMessageDao()
+        val repository = newRepository(messageDao = messageDao)
+
+        messageDao.insert(msg("m-a", "conv-a", "message in thread A"))
+        repository.openConversation("conv-a")
+        kotlinx.coroutines.delay(100)
+        assertEquals("conv-a", repository.conversationState.value.header.title)
+        assertTrue(
+            "thread A must have loaded, or this test proves nothing",
+            repository.conversationState.value.messages.isNotEmpty(),
+        )
+
+        repository.openConversation("conv-b")
+        // Synchronously, in the same turn: B's identity, and no leftover rows.
+        val afterOpen = repository.conversationState.value
+        assertEquals("conv-b", afterOpen.header.title)
+        assertTrue("A's messages must not appear under B", afterOpen.messages.isEmpty())
+        assertEquals("", afterOpen.draftText)
+    }
+
+    /**
+     * `hasLoaded` is what lets an empty chat list be read as an answer rather than as a gap. The
+     * shell shows the skeleton until it flips, so it MUST flip even when Room has nothing — a
+     * genuinely fresh install has to be able to reach the first-run panel.
+     */
+    @Test
+    fun `chat list reports hasLoaded once Room answers, even when empty`() = runBlocking {
+        val repository = newRepository()
+        assertFalse(
+            "before the first emission an empty list means 'not known yet'",
+            repository.chatListState.value.hasLoaded,
+        )
+
+        val state = kotlinx.coroutines.withTimeout(5_000) {
+            repository.chatListState.first { it.hasLoaded }
+        }
+        assertTrue("an empty Room is a real answer and must end the skeleton", state.hasLoaded)
+        assertTrue(state.items.isEmpty())
+    }
+
+    @Test
+    fun `hasLoaded stays true once a row arrives`() = runBlocking {
+        val conversationDao = FakeConversationDao()
+        val repository = newRepository(conversationDao = conversationDao)
+        kotlinx.coroutines.withTimeout(5_000) { repository.chatListState.first { it.hasLoaded } }
+
+        conversationDao.upsert(
+            ConversationEntity(
+                id = "conv-alex",
+                title = "Alex",
+                isGroup = false,
+                sortOrder = System.currentTimeMillis(),
+            ),
+        )
+
+        val state = kotlinx.coroutines.withTimeout(5_000) {
+            repository.chatListState.first { it.items.isNotEmpty() }
+        }
+        assertEquals(1, state.items.size)
+        assertTrue(state.hasLoaded)
+    }
+
+    // ------------------------------------------------------------------ groups (Phase 1A)
+
+    @Test
+    fun `sending an attachment to a group never clobbers the group conversation row`() = runBlocking {
+        val memberDao = FakeGroupMemberDao()
+        val conversationDao = FakeConversationDao()
+        val messageDao = FakeMessageDao()
+        val repository = newRepository(
+            messageDao = messageDao,
+            conversationDao = conversationDao,
+            groupMemberDao = memberDao,
+            trustedPeers = setOf("peer-a"),
+        )
+        val groupId = (repository.createGroup("Design Team", setOf("peer-a")) as FlashResult.Success).value
+
+        // F1: the attachment path used to upsert ConversationEntity(isGroup=false, title=groupId),
+        // a full-row replace that demoted the group to a direct chat titled with its own id.
+        repository.sendAttachment(
+            conversationId = groupId,
+            transferId = "transfer-1",
+            fileName = "Voice message.m4a",
+            mimeType = "audio/mp4",
+            sizeBytes = 1024,
+            localPath = "/tmp/v.m4a",
+        )
+        kotlinx.coroutines.delay(100)
+
+        val row = conversationDao.get(groupId)!!
+        assertTrue("group row demoted to direct chat", row.isGroup)
+        assertEquals("Design Team", row.title)
+        assertEquals("my-device-id", row.groupCreatedBy)
+        // Interim honest gate: the attachment row itself must NOT exist for a group (F4 pending).
+        assertTrue(messageDao.messages.isEmpty())
+    }
+
+    /** Fakes for the two group tables, mirroring the SQL semantics of the Room DAOs. */
+    private class FakeGroupMemberDao : GroupMemberDao {
+        val members = ConcurrentHashMap<Pair<String, String>, GroupMemberEntity>()
+        override suspend fun upsert(member: GroupMemberEntity) {
+            members[member.groupId to member.deviceId] = member
+        }
+        override fun observeMembers(groupId: String): Flow<List<GroupMemberEntity>> =
+            MutableStateFlow(members.values.filter { it.groupId == groupId }.sortedBy { it.joinedAt })
+        override suspend fun activeMembers(groupId: String): List<GroupMemberEntity> =
+            members.values.filter { it.groupId == groupId && it.isActive }.sortedBy { it.joinedAt }
+        override suspend fun member(groupId: String, deviceId: String): GroupMemberEntity? =
+            members[groupId to deviceId]
+        override suspend fun activeCount(groupId: String): Int =
+            members.values.count { it.groupId == groupId && it.isActive }
+        override suspend fun activeGroupIdsFor(deviceId: String): List<String> =
+            members.values.filter { it.deviceId == deviceId && it.isActive }.map { it.groupId }.distinct()
+    }
+
+    private class FakeGroupDeliveryDao : GroupDeliveryDao {
+        val rows = ConcurrentHashMap<Pair<String, String>, GroupDeliveryEntity>()
+        override suspend fun insertAll(deliveries: List<GroupDeliveryEntity>) {
+            deliveries.forEach { rows[it.messageId to it.memberId] = it }
+        }
+        override suspend fun pendingForMessage(messageId: String): List<GroupDeliveryEntity> =
+            rows.values.filter { it.messageId == messageId && it.state != "DELIVERED" }
+                .sortedBy { it.nextAttemptAt }
+        override suspend fun memberCount(messageId: String): Int =
+            rows.values.count { it.messageId == messageId }
+        override suspend fun deliveredCount(messageId: String): Int =
+            rows.values.count { it.messageId == messageId && it.state == "DELIVERED" }
+        override suspend fun markDelivered(messageId: String, memberId: String, deliveredAt: Long): Int {
+            val key = messageId to memberId
+            val row = rows[key] ?: return 0
+            if (row.state == "DELIVERED") return 0
+            rows[key] = row.copy(state = "DELIVERED", deliveredAt = deliveredAt)
+            return 1
+        }
+        override suspend fun reschedule(messageId: String, memberId: String, state: String, nextAttemptAt: Long) {
+            val key = messageId to memberId
+            rows[key]?.let { rows[key] = it.copy(state = state, attempts = it.attempts + 1, nextAttemptAt = nextAttemptAt) }
+        }
+        override suspend fun makePendingDueForMember(memberId: String, now: Long) {
+            rows.values.filter { it.memberId == memberId && it.state != "DELIVERED" }
+                .forEach { rows[it.messageId to it.memberId] = it.copy(attempts = 0, nextAttemptAt = now) }
+        }
+        override suspend fun deleteForMessage(messageId: String) {
+            rows.keys.removeAll { it.first == messageId }
+        }
+    }
+
+    @Test
+    fun `group mutations never send from the caller's thread`() = runBlocking {
+        // ERROR-036: createGroup used to run its blocking socket writes on the CALLER's
+        // dispatcher; the UI calls it from the main thread, and the send threw
+        // NetworkOnMainThreadException (and killed the live sessions). The fix hops to the
+        // repository's ioDispatcher. The JVM cannot reproduce Android's main-thread detector,
+        // but it CAN observe which thread the sink ran on — and it must not be the caller's.
+        val ioThread = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+            Thread(r, "repo-io-test")
+        }.asCoroutineDispatcher()
+        try {
+            val memberDao = FakeGroupMemberDao()
+            val callerThread = Thread.currentThread()
+            val sinkThreads = java.util.Collections.synchronizedList(mutableListOf<Thread>())
+            val repository = newRepository(
+                groupMemberDao = memberDao,
+                trustedPeers = setOf("peer-a"),
+                groupSink = { _, _ -> sinkThreads.add(Thread.currentThread()); true },
+            )
+            val field = RealFlashChatRepository::class.java.getDeclaredField("ioDispatcher")
+            field.isAccessible = true
+            field.set(repository, ioThread)
+
+            repository.createGroup("Team", setOf("peer-a"))
+            kotlinx.coroutines.delay(100)
+            assertTrue(sinkThreads.isNotEmpty())
+            assertTrue(
+                "group send ran on the caller's thread ${callerThread.name}",
+                sinkThreads.none { it === callerThread },
+            )
+        } finally {
+            ioThread.close()
+        }
+    }
+
+    @Test
+    fun `state frame bootstraps the group on a device with no local record`() = runBlocking {
+        val memberDao = FakeGroupMemberDao()
+        val conversationDao = FakeConversationDao()
+        val repository = newRepository(
+            conversationDao = conversationDao,
+            groupMemberDao = memberDao,
+            trustedPeers = setOf("peer-a"),
+        )
+
+        val now = System.currentTimeMillis()
+        val state = GroupWireFrame.State(
+            groupId = "g-new",
+            from = "peer-a",
+            operationId = "op-state",
+            membershipVersion = now,
+            name = "Late Joiners",
+            creatorId = "peer-a",
+            members = listOf(
+                GroupWireFrame.RosterEntry(
+                    deviceId = "peer-a", displayName = "Peer A", role = "owner",
+                    joinedAt = now, membershipVersion = now, operationId = "op-create", isActive = true,
+                ),
+                GroupWireFrame.RosterEntry(
+                    deviceId = "my-device-id", displayName = "Me", role = "member",
+                    joinedAt = now, membershipVersion = now, operationId = "op-create", isActive = true,
+                ),
+                GroupWireFrame.RosterEntry(
+                    deviceId = "peer-b", displayName = "Peer B", role = "member",
+                    joinedAt = now, membershipVersion = now, operationId = "op-create", isActive = true,
+                ),
+            ),
+        )
+        repository.onInboundGroupWireFrame("peer-a", state)
+
+        val row = conversationDao.get("g-new")!!
+        assertTrue(row.isGroup)
+        assertEquals("Late Joiners", row.title)
+        assertEquals("peer-a", row.groupCreatedBy)
+        assertEquals(3, memberDao.activeCount("g-new"))
+        assertEquals("owner", memberDao.member("g-new", "peer-a")!!.role)
+        assertEquals("member", memberDao.member("g-new", "my-device-id")!!.role)
+    }
+
+    @Test
+    fun `state frame from an untrusted transport peer is dropped`() = runBlocking {
+        val memberDao = FakeGroupMemberDao()
+        val conversationDao = FakeConversationDao()
+        val repository = newRepository(
+            conversationDao = conversationDao,
+            groupMemberDao = memberDao,
+            trustedPeers = setOf("peer-a"),
+        )
+        val now = System.currentTimeMillis()
+        // An untrusted transport peer cannot bootstrap a group even with a self-consistent
+        // roster — trust is the outer boundary for every group frame.
+        repository.onInboundGroupWireFrame(
+            "stranger",
+            GroupWireFrame.State(
+                "g-fake", "stranger", "op", now, "Fabricated", "stranger",
+                listOf(
+                    GroupWireFrame.RosterEntry(
+                        deviceId = "stranger", displayName = "S", role = "owner",
+                        joinedAt = now, membershipVersion = now, operationId = "op", isActive = true,
+                    ),
+                    GroupWireFrame.RosterEntry(
+                        deviceId = "my-device-id", displayName = "Me", role = "member",
+                        joinedAt = now, membershipVersion = now, operationId = "op", isActive = true,
+                    ),
+                ),
+            ),
+        )
+        assertNull(conversationDao.get("g-fake"))
+    }
+
+    @Test
+    fun `state frame cannot resurrect a newer leave tombstone`() = runBlocking {
+        val memberDao = FakeGroupMemberDao()
+        val repository = newRepository(
+            groupMemberDao = memberDao,
+            trustedPeers = setOf("peer-a", "peer-b"),
+        )
+        val groupId =
+            (repository.createGroup("Team", setOf("peer-a", "peer-b")) as FlashResult.Success).value
+        val leaveVersion = System.currentTimeMillis() + 1_000_000L
+        repository.onInboundGroupWireFrame(
+            "peer-a",
+            GroupWireFrame.Leave(groupId, "peer-a", "leave-op", leaveVersion, "peer-a"),
+        )
+        assertEquals(false, memberDao.member(groupId, "peer-a")!!.isActive)
+
+        // A replayed state carrying an OLDER version for peer-a must not reactivate them.
+        val now = System.currentTimeMillis()
+        repository.onInboundGroupWireFrame(
+            "peer-b",
+            GroupWireFrame.State(
+                groupId, "peer-b", "op-replay", now, "Team", "my-device-id",
+                listOf(
+                    GroupWireFrame.RosterEntry(
+                        deviceId = "my-device-id", displayName = "Kali", role = "owner",
+                        joinedAt = now, membershipVersion = now, operationId = "op", isActive = true,
+                    ),
+                    GroupWireFrame.RosterEntry(
+                        deviceId = "peer-a", displayName = "Peer A", role = "member",
+                        joinedAt = now, membershipVersion = leaveVersion - 1, operationId = "op-old", isActive = true,
+                    ),
+                    GroupWireFrame.RosterEntry(
+                        deviceId = "peer-b", displayName = "Peer B", role = "member",
+                        joinedAt = now, membershipVersion = now, operationId = "op", isActive = true,
+                    ),
+                ),
+            ),
+        )
+        assertEquals(false, memberDao.member(groupId, "peer-a")!!.isActive)
+    }
+
+    @Test
+    fun `createGroup rejects untrusted members and persists a six-member bound`() = runBlocking {
+        val memberDao = FakeGroupMemberDao()
+        val conversationDao = FakeConversationDao()
+        val repository = newRepository(
+            conversationDao = conversationDao,
+            groupMemberDao = memberDao,
+            trustedPeers = setOf("peer-a", "peer-b"),
+        )
+
+        val bad = repository.createGroup("Team", setOf("peer-a", "stranger"))
+        assertTrue(bad is FlashResult.Failure)
+
+        val ok = repository.createGroup("Team", setOf("peer-a", "peer-b"))
+        assertTrue(ok is FlashResult.Success)
+        val groupId = (ok as FlashResult.Success).value
+        assertEquals(3, memberDao.activeCount(groupId))
+        assertEquals("Team", conversationDao.get(groupId)!!.title)
+        assertTrue(conversationDao.get(groupId)!!.isGroup)
+    }
+
+    @Test
+    fun `leave tombstone beats a replayed stale add until a newer re-add`() = runBlocking {
+        val memberDao = FakeGroupMemberDao()
+        val repository = newRepository(
+            groupMemberDao = memberDao,
+            trustedPeers = setOf("peer-a", "peer-b"),
+        )
+        val groupId =
+            (repository.createGroup("Team", setOf("peer-a", "peer-b")) as FlashResult.Success).value
+
+        // peer-a leaves (inbound frame, version strictly above the create's ms timestamp).
+        val leaveVersion = System.currentTimeMillis() + 1_000_000L
+        repository.onInboundGroupWireFrame(
+            "peer-a",
+            GroupWireFrame.Leave(groupId, "peer-a", "leave-op", leaveVersion, "peer-a"),
+        )
+        assertEquals(false, memberDao.member(groupId, "peer-a")!!.isActive)
+
+        // A replayed STALE add (older than the leave) must NOT resurrect the member. It arrives
+        // from peer-b, an active member, so it clears the sender gate and still loses on version.
+        repository.onInboundGroupWireFrame(
+            "peer-b",
+            GroupWireFrame.Add(groupId, "peer-b", "stale-add", 1L, listOf("peer-a")),
+        )
+        assertEquals(false, memberDao.member(groupId, "peer-a")!!.isActive)
+
+        // A strictly newer add from an active member reactivates the tombstoned peer.
+        repository.onInboundGroupWireFrame(
+            "peer-b",
+            GroupWireFrame.Add(groupId, "peer-b", "re-add", Long.MAX_VALUE, listOf("peer-a")),
+        )
+        assertEquals(true, memberDao.member(groupId, "peer-a")!!.isActive)
+    }
+
+    @Test
+    fun `untrusted or non-member group message is dropped without notification`() = runBlocking {
+        val memberDao = FakeGroupMemberDao()
+        val notified = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val repository = newRepository(
+            groupMemberDao = memberDao,
+            trustedPeers = setOf("peer-a", "peer-c"),
+            onInboundTextMessage = { _, _, text -> notified.add(text) },
+        )
+        val groupId = (repository.createGroup("Team", setOf("peer-a")) as FlashResult.Success).value
+
+        // An untrusted transport peer cannot address a group even with valid membership data.
+        repository.onInboundGroupWireFrame(
+            "stranger",
+            GroupWireFrame.Message(groupId, "m1", "stranger", "Stranger", 1L, "hello"),
+        )
+        assertEquals(0, notified.size)
+
+        // A trusted peer who is not an active member is also dropped (peer-c never joined).
+        repository.onInboundGroupWireFrame(
+            "peer-c",
+            GroupWireFrame.Message(groupId, "m2", "peer-c", "Peer C", 1L, "hello"),
+        )
+        assertEquals(0, notified.size)
+    }
+
+    @Test
+    fun `opening a group conversation renders a group header with the real name and roster`() =
+        runBlocking {
+            val memberDao = FakeGroupMemberDao()
+            val conversationDao = FakeConversationDao()
+            val repository = newRepository(
+                conversationDao = conversationDao,
+                groupMemberDao = memberDao,
+                trustedPeers = setOf("peer-a", "peer-b"),
+            )
+            val groupId =
+                (repository.createGroup("Design Team", setOf("peer-a", "peer-b")) as FlashResult.Success).value
+
+            repository.openConversation(groupId)
+            // The seed (groupTitleCache) is isGroup=true with no roster — the combine stamps
+            // DB truth on its first emission. Await the POPULATED header, not just isGroup.
+            val header = kotlinx.coroutines.withTimeout(5_000) {
+                repository.conversationState.first { it.header.isGroup && it.header.memberCount > 0 }
+            }.header
+
+            // The UUID must never win: the stored group name is the title.
+            assertEquals("Design Team", header.title)
+            assertTrue(header.isGroup)
+            assertEquals(3, header.memberCount)
+            assertEquals(false, header.showCallActions)
+
+            // Phase B: the real roster rides the state — names, owner role, and the local device.
+            val members = repository.conversationState.value.members
+            assertEquals(3, members.size)
+            assertEquals(setOf("my-device-id", "peer-a", "peer-b"), members.map { it.id }.toSet())
+            assertEquals(FlashMemberRole.Owner, members.single { it.id == "my-device-id" }.role)
+            assertEquals(FlashMemberRole.Member, members.single { it.id == "peer-a" }.role)
+        }
+
+    @Test
+    fun `group send fans out per member and full quorum retires the outbox`() = runBlocking {
+        val memberDao = FakeGroupMemberDao()
+        val deliveryDao = FakeGroupDeliveryDao()
+        val outboxDao = FakeOutboxDao()
+        val messageDao = FakeMessageDao()
+        val groupFrames = java.util.Collections.synchronizedList(mutableListOf<Pair<String, GroupWireFrame>>())
+        val repository = newRepository(
+            messageDao = messageDao,
+            outboxDao = outboxDao,
+            groupMemberDao = memberDao,
+            groupDeliveryDao = deliveryDao,
+            trustedPeers = setOf("peer-a", "peer-b"),
+            groupSink = { target, frame -> groupFrames.add(target to frame); true },
+        )
+        val groupId = (repository.createGroup("Team", setOf("peer-a", "peer-b")) as FlashResult.Success).value
+
+        repository.openConversation(groupId)
+        repository.sendText("hello team")
+        kotlinx.coroutines.delay(100)
+
+        // One wire frame per recipient, not one shared frame.
+        assertEquals(setOf("peer-a", "peer-b"), groupFrames.map { it.first }.toSet())
+        assertEquals(1, outboxDao.queue.size)
+
+        // First receipt: quorum not reached — outbox row stays (ERROR-031 commit rule).
+        val messageId = outboxDao.queue.keys.first()
+        repository.onInboundGroupWireFrame(
+            "peer-a",
+            GroupWireFrame.Receipt(groupId, messageId, "peer-a", System.currentTimeMillis()),
+        )
+        kotlinx.coroutines.delay(50)
+        assertEquals(1, outboxDao.queue.size)
+
+        // Second receipt completes the quorum: row retires, message reads DELIVERED.
+        repository.onInboundGroupWireFrame(
+            "peer-b",
+            GroupWireFrame.Receipt(groupId, messageId, "peer-b", System.currentTimeMillis()),
+        )
+        kotlinx.coroutines.delay(50)
+        assertEquals(0, outboxDao.queue.size)
+        assertEquals("DELIVERED", messageDao.messages[messageId]!!.status)
+    }
+
+    /** Shared construction for the ERROR-034 tests; every DAO is an in-memory fake. */
+    private fun newRepository(
+        messageDao: MessageDao = FakeMessageDao(),
+        conversationDao: ConversationDao = FakeConversationDao(),
+        outboxDao: OutboxDao = FakeOutboxDao(),
+        groupMemberDao: GroupMemberDao? = null,
+        groupDeliveryDao: GroupDeliveryDao? = null,
+        trustedPeers: Set<String> = emptySet(),
+        groupSink: (suspend (String, GroupWireFrame) -> Boolean)? = null,
+        onInboundTextMessage: (String, String?, String) -> Unit = { _, _, _ -> },
+    ) = RealFlashChatRepository(
+        localDeviceId = "my-device-id",
+        localDisplayName = "Kali",
+        messageDao = messageDao,
+        conversationDao = conversationDao,
+        outboxDao = outboxDao,
+        receiptDao = FakeReceiptDao(),
+        draftDao = FakeDraftDao(),
+        recentSearchDao = FakeRecentSearchDao(),
+        reactionDao = FakeReactionDao(),
+        groupMemberDao = groupMemberDao,
+        groupDeliveryDao = groupDeliveryDao,
+        isTrustedPeer = { it in trustedPeers || it == "my-device-id" },
+        groupTransportSink = groupSink?.let { sink -> GroupTransportSink { target, frame -> sink(target, frame) } },
+        transportSink = MessageTransportSink { _, _ -> true },
+        ioDispatcher = testDispatcher,
+        onInboundTextMessage = onInboundTextMessage,
+    )
 
     private fun msg(localId: String, conversationId: String, text: String) = MessageEntity(
         localId = localId,

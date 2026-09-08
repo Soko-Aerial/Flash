@@ -29,12 +29,14 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -43,11 +45,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import com.transfer.flash.core.messaging.SampleFlashChatRepository
+import com.transfer.flash.core.messaging.EmptyFlashChatRepository
 import com.transfer.flash.core.common.model.FlashDevice
 import com.transfer.flash.core.common.model.FlashDeviceId
 import com.transfer.flash.core.common.model.FlashTransportType
+import com.transfer.flash.core.common.perf.FlashMotionPolicy
 import com.transfer.flash.core.common.result.getOrNull
 import com.transfer.flash.core.discovery.FlashDiscoveredEndpoint
 import com.transfer.flash.core.discovery.FlashDiscoveryState
@@ -83,8 +87,10 @@ import com.transfer.flash.ui.shell.FlashBottomNavDefaults
 import com.transfer.flash.ui.shell.FlashBottomNavItem
 import com.transfer.flash.ui.splash.FlashSplashScreen
 import com.transfer.flash.ui.transfers.FlashTransfersScreen
+import com.transfer.flash.ui.transfers.FlashTransfersMath
 import com.transfer.flash.ui.transfers.FlashTransferState
 import com.transfer.flash.ui.transfers.TransfersUiState
+import com.transfer.flash.ui.throttleLatest
 import com.transfer.flash.core.transfer.model.FlashTransfer
 import com.transfer.flash.core.transfer.model.FlashTransferId
 import com.transfer.flash.notifications.FlashNotificationManager
@@ -92,6 +98,8 @@ import com.transfer.flash.ui.icons.FlashIcons
 import com.transfer.flash.core.messaging.model.FlashNetworkTransport
 import com.transfer.flash.ui.theme.FlashMaterialTheme
 import com.transfer.flash.ui.theme.FlashTheme
+import com.transfer.flash.ui.theme.rememberFlashMotion
+import com.transfer.flash.ui.theme.rememberSystemReduceMotion
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -300,6 +308,12 @@ fun FlashApp(
     val autoDownloadVideo by store.autoDownloadVideo.collectAsState(initial = false)
     val autoDownloadFile by store.autoDownloadFile.collectAsState(initial = false)
     val prioritiseVoiceQuality by store.prioritiseVoiceQuality.collectAsState(initial = true)
+    // ERROR-033: the tier pin (null = Auto) and the tier actually in force. The pin drives the
+    // picker; the resolved value drives the theme, so a device on Auto still gets the tier's
+    // reduce-motion floor without the user having chosen anything.
+    val pinnedPerformanceMode by store.performanceMode.collectAsState(initial = null)
+    val effectivePerformanceMode by engine.performanceMode.collectAsState()
+    val motionOverrideForcesReduce by store.reduceMotionOverrideForcesReduce.collectAsState(initial = null)
     val batteryExempt by ignoringBatteryOptimizations.collectAsState()
 
     val ready by engine.ready.collectAsState()
@@ -307,7 +321,12 @@ fun FlashApp(
     val trustedPeers by (engine.pairing?.trustedPeers ?: trustedFallback).collectAsState()
 
     val settings = FlashSettingsModel(
-        displayName = displayNamePref.ifBlank { if (ready) engine.localFriendlyName else "Flash device" },
+        // ERROR-034: no `if (ready)` gate. Identity comes from a self-healing prefs store that
+        // mints and persists an id and a "Flash <MODEL>" name on its first read, so it is real and
+        // correct before the transport stack boots. Gating on `ready` substituted the literals
+        // "Flash device" / "00000000" for the whole boot window — invented content, and on a slow
+        // device visible for seconds before it swapped to the truth.
+        displayName = displayNamePref.ifBlank { engine.localFriendlyName },
         themeMode = SettingsKeys.themeModeFromKey(themeModeKey),
         dynamicAccent = dynamicAccent,
         hapticsEnabled = hapticsEnabled,
@@ -318,9 +337,13 @@ fun FlashApp(
         autoDownloadFile = autoDownloadFile,
         ignoringBatteryOptimizations = batteryExempt,
         prioritiseVoiceQuality = prioritiseVoiceQuality,
+        performanceMode = pinnedPerformanceMode,
+        detectedPerformanceMode = engine.detectedPerformance.mode,
         trustedPeerCount = trustedPeers.size,
         appVersion = engine.appVersionName,
-        deviceIdShort = (if (ready) engine.localDeviceId else "").take(8).ifBlank { "00000000" },
+        // ifBlank is a real guard, not the normal path: a UUID always survives take(8), but a
+        // prefs entry that somehow holds "" would not be caught by the store's null check.
+        deviceIdShort = engine.localDeviceId.take(8).ifBlank { "00000000" },
     )
     val onSettingsChange: (FlashSettingsModel) -> Unit = { updated ->
         persistScope.launch {
@@ -339,6 +362,9 @@ fun FlashApp(
             if (updated.prioritiseVoiceQuality != settings.prioritiseVoiceQuality) {
                 store.setPrioritiseVoiceQuality(updated.prioritiseVoiceQuality)
             }
+            if (updated.performanceMode != settings.performanceMode) {
+                store.setPerformanceMode(updated.performanceMode)
+            }
             if (updated.displayName != settings.displayName) store.setDisplayName(updated.displayName)
         }
     }
@@ -348,11 +374,23 @@ fun FlashApp(
         systemDark = isSystemInDarkTheme(),
     )
 
+    // ERROR-033: the performance tier is a *floor* under the motion decision, not another vote in
+    // it. A handset classified LOW or MEDIUM does not animate even if the platform and the user both
+    // say motion is fine — on the hardware that earns those tiers, the animation is the jank. One
+    // resolved boolean here reaches every FlashTheme.motion call site in the app at once.
+    val reduceMotionResolved = FlashMotionPolicy.resolveReduceMotion(
+        mode = effectivePerformanceMode,
+        overrideForcesReduce = motionOverrideForcesReduce,
+        systemReduceMotion = rememberSystemReduceMotion(),
+    )
+
     FlashMaterialTheme(darkTheme = darkTheme, dynamicColor = settings.dynamicAccent) {
         FlashTheme(
             darkTheme = darkTheme,
             dynamicAccent = settings.dynamicAccent,
             hapticsEnabled = settings.hapticsEnabled,
+            minimalChrome = effectivePerformanceMode.minimalChrome,
+            motion = rememberFlashMotion(reduceMotionResolved),
         ) {
             // Launch animation: the looping splash stays up until the engine is ready (or
             // boot fails), then fades out. No minimum display time — a fast boot dismisses
@@ -398,16 +436,37 @@ private fun FlashShell(
     onEnableBackgroundTransfers: () -> Unit,
 ) {
     val nav = rememberFlashNavigationState()
-    // Phase 3.1: Chats now bind to the real Room-backed repository once the engine has booted.
+    // Phase 3.1: Chats bind to the real Room-backed repository once the engine has booted.
     // Reading `ready` here is the recomposition trigger — engine.chats is a plain holder getter, so
-    // without a state read the swap from Sample → real would never recompose. Until the stack is up
-    // (or if boot failed), the Sample repo keeps the tab populated so the shell is never empty.
+    // without a state read the swap from empty → real would never recompose.
+    //
+    // ERROR-034: the pre-boot fallback used to be `SampleFlashChatRepository()`, "so the shell is
+    // never empty". It made the tab render three fabricated threads (False School / Design Team /
+    // Flash Transfer) that vanished the instant the real repository arrived. That is invisible on a
+    // fast handset — the splash covers the whole boot — but the splash has a 6s ceiling, and on a
+    // slow device (Belfone SCP810) boot outlasts it, so the user watches invented conversations
+    // appear and disappear. The fallback is now an honest empty repository, and the tab reports its
+    // real state through FlashChatListScreen's own isLoading/errorMessage inputs: skeleton while the
+    // stack comes up (UI-026), first-run empty state once it is up with no threads (UI-025), error
+    // state if boot failed (UI-027).
     val ready by engine.ready.collectAsState()
-    val sampleChatRepository = remember { SampleFlashChatRepository() }
+    val chatStartError by engine.startError.collectAsState()
     val chatRepository: com.transfer.flash.core.messaging.FlashChatRepository =
-        (if (ready) engine.chats else null) ?: sampleChatRepository
+        (if (ready) engine.chats else null) ?: EmptyFlashChatRepository
     val conversationState by chatRepository.conversationState.collectAsState()
     val chatListState by chatRepository.chatListState.collectAsState()
+    // EXP-012: `chatListState` itself is only ever *read* inside the ChatList branch (the screen and
+    // its isLoading), and `conversationState` only inside the Conversation branch — a `by` delegate
+    // records its read where the property is read, not where collectAsState was called, so both are
+    // already narrow. The one exception was the selection-mode BackHandler far below, which read the
+    // whole state object at FlashShell scope; because a State has no per-field granularity, every
+    // presence change, unread-count change, new preview and draft edit then re-executed this entire
+    // ~750-line composable to re-evaluate one Boolean. Deriving the Boolean moves that read into the
+    // derivation, which invalidates its reader only when the Boolean actually flips. Keyed on the
+    // repository because it swaps from EmptyFlashChatRepository once the engine boots.
+    val chatListSelectionMode by remember(chatRepository) {
+        derivedStateOf { chatListState.selectionMode }
+    }
 
     // Bug 7: the shell mirrors the open conversation into the notification manager so it
     // can suppress notifications for the thread being read right now (and clear that
@@ -423,8 +482,8 @@ private fun FlashShell(
     }
 
     // Bug 7: consume a notification-tap navigation request once the engine is ready (the
-    // real repository must exist to open the thread; navigating with the sample repo
-    // would show an empty conversation). Cleared after consuming so re-taps re-trigger.
+    // real repository must exist to open the thread; navigating before it does would show an
+    // empty conversation). Cleared after consuming so re-taps re-trigger.
     val pendingConversation by pendingNotificationConversation.collectAsState()
     LaunchedEffect(ready, pendingConversation) {
         if (!ready || pendingConversation == null) return@LaunchedEffect
@@ -528,8 +587,48 @@ private fun FlashShell(
     // inside a `?:` — conditional remember desyncs the slot table). TransfersUiState.fromDomain does
     // the domain→UI mapping (Active/Failed/History bucketing, direction, ETA/verified normalisation).
     val fallbackTransfers = remember { MutableStateFlow(emptyList<FlashTransfer>()) }
-    val domainTransfers by (engine.transfers?.activeTransfers ?: fallbackTransfers).collectAsState()
-    val transfersUi = remember(domainTransfers) { TransfersUiState.fromDomain(domainTransfers) }
+    // The source is resolved OUTSIDE the remember below (the `?:` picks a flow, it does not decide
+    // whether to remember), then paced. Unpaced this is the transfer layer's raw 10 ms watcher tick:
+    // a hundred fresh lists a second for the whole duration of a transfer, collected here at the
+    // shell, so it invalidated the shell and re-ran `fromDomain` (a map, four filters and a copy)
+    // every frame — even with the Transfers tab off screen. See FlashTransfersMath.PROGRESS_THROTTLE_MS
+    // for why the window is derived from the animation duration rather than picked, and why pacing
+    // costs this screen nothing: speed is rounded to one decimal, ETA to whole seconds, and both the
+    // row fill and the header throughput roll are animated against Compose's frame clock.
+    val transfersSource = engine.transfers?.activeTransfers ?: fallbackTransfers
+    val pacedTransfers = remember(transfersSource) {
+        transfersSource.throttleLatest(FlashTransfersMath.PROGRESS_THROTTLE_MS)
+    }
+    // Seeded with the StateFlow's CURRENT value, not an empty list: the leading edge arrives on the
+    // first dispatch, and seeding makes even that gap unobservable, so the tab never renders a frame
+    // of "nothing" that it would have to take back (ERROR-034).
+    val domainTransfers by pacedTransfers.collectAsState(initial = transfersSource.value)
+    // ERROR-034: the tab's Loading/Error branches existed but nothing ever reached them, so an
+    // un-booted Transfers tab claimed "No transfers yet" — a statement about this device's history
+    // from code that had no access to it yet. `engine.transfers == null` is exactly the pre-boot
+    // window; once the repository exists an empty list is the truth (it is in-memory, not queried).
+    val transfersReady = ready && engine.transfers != null
+    // `derivedStateOf`, not `remember(domainTransfers, …)`. The difference is *where the read is
+    // recorded* (EXP-012). With a plain `remember` keyed on `domainTransfers`, the key expression
+    // reads the transfer State here, at FlashShell scope, so every paced tick invalidated this whole
+    // ~750-line composable and re-ran `fromDomain` (a map, one item per transfer, four filter passes,
+    // a state object and a copy) — with the Transfers tab off screen, because `transfersUi` has
+    // exactly one consumer, the `FlashDestination.Transfers ->` branch. Inside `derivedStateOf` the
+    // same read belongs to the derived state, so it invalidates only whoever reads `transfersUi`, and
+    // the block itself is *lazy*: off-tab nobody reads it and the mapping never runs at all. Pacing
+    // (above) is still what keeps the upstream flow cheap; this is what keeps the shell out of it.
+    // Keys: `pacedTransfers` because the source flow swaps at boot and the block would otherwise keep
+    // reading the pre-boot State forever; `transfersReady` because it is a plain Boolean, not a State,
+    // so it would be captured. `chatStartError` needs no key — it is read as State inside the block.
+    val transfersUi by remember(pacedTransfers, transfersReady) {
+        derivedStateOf {
+            TransfersUiState.fromDomain(
+                transfers = domainTransfers,
+                isLoading = !transfersReady && chatStartError == null,
+                isError = chatStartError != null,
+            )
+        }
+    }
 
     // Phase 3.2: Nearby derives from the live discovery engine. `peers` are the real NSD-discovered
     // endpoints; the identity card reflects this device's advertised id/name/port. Fallback flows are
@@ -547,6 +646,23 @@ private fun FlashShell(
     val fallbackTrusted = remember { MutableStateFlow(emptyList<NearbyTrustedPeerUi>()) }
     val pairingModel by (engine.pairing?.pairing ?: fallbackPairing).collectAsState()
     val trustedPeers by (engine.pairing?.trustedPeers ?: fallbackTrusted).collectAsState()
+    // Group Phase 1A: the create-group sheet opens from the chat list's top bar; its roster comes
+    // from the pairing coordinator's trusted peers only (fail-closed membership by construction).
+    var showCreateGroup by remember { mutableStateOf(false) }
+    val trustedPeerRoster = trustedPeers.map { trusted ->
+        // Initials mirror the repository's rule: first letters of the first two words, uppercased.
+        val initials = trusted.name.trim().split("\\s+".toRegex())
+            .filter { it.isNotEmpty() }
+            .take(2)
+            .map { it.first().uppercaseChar().toString() }
+            .joinToString("")
+            .ifBlank { "?" }
+        com.transfer.flash.ui.chat.FlashCreateGroupPeerUi(
+            id = trusted.id,
+            name = trusted.name,
+            initials = initials,
+        )
+    }
     // Surface the coordinator's transient status lines (e.g. "Connecting…", "Couldn't reach …") as
     // toasts so tapping Pair always gives feedback instead of silently doing nothing. Keyed on the
     // coordinator instance so collection (re)starts once the engine boots.
@@ -556,33 +672,53 @@ private fun FlashShell(
             Toast.makeText(toastContext, message, Toast.LENGTH_SHORT).show()
         }
     }
-    val nearby = remember(discoveredEndpoints, discoveryState, ready, pairingModel, trustedPeers) {
-        val trustedIds = trustedPeers.mapTo(HashSet()) { it.id }
-        NearbyUiState(
-            identity = NearbyIdentityUi(
-                displayName = if (ready) engine.localFriendlyName else "Flash device",
-                deviceIdShort = (if (ready) engine.localDeviceId else "").take(8).ifBlank { "00000000" },
-                port = discoveryState.advertisedPort,
-            ),
-            isScanning = discoveryState.isDiscovering,
-            // A trusted peer lives in the TRUSTED section (with its own Chat/Revoke), so exclude
-            // it from DISCOVERED — otherwise the same device renders in both sections, which both
-            // duplicates the row and (sharing a device-id key) crashed the Nearby LazyColumn.
-            peers = discoveredEndpoints
-                .filter { it.deviceId.value !in trustedIds }
-                .map { ep ->
-                    NearbyPeerUi(
-                        id = ep.deviceId.value,
-                        name = ep.friendlyName,
-                        transport = ep.transportType.toUiTransport(),
-                        isTrusted = false,
-                    )
-                },
-            trustedPeers = trustedPeers,
-            pairingRequest = pairingModel?.request,
-            pairingPhase = pairingModel?.phase ?: FlashPairingPhase.Idle,
-            pairingSecondsLeft = pairingModel?.secondsLeft ?: 0,
-        )
+    // `ready` is read for `isLoading` below; inside `derivedStateOf` it is read as State rather than
+    // as a key, which is narrower, not looser (EXP-012). Same reasoning as `transfersUi` above: as a
+    // 5-key `remember` this recorded five State reads at FlashShell scope, so any discovery tick,
+    // presence change or pairing-countdown second re-executed the entire shell body *and* rebuilt
+    // NearbyUiState (a HashSet of trusted ids, a filter and a map over every endpoint) even with the
+    // Nearby tab off screen. As a derived state the reads belong to the derivation, it recomputes
+    // lazily only when something actually reads `nearby`, and because NearbyUiState is a data class
+    // the default structural-equality policy drops an identical rebuild without invalidating anyone.
+    // Keyed on the engine handles that own the four flows: they swap once at boot, and without the
+    // keys this block would keep reading the pre-boot fallback States forever.
+    val nearby by remember(engine, engine.discovery, engine.pairing) {
+        derivedStateOf {
+            val trustedIds = trustedPeers.mapTo(HashSet()) { it.id }
+            NearbyUiState(
+                identity = NearbyIdentityUi(
+                    // ERROR-034: real identity, not "Flash device" / "00000000". See the settings model
+                    // above — the store resolves both before the stack boots, so there was never a
+                    // window in which we had to invent them.
+                    displayName = engine.localFriendlyName,
+                    deviceIdShort = engine.localDeviceId.take(8).ifBlank { "00000000" },
+                    port = discoveryState.advertisedPort,
+                ),
+                isScanning = discoveryState.isDiscovering,
+                // ERROR-034: the Nearby page has had a Loading branch all along and nothing reached it,
+                // so for the whole boot the tab rendered the first-run "no devices" panel under the
+                // header line "Scan paused" — attributing to the user a pause of a scan that had not
+                // started. `ready` is the right gate here: discovery is what `ensureStarted` brings up.
+                isLoading = !ready,
+                // A trusted peer lives in the TRUSTED section (with its own Chat/Revoke), so exclude
+                // it from DISCOVERED — otherwise the same device renders in both sections, which both
+                // duplicates the row and (sharing a device-id key) crashed the Nearby LazyColumn.
+                peers = discoveredEndpoints
+                    .filter { it.deviceId.value !in trustedIds }
+                    .map { ep ->
+                        NearbyPeerUi(
+                            id = ep.deviceId.value,
+                            name = ep.friendlyName,
+                            transport = ep.transportType.toUiTransport(),
+                            isTrusted = false,
+                        )
+                    },
+                trustedPeers = trustedPeers,
+                pairingRequest = pairingModel?.request,
+                pairingPhase = pairingModel?.phase ?: FlashPairingPhase.Idle,
+                pairingSecondsLeft = pairingModel?.secondsLeft ?: 0,
+            )
+        }
     }
 
     // Console first: while it is up it owns back, and the shell keeps its own handler disabled
@@ -597,7 +733,8 @@ private fun FlashShell(
     }
     // UI-013: while chat-list selection mode is active, Back exits selection first (registered
     // last so it wins over the search-close and stack-pop handlers when several are eligible).
-    BackHandler(enabled = chatListState.selectionMode && !showDevConsole) {
+    // Reads the derived Boolean, not `chatListState` — see its declaration for why (EXP-012).
+    BackHandler(enabled = chatListSelectionMode && !showDevConsole) {
         chatRepository.clearListSelection()
     }
 
@@ -610,7 +747,10 @@ private fun FlashShell(
     val tabBottomInset = FlashBottomNavDefaults.contentInset + systemBottomInset
     // Only the floating Dev Console chip still needs the animated inset — page content is
     // padded from the inside, so its inset must stay constant to avoid a relayout per frame.
-    val chipBottomInset by animateDpAsState(
+    // Stays an explicit `State<Dp>`: it is read inside the chip's `offset { }` lambda below, so
+    // a frame of this tween re-places one Box instead of recomposing this ~750-line shell
+    // (EXP-013). Same trick as the theme segment / switch thumb in FlashSettingsScreen.
+    val chipBottomInset = animateDpAsState(
         targetValue = if (showBar) tabBottomInset else 0.dp,
         animationSpec = FlashTheme.motion.tweenNormalSpec(),
         label = "flashShellChipInset",
@@ -650,34 +790,72 @@ private fun FlashShell(
                         onTypingChanged = chatRepository::setTyping,
                         onAttachmentClick = chatRepository::openAttachmentPicker,
                         onSendFile = { uri, displayName, size ->
-                            // conversationId doubles as the peer's device id (the transport routing
-                            // key). Reuse the live discovered transport when known so the transfer
-                            // rides the right medium; fall back to LAN (the WS-mesh default).
                             val peerId = entry.conversationId
                             val transfers = engine.transfers
                             if (peerId != null && transfers != null) {
-                                val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == peerId }
-                                val targetDevice = FlashDevice(
-                                    id = FlashDeviceId(peerId),
-                                    friendlyName = conversationState.header.title,
-                                    transportType = endpoint?.transportType ?: FlashTransportType.LAN,
-                                )
                                 val mime = guessMimeType(displayName)
-                                scope.launch {
-                                    // Start the P2P transfer, then (B4) drop a local chat row keyed by
-                                    // the returned transferId so the attachment shows inline in the
-                                    // conversation — image thumbnail / video play button / file card —
-                                    // with progress joined from activeTransfers, alongside Transfers.
-                                    val transferId = transfers.sendFile(targetDevice, uri, displayName, size).getOrNull()
-                                    if (transferId != null) {
+                                if (conversationState.header.isGroup) {
+                                    // F4: group media — one intro + one transfer per active member,
+                                    // all sharing the SAME wireFileId so receivers correlate them and
+                                    // a later re-pull resumes the original session.
+                                    val sharedWireFileId = java.util.UUID.randomUUID().toString()
+                                    scope.launch {
+                                        chatRepository.groupMembers(peerId)
+                                            .filter { it.id != engine.localDeviceId }
+                                            .forEach { member ->
+                                                val identity = chatRepository.beginGroupAttachment(
+                                                    groupId = peerId,
+                                                    recipientDeviceId = member.id,
+                                                    fileName = displayName,
+                                                    mimeType = mime,
+                                                    sizeBytes = size,
+                                                    wireFileId = sharedWireFileId,
+                                                )
+                                                val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == member.id }
+                                                val targetDevice = FlashDevice(
+                                                    id = FlashDeviceId(member.id),
+                                                    friendlyName = member.name,
+                                                    transportType = endpoint?.transportType ?: FlashTransportType.LAN,
+                                                )
+                                                transfers.sendFile(
+                                                    targetDevice, uri, displayName, size,
+                                                    wireFileId = sharedWireFileId,
+                                                )
+                                            }
+                                        // The sender's own chat row: one bubble per group send,
+                                        // keyed by the shared wire identity.
                                         chatRepository.sendAttachment(
                                             conversationId = peerId,
-                                            transferId = transferId.value,
+                                            transferId = sharedWireFileId,
                                             fileName = displayName,
                                             mimeType = mime,
                                             sizeBytes = size,
                                             localPath = uri,
                                         )
+                                    }
+                                } else {
+                                    val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == peerId }
+                                    val targetDevice = FlashDevice(
+                                        id = FlashDeviceId(peerId),
+                                        friendlyName = conversationState.header.title,
+                                        transportType = endpoint?.transportType ?: FlashTransportType.LAN,
+                                    )
+                                    scope.launch {
+                                        // Start the P2P transfer, then (B4) drop a local chat row keyed by
+                                        // the returned transferId so the attachment shows inline in the
+                                        // conversation — image thumbnail / video play button / file card —
+                                        // with progress joined from activeTransfers, alongside Transfers.
+                                        val transferId = transfers.sendFile(targetDevice, uri, displayName, size).getOrNull()
+                                        if (transferId != null) {
+                                            chatRepository.sendAttachment(
+                                                conversationId = peerId,
+                                                transferId = transferId.value,
+                                                fileName = displayName,
+                                                mimeType = mime,
+                                                sizeBytes = size,
+                                                localPath = uri,
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -692,22 +870,39 @@ private fun FlashShell(
                             val peerId = entry.conversationId
                             val transfers = engine.transfers
                             if (peerId != null && transfers != null) {
-                                val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == peerId }
-                                val targetDevice = FlashDevice(
-                                    id = FlashDeviceId(peerId),
-                                    friendlyName = conversationState.header.title,
-                                    transportType = endpoint?.transportType ?: FlashTransportType.LAN,
-                                )
                                 val fileName = "Voice message.m4a"
                                 val size = runCatching {
                                     android.net.Uri.parse(localPath).path?.let { java.io.File(it).length() } ?: 0L
                                 }.getOrDefault(0L)
-                                scope.launch {
-                                    val transferId = transfers.sendFile(targetDevice, localPath, fileName, size).getOrNull()
-                                    if (transferId != null) {
+                                if (conversationState.header.isGroup) {
+                                    // F4: identical fan-out to onSendFile's group path, with voice meta.
+                                    val sharedWireFileId = java.util.UUID.randomUUID().toString()
+                                    scope.launch {
+                                        chatRepository.groupMembers(peerId)
+                                            .filter { it.id != engine.localDeviceId }
+                                            .forEach { member ->
+                                                chatRepository.beginGroupAttachment(
+                                                    groupId = peerId,
+                                                    recipientDeviceId = member.id,
+                                                    fileName = fileName,
+                                                    mimeType = "audio/mp4",
+                                                    sizeBytes = size,
+                                                    wireFileId = sharedWireFileId,
+                                                )
+                                                val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == member.id }
+                                                val targetDevice = FlashDevice(
+                                                    id = FlashDeviceId(member.id),
+                                                    friendlyName = member.name,
+                                                    transportType = endpoint?.transportType ?: FlashTransportType.LAN,
+                                                )
+                                                transfers.sendFile(
+                                                    targetDevice, localPath, fileName, size,
+                                                    wireFileId = sharedWireFileId,
+                                                )
+                                            }
                                         chatRepository.sendAttachment(
                                             conversationId = peerId,
-                                            transferId = transferId.value,
+                                            transferId = sharedWireFileId,
                                             fileName = fileName,
                                             mimeType = "audio/mp4",
                                             sizeBytes = size,
@@ -715,6 +910,28 @@ private fun FlashShell(
                                             voiceDurationMs = durationMs,
                                             voiceAmplitudes = amplitudes,
                                         )
+                                    }
+                                } else {
+                                    val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == peerId }
+                                    val targetDevice = FlashDevice(
+                                        id = FlashDeviceId(peerId),
+                                        friendlyName = conversationState.header.title,
+                                        transportType = endpoint?.transportType ?: FlashTransportType.LAN,
+                                    )
+                                    scope.launch {
+                                        val transferId = transfers.sendFile(targetDevice, localPath, fileName, size).getOrNull()
+                                        if (transferId != null) {
+                                            chatRepository.sendAttachment(
+                                                conversationId = peerId,
+                                                transferId = transferId.value,
+                                                fileName = fileName,
+                                                mimeType = "audio/mp4",
+                                                sizeBytes = size,
+                                                localPath = localPath,
+                                                voiceDurationMs = durationMs,
+                                                voiceAmplitudes = amplitudes,
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -782,6 +999,36 @@ private fun FlashShell(
                         // is the one case where the banner should say "try again in a moment".
                         onRetryConnection = { engine.reconnectNow() },
                         onShareText = { text -> shareText(toastContext, text) },
+                        // Group Phase D: conversationId + menu actions.
+                        conversationId = entry.conversationId,
+                        addablePeers = trustedPeerRoster.filter { candidate ->
+                            conversationState.members.none { it.id == candidate.id }
+                        },
+                        onAddGroupMembers = { groupId, memberIds ->
+                            scope.launch {
+                                chatRepository.addGroupMembers(groupId, memberIds)
+                            }
+                        },
+                        onLeaveGroup = { groupId ->
+                            scope.launch {
+                                val left = chatRepository.leaveGroup(groupId)
+                                if (left is com.transfer.flash.core.common.result.FlashResult.Success) {
+                                    chatRepository.closeConversation()
+                                    nav.back()
+                                } else {
+                                    Toast.makeText(
+                                        toastContext,
+                                        "Couldn't leave the group — try again",
+                                        Toast.LENGTH_SHORT,
+                                    ).show()
+                                }
+                            }
+                        },
+                        onClearConversation = { id ->
+                            chatRepository.deleteConversations(setOf(id))
+                            chatRepository.closeConversation()
+                            nav.back()
+                        },
                     )
                     FlashDestination.Transfers -> FlashTransfersScreen(
                         state = transfersUi,
@@ -887,6 +1134,9 @@ private fun FlashShell(
                         onPrioritiseVoiceQualityChanged = {
                             onSettingsChange(settings.copy(prioritiseVoiceQuality = it))
                         },
+                        onPerformanceModeSelected = {
+                            onSettingsChange(settings.copy(performanceMode = it))
+                        },
                         onEditDisplayName = { showRenameDialog = true },
                         // ERROR-031 / D7: same system prompt the Background-transfers toggle fires,
                         // reachable on its own so a user who already flipped that toggle (or who
@@ -935,6 +1185,26 @@ private fun FlashShell(
                         onDeleteSelected = {
                             chatRepository.deleteConversations(chatListState.selectedIds)
                         },
+                        // ERROR-034: the tab's real boot state, replacing the fabricated-content
+                        // fallback. Skeleton while the transport stack comes up, error state (with a
+                        // working retry — AppEngine.start() is idempotent and re-armable after a
+                        // failure) if it never did. `isErrorEnvironmental` stays false: a boot
+                        // failure is ours, not the network's.
+                        //
+                        // Both terms are needed. `ready` covers the pre-boot window, in which the
+                        // repository is EmptyFlashChatRepository and has no rows to give. `hasLoaded`
+                        // covers the window *after* it: `ready` flips when the stack finishes
+                        // booting, which is earlier than the real repository's first Room emission,
+                        // so gating on `ready` alone showed the first-run "No conversations yet"
+                        // panel to a device that has conversations, then crossfaded to real rows.
+                        isLoading = (!ready || !chatListState.hasLoaded) && chatStartError == null,
+                        errorMessage = chatStartError?.let { error ->
+                            error.message?.takeIf { it.isNotBlank() }
+                                ?: error::class.simpleName
+                                ?: "Unknown startup failure"
+                        },
+                        onRetryLoad = { engine.start() },
+                        onNewGroupClick = { showCreateGroup = true },
                         modifier = Modifier.fillMaxSize(),
                         listState = chatListScroll,
                         bottomInset = tabBottomInset,
@@ -942,12 +1212,40 @@ private fun FlashShell(
                 }
             }
 
-            // P3.5/E: debug-only Dev Console entry sits just above the hanging bar. Release never sees this.
+            // Group Phase 1A: trusted-only creation. On success the new group opens like any
+            // other conversation; a failure is surfaced as a toast rather than silently dropped.
+            if (showCreateGroup) {
+                com.transfer.flash.ui.chat.FlashCreateGroupSheet(
+                    peers = trustedPeerRoster,
+                    onDismiss = { showCreateGroup = false },
+                    onCreate = { title, memberIds ->
+                        scope.launch {
+                            val result = chatRepository.createGroup(title, memberIds)
+                            val groupId = result.getOrNull()
+                            if (groupId != null) {
+                                showCreateGroup = false
+                                chatRepository.openConversation(groupId)
+                                nav.navigate(FlashDestination.Conversation, conversationId = groupId)
+                            } else {
+                                Toast.makeText(
+                                    toastContext,
+                                    "Couldn't create the group — check that every member is paired",
+                                    Toast.LENGTH_SHORT,
+                                ).show()
+                            }
+                        }
+                    },
+                )
+            }
+
             if (showDevConsoleEntry) {
                 Box(
                     Modifier
                         .align(Alignment.BottomEnd)
-                        .padding(end = 16.dp, bottom = 16.dp + chipBottomInset),
+                        .padding(end = 16.dp, bottom = 16.dp)
+                        // Bottom-aligned, so shifting up by the inset is exactly what
+                        // `bottom = 16.dp + inset` used to do — but in the placement pass.
+                        .offset { IntOffset(0, -chipBottomInset.value.roundToPx()) },
                 ) {
                     DevConsoleChip(onClick = { showDevConsole = true })
                 }

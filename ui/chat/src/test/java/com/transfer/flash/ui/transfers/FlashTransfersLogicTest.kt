@@ -1,11 +1,30 @@
 package com.transfer.flash.ui.transfers
 
+import com.transfer.flash.ui.theme.FlashMotion
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /** JVM tests for UI-047 transfers-page pure helpers. */
 class FlashTransfersLogicTest {
+
+    /**
+     * The pacing window guards a HIGH-tier animation, so it is an invariant rather than a taste
+     * setting: both the per-row progress fill and the header throughput roll animate for
+     * [FlashMotion.NormalMillis], and a window longer than that would let each animation finish and
+     * then sit still until the next value arrived — a periodic dead stop on the one tier that is not
+     * allowed to give anything up. Strictly below the duration means every new target lands mid-flight.
+     */
+    @Test
+    fun `the progress pacing window stays inside the animation it feeds`() {
+        assertTrue(
+            "a ${FlashTransfersMath.PROGRESS_THROTTLE_MS}ms window would dead-stop a " +
+                "${FlashMotion.NormalMillis}ms animation",
+            FlashTransfersMath.PROGRESS_THROTTLE_MS < FlashMotion.NormalMillis.toLong(),
+        )
+        // And it has to actually throttle: a non-positive window is the operator's disable switch.
+        assertTrue(FlashTransfersMath.PROGRESS_THROTTLE_MS > 0L)
+    }
 
     private fun item(
         state: FlashTransferState,
@@ -86,5 +105,38 @@ class FlashTransfersLogicTest {
             item(FlashTransferState.Active, speed = 1024 * 1024, eta = 90),
         )
         assertEquals("1.0 MB/s · 1 min left", line)
+    }
+
+    // ---------------------------------------------------------------------------
+    // progressBarWidthPx — the arithmetic lifted out of Modifier.fillMaxWidth(fraction)
+    // when the progress fill moved to a layout-phase read (EXP-013). These assertions are
+    // what pins it to Compose's own FillNode formula.
+    // ---------------------------------------------------------------------------
+
+    @Test
+    fun `progress bar width spans nothing at zero and the whole track at one`() {
+        assertEquals(0, FlashTransfersMath.progressBarWidthPx(0, 400, 0f))
+        assertEquals(400, FlashTransfersMath.progressBarWidthPx(0, 400, 1f))
+    }
+
+    @Test
+    fun `progress bar width rounds to the nearest pixel rather than truncating`() {
+        // 401 * 0.5 = 200.5 -> 201, the same half-up rounding FillNode's roundToInt does.
+        assertEquals(201, FlashTransfersMath.progressBarWidthPx(0, 401, 0.5f))
+        assertEquals(200, FlashTransfersMath.progressBarWidthPx(0, 400, 0.4999f))
+    }
+
+    @Test
+    fun `progress bar width never escapes the incoming constraints`() {
+        // An animation can overshoot its target; the fill must not measure wider than the track.
+        assertEquals(400, FlashTransfersMath.progressBarWidthPx(0, 400, 1.4f))
+        assertEquals(0, FlashTransfersMath.progressBarWidthPx(0, 400, -0.2f))
+        // A fixed-width parent pins both bounds, so the fraction cannot shrink the fill below it.
+        assertEquals(400, FlashTransfersMath.progressBarWidthPx(400, 400, 0.1f))
+    }
+
+    @Test
+    fun `a zero width track produces a zero width fill instead of dividing`() {
+        assertEquals(0, FlashTransfersMath.progressBarWidthPx(0, 0, 0.6f))
     }
 }

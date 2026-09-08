@@ -17,4 +17,7 @@ public data class ConversationEntity(
     val archived: Boolean = false,
     val sortOrder: Long = 0L,
     val lastReadCursor: String? = null,
+    /** Non-null only for a group conversation; immutable provenance for the membership log. */
+    val groupCreatedBy: String? = null,
+    val groupCreatedAt: Long? = null,
 )

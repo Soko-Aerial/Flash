@@ -10,6 +10,7 @@ import com.transfer.flash.core.common.result.FlashResult
 import com.transfer.flash.core.transfer.chunked.ChunkSource
 import com.transfer.flash.core.transfer.chunked.Chunker
 import com.transfer.flash.core.transfer.chunked.FileMeta
+import com.transfer.flash.core.transfer.chunked.ResumeBitVector
 import com.transfer.flash.core.transfer.chunked.Sha256
 import com.transfer.flash.core.transfer.model.FlashTransfer
 import com.transfer.flash.core.transfer.model.FlashTransferDirection
@@ -20,8 +21,10 @@ import com.transfer.flash.core.transfer.multistream.MultiStreamResult
 import com.transfer.flash.core.transfer.multistream.StreamChannelFactory
 import com.transfer.flash.core.transfer.store.TransferStore
 import java.io.InputStream
+import java.util.BitSet
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.concurrent.Volatile
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -106,6 +109,20 @@ public class RealFlashTransferRepository(
     private val runningDispatchers = ConcurrentHashMap<String, MultiStreamDispatcher>()
 
     /**
+     * Voice-call quiet hint, set by the host (engine holder) on the ACTIVE edge of a call and
+     * cleared when the call leaves ACTIVE. While true every live dispatcher's progress watcher
+     * slows to [MultiStreamDispatcher.WATCH_QUIET_POLL_MS], and dispatchers created afterwards
+     * start quiet — so a transfer overlapping a call costs ~4 wakeups/s instead of ~100 on the
+     * shared worker pool. Telemetry-only: ACK ingestion and chunk transmission are untouched.
+     */
+    @Volatile
+    public var voiceCallActive: Boolean = false
+        set(value) {
+            field = value
+            runningDispatchers.values.forEach { it.quietWatcherHint = value }
+        }
+
+    /**
      * Transfer ids whose transmission should be paused, recorded independently of whether a
      * dispatcher exists yet.
      *
@@ -147,10 +164,20 @@ public class RealFlashTransferRepository(
         fileUri: String,
         displayName: String,
         fileSize: Long,
+    ): FlashResult<FlashTransferId> = sendFile(targetDevice, fileUri, displayName, fileSize, wireFileId = null)
+
+    override suspend fun sendFile(
+        targetDevice: FlashDevice,
+        fileUri: String,
+        displayName: String,
+        fileSize: Long,
+        wireFileId: String?,
     ): FlashResult<FlashTransferId> {
         val transferIdString = UUID.randomUUID().toString()
         val transferId = FlashTransferId(transferIdString)
-        val fileId = UUID.randomUUID().toString()
+        // F4: group media shares ONE wire identity across the per-member transfers so the
+        // receiver can correlate them (and a future re-pull resumes the original session).
+        val fileId = wireFileId ?: UUID.randomUUID().toString()
 
     val initialTransfer = FlashTransfer(
         id = transferId,
@@ -228,11 +255,21 @@ public class RealFlashTransferRepository(
             peerDeviceId = peerDeviceId,
         )
         runningDispatchers[transferId] = dispatcher
+        // A call that went ACTIVE while this dispatcher was being built still quiets it.
+        dispatcher.quietWatcherHint = voiceCallActive
 
         // Honour a pause requested before this dispatcher existed (see [pauseIntents]).
         applyPendingPauseOrStart(transferId, dispatcher)
 
-        var persistedDone = doneIndexes.toSet()
+        // Resume bookkeeping is delta-based (EXP-008). The collector below runs on every progress
+        // emission, and the dispatcher's watcher publishes one every WATCH_POLL_MS = 10 ms for the
+        // whole transfer — so anything proportional to "chunks confirmed so far" per emission is
+        // quadratic in the chunk count. It used to snapshot the entire confirmed set and diff it
+        // against a Set copy, i.e. ~16k boxed Int allocations 100 times a second for a 2 GB file,
+        // built inside the dispatcher's terminal lock that the ACK path also needs.
+        val persistedChunks = ResumeBitVector(dispatcher.totalChunks).also { it.reconcile(doneIndexes) }
+        var lastConfirmedCount = -1
+        var persistedBytesDone = -1L
         val progressJob = repositoryScope.launch(workerDispatcher) {
             dispatcher.progress.collect { progress ->
                 updateTransferState(transferId) {
@@ -244,14 +281,33 @@ public class RealFlashTransferRepository(
                         etaSeconds = if (progress.etaMs >= 0) progress.etaMs / 1000 else -1L,
                     )
                 }
-                store?.setBytesDone(transferId, progress.bytesDone)
 
                 // Persist newly confirmed chunks so a later resume skips them (C5.6).
-                val confirmedNow = dispatcher.confirmedIndexesSnapshot()
-                val fresh = confirmedNow.filter { it !in persistedDone }
-                if (fresh.isNotEmpty()) {
-                    store?.markChunksDone(transferId, fresh)
-                    persistedDone = confirmedNow.toSet()
+                //
+                // confirmedCountSnapshot() is a single atomic read and the count only grows, so a
+                // change since the last look is an exact test for "new ACKs arrived" — which is once
+                // per ACK_BATCH (32 chunks), not once per 10 ms tick. Neither cursor advances until
+                // the write returns, so a failed write is retried on the next batch exactly as the
+                // whole-snapshot diff used to retry it on the next tick.
+                val confirmedCount = dispatcher.confirmedCountSnapshot()
+                if (confirmedCount != lastConfirmedCount) {
+                    val fresh = dispatcher.confirmedIndexesNotIn(persistedChunks)
+                    if (fresh.isNotEmpty()) {
+                        store?.markChunksDone(transferId, fresh)
+                        fresh.forEach { persistedChunks.markReceived(it) }
+                    }
+                    lastConfirmedCount = confirmedCount
+
+                    // The `transfers` row rides along with the chunk rows rather than being written
+                    // on its own 10 ms cadence: a resume point is defined by the chunk done-set, so
+                    // a bytesDone more precise than that set is not more useful — it was just 100
+                    // write transactions a second, each its own fsync on a slow eMMC. Nothing reads
+                    // this column live (the UI reads the in-memory state above), and both terminal
+                    // paths below write the exact final value.
+                    if (progress.bytesDone != persistedBytesDone) {
+                        store?.setBytesDone(transferId, progress.bytesDone)
+                        persistedBytesDone = progress.bytesDone
+                    }
                 }
             }
         }
@@ -638,21 +694,63 @@ public class RealFlashTransferRepository(
      * the receive pipeline can seed a resumed FILE_START's bit-vector synchronously (no blocking
      * DAO read under its lock). Mirrors the send-side persistence into the same `transfer_chunks`
      * table; ids are role-scoped so send/receive rows never collide on one device.
+     *
+     * ## Why a [BitSet] per transfer and not a `Set<Int>`
+     *
+     * This map is **retained for the whole process lifetime** and only ever grows: nothing prunes
+     * `transfer_chunks` (see [preloadReceiverProgress]), so every chunk this device has ever received
+     * is warmed back in at startup and kept. A `Collections.newSetFromMap(ConcurrentHashMap())` costs
+     * roughly a boxed `Integer` plus a hash node plus a table slot per chunk — order 50 bytes — so a
+     * device that has received 50 GB over its lifetime (≈820k rows at the 64 KiB default chunk size)
+     * would hold tens of MB of heap forever, on hardware that may only have 2 GB. One bit per chunk
+     * makes the same set ~400× smaller and keeps the seed path allocation-free until it returns.
+     *
+     * The trade-off runs the other way only for a barely-started huge transfer: a [BitSet] sizes to
+     * its highest set bit, so it costs `totalChunks / 8` bytes regardless of how few are done — but
+     * that ceiling is ~2 bytes per MB of file (8 KB for a 4 GB file) and is passed by the `Set` form
+     * as soon as ~1/400 of the chunks are done. The case that actually accumulates here is completed
+     * transfers, which is the case the bit-vector wins outright.
+     *
+     * [BitSet] is not thread-safe, so each entry is mutated under `synchronized` on the set itself.
+     * The critical sections are a bit test plus a bit set — no I/O, no DAO call, no allocation.
      */
-    private val receiverDone = ConcurrentHashMap<String, MutableSet<Int>>()
+    private val receiverDone = ConcurrentHashMap<String, BitSet>()
 
-    /** Warms [receiverDone] from persisted chunk rows. Call once during transport startup. */
+    /**
+     * Warms [receiverDone] from persisted chunk rows. Call once during transport startup.
+     *
+     * This reads **every** done chunk row on the device, for every transfer ever made, because
+     * nothing prunes them: `RetentionPolicy` exists but has no production caller — its KDoc calls
+     * itself the "read/delete seam the future DB-backed pruner worker will implement" — and a
+     * `Completed` transfer's rows are dead weight that can never be resumed. Bounding this properly
+     * needs a Room query (status join or a delete sweep) and is therefore owner-gated; see the
+     * 2026-09-04 (d) handoff entry. Until then the cost is held down on the heap side by the
+     * [BitSet] representation, and the read itself is off the critical path (Flash.kt calls this from
+     * the transport-startup coroutine, after the WS server is bound).
+     */
     public suspend fun preloadReceiverProgress() {
         val rows = store?.allDoneChunks() ?: return
         for (row in rows) {
-            receiverDone.getOrPut(row.transferId) { java.util.Collections.newSetFromMap(ConcurrentHashMap()) }
-                .add(row.chunkIndex)
+            val bits = receiverDone.computeIfAbsent(row.transferId) { BitSet() }
+            // A negative index cannot name a real chunk, and BitSet.set would throw on it: a corrupt
+            // row must not take startup down.
+            if (row.chunkIndex >= 0) synchronized(bits) { bits.set(row.chunkIndex) }
         }
     }
 
     /** Synchronous resume seed for the receive pipeline; empty when nothing was persisted. */
-    public fun receiverDoneIndexes(transferId: String): List<Int> =
-        receiverDone[transferId]?.sorted() ?: emptyList()
+    public fun receiverDoneIndexes(transferId: String): List<Int> {
+        val bits = receiverDone[transferId] ?: return emptyList()
+        return synchronized(bits) {
+            val out = ArrayList<Int>(bits.cardinality())
+            var i = bits.nextSetBit(0)
+            while (i >= 0) {
+                out.add(i)
+                i = bits.nextSetBit(i + 1)
+            }
+            out
+        }
+    }
 
     /**
      * Records receiver-confirmed chunks (#20): updates the in-memory set immediately (so a
@@ -661,10 +759,19 @@ public class RealFlashTransferRepository(
      */
     public fun onIncomingChunkConfirmed(transferId: String, indexes: List<Int>) {
         if (indexes.isEmpty()) return
-        val set = receiverDone.getOrPut(transferId) {
-            java.util.Collections.newSetFromMap(ConcurrentHashMap())
+        val bits = receiverDone.computeIfAbsent(transferId) { BitSet() }
+        // Only indexes that were not already marked are persisted, so the DB write stays a delta.
+        // Negatives are dropped rather than thrown on: these indexes are derived from the wire.
+        val fresh = synchronized(bits) {
+            indexes.filter { i ->
+                if (i < 0 || bits.get(i)) {
+                    false
+                } else {
+                    bits.set(i)
+                    true
+                }
+            }
         }
-        val fresh = indexes.filter { set.add(it) }
         if (fresh.isEmpty()) return
         val activeStore = store ?: return
         repositoryScope.launch(workerDispatcher) {

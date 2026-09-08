@@ -13,6 +13,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -29,12 +30,14 @@ import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -54,6 +57,9 @@ import com.transfer.flash.ui.theme.FlashDimensions
 import com.transfer.flash.ui.theme.FlashSpacing
 import com.transfer.flash.ui.theme.FlashTheme
 
+/** Resting -> pressed scale of a chat-list row; mirrors `Modifier.flashPressScale`'s default. */
+private const val RowPressedScale = 0.98f
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun FlashChatListRow(
@@ -66,7 +72,6 @@ fun FlashChatListRow(
     onLongClick: () -> Unit = {},
     onArchive: (String) -> Unit = {},
 ) {
-    val colors = FlashTheme.colors
     val motion = FlashTheme.motion
     val dismissState = rememberSwipeToDismissBoxState(
         confirmValueChange = { value ->
@@ -77,6 +82,18 @@ fun FlashChatListRow(
         },
     )
 
+    // Hoisted so the swipe background can tell whether it is actually visible. The value itself is
+    // only ever read in the render phase (graphicsLayer below); what crosses into composition is the
+    // derived boolean, which flips twice per press instead of once per frame.
+    val interactionSource = remember { MutableInteractionSource() }
+    val pressed by interactionSource.collectIsPressedAsState()
+    val pressScale = animateFloatAsState(
+        targetValue = if (pressed) RowPressedScale else 1f,
+        animationSpec = motion.springSnappySpec(),
+        label = "flashChatListRowPress",
+    )
+    val pressInset = remember(pressScale) { derivedStateOf { pressScale.value < 1f } }
+
     SwipeToDismissBox(
         state = dismissState,
         enableDismissFromStartToEnd = false,
@@ -84,6 +101,7 @@ fun FlashChatListRow(
         backgroundContent = {
             FlashChatListSwipeBackground(
                 dismissValue = dismissState.dismissDirection,
+                showRestingFill = pressInset.value,
             )
         },
         modifier = modifier,
@@ -95,14 +113,27 @@ fun FlashChatListRow(
             isSelected = isSelected,
             selectionMode = selectionMode,
             showDivider = showDivider,
+            interactionSource = interactionSource,
+            pressScale = pressScale,
         )
     }
 }
 
 @Composable
-private fun FlashChatListSwipeBackground(dismissValue: SwipeToDismissBoxValue) {
+private fun FlashChatListSwipeBackground(
+    dismissValue: SwipeToDismissBoxValue,
+    showRestingFill: Boolean,
+) {
     val colors = FlashTheme.colors
     val showArchive = dismissValue == SwipeToDismissBoxValue.EndToStart
+
+    // While the row sits flush over this slot there is nothing to show: the row's own opaque
+    // background covers it pixel for pixel, so the fill that used to be painted unconditionally was
+    // a second full-width rect per row on every frame of the list. It is still painted for the two
+    // states where it is genuinely visible - the inset the press scale opens up, and the archive
+    // reveal once a drag has begun. `matchParentSize` inside SwipeToDismissBox means an empty
+    // background contributes no size, so skipping it cannot move the row.
+    if (!showArchive && !showRestingFill) return
 
     Box(
         modifier = Modifier
@@ -140,17 +171,12 @@ private fun FlashChatListRowContent(
     isSelected: Boolean,
     selectionMode: Boolean,
     showDivider: Boolean,
+    interactionSource: MutableInteractionSource,
+    pressScale: State<Float>,
 ) {
     val colors = FlashTheme.colors
     val typography = FlashTheme.typography
     val motion = FlashTheme.motion
-    val interactionSource = remember { MutableInteractionSource() }
-    val pressed by interactionSource.collectIsPressedAsState()
-    val scale by animateFloatAsState(
-        targetValue = if (pressed) 0.98f else 1f,
-        animationSpec = motion.springSnappySpec(),
-        label = "flashChatListRowPress",
-    )
     val rowDescription = remember(item) { chatListRowContentDescription(item) }
     val previewKey = remember(item.isTyping, item.previewText) {
         if (item.isTyping) "typing" else item.previewText
@@ -159,7 +185,13 @@ private fun FlashChatListRowContent(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .scale(scale)
+            // Read in the layer phase, not composition: a press costs one render pass instead of
+            // recomposing this row's whole subtree (avatar, both text rows, every indicator) at
+            // spring frequency. Same 2% squeeze on screen as before.
+            .graphicsLayer {
+                scaleX = pressScale.value
+                scaleY = pressScale.value
+            }
             .background(
                 when {
                     isSelected -> colors.backgroundSurfaceStrong
@@ -192,11 +224,18 @@ private fun FlashChatListRowContent(
                 Spacer(modifier = Modifier.width(FlashSpacing.space8))
             }
 
-            FlashChatListAvatar(
-                initials = item.avatarInitials,
-                seed = item.avatarSeed,
-                presence = item.presence,
-            )
+            // Group Phase C: groups show a live "M online" count chip instead of the plain dot,
+            // overlaid on the avatar's bottom-end exactly where the single-peer dot sits.
+            Box {
+                FlashChatListAvatar(
+                    initials = item.avatarInitials,
+                    seed = item.avatarSeed,
+                    presence = item.presence,
+                )
+                if (item.isGroup && item.groupOnlineCount > 0) {
+                    FlashChatListGroupOnlineBadge(onlineCount = item.groupOnlineCount)
+                }
+            }
 
             Spacer(modifier = Modifier.width(FlashSpacing.space12))
 
@@ -292,6 +331,33 @@ private fun FlashChatListAvatar(
                     .semantics { contentDescription = "Online" },
             )
         }
+    }
+}
+
+/**
+ * Group Phase C: the avatar badge variant for group rows — a filled online chip showing how many
+ * members are live right now ("2"), rendered only when at least one member is online.
+ */
+@Composable
+private fun BoxScope.FlashChatListGroupOnlineBadge(onlineCount: Int) {
+    if (onlineCount <= 0) return
+    val colors = FlashTheme.colors
+    Box(
+        modifier = Modifier
+            .align(Alignment.BottomEnd)
+            .clip(CircleShape)
+            .background(colors.backgroundSurface)
+            .padding(2.dp)
+            .clip(CircleShape)
+            .background(colors.statusOnline)
+            .padding(horizontal = 5.dp, vertical = 1.dp)
+            .semantics { contentDescription = "$onlineCount members online" },
+    ) {
+        Text(
+            text = onlineCount.toString(),
+            style = FlashTheme.typography.metadataEmphasis,
+            color = colors.backgroundSurface,
+        )
     }
 }
 

@@ -1,5 +1,109 @@
 # Android Platform Notes
 
+## 2026-09-03 - A mesh Wi-Fi roam is invisible to `ConnectivityManager`; `VOICE_COMMUNICATION` is a request, not a contract; and what a 2 GB API-27 handset actually cannot afford
+
+### Android version / API level
+- Roam invisibility: all supported versions (API 24+). The *severity* depends on the **client**, not the
+  OS: a device without 802.11k/v/r fast transition does a full scan + reassociation + DHCP.
+- Silent `AudioRecord`: observed on Android 8.1 / API 27 (BelFone SCP810, qcom). Not version-specific —
+  it is a HAL property.
+- `AudioManager.setMode` audio-focus requirement: API 31+.
+- Reduce-motion detection: `ANIMATOR_DURATION_SCALE` all versions; the accessibility reduce-motion
+  toggle is API 33+.
+
+### APIs / permissions involved
+- `ConnectivityManager.NetworkCallback` — `onAvailable` / `onLost` / `onLinkPropertiesChanged` /
+  `onCapabilitiesChanged`; `Network`, `LinkProperties`, `NetworkCapabilities`
+- `MediaRecorder.AudioSource.VOICE_COMMUNICATION` / `MIC` / `DEFAULT`; `AudioRecord.getState()` and
+  `read()`; `AudioManager.setMode(MODE_IN_COMMUNICATION)`; `RECORD_AUDIO`
+- `ActivityManager.MemoryInfo.totalMem`, `Runtime.availableProcessors()`, `DisplayMetrics`
+- `Settings.Global.ANIMATOR_DURATION_SCALE`; `AccessibilityManager.isReduceMotionEnabled` (API 33+,
+  reached reflectively — it is not in the public SDK surface we compile against)
+
+### Sources
+Reference pages consulted for the API contracts above:
+- https://developer.android.com/reference/android/net/ConnectivityManager.NetworkCallback
+- https://developer.android.com/reference/android/media/MediaRecorder.AudioSource
+- https://developer.android.com/reference/android/media/AudioManager#setMode(int)
+- https://developer.android.com/reference/android/provider/Settings.Global#ANIMATOR_DURATION_SCALE
+
+Discoveries 1 and 2 below were established **on device** in this project (EXP-006, ERROR-032/033), not
+read out of a doc page. Neither behaviour is documented as such, which is the point of recording them.
+
+### Discovery 1 — a roam between mesh APs keeps the same `Network` object
+Android hands out one `Network` per *network*, not per *association*. An AP-to-AP handoff inside one
+SSID therefore keeps the same `Network`: **`onAvailable` and `onLost` never fire**, and any recovery
+logic hung off them is unreachable for the single most common real-world connectivity event in a mesh
+deployment. What does change is the link — `LinkProperties` (interface, routes, DNS, addresses) and
+`NetworkCapabilities` — so `onLinkPropertiesChanged` / `onCapabilitiesChanged` are the only callbacks
+that see it, and they fire for benign reasons too, so they are a *hint* rather than a verdict.
+
+The differential is entirely client-side. A Pixel 7 and an Infinix X6882B crossed the same node
+boundary without a visible interruption; a BelFone SCP810 with no 802.11k/v/r support lost seconds to a
+full scan, reassociation and DHCP. Same network, same build, same walk.
+
+**Do not** infer "the link moved" from a socket error either: on a roam the sockets survive the address
+change often enough that failure is not reliable evidence, and a session that is merely paused looks
+identical to one that is dead. The workable shape is: diff successive link snapshots to *suspect* a
+move, then **probe** each live session and reap only the ones that fail to answer within a bounded
+window.
+### Discovery 2 — `AudioSource.VOICE_COMMUNICATION` can open, verify, and deliver nothing
+`MediaRecorder.AudioSource` values are **requests, not contracts**. An OEM HAL that carries a vendor
+radio stack on the voice path can accept `VOICE_COMMUNICATION`, report `AudioRecord.getState() ==
+INITIALIZED`, pass libwebrtc's own `verifyAudioConfig`, enable both hardware effects — and then never
+return a frame from `read()`. No exception, no `AudioRecordErrorCallback`, nothing to detect after the
+fact. The only symptoms are downstream: libwebrtc's "Join of AudioRecordJavaThread timed out",
+"AudioRecord.read failed: 0", and a `stop()` that blocks for 8 seconds. Those blocking HAL calls also
+ANR the app, which presents as an unrelated second bug.
+
+Three properties of the workaround are worth carrying forward:
+- **The pass criterion must be frame delivery, never loudness.** A healthy mic in a quiet room returns
+  buffers of zeros and a broken HAL returns nothing — a non-zero-PCM check scores both the same. Two
+  identical SCP810 units proved it: the noisy one fell back correctly, the quiet one rejected every
+  candidate and kept the source that does not work.
+- **Probe in `MODE_IN_COMMUNICATION`.** The stall is mode-dependent on this HAL, so a measurement taken
+  in `MODE_NORMAL` caches the source that is about to fail. From API 31 the platform refuses the mode
+  change without audio focus, so this is best-effort — and a probe that ends up measuring `MODE_NORMAL`
+  is still no worse than not probing.
+- **Hardware AEC/NS belong to `VOICE_COMMUNICATION` only.** On a raw `MIC` fallback there is no platform
+  echo-cancellation path for them to attach to; stacking them anyway is a known way to produce a capture
+  stream that is present but useless. Software APM does that work instead — and the effects log lines
+  become the field tell for which source won.
+
+### Discovery 3 — what a 2 GB / API 27 / 480x640 handset cannot afford
+- **Capture size is a CPU cost paid before the encoder exists.** `getUserMedia` at 1920x1080@30 means
+  ≈62 Mpixel/s of scale and colour conversion on the way *in*, spent whether or not a byte of it survives
+  the encoder's decision to send 360p. Both adaptive mechanisms in the stack (WebRTC's
+  `MAINTAIN_FRAMERATE` degradation, and Flash's `CallQualityGovernor`) act on the encoder and therefore
+  cannot reach it. Capping the **request** is the only lever.
+- **Packet rate, not bit rate, is what a congested 2.4 GHz link cannot afford.** 802.11 charges a largely
+  fixed airtime price per frame — preamble, PHY header, inter-frame spacing, an ACK — on a half-duplex
+  shared medium. At 100 packets/s, RTP 12 + UDP 8 + IPv4 20 + SRTP tag 10 ≈ 50 bytes of header is
+  ~40 kbit/s of wrapping around 25 kbit/s of speech. Opus's legal frame sizes are 10/20/40/60 ms, so
+  60 ms framing is the available 6× reduction in frames on the air.
+- **`totalMem` is a classification input, not a truth.** Some OEMs under-report it, so a RAM threshold
+  should be one signal among several and a low reading should never be the *only* thing that demotes a
+  device irreversibly. Recompute on every boot rather than persisting a verdict.
+- **Two ways to ask "should this device animate?", and they are not the same question.**
+  `Settings.Global.ANIMATOR_DURATION_SCALE == 0f` is the developer-options / OEM answer and works
+  everywhere; the accessibility reduce-motion toggle is API 33+ and is not in the public SDK surface, so
+  it needs reflection. A device that cannot animate smoothly reports neither — the hardware verdict has
+  to come from classification, and it has to be a **floor** under the other two rather than another vote,
+  because on such hardware the animation is the jank.
+
+### Project implication
+1. `LinkChangeTracker` + `AndroidNetworkWatcher.onLinkChanged` + `probeSessionsAfterLinkChange()` exist
+   because of Discovery 1; do not "simplify" any of the three back onto `onAvailable`/`onLost`.
+2. `FlashWebRtcEngine.configureOnce` probes the capture source once per process because of Discovery 2 —
+   `WebRtc.configure` builds the `PeerConnectionFactory` immediately and throws if one exists, so the ADM
+   is process-wide and permanent and there is no later window to fix a bad source in.
+3. Discovery 3 is the empirical basis for `FlashPerformanceClassifier`'s thresholds and for
+   `FlashVideoProfile`/`FlashVoiceProfile` (ADR-028). The numbers are field-derived, not tasteful.
+4. Known gap: the source probe needs `RECORD_AUDIO`, which may not be granted at engine construction. It
+   is then skipped and `VOICE_COMMUNICATION` is used as before, so a device that both prompts for the mic
+   *and* needs the fallback gets it from the next process start rather than the first call.
+
+
 ## 2026-09-01 - Battery saver / low-battery power policy supersedes FGS priority; why WhatsApp-class apps use FCM (and why Flash cannot)
 
 ### Android version / API level

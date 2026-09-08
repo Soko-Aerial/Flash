@@ -29,11 +29,17 @@ import com.transfer.flash.core.calling.model.FlashCallStats
 import com.transfer.flash.core.calling.model.FlashCallUiState
 import com.transfer.flash.core.calling.protocol.CallWireFrame
 import com.transfer.flash.core.common.logging.FlashLog
+import com.transfer.flash.core.common.perf.FlashPerformanceMode
+import com.transfer.flash.core.common.perf.FlashTransportProfile
+import com.transfer.flash.core.common.perf.FlashVideoProfile
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.Executors
 import kotlin.math.roundToInt
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExecutorCoroutineDispatcher
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -85,16 +91,43 @@ public class FlashCallSession(
     private val sendFrame: suspend (CallWireFrame) -> Boolean,
     /** Called exactly once when the session terminates, on the session scope. */
     private val onEnded: (FlashCallSession) -> Unit = {},
-    /** Ring timeout for outgoing calls (ms) — auto NO_ANSWER hangup. */
+    /**
+     * Reads this device's performance tier (ERROR-033). Everything a weak device or a contended
+     * radio cannot afford is derived from here: capture geometry, the encoder's bitrate window,
+     * Opus packetization, the stats sampling rate and the three recovery windows below.
+     *
+     * A lambda for the same reasons as [prioritiseVoice] — a tier change (auto-detect resolving, or
+     * the user pinning a mode) must reach the next call without re-wiring anything, and
+     * `core:calling` must keep knowing nothing about DataStore (ADR-024).
+     *
+     * Defaults to [FlashPerformanceMode.HIGH], whose profiles are the pre-tiering constants, so a
+     * caller that does not tier behaves as it did before.
+     */
+    private val performanceMode: () -> FlashPerformanceMode = { FlashPerformanceMode.HIGH },
+    /**
+     * Ring timeout for outgoing calls (ms) — auto NO_ANSWER hangup.
+     *
+     * Deliberately *not* tiered: this is how long a person is willing to let a phone ring, which
+     * has nothing to do with how much RAM the phone has.
+     */
     private val dialTimeoutMs: Long = 45_000L,
-    /** Grace window after ICE Disconnected before the call is declared lost (ms). */
-    private val disconnectGraceMs: Long = 5_000L,
+    /**
+     * Grace window after ICE Disconnected before the call is declared lost (ms).
+     *
+     * Tier-sized, and the one recovery number that grew at *every* tier including HIGH: an ICE
+     * restart now happens inside this window, and 5 s was not enough for one to complete on a
+     * mesh roam (see [FlashTransportProfile.callDisconnectGraceMs]).
+     */
+    private val disconnectGraceMs: Long = performanceMode().transport.callDisconnectGraceMs,
     /**
      * Ceiling on the CONNECTING phase (ms). SDP+ICE on a LAN completes in well under a
      * second; if it has not, something is wrong (lost signaling frame, blocked ICE, peer
      * crash) and the call must fail VISIBLY instead of hanging on "Connecting…" forever.
+     *
+     * Longer at LOW: on a 2 GB handset the first `PeerConnectionFactory` init, the camera open and
+     * the encoder init are all slow enough to eat a double-digit share of this budget.
      */
-    private val connectTimeoutMs: Long = 30_000L,
+    private val connectTimeoutMs: Long = performanceMode().transport.callConnectTimeoutMs,
     /**
      * Reads the user's "Prioritise voice quality" setting (Settings, default on) — a lambda,
      * not a value, because it is consulted once a second for the life of the call and must
@@ -221,7 +254,32 @@ public class FlashCallSession(
     private var dialTimeoutJob: Job? = null
     private var connectTimeoutJob: Job? = null
     private var disconnectGraceJob: Job? = null
+    private var signalingGraceJob: Job? = null
     private var statsJob: Job? = null
+
+    /**
+     * Dedicated single thread for the `getStats()` sampler (call-latency work): one pass walks
+     * every report the native stack holds, and running that walk on the host's shared
+     * `Dispatchers.Default` pool meant it both stole quanta from transfer/crypto/Room work on
+     * 4-core hardware and was itself preempted by them — jittering the very numbers it samples
+     * (bitrate/loss denominators) and the governor tick riding them. A parked sampler costs one
+     * sleeping thread and nothing else; it is created on first arm and closed in [releaseMedia],
+     * so a finished call holds no thread. Daemon, so a missed teardown can never pin the process.
+     *
+     * This is the first production thread pool in the tree (the rest is coroutines-only) — kept
+     * to exactly one thread for exactly one job, rather than adding a dispatcher dependency to
+     * a hot path, for that reason.
+     */
+    private var statsDispatcher: ExecutorCoroutineDispatcher? = null
+
+    /**
+     * Wall clock of the last ICE restart offer, so a link that flaps cannot become an offer storm.
+     *
+     * Deliberately survives a recovery episode rather than resetting with it: two `Disconnected`
+     * transitions one second apart are one bad link, not two independent failures, and the second
+     * one has nothing new to offer the peer.
+     */
+    private var lastIceRestartAtMs: Long = 0L
 
     /** Previous stats sample, for differencing byte counters into a bitrate. */
     private var lastStatsAtUs: Long = 0L
@@ -453,7 +511,7 @@ public class FlashCallSession(
 
     private suspend fun onOffer(frame: CallWireFrame.Offer) {
         val pc = peerConnection
-        if (pc == null || _state.value.state != FlashCallState.CONNECTING) {
+        if (pc == null || !canNegotiate()) {
             // Loud on purpose: a silently discarded offer is a call stuck in CONNECTING.
             FlashLog.w(
                 "CALL",
@@ -485,7 +543,7 @@ public class FlashCallSession(
 
     private suspend fun onAnswer(frame: CallWireFrame.Answer) {
         val pc = peerConnection
-        if (pc == null || _state.value.state != FlashCallState.CONNECTING) {
+        if (pc == null || !canNegotiate()) {
             FlashLog.w(
                 "CALL",
                 "ignoring answer: media=${pc != null} state=${_state.value.state} call=$callId",
@@ -504,9 +562,26 @@ public class FlashCallSession(
     }
 
     /**
-     * Applies [desc] after [CallSdp.tune], returning the description that was actually
+     * Whether a description may legitimately be applied right now.
+     *
+     * `CONNECTING` is the initial negotiation. `ACTIVE` is a *re*negotiation — the ICE restart in
+     * [recoverIce], which by definition arrives on a call that already connected once. Rejecting an
+     * offer while ACTIVE (which this used to do) meant the restart offer was logged and dropped by
+     * the very peer it was sent to rescue.
+     */
+    private fun canNegotiate(): Boolean = when (_state.value.state) {
+        FlashCallState.CONNECTING, FlashCallState.ACTIVE -> true
+        else -> false
+    }
+
+    /**
+     * Applies [desc] after [CallSdp.tuneLocal], returning the description that was actually
      * installed — that, not the original, is what goes on the wire, so the peer sees the
      * same body the local ICE agent is working from.
+     *
+     * The local rewrite *forces* this device's tier numbers, and that is also how the peer learns
+     * what tier we are: what libwebrtc put in a description it generated is its own default, not a
+     * statement anybody made. The peer folds our declaration into its own envelope — see [CallSdp].
      *
      * Falls back to the untuned description if WebRTC rejects the rewrite. SDP munging is
      * the only route to these knobs on this stack, but it is still munging: a fallback is
@@ -516,7 +591,7 @@ public class FlashCallSession(
         pc: PeerConnection,
         desc: SessionDescription,
     ): SessionDescription {
-        val tunedSdp = runCatching { CallSdp.tune(desc.sdp) }.getOrNull()
+        val tunedSdp = runCatching { CallSdp.tuneLocal(desc.sdp, performanceMode()) }.getOrNull()
         if (tunedSdp != null && tunedSdp != desc.sdp) {
             val tuned = SessionDescription(desc.type, tunedSdp)
             try {
@@ -535,19 +610,23 @@ public class FlashCallSession(
     }
 
     /**
-     * Installs a remote description with the same tuning applied.
+     * Installs a remote description, rewritten into the two-endpoint envelope
+     * ([CallSdp.tuneRemote]).
      *
      * Load-bearing direction: an encoder takes its bitrate and packetization from the
-     * description it RECEIVES, so this — not [setLocalDescriptionTuned] — is what makes the
-     * local encoder start at [CallSdp.VIDEO_START_BITRATE_KBPS] and the local mic emit
-     * 10 ms packets. Tuning both directions makes the pair symmetric.
+     * description it RECEIVES, so this — not [setLocalDescriptionTuned] — is what actually
+     * throttles this device. Which is exactly why it cannot simply force our own numbers: doing
+     * that on a LOW-tier peer's offer would rewrite its `ptime:60` back to `ptime:10` and go on
+     * flooding the radio it just asked us not to flood. The envelope takes the more conservative of
+     * the two declarations per parameter, so both ends compute the same effective settings no
+     * matter which of them offered.
      */
     private suspend fun setRemoteDescriptionTuned(
         pc: PeerConnection,
         type: SessionDescriptionType,
         sdp: String,
     ) {
-        val tuned = runCatching { CallSdp.tune(sdp) }.getOrNull()
+        val tuned = runCatching { CallSdp.tuneRemote(sdp, performanceMode()) }.getOrNull()
         if (tuned != null && tuned != sdp) {
             try {
                 pc.setRemoteDescription(SessionDescription(type, tuned))
@@ -615,23 +694,37 @@ public class FlashCallSession(
      * path LOGS — these used to return a bare `false`, which made a denied mic or a busy
      * camera indistinguishable from a signaling bug in a field logcat.
      *
-     * Capture is requested at [CAPTURE_WIDTH]x[CAPTURE_HEIGHT]; webrtc-kmp's default is
-     * 1280x720 (`CameraVideoCapturerController.selectVideoSize` falls back to those two
-     * literals when the constraints carry no size), which is why the ceiling used to be
-     * 720p. The camera enumerator snaps the request to the closest format it actually
-     * supports, so a device without a 1080p mode degrades instead of failing.
+     * ## Capture geometry is a tier decision, and the most expensive one (ERROR-033)
+     *
+     * The request comes from [FlashVideoProfile], so it is 1080p30 only on HIGH. It used to be
+     * 1080p30 unconditionally, which on a 2 GB API-27 handset with a 480x640 screen meant ~62
+     * megapixel/s of capture-side scale and colour conversion — paid on the CPU *before* the
+     * encoder sees a frame, and paid regardless of what the encoder then decides to send. Neither
+     * of the two adaptive mechanisms in this file helps with that: `MAINTAIN_FRAMERATE` and
+     * [CallQualityGovernor] both act on the *encoder*, downstream of the cost. The only way not to
+     * pay it is not to ask for the pixels.
+     *
+     * webrtc-kmp's default is 1280x720 (`CameraVideoCapturerController.selectVideoSize` falls back
+     * to those two literals when the constraints carry no size). The camera enumerator snaps the
+     * request to the closest format it actually supports, so a device without the requested mode
+     * degrades instead of failing.
      */
     private suspend fun startMedia(): Boolean {
         if (peerConnection != null) return true
+        val videoProfile = performanceMode().video
         return try {
-            FlashLog.i("CALL", "startMedia video=$video call=$callId")
+            FlashLog.i(
+                "CALL",
+                "startMedia video=$video tier=${performanceMode().key} " +
+                    "capture=${videoProfile.label} call=$callId",
+            )
             val stream = MediaDevices.getUserMedia {
                 audio(true)
                 if (video) {
                     video {
-                        width(CAPTURE_WIDTH)
-                        height(CAPTURE_HEIGHT)
-                        frameRate(CAPTURE_FPS.toDouble())
+                        width(videoProfile.captureWidth)
+                        height(videoProfile.captureHeight)
+                        frameRate(videoProfile.captureFps.toDouble())
                     }
                 }
             }
@@ -722,9 +815,11 @@ public class FlashCallSession(
      * identically and mark nothing apart — the priority has to be expressed where the two
      * streams are still distinguishable, which is the allocator, not the IP header.
      *
-     * [AUDIO_MAX_BITRATE_BPS] is a ceiling, not a target: Opus at 32 kbit/s with 10 ms packets
-     * and in-band FEC (see [CallSdp]) is already transparent for speech, and capping it stops a
-     * generous bandwidth estimate from handing voice bitrate it cannot use.
+     * The audio ceiling is a ceiling, not a target: Opus with in-band FEC (see [CallSdp]) is
+     * already transparent for speech well below it, and capping it stops a generous bandwidth
+     * estimate from handing voice bitrate it cannot use. It comes from
+     * [com.transfer.flash.core.common.perf.FlashVoiceProfile] so it drops with the tier — 16 kbit/s
+     * on LOW, where the packet *rate* has been cut too and the two savings compound.
      *
      * Best-effort, like [tuneVideoSender]: a failure here costs priority, not the call.
      */
@@ -733,6 +828,7 @@ public class FlashCallSession(
             FlashLog.i("CALL", "voice priority off — leaving symmetric sender defaults")
             return
         }
+        val maxBitrateBps = performanceMode().voice.maxBitrateBps
         try {
             val native = sender.android
             val params = native.parameters
@@ -744,12 +840,12 @@ public class FlashCallSession(
                 encoding.active = true
                 encoding.networkPriority = Priority.HIGH
                 encoding.bitratePriority = AUDIO_BITRATE_PRIORITY
-                encoding.maxBitrateBps = AUDIO_MAX_BITRATE_BPS
+                encoding.maxBitrateBps = maxBitrateBps
             }
             val applied = native.setParameters(params)
             FlashLog.i(
                 "CALL",
-                "audio sender tuned applied=$applied max=${AUDIO_MAX_BITRATE_BPS / 1000}kbps " +
+                "audio sender tuned applied=$applied max=${maxBitrateBps / 1000}kbps " +
                     "networkPriority=HIGH bitratePriority=$AUDIO_BITRATE_PRIORITY",
             )
         } catch (t: Throwable) {
@@ -766,9 +862,10 @@ public class FlashCallSession(
      * keeps the frame rate, which is what a moving talking head needs. The default,
      * `BALANCED`, throws away frame rate first and makes motion stutter.
      *
-     * Without a [VIDEO_MAX_BITRATE_BPS] ceiling this is academic: libwebrtc caps a VP8
-     * stream around 2.5 Mbit/s from its internal codec table, which starves 1080p no matter
-     * what the link can carry.
+     * Without a bitrate ceiling this is academic: libwebrtc caps a VP8 stream around 2.5 Mbit/s
+     * from its internal codec table, which starves 1080p no matter what the link can carry. The
+     * ceiling, the floor and the frame-rate cap all come from [FlashVideoProfile], so on LOW this
+     * asks for 350 kbit/s of 480x360p15 rather than 2.5 Mbit/s of 1080p30.
      *
      * With "Prioritise voice quality" on, video is also explicitly *demoted* — the mirror image
      * of [tuneAudioSender]. Capping video is not the same as ordering the two streams: a cap
@@ -780,6 +877,7 @@ public class FlashCallSession(
      * bitrate, not the call.
      */
     private fun tuneVideoSender(sender: RtpSender) {
+        val profile = performanceMode().video
         try {
             val voiceFirst = prioritiseVoice()
             val native = sender.android
@@ -791,9 +889,9 @@ public class FlashCallSession(
             }
             params.encodings.forEach { encoding ->
                 encoding.active = true
-                encoding.maxBitrateBps = VIDEO_MAX_BITRATE_BPS
-                encoding.minBitrateBps = VIDEO_MIN_BITRATE_BPS
-                encoding.maxFramerate = CAPTURE_FPS
+                encoding.maxBitrateBps = profile.maxBitrateKbps * BPS_PER_KBPS
+                encoding.minBitrateBps = profile.minBitrateKbps * BPS_PER_KBPS
+                encoding.maxFramerate = profile.captureFps
                 // Send at capture resolution; adaptation drives this down on its own.
                 encoding.scaleResolutionDownBy = 1.0
                 if (voiceFirst) {
@@ -804,8 +902,9 @@ public class FlashCallSession(
             val applied = native.setParameters(params)
             FlashLog.i(
                 "CALL",
-                "video sender tuned applied=$applied max=${VIDEO_MAX_BITRATE_BPS / 1000}kbps " +
-                    "fps=$CAPTURE_FPS degradation=MAINTAIN_FRAMERATE voiceFirst=$voiceFirst",
+                "video sender tuned applied=$applied max=${profile.maxBitrateKbps}kbps " +
+                    "fps=${profile.captureFps} degradation=MAINTAIN_FRAMERATE " +
+                    "voiceFirst=$voiceFirst",
             )
         } catch (t: Throwable) {
             FlashLog.w("CALL", "video sender tuning failed: ${t.message}")
@@ -852,28 +951,23 @@ public class FlashCallSession(
                         dialTimeoutJob?.cancel()
                         connectTimeoutJob?.cancel()
                         disconnectGraceJob?.cancel()
+                        // Media is flowing again, so whatever the signaling watcher thought it saw
+                        // is moot — a session that can carry ICE can carry a Hangup.
+                        signalingGraceJob?.cancel()
                         _state.value = _state.value.copy(
                             state = FlashCallState.ACTIVE,
-                            connectedAt = System.currentTimeMillis(),
+                            // First connect only. Now that a call can genuinely reconnect, stamping
+                            // this again would restart the duration the call log reports and turn a
+                            // ten-minute call that survived a roam into a ten-second one.
+                            connectedAt = _state.value.connectedAt ?: System.currentTimeMillis(),
                         )
                         armStatsPolling(pc)
                     }
                     PeerConnectionState.Disconnected -> {
-                        // ICE is trying to recover; give it a grace window before
-                        // declaring the call lost. Cancellable: a reconnect inside
-                        // the window revives the call (Connected cancels this job).
-                        disconnectGraceJob?.cancel()
-                        disconnectGraceJob = scope.launch {
-                            delay(disconnectGraceMs)
-                            if (_state.value.state != FlashCallState.ENDED) {
-                                end(FlashCallEndReason.DISCONNECTED, notifyPeer = false)
-                            }
-                        }
+                        armIceRecovery(pc, FlashCallEndReason.DISCONNECTED)
                     }
                     PeerConnectionState.Failed -> {
-                        if (_state.value.state != FlashCallState.ENDED) {
-                            end(FlashCallEndReason.ERROR, notifyPeer = false)
-                        }
+                        armIceRecovery(pc, FlashCallEndReason.ERROR)
                     }
                     PeerConnectionState.Closed -> {
                         if (_state.value.state != FlashCallState.ENDED) {
@@ -901,12 +995,117 @@ public class FlashCallSession(
         }
     }
 
+    // --------------------------------------------------------------- ICE recovery
+
+    /**
+     * Opens the recovery window for a call whose transport has just gone away (ERROR-033).
+     *
+     * The window is [disconnectGraceMs] long and is spent *working* rather than waiting: see
+     * [recoverIce]. If it expires with the connection still down the call ends with [reason]. A
+     * return to `Connected` cancels this job, which is the success path.
+     *
+     * Replaces two branches that both gave up too early. `Disconnected` used to be a bare
+     * `delay(5_000)`, which was a bet that ICE would repair itself — and ICE cannot repair a path
+     * whose local candidates no longer exist, which is precisely what a Wi-Fi roam produces.
+     * `Failed` used to end the call on the spot, even though an ICE restart is the documented
+     * remedy for exactly that state.
+     */
+    private fun armIceRecovery(pc: PeerConnection, reason: FlashCallEndReason) {
+        disconnectGraceJob?.cancel()
+        disconnectGraceJob = scope.launch {
+            recoverIce(pc)
+            if (_state.value.state != FlashCallState.ENDED) {
+                FlashLog.w("CALL", "ICE recovery window expired, ending call=$callId reason=$reason")
+                end(reason, notifyPeer = false)
+            }
+        }
+    }
+
+    /**
+     * Tries to rebuild the media path for up to [disconnectGraceMs], then returns.
+     *
+     * ## Why a loop and not one attempt
+     *
+     * The device that roams loses *signaling* at the same moment it loses media — same radio, same
+     * association. So the first restart offer very often cannot be delivered at all: [sendFrame]
+     * returns false because the WS session it needs is itself being redialled by
+     * `WsFlashNetwork`. One attempt at the moment of failure is therefore an attempt made at the
+     * worst possible instant. The loop keeps offering until the transport underneath it comes back,
+     * which on a 2.4 GHz-only client with no fast-transition support is seconds away — the reason
+     * [FlashTransportProfile.callDisconnectGraceMs] is 25 s at LOW and not 5 s.
+     *
+     * ## Why only the caller offers
+     *
+     * The same glare rule as call setup (ADR-025): both endpoints see this transition
+     * simultaneously, and two simultaneous offers on one PeerConnection is a rollback mess. The
+     * callee simply waits out the window and answers whatever arrives — [onOffer] and [onAnswer]
+     * accept a renegotiation while `ACTIVE` for that reason.
+     */
+    private suspend fun recoverIce(pc: PeerConnection) {
+        val minIntervalMs = performanceMode().transport.iceRestartMinIntervalMs
+        val deadline = System.currentTimeMillis() + disconnectGraceMs
+        if (direction != FlashCallDirection.OUTGOING) {
+            // Answerer: nothing to send, just hold the window open.
+            delay(disconnectGraceMs)
+            return
+        }
+        while (true) {
+            val remaining = deadline - System.currentTimeMillis()
+            if (remaining <= 0L) return
+            if (System.currentTimeMillis() - lastIceRestartAtMs >= minIntervalMs) {
+                lastIceRestartAtMs = System.currentTimeMillis()
+                attemptIceRestart(pc)
+            }
+            delay(minOf(minIntervalMs, remaining))
+        }
+    }
+
+    /**
+     * Sends one ICE restart offer: new ICE credentials, fresh candidate gathering, same media
+     * sections. Returns whether the offer reached the peer at all.
+     *
+     * Goes through [setLocalDescriptionTuned] like every other description this device generates,
+     * so a restart is also when a tier change since the call started takes effect.
+     *
+     * Takes [signalMutex] because it mutates the same signaling state an inbound frame would, and
+     * an offer created while a remote description is half-applied is a rollback. Never throws: a
+     * failed restart is one wasted attempt, and the window has more.
+     */
+    private suspend fun attemptIceRestart(pc: PeerConnection): Boolean = signalMutex.withLock {
+        if (ended) return@withLock false
+        try {
+            val offer = pc.createOffer(
+                OfferAnswerOptions(
+                    iceRestart = true,
+                    offerToReceiveAudio = true,
+                    offerToReceiveVideo = video,
+                ),
+            )
+            val applied = setLocalDescriptionTuned(pc, offer)
+            val delivered = sendFrame(
+                CallWireFrame.Offer(callId = callId, from = localDeviceId, sdp = applied.sdp),
+            )
+            FlashLog.i("CALL", "ICE restart offer delivered=$delivered call=$callId")
+            delivered
+        } catch (e: CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            FlashLog.w("CALL", "ICE restart offer failed: ${t.message}")
+            false
+        }
+    }
+
     // ------------------------------------------------------------------ metrics
 
     /**
-     * Starts the once-a-second [stats] sampler. Armed on Connected rather than at media
-     * start because `getStats()` has nothing to say about a transport that has not selected
-     * a candidate pair yet.
+     * Starts the [stats] sampler. Armed on Connected rather than at media start because
+     * `getStats()` has nothing to say about a transport that has not selected a candidate pair yet.
+     *
+     * The period comes from [FlashTransportProfile.callStatsIntervalMs], so it halves to 2 s on LOW:
+     * a `getStats()` pass walks every report the native stack holds, which is a measurable cost on
+     * the hardware least able to pay it. It is also the governor's tick — [applyVoicePriority]
+     * rides this loop — so a slower sample is a proportionally slower governor, which is the
+     * trade being made.
      */
     private fun armStatsPolling(pc: PeerConnection) {
         statsJob?.cancel()
@@ -916,7 +1115,12 @@ public class FlashCallSession(
         lastPacketsLost = 0L
         lastPacketsReceived = 0L
         lastIntervalLoss = null
-        statsJob = scope.launch {
+        val intervalMs = performanceMode().transport.callStatsIntervalMs
+        val sampler = statsDispatcher
+            ?: Executors.newSingleThreadExecutor { r ->
+                Thread(r, "FlashCallStats").apply { isDaemon = true }
+            }.asCoroutineDispatcher().also { statsDispatcher = it }
+        statsJob = scope.launch(sampler) {
             while (!ended) {
                 val sample = try {
                     sampleStats(pc)
@@ -931,7 +1135,7 @@ public class FlashCallSession(
                     _stats.value = sample
                     applyVoicePriority(sample)
                 }
-                delay(STATS_INTERVAL_MS)
+                delay(intervalMs)
             }
         }
     }
@@ -972,7 +1176,11 @@ public class FlashCallSession(
     private fun applyVideoConcession(level: VideoConcession) {
         _state.value = _state.value.copy(videoLimitReason = level.reason)
         val sender = videoSender ?: return
-        val ceiling = (VIDEO_MAX_BITRATE_BPS * level.bitrateScale).toInt()
+        // Scale the TIER's ceiling, not a constant: a concession is a fraction of what this device
+        // was ever going to send, so on LOW the ladder walks down from 350 kbit/s, not 2.5 Mbit/s.
+        val profile = performanceMode().video
+        val ceiling = (profile.maxBitrateKbps * BPS_PER_KBPS * level.bitrateScale).toInt()
+        val floor = profile.minBitrateKbps * BPS_PER_KBPS
         try {
             val native = sender.android
             val params = native.parameters
@@ -980,7 +1188,7 @@ public class FlashCallSession(
             params.encodings.forEach { encoding ->
                 encoding.active = level.videoActive
                 encoding.maxBitrateBps = ceiling
-                encoding.minBitrateBps = if (level.holdsBitrateFloor) VIDEO_MIN_BITRATE_BPS else null
+                encoding.minBitrateBps = if (level.holdsBitrateFloor) floor else null
                 encoding.scaleResolutionDownBy = level.scaleResolutionDownBy
             }
             val applied = native.setParameters(params)
@@ -1098,6 +1306,7 @@ public class FlashCallSession(
         dialTimeoutJob?.cancel()
         connectTimeoutJob?.cancel()
         disconnectGraceJob?.cancel()
+        signalingGraceJob?.cancel()
         deferredFrames.clear()
         _state.value = _state.value.copy(
             state = FlashCallState.ENDED,
@@ -1120,6 +1329,10 @@ public class FlashCallSession(
     private fun releaseMedia() {
         statsJob?.cancel()
         statsJob = null
+        // The sampler thread belongs to the call, not the process: a finished call must not
+        // hold it. `close()` is idempotent and releaseMedia is too, so a second pass is a no-op.
+        statsDispatcher?.close()
+        statsDispatcher = null
         _stats.value = null
         eventJobs.forEach { it.cancel() }
         eventJobs.clear()
@@ -1140,9 +1353,45 @@ public class FlashCallSession(
         localStream = null
     }
 
-    /** Host calls this when the WS signaling session dies — the call cannot survive it. */
+    /**
+     * Host calls this when the WS signaling session to the peer died.
+     *
+     * Opens a window instead of ending the call (ERROR-033). This used to be an immediate
+     * `end(DISCONNECTED)` on the reasoning that "a call cannot survive its signaling session" —
+     * true in the long run, false over the two to five seconds a mesh roam actually takes, and it
+     * pre-empted every recovery mechanism in this file: the ICE restart in [recoverIce] can only be
+     * delivered over signaling, so killing the call the moment signaling drops guaranteed the
+     * restart never happened on the one failure it exists for.
+     *
+     * The window is sized by [disconnectGraceMs], the same budget the media path gets, because the
+     * two outages are the same outage. [onSignalingRestored] closes it; expiry ends the call.
+     */
     public fun onSignalingLost() {
-        end(FlashCallEndReason.DISCONNECTED, notifyPeer = false)
+        if (ended) return
+        if (signalingGraceJob?.isActive == true) return // already counting
+        FlashLog.i("CALL", "signaling lost, holding call for ${disconnectGraceMs}ms call=$callId")
+        signalingGraceJob = scope.launch {
+            delay(disconnectGraceMs)
+            if (!ended) {
+                FlashLog.w("CALL", "signaling did not return, ending call=$callId")
+                end(FlashCallEndReason.DISCONNECTED, notifyPeer = false)
+            }
+        }
+    }
+
+    /**
+     * Host calls this when a signaling session to the peer is live again.
+     *
+     * Cancels the [onSignalingLost] window. It does **not** revive the media path — that is
+     * [recoverIce]'s job, and its own window is still running underneath this one. What it does is
+     * make the restart offer deliverable, which is the only reason the call was kept alive.
+     */
+    public fun onSignalingRestored() {
+        if (ended) return
+        if (signalingGraceJob?.isActive != true) return
+        FlashLog.i("CALL", "signaling restored, call held call=$callId")
+        signalingGraceJob?.cancel()
+        signalingGraceJob = null
     }
 
     private companion object {
@@ -1153,30 +1402,6 @@ public class FlashCallSession(
         const val MAX_DEFERRED_FRAMES = 64
 
         /**
-         * Requested capture size. webrtc-kmp defaults to 1280x720 when the constraints
-         * carry no size, which was the old ceiling; the camera enumerator snaps this to the
-         * nearest format the hardware actually offers.
-         */
-        const val CAPTURE_WIDTH = 1920
-        const val CAPTURE_HEIGHT = 1080
-        const val CAPTURE_FPS = 30
-
-        /**
-         * Sender bitrate window for video, in bit/s. The floor is where the encoder stops
-         * lowering bitrate and starts lowering resolution instead; the ceiling is sized for a
-         * shared phone hotspot rather than for the camera (see [CallSdp.VIDEO_MAX_BITRATE_KBPS]).
-         */
-        const val VIDEO_MAX_BITRATE_BPS = CallSdp.VIDEO_MAX_BITRATE_KBPS * 1000
-        const val VIDEO_MIN_BITRATE_BPS = CallSdp.VIDEO_MIN_BITRATE_KBPS * 1000
-
-        /**
-         * Voice ceiling, bit/s. Opus with 10 ms packets and in-band FEC is transparent for
-         * speech well below this; the cap exists so a generous bandwidth estimate cannot hand
-         * voice bitrate it has no use for, at video's expense.
-         */
-        const val AUDIO_MAX_BITRATE_BPS = 32_000
-
-        /**
          * Allocator weights, and the reason a video call can be understood on a bad link.
          *
          * `bitratePriority` is relative and defaults to 1.0 for every stream, so the pair below
@@ -1184,11 +1409,16 @@ public class FlashCallSession(
          * estimate is too small for both. Voice needs ~32 kbit/s of a link that must be at least
          * a few hundred; the weighting only ever matters in the region where video was going to
          * be ugly regardless.
+         *
+         * Not tiered: these are ratios, and the ratio voice needs does not depend on the handset.
          */
         const val AUDIO_BITRATE_PRIORITY = 4.0
         const val VIDEO_BITRATE_PRIORITY = 0.5
 
-        /** [stats] sampling period. One second matches the RTCP reporting interval. */
-        const val STATS_INTERVAL_MS = 1_000L
+        /**
+         * The profiles state bitrates in kbit/s because that is how SDP does; `RtpParameters`
+         * wants bit/s.
+         */
+        const val BPS_PER_KBPS = 1_000
     }
 }

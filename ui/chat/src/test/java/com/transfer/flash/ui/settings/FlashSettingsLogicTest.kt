@@ -1,5 +1,6 @@
 package com.transfer.flash.ui.settings
 
+import com.transfer.flash.core.common.perf.FlashPerformanceMode
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -74,5 +75,76 @@ class FlashSettingsLogicTest {
         assertNotEquals(off, on)
         assertTrue("on copy must name video: $on", on.contains("Video", ignoreCase = true))
         assertTrue("off copy must name video: $off", off.contains("video", ignoreCase = true))
+    }
+
+    /** ERROR-033. Auto is the absence of a pin, so it needs a label of its own alongside the tiers. */
+    @Test
+    fun `the performance picker labels auto separately from the three tiers`() {
+        assertEquals("Auto", FlashSettingsMath.performanceModeLabel(null))
+        assertEquals("Low", FlashSettingsMath.performanceModeLabel(FlashPerformanceMode.LOW))
+        assertEquals("Medium", FlashSettingsMath.performanceModeLabel(FlashPerformanceMode.MEDIUM))
+        assertEquals("High", FlashSettingsMath.performanceModeLabel(FlashPerformanceMode.HIGH))
+
+        val labels = (listOf(null) + FlashPerformanceMode.entries)
+            .map { FlashSettingsMath.performanceModeLabel(it) }
+        assertEquals("labels must be distinct: $labels", labels.size, labels.toSet().size)
+    }
+
+    /**
+     * ERROR-033. On Auto the row has to name the tier that was chosen for the user: a device
+     * misclassified LOW and a device on a bad link look identical from the outside otherwise, and
+     * the pin is the only lever for the second case.
+     */
+    @Test
+    fun `auto names the detected tier and a pin does not`() {
+        val auto = FlashSettingsMath.performanceModeSubtitle(
+            pinned = null,
+            detected = FlashPerformanceMode.LOW,
+        )
+        assertTrue("auto copy must name the detected tier: $auto", auto.contains("Low"))
+        assertTrue("auto copy must say it was matched: $auto", auto.contains("Matched to this device"))
+
+        val pinned = FlashSettingsMath.performanceModeSubtitle(
+            pinned = FlashPerformanceMode.LOW,
+            detected = FlashPerformanceMode.HIGH,
+        )
+        assertFalse("a pin is not 'matched to this device': $pinned", pinned.contains("Matched"))
+        assertFalse("a pin must not describe the detected tier: $pinned", pinned.contains("1080p"))
+    }
+
+    /**
+     * The subtitle is the only place the tier's cost is visible, so it has to move with the tier —
+     * all three of the things field testing changed (capture size, packet rate, animations).
+     */
+    @Test
+    fun `the subtitle reports the tier actually in force`() {
+        val low = FlashSettingsMath.performanceModeSubtitle(
+            pinned = FlashPerformanceMode.LOW,
+            detected = FlashPerformanceMode.HIGH,
+        )
+        val high = FlashSettingsMath.performanceModeSubtitle(
+            pinned = FlashPerformanceMode.HIGH,
+            detected = FlashPerformanceMode.LOW,
+        )
+
+        assertNotEquals(high, low)
+        assertTrue("LOW must show its capture size: $low", low.contains("360p15"))
+        assertTrue("HIGH must show its capture size: $high", high.contains("1080p30"))
+        // 60 ms frames vs 10 ms: the packet rate is what the Belfone was actually choking on.
+        assertTrue("LOW must show its packet rate: $low", low.contains("16 voice packets/s"))
+        assertTrue("HIGH must show its packet rate: $high", high.contains("100 voice packets/s"))
+        assertTrue("LOW must disclose that it stops animating: $low", low.contains("animations off"))
+        assertFalse("HIGH animates, so it must not claim otherwise: $high", high.contains("animations off"))
+    }
+
+    /** A pinned tier reads the same whatever auto-detect would have said — the pin wins outright. */
+    @Test
+    fun `a pin ignores the detected tier entirely`() {
+        FlashPerformanceMode.entries.forEach { pin ->
+            val subtitles = FlashPerformanceMode.entries.map {
+                FlashSettingsMath.performanceModeSubtitle(pinned = pin, detected = it)
+            }
+            assertEquals("$pin must not vary with detection: $subtitles", 1, subtitles.toSet().size)
+        }
     }
 }

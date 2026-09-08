@@ -52,6 +52,7 @@ import com.transfer.flash.ui.theme.FlashShapes
 import com.transfer.flash.ui.theme.FlashSpacing
 import com.transfer.flash.ui.theme.FlashText
 import com.transfer.flash.ui.theme.FlashTheme
+import com.transfer.flash.ui.theme.flashAnimateItem
 import com.transfer.flash.ui.theme.flashPressScale
 import com.transfer.flash.ui.theme.rememberFlashHaptics
 
@@ -93,8 +94,16 @@ data class NearbyUiState(
 /** Pure helpers backing the nearby page (JVM-testable). */
 object FlashNearbyMath {
 
-    fun statusLine(isScanning: Boolean, peerCount: Int): String = when {
+    /**
+     * ERROR-034: [isLoading] exists because "not scanning" and "not started yet" are different
+     * facts and only one of them is the user's doing. Before the discovery stack boots
+     * `isScanning` is false, and this used to render that as "Scan paused" — telling the user they
+     * had paused something that had not begun. Loading outranks the paused copy but not a real
+     * peer count, so a scan that finds a device during boot still reports the device.
+     */
+    fun statusLine(isScanning: Boolean, peerCount: Int, isLoading: Boolean = false): String = when {
         peerCount > 0 -> "$peerCount device${if (peerCount == 1) "" else "s"} nearby"
+        isLoading -> "Starting…"
         isScanning -> "Scanning…"
         else -> "Scan paused"
     }
@@ -210,10 +219,7 @@ private fun PopulatedContent(
                 // (an AnimatedVisibility pinned to `visible = true` could never play).
                 PeerRow(
                     peer = peer,
-                    modifier = Modifier.animateItem(
-                        placementSpec = motion.messagePlacementSpec(),
-                        fadeOutSpec = motion.messageFadeOutSpec(),
-                    ),
+                    modifier = flashAnimateItem(motion),
                     onAction = {
                         // Trusted peers open a chat; untrusted peers start pairing.
                         haptics(FlashHaptic.Tick)
@@ -235,10 +241,7 @@ private fun PopulatedContent(
             items(state.trustedPeers, key = { "trusted-${it.id}" }) { trusted ->
                 TrustedRow(
                     trusted = trusted,
-                    modifier = Modifier.animateItem(
-                        placementSpec = motion.messagePlacementSpec(),
-                        fadeOutSpec = motion.messageFadeOutSpec(),
-                    ),
+                    modifier = flashAnimateItem(motion),
                     onChat = {
                         haptics(FlashHaptic.Tick)
                         onChatTrustedClick(trusted)
@@ -271,6 +274,7 @@ private fun HeaderBlock(state: NearbyUiState) {
                 text = FlashNearbyMath.statusLine(
                     state.isScanning,
                     state.peers.size + state.trustedPeers.size,
+                    state.isLoading,
                 ),
                 style = FlashTheme.typography.metadataDefault,
                 color = FlashTheme.colors.textSecondary,

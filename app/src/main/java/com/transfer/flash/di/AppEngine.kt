@@ -1,6 +1,11 @@
 package com.transfer.flash.di
 
 import android.content.Context
+import android.util.Log
+import com.transfer.flash.core.common.perf.AndroidDeviceProfile
+import com.transfer.flash.core.common.perf.FlashPerformanceClassifier
+import com.transfer.flash.core.common.perf.FlashPerformanceMode
+import com.transfer.flash.core.common.perf.FlashPerformanceVerdict
 import com.transfer.flash.core.discovery.core.CompositeDiscovery
 import com.transfer.flash.core.messaging.FlashChatRepository
 import com.transfer.flash.core.network.FlashNetwork
@@ -12,8 +17,11 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -83,14 +91,22 @@ class AppEngine @Inject constructor(
     val calls: com.transfer.flash.core.calling.FlashCalling? get() = DiscoveryEngineHolder.currentCallCoordinator()
 
     // Local identity is read from the same persisted store the holder advertises with, so the
-    // Nearby "this device" card matches what peers actually see. Lazy: the store touches prefs.
-    private val appIdentity by lazy { AppIdentity(context) }
+    // Nearby "this device" card matches what peers actually see.
+    //
+    // Resolved exactly once. The store mints *and persists* both values on its first read, so this
+    // is available and correct long before start() runs — and nothing in the app ever rewrites it
+    // (updateFriendlyName has no production caller), so it is process-stable. Caching the pair here
+    // keeps the settings and Nearby models off a SharedPreferences lookup plus two allocations on
+    // every recomposition; they used to call through on each read.
+    private val localIdentity: Pair<String, String> by lazy {
+        AppIdentity(context).let { it.deviceId to it.friendlyName }
+    }
 
     /** This device's stable id (matches the discovery-advertised id in the normal, non-blank case). */
-    val localDeviceId: String get() = appIdentity.deviceId
+    val localDeviceId: String get() = localIdentity.first
 
     /** This device's advertised friendly name. */
-    val localFriendlyName: String get() = appIdentity.friendlyName
+    val localFriendlyName: String get() = localIdentity.second
 
     /**
      * #14: persisted user settings (theme / haptics / dynamic accent / background transfers /
@@ -111,6 +127,42 @@ class AppEngine @Inject constructor(
         }.getOrNull()?.takeIf { it.isNotBlank() } ?: "dev"
 
     /**
+     * ERROR-033: what this device's hardware says its tier should be, classified once per process.
+     *
+     * Lazy rather than eager because the read walks `MediaCodecList`, which is cheap but not free,
+     * and nothing needs it until the first UI composition or the first call. Not persisted: a
+     * device that gains a capability, or an OEM update that fixes an under-reported `totalMem`,
+     * should be re-read on the next launch rather than remembered forever.
+     */
+    val detectedPerformance: FlashPerformanceVerdict by lazy {
+        FlashPerformanceClassifier.classify(AndroidDeviceProfile.read(context)).also {
+            Log.i(
+                TAG_PERF,
+                "Performance tier detected=${it.mode} reason=${it.reason} " +
+                    "video=${it.mode.video.label} ptime=${it.mode.voice.ptimeMs}ms",
+            )
+        }
+    }
+
+    /**
+     * The tier actually in force: the user's pin if they made one, otherwise [detectedPerformance].
+     *
+     * Eagerly started so the value is available to the theme on the very first composition — a
+     * tier that arrived one frame late would animate once and then stop, which reads as a glitch.
+     * The seed is the detected tier, so the only window in which this can be "wrong" is between
+     * process start and DataStore's first emission, and in that window it is wrong in the
+     * direction of the hardware rather than of a stale pin.
+     *
+     * `by lazy` so that constructing this @Singleton stays free of the codec-list walk; [start]
+     * touches it from a background coroutine, which in practice is what pays for it.
+     */
+    val performanceMode: StateFlow<FlashPerformanceMode> by lazy {
+        settingsStore.performanceMode
+            .map { pinned -> pinned ?: detectedPerformance.mode }
+            .stateIn(scope, SharingStarted.Eagerly, detectedPerformance.mode)
+    }
+
+    /**
      * Idempotently boots the transport stack on [scope]. Safe to call from every composition /
      * lifecycle entry — the first call wins, later calls no-op once [ready] is set. Boot failures
      * are captured into [startError] rather than thrown, so a discovery-permission rejection can
@@ -120,6 +172,18 @@ class AppEngine @Inject constructor(
         scope.launch {
             startMutex.withLock {
                 if (_ready.value) return@withLock
+                // ERROR-034: clear a previous failure *before* retrying, not only on success. The
+                // chat tab renders its error state off this flow and offers a retry that calls back
+                // in here; leaving the stale Throwable set would keep the error visible for the
+                // whole retry, making the button look inert.
+                _startError.value = null
+                // ERROR-033: resolve the tier BEFORE the engine is built. Everything downstream
+                // reads it through a lambda, so a late value would still be picked up, but
+                // WsFlashNetwork logs its keepalive cadence at construction and a call placed in
+                // the first second should not be the one that gets HIGH-tier defaults by accident.
+                // This is also what pays for the codec-list walk on a background thread rather
+                // than on the first composition.
+                DiscoveryEngineHolder.performanceMode = performanceMode.value
                 val result = runCatching { DiscoveryEngineHolder.ensureStarted(context) }
                 result
                     .onSuccess {
@@ -145,11 +209,20 @@ class AppEngine @Inject constructor(
                                 DiscoveryEngineHolder.prioritiseVoiceQuality = it
                             }
                         }
+                        // ERROR-033: same mirroring for the performance tier, read by
+                        // CallCoordinator and WsFlashNetwork through lambdas.
+                        scope.launch {
+                            performanceMode.collect { DiscoveryEngineHolder.performanceMode = it }
+                        }
                         _startError.value = null
                         _ready.value = true
                     }
                     .onFailure { _startError.value = it }
             }
         }
+    }
+
+    private companion object {
+        const val TAG_PERF = "FlashPerf"
     }
 }

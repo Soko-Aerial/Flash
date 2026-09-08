@@ -109,6 +109,16 @@ object FlashMediaViewerMath {
     const val DISMISS_SCALE_DELTA = 0.06f
     const val MAX_DECODE_LONG_EDGE = 4096
 
+    /**
+     * Full-screen decode ceiling below the HIGH tier (ERROR-033).
+     *
+     * [MAX_DECODE_LONG_EDGE] at 4:3 is 4096x3072, which is 48 MB as `ARGB_8888` — more than the whole
+     * heap on the handsets this tier classifies, so the decode threw `OutOfMemoryError`, `decode`'s
+     * `runCatching` swallowed it, and the viewer showed its failure state instead of the photo. 1536
+     * is a ninth of the pixels and still more than three times the long edge of a 480x640 panel.
+     */
+    const val MAX_DECODE_LONG_EDGE_MINIMAL = 1536
+
     /** Hard clamp applied when a gesture settles (rubber-band target). */
     fun clampedScale(raw: Float): Float = raw.coerceIn(ZOOM_MIN, ZOOM_MAX)
 
@@ -416,15 +426,17 @@ private fun FlashMediaPage(
 ) {
     val context = LocalContext.current
     val motion = FlashTheme.motion
+    val minimalChrome = FlashTheme.minimalChrome
     val viewConfiguration = LocalViewConfiguration.current
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
 
     val decodeState = produceState(
         FlashMediaDecodeState(),
-        key1 = item.image.uri,
-        key2 = item.image.thumbUri,
-        key3 = item.image.isVideo,
+        item.image.uri,
+        item.image.thumbUri,
+        item.image.isVideo,
+        minimalChrome,
     ) {
         val source = item.image.uri ?: item.image.thumbUri
         value = withContext(Dispatchers.IO) {
@@ -433,12 +445,21 @@ private fun FlashMediaPage(
             // BitmapFactory decode of an mp4 returns null, so swiping onto a clip hit `failed`), and
             // one code path for the sample-size guard. memoize = false because a 4096-edge bitmap
             // would evict the entire thumbnail cache to store something nobody asks for twice.
+            //
+            // ERROR-033: below HIGH this is the single largest allocation the app makes, and at 4096
+            // it does not fit — see MAX_DECODE_LONG_EDGE_MINIMAL. The reduced ceiling is still ~3x a
+            // 480 px panel, so it only goes soft near the 4x zoom limit, which beats not decoding.
             FlashMediaDecoder.decode(
                 context = context,
                 source = source,
                 isVideo = item.image.isVideo,
-                maxLongEdge = FlashMediaViewerMath.MAX_DECODE_LONG_EDGE,
+                maxLongEdge = if (minimalChrome) {
+                    FlashMediaViewerMath.MAX_DECODE_LONG_EDGE_MINIMAL
+                } else {
+                    FlashMediaViewerMath.MAX_DECODE_LONG_EDGE
+                },
                 memoize = false,
+                lowColorDepth = minimalChrome,
             )?.let { FlashMediaDecodeState(bitmap = it) } ?: FlashMediaDecodeState(failed = true)
         }
     }

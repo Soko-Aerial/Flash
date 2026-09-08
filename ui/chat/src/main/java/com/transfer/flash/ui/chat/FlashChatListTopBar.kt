@@ -26,6 +26,8 @@ fun FlashChatListTopBar(
     modifier: Modifier = Modifier,
     title: String = "Chats",
     onLanClick: (() -> Unit)? = null,
+    /** Group Phase 1A: opens the create-group sheet; null hides the action. */
+    onNewGroupClick: (() -> Unit)? = null,
 ) {
     val colors = FlashTheme.colors
     val typography = FlashTheme.typography
@@ -51,6 +53,14 @@ fun FlashChatListTopBar(
                 style = typography.headingMedium,
                 color = colors.textPrimary,
             )
+            if (onNewGroupClick != null) {
+                IconButton(
+                    onClick = onNewGroupClick,
+                    modifier = Modifier.size(FlashDimensions.minTouchTarget),
+                ) {
+                    FlashIcon(icon = FlashIcons.Group, contentDescription = "New group")
+                }
+            }
             IconButton(
                 onClick = onSearchClick,
                 modifier = Modifier.size(FlashDimensions.minTouchTarget),

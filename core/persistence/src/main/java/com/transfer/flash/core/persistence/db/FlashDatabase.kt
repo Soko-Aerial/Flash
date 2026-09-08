@@ -4,6 +4,8 @@ import androidx.room.Database
 import androidx.room.RoomDatabase
 import com.transfer.flash.core.persistence.db.dao.ConversationDao
 import com.transfer.flash.core.persistence.db.dao.DraftDao
+import com.transfer.flash.core.persistence.db.dao.GroupDeliveryDao
+import com.transfer.flash.core.persistence.db.dao.GroupMemberDao
 import com.transfer.flash.core.persistence.db.dao.MessageDao
 import com.transfer.flash.core.persistence.db.dao.OutboxDao
 import com.transfer.flash.core.persistence.db.dao.ReadCursorDao
@@ -15,6 +17,8 @@ import com.transfer.flash.core.persistence.db.dao.TransferDao
 import com.transfer.flash.core.persistence.db.dao.TrustedPeerDao
 import com.transfer.flash.core.persistence.db.entity.ConversationEntity
 import com.transfer.flash.core.persistence.db.entity.DraftEntity
+import com.transfer.flash.core.persistence.db.entity.GroupDeliveryEntity
+import com.transfer.flash.core.persistence.db.entity.GroupMemberEntity
 import com.transfer.flash.core.persistence.db.entity.MessageEntity
 import com.transfer.flash.core.persistence.db.entity.OutboxEntity
 import com.transfer.flash.core.persistence.db.entity.ReadCursorEntity
@@ -45,6 +49,8 @@ import com.transfer.flash.core.persistence.db.entity.TrustedPeerEntity
         ReactionEntity::class,
         DraftEntity::class,
         ReadCursorEntity::class,
+        GroupMemberEntity::class,
+        GroupDeliveryEntity::class,
     ],
     version = FlashDatabase.DATABASE_VERSION,
     exportSchema = true,
@@ -73,11 +79,15 @@ public abstract class FlashDatabase : RoomDatabase() {
 
     public abstract fun readCursorDao(): ReadCursorDao
 
+    public abstract fun groupMemberDao(): GroupMemberDao
+
+    public abstract fun groupDeliveryDao(): GroupDeliveryDao
+
     public companion object {
         public const val DATABASE_NAME: String = "flash.db"
         // v2: MessageEntity gained attachment columns (attachmentTransferId/Name/Mime/Size/Path).
-        // v3: MessageEntity gained reply columns (replyToId/replyToPreview). Migrations in
-        //     [FlashMigrations]; production open path is non-destructive from v2 onward.
-        public const val DATABASE_VERSION: Int = 3
+        // v3: MessageEntity gained reply columns (replyToId/replyToPreview).
+        // v4: group membership/delivery tables and conversation group provenance.
+        public const val DATABASE_VERSION: Int = 4
     }
 }

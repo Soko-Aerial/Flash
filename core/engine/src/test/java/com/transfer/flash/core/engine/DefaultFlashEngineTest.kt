@@ -6,7 +6,7 @@ import com.transfer.flash.core.discovery.FlashDiscoveredEndpoint
 import com.transfer.flash.core.discovery.FlashDiscovery
 import com.transfer.flash.core.discovery.FlashDiscoveryState
 import com.transfer.flash.core.messaging.FlashChatRepository
-import com.transfer.flash.core.messaging.SampleFlashChatRepository
+import com.transfer.flash.core.messaging.EmptyFlashChatRepository
 import com.transfer.flash.core.network.FlashConnectionHealth
 import com.transfer.flash.core.network.FlashNetwork
 import com.transfer.flash.core.network.FlashNetworkState
@@ -76,7 +76,10 @@ class DefaultFlashEngineTest {
 
     @Test
     fun `DefaultFlashEngine binds all subsystem delegates correctly`() {
-        val chatRepo = SampleFlashChatRepository()
+        // Any FlashChatRepository proves the delegate binding; this test never reads content from
+        // it. EmptyFlashChatRepository rather than the sample one because the sample repository is
+        // test-only in :core:messaging and not visible from here (ERROR-034).
+        val chatRepo = EmptyFlashChatRepository
         val transferRepo = FakeTransferRepo()
         val discovery = FakeDiscovery()
         val network = FakeNetwork()

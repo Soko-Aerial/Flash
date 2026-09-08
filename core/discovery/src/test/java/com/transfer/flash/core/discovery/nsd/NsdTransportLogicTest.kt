@@ -119,6 +119,14 @@ class NsdTransportLogicTest {
         @Volatile var networkObserved = false
         private var networkListener: (() -> Unit)? = null
 
+        /**
+         * What [linkFingerprint] returns next. A test moves this to stand for a hotspot coming up
+         * or going down, the transition that produces no platform callback at all.
+         */
+        @Volatile var fingerprint: String = "wlan0=192.168.1.20"
+
+        @Volatile var fingerprintReads = 0
+
         lateinit var browseEvents: BrowseEvents
             private set
         lateinit var monitorEvents: MonitorEvents
@@ -184,6 +192,11 @@ class NsdTransportLogicTest {
         override fun stopObservingNetworkChanges() {
             networkListener = null
             networkObserved = false
+        }
+
+        override fun linkFingerprint(): String {
+            fingerprintReads += 1
+            return fingerprint
         }
 
         fun fireNetworkChanged() = requireNotNull(networkListener) { "not observing" }.invoke()
@@ -966,6 +979,150 @@ class NsdTransportLogicTest {
         assertTrue(bridge.stopBrowseCount >= 1)
         runBlocking { transport.stop() }
         assertFalse(bridge.networkObserved)
+    }
+
+    @Test
+    fun hotspotComingUpWhileWifiStaysConnected_reArmsDiscovery() {
+        // ERROR-035, the transition with NO platform signal whatsoever: turning this device's
+        // hotspot on while it stays joined to Wi-Fi creates ap0 with a new subnet, but a SoftAP
+        // interface is not a Network — no NetworkCallback fires, the default network is unchanged,
+        // and TetheringManager's callback is API 30+ (this project ships to API 27). Without the
+        // interface poll the unbound browse keeps running on wlan0 only and the tethered client is
+        // never discovered.
+        val ticker = ManualTicker()
+        val bridge = FakeBridge()
+        var now = 1_000L
+        val transport = newTransport(
+            apiLevel = 34,
+            directory = StandardEndpointDirectory(),
+            bridge = bridge,
+            nowMs = { now },
+            presenceHeartbeatMs = 1_000L,
+            presenceSleep = ticker.sleep,
+            maxPresenceTicks = 10,
+            networkChangeDebounceMs = 0L,
+        )
+        runBlocking { transport.startBrowsing() }
+        assertEquals(1, bridge.browseStartCount)
+
+        // First tick only seeds the baseline — the interfaces we booted on are not a change.
+        now += 10_000L
+        ticker.tick()
+        assertEquals("seeding must not restart the browse", 1, bridge.browseStartCount)
+
+        bridge.fingerprint = "ap0=192.168.43.1;wlan0=192.168.1.20"
+        now += 10_000L
+        ticker.tick()
+
+        assertTrue(awaitTrue { bridge.browseStartCount >= 2 })
+        runBlocking { transport.stop() }
+    }
+
+    @Test
+    fun unchangedInterfaces_neverRestartTheBrowse() {
+        // The poll runs every heartbeat for the whole browse session, so a stable device must pay
+        // nothing for it. A browse restart tears down the radio browse and costs a full re-discovery
+        // grace window; doing that every 10s would be far worse than the bug it fixes.
+        val ticker = ManualTicker()
+        val bridge = FakeBridge()
+        var now = 1_000L
+        val transport = newTransport(
+            apiLevel = 34,
+            directory = StandardEndpointDirectory(),
+            bridge = bridge,
+            nowMs = { now },
+            presenceHeartbeatMs = 1_000L,
+            presenceSleep = ticker.sleep,
+            maxPresenceTicks = 20,
+            networkChangeDebounceMs = 0L,
+        )
+        runBlocking { transport.startBrowsing() }
+
+        repeat(10) {
+            now += 10_000L
+            ticker.tick()
+        }
+
+        assertEquals(1, bridge.browseStartCount)
+        assertTrue("the poll must actually be running", bridge.fingerprintReads >= 10)
+        runBlocking { transport.stop() }
+    }
+
+    @Test
+    fun flappingInterface_isRateLimitedToOneReArmPerTwoHeartbeats() {
+        // An interface that goes up and down repeatedly (a hotspot being toggled, a USB tether
+        // being reseated) would otherwise buy a browse teardown on every single tick for as long as
+        // it lasted. The tracker's floor is two heartbeat periods, so alternating values every tick
+        // can re-arm at most every other tick.
+        val ticker = ManualTicker()
+        val bridge = FakeBridge()
+        var now = 1_000L
+        val heartbeatMs = 10_000L
+        val transport = newTransport(
+            apiLevel = 34,
+            directory = StandardEndpointDirectory(),
+            bridge = bridge,
+            nowMs = { now },
+            presenceHeartbeatMs = heartbeatMs,
+            presenceSleep = ticker.sleep,
+            maxPresenceTicks = 20,
+            networkChangeDebounceMs = 0L,
+        )
+        runBlocking { transport.startBrowsing() }
+
+        now += heartbeatMs
+        ticker.tick() // seed
+
+        repeat(8) { index ->
+            bridge.fingerprint = if (index % 2 == 0) "wlan0=192.168.1.20" else "ap0=192.168.43.1"
+            now += heartbeatMs
+            ticker.tick()
+        }
+
+        // 8 alternating ticks spanning 80s against a 20s floor: at most 5 verdicts, so at most 5
+        // extra browse starts on top of the original.
+        assertTrue(
+            "flapping produced ${bridge.browseStartCount - 1} re-arms in 8 ticks",
+            bridge.browseStartCount - 1 <= 5,
+        )
+        assertTrue("at least one flap must be acted on", bridge.browseStartCount >= 2)
+        runBlocking { transport.stop() }
+    }
+
+    @Test
+    fun interfaceBaselineIsForgottenOnStop() {
+        // A restarted transport must re-seed: diffing a new session's first reading against the
+        // previous session's would restart the browse immediately on every start().
+        val ticker = ManualTicker()
+        val bridge = FakeBridge()
+        var now = 1_000L
+        val transport = newTransport(
+            apiLevel = 34,
+            directory = StandardEndpointDirectory(),
+            bridge = bridge,
+            nowMs = { now },
+            presenceHeartbeatMs = 1_000L,
+            presenceSleep = ticker.sleep,
+            maxPresenceTicks = 20,
+            networkChangeDebounceMs = 0L,
+        )
+        runBlocking { transport.startBrowsing() }
+        now += 10_000L
+        ticker.tick()
+        runBlocking { transport.stop() }
+
+        bridge.fingerprint = "ap0=192.168.43.1"
+        runBlocking { transport.startBrowsing() }
+        val startsAfterRestart = bridge.browseStartCount
+        now += 10_000L
+        ticker.tick()
+
+        assertEquals(
+            "the first reading of a new session is a baseline, not a change",
+            startsAfterRestart,
+            bridge.browseStartCount,
+        )
+        runBlocking { transport.stop() }
     }
 
     // ------------------------------------------------------------------

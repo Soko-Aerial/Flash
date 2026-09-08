@@ -1,9 +1,5 @@
 package com.transfer.flash.core.transfer.chunked
 
-import java.io.ByteArrayOutputStream
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
-
 /**
  * Framing v2 wire types for chunked, resumable transfers (C5.3), self-contained binary format.
  *
@@ -203,51 +199,127 @@ public sealed class ChunkFrame {
         /** Hard cap for ACK batch size when parsing untrusted input. */
         public const val MAX_ACK_COUNT: Int = 1 shl 20
 
-        /** Serializes a frame to the full header + payload byte layout documented above. */
-        public fun serialize(frame: ChunkFrame): ByteArray {
-            val payload = PayloadWriter()
-            when (frame) {
-                is FileStart -> {
-                    payload.string(frame.transferId)
-                    payload.string(frame.fileId)
-                    payload.string(frame.fileName)
-                    payload.i64(frame.totalBytes)
-                    payload.i32(frame.totalChunks)
-                    payload.i32(frame.chunkSize)
-                    payload.rawAscii(Sha256.normalizeHex(frame.fileSha256Hex))
-                }
-
-                is Chunk -> {
-                    payload.string(frame.transferId)
-                    payload.string(frame.fileId)
-                    payload.i32(frame.index)
-                    payload.i32(frame.data.size)
-                    payload.bytes(frame.data)
-                    payload.bytes(frame.chunkSha256)
-                }
-
-                is AckBatch -> {
-                    payload.string(frame.transferId)
-                    payload.string(frame.fileId)
-                    payload.i32(frame.indexes.size)
-                    // Ascending order is part of the documented format.
-                    frame.indexes.sorted().forEach(payload::i32)
-                }
-
-                is Complete -> {
-                    payload.string(frame.transferId)
-                    payload.string(frame.fileId)
-                    payload.u8(if (frame.verified) 1 else 0)
-                }
+        /**
+         * Serializes a frame to the full header + payload byte layout documented above.
+         *
+         * Writes directly into ONE exact-sized array: the CHUNK path is the transfer hot loop, and
+         * the previous chain (growable ByteArrayOutputStream → `toByteArray()` copy → final
+         * ByteBuffer) allocated the full frame size roughly three times per chunk — about 60 MB of
+         * large-object churn per 10 MB transferred, which is what drove GC pressure on 2 GB
+         * devices in EXP-001. Wire bytes are unchanged.
+         */
+        public fun serialize(frame: ChunkFrame): ByteArray = when (frame) {
+            is FileStart -> {
+                val transferId = utf8Field(frame.transferId)
+                val fileId = utf8Field(frame.fileId)
+                val fileName = utf8Field(frame.fileName)
+                val hashHex = Sha256.normalizeHex(frame.fileSha256Hex)
+                require(hashHex.length <= MAX_STRING_BYTES) { "string too long: ${hashHex.length}" }
+                val payloadSize = stringFieldSize(transferId) + stringFieldSize(fileId) +
+                    stringFieldSize(fileName) + 8 + 4 + 4 + hashHex.length
+                val out = newFrameArray(frame.type.code, payloadSize)
+                var pos = HEADER_SIZE
+                pos = writeString(out, pos, transferId)
+                pos = writeString(out, pos, fileId)
+                pos = writeString(out, pos, fileName)
+                pos = writeI64(out, pos, frame.totalBytes)
+                pos = writeI32(out, pos, frame.totalChunks)
+                pos = writeI32(out, pos, frame.chunkSize)
+                for (i in hashHex.indices) out[pos + i] = hashHex[i].code.toByte()
+                out
             }
-            val body = payload.toByteArray()
-            val out = ByteBuffer.allocate(HEADER_SIZE + body.size).order(ByteOrder.LITTLE_ENDIAN)
-            out.put(MAGIC)
-            out.put(VERSION.toByte())
-            out.put(frame.type.code)
-            out.putInt(body.size)
-            out.put(body)
-            return out.array()
+
+            is Chunk -> {
+                val transferId = utf8Field(frame.transferId)
+                val fileId = utf8Field(frame.fileId)
+                val payloadSize = stringFieldSize(transferId) + stringFieldSize(fileId) +
+                    4 + 4 + frame.data.size + frame.chunkSha256.size
+                val out = newFrameArray(frame.type.code, payloadSize)
+                var pos = HEADER_SIZE
+                pos = writeString(out, pos, transferId)
+                pos = writeString(out, pos, fileId)
+                pos = writeI32(out, pos, frame.index)
+                pos = writeI32(out, pos, frame.data.size)
+                frame.data.copyInto(out, pos)
+                pos += frame.data.size
+                frame.chunkSha256.copyInto(out, pos)
+                out
+            }
+
+            is AckBatch -> {
+                val transferId = utf8Field(frame.transferId)
+                val fileId = utf8Field(frame.fileId)
+                // Ascending order is part of the documented format.
+                val sorted = frame.indexes.sorted()
+                val payloadSize = stringFieldSize(transferId) + stringFieldSize(fileId) +
+                    4 + 4 * sorted.size
+                val out = newFrameArray(frame.type.code, payloadSize)
+                var pos = HEADER_SIZE
+                pos = writeString(out, pos, transferId)
+                pos = writeString(out, pos, fileId)
+                pos = writeI32(out, pos, sorted.size)
+                for (index in sorted) pos = writeI32(out, pos, index)
+                out
+            }
+
+            is Complete -> {
+                val transferId = utf8Field(frame.transferId)
+                val fileId = utf8Field(frame.fileId)
+                val payloadSize = stringFieldSize(transferId) + stringFieldSize(fileId) + 1
+                val out = newFrameArray(frame.type.code, payloadSize)
+                var pos = HEADER_SIZE
+                pos = writeString(out, pos, transferId)
+                pos = writeString(out, pos, fileId)
+                out[pos] = if (frame.verified) 1 else 0
+                out
+            }
+        }
+
+        private fun utf8Field(s: String): ByteArray {
+            val encoded = s.toByteArray(Charsets.UTF_8)
+            require(encoded.size <= MAX_STRING_BYTES) {
+                "string too long for framing: ${encoded.size} > $MAX_STRING_BYTES"
+            }
+            return encoded
+        }
+
+        private fun stringFieldSize(encoded: ByteArray): Int = 2 + encoded.size
+
+        private fun newFrameArray(typeCode: Byte, payloadSize: Int): ByteArray {
+            val out = ByteArray(HEADER_SIZE + payloadSize)
+            MAGIC.copyInto(out)
+            out[4] = VERSION.toByte()
+            out[5] = typeCode
+            writeI32(out, 6, payloadSize)
+            return out
+        }
+
+        private fun writeString(out: ByteArray, offset: Int, encoded: ByteArray): Int {
+            writeI16(out, offset, encoded.size)
+            encoded.copyInto(out, offset + 2)
+            return offset + 2 + encoded.size
+        }
+
+        private fun writeI16(out: ByteArray, offset: Int, v: Int): Int {
+            require(v in 0..0xFFFF) { "u16 out of range: $v" }
+            out[offset] = v.toByte()
+            out[offset + 1] = (v ushr 8).toByte()
+            return offset + 2
+        }
+
+        private fun writeI32(out: ByteArray, offset: Int, v: Int): Int {
+            out[offset] = v.toByte()
+            out[offset + 1] = (v ushr 8).toByte()
+            out[offset + 2] = (v ushr 16).toByte()
+            out[offset + 3] = (v ushr 24).toByte()
+            return offset + 4
+        }
+
+        private fun writeI64(out: ByteArray, offset: Int, v: Long): Int {
+            for (i in 0 until 8) {
+                out[offset + i] = (v ushr (8 * i)).toByte()
+            }
+            return offset + 8
         }
 
         /**
@@ -343,56 +415,6 @@ public sealed class ChunkFrame {
                 ((bytes[offset + 2].toInt() and 0xFF) shl 16) or
                 ((bytes[offset + 3].toInt() and 0xFF) shl 24)
     }
-}
-
-/** Little-endian scalar/string writer used by [ChunkFrame.serialize]. */
-private class PayloadWriter {
-
-    private val out = ByteArrayOutputStream()
-    private val scratch = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)
-
-    fun u8(v: Int) = out.write(v and 0xFF)
-
-    fun u16(v: Int) {
-        require(v in 0..0xFFFF) { "u16 out of range: $v" }
-        scratch.clear()
-        scratch.putShort(v.toShort())
-        writeScratch(2)
-    }
-
-    fun i32(v: Int) {
-        scratch.clear()
-        scratch.putInt(v)
-        writeScratch(4)
-    }
-
-    fun i64(v: Long) {
-        scratch.clear()
-        scratch.putLong(v)
-        writeScratch(8)
-    }
-
-    fun bytes(b: ByteArray) = out.write(b)
-
-    fun rawAscii(s: String) {
-        require(s.length <= ChunkFrame.MAX_STRING_BYTES) { "string too long: ${s.length}" }
-        out.write(s.toByteArray(Charsets.US_ASCII))
-    }
-
-    fun string(s: String) {
-        val encoded = s.toByteArray(Charsets.UTF_8)
-        require(encoded.size <= ChunkFrame.MAX_STRING_BYTES) {
-            "string too long for framing: ${encoded.size} > ${ChunkFrame.MAX_STRING_BYTES}"
-        }
-        u16(encoded.size)
-        out.write(encoded)
-    }
-
-    private fun writeScratch(n: Int) {
-        out.write(scratch.array(), 0, n)
-    }
-
-    fun toByteArray(): ByteArray = out.toByteArray()
 }
 
 /**

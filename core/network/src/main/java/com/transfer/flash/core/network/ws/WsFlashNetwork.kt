@@ -4,10 +4,13 @@ package com.transfer.flash.core.network.ws
 
 import android.content.Context
 import com.transfer.flash.core.common.annotation.FlashInternalApi
+import com.transfer.flash.core.common.logging.FlashLog
 import com.transfer.flash.core.common.model.FlashDevice
 import com.transfer.flash.core.common.model.FlashDeviceId
 import com.transfer.flash.core.common.model.FlashPeerPresence
 import com.transfer.flash.core.common.model.FlashTransportType
+import com.transfer.flash.core.common.perf.FlashPerformanceMode
+import com.transfer.flash.core.common.perf.FlashTransportProfile
 import com.transfer.flash.core.common.protocol.FlashTextFraming
 import com.transfer.flash.core.common.result.FlashError
 import com.transfer.flash.core.common.result.FlashResult
@@ -82,11 +85,29 @@ public class WsFlashNetwork(
      * host-side failure cannot cost the mesh its rejoin sweep.
      */
     private val onUsableNetwork: () -> Unit = {},
+    /**
+     * The device's transport tier (ERROR-033), read per use.
+     *
+     * A lambda rather than a value so pinning a tier from Settings reaches the next connection and
+     * the next redial without restarting the engine, and so `core:network` needs no knowledge of
+     * where the tier came from (ADR-024). Defaults to [FlashPerformanceMode.HIGH]'s profile — the
+     * stack's shipped numbers — which makes the untiered call sites below a provable no-op.
+     */
+    private val transportProfile: () -> FlashTransportProfile = { FlashPerformanceMode.HIGH.transport },
 ) : FlashNetwork, EndpointMemory, WsConnection.Listener {
 
     private val running = AtomicBoolean(false)
     private var server: WsTransferServer? = null
-    private val client = WsTransferClient(context, this, tlsOptions)
+    private val client = WsTransferClient(context, this, tlsOptions, keepalive = ::keepaliveTiming)
+
+    /** The tier's keepalive pair, as [WsConnection] wants it. Read once per new connection. */
+    private fun keepaliveTiming(): WsKeepaliveTiming {
+        val profile = transportProfile()
+        return WsKeepaliveTiming(
+            pingIntervalMs = profile.pingIntervalMs,
+            livenessTimeoutMs = profile.livenessTimeoutMs,
+        )
+    }
 
     private val knownEndpoints = ConcurrentHashMap<String, Endpoint>()
     private val sessionsById = ConcurrentHashMap<FlashDeviceId, WsSession>()
@@ -173,6 +194,7 @@ public class WsFlashNetwork(
                 handleInboundConnection(connection)
             },
             tls = tlsOptions,
+            keepalive = ::keepaliveTiming,
         )
         server = serverImpl
         val port = runCatching { serverImpl.start() }.getOrElse {
@@ -626,6 +648,13 @@ public class WsFlashNetwork(
                 val policy = reconnectPolicies.getOrPut(deviceId) {
                     ReconnectPolicy(
                         baseMs = if (backup) backupRedialBaseMs else ReconnectPolicy.DEFAULT_BASE_MS,
+                        // ERROR-033: the single most load-bearing number for "does this device come
+                        // back". A device that needs seconds to reassociate on a mesh roam is
+                        // exactly the device that must not then wait out a 30 s ceiling before its
+                        // next attempt — two seconds of radio outage used to become half a minute
+                        // of "offline". Read at loop start, so a tier pinned mid-outage applies to
+                        // the loop that is still running.
+                        capMs = transportProfile().reconnectCapMs,
                         random01 = { ThreadLocalRandom.current().nextDouble() },
                     )
                 }
@@ -674,7 +703,8 @@ public class WsFlashNetwork(
     /**
      * Starts the [AndroidNetworkWatcher] (no-op when [context] is null, e.g. JVM tests). On a fresh
      * usable network (Wi-Fi/Ethernet available) it collapses every pending peer backoff to an
-     * immediate attempt instead of waiting the loop out.
+     * immediate attempt instead of waiting the loop out; on a *link change* within the same network
+     * (a mesh roam) it probes the sessions it already has — see [probeSessionsAfterLinkChange].
      */
     private fun startNetworkWatcher() {
         val ctx = context ?: return
@@ -687,22 +717,90 @@ public class WsFlashNetwork(
                 // the mesh itself is still running.
                 runCatching { onUsableNetwork() }
                 if (!running.get()) return@onAvailable
-                // ERROR-026: sweep discovery-known peers too, not just ones we dialed, so the
-                // accepting side also redials on a Wi-Fi rejoin. Peers we deliberately disconnected
-                // stay excluded (redialTargetOf enforces the same rule inside the loop).
-                //
-                // ERROR-031: a rejoin is exactly when a session held over from the OLD network is
-                // most likely to be a zombie, so skip only peers whose session is demonstrably
-                // carrying traffic.
-                (reconnectTargets.keys + knownEndpoints.keys).forEach { deviceId ->
-                    if (hasLiveSession(deviceId)) return@forEach
-                    if (deviceId in localDisconnects) return@forEach
-                    val backup = !reconnectTargets.containsKey(deviceId)
-                    reconnectPolicies.remove(deviceId) // fresh network → restart backoff from base
-                    scheduleReconnect(deviceId, immediate = !backup, backup = backup)
-                }
+                sweepDisconnectedPeers()
+            },
+            onLinkChanged = onLinkChanged@{
+                if (!running.get()) return@onLinkChanged
+                scope.launch { probeSessionsAfterLinkChange() }
             },
         ).also { it.start() }
+    }
+
+    /**
+     * Gives every peer without a live session an immediate fresh redial attempt.
+     *
+     * ERROR-026: sweeps discovery-known peers too, not just ones we dialed, so the accepting side
+     * also redials on a Wi-Fi rejoin. Peers we deliberately disconnected stay excluded
+     * ([redialTargetOf] enforces the same rule inside the loop).
+     *
+     * ERROR-031: a rejoin is exactly when a session held over from the OLD network is most likely to
+     * be a zombie, so this skips only peers whose session is demonstrably carrying traffic.
+     *
+     * Dropping the peer's [ReconnectPolicy] is the point of running this at all: a link event means
+     * the *reason* for the previous failures is gone, so the accumulated backoff is now
+     * misinformation.
+     */
+    private fun sweepDisconnectedPeers() {
+        (reconnectTargets.keys + knownEndpoints.keys).forEach { deviceId ->
+            if (hasLiveSession(deviceId)) return@forEach
+            if (deviceId in localDisconnects) return@forEach
+            val backup = !reconnectTargets.containsKey(deviceId)
+            reconnectPolicies.remove(deviceId) // fresh link → restart backoff from base
+            scheduleReconnect(deviceId, immediate = !backup, backup = backup)
+        }
+    }
+
+    /**
+     * Answers a suspected Wi-Fi roam (ERROR-033) by asking every session to prove itself, and
+     * reaping only the ones that cannot.
+     *
+     * ## Why probe instead of reconnect
+     *
+     * The signal from [AndroidNetworkWatcher] is a hint — there is no permission-free way to *know*
+     * a roam happened (see `LinkChangeTracker`). Tearing sessions down on a hint would turn a false
+     * positive into a real outage, so the response is one PING per peer: a session still carried by
+     * the new association answers within a round trip and is left completely alone, and a session
+     * stranded on the old one answers with nothing and is closed *now* rather than in the 25-40 s
+     * the liveness watchdog would take to reach the same conclusion. Closing it is what starts the
+     * redial loop, which is the actual recovery.
+     *
+     * That difference is the whole Belfone bug: a mesh hand-off keeps the same `Network` object, so
+     * `onAvailable`/`onLost` never fire, and nothing at all used to happen here. The Pixel and the
+     * Infinix survived on radio behaviour alone; the Belfone's session sat dead until the watchdog
+     * noticed, and then waited out a 30 s reconnect ceiling on top.
+     *
+     * ## Why the test is movement, not freshness
+     *
+     * A session that received a frame moments before the roam would pass a naive "is it fresh?"
+     * check while having proven nothing about the *new* association. So the stamp is snapshotted
+     * before the PING goes out and must strictly advance past that value. A session opened after the
+     * snapshot is simply not in it, and one opened just before still has to answer like everyone
+     * else — [WsConnection.start] stamps its birth, so a silent newborn is correctly suspicious.
+     */
+    private suspend fun probeSessionsAfterLinkChange() {
+        val probeWindowMs = transportProfile().linkChangeProbeMs
+        val probed = sessionsById.values
+            .filter { it.connection.isOpen }
+            .associateWith { it.connection.lastInboundAtMs }
+        if (probed.isNotEmpty()) {
+            FlashLog.i(TAG, "Link change: probing ${probed.size} session(s), window=${probeWindowMs}ms")
+            probed.keys.forEach { session -> runCatching { session.connection.sendPing() } }
+            delay(probeWindowMs)
+            probed.forEach { (session, stampBefore) ->
+                if (!running.get()) return
+                if (!session.connection.isOpen) return@forEach
+                if (session.connection.lastInboundAtMs > stampBefore) return@forEach
+                FlashLog.w(TAG, "Link change: peer=${session.peerDeviceId.value} did not answer probe; reaping")
+                // Closing drives onConnectionClosed -> WsSession.onClosed -> onSessionDisconnected,
+                // which is what schedules the redial. Nothing else to do here.
+                session.connection.close("Link change: unanswered probe")
+            }
+        }
+
+        // Whether or not anything was reaped, a roam is a fresh chance for every peer that has no
+        // live session — including the ones just closed above.
+        if (!running.get()) return
+        sweepDisconnectedPeers()
     }
 
     private fun stopNetworkWatcher() {
@@ -802,6 +900,7 @@ public class WsFlashNetwork(
 
     public companion object {
         public const val PROTOCOL_VERSION: Int = 2
+        private const val TAG = "WS"
         private const val HELLO_PREFIX = "FLASH_WS_HELLO"
         private const val HANDSHAKE_TIMEOUT_MS = 6_000L
 

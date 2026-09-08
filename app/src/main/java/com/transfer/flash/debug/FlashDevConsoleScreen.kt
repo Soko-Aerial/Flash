@@ -37,6 +37,7 @@ import com.transfer.flash.core.discovery.core.FlashDiscoveryMode
 import com.transfer.flash.core.network.FlashConnectionHealth
 import com.transfer.flash.core.network.FlashNetworkState
 import com.transfer.flash.core.network.FlashSession
+import com.transfer.flash.core.network.util.LocalNetworkAddresses
 import com.transfer.flash.core.discovery.FlashDiscoveredEndpoint
 import com.transfer.flash.core.transfer.model.FlashTransfer
 import com.transfer.flash.core.transfer.model.FlashTransferDirection
@@ -323,12 +324,27 @@ fun FlashDevConsoleScreen(
                         log("Start engine first")
                         return@NetTab
                     }
+                    // Real gateways from LinkProperties.routes, not a hardcoded 192.168.43.1: that is
+                    // only one of at least five tethering subnets OEMs use, and wrong outright for a
+                    // device on an ordinary router (ERROR-035).
+                    val gateways = LocalNetworkAddresses(context).ipv4Gateways()
+                    if (gateways.isEmpty()) {
+                        log("No IPv4 gateway on any LAN network - hosting a hotspot, or no LAN at all")
+                        return@NetTab
+                    }
                     scope.launch {
-                        log("Probing hotspot gateway 192.168.43.1â€¦")
-                        when (val result = net.connectManual("192.168.43.1", 0)) {
-                            is FlashResult.Success -> log("Connected to hotspot host!")
-                            is FlashResult.Failure -> log("Probe failed: ${result.error}")
+                        log("Probing ${gateways.size} gateway(s): ${gateways.joinToString()}")
+                        var connected = false
+                        for (gateway in gateways) {
+                            when (val result = net.connectManual(gateway, 0)) {
+                                is FlashResult.Success -> {
+                                    log("Connected to $gateway")
+                                    connected = true
+                                }
+                                is FlashResult.Failure -> log("$gateway failed: ${result.error}")
+                            }
                         }
+                        if (!connected) log("No gateway answered - it may not be running Flash")
                     }
                 },
             )
@@ -515,9 +531,10 @@ private fun NetTab(
         item { SectionTitle("Diagnostics") }
         item {
             CardSurface {
-                FlashText("Hotspot gateway probe", style = MaterialTheme.typography.titleSmall)
+                FlashText("Gateway probe", style = MaterialTheme.typography.titleSmall)
                 FlashText(
-                    "Attempts a direct WS connect to 192.168.43.1 (hotspot host). Use when mDNS can't see the host.",
+                    "Reads this device's real IPv4 gateways and tries a direct WS connect to each. " +
+                        "Use when mDNS can't see the hotspot host or router-side peer.",
                     style = MaterialTheme.typography.bodySmall,
                     color = Color.Gray,
                 )

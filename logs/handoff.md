@@ -1,5 +1,1458 @@
 # Current Handoff
 
+## 2026-09-08 (c) — F-series: F1–F3 DONE, F4 core DONE (group media in chat), F4b + audit follow-ups queued — uncommitted
+
+### Current branch
+`dev`, HEAD `5b31785`. **Nothing is committed** (owner's call). `New folder/` is unrelated
+session data — never stage it.
+
+### Last verified build
+Full R3 sweep: **1021 live tests / 12 failures / 0 skipped** — every failure is the known
+Windows `:core:persistence` DataStore set (verified: no failures in any other module);
+`:app:assembleDebug` green.
+
+### Last change
+F-series per `docs/group/ui-phase-plan.md`, each grounded in evidence recorded up front:
+- **F1:** `touchConversation` (no more group-row clobber by attachment/call upserts);
+  `openStreamChannel` named-peer-without-session fails cleanly (no more transfers leaking to
+  an arbitrary peer — the owner's "only one device got the audio"); interim group-attachment
+  gate.
+- **F2:** `FLASH_GROUP action=state` full-roster bootstrap — ⋮-added devices now receive the
+  whole versioned roster and materialize the group (the "added device never got the chat"
+  report); tombstones still win over replayed state.
+- **F3:** FLASH_GSYNC implemented — deterministic holder election, TTL/cursor/budget bounds,
+  paced rank-0 push with ack-gated backup; hosts request catch-up on session-up. Old-message
+  sync for late joiners/returners.
+- **F4 core:** FLASH_GMEDIA intro + shared-wireFileId fan-out — group voice notes and
+  attachments now thread into the GROUP chat on every member (consumed at accept, race-free),
+  with the sender's bubble keyed by the shared wire id. 1:1 paths byte-identical.
+
+### Recommended next task
+1. Owner device gates: ⋮-add → group appears; 5-min offline → exactly-once catch-up;
+   group media matrix (in chat, progress, resume); 1:1 regression.
+2. F4b: any-holder re-pull (`FLASH_GFETCH` + original-identity resume) + SyncPush media
+   metadata.
+3. **F5/F6 audit follow-ups are now PLANNED, not implemented** — full per-item designs with
+   code evidence live in `docs/group/ui-phase-plan.md` §F5/F6. Recommended order: F5.2 group
+   notification naming (10-line) → F5.1 date separators → F5.3 group typing → F5.4
+   delivered-M-of-N → F6.1 mark unread → F6.2 delete-for-everyone → F6.3 storage screen.
+
+### Files most relevant to next task
+- `core/messaging/.../protocol/GroupWireFrame.kt`, `GroupFrameCodec.kt`, `GroupSyncPolicy.kt`
+- `core/messaging/.../RealFlashChatRepository.kt` (touchConversation, State branch, GSYNC
+  handlers, pendingGroupMedia, beginGroupAttachment)
+- `core/transfer/.../RealFlashTransferRepository.kt` (sendFile wireFileId overload)
+- `app/.../MainActivity.kt` (group fan-out), `app/.../debug/DiscoveryEngineHolder.kt` +
+  `core/engine/.../Flash.kt` (sync requests on session-up, GMEDIA via codec)
+
+## 2026-09-08 (b) — Group UI Phases A–E DONE: groups render as groups, real roster, online counts, three-dot menus, essentials audit — uncommitted
+
+### Current branch
+`dev`, HEAD `5b31785`. **Nothing is committed** (owner's call). Tree now SEVENTEEN windows
+deep. `New folder/` is unrelated session data — never stage it.
+
+### Last verified build
+Full R3 sweep 2026-09-08: **1005 live tests / 0 failures / 0 skipped** (messaging 59,
+ui/chat 265); `:app:assembleDebug` green. Phase record: `docs/group/ui-phase-plan.md`
+(all five phases DONE with per-phase verification notes).
+
+### Last change
+Phases A–E per `docs/group/ui-phase-plan.md`, all grounded in the owner's device report:
+A — group conversations now render as groups (header branches on `conversationDao.get().isGroup`;
+stored title beats the UUID; `isGroup`/`memberCount`/`onlineCount` filled; call buttons hidden,
+killing the silent `startCall(groupId)` trust refusal; chat-list aggregate presence; seed via
+`groupTitleCache`, not a blocking Room read). B — real member roster in
+`FlashConversationUiState.members` (names/online/owner role) consumed by the member sheet.
+C — "N members · M online" subtitle + group online-count chip on chat-list avatars.
+D — working three-dot menus (`FlashConversationMenuMath` + `FlashConversationMenu`): direct
+(profile/search/revoke/clear) and group (info/add members/leave/search) with
+`FlashAddMembersSheet` + `FlashLeaveGroupDialog` and full MainActivity wiring. E — code-based
+essentials audit at `docs/ui/app-essentials-audit.md` with a prioritized follow-up list
+(date separators and group-notification naming on top).
+
+### Recommended next task
+1. **Owner device re-test** of A–D (group name/counts, member sheet, both menus, no call
+   buttons in groups, 1:1 regression).
+2. Owner picks follow-ups from `docs/ui/app-essentials-audit.md` — recommended first:
+   date separators, then group notification naming.
+3. Then Phase 1B (FLASH_GSYNC) / Phase 2 (group voice) per `docs/group/`.
+
+### Files most relevant to next task
+- `core/messaging/.../RealFlashChatRepository.kt` (group header branch, `directHeaderState`,
+  `groupTitleCache`, roster mapping, aggregate list presence)
+- `core/messaging/.../model/FlashMessagingModels.kt` (`members`, `groupOnlineCount`)
+- `ui/chat/.../FlashConversationMenu.kt`, `FlashAddMembersSheet.kt`, `FlashConversationScreen.kt`
+- `ui/chat/.../FlashChatListRow.kt` (online chip), `FlashChatHeader.kt` (menu anchor)
+- `app/.../MainActivity.kt` (menu actions, add/leave/clear wiring)
+- `docs/ui/app-essentials-audit.md` (next work queue)
+
+## 2026-09-08 — Groups Phase 0 + Phase 1A LANDED: trusted group text, quorum delivery, call trust gate (ADR-030), uncommitted
+
+### Current branch
+`dev`, HEAD `5b31785`. **Nothing is committed** (owner's call). The tree is now SIXTEEN work
+windows deep (the fifteen prior + this groups landing). `New folder/` is unrelated session
+data — never stage it.
+
+### Last verified build
+Full R3 sweep 2026-09-08: **1001 live tests / 12 known Windows DataStore failures / 0 skipped**
+(messaging 47→57, persistence 35→38, ui/chat 255→259); `:app:assembleDebug`, both sample
+consumers, and v4 schema export all green. Only the 12 documented `:core:persistence`
+DataStore failures failed; nothing else.
+
+### Last change
+Groups Phase 0 + 1A per `docs/group/` (ADR-030): protocol frozen (`docs/protocol.md` §Groups),
+`GroupWireFrame`/`GroupFrameCodec`/`GroupPolicy` in `:core:messaging`, non-destructive DB
+v3→v4 (`group_members`, `group_deliveries`, conversation provenance, `MIGRATION_3_4`), additive
+repository group API with per-member quorum delivery riding the existing durable outbox,
+fail-closed trust on every group path, `CallCoordinator.isTrustedPeer` calling gate (outbound
+refused / inbound invite auto-declined for unpaired peers), both hosts wired, create-group UI
+(`FlashCreateGroupSheet`, trusted peers only) wired through the chat-list top bar.
+
+### Recommended next task
+1. **Owner physical gate (Phase 1A):** three trusted devices — create/add/leave/re-add, one
+   member offline 5 min then reconnect (durable delivery on session-up), untrusted frame
+   rejection, no 1:1 regression. Record in `logs/experiments.md`.
+2. Then **Phase 1B** (FLASH_GSYNC holder catch-up — codec/policy constants already exist) or
+   the UI follow-ups (real member names in the members sheet, "delivered to M of N").
+3. Group voice (Phase 2) only after 1A+1B verify.
+
+### Files most relevant to next task
+- `core/messaging/src/main/.../protocol/GroupWireFrame.kt`, `GroupFrameCodec.kt`, `GroupPolicy.kt`
+- `core/messaging/src/main/.../RealFlashChatRepository.kt` (`createGroup`,
+  `onInboundGroupWireFrame`, `sendGroupText`, `drainGroupMessage`)
+- `core/persistence/.../FlashMigrations.kt` (`MIGRATION_3_4`), `GroupMemberDao.kt`,
+  `GroupDeliveryDao.kt`, `schemas/.../4.json`
+- `app/.../debug/DiscoveryEngineHolder.kt` + `core/engine/.../Flash.kt` (both hosts)
+- `core/calling/.../CallCoordinator.kt` (`isTrustedPeer`)
+- `ui/chat/.../FlashCreateGroupSheet.kt` + `app/.../MainActivity.kt` (sheet wiring)
+
+## 2026-09-07 — Voice-call latency fluctuation: five in-app sources fixed (ADR-026), uncommitted
+
+### Current branch
+`dev`, HEAD `5b31785`. **Nothing is committed** (owner's call). Working tree now carries the
+fourteen prior windows PLUS the call-latency landing below — fifteen windows deep.
+
+### Last verified build
+Full R3 sweep 2026-09-07: **984 live tests / 12 known Windows DataStore failures / 0 skipped**,
+per-module split byte-identical to baseline (`:ui:callui` still 5 — no tests added, timing/lifetime
+properties are not unit-assertable; the unchanged 984 is the regression check). APK rebuilt 12:11.
+
+### Last change (this window)
+Voice-call quiet, five files + ADR-026: (1) `DiscoveryEngineHolder.setCallActive` — ECO discovery
++ sweep skip while ACTIVE, STANDARD restore after; (2) `MultiStreamDispatcher.quietWatcherHint`
+(`WATCH_QUIET_POLL_MS = 250L`) via public `RealFlashTransferRepository.voiceCallActive`;
+(3) `FlashCallSession` stats sampler on a dedicated `FlashCallStats` daemon thread, closed in
+`releaseMedia` — first production thread pool in the tree; (4) `FlashWebRtcEngine.configureOnce`
+gains `lowLatencyPlayout` (holder passes `performanceMode != LOW`); (5) call-screen clock aligned
+to second boundaries + live-region transitions-only. Zero HIGH pixel/tier change throughout.
+
+### Recommended next task
+On-device validation (EXP-007): which of the five dominates, heard on two low-end devices. Proposed
+instrumentation (not implemented): log `jitterBufferDelay/concealedSamples/fecPacketsReceived`
+alongside `jitter` in `sampleStats`, and A/B LOW `ptime 60` vs MEDIUM `ptime 20` on the same pair.
+
+### Files most relevant to next task
+`core/calling/.../FlashCallSession.kt` (`armStatsPolling`, `sampleStats`), `core/calling/.../FlashWebRtcEngine.kt`,
+`app/.../DiscoveryEngineHolder.kt` (`setCallActive`), `core/transfer/.../RealFlashTransferRepository.kt`
+(`voiceCallActive`), `docs/decisions.md` ADR-026.
+
+## 2026-09-04 (h) — Task #5: recomposition scopes are now narrow in the shell (EXP-012), on the call screen (EXP-013 part 1), and in every per-frame animation in the app including the launch splash (EXP-013 part 2). A closing pass over the sites part 2 deferred found 10 of 11 already correct — the reason recorded for deferring them was wrong — and fixed the one that was real, the send button. A third pass (part 3) found that closing grep had only covered animated `Float`s, and that the animated `Dp` form had hit the shell a second time. A fourth pass then left animations behind and found the app implemented **no** memory-pressure callback at all, so the chat thumbnail cache held its whole `maxMemory / 8` share for the life of the process, backgrounded mid-transfer included (EXP-014). A fifth pass then inverted that question — not a callback the app never implements, but work the app does **on a timer whether or not there is anything to do** — and found the durable outbox's retry loop waking on a fixed 1 s grid for the life of the process, i.e. ~86,400 SQLCipher queries a day against a table that is almost always empty, *and* rounding every retry up to the next second despite having computed an exact deadline (EXP-015). A sixth pass then took the timer inventory that fifth pass produced and closed its only remaining unscoped entry: a 1 Hz pairing tick launched from a constructor for the life of the process, servicing a state that is idle except during the few seconds a user spends pairing (EXP-016). The cadence, scope, per-frame, retention and periodicity threads are all closed; the *listed* remainder of task #5 is R8-gated, ADR-gated or measure-first, but new classes keep being findable — by auditing platform callbacks the app never implements, then its timers, and next what it holds open while idle
+
+### Current branch
+`dev`, HEAD `5b31785`. **Nothing is committed.** Working tree carries ERROR-033/034/035, task #3,
+task #4 (complete), and ten task #5 landings (frame-path allocations, send-side resume bookkeeping,
+receiver done-set, chat progress cadence, shell progress cadence, shell recomposition scopes, call-screen
+recomposition scope, per-frame animation phases — the last of these including the send-button fix from
+the closing pass and the shell chip-inset fix from part 3 — the thumbnail-cache trim policy, the
+outbox drain loop, and the pairing tick). No commit requested by the owner; the tree is **fourteen**
+work-windows deep.
+
+### Last verified build
+```bash
+cd "C:/Users/KaliOxygen/Downloads/Flash" && export JAVA_HOME="/c/Users/KaliOxygen/.gradle/jdks/jetbrains_s_r_o_-21-amd64-windows.2" && export JAVA_TOOL_OPTIONS='-Djdk.net.unixdomain.tmpdir=C:\Users\KaliOxygen\.gradle\afunix' && ./gradlew testDebugUnitTest assembleDebug :core:common:testAndroidHostTest --continue --console=plain --max-workers=2
+```
+**984 live tests / 12 known Windows DataStore failures / 0 skipped**, APK 15:18, 67,556,718 bytes
+(re-run after EXP-016's pairing-tick work; the preceding verified APKs were 14:51, 14:15, 13:52, 13:34,
+13:05 — and 67,556,718 is the same byte count as the 14:51 build, which is coincidence, not a skipped
+build: 13 tasks executed and one lambda class replaced another).
+CONVENTIONS R3 bumped 963 → 968 → 972 → 978 → **984** and **stays at 984**: `FlashCallDurationTest` +5,
+which is also the
+**first** `src/test` in `:ui:callui`, so a
+`:ui:callui:testDebugUnitTest` task now exists where it did not before (no build-file change was
+needed — the module already had `testImplementation(libs.junit)`); then `FlashTransfersLogicTest` +4 for
+`progressBarWidthPx`; then `FlashMediaCacheTrimTest` +6 for the thumbnail-cache trim policy; then
+`OutboxDrainScheduleTest` +6 for the outbox wait function, taking `:core:messaging` 41 → **47**. EXP-012
+and EXP-016 added no tests, on purpose; see below for both. The part-2 closing pass and part 3
+add none either, so **an unchanged 972 was their regression check** — per-module split identical,
+`:ui:chat` 249 at that point and **255** now.
+
+A per-module recompile is worth running when only one module changed; EXP-016's was
+`:app:compileDebugKotlin` → `BUILD SUCCESSFUL`, **zero warnings in `:app`** (EXP-015's was
+`:core:messaging:compileDebugKotlin :core:messaging:compileDebugUnitTestKotlin --rerun-tasks`, also
+clean). The six warnings the full sweep prints are
+pre-existing in `:core:discovery`/`:core:network`; do not read them as new.
+
+
+The command reports `BUILD FAILED` — that is the 12 documented `:core:persistence` failures, and
+`--continue` is what lets the later modules run at all. Confirm non-regression by counting live XML per
+module and by the APK timestamp, never by the exit code:
+```bash
+for d in app core/calling core/common core/discovery core/engine core/messaging core/network core/persistence core/security core/transfer ui/chat ui/theme ui/callui; do n=$(find "$d" -path "*test-results*" -name "TEST-*.xml" 2>/dev/null | xargs grep -ho 'tests="[0-9]*"' 2>/dev/null | grep -o '[0-9]*' | awk '{s+=$1} END {print s+0}'); echo "$d $n"; done
+```
+
+### Current phase
+Task #5. The three classes that produced the animation results are out of inspectable un-gated items:
+EXP-008/009/010/011 were **cadence** findings (how often work runs); EXP-012 and EXP-013 part 1
+were **scope** findings (how much of the tree the work invalidates); EXP-013 part 2 was a **phase**
+finding (which pipeline stage the work happens in). EXP-014 then opened a **fourth** class —
+**retention** (what the process keeps holding, and for how long) — by asking what the app does when the
+platform asks for memory back. The answer was nothing at all. EXP-015 opened a **fifth** —
+**periodicity** (work the app repeats on a timer whether or not there is anything to do) — by inverting
+that same question, and the outbox retry loop was polling an encrypted database once a second forever.
+EXP-016 then **closed** that fifth class: its inventory of 27 `while (true)` sites had exactly three
+time-driven entries, two of which were already correctly scoped, and the third — `PairingCoordinator`'s
+1 Hz tick — is now fixed.
+So do not read "out of items in three classes" as "out of items": the remaining *listed* work is blocked
+on an owner decision, an ADR boundary or a device measurement, but two of the five classes were opened in
+the last three passes, and a candidate **sixth** question is written down under *Recommended next task*
+(what the process holds *open* while nothing is happening — sockets, wake locks, codec instances, EGL
+contexts, cursors). That inventory has not been taken.
+
+**The three Compose rules behind every scope finding — carry these forward:**
+1. A `State`'s invalidation scope is **where `.value` is read**, not where the `State` was created —
+   and a `remember(someState) { … }` **key expression is a read**, located where the `remember` sits.
+   So a `by collectAsState()` at the top of a huge composable is not automatically wide, but a
+   `remember` keyed on it is.
+2. **A value-returning `@Composable` is not restartable.** State reads inside it are recorded against
+   the nearest restartable scope above it, i.e. the caller. A Unit-returning composable is always
+   restartable, which is why wrapping one `Text` in one was the whole EXP-013 part 1 fix.
+3. **The phase that evaluates the read is the phase that gets invalidated.** Reads inside
+   `graphicsLayer { }`, `drawBehind { }`, a `Canvas` draw lambda or a `progress = { … }` lambda cost a
+   **re-draw**; reads inside `Modifier.layout { }` or `Modifier.offset { }` cost a **re-place**; reads
+   inside `Modifier.semantics { }` cost a semantics pass. Only a composition-time *argument* —
+   `fillMaxWidth(f)`, `Modifier.scale(f)`, `background(c.copy(alpha = f))`, and just as much
+   `.padding(bottom = animatedDp)`, `.size(animatedDp)` or `FontWeight(animatedInt)` — costs a
+   **recomposition**. When grepping for this class, grep the `Dp`/`Int` spellings too: part 3 exists
+   because the "closing" grep of part 2 only had the `Float` ones.
+   Corollary: a `by` delegate whose only use is inside a lambda the callee runs in draw
+   (`progress = { x }`) is already correct, because `getValue` runs when the lambda runs.
+
+Also worth carrying: `graphicsLayer { alpha = … }` is not free. Under the default
+`CompositingStrategy.Auto`, `alpha < 1` marks the layer as overlapping content, so the platform may
+allocate an offscreen buffer per layer. When the layer wraps exactly one solid draw,
+`CompositingStrategy.ModulateAlpha` is pixel-identical and needs no buffer; when no layer is needed at
+all, `drawBehind { }` is cheaper still.
+
+### Broken
+Nothing new. The 12 `:core:persistence` failures are the pre-existing Windows-only DataStore
+atomic-rename issue and are the documented baseline.
+
+### Last change
+1. `app/.../MainActivity.kt`, four edits (EXP-012): `derivedStateOf` import; `transfersUi` and `nearby`
+   converted from `remember(state, …)` to `remember(stableKeys) { derivedStateOf { … } }`; new
+   `chatListSelectionMode` derived `Boolean` read by the selection-mode `BackHandler`.
+2. `ui/callui/.../FlashCallScreen.kt` (EXP-013 part 1): new Unit-returning
+   `FlashCallStatusLine(state, color)` wrapping the one `Text` that shows the mm:ss clock, used by both
+   former call sites; `activeDuration`'s KDoc corrected (it claimed "leaf text node" and was not one);
+   mm:ss arithmetic extracted as `internal fun formatCallDuration(elapsedMillis: Long)`.
+3. `ui/callui/src/test/.../FlashCallDurationTest.kt` — new, 5 tests.
+
+Then EXP-013 part 2, the per-frame animation sweep — seven files, no build files:
+
+4. `ui/theme/.../FlashBrandAnimation.kt` — the launch splash, the worst site found.
+   `rememberFlashBrandPhase()` now returns a `FlashBrandPhase` holding two `State<Float>`s, read inside
+   the `Canvas` draw block. It used to recompose the whole composable per frame of a 2.4 s loop — while
+   the transport stack boots, on the device where boot is slowest (ERROR-034).
+5. `ui/chat/.../FlashTypingIndicator.kt` — three waves kept as `State`, read inside each dot's
+   `graphicsLayer`, plus `ModulateAlpha`; the `listOf` remembered. Its KDoc had claimed "without
+   triggering recomposition cycles" and was false.
+6. `ui/callui/.../FlashCallScreen.kt` again — the avatar halo extracted to
+   `rememberCallPulseScale(pulsing): State<Float>`, read in the layer.
+7. `ui/chat/.../FlashVoiceRecording.kt` — record-dot `pulseAlpha` (+ `ModulateAlpha`) and the mic
+   button's press `scale` both stay `State`, read inside their layers.
+8. `ui/chat/.../FlashPairingFlow.kt` — `FlashPulsingDot` drops `clip` + `background` + layer for
+   `drawBehind { drawCircle(color.copy(alpha = alpha.value)) }`.
+9. `ui/chat/.../FlashStateViews.kt` — `graphicsLayerAlpha(State<Float>)` gains `ModulateAlpha`
+   (up to 8 skeleton rows x 3 shapes, during boot).
+10. `ui/chat/.../transfers/FlashTransfersScreen.kt` — header derives the throughput **label** with
+    `derivedStateOf` (structural equality drops every frame formatting to the same text); the row's fill
+    moves from `fillMaxWidth(fraction)` to `Modifier.layout { }` via the new
+    `FlashTransfersMath.progressBarWidthPx`; the a11y percent reads `item`, not the tween, so a moving
+    transfer no longer rebuilds a `buildString` per frame.
+11. `ui/chat/src/test/.../FlashTransfersLogicTest.kt` — +4 tests pinning `progressBarWidthPx` to
+    `FillNode`.
+
+Then the closing pass over the press-scale sites part 2 had deferred — one file, no tests:
+
+12. `ui/chat/.../FlashComposer.kt` — `FlashSendButton`, two faults. `.scale(scale)` was a
+    composition-time *argument*, so every frame of the press spring recomposed the whole button (both
+    `animateColorAsState` calls, the `clickable` chain, the semantics block, the icon); it is now
+    `graphicsLayer { scaleX = scale.value; scaleY = scale.value }` in the same chain position, which is
+    the same node with the same centre pivot and therefore pixel-identical. And its spec was a raw
+    `spring(0.6f, 500f)` with **no reduce-motion guard** — the last one left in the app — now
+    `if (motion.reduceMotion) snap() else spring(0.6f, 500f)`, so HIGH keeps that spring byte-for-byte
+    (deliberately not `springSnappySpec()`, which would change HIGH's feel) and LOW/MEDIUM snap.
+
+The same pass **reverted** two conversions it had made in `FlashMessageContextMenu.kt`
+(`FlashQuickReactionsBar`) and `FlashAttachmentSheet.kt` (`FlashAttachmentTile`): both files' reads were
+already inside their `graphicsLayer` lambdas, so the conversions bought nothing and the comments
+attached to them were false. Those two files are back to their pre-pass content; see item 8 of the
+do-not-simplify list.
+
+Then part 3, the animated-`Dp`/`Int`/`Color` sweep the closing grep had missed — one file, no tests:
+
+13. `app/.../MainActivity.kt` — `chipBottomInset`, an EXP-012 recurrence in the same composable by a
+    different route. The animated `Dp`'s only consumer was
+    `.padding(end = 16.dp, bottom = 16.dp + chipBottomInset)`, a composition-time argument on an inline
+    `Box` inside an `if` in `FlashShell`'s own body, so every tab-root navigation recomposed the
+    ~750-line shell once per frame for the tween's 200 ms. Now an explicit `State<Dp>` read in the
+    placement pass: `.padding(end = 16.dp, bottom = 16.dp)` plus
+    `.offset { IntOffset(0, -chipBottomInset.value.roundToPx()) }`. The chip is bottom-aligned, so
+    shifting up by the inset is exactly what the padding did — same pixels, same tween, HIGH untouched.
+    Scope note: `showDevConsoleEntry` is `isDebuggable`, so **release never took this path**; what it
+    affected is debug builds, which is what EXP-007's device matrix will run.
+
+Then EXP-014, the retention pass — one source file plus one new test file, no build files:
+
+14. `ui/chat/.../FlashMediaDecoder.kt` — the app implemented **no** memory-pressure callback anywhere
+    (`FlashApplication` has an empty body; nothing in `app/`, `core/` or `ui/` mentioned `onTrimMemory`,
+    `onLowMemory`, `ComponentCallbacks2` or `registerComponentCallbacks`), so the thumbnail `LruCache`
+    held its whole `(maxMemory / 8).coerceIn(4 MB, 24 MB)` share for the life of the process — an
+    `LruCache` evicts only when a *new* entry does not fit, never because nothing wants the old ones.
+    Worst case is the backgrounded one: transfers run as a foreground service, so the process survives
+    with the UI gone, and there the cache is fullest and least useful. Now a `ComponentCallbacks2`
+    registered lazily from the top of `decode()` behind an `AtomicBoolean.compareAndSet`, with the
+    policy extracted as a pure function — `internal fun cacheTrimFor(level: Int): CacheTrim`,
+    `enum class CacheTrim { None, Halve, EvictAll }` — halving via `trimToSize(size() / 2)` from
+    `TRIM_MEMORY_RUNNING_LOW` and evicting from `TRIM_MEMORY_UI_HIDDEN` up and on `onLowMemory()`.
+15. `ui/chat/src/test/.../FlashMediaCacheTrimTest.kt` — new, 6 tests (972 → 978).
+
+Then EXP-015, the periodicity pass — one source file rewritten, one new source file, one new test file,
+no build files:
+
+16. `core/messaging/.../RealFlashChatRepository.kt` — `drainOutboxLoop()` was
+    `while (true) { drainOutboxOnce(); delay(1000) }`, launched from `init` and never stopped. Because
+    `transportSink` is an immutable constructor val, on the real DI path every pass reached
+    `outboxDao.dueForDelivery(now, 16)` — a SQLCipher query ~86,400 times a day against a table whose
+    steady state is empty. It also ignored the deadline `rescheduleAttempt` had just written, so a row due
+    at `T` was retried at the first 1 s boundary at or after `T`. Now it waits on whichever comes first:
+    a write to the `outbox` table (`OutboxDao.observeCount()`, which **already existed** — no DAO change,
+    R8 clean — forwarded into a `Channel<Unit>(Channel.CONFLATED)` by a second `init` collector) or the
+    earliest deadline it holds (`@Volatile private var outboxNextDueAt`). `drainOutboxOnce()` now returns
+    `Boolean` — "the batch was full" — and a full batch skips the wait entirely, which also makes
+    `notifyPeerSessionUp()`'s post-reconnect backlog leave as fast as the socket accepts instead of
+    16 rows/second. `drainWake` and `outboxNextDueAt` are declared **above** the `init` block for the
+    reason already recorded on `drainMutex` (Bug 6: an init-launched coroutine reading a
+    not-yet-initialised property FATALs the process).
+17. **New** `core/messaging/.../OutboxDrainSchedule.kt` — `MIN_WAIT_MS = 25L`, `IDLE_WAIT_MS = 60_000L`
+    (pinned to the backoff cap), and `waitMs(nextDueAt, now)`. Split out because the loop is `while (true)`
+    inside a coroutine launched from a constructor: no test can step it, so extracting the arithmetic is
+    the only way any of this timing is assertable.
+18. `core/messaging/src/test/.../OutboxDrainScheduleTest.kt` — new, 6 tests (978 → 984). The stronger
+    regression net is the **seven existing `RealFlashChatRepositoryTest` cases that drive this loop**
+    (resend-after-reconnect, the give-up budget, the receipt-deletes-the-row path, the tombstone and
+    missing-row sweeps); each was hand-traced against the new timing before the sweep and each passed
+    unchanged. `FakeOutboxDao` needed no edit — it already bumps `countFlow` in `enqueue` and `delete`,
+    which is exactly the wake those tests need.
+
+19. `app/.../pairing/PairingCoordinator.kt` — the `init` block held a 1 Hz
+    `while (isActive) { if (phase != Idle) { onTick; recomputeUi }; delay(1000) }` for the life of the
+    process. Milder than #16 (an idle pass was a wake-up plus a `StateFlow.value` read, not a query) but
+    unconditional in time: ~86,400 wake-ups a day for a phase that is `Idle` except during the seconds a
+    user spends pairing, and it polled a value that already pushes. Replaced by `tickWhileInFlight(p)`, a
+    **third child of `collectorJob`** driven by `p.session.map { it.phase != Idle }.distinctUntilChanged()
+    .collectLatest { … }`. `resetProtocol()`'s existing `collectorJob.cancel()` is therefore the teardown —
+    no new lifecycle bookkeeping. The class KDoc's "the 1 Hz ticker always reads the current instance"
+    became false and was corrected: the ticker is now per-instance *on purpose* (see item 12). No test
+    added; `:app` stays at 36 and the reasoning is in EXP-016 under **Not tested, and why**.
+
+Full rationale in `logs/experiments.md` EXP-012, EXP-013, EXP-014, EXP-015 and EXP-016.
+
+### Twelve things not to "simplify" later
+1. **`derivedStateOf`'s remaining `remember` keys are load-bearing, and they are not the old keys.**
+   States read *inside* the block need no key; two things do — plain non-State values
+   (`transfersReady`) and **the flows, which swap once at boot** (every delegate is
+   `(engine.X ?: fallback).collectAsState()`). Drop the keys and the derivation reads the pre-boot
+   fallback `State` forever. Do not "clean up" `remember(engine, engine.discovery, engine.pairing)`.
+2. **`FlashCallStatusLine` is not a pointless one-line wrapper.** It exists solely because it is
+   Unit-returning and therefore restartable; inline that `Text` back into either caller and the
+   per-second clock starts recomposing the video renderers again. Its KDoc says so, and
+   `activeDuration`'s KDoc now says so too.
+3. **150 ms, not the 250 ms that was written down** (EXP-011). `FlashMotion.NormalMillis = 200`, so a
+   250 ms window leaves a 50 ms dead stop in two `animateFloatAsState` animations, four times a
+   second — at the HIGH tier, the one tier the owner said must not be compromised.
+   `FlashTransfersLogicTest` asserts the inequality.
+4. **`collectAsState(initial = transfersSource.value)`, not `emptyList()`** (EXP-011). A cold flow's
+   `initial` is rendered for real; an empty seed gives one frame of "No transfers yet" — a claim about
+   the device's history made before any data arrived. That is the ERROR-034 failure mode exactly.
+5. **`rememberCallPulseScale`, `rememberFlashBrandPhase` and `rememberSkeletonAlpha` must keep
+   returning `State`, not `Float`** (EXP-013 part 2), and `FlashBrandPhase` must keep holding
+   `State<Float>` rather than `Float`. Unwrapping any of them — including "tidying" a
+   `graphicsLayerAlpha(alpha: State<Float>)` parameter to a plain `Float` — moves the read back into
+   composition and silently reinstates a per-frame recomposition. Same for the three `State`s kept in
+   `FlashTypingIndicator`, `FlashVoiceRecordingBar` and `FlashMicButton`. Every one of these carries a
+   comment saying so, because two of the sites had a KDoc claiming the correct behaviour while the code
+   did the wrong thing, and that is how they survived this long.
+6. **`FlashTransfersMath.progressBarWidthPx` must keep mirroring Compose's `FillNode`** —
+   `(maxWidth * fraction).roundToInt().coerceIn(minWidth, maxWidth)`. It is not a reinvention for its
+   own sake; it is the arithmetic `fillMaxWidth(fraction)` was doing, lifted out so the layout-phase
+   replacement can be asserted against what it replaced. Four tests pin it. If it drifts, every progress
+   bar in the app quietly resizes by a pixel.
+7. **`CompositingStrategy.ModulateAlpha` is not decorative, and the pairing dot's `drawBehind` is not a
+   downgrade.** `Auto` treats `alpha < 1` as overlapping content and may allocate an offscreen buffer
+   per layer; each of these layers wraps exactly one solid draw, so modulating is pixel-identical and
+   buffer-free. The pairing dot needs no layer at all — for a square box the inscribed circle is the
+   same pixels as `clip(CircleShape).background(…)`.
+8. **Do not "fix" the remaining `by animateFloatAsState` press scales.** In `FlashAttachmentButton`,
+   `FlashAttachmentSheet`, `FlashChatSearchBar` (x2), `FlashFileMessageCard`, `FlashMessageBubble`,
+   `FlashMessageContextMenu` (x2 sites, 4 floats) and `FlashVoiceMessageCard` (x2), the property's only
+   mention is *inside* the `graphicsLayer` lambda. `getValue` is an inline `State<T>` extension
+   returning `.value`, so the read is evaluated at the use site — already the draw phase. Converting
+   them to an explicit `State` plus `.value` is a **no-op**; this window did it to two of them, wrote
+   comments claiming a win, then reverted both. What *would* be a defect is hoisting one of those reads
+   out of its layer. Consolidating them onto `Modifier.flashPressScale` is still worth doing, but as
+   de-bloat, and sighted — pressed scales run 0.85 to 0.98, several gate on `enabled`/`canSend`, two
+   multiply by an enter scale.
+9. **Four animated `Dp`/`Int` sites are settled; two are already right and two must stay in composition.**
+   `FlashSettingsScreen`'s `indicatorOffset` (`:517`) and `FlashSwitch`'s `thumbOffset` (`:694`) are
+   explicit `State<Dp>` read inside `Modifier.offset { }` — layout-phase, and the model for part 3's
+   `chipBottomInset` fix; do not "tidy" either into a `by` delegate feeding `padding`.
+   `FlashReactionChip.kt:88` `borderWidth` feeds `BorderStroke(borderWidth, borderColor)`, and
+   `Modifier.border` takes no lambda while `borderColor` animates off the same flip in the same stroke,
+   so the recomposition is unavoidable and hand-drawing the ring would only risk pixels.
+   `FlashBottomNav.kt:325` `labelWeight` feeds `FontWeight(...)` inside a `TextStyle` — font weight
+   changes text layout, so that read is inherently composition-time. Likewise all 11
+   `animateColorAsState` sites: every one is a leaf feeding `background(…)` or `tint =`, and swapping to
+   `drawBehind` would risk a pixel difference on shaped and bordered surfaces to save recomposing a leaf.
+10. **The thumbnail cache's trim policy is deliberate in four ways (EXP-014).** (a) `Halve`, not
+    `EvictAll`, from `TRIM_MEMORY_RUNNING_LOW`: that level arrives with the conversation still on
+    screen, so evicting answers memory pressure with a decode storm on the next scroll pass. (b)
+    `trimToSize(size() / 2)` and **not** `resize()` — `resize` lowers `maxSize` permanently, so the
+    cache would never recover after one pressure event. (c) Thresholds are compared with `>=` rather
+    than matched per constant, so an unknown or future level cannot fall through to `None`; the
+    monotonicity test pins that. (d) The two `@Suppress("DEPRECATION")` annotations stay: against the
+    API 36 `android.jar` only `TRIM_MEMORY_UI_HIDDEN` and `TRIM_MEMORY_BACKGROUND` are still current,
+    so on a recent platform every delivered level lands on `EvictAll` and `Halve` is the legacy branch —
+    which is the API-27 tier this whole task exists for. Deleting the `RUNNING_*` branch to clear the
+    warnings would silently drop the low-end devices it was written for.
+11. **The outbox drain loop's four load-bearing details (EXP-015).** (a) `outboxNextDueAt` is merged as a
+    **running minimum** — `listOfNotNull(outboxNextDueAt?.takeIf { it > now }, earliestScheduled).minOrNull()`
+    — not assigned this pass's minimum. A row that was not yet due when the pass ran carries a deadline the
+    pass never saw; overwriting sleeps straight past it. (b) The `takeIf { it > now }` is the other half:
+    a deadline already in the past belongs to a row that has since been acknowledged and deleted, and
+    keeping it pins the loop at the 25 ms floor forever — worse than the 1 Hz poll it replaced. (c)
+    `Channel.CONFLATED`, not `RENDEZVOUS` or `BUFFERED`. A burst of table writes must collapse to one
+    wake, **and** a wake that arrives *while* a pass is running must be retained, so the row that pass
+    could not see is picked up immediately instead of waiting out the idle interval. `RENDEZVOUS` drops it;
+    `BUFFERED` queues redundant passes. (d) The `observeCount()` collector must stay subscribed for the
+    loop's whole life — a Room `Flow` only invalidates while something is collecting it, so folding it into
+    the loop body (which must be free to be *asleep*) breaks the wake. The invariant underneath all four:
+    **`outboxNextDueAt` only ever has to be an upper bound on the wait, because every event that makes a
+    row due earlier than expected is itself a write to the `outbox` table, and every table write wakes the
+    loop.** Also do not "simplify" `withTimeoutOrNull(waitMs) { drainWake.receive() }` into a
+    `select`/`onTimeout` pair for the sake of not discarding a racing element: both the wake and the
+    timeout resume the same next statement — another drain pass — so which one won is immaterial.
+12. **The pairing ticker's four load-bearing details (EXP-016).** (a) It takes the instance as a parameter
+    and is launched from `launchCollectors()`, so it is **per protocol instance**. Hoisting it back to a
+    single process-wide ticker that reads the `protocol` field is not a simplification, it is the bug:
+    terminal phases absorb every event and never return to `Idle`, so a ticker that outlives its instance
+    spins at 1 Hz forever on a dead session. (b) `distinctUntilChanged()` on the boolean is correctness,
+    not tidiness — a pairing emits several session states, and without it every one restarts
+    `collectLatest`'s block and therefore restarts `delay(TICK_MS)` from zero, so a chatty handshake
+    starves the countdown and postpones expiry indefinitely. (c) `delay` comes **before** `onTick`, not
+    after: the emission that started the ticker has already run `recomputeUi`, and this way the first
+    displayed second is a full second instead of however much of a process-wide 1 Hz grid slot was left.
+    (d) The gate is `!= Idle` and was **deliberately not narrowed** to the three phases the reducer acts
+    on, even though that is provably equivalent (`reduce()` returns early when terminal;
+    `FlashPairingDialog` draws the countdown only while active). `isActive()` is private to
+    `PairingSessionStateMachine` in `:core:security`, so narrowing means `:app` keeping a copy of a
+    classification that module owns — and a stale copy freezes the countdown. It buys 2–3 recompositions
+    across a ≤2.5 s linger; not worth it.
+
+### Why EXP-012 and EXP-016 have no test (do not file either as missing coverage)
+It changes *where Compose records a snapshot read*. Asserting that needs a composition, and `:app`'s
+test source set is plain JVM — no Compose UI test, no Robolectric. Adding either is a build-file
+change outside the task, and R10 forbids reaching for it opportunistically. The derivation's output is
+already covered (`TransfersUiMapperTest`, `FlashTransfersLogicTest`) and is untouched, so the
+unchanged-at-963 sweep was the regression check. EXP-013's scope change is untestable for the same
+reason; what *is* tested there is the arithmetic the fix extracted.
+
+The same holds for EXP-013 parts 2 and 3, with one addition: ten per-frame reads moved phase, and nothing
+in a plain-JVM test can observe which phase Compose invalidated. What is testable is what the move made
+explicit — `progressBarWidthPx`, which now has four tests. The regression check for the rest is the
+sweep at 972 plus a rebuilt APK.
+
+EXP-016 is the same conclusion by a different route, and the route matters because the obvious tests look
+like they would work. The property is a coroutine *lifetime* — "no periodic work exists while idle" — and
+each cheap discriminator fails: a counting `FlashTimeSource` reads **zero under both versions**, because
+the old loop called `nowMs()` only *inside* its `!= Idle` gate; `runTest` with the coordinator's scope as
+the `TestScope` fails identically either way, since the old ticker never completes and the new
+`session.collect` on a `StateFlow` never completes either; `advanceUntilIdle()` genuinely does
+discriminate, but by **hanging** rather than failing, which is a worse regression signal than none; and
+extracting `fun needsTick(phase) = phase != Idle` would assert the expression it wraps. Exposing the
+ticker's existence as production API purely for a test has no precedent in `:app` and is not worth it at
+this size. The substitute is that the fix's equivalence argument is a proof about code that was read —
+`PairingSessionStateMachine`'s two early returns, the countdown gate at `FlashPairingFlow.kt:140-219`,
+and `FlashPairingMath.tickCountdown` having zero production callers.
+
+### Recomposition scope: what was cleared (do not re-audit)
+- **`conversationState` is already narrow.** Its only composition read is `state = conversationState`
+  inside the Conversation branch; the four `conversationState.header.title` uses (780/816/868/888) are
+  inside **event lambdas**, which run at click time outside any snapshot observer and record no read.
+  It needed no change — and pacing it would have been wrong regardless, because a keystroke must reach
+  the composer immediately.
+- **`chatListState`'s other uses are already narrow** (1021, 1045-1057, 1071 — all inside the ChatList
+  branch). Only the `BackHandler` at shell scope was wide, and that is what was fixed.
+- **`FlashAnimatedScreen`'s `content` is a non-inline `@Composable (FlashBackStackState) -> Unit`**
+  (`ui/chat/.../FlashNavigation.kt:259-262`), so the branches really do get their own restart scope.
+  This was verified, not assumed; it is what makes the whole argument hold.
+- **`showDevConsole`, `isSearching`, `searchQuery` are correct as shell-scope state.** They change on a
+  user tap, not on a data event. Leave them.
+- **`FlashCallStatsBadge` is already correct.** It is Unit-returning, so `rememberCallStats`'
+  per-second read stays inside the badge that displays it.
+- **`rememberVideoTrack` is value-returning and does leak its read into `FlashCallVideoSurfaces`** —
+  left alone deliberately, because track changes are a handful per call, not per second, and the
+  renderer slots underneath it are the delicate ones (see the `FlashVideoRenderer` KDoc: `release()`
+  is terminal).
+
+### Per-frame animations: what was cleared (do not re-audit)
+Five sites were checked in the EXP-013 part 2 sweep and are **already correct**; they are the house
+precedents for the pattern, so read one of them before writing a new animation:
+- **`ScanningDot`** (`ui/chat/.../nearby/FlashNearbyScreen.kt:286-317`) — keeps the `State` and reads
+  `pulse?.value ?: 1f` inside `graphicsLayer`, with a comment saying exactly that.
+- **`Modifier.flashPressScale`** (`ui/theme/.../FlashInteraction.kt:29-44`) — `animateFloatAsState`
+  then `graphicsLayer { scaleX = scale.value; … }`. This is the thing the ~20 hand-rolled press scales
+  should be replaced by.
+- **`rememberTravelPulse`** (`ui/chat/.../shell/FlashBottomNav.kt:265`) — returns `State<Float>`.
+- **`FlashCallStatsBadge`** — Unit-returning, so `rememberCallStats`' per-second read stays inside the
+  badge that displays it.
+- **`FlashFileIconBadge`'s `animatedProgress`** (`ui/chat/.../FlashFileMessageCard.kt:295-345`) — this
+  one looks wrong and is not. It is a `by` delegate, but its only use is inside `progress = { … }`, and
+  a delegate's `getValue` runs when the lambda runs, i.e. in the draw phase. Do not "fix" it.
+
+Also checked and **not** timers: the `while (true)` loops at `ui/chat/.../FlashMediaViewer.kt:495-540`
+and `ui/chat/.../FlashVoiceRecording.kt:190-225` are `awaitEachGesture`/`pointerInput` bodies.
+
+**Cleared by the closing pass, with the real reason:** the ~10 remaining hand-rolled
+`by animateFloatAsState` press scales (`FlashAttachmentButton`, `FlashAttachmentSheet`,
+`FlashChatSearchBar` x2, `FlashFileMessageCard`, `FlashImageGrid`, `FlashMessageBubble`,
+`FlashMessageContextMenu` x2, `FlashReactionChip`, `FlashVoiceMessageCard` x2) need **nothing**: the
+property's only mention is inside the `graphicsLayer` lambda, so the read is already in the draw phase.
+The reason recorded here on the first pass — "each already recomposes for an accompanying
+`animateColorAsState`, so converting the scale alone buys only the spring tail" — was wrong; there is no
+tail to buy. Item 8 of the do-not-simplify list has the mechanism. `FlashComposer`'s send button was the
+one exception, and it is fixed (item 12 above). Consolidating the rest onto `Modifier.flashPressScale`
+stays queued as **de-bloat**.
+
+`MainActivity`'s `chipBottomInset` was listed here as needing nothing too, and that was wrong for a
+different reason: it is not a press scale and it was never in a `graphicsLayer`. It was an animated `Dp`
+consumed by `.padding(bottom = 16.dp + inset)` — a composition-time argument in `FlashShell`'s own
+restart scope. Part 3 fixed it (item 13 above); the phase-discipline sweep is now complete across
+`Float`, `Dp`, `Int`, `Color` and `Animatable`, with `updateTransition`/`animateValueAsState` having no
+callers at all.
+
+### Progress cadence: what was cleared (do not re-audit)
+Nearby *events* are second-scale and its models are data classes behind a `MutableStateFlow`, so
+identical rebuilds already conflate; call stats already run at `delay(intervalMs)` with an existing
+cost KDoc; the chat-list DAO write path during a transfer is already capped at one write per
+(transferId, path) by the stamping collector's `stamped` HashSet.
+
+### Held-open resources: what the seventh method has already cleared (partial — finish this list, don't restart it)
+Started at the end of the EXP-016 window; **not** finished, and it produced no find yet. What was checked
+and why each is *intentional* rather than a defect:
+- **`DiscoveryEngineHolder`'s `PARTIAL_WAKE_LOCK` + `WifiLock` (`:1520-1556`) are held for the engine's
+  lifetime on purpose.** This is the loudest possible hit for "held while nothing is happening" and it is
+  **not** a defect: for a mesh app, "nothing is happening" is exactly the state in which it must stay
+  reachable, and the memory note `session-recovery-invariants` records that the locks were deliberately
+  moved to outlive the Service to stop a peer flapping offline on screen-off. Both are
+  `setReferenceCounted(false)` and re-acquisition is guarded by `isHeld`, so they cannot stack. Only
+  `stopAll()` releases them, and that is stated in the KDoc. Do not "fix" this without an owner
+  instruction — it would regress the flap.
+- **`MulticastLock` in `NsdFlashDiscovery` and `NsdTransport` is already refcount-managed by state**, via
+  `acquireMulticastLockIfNeeded()` / `releaseMulticastLockIfIdle()` called from every browse/register
+  start and stop path (10 call sites). Nothing to do.
+- **No production thread pools exist.** Every `Executors.*` hit in the tree is in `src/test`; the product
+  code is coroutines-only.
+- **WebRTC's `PeerConnectionFactory` is never disposed, and that is webrtc-kmp's lazy global.** Its init
+  is one of the two things that make a first call slow on a 2 GB handset (`FlashCallSession.kt:124`,
+  `:231`), so disposing it between calls trades a held allocation for a repeated cost — a measure-first
+  question (EXP-007), not an inspectable win. `localStream`, the `AudioRecord` probe and the ringer's
+  `MediaPlayer` all *do* have release paths (`FlashCallSession.kt:1326`, `FlashWebRtcEngine.kt:263`,
+  `FlashCallRinger.kt:153/158/197`).
+
+**Not yet checked, and where the search should resume:** `MediaCodec` instances; `SurfaceTextureHelper`
+and camera capturer teardown on call end (as distinct from renderers, which
+`webrtc-renderer-lifetime` already settles — `EglRenderer.release()` is terminal, so never release on a
+track change); NSD registration/discovery listener unregistration symmetry; Room cursors held by any
+long-lived `Flow` collector; the foreground-service notification's own lifetime; and open `Socket` /
+`ServerSocket` counts against ADR-017's N-socket design.
+
+### Recommended next task, in order
+1. **A seventh method, and the only un-gated searchable item left: enumerate what the process holds
+   *open* while nothing is happening.** The two methods that produced finds (items 6 and 7 below) both
+   asked what the app does when nothing is happening — on a callback it never implements, and on a timer
+   nothing was waiting for. The third question of that family is about *handles*, not work: sockets and
+   server sockets, `WifiManager`/`PowerManager` wake locks, `MediaCodec`, `AudioRecord`/`AudioTrack` and
+   the WebRTC ADM, `EglBase` contexts and `SurfaceTextureHelper`s, `MulticastLock`s, NSD registration
+   listeners, Room cursors, thread pools, and foreground-service notifications. For each: what starts it,
+   what stops it, and is there a state in which it is open with no user-visible reason. **The top of this
+   inventory is already done** — see *Held-open resources: what the seventh method has already cleared*
+   above. It produced **no find**: the four loudest candidates (the engine's wake/Wi-Fi locks, the
+   multicast locks, thread pools, the WebRTC factory) are each intentional or already managed, and that is
+   worth knowing before spending another window on them. Resume from the "not yet checked" list there.
+2. **Ask the owner for the R8 instruction** on `transfer_chunks`: it grows without bound, and the fix
+   is a DAO status join for `allDoneChunks()` and/or wiring `RetentionPolicy` to a real delete sweep
+   (it has **zero production callers** today). R8 forbids touching DAOs without an explicit
+   instruction, so this cannot start without one.
+3. **EXP-007** — the on-device matrix. This is owner action and it gates every low-end *claim*.
+   Ten landings' worth of counted reductions are now waiting on it.
+4. Fold `markChunksDone` + `setBytesDone` into one Room transaction (needs a `TransferStore` port
+   change, ADR-024 boundary).
+5. If continuing to hunt inspectable costs, all four methods that worked are written down: (a) pick a
+   hot flow, count what *one* emission makes the app do, then check what the screen can actually render
+   at that rate; (b) find a `remember(state)` whose value is consumed in a narrower scope than the
+   `remember` sits in; (c) find a **value-returning `@Composable`** that reads State — it is not
+   restartable, so the read lands in its caller; (d) find a value read in composition whose only
+   consumer is a `graphicsLayer` / `drawBehind` / `Canvas` / `layout` / `semantics` block, and move the
+   read into that phase. **(b), (c) and (d) are now exhausted** across `:app`, `:ui:theme`, `:ui:chat`
+   and `:ui:callui`. For (d) specifically, the mechanical form of the search is a grep for animated
+   values passed as composition-time modifier *arguments*, and it must cover **all** the types, not just
+   `Float`: `.scale(`, `.alpha(`, `.rotate(`, `.offset(`, the `graphicsLayer(…)` argument form,
+   `fillMaxWidth(var)` **and** `.padding(`/`.height(`/`.width(`/`.size(`/`FontWeight(` fed by
+   `animateDpAsState`/`animateIntAsState`. The `Float` half returned no hits; the `Dp` half was skipped
+   the first time and turned up the `chipBottomInset` defect, which is why part 3 exists. Both halves now
+   return nothing outstanding, and the animated-`Color` and `Animatable` families were enumerated too, so
+   do not re-run these expecting finds — and do not mistake a read that is already inside a layer lambda
+   for one of these. Un-audited: `FlashDevConsoleScreen` (edit it with plain ASCII — it carries
+   pre-existing mojibake at lines 51/316). Also queued: the press-scale consolidation onto
+   `Modifier.flashPressScale`, as de-bloat.
+6. **A fifth method, and the one that produced EXP-014: pick a platform callback or lifecycle signal the
+   app never implements, and cost out what that omission retains or repeats.** `onTrimMemory` /
+   `onLowMemory` was the first — a grep for the callback name across `app/`, `core/` and `ui/` returned
+   nothing, and the bound followed from one cache's own budget expression. The same question has not yet
+   been asked of: `Configuration` changes other than the one the decoder now ignores;
+   `onSaveInstanceState` / process-death restore for an in-progress transfer or composer draft;
+   `ConnectivityManager.NetworkCallback` teardown symmetry (ERROR-035 covered the arrival side);
+   `PowerManager` idle/doze transitions against the retry budgets; and the fact that
+   `FlashPerformanceClassifier` classifies **once** and reads `ActivityManager.MemoryInfo.totalMem`
+   but never `Runtime.getRuntime().maxMemory()` — the per-process heap cap, which is what actually
+   governs an OOM and can be 128 MB on a 2 GB handset. (It *does* consult `isLowRamDevice` and
+   `totalRamMb`, both as hard gates — do not "add" those.) Each is a question, not a claimed find.
+7. **A sixth method, and the one that produced EXP-015 and EXP-016: invert the fifth. Enumerate what the
+   app repeats on a timer whether or not there is anything to do, and for each ask what it would take to
+   know when the next piece of work is actually due.** This class is now **closed**, and the enumeration
+   is **already done and must not be re-run**:
+   27 `while (true)` sites exist in product code, but almost all are blocking read/queue loops
+   (`WebSocketCodec`, `DataChannelFraming`, `BoundedSendQueue`, `Chunker`) that are event-driven by
+   construction, and `ui/chat/.../FlashMediaViewer.kt:495` / `FlashVoiceRecording.kt:190` are
+   `awaitEachGesture`/`pointerInput` bodies. Cross-referenced against a literal `delay(...)`, exactly three
+   were time-driven and all three are now accounted for: `PairingCoordinator` (**fixed, EXP-016**),
+   `MultiStreamDispatcher.kt:197` (10 ms, but `while (isActive && !deferred.isCompleted)` so it is scoped
+   to a running transfer, and EXP-011 already throttled its consumer), and `FlashCallScreen.kt:586` (the
+   mm:ss call clock — inherently 1 Hz and scoped to a call). Everything else is a one-shot `delay` or the
+   deliberately time-driven `WsKeepalive`. Two transferable rules came out of it: **a loop that does not
+   know when its next piece of work is due will both poll too often and fire too late** (EXP-015 — its two
+   costs were one root cause, and both fixes are the same one), and where there is no deadline to hold,
+   **give the loop the same lifetime as the thing it is timing** (EXP-016 — usually by making it a child of
+   a job that already gets cancelled, rather than adding a new cancellation path).
+8. **The commit is the owner's call.** Fourteen windows of work sit uncommitted on `dev`.
+
+### Files most relevant
+`app/.../MainActivity.kt` (EXP-011/012, and EXP-013 part 3's `chipBottomInset`), `app/.../ui/UiPacing.kt`,
+`ui/callui/.../FlashCallScreen.kt` (EXP-013 both parts), `ui/callui/src/test/.../FlashCallDurationTest.kt`,
+`ui/chat/.../transfers/FlashTransfersScreen.kt` (`PROGRESS_THROTTLE_MS`, `progressBarWidthPx`, the
+layout-phase fill), `ui/theme/.../FlashBrandAnimation.kt`, `ui/chat/.../FlashTypingIndicator.kt`,
+`ui/chat/.../FlashVoiceRecording.kt`, `ui/chat/.../FlashPairingFlow.kt`, `ui/chat/.../FlashStateViews.kt`,
+`ui/chat/.../FlashComposer.kt` (`FlashSendButton` — the last composition-time `Modifier.scale` and the
+last unguarded spring), `ui/theme/.../FlashInteraction.kt` (the precedent),
+`ui/chat/.../settings/FlashSettingsScreen.kt` (the two `offset { }` reads part 3 copied),
+`ui/chat/.../FlashMediaDecoder.kt` + `ui/chat/src/test/.../FlashMediaCacheTrimTest.kt` (EXP-014, the
+only memory-pressure handler in the app), `core/messaging/.../RealFlashChatRepository.kt` (EXP-015's
+`drainOutboxLoop` / `drainOutboxOnce` / `outboxNextDueAt`, and the declaration-order hazard comment above
+the `init` block), `core/messaging/.../OutboxDrainSchedule.kt` +
+`core/messaging/src/test/.../OutboxDrainScheduleTest.kt` (EXP-015, new),
+`core/persistence/.../dao/OutboxDao.kt:61` (`observeCount()`, the wake source — pre-existing, unchanged),
+`app/.../pairing/PairingCoordinator.kt` (**EXP-016** — `tickWhileInFlight`, launched from
+`launchCollectors()`; the `init` block it replaced is gone),
+`logs/experiments.md` EXP-008…015.
+
+### Also outstanding
+`New folder/` can be deleted by the owner; `app/.../lan/LanController.kt:94` never refreshes
+`LanUiState.localAddresses` after a roam (deferred); `docs/session-prompt.md:36-45` is stale; a tier
+below LOW is deliberately deferred.
+
+## 2026-09-04 (g) — Task #5: both consumers of the 100 Hz transfer tick are now paced (EXP-010 chat, EXP-011 shell). The cadence thread is closed; what is left of task #5 is R8-gated, ADR-gated or measure-first
+
+### Current branch
+`dev`, HEAD `5b31785`. **Nothing is committed.** Working tree carries ERROR-033/034/035, task #3,
+task #4 (complete), and five task #5 landings (frame-path allocations, send-side resume bookkeeping,
+receiver done-set, chat progress cadence, shell progress cadence). No commit requested by the owner; the
+tree is nine work-windows deep.
+
+### Last verified build
+The authoritative command below. **963 live tests / 12 known Windows DataStore failures / 0 skipped**,
+fresh `app-debug.apk`. `BASELINE_TEST_TOTAL` is now **963** (CONVENTIONS R3 updated; `:app` 32 → 36,
+`:ui:chat` 244 → 245).
+
+```bash
+cd "C:/Users/KaliOxygen/Downloads/Flash" && export JAVA_HOME="/c/Users/KaliOxygen/.gradle/jdks/jetbrains_s_r_o_-21-amd64-windows.2" && export JAVA_TOOL_OPTIONS='-Djdk.net.unixdomain.tmpdir=C:\Users\KaliOxygen\.gradle\afunix' && ./gradlew testDebugUnitTest assembleDebug :core:common:testAndroidHostTest --continue --console=plain --max-workers=2
+```
+
+Only the 12 `:core:persistence` failures may fail. Anything else is a regression.
+
+### Current phase
+Tasks #1–#4 complete. **Task #5 (low-end library speed) is IN PROGRESS but out of un-gated inspectable
+items.** Landed: EXP-001 frame allocation churn; **EXP-008** send-side resume bookkeeping; **EXP-009**
+receiver done-set; **EXP-010** chat progress cadence; **EXP-011** shell progress cadence. All five were
+convicted by arithmetic over repo constants, which is the only §23-legal route without hardware.
+
+### Broken
+Only the 12 known Windows-only `:core:persistence` DataStore failures.
+
+### Last change
+- `ui/chat/.../FlashTransfersScreen.kt` — `FlashTransfersMath.PROGRESS_THROTTLE_MS` was a **dead
+  constant with zero references** (`250L`). Now live *and* re-derived:
+  `FlashMotion.NormalMillis * 3L / 4L` = **150 ms**. The derivation is the point — see below.
+- `app/.../MainActivity.kt:572-590` — source resolved outside the `remember`, paced, and
+  `collectAsState(initial = transfersSource.value)`.
+- **New** `app/.../ui/UiPacing.kt` + `app/src/test/.../ui/UiPacingTest.kt` (+4) — the same leading-edge
+  `throttleLatest` as `:core:messaging`'s, deliberately duplicated (reason in its KDoc and in EXP-011).
+- `ui/chat/.../FlashTransfersLogicTest.kt` (+1) — asserts `PROGRESS_THROTTLE_MS < FlashMotion.NormalMillis`.
+- Docs: `logs/experiments.md` EXP-011, `logs/progress.md` (g), CONVENTIONS R3 (963).
+
+### Two things not to "simplify" later
+1. **150, not 250.** Both animations on the Transfers screen run for `FlashMotion.NormalMillis = 200`. A
+   pacing window *longer* than the animation lets it finish and then hold still until the next value —
+   a periodic dead stop, four times a second, on the **HIGH** tier specifically (the tier where the
+   animation is not switched off), which is exactly what the owner's constraint forbids. Shorter than the
+   animation means every target lands mid-flight and `animateFloatAsState` retargets. The test enforces it.
+2. **`collectAsState(initial = transfersSource.value)`, not `emptyList()`.** `collectAsState()` on a
+   `StateFlow` reads the current value synchronously at composition; a cold flow's overload does not.
+   An empty seed gives one frame where `transfersReady` is true and the list is empty — i.e. the tab
+   renders "No transfers yet", a claim about this device's history. That is the ERROR-034 shape.
+
+### Startup: what was cleared (do not re-audit)
+`FlashApplication` is a bare `@HiltAndroidApp` shell. `MainActivity.onCreate` does no disk I/O. Every
+expensive `AppEngine` member is `by lazy`, and `start()` touches `performanceMode.value` on
+`Dispatchers.Default` on purpose so the `MediaCodecList` tier walk is paid off the first composition. The
+AndroidKeyStore passphrase unwrap is lazy (Room calls it on first query) and one-time. None of these need
+work.
+
+### Progress cadence: what was cleared (do not re-audit)
+Both consumers of `MultiStreamDispatcher`'s `WATCH_POLL_MS = 10L` tick are paced: the conversation mapper
+at 100 ms (`RealFlashChatRepository.pacedAttachmentProgress`, EXP-010) and the app shell at 150 ms
+(`MainActivity` + `FlashTransfersMath.PROGRESS_THROTTLE_MS`, EXP-011). The tick itself was left alone on
+purpose — it is the sender's own bookkeeping cadence and `maybeResolveFromState` rides on it.
+
+### Recommended next task
+1. **Owner instruction needed (R8): bound `transfer_chunks`.** `preloadReceiverProgress()` reads every
+   done row on the device with no predicate, and **nothing prunes the table** — `RetentionPolicy` is
+   fully unit-tested with **zero production callers**, and no `DELETE` exists for `transfers` or
+   `transfer_chunks`, so it is append-only for the life of the install. The fix is a status-joined
+   `allDoneChunks` and/or a real delete sweep — both Room changes, and `TransferDao` has no "all
+   transfers" query to filter against from the adapter side. **R8 blocks this without an explicit
+   instruction.**
+2. **Owner: EXP-007.** Still the gate on every low-end *claim*; EXP-001/008/009/010/011 may only be
+   quoted as counts. Add one item: which `startEngineLocked` stage dominates the cold-start splash. The
+   sequence is fully serialized under one mutex, but its order encodes ERROR-032/033 and #4/#20
+   invariants, so it must not be reordered on inspection alone.
+3. Optional, needs an ADR-024 port change: fold `markChunksDone` + `setBytesDone` into one Room
+   transaction to halve the remaining fsyncs.
+4. **If continuing to hunt inspectable costs**, the method that found EXP-008/009/010/011 was: pick a hot
+   flow, count what *one* emission makes the app do, then check what the screen can actually render at
+   that rate. Un-inspected candidates: `discoveredEndpoints` / `discoveryState` and the `NearbyUiState`
+   rebuild at `MainActivity.kt:613` (keyed on five values, one of which is a list rebuilt per discovery
+   event); the `:ui:chat` chat-list mapper under presence churn; `FlashCallSession`'s stats flow during
+   a call. None of these has been counted yet — do not assume they are hot.
+5. Commit/split decision is the owner's.
+
+### Files most relevant to next task
+- `core/transfer/.../RealFlashTransferRepository.kt` — `preloadReceiverProgress` / `receiverDone`, and
+  the `TransferStore` port it calls.
+- `core/engine/.../RoomTransferStore.kt` + `core/persistence/.../TransferChunkDao.kt` + `TransferDao.kt`
+  — where the R8-gated predicate would go.
+- `core/transfer/.../RetentionPolicy.kt` — the unwired pruner seam.
+- `app/.../MainActivity.kt:592-640` — the Nearby derivation, candidate 4 above.
+
+## 2026-09-04 (f) — Task #5: the 100 Hz progress tick was re-deriving the whole open conversation; throttled to 10 Hz, tier-independent, nothing lost on screen (EXP-010). Next = the same tick's second consumer at `MainActivity.kt:573`
+
+### Current branch
+`dev`, HEAD `5b31785`. **Nothing is committed.** Working tree carries ERROR-033/034/035, task #3,
+task #4 (complete), and four task #5 landings (frame-path allocations, send-side resume bookkeeping,
+receiver done-set, progress cadence). No commit requested by the owner; the tree is eight work-windows
+deep.
+
+### Last verified build
+The authoritative command below. **958 live tests / 12 known Windows DataStore failures / 0 skipped**,
+fresh `app-debug.apk`. `BASELINE_TEST_TOTAL` is now **958** (CONVENTIONS R3 updated; `:core:messaging`
+36 → 41).
+
+```bash
+cd "C:/Users/KaliOxygen/Downloads/Flash" && export JAVA_HOME="/c/Users/KaliOxygen/.gradle/jdks/jetbrains_s_r_o_-21-amd64-windows.2" && export JAVA_TOOL_OPTIONS='-Djdk.net.unixdomain.tmpdir=C:\Users\KaliOxygen\.gradle\afunix' && ./gradlew testDebugUnitTest assembleDebug :core:common:testAndroidHostTest --continue --console=plain --max-workers=2
+```
+
+Only the 12 `:core:persistence` failures may fail. Anything else is a regression.
+
+### Current phase
+Tasks #1–#4 complete. **Task #5 (low-end library speed) is IN PROGRESS.** Landed: EXP-001 frame
+allocation churn; **EXP-008** send-side resume bookkeeping; **EXP-009** receiver done-set; **EXP-010**
+the attachment-progress cadence into the conversation mapper. All four were convicted by arithmetic over
+repo constants, which is the only §23-legal route without hardware.
+
+### In progress
+Task #5. The **chat** consumer of the transfer progress tick is now paced. The **root-composable**
+consumer of the same tick is identified and untouched — see "Recommended next task".
+
+### Broken
+Only the 12 known Windows-only `:core:persistence` DataStore failures.
+
+### Last change
+- **New** `core/messaging/.../util/ProgressThrottle.kt` — `internal fun <T> Flow<T>.throttleLatest(windowMs: Long)`:
+  emit, then `delay(windowMs)`. **Leading-edge**, not `kotlinx`'s trailing-edge `sample`: the flow feeds
+  a `combine` that cannot emit until every input has, so `sample` would have blanked the conversation for
+  up to a window on open (**ERROR-034**). Non-positive window disables throttling.
+- `core/messaging/.../RealFlashChatRepository.kt` — `pacedAttachmentProgress` (100 ms via
+  `ATTACHMENT_PROGRESS_THROTTLE_MS`), declared **above the `init` block** for the reason recorded on
+  `drainMutex`; both consumers switched (the `init` path-stamping collector, and the `contentFlow`
+  combine's third input).
+- Nothing changed at the wiring sites (`Flash.kt:258`, `DiscoveryEngineHolder.kt:541`) **on purpose**:
+  the operator suspends upstream instead of buffering, so the `StateFlow` conflates and the intervening
+  `activeTransfers.map { … }` never runs — the discarded maps are never built.
+- Tests: `ProgressThrottleTest` +4 (wall-clock by design, bounds derived from *measured* elapsed time);
+  `RealFlashChatRepositoryTest` +1 (300-tick burst, then the terminal `Downloaded` must land on **both**
+  the rendered `localUri` and the row's `attachmentPath`).
+- Docs: `logs/experiments.md` EXP-010, `logs/progress.md` (f), CONVENTIONS R3 (958 / `:core:messaging` 41).
+
+### Why this is not gated on the performance tier
+The owner's constraint is that HIGH mode loses no quality or animation. Nothing here is tiered because
+nothing HIGH-tier changes: `progress` only advances per ACK_BATCH (one per 2 MB), `speedMbps` renders at
+`"%.1f"`, `etaSeconds` is not rendered at all, and the bar is animated by `animateFloatAsState` against
+Compose's frame clock. The 10 ms cadence carried nothing the screen could show.
+
+### Startup: what was cleared (do not re-audit)
+`FlashApplication` is a bare `@HiltAndroidApp` shell. `MainActivity.onCreate` does no disk I/O. Every
+expensive `AppEngine` member is `by lazy`, and `start()` touches `performanceMode.value` on
+`Dispatchers.Default` on purpose so the `MediaCodecList` tier walk is paid off the first composition. The
+AndroidKeyStore passphrase unwrap is lazy (Room calls it on first query) and one-time. None of these need
+work.
+
+### Recommended next task
+1. **`MainActivity.kt:560-604` — the second consumer of the 100 Hz tick.** `collectAsState()` on
+   `activeTransfers` sits at the **root** composable and feeds
+   `remember(domainTransfers, transfersReady, chatStartError) { TransfersUiState.fromDomain(...) }`, so the
+   app root invalidates on every tick during a transfer. Compose frame-coalesces the recomposition, so
+   this is milder than the chat path was — read `TransfersUiMapper.kt` and size `fromDomain` before
+   choosing between a throttle, a `distinctUntilChanged` on just the fields the Transfers tab renders, or
+   hoisting the collection out of the root. Do not assume a throttle is right here: the Transfers tab is
+   the one surface where a *speed* readout is the point.
+2. **Owner instruction needed (R8): bound `transfer_chunks`.** `preloadReceiverProgress()` reads every
+   done row on the device with no predicate, and **nothing prunes the table** — `RetentionPolicy` is
+   fully unit-tested with **zero production callers**, and no `DELETE` exists for `transfers` or
+   `transfer_chunks`, so it is append-only for the life of the install. The fix is a status-joined
+   `allDoneChunks` and/or a real delete sweep — both Room changes, and `TransferDao` has no "all
+   transfers" query to filter against from the adapter side. **R8 blocks this without an explicit
+   instruction.**
+3. **Owner: EXP-007** (still the decisive gate for every low-end *claim*; EXP-008/009/010 may only be
+   quoted as counts). Add one item: which `startEngineLocked` stage dominates the cold-start splash. The
+   sequence is fully serialized under one mutex, but its order encodes ERROR-032/033 and #4/#20
+   invariants, so it must not be reordered on inspection alone.
+4. Optional, needs an ADR-024 port change: fold `markChunksDone` + `setBytesDone` into one Room
+   transaction to halve the remaining fsyncs.
+5. Commit/split decision is the owner's.
+
+### Files most relevant to next task
+- `app/.../MainActivity.kt:560-604` — the root `collectAsState()` and the `remember` re-map.
+- `app/.../TransfersUiMapper.kt` — `TransfersUiState.fromDomain`, the work being repeated.
+- `core/messaging/.../util/ProgressThrottle.kt` — the operator, if a throttle turns out to be the right
+  shape there too (it is `internal` to `:core:messaging`; a second consumer in `:app` would need a home
+  decision, and `:core:common` was rejected because it is the live Phase-06 KMP pilot).
+- `core/transfer/.../MultiStreamDispatcher.kt:150-249, 626-656` — `WATCH_POLL_MS` and `publishProgress()`,
+  the source of the cadence.
+
+## 2026-09-04 (e) — Task #5: startup cost inspected end to end; the receiver done-set is now one bit per chunk instead of ~50 bytes (EXP-009). What remains of startup is either R8-gated or needs a real trace
+
+### Current branch
+`dev`, HEAD `5b31785`. **Nothing is committed.** Working tree carries ERROR-033/034/035, task #3,
+task #4 (complete), and three task #5 landings (frame-path allocations, send-side resume bookkeeping,
+receiver done-set). No commit requested by the owner; the tree is seven work-windows deep.
+
+### Last verified build
+The authoritative command below. **953 live tests / 12 known Windows DataStore failures / 0 skipped**,
+fresh `app-debug.apk`. `BASELINE_TEST_TOTAL` is now **953** (CONVENTIONS R3 updated; `:core:transfer`
+100 → 102).
+
+```bash
+cd "C:/Users/KaliOxygen/Downloads/Flash" && export JAVA_HOME="/c/Users/KaliOxygen/.gradle/jdks/jetbrains_s_r_o_-21-amd64-windows.2" && export JAVA_TOOL_OPTIONS='-Djdk.net.unixdomain.tmpdir=C:\Users\KaliOxygen\.gradle\afunix' && ./gradlew testDebugUnitTest assembleDebug :core:common:testAndroidHostTest --continue --console=plain --max-workers=2
+```
+
+Only the 12 `:core:persistence` failures may fail. Anything else is a regression.
+
+### Current phase
+Tasks #1–#4 complete. **Task #5 (low-end library speed) is IN PROGRESS.** Landed: EXP-001 frame
+allocation churn; **EXP-008** send-side resume bookkeeping (was O(chunks²) in allocations, wrote the
+`transfers` row ~100×/s); **EXP-009** the receiver done-set. All three were convicted by arithmetic over
+repo constants, which is the only §23-legal route without hardware.
+
+### In progress
+Task #5. Startup cost is now **inspected as far as inspection can take it** — see "Startup: what was
+cleared" below, so the next window does not re-audit it.
+
+### Broken
+Only the 12 known Windows-only `:core:persistence` DataStore failures.
+
+### Last change
+- `core/transfer/.../RealFlashTransferRepository.kt` — `receiverDone` is `ConcurrentHashMap<String,
+  BitSet>` (one bit per chunk, **~400×** smaller than the boxed-`Integer` set it replaced), each entry
+  mutated under `synchronized`; `getOrPut` → `computeIfAbsent` (the old form was a non-atomic
+  get-then-put that could drop a racing coroutine's marks); negative indexes dropped rather than passed
+  to `BitSet.set`, which throws where the old `HashSet.add` silently accepted. `import java.util.BitSet`.
+  KDoc records the `totalChunks / 8` worst case and the pruning gap.
+- Public surface unchanged — `receiverDoneIndexes(transferId): List<Int>` still returns ascending, and
+  its callers at `Flash.kt:220` / `DiscoveryEngineHolder.kt:410` needed no edit.
+- Tests: `RealFlashTransferRepositoryTest` +2 (preload ordering across a `BitSet` word boundary, per-
+  transfer isolation, corrupt-row survival; delta-only persistence with in-batch de-dup and a wholly
+  redundant batch reaching the store not at all).
+- Docs: `logs/experiments.md` EXP-009, `logs/progress.md` (e), CONVENTIONS R3 (953 / `:core:transfer` 102).
+
+### Startup: what was cleared (do not re-audit)
+`FlashApplication` is a bare `@HiltAndroidApp` shell. `MainActivity.onCreate` does no disk I/O. Every
+expensive `AppEngine` member is `by lazy`, and `start()` touches `performanceMode.value` on
+`Dispatchers.Default` on purpose so the `MediaCodecList` tier walk is paid off the first composition. The
+AndroidKeyStore passphrase unwrap is lazy (Room calls it on first query) and one-time. None of these need
+work.
+
+### Recommended next task
+1. **Owner instruction needed (R8): bound `transfer_chunks`.** `preloadReceiverProgress()` reads every
+   done row on the device with no predicate, and **nothing prunes the table** — `RetentionPolicy` is
+   fully unit-tested with **zero production callers**, and no `DELETE` exists for `transfers` or
+   `transfer_chunks`, so it is append-only for the life of the install. `Completed` transfers' rows are
+   unresumable dead weight that is read back every launch. The fix is a status-joined `allDoneChunks`
+   and/or a real delete sweep — both Room changes, and `TransferDao` has no "all transfers" query to
+   filter against from the adapter side, so it cannot be done outside the DAO. **R8 blocks this without
+   an explicit instruction.**
+2. **Owner: EXP-007** (still the decisive gate for every low-end claim; no throughput claim may be made
+   from EXP-008 or EXP-009). Add one item to its run: which `startEngineLocked` stage dominates the
+   cold-start splash. `MainActivity` holds the splash for the entire transport boot, and the sequence is
+   fully serialized under one mutex — but its order encodes invariants from ERROR-032/033 and #4/#20, so
+   it must not be reordered on inspection alone.
+3. Optional, needs an ADR-024 port change: fold `markChunksDone` + `setBytesDone` into one Room
+   transaction to halve the remaining fsyncs.
+4. Commit/split decision is the owner's.
+
+### Files most relevant to next task
+- `core/transfer/.../RealFlashTransferRepository.kt` — `preloadReceiverProgress` / `receiverDone` /
+  `onIncomingChunkConfirmed` (~663-720), and the `TransferStore` port it calls.
+- `core/engine/.../RoomTransferStore.kt` + `core/persistence/.../TransferChunkDao.kt` +
+  `TransferDao.kt` — where the R8-gated predicate would go.
+- `core/transfer/.../RetentionPolicy.kt` — the unwired pruner seam.
+- `app/.../MainActivity.kt:123-182` and `app/.../debug/DiscoveryEngineHolder.kt:297-470` — the splash
+  coupling and the serialized boot sequence.
+
+## 2026-09-04 (d) — Task #5: send-side resume bookkeeping de-quadraticised and the 100 Hz `transfers`-row fsync storm cut (EXP-008); next = startup cost, starting with `preloadReceiverProgress()` vs `RetentionPolicy`
+
+### Current branch
+`dev`, HEAD `5b31785`. **Nothing is committed.** Working tree carries ERROR-033/034/035, task #3,
+task #4 (complete), and two task #5 landings (frame-path allocations, and now resume bookkeeping).
+No commit requested by the owner; the tree is six work-windows deep.
+
+### Last verified build
+The authoritative command below. **951 live tests / 12 known Windows DataStore failures / 0 skipped**,
+fresh `app-debug.apk`. `BASELINE_TEST_TOTAL` is now **951** (CONVENTIONS R3 updated; `:core:transfer`
+95 → 100).
+
+```bash
+cd "C:/Users/KaliOxygen/Downloads/Flash" && export JAVA_HOME="/c/Users/KaliOxygen/.gradle/jdks/jetbrains_s_r_o_-21-amd64-windows.2" && export JAVA_TOOL_OPTIONS='-Djdk.net.unixdomain.tmpdir=C:\Users\KaliOxygen\.gradle\afunix' && ./gradlew testDebugUnitTest assembleDebug :core:common:testAndroidHostTest --continue --console=plain --max-workers=2
+```
+
+Only the 12 `:core:persistence` failures may fail. Anything else is a regression.
+
+### Current phase
+Tasks #1–#4 complete. **Task #5 (low-end library speed) is IN PROGRESS.** Landed so far: the EXP-001
+frame allocation churn (single-allocation `ChunkFrame.serialize`, in-place masking on the consuming
+send, `readMessage` single-frame fast path) and now **EXP-008** — the send-side resume bookkeeping was
+O(chunks²) in allocations and wrote the `transfers` row ~100×/s. This *was* the "DB batching" item the
+previous handoff deferred; it was convicted by arithmetic over repo constants
+(`WATCH_POLL_MS = 10L`, `DEFAULT_ACK_EVERY = 32`, `DEFAULT_CHUNK_SIZE_BYTES = 64 KiB`) rather than by
+intuition, which is the only §23-legal route without hardware.
+
+### In progress
+Task #5 — startup cost is the remaining item and is still unmeasured.
+
+### Broken
+Only the 12 known Windows-only `:core:persistence` DataStore failures.
+
+### Last change
+- `core/transfer/.../chunked/ResumeBitVector.kt` — new `receivedIndexesNotIn(other)` (`BitSet.andNot`
+  word arithmetic; boxes only the delta).
+- `core/transfer/.../multistream/MultiStreamDispatcher.kt` — new `confirmedIndexesNotIn(known)` and
+  `totalChunks`. Existing snapshot accessors untouched.
+- `core/transfer/.../RealFlashTransferRepository.kt` — the send-side progress collector: an O(1)
+  `confirmedCountSnapshot()` gate, delta-based chunk persistence against a local mirror
+  `ResumeBitVector`, and `setBytesDone` moved onto the chunk-row cadence.
+- Tests: `ResumeBitVectorTest` +4, `RealFlashTransferRepositoryTest` +1 (recording `TransferStore`
+  over the 8-chunk ACK-loopback harness; exactly-once, ascending, bounded byte writes).
+- Docs: `logs/experiments.md` EXP-008, `logs/progress.md` (d), CONVENTIONS R3.
+
+### Recommended next task
+1. **Task #5 continued — startup cost.** `FlashApplication` is a bare `@HiltAndroidApp` shell, so look
+   at Hilt graph construction, `MainActivity`, engine init, and especially
+   **`preloadReceiverProgress()`**: a full `SELECT transferId, chunkIndex FROM transfer_chunks WHERE
+   done = 1` across every transfer ever made, with no visible pruning. Check it against
+   `RetentionPolicy` — inspectable without hardware, the same way EXP-008 was.
+2. **Owner: EXP-007** (still the decisive gate for every low-end claim; no throughput claim may be
+   made from EXP-008).
+3. Optional, needs an ADR-024 port change: fold `markChunksDone` + `setBytesDone` into one Room
+   transaction to halve the remaining fsyncs.
+4. Commit/split decision is the owner's.
+
+### Files most relevant to next task
+- `logs/progress.md` 2026-09-04 (d) and `logs/experiments.md` EXP-008 — the full record.
+- `core/transfer/.../RealFlashTransferRepository.kt` (`preloadReceiverProgress()`),
+  `core/persistence/.../dao/TransferChunkDao.kt`, and whatever owns `RetentionPolicy`.
+- `app/.../di/FlashApplication.kt`, `MainActivity.kt`, `di/AppEngine.kt` for the startup path.
+
+## 2026-09-04 (c) — Task #5 STARTED (frame-path allocation churn cut, EXP-001 LOS finding); next = measure DB batching + startup on the Belfone, or EXP-007
+
+### Current branch
+`dev`, HEAD `5b31785`. **Nothing is committed.** Working tree carries ERROR-033/034/035, task #3,
+task #4 (complete), and the first task #5 landing. No commit requested by the owner.
+
+### Last verified build
+Same authoritative command as the (b) section (plus `assembleRelease` there). **946 live tests /
+12 known Windows DataStore failures / 0 skipped.** `BASELINE_TEST_TOTAL` is now **946**
+(CONVENTIONS R3 updated; `:core:network` 135 → 137).
+
+### Current phase
+Tasks #1–#4 complete. **Task #5 (low-end library speed) is IN PROGRESS:** the EXP-001 allocation
+churn is fixed (single-allocation `ChunkFrame.serialize`, in-place masking on the consuming send,
+single-frame fast path in `readMessage`). DB batching and startup cost remain, and both need a real
+measurement before any edit (AGENTS.md §23). Task #6 received one item incidentally: the load-flaky
+`hasLoaded` tests are now `withTimeout`-deterministic.
+
+### In progress
+Task #5 — see above.
+
+### Broken
+Only the 12 known Windows-only `:core:persistence` DataStore failures.
+
+### Last change
+`ChunkFrame.kt` (serialize rewrite), `WebSocketCodec.kt` (`maskPayloadInPlace`, single-frame fast path),
+`WsConnection.kt` (`sendBinaryConsuming`), `Flash.kt` (2 consuming call sites),
+`WebSocketCodecTest.kt` (+2), `RealFlashChatRepositoryTest.kt` (deterministic `hasLoaded` awaits).
+
+### Recommended next task
+1. **Owner: EXP-007** (still the decisive gate for every low-end claim).
+2. Task #5 continued: **measure** DB write batching (Room inserts per message/chunk-row?) and engine
+   startup cost on the Belfone, then optimize only what the profile convicts.
+3. Commit decision is the owner's: the tree is now five work-windows deep.
+
+### Files most relevant to next task
+- `logs/progress.md` 2026-09-04 (c) — the full task #5 record.
+- `core/transfer/.../chunked/ChunkFrame.kt`, `core/network/.../ws/WebSocketCodec.kt`,
+  `WsConnection.kt`, `core/engine/.../Flash.kt`.
+- `logs/experiments.md` EXP-001 (the baseline this work attacks; re-run on 5 GHz still open).
+
+## 2026-09-04 (b) — Task #4 UI de-bloat CLOSED (release optimization + delivery-check gate were the last two); next = task #5 (low-end library speed) or #6 (opportunistic optimisations)
+
+### Current branch
+`dev`, HEAD `5b31785`. **Nothing is committed.** The working tree carries ERROR-033 tiering,
+ERROR-034/035 network-change work, task #3, and the now-complete task #4 de-bloat set. No commit has
+been requested by the owner. `logs/` itself was briefly missing from the repo root (it had been moved
+into `New folder/logs/` alongside a session export) — restored this session; `New folder/` also holds
+the previous AI session's transcript for archaeology and can be deleted when no longer needed.
+
+### Last verified build
+```bash
+cd "C:/Users/KaliOxygen/Downloads/Flash" && export JAVA_HOME="/c/Users/KaliOxygen/.gradle/jdks/jetbrains_s_r_o_-21-amd64-windows.2" && export JAVA_TOOL_OPTIONS='-Djdk.net.unixdomain.tmpdir=C:\Users\KaliOxygen\.gradle\afunix' && ./gradlew testDebugUnitTest assembleDebug assembleRelease :core:common:testAndroidHostTest --continue --console=plain --max-workers=2
+```
+- **944 live tests / 12 failures / 0 skipped** — the same known Windows-only `:core:persistence`
+  DataStore atomic-rename set, before AND after this session's edits. Per-module table unchanged from
+  the 2026-09-04 section below.
+- `app-debug.apk` rebuilt; **`app-release-unsigned.apk` = 52.8 MB vs debug 67.6 MB** — the first
+  release build with `optimization.enable = true` (R8 + optimized resource shrinking, AGP 9.3+ DSL).
+  Built clean on the first attempt; no keep rules needed.
+
+### Current phase
+Tasks #1 (phantom conversations), #2 (network-change handling), #3 (Wi-Fi client + hotspot host
+concurrency) and **#4 (UI de-bloat) are all complete.** Every finding on the de-bloat list is done —
+see `logs/progress.md` 2026-09-04 (b) for the full inventory. Tasks #5 (low-end library speed) and #6
+(opportunistic optimisations) from the owner's five-thread request are untouched.
+
+### Working features (NEW since last handoff)
+- **Release builds are optimized.** `release.optimization.enable = true` in `app/build.gradle.kts`.
+- **No per-bubble `AnimatedContent` at LOW/MEDIUM.** `FlashDeliveryStatusIcon` gates the crossfade on
+  `!reduceMotion`; the reduced path is a direct glyph swap that is visually identical (the spec already
+  snapped) but drops the per-row `Transition` and second layout. HIGH is bit-identical.
+
+### In progress
+Nothing mid-edit.
+
+### Broken
+Only the 12 known Windows-only `:core:persistence` DataStore failures (pass on Linux/macOS CI and on
+device).
+
+### Last change
+`app/build.gradle.kts` (optimization) and `FlashDeliveryStatusIcon.kt` (conditional AnimatedContent,
+glyph body extracted to private `DeliveryStatusGlyph`).
+
+### Last test
+944 / 12 / 0 + `assembleRelease` green, as above.
+
+### Known blockers
+- **EXP-007's on-device matrix is owner action** and is still the only step before ERROR-033 is DONE.
+  Nothing from ERROR-034/035 or task #4 is confirmed on hardware either — all claims are
+  build-and-unit-test verified only; the release APK additionally has not been installed anywhere.
+- All other blockers from the 2026-09-04 section below stand (single-address endpoints deferred,
+  hotspot-client ↔ router-LAN discovery by design, `LanController.kt:94`, `docs/session-prompt.md`
+  staleness, `FlashDevConsoleScreen.kt` mojibake at :316).
+
+### Recommended next task
+**Task #5 — low-end library speed**, or **task #6 — opportunistic optimisations** (owner's five-thread
+request; neither has a written scope yet — reconstruct from the request and the ERROR-033 tier work
+before editing). Otherwise EXP-007 with the owner. Do not commit without the owner's go-ahead; the
+split-vs-single decision for the accumulated changeset is theirs.
+
+### Files most relevant to next task
+- `logs/progress.md` 2026-09-04 (b) — the complete task #4 inventory and verification record.
+- `core/common/src/commonMain/kotlin/.../perf/` — the tier definitions any speed work must respect.
+- `app/build.gradle.kts`, `docs/migration/CONVENTIONS.md` (R3 baseline 944).
+
+### Verify command (Git Bash, authoritative)
+Same as *Last verified build* above. Do **not** add `--offline`. `--continue` is load-bearing. The
+`:core:persistence` 12 are expected; anything else failing is a regression.
+
+## 2026-09-04 — Network-change handling closed end-to-end (ERROR-035) + the phantom conversations removed (ERROR-034); next = task #4, UI de-bloat
+
+### Current branch
+`dev`, HEAD `5b31785`. **Nothing is committed.** The working tree now carries the ERROR-033 tiering
+changeset *plus* four windows of ERROR-034/ERROR-035 work. No commit has been requested by the owner.
+
+### Last verified build
+```bash
+cd "C:/Users/KaliOxygen/Downloads/Flash" && export JAVA_HOME="/c/Users/KaliOxygen/.gradle/jdks/jetbrains_s_r_o_-21-amd64-windows.2" && export JAVA_TOOL_OPTIONS='-Djdk.net.unixdomain.tmpdir=C:\Users\KaliOxygen\.gradle\afunix' && ./gradlew testDebugUnitTest assembleDebug :core:common:testAndroidHostTest --continue --console=plain --max-workers=2
+```
+- `app-debug.apk` rebuilt; the only failing task is `:core:persistence:testDebugUnitTest`.
+- **944 live tests / 12 failures / 0 skipped** — the same Windows-only DataStore atomic-rename set
+  (`FlashSettingsDataStoreTest` 11 + `DiscoveryModeSettingTest` 1). Measured per module: `:app` 32,
+  `:core:calling` 63, `:core:common` 85 (`testAndroidHostTest`), `:core:discovery` 101, `:core:engine` 1,
+  `:core:messaging` 36, `:core:network` 135, `:core:persistence` 35, `:core:security` 80,
+  `:core:transfer` 95, `:ui:chat` 244, `:ui:theme` 37.
+- `BASELINE_TEST_TOTAL` moves 911 → **944** in `docs/migration/CONVENTIONS.md` R3, now stated as a
+  *measured* per-module table. The old 911 figure does not reconcile to 944 by one test; it was
+  hand-written and its breakdown mis-credited `LinkChangeTrackerTest`. Prefer the table.
+- The 49-XML stale-results trap named in the previous handoff is **resolved**: the orphaned pre-KMP
+  `core/common/build/test-results/testDebugUnitTest/` directory was deleted, so a raw aggregation now
+  agrees. The trap recurs for every future KMP conversion — delete the dead directory, do not "fix"
+  a too-high count by assuming tests were added.
+
+### Current phase
+Task #2 of the owner's five-thread request (network-change handling) is **complete**. Task #1
+(phantom conversations) was already complete and is now written up. Task #3 (Wi-Fi client + hotspot
+host concurrency) has its central question answered and its one real bug fixed. Tasks #4 (UI
+de-bloat), #5 (low-end library speed) and #6 (opportunistic optimisations) are untouched.
+
+### Working features (NEW since last handoff)
+- **All four ways a link changes now produce a signal (ERROR-035 D1/D2).** `LinkChangeTracker` moved
+  to `core:common` `commonMain` — the only place a class can be shared, because `:core:network`
+  depends on `:core:discovery`. Per-network fingerprints in both observers, a per-network NSD
+  callback, and an interface poll for the SoftAP case. **A SoftAP interface is not a `Network`:** the
+  platform hands out no `Network` object for `ap0`, so no `NetworkCallback` fires when a hotspot comes
+  up while STA stays joined, and interface enumeration is the only permission-free all-API signal.
+- **Destination-aware dialling (`Ipv4Routing`, `chooseRoute`).** `LocalNetworkAddresses` now **merges**
+  its two sources instead of preferring ConnectivityManager and treating enumeration as a fallback.
+  The old early-return made the interface branch unreachable in exactly the topology it was written
+  for: a device both joined to Wi-Fi *and* hosting a hotspot reported only its router address, never
+  the `192.168.43.1` its own tethered clients had to use.
+- **Bounded auto-resume of roam-killed sends (ERROR-035 D4).** `TransferReconnectResumePolicy` in
+  `:core:transfer`, wired into **both** session-up collectors (`DiscoveryEngineHolder` for the app,
+  `Flash`'s `Wiring` for the library) as a **field**, so the budget spans session-up edges. Byte-exact
+  resume already worked and nothing called it: a mesh roam mid-transfer left a `Failed` row until a
+  human tapped retry. The cap counts only attempts that achieved nothing — `bytesDone` is recorded per
+  attempt and the count clears when it later advances, so a 2 GB file survives ten roams while a
+  genuinely broken source (deleted file, lapsed content-URI grant, full storage) stops after three.
+  `Paused` is excluded: a pause is a user decision a network hiccup must not override. A 750 ms settle
+  plus a session re-check precedes each re-offer, because both ends dial and `registerSession` closes
+  the loser — a re-offer into the losing session would fail and burn an attempt.
+- **The Dev Console probes real gateways.** `LocalNetworkAddresses.ipv4Gateways()` reads
+  `LinkProperties.routes` (API 21, no gate), drops `0.0.0.0` next hops, and the NET tab tries each in
+  turn. It used to dial a hardcoded `192.168.43.1` — one of at least five tethering subnets in use
+  across OEMs (`.42.1`, `.49.1`, `.61.1`, `172.20.10.1`) and simply wrong for a client on an ordinary
+  router. An empty list is the *correct* answer for a device that is hosting rather than joined.
+- **No fabricated conversations during boot (ERROR-034).** The pre-boot fallback was
+  `SampleFlashChatRepository()`, rendering three invented threads that vanished when the real
+  repository arrived — hidden behind the splash on fast hardware, plainly visible on the Belfone.
+  Now `EmptyFlashChatRepository` + `FlashChatListUiState.hasLoaded`, so empty no longer means both
+  "no conversations" and "not answered yet". Three unreachable Loading/Error branches were wired for
+  real, and `AppEngine.start()` clears `startError` on entry so the retry button stops looking inert.
+
+### In progress
+Nothing mid-edit. Task #3's remaining sub-items are closed or deliberately deferred (below).
+
+### Broken
+Only the 12 known Windows-only `:core:persistence` DataStore failures. They pass on Linux/macOS CI
+and on device; the cause is Windows atomic-rename semantics in DataStore's test fixture.
+
+### Last change
+`FlashDevConsoleScreen.kt`'s `onProbeGateway` now enumerates `ipv4Gateways()` and probes each,
+logging "No IPv4 gateway on any LAN network" when the list is empty. Its card copy was retitled from
+"Hotspot gateway probe" to "Gateway probe" to stop advertising a single hardcoded subnet.
+
+### Last test
+944 / 12 / 0, as above. `TransferReconnectResumePolicyTest` is 9/9.
+
+### Known blockers
+- **EXP-007's on-device matrix is owner action** and remains the only step before ERROR-033 is DONE.
+  Nothing in ERROR-034 or ERROR-035 is confirmed on hardware either — every claim above is
+  build-and-unit-test verified only.
+- **`FlashDiscoveredEndpoint`/`WsFlashNetwork.Endpoint` carry a single address (task #3 item e) —
+  deliberately deferred.** A dual-homed hotspot host cannot be represented, so `sameEndpoint`
+  compares one `hostAddress` and `NsdTransport.mapResolved` reads one `info.host?.hostAddress`. Every
+  additive fix was rejected for cause: `NsdServiceInfo.getHostAddresses()` is **API 34+** and does
+  nothing on the API-27 Belfone; a new TXT key is forbidden by **R8** (`TxtCodec` is a wire format);
+  and the `Diff.Updated` flap it would prevent needs the platform to alternate addresses across
+  resolves, for which there is no pre-34 evidence. The enabling move when this is revisited:
+  `Ipv4Routing` is pure integer arithmetic with no `java.*`, so it is a valid `commonMain` citizen and
+  could move to `:core:common` to let `:core:discovery` prefer an on-link address.
+- **A hotspot client cannot discover a router-LAN peer, and this is by design for v1.** Client C
+  reaches host H only. mDNS multicast is not forwarded across H's tethering NAT, discovery is the sole
+  source of routes, HELLO carries no third-party addresses, and `FlashTransportType.RELAY`/`MESH` are
+  unused placeholders — relay is post-v1.
+- `app/.../lan/LanController.kt:94` never refreshes `LanUiState.localAddresses` after a roam. Legacy
+  TCP dev-console path only; deferred.
+- `docs/session-prompt.md:36-45` is stale (E:-drive paths, "~271 tests").
+- `FlashDevConsoleScreen.kt:316` still contains pre-existing mojibake (`â†’`, UTF-8 read as Latin-1).
+  The `â€¦` at the old :327 went out with the gateway rewrite. Use plain ASCII when editing this file.
+
+### Recommended next task
+**Task #4 — UI de-bloat**, one finding at a time, highest Belfone value first:
+1. The per-row full-width **opaque** `SwipeToDismissBox` background behind every chat row.
+2. `FlashMessageUi` is unstable *and* re-`copy()`-ed at `FlashMessageList.kt:163`.
+3. `FlashMotion`'s three spring factories (`FlashMotion.kt:312/317/322`) ignore `reduceMotion`.
+4. Enable `isMinifyEnabled` / `shrinkResources`.
+Then `FlashChatListRow.kt:149` (press-scale read in composition scope; two dead `FlashTheme` reads at
+69-70), per-bubble `BoxWithConstraints` (`FlashMessageBubble.kt:92`), tailed-bubble clipping through
+`Outline.Generic` (`FlashShapes.kt:93`), identity `graphicsLayer` + `animateItem` per row at LOW,
+`FlashMediaDecoder`'s ~2x-oversized 720px ARGB_8888 tiles, `AnimatedContent` per delivery check mark,
+`FlashBottomNav.kt:303/422` rebuilding `FlashTypography` per recomposition, and the dead
+`FlashAdaptiveLayouts.kt` + five unreferenced drawables.
+
+### Files most relevant to next task
+- `ui/chat/src/main/java/com/transfer/flash/ui/chat/FlashMessageList.kt`,
+  `FlashMessageBubble.kt`, `FlashChatListRow.kt`
+- `ui/theme/src/main/java/com/transfer/flash/ui/theme/FlashMotion.kt`, `FlashShapes.kt`
+- `app/build.gradle.kts` (minify/shrink), `ui/chat/.../FlashAdaptiveLayouts.kt` (dead)
+
+### Verify command (Git Bash, authoritative)
+```bash
+cd "C:/Users/KaliOxygen/Downloads/Flash" && export JAVA_HOME="/c/Users/KaliOxygen/.gradle/jdks/jetbrains_s_r_o_-21-amd64-windows.2" && export JAVA_TOOL_OPTIONS='-Djdk.net.unixdomain.tmpdir=C:\Users\KaliOxygen\.gradle\afunix' && ./gradlew testDebugUnitTest assembleDebug :core:common:testAndroidHostTest --continue --console=plain --max-workers=2
+```
+Do **not** add `--offline`. `--continue` is load-bearing. `bc` is unavailable — sum with `awk`.
+
+## 2026-09-03 — Three performance tiers (low/medium/high), auto-detected each boot: packet-rate-priced voice, capped capture, mesh-roam call recovery, a UI that stops animating (ERROR-033) + the capture-source probe (ERROR-032)
+
+### Current branch
+`dev`, HEAD `5b31785`. The tiering changeset is **UNCOMMITTED**: 27 modified files (19 code + 8
+docs/logs) + 6 untracked paths in the working tree, listed under *Files most relevant to next task*.
+No commit has been requested by the owner. ERROR-032's fix is already in HEAD, and ERROR-031's landed
+earlier as `4bb1240` — so what is uncommitted here is **ERROR-033 only**, plus its documentation.
+
+### Last verified build
+```bash
+./gradlew testDebugUnitTest assembleDebug --console=plain --max-workers=2
+```
+- `:app:assembleDebug` → **BUILD SUCCESSFUL** (4m 2s).
+- **911 live tests, 12 failures, 0 errors, 0 skipped.** All 12 are the known Windows-only DataStore
+  atomic-rename failures in `:core:persistence` (`DiscoveryModeSettingTest` 1 +
+  `FlashSettingsDataStoreTest` 11) — byte-for-byte the baseline set, not a regression.
+- **`BASELINE_TEST_TOTAL` moves 863 → 911** (updated in `docs/migration/CONVENTIONS.md` R3):
+  `CallSdpTest` 16→24 (+8), `LinkChangeTrackerTest` (+10), `FlashPerformanceClassifierTest` (+23),
+  `FlashMotionPolicyTest` (+3), `FlashSettingsLogicTest` (+4).
+- **Trap when you re-count: a raw XML aggregation reports 960, not 911.** 49 of those are stale
+  pre-KMP `core/common/build/test-results/testDebugUnitTest/` files still on disk. `:core:common` is
+  KMP since Phase 06, its live task is `testAndroidHostTest` (75 tests), and a root
+  `testDebugUnitTest` no longer reaches it. Name it explicitly per CONVENTIONS R3, or delete the
+  stale directory before counting.
+
+### Current phase
+The owner field-tested on a **Belfone SCP810** (rugged PoC/PTT handset: 2 GB RAM, Android 8.1/API 27,
+480x640 display, qcom, 2.4 GHz b/g/n only, **no 802.11k/v/r**) and got "a lot of lag connection lost
+and even supprising huge latencies", while a **Pixel 7** and an **Infinix X6882B** on the same **mesh**
+Wi-Fi "worked fine at long distances" and recovered from node handoffs the Belfone did not survive.
+Voice-only at 25 kbit/s lagged too — so this was never a bandwidth problem. Three tiers now exist, are
+auto-detected on every boot, and reach every consumer as a lambda. **Code complete and green;
+on-device verification (EXP-007) is owner action and is the only step left before this is DONE.**
+
+### Working features (NEW since last handoff)
+- **`FlashPerformanceMode` (LOW / MEDIUM / HIGH)** in `core:common` `commonMain` — the tier plus its
+  four profiles (`FlashVideoProfile`, `FlashAudioProfile`, `FlashKeepaliveProfile`, motion flags),
+  `fromKey`/`toKey`, `reduceMotion`, `minimalChrome`. **`HIGH` is the pre-tiering constants verbatim**,
+  so that tier is provably a no-op against the previous build.
+- **Auto-detection with no first-run flag (ADR-028).** `FlashPerformanceClassifier` runs hard gates
+  (RAM < 2560 MB, API < 26, display < 500k px, cores ≤ 2 → LOW; two weak concerns → MEDIUM). An
+  **unset** preference *is* auto, and auto is re-resolved every boot — nothing is persisted at first
+  run, so a wrong verdict is never sticky. The user can pin a tier; `"auto"` and any unrecognised
+  token map to null.
+- **Voice priced by packet rate, not bit rate (D1).** LOW raises the Opus frame to `a=ptime:60` with
+  `usedtx=1` — ~16 packets/s instead of ~100. At ≈50 bytes of RTP/UDP/IP/SRTP header per packet the
+  headers alone outweighed 25 kbit/s of speech, and 802.11 charges a largely fixed airtime price *per
+  frame*. This is why every previous bitrate reduction changed nothing.
+- **Capture capped upstream of the encoder (D2).** LOW captures 480x360@15, MEDIUM 960x540@24, HIGH
+  1920x1080@30. On a 480x640 panel the old 1080p30 request was ≈62 Mpixel/s of pure waste, spent
+  regardless of what the encoder then chose to send.
+- **A mesh roam no longer kills the call (D3).** `LinkChangeTracker` diffs `LinkProperties` /
+  `NetworkCapabilities` because an AP-to-AP roam keeps the **same** `Network` object — so
+  `onAvailable`/`onLost` never fire and nothing used to re-probe. `onSignalingLost` now opens a
+  recovery window instead of ending the call, `onSignalingRestored` closes it, and per-tier keepalive
+  (`WsKeepaliveTiming`: LOW pings 15 s / forgives 40 s, HIGH 10 s / 25 s) is the second layer.
+- **Per-endpoint SDP (ADR-029).** `CallSdp.tune()` split into `tuneLocal` (asserts our tier) and
+  `tuneRemote` (reconciles the peer's: **longer** frame, **smaller** ceiling). Two devices on
+  different tiers converge on identical session parameters by reconciliation rather than by symmetry.
+  Keepalive cadence is deliberately *not* reconciled — it is local policy.
+- **Extreme-minimalist UI at LOW and MEDIUM.** `FlashMotionPolicy` treats the tier as a **floor**:
+  `mode.reduceMotion || (overrideForcesReduce ?: systemReduceMotion)`. Animations off, and
+  `minimalChrome` separately drops drop-shadows (a shadow costs the same on a still frame as on a
+  moving one). `FlashBottomNav` is the first consumer. `FlashMotion`'s constructor stays `internal`.
+- **Settings → PERFORMANCE** shows the resolved verdict, e.g. `Auto · Matched to this device: Low`.
+- **Capture-source probe (ERROR-032, already in HEAD `5b31785`).** On both SCP810 units
+  `AudioRecord(VOICE_COMMUNICATION)` reached INITIALIZED, passed `verifyAudioConfig`, and then
+  delivered **zero frames** — the far end heard nothing. The ADM source is now probed once
+  (`VOICE_COMMUNICATION` → `MIC` → `DEFAULT`, pass = 2400 frames ≈ 50 ms at 48 kHz) and cached;
+  hardware AEC/NS are enabled only for `VOICE_COMMUNICATION`.
+
+### In progress
+- **EXP-007 — the decisive on-device matrix** (owner action; see `logs/experiments.md`). Re-run all
+  three EXP-006 rows on the tiered build across the Belfone / Pixel 7 / Infinix.
+- Nothing else. No code is half-written; the changeset compiles and tests green as it stands.
+
+### Broken
+- Nothing new. The 12 `:core:persistence` DataStore failures are the pre-existing Windows
+  file-locking set and predate this work.
+
+### Last change
+The full tiering changeset (ERROR-033) plus its repository record. Code: `FlashPerformanceMode` /
+`FlashVideoProfile` / `FlashAudioProfile` / `FlashKeepaliveProfile` / `FlashPerformanceClassifier` /
+`FlashMotionPolicy` (new, in `core:common`), `LinkChangeTracker` + `WsKeepaliveTiming` (new, in
+`core:network`), `CallSdp.tuneLocal`/`tuneRemote`, `onSignalingRestored` on `FlashCalling`,
+`performanceMode: () -> FlashPerformanceMode` threaded through `CallCoordinator` /
+`WsTransferClient` / `WsTransferServer` / `WsConnection` as a reader lambda (ADR-024 port/adapter —
+`:core:*` still never sees DataStore), the Settings PERFORMANCE section, and `FlashBottomNav`'s
+`minimalChrome` path. Docs: ERROR-033 + a back-filled ERROR-032 in `logs/errors.md`, EXP-006 in
+`logs/experiments.md`, ADR-028 + ADR-029 in `docs/decisions.md`, a new `docs/android-platform-notes.md`
+entry, `docs/architecture/public-api.md` de-staled (new fourth seam), and a `logs/progress.md` entry.
+
+### Last test
+- `./gradlew testDebugUnitTest assembleDebug` → `:app:assembleDebug` **BUILD SUCCESSFUL**;
+  **911 live tests / 12 known failures / 0 errors / 0 skipped** (details under *Last verified build*).
+- `:core:calling:testDebugUnitTest` → 55 tests for the ERROR-032 probe, including `client audio
+  source=MIC` and the ~85 ms teardown that replaced an 8.2 s `AudioRecord.stop` hang.
+- **Physical verification PENDING (EXP-007), the whole point of the change:**
+  1. Belfone: Settings → PERFORMANCE must read `Auto · Matched to this device: Low`; the Pixel 7 must
+     read `High`. If the Belfone reads MEDIUM or HIGH, the classifier thresholds are wrong — that is
+     the first thing to check, before touching anything else.
+  2. Voice-only call, stationary: the lag and "supprising huge latencies" should be gone.
+  3. **Walk between mesh nodes mid-call.** Success is *the call surviving the roam* with an audio gap
+     of a few seconds, and the peer returning to Online in single-digit seconds rather than ~30.
+  4. Visual: no animations and no bottom-nav drop shadow at LOW/MEDIUM.
+  5. Belfone ↔ Pixel 7 video call: both ends must settle at **540p or below** (reconciliation), not
+     just the Belfone.
+
+### Known blockers
+- **The "authoritative" install command in the older sections below is wrong for this machine.** It
+  points `JAVA_HOME` at `E:\AndroidDev\AndroidStudio\android-studio\jbr`, which is **JBR 25.0.2** —
+  too new for Gradle 9.5.0 / AGP 9.3.1. Use the Gradle-provisioned **JBR 21** instead; the working
+  invocation is at the bottom of this section. `docs/session-prompt.md` §BUILD ENVIRONMENT is stale
+  for the same reason (and still says `E:\Flash` and "~271 tests").
+- **ERROR-017 still mandatory:** every Gradle invocation dies with "Unable to establish loopback
+  connection" unless `JAVA_TOOL_OPTIONS="-Djdk.net.unixdomain.tmpdir=…"` points the AF_UNIX temp dir
+  somewhere the JDK's TCP fallback will trigger. Export it via `JAVA_TOOL_OPTIONS` (not
+  `org.gradle.jvmargs`) so the daemon, Kotlin daemon **and** test workers all inherit it.
+- **Do not add `--offline`.** `generateDebugUnitTestStubRFile` fails offline on
+  `androidx.annotation:annotation-experimental:1.5.0` ("No cached version available") and discards the
+  configuration-cache entry when it does. The network is available here; dropping the flag works.
+- **A root `testDebugUnitTest` silently under-counts.** Any module converted to
+  `com.android.kotlin.multiplatform.library` has no `debug` variant and therefore no
+  `testDebugUnitTest` task. `:core:common` must be named explicitly as
+  `:core:common:testAndroidHostTest` (CONVENTIONS R3/R3.1), and its old `testDebugUnitTest` XML is
+  still on disk inflating naive counts by 49.
+- Kotlin daemon flakiness: treat "BUILD SUCCESSFUL" as success; don't trust the exit code alone.
+- If `./gradlew` reports `JAVA_HOME is set to an invalid directory` for a path that worked minutes
+  earlier, the external drive holding `~/.gradle` was detached. Retry the same command unchanged once
+  it is back; this is not a broken JAVA_HOME.
+
+### Recommended next task
+1. **Run EXP-007** (owner action, decisive). The five checks are listed under *Last test*. Record the
+   results in `logs/experiments.md` as EXP-007 against the EXP-006 table.
+2. **If the Belfone still lags after this, the discriminating measurement is packets/s on the wire,
+   not bitrate.** Confirm `a=ptime:60` and `usedtx=1` survived into the **answer** (`tuneRemote`
+   reconciliation) — a peer that re-offers 10 ms framing undoes D1 entirely and the symptom is
+   indistinguishable from the original bug.
+3. **If a roam still drops the call**, check `LinkChangeTracker` actually fired. An OEM that reports no
+   `LinkProperties` change on reassociation would defeat layer 1, and then the fallback is the
+   keepalive cadence (layer 2), **not** more roam detection.
+4. Capture the serving AP's band and channel width, and whether the mesh backhaul is wired or
+   wireless. A wireless backhaul halves usable airtime again and would change what LOW should target.
+5. Only then consider committing (nothing is committed) and returning to the KMP migration
+   (Phase 07 onward) or the premium chat UI sequence.
+
+### Files most relevant to next task
+**New (untracked) — the tier itself:**
+- `core/common/src/commonMain/kotlin/com/transfer/flash/core/common/perf/` — `FlashPerformanceMode.kt`,
+  `FlashVideoProfile.kt`, `FlashAudioProfile.kt`, `FlashKeepaliveProfile.kt`,
+  `FlashPerformanceClassifier.kt`, `FlashMotionPolicy.kt`
+- `core/common/src/androidMain/kotlin/.../perf/` — the Android probe feeding the classifier
+- `core/common/src/androidHostTest/kotlin/.../perf/` — `FlashPerformanceClassifierTest` (+23),
+  `FlashMotionPolicyTest` (+3)
+- `core/network/src/main/java/.../resilience/LinkChangeTracker.kt` + its test (+10) — the roam detector
+- `core/network/src/main/java/.../ws/WsKeepaliveTiming.kt` — the ping/liveness pair, `init`-guarded
+  against a liveness window shorter than `pingInterval * WsKeepalive.STALL_FACTOR`
+
+**Modified code:**
+- `core/calling/.../CallSdp.kt` (+ `CallSdpTest.kt`, 16→24) — `tuneLocal` / `tuneRemote`
+- `core/calling/.../CallCoordinator.kt`, `FlashCallSession.kt`, `FlashCalling.kt` —
+  `performanceMode` lambda, `onSignalingRestored`, recovery window
+- `core/network/.../ws/WsConnection.kt`, `WsTransferClient.kt`, `WsTransferServer.kt`,
+  `WsFlashNetwork.kt`, `resilience/AndroidNetworkWatcher.kt` — per-connection keepalive cadence,
+  defaulted so untiered callers are unchanged
+- `core/persistence/.../settings/FlashSettingsDataStore.kt` — the pinned-tier key (`"auto"` → null)
+- `app/.../MainActivity.kt`, `debug/DiscoveryEngineHolder.kt`, `di/AppEngine.kt` — host wiring; the
+  reader lambdas are constructed here, never inside `core:*` (ADR-024)
+- `ui/theme/.../FlashMotion.kt`, `FlashTheme.kt` — the resolved `Boolean` crossing the `:ui:theme`
+  seam (`FlashMotion`'s constructor stays `internal`)
+- `ui/chat/.../shell/FlashBottomNav.kt` — first `minimalChrome` consumer
+- `ui/chat/.../settings/FlashSettingsScreen.kt` (+ `FlashSettingsLogicTest.kt`, +4) — PERFORMANCE section
+
+**Record:** `logs/errors.md` (ERROR-033, ERROR-032), `logs/experiments.md` (EXP-006),
+`docs/decisions.md` (ADR-028, ADR-029), `docs/android-platform-notes.md`,
+`docs/architecture/public-api.md`, `logs/progress.md`, `docs/migration/CONVENTIONS.md` (baseline 911).
+
+### Remaining work summary (for next AI)
+1. **EXP-007 on-device matrix** (owner-driven, decisive) — the five checks under *Last test*; record in
+   `logs/experiments.md`.
+2. **Deferred by decision: a tier below LOW** for the "devices lower than the Belfone, and possibly an
+   Android watch" the owner mentioned. Deferred until such a device exists to measure, because the
+   thresholds are exactly the part that cannot be guessed from a spec sheet. ADR-028's revisit rule is
+   explicit: **do not revisit by adding a fourth enum constant for a device nobody has measured.**
+3. **Nothing is committed.** Decide with the owner whether ERROR-033 lands as one commit or is split
+   (tier + D1 + D2 + D3 + UI). CONVENTIONS **R4** forbids editing two modules' build files in one
+   commit — no build files changed here, so R4 does not bite, but check before adding any.
+4. EXP-003 charged-Infinix re-test (still open from 2026-09-01).
+5. `docs/session-prompt.md` §BUILD ENVIRONMENT is stale (`E:\Flash`, the JBR 25 path, "~271 tests") —
+   worth correcting when someone is in that file.
+6. Deterministic cleanup of the messaging backoff timing test; Bug 7 device checklist pass.
+7. Then: resume the KMP migration (Phase 07 onward — `:core:common` is the only converted module) or
+   the premium chat UI sequence (UI-011 composer / UI-007 selection).
+
+### Verify command (Git Bash, authoritative — supersedes the E:-drive blocks below)
+```bash
+cd "C:/Users/KaliOxygen/Downloads/Flash" && export JAVA_HOME="/c/Users/KaliOxygen/.gradle/jdks/jetbrains_s_r_o_-21-amd64-windows.2" && export JAVA_TOOL_OPTIONS='-Djdk.net.unixdomain.tmpdir=C:\Users\KaliOxygen\.gradle\afunix' && ./gradlew testDebugUnitTest assembleDebug :core:common:testAndroidHostTest --console=plain --max-workers=2
+```
+`C:\Users\KaliOxygen\.gradle\afunix` must exist. Expect **911 live tests / 12 known failures**. Naming
+`:core:common:testAndroidHostTest` explicitly is required (CONVENTIONS R3), not optional. To install:
+
+```bash
+cd "C:/Users/KaliOxygen/Downloads/Flash" && export JAVA_HOME="/c/Users/KaliOxygen/.gradle/jdks/jetbrains_s_r_o_-21-amd64-windows.2" && export JAVA_TOOL_OPTIONS='-Djdk.net.unixdomain.tmpdir=C:\Users\KaliOxygen\.gradle\afunix' && ./gradlew :app:installDebug --console=plain
+```
+
 ## 2026-09-02 (d) — Call-accept crash FIXED (ERROR-024): base64 SDP transport + try/catch hardening; physical call re-test pending
 
 ### Current branch

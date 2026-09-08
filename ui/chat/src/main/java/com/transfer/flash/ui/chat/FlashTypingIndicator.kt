@@ -18,11 +18,13 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
+import androidx.compose.runtime.State
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -41,8 +43,14 @@ import com.transfer.flash.ui.theme.FlashTheme
 /**
  * UI-014 Core 3-dot wave typing indicator.
  *
- * Runs a fluid 120 FPS GPU-accelerated wave animation via [rememberInfiniteTransition]
- * and [graphicsLayer] without triggering recomposition cycles.
+ * Runs a fluid GPU-accelerated wave animation via [rememberInfiniteTransition] and [graphicsLayer]
+ * without triggering recomposition cycles — which is what this KDoc claimed before EXP-013 and is
+ * only now true. The three waves were declared `val wave0 by …animateFloat(…)`, and `by` reads the
+ * animation *here*, in this composable's body: every frame invalidated `FlashTypingIndicator`, which
+ * re-ran the whole body (three `animateFloat` calls, a fresh `listOf` and three full modifier chains)
+ * at display refresh rate, then handed `graphicsLayer` a constant it could not animate on its own.
+ * Keeping them as `State<Float>` and reading `.value` *inside* the layer block is what actually puts
+ * the animation in the render pipeline. Same motion, same easing, same phase offsets as before.
  */
 @Composable
 fun FlashTypingIndicator(
@@ -78,7 +86,7 @@ fun FlashTypingIndicator(
     val totalDuration = 900
     val phaseOffset = 120
 
-    val wave0 by infiniteTransition.animateFloat(
+    val wave0 = infiniteTransition.animateFloat(
         initialValue = 0f,
         targetValue = 1f,
         animationSpec = infiniteRepeatable(
@@ -94,7 +102,7 @@ fun FlashTypingIndicator(
         label = "dotWave0",
     )
 
-    val wave1 by infiniteTransition.animateFloat(
+    val wave1 = infiniteTransition.animateFloat(
         initialValue = 0f,
         targetValue = 1f,
         animationSpec = infiniteRepeatable(
@@ -110,7 +118,7 @@ fun FlashTypingIndicator(
         label = "dotWave1",
     )
 
-    val wave2 by infiniteTransition.animateFloat(
+    val wave2 = infiniteTransition.animateFloat(
         initialValue = 0f,
         targetValue = 1f,
         animationSpec = infiniteRepeatable(
@@ -126,22 +134,29 @@ fun FlashTypingIndicator(
         label = "dotWave2",
     )
 
-    val waves = listOf(wave0, wave1, wave2)
+    // Remembered so the list itself is not re-allocated on the (now rare) recomposition of this
+    // composable; the animation values live in the State objects, not in the list.
+    val waves: List<State<Float>> = remember(wave0, wave1, wave2) { listOf(wave0, wave1, wave2) }
 
     Row(
         modifier = modifier,
         horizontalArrangement = Arrangement.spacedBy(dotSpacing),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        waves.forEach { progress ->
+        waves.forEach { wave ->
             Box(
                 modifier = Modifier
                     .size(dotSize)
                     .graphicsLayer {
+                        val progress = wave.value
                         translationY = maxTranslationPx * progress
                         scaleX = 0.85f + (0.30f * progress)
                         scaleY = 0.85f + (0.30f * progress)
                         alpha = 0.45f + (0.55f * progress)
+                        // One solid circle per layer, so modulating alpha into the draw is
+                        // pixel-identical and skips the offscreen buffer the default
+                        // CompositingStrategy.Auto can allocate for alpha < 1 (EXP-013).
+                        compositingStrategy = CompositingStrategy.ModulateAlpha
                     }
                     .clip(CircleShape)
                     .background(dotColor),

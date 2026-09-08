@@ -86,9 +86,49 @@ per conversion as phases 07–12 land. `--continue` is load-bearing: without it 
 modules execute, and the total silently drops.
 
 Every phase must additionally paste the **test count** from
-`*/build/test-results/**/TEST-*.xml` compared against the Phase 00 baseline
-(`BASELINE_TEST_TOTAL = 863 / 12 failures / 0 skipped`). A phase that cannot show its
-test count matches or exceeds baseline is not verified.
+`*/build/test-results/**/TEST-*.xml` compared against the current baseline
+(`BASELINE_TEST_TOTAL = 984 / 12 failures / 0 skipped`, **measured** on 2026-09-04 after the task #5
+outbox-drain work: `OutboxDrainScheduleTest` +6, a new file asserting `OutboxDrainSchedule.waitMs` —
+the durable outbox's retry loop was a fixed `while (true) { drain(); delay(1000) }`, i.e. a
+`dueForDelivery` query against SQLCipher every second for the life of the process (~86,400/day)
+against a table that is almost always empty, *and* every retry up to a second later than the ladder
+the code itself computed (EXP-015). Preceding baseline 978 after the
+thumbnail-cache memory-pressure work: `FlashMediaCacheTrimTest` +6, a new file asserting
+`FlashMediaDecoder.cacheTrimFor` — the app had no `onTrimMemory`/`onLowMemory` handler anywhere, so the
+chat thumbnail `LruCache` held its whole `maxMemory / 8` share for the life of the process (EXP-014).
+Preceding baseline 972 after the per-frame-animation scope sweep: `FlashTransfersLogicTest` +4 for
+`progressBarWidthPx`, the arithmetic
+lifted out of `Modifier.fillMaxWidth(fraction)` when the transfer progress fill moved to a layout-phase
+read (EXP-013). Preceding baseline 968 after the call-screen recomposition-scope work:
+`FlashCallDurationTest` +5, which is also the **first** test
+directory in `:ui:callui` (the module already had `testImplementation(libs.junit)` and no `src/test`,
+so a root `testDebugUnitTest` created a new `:ui:callui:testDebugUnitTest` task — expect it in the
+task list, EXP-013). Preceding baseline 963 after the progress-cadence work: `UiPacingTest` +4 and
+`FlashTransfersLogicTest` +1 (EXP-011), on top of
+`ProgressThrottleTest` +4 and `RealFlashChatRepositoryTest` +1 (EXP-010, baseline 958); the preceding
+resume-bookkeeping baseline was 953 with `ResumeBitVectorTest` +4 and `RealFlashTransferRepositoryTest`
++3 (EXP-008, EXP-009), and the frame-allocation baseline before that was 946 with `WebSocketCodecTest` +2).
+
+Per-module, as measured: `:app` 36, `:core:calling` 63, `:core:common` 85 (`testAndroidHostTest`),
+`:core:discovery` 101, `:core:engine` 1, `:core:messaging` 47, `:core:network` 137,
+`:core:persistence` 35 (12 failures), `:core:security` 80, `:core:transfer` 102, `:ui:chat` 255,
+`:ui:theme` 37, `:ui:callui` 5.
+
+The previous baseline line read 911 and did not reconcile: ERROR-035 added 32 tests
+(`TransferReconnectResumePolicyTest` +9, `Ipv4RoutingTest` +9, `LinkChangeTrackerTest` +10,
+`NsdTransportLogicTest` 36→40), which lands at 943, one short of the measured 944. The residual is
+unattributed — the 911 figure was itself written by hand and its breakdown credited
+`LinkChangeTrackerTest` to ERROR-033, a phase that predates the file. **Prefer the measured
+per-module table above to any hand-maintained delta.** A phase that cannot show its test count
+matches or exceeds baseline is not verified.
+
+**Count live results, not files on disk.** A raw aggregation over `*/build/test-results/**` used to
+report 49 too many, because stale pre-KMP `core/common/build/test-results/testDebugUnitTest/` XMLs
+survived Phase 06 in a directory Gradle no longer writes and therefore never cleans. That directory was
+deleted on 2026-09-04, so a raw aggregation now agrees with the baseline — but the trap recurs for every
+module converted to KMP. `:core:common`'s live results are the ones under
+`build/test-results/testAndroidHostTest/`. After a conversion, delete the orphaned
+`testDebugUnitTest/` directory; do not "fix" a count that looks too high by assuming tests were added.
 
 `--no-configuration-cache` is required because this project enables the
 configuration cache in `gradle.properties`, and KMP source-set wiring is a known

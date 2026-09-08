@@ -1,21 +1,33 @@
 package com.transfer.flash.core.calling
 
+import com.transfer.flash.core.common.perf.FlashPerformanceMode
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * [CallSdp] rewriting tests (C7, ADR-025).
+ * [CallSdp] rewriting tests (C7, ADR-025; made tier-aware by ERROR-033).
  *
- * SDP is the only place this stack exposes Opus packetization and the encoder's start
- * bitrate, so those two latency knobs are set by string surgery on a text protocol. The
- * failure modes are all silent — a malformed fmtp line does not throw, it just makes the
- * peer ignore the codec — and the alternative to unit tests is measuring bitrate policy on
- * a phone. Hence: exact expected lines, and an explicit guard on every payload type that
- * must NOT be touched (`rtx`, `red`, `ulpfec`, PCMU).
+ * SDP is the only place this stack exposes Opus packetization and the encoder's bitrate window, so
+ * those two latency knobs are set by string surgery on a text protocol. The failure modes are all
+ * silent — a malformed fmtp line does not throw, it just makes the peer ignore the codec — and the
+ * alternative to unit tests is measuring bitrate policy on a phone. Hence: exact expected lines,
+ * and an explicit guard on every payload type that must NOT be touched (`rtx`, `red`, `ulpfec`,
+ * PCMU).
+ *
+ * The tier tests carry a load the old symmetric `tune()` could not. A sender takes its
+ * packetization and bitrate from the description it *receives*, so [CallSdp.tuneLocal] and
+ * [CallSdp.tuneRemote] have to do different jobs — and the property that matters is that two
+ * differently-tiered endpoints compute the *same* effective parameters no matter which of them
+ * offered.
  */
 class CallSdpTest {
+
+    private val low = FlashPerformanceMode.LOW
+    private val medium = FlashPerformanceMode.MEDIUM
+    private val high = FlashPerformanceMode.HIGH
 
     private fun sdp(vararg lines: String): String = lines.joinToString("\r\n")
 
@@ -27,10 +39,28 @@ class CallSdpTest {
         return listOf(lines[start]) + lines.drop(start + 1).takeWhile { !it.startsWith("m=") }
     }
 
-    private val videoParams =
-        "x-google-start-bitrate=${CallSdp.VIDEO_START_BITRATE_KBPS};" +
-            "x-google-min-bitrate=${CallSdp.VIDEO_MIN_BITRATE_KBPS};" +
-            "x-google-max-bitrate=${CallSdp.VIDEO_MAX_BITRATE_KBPS}"
+    /** One payload type's `;`-separated fmtp parameter list, keyed by parameter name. */
+    private fun fmtpParams(body: String, kind: String, payloadType: String): Map<String, String> =
+        section(body, kind)
+            .single { it.startsWith("a=fmtp:$payloadType ") }
+            .substringAfter(' ')
+            .split(';')
+            .filter { it.contains('=') }
+            .associate { it.substringBefore('=') to it.substringAfter('=') }
+
+    /** The one `a=ptime:` value of an audio section. */
+    private fun ptime(body: String): String =
+        section(body, "audio").single { it.startsWith("a=ptime:") }.removePrefix("a=ptime:")
+
+    /** The fmtp parameter list [mode] writes for VP8, in the order [CallSdp] emits it. */
+    private fun videoParamsOf(mode: FlashPerformanceMode): String =
+        "x-google-start-bitrate=${mode.video.startBitrateKbps};" +
+            "x-google-min-bitrate=${mode.video.minBitrateKbps};" +
+            "x-google-max-bitrate=${mode.video.maxBitrateKbps}"
+
+    /** The fmtp parameter list [mode] writes for Opus, in the order [CallSdp] emits it. */
+    private fun opusParamsOf(mode: FlashPerformanceMode): String =
+        "minptime=${mode.voice.ptimeMs};useinbandfec=1;usedtx=${if (mode.voice.useDtx) 1 else 0}"
 
     /** A trimmed but structurally faithful libwebrtc offer: bundled audio + video. */
     private val offer = sdp(
@@ -64,28 +94,31 @@ class CallSdpTest {
     )
 
     // ------------------------------------------------------------------
-    // Audio: 10 ms packetization
+    // Audio packetization
     // ------------------------------------------------------------------
 
     /**
-     * `a=ptime:20` is what libwebrtc generates, and the *sender* reads packetization from
-     * the description it receives — so a stale 20 here is 10 ms of one-way delay that no
-     * per-call API can take back. Exactly one ptime line may survive.
+     * `a=ptime:20` is what libwebrtc generates, and the *sender* reads packetization from the
+     * description it receives — so a value left at libwebrtc's default is a tier that never reached
+     * the wire. Exactly one ptime line may survive, whichever way the tier moves it.
      */
     @Test
-    fun audio_forcesTenMillisecondPtime() {
-        val audio = section(CallSdp.tune(offer), "audio")
+    fun local_forcesOurTiersPtime() {
+        for (mode in FlashPerformanceMode.entries) {
+            val audio = section(CallSdp.tuneLocal(offer, mode), "audio")
 
-        assertEquals(
-            listOf("a=ptime:${CallSdp.OPUS_PTIME_MS}"),
-            audio.filter { it.startsWith("a=ptime:") },
-        )
-        assertTrue("maxptime is not ours to change: $audio", "a=maxptime:120" in audio)
+            assertEquals(
+                "tier ${mode.key}",
+                listOf("a=ptime:${mode.voice.ptimeMs}"),
+                audio.filter { it.startsWith("a=ptime:") },
+            )
+            assertTrue("maxptime is not ours to change: $audio", "a=maxptime:120" in audio)
+        }
     }
 
     /** An audio section with no ptime at all gets one, after the last attribute line. */
     @Test
-    fun audio_insertsPtimeWhenAbsent() {
+    fun local_insertsPtimeWhenAbsent() {
         val body = sdp(
             "v=0",
             "m=audio 9 UDP/TLS/RTP/SAVPF 111",
@@ -94,25 +127,43 @@ class CallSdpTest {
             "a=rtpmap:111 opus/48000/2",
         )
 
-        val audio = section(CallSdp.tune(body), "audio")
+        val audio = section(CallSdp.tuneLocal(body, high), "audio")
 
-        assertEquals("a=ptime:${CallSdp.OPUS_PTIME_MS}", audio.last())
+        assertEquals("a=ptime:${high.voice.ptimeMs}", audio.last())
     }
 
-    /** Merging must not drop parameters the peer negotiated; only ours override. */
+    /**
+     * Several `a=ptime:` lines are read at their largest, so the result cannot depend on the order
+     * the peer happened to list them in. Both permutations must land on the same value.
+     */
     @Test
-    fun audio_mergesOpusFmtpInPlace() {
-        val audio = section(CallSdp.tune(offer), "audio")
+    fun remote_readsSeveralPtimeLinesAtTheirLargestWhateverTheOrder() {
+        fun body(vararg ptimes: Int) = sdp(
+            "v=0",
+            "m=audio 9 UDP/TLS/RTP/SAVPF 111",
+            "a=rtpmap:111 opus/48000/2",
+            *ptimes.map { "a=ptime:$it" }.toTypedArray(),
+        )
+
+        // MEDIUM asks for 20; the peer's largest declaration is 40, and the envelope takes theirs.
+        assertEquals("40", ptime(CallSdp.tuneRemote(body(20, 40), medium)))
+        assertEquals("40", ptime(CallSdp.tuneRemote(body(40, 20), medium)))
+    }
+
+    /** Merging must not drop parameters the peer negotiated; only our own keys move. */
+    @Test
+    fun local_mergesOpusFmtpInPlace() {
+        val audio = section(CallSdp.tuneLocal(offer, high), "audio")
 
         assertEquals(
-            "a=fmtp:111 minptime=${CallSdp.OPUS_PTIME_MS};useinbandfec=1;usedtx=0",
+            "a=fmtp:111 ${opusParamsOf(high)}",
             audio.single { it.startsWith("a=fmtp:111 ") },
         )
     }
 
     /** No fmtp line for Opus means the params have to be created next to the rtpmap. */
     @Test
-    fun audio_createsOpusFmtpWhenAbsent() {
+    fun local_createsOpusFmtpWhenAbsent() {
         val body = sdp(
             "v=0",
             "m=audio 9 UDP/TLS/RTP/SAVPF 111",
@@ -120,19 +171,38 @@ class CallSdpTest {
             "a=rtcp-fb:111 transport-cc",
         )
 
-        val audio = section(CallSdp.tune(body), "audio")
+        val audio = section(CallSdp.tuneLocal(body, high), "audio")
         val rtpmapAt = audio.indexOfFirst { it.startsWith("a=rtpmap:111 ") }
 
+        assertEquals("a=fmtp:111 ${opusParamsOf(high)}", audio[rtpmapAt + 1])
+    }
+
+    /**
+     * Opus carries parameters this stack has no policy about (`stereo`, `cbr`, `maxaveragebitrate`).
+     * Dropping or reordering them is how you turn a rewrite into a renegotiation: they stay where
+     * the peer put them, and only the values of our own keys change.
+     */
+    @Test
+    fun local_preservesParametersWeHaveNoOpinionAbout() {
+        val body = sdp(
+            "v=0",
+            "m=audio 9 UDP/TLS/RTP/SAVPF 111",
+            "a=rtpmap:111 opus/48000/2",
+            "a=fmtp:111 maxplaybackrate=16000;minptime=20;stereo=0;useinbandfec=1;cbr=1",
+        )
+
+        val audio = section(CallSdp.tuneLocal(body, low), "audio")
+
         assertEquals(
-            "a=fmtp:111 minptime=${CallSdp.OPUS_PTIME_MS};useinbandfec=1;usedtx=0",
-            audio[rtpmapAt + 1],
+            "a=fmtp:111 maxplaybackrate=16000;minptime=60;stereo=0;useinbandfec=1;cbr=1;usedtx=1",
+            audio.single { it.startsWith("a=fmtp:111 ") },
         )
     }
 
     /** `red` and PCMU are not Opus: their payload types must come out untouched. */
     @Test
     fun audio_leavesNonOpusPayloadTypesAlone() {
-        val audio = section(CallSdp.tune(offer), "audio")
+        val audio = section(CallSdp.tuneLocal(offer, low), "audio")
 
         assertTrue("red's fmtp is a payload list, not params: $audio", "a=fmtp:63 111/111" in audio)
         assertTrue("PCMU needs no fmtp: $audio", audio.none { it.startsWith("a=fmtp:0 ") })
@@ -141,24 +211,27 @@ class CallSdpTest {
     /** Bitrate hints in an audio section would be nonsense — and are silently ignored. */
     @Test
     fun audio_carriesNoVideoBitrateHints() {
-        val audio = section(CallSdp.tune(offer), "audio")
+        val audio = section(CallSdp.tuneLocal(offer, low), "audio")
 
         assertTrue(audio.none { it.contains("x-google-") })
     }
 
     // ------------------------------------------------------------------
-    // Video: encoder start bitrate
+    // Video: the encoder's bitrate window
     // ------------------------------------------------------------------
 
     /** Every real video codec in the section is seeded, whether or not it had an fmtp line. */
     @Test
-    fun video_seedsBitrateOnEveryCodec() {
-        val video = section(CallSdp.tune(offer), "video")
+    fun local_seedsBitrateOnEveryCodec() {
+        val video = section(CallSdp.tuneLocal(offer, high), "video")
 
-        assertEquals("a=fmtp:96 $videoParams", video.single { it.startsWith("a=fmtp:96 ") })
+        assertEquals(
+            "a=fmtp:96 ${videoParamsOf(high)}",
+            video.single { it.startsWith("a=fmtp:96 ") },
+        )
         assertEquals(
             "a=fmtp:98 level-asymmetry-allowed=1;packetization-mode=1;" +
-                "profile-level-id=42e01f;$videoParams",
+                "profile-level-id=42e01f;${videoParamsOf(high)}",
             video.single { it.startsWith("a=fmtp:98 ") },
         )
     }
@@ -169,7 +242,7 @@ class CallSdpTest {
      */
     @Test
     fun video_leavesRtxRedAndUlpfecAlone() {
-        val video = section(CallSdp.tune(offer), "video")
+        val video = section(CallSdp.tuneLocal(offer, low), "video")
 
         assertEquals("a=fmtp:97 apt=96", video.single { it.startsWith("a=fmtp:97 ") })
         assertTrue(video.none { it.startsWith("a=fmtp:99 ") })
@@ -179,35 +252,179 @@ class CallSdpTest {
     /** ptime is an audio attribute; a video section must not acquire one. */
     @Test
     fun video_hasNoPtime() {
-        val video = section(CallSdp.tune(offer), "video")
+        for (mode in FlashPerformanceMode.entries) {
+            val video = section(CallSdp.tuneLocal(offer, mode), "video")
 
-        assertTrue(video.none { it.startsWith("a=ptime:") })
+            assertTrue("tier ${mode.key}", video.none { it.startsWith("a=ptime:") })
+        }
     }
 
     /**
-     * The literal ceiling, pinned (D8). Every other assertion in this class interpolates the
-     * constants, so all of them would have passed just as happily at the old 8 Mbit/s — and
-     * 8 Mbit/s of video on a phone hotspot is what made voice unintelligible. The number is the
-     * fix, so the number is what the test names.
+     * The literal numbers of each tier, pinned (D8). Every other assertion in this class
+     * interpolates the profiles, so all of them would have passed just as happily at the old
+     * 8 Mbit/s — and 8 Mbit/s of video on a phone hotspot is what made voice unintelligible. The
+     * numbers are the fix, so the numbers are what the test names.
+     *
+     * HIGH's triple is also the pre-tiering constant set, which is what makes that tier a provable
+     * no-op rather than a fourth set of numbers to keep in sync.
      */
     @Test
-    fun video_capsBitrateForAPhoneHotspot() {
-        val video = section(CallSdp.tune(offer), "video")
-        val params = video.single { it.startsWith("a=fmtp:96 ") }.substringAfter(' ')
+    fun local_capsBitratePerTier() {
+        val expected = mapOf(
+            low to Triple(200, 100, 350),
+            medium to Triple(500, 250, 900),
+            high to Triple(1200, 600, 2500),
+        )
 
-        assertTrue("ceiling must be 2500: $params", "x-google-max-bitrate=2500" in params)
-        assertTrue("start must be 1200: $params", "x-google-start-bitrate=1200" in params)
-        assertTrue("floor must be 600: $params", "x-google-min-bitrate=600" in params)
+        for ((mode, triple) in expected) {
+            val params = fmtpParams(CallSdp.tuneLocal(offer, mode), "video", "96")
+            val (start, min, max) = triple
+
+            assertEquals("tier ${mode.key} start", "$start", params["x-google-start-bitrate"])
+            assertEquals("tier ${mode.key} min", "$min", params["x-google-min-bitrate"])
+            assertEquals("tier ${mode.key} max", "$max", params["x-google-max-bitrate"])
+        }
+    }
+
+    /** And the voice numbers, likewise pinned: 100 pps at HIGH down to ~16 at LOW. */
+    @Test
+    fun local_setsPacketizationPerTier() {
+        assertEquals("60", ptime(CallSdp.tuneLocal(offer, low)))
+        assertEquals("20", ptime(CallSdp.tuneLocal(offer, medium)))
+        assertEquals("10", ptime(CallSdp.tuneLocal(offer, high)))
+
+        assertEquals("1", fmtpParams(CallSdp.tuneLocal(offer, low), "audio", "111")["usedtx"])
+        assertEquals("1", fmtpParams(CallSdp.tuneLocal(offer, medium), "audio", "111")["usedtx"])
+        assertEquals("0", fmtpParams(CallSdp.tuneLocal(offer, high), "audio", "111")["usedtx"])
+    }
+
+    // ------------------------------------------------------------------
+    // Mixed tiers: the envelope
+    // ------------------------------------------------------------------
+
+    /**
+     * The bug that made two functions necessary. A HIGH-tier phone that merely forced its own
+     * numbers onto a LOW-tier handset's offer would rewrite `ptime:60` straight back to `ptime:10`
+     * and defeat the whole request — its sender would go on emitting 100 packets/second into the
+     * radio that could not take them.
+     */
+    @Test
+    fun local_overridesTheBodyWhereRemote_respectsIt() {
+        val lowOffer = CallSdp.tuneLocal(offer, low)
+        assertEquals("60", ptime(lowOffer))
+
+        // Same input, same tier, opposite verdict — which is exactly why the split exists.
+        assertEquals("10", ptime(CallSdp.tuneLocal(lowOffer, high)))
+        assertEquals("60", ptime(CallSdp.tuneRemote(lowOffer, high)))
+        assertNotEquals(CallSdp.tuneLocal(lowOffer, high), CallSdp.tuneRemote(lowOffer, high))
     }
 
     /**
-     * Seeding the estimate above the cap would ask congestion control to walk *down* from an
-     * illegal rate on the very first frame; seeding below the floor would make the seed a no-op.
+     * The invariant the envelope buys: both endpoints derive the *same* effective parameters, and
+     * which of them happened to offer does not enter into it. Anything weaker and a mixed-tier call
+     * runs one direction at the constrained tier and the other at the capable one.
      */
     @Test
-    fun video_seedsBetweenTheFloorAndTheCeiling() {
-        assertTrue(CallSdp.VIDEO_MIN_BITRATE_KBPS <= CallSdp.VIDEO_START_BITRATE_KBPS)
-        assertTrue(CallSdp.VIDEO_START_BITRATE_KBPS < CallSdp.VIDEO_MAX_BITRATE_KBPS)
+    fun bothEndpointsComputeTheSameParametersWhicheverOfThemOffered() {
+        // LOW dials: its offer declares 60 ms / 350 kbps, and HIGH folds that in on receipt.
+        val highSees = CallSdp.tuneRemote(CallSdp.tuneLocal(offer, low), high)
+        // HIGH dials: its offer declares 10 ms / 2500 kbps, and LOW folds that in on receipt.
+        val lowSees = CallSdp.tuneRemote(CallSdp.tuneLocal(offer, high), low)
+
+        assertEquals(highSees, lowSees)
+
+        // Spelled out, so a failure says which knob moved rather than just "strings differ".
+        assertEquals("60", ptime(highSees))
+        assertEquals("1", fmtpParams(highSees, "audio", "111")["usedtx"])
+        assertEquals("60", fmtpParams(highSees, "audio", "111")["minptime"])
+        assertEquals("350", fmtpParams(highSees, "video", "96")["x-google-max-bitrate"])
+        assertEquals("100", fmtpParams(highSees, "video", "96")["x-google-min-bitrate"])
+        assertEquals("200", fmtpParams(highSees, "video", "96")["x-google-start-bitrate"])
+    }
+
+    /** Longer Opus frames win, the tighter bitrate ceiling wins — for every tier pairing. */
+    @Test
+    fun remote_takesTheLongerFrameAndTheSmallerCeiling() {
+        for (theirs in FlashPerformanceMode.entries) {
+            for (ours in FlashPerformanceMode.entries) {
+                val seen = CallSdp.tuneRemote(CallSdp.tuneLocal(offer, theirs), ours)
+                val label = "${theirs.key} → ${ours.key}"
+                val video = fmtpParams(seen, "video", "96")
+
+                assertEquals(
+                    label,
+                    "${maxOf(theirs.voice.ptimeMs, ours.voice.ptimeMs)}",
+                    ptime(seen),
+                )
+                assertEquals(
+                    label,
+                    "${minOf(theirs.video.maxBitrateKbps, ours.video.maxBitrateKbps)}",
+                    video["x-google-max-bitrate"],
+                )
+            }
+        }
+    }
+
+    /**
+     * The seed must stay inside the window in every pairing too. Seeding above the cap would ask
+     * congestion control to walk *down* from an illegal rate on the first frame; seeding below the
+     * floor makes the seed a no-op. Taking MIN of all three independently only preserves the
+     * ordering because the tiers are monotonic in all three fields — this is the test that says so.
+     */
+    @Test
+    fun remote_keepsTheSeedInsideTheWindowForEveryPairing() {
+        for (theirs in FlashPerformanceMode.entries) {
+            for (ours in FlashPerformanceMode.entries) {
+                val video = fmtpParams(
+                    CallSdp.tuneRemote(CallSdp.tuneLocal(offer, theirs), ours),
+                    "video",
+                    "96",
+                )
+                val floor = video.getValue("x-google-min-bitrate").toInt()
+                val start = video.getValue("x-google-start-bitrate").toInt()
+                val ceiling = video.getValue("x-google-max-bitrate").toInt()
+                val label = "${theirs.key} → ${ours.key}: $floor/$start/$ceiling"
+
+                assertTrue(label, floor <= start)
+                assertTrue(label, start < ceiling)
+            }
+        }
+    }
+
+    /**
+     * DTX is MAX rather than "ours", because the airtime it saves is on the link and both ends
+     * share the link. A constrained peer therefore turns it on for the capable one too.
+     */
+    @Test
+    fun remote_turnsDtxOnWhenEitherEndAsksForIt() {
+        assertFalse(high.voice.useDtx) // the premise: HIGH would not ask for DTX on its own
+
+        val fromLow = CallSdp.tuneRemote(CallSdp.tuneLocal(offer, low), high)
+
+        assertEquals("1", fmtpParams(fromLow, "audio", "111")["usedtx"])
+        // ...and inband FEC survives the fold in both directions; it is on at every tier.
+        assertEquals("1", fmtpParams(fromLow, "audio", "111")["useinbandfec"])
+    }
+
+    /**
+     * A peer declaration we cannot read as a number is not a constraint we could honour, so our own
+     * value stands rather than being dropped. Silently emitting the peer's garbage back would make
+     * the codec unusable at both ends.
+     */
+    @Test
+    fun remote_keepsOurValueWhenThePeerDeclarationIsNotANumber() {
+        val body = sdp(
+            "v=0",
+            "m=audio 9 UDP/TLS/RTP/SAVPF 111",
+            "a=rtpmap:111 opus/48000/2",
+            "a=fmtp:111 minptime=wide;useinbandfec=1",
+            "a=ptime:tiny",
+        )
+
+        val tuned = CallSdp.tuneRemote(body, low)
+
+        assertEquals("60", ptime(tuned))
+        assertEquals("60", fmtpParams(tuned, "audio", "111")["minptime"])
     }
 
     // ------------------------------------------------------------------
@@ -215,21 +432,26 @@ class CallSdpTest {
     // ------------------------------------------------------------------
 
     /**
-     * [CallSdp.tune] runs over descriptions this device generated as well as ones it received,
-     * so it can legitimately see the same body twice. A second pass that appended a duplicate
-     * `usedtx=0` or a second ptime would be a parse error on the peer.
+     * Both entry points can legitimately see the same body twice — a local description is tuned on
+     * create and can be re-tuned on an ICE restart, and a remote one is re-offered on
+     * renegotiation. A second pass that appended a duplicate `usedtx` or a second ptime line would
+     * be a parse error on the peer.
      */
     @Test
-    fun tune_isIdempotent() {
-        val once = CallSdp.tune(offer)
+    fun bothDirectionsAreIdempotent() {
+        for (mode in FlashPerformanceMode.entries) {
+            val local = CallSdp.tuneLocal(offer, mode)
+            assertEquals("tier ${mode.key}", local, CallSdp.tuneLocal(local, mode))
 
-        assertEquals(once, CallSdp.tune(once))
+            val remote = CallSdp.tuneRemote(offer, mode)
+            assertEquals("tier ${mode.key}", remote, CallSdp.tuneRemote(remote, mode))
+        }
     }
 
     /** CRLF is what libwebrtc emits, and mixing terminators inside one body breaks parsers. */
     @Test
-    fun tune_preservesCrlf() {
-        val tuned = CallSdp.tune(offer)
+    fun preservesCrlf() {
+        val tuned = CallSdp.tuneLocal(offer, low)
 
         assertTrue(tuned.contains("\r\n"))
         assertTrue("no bare LF may survive", tuned.split("\r\n").none { it.contains("\n") })
@@ -237,31 +459,33 @@ class CallSdpTest {
 
     /** An LF-only body stays LF-only — the terminator is detected, not imposed. */
     @Test
-    fun tune_preservesBareLf() {
+    fun preservesBareLf() {
         val body = listOf(
             "v=0",
             "m=audio 9 UDP/TLS/RTP/SAVPF 111",
             "a=rtpmap:111 opus/48000/2",
         ).joinToString("\n")
 
-        val tuned = CallSdp.tune(body)
+        val tuned = CallSdp.tuneLocal(body, low)
 
         assertFalse(tuned.contains("\r"))
-        assertTrue(tuned.contains("a=ptime:${CallSdp.OPUS_PTIME_MS}"))
+        assertTrue(tuned.contains("a=ptime:${low.voice.ptimeMs}"))
     }
 
     /** A body with nothing to tune comes back byte-identical rather than reformatted. */
     @Test
-    fun tune_passesThroughWhatItDoesNotRecognise() {
+    fun passesThroughWhatItDoesNotRecognise() {
         val sessionOnly = sdp("v=0", "o=- 1 2 IN IP4 127.0.0.1", "s=-", "t=0 0")
 
-        assertEquals(sessionOnly, CallSdp.tune(sessionOnly))
-        assertEquals("", CallSdp.tune(""))
+        assertEquals(sessionOnly, CallSdp.tuneLocal(sessionOnly, low))
+        assertEquals(sessionOnly, CallSdp.tuneRemote(sessionOnly, low))
+        assertEquals("", CallSdp.tuneLocal("", low))
+        assertEquals("", CallSdp.tuneRemote("", low))
     }
 
     /** A data-only m-section (the transfer path's SCTP negotiation) is not audio or video. */
     @Test
-    fun tune_ignoresApplicationSections() {
+    fun ignoresApplicationSections() {
         val body = sdp(
             "v=0",
             "m=application 9 UDP/DTLS/SCTP webrtc-datachannel",
@@ -269,6 +493,7 @@ class CallSdpTest {
             "a=sctp-port:5000",
         )
 
-        assertEquals(body, CallSdp.tune(body))
+        assertEquals(body, CallSdp.tuneLocal(body, low))
+        assertEquals(body, CallSdp.tuneRemote(body, low))
     }
 }

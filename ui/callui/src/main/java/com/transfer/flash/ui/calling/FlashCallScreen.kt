@@ -30,8 +30,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -153,13 +155,31 @@ public fun FlashCallScreen(
     }
 }
 
-/** Peer avatar + name + live-region status line (audio calls / ended video calls). */
+/**
+ * The avatar halo's breathing scale, handed out as a **[State], not a `Float`** (EXP-013).
+ *
+ * The value is consumed in exactly one place — a `Modifier.graphicsLayer { }` block — so it never
+ * needed to be a snapshot read in composition at all. It used to be: `.value` was read at
+ * [FlashCallIdentityBlock]'s body scope, which subscribed that whole composable (avatar, peer name,
+ * status line, stats badge) to a 60 Hz animation clock for the entire duration of every RINGING or
+ * ACTIVE call. Reading it inside the layer block instead moves the observation into the render
+ * pipeline: a new frame re-runs the block and re-draws, and composition is never invalidated.
+ *
+ * That is strictly the bigger of the two costs this file had; the mm:ss counter that
+ * [FlashCallStatusLine] now confines ticked once per second, this ticked every frame.
+ *
+ * The `if` is deliberately kept: `pulsing` is false during CONNECTING, so the branch flips mid-call
+ * and the transition is created and discarded. That is pre-existing behaviour and it is safe —
+ * the compiler emits a group per `if` branch, so the `remember` and the transition are correctly
+ * scoped to their branch. (Contrast `MainActivity.kt:569`, which warns about `remember` inside a
+ * `?:`; an elvis gets no group and *would* leak state across the swap.)
+ *
+ * Under reduce-motion this returns a constant `1f` state, exactly as before: no transition is
+ * created, no frame callback is scheduled. HIGH tier animates identically to before this change.
+ */
 @Composable
-private fun FlashCallIdentityBlock(state: FlashCallUiState, session: FlashCallMedia?) {
-    val colors = FlashTheme.colors
-    val pulsing = state.state == FlashCallState.RINGING || state.state == FlashCallState.ACTIVE
-
-    val scale = if (pulsing && !FlashTheme.motion.reduceMotion) {
+private fun rememberCallPulseScale(pulsing: Boolean): State<Float> =
+    if (pulsing && !FlashTheme.motion.reduceMotion) {
         val transition = rememberInfiniteTransition(label = "flashCallPulse")
         transition.animateFloat(
             initialValue = 1f,
@@ -169,10 +189,17 @@ private fun FlashCallIdentityBlock(state: FlashCallUiState, session: FlashCallMe
                 repeatMode = RepeatMode.Reverse,
             ),
             label = "flashCallPulseScale",
-        ).value
+        )
     } else {
-        1f
+        remember { mutableFloatStateOf(1f) }
     }
+
+/** Peer avatar + name + live-region status line (audio calls / ended video calls). */
+@Composable
+private fun FlashCallIdentityBlock(state: FlashCallUiState, session: FlashCallMedia?) {
+    val colors = FlashTheme.colors
+    val pulsing = state.state == FlashCallState.RINGING || state.state == FlashCallState.ACTIVE
+    val scale = rememberCallPulseScale(pulsing)
 
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Box(contentAlignment = Alignment.Center) {
@@ -180,8 +207,8 @@ private fun FlashCallIdentityBlock(state: FlashCallUiState, session: FlashCallMe
                 modifier = Modifier
                     .size(FlashDimensions.avatarXl * 2)
                     .graphicsLayer {
-                        scaleX = scale
-                        scaleY = scale
+                        scaleX = scale.value
+                        scaleY = scale.value
                     }
                     .clip(CircleShape)
                     .background(colors.accentPrimary.copy(alpha = 0.12f)),
@@ -199,12 +226,7 @@ private fun FlashCallIdentityBlock(state: FlashCallUiState, session: FlashCallMe
             color = colors.textPrimary,
         )
         Spacer(Modifier.height(FlashSpacing.space4))
-        Text(
-            text = statusLine(state),
-            style = FlashTheme.typography.bodyDefault,
-            color = colors.textSecondary,
-            modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
-        )
+        FlashCallStatusLine(state = state, color = colors.textSecondary)
         Spacer(Modifier.height(FlashSpacing.space8))
         FlashCallStatsBadge(session = session, state = state, onDark = false)
     }
@@ -265,12 +287,7 @@ private fun FlashCallVideoSurfaces(
                 style = FlashTheme.typography.headingMedium,
                 color = Color.White,
             )
-            Text(
-                text = statusLine(state),
-                style = FlashTheme.typography.bodyDefault,
-                color = Color.White.copy(alpha = 0.8f),
-                modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
-            )
+            FlashCallStatusLine(state = state, color = Color.White.copy(alpha = 0.8f))
             Spacer(Modifier.height(FlashSpacing.space4))
             FlashCallStatsBadge(session = session, state = state, onDark = true)
         }
@@ -514,6 +531,39 @@ private fun FlashCallControlButton(
 }
 
 /** Human status line per call state (UI-050 status-text spec). */
+/**
+ * The status line as its **own restartable scope** — the reason this wrapper exists (EXP-013).
+ *
+ * [statusLine] and [activeDuration] are `@Composable` functions that *return a value*, which makes
+ * them non-restartable: the `mutableStateOf` tick inside [activeDuration] is recorded against the
+ * nearest restartable scope *above* them, i.e. whichever composable called `statusLine(state)`. Both
+ * call sites were large — [FlashCallIdentityBlock] (avatar, infinite pulse transition) and
+ * [FlashCallVideoSurfaces] (two `AndroidView` renderers and their whole modifier chains) — so an
+ * ACTIVE call recomposed them once per second, which is not what [activeDuration]'s own KDoc
+ * describes. A Unit-returning composable is always restartable, so putting the call behind one stops
+ * the invalidation here, at the single `Text` that actually shows the changing value.
+ *
+ * Purely a scope change: same text, style, colour and live-region semantics as before, at every
+ * performance tier.
+ */
+@Composable
+private fun FlashCallStatusLine(state: FlashCallUiState, color: Color) {
+    Text(
+        text = statusLine(state),
+        style = FlashTheme.typography.bodyDefault,
+        color = color,
+        modifier = Modifier.semantics {
+            // Transitions ("Incoming call" → "Call ended") are announced; the ACTIVE second
+            // hand is not. A polite live-region on the clock would post an accessibility
+            // event every second for the whole call — hundreds of announcements nobody asked
+            // for, each waking the accessibility pipeline on a low-end device mid-call.
+            // `state.state` reads in the semantics phase, so this costs a semantics pass on
+            // transitions, never a recomposition per tick.
+            if (state.state != FlashCallState.ACTIVE) liveRegion = LiveRegionMode.Polite
+        },
+    )
+}
+
 @Composable
 private fun statusLine(state: FlashCallUiState): String {
     return when (state.state) {
@@ -532,21 +582,42 @@ private fun statusLine(state: FlashCallUiState): String {
     }
 }
 
-/** mm:ss duration counter while ACTIVE — one tick per second on a leaf text node. */
+/** mm:ss duration counter while ACTIVE — one tick per second, confined to one text node by
+ *  [FlashCallStatusLine]'s scope. Call it only from there; calling it from a larger composable
+ *  recomposes that whole composable every second, because a value-returning `@Composable` is
+ *  non-restartable and its State reads land in the caller's scope (EXP-013). */
 @Composable
 private fun activeDuration(state: FlashCallUiState): String {
-    var text by remember { mutableStateOf("00:00") }
+    var text by remember { mutableStateOf(formatCallDuration(0L)) }
     LaunchedEffect(state.connectedAt) {
         val startedAt = state.connectedAt ?: return@LaunchedEffect
         while (true) {
-            val elapsedSec = ((System.currentTimeMillis() - startedAt) / 1000L).coerceAtLeast(0L)
-            val minutes = elapsedSec / 60
-            val seconds = elapsedSec % 60
-            text = "%02d:%02d".format(minutes, seconds)
-            delay(1_000L)
+            val now = System.currentTimeMillis()
+            text = formatCallDuration(now - startedAt)
+            // Sleep to the next wall-clock second boundary, not a flat 1 s: the displayed
+            // second flips on its edge (no drift, no skipped/duplicated seconds) and the tick
+            // coalesces into the same wakeup phase as the stats sampler's own 1 s cadence
+            // instead of free-running against it. Same text, same cadence, same tier behaviour.
+            val intoSecond = ((now - startedAt) % 1_000L).coerceAtLeast(0L)
+            delay(1_000L - intoSecond)
         }
     }
     return text
+}
+
+/**
+ * Elapsed call time as `mm:ss`, extracted from [activeDuration] so the arithmetic is JVM-testable
+ * (it was previously inline in a `LaunchedEffect` and had no coverage).
+ *
+ * Truncates rather than rounds — a call is "00:00" for its whole first second, which is what a phone
+ * dialler does. Negative input clamps to zero: [FlashCallUiState.connectedAt] comes from
+ * `System.currentTimeMillis()`, so a wall-clock correction mid-call can put "now" behind the start,
+ * and "-1:-3" on screen would be worse than a paused counter. Past 59:59 the minutes field widens
+ * ("100:00") instead of wrapping — `%02d` is a minimum width, not a truncation.
+ */
+internal fun formatCallDuration(elapsedMillis: Long): String {
+    val elapsedSec = (elapsedMillis / 1000L).coerceAtLeast(0L)
+    return "%02d:%02d".format(elapsedSec / 60, elapsedSec % 60)
 }
 
 /**

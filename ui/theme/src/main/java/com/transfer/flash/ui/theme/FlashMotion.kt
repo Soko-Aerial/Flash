@@ -10,7 +10,6 @@ import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.FiniteAnimationSpec
-import androidx.compose.animation.core.SpringSpec
 import androidx.compose.animation.core.VisibilityThreshold
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.spring
@@ -24,10 +23,12 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.lazy.LazyItemScope
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.IntOffset
 
@@ -54,7 +55,18 @@ class FlashMotion internal constructor(
     /** Header status, metadata, small state swaps. */
     fun statusCrossfade(): ContentTransform {
         if (reduceMotion) {
-            return EnterTransition.None togetherWith ExitTransition.None
+            // `sizeTransform = null` is the load-bearing part, not the two `None`s. `togetherWith`
+            // hands `ContentTransform` its default `SizeTransform()`, which animates the *container*
+            // between the two children's sizes on its own spring — so the nine `AnimatedContent`
+            // sites on this spec still played a size animation under reduce-motion even with both
+            // fades switched off. Visible wherever the swapped labels differ in width: a chat-list
+            // row preview, a transfer's status text, the conversation header. Null makes the
+            // container jump, and drops the per-instance size `Transition` with it.
+            return ContentTransform(
+                targetContentEnter = EnterTransition.None,
+                initialContentExit = ExitTransition.None,
+                sizeTransform = null,
+            )
         }
         return fadeIn(tween(fastMillis, easing = Decelerate)) togetherWith
             fadeOut(tween(fastMillis, easing = Accelerate))
@@ -308,21 +320,50 @@ class FlashMotion internal constructor(
             )
     }
 
-    /** Micro tap feedback scale spec (UI-041 send / reaction). */
-    fun <T> springSnappySpec(): SpringSpec<T> = spring(
-        dampingRatio = SpringSnappyDamping,
-        stiffness = SpringSnappyStiffness,
-    )
+    /**
+     * Micro tap feedback scale spec (UI-041 send / reaction).
+     *
+     * Returns [FiniteAnimationSpec] rather than `SpringSpec` because reduce-motion has to be able to
+     * answer `snap()`, and a spring cannot express "no animation" — its duration is emergent, so
+     * there is no zero to set. That is the same reason [messagePlacementSpec] is shaped this way.
+     *
+     * This used to hand back a live spring unconditionally, which is why two call sites had grown
+     * their own `if (motion.reduceMotion) snap() else motion.springSnappySpec()` — `FlashBottomNav`'s
+     * indicator and `Modifier.flashPressScale`. The other 27 call sites had no such guard, so on a LOW
+     * or MEDIUM tier every press, reaction pop, chip and sheet still ran a spring to settle: exactly
+     * the animation the tier exists to switch off. Fixed here so a caller cannot forget.
+     *
+     * At HIGH, `reduceMotion` is false and the returned spring is unchanged from before.
+     */
+    fun <T> springSnappySpec(): FiniteAnimationSpec<T> =
+        if (reduceMotion) {
+            snap()
+        } else {
+            spring(
+                dampingRatio = SpringSnappyDamping,
+                stiffness = SpringSnappyStiffness,
+            )
+        }
 
-    fun <T> springDefaultSpec(): SpringSpec<T> = spring(
-        dampingRatio = SpringDefaultDamping,
-        stiffness = SpringDefaultStiffness,
-    )
+    fun <T> springDefaultSpec(): FiniteAnimationSpec<T> =
+        if (reduceMotion) {
+            snap()
+        } else {
+            spring(
+                dampingRatio = SpringDefaultDamping,
+                stiffness = SpringDefaultStiffness,
+            )
+        }
 
-    fun <T> springGentleSpec(): SpringSpec<T> = spring(
-        dampingRatio = SpringGentleDamping,
-        stiffness = SpringGentleStiffness,
-    )
+    fun <T> springGentleSpec(): FiniteAnimationSpec<T> =
+        if (reduceMotion) {
+            snap()
+        } else {
+            spring(
+                dampingRatio = SpringGentleDamping,
+                stiffness = SpringGentleStiffness,
+            )
+        }
 
     fun <T> tweenFastSpec(): androidx.compose.animation.core.TweenSpec<T> =
         tween(fastMillis, easing = Standard)
@@ -414,9 +455,62 @@ class FlashMotion internal constructor(
     }
 }
 
+/**
+ * The platform's own answer to "should this device animate?" — a zeroed animator duration scale,
+ * or Android 13+'s accessibility reduce-motion toggle.
+ *
+ * Exposed separately from [rememberFlashMotion] because the app-level verdict is a three-way one
+ * (device performance tier, user override, platform), and only the host knows the first two; this
+ * supplies the third. Read once per [android.content.Context]: both inputs need a process restart
+ * to take effect anyway, and re-reading them per recomposition would put a `Settings.Global` query
+ * on the frame path.
+ */
 @Composable
-fun rememberFlashMotion(): FlashMotion {
+fun rememberSystemReduceMotion(): Boolean {
     val context = LocalContext.current
-    val reduceMotion = remember(context) { FlashMotion.isReduceMotionEnabled(context) }
-    return remember(reduceMotion) { FlashMotion(reduceMotion = reduceMotion) }
+    return remember(context) { FlashMotion.isReduceMotionEnabled(context) }
 }
+
+@Composable
+fun rememberFlashMotion(): FlashMotion = rememberFlashMotion(rememberSystemReduceMotion())
+
+/**
+ * A [FlashMotion] whose reduce-motion verdict the caller already reached.
+ *
+ * The way in for hosts that must widen "reduce motion" past what the platform reports: a handset on
+ * a low performance tier should not animate however the platform feels about it
+ * (`FlashMotionPolicy.resolveReduceMotion` in `:core:common` is where that is decided).
+ * [FlashMotion]'s constructor is internal, so this overload is the only entry point from outside
+ * this module.
+ */
+@Composable
+fun rememberFlashMotion(reduceMotion: Boolean): FlashMotion =
+    remember(reduceMotion) { FlashMotion(reduceMotion = reduceMotion) }
+
+/**
+ * The Flash lazy-list item animation: sibling glide on insert/remove, fade on removal.
+ *
+ * Exists so that no call site has to remember two separate things, the same reason
+ * [FlashMotion.springSnappySpec] collapses to `snap()` internally.
+ *
+ * `Modifier.animateItem` takes *three* specs and each one defaults to a live spring. Every one of
+ * the app's lazy lists had grown the form `animateItem(placementSpec = …, fadeOutSpec = …)`, which
+ * leaves `fadeInSpec` at that default — so on a LOW or MEDIUM tier each appearing row still faded in
+ * on a spring, which is precisely the animation the tier exists to switch off. Zeroing the third
+ * spec would not have been enough either: with all three at `snap()` the modifier is still installed,
+ * so every visible row keeps an animation node and the list keeps running item-animator bookkeeping
+ * for animations that can never play. Under reduce-motion this returns [Modifier] instead and those
+ * rows carry no animation node at all.
+ *
+ * At HIGH this is exactly what the call sites passed before — the two Flash springs, with
+ * `fadeInSpec` left on the platform default.
+ */
+fun LazyItemScope.flashAnimateItem(motion: FlashMotion): Modifier =
+    if (motion.reduceMotion) {
+        Modifier
+    } else {
+        Modifier.animateItem(
+            placementSpec = motion.messagePlacementSpec(),
+            fadeOutSpec = motion.messageFadeOutSpec(),
+        )
+    }

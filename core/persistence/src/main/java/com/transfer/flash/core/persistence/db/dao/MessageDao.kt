@@ -42,6 +42,23 @@ public interface MessageDao {
         limit: Int,
     ): List<MessageEntity>
 
+    /**
+     * F3 (FLASH_GSYNC): the holder's catch-up read — messages strictly AFTER
+     * `(cursorSentAt, cursorLocalId)` in ascending order, non-tombstoned only. The mirror of
+     * [historyBefore]: the composite cursor means equal-`sentAt` messages can never be skipped.
+     */
+    @Query(
+        "SELECT * FROM messages WHERE conversationId = :conversationId AND deletedAt IS NULL AND " +
+            "(sentAt > :cursorSentAt OR (sentAt = :cursorSentAt AND localId > :cursorLocalId)) " +
+            "ORDER BY sentAt ASC, localId ASC LIMIT :limit",
+    )
+    public suspend fun historyAfter(
+        conversationId: String,
+        cursorSentAt: Long,
+        cursorLocalId: String,
+        limit: Int,
+    ): List<MessageEntity>
+
     /** Single row by client UUID, or null if absent. Used by the outbox drain to recover the
      *  authoritative conversationId/sentAt/text a message was composed with (the outbox row itself
      *  carries only the payload), so a message is never re-routed to whatever conversation happens

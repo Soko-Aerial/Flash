@@ -10,7 +10,9 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
+import androidx.compose.runtime.State
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
@@ -38,6 +40,10 @@ import kotlin.math.min
  * Always honors reduce-motion via [FlashTheme.motion]: when animations are disabled the
  * loop collapses to a static centered bolt at rest.
  *
+ * Both animated values are read **inside the `Canvas` draw block**, never in composition — see
+ * [rememberFlashBrandPhase]. This composable therefore does not recompose while it animates; each
+ * frame only re-runs the draw lambda.
+ *
  * @param modifier The drawing box. Pass `Modifier.fillMaxSize()` for the splash, or a
  *   explicit `Modifier.size(...)` for a compact embedded animation (the bolt/rings scale
  *   to the canvas box).
@@ -48,9 +54,12 @@ fun FlashBrandAnimation(
     modifier: Modifier = Modifier,
     background: Boolean = true,
 ) {
-    val (breathe, phase) = rememberFlashBrandPhase()
+    val (boltBreathe, ringPhase) = rememberFlashBrandPhase()
 
     Canvas(modifier = modifier.fillMaxSize()) {
+        val breathe = boltBreathe.value
+        val phase = ringPhase.value
+
         if (background) {
             drawRect(brush = Brush.verticalGradient(listOf(SplashBgTop, SplashBgBottom)))
         }
@@ -99,18 +108,32 @@ fun FlashBrandAnimation(
 /**
  * The animated bolt is an infinite loop; under reduce-motion it returns a static bolt at
  * rest so reduced-motion users see a calm, non-moving brand mark.
+ *
+ * Hands out the two **[State]s, not their `Float`s** (EXP-013). This is a `@Composable` that returns
+ * a value, so it is not restartable: `val phase by transition.animateFloat(…)` recorded the read in
+ * the *caller's* scope, which meant [FlashBrandAnimation] recomposed on every frame of a 2.4 s loop —
+ * rebuilding its modifier chain, re-allocating the `Canvas` draw lambda and one `FlashBrandPhase`
+ * per frame — and then handed the draw block two constants it could not animate on its own.
+ *
+ * That was the worst place in the app to pay for recomposition: this is the launch splash, so it runs
+ * while the whole transport stack is booting, on the device where boot is slowest (ERROR-034 — on the
+ * Belfone SCP810 boot outlasts the 6 s splash ceiling). Reading `.value` inside the draw block instead
+ * keeps the animation in the draw phase: a new frame invalidates draw only, composition never re-runs,
+ * and the CPU the splash used to spend on itself is available to the boot it is covering for.
+ *
+ * Same easings, same durations, same `PULSE_MS`, same static reduce-motion fallback as before.
  */
 @Composable
 private fun rememberFlashBrandPhase(): FlashBrandPhase {
     if (FlashTheme.motion.reduceMotion) {
-        return FlashBrandPhase(breathe = 0f, phase = 0f)
+        return remember { FlashBrandPhase(mutableFloatStateOf(0f), mutableFloatStateOf(0f)) }
     }
 
     val transition = rememberInfiniteTransition(label = "flash-brand-animation")
 
     // Single 0..1 loop phase drives all three rings; each ring is offset by 1/3 so they
     // stagger like the SVG's 0s / 0.8s / 1.6s begins.
-    val phase by transition.animateFloat(
+    val phase = transition.animateFloat(
         initialValue = 0f,
         targetValue = 1f,
         animationSpec = infiniteRepeatable(
@@ -120,7 +143,7 @@ private fun rememberFlashBrandPhase(): FlashBrandPhase {
         label = "phase",
     )
 
-    val breathe by transition.animateFloat(
+    val breathe = transition.animateFloat(
         initialValue = 0f,
         targetValue = 1f,
         animationSpec = infiniteRepeatable(
@@ -130,10 +153,15 @@ private fun rememberFlashBrandPhase(): FlashBrandPhase {
         label = "breathe",
     )
 
-    return FlashBrandPhase(breathe = breathe, phase = phase)
+    return remember(breathe, phase) { FlashBrandPhase(breathe = breathe, phase = phase) }
 }
 
-private data class FlashBrandPhase(val breathe: Float, val phase: Float)
+/**
+ * Carries the two animation [State]s to the draw block. Deliberately holds `State<Float>` rather
+ * than `Float`: unwrapping it here would move the read back into composition and undo the fix
+ * described in [rememberFlashBrandPhase].
+ */
+private data class FlashBrandPhase(val breathe: State<Float>, val phase: State<Float>)
 
 /** Draws the bolt centered at (cx,cy), filling a [boxSize]-wide 24x24 space. */
 private fun DrawScope.drawBolt(cx: Float, cy: Float, boxSize: Float) {

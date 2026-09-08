@@ -43,6 +43,17 @@ public class WsTransferServer(
     private val connectionListener: WsConnection.Listener,
     private val onConnection: (WsConnection) -> Unit,
     private val tls: TlsOptions? = null,
+    /**
+     * Keepalive cadence for every connection this server accepts (ERROR-033), read per connection
+     * so a tier change reaches the next inbound session. Defaults to [WsConnection]'s own
+     * constants, so a caller that does not tier is byte-for-byte unchanged.
+     *
+     * Note the cadence is per *endpoint*, not negotiated: a LOW-tier device pings every 15 s and
+     * forgives 40 s of silence while its HIGH-tier peer pings every 10 s and forgives 25 s. That
+     * asymmetry is fine and in fact desirable — each end is describing its own tolerance for its
+     * own radio, and each end's pings are what keep the *other* end's watchdog fed.
+     */
+    private val keepalive: () -> WsKeepaliveTiming = { WsKeepaliveTiming.DEFAULT },
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var serverSocket: ServerSocket? = null
@@ -121,7 +132,17 @@ public class WsTransferServer(
         socket.getOutputStream().flush()
         socket.soTimeout = 0
         val label = "${socket.inetAddress?.hostAddress ?: "?"}:${socket.port}"
-        onConnection(WsConnection(socket, maskOutboundFrames = false, remoteLabel = label, listener = connectionListener))
+        val timing = keepalive()
+        onConnection(
+            WsConnection(
+                socket,
+                maskOutboundFrames = false,
+                remoteLabel = label,
+                listener = connectionListener,
+                pingIntervalMs = timing.pingIntervalMs,
+                livenessTimeoutMs = timing.livenessTimeoutMs,
+            ),
+        )
     }
 
     public companion object {

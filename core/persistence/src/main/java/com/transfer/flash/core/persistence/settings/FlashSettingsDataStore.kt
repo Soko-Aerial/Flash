@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import com.transfer.flash.core.common.perf.FlashPerformanceMode
 import java.io.File
 import java.io.IOException
 import kotlinx.coroutines.CoroutineScope
@@ -67,6 +68,7 @@ public class FlashSettingsDataStore(
         public val autoDownloadFile: Preferences.Key<Boolean> = booleanPreferencesKey("auto_download_file")
         public val prioritiseVoiceQuality: Preferences.Key<Boolean> =
             booleanPreferencesKey("prioritise_voice_quality")
+        public val performanceMode: Preferences.Key<String> = stringPreferencesKey("performance_mode")
         public val saveLocationUri: Preferences.Key<String> = stringPreferencesKey("save_location_uri")
         public val retentionDays: Preferences.Key<Int> = intPreferencesKey("retention_days")
         public val displayName: Preferences.Key<String> = stringPreferencesKey("display_name")
@@ -80,6 +82,20 @@ public class FlashSettingsDataStore(
         public const val MOTION_OVERRIDE_SYSTEM: String = "system"
         public const val MOTION_OVERRIDE_ON: String = "on"
         public const val MOTION_OVERRIDE_OFF: String = "off"
+
+        /**
+         * Maps a [Keys.reduceMotionOverride] token to the tri-state
+         * `com.transfer.flash.core.common.perf.FlashMotionPolicy` wants: true = always reduce,
+         * false = allow motion, **null = follow the platform**.
+         *
+         * Lives here, beside the tokens, so `:core:common` never has to know the persisted
+         * vocabulary and the motion policy stays a pure function of already-decoded inputs.
+         */
+        public fun motionOverrideForcesReduce(token: String?): Boolean? = when (token) {
+            MOTION_OVERRIDE_ON -> true
+            MOTION_OVERRIDE_OFF -> false
+            else -> null
+        }
 
         public const val DEFAULT_RETENTION_DAYS: Int = 365
     }
@@ -107,6 +123,10 @@ public class FlashSettingsDataStore(
 
     public val reduceMotionOverride: Flow<String> =
         preferences.map { it[Keys.reduceMotionOverride] ?: MOTION_OVERRIDE_SYSTEM }
+
+    /** [reduceMotionOverride] decoded for `FlashMotionPolicy`; null means "follow the platform". */
+    public val reduceMotionOverrideForcesReduce: Flow<Boolean?> =
+        preferences.map { motionOverrideForcesReduce(it[Keys.reduceMotionOverride]) }
 
     /** Default FALSE: sounds are opt-in only (owner decision D6, UI-040). */
     public val soundsEnabled: Flow<Boolean> =
@@ -145,6 +165,19 @@ public class FlashSettingsDataStore(
      */
     public val prioritiseVoiceQuality: Flow<Boolean> =
         preferences.map { it[Keys.prioritiseVoiceQuality] ?: true }
+
+    /**
+     * The pinned [FlashPerformanceMode], or **null meaning "detect from the hardware"**.
+     *
+     * Null is the shipped default and it is what makes the tiers detect themselves on first run
+     * with no first-run flag anywhere: an unset preference is auto, auto is resolved on every
+     * boot, and so is a token this build does not recognise (see
+     * [FlashPerformanceMode.fromKey]). The host resolves auto by classifying the device; nothing
+     * writes the detected value back, because a device that gains a capability — or an OEM update
+     * that fixes an under-reported `totalMem` — should be re-read rather than remembered.
+     */
+    public val performanceMode: Flow<FlashPerformanceMode?> =
+        preferences.map { FlashPerformanceMode.fromKey(it[Keys.performanceMode]) }
 
     public val saveLocationUri: Flow<String?> =
         preferences.map { it[Keys.saveLocationUri] }
@@ -202,6 +235,11 @@ public class FlashSettingsDataStore(
 
     public suspend fun setPrioritiseVoiceQuality(value: Boolean) {
         dataStore.edit { it[Keys.prioritiseVoiceQuality] = value }
+    }
+
+    /** Pins a tier, or restores hardware detection when [value] is null. */
+    public suspend fun setPerformanceMode(value: FlashPerformanceMode?) {
+        dataStore.edit { it[Keys.performanceMode] = FlashPerformanceMode.toKey(value) }
     }
 
     public suspend fun setSaveLocationUri(value: String?) {

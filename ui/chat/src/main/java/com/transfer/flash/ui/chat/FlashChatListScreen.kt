@@ -21,6 +21,7 @@ import androidx.compose.ui.unit.dp
 import com.transfer.flash.core.messaging.model.FlashChatListUiState
 import com.transfer.flash.core.messaging.util.sampleFlashChatListState
 import com.transfer.flash.ui.theme.FlashTheme
+import com.transfer.flash.ui.theme.flashAnimateItem
 
 @Composable
 fun FlashChatListScreen(
@@ -59,6 +60,8 @@ fun FlashChatListScreen(
     /** Conversation ids with a full-history message-body match for [searchQuery] (#12), resolved by
      *  the repository; folded into the client-side title/preview filter so buried matches surface. */
     messageBodyMatches: Set<String> = emptySet(),
+    /** Group Phase 1A: opens the create-group sheet. */
+    onNewGroupClick: () -> Unit = {},
 ) {
     val colors = FlashTheme.colors
     val motion = FlashTheme.motion
@@ -95,6 +98,7 @@ fun FlashChatListScreen(
                 FlashChatListTopBar(
                     onSearchClick = onSearchClick,
                     onLanClick = onLanClick,
+                    onNewGroupClick = onNewGroupClick,
                 )
             }
         },
@@ -178,10 +182,7 @@ fun FlashChatListScreen(
                                 isSelected = item.id in state.selectedIds,
                                 selectionMode = state.selectionMode,
                                 showDivider = showRecents || !isLastRow,
-                                modifier = Modifier.animateItem(
-                                    placementSpec = motion.messagePlacementSpec(),
-                                    fadeOutSpec = motion.messageFadeOutSpec(),
-                                ),
+                                modifier = flashAnimateItem(motion),
                             )
                         }
                     }

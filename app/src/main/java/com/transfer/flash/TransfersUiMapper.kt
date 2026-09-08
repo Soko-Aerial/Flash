@@ -51,6 +51,21 @@ fun FlashTransfer.toUiItem(): FlashTransferItemUi = FlashTransferItemUi(
 /**
  * Maps a live domain transfer list into the sectioned [TransfersUiState] the screen renders,
  * reusing [TransfersUiState.fromItems] for the Active / Failed / History bucketing.
+ *
+ * [isLoading] and [isError] are the screen's boot state and are required, not defaulted
+ * (ERROR-034). The transfers page has had Loading and Error branches all along and both were
+ * unreachable, because every caller mapped a list and left the flags false — so before the engine
+ * booted the tab asserted "No transfers yet", which is a claim about this device's history made by
+ * code that had not yet been given access to it. Making the parameters mandatory means a new call
+ * site has to state what it knows.
+ *
+ * Note that an empty list from a *booted* repository is a real answer: `activeTransfers` is
+ * in-memory and starts genuinely empty, so unlike the chat list there is no first-emission gap to
+ * cover here — pre-boot is the whole of it.
  */
-fun TransfersUiState.Companion.fromDomain(transfers: List<FlashTransfer>): TransfersUiState =
-    TransfersUiState.fromItems(transfers.map { it.toUiItem() })
+fun TransfersUiState.Companion.fromDomain(
+    transfers: List<FlashTransfer>,
+    isLoading: Boolean,
+    isError: Boolean,
+): TransfersUiState = TransfersUiState.fromItems(transfers.map { it.toUiItem() })
+    .copy(isLoading = isLoading, isError = isError)

@@ -21,6 +21,21 @@ public interface FlashTransferRepository {
         fileSize: Long,
     ): FlashResult<FlashTransferId>
 
+    /**
+     * F4 (group media): send with an explicit wire identity. Group sends fan out N per-member
+     * transfers that must correlate — the receiver mints its chat row under the same
+     * [wireFileId] and a later re-pull from another member resumes the original session
+     * (identical `(transferId, wireFileId)` re-offer → resume, per [relaunchSend]'s contract).
+     * Null keeps the generated-UUID default (1:1 sends unchanged).
+     */
+    public suspend fun sendFile(
+        targetDevice: FlashDevice,
+        fileUri: String,
+        displayName: String,
+        fileSize: Long,
+        wireFileId: String?,
+    ): FlashResult<FlashTransferId>
+
     public suspend fun pauseTransfer(transferId: FlashTransferId): FlashResult<Unit>
     public suspend fun resumeTransfer(transferId: FlashTransferId): FlashResult<Unit>
     public suspend fun cancelTransfer(transferId: FlashTransferId): FlashResult<Unit>

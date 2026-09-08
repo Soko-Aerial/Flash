@@ -11,6 +11,7 @@ import com.transfer.flash.core.common.model.FlashDevice
 import com.transfer.flash.core.common.model.FlashDeviceId
 import com.transfer.flash.core.common.model.FlashPeerPresence
 import com.transfer.flash.core.common.model.FlashTransportType
+import com.transfer.flash.core.common.net.LinkChangeTracker
 import com.transfer.flash.core.common.protocol.FlashProtocol
 import com.transfer.flash.core.common.result.FlashError
 import com.transfer.flash.core.common.result.FlashResult
@@ -147,7 +148,8 @@ public interface NsdManagerBridge {
 
     /**
      * Registers a listener fired whenever the set of usable local networks
-     * changes (Wi-Fi connected/lost, hotspot/tether up or down).
+     * changes (Wi-Fi connected/lost, hotspot/tether up or down), **or** whenever the shape of a
+     * network changes in a way consistent with a Wi-Fi reassociation.
      *
      * Needed because the browse is deliberately UNBOUND (see
      * [RealNsdManagerBridge.startBrowse]): the unbound `discoverServices`
@@ -157,6 +159,12 @@ public interface NsdManagerBridge {
      * no longer exists. Nothing then re-arms it and discovery is silently dead
      * until the process restarts.
      *
+     * The reassociation half was added by ERROR-035. Roaming between two APs of one mesh SSID keeps
+     * the same `Network` object, so availability callbacks alone sleep through it — see
+     * [LinkChangeTracker] for why the substitute signal is a hint and why answering it must stay
+     * cheap. Here the answer is a debounced browse restart plus a re-registered advertisement, both
+     * of which the transport already does for an ordinary Wi-Fi transition.
+     *
      * @return true when observation started. Default false for fakes/hosts with
      *   no connectivity service — callers must degrade, not fail.
      */
@@ -164,6 +172,29 @@ public interface NsdManagerBridge {
 
     /** Stops [observeNetworkChanges]. Idempotent. */
     public fun stopObservingNetworkChanges() {}
+
+    /**
+     * A canonical string over the LAN-capable **local interfaces**, polled by
+     * [NsdTransport.presenceTick] and diffed to catch the one transition
+     * [observeNetworkChanges] structurally cannot see (ERROR-035).
+     *
+     * When this device turns its hotspot on while it is still joined to a Wi-Fi network, the
+     * platform creates `ap0` with a fresh subnet and delivers **no callback of any kind**: a SoftAP
+     * interface is not a `Network`, so no `NetworkCallback` fires, the default network never changes,
+     * and `TetheringManager.registerTetheringEventCallback` — the one API that would say so
+     * outright — is API 30+ while the oldest supported device here is API 27. The unbound browse
+     * therefore keeps running on the interface it started on and the newly tethered client is never
+     * seen. Interface enumeration is the only permission-free signal available on every API level.
+     *
+     * Polled rather than pushed because there is nothing to push. Folded into the presence heartbeat
+     * that already runs for the whole browse session, so it costs no additional wakeup — the reason
+     * the return value must stay cheap to compute.
+     *
+     * @return a value that is stable while the interfaces are, and different when they are not.
+     *   The default "" is a constant, which reads as "never changes" and disables the check — the
+     *   right behaviour for fakes and for hosts with no way to enumerate.
+     */
+    public fun linkFingerprint(): String = ""
 }
 
 /**
@@ -208,6 +239,26 @@ public class RealNsdManagerBridge(
         }.getOrNull()
 
     private var networkCallback: android.net.ConnectivityManager.NetworkCallback? = null
+
+    /**
+     * Rate-limited roam detector over the *shape* half of the network callbacks (ERROR-035).
+     * Shared implementation with the transport side, which is why it lives in `core:common` —
+     * `core:network` depends on this module, so it could not have been shared from there.
+     */
+    private val linkChanges = LinkChangeTracker(nowMs = System::currentTimeMillis)
+
+    /**
+     * Shape halves **per network**, keyed by `Network.networkHandle`. Per network rather than one
+     * shared pair of strings because the unfiltered request below matches several networks at once;
+     * with a shared pair, interleaved reports from two of them flip the combined value on every
+     * callback and every rate-limit expiry buys a browse teardown on a link that never moved.
+     */
+    private val capabilitiesByNetwork = java.util.concurrent.ConcurrentHashMap<Long, String>()
+
+    private val linkByNetwork = java.util.concurrent.ConcurrentHashMap<Long, String>()
+
+    /** Last successfully enumerated value, returned when a later enumeration throws. */
+    @Volatile private var lastLinkFingerprint: String = ""
 
     override fun setMulticastLock(active: Boolean) {
         runCatching {
@@ -400,18 +451,95 @@ public class RealNsdManagerBridge(
     override fun observeNetworkChanges(onChanged: () -> Unit): Boolean {
         val manager = connectivityManager ?: return false
         stopObservingNetworkChanges()
+        linkChanges.reset()
+        capabilitiesByNetwork.clear()
+        linkByNetwork.clear()
         val callback = object : android.net.ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: android.net.Network) = onChanged()
-            override fun onLost(network: android.net.Network) = onChanged()
+            override fun onAvailable(network: android.net.Network) {
+                // A new network re-seeds the shape baseline: its first capabilities/link report is
+                // an initial association, not a roam.
+                linkChanges.reset()
+                capabilitiesByNetwork.clear()
+                linkByNetwork.clear()
+                onChanged()
+            }
+
+            override fun onLost(network: android.net.Network) {
+                linkChanges.reset()
+                capabilitiesByNetwork.remove(network.networkHandle)
+                linkByNetwork.remove(network.networkHandle)
+                onChanged()
+            }
+
+            override fun onCapabilitiesChanged(
+                network: android.net.Network,
+                capabilities: android.net.NetworkCapabilities,
+            ) {
+                if (isLanCapable(capabilities)) {
+                    capabilitiesByNetwork[network.networkHandle] = capabilitiesShape(capabilities)
+                } else {
+                    // Cellular (and anything else that cannot carry mDNS) is deliberately dropped
+                    // from the SHAPE half while remaining registered for availability. Its
+                    // bandwidth estimate moves continuously on a walking device, and every such
+                    // report would otherwise buy a full browse teardown and re-register for an
+                    // interface that no peer is reachable over.
+                    capabilitiesByNetwork.remove(network.networkHandle)
+                    linkByNetwork.remove(network.networkHandle)
+                }
+                offerShape(onChanged)
+            }
+
+            override fun onLinkPropertiesChanged(
+                network: android.net.Network,
+                linkProperties: android.net.LinkProperties,
+            ) {
+                // Only for networks already established as LAN-capable by the capabilities
+                // callback, which the platform always delivers first for a given network.
+                if (capabilitiesByNetwork.containsKey(network.networkHandle)) {
+                    linkByNetwork[network.networkHandle] = linkShape(linkProperties)
+                    offerShape(onChanged)
+                }
+            }
         }
         return runCatching {
-            // No NetworkRequest filter: a hotspot HOST has no connected Wi-Fi/Ethernet
-            // network at all, and that transition is exactly the one we must react to.
-            manager.registerDefaultNetworkCallback(callback)
+            // Registered for EVERY transport, not the default network only. A Wi-Fi network coming
+            // up while cellular stays default is a real LAN event that a default-network callback
+            // never reports, and this form is otherwise a strict superset: a per-network callback
+            // still delivers onLost for the last network standing, which is the hotspot-HOST
+            // transition the previous registerDefaultNetworkCallback comment was protecting.
+            manager.registerNetworkCallback(android.net.NetworkRequest.Builder().build(), callback)
             networkCallback = callback
         }.onFailure { Log.w(tag, "Unable to observe network changes", it) }
             .isSuccess
     }
+
+    private fun offerShape(onChanged: () -> Unit) {
+        val handles = (capabilitiesByNetwork.keys + linkByNetwork.keys).sorted()
+        val combined = handles.joinToString(separator = ";") { handle ->
+            "$handle=${capabilitiesByNetwork[handle].orEmpty()}|${linkByNetwork[handle].orEmpty()}"
+        }
+        if (linkChanges.onFingerprint(combined)) {
+            Log.i(tag, "Link shape changed; treating as possible reassociation")
+            runCatching { onChanged() }
+        }
+    }
+
+    private fun isLanCapable(capabilities: android.net.NetworkCapabilities): Boolean =
+        capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) ||
+            capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET)
+
+    /** Bandwidth bucketed to 1 Mbit/s; see `AndroidNetworkWatcher` for why an exact value is unusable. */
+    private fun capabilitiesShape(capabilities: android.net.NetworkCapabilities): String {
+        val down = capabilities.linkDownstreamBandwidthKbps / BANDWIDTH_BUCKET_KBPS
+        val up = capabilities.linkUpstreamBandwidthKbps / BANDWIDTH_BUCKET_KBPS
+        return "$down/$up"
+    }
+
+    private fun linkShape(linkProperties: android.net.LinkProperties): String = runCatching {
+        val addresses = linkProperties.linkAddresses.map { it.toString() }.sorted()
+        val routes = linkProperties.routes.map { it.toString() }.sorted()
+        "${linkProperties.interfaceName}/$addresses/$routes"
+    }.getOrDefault("")
 
     override fun stopObservingNetworkChanges() {
         networkCallback?.let { callback ->
@@ -419,6 +547,62 @@ public class RealNsdManagerBridge(
                 .onFailure { Log.w(tag, "Unable to stop observing network changes", it) }
         }
         networkCallback = null
+        linkChanges.reset()
+        capabilitiesByNetwork.clear()
+        linkByNetwork.clear()
+    }
+
+    /**
+     * Interfaces that are up, not loopback, and carry an IPv4 address, rendered
+     * `name=addr,addr;name=addr` with everything sorted.
+     *
+     * IPv4 only, deliberately. The transition this exists to catch is a SoftAP appearing with a
+     * fresh IPv4 subnet, while IPv6 privacy addresses rotate on a timer of their own and would make
+     * an idle device look like it had moved every few hours.
+     *
+     * Interfaces belonging to a non-LAN-capable `Network` (cellular, VPN) are excluded, and the
+     * exclusion set is read from ConnectivityManager rather than guessed from name prefixes, which
+     * vary by OEM. A cellular handover re-addresses `rmnet0` without any LAN change, and including
+     * it would re-arm discovery every time a moving device changed cell.
+     *
+     * On any enumeration failure this returns the previous value rather than "", so a transient
+     * SocketException reads as "nothing changed" instead of billing two spurious re-arms — one for
+     * the disappearance and one for the reappearance.
+     */
+    override fun linkFingerprint(): String {
+        val excluded = excludedInterfaceNames()
+        val rendered = runCatching {
+            java.net.NetworkInterface.getNetworkInterfaces()?.asSequence().orEmpty()
+                .filter { nic ->
+                    runCatching { nic.isUp && !nic.isLoopback }.getOrDefault(false) &&
+                        nic.name !in excluded
+                }
+                .mapNotNull { nic ->
+                    val addresses = nic.inetAddresses.asSequence()
+                        .filterIsInstance<java.net.Inet4Address>()
+                        .mapNotNull { it.hostAddress }
+                        .sorted()
+                        .toList()
+                    if (addresses.isEmpty()) null else "${nic.name}=${addresses.joinToString(",")}"
+                }
+                .sorted()
+                .joinToString(separator = ";")
+        }.getOrElse { return lastLinkFingerprint }
+        lastLinkFingerprint = rendered
+        return rendered
+    }
+
+    /** Interface names owned by networks that cannot carry LAN traffic. Empty when CM is unavailable. */
+    private fun excludedInterfaceNames(): Set<String> {
+        val manager = connectivityManager ?: return emptySet()
+        return runCatching {
+            @Suppress("DEPRECATION")
+            manager.allNetworks.mapNotNullTo(mutableSetOf()) { network ->
+                val capabilities = manager.getNetworkCapabilities(network) ?: return@mapNotNullTo null
+                if (isLanCapable(capabilities)) return@mapNotNullTo null
+                manager.getLinkProperties(network)?.interfaceName
+            }
+        }.getOrDefault(emptySet())
     }
 
     private fun mapResolved(info: NsdServiceInfo): ResolvedServiceData? {
@@ -443,6 +627,9 @@ public class RealNsdManagerBridge(
 
     public companion object {
         public const val TAG: String = "DISCOVERY"
+
+        /** Link-bandwidth quantum for the shape fingerprint; see [capabilitiesShape]. */
+        private const val BANDWIDTH_BUCKET_KBPS = 1_000
 
         /**
          * Direct executor: NSD callbacks stay on ConnectivityThread, matching
@@ -743,6 +930,23 @@ public class NsdTransport(
     @Volatile private var networkChangeJob: Job? = null
 
     @Volatile private var observingNetwork = false
+
+    /**
+     * Diffs [NsdManagerBridge.linkFingerprint] across presence ticks (ERROR-035).
+     *
+     * Rate limited to two heartbeat periods rather than the tracker's 5 s default, because the tick
+     * period is already the poll rate and the thing the limit has to bound is a *flapping*
+     * interface: an `ap0` that goes up and down repeatedly would otherwise buy a browse teardown on
+     * every tick for as long as it lasted. Fed only from [presenceTick], i.e. only from [lane],
+     * which satisfies the tracker's single-threaded contract.
+     */
+    private val interfaceChanges = LinkChangeTracker(
+        nowMs = timeSourceMs,
+        minIntervalMs = maxOf(
+            presenceHeartbeatMs * 2,
+            LinkChangeTracker.DEFAULT_MIN_INTERVAL_MS,
+        ),
+    )
 
     /** Wall clock of the most recent browse (re)start; gates heartbeat eviction. */
     @Volatile private var browseStartedAtMs: Long = 0L
@@ -1180,8 +1384,14 @@ public class NsdTransport(
      * radio needs a moment to re-deliver `onServiceFound` for services that are
      * still there, and evicting during that window would recreate the very false
      * Lost this heartbeat exists to prevent.
+     *
+     * Step 0 polls the local interfaces. It is here rather than on its own timer because a hotspot
+     * being switched on produces no callback to hang a timer off (see
+     * [NsdManagerBridge.linkFingerprint]) and the heartbeat is already awake.
      */
     private suspend fun presenceTick() {
+        pollLinkFingerprint()
+
         val strategy = resolutionStrategy()
         for ((serviceName, monitorStarted) in monitoredServices.entries.toList()) {
             if (!monitorStarted) startMonitor(serviceName, strategy)
@@ -1220,6 +1430,20 @@ public class NsdTransport(
 
     // -- Connectivity re-arm ---------------------------------------------------
 
+    /**
+     * Reads the bridge's interface fingerprint and re-arms discovery when it moved.
+     *
+     * Wrapped in `runCatching` because it runs inside the heartbeat: an enumeration failure must not
+     * take down the loop that also retries monitors and republishes presence.
+     */
+    private fun pollLinkFingerprint() {
+        val fingerprint = runCatching { bridge.linkFingerprint() }.getOrNull() ?: return
+        if (interfaceChanges.onFingerprint(fingerprint)) {
+            logInfo("Local interfaces changed; re-arming discovery")
+            onNetworkChanged()
+        }
+    }
+
     private fun observeNetworkChangesIfNeeded() {
         if (observingNetwork) return
         observingNetwork = runCatching { bridge.observeNetworkChanges(::onNetworkChanged) }
@@ -1227,10 +1451,15 @@ public class NsdTransport(
     }
 
     /**
-     * Connectivity changed (Wi-Fi joined/dropped, hotspot toggled). The browse is
-     * unbound and therefore network-blind, so nothing else would notice that the
+     * Connectivity changed (Wi-Fi joined/dropped, hotspot toggled, or the link reassociated). The
+     * browse is unbound and therefore network-blind, so nothing else would notice that the
      * interface it was started on is gone. Debounced because a single Wi-Fi
      * transition arrives as a burst of callbacks.
+     *
+     * Three sources reach here, all of them necessarily distinct: availability callbacks for a
+     * network appearing or disappearing, a shape change on a network that stayed (a mesh roam, which
+     * keeps its `Network` object and so fires neither of the first two), and the interface poll for
+     * a SoftAP coming up, which produces no callback at all.
      *
      * The advertisement is re-registered for the same reason and is deliberately NOT gated on
      * `advertising`: a registration pinned to a vanished interface still reports itself as healthy,
@@ -1402,6 +1631,7 @@ public class NsdTransport(
         runCatching { bridge.cancelMonitors() }
         runCatching { bridge.stopObservingNetworkChanges() }
         observingNetwork = false
+        interfaceChanges.reset()
         runCatching { bridge.setMulticastLock(false) }
         scope?.cancel()
         scope = null

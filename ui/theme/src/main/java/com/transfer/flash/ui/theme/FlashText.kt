@@ -2,8 +2,10 @@ package com.transfer.flash.ui.theme
 
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorProducer
 import androidx.compose.ui.graphics.isSpecified
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
@@ -16,6 +18,13 @@ import androidx.compose.ui.text.style.TextOverflow
  * Foundation-level [BasicText] (same non-Material tier as the composer's `BasicTextField`)
  * styled exclusively through [FlashTypography] tokens — chat UI never renders bare
  * `material3.Text`, keeping all visible identity Flash-owned.
+ *
+ * [color] is handed to [BasicText] as a [ColorProducer] rather than folded into [style] with a
+ * `copy`. `TextStyle.copy` rebuilds the whole `SpanStyle`/`ParagraphStyle` pair, and virtually every
+ * call site in the app passes an explicit colour — so the old form paid for a fresh `TextStyle` per
+ * piece of text per recomposition. A `ColorProducer` is read in the draw phase instead, which is
+ * exactly what it exists for. [textAlign] has no draw-phase equivalent (it is a paragraph property
+ * and feeds measurement), so it still copies, but only when it is actually set.
  */
 @Composable
 fun FlashText(
@@ -27,19 +36,13 @@ fun FlashText(
     overflow: TextOverflow = TextOverflow.Clip,
     textAlign: TextAlign? = null,
 ) {
-    var resolved = style
-    if (color.isSpecified) {
-        resolved = resolved.copy(color = color)
-    }
-    if (textAlign != null) {
-        resolved = resolved.copy(textAlign = textAlign)
-    }
     BasicText(
         text = text,
         modifier = modifier,
-        style = resolved,
+        style = if (textAlign == null) style else style.copy(textAlign = textAlign),
         maxLines = maxLines,
         overflow = overflow,
+        color = rememberFlashTextColor(color),
     )
 }
 
@@ -57,18 +60,20 @@ fun FlashText(
     overflow: TextOverflow = TextOverflow.Clip,
     textAlign: TextAlign? = null,
 ) {
-    var resolved = style
-    if (color.isSpecified) {
-        resolved = resolved.copy(color = color)
-    }
-    if (textAlign != null) {
-        resolved = resolved.copy(textAlign = textAlign)
-    }
     BasicText(
         text = text,
         modifier = modifier,
-        style = resolved,
+        style = if (textAlign == null) style else style.copy(textAlign = textAlign),
         maxLines = maxLines,
         overflow = overflow,
+        color = rememberFlashTextColor(color),
     )
 }
+
+/**
+ * `null` for [Color.Unspecified] so [BasicText] falls through to `style.color`, otherwise a producer
+ * cached per colour — the lambda would otherwise be a fresh allocation on every recomposition.
+ */
+@Composable
+private fun rememberFlashTextColor(color: Color): ColorProducer? =
+    if (color.isSpecified) remember(color) { ColorProducer { color } } else null

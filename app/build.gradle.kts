@@ -23,8 +23,13 @@ android {
 
     buildTypes {
         release {
+            // AGP 9.3+ DSL: one flag enables both R8 code shrinking/obfuscation and the
+            // optimized resource-shrinker pipeline (replaces isMinifyEnabled +
+            // isShrinkResources; default platform keep rules are included). No first-party
+            // reflection exists in core/* (verified 2026-08-27); Room/SQLCipher/WebRTC ship
+            // their own consumer rules.
             optimization {
-                enable = false
+                enable = true
             }
         }
     }

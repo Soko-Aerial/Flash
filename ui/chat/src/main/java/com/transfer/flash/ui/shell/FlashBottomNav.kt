@@ -3,10 +3,8 @@ package com.transfer.flash.ui.shell
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.animateIntAsState
-import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -57,7 +55,6 @@ import com.transfer.flash.ui.theme.FlashShapes
 import com.transfer.flash.ui.theme.FlashSpacing
 import com.transfer.flash.ui.theme.FlashText
 import com.transfer.flash.ui.theme.FlashTheme
-import com.transfer.flash.ui.theme.FlashTypography
 import com.transfer.flash.ui.theme.rememberFlashHaptics
 import kotlin.math.abs
 import kotlin.math.sqrt
@@ -173,15 +170,17 @@ fun FlashBottomNav(
     if (items.isEmpty()) return
     val colors = FlashTheme.colors
     val motion = FlashTheme.motion
+    // The bar hangs over the page, and its drop-shadow is what sells that (UI-046). It is also the
+    // one piece of chrome in the shell that costs a blur every frame the page scrolls underneath,
+    // so a low-tier device gets the hairline border alone (ERROR-033).
+    val elevation = if (FlashTheme.minimalChrome) FlashElevation.none else FlashElevation.floating
     val haptics = rememberFlashHaptics()
     val isRtl = LocalLayoutDirection.current == LayoutDirection.Rtl
     val selectedIndex = items.indexOfFirst { it.destination == selectedTab }.coerceAtLeast(0)
 
-    val slideSpec: FiniteAnimationSpec<Float> =
-        if (motion.reduceMotion) snap() else motion.springSnappySpec()
     val position = animateFloatAsState(
         targetValue = selectedIndex.toFloat(),
-        animationSpec = slideSpec,
+        animationSpec = motion.springSnappySpec(),
         label = "flashNavIndicatorPosition",
     )
     val travel = rememberTravelPulse(selectedIndex, motion)
@@ -201,7 +200,7 @@ fun FlashBottomNav(
             Modifier
                 .fillMaxWidth()
                 .height(FlashBottomNavDefaults.barHeight)
-                .shadow(FlashElevation.floating, FlashShapes.navBar, clip = false)
+                .shadow(elevation, FlashShapes.navBar, clip = false)
                 .clip(FlashShapes.navBar)
                 .background(colors.backgroundSurface)
                 .border(FlashDimensions.borderHairline, colors.borderSubtle, FlashShapes.navBar)
@@ -296,7 +295,7 @@ private fun FlashBottomNavItemCell(
 ) {
     val colors = FlashTheme.colors
     val motion = FlashTheme.motion
-    val typography = FlashTypography.default()
+    val typography = FlashTheme.typography
 
     var reselectTrigger by remember { mutableIntStateOf(0) }
     val ringProgress = remember { Animatable(1f) }
@@ -415,7 +414,7 @@ private fun Badge(count: Int?, modifier: Modifier = Modifier) {
         ) {
             FlashText(
                 text = FlashBottomNavMath.formatBadgeCount(lastCount),
-                style = FlashTypography.default().numericEmphasis,
+                style = FlashTheme.typography.numericEmphasis,
                 color = colors.mediaViewerChromeText,
             )
         }

@@ -16,6 +16,7 @@ import com.transfer.flash.core.discovery.nsd.NsdTransport
 import com.transfer.flash.core.engine.store.KeystorePassphraseProvider
 import com.transfer.flash.core.engine.store.RoomTransferStore
 import com.transfer.flash.core.messaging.RealFlashChatRepository
+import com.transfer.flash.core.messaging.protocol.GroupFrameCodec
 import com.transfer.flash.core.messaging.protocol.MessageWireFrame
 import com.transfer.flash.core.network.bridge.DiscoveryRouteBinder
 import com.transfer.flash.core.network.datachannel.DataChannelClient
@@ -38,6 +39,7 @@ import com.transfer.flash.core.transfer.multistream.StreamChannel
 import com.transfer.flash.core.transfer.policy.FileRandomAccessSinkHandle
 import com.transfer.flash.core.transfer.policy.RandomAccessChunkSink
 import com.transfer.flash.core.transfer.policy.RandomAccessSinkHandle
+import com.transfer.flash.core.transfer.policy.TransferReconnectResumePolicy
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
@@ -125,6 +127,12 @@ private const val XFER_PREFIX = "FLASH_XFER"
 private const val AUTO_CONNECT_SWEEP_MS = 5_000L
 
 /**
+ * Delay between a session coming up and auto-resume re-offering on it: long enough for two-way-dial
+ * glare to have been resolved, negligible next to the outage that failed the transfer.
+ */
+private const val SETTLE_BEFORE_RESUME_MS = 750L
+
+/**
  * Faithful port of the app's `DiscoveryEngineHolder` wiring, minus the app-only pieces (pairing UI
  * glue, foreground service, Dev Console payload). Assembles the six [FlashEngine] subsystems on one
  * shared [scope] and returns a [DefaultFlashEngine] whose `close()` tears everything down.
@@ -141,6 +149,12 @@ private class Wiring(
     private val incomingByPeer = ConcurrentHashMap<String, MutableSet<String>>()
     private val dataPortCache = ConcurrentHashMap<String, Int>()
     private val pausedIntakeIds = MutableStateFlow<Set<String>>(emptySet())
+
+    /**
+     * Attempt budget for restarting roam-killed sends (ERROR-035). One per engine, so the cap spans
+     * session-up edges — a per-edge instance would never run out, which defeats the point.
+     */
+    private val reconnectResume = TransferReconnectResumePolicy()
 
     @Volatile private var dataPort: Int = 0
     @Volatile private var transferRef: RealFlashTransferRepository? = null
@@ -238,6 +252,9 @@ private class Wiring(
             draftDao = db.draftDao(),
             recentSearchDao = db.recentSearchDao(),
             reactionDao = db.reactionDao(),
+            groupMemberDao = db.groupMemberDao(),
+            groupDeliveryDao = db.groupDeliveryDao(),
+            isTrustedPeer = { peerId -> trustStore.isTrusted(peerId) },
             onlinePeerIds = networkImpl.activeSessions.map { sessions ->
                 sessions.keys.mapTo(HashSet()) { it.value }
             },
@@ -269,6 +286,14 @@ private class Wiring(
                 }
             },
             transportSink = { targetDeviceId, wireFrame -> sendChatFrame(networkImpl, targetDeviceId, wireFrame) },
+            groupTransportSink = { targetDeviceId, wireFrame ->
+                val session = networkImpl.activeSessions.value[FlashDeviceId(targetDeviceId)] as? WsSession
+                if (session == null) {
+                    Log.w(TAG, "Group frame dropped: no active session for $targetDeviceId")
+                    return@RealFlashChatRepository false
+                }
+                session.connection.sendText(GroupFrameCodec.encode(wireFrame))
+            },
         )
         val cleanupInbound: (String, String) -> Unit = { transferId, reason ->
             openHandles.remove(transferId)?.let { handle -> runCatching { handle.close() } }
@@ -345,7 +370,15 @@ private class Wiring(
                     if (session is WsSession && !sessionJobs.containsKey(session)) {
                         // Bug 5: a peer session is up (first connect or reconnect) — flush the
                         // durable outbox so messages queued while this peer was offline send now.
-                        chatImpl.notifyPeerSessionUp()
+                        // The peer id additionally makes that member's group deliveries retryable.
+                        chatImpl.notifyPeerSessionUp(session.peerDeviceId.value)
+                        // F3: holder-coordinated group catch-up (FLASH_GSYNC) with the returning peer.
+                        chatImpl.sendGroupSyncRequests(session.peerDeviceId.value)
+                        // Restart sends the peer's last disconnect killed. Byte-accurate resume
+                        // already existed and nothing called it (ERROR-035).
+                        scope.launch {
+                            resumeRoamKilledSends(transferImpl, networkImpl, session.peerDeviceId.value)
+                        }
                         sessionJobs[session] = scope.launch {
                             launch {
                                 session.incomingText.collect { text ->
@@ -359,7 +392,7 @@ private class Wiring(
                                     handleInboundBinary(
                                         transferImpl, receivePipeline, session.peer.friendlyName,
                                         session.peerDeviceId.value, data,
-                                        { bytes -> session.connection.sendBinary(bytes) },
+                                        { bytes -> session.connection.sendBinaryConsuming(bytes) },
                                     )
                                 }
                             }
@@ -418,6 +451,11 @@ private class Wiring(
         peerDeviceId: String,
         text: String,
     ) {
+        GroupFrameCodec.decode(text)?.let { frame ->
+            Log.i(TAG, "Inbound group frame ${frame.javaClass.simpleName} from id=$peerDeviceId")
+            chatImpl.onInboundGroupWireFrame(peerDeviceId, frame)
+            return
+        }
         FlashTextFraming.parseFields(text, MSG_PREFIX)?.let { f ->
             val localId = f["localId"] ?: return
             chatImpl.onInboundWireFrame(
@@ -546,13 +584,23 @@ private class Wiring(
     }
     private fun openStreamChannel(channelId: Int, peerDeviceId: String?, networkImpl: WsFlashNetwork, localId: String): StreamChannel? {
         val active = networkImpl.activeSessions.value
-        val wsSession = (peerDeviceId?.let { active[FlashDeviceId(it)] } ?: active.values.firstOrNull()) as? WsSession
+        // F1: a NAMED peer with no session fails the stream — the old
+        // `?: active.values.firstOrNull()` leaked group-addressed transfers (whose id is a
+        // groupId, never a session key) to an arbitrary connected peer. The anonymous fallback
+        // is only correct when no peer was named at all (legacy path).
+        val wsSession = (if (peerDeviceId == null) {
+            active.values.firstOrNull()
+        } else {
+            active[FlashDeviceId(peerDeviceId)]
+        }) as? WsSession
 
         fun wsFallback(): StreamChannel? {
             if (wsSession == null) return null
             return object : StreamChannel {
                 override val id: Int = channelId
-                override suspend fun sendFrame(frameBytes: ByteArray): Boolean = wsSession.connection.sendBinary(frameBytes)
+                override suspend fun sendFrame(frameBytes: ByteArray): Boolean =
+                    // StreamChannel's contract hands over single-use ChunkFrame.serialize output.
+                    wsSession.connection.sendBinaryConsuming(frameBytes)
             }
         }
 
@@ -668,6 +716,33 @@ private class Wiring(
         require(uriString.startsWith("content://") || uriString.startsWith("file://")) { "Unsupported source descriptor: $uriString" }
         return appContext.contentResolver.openInputStream(android.net.Uri.parse(uriString))
             ?: throw IOException("Content resolver returned null stream for $uriString")
+    }
+
+    /**
+     * Restarts outbound transfers that this peer's previous disconnect failed (ERROR-035).
+     *
+     * The session-up edge is the only moment a resume can succeed: `relaunchSend` needs a live session
+     * for the re-offer, and it reproduces the original `wireFileId`/`sourceUri` so the receiver
+     * continues the session it has rather than starting over. [SETTLE_BEFORE_RESUME_MS] waits out the
+     * two-way-dial glare that `WsFlashNetwork.registerSession` resolves, so a re-offer is not spent on
+     * a session that is about to be closed as the loser.
+     */
+    private suspend fun resumeRoamKilledSends(
+        transfers: RealFlashTransferRepository,
+        networkImpl: WsFlashNetwork,
+        peerDeviceId: String,
+    ) {
+        delay(SETTLE_BEFORE_RESUME_MS)
+        if (networkImpl.activeSessions.value[FlashDeviceId(peerDeviceId)] == null) return
+        val snapshot = transfers.activeTransfers.value
+        reconnectResume.retainOnly(snapshot.mapTo(HashSet(snapshot.size)) { it.id })
+        val toResume = reconnectResume.onPeerSessionUp(peerDeviceId, snapshot)
+        if (toResume.isEmpty()) return
+        Log.i(TAG, "Session up for $peerDeviceId: auto-resuming ${toResume.size} failed send(s)")
+        toResume.forEach { transferId ->
+            runCatching { transfers.resumeTransfer(transferId) }
+                .onFailure { error -> Log.w(TAG, "Auto-resume threw for ${transferId.value}", error) }
+        }
     }
 
     private fun runAutoConnectSweep(engine: CompositeDiscovery, networkImpl: WsFlashNetwork, localId: String, gate: com.transfer.flash.core.engine.internal.AutoConnectGate) {

@@ -25,13 +25,16 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -414,16 +417,28 @@ private fun FlashPairingPillButton(
     }
 }
 
-/** Softly breathing dot shown while the peer decides; static under reduce-motion. */
+/**
+ * Softly breathing dot shown while the peer decides; static under reduce-motion.
+ *
+ * The alpha is kept as a **[State] and read in the draw phase** (EXP-013). Unwrapped to a `Float` it
+ * was a composition read, so this dot recomposed on every frame for as long as a pairing request was
+ * outstanding — up to the whole countdown, on the device where pairing is already the slowest moment.
+ *
+ * `drawBehind { drawCircle(color.copy(alpha = …)) }` rather than `clip(CircleShape).background(…)`
+ * behind a `graphicsLayer { alpha = … }`: for a square box the inscribed circle is the same pixels,
+ * but a `graphicsLayer` with `alpha < 1` under the default `CompositingStrategy.Auto` marks the layer
+ * as overlapping and can have the platform allocate an offscreen buffer for it. Modulating the alpha
+ * into the one draw call needs no buffer at all.
+ */
 @Composable
 private fun FlashPulsingDot(modifier: Modifier = Modifier) {
     val colors = FlashTheme.colors
     val motion = FlashTheme.motion
-    val alpha: Float = if (motion.reduceMotion) {
-        1f
+    val alpha: State<Float> = if (motion.reduceMotion) {
+        remember { mutableFloatStateOf(1f) }
     } else {
         val transition = rememberInfiniteTransition(label = "pairingPulse")
-        val animated by transition.animateFloat(
+        transition.animateFloat(
             initialValue = 1f,
             targetValue = 0.25f,
             animationSpec = infiniteRepeatable(
@@ -432,13 +447,12 @@ private fun FlashPulsingDot(modifier: Modifier = Modifier) {
             ),
             label = "pairingPulseAlpha",
         )
-        animated
     }
+    val dotColor = colors.accentPrimary
     Box(
         modifier = modifier
             .size(FlashSpacing.space12)
-            .clip(CircleShape)
-            .background(colors.accentPrimary.copy(alpha = alpha)),
+            .drawBehind { drawCircle(color = dotColor.copy(alpha = alpha.value)) },
     )
 }
 

@@ -127,6 +127,17 @@ internal class MultiStreamDispatcher(
     /** Streams actually opened for this session (set in send()); used for all-dead checks. */
     @Volatile private var plannedStreams: Int = 0
 
+    /**
+     * Voice-call quiet hint, set by the host via [RealFlashTransferRepository.voiceCallActive].
+     * While true the progress watcher below polls at [WATCH_QUIET_POLL_MS] instead of
+     * [WATCH_POLL_MS]: 25x fewer wakeups, StateFlow emissions and repository-collector passes
+     * per second for the whole transfer, so a file moving during a call stops preempting the
+     * audio path on 4-core hardware. Terminal resolution only ever waits out one extra poll
+     * interval (≤250 ms against second-scale grace deadlines), and every ACK still ingests
+     * immediately on arrival — this slows telemetry, never the wire.
+     */
+    @Volatile internal var quietWatcherHint: Boolean = false
+
     private data class PreparedFrame(val index: Int, val frameBytes: ByteArray)
 
     // ---- public API ------------------------------------------------------------------------------
@@ -198,7 +209,7 @@ internal class MultiStreamDispatcher(
                 while (isActive && !deferred.isCompleted) {
                     publishProgress()
                     maybeResolveFromState(deferred, forceCoverageResolve = false)
-                    delay(WATCH_POLL_MS)
+                    delay(if (quietWatcherHint) WATCH_QUIET_POLL_MS else WATCH_POLL_MS)
                 }
             }
 
@@ -300,6 +311,22 @@ internal class MultiStreamDispatcher(
     /** Snapshot: all receiver-confirmed chunk indexes (resume bit-vector mirror). */
     fun confirmedIndexesSnapshot(): List<Int> =
         synchronized(terminalLock) { confirmedVector.doneIndexes() }
+
+    /**
+     * Snapshot: receiver-confirmed indexes that [known] does not already hold.
+     *
+     * The delta form exists because [confirmedIndexesSnapshot] allocates one boxed `Int` per
+     * confirmed chunk, and the send-side progress collector polls the confirmed set at this class's
+     * [WATCH_POLL_MS] watcher cadence — 100 times a second, for the whole transfer. Diffing whole
+     * snapshots there was quadratic in the chunk count (EXP-008), and it built a list thousands of
+     * entries long inside [terminalLock], which the ACK path needs for every [markRangeConfirmed]
+     * and every [maybeResolveFromState]. This holds the lock for word arithmetic instead.
+     */
+    fun confirmedIndexesNotIn(known: ResumeBitVector): List<Int> =
+        synchronized(terminalLock) { confirmedVector.receivedIndexesNotIn(known) }
+
+    /** Chunk count of the resolved plan; the size a caller's mirror bit-vector must have. */
+    val totalChunks: Int get() = plan.totalChunks
 
     /** Snapshot: channel ids marked dead during the session. */
     fun deadChannelsSnapshot(): List<Int> = synchronized(terminalLock) { deadIds.toList() }
@@ -645,6 +672,13 @@ internal class MultiStreamDispatcher(
         const val REDISTRIBUTE_POLL_MS = 5L
 
         const val WATCH_POLL_MS = 10L
+
+        /**
+         * Watcher cadence while [quietWatcherHint] holds (a voice call is ACTIVE). 4 Hz keeps
+         * the UI progress bar and the ACK-drain bookkeeping moving — every grace deadline it
+         * guards is second-scale — at 1/25th of the wakeups and emissions.
+         */
+        const val WATCH_QUIET_POLL_MS = 250L
         const val DEFAULT_COMPLETE_GRACE_MS = 2_000L
 
         /**

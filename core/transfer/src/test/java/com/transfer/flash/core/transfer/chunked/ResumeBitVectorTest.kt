@@ -101,6 +101,62 @@ class ResumeBitVectorTest {
         assertEquals(3, local.receivedCount)
     }
 
+    @Test
+    fun `receivedIndexesNotIn returns only the delta and never mutates either side`() {
+        val confirmed = ResumeBitVector(8)
+        listOf(0, 1, 4, 7).forEach { confirmed.markReceived(it) }
+        val persisted = ResumeBitVector(8)
+        listOf(0, 4).forEach { persisted.markReceived(it) }
+
+        assertEquals(listOf(1, 7), confirmed.receivedIndexesNotIn(persisted))
+        // Neither operand changed: the caller decides when to advance its own mirror.
+        assertEquals(listOf(0, 1, 4, 7), confirmed.doneIndexes())
+        assertEquals(listOf(0, 4), persisted.doneIndexes())
+    }
+
+    @Test
+    fun `receivedIndexesNotIn is empty when the other side already holds everything`() {
+        val confirmed = ResumeBitVector(4)
+        confirmed.markReceived(2)
+        val persisted = ResumeBitVector(4)
+        persisted.markReceived(2)
+        // A superset on the other side is still a no-op, not a negative delta.
+        persisted.markReceived(3)
+
+        assertTrue(confirmed.receivedIndexesNotIn(persisted).isEmpty())
+        assertEquals(listOf(2), confirmed.doneIndexes())
+    }
+
+    @Test
+    fun `receivedIndexesNotIn agrees with the whole-snapshot diff it replaced`() {
+        // The old send-side bookkeeping was `doneIndexes().filter { it !in persistedSet }`; this is
+        // the property that let it be swapped for word arithmetic (EXP-008).
+        val confirmed = ResumeBitVector(200)
+        val persisted = ResumeBitVector(200)
+        for (i in 0 until 200) {
+            if (i % 3 == 0) confirmed.markReceived(i)
+            if (i % 9 == 0) persisted.markReceived(i)
+        }
+        val persistedSet = persisted.doneIndexes().toSet()
+
+        assertEquals(
+            confirmed.doneIndexes().filter { it !in persistedSet },
+            confirmed.receivedIndexesNotIn(persisted),
+        )
+    }
+
+    @Test
+    fun `receivedIndexesNotIn spans word boundaries`() {
+        // 64 chunks per BitSet word: a delta that starts in word 0 and ends in word 2 exercises the
+        // multi-word andNot path rather than a single-word shortcut.
+        val confirmed = ResumeBitVector(200)
+        listOf(63, 64, 127, 128, 199).forEach { confirmed.markReceived(it) }
+        val persisted = ResumeBitVector(200)
+        listOf(64, 128).forEach { persisted.markReceived(it) }
+
+        assertEquals(listOf(63, 127, 199), confirmed.receivedIndexesNotIn(persisted))
+    }
+
     private fun writeI32(bytes: ByteArray, offset: Int, value: Int) {
         bytes[offset] = (value and 0xFF).toByte()
         bytes[offset + 1] = ((value ushr 8) and 0xFF).toByte()

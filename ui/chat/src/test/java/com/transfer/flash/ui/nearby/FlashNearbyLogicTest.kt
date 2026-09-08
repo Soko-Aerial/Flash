@@ -15,6 +15,27 @@ class FlashNearbyLogicTest {
         assertEquals("Scan paused", FlashNearbyMath.statusLine(isScanning = false, peerCount = 0))
     }
 
+    /**
+     * ERROR-034: before the discovery stack boots `isScanning` is false, which used to read as
+     * "Scan paused" — a pause the user never asked for, of a scan that had not begun.
+     */
+    @Test
+    fun `status line separates not-started from paused`() {
+        assertEquals(
+            "Starting…",
+            FlashNearbyMath.statusLine(isScanning = false, peerCount = 0, isLoading = true),
+        )
+        assertEquals(
+            "Scan paused",
+            FlashNearbyMath.statusLine(isScanning = false, peerCount = 0, isLoading = false),
+        )
+        // A real peer count outranks loading: if we found a device during boot, say so.
+        assertEquals(
+            "2 devices nearby",
+            FlashNearbyMath.statusLine(isScanning = false, peerCount = 2, isLoading = true),
+        )
+    }
+
     @Test
     fun `peers sort alphabetically with id tiebreak`() {
         val sorted = FlashNearbyMath.sortedPeers(

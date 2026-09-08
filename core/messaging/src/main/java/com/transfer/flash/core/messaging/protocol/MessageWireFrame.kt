@@ -1,9 +1,12 @@
 package com.transfer.flash.core.messaging.protocol
 
+/** A text frame carried by the chat transport. */
+public sealed interface ChatWireFrame
+
 /**
- * Protocol frames exchanged over Flash networking sessions for messaging (C6.0).
+ * Protocol frames exchanged over Flash networking sessions for direct messaging (C6.0).
  */
-public sealed interface MessageWireFrame {
+public sealed interface MessageWireFrame : ChatWireFrame {
 
     /**
      * Outbox text message payload.

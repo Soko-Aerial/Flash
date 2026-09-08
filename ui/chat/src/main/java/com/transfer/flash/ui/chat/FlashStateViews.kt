@@ -20,10 +20,13 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
+import androidx.compose.runtime.State
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -262,6 +265,11 @@ fun FlashSkeletonChatList(
     modifier: Modifier = Modifier,
     rowCount: Int = 8,
 ) {
+    // The pulse is hoisted once for the whole list. It used to be created per leaf, which meant 8
+    // rows × 3 shapes = 24 independent infinite transitions each scheduling its own frame callback
+    // for one shared value. One clock now drives every shape — and it is passed down as a State, so
+    // the pulse never recomposes this list (EXP-013).
+    val alpha = rememberSkeletonAlpha()
     Column(modifier = modifier.fillMaxSize()) {
         repeat(FlashStateMath.skeletonRowCount(rowCount)) {
             Row(
@@ -271,11 +279,11 @@ fun FlashSkeletonChatList(
                     .height(FlashDimensions.chatListRowHeight)
                     .padding(horizontal = FlashSpacing.space16),
             ) {
-                FlashSkeletonCircle(size = 48.dp)
+                FlashSkeletonCircle(size = 48.dp, alpha = alpha)
                 Spacer(modifier = Modifier.width(FlashSpacing.space12))
                 Column(verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8)) {
-                    FlashSkeletonBar(width = 140.dp, height = 14.dp)
-                    FlashSkeletonBar(width = 220.dp, height = 12.dp)
+                    FlashSkeletonBar(width = 140.dp, height = 14.dp, alpha = alpha)
+                    FlashSkeletonBar(width = 220.dp, height = 12.dp, alpha = alpha)
                 }
             }
         }
@@ -288,6 +296,7 @@ fun FlashSkeletonConversation(
     modifier: Modifier = Modifier,
     bubbleCount: Int = 6,
 ) {
+    val alpha = rememberSkeletonAlpha()
     Column(
         verticalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
         modifier = modifier
@@ -304,21 +313,35 @@ fun FlashSkeletonConversation(
                     width = if (isMine) 210.dp else 250.dp,
                     height = 44.dp,
                     cornerRadius = 18.dp,
+                    alpha = alpha,
                 )
             }
         }
     }
 }
 
-/** Soft opacity pulse (0.5↔1); fully static under reduce-motion (accessible default). */
+/**
+ * Soft opacity pulse (0.5<->1); fully static under reduce-motion (accessible default).
+ *
+ * Returns the **[State], not the `Float`** — same reason as `rememberTravelPulse` in the bottom nav
+ * (EXP-013). A `@Composable` that returns a value is not restartable, so reading the animation here
+ * and handing out a plain `Float` recorded the read in the *caller's* scope: every frame of the pulse
+ * recomposed the whole skeleton, rebuilding the `Column`, the `repeat` loop and every leaf's modifier
+ * chain at 60 Hz. Handing out the `State` lets [graphicsLayerAlpha] read it inside `graphicsLayer`,
+ * i.e. in the render pipeline, so the pulse costs a re-draw and no recomposition at all.
+ *
+ * This matters most exactly where it is worst: the skeleton is what a slow device shows while the
+ * transport stack boots (ERROR-034 — on the Belfone SCP810 boot outlasts the 6s splash ceiling), so
+ * the old version spent frames re-composing a placeholder while the CPU was already saturated.
+ */
 @Composable
-private fun rememberSkeletonAlpha(): Float {
+private fun rememberSkeletonAlpha(): State<Float> {
     val motion = FlashTheme.motion
     return if (motion.reduceMotion) {
-        0.6f
+        remember { mutableFloatStateOf(0.6f) }
     } else {
         val transition = rememberInfiniteTransition(label = "skeletonPulse")
-        val alpha by transition.animateFloat(
+        transition.animateFloat(
             initialValue = 1f,
             targetValue = 0.5f,
             animationSpec = infiniteRepeatable(
@@ -327,13 +350,11 @@ private fun rememberSkeletonAlpha(): Float {
             ),
             label = "skeletonPulseAlpha",
         )
-        alpha
     }
 }
 
 @Composable
-private fun FlashSkeletonCircle(size: androidx.compose.ui.unit.Dp) {
-    val alpha = rememberSkeletonAlpha()
+private fun FlashSkeletonCircle(size: androidx.compose.ui.unit.Dp, alpha: State<Float>) {
     Box(
         modifier = Modifier
             .size(size)
@@ -345,8 +366,11 @@ private fun FlashSkeletonCircle(size: androidx.compose.ui.unit.Dp) {
 }
 
 @Composable
-private fun FlashSkeletonBar(width: androidx.compose.ui.unit.Dp, height: androidx.compose.ui.unit.Dp) {
-    val alpha = rememberSkeletonAlpha()
+private fun FlashSkeletonBar(
+    width: androidx.compose.ui.unit.Dp,
+    height: androidx.compose.ui.unit.Dp,
+    alpha: State<Float>,
+) {
     Box(
         modifier = Modifier
             .size(width = width, height = height)
@@ -362,8 +386,8 @@ private fun FlashSkeletonRoundedRect(
     width: androidx.compose.ui.unit.Dp,
     height: androidx.compose.ui.unit.Dp,
     cornerRadius: androidx.compose.ui.unit.Dp,
+    alpha: State<Float>,
 ) {
-    val alpha = rememberSkeletonAlpha()
     Box(
         modifier = Modifier
             .size(width = width, height = height)
@@ -374,5 +398,21 @@ private fun FlashSkeletonRoundedRect(
     )
 }
 
-private fun Modifier.graphicsLayerAlpha(alpha: Float): Modifier =
-    this.then(Modifier.graphicsLayer { this.alpha = alpha })
+/**
+ * The alpha read happens **inside** the `graphicsLayer` block, so it is observed by the layer rather
+ * than by composition: a new value re-runs the block and re-draws, and nothing recomposes. Taking a
+ * `State<Float>` instead of a `Float` is the whole point — do not "simplify" the parameter.
+ *
+ * [CompositingStrategy.ModulateAlpha] is the second half of the fix. Under the default
+ * `CompositingStrategy.Auto`, a layer with `alpha < 1` is treated as having overlapping content, so
+ * the platform can allocate an offscreen buffer to composite it — for every skeleton shape, i.e. up
+ * to 8 rows x 3 shapes, on the slow device, during boot. Each of these layers wraps exactly one solid
+ * background draw, so folding the alpha into that draw is pixel-identical and needs no buffer.
+ */
+private fun Modifier.graphicsLayerAlpha(alpha: State<Float>): Modifier =
+    this.then(
+        Modifier.graphicsLayer {
+            this.alpha = alpha.value
+            compositingStrategy = CompositingStrategy.ModulateAlpha
+        },
+    )

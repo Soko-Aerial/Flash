@@ -2,6 +2,8 @@ package com.transfer.flash.core.persistence.db
 
 import com.transfer.flash.core.persistence.db.entity.ConversationEntity
 import com.transfer.flash.core.persistence.db.entity.DraftEntity
+import com.transfer.flash.core.persistence.db.entity.GroupDeliveryEntity
+import com.transfer.flash.core.persistence.db.entity.GroupMemberEntity
 import com.transfer.flash.core.persistence.db.entity.MessageEntity
 import com.transfer.flash.core.persistence.db.entity.OutboxEntity
 import com.transfer.flash.core.persistence.db.entity.ReadCursorEntity
@@ -312,5 +314,99 @@ class FlashDatabaseInvariantTest {
 
         dao.clear("conv-1")
         assertNull(dao.observeDraft("conv-1").first())
+    }
+
+    // ------------------------------------------------------------------ group tables (v4)
+
+    private fun member(
+        groupId: String,
+        deviceId: String,
+        version: Long,
+        op: String,
+        active: Boolean = true,
+    ) = GroupMemberEntity(
+        groupId = groupId,
+        deviceId = deviceId,
+        displayName = "Member $deviceId",
+        role = if (deviceId == "creator") "owner" else "member",
+        joinedAt = 1_000L,
+        membershipVersion = version,
+        operationId = op,
+        isActive = active,
+    )
+
+    @Test
+    fun groupMemberUpsertReplacesTheWholeRowAndActiveFilterApplies() = runTest {
+        val dao = db.groupMemberDao()
+        dao.upsert(member("g1", "creator", version = 100L, op = "op-create"))
+        dao.upsert(member("g1", "peer-a", version = 100L, op = "op-create"))
+
+        assertEquals(2, dao.activeCount("g1"))
+
+        // Leave = tombstone via upsert with isActive=false; active queries no longer see it,
+        // but the row survives so a stale add can be version-compared against it.
+        dao.upsert(member("g1", "peer-a", version = 200L, op = "op-leave", active = false))
+        assertEquals(1, dao.activeCount("g1"))
+        assertEquals(false, dao.member("g1", "peer-a")!!.isActive)
+        assertEquals(2, dao.observeMembers("g1").first().size)
+    }
+
+    @Test
+    fun groupDeliveryStateTransitionsAreMonotonicAndScoped() = runTest {
+        val dao = db.groupDeliveryDao()
+        dao.insertAll(
+            listOf(
+                GroupDeliveryEntity("m1", "peer-a", nextAttemptAt = 10L),
+                GroupDeliveryEntity("m1", "peer-b", nextAttemptAt = 10L),
+                GroupDeliveryEntity("m2", "peer-a", nextAttemptAt = 10L),
+            ),
+        )
+        assertEquals(2, dao.pendingForMessage("m1").size)
+
+        // First receipt flips only that member.
+        assertEquals(1, dao.markDelivered("m1", "peer-a", deliveredAt = 50L))
+        assertEquals(1, dao.pendingForMessage("m1").size)
+        assertEquals(1, dao.deliveredCount("m1"))
+
+        // Replayed receipt is a no-op (idempotent).
+        assertEquals(0, dao.markDelivered("m1", "peer-a", deliveredAt = 60L))
+
+        // Retry reschedule cannot resurrect a delivered row.
+        dao.reschedule("m1", "peer-a", state = "PENDING", nextAttemptAt = 70L)
+        assertEquals(1, dao.deliveredCount("m1"))
+        assertEquals(1, dao.pendingForMessage("m1").size)
+
+        // makePendingDueForMember touches only that member's undelivered rows.
+        dao.makePendingDueForMember("peer-b", now = 100L)
+        val peerB = dao.pendingForMessage("m1").single()
+        assertEquals("peer-b", peerB.memberId)
+        assertEquals(100L, peerB.nextAttemptAt)
+        assertEquals(0, peerB.attempts)
+
+        // Scoped by message: m2 untouched.
+        assertEquals(1, dao.pendingForMessage("m2").size)
+    }
+
+    @Test
+    fun conversationProvenanceColumnsRoundTrip() = runTest {
+        val dao = db.conversationDao()
+        dao.upsert(
+            ConversationEntity(
+                id = "group-1",
+                title = "Team",
+                isGroup = true,
+                sortOrder = 5L,
+                groupCreatedBy = "creator",
+                groupCreatedAt = 42L,
+            ),
+        )
+        val loaded = dao.get("group-1")
+        assertEquals("creator", loaded!!.groupCreatedBy)
+        assertEquals(42L, loaded.groupCreatedAt)
+        assertTrue(loaded.isGroup)
+
+        // Direct rows keep null provenance.
+        dao.upsert(ConversationEntity(id = "peer-1", title = "Alex", isGroup = false))
+        assertNull(dao.get("peer-1")!!.groupCreatedBy)
     }
 }

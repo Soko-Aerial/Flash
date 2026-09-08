@@ -75,12 +75,21 @@ public object FlashWebRtcEngine {
 
     /**
      * Configures the engine if it has not been configured yet. Idempotent and thread-safe;
-     * returns true when the low-latency ADM is in place.
+     * returns true when the ADM is in place.
      *
      * Must be called before any call is placed or answered. Calling it later is harmless —
      * it will fail cleanly and log — but the ADM will already be the default one.
+     *
+     * @param lowLatencyPlayout install the low-latency ADM (`PERFORMANCE_MODE_LOW_LATENCY`
+     *   plus a smaller output buffer). Pass false on LOW-tier hardware: the small buffer is
+     *   what underruns on a weak HAL (seen as `LowLatencyAudioBufferManager: Underrun
+     *   detected` + `underrun count` in logcat), and each underrun makes NetEQ stretch time —
+     *   a 20–80 ms latency jump that then compresses back, i.e. exactly the fluctuation this
+     *   flag exists to stop. The default ADM's tens of ms of stable buffering is the smaller
+     *   evil there. One-shot like everything else here: a tier change mid-process takes effect
+     *   on the next process start, not the next call.
      */
-    public fun configureOnce(context: Context): Boolean {
+    public fun configureOnce(context: Context, lowLatencyPlayout: Boolean = true): Boolean {
         if (configured) return true
         synchronized(this) {
             if (configured) return true
@@ -94,9 +103,12 @@ public object FlashWebRtcEngine {
             val hwNs = voicePath && JavaAudioDeviceModule.isBuiltInNoiseSuppressorSupported()
             return try {
                 val adm = JavaAudioDeviceModule.builder(appContext)
-                    // The point of this whole object: PERFORMANCE_MODE_LOW_LATENCY and a
-                    // smaller output buffer on the playout AudioTrack.
-                    .setUseLowLatency(true)
+                    // The point of this whole object on capable hardware:
+                    // PERFORMANCE_MODE_LOW_LATENCY and a smaller output buffer on the playout
+                    // AudioTrack. Skipped on LOW-tier hardware (see [configureOnce]): the small
+                    // buffer underruns there, and an underrun-driven NetEQ stretch jitters more
+                    // than the default buffer ever costs.
+                    .setUseLowLatency(lowLatencyPlayout)
                     .setAudioSource(source)
                     .setUseHardwareAcousticEchoCanceler(hwAec)
                     .setUseHardwareNoiseSuppressor(hwNs)
@@ -117,7 +129,7 @@ public object FlashWebRtcEngine {
                 )
                 FlashLog.i(
                     "CALL",
-                    "WebRTC engine configured: low-latency ADM, " +
+                    "WebRTC engine configured: lowLatencyPlayout=$lowLatencyPlayout ADM, " +
                         "source=${sourceName(source)} hwAec=$hwAec hwNs=$hwNs",
                 )
                 true

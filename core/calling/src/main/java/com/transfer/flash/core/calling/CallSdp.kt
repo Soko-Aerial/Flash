@@ -1,89 +1,100 @@
 package com.transfer.flash.core.calling
 
+import com.transfer.flash.core.common.perf.FlashPerformanceMode
+import com.transfer.flash.core.common.perf.FlashVideoProfile
+import com.transfer.flash.core.common.perf.FlashVoiceProfile
+
 /**
- * SDP rewriting for latency and bitrate (C7, ADR-025).
+ * SDP rewriting for latency and bitrate (C7, ADR-025; made tier-aware by ERROR-033).
  *
  * Two knobs that are only reachable through the session description on this stack — neither
  * webrtc-kmp's `RtcConfiguration` nor its `RtpParameters` wrapper exposes them:
  *
- * 1. **Opus packetization.** WebRTC defaults to 20 ms audio packets, so every talk spurt
- *    pays 20 ms of packetization delay before a single byte leaves the device. `a=ptime:10`
- *    plus `minptime=10` in the Opus fmtp halves that. libwebrtc's SDP parser folds a
- *    media-level `a=ptime` into the codec parameters of that m-section, and the *sender*
- *    reads its packetization from the description it **receives** — which is why [tune] is
- *    applied symmetrically to local and remote descriptions rather than just outbound ones.
+ * 1. **Opus packetization** (`a=ptime` + `minptime`). WebRTC defaults to 20 ms packets. *Shorter*
+ *    packets cut packetization delay; *longer* ones cut the packet rate, and on a contended
+ *    half-duplex 2.4 GHz link the packet rate is what costs latency — see [FlashVoiceProfile] for
+ *    the arithmetic. Which direction is the win depends on the device and the radio, which is why
+ *    this is a tier knob now and not a constant.
+ * 2. **Encoder bitrate window** (`x-google-{start,min,max}-bitrate`). A cold VP8 encoder starts
+ *    near 300 kbps and lets bandwidth estimation walk it up, so the opening second of a call is a
+ *    smear; the ceiling matters because libwebrtc's internal codec table otherwise caps the stream
+ *    wherever it pleases.
  *
- * 2. **Encoder start bitrate.** A cold VP8 encoder begins near 300 kbps and lets bandwidth
- *    estimation walk it up, which is why call start shows four `initEncode` calls in ~350 ms
- *    and the first second of a 1080p call looks like a smear. `x-google-start-bitrate` seeds
- *    the estimate instead. It is seeded *below* the ceiling, not at it: on a phone hotspot the
- *    opening burst is shared with the voice stream it is supposed to leave room for (D8).
+ * ## Direction matters, and that is the whole tiering design
  *
- * Everything here is pure string work over a text protocol: fully unit-testable on the JVM,
- * which matters because the alternative is testing bitrate policy on a phone. All rewrites
- * are idempotent — [tune] runs over descriptions this device generated as well as ones it
- * received, and may see the same body twice.
+ * A sender takes its packetization and bitrate from the description it **receives**. So the local
+ * and the remote rewrite do different jobs and cannot be the same function:
+ *
+ * - [tuneLocal] runs on a description this device generated and **forces** our tier's numbers —
+ *   the values libwebrtc put there are its own defaults, not a statement from anybody. The result
+ *   travels on the wire, so this is also how we *declare* our tier to the peer.
+ * - [tuneRemote] runs on a description the peer sent and combines the two declarations into a
+ *   **conservative envelope**: `ptime`/`minptime` take the larger value, bitrate ceilings take the
+ *   smaller, DTX is on if either end asked for it.
+ *
+ * The envelope is what makes a mixed-tier call work. A HIGH-tier Pixel that merely forced its own
+ * numbers onto a LOW-tier BelFone's offer would rewrite `ptime:60` straight back to `ptime:10` and
+ * defeat the entire request — the Pixel's sender would go on emitting 100 packets/second into the
+ * radio that cannot take them. With the envelope both devices independently compute the *same*
+ * effective parameters no matter which of them offered, which is a stronger and more useful
+ * invariant than the old "wire content must not depend on a local toggle".
+ *
+ * Everything here is pure string work over a text protocol: fully unit-testable on the JVM, which
+ * matters because the alternative is testing bitrate policy on a phone. Every rewrite is
+ * idempotent — a forced value re-forced is unchanged, and min/max of a value with itself is that
+ * value — because both entry points can legitimately see the same body twice.
  */
 internal object CallSdp {
 
-    /** Opus packet duration, ms. 20 is WebRTC's default; Opus supports 10. */
-    const val OPUS_PTIME_MS: Int = 10
+    /** How one parameter combines when both endpoints have declared a value for it. */
+    private enum class Envelope {
+        /** Larger wins: longer Opus frames, i.e. fewer packets. Also "either end wants it" (1/0). */
+        MAX,
+
+        /** Smaller wins: the more constrained bitrate ceiling. */
+        MIN,
+    }
+
+    private class Param(val key: String, val value: String, val envelope: Envelope)
 
     /**
-     * Encoder start bitrate, kbit/s — the initial bandwidth estimate, not a cap.
-     *
-     * High enough that the first second of a call is already sharp, low enough that the opening
-     * burst does not itself congest the link it is trying to measure. It used to be 2.5 Mbit/s,
-     * which on a phone hotspot meant the very first video frames competed with the audio stream
-     * before congestion control had a single RTCP report to work from.
+     * Rewrites a description **this device generated**, forcing [mode]'s numbers. The result is
+     * what goes on the wire, so this doubles as our tier declaration to the peer.
      */
-    const val VIDEO_START_BITRATE_KBPS: Int = 1_200
-
-    /** Floor the encoder is allowed to drop to before it sheds resolution instead. */
-    const val VIDEO_MIN_BITRATE_KBPS: Int = 600
+    fun tuneLocal(sdp: String, mode: FlashPerformanceMode): String =
+        rewrite(sdp, mode, force = true)
 
     /**
-     * Ceiling for video, kbit/s. Congestion control stays free to use less.
-     *
-     * Sized for the network Flash actually runs on, not for the camera (D8). The old 8 Mbit/s
-     * was chosen to let 1080p30 run unconstrained on a LAN — but the real deployment is a phone
-     * hotspot: half-duplex, one radio, shared with every other associated client. 8 Mbit/s of
-     * video on that link is precisely what starved a 32 kbit/s voice stream and made calls
-     * unintelligible while the picture stayed pretty. 2.5 Mbit/s still carries a sharp 720p and
-     * a serviceable 1080p talking head, and leaves headroom that voice can actually reach.
-     *
-     * The ceiling is unconditional — it is a network-shape fix, not a preference. The
-     * "Prioritise voice quality" toggle governs the sender *priorities* and the adaptive
-     * governor ([com.transfer.flash.core.calling.CallQualityGovernor]), not this number, because
-     * [tune] is applied symmetrically to the local and remote descriptions and the wire content
-     * must not depend on which device happens to have a toggle flipped.
+     * Rewrites a description **received from the peer** into the conservative envelope of both
+     * endpoints' declarations. This is the description our own sender reads its packetization and
+     * bitrate from, so this — not [tuneLocal] — is what actually throttles this device.
      */
-    const val VIDEO_MAX_BITRATE_KBPS: Int = 2_500
+    fun tuneRemote(sdp: String, mode: FlashPerformanceMode): String =
+        rewrite(sdp, mode, force = false)
 
-    private val OPUS_CODECS = setOf("OPUS")
-
-    private val VIDEO_CODECS = setOf("VP8", "VP9", "H264", "H265", "AV1", "AV1X")
-
-    private val OPUS_PARAMS = listOf(
-        // The peer may send us 10 ms packets.
-        "minptime" to OPUS_PTIME_MS.toString(),
-        // Cheap loss concealment; on by default, pinned so a peer cannot negotiate it away.
-        "useinbandfec" to "1",
-        // DTX saves bandwidth we do not need and adds comfort-noise transitions.
-        "usedtx" to "0",
+    private fun opusParams(voice: FlashVoiceProfile): List<Param> = listOf(
+        // The shortest frame we are willing to RECEIVE. Same value as our own ptime: a peer sending
+        // us shorter frames than we send it gains nothing and costs us the packet rate anyway.
+        Param("minptime", voice.ptimeMs.toString(), Envelope.MAX),
+        // Cheap loss concealment, and what makes the longer frame sizes survivable. Pinned so a
+        // peer cannot negotiate it away.
+        Param("useinbandfec", if (voice.useInbandFec) "1" else "0", Envelope.MAX),
+        // DTX collapses silence to roughly one packet per 400 ms. MAX, so a constrained peer turns
+        // it on for both directions — the airtime it saves is on the link, which both ends share.
+        Param("usedtx", if (voice.useDtx) "1" else "0", Envelope.MAX),
     )
 
-    private val VIDEO_PARAMS = listOf(
-        "x-google-start-bitrate" to VIDEO_START_BITRATE_KBPS.toString(),
-        "x-google-min-bitrate" to VIDEO_MIN_BITRATE_KBPS.toString(),
-        "x-google-max-bitrate" to VIDEO_MAX_BITRATE_KBPS.toString(),
+    private fun videoParams(video: FlashVideoProfile): List<Param> = listOf(
+        Param("x-google-start-bitrate", video.startBitrateKbps.toString(), Envelope.MIN),
+        Param("x-google-min-bitrate", video.minBitrateKbps.toString(), Envelope.MIN),
+        Param("x-google-max-bitrate", video.maxBitrateKbps.toString(), Envelope.MIN),
     )
 
     /**
-     * Returns [sdp] with the audio and video sections retuned, or [sdp] unchanged if there
-     * is nothing to do. Never throws: a body this does not recognise is passed through.
+     * Returns [sdp] with its audio and video sections retuned, or [sdp] unchanged when there is
+     * nothing to do. Never throws: a body this does not recognise is passed through.
      */
-    fun tune(sdp: String): String {
+    private fun rewrite(sdp: String, mode: FlashPerformanceMode, force: Boolean): String {
         if (sdp.isBlank()) return sdp
         val eol = if (sdp.contains("\r\n")) "\r\n" else "\n"
         val lines = sdp.split(eol)
@@ -93,8 +104,8 @@ internal object CallSdp {
 
         fun flushSection() {
             out += when (kind) {
-                "audio" -> tuneAudio(section)
-                "video" -> tuneVideo(section)
+                "audio" -> tuneAudio(section, mode.voice, force)
+                "video" -> tuneVideo(section, mode.video, force)
                 else -> section
             }
             section = ArrayList()
@@ -111,11 +122,41 @@ internal object CallSdp {
         return out.joinToString(eol)
     }
 
-    private fun tuneAudio(lines: List<String>): List<String> =
-        withPtime(mergeFmtp(lines, OPUS_CODECS, OPUS_PARAMS))
+    private fun tuneAudio(
+        lines: List<String>,
+        voice: FlashVoiceProfile,
+        force: Boolean,
+    ): List<String> =
+        withPtime(mergeFmtp(lines, OPUS_CODECS, opusParams(voice), force), voice.ptimeMs, force)
 
-    private fun tuneVideo(lines: List<String>): List<String> =
-        mergeFmtp(lines, VIDEO_CODECS, VIDEO_PARAMS)
+    private fun tuneVideo(
+        lines: List<String>,
+        video: FlashVideoProfile,
+        force: Boolean,
+    ): List<String> = mergeFmtp(lines, VIDEO_CODECS, videoParams(video), force)
+
+    /**
+     * The effective value of one parameter. [force] ignores [theirs] entirely; otherwise a peer
+     * declaration folds into the envelope. A null [theirs] — the peer said nothing — always yields
+     * [ours], because there is no second declaration to be conservative about.
+     */
+    private fun combine(theirs: Int?, ours: Int, envelope: Envelope, force: Boolean): Int {
+        if (force || theirs == null) return ours
+        return when (envelope) {
+            Envelope.MAX -> maxOf(theirs, ours)
+            Envelope.MIN -> minOf(theirs, ours)
+        }
+    }
+
+    /**
+     * [combine] over the string form an fmtp parameter list carries. A declaration this cannot read
+     * as a number is treated as no declaration: it is not a constraint we could honour, so our own
+     * value stands rather than being dropped.
+     */
+    private fun combined(theirs: String?, param: Param, force: Boolean): String {
+        val ours = param.value.toIntOrNull() ?: return param.value
+        return combine(theirs?.toIntOrNull(), ours, param.envelope, force).toString()
+    }
 
     /**
      * Merges [params] into the `a=fmtp:` line of every payload type in this media section
@@ -126,7 +167,8 @@ internal object CallSdp {
     private fun mergeFmtp(
         lines: List<String>,
         codecs: Set<String>,
-        params: List<Pair<String, String>>,
+        params: List<Param>,
+        force: Boolean,
     ): List<String> {
         val targets = lines.mapNotNullTo(LinkedHashSet()) { rtpmapPayloadType(it, codecs) }
         if (targets.isEmpty()) return lines
@@ -135,29 +177,40 @@ internal object CallSdp {
         for (line in lines) {
             val fmtpPt = fmtpPayloadType(line)
             if (fmtpPt != null && fmtpPt in targets) {
-                out += "a=fmtp:$fmtpPt " + mergeParams(line.substringAfter(' ', ""), params)
+                out += "a=fmtp:$fmtpPt " + mergeParams(line.substringAfter(' ', ""), params, force)
                 continue
             }
             out += line
             val rtpmapPt = rtpmapPayloadType(line, codecs)
             if (rtpmapPt != null && rtpmapPt !in alreadyHaveFmtp) {
-                out += "a=fmtp:$rtpmapPt " + mergeParams("", params)
+                out += "a=fmtp:$rtpmapPt " + mergeParams("", params, force)
             }
         }
         return out
     }
 
     /**
-     * Forces `a=ptime:` in an audio section, replacing any existing value and dropping
-     * duplicates. Inserted after the section's last attribute line so the `m= i= c= b= a=`
-     * ordering RFC 4566 requires is preserved.
+     * Writes exactly one `a=ptime:` into an audio section — [ptimeMs] when [force], otherwise the
+     * envelope of [ptimeMs] and what the section already asks for. Duplicates are dropped, and the
+     * line lands after the section's last attribute so the `m= i= c= b= a=` ordering RFC 4566
+     * requires is preserved.
+     *
+     * A section carrying several `a=ptime:` lines is read at its largest value, so the result does
+     * not depend on their order. `a=maxptime:` is deliberately left alone and not used as a clamp:
+     * libwebrtc emits 120 at both ends, which is above every tier's frame size, and clamping
+     * against a value that can differ per endpoint would cost the "both ends compute the same
+     * parameters" invariant for a case that cannot arise.
      */
-    private fun withPtime(lines: List<String>): List<String> {
-        val wanted = "a=ptime:$OPUS_PTIME_MS"
+    private fun withPtime(lines: List<String>, ptimeMs: Int, force: Boolean): List<String> {
+        val theirs = lines
+            .filter { it.startsWith(PTIME_PREFIX) }
+            .mapNotNull { it.removePrefix(PTIME_PREFIX).trim().toIntOrNull() }
+            .maxOrNull()
+        val wanted = PTIME_PREFIX + combine(theirs, ptimeMs, Envelope.MAX, force)
         val out = ArrayList<String>(lines.size + 1)
         var replaced = false
         for (line in lines) {
-            if (line.startsWith("a=ptime:")) {
+            if (line.startsWith(PTIME_PREFIX)) {
                 if (!replaced) {
                     out += wanted
                     replaced = true
@@ -173,8 +226,12 @@ internal object CallSdp {
         return out
     }
 
-    /** Merges `key=value` [params] into a `;`-separated fmtp parameter list. */
-    private fun mergeParams(existing: String, params: List<Pair<String, String>>): String {
+    /**
+     * Merges [params] into a `;`-separated fmtp parameter list. Tokens the peer sent that we have
+     * no opinion about are preserved in place, and so is their order — only the values of our own
+     * keys move, and a key we own that is absent is appended.
+     */
+    private fun mergeParams(existing: String, params: List<Param>, force: Boolean): String {
         val merged = LinkedHashMap<String, String?>()
         existing.split(';')
             .map { it.trim() }
@@ -186,7 +243,9 @@ internal object CallSdp {
                     merged[token] = null
                 }
             }
-        params.forEach { (key, value) -> merged[key] = value }
+        params.forEach { param ->
+            merged[param.key] = combined(theirs = merged[param.key], param = param, force = force)
+        }
         return merged.entries.joinToString(";") { (key, value) ->
             if (value == null) key else "$key=$value"
         }
@@ -209,6 +268,11 @@ internal object CallSdp {
         return pt.takeIf { it.isNotEmpty() && it.all(Char::isDigit) }
     }
 
+    private val OPUS_CODECS = setOf("OPUS")
+
+    private val VIDEO_CODECS = setOf("VP8", "VP9", "H264", "H265", "AV1", "AV1X")
+
     private const val RTPMAP_PREFIX = "a=rtpmap:"
     private const val FMTP_PREFIX = "a=fmtp:"
+    private const val PTIME_PREFIX = "a=ptime:"
 }

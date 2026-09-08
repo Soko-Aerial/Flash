@@ -147,6 +147,31 @@ fun FlashConversationScreen(
      * "Forward" button until it does. Default no-op keeps previews inert.
      */
     onShareText: (String) -> Unit = {},
+    /**
+     * Group Phase D: add trusted peers to this group (empty members is a no-op). Default no-op
+     * keeps previews inert; the host routes to the repository's addGroupMembers.
+     */
+    onAddGroupMembers: (groupId: String, memberIds: Set<String>) -> Unit = { _, _ -> },
+    /**
+     * Group Phase D: leave this group. Default no-op keeps previews inert; the host routes to the
+     * repository's leaveGroup and navigates back on success.
+     */
+    onLeaveGroup: (groupId: String) -> Unit = {},
+    /**
+     * Group Phase D: trusted peers that could be added to this group (host filters out current
+     * members); drives the Add-members sheet's roster. Default empty keeps previews inert.
+     */
+    addablePeers: List<FlashCreateGroupPeerUi> = emptyList(),
+    /**
+     * Group Phase D: clear (hard-delete) this conversation, behind the direct-chat menu.
+     * Default no-op keeps previews inert; the host routes to deleteConversations + nav back.
+     */
+    onClearConversation: (conversationId: String) -> Unit = {},
+    /**
+     * Group Phase D: the id of the conversation this screen renders. Required for the group menu
+     * actions (add members / leave) to address the right group; null keeps previews inert.
+     */
+    conversationId: String? = null,
 ) {
     val context = LocalContext.current
     val motion = FlashTheme.motion
@@ -218,9 +243,16 @@ fun FlashConversationScreen(
     var mediaViewerItems by remember { mutableStateOf(emptyList<FlashMediaViewerItem>()) }
     var mediaViewerStartIndex by remember { mutableStateOf(0) }
 
-    // UI-029: group member sheet (demo roster until the repository feeds live members).
+    // UI-029: group member sheet. The roster is derived from the live header (member initials +
+    // online count), not from sample data — the older "demo roster" comment here was stale.
+    // Known gap: the header carries initials only, so a member's row shows "AC" rather than
+    // "Alex Chen" until the repository supplies full member names.
     var showGroupMembers by remember { mutableStateOf(false) }
-    val groupMembers = remember(state.header) { groupMembersFromHeader(state.header) }
+    // Group Phase B: prefer the repository's real roster (names, online flags, roles). The
+    // header-derived fallback keeps older states rendering instead of an empty sheet.
+    val groupMembers = remember(state.members, state.header) {
+        state.members.ifEmpty { groupMembersFromHeader(state.header) }
+    }
 
     // UI-032: 1:1 peer details sheet (opened from the header avatar for non-group chats).
     var showPeerDetails by remember { mutableStateOf(false) }
@@ -229,6 +261,17 @@ fun FlashConversationScreen(
     // engine via isPeerTrusted (verified) + header.isEncrypted (channel encrypted). Groups keep
     // the legacy static lock (per-member verification isn't modeled yet).
     var showEncryptionSheet by remember { mutableStateOf(false) }
+
+    // Group Phase D: three-dot menu state. Items are derived per conversation type; a group with
+    // only this device left (memberCount <= 1) cannot offer Leave.
+    var menuExpanded by remember { mutableStateOf(false) }
+    var showAddMembers by remember { mutableStateOf(false) }
+    var showLeaveConfirm by remember { mutableStateOf(false) }
+    val menuItems = if (state.header.isGroup) {
+        FlashConversationMenuMath.groupItems(canLeave = state.header.memberCount > 1)
+    } else {
+        FlashConversationMenuMath.directItems(canRevokeTrust = isPeerTrusted && onRevokePeerTrust != null)
+    }
     val encryptionState = if (state.header.isGroup) {
         FlashEncryptionBadgeState.None
     } else {
@@ -392,6 +435,27 @@ fun FlashConversationScreen(
                                 onEncryptionClick = { showEncryptionSheet = true },
                                 onCallClick = onStartCall,
                                 onVideoCallClick = onStartVideoCall,
+                                // Group Phase D: the header's More button finally does something —
+                                // it opens the conversation menu anchored to it.
+                                onMenuClick = { menuExpanded = true },
+                            )
+                            FlashConversationMenu(
+                                expanded = menuExpanded,
+                                items = menuItems,
+                                onDismiss = { menuExpanded = false },
+                                onItemSelected = { item ->
+                                    when (item) {
+                                        FlashConversationMenuItem.VIEW_PROFILE -> showPeerDetails = true
+                                        FlashConversationMenuItem.SEARCH -> isSearchActive = true
+                                        FlashConversationMenuItem.REVOKE_TRUST -> onRevokePeerTrust?.invoke()
+                                        FlashConversationMenuItem.CLEAR_CONVERSATION ->
+                                            conversationId?.let { onClearConversation(it) }
+                                        FlashConversationMenuItem.GROUP_INFO -> showGroupMembers = true
+                                        FlashConversationMenuItem.ADD_MEMBERS -> showAddMembers = true
+                                        FlashConversationMenuItem.LEAVE_GROUP ->
+                                            conversationId?.let { showLeaveConfirm = true }
+                                    }
+                                },
                             )
                             // UI-030 connection banner — hidden while fully connected.
                             AnimatedVisibility(
@@ -637,6 +701,24 @@ fun FlashConversationScreen(
         FlashGroupMembersSheet(
             members = groupMembers,
             onDismiss = { showGroupMembers = false },
+        )
+    }
+
+    // Group Phase D: add members (trusted peers supplied by the host) and the leave confirmation.
+    if (showAddMembers && conversationId != null) {
+        FlashAddMembersSheet(
+            availablePeers = addablePeers,
+            onDismiss = { showAddMembers = false },
+            onAdd = { memberIds -> onAddGroupMembers(conversationId, memberIds) },
+        )
+    }
+    if (showLeaveConfirm && conversationId != null) {
+        FlashLeaveGroupDialog(
+            onConfirm = {
+                showLeaveConfirm = false
+                onLeaveGroup(conversationId)
+            },
+            onDismiss = { showLeaveConfirm = false },
         )
     }
 

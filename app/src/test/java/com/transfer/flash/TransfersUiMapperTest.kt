@@ -92,7 +92,7 @@ class TransfersUiMapperTest {
     @Test
     fun fromDomainBucketsIntoActiveFailedHistory() {
         val ui = TransfersUiState.fromDomain(
-            listOf(
+            transfers = listOf(
                 domain(id = "a", state = FlashTransferState.Transferring),
                 domain(id = "b", state = FlashTransferState.Queued),
                 domain(id = "c", state = FlashTransferState.Paused),
@@ -100,6 +100,8 @@ class TransfersUiMapperTest {
                 domain(id = "e", state = FlashTransferState.Cancelled),
                 domain(id = "f", state = FlashTransferState.Completed),
             ),
+            isLoading = false,
+            isError = false,
         )
         assertEquals(3, ui.active.size) // Transferring + Queued + Paused
         assertEquals(2, ui.failed.size) // Failed + Cancelled
@@ -108,9 +110,36 @@ class TransfersUiMapperTest {
 
     @Test
     fun emptyDomainListYieldsEmptyState() {
-        val ui = TransfersUiState.fromDomain(emptyList())
+        val ui = TransfersUiState.fromDomain(emptyList(), isLoading = false, isError = false)
         assertTrue(ui.active.isEmpty())
         assertTrue(ui.failed.isEmpty())
         assertTrue(ui.history.isEmpty())
+        assertFalse("a booted repository with no transfers is empty, not loading", ui.isLoading)
+        assertFalse(ui.isError)
+    }
+
+    /**
+     * ERROR-034. The screen resolves Loading only when the state is *also* empty, so the flags have
+     * to survive the bucketing rather than being dropped by it — an empty pre-boot state must read
+     * as Loading, not as "No transfers yet".
+     */
+    @Test
+    fun bootFlagsSurviveTheBucketing() {
+        val loading = TransfersUiState.fromDomain(emptyList(), isLoading = true, isError = false)
+        assertTrue(loading.isLoading)
+        assertFalse(loading.isError)
+
+        val failed = TransfersUiState.fromDomain(emptyList(), isLoading = false, isError = true)
+        assertTrue(failed.isError)
+        assertFalse(failed.isLoading)
+
+        // Flags are orthogonal to content: a populated list still carries them through.
+        val populated = TransfersUiState.fromDomain(
+            transfers = listOf(domain(id = "a", state = FlashTransferState.Transferring)),
+            isLoading = true,
+            isError = false,
+        )
+        assertEquals(1, populated.active.size)
+        assertTrue(populated.isLoading)
     }
 }

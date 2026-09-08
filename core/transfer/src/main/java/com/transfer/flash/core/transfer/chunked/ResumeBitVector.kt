@@ -80,6 +80,27 @@ public class ResumeBitVector(public val totalChunks: Int) {
     }
 
     /**
+     * Ascending list of indexes marked here but **not** in [other] — the delta a caller still has
+     * to act on.
+     *
+     * [doneIndexes] boxes one `Int` per received chunk, so polling it to answer "what is new since
+     * last time" costs allocations proportional to the whole done-set on every poll, however small
+     * the delta. This computes the difference in [BitSet] words instead — 64 chunks per word — and
+     * boxes only what it returns. See EXP-008 for why that mattered on the send path.
+     */
+    public fun receivedIndexesNotIn(other: ResumeBitVector): List<Int> {
+        val delta = bits.clone() as BitSet
+        delta.andNot(other.bits)
+        val out = ArrayList<Int>(delta.cardinality())
+        var i = delta.nextSetBit(0)
+        while (i >= 0) {
+            out.add(i)
+            i = delta.nextSetBit(i + 1)
+        }
+        return out
+    }
+
+    /**
      * Union merge with a remote done-set; see class KDoc. Indexes outside `[0, totalChunks)` are
      * ignored rather than thrown: remote reports arrive over the wire and must never crash the
      * pipeline.

@@ -28,12 +28,14 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
@@ -52,12 +54,15 @@ import com.transfer.flash.ui.icons.FlashIcons
 import com.transfer.flash.ui.theme.FlashBrandAnimation
 import com.transfer.flash.ui.theme.FlashDimensions
 import com.transfer.flash.ui.theme.FlashHaptic
+import com.transfer.flash.ui.theme.FlashMotion
 import com.transfer.flash.ui.theme.FlashShapes
 import com.transfer.flash.ui.theme.FlashSpacing
 import com.transfer.flash.ui.theme.FlashText
 import com.transfer.flash.ui.theme.FlashTheme
+import com.transfer.flash.ui.theme.flashAnimateItem
 import com.transfer.flash.ui.theme.flashPressScale
 import com.transfer.flash.ui.theme.rememberFlashHaptics
+import kotlin.math.roundToInt
 
 /**
  * P3 Transfers tab (UI-047, docs/ui/transfers-page.md): sectioned per-row queue —
@@ -117,11 +122,44 @@ data class TransfersUiState(
 /** Pure helpers backing the transfers page (JVM-testable). */
 object FlashTransfersMath {
 
-    const val PROGRESS_THROTTLE_MS = 250L
+    /**
+     * How often the *domain* transfer list should be allowed to reach this screen.
+     *
+     * The transfer layer publishes progress on a 10 ms watcher tick — a hundred values a second for
+     * the whole duration of a transfer, each one a fresh list — and the collector sits at the app
+     * shell, so unpaced it invalidates the shell and re-derives a whole [TransfersUiState] on every
+     * frame whether or not this tab is even on screen.
+     *
+     * Nothing on this screen can show that cadence: [formatSpeed] rounds to one decimal, [formatEta]
+     * to whole seconds, and both the per-row progress fill and the header throughput roll are
+     * `animateFloatAsState` against Compose's frame clock — their smoothness is the animation's, not
+     * the emission rate's.
+     *
+     * **Derived from [FlashMotion.NormalMillis] on purpose, and it must stay below it.** Those two
+     * animations run for `NormalMillis`, so a window *longer* than the animation would let each one
+     * finish and then sit still until the next value arrived — a periodic dead stop at the HIGH tier,
+     * where nothing may be given up. Three quarters of the duration means a new target always lands
+     * while the previous animation is still running, so it retargets in flight and the motion is
+     * continuous. That is also why this is not tiered: reduce-motion already collapses `normalMillis`
+     * to 0, and the HIGH tier keeps the exact animation it had.
+     */
+    const val PROGRESS_THROTTLE_MS: Long = FlashMotion.NormalMillis * 3L / 4L
 
     /** Fraction 0..1 clamped; zero total bytes never divides. */
     fun progressFraction(bytesDone: Long, bytesTotal: Long): Float =
         if (bytesTotal <= 0L) 0f else (bytesDone.toFloat() / bytesTotal).coerceIn(0f, 1f)
+
+    /**
+     * Width in px of a progress fill occupying [fraction] of a track, measured in the layout phase.
+     *
+     * This is `Modifier.fillMaxWidth(fraction)`'s own arithmetic, lifted out so it can be asserted:
+     * Compose's `FillNode` computes `(maxWidth * fraction).roundToInt().coerceIn(minWidth, maxWidth)`,
+     * and the fill in [TransferRow] must match it exactly, because that is what it replaced (EXP-013).
+     * Keeping the formula here means a future edit that drifts from `FillNode` fails a test instead of
+     * quietly resizing every progress bar by a pixel.
+     */
+    fun progressBarWidthPx(minWidthPx: Int, maxWidthPx: Int, fraction: Float): Int =
+        (maxWidthPx * fraction).roundToInt().coerceIn(minWidthPx, maxWidthPx)
 
     fun formatSpeed(bytesPerSec: Long): String = when {
         bytesPerSec >= 1024L * 1024L -> "${(bytesPerSec / (1024f * 1024f) * 10).toInt() / 10.0} MB/s"
@@ -320,10 +358,7 @@ private fun PopulatedSections(
             items(state.offers, key = { it.id }) { item ->
                 TransferRow(
                     item = item,
-                    modifier = Modifier.animateItem(
-                        placementSpec = motion.messagePlacementSpec(),
-                        fadeOutSpec = motion.messageFadeOutSpec(),
-                    ),
+                    modifier = flashAnimateItem(motion),
                     trailing = {
                         RowIcon(
                             icon = FlashIcons.Check,
@@ -345,10 +380,7 @@ private fun PopulatedSections(
             items(state.active, key = { it.id }) { item ->
                 TransferRow(
                     item = item,
-                    modifier = Modifier.animateItem(
-                        placementSpec = motion.messagePlacementSpec(),
-                        fadeOutSpec = motion.messageFadeOutSpec(),
-                    ),
+                    modifier = flashAnimateItem(motion),
                     trailing = {
                         AnimatedContent(
                             targetState = item.state == FlashTransferState.Paused,
@@ -376,10 +408,7 @@ private fun PopulatedSections(
             items(state.failed, key = { it.id }) { item ->
                 TransferRow(
                     item = item,
-                    modifier = Modifier.animateItem(
-                        placementSpec = motion.messagePlacementSpec(),
-                        fadeOutSpec = motion.messageFadeOutSpec(),
-                    ),
+                    modifier = flashAnimateItem(motion),
                     trailing = {
                         // Retry is offered only where it can actually do something. A cancelled or
                         // declined transfer lands in this section too (the UI has no Cancelled
@@ -401,10 +430,7 @@ private fun PopulatedSections(
             items(state.history, key = { it.id }) { item ->
                 TransferRow(
                     item = item,
-                    modifier = Modifier.animateItem(
-                        placementSpec = motion.messagePlacementSpec(),
-                        fadeOutSpec = motion.messageFadeOutSpec(),
-                    ),
+                    modifier = flashAnimateItem(motion),
                     trailing = {
                         RowIcon(
                             icon = FlashIcons.Share,
@@ -426,12 +452,22 @@ private fun HeaderWithChips(state: TransfersUiState) {
     // acceleration and a pause reads as a drop. animateFloatAsState is a single value animation
     // (not a per-row one), and the label it produces is re-read only when the rounded text
     // actually changes.
-    val rolledSpeed by animateFloatAsState(
+    //
+    // The `derivedStateOf` is what makes that last sentence true (EXP-013). `Column` is an inline
+    // function, so reads inside its content lambda belong to *this* composable's restart scope;
+    // formatting the raw animated float here therefore re-executed the header — two texts, two
+    // AnimatedVisibility containers and the failed-count chip — on every frame of the roll, for as
+    // long as any transfer was moving. Deriving the String means the read happens in the derivation
+    // and structural equality drops every frame that formats to the same text, so the header
+    // recomposes when the *label* changes ("1.2 MB/s" -> "1.4 MB/s") rather than when the float does.
+    val rolledSpeed = animateFloatAsState(
         targetValue = FlashTransfersMath.aggregateSpeed(state.active).toFloat(),
         animationSpec = if (motion.reduceMotion) snap() else motion.tweenNormalSpec(),
         label = "transfersThroughputRoll",
     )
-    val throughputLabel = FlashTransfersMath.formatSpeed(rolledSpeed.toLong())
+    val throughputLabel by remember(rolledSpeed) {
+        derivedStateOf { FlashTransfersMath.formatSpeed(rolledSpeed.value.toLong()) }
+    }
 
     Column {
         FlashText(
@@ -483,7 +519,13 @@ private fun TransferRow(
 ) {
     val colors = FlashTheme.colors
     val interactionSource = remember { MutableInteractionSource() }
-    val fraction by animateFloatAsState(
+    // Stays a `State`; the only consumers are a layout modifier and the fill's width (EXP-013).
+    // Unwrapped, this animation ran the whole row's body — badge, two texts, the track, the status
+    // line and the trailing controls — once per frame for the whole of every transfer, because
+    // `fillMaxWidth(fraction)` is a composition-time argument. The `layout` block below reproduces
+    // exactly what `fillMaxWidth(fraction)` computes, but reads the value in the layout phase, so a
+    // frame of the tween re-measures one 2dp bar and recomposes nothing.
+    val fraction = animateFloatAsState(
         targetValue = FlashTransfersMath.progressFraction(item.bytesDone, item.bytesTotal),
         animationSpec = FlashTheme.motion.tweenNormalSpec(),
         label = "transferProgress",
@@ -522,7 +564,11 @@ private fun TransferRow(
                         FlashTransferDirection.Send -> "Sending"
                         FlashTransferDirection.Receive -> "Receiving"
                     })
-                    append(", ${(fraction * 100).toInt()} percent")
+                    // The real progress, not the tween: a screen reader should hear where the
+                    // transfer actually is, and reading `item` here (a parameter, not a State) keeps
+                    // the animation from re-running this whole `buildString` in the semantics phase
+                    // on every frame (EXP-013).
+                    append(", ${(FlashTransfersMath.progressFraction(item.bytesDone, item.bytesTotal) * 100).toInt()} percent")
                     append(", ${FlashTransfersMath.statusLine(item)}")
                 }
             },
@@ -559,7 +605,20 @@ private fun TransferRow(
             ) {
                 Box(
                     Modifier
-                        .fillMaxWidth(fraction)
+                        // Mirrors `fillMaxWidth(fraction)` exactly — same `roundToInt`, same
+                        // `coerceIn(minWidth, maxWidth)` as Compose's own FillNode — but in the
+                        // layout phase, so the progress tween never touches composition.
+                        .layout { measurable, constraints ->
+                            val width = FlashTransfersMath.progressBarWidthPx(
+                                minWidthPx = constraints.minWidth,
+                                maxWidthPx = constraints.maxWidth,
+                                fraction = fraction.value,
+                            )
+                            val placeable = measurable.measure(
+                                constraints.copy(minWidth = width, maxWidth = width),
+                            )
+                            layout(placeable.width, placeable.height) { placeable.place(0, 0) }
+                        }
                         .fillMaxSize()
                         .clip(FlashShapes.bubbleGrouped)
                         .background(fillTint),

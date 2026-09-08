@@ -214,8 +214,6 @@ public data class FlashMessageUi(
     val text: String,
     val isMine: Boolean,
     val images: List<FlashImageAttachmentUi> = emptyList(),
-    val hasImageGrid: Boolean = false,
-    val imageCountLabel: String? = null,
     val fileAttachments: List<FlashFileAttachmentUi> = emptyList(),
     val voiceAttachments: List<FlashVoiceAttachmentUi> = emptyList(),
     val reactions: List<FlashReaction> = emptyList(),
@@ -240,6 +238,8 @@ public data class FlashChatListItemUi(
     val isTyping: Boolean = false,
     val presence: FlashPeerPresence = FlashPeerPresence.Offline,
     val isGroup: Boolean = false,
+    /** Group Phase C: how many members are online right now (0 for direct chats). */
+    val groupOnlineCount: Int = 0,
     val previewIsMedia: Boolean = false,
     val previewDelivery: FlashListPreviewDelivery? = null,
     val sortOrder: Long = 0L,
@@ -249,6 +249,18 @@ public data class FlashChatListUiState(
     val items: List<FlashChatListItemUi> = emptyList(),
     val selectionMode: Boolean = false,
     val selectedIds: Set<String> = emptySet(),
+    /**
+     * True once the backing store has produced its first list — even if that list is empty
+     * (ERROR-034).
+     *
+     * Without this an empty [items] is ambiguous: it means both "this device has no conversations"
+     * and "the query has not answered yet". The shell resolved the ambiguity with the engine's
+     * `ready` flag, but `ready` flips when the transport stack finishes booting, which is strictly
+     * earlier than the first Room emission — so a device with conversations rendered the
+     * first-run "No conversations yet" panel and then crossfaded to real rows. Screens must treat
+     * `!hasLoaded` as loading, not as empty.
+     */
+    val hasLoaded: Boolean = false,
 )
 
 public data class FlashChatHeaderUiState(
@@ -289,6 +301,12 @@ public data class FlashConversationUiState(
     val messages: List<FlashMessageUi>,
     /** Persisted unsent composer text for this conversation (#9), restored when the screen opens. */
     val draftText: String = "",
+    /**
+     * Group Phase B: the real member roster for a group conversation (names, per-member online
+     * flags, roles). Empty for direct chats and for group states produced before Phase B's
+     * repository wiring — consumers fall back to header-derived rows when empty.
+     */
+    val members: List<FlashGroupMemberUi> = emptyList(),
 )
 
 public data class FlashConversation(

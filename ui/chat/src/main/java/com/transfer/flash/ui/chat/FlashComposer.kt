@@ -5,6 +5,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -43,9 +44,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -354,12 +355,20 @@ fun FlashSendButton(
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
 
-    val scale by animateFloatAsState(
+    // The press scale stays a `State` and is read in the `graphicsLayer` below, not here
+    // (EXP-013). It also gained the reduce-motion guard it never had: HIGH keeps this exact
+    // spring — deliberately its own, not `springSnappySpec()`, so the send button's feel is
+    // unchanged — while LOW/MEDIUM snap, like every other animation at those tiers.
+    val scale = animateFloatAsState(
         targetValue = if (isPressed && canSend) 0.90f else 1.0f,
-        animationSpec = spring(
-            dampingRatio = 0.6f,
-            stiffness = 500f,
-        ),
+        animationSpec = if (motion.reduceMotion) {
+            snap()
+        } else {
+            spring(
+                dampingRatio = 0.6f,
+                stiffness = 500f,
+            )
+        },
         label = "send_button_press_scale",
     )
 
@@ -386,7 +395,16 @@ fun FlashSendButton(
     Box(
         modifier = modifier
             .size(FlashSpacing.space40)
-            .scale(scale)
+            // Same chain position, same node: `Modifier.scale(f)` *is*
+            // `graphicsLayer(scaleX = f, scaleY = f)` with the same centre pivot, so this is
+            // pixel-identical — but the read now happens in draw instead of being a
+            // composition-time argument, which used to recompose the whole button (both
+            // `animateColorAsState` calls, the `clickable` chain, the semantics block and the
+            // icon) on every frame of the press spring.
+            .graphicsLayer {
+                scaleX = scale.value
+                scaleY = scale.value
+            }
             .clip(CircleShape)
             .background(backgroundColor)
             .clickable(

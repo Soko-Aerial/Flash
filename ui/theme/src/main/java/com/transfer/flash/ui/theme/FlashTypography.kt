@@ -22,7 +22,28 @@ data class FlashTypography(
     val numericEmphasis: TextStyle,
 ) {
     companion object {
-        fun default(fontFamily: FontFamily? = null): FlashTypography {
+
+        /**
+         * The system-font typography, built once.
+         *
+         * [default] used to construct a fresh [FlashTypography] plus twelve [TextStyle] objects on
+         * every call, and it is called from Kotlin default-argument positions - `FlashText`'s `style`
+         * parameter, `FlashTheme`'s `typography` parameter, the `LocalFlashTypography` fallback. A
+         * default argument is re-evaluated at every call site that omits it, so the app's universal
+         * text composable was allocating thirteen objects and discarding twelve of them per piece of
+         * text drawn. The values never varied, so there is nothing to recompute.
+         */
+        private val System: FlashTypography = build(fontFamily = null)
+
+        /**
+         * [fontFamily] `null` means "the platform default", which is the only variant the app ships,
+         * so it is served from the shared [System] instance. A caller that supplies its own family
+         * still gets a freshly built set.
+         */
+        fun default(fontFamily: FontFamily? = null): FlashTypography =
+            if (fontFamily == null) System else build(fontFamily)
+
+        private fun build(fontFamily: FontFamily?): FlashTypography {
             val tabular = "tnum"
             return FlashTypography(
                 display = TextStyle(

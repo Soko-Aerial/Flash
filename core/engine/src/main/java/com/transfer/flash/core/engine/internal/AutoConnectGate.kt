@@ -5,10 +5,13 @@ package com.transfer.flash.core.engine.internal
  * Ported into `core:engine` for [com.transfer.flash.core.engine.Flash.create]; mirrors the app's gate.
  *
  * The auto-connector proactively dials every discovered peer that has no live session so a
- * full-duplex WebSocket exists in whichever direction the network permits — REQUIRED for Wi-Fi
- * hotspot topologies where the SoftAP/gateway cannot dial its client stations. The gate bounds
- * attempts: at most one per [suppressMs] per peer, never two concurrent for the same peer, and a
- * peer that already has a session is cleared so a later drop re-arms it immediately.
+ * full-duplex WebSocket exists in whichever direction succeeds first; both ends ride whichever one
+ * lands. It is NOT a workaround for a SoftAP being unable to dial its stations, which is what this
+ * KDoc used to claim — no such platform rule exists, and the real cause of those failures was a
+ * destination-blind socket bind since fixed in `WsTransferClient` (ERROR-035).
+ *
+ * The gate bounds attempts: at most one per [suppressMs] per peer, never two concurrent for the same
+ * peer, and a peer that already has a session is cleared so a later drop re-arms it immediately.
  */
 internal class AutoConnectGate(private val suppressMs: Long = DEFAULT_SUPPRESS_MS) {
 

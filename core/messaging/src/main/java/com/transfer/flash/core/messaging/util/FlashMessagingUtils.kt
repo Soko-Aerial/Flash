@@ -96,7 +96,10 @@ public fun sampleFlashChatListState(): FlashChatListUiState {
             sortOrder = 1,
         ),
     )
-    return FlashChatListUiState(items = sortedChatListItems(items))
+    // hasLoaded: a sample dataset is complete the moment it is constructed — there is no query
+    // behind it to wait for. Leaving it false would make every preview and test that binds this
+    // state render the loading skeleton instead of the rows it was built to show (ERROR-034).
+    return FlashChatListUiState(items = sortedChatListItems(items), hasLoaded = true)
 }
 
 public fun sampleFlashConversationState(): FlashConversationUiState {

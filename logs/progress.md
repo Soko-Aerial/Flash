@@ -1,5 +1,1525 @@
 # Progress Log
 
+## 2026-09-08 — F-series: group media/late-join defects fixed (F1–F4 core), GSYNC catch-up implemented (F3)
+
+### Worked on
+Owner's four device-reported problems, phased per `docs/group/ui-phase-plan.md` (F-series).
+Evidence-backed root causes were recorded in the plan before any code: conversation-row
+clobber by attachment/call upserts, anonymous peer fallback leaking transfers, sender-keyed
+attachment threading, Add-frame bootstrap impossibility, and the identical-resume machinery
+that makes any-holder re-pulls cheap.
+
+### Changed (per phase)
+- **F1 (stop the damage):** `touchConversation` replaces the three clobbering upserts (group
+  rows update sortOrder only); `openStreamChannel` (holder + engine) no longer falls back to
+  an arbitrary session when a NAMED peer has no session (group transfers failed cleanly
+  instead of leaking to a random peer); interim honest gate on group attachment sends.
+  Test: attachment-to-group clobber regression.
+- **F2 (late-join bootstrap):** `GroupWireFrame.State` + `RosterEntry` (name, creator, full
+  versioned roster) + codec; receiver gate = trusted peer + sender active in roster + self in
+  roster, materialized via the versioned merge (tombstones still win); `addGroupMembers` sends
+  State to newcomers and Add to existing members. Tests: fresh-device bootstrap, untrusted
+  drop, tombstone precedence, codec round-trip, oversized-roster rejection.
+- **F3 (FLASH_GSYNC catch-up):** `GroupSyncPolicy` (deterministic FNV-1a election, TTL/cursor/
+  budget selection, pacing — 7 tests); `MessageDao.historyAfter` (composite-cursor mirror);
+  repository request/claim/backup-push/ack flow with per-round state; both hosts send sync
+  requests on session-up; codec round-trips for SyncRequest/SyncClaim(tier). Device gate
+  (3 devices, 5-min offline, exactly-once) owed by owner.
+- **F4 core (group media in chat):** `GroupMedia` frame + codec; `sendFile(wireFileId:)`
+  overload; receiver parks group context at GMEDIA and consumes it at ACCEPT
+  (`onInboundAttachment` threads into the group under the sender's messageId — kills the
+  sender-keyed threading AND the WS/data-channel arrival race); `beginGroupAttachment` +
+  MainActivity group fan-out (intro + per-member transfer sharing one wireFileId, sender row
+  keyed by it). F1's interim gate replaced by the real path. En route: the group-header test
+  now awaits the populated header (seed is isGroup=true memberCount=0). **Deferred to F4b:**
+  any-holder re-pull (`FLASH_GFETCH`) + SyncPush media metadata.
+
+### Verification
+Full R3 sweep: **1021 live / 12 failures / 0 skipped** — all 12 are the known Windows
+`:core:persistence` DataStore set (verified no failures elsewhere); `:app:assembleDebug`
+green. Device gates owed: ⋮-added device sees the group; 5-min offline catch-up exactly-once;
+3-device media matrix (in chat, with progress, resumes).
+
+### Remaining
+- F4b (re-pull + SyncPush media metadata), F5/F6 audit follow-ups, owner device gates.
+
+### Next AI
+Resume from `docs/group/ui-phase-plan.md`. Do not remove the consult-at-accept pattern for a
+race-prone offer-time one. `New folder/` is unrelated session data — never stage it.
+
+## 2026-09-08 — Group UI Phases A–E: groups render as groups, real roster, online counts, three-dot menus, essentials audit
+
+### Worked on
+Owner field report after device-testing Phase 1A: group header showed the raw UUID, group
+profile click opened the 1:1 peer-trust sheet ("not connected / not encrypted / not paired"),
+voice-call taps in groups silently failed, member sheet had no real roster, the three-dot menu
+was a no-op, and online counts never showed. Plan recorded in `docs/group/ui-phase-plan.md`
+(compaction-safe; phases executed strictly one at a time; direct-chat behavior unchanged).
+
+### Changed
+- **Phase A (root fix):** `RealFlashChatRepository` conversation header now branches on
+  `conversationDao.get(id).isGroup`: group headers take the stored title + member roster
+  (isGroup, memberCount, memberInitials, onlineCount, showCallActions=false — which also stops
+  the silent `startCall(groupId)` trust-refusal); direct path extracted verbatim as
+  `directHeaderState`. `openConversation` seeds via a new `groupTitleCache` (stamped at local +
+  inbound create) instead of a blocking Room read — the `runBlocking` first attempt starved the
+  shared test executor (sendText flake, caught by rerun-in-isolation). Chat-list presence for
+  groups is aggregate (≥1 member online ⇒ Online); the old per-row check can never fire for a
+  groupId and pinned every group to Offline.
+- **Phase B:** `FlashConversationUiState.members` (additive) carries the real roster — names,
+  per-member `isOnline` from live sessions, owner role from the stored role column; shared
+  `toMemberUi`. `FlashConversationScreen` prefers `state.members`, falls back to
+  header-derived rows.
+- **Phase C:** subtitle "N members · M online" already existed + unit-pinned
+  (`FlashGroupHeaderLogicTest`); now fed real counts. Chat-list group rows show a live
+  "M online" count chip on the avatar (`FlashChatListItemUi.groupOnlineCount` +
+  `FlashChatListGroupOnlineBadge`).
+- **Phase D:** three-dot menus. New `FlashConversationMenu` + pure `FlashConversationMenuMath`;
+  direct: View profile / Search / Revoke trust (paired only) / Clear conversation; group:
+  Group info / Add members / Search / Leave group (hidden when memberCount ≤ 1). New
+  `FlashAddMembersSheet` (trusted peers, host pre-filters existing members) +
+  `FlashLeaveGroupDialog`; screen gains additive `conversationId`/`addablePeers`/
+  `onAddGroupMembers`/`onLeaveGroup`/`onClearConversation`; MainActivity wires leave
+  (confirm → leaveGroup → closeConversation/nav.back, failure toast) and clear
+  (deleteConversations + nav.back).
+- **Phase E:** code-based essentials audit → `docs/ui/app-essentials-audit.md` (exists/partial/
+  missing with file refs + prioritized 8-item follow-up list; date separators and group
+  notification naming are the top two).
+
+### Verification
+Per phase: focused module tests + `:app:assembleDebug`; two full R3 sweeps during the run, the
+final one **1005 live tests / 0 failures / 0 skipped** (messaging 59, ui/chat 265). New tests:
+group header derivation (title/isGroup/count/roster/roles), `FlashConversationMenuMathTest`
+(item visibility). In en-route fix documented above, no regression left behind. Device re-test
+of all four UI phases owed by owner.
+
+### Remaining
+- Owner device re-test: group name/counts in header + list, member sheet roster, both menus
+  (add/leave/clear/revoke), no call buttons in groups, 1:1 regression sweep.
+- Audit follow-ups in `docs/ui/app-essentials-audit.md` order (owner picks).
+- Phase 1B (FLASH_GSYNC) and Phase 2 (group voice) per `docs/group/`.
+
+### Next AI
+Resume from `docs/group/ui-phase-plan.md` (all five phases DONE) and
+`docs/ui/app-essentials-audit.md` for follow-up order. Do not add a second group codec; keep
+direct-chat paths byte-identical; `New folder/` is unrelated session data — never stage it.
+
+## 2026-09-08 — Groups Phase 0 + Phase 1A: trusted ad-hoc group text with per-member quorum delivery (ADR-030)
+
+### Worked on
+Owner instruction: "start phase 0 and then move to phase 1" against the `docs/group/` plan.
+Owner-locked deltas: trusted peers only, max 6 members total, leave-wins tombstone
+membership, Phase 1 split into 1A (live path) / 1B (holder sync).
+
+### Changed
+- **Phase 0 (contract):** `docs/protocol.md` §Groups (all five prefixes, versioned membership,
+  quorum rule, GSYNC wire), **ADR-030** in `docs/decisions.md`, status notes in
+  `docs/group/README.md` + phase-0/phase-1 docs. Trust gate: `CallCoordinator` gains
+  `isTrustedPeer` (default permissive for source compat); app wiring passes the trust store —
+  outbound calls to unpaired peers are refused, inbound invites are auto-declined without
+  ringing. Direct 1:1 text deliberately NOT trust-gated.
+- **Protocol layer (`:core:messaging/protocol`, new):** `GroupWireFrame` (membership + message +
+  receipt/read + Phase-1B sync frames), `GroupFrameCodec` (single encode/decode for
+  `FLASH_GROUP`/`FLASH_GMSG`/`FLASH_GRCPT`/`FLASH_GREAD`/`FLASH_GSYNC`; indexed member lists
+  instead of CSV; unknown actions decode to null = ignored), `GroupPolicy` (6-member cap,
+  name/text bounds, sync budgets/TTL/caps, `GroupSyncCursor`, `GroupMembershipVersion` +
+  `membershipUpdateWins` leave-wins rule).
+- **Persistence v3→v4 (non-destructive):** new `group_members` (versioned tombstone-capable
+  roster, role column reserved) + `group_deliveries` (per-recipient state/attempts/next-attempt)
+  tables + DAOs; `ConversationEntity.groupCreatedBy/groupCreatedAt`; `MIGRATION_3_4` in
+  `FlashMigrations.ALL`; `DATABASE_VERSION = 4`; schema `4.json` exported. Existing
+  `read_cursors` reused (already per-conversation-per-member); `receipts` NOT overloaded.
+- **Repository:** `RealFlashChatRepository` gains `groupMemberDao`/`groupDeliveryDao`/
+  `isTrustedPeer`/`groupTransportSink` (all defaulted — source compatible) and additive public
+  API `createGroup`/`addGroupMembers`/`leaveGroup`/`groupMembers` (`FlashResult`-returning,
+  validated: name bounds, 6-cap, trust). `onInboundGroupWireFrame(peerDeviceId, frame)` enforces
+  `from == transport peer` + trust + active membership, applies the versioned membership merge,
+  inserts group messages idempotently under `groupId`, auto-receipts the author. Group sends
+  branch from direct sends in `sendText`/`sendReply` (`sendGroupText`: one message row + one
+  delivery row per active recipient + one outbox row); the drain routes group rows through
+  `drainGroupMessage` (per-member `SENT` on write; outbox retires only at full active-member
+  quorum — ERROR-031 commit rule generalized); `GroupReceipt` flips exactly one member.
+  `notifyPeerSessionUp(peerId?)` additionally makes that member's group deliveries due (direct
+  Bug-5 global reset unchanged).
+- **Hosts:** both `DiscoveryEngineHolder` and `Flash.create` wire the new DAOs, trust predicate,
+  `GroupFrameCodec` group sink, decode group frames inbound (before the direct families), and
+  pass the session peer id to `notifyPeerSessionUp`.
+- **UI:** `FlashCreateGroupSheet` + pure `FlashCreateGroupMath` (title validation, 6-cap incl.
+  self, count label) in `:ui:chat`; `FlashChatListTopBar` gains a "New group" action wired
+  through `FlashChatListScreen` → `MainActivity` (roster = `pairing.trustedPeers` only; success
+  opens the new conversation; failure toasts). `FlashCreateGroupMathTest` (4).
+
+### Verification
+Full sweep `testDebugUnitTest assembleDebug :core:common:testAndroidHostTest --continue`:
+**1001 live / 12 known Windows DataStore failures / 0 skipped** (messaging 47 → **57**
+(+6 codec/policy, +4 group repository), persistence 35 → **38** (+3 group-DAO invariants),
+ui/chat 255 → **259**); `:app:assembleDebug` + both sample consumers green; v4 schema exported.
+Group unit coverage: codec round-trips/escaping, unknown-action tolerance, six-member bound +
+creator inclusion, untrusted/non-member drop, leave tombstone vs stale add vs newer re-add
+(re-add must come from an active member), per-recipient fan-out, full-quorum outbox retirement,
+per-member delivery monotonicity, conversation provenance round-trip.
+
+### Remaining
+- **3-device physical gate (owner):** create/add/leave/re-add, one member offline 5 min then
+  reconnect → durable delivery on session-up, per-member labels, untrusted-frame rejection,
+  no 1:1 regression. *(First on-device run found ERROR-036 — group mutations did blocking WS
+  sends on the main thread, killing both sessions; fixed with `withContext(ioDispatcher)`
+  hops + a dispatch regression pin. Re-run create-group.)*
+- **Phase 1B:** `FLASH_GSYNC` sender/receiver (codec + policy constants already in place;
+  request on return, holder claim/elect/push/ack).
+- UI follow-up: real member names in `FlashGroupMembersSheet` (currently initials-derived from
+  the header), "delivered to M of N" label, group typing fan-out.
+- Phase 2 (group voice) per `docs/group/phase-2-group-voice.md`.
+
+### Next AI
+Run the physical gate or start 1B. Do not add a second group codec; both hosts must keep using
+`GroupFrameCodec`. `New folder/` remains unrelated session data — never stage it.
+
+## 2026-09-07 — Group chat + group voice plan written to `docs/group/` (5 files)
+
+Owner scope (locked): phased sizes, voice-only v1, ad-hoc no-admin groups, eager holder
+push with holder coordination, LOW-tier protected, text-first Phase 1. Plan built on a
+file-by-file map of the 1:1 architecture plus current sources (2026 mesh/SFU consensus,
+Signal/WhatsApp sender-key lineage + MLS deferral rationale, bitchat/Kabootar/Aether DTN
+pattern). Key designs: `FLASH_GROUP`/`FLASH_GMSG`/`FLASH_GSYNC` frames with claim-window
+election `(tierRank, hash)` + batch-ack holder sync (max 2 copies/message, 5 msgs/sec to
+LOW returners); quorum side table replacing first-ACK-wins; per-reader cursors; mesh of
+1:1 call legs reusing ADR-026 quiet hooks. No code; Phase 0 gate is owner sign-off.
+
+## 2026-09-07 — Voice-call latency fluctuation: all five in-app sources fixed (ADR-026)
+
+### Worked on
+Owner field report: unstable/fluctuating voice latency between two low-end devices, with a logcat
+showing clean NORMAL call setup/teardown (Offer 1341 B → Answer 1244 B → Connected in ~300 ms) but
+one smoking gun inside it: `LowLatencyAudioBufferManager: Underrun detected! 3844 → 4324` plus
+`underrun count: 1` — playout starvation, not network loss. Three parallel audits (audio/WebRTC
+path, background contention, signaling/transport) confirmed media is WebRTC P2P UDP (not WS-TCP,
+so no head-of-line blocking on media) and convicted five compounding in-app sources.
+
+### Changed
+- `app/.../DiscoveryEngineHolder.kt` — new `callActive` flag + `setCallActive()`: ACTIVE edge
+  drops discovery to ECO and quiets transfers; leaving-ACTIVE restores STANDARD (ECO→STANDARD
+  wakes an in-flight idle gap immediately). Auto-connect sweep skips while `callActive`; the
+  `runCatching` guards the mode switch, never the flag, so a throwing transport cannot kill the
+  ringer `collect` loop this runs inside.
+- `core/transfer/.../MultiStreamDispatcher.kt` (internal) — `quietWatcherHint` + new
+  `WATCH_QUIET_POLL_MS = 250L`: watcher 100 Hz → 4 Hz. Terminal resolution waits at most one
+  extra 250 ms against second-scale graces; ACKs still ingest on arrival.
+- `core/transfer/.../RealFlashTransferRepository.kt` — public `voiceCallActive` fans out to live
+  dispatchers and is applied at registration (covers calls going ACTIVE mid-construction).
+- `core/calling/.../FlashCallSession.kt` — `getStats()` sampler moved to a dedicated single
+  daemon thread (`FlashCallStats`), closed in `releaseMedia`. First production thread pool in the
+  tree; see ADR-026 for why coroutines-only could not isolate this.
+- `core/calling/.../FlashWebRtcEngine.kt` — `configureOnce(context, lowLatencyPlayout = true)`;
+  holder passes `performanceMode != LOW` (one-shot per process, documented).
+- `ui/callui/.../FlashCallScreen.kt` — clock sleeps to the next wall-clock second boundary
+  (no drift, coalesces with the 1 s stats phase); status live-region announces transitions only,
+  killing ~1 accessibility event/sec for a whole call. Zero pixel/tier change.
+
+### Verification
+Full R3 sweep **984 live / 12 known Windows DataStore failures / 0 skipped** — byte-identical
+per-module split to baseline, APK rebuilt 12:11. No new tests: the properties are timing/lifetime
+(same rationale as EXP-016 — a cadence assertion would hang-or-flake rather than fail); the
+unchanged 984 is the regression check. Device confirmation (which of the five dominates) belongs
+to EXP-007.
+
+### Remaining / next AI
+On-device validation with stats logging (`jitterBufferDelay/concealedSamples` alongside `jitter`
+in `sampleStats` — proposed, not yet implemented); retune 250 ms / ECO policy against EXP-007.
+
+## 2026-09-04 (h) — Task #5: recomposition scopes. Three shell derivations subscribed a ~750-line composable to flows only one off-screen tab consumed (EXP-012); the call screen's mm:ss clock was recomposing both video renderers once per second; and then a sweep found that **every** per-frame animation in the app — splash included — was recomposing its host instead of just re-drawing (EXP-013). A closing pass over the sites the sweep had deferred found 10 of 11 needed nothing at all, corrected the wrong reason recorded for them, and fixed the one that was real: the send button. A third pass then found the closing grep had only covered animated `Float`s, and that the animated `Dp` form had hit the shell a second time. A fourth pass left animations behind entirely and found that **nothing in the app implemented `onTrimMemory`**, so the chat thumbnail cache held its whole `maxMemory / 8` share for the life of the process — including backgrounded mid-transfer with no tile on screen (EXP-014). A fifth pass turned that method around — instead of a callback the app
+never implements, work the app does *on a timer whether or not there is anything to do* — and found the
+durable outbox's retry loop waking on a fixed 1 s grid for the life of the process: ~86,400 SQLCipher
+queries a day against a table that is almost always empty, *and* every retry rounded up to the next
+second despite the code having computed an exact deadline (EXP-015). A sixth pass took the timer
+inventory that fifth pass had produced and closed the only remaining unscoped entry on it: a 1 Hz
+pairing tick launched from a constructor for the life of the process, to service a state that is idle
+except during the few seconds a user spends pairing (EXP-016)
+
+### Worked on
+The candidate list left by (g). Ruled out three items by inspection first (Nearby *events* are
+second-scale and its state objects are data classes behind a `MutableStateFlow`, so identical
+rebuilds conflate; call stats already `delay(intervalMs)`; the chat-list DAO write path is already
+capped by the stamping collector's `stamped` HashSet). Then grepped the shell's own state reads,
+which surfaced a different and more general problem than pacing.
+
+### The part worth recording
+The rule is: **a `State`'s invalidation scope is where `.value` is read, not where the `State` was
+created.** So `val x by someFlow.collectAsState()` at the top of a 750-line composable is *not*
+automatically a wide read — but `remember(x) { … }` **is**, because the key expression is itself a
+read and it happens where the `remember` call sits.
+
+That is the bug shape in three places, and in all three the *value* was consumed only inside one
+`when` branch:
+
+| Site | Was subscribed to | Consumed by | Fired on |
+|---|---|---|---|
+| `transfersUi` | 3 States as `remember` keys | Transfers tab only | every paced transfer tick |
+| `nearby` | **5** States as `remember` keys | Nearby tab only | discovery ticks, presence, pairing countdown |
+| selection-mode `BackHandler` | the whole `FlashChatListUiState`, to read one `Boolean` | one `enabled` flag | every row/presence/unread/preview change |
+
+The third is the worst of the three: a `State` has no per-field granularity, so pulling one `Boolean`
+out of the chat-list model subscribed the shell to every field of it. Presence churn is exactly what
+makes that state emit, and presence churn is exactly what the owner reported on the Belfone.
+
+`derivedStateOf` fixes both halves in one move: the reads move inside the derivation (so only readers
+of the *derived* value invalidate, and only when that value really changes), and the block becomes
+**lazy** — off-tab, nothing reads it and the mapping never runs at all. That laziness is the part
+pacing could not buy: EXP-011 cut the transfer re-derivation to ~6-7/s off-screen; this takes it to 0.
+
+### Changed
+`app/.../MainActivity.kt` only, four edits: the `derivedStateOf` import; `transfersUi` and `nearby`
+wrapped; a `chatListSelectionMode` derived `Boolean` read by the `BackHandler`. No other file touched.
+
+### The subtlety, handled
+`derivedStateOf` tracks States read *inside* the block, so those need no keys — but two kinds of
+value would otherwise be captured and frozen at first composition: plain non-State values
+(`transfersReady`), and **the flows themselves, which swap once at boot** because every delegate is
+`(engine.X ?: fallback).collectAsState()`. Without keys the derivation would bind to the pre-boot
+fallback `State` and read it forever. Keys are `pacedTransfers` / `transfersReady`, then
+`engine`+`engine.discovery`+`engine.pairing`, then `chatRepository`.
+
+Their *sufficiency* rests on `AppEngine.kt:43-45`'s documented contract — subsystems are non-null
+before `_ready.value = true` (line 218) — i.e. the same assumption the existing `collectAsState()`
+call sites at `MainActivity.kt:611-619` already make. Checked rather than assumed.
+
+`conversationState` was audited in the same pass and needed **no** change: its only composition read
+is inside the Conversation branch, and its four `header.title` uses are inside event lambdas, which
+run at click time outside any snapshot observer and record no read. Worth knowing because pacing
+would have been *wrong* here anyway — a keystroke has to reach the composer immediately.
+
+### Verification
+`:app:compileDebugKotlin` clean, no new `MainActivity.kt` warnings. Full sweep **963 / 12 known / 0
+skipped** — identical to baseline, which is the intended outcome. APK 12:19. CONVENTIONS needs no
+edit: no tests added.
+
+**No test exists for this and none is available in `:app`.** Asserting where Compose records a
+snapshot read needs a composition; `:app`'s test source set is plain JVM with no Compose UI test or
+Robolectric dependency, and adding one is a build-file change outside this task (R10). The
+derivation's *output* is already covered by `TransfersUiMapperTest` and `FlashTransfersLogicTest`, and
+this change does not touch it — so the unchanged 963 is the regression check, not a coverage claim.
+
+## Then: the same method found a worse one on the call screen (EXP-013)
+
+### The rule that caused it
+**A `@Composable` function that returns a value is not restartable.** The compiler cannot restart it
+alone, so a `State` read inside it is recorded against the nearest restartable scope *above* it. That
+is a different mechanism from EXP-012's (which was about where a `remember` key expression sits) and
+it is easier to miss, because the code looks perfectly encapsulated.
+
+`activeDuration(state)` — the call screen's mm:ss clock — is value-returning, and so is `statusLine`,
+which wraps it. So the once-per-second `text` write propagated through both into whichever composable
+wrote `text = statusLine(state)`. Its own KDoc said "one tick per second on a leaf text node". It was
+not a leaf; there were two call sites and neither was small:
+
+- `FlashCallIdentityBlock` — avatar, infinite pulse transition, name, status, stats badge.
+- `FlashCallVideoSurfaces` — **both video renderers**, each an `AndroidView` over a
+  `SurfaceViewRenderer` (so each `update` pass re-runs), plus the PiP's eight-element modifier chain
+  and the full-screen renderer's chain, all rebuilt from scratch.
+
+That second one is the video-call path — the heaviest thing this app does — and it was being dragged
+through a full recomposition by a clock.
+
+### Changed
+`ui/callui/.../FlashCallScreen.kt`: new Unit-returning `FlashCallStatusLine(state, color)` wrapping
+the one `Text` (Unit-returning ⇒ restartable ⇒ the invalidation stops there); both call sites use it;
+`activeDuration`'s KDoc corrected to state the rule so nobody inlines it back; the mm:ss arithmetic
+extracted as `internal fun formatCallDuration(elapsedMillis: Long)`.
+
+Note it is **restartability**, not skippability, that does the work — so this holds regardless of
+whether the compiler infers `FlashCallUiState` (from `:core:calling`, no Compose compiler) as stable.
+The "make it skippable" reading would have meant annotating a core model type for a UI concern.
+
+### Verification
+`:ui:callui:compileDebugKotlin` and `:ui:callui:testDebugUnitTest` BUILD SUCCESSFUL. Full sweep
+**968 live / 12 known / 0 skipped** (`:ui:callui` 0 → 5). APK 12:28. CONVENTIONS R3 bumped 963 → 968.
+
+`FlashCallDurationTest` is the **first test directory in `:ui:callui`**; the module already had
+`testImplementation(libs.junit)` and only `src/main`, so a `:ui:callui:testDebugUnitTest` task now
+exists where it did not before — no build-file change needed. It covers truncation (`00:00` for the
+whole first second), padding, the 59→60 s rollover, a **backwards clock** (`connectedAt` is a
+`currentTimeMillis()` stamp, so an NTP correction mid-call must clamp rather than render `-1:-3`), and
+a call past an hour (`%02d` widens to `100:00` rather than wrapping). Extracting the arithmetic is what
+made anything in that file testable at all.
+
+## Then: the same question, asked of every animation in the app (EXP-013 part 2)
+
+### The rule that caused it
+The clock finding was about the wrong **scope**. Asking the same question of the animations turned up
+the wrong **phase**, which is the third rule and the one that actually costs per frame:
+
+> The phase that evaluates the read is the phase that gets invalidated. `graphicsLayer { }`,
+> `drawBehind { }`, a `Canvas` draw lambda and a `progress = { … }` lambda read in **draw**;
+> `Modifier.layout { }` reads in **layout**; `Modifier.semantics { }` reads in **semantics**. Only a
+> composition-time *argument* — `fillMaxWidth(f)`, `Modifier.scale(f)`, `background(c.copy(alpha=f))`
+> — reads in **composition**.
+
+So `val wave by transition.animateFloat(…)` followed by `graphicsLayer { translationY = wave }` is the
+worst of both: the `by` read happens in the composable body, so the host recomposes at refresh rate,
+*and* the layer receives a constant it cannot animate on its own. Keeping the `State` and reading
+`.value` inside the layer is what puts the animation where it belongs. Nine sites had this shape.
+
+The splash was the worst of them, for a reason specific to this app: it runs while the whole transport
+stack boots, on the device where boot is slowest (ERROR-034 — on the Belfone SCP810 boot outlasts the
+6 s splash ceiling). It was spending CPU recomposing itself, per frame of a 2.4 s loop, against the
+boot it exists to cover for.
+
+A second-order cost turned up mid-fix and changed one of the fixes: `graphicsLayer { alpha = … }` is
+not free. Under the default `CompositingStrategy.Auto`, `alpha < 1` marks the layer as overlapping, so
+the platform may allocate an **offscreen buffer** per layer. Every alpha layer here wraps exactly one
+solid draw, so `CompositingStrategy.ModulateAlpha` is pixel-identical and needs no buffer; the pairing
+dot dropped the layer entirely for `drawBehind { drawCircle(…) }`.
+
+### Changed
+Seven files, all `:ui:*`, no build files: `FlashBrandAnimation.kt` (splash — two `State`s read in the
+`Canvas`), `FlashTypingIndicator.kt` (three waves; its KDoc had claimed exactly this and was false),
+`FlashCallScreen.kt` (`rememberCallPulseScale`), `FlashVoiceRecording.kt` (record dot + mic spring),
+`FlashPairingFlow.kt` (`drawBehind`), `FlashStateViews.kt` (`ModulateAlpha`), and
+`FlashTransfersScreen.kt` — where the header now derives the throughput *label* with `derivedStateOf`
+(structural equality drops every frame that formats to the same text), the row's progress fill moved
+from `fillMaxWidth(fraction)` to `Modifier.layout { }`, and the a11y percent reads `item` instead of
+the tween so a moving transfer no longer rebuilds a `buildString` per frame.
+
+`FlashTransfersMath.progressBarWidthPx(minWidthPx, maxWidthPx, fraction)` is new: it is Compose's own
+`FillNode` arithmetic — `(maxWidth * fraction).roundToInt().coerceIn(minWidth, maxWidth)` — lifted out
+so the replacement can be asserted against the thing it replaced.
+
+Five sites were checked and found **already correct**: `ScanningDot`, `Modifier.flashPressScale`,
+`rememberTravelPulse`, `FlashCallStatsBadge`, and `FlashFileIconBadge`'s `animatedProgress`. The last
+one nearly got a wrong fix: it is a `by` delegate, but its only use is inside `progress = { … }`, and a
+delegate's `getValue` runs when the lambda runs — i.e. already in the draw phase.
+
+~20 hand-rolled press scales were left deliberately, and the reason recorded here at the time —
+"each already recomposes for an accompanying `animateColorAsState`, so converting the scale alone buys
+only the spring tail" — **was wrong**. See the next section.
+
+## Then: the deferred press scales, re-examined — 10 of 11 needed nothing, 1 was a real defect (R9 correction)
+
+The deferral above was written from a wrong model, so the list was re-derived properly: all 24
+`collectIsPressedAsState` sites enumerated, and each animated value's *consumer* grepped rather than
+assumed.
+
+The correction is the corollary this window had already written down and then failed to apply. Compose's
+delegate operator is
+
+> `inline operator fun <T> State<T>.getValue(thisObj: Any?, property: KProperty<*>): T = value`
+
+so a `by` property is read **at each mention of the property**, not where it was declared. In 10 of the
+11 press-scale sites the only mention is inside the `graphicsLayer` lambda (`scaleX = pressScale`), so
+those reads were **already in the draw phase**. `by` versus an explicit `State` plus `.value` at the
+same use site is the same read in the same phase. There was nothing to convert — not the spring tail,
+nothing.
+
+Two of them (`FlashQuickReactionsBar`, `FlashAttachmentTile`) were converted anyway, on the theory that
+an enter animation sharing the restart scope made them different, and the comments attached to the
+conversion claimed 18 per-frame reads invalidating one composable. That was false; **both files were
+reverted to their pre-pass content** rather than left as churn with a wrong explanation.
+
+### Changed
+One file, `FlashComposer.kt` — `FlashSendButton`, which was the one genuine defect the list was hiding,
+with two faults:
+
+- `.scale(scale)` is a composition-time *argument*, the single shape that does invalidate composition.
+  Every frame of the press spring recomposed the whole button: both `animateColorAsState` calls, the
+  `clickable` chain, the semantics block and the icon. Now `graphicsLayer { scaleX = scale.value;
+  scaleY = scale.value }` in the same chain position — `Modifier.scale(f)` *is*
+  `graphicsLayer(scaleX = f, scaleY = f)` with the same centre pivot, so the pixels are unchanged.
+- Its spec was a raw `spring(dampingRatio = 0.6f, stiffness = 500f)` with **no reduce-motion guard** —
+  the last one left in the app, and exactly what `springSnappySpec`'s KDoc exists to complain about.
+  LOW/MEDIUM ran a live spring on every press. Now `if (motion.reduceMotion) snap() else spring(0.6f,
+  500f)`: HIGH keeps that spring byte-for-byte — deliberately its own and not `springSnappySpec()`,
+  which would have changed HIGH's feel — and LOW/MEDIUM snap, like every other animation there.
+
+A closing grep for animated values used as composition-time modifier arguments (`.scale(`, `.alpha(`,
+`.rotate(`, `.offset(`, the `graphicsLayer(…)` argument form, `fillMaxWidth(var)`) returns **no hits**
+in `ui/` or `app/` — but only for the `Float` spellings, which is not the same thing as the class being
+exhausted. See the next section.
+
+The press-scale consolidation onto `Modifier.flashPressScale` remains a follow-up, but as **de-bloat**
+(task #4's kind of work), not as a hot-path fix — and it must be done sighted: pressed scales run 0.85
+to 0.98, several gate on `enabled`/`canSend`, two multiply by an enter scale, so a blanket swap would
+change HIGH-tier feel.
+
+## Then: the same rule for animated `Dp`/`Int`/`Color` — the grep above had the wrong spellings, and the shell was hit again (EXP-013 part 3)
+
+An animated `Dp` never reaches a modifier through `.scale(` or `.alpha(`; it arrives through
+`.padding(`, `.height(`, `.width(`, `.size(`, and an animated `Int` through something like
+`FontWeight(…)`. None of those were in the closing grep, so "exhausted" was premature. Re-grepping
+`animateDpAsState|animateIntAsState|animateIntOffsetAsState|animateSizeAsState|animateOffsetAsState`
+and then each hit's **consumer** gave five sites: one real defect, two already correct, two that have
+to stay in composition.
+
+### Changed
+`app/.../MainActivity.kt` — `chipBottomInset`, an EXP-012 recurrence inside the same composable,
+reached by a different route. The shell animates the floating Dev Console chip's bottom inset with
+`animateDpAsState(tweenNormalSpec())`, and its only consumer was
+`.padding(end = 16.dp, bottom = 16.dp + chipBottomInset)`. A modifier argument is composition-time, the
+`Box` is inline, and the `if (showDevConsoleEntry)` guard sits directly in `FlashShell`'s body — so the
+read landed in the **~750-line shell's own restart scope**, and every tab-root navigation recomposed
+the whole shell once per frame for the tween's 200 ms. The `Dp` is now an explicit `State` read in the
+placement pass:
+
+```kotlin
+.padding(end = 16.dp, bottom = 16.dp)
+.offset { IntOffset(0, -chipBottomInset.value.roundToPx()) }
+```
+
+The chip is bottom-aligned, so shifting up by the inset is exactly what `bottom = 16.dp + inset` did —
+same pixels, same tween, same reduce-motion behaviour (`normalMillis` is already 0 at LOW/MEDIUM), HIGH
+untouched.
+
+Bounded honestly: `showDevConsoleEntry` is `isDebuggable`, so **release never took this path**. What it
+did affect is debug builds — which is what EXP-007's device matrix will run, so a per-frame shell
+recomposition during navigation would have sat inside the very measurements that gate every low-end
+claim. That is the reason to fix it, not release performance.
+
+### Already correct — and the precedent for that fix
+`FlashSettingsScreen.kt:517` `indicatorOffset` and `:694` `thumbOffset` are both explicit `State<Dp>`
+read inside `Modifier.offset { IntOffset(…roundToPx(), …) }`, i.e. layout-phase; the segment one even
+carries the comment explaining why. Do not "tidy" either into a `by` delegate feeding `padding`.
+
+### Left in composition deliberately
+`FlashReactionChip.kt:88` `borderWidth` feeds `BorderStroke(borderWidth, borderColor)`;
+`Modifier.border` takes no lambda, and `borderColor` animates off the same `isSelfReacted` flip in the
+same stroke, so the chip recomposes regardless — here the "already recomposes for the colour" reasoning
+that was *wrong* for the press scales is actually right. `FlashBottomNav.kt:325` `labelWeight` feeds
+`FontWeight(labelWeight)` inside a `TextStyle`: font weight changes text layout, so that read is
+inherently a composition input.
+
+Animated colours were enumerated too — 11 `animateColorAsState` across 7 files, every one in a small
+leaf composable and every one feeding `background(…)` or `tint =`, both composition-time by
+construction. Rewriting them as `drawBehind` would risk a pixel difference on shaped and bordered
+surfaces to save recomposing a leaf; against §23 that trade is not worth taking. `Animatable` sweep:
+the only un-`remember`ed ones are `FlashZoomState`'s three, which are `@Stable` class properties whose
+KDoc already states the reads happen in `graphicsLayer`. `updateTransition` and `animateValueAsState`
+have no callers. With `Float`, `Dp`, `Int`, `Color` and `Animatable` all covered, the class is now
+closed by enumeration of every animation API in use rather than by one grep over one type.
+
+### Verification
+`:app:compileDebugKotlin` BUILD SUCCESSFUL, no new warnings. Full sweep **972 live / 12 known / 0
+skipped**, per-module split byte-identical (app 36, core/calling 63, core/common 85, core/discovery 101,
+core/engine 1, core/messaging 41, core/network 137, core/persistence 35, core/security 80,
+core/transfer 102, ui/chat 249, ui/theme 37, ui/callui 5). APK rewritten 13:52. CONVENTIONS R3 baseline
+unchanged at 972 — part 3 adds no tests, so an unchanged total *is* its regression check, and `:app` has
+no Compose UI test or Robolectric dependency, so asserting where a read is recorded is not expressible
+there.
+
+### Verification (part 2's send-button fix, as run at the time)
+`:ui:chat:compileDebugKotlin` BUILD SUCCESSFUL. Full sweep **972 live / 12 known / 0 skipped**, same
+per-module split (`:ui:chat` still 249 — this pass adds no tests, so an unchanged total *is* the
+regression check). APK rewritten 13:34. CONVENTIONS R3 baseline unchanged at 972.
+
+### Verification (part 2, as run at the time)
+`:ui:theme`, `:ui:chat`, `:ui:callui` `compileDebugKotlin` clean, no new warnings. Full sweep
+**972 live / 12 known / 0 skipped** (`:ui:chat` 245 → 249). APK 13:05. CONVENTIONS R3 bumped 968 → 972.
+
+`FlashTransfersLogicTest` +4 pins `progressBarWidthPx` to `FillNode`: endpoints, half-up rounding
+(401 x 0.5 → 201), `coerceIn` against the constraints (an overshooting animation must not measure wider
+than the track; a fixed-width parent wins over the fraction), and a zero-width track returning 0.
+
+The run reports `BUILD FAILED` because of the 12 documented `:core:persistence` failures, so
+non-regression was confirmed by counting live XML per module and by the APK timestamp — not by the
+exit code. The scope changes themselves have no test, for the same reason as EXP-012: asserting where
+Compose records a read needs a composition, and these modules have no Compose UI test or Robolectric
+dependency either.
+
+### What this does and does not claim
+**Counted, not timed.** Recompositions and allocations that provably stop happening, derived from the
+code. No frame time, jank count or latency figure — EXP-007 (owner, on-device) still gates every
+low-end *claim*, as opposed to every low-end *count*.
+
+## Then: the memory the app never gave back — nothing anywhere implemented `onTrimMemory` (EXP-014)
+
+With the animation class closed by enumeration, the next pass looked at *retention* instead of
+recomposition. `FlashApplication` is `@HiltAndroidApp class FlashApplication : Application()` with no
+body, and a grep across `app/`, `core/` and `ui/` for `onTrimMemory`, `onLowMemory`,
+`ComponentCallbacks2` and `registerComponentCallbacks` found nothing. The app had no memory-pressure
+handling at all.
+
+The cost is bounded by the one deliberate cache in the tree: `FlashMediaDecoder`'s thumbnail
+`LruCache`, budgeted at `(maxMemory / 8).coerceIn(4 MB, 24 MB)` and charged at real bytes. An
+`LruCache` evicts only when a new entry does not fit, never because nothing wants the old ones — so
+after one scroll through a photo-heavy conversation that share stays resident until the process dies,
+including while the UI is gone and a transfer keeps the process alive as a foreground service. That is
+the state in which the cache is simultaneously fullest and most useless, and every entry in it is
+reconstructible from the file it came from. On the 2 GB Belfone, `maxMemory / 8` sits at or near the
+24 MB clamp.
+
+### Changed
+`ui/chat/.../FlashMediaDecoder.kt` — a `ComponentCallbacks2` registered lazily against the application
+context from the top of `decode()` behind an `AtomicBoolean.compareAndSet`, with the policy extracted
+as a pure function: `internal fun cacheTrimFor(level: Int): CacheTrim`, `enum class CacheTrim { None,
+Halve, EvictAll }`. Halve (`trimToSize(size() / 2)`, which does **not** lower `maxSize` — only
+`resize()` does) from `TRIM_MEMORY_RUNNING_LOW`; `evictAll()` from `TRIM_MEMORY_UI_HIDDEN` up and on
+`onLowMemory()`.
+
+Halving rather than blanking while still foreground is the load-bearing part: the conversation is on
+screen at `RUNNING_LOW`, so evicting there answers memory pressure with a decode storm on the next
+scroll pass. Thresholds are ordered rather than matched per constant so an unknown level cannot fall
+through to `None` — which turned out to matter more than expected: against the API 36 `android.jar`
+only `TRIM_MEMORY_UI_HIDDEN` and `TRIM_MEMORY_BACKGROUND` are still current, so on a recent platform
+every level delivered lands on `EvictAll` and `Halve` is the legacy-device branch — exactly the API-27
+tier this task exists for. Two `@Suppress("DEPRECATION")` annotations (one on `cacheTrimFor`, one on
+the test class) keep the real constant names rather than hard-coding 5 / 10 / 15 / 60 / 80; without
+them the change produced six new `Deprecated in Java` warnings.
+
+### Verification
+Full sweep **978 live / 12 known / 0 skipped** (`:ui:chat` 249 → 255), APK rewritten 14:15
+(67,554,987 bytes), no new warnings. CONVENTIONS R3 baseline raised 972 → 978. The six tests are
+`ui/chat/src/test/.../FlashMediaCacheTrimTest.kt`: `RUNNING_MODERATE → None`, `RUNNING_LOW` /
+`RUNNING_CRITICAL → Halve`, `UI_HIDDEN` / `BACKGROUND` / `MODERATE` / `COMPLETE → EvictAll`,
+monotonicity across `0..100` plus `Int.MAX_VALUE → EvictAll`, and `0` / `-1` / `Int.MIN_VALUE → None`.
+They run on a plain JVM because `TRIM_MEMORY_*` are `static final int` and inline at compile time.
+
+Counted, not timed, like everything else in task #5: up to 24 MB that the process used to hold until
+death is now returned when the platform asks for it. An avoided OOM-kill is an absence rather than a
+measurement, so no latency or throughput claim attaches to it — EXP-007 still gates those. HIGH gives
+up nothing: no branch runs unless the system reports pressure, and no decode path, budget, sample size
+or colour depth changed.
+
+Every animation change in this window is a scope change, so the output is **pixel-identical at every
+performance tier**: same easings, durations, colours, semantics and reduce-motion fallbacks. That is
+what makes them admissible under the owner's rule that HIGH tier gives nothing up — none of them is
+tier-gated, because none of them changes what is drawn. The two non-animation changes that close the
+window are tier-neutral for their own reasons: the trim policy executes only when the system reports
+memory pressure and changes what is *retained*, never what is decoded or shown; the outbox drain is a
+background retry timer that no tier ever looked at, and it now fires *earlier* than it used to.
+
+## Then: a loop that woke every second forever to ask an encrypted database a question whose answer was almost always "nothing" (EXP-015)
+
+EXP-014 came from asking what the app never implements. Turning that around — what does the app do on
+a timer whether or not there is anything to do — found `RealFlashChatRepository.drainOutboxLoop()`:
+
+```kotlin
+while (true) {
+    drainOutboxOnce()
+    kotlinx.coroutines.delay(1000)
+}
+```
+
+launched from `init` and never stopped. `transportSink` is an immutable constructor val, so on the real
+DI path it is non-null from construction and every pass reached
+`outboxDao.dueForDelivery(now, limit = 16)` — a planned, executed, SQLCipher-decrypting query, ~86,400
+times a day, against a table whose steady state is empty (a row exists only between a send and the
+peer's `DeliveryReceipt`, milliseconds on a LAN).
+
+The second cost is the more interesting one, because the code already knew better. `backoffDelayMs`
+computes `1 s, 2 s, 4 s … 60 s` and `rescheduleAttempt` writes that exact deadline onto the row — and
+then the loop ignored it and woke on a grid with no relation to it, so a row due at `T` was retried at
+the first 1 s boundary at or after `T`. The same root cause produces both: the loop had no idea when
+its next piece of work was, so it guessed, and a guess cheap enough to repeat is also imprecise.
+
+Not the send path, then or now: every producer enqueues and calls `drainOutboxOnce()` itself, so a
+message's first attempt never waited on this loop.
+
+### Changed
+`core/messaging/.../RealFlashChatRepository.kt` plus a new
+`core/messaging/.../OutboxDrainSchedule.kt`. The loop now waits for whichever comes first — a write to
+the `outbox` table, or the earliest deadline it holds:
+
+```kotlin
+val batchWasFull = drainOutboxOnce()
+if (batchWasFull) { delay(OutboxDrainSchedule.MIN_WAIT_MS); continue }
+val waitMs = OutboxDrainSchedule.waitMs(outboxNextDueAt, System.currentTimeMillis())
+withTimeoutOrNull(waitMs) { drainWake.receive() }
+```
+
+The wake is `OutboxDao.observeCount()`, which **already existed** — a Room `Flow`, so it invalidates on
+any write to the table: an enqueue by any producer, our own `rescheduleAttempt`, the delete an inbound
+receipt performs, the `makePendingDue(now)` in `notifyPeerSessionUp`. No DAO method was added, so R8
+holds. A collector forwards it into a `Channel<Unit>(Channel.CONFLATED)`, and that choice is
+load-bearing at both ends: a burst of writes collapses to one wake, and a wake arriving *while* a pass
+runs is retained, so the row that pass could not see is picked up immediately instead of waiting out an
+idle interval.
+
+That combination is what makes the deadline safe to be approximate: **it only ever has to be an upper
+bound on the wait, because every event that makes a row due earlier than expected is itself a table
+write, and every table write wakes the loop.**
+
+Two details in the bookkeeping are easy to "clean up" into bugs, and both carry comments saying so.
+`outboxNextDueAt` is merged as a **running minimum**, not assigned this pass's minimum — a row that was
+not yet due when the pass ran carries a deadline the pass never saw, and overwriting would sleep
+straight past it. And a deadline already in the past is **dropped** (`takeIf { it > now }`), because it
+belongs to a row that has since been acknowledged and deleted; keeping it would pin the loop at the
+25 ms floor forever, which is worse than the 1 Hz poll it replaced.
+
+`OutboxDrainSchedule.waitMs` is a separate pure function for a blunt reason: the loop is `while (true)`
+inside a coroutine launched from a constructor, so no test can step it. Extracting the arithmetic is the
+only way any of this timing is assertable at all.
+
+### Verification
+Full R3 sweep: **984 live tests / 12 known failures / 0 skipped** (the 12 are the pre-existing Windows
+`:core:persistence` DataStore failures), `:core:messaging` **41 → 47**, APK rebuilt 14:51
+(67,556,718 bytes). `:core:messaging:compileDebugKotlin` + `compileDebugUnitTestKotlin --rerun-tasks`
+→ `BUILD SUCCESSFUL` with **zero warnings in the module** (the six reported by the sweep are
+pre-existing in `:core:discovery`/`:core:network`). R3 baseline raised 978 → 984 in
+`docs/migration/CONVENTIONS.md`.
+
+The +6 is `OutboxDrainScheduleTest`: idle wait with no deadline; a future deadline waited out exactly at
+two real rungs of the ladder (1 s, 8 s); a deadline already past, far past, or exactly `now` all
+yielding the floor; a deadline beyond the idle interval capped at it; a sweep of nine deadlines either
+side of `now` including `Long.MIN_VALUE`/`MAX_VALUE` (the overflow is deliberate and commented —
+unreachable, since real deadlines are `now + backoff`, and the point is that even then the result is a
+legal wait rather than a negative one); and a guard pinning the floor below the first rung and the
+ceiling to the backoff cap.
+
+The stronger net is the **seven existing `RealFlashChatRepositoryTest` cases that drive this loop** —
+resend-after-reconnect, the give-up budget, the receipt-deletes-the-row path, the tombstone and
+missing-row sweeps. Each was hand-traced against the new timing before the sweep ran, and each passed
+unchanged. `FakeOutboxDao` needed no edit: it already bumps `countFlow` in `enqueue` and `delete`, which
+is exactly the wake those tests need.
+
+One behavioural improvement falls out for free: `notifyPeerSessionUp()` calls `makePendingDue(now)` and
+then one drain, so after a reconnect a backlog used to leave at 16 rows/second. A full batch now returns
+immediately, so it leaves as fast as the socket accepts it.
+
+## Then: the same question asked of the pairing tick — a timer that outlived, by four orders of magnitude, the thing it was timing (EXP-016)
+
+`PairingCoordinator` launched a 1 Hz loop from its `init` block and never stopped it. It polled
+`protocol.session.value.phase`, did nothing unless the phase was non-`Idle`, and slept a second.
+
+This one is **milder than EXP-015 and deserves to be described that way.** An idle pass is a scheduler
+wake-up and a volatile read — no query, no decrypt, no allocation. What makes it worth fixing is the
+ratio: the loop runs for the life of the process, and the state it is polling is `Idle` except during the
+few seconds of an actual pairing, which happens once per peer, ever. ~86,400 wake-ups a day to observe
+"nothing is happening", on the handset this whole task exists for. And, exactly as in EXP-015, the
+information needed to avoid it was already in hand: `protocol.session` is a `StateFlow`, so the value the
+loop polled was a value that pushes.
+
+### Changed
+The `init` block is gone; the tick is now a third child of `collectorJob`, launched per protocol instance
+alongside the two existing collectors:
+
+```kotlin
+p.session
+    .map { it.phase != PairingPhase.Idle }
+    .distinctUntilChanged()
+    .collectLatest { inFlight ->
+        if (!inFlight) return@collectLatest
+        while (true) {
+            delay(TICK_MS)
+            p.onTick(timeSource.nowMs())
+            recomputeUi(p.session.value)
+        }
+    }
+```
+
+Being a child of `collectorJob` is what makes this safe rather than merely shorter. `resetProtocol()`
+already cancels that job before swapping the instance, so the existing cancel is the ticker's teardown
+and no new lifecycle bookkeeping is introduced. A ticker that outlived its instance would be **worse
+than the loop it replaced**: terminal phases absorb every event and never return to `Idle`, so its
+`!= Idle` gate would stay true forever and it would spin at 1 Hz on a dead session. The class KDoc
+promised the opposite property — "the 1 Hz ticker always reads the current instance" — and had to be
+corrected, which is the third time this window a KDoc described behaviour the code did not have.
+
+`distinctUntilChanged()` is load-bearing: a pairing emits several session states, and without it each
+would restart `collectLatest`'s block and therefore restart `delay(TICK_MS)` from zero, so a chatty
+handshake could starve the countdown and postpone expiry indefinitely. `delay` comes *before* the work
+because the emission that starts the ticker has already run `recomputeUi`, and expiry is 30 s out — so
+the first tick only decrements the displayed second, which now lands a full second after the dialog
+appears instead of wherever the dialog fell on a process-wide 1 Hz grid.
+
+The gate stays at `!= Idle` rather than narrowing to the three phases the reducer acts on. The narrower
+form is provably equivalent — `reduce()` returns early when terminal, and the countdown is drawn only for
+the active phases — and would save 2–3 recompositions during the 1.8 s/2.5 s terminal linger, but
+`isActive()` is private to `PairingSessionStateMachine` in `:core:security`, so `:app` would have to keep
+its own copy of a classification the state machine owns. A copy that goes stale when a phase is added
+would freeze the countdown; two recompositions per pairing is not worth that.
+
+### Verification
+**984 / 12 failures / 0 skipped — exactly baseline**, and no test was added. `:app:compileDebugKotlin`
+is clean with zero warnings in the module (the `isActive` import went out with the loop). APK 15:18,
+67,556,718 bytes.
+
+The honest part: this change is **not unit-tested**, and the reason is written up in `logs/experiments.md`
+EXP-016. The property is a coroutine lifetime, `:app`'s test source set is plain JVM with JUnit only, and
+each cheap discriminator fails — a counting `FlashTimeSource` reads zero under both versions (the old
+loop called `nowMs()` only inside the gate), `runTest` never completes under either, and
+`advanceUntilIdle()` does discriminate but by hanging rather than failing. What is verified instead is
+that the equivalence argument is a proof about code that was read, not an assumption:
+`PairingSessionStateMachine`'s two early returns, the countdown's phase gate at
+`FlashPairingFlow.kt:140-219`, and `FlashPairingMath.tickCountdown` having zero production callers.
+
+### Remaining on task #5
+| Item | Blocked by |
+|---|---|
+| Bound `transfer_chunks` growth | **R8** — needs an explicit owner instruction to touch DAOs |
+| `markChunksDone` + `setBytesDone` in one transaction | ADR-024 `TransferStore` port change |
+| Write-lock waits | N sockets (ADR-017) |
+| Any throughput/latency claim | EXP-007, owner device matrix |
+| Splash held for the whole transport boot | measure-first |
+| Bitmap pooling (`inBitmap` reuse) in the decoder | measure-first — needs same-config/size buckets |
+| Trim policy for `:core:transfer` buffers and the WebRTC renderers | measure-first (EXP-007) |
+
+### Next AI
+The cadence thread and the recomposition-scope thread are both closed, and with the sweeps above the
+per-frame-animation thread is closed too — every animation API in use (`Float`, `Dp`, `Int`, `Color`,
+`Animatable`, `updateTransition`) has now been enumerated and its consumers checked, not just one grep
+over one type. The last pass in this window (EXP-014) deliberately left that class behind and found a
+different one — retained memory — by asking a question no animation audit would reach: what does the
+app do when the platform asks for memory back? It did nothing. That is the shape of the next find too:
+pick a platform callback or lifecycle signal the app never implements and check what it costs.
+
+**A fifth class was opened and is now closed too.** EXP-015 inverted that question — not what the app
+fails to do on demand, but what it does on a timer regardless of demand — and the inventory it produced
+needed no repeating. 27 `while (true)` sites exist in product code; almost all are blocking read/queue
+loops (`WebSocketCodec`, `DataChannelFraming`, `BoundedSendQueue`, `Chunker`) that are event-driven by
+construction. Cross-referenced against a literal `delay(...)`, only three were genuinely time-driven, and
+all three are now accounted for:
+
+- **`app/.../pairing/PairingCoordinator.kt` — fixed, EXP-016.** 1 Hz from `init` for the life of the
+  process. Same fix shape as EXP-015: the phase it polled was already a `StateFlow`, so the tick is now
+  started by the edge that makes it necessary and torn down by the cancel that already existed.
+- `core/transfer/.../multistream/MultiStreamDispatcher.kt:197` — 10 ms, but scoped
+  (`while (isActive && !deferred.isCompleted)`) and its consumer was already throttled by EXP-011.
+- `ui/callui/.../FlashCallScreen.kt:586` — the mm:ss call clock, inherently 1 Hz and scoped to a call.
+
+Everything else is a one-shot `delay` or the deliberately time-driven `WsKeepalive`. **The inventory is
+complete; do not re-run it.** The general rule worth carrying: **a loop that does not know when its next
+piece of work is due will both poll too often and fire too late** — EXP-015's two costs were one root
+cause, and the fix for both is to let the loop hold the deadline it already computed. EXP-016 adds the
+corollary for the case where there is no deadline to hold: **give the loop the same lifetime as the thing
+it is timing**, which usually means making it a child of a job that already gets cancelled, not adding a
+new one.
+
+So there is no un-gated structural item left on the board that was found by either method. A **sixth**
+method is the place to look next, and the two that worked share a shape worth naming: both asked what the
+app does when *nothing is happening* — on a platform callback it never implemented, and on a timer
+nothing was waiting for. A third question of that family: what does the app hold *open* when nothing is
+happening — sockets, wake locks, `MediaCodec`/`AudioRecord` instances, `EglBase` contexts, file handles,
+Room cursors, foreground-service notifications. The top of that inventory was taken at the end of this
+window and produced **no find**, which is itself worth recording: the engine's `PARTIAL_WAKE_LOCK` and
+`WifiLock` are held for the engine's lifetime *on purpose* (for a mesh app, "nothing is happening" is
+exactly when it must stay reachable — and `session-recovery-invariants` records that they were moved to
+outlive the Service to stop a peer flapping offline on screen-off); the multicast locks are already
+released by state on every browse/register stop path; there are **no** production thread pools, every
+`Executors.*` in the tree being in `src/test`; and WebRTC's never-disposed `PeerConnectionFactory` is
+webrtc-kmp's lazy global, whose init is one of the two things that make a first call slow on a 2 GB
+handset — so disposing it between calls trades a held allocation for a repeated cost, which is
+measure-first, not inspectable. The unchecked remainder is listed in `logs/handoff.md` under
+*Held-open resources*; resume there rather than restarting.
+
+What is left of task #5 on paper is R8-gated, ADR-gated or measure-first, i.e. **the next step is
+EXP-007, the owner's device matrix** — but "measure-first" is not "finished", and EXP-014 is proof that
+unmeasured structural wins remain findable without violating §23, provided the claim stays a count.
+
+Not yet audited: `FlashDevConsoleScreen` (edit it with plain ASCII — pre-existing mojibake). Left alone
+deliberately, with reasons: `rememberVideoTrack` (value-returning, but a handful of changes per call,
+not per second); the ~10 remaining hand-rolled press scales, which need **nothing** — their reads are
+already inside their `graphicsLayer` lambdas, and consolidating them onto `Modifier.flashPressScale` is
+de-bloat, not performance; `FlashReactionChip`'s `borderWidth` and `FlashBottomNav`'s `labelWeight`
+(must stay composition-time — a `BorderStroke` colour animating on the same trigger already forces the
+recomposition, and a `TextStyle`'s `FontWeight` is a value); all 11 animated colours (leaf composables
+feeding `background`/`tint`); `showDevConsole`, `isSearching` and `searchQuery` (legitimate shell-scope
+state — they change on a tap).
+
+Do not "simplify" these back: `rememberCallPulseScale`, `rememberFlashBrandPhase` and
+`rememberSkeletonAlpha` must keep returning `State`, not `Float` — unwrapping any of them moves the
+read back into composition and undoes the fix; `FlashCallStatusLine` is not a pointless one-`Text`
+wrapper, its Unit-returning-ness *is* the fix; `progressBarWidthPx` must keep mirroring `FillNode`.
+Each carries a comment saying so, and two of the three sites this window fixed had a KDoc that claimed
+the correct behaviour while the code did the wrong thing — which is how they survived this long.
+
+**Three Compose rules this window turned up, worth carrying forward:** (1) a `State`'s invalidation
+scope is where `.value` is read — and a `remember(state)` **key expression** is a read at the
+`remember`'s own location; (2) a value-returning `@Composable` is **not restartable**, so State reads
+inside it land in the caller's scope; (3) the phase that evaluates the read is the phase that gets
+invalidated, so a read inside `graphicsLayer`/`drawBehind`/`Canvas`/`layout`/`semantics` costs a
+re-draw or a re-measure and *no* recomposition. Together they explain every finding in EXP-012 and
+EXP-013. The corresponding search methods are (b) find a `remember(state)` consumed in a narrower scope
+than it sits in; (c) find a value-returning `@Composable` that reads State; (d) find a composition read
+whose only consumer is a draw-, layout- or semantics-phase block.
+
+## 2026-09-04 (g) — Task #5: the app shell was recomposing every frame during a transfer to update a tab that was not on screen; paced from a dead constant that was also the wrong value (EXP-011)
+
+### Worked on
+The item EXP-010 nominated: the **second** consumer of `MultiStreamDispatcher`'s 10 ms tick.
+`MainActivity`'s `FlashShell` collected `activeTransfers` in its own restart scope — a ~750-line
+composable body — and then re-ran `TransfersUiState.fromDomain` inside a `remember` keyed on the list.
+So every tick invalidated the whole shell (frame-coalesced, so ~60/s rather than 100/s) and re-derived
+the Transfers UI model: a `map` producing one `FlashTransferItemUi` per transfer, then `fromItems`'s
+**four separate `filter` passes**, then a `TransfersUiState`, then a `.copy()`.
+
+`transfersUi` has exactly one consumer — the `FlashDestination.Transfers ->` branch. So all of that ran
+at frame rate while the user was on the chat list, in a conversation, on Nearby or in Settings.
+
+### The part worth recording
+`FlashTransfersMath.PROGRESS_THROTTLE_MS` **already existed** — `250L`, with **zero references in the
+repo**. Somebody meant to pace this surface and never wired it. It is now wired, and re-derived rather
+than trusted, because 250 ms was **wrong**:
+
+Both animations on that screen (`animateFloatAsState` for the row fill and for the header throughput
+roll) run for `FlashMotion.NormalMillis = 200`. A window *longer* than the animation lets it finish and
+then sit still until the next value arrives — a periodic 50 ms dead stop, four times a second, on the
+**HIGH** tier specifically, since that is the tier where the animation is not switched off. That is
+exactly what the owner's constraint forbids. A window *shorter* than the animation means every new
+target lands mid-flight and `animateFloatAsState` retargets, so motion stays continuous.
+
+So the constant is now `FlashMotion.NormalMillis * 3L / 4L` — **150 ms**, expressed as arithmetic on the
+motion token so the relationship cannot rot, with `FlashTransfersLogicTest` asserting the inequality.
+
+### Changed
+- `ui/chat/.../FlashTransfersScreen.kt` — `PROGRESS_THROTTLE_MS` derived from `FlashMotion.NormalMillis`,
+  with the KDoc recording why it must stay below the animation duration; `FlashMotion` imported.
+- `app/.../MainActivity.kt` — source resolved outside the `remember` (so the `?:` picks a flow, it never
+  decides *whether* to remember), paced, and `collectAsState(initial = transfersSource.value)`.
+- **New** `app/.../ui/UiPacing.kt` — the same leading-edge `throttleLatest` as `:core:messaging`'s.
+
+### The one subtlety, handled
+`collectAsState()` on a `StateFlow` reads the current value **synchronously at composition**;
+`collectAsState(initial = …)` on a cold flow does not. Seeded with `emptyList()`, the tab would have had
+a frame where `transfersReady` was true and the list empty — rendering "No transfers yet", a claim about
+this device's history, before the first paced value landed. That is the ERROR-034 shape. Seeding with
+`transfersSource.value` makes the first composition identical to today's.
+
+### Why the operator is duplicated (checked, not assumed)
+`:core:common` is the only module both `:app` and `:core:messaging` depend on, and it has **no coroutines
+dependency at all** — hosting a `Flow` operator there means adding one to the live Phase-06 KMP pilot.
+`:core:transfer` is not visible to `:core:messaging`. Making `:core:messaging`'s copy `public` would put
+a generic operator into a published ABI forever for an app-internal need. Two copies, two test files,
+each KDoc naming the other.
+
+### Verification
+- Full sweep **963 live / 12 known failures / 0 skipped**; `assembleDebug` green. CONVENTIONS R3 bumped
+  958 → 963 (`:app` 32 → 36, `:ui:chat` 244 → 245).
+- `UiPacingTest` +4 (mirrors `ProgressThrottleTest`; wall-clock, bounds from measured elapsed time).
+- `FlashTransfersLogicTest` +1 — `PROGRESS_THROTTLE_MS < FlashMotion.NormalMillis` and `> 0`.
+
+### What this does and does not claim
+**Counted, not timed.** ~60 whole-shell recompositions a second → ~6.7, and `fromDomain`'s 7 + N
+allocations per frame with them; plus that work stops happening at frame rate for a tab that is not
+visible. No frame time, jank count or throughput figure is claimed; EXP-007 still gates all of those.
+
+**HIGH tier unchanged**, and this time that was a design constraint with teeth rather than an
+observation — see the 250-vs-150 reasoning above. Reduce-motion collapses `normalMillis` to 0, so LOW and
+MEDIUM behave exactly as before.
+
+### Remaining
+| Item | Why it is not done |
+|---|---|
+| bound `transfer_chunks` (DAO status join / wire `RetentionPolicy` to a delete sweep) | **R8** — Room DAOs need an explicit owner instruction |
+| fold `markChunksDone` + `setBytesDone` into one transaction | needs a `TransferStore` port change (ADR-024 boundary) |
+| write-lock waits → N sockets | ADR-017, still open |
+| which `startEngineLocked` stage dominates the splash | measure-first (§23); needs hardware |
+| `LanController.kt:94` never refreshes `LanUiState.localAddresses` after a roam | deferred in `logs/handoff.md` |
+
+### Next AI
+Both consumers of the transfer progress tick are now paced, which closes the cadence thread of task #5.
+The remaining named items are either R8-gated, ADR-gated, or measure-first — so the honest next move is
+either (a) hunt a *new* inspectable cost with the same method (pick a hot flow, count what one emission
+makes the app do, check what the screen can actually render), or (b) hand back for **EXP-007**, which is
+the gate on every low-end *claim* as opposed to every low-end *count*. If continuing with (a), the
+untouched candidate list is in `logs/handoff.md`.
+
+## 2026-09-04 (f) — Task #5: a running transfer re-derived the whole open conversation 100 times a second; throttled to 10 Hz with nothing given up on screen (EXP-010)
+
+### Worked on
+The next inspectable item in task #5, picked up by following the transfer layer's progress tick to see
+who consumes it. `MultiStreamDispatcher.WATCH_POLL_MS = 10L` publishes 100 progress values a second for
+the whole duration of a transfer, and `publishProgress()` puts `rateMeter.instantBytesPerSec(...)` in
+each one — so the value changes nearly every tick and **StateFlow conflation never fires anywhere along
+the chain**.
+
+That chain ends inside the chat repository: `attachmentProgress` is one of four `combine` inputs to the
+open conversation. So every one of those hundred ticks a second re-derived the entire thread —
+`associateBy` over the window, `groupBy` over reaction rows, a fresh `FlashMessageUi` per message (each
+with a `formatTime` and a `computeInitials`), `reversed()`, `computeMessageGroupPositions`, then a
+rebuilt header and a whole `FlashConversationUiState`, deep-compared on assignment. The comparison
+failed each time (speed had changed), so it really did republish and Compose really did recompose.
+
+Before touching it I checked what the UI can actually *show* at that cadence, because that decides
+whether a throttle costs anything: `progress` only advances when an ACK_BATCH lands (`DEFAULT_ACK_EVERY = 32`
+× 64 KiB chunks = one advance per 2 MB); `speedMbps` renders through `"%.1f"`, so finer than 0.1 MB/s is
+undisplayable; `etaSeconds` isn't rendered at all today; and the bar's smoothness comes from
+`animateFloatAsState` on Compose's frame clock, not from how often a new target arrives. The 10 ms
+cadence carried no information the screen could use.
+
+### Changed
+- **New** `core/messaging/.../util/ProgressThrottle.kt`: `internal fun <T> Flow<T>.throttleLatest(windowMs: Long)` —
+  emit, then `delay(windowMs)`. **Leading edge first**, deliberately not `kotlinx`'s `sample`: `sample` is
+  trailing-edge, and since this flow feeds a `combine` that cannot emit until every input has, it would
+  have held the conversation blank for up to a window on open — the **ERROR-034** failure mode.
+- **`RealFlashChatRepository`**: `pacedAttachmentProgress = attachmentProgress.throttleLatest(ATTACHMENT_PROGRESS_THROTTLE_MS)`
+  (100 ms), declared above the `init` block for the reason recorded on `drainMutex`; both consumers
+  switched to it (the `init` path-stamping collector and the `contentFlow` combine's third input).
+- Because the operator **suspends** upstream rather than buffering, the `StateFlow` conflates *and the
+  intervening `activeTransfers.map { … }` never runs* — the discarded maps are never built. That is why
+  the two wiring sites (`Flash.kt:258`, `DiscoveryEngineHolder.kt:541`) needed no edit at all.
+
+### Verification
+- `:core:messaging` 36 → **41** tests; full sweep **958 live / 12 known failures / 0 skipped**;
+  `assembleDebug` green (`app-debug.apk` written). `CONVENTIONS` R3 baseline bumped 953 → 958.
+- `ProgressThrottleTest` (+4) — wall-clock on purpose, with every bound derived from *measured* elapsed
+  time so a slow machine makes it slower, not flaky: leading edge under a second against a 5 s window;
+  a 200-value burst collapses within a per-window budget while the newest value still lands and order
+  holds; non-positive window disables throttling; a non-conflating upstream is spaced out but never
+  loses or reorders a value.
+- `RealFlashChatRepositoryTest` (+1) — the integration risk a throttle introduces is **swallowing the
+  last value**, and the last value carries the received file's path. 300 ticks at 1 ms, then a terminal
+  `Downloaded`, then assert it landed on **both** surfaces: `localUri` on the rendered attachment and
+  `attachmentPath` on the row. The row half is the one that matters on restart — live progress is
+  in-memory only.
+
+### What this does and does not claim
+**Counted, not timed.** A 10× cut in whole-conversation re-derivations during a transfer (100 Hz → 10 Hz),
+derived from `WATCH_POLL_MS` and `ATTACHMENT_PROGRESS_THROTTLE_MS`. No frame time, jank count or
+throughput figure is claimed; per EXP-001's standing prohibition none may be until EXP-007 runs on
+hardware.
+
+**Tier-independent, and that is the point.** The owner's constraint is that HIGH mode must not lose
+quality or animation. Nothing here is gated on `reduceMotion`/`minimalChrome` because nothing about the
+HIGH-tier look changes: a label that updates 10×/s is already faster than it can be read, and the
+progress bar is animated independently of the tick.
+
+### Remaining
+| Item | Why it is not done |
+|---|---|
+| `MainActivity.kt:573` re-maps the whole transfer list at the **root** composable on every tick | same 100 Hz source, second consumer; Compose frame-coalesces it so it is less severe, but `TransfersUiState.fromDomain` is real work at 100 Hz. Next candidate. |
+| bound `transfer_chunks` (DAO status join / wire `RetentionPolicy` to a delete sweep) | **R8** — Room DAOs need an explicit owner instruction |
+| fold `markChunksDone` + `setBytesDone` into one transaction | needs a `TransferStore` port change (ADR-024 boundary) |
+| write-lock waits → N sockets | ADR-017, still open |
+| which `startEngineLocked` stage dominates the splash | measure-first (§23); needs hardware |
+
+### Next AI
+The chat path's progress cost is closed. The obvious next item is the **second** consumer of the same
+tick: `MainActivity.kt:560-604` collects `activeTransfers` at the root and re-derives
+`TransfersUiState.fromDomain(...)` inside a `remember`. Read `TransfersUiMapper.kt` first to see how much
+work `fromDomain` actually is before deciding whether a throttle, a `distinctUntilChanged` on the fields
+the Transfers tab renders, or hoisting the collection off the root is the right shape. Otherwise hand
+back for EXP-007 — every low-end *claim*, as opposed to every low-end *count*, is still gated on it.
+
+## 2026-09-04 (e) — Task #5: startup cost inspected end to end; the receiver done-set retained ~50 bytes per chunk forever and nothing prunes the table feeding it (EXP-009) — heap side cut ~400×, table growth is owner-gated by R8
+
+### Worked on
+The (d) handoff nominated startup cost next, and named the inspectable part: "`preloadReceiverProgress()`
+vs `RetentionPolicy` — that one is inspectable without hardware, the same way EXP-008 was." So this window
+read the whole cold-start path instead of guessing at it.
+
+Most of it is already clean, and that is worth recording so nobody re-audits it: `FlashApplication` is a
+bare `@HiltAndroidApp` shell; `MainActivity.onCreate` does no disk I/O; every expensive `AppEngine` member
+is `by lazy` and `start()` deliberately touches `performanceMode.value` on `Dispatchers.Default` so the
+`MediaCodecList` tier walk is paid off the first composition; the AndroidKeyStore passphrase unwrap is
+lazy (Room calls it on first query) and one-time.
+
+The cost is in `preloadReceiverProgress()`. It reads **every** done chunk row on the device —
+`allDoneChunks()`, no predicate — and keeps them for the process lifetime. Two facts compound:
+**nothing prunes `transfer_chunks`** (`RetentionPolicy` is fully unit-tested and has **zero production
+callers**; no `DELETE` exists for `transfers` or `transfer_chunks`, so the table is append-only for the
+life of the install), and **`Completed` transfers' rows are dead weight** — unresumable, yet read back and
+retained on every launch. The representation made that worse than necessary:
+`ConcurrentHashMap<String, MutableSet<Int>>` over `newSetFromMap(ConcurrentHashMap())` is a boxed
+`Integer` + hash node + table slot per chunk, order 50 bytes. At the 64 KiB default chunk size a device
+that has received 50 GB holds ~820k rows ≈ **tens of MB retained forever**, on hardware that may have
+2 GB total.
+
+### Changed
+- **`receiverDone` is now `ConcurrentHashMap<String, BitSet>`** — one bit per chunk, **~400× smaller**,
+  each entry mutated under `synchronized` (bit test + bit set, no I/O in the critical section). Public
+  surface unchanged: `receiverDoneIndexes` still returns an ascending `List<Int>` and its two callers
+  (`Flash.kt:220`, `DiscoveryEngineHolder.kt:410`, both seeding a resumed FILE_START's bit-vector) needed
+  no edit.
+- **`getOrPut` → `computeIfAbsent`.** `getOrPut` on a `ConcurrentHashMap` is a non-atomic get-then-put:
+  two receive coroutines racing on a new transferId could each build a set, and the loser's marks would be
+  dropped. `computeIfAbsent` is atomic — the idiom already used at `RealFlashChatRepository.kt:805` and
+  `WsFlashNetwork.kt:890`.
+- **Negative indexes are dropped rather than set.** The old `Set` swallowed them; `BitSet.set(-1)` throws,
+  and these values come off the wire and out of the DB, so one corrupt row must not take startup down.
+- **KDoc records the trade-off and the gap**: the `totalChunks / 8` worst case (~2 bytes per MB of file,
+  8 KB for 4 GB; the `Set` form passes it once ~1/400 of chunks are done), and the pruning gap as
+  explicitly owner-gated.
+
+### Verification
+- `:core:transfer` 100 → **102/102**: preload warms the set ascending regardless of row order, spans a
+  `BitSet` word boundary (0, 5, 64), isolates transfers, returns empty for an unknown id and survives a
+  negative row; `onIncomingChunkConfirmed` persists only fresh indexes, de-dups within one batch, drops
+  negatives, and a wholly redundant batch reaches the store **not at all**.
+- Full authoritative sweep: **953 live / 12 known Windows DataStore failures / 0 skipped**, fresh
+  `app-debug.apk`. `BASELINE_TEST_TOTAL` 951 → 953 and the `:core:transfer` row updated in CONVENTIONS R3.
+- Recorded as **EXP-009** in `logs/experiments.md`, again explicitly labelled a static finding.
+
+### What this does and does not claim
+**Counted, not timed** — same discipline as EXP-008. This is a retained-heap and row-count argument
+derived from repo constants; no startup-time or throughput number is claimed, and none may be until
+EXP-007's on-device matrix runs. The change is tier-independent: no UI cadence, no animation, no HIGH-mode
+behaviour is touched.
+
+### Remaining
+- **Owner-gated (R8):** bound `transfer_chunks`. The right fix is a Room change — a status-joined
+  `allDoneChunks` that skips terminal transfers, and/or wiring `RetentionPolicy` to a real delete sweep.
+  R8 forbids touching DAOs/entities/migrations without an explicit instruction, and `TransferDao` has no
+  "all transfers" query to filter against from the adapter side, so it cannot be done outside the DAO.
+- **Measure-first:** the cold-start splash is held for the entire transport boot
+  (`setKeepOnScreenCondition { !ready }`) and `startEngineLocked` serializes power locks → identity → NSD
+  → WS bind → `startAll` → SQLCipher open → DataChannel bind under one mutex. Overlapping the independent
+  stages is the obvious win, but that order encodes invariants from ERROR-032/033 and #4/#20. **Not
+  reordered on inspection alone** — added to EXP-007's run.
+- Folding `markChunksDone` + `setBytesDone` into one Room transaction still needs a `TransferStore` port
+  change (ADR-024 boundary). Write-lock waits still want N sockets (ADR-017).
+
+### Next AI
+Startup cost is now inspected as far as inspection can take it: what remained after the done-set fix is
+either R8-gated or needs a real trace. Pick up task #5's next inspectable item, or hand back for EXP-007
+— every remaining low-end claim is blocked on it.
+
+## 2026-09-04 (d) — Task #5: send-side resume bookkeeping was quadratic in chunk count and ran a 100 Hz fsync storm — both cut (EXP-008); this is the "DB batching" item, convicted by arithmetic rather than intuition
+
+### Worked on
+The handoff left task #5 with "DB batching + startup cost — measure on the Belfone first (AGENTS.md
+§23), don't guess." No Belfone is attached to this machine, so instead of guessing at a batching scheme
+I looked for a cost that is **arithmetic from constants already in the repo** — the one form of
+"measure first" available without hardware. The send-side progress collector in
+`RealFlashTransferRepository` is exactly that, and it turned out to contain the DB-batching item.
+
+Three constants decide it: `MultiStreamDispatcher.WATCH_POLL_MS = 10L` (the watcher publishes progress
+at **100 Hz for the whole transfer**), `ReceivePipeline.DEFAULT_ACK_EVERY = 32` and
+`Chunker.DEFAULT_CHUNK_SIZE_BYTES = 64 KiB` (⇒ one ACK_BATCH per **2 MB**). The collector ran on every
+emission and, per emission, called `confirmedIndexesSnapshot()` — an `ArrayList<Int>` of **every chunk
+confirmed so far** — then `filter`ed it against a `Set` copy. That is O(confirmed) allocations per tick,
+i.e. **quadratic in the chunk count per transfer**: ~41,000 ticks × ~16,384 average entries ≈ **672 M
+boxed `Integer`s (~10.7 GB)** for a 2 GB file at 5 MB/s, and *worse* on a slower device because the tick
+count scales with duration. Two aggravations: the snapshot was built **inside `terminalLock`**, whose own
+KDoc says "tiny critical sections, never held across I/O" and which the ACK path takes on every
+`markRangeConfirmed`; and `store?.setBytesDone(...)` — a Room `UPDATE` in its own implicit transaction,
+its own fsync on eMMC — also fired 100 times a second, for a column nothing reads live.
+
+### Changed
+- **`ResumeBitVector.receivedIndexesNotIn(other)`** (new public API) — set difference computed in
+  `BitSet` words via `andNot` (64 chunks per word), boxing only the delta. Takes a `ResumeBitVector`,
+  not a raw `BitSet`, so the signature survives a future KMP conversion of `:core:transfer`.
+- **`MultiStreamDispatcher.confirmedIndexesNotIn(known)`** and **`totalChunks`** — the delta form of the
+  snapshot. `terminalLock` now covers word arithmetic instead of list construction.
+  `confirmedIndexesSnapshot()`/`confirmedCountSnapshot()` are untouched for their other callers.
+- **The collector gates on `confirmedCountSnapshot()`**, a single atomic read. The count is monotonic, so
+  "changed since the last look" is an *exact* test for "new ACKs arrived" — once per ACK_BATCH, not once
+  per tick. Neither cursor advances until the write returns, so failed-write retry semantics are
+  unchanged (retried on the next batch instead of the next tick).
+- **`bytesDone` now rides along with the chunk rows.** Justified: a resume point *is* the chunk done-set,
+  so a finer-grained `bytesDone` is not a better resume point. Verified safe: `TransferDao.observe()` has
+  **zero call sites repo-wide** and every `t.bytesDone` read in the app is against the in-memory model —
+  which still updates on all 100 Hz emissions, so no UI cadence changes at any tier. Both terminal paths
+  still write the exact final value.
+
+### Verification
+- `:core:transfer` 95 → **100/100**: four `ResumeBitVectorTest` cases (delta correctness; neither operand
+  mutated; agreement with the whole-snapshot diff it replaced; multi-word `andNot` spans) and one
+  `RealFlashTransferRepositoryTest` case driving the 8-chunk ACK-loopback harness through a recording
+  `TransferStore` — each index persisted **exactly once**, ascending, byte writes inside the
+  confirmed-count bound. (That test paces the wire 15 ms/chunk so the transfer outlives several watcher
+  ticks; a transfer finishing inside one tick would not exercise the bug.)
+- Full authoritative sweep: **951 live / 12 known Windows DataStore failures / 0 skipped**, fresh
+  `app-debug.apk`. `BASELINE_TEST_TOTAL` 946 → 951 and the `:core:transfer` row updated in CONVENTIONS R3.
+- Recorded as **EXP-008** in `logs/experiments.md`, explicitly labelled a static finding.
+
+### What this does and does not claim
+**Counted, not timed.** Per 2 GB transfer: whole-set snapshots ~41,000 → ~1,024, bookkeeping boxing
+~672 M → ~33 K, `transfers`-row write transactions ~41,000 → ~1,024. That is an allocation- and
+transaction-count argument. **No throughput claim** — EXP-001 forbids one until a 5 GHz re-run exists and
+nothing here is device-verified. Tier-independent: no UI cadence changes, so HIGH is untouched.
+
+### Remaining (task #5)
+- **Startup cost — still unmeasured.** `FlashApplication` is a bare `@HiltAndroidApp` shell, so the cost
+  is in Hilt graph construction, `MainActivity`, engine init, and `preloadReceiverProgress()` — which runs
+  a full `SELECT transferId, chunkIndex FROM transfer_chunks WHERE done = 1` across **every transfer ever
+  made**, with no visible pruning. Worth checking against `RetentionPolicy` first.
+- Folding `markChunksDone` + `setBytesDone` into one Room transaction would halve the remaining fsyncs but
+  needs a `TransferStore` port change (ADR-024 boundary). Noted, not done.
+- Write-lock waits: real fix is N sockets (ADR-017); the `DataChannel*` multistream path already exists.
+- EXP-007 on-device matrix remains the owner's decisive gate for all low-end claims.
+
+### Next AI
+Take startup cost next, and start with `preloadReceiverProgress()` vs `RetentionPolicy` — that one is
+inspectable without hardware, the same way EXP-008 was. Do not re-derive the bookkeeping work above; it
+is done, tested and logged.
+
+## 2026-09-04 (c) — Task #5 STARTED: frame-path allocation churn cut on both ends (EXP-001's ~60 MB LOS finding); a load-flaky hasLoaded test made deterministic
+
+### Worked on
+Task #5 of the owner's five-thread request — "the library faster on the low end". The measured evidence
+in hand is EXP-001: ~60 MB of large-object churn from 64 KB frame arrays during a 10 MB transfer, and
+WS write-lock waits of 210–965 ms. Traced the outbound path byte by byte and found the churn: per 64 KB
+chunk the client allocated the full frame size ~4 times (growable `PayloadWriter` BAOS → `toByteArray()`
+copy → final `ByteBuffer` → masked-payload copy under the write lock), and the receiver copied every
+message through the reassembly buffer even though outbound frames are never fragmented.
+
+### Changed
+- **`ChunkFrame.serialize` is single-allocation.** Exact payload size computed per frame type, header
+  and fields written straight into one array. The `PayloadWriter` BAOS chain is deleted. Wire bytes are
+  byte-identical (round-trip, header-layout, truncation and corruption tests all pass unchanged).
+- **`WebSocketCodec.writeFrame` gained `maskPayloadInPlace`.** Default `false` preserves the old copy
+  semantics; `true` transfers ownership and masks in place, skipping one full-size copy per masked
+  (client-side) frame — and shortening the write-lock hold by the copy's duration.
+- **`WsConnection.sendBinaryConsuming`** — the ownership-transferring send for the hot loop. The PONG
+  reply also consumes its (fresh, unretained) ping payload. `sendBinary` is unchanged for everyone else.
+- **`WebSocketCodec.readMessage` single-frame fast path.** A FIN-complete first frame returns its
+  payload directly instead of copying it through the reassembly BAOS — one full-size copy per chunk
+  removed on the receive side.
+- The two proven single-use call sites switched to the consuming send: `Flash.kt`'s inbound-binary reply
+  lambda and the WS-fallback `StreamChannel.sendFrame` (the `StreamChannel` contract already documents
+  `frameBytes` as `ChunkFrame.serialize` output).
+- **Test hardening (task #6 / standing "deterministic cleanup" item):** the ERROR-034 `hasLoaded` tests
+  raced a fixed `delay(200)` against a flow emission and failed twice under machine load (they pass
+  idle). Both now await the actual condition under `withTimeout(5_000)` — load-proof.
+
+### Verification
+- `:core:transfer` 95/95 (serialize byte-compat), `:core:network` 137/137 (incl. 2 new: in-place masking
+  round-trip + mutation proof, default copy-semantics preservation), `:core:engine` 1/1.
+- Full sweep: **946 live / 12 known Windows DataStore failures / 0 skipped**; `app-debug.apk` rebuilt.
+  `BASELINE_TEST_TOTAL` 944 → 946 in CONVENTIONS R3.
+
+### What this does and does not claim
+Allocation-side only: the EXP-001 transfer would now allocate ~2 large arrays per chunk per side instead
+of ~4. **No throughput claim** — EXP-001 explicitly forbids one until a 5 GHz router-link re-run exists,
+and nothing here is device-verified. The write-lock *waits* are dominated by one-socket backpressure;
+their real fix is N sockets (ADR-017), and the `DataChannel*` multistream path already exists for that.
+
+### Remaining (task #5)
+- DB batching and startup cost: no measurements in hand — need a Belfone-class profile before touching.
+- EXP-007 on-device matrix remains the owner's decisive gate for all low-end claims.
+
+### Next AI
+If continuing #5: measure DB write batching and engine startup on the Belfone first (AGENTS.md §23 —
+measure, then optimize). Do not re-derive the allocation work above; it is done and tested.
+
+## 2026-09-04 (b) — Task #4 UI de-bloat CLOSED: release optimization on (R8 + resource shrinker), per-bubble delivery-check `AnimatedContent` gated by reduceMotion; every listed finding now done
+
+### Worked on
+The remainder of the owner's fourth thread (UI de-bloat). The previous session (Claude, claude-opus-5)
+executed most of the handoff's de-bloat list but died on a provider outage before the last two items and
+before logging anything; this session reconstructed state from its transcript (`New folder/`), verified
+its leftover tree green, and closed the list. Also restored the project memory files: `logs/` had been
+moved into `New folder/logs/` when the session was exported — the files are now back at the repo root.
+
+### Changed (this session)
+- `app/build.gradle.kts` — `release.optimization.enable = true`. On AGP 9.3+ this single flag is both
+  `isMinifyEnabled` and `isShrinkResources` plus the optimized resource-shrinker pipeline, with the
+  default platform keep rules included. No first-party reflection exists in `core/*` (verified
+  2026-08-27), so no keep rules were needed; Room/SQLCipher/WebRTC ship their own consumer rules.
+- `FlashDeliveryStatusIcon.kt` — the per-bubble `AnimatedContent` is now gated on `!motion.reduceMotion`.
+  Under reduce-motion the `statusCrossfade()` spec already snaps (`None`/`None`, `sizeTransform = null`),
+  so a direct glyph swap in a centered `Box` is visually identical and skips the per-row `Transition` and
+  the second layout a crossfade runs. The `when(status)` glyph body moved to a private
+  `DeliveryStatusGlyph` shared by both paths; semantics unchanged. HIGH tier is bit-identical.
+
+### Changed (previous session, verified now, never logged)
+All from the handoff's de-bloat list: reduceMotion honored in `FlashMotion`'s three spring factories (+
+the two hand-rolled workarounds in `FlashBottomNav`/`FlashInteraction` deleted); `FlashChatListRow`
+overdraw + press-scale moved into the layer phase; `FlashMessageList` per-row `copy()` and identity
+`graphicsLayer` dropped; `FlashTypography.default()` rebuilds in `FlashBottomNav` removed; per-bubble
+`BoxWithConstraints` removed from `FlashMessageBubble`; `FlashMediaDecoder` tile decode budget corrected;
+systemic `flashAnimateItem(motion)` replacing eight `animateItem` call sites; tailed-bubble path clip
+fixed; dead `FlashAdaptiveLayouts.kt` cut down to the tested `FlashAdaptiveMath` + `FlashWindowSizeClass`
+(`FlashAdaptiveTwoPane` and `rememberFlashWindowSize` deleted — no call sites); five unreferenced
+drawables deleted (`ic_account_box`, `ic_favorite`, `ic_home`, `flash_ic_arrow_left`,
+`flash_ic_delivered`).
+
+### Verification
+- Baseline sweep on the previous session's leftover tree **before** this session's edits: 944 live /
+  12 known Windows DataStore failures / 0 skipped — byte-for-byte the handoff baseline.
+- After this session's edits: `testDebugUnitTest assembleDebug assembleRelease :core:common:testAndroidHostTest --continue`
+  → **944/12/0 again** (same known set), `app-debug.apk` rebuilt, and `app-release-unsigned.apk`
+  **52,797,473 bytes vs debug 67,551,513** — R8 + resource shrinking ran clean on the first try.
+- HIGH-tier visuals unchanged by construction (both edits are no-ops when `reduceMotion == false`).
+
+### Problems
+The previous session's last grep (verifying no references to the deleted drawables) returned 2.1 MB of
+build-intermediate matches, and the session died before evaluating it. Re-verified: no source references
+exist; the matches were stale `build/intermediates` merger output. The full sweep above is the proof.
+
+### Remaining
+- Task #5 (low-end library speed) and task #6 (opportunistic optimisations) — untouched.
+- EXP-007 on-device tier matrix remains owner action.
+- Release optimization is build-verified only; nobody has installed the release APK.
+
+### Next AI
+Start task #5/#6 scoping from the owner's five-thread request, or pick up EXP-007 with the owner.
+Nothing is committed — HEAD is still `5b31785`; the working tree carries ERROR-033 + ERROR-034/035 +
+task #3/#4 work. The commit decision (split vs single) is the owner's.
+
+## 2026-09-04 — Network changes end to end: three invisible link transitions made visible, a hotspot host taught to dial its own clients, roam-killed sends resumed automatically (ERROR-035); plus the boot-time placeholder chats removed (ERROR-034)
+
+### Worked on
+Two of the five threads in the owner's request: "the app or the library doesnt know how to handle a
+network change", and "can it handle a device connected to a wifi also hotspoting another device can
+the device connected to the hotspot find anyother device". Also closed the first thread from the same
+message, "the placeholder chats are still there because sometimes they show and then vanish", which had
+landed in code the day before but was never written up.
+
+The finding that reframed the work: the *responses* to a link change were already good — the transport
+probes its sessions and drops accumulated backoff, NSD re-registers and restarts its browse. The
+triggers were too narrow, the dial went out the wrong interface, and the transfer layer was never told
+at all.
+
+### Root cause
+- **Three of the four link transitions produced no signal.** Availability callbacks cover exactly one
+  case. A **mesh roam** keeps the same `Network` object, so neither `onAvailable` nor `onLost` fires. A
+  **hotspot coming up** produces no `Network` at all — a SoftAP interface is not a `Network`, so no
+  callback of any kind fires and the default network never changes. And `registerDefaultNetworkCallback`
+  misses **Wi-Fi appearing while cellular is still default**, the ordinary case on a phone with data.
+- **The fingerprint aliased across networks.** One capabilities/link-properties pair was kept for all
+  matching networks, so two networks reporting alternately looked like a permanent roam — a probe round
+  per peer, every rate-limit period, forever, on a link that never moved.
+- **The dial was destination-blind, and three KDocs had invented a platform rule to explain it.**
+  `WsTransferClient` bound every socket to the first Wi-Fi `Network` CM listed. A hotspot host is
+  dual-homed; binding a dial to its own `192.168.43.x` client to the *router* network put the packet
+  where that address has no route, so every attempt burned the full 4 s connect timeout. Clients dialled
+  the host fine — one network each — and that asymmetry had been written down as "a SoftAP/gateway device
+  cannot open a TCP connection to a client station". **There is no such rule.** The host is the client's
+  gateway and has a directly connected route. `LocalNetworkAddresses` had the mirror defect: an
+  early-return made its own interface fallback unreachable in exactly the dual-homed case it was for.
+- **Byte-accurate resume existed and nothing called it.** `resumeTransfer` already accepted `Failed`,
+  and `relaunchSend` already reproduced `wireFileId`/`sourceUri` exactly so the receiver keeps verified
+  chunks. No code path invoked it on recovery, so a roam-killed send sat `Failed` until a human tapped
+  retry — on a device that walks between mesh APs mid-transfer, that is every transfer.
+
+Full analysis in `logs/errors.md` ERROR-035; the placeholder-chat write-up is ERROR-034.
+
+<!-- PROGRESS-0904-CONTINUES -->
+
+### Changed
+**Triggers**
+- `LinkChangeTracker` moved to `core/common/src/commonMain/.../net/` — `:core:network` depends on
+  `:core:discovery`, so `:core:common` is the only module both link-change paths can see.
+- `NsdTransport` gained all three missing signals: a per-network `registerNetworkCallback` (a strict
+  superset of the default-network variant), a **link-shape** fingerprint over capabilities and link
+  properties that catches a roam on a network that stayed, and a `linkFingerprint()` interface poll
+  folded into the existing presence heartbeat — the only permission-free all-API-level way to notice a
+  SoftAP, and API 27 rules out `registerTetheringEventCallback` (API 30+).
+- Both observers key their fingerprints by `Network.networkHandle`, so networks cannot alias.
+- Cellular is registered but excluded from the shape half; its bandwidth churn cannot storm restarts.
+- Because BSSID needs `ACCESS_FINE_LOCATION`, link *shape* substitutes for association identity and
+  false positives are certain — so the response stays cheap: probe the sessions, never reap them.
+
+**Routing**
+- New `Ipv4Routing` (`internal object`, pure integer arithmetic, no DNS): `parse`, `onLink`,
+  `isUsableLocalAddress`, `isPrivate`.
+- `WsTransferClient.findLanNetwork()` → `chooseRoute(host)`: bind the network the destination is on-link
+  for; bind **nothing** when an unmanaged interface is on-link, so the kernel's table — which knows
+  `ap0` — decides; else fall back to the first LAN network. Candidates are `sortedBy { networkHandle }`
+  because two devices must not each pick a different network for the same peer. The bind-nothing branch
+  needs CM's own transport mapping *and* RFC 1918 to agree, so cellular can never win it.
+- `LocalNetworkAddresses.ipv4Addresses()` merges CM and interface enumeration instead of early-returning.
+
+**Auto-resume**
+- New `TransferReconnectResumePolicy` (`:core:transfer`, pure, synchronized). Selects a returning peer's
+  outbound `Failed` transfers with a usable `sourceUri`; `Paused` is excluded because a pause is a user
+  decision. The cap counts only attempts that achieved **nothing** — each records `bytesDone`, and an
+  attempt later found to have moved it clears the count. So a 2 GB file crossing ten APs resumes ten
+  times while a deleted source stops after three.
+- Wired into both session-up collectors (`DiscoveryEngineHolder`, `Flash`'s `Wiring`) after a 750 ms
+  settle, with the session re-checked, so a re-offer is not spent on the loser of a two-way dial.
+
+**Documentation**
+- The three KDocs asserting the nonexistent platform rule corrected in place, each pointing at
+  `Ipv4Routing`. Dialling both ways is still right; only the reason changed.
+- `docs/migration/CONVENTIONS.md` now carries a **measured** per-module test table rather than a
+  hand-maintained delta, and states plainly that the old 911 figure does not reconcile to 944 by one
+  test. A stale pre-KMP `core/common/build/test-results/testDebugUnitTest/` directory that inflated raw
+  aggregations by 49 was deleted.
+
+### Deliberately not done
+`AndroidNetworkWatcher.start()` was **not** broadened past WIFI+ETHERNET, though the plan called for it:
+widening cannot see a SoftAP (no `Network` exists) and would newly admit cellular, costing a LAN redial
+sweep plus a foreground-promotion retry per bandwidth report on a walking device. The hotspot transition
+is caught on the discovery side; its peers reach the transport via the auto-connect sweep.
+
+### Verified
+`testDebugUnitTest assembleDebug :core:common:testAndroidHostTest --continue`: **944 live tests, 12
+failures, 0 skipped**, the 12 being the known Windows DataStore atomic-rename failures in
+`:core:persistence`. `app-debug.apk` builds. 32 new tests — `Ipv4RoutingTest` 9,
+`TransferReconnectResumePolicyTest` 9, `NsdTransportLogicTest` 36→40, `LinkChangeTrackerTest` 10.
+
+**Not verified:** nothing here is confirmed on hardware. The mesh roam, the dual-homed hotspot dial and
+the auto-resume all need the three-phone field setup.
+
+### The owner's literal question
+**No** — a station on a phone's hotspot can reach that host and nothing else on the host's router LAN.
+mDNS multicast is not forwarded across the host's tethering NAT, discovery is the only source of routes,
+`HELLO` carries no third-party addresses, and `FlashTransportType.RELAY`/`MESH` are unused placeholders;
+relaying is post-v1. What *is* fixed is the half that used to fail silently: the dual-homed host can now
+reach its own clients, and they can reach it.
+
+## 2026-09-03 — Three performance tiers (low/medium/high) with first-run auto-detect: packet-rate-priced voice, capped capture, mesh-roam call recovery, and a UI that stops animating (ERROR-033); plus the capture-source probe (ERROR-032)
+
+### Worked on
+The owner's field report from a **BelFone SCP810** rugged handset on a **mesh Wi-Fi**: "a lot of lag
+connection lost and even supprising huge latencies", "even with only voice with 25kbps it still lags
+and latency", and — decisively — "the pixel and infinix recover fine but it doesnt for he belfone"
+when walking between mesh nodes. The instruction was to "create three modes: low, medium, high",
+anticipate devices *below* the Belfone and possibly an Android watch, disable animations and go
+"extreme minimalist" for low and medium, cap video at "540p and below", and have "those modes detect
+automatically on first run".
+
+Read-only investigation established three **independent** defects — one per symptom, no two sharing a
+fix, which is why "lower the bitrate" had never helped — plus the underlying fact that the app had
+exactly one performance profile and it was written for the phones in the developer's hand.
+
+### Root cause
+- **D1 — voice was priced per packet and the code only ever counted bits.** ~50–100 packets/s per
+  direction, each carrying RTP 12 + UDP 8 + IPv4 20 + SRTP tag 10 ≈ **50 bytes** of header: 40 kbit/s
+  of wrapping around 25 kbit/s of speech. 802.11 charges a largely *fixed airtime price per frame* on
+  a half-duplex shared medium, so on a congested 2.4 GHz mesh the **packet rate**, not the bit rate,
+  is what the link cannot afford. `usedtx=0` meant silence was transmitted at full rate too.
+- **D2 — capture was 1920x1080@30 on every device, unconditionally.** ≈ **62 Mpixel/s** of CPU-side
+  scale and colour conversion on a 2 GB API-27 handset with a 480x640 screen, paid *before* the
+  encoder sees a frame. `MAINTAIN_FRAMERATE` degradation and `CallQualityGovernor` both act on the
+  encoder, downstream of the cost. The only way not to pay it is not to ask for the pixels.
+- **D3 — a mesh roam is invisible to `ConnectivityManager` and used to be fatal to a call.** Android
+  hands out one `Network` per *network*, not per association, so an AP-to-AP handoff on one SSID
+  keeps the same object: `onAvailable`/`onLost` never fire. The session died of its own 25 s watchdog
+  and was redialled by a loop with a 30 s ceiling — 2 s of radio outage becoming half a minute of
+  "offline" — and when reaped, `DiscoveryEngineHolder` **ended the live call outright**, so the ICE
+  restart that would have recovered it could never run. The Pixel and Infinix crossed the same gap
+  unnoticed because they have fast transition; the Belfone (no 802.11k/v/r) does a full scan,
+  reassociation and DHCP.
+
+Full analysis, including the eight rejected alternatives, in `logs/errors.md` ERROR-033.
+
+### Changed
+**The tier itself (`:core:common/perf`, all new, all pure, JVM-tested)**
+- `FlashPerformanceMode` — `LOW`/`MEDIUM`/`HIGH`, each exposing a `voice`, `video` and `transport`
+  profile plus `reduceMotion`/`minimalChrome` (both `this != HIGH`), with `fromKey`/`toKey`.
+- `FlashVoiceProfile` — `ptimeMs` 60/20/10 → **16/50/100 packets/s**, `useDtx` on below HIGH,
+  `PACKET_OVERHEAD_BYTES = 50`.
+- `FlashVideoProfile` — 480x360@15 / 960x540@24 / 1920x1080@30. HIGH is the pre-tiering numbers
+  verbatim, so that tier is provably a no-op; MEDIUM *is* the owner's "540p" and LOW is below it.
+- `FlashTransportProfile` — eight timings: ping, liveness, reconnect cap, link probe, call grace,
+  connect timeout, stats cadence, ICE-restart floor.
+- `FlashPerformanceClassifier` + `FlashDeviceProfile` + `AndroidDeviceProfile` — RAM, API, screen
+  pixels, cores, codec support. Any one **hard gate** is conclusive for LOW; the weak signals only
+  demote to MEDIUM once **two** agree. Unknown values never demote. `FlashPerformanceVerdict.reason`
+  carries the deciding evidence and is logged at boot.
+- `FlashMotionPolicy` — resolves tier, user override and platform setting with the tier as a **floor**.
+
+Every consumer reads the tier through a **lambda**, never a stored value, so a tier change reaches the
+next call and `:core:calling`/`:core:network` keep knowing nothing about DataStore (ADR-024).
+**D1 — packet rate is the knob**
+- `core/calling/.../CallSdp.kt` — `tune()` **split** into `tuneLocal` (asserts our tier: writes
+  `a=ptime:` and merges `minptime`/`usedtx` into the existing Opus `a=fmtp:` line in place) and
+  `tuneRemote` (reads the peer's declaration and reconciles by taking the **longer** frame and the
+  **smaller** ceiling). The symmetric version stops working the moment two endpoints have different
+  tiers; the split is what makes a LOW↔HIGH call converge on byte-identical parameters whichever end
+  offered. Non-Opus payload types, `red`, `rtx` and `ulpfec` untouched. Video bitrate seeds per tier.
+
+**D2 — stop asking for the pixels**
+- `core/calling/.../FlashCallSession.kt` — `MediaDevices.getUserMedia` now requests
+  `captureWidth`/`captureHeight`/`captureFps` from the tier. The enumerator snaps to the nearest
+  supported format, so a device without the mode degrades instead of failing.
+
+**D3 — see the roam, probe it, let the call recover it (three layers)**
+- `core/network/.../resilience/LinkChangeTracker.kt` — **new**, pure. Diffs successive
+  `LinkProperties`/`NetworkCapabilities` snapshots and reports a *move* under a `Network` that never
+  went away. `AndroidNetworkWatcher` gained `onLinkChanged` to drive it.
+- `core/network/.../ws/WsFlashNetwork.kt` — `probeSessionsAfterLinkChange()` PINGs every live session
+  and reaps only those that fail to answer within `linkChangeProbeMs`. A roam is not evidence that a
+  session is dead; most survive it. Tiered reconnect ceiling drops to **8 s** at LOW, which is the
+  single most load-bearing number for "does this device come back".
+- `core/network/.../ws/WsKeepaliveTiming.kt` — **new**, the ping/liveness pair with an `init` guard
+  tying liveness to `WsKeepalive.STALL_FACTOR`; threaded through `WsConnection`/`WsTransferClient`/
+  `WsTransferServer` per connection, defaulted so untiered callers are byte-for-byte unchanged.
+- `core/calling/.../CallCoordinator.kt` — `onSignalingLost` no longer ends the call: it opens a
+  recovery window, and the **new** `onSignalingRestored` closes it, so a roam that resolves in two
+  seconds does not cost the full grace period. `FlashCallSession` restarts ICE on that transition
+  (`armIceRecovery`/`recoverIce`/`attemptIceRestart`), rate-limited by `iceRestartMinIntervalMs`.
+  `DiscoveryEngineHolder` calls **both** from its `activeSessions` collector — that wiring is what
+  made the ICE-restart mechanism reachable at all; without `onSignalingRestored` the restart offer had
+  no channel to travel on.
+
+**Auto-detect on first run — and why there is no first-run flag**
+- `app/.../di/AppEngine.kt` — `detectedPerformance` classified once per process; `performanceMode`
+  StateFlow = pinned ?: detected. An **unset** preference already *is* auto, and auto is re-resolved
+  every boot, so a device that gains a capability (or an OEM update that fixes an under-reported
+  `totalMem`) is simply re-read. A persisted first-run verdict would be one more thing to go stale.
+  `fromKey` maps `"auto"` and any unrecognised token to null, so a downgrade cannot strand a device on
+  a tier it can no longer name.
+
+**UI: low and medium stop animating and stop paying for ornament**
+- `ui/theme/.../FlashMotion.kt` — `rememberSystemReduceMotion()` and a `rememberFlashMotion(reduceMotion)`
+  overload. `FlashMotion`'s constructor stays `internal`, and `:ui:theme` depends on `:core:common`
+  with `implementation`, so a resolved **Boolean** is the only thing that can cross that seam.
+- `app/.../MainActivity.kt` — one `FlashMotionPolicy.resolveReduceMotion` result into the app's single
+  `FlashTheme(...)`, which reaches all ~26 existing `FlashTheme.motion` call sites at once.
+- `ui/theme/.../FlashTheme.kt` — new `minimalChrome` parameter, local and accessor. Distinct from
+  reduce-motion: a drop-shadow costs the same on a still frame as on a moving one, so switching
+  animations off does not pay for it. A call site draws the **flat equivalent**, never nothing.
+- `ui/chat/.../ui/shell/FlashBottomNav.kt` — first consumer; the hanging bar's 10.dp floating shadow
+  becomes the hairline border alone. A repo survey found the honest surface is small: the only other
+  `Brush` uses are legibility scrims over media (kept — they carry information) and the splash brand
+  animation (already reduce-motion aware).
+- `ui/chat/.../ui/settings/FlashSettingsScreen.kt` — a PERFORMANCE section with an Auto/Low/Medium/High
+  picker. Four segments because "Auto" is not a fourth tier but the absence of a pin, and it has to be
+  reachable again after pinning. No sliding indicator — the devices this control exists for are the
+  ones that cannot afford one. The subtitle names the tier in force and what it costs (capture size,
+  voice packets/s, animations off), derived from the profile tokens so the copy cannot drift from
+  behaviour; on Auto it names the **detected** tier, because a misclassified device and a bad link are
+  otherwise indistinguishable from outside and the pin is the only lever for the second case.
+- `core/persistence/.../settings/FlashSettingsDataStore.kt` — `performance_mode` key, flow and setter,
+  null = auto.
+
+**ERROR-032 (committed separately as `5b31785`, entry back-filled into `logs/errors.md` this session)**
+- `core/calling/.../FlashWebRtcEngine.kt` — `configureOnce` probes the capture source before handing it
+  to the ADM, because the ADM is process-wide and permanent so there is no later window.
+  `VOICE_COMMUNICATION` is a request, not a contract: this HAL opened, verified, logged PASS, and
+  delivered zero frames. Pass criterion is **frame delivery** (2400 frames ≈ 50 ms), never loudness —
+  two identical SCP810 units proved that a quiet room and a broken HAL both score zero on a PCM check.
+  Hardware AEC/NS now only for `VOICE_COMMUNICATION`; those effect lines are the field tell for which
+  source won.
+
+### Verification
+`./gradlew testDebugUnitTest assembleDebug` — `:app:assembleDebug` succeeds (4m 2s); **911 live tests,
+0 skipped, 12 failures**, all 12 the known Windows-only DataStore atomic-rename file-locking failures
+in `:core:persistence` (`DiscoveryModeSettingTest` 1 + `FlashSettingsDataStoreTest` 11), identical to
+baseline. `BASELINE_TEST_TOTAL` **863 → 911**: `CallSdpTest` 16 → 24, `LinkChangeTrackerTest` +10,
+`FlashPerformanceClassifierTest` +23, `FlashMotionPolicyTest` +3, `FlashSettingsLogicTest` +4
+(`ui:chat` 239 → 243).
+
+Live totals **exclude** 49 stale pre-KMP `core/common/build/test-results/testDebugUnitTest` artifacts
+still on disk from before the Phase 06 conversion; the live `:core:common` results are
+`testAndroidHostTest` (75). Raw XML aggregation therefore reports 960 and the true figure is 911.
+
+Not verifiable here: anything requiring the radio or WebRTC's runtime — that the airtime saving is
+real, that a roam actually recovers, and that the classifier puts the Belfone in LOW on the device
+rather than on paper.
+
+### Problems encountered
+1. **`FlashMotion`'s constructor is `internal` and `:ui:theme` depends on `:core:common` with
+   `implementation`, not `api`.** So `FlashPerformanceMode` cannot appear in `:ui:theme`'s public API,
+   and `:app` cannot construct a `FlashMotion` directly. Resolved by resolving the verdict to a
+   `Boolean` in `:core:common` (`FlashMotionPolicy`) and adding the `rememberFlashMotion(Boolean)`
+   overload — which is a better seam anyway: the policy is now pure and tested.
+2. **Inserting `minimalChrome` before `colors` in `FlashTheme(...)` would break positional callers.**
+   Checked rather than hit: all 16 call sites use named arguments.
+3. **A test assertion asserted the wrong arithmetic.** Written as `17 voice packets/s` on the
+   assumption that 1000/60 rounds up; `FlashVoiceProfile.packetsPerSecond` is integer division and
+   documents "60 ms → 16" in source. Caught by reading the source before running, not by the run.
+4. **ERROR-032 had no `logs/errors.md` entry at all** — the commit message was the only record, so a
+   reader of the log would have gone from ERROR-031 straight to ERROR-033. Back-filled from the commit
+   message this session.
+
+### Remaining
+- **On-device (owner action), on the mesh, per device and per tier:** place a voice-only call on the
+  Belfone and walk between APs — the call must survive the roam (an audio gap of a few seconds, not a
+  drop) and the peer must return to Online in single-digit seconds, not ~30; confirm Settings shows
+  `Auto · Matched to this device: Low` there and `High` on the Pixel 7; confirm LOW/MEDIUM animate
+  nowhere and the nav bar has no shadow; place a Belfone↔Pixel video call and confirm both ends agree
+  on 540p-or-below and that the picture, not the voice, is what degrades.
+- **Not yet built: a tier below LOW.** The owner named "devices lower than the Belfone, and possibly
+  an Android watch". LOW's hard gates would catch such a device, but LOW still offers video at all; a
+  watch tier would be voice-only by construction. Deliberately deferred until there is a device to
+  measure — the classifier's thresholds are the part that cannot be guessed.
+- **Still owed from earlier entries:** the ERROR-031 five-row two-phone matrix; ringing in all three
+  ringer modes both directions (ERROR-027); the two-phone retry test each way (ERROR-028); photo +
+  video preview each way, force-stop-and-reopen persistence, save-a-video → Movies/Flash, Forward from
+  both surfaces, banner Retry, a received voice note, a TalkBack sweep.
+- Nothing from this entry is committed; it is all in the working tree alongside the ERROR-031 work.
+
+### Next AI
+If the Belfone still lags after this, the discriminating measurement is **packets/s on the wire**, not
+bitrate: confirm `a=ptime:60` and `usedtx=1` survived into the *answer* (`tuneRemote` reconciliation),
+because a peer that re-offers 10 ms framing undoes D1 entirely and the symptom is indistinguishable
+from the original bug. If a roam still drops the call, check `LinkChangeTracker` actually fired — an
+OEM that reports no `LinkProperties` change on reassociation would defeat layer 1, and then the fallback
+is the keepalive cadence (layer 2), not more roam detection.
+
 ## 2026-09-02 (f) — Zombie sessions killed: bounded stall forgiveness, same-direction supersede, deliver-or-retry outbox, three-state presence — plus real audio priority in calls (ERROR-031)
 
 ### Worked on
@@ -109,6 +1629,8 @@ source before anything was touched:
   (`maxBitrateBps`, `scaleResolutionDownBy`, `active`) and publishes a reason.
 - `core/calling/.../CallSdp.kt` — video ceiling 8 → **2.5 Mbit/s**, start 2.5 → 1.2,
   floor unchanged at 600 kbit/s. Sized for a phone hotspot, not for the camera.
+  *(Later: ERROR-033 made these per-tier. They are now `FlashVideoProfile.HIGH` verbatim,
+  so that tier is provably a no-op against this build.)*
 - `core/calling/.../model/FlashCallModels.kt`, `ui/callui/.../FlashCallScreen.kt` —
   `FlashCallUiState.videoLimitReason`, rendered as a second line in the stats badge.
 - `core/persistence/.../settings/FlashSettingsDataStore.kt`,

@@ -73,78 +73,99 @@ fun FlashDeliveryStatusIcon(
         FlashMessageStatus.Failed -> "Failed to send. Double-tap to retry."
     }
 
-    AnimatedContent(
-        targetState = status,
-        transitionSpec = { motion.statusCrossfade() },
-        label = "deliveryStatusTransition",
-        modifier = modifier.semantics {
-            contentDescription = a11yDescription
-            if (status == FlashMessageStatus.Failed && onRetry != null) {
-                role = Role.Button
-            }
-        },
-    ) { currentStatus ->
-        when (currentStatus) {
-            FlashMessageStatus.Pending -> {
+    val statusModifier = modifier.semantics {
+        contentDescription = a11yDescription
+        if (status == FlashMessageStatus.Failed && onRetry != null) {
+            role = Role.Button
+        }
+    }
+
+    if (motion.reduceMotion) {
+        // The crossfade spec already snaps under reduce-motion, so a direct swap is visually
+        // identical and skips the per-row Transition plus the second layout a crossfade runs.
+        Box(modifier = statusModifier, contentAlignment = Alignment.Center) {
+            DeliveryStatusGlyph(status, iconColor, size, onRetry, haptics)
+        }
+    } else {
+        AnimatedContent(
+            targetState = status,
+            transitionSpec = { motion.statusCrossfade() },
+            label = "deliveryStatusTransition",
+            modifier = statusModifier,
+        ) { currentStatus ->
+            DeliveryStatusGlyph(currentStatus, iconColor, size, onRetry, haptics)
+        }
+    }
+}
+
+@Composable
+private fun DeliveryStatusGlyph(
+    status: FlashMessageStatus,
+    iconColor: Color,
+    size: Dp,
+    onRetry: (() -> Unit)?,
+    haptics: (FlashHaptic) -> Unit,
+) {
+    when (status) {
+        FlashMessageStatus.Pending -> {
+            FlashIcon(
+                icon = FlashIcons.Clock,
+                contentDescription = null,
+                tint = iconColor,
+                size = size,
+            )
+        }
+
+        FlashMessageStatus.Sent -> {
+            FlashIcon(
+                icon = FlashIcons.Check,
+                contentDescription = null,
+                tint = iconColor,
+                size = size,
+            )
+        }
+
+        FlashMessageStatus.Delivered -> {
+            FlashIcon(
+                icon = FlashIcons.Delivered,
+                contentDescription = null,
+                tint = iconColor,
+                size = size,
+            )
+        }
+
+        FlashMessageStatus.Read -> {
+            FlashIcon(
+                icon = FlashIcons.Read,
+                contentDescription = null,
+                tint = iconColor,
+                size = size,
+            )
+        }
+
+        FlashMessageStatus.Failed -> {
+            val interactionSource = remember { MutableInteractionSource() }
+            Box(
+                modifier = Modifier
+                    .size(size)
+                    .clip(CircleShape)
+                    .clickable(
+                        interactionSource = interactionSource,
+                        indication = null,
+                        enabled = onRetry != null,
+                        onClick = {
+                            haptics(FlashHaptic.Confirm)
+                            onRetry?.invoke()
+                        },
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
                 FlashIcon(
-                    icon = FlashIcons.Clock,
+                    icon = FlashIcons.Failed,
                     contentDescription = null,
                     tint = iconColor,
                     size = size,
                 )
-            }
-
-            FlashMessageStatus.Sent -> {
-                FlashIcon(
-                    icon = FlashIcons.Check,
-                    contentDescription = null,
-                    tint = iconColor,
-                    size = size,
-                )
-            }
-
-            FlashMessageStatus.Delivered -> {
-                FlashIcon(
-                    icon = FlashIcons.Delivered,
-                    contentDescription = null,
-                    tint = iconColor,
-                    size = size,
-                )
-            }
-
-            FlashMessageStatus.Read -> {
-                FlashIcon(
-                    icon = FlashIcons.Read,
-                    contentDescription = null,
-                    tint = iconColor,
-                    size = size,
-                )
-            }
-
-            FlashMessageStatus.Failed -> {
-                val interactionSource = remember { MutableInteractionSource() }
-                Box(
-                    modifier = Modifier
-                        .size(size)
-                        .clip(CircleShape)
-                        .clickable(
-                            interactionSource = interactionSource,
-                            indication = null,
-                            enabled = onRetry != null,
-                            onClick = {
-                                haptics(FlashHaptic.Confirm)
-                                onRetry?.invoke()
-                            },
-                        ),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    FlashIcon(
-                        icon = FlashIcons.Failed,
-                        contentDescription = null,
-                        tint = iconColor,
-                        size = size,
-                    )
-                }
             }
         }
     }

@@ -78,8 +78,21 @@ public object WebSocketCodec {
         return base64Encode(digest)
     }
 
-    /** Writes a single unfragmented frame. Client frames must pass [masked] = true. */
-    public fun writeFrame(output: OutputStream, opcode: Int, payload: ByteArray, masked: Boolean) {
+    /**
+     * Writes a single unfragmented frame. Client frames must pass [masked] = true.
+     *
+     * When [maskPayloadInPlace] is true the caller transfers ownership of [payload]: it is masked
+     * in place and must not be retained or reused afterwards. That skips one full-size payload
+     * copy per client frame — the transfer hot loop's frames are single-use `ChunkFrame.serialize`
+     * output, so the copy was pure churn (see EXP-001's LOS finding).
+     */
+    public fun writeFrame(
+        output: OutputStream,
+        opcode: Int,
+        payload: ByteArray,
+        masked: Boolean,
+        maskPayloadInPlace: Boolean = false,
+    ) {
         val maskKey = if (masked) ByteArray(4).also(random::nextBytes) else null
         val header = ByteArrayOutputStream(14)
         header.write(0x80 or opcode)
@@ -104,11 +117,15 @@ public object WebSocketCodec {
         }
         output.write(header.toByteArray())
         if (maskKey != null) {
-            val maskedPayload = ByteArray(payload.size)
-            for (index in payload.indices) {
-                maskedPayload[index] = (payload[index].toInt() xor maskKey[index and 3].toInt()).toByte()
+            val wirePayload = if (maskPayloadInPlace) {
+                payload
+            } else {
+                ByteArray(payload.size) { payload[it] }
             }
-            output.write(maskedPayload)
+            for (index in wirePayload.indices) {
+                wirePayload[index] = (wirePayload[index].toInt() xor maskKey[index and 3].toInt()).toByte()
+            }
+            output.write(wirePayload)
         } else {
             output.write(payload)
         }
@@ -155,6 +172,16 @@ public object WebSocketCodec {
                         messageOpcode = header.opcode
                     } else if (messageOpcode == -1) {
                         throw IOException("Continuation frame without a started message")
+                    }
+                    // Outbound messages are never fragmented, so nearly every message completes in
+                    // its first frame: return that payload directly instead of copying it through
+                    // the reassembly buffer (one full-size copy per chunk on the receive side).
+                    if (header.fin && messageBuffer.size() == 0) {
+                        return if (messageOpcode == OPCODE_TEXT) {
+                            Message.Text(String(payload, Charsets.UTF_8))
+                        } else {
+                            Message.Binary(payload)
+                        }
                     }
                     messageBuffer.write(payload)
                     if (messageBuffer.size() > MAX_MESSAGE_BYTES) {

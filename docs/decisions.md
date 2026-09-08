@@ -874,3 +874,247 @@ that framing can corrupt (ERROR-024).
 A native set-SDP failure is reproduced on device with diagnostics and the real
 corruptor (if any framing edge case remains) is identified; or if the transfer protocol
 ever moves to binary frames (ADR-014-style) where SDP can ride as opaque bytes directly.
+
+## ADR-028 — Three device performance tiers, auto-detected each boot, delivered to every consumer as a lambda
+
+### Decision
+`:core:common/perf` owns a single `FlashPerformanceMode` enum — `LOW`, `MEDIUM`, `HIGH` — and each
+constant carries the whole envelope for that tier: a `FlashVoiceProfile` (Opus `ptimeMs`, DTX), a
+`FlashVideoProfile` (capture size, fps, bitrate seeds), a `FlashTransportProfile` (eight keepalive /
+recovery timings) and two UI verdicts, `reduceMotion` and `minimalChrome` (both `this != HIGH`).
+`HIGH`'s numbers are the pre-tiering constants verbatim, so that tier is provably a no-op.
+
+Four rules govern how the tier is obtained and consumed:
+
+1. **Auto-detected, never persisted.** `FlashPerformanceClassifier` reads a platform-free
+   `FlashDeviceProfile` (RAM, API level, screen pixels, CPU cores, codec support) once per process. Any
+   one **hard gate** is conclusive for `LOW`; the weaker signals only demote to `MEDIUM` once **two**
+   agree; unknown values never demote. An **unset** preference *is* auto — there is no first-run flag.
+2. **The user can pin a tier, and null means auto.** `FlashPerformanceMode?` in DataStore;
+   `fromKey` maps `"auto"` and any unrecognised token to null.
+3. **Consumers read a lambda, never a stored value.** `() -> FlashPerformanceMode`, defaulted to
+   `{ HIGH }`.
+4. **For the UI, the tier is a floor, not a vote.** `FlashMotionPolicy.resolveReduceMotion` is
+   `mode.reduceMotion || (overrideForcesReduce ?: systemReduceMotion)`.
+
+### Context
+Field testing on a BelFone SCP810 (2 GB, API 27, 480x640, 2.4 GHz-only, no 802.11k/v/r) on a mesh
+Wi-Fi produced lag, lost connections and large latencies, while a Pixel 7 and an Infinix X6882B on the
+same network were fine at long distances (EXP-006, ERROR-033). Voice-only calls still lagged at
+25 kbit/s of speech, which rules out bandwidth: the constraint is the **packet rate** against 802.11's
+largely fixed per-frame airtime cost. Meanwhile video capture was `1920x1080@30` on every device,
+unconditionally — ≈62 Mpixel/s of CPU work on a handset whose own display is 480x640, spent upstream
+of the encoder and therefore invisible to both existing adaptive mechanisms. The app had exactly one
+performance profile and it was written for the phones in the developer's hand. The owner asked for
+three modes that "detect automatically on first run", with animations off and "extreme minimalist" UI
+for the lower two, and video capped at "540p and below".
+
+### Alternatives considered
+- **Keep one profile and lean harder on the existing adaptive mechanisms.** Rejected: WebRTC's
+  `MAINTAIN_FRAMERATE` degradation and Flash's own `CallQualityGovernor` (ERROR-031) both act on the
+  **encoder**. The capture-side megapixels and the per-packet header tax are upstream of it and are
+  paid whether or not the encoder sends a byte. Reactive control cannot recover a cost already spent.
+- **Lower the Opus bitrate again.** Rejected on arithmetic: at 25 kbit/s of speech the RTP+UDP+IP+SRTP
+  headers alone were ~40 kbit/s at 100 packets/s. Halving the payload barely moves the airtime bill,
+  because the bill is per frame. `ptimeMs` is the knob; bitrate is not.
+- **Persist the detected tier on first run behind a first-run flag.** Rejected as a mechanism that must
+  be maintained and can go stale. An unset preference already *is* auto and auto is re-resolved every
+  boot, so a device that gains a capability — or an OEM update that fixes an under-reported
+  `totalMem` — is simply re-read. A persisted verdict would also survive a build whose classifier
+  thresholds changed, which is the worst case: silently wrong and invisible.
+- **A `FlashPerformanceMode` value injected at construction instead of a lambda.** Rejected: a tier
+  change (auto-detect resolving, or the user pinning a mode) must reach the *next* call without
+  re-wiring anything, and `:core:calling`/`:core:network` must keep knowing nothing about DataStore
+  (ADR-024). A lambda satisfies both; a value satisfies neither.
+- **Treating the tier as one more input to the reduce-motion decision.** Rejected: on hardware that
+  earns `LOW`, the animation **is** the jank, so the tier must win over both the platform's animator
+  setting and the user's own preference. Hence a floor rather than a vote. The inverse — letting a user
+  *force* motion on at `LOW` — was considered and dropped: it exists only to let someone make their own
+  device worse.
+- **A symmetric ratio, e.g. "scale everything by 0.5 on weak devices".** Rejected: the three costs move
+  independently. `LOW` drops to 360p **15** fps (pixels/s is the binding constraint where there is no
+  usable hardware encoder) while its Opus frame goes *up* to 60 ms (packets/s is the binding constraint
+  on the radio). One scalar cannot express that.
+- **Demoting to `MEDIUM` on a single weak signal.** Rejected: `MEDIUM` disables animation everywhere,
+  and one under-reported figure should not cost every user their UI. Hence the asymmetry — hard gates
+  are conclusive alone, weak signals need two.
+
+### Consequences
+- `:core:calling` reads the tier for capture size (`getUserMedia`), Opus packetization, stats cadence
+  and the ICE-restart floor; `:core:network` reads it for keepalive cadence, the link-change probe
+  window and the reconnect ceiling (8 s at `LOW`, down from 30). `:core:persistence` gains a
+  `performance_mode` key. None of them gains a dependency.
+- The UI half is one change at one place: `MainActivity` resolves the boolean and passes it to the app's
+  single `FlashTheme(...)`, which reaches all ~26 existing `FlashTheme.motion` call sites at once.
+  `FlashTheme` also gained `minimalChrome`, deliberately **distinct** from reduce-motion because a
+  drop-shadow costs the same on a still frame as on a moving one. A `minimalChrome` call site must draw
+  the flat equivalent, never nothing: it is a budget for ornament, not for information.
+- `:ui:theme` depends on `:core:common` with `implementation`, not `api`, and `FlashMotion`'s
+  constructor is `internal`. So the tier cannot cross that seam as a type — only as a resolved
+  `Boolean`, through the new `rememberFlashMotion(reduceMotion)` overload. This is why the policy lives
+  in `:core:common` as a pure function, which also makes it testable.
+- Settings gains a PERFORMANCE section with **four** segments, because "Auto" is not a fourth tier but
+  the absence of a pin and has to be reachable again after pinning. Its subtitle is derived from the
+  profile values, so the user-facing description of what a tier costs cannot drift from what it does.
+- Classification happens on real hardware and can be wrong. `FlashPerformanceVerdict.reason` carries the
+  deciding evidence and is logged at boot, and the pin exists as the escape hatch — including for the
+  case auto-detect structurally cannot see, which is the **link** rather than the handset.
+
+### Revisit when
+A device below `LOW` is actually in hand — the owner named "devices lower than the Belfone, and
+possibly an Android watch", and a watch tier would be voice-only by construction rather than a fourth
+set of numbers. Also revisit if the classifier is ever observed misclassifying a real device (the
+thresholds are the guessable part and should move with evidence, not with taste), or if a runtime signal
+worth trusting appears — sustained thermal throttling, or a measured encoder throughput — at which point
+the tier could become dynamic rather than boot-time. Do **not** revisit by adding a fourth enum constant
+for a device nobody has measured.
+
+## ADR-029 — Per-endpoint SDP asymmetry: `tuneLocal` asserts our tier, `tuneRemote` reconciles the peer's
+
+### Decision
+`CallSdp.tune()` is replaced by two functions with different jobs:
+
+- **`tuneLocal(sdp, mode)`** writes *our* tier into the description we are about to send: `a=ptime:`,
+  and `minptime`/`usedtx` merged in place into the existing Opus `a=fmtp:` line, plus the tier's
+  `x-google-{start,min,max}-bitrate` on each video codec.
+- **`tuneRemote(sdp, mode)`** reads the peer's description as a *declaration* and reconciles it against
+  ours by taking the **longer** Opus frame and the **smaller** bitrate ceiling of the two.
+
+Non-Opus payload types and the `red`, `rtx` and `ulpfec` lines are left alone by both.
+
+### Context
+The pre-tiering `tune()` was applied symmetrically to the local and the remote description, and that
+was correct while every device ran identical numbers: wire content then could not depend on which end
+had a switch flipped (ERROR-031, rejected item 8). ADR-028 breaks that premise — a `LOW` handset and a
+`HIGH` phone now legitimately want different packetization, and asserting our own tier onto the peer's
+description would mean each end believed something different about the session.
+
+### Alternatives considered
+- **Keep `tune()` symmetric and let each end assert its own numbers.** Rejected: the two endpoints
+  would disagree about `ptime`, which is exactly the parameter that decides the packet rate the weaker
+  radio cannot afford.
+- **Negotiate a tier explicitly in the `FLASH_CALL` protocol.** Rejected as unnecessary: SDP already
+  carries `ptime`/`minptime`/`usedtx` and bitrate hints, so the declaration is on the wire already.
+  Adding a tier field would be a second source of truth and a wire-format change (R8).
+- **Take the *stronger* side's parameters.** Rejected: the constraint is the weaker link, and a call is
+  only as good as the endpoint that cannot keep up. Longer frame, smaller ceiling — always.
+- **Let the tiers differ and simply accept it.** Rejected: WebRTC would apply whatever each side set,
+  and the resulting asymmetry is the hard kind to debug — audio flows, sounds wrong on exactly one
+  device, and the SDP looks valid at both ends.
+
+### Consequences
+- Both endpoints converge on byte-identical Opus parameters whichever of them offered, and a test pins
+  that (`CallSdpTest`, 16 → 24 tests).
+- Keepalive cadence is deliberately **not** reconciled: it stays per endpoint. A `LOW` device pings every
+  15 s and forgives 40 s of silence while its `HIGH` peer pings every 10 s and forgives 25 s. Each end is
+  describing its own tolerance for its own radio, and each end's pings feed the *other* end's watchdog,
+  so the asymmetry is correct there — the distinction is that keepalive is local policy while `ptime` is
+  shared session state.
+- A future debugging session must read `a=ptime` in the **answer**, not the offer: a peer that re-offers
+  10 ms framing undoes the packet-rate fix invisibly, and the symptom is indistinguishable from the
+  original bug.
+
+### Revisit when
+A third endpoint enters a session (any form of conferencing), where pairwise reconciliation stops being
+well-defined and the rule has to become "the weakest participant" across a set; or if Flash ever needs
+to negotiate something that is genuinely asymmetric by design, such as simulcast layers, in which case
+"take the smaller of the two" is no longer the right primitive.
+
+## ADR-026 - Voice-call quiet: ECO discovery, slowed transfer telemetry, isolated stats sampler, tiered playout buffer, coalesced call-screen ticks
+
+### Date
+2026-09-07
+
+### Decision
+During an ACTIVE call the stack yields the radio and the scheduler to voice:
+1. Discovery drops to ECO (advertising continues; browse duty-cycles; auto-connect sweep skipped) and
+   is restored to STANDARD on the leaving-ACTIVE edge (`DiscoveryEngineHolder.setCallActive`).
+2. Live transfer dispatchers slow their progress watcher 10 ms → 250 ms
+   (`MultiStreamDispatcher.quietWatcherHint`, driven by public
+   `RealFlashTransferRepository.voiceCallActive`). Telemetry only — ACK ingestion and transmission
+   are untouched.
+3. The `getStats()` sampler runs on a dedicated single daemon thread owned by the call session
+   (created on first arm, closed in `releaseMedia`) instead of the shared `Dispatchers.Default` pool.
+4. LOW-tier devices skip the low-latency ADM (`FlashWebRtcEngine.configureOnce(..., lowLatencyPlayout)`);
+   the default ADM's stable buffering replaces underrun-driven NetEQ stretches.
+5. The call-screen clock ticks on wall-clock second boundaries and the status live-region announces
+   transitions only (no per-second accessibility event while ACTIVE). No pixel or tier change.
+
+### Context
+Field report: unstable, fluctuating voice latency between two low-end devices. Logcat showed a
+`LowLatencyAudioBufferManager` underrun with buffer growth — playout starvation, not network loss.
+Audit found five compounding in-app sources (radio airtime from discovery/dials, 100 Hz transfer
+telemetry, shared-pool stats sampling, forced small playout buffer, uncoalesced 1 Hz tickers).
+
+### Alternatives considered
+- **Pause transfers during calls**: rejected — user data must keep moving; slowing telemetry buys
+  nearly all of the scheduler relief with none of the UX cost.
+- **Keep stats on the shared pool and just sample slower**: rejected — preemption works both ways;
+  the sampler both steals quanta and is itself jittered, corrupting the governor's inputs.
+- **Drop to GHOST instead of ECO**: rejected — the device must stay visible to its mesh while on
+  a call; ECO keeps advertising.
+- **Coroutines-only stats isolation (`Dispatchers.IO.limitedParallelism(1)`)**: rejected — still
+  shares pool threads with Room/SQLCipher; a single owned thread is the actual isolation.
+
+### Consequences
+- First production thread pool in the tree (previously coroutines-only); exactly one thread, one
+  job, daemon, closed per call. The held-open-resources inventory in `logs/handoff.md` now lists it.
+- `RealFlashTransferRepository` gains one public `var` (non-breaking addition); `configureOnce`
+  gains one defaulted param (source-compatible).
+
+### Revisit when
+On-device measurements (EXP-007) show which of the five dominates; the 250 ms quiet cadence and
+the ECO-during-call policy are the first knobs to retune against that data.
+
+## ADR-030 — Ad-hoc trusted groups: versioned membership log, per-member quorum delivery, holder-coordinated catch-up
+
+### Date
+2026-09-08
+
+### Decision
+Group chat (Phase 1) lands as an operation-log projection over four new text-frame prefixes
+(`FLASH_GROUP`/`FLASH_GMSG`/`FLASH_GRCPT`/`FLASH_GREAD`, plus wire-reserved `FLASH_GSYNC`):
+1. **Membership is versioned, not union-merged.** Every membership frame carries
+   `(opId, version)`; a row changes only when the candidate compares strictly greater. A leave
+   is a tombstone that stale/replayed adds cannot resurrect — resolving the draft plan's
+   "set-union vs leave" contradiction in favor of leave-wins-until-re-add (owner-confirmed).
+2. **Trust is fail-closed.** Creation and every inbound group frame require the transport peer
+   to be paired (`FlashTrustStore`) AND, for chat/sync, an active member. `from` must equal the
+   WS session's peer id — a forged sender id cannot borrow a member's identity. The 1:1 call
+   trust gap closes in the same change (`CallCoordinator.isTrustedPeer`).
+3. **Delivery is per-member quorum.** One message row + one `group_deliveries` row per
+   recipient; a socket write flips only that member; the bubble reads DELIVERED only when every
+   active recipient acknowledged, which is also the only thing that retires the outbox row
+   (ERROR-031's commit rule, generalized from pairwise to quorum).
+4. **Catch-up (Phase 1B) is holder-coordinated** with cursor `(sentAt, messageId)`,
+   deterministic claim election `(tierRank, hash(deviceId+msgId))`, rank-0 push / rank-1 backup,
+   broadcast batch ack, LOW budget 5 msg/s (owner-locked: max 6 members, text-first, 1A live
+   path before 1B sync).
+5. **Storage moves v3 → v4** with an explicit non-destructive migration (new `group_members`,
+   `group_deliveries` tables; `groupCreatedBy`/`groupCreatedAt` provenance columns); existing
+   `receipts`/`read_cursors` keep their meanings — no destructive fallback, per invariant 5 of
+   the group plan.
+
+### Alternatives considered
+- **Pure set-union membership (draft plan):** rejected — any replayed `add` resurrects a member
+  who left; the tombstone rule is strictly safer and costs one version comparison.
+- **One outbox row per recipient:** rejected — it would fork the durable-outbox invariants
+  (ERROR-031, EXP-015) the drain loop already enforces; per-member state lives in
+  `group_deliveries` instead and the outbox stays one row per message.
+- **Overloading `receipts` for group state:** rejected — its first-state-wins insert is
+  idempotency-shaped, not mutable-delivery-state shaped.
+- **Trust-gating 1:1 text:** deliberately NOT done in this change; only calls gain the gate
+  now (group-join requires it), and direct-chat behavior is preserved byte-for-byte.
+
+### Consequences
+- `RealFlashChatRepository` gains an additive group API (`createGroup`/`addGroupMembers`/
+  `leaveGroup`/`groupMembers`) and a dedicated `GroupTransportSink`; the direct-message ABI and
+  wire bytes are unchanged.
+- Both hosts (app holder and `Flash.create`) construct the same repository with the new DAOs,
+  the trust predicate, and `GroupFrameCodec` — one codec, two call sites, no third copy.
+- Phase 1B (holder sync) ships after the 3-device live path is verified; its wire frames are
+  documented and codec-reserved from day one so no format break follows.
+
+### Revisit when
+Group size demand exceeds 6, attachments land (Phase 3 lifts the rejection), or E2E
+(`keyEpoch` > 0) arrives — at which point per-sender keys replace inherited transport trust.

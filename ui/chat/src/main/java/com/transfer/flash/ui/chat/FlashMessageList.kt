@@ -47,6 +47,7 @@ import com.transfer.flash.ui.theme.FlashShapes
 import com.transfer.flash.ui.theme.FlashSpacing
 import com.transfer.flash.ui.theme.FlashText
 import com.transfer.flash.ui.theme.FlashTheme
+import com.transfer.flash.ui.theme.flashAnimateItem
 import kotlinx.coroutines.launch
 
 /**
@@ -160,13 +161,17 @@ fun FlashMessageList(
             key = { _, message -> message.id },
             contentType = { _, _ -> "flashMessage" },
         ) { layoutIndex, message ->
-            val rendered = if (showSenderHeaders) message else message.copy(showSenderHeader = false)
             val animateEnter = shouldAnimateMessageEnter(
                 messageId = message.id,
                 layoutIndex = layoutIndex,
                 initialMessageIds = initialMessageIds,
             )
             val enterProgress by motion.rememberMessageEnterProgress(animate = animateEnter)
+            // Only the row actually playing the entrance needs a render node. Every other row's
+            // progress is pinned at 1f, so the layer they all used to get was an identity transform:
+            // one render node, one offscreen-capable layer and one save/restore per visible row per
+            // frame, for nothing. Under reduce-motion no row animates, so no row gets a layer.
+            val entering = animateEnter && !motion.reduceMotion
 
             val spacingBelow = when (message.groupPosition) {
                 FlashMessageGroupPosition.TOP,
@@ -182,7 +187,7 @@ fun FlashMessageList(
             val isHighlighted = message.id == highlightedMessageId
 
             FlashMessageBubble(
-                message = rendered,
+                message = message,
                 onOpenActions = { onOpenMessageActions(message) },
                 isSelected = isSelected,
                 inSelectionMode = inSelectionMode,
@@ -196,19 +201,23 @@ fun FlashMessageList(
                 onDeclineOffer = { file -> onDeclineOffer(message, file) },
                 isHighlighted = isHighlighted,
                 searchQuery = searchQuery,
+                suppressSenderHeader = !showSenderHeaders,
                 modifier = Modifier
                     .padding(bottom = spacingBelow)
-                    .animateItem(
-                        placementSpec = motion.messagePlacementSpec(),
-                        fadeOutSpec = motion.messageFadeOutSpec(),
-                    )
-                    .graphicsLayer {
-                        alpha = enterProgress
-                        translationY = (1f - enterProgress) * (size.height / 4f)
-                        val s = 0.96f + (0.04f * enterProgress)
-                        scaleX = s
-                        scaleY = s
-                    },
+                    .then(flashAnimateItem(motion))
+                    .then(
+                        if (entering) {
+                            Modifier.graphicsLayer {
+                                alpha = enterProgress
+                                translationY = (1f - enterProgress) * (size.height / 4f)
+                                val s = 0.96f + (0.04f * enterProgress)
+                                scaleX = s
+                                scaleY = s
+                            }
+                        } else {
+                            Modifier
+                        },
+                    ),
             )
         }
     }
