@@ -189,7 +189,7 @@ one at a time; direct 1:1 behavior byte-identical; verify + log after each.
   `:app:assembleDebug` passed with the required JDK 21 on 2026-09-08. Physical background-device
   confirmation remains owed; code/test status is complete.
 
-### F5.3 — Group typing fan-out (partial)
+### F5.3 — Group typing fan-out — STATUS: DONE 2026-09-08 (code + focused tests verified; device gate remains)
 - **Evidence:** `setTyping` sends `TypingFrame` to `conversationId` — for a group that is the
   groupId, which has no session, so it drops silently (RealFlashChatRepository ~1590); inbound
   group typing is not gated into `typingStates[groupId]` either.
@@ -208,6 +208,20 @@ one at a time; direct 1:1 behavior byte-identical; verify + log after each.
 - **Tests:** pure part (which members receive the frame; membership gating of inbound) via the
   fakes; render path already covered by header tests.
 - **Verify:** device (two members see "Alex is typing…" in a group).
+
+- **Implemented:** `setTyping` now reads the stored conversation and preserves the original direct
+  `MessageTransportSink` target/frame behavior for direct chats. For groups it sends the existing
+  `MessageWireFrame.TypingFrame` once per active member except self, addressed through
+  `MessageTransportSink`; `GroupTransportSink` remains restricted to `GroupWireFrame`.
+- **Inbound security/routing:** both Android hosts preserve the wire `conversationId` and pass the
+  authenticated transport peer id. Group typing is accepted only when the stored conversation is a
+  group, the claimed member matches that transport peer, and the member is both trusted and active;
+  accepted names publish under `typingStates[groupId]`. Direct inbound typing remains keyed to the
+  transport peer exactly as before.
+- **Verification:** focused repository coverage for direct send/receive compatibility, group
+  recipients, self/inactive exclusion, correct sink use, and inactive/untrusted/spoof drops;
+  `:core:messaging:testAndroidHostTest`, `:core:messaging:jvmTest`, and `:app:assembleDebug` passed
+  with JDK 21 on 2026-09-08. Physical multi-device confirmation remains owed.
 
 ### F5.4 — "Delivered to M of N" (partial; data already persisted)
 - **Evidence:** `group_deliveries` rows carry per-member state (Phase 1A); `GroupDeliveryDao`

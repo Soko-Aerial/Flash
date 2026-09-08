@@ -1854,6 +1854,106 @@ class RealFlashChatRepositoryTest {
     }
 
     @Test
+    fun `direct typing keeps its single addressed frame behavior`() = runBlocking {
+        val sent = java.util.Collections.synchronizedList(mutableListOf<Pair<String, MessageWireFrame>>())
+        val repository = newRepository(
+            messageSink = { target, frame -> sent += target to frame; true },
+        )
+
+        repository.openConversation("peer-a")
+        repository.setTyping(true)
+        kotlinx.coroutines.delay(50)
+
+        assertEquals(1, sent.size)
+        val (target, frame) = sent.single()
+        assertEquals("peer-a", target)
+        val typing = frame as MessageWireFrame.TypingFrame
+        assertEquals("peer-a", typing.conversationId)
+        assertEquals("my-device-id", typing.memberId)
+        assertEquals("Kali", typing.memberName)
+        assertTrue(typing.isTyping)
+    }
+
+    @Test
+    fun `group typing fans out to active members except self using message transport`() = runBlocking {
+        val memberDao = FakeGroupMemberDao()
+        val sent = java.util.Collections.synchronizedList(mutableListOf<Pair<String, MessageWireFrame>>())
+        val groupFrames = java.util.Collections.synchronizedList(mutableListOf<Pair<String, GroupWireFrame>>())
+        val repository = newRepository(
+            groupMemberDao = memberDao,
+            trustedPeers = setOf("peer-a", "peer-b"),
+            groupSink = { target, frame -> groupFrames += target to frame; true },
+            messageSink = { target, frame -> sent += target to frame; true },
+        )
+        val groupId = (repository.createGroup("Team", setOf("peer-a", "peer-b")) as FlashResult.Success).value
+        memberDao.upsert(memberDao.member(groupId, "peer-b")!!.copy(isActive = false))
+        groupFrames.clear()
+
+        repository.openConversation(groupId)
+        repository.setTyping(true)
+        kotlinx.coroutines.delay(50)
+
+        assertEquals(listOf("peer-a"), sent.map { it.first })
+        val typing = sent.single().second as MessageWireFrame.TypingFrame
+        assertEquals(groupId, typing.conversationId)
+        assertEquals("my-device-id", typing.memberId)
+        assertTrue(typing.isTyping)
+        assertTrue("TypingFrame must not be forced through GroupTransportSink", groupFrames.isEmpty())
+    }
+
+    @Test
+    fun `group typing accepts trusted active member and drops inactive untrusted and spoofed senders`() = runBlocking {
+        val memberDao = FakeGroupMemberDao()
+        val conversationDao = FakeConversationDao()
+        val repository = newRepository(
+            conversationDao = conversationDao,
+            groupMemberDao = memberDao,
+            trustedPeers = setOf("peer-a", "peer-b"),
+        )
+        val groupId = (repository.createGroup("Team", setOf("peer-a", "peer-b")) as FlashResult.Success).value
+        repository.openConversation(groupId)
+        kotlinx.coroutines.withTimeout(5_000) {
+            repository.conversationState.first { it.header.isGroup && it.header.memberCount > 0 }
+        }
+
+        suspend fun inbound(memberId: String, memberName: String, peerId: String) {
+            repository.onInboundWireFrame(
+                MessageWireFrame.TypingFrame(groupId, memberId, memberName, true, 1L),
+                transportPeerId = peerId,
+            )
+        }
+
+        inbound("peer-a", "Alex", "peer-a")
+        kotlinx.coroutines.withTimeout(5_000) {
+            repository.conversationState.first { it.header.typingMemberNames == listOf("Alex") }
+        }
+
+        memberDao.upsert(memberDao.member(groupId, "peer-b")!!.copy(isActive = false))
+        inbound("peer-b", "Inactive", "peer-b")
+        inbound("stranger", "Untrusted", "stranger")
+        inbound("peer-b", "Spoofed", "peer-a")
+        kotlinx.coroutines.delay(50)
+
+        assertEquals(listOf("Alex"), repository.conversationState.value.header.typingMemberNames)
+    }
+
+    @Test
+    fun `direct inbound typing remains keyed to transport peer`() = runBlocking {
+        val repository = newRepository()
+        repository.openConversation("peer-a")
+
+        repository.onInboundWireFrame(
+            MessageWireFrame.TypingFrame("my-device-id", "peer-a", "Alex", true, 1L),
+            transportPeerId = "peer-a",
+        )
+        kotlinx.coroutines.withTimeout(5_000) {
+            repository.conversationState.first { it.header.typingMemberNames == listOf("Alex") }
+        }
+
+        assertEquals(listOf("Alex"), repository.conversationState.value.header.typingMemberNames)
+    }
+
+    @Test
     fun `conversation mapping assigns separators after tombstones are filtered`() = runBlocking {
         val messageDao = FakeMessageDao()
         val repository = newRepository(messageDao = messageDao)
@@ -1888,6 +1988,7 @@ class RealFlashChatRepositoryTest {
         groupDeliveryDao: GroupDeliveryDao? = null,
         trustedPeers: Set<String> = emptySet(),
         groupSink: (suspend (String, GroupWireFrame) -> Boolean)? = null,
+        messageSink: suspend (String, MessageWireFrame) -> Boolean = { _, _ -> true },
         onInboundTextMessage: (String, String?, String) -> Unit = { _, _, _ -> },
         onInboundTextMessageWithGroupTitle: (String, String?, String, String?) -> Unit =
             { conversationId, senderName, text, _ ->
@@ -1909,7 +2010,7 @@ class RealFlashChatRepositoryTest {
         groupDeliveryDao = groupDeliveryDao,
         isTrustedPeer = { it in trustedPeers || it == "my-device-id" },
         groupTransportSink = groupSink?.let { sink -> GroupTransportSink { target, frame -> sink(target, frame) } },
-        transportSink = MessageTransportSink { _, _ -> true },
+        transportSink = MessageTransportSink { target, frame -> messageSink(target, frame) },
         ioDispatcher = testDispatcher,
         onInboundTextMessage = onInboundTextMessage,
         onInboundTextMessageWithGroupTitle = onInboundTextMessageWithGroupTitle,

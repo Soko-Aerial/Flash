@@ -1367,14 +1367,16 @@ object DiscoveryEngineHolder {
         if (typingFields != null) {
             chatImpl.onInboundWireFrame(
                 MessageWireFrame.TypingFrame(
-                    // Thread typing under the SENDER's device id, matching how inbound text is keyed
-                    // (the wire conversationId is our own id from the peer's perspective).
-                    conversationId = peerDeviceId,
+                    // Preserve the wire-carried conversation id: direct senders encode the receiver
+                    // id, while group fan-out encodes the group id. The repository uses the trusted
+                    // transport peer below to distinguish/directly key and authenticate these cases.
+                    conversationId = typingFields["conversationId"] ?: peerDeviceId,
                     memberId = typingFields["memberId"] ?: return,
                     memberName = typingFields["memberName"] ?: "Peer",
                     isTyping = typingFields["isTyping"]?.toBooleanStrictOrNull() ?: false,
                     timestampMs = typingFields["timestampMs"]?.toLongOrNull() ?: System.currentTimeMillis(),
                 ),
+                transportPeerId = peerDeviceId,
             )
             return
         }

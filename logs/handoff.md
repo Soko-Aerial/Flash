@@ -1,5 +1,39 @@
 # Current Handoff
 
+## 2026-09-08 (g) — F5.3 group typing fan-out complete, staged, uncommitted
+
+### Current branch
+`dev` at `33bbb41`. F5.3 code/tests/docs/logs are staged; unrelated `New folder/` and root CLI
+JSONL diagnostics remain unstaged.
+
+### Last verified build
+With `JAVA_HOME=C:/Users/KaliOxygen/.gradle/jdks/jetbrains_s_r_o_-21-amd64-windows.2`:
+- Focused `RealFlashChatRepositoryTest` passed.
+- `:core:messaging:testAndroidHostTest` passed.
+- `:core:messaging:jvmTest` passed.
+- `:app:assembleDebug` passed.
+
+### Last change
+- Direct typing retains its existing addressed `MessageTransportSink` frame and behavior.
+- Group typing fans the existing `MessageWireFrame.TypingFrame` out to active members except self;
+  `GroupTransportSink` remains exclusively `GroupWireFrame`.
+- Both Android hosts pass the authenticated transport peer while preserving the wire group id.
+- Inbound group typing requires trusted active membership and matching claimed/transport identities,
+  then publishes into the group typing state.
+- Focused tests cover direct compatibility, recipients, exclusions, and spoof/trust/member drops.
+
+### Recommended next task
+Run the F5.3 physical-device gate with at least three group members and confirm named typing start/stop
+on both receivers plus unchanged direct typing. Continue only the owner-selected F item afterward;
+F5.4+, F4b, and KMP Phase 15 remain separate.
+
+### Files most relevant to this change
+- `core/messaging/src/androidMain/.../RealFlashChatRepository.kt`
+- `core/messaging/src/androidHostTest/.../RealFlashChatRepositoryTest.kt`
+- `core/engine/src/androidMain/.../Flash.kt`
+- `app/src/main/.../debug/DiscoveryEngineHolder.kt`
+- `docs/group/ui-phase-plan.md`
+
 ## 2026-09-08 (f) — F5.1 date separators complete, staged, uncommitted
 
 ### Current branch

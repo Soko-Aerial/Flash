@@ -1,5 +1,40 @@
 # Progress Log
 
+## 2026-09-08 — F5.3 group typing fan-out
+
+### Worked on
+Implemented only F5.3 from `docs/group/ui-phase-plan.md`: authenticated per-member typing fan-out
+and group-scoped inbound typing state.
+
+### Changed
+- `setTyping` branches on the stored conversation. Direct chats keep the prior single
+  `MessageTransportSink` target and `TypingFrame`; groups send that same frame to every active member
+  except self through the addressed message sink.
+- Kept `GroupTransportSink` type-safe: no `MessageWireFrame` was forced into its `GroupWireFrame`
+  contract and no protocol frame was added.
+- Android hosts now preserve the typing frame's wire `conversationId` and pass the authenticated
+  transport peer id into the repository.
+- Group inbound typing requires a stored group conversation, trusted active membership, and claimed
+  `memberId == transportPeerId`; accepted state is published under the group id. Direct inbound
+  typing remains keyed to the transport peer.
+- Added focused repository tests for direct send/receive compatibility, fan-out recipients, self and
+  inactive exclusion, sink selection, and inactive/untrusted/spoof rejection.
+
+### Verification
+- Focused `RealFlashChatRepositoryTest` passed.
+- `:core:messaging:testAndroidHostTest` passed.
+- `:core:messaging:jvmTest` passed.
+- `:app:assembleDebug` passed.
+- Required JDK: `C:/Users/KaliOxygen/.gradle/jdks/jetbrains_s_r_o_-21-amd64-windows.2`.
+
+### Remaining
+Physical-device gate: in a group with at least two remote members, verify named typing appears for
+both typing start and stop, while direct typing remains unchanged. F5.4+, F4b, and KMP Phase 15 were
+not touched.
+
+### Next AI
+Run the F5.3 physical-device gate, then continue only the owner-selected phase.
+
 ## 2026-09-08 — F5.1 date separators
 
 ### Worked on

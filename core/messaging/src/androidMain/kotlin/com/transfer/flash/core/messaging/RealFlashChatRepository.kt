@@ -1663,9 +1663,11 @@ public class RealFlashChatRepository(
     }
 
     /**
-     * Ingests an inbound direct-message wire frame from the network layer.
+     * Ingests an inbound message wire frame from the network layer. [transportPeerId] is supplied by
+     * hosts when the authenticated session identity is available so group typing cannot impersonate
+     * another member. It remains optional for source compatibility with non-transport callers.
      */
-    public suspend fun onInboundWireFrame(frame: MessageWireFrame) {
+    public suspend fun onInboundWireFrame(frame: MessageWireFrame, transportPeerId: String? = null) {
         when (frame) {
             is MessageWireFrame.TextMessage -> {
                 // conversationId doubles as the transport routing key (a device id). The sender
@@ -1753,7 +1755,18 @@ public class RealFlashChatRepository(
             }
 
             is MessageWireFrame.TypingFrame -> {
-                val convTyping = typingStates.computeIfAbsent(frame.conversationId) { ConcurrentHashMap() }
+                val isGroup = conversationDao.get(frame.conversationId)?.isGroup == true
+                val typingConversationId = if (isGroup) {
+                    val members = groupMemberDao ?: return
+                    if (transportPeerId != null && frame.memberId != transportPeerId) return
+                    if (!isActiveTrustedMember(members, frame.conversationId, frame.memberId)) return
+                    frame.conversationId
+                } else {
+                    // Direct hosts historically keyed inbound typing under the transport peer rather
+                    // than the wire conversation id (which names this receiver). Preserve that behavior.
+                    transportPeerId ?: frame.conversationId
+                }
+                val convTyping = typingStates.computeIfAbsent(typingConversationId) { ConcurrentHashMap() }
                 if (frame.isTyping) {
                     convTyping[frame.memberId] = frame.memberName
                 } else {
@@ -2033,16 +2046,21 @@ public class RealFlashChatRepository(
     override fun setTyping(isTyping: Boolean) {
         val conversationId = activeConversationId ?: return
         scope.launch(ioDispatcher) {
-            transportSink?.send(
-                conversationId,
-                MessageWireFrame.TypingFrame(
-                    conversationId = conversationId,
-                    memberId = localDeviceId,
-                    memberName = localDisplayName,
-                    isTyping = isTyping,
-                    timestampMs = System.currentTimeMillis(),
-                ),
+            val frame = MessageWireFrame.TypingFrame(
+                conversationId = conversationId,
+                memberId = localDeviceId,
+                memberName = localDisplayName,
+                isTyping = isTyping,
+                timestampMs = System.currentTimeMillis(),
             )
+            if (conversationDao.get(conversationId)?.isGroup == true) {
+                groupMemberDao?.activeMembers(conversationId)
+                    ?.filter { it.deviceId != localDeviceId }
+                    ?.forEach { member -> transportSink?.send(member.deviceId, frame) }
+            } else {
+                // Keep the direct route and MessageWireFrame bytes exactly as before F5.3.
+                transportSink?.send(conversationId, frame)
+            }
         }
     }
 

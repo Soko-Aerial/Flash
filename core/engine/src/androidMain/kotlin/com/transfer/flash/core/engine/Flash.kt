@@ -514,12 +514,13 @@ private class Wiring(
         FlashTextFraming.parseFields(text, TYPING_PREFIX)?.let { f ->
             chatImpl.onInboundWireFrame(
                 MessageWireFrame.TypingFrame(
-                    conversationId = peerDeviceId,
+                    conversationId = f["conversationId"] ?: peerDeviceId,
                     memberId = f["memberId"] ?: return,
                     memberName = f["memberName"] ?: "Peer",
                     isTyping = f["isTyping"]?.toBooleanStrictOrNull() ?: false,
                     timestampMs = f["timestampMs"]?.toLongOrNull() ?: System.currentTimeMillis(),
                 ),
+                transportPeerId = peerDeviceId,
             )
             return
         }
