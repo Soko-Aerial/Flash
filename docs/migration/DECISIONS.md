@@ -6,22 +6,33 @@
 |---|---|---|
 | **D1** | **Phase 06** | The KMP pilot cannot start until the source-set strategy is chosen. Highest-leverage decision in the migration. |
 | **D2** | **Phase 06** | Only if you choose to rename; if D2 = B, the rename is its own phase run **before** Phase 06. If D2 = A, non-blocking. |
-| **D3** | **Phase 18** | Compose dependency source. Does **not** block Phase 06. |
+| **D3** | **Phase 18** | Compose dependency source. Does **not** block Phase 06. **Bound Phase 17 as well** (2026-09-05): 17 could not add `composeResources/` without the CMP plugin, so it enacted D3 = A a phase early and discharged D3's outstanding CMP-version verification. |
 | **D4** | **Phase 18** | Dynamic-color replacement. Does **not** block Phase 06. |
 | **D5** | **Phase 09** | Desktop persistence strategy. |
 | **D6** | **Phase 14** | Desktop discovery implementation. |
-| **D7** | **Phase 19** | UI platform shims. |
+| **D7** | **Phase 19** | UI platform shims. **Executed 2026-09-05 (`94a60a4`); D7b overridden on evidence** — a and c as written, but FileKit was **not** adopted. See the note under D7 below. |
 | **D8** | **Phase 22** | Whether the §15 desktop screens exist. |
 | **D9** | Phase 24 | Sample consumers; agent may proceed on the recommendation. |
+| **D10** | **Phases 13B-2, 13B-3, 15, 16** | What replaces `java.io.InputStream` in a `commonMain` signature. Added 2026-09-05 by the agent that reached Phase 13. **Answered 2026-09-05 = Option A**, with an explicit R8 authorisation for 13B-3's `ChunkFrame` rewrite (byte-identical output required). **Enacted as Okio 3.4.0 by 13B-2 (`732e7b5`, 2026-09-05); spent again by 13B-3a (`5e4e9a5`) for SHA-256. The R8 authorisation was spent and discharged by 13B-3b (`a3375e3`) — byte-identity proved on both targets and against the verbatim old serializer — so `ChunkFrame` is untouchable again. 13B-3c (`d51206b`) and 13B-3d (`293f12b`) both needed no library at all, which is evidence that D10 is correctly scoped to I/O and should not be stretched over every `java.util` type: `BitSet` became Kotlin `Long` intrinsics and the atomics became `kotlin.concurrent.atomics`. FULLY ENACTED by 13B-3e (`fa95d74`, 2026-09-06), which is where the choice actually paid for itself — `ChunkStream` now takes an `okio.BufferedSource` and `:core:transfer` is 23 `commonMain` / 3 `androidMain` / 1 `jvmMain` with a desktop end-to-end round trip asserted. Phase 13B is complete and no sub-step touched a wire format. Three properties of okio's *common* surface had to be read out of the published metadata jar because `compileCommonMainKotlinMetadata` is SKIPPED in this repo: `okio.IOException` is common, `read(ByteArray,Int,Int)` still returns −1 at EOF, and `use { }` does NOT apply to a `BufferedSource` in common code (`okio.Closeable` is an `expect interface`, and `AutoCloseable` is absent from okio 3.4.0's commonMain metadata) — that last one is the only place Option A is more awkward in common code than on the JVM, and the cost is an explicit `try`/`finally`. Two `Closeable` → `AutoCloseable` ABI breaks are the total consumer-visible price so far (`RandomAccessSinkHandle` in 13B-2, `ChunkStream` in 13B-3e); both need Phase 24 release notes.** |
+| **D11** | **a new phase, number TBD** | Is the calling stack (`:core:calling` + `:ui:callui`) in desktop scope? Added 2026-09-05 — no phase file has ever mentioned `:core:calling`. **Answered 2026-09-05 = in scope, research first.** Does not block any existing phase. |
+
+**As of 2026-09-05 every decision D1–D11 is answered.** No phase in this plan is blocked on a decision
+any more. What remains blocked is blocked on a *predecessor phase*, and two sub-items are blocked on
+narrower human input that is not a decision: 09B-2 needs D5=C's three implementation sub-answers (which
+encrypted desktop driver, is a commercial licence acceptable, SQLCipher file-format parity) and 09B-3
+needs the settings-tier ABI option (a) or (b).
 
 Earlier drafts said "D1–D4 block Phase 06." That was wrong: D3 and D4 are Compose
 decisions and cannot affect a pilot that converts a Compose-free module (`core:common`).
 Phase 06's own header states this; this table is the source of truth.
 
 Each decision lists options, consequences, and a recommendation. An agent must
-**not** pick for the human on D1, D2, D5, or D8 — those change the shape of the
+**not** pick for the human on D1, D2, D5, D8, D10 or **D11** — those change the shape of the
 project. For D3, D4, D6, D7 an agent may proceed with the recommendation if the human
-has not answered, but must record that it did so in the phase log.
+has not answered, but must record that it did so in the phase log. **All of D1–D11 now carry a human
+answer**, so this rule is currently a rule about *future* decisions and about not re-litigating the
+existing ones: if a phase seems to need a decision changed, add a new numbered decision, do not edit an
+answered one.
 
 Record answers by editing this file: replace `**ANSWER:** _pending_` with the choice
 and the date.
@@ -125,6 +136,41 @@ plugin and its artifacts, drop the Android BOM for shared UI modules. The custom
 design system (`FlashColors`, `FlashTypography`, `FlashShapes`, `FlashIcons`) is
 Flash-owned and survives unchanged — only the dependency source changes, not the visual
 identity. Phase 06 must still verify the exact CMP version against Kotlin 2.2.10.
+
+**VERIFICATION DISCHARGED — Phase 17, 2026-09-05 (`a8d9d0d`).** Phase 06 never did it (it
+converted `:core:common`, which has no Compose). Result: **CMP 1.9.3**, and the ⚠️ above is
+wrong on the key point — *"the latest CMP is always compatible with the latest Kotlin"* is true
+but useless here, because this repo's Kotlin is **frozen at 2.2.10 by R10**, not latest. Read
+from each release's `components-resources-<v>.module` on Maven Central:
+
+| CMP | declares `kotlin-stdlib` | usable at Kotlin 2.2.10? |
+|---|---|---|
+| **1.9.3** | **2.1.0** | **yes — chosen** |
+| 1.10.3 | 2.2.20 | no — would raise stdlib above the compiler |
+| 1.11.1 | 2.3.20 | no — built with Kotlin 2.3 |
+| 1.12.0 | 2.3.20 | no — built with Kotlin 2.3 |
+
+A 2.2.10 compiler cannot read metadata emitted by 2.3, so **CMP 1.12.0 — the version this
+decision's text names — is unusable**, and so is 1.11.x. 1.9.3 also happens to leave every
+Android consumer untouched: it maps to Jetpack Compose 1.9.4, *below* the 1.10.0 that
+`composeBom = "2025.12.00"` pins (material3 1.4.0), so Gradle keeps 1.10.0 and `:ui:chat`,
+`:ui:callui` and `:app` see no version change at all. CMP 1.10.3 would have dragged
+androidx.compose to 1.10.5.
+
+Two mechanical facts D3's Option A text omits, both mandatory and both discovered by build
+failure rather than by reading docs:
+
+- A CMP module applies **both** `org.jetbrains.kotlin.plugin.compose` (the compiler, tracks the
+  Kotlin version) **and** `org.jetbrains.compose` (the `compose` DSL and `Res` generation,
+  versioned independently). They are not alternatives.
+- `compose.components.resources` does **not** put the Compose runtime on the compile classpath.
+  `implementation(compose.runtime)` is required or every Kotlin compilation in the module fails
+  with `IncompatibleComposeRuntimeVersionException` — including a source set with zero
+  `@Composable`, because the compiler plugin checks unconditionally.
+
+**Consequence for the human decision queue: current CMP is unreachable without a Kotlin bump.**
+Staying on 1.9.3 is fine today. If any phase from 20 onward wants a newer CMP API, the Kotlin
+version has to move first, and R10 makes that an explicit authorisation, not an agent's call.
 
 ---
 
@@ -246,6 +292,47 @@ permissions library for one call site.
 - **b)** Adopt **FileKit** (`vinceglb/FileKit`) for file picking/saving — cross-platform shared library using native pickers. Android keeps the system document picker; no UX change there.
 - **c)** Add `expect suspend fun ensurePermission(...)` — Android `actual` uses existing `RequestPermission` + `ContextCompat` internally; desktop returns granted unconditionally. No permissions library.
 
+**EXECUTED — Phase 19, 2026-09-05 (`94a60a4`). (a) and (c) as answered; (b) overridden on evidence.**
+
+- **a) done as answered**, with two facts the answer did not have. It is **13** call sites, not the 12
+  this ANSWER says (the problem statement above says 13; grep confirms 13). And the `SnackbarHost`
+  could not go in the `Scaffold`'s `snackbarHost` slot: six of the 13 messages are raised from inside
+  the focus overlay and the media viewer, which are emitted *after* the Scaffold and paint over
+  anything it owns. It is the last sibling of the screen body instead, and every `showSnackbar` is
+  preceded by `currentSnackbarData?.dismiss()` so the newest message wins the way a Toast did.
+- **c) done as answered**, except that `ensureGranted` cannot be a *bare* `expect suspend fun`: the
+  Android `actual` needs an `ActivityResultLauncher`, which only `rememberLauncherForActivityResult`
+  can create, inside a composition. So the seam is `@Composable expect fun
+  rememberFlashPermissionRequester(): FlashPermissionRequester`, whose interface carries the
+  `suspend fun ensureGranted(FlashPermission): Boolean` the answer asks for.
+- **b) FileKit was NOT adopted.** Read at source level, not judged from its README, and ruled out on
+  three counts — each a silent behaviour change rather than a compile error:
+  1. **Toolchain.** FileKit 0.15.0 needs Kotlin 2.4.10 and CMP 1.11.1; this repo is frozen at 2.2.10 /
+     1.9.3 (CONVENTIONS R10), so the newest usable release is 0.11.0. The coordinates named above
+     (`com.vinceglb:filekit-compose`) do not exist at **any** version — the group is
+     `io.github.vinceglb` and the module is `filekit-dialogs-compose`.
+  2. **`audio/*` is not expressible.** `FileKitType.File(extensions)` maps each extension through
+     `MimeTypeMap.getMimeTypeFromExtension` and falls back to an all-files wildcard when the set is
+     empty. There is no wildcard-MIME path, so the composer's Audio filter would silently become
+     device-dependent or all-files.
+  3. **Gallery would lose its persistable grant.** `FileKitType.ImageAndVideo` routes to
+     `PickVisualMedia` — the Android photo picker, not SAF `OpenDocument`. Photo-picker URIs reject
+     `takePersistableUriPermission`, which Flash needs so the transfer engine can keep streaming a
+     picked file after the chat screen dies. This is a functional regression in the transfer path, not
+     a UX preference — and it contradicts this ANSWER's own *"Android keeps the system document
+     picker; no UX change there."*
+
+  What shipped instead is the ANSWER's stated alternative: a hand-rolled `expect`/`actual` —
+  `OpenDocument` on Android, `JFileChooser` on desktop (**not** AWT `FileDialog`, whose only filter
+  hook is `setFilenameFilter`, which Windows ignores outright — the Gallery and Audio filters would
+  become all-files with no warning). No dependency was added, so PHASE-19's Step 14 (`libs.versions.toml`
+  FileKit alias) is a no-op and R10 is untouched.
+
+  One objection to FileKit **was** cleared and is recorded so it is not re-raised: it auto-initialises
+  from `LocalActivityResultRegistryOwner`, so adopting it would not have required an `:app` change.
+  **Revisit after a Kotlin bump** — at a current CMP, only objections 2 and 3 remain, and both are
+  about Flash's specific picker contract rather than about FileKit's quality.
+
 ---
 
 ## D8 — Do the desktop screens in old plan §15 exist?
@@ -282,3 +369,233 @@ Recommended: keep them Android-only as-is through Phase 23, then add a
 **ANSWER:** Option A (chosen 2026-08-31) — keep `sample/consumer` and
 `sample/consumer-granular` Android-only as-is through Phase 23; add
 `sample/consumer-desktop` (pure JVM) in Phase 24 to validate the desktop artifact.
+
+---
+
+## D10 — How does the desktop reach the `:core:transfer` pipeline?
+
+Added 2026-09-05, by the agent that reached Phase 13 and could not execute it. **This is a new
+decision, not a re-litigation of D1.** D1 chose strict `commonMain`; D10 is the consequence nobody
+costed at the time.
+
+**When this decision was taken (measured, repo at `d8af05c`):** `:core:transfer` is 5 `commonMain` +
+15 `androidMain` files.
+**Not one of the 15 references `android.*` or `androidx.*`.** They are `androidMain` because they use
+`java.io` byte streams, `java.nio.ByteBuffer` framing, `java.security.MessageDigest`,
+`java.util.concurrent` atomics and maps, `java.util.UUID` and `java.util.BitSet` — and under D1 = B
+there is no shared JVM tier to hold them. `androidMain` and `jvmMain` are siblings, so **nothing in
+`jvmMain` can see any of it**: a compile probe of Phase 13's own proposed adapters produced 11
+`Unresolved reference` errors, including the `chunked` and `policy` **packages** themselves.
+*(That census is a snapshot of the problem, not of the repo. It is superseded — see* ***FULLY ENACTED
+2026-09-06*** *at the end of this decision for the figures after all five 13B-3 sub-steps landed.)*
+
+The blocker is specifically that `java.io.InputStream` appears in *published* `public` signatures:
+`ChunkSource.open(): InputStream`, `FileSourceOpener.open(String): InputStream`,
+`RandomAccessSinkHandle : Closeable`, `FileRandomAccessSinkHandle(File, Long)`.
+
+**Option A — adopt a multiplatform I/O library and re-type the seams (RECOMMENDED).**
+`kotlinx-io` (`kotlinx.io.Source`/`Sink`/`RawSource`) or Okio. One new dependency. ABI change on
+four `public` types, of which three have **zero** first-party consumers; the three `RandomAccess*`
+types have exactly two callers each (`core/engine/…/Flash.kt`, `app/…/DiscoveryEngineHolder.kt`),
+both constructing over a `java.io.File`, so an Android-side `File` overload keeps consumer edits at
+zero. The only option under which a Kotlin/Native target can ever compile this module — which is the
+same hole R6.1 records.
+
+**Option B — in-repo `expect`/`actual` typealiases to `java.*`.** `public expect class
+PlatformInputStream` with `actual typealias PlatformInputStream = java.io.InputStream` in both
+`androidMain` and `jvmMain`. No new dependency, no consumer edits, Android JVM signatures unchanged.
+But it is JVM-shaped multiplatform: a native target has nothing to alias to, and `java.nio.ByteBuffer`
+has no native analogue at all, so this defers the problem rather than solving it. Cheapest path to a
+working desktop transfer; dead end for "all platforms".
+
+**Option C — duplicate the pipeline in `jvmMain`.** No ABI change, no dependency, Android
+`ChunkFrame` stays byte-identical. Rejected on principle: two independent implementations of a wire
+format is exactly what R8 exists to prevent, and the one duplicate the repo already has
+(`AutoConnectGate`) has been filed as a Known issue twice. Listed for completeness.
+
+**Option D — desktop gets no transfer pipeline.** `:core:transfer`'s desktop artifact stays
+contract-only (15 interface/data classes, no chunker, no sink). Phase 13 becomes a documented no-op,
+Phase 15's desktop transport carries bytes for a pipeline that does not exist on the desktop side,
+and Phase 16's headless interop gate cannot pass. This is the honest description of doing nothing.
+
+**Constraint that applies to A, B and C alike:** `chunked/ChunkFrame.kt` builds the CHUNK wire frame
+with `java.nio.ByteBuffer`, and `ChunkFrame` is named in R8's untouchable list. Whichever option is
+chosen, the framing rewrite needs an explicit authorisation from the human, with byte-identical
+output as the acceptance criterion. See `PHASE-13B-desktop-fileio.md` §13B-3.
+
+**Recommendation:** **A**, staged. Run 13B-1 now (decision-free, no dependency, no ABI change),
+then adopt the I/O library in 13B-2, then do the framing/hashing/atomics port in 13B-3 under an
+explicit R8 authorisation.
+
+**ANSWER:** **Option A (chosen 2026-09-05)** — adopt a multiplatform I/O library and re-type the four
+seams. Staged exactly as recommended: 13B-1 (already done, `fafd450`) → 13B-2 adopts the library and
+re-types `ChunkSource.open()`, `FileSourceOpener.open(String)`, `RandomAccessSinkHandle` and
+`FileRandomAccessSinkHandle` → 13B-3 ports the framing, hashing and atomics. An Android-side `File`
+overload keeps first-party consumer edits at zero (`core/engine/…/Flash.kt`,
+`app/…/DiscoveryEngineHolder.kt`). This is the only option under which a Kotlin/Native target can ever
+compile `:core:transfer`, which is the same hole CONVENTIONS.md R6.1 has recorded since Phase 07.
+
+**R8 AUTHORISATION FOR 13B-3 (granted 2026-09-05):** the human has explicitly authorised the rewrite of
+`chunked/ChunkFrame.kt`, which builds the CHUNK wire frame with `java.nio.ByteBuffer` and is named on
+R8's untouchable list. **The acceptance criterion is byte-identical output** against the current Android
+implementation: golden vectors captured from the existing frames before the rewrite, asserted after it,
+and **13B-3 does not ship if any byte differs**. This authorisation covers `ChunkFrame` only. It does
+**not** extend to `FlashEnvelope`, `FlashProtocol`, `MessageWireFrame`, `WsTransferMessages`, `TxtCodec`
+or `FlashPairingFrames`, which remain untouchable under R8 without a separate authorisation.
+
+The choice between `kotlinx-io` and Okio is left to 13B-2 as an implementation detail, to be decided on
+evidence and recorded in its log entry. It is a new dependency, so it needs a new
+`gradle/libs.versions.toml` alias — permitted because R10 allows a phase that explicitly adds a
+dependency to add one, and 13B-2 is that phase.
+
+**ENACTED 2026-09-05 by 13B-2 (`732e7b5`): Okio 3.4.0.** Not a preference — `kotlinx-io-core` 0.8.2's
+`FileSystem` is sequential-only (`source`/`sink`, no `FileHandle`, no positional write) and cannot
+express `RandomAccessSinkHandle.writeAt(byteOffset, data)` at all, so it was not a candidate once the
+handle seam was in scope. `3.4.0` rather than the current `3.17.0` because `androidx.datastore` already
+resolves `com.squareup.okio:okio:3.4.0` onto `:app`, which makes the declaration resolution-neutral
+under R10. The alias points at the **root** multiplatform module, never `okio-jvm`. Full evidence and
+the verification commands are in the `gradle/libs.versions.toml` comment; the ABI consequence
+(`RandomAccessSinkHandle`: `java.io.Closeable` → `kotlin.AutoCloseable`) is queued for Phase 24.
+**13B-3 is now unblocked** — its R8 authorisation above is still the only thing it needs.
+
+**PROGRESS 2026-09-05 (`5e4e9a5`): 13B-3 is being executed as five commits, and the first, 13B-3a, is
+done.** It moved `chunked/Sha256.kt` to `commonMain` on Okio's `HashingSink` — a second use of this
+decision's dependency, with no module edge, no new alias and no ABI break. It had to go first: the
+`ChunkFrame` this decision's R8 authorisation covers calls `Sha256.isValidHex`, `normalizeHex`,
+`HEX_LENGTH` and `RAW_LENGTH`, so the framing rewrite was gated on hashing rather than the reverse.
+**The R8 authorisation was therefore NOT spent by 13B-3a** — `chunked/ChunkFrame.kt` is byte-for-byte
+untouched, and 13B-3b is the sub-step that uses it, under the byte-identical criterion stated above.
+
+**THE R8 AUTHORISATION IS NOW SPENT. 2026-09-05 (`a3375e3`): 13B-3b executed it, and `ChunkFrame`
+returns to untouchable status.** `chunked/ChunkFrame.kt` is in `commonMain` on Okio, and the acceptance
+criterion was discharged twice over rather than argued:
+
+1. **Eleven golden hex vectors** captured from the shipping `java.nio.ByteBuffer` implementation
+   *before* a line was edited, now committed as `commonTest/…/ChunkFrameGoldenVectorTest.kt` so
+   `testAndroidHostTest` **and** `jvmTest` both assert them — one target agreeing would have proved
+   nothing, since the claim is that one implementation serves both.
+2. **A temporary differential test** holding the pre-rewrite serializer verbatim and asserting it
+   byte-for-byte against the new one over the eleven shapes plus 4000 pseudo-random frames
+   (`PARITY|unpairedSurrogatesExercised=2967`). This is what makes the golden hex faithful to the *old*
+   bytes rather than to a transcription of them: old == new mechanically, new == golden hex in the
+   committed suite. Deleted before the commit; never committed.
+
+Not a field, not an order, not a width, not the endianness changed, and no `public` signature moved, so
+there is nothing here for Phase 24's release notes. **Any future edit to `ChunkFrame` needs a fresh
+authorisation**, on the same footing as `FlashEnvelope`, `FlashProtocol`, `MessageWireFrame`,
+`WsTransferMessages`, `TxtCodec` and `FlashPairingFrames`, which were never in scope and are untouched.
+
+One correction this decision should carry, because it is the reason Okio rather than the stdlib was used
+for the encoder: 13B-3a predicted that `String.toByteArray(Charsets.UTF_8)` and
+`String.encodeToByteArray()` diverge on an unpaired surrogate. Measured, **they do not diverge on the
+JVM** — `kotlin-stdlib`'s JVM `actual` for `encodeToByteArray()` *is* `toByteArray(Charsets.UTF_8)`, so
+they are identical by construction, and all three candidate encoders emitted `0x3F`. The risk is real
+but lives on **Kotlin/Native**, whose `actual` no artifact in this environment can show. Okio's
+`commonWriteUtf8` is a single `commonMain` implementation whose surrogate branch is
+`writeByte('?'.code)`, so it removes the question instead of answering it for one platform. Full
+evidence in the 13B-3b log entry.
+
+~~**Remaining 13B-3 sub-steps, none of which touch a wire format:** 13B-3c (`java.util.BitSet`),
+13B-3d (atomics, `ConcurrentHashMap`, `UUID`), 13B-3e (the pipelines).~~ **There are none left.
+13B-3c (`d51206b`), 13B-3d (`293f12b`) and 13B-3e (`fa95d74`) are all done, and not one of the three
+opened `ChunkFrame.kt`** — the R8 authorisation was spent by 13B-3b and nothing after it needed the
+file.
+
+**FULLY ENACTED 2026-09-06 by 13B-3e (`fa95d74`).** Option A is finished, and the census that opens this
+decision is the right way to measure the result, because it is the same count taken again:
+
+| | At `d8af05c`, when D10 was asked | At `fa95d74`, with D10 enacted |
+|---|---|---|
+| `commonMain` | 5 | **23** |
+| `androidMain` | 15 | **3** |
+| `jvmMain` | 0 | **1** |
+| `commonTest` | 1 | **13** |
+| `androidHostTest` | 13 | **5** |
+| `jvmTest` | 0 | 0 |
+
+The three files still in `androidMain` are there for reasons that have nothing to do with this decision,
+and it is worth naming them so nobody reads "3" as unfinished work:
+
+1. **`concurrent/PlatformLock.android.kt`** — an `actual`. Its `jvmMain` sibling is the single `jvmMain`
+   file. A platform declaration is the *intended* end state, not a residue.
+2. **`policy/DestinationPolicy.kt`** — genuinely still Java-typed (`import java.io.File`,
+   `java.io.OutputStream`). It is the SAF/destination seam and it needs its own decision about what a
+   desktop destination even is; D10 was scoped to the *pipeline*, and moving this file would have been
+   R1 scope creep.
+3. **`model/WsTransferModels.kt`** — has **no** platform imports at all. It is dead code that
+   `PHASE-13B-desktop-fileio.md` explicitly forbids deleting, so it stayed where it was rather than
+   being moved for tidiness.
+
+`jvmTest` is 0 for `:core:transfer` and that is not a gap in this decision's sense: `commonTest`'s 13
+files run under **both** `testAndroidHostTest` and `jvmTest`, which is how the desktop target gets its
+102 tests. A file in `jvmTest` proper would be a desktop-*only* test, and 13B-3 had no reason to write
+one.
+
+**What Option A actually bought, stated so it can be checked:** a desktop JVM host can open a file,
+chunk it, hash it, frame it to FLSH v2, send it, receive it, verify it and resume it — in common code,
+with no `java.*` in any of it. That was impossible at `d8af05c`, when a compile probe of the same
+functionality returned 11 `Unresolved reference` errors on the `chunked` and `policy` packages.
+
+**What it cost, in full:** one new dependency (Okio 3.4.0, resolution-neutral), and **two**
+`java.io.Closeable` → `kotlin.AutoCloseable` ABI breaks on `public` types — `RandomAccessSinkHandle`
+(13B-2) and `ChunkStream` (13B-3e). Neither was predicted by the phase file; both are queued for Phase
+24's release notes, which now need a *list* rather than a sentence. Because ADR-023 removed binary
+compatibility validation repo-wide, the log entries and those release notes are the **only** record of
+these breaks — nothing mechanical will catch a third one.
+
+**One thing this decision could not verify, and Option A does not fix:** Okio's *common* surface had to
+be read out of the published `*-metadata-*-all.jar` by hand (`unzip` + `grep -a` over the `.knm` files,
+plus `javap` for the JVM signatures), because `compileCommonMainKotlinMetadata` is **SKIPPED** in this
+repo — android and jvm are both JVM platform type, so no Gradle task certifies that `commonMain` uses
+only a dependency's common API. Three properties mattered and all three were verified that way:
+`BufferedSource.exhausted()` and `read(ByteArray, Int, Int): Int` (−1 at EOF) are common,
+`okio.IOException` is common, and **`use { }` is not reachable on a `BufferedSource` in common code** —
+`okio.Closeable` *is* in okio's `commonMain`, but only as an `expect interface` whose JVM `actual` is a
+typealias to `java.io.Closeable`, and `AutoCloseable` is absent from okio 3.4.0's commonMain metadata
+altogether, so neither `kotlin.io.use` (`java.io.Closeable`) nor `kotlin.use` (`kotlin.AutoCloseable`)
+applies. 13B-3e uses explicit `try`/`finally`. When a phase's
+correctness rests on a third-party library's common surface, the metadata jar is the gate, and it must
+be opened by hand.
+
+---
+
+## D11 — Is the calling stack (`:core:calling` + `:ui:callui`) in desktop scope?
+
+Added 2026-09-05, by the agent that finished Phase 20 and audited the phase index. **This decision
+exists because the plan never had one.** Grepping every file in `docs/migration/` for `core:calling`
+returns hits in `CONVENTIONS.md` and `README.md` only — **no phase file mentions `:core:calling` at
+all**, and none converts or gates `:ui:callui` either.
+
+**Today (measured 2026-09-05):** both modules are still `com.android.library`. `:ui:callui` depends on
+`:ui:theme` (`ui/callui/build.gradle.kts:62`) and names `FlashIconSpec` (`FlashCallScreen.kt:486`), so it
+sits inside the blast radius of Phases 17, 18 and 19 — all three of which are done. The verification runs
+for 09B-1, 17, 18 and 19 each added `:ui:callui:compileDebugKotlin` **by hand**, because nothing in the
+plan compiles it. Since Phase 18 it has been compiling against a `:ui:theme` that is multiplatform, so
+the gap widens with every UI phase instead of holding still. `:core:calling` is the WebRTC module and is
+the substantive half of the problem.
+
+**Option A — out of scope, documented.** Both stay Android-only permanently. Cheap and honest, but leaves
+`:ui:callui` structurally exposed to every future `:ui:theme` change with only a hand-added compile task
+as a net.
+
+**Option B — in scope, research first (RECOMMENDED, and chosen).** A new phase file whose **first step is
+a research step**, not a conversion step: which WebRTC implementation exists for desktop JVM, what it
+would pin against the frozen toolchain (R10: Gradle 9.5.0 / AGP 9.3.1 / Kotlin 2.2.10 / JVM_11), whether
+the existing signalling and `:core:messaging` seams survive it, and what the ABI consequences are. It
+reports before proposing any conversion. **WebRTC on desktop is not a small assumption to make
+silently** — that is exactly why this is a decision and not an agent judgement call.
+
+**Option C — defer, but wire the gate.** Add `:core:calling` and `:ui:callui` compile tasks to the
+documented R3 command line so the widening gap is *measured* rather than assumed, and decide later.
+
+**ANSWER:** **Option B (chosen 2026-09-05)** — **in desktop scope, research first.** The phase must open
+with the WebRTC-for-desktop-JVM investigation and report its findings before proposing any conversion
+work; it must not begin by converting either module. Option C's gate wiring should be folded in as a
+cheap side-effect regardless of what the research concludes, since it costs one line in the R3 command
+and turns an assumption into a measurement.
+
+**This decision blocks nothing that already exists.** It authorises a *new* phase, whose number is TBD
+and which must not be inserted ahead of 15/16 — D10 = A has unblocked the critical path and **the whole
+of Phase 13B is now done** (13B-2 `732e7b5`, 13B-3a `5e4e9a5`, 13B-3b `a3375e3`, 13B-3c `d51206b`,
+13B-3d `293f12b` all landed 2026-09-05; 13B-3e `fa95d74` on 2026-09-06), and the Phase 16 interop gate
+outranks calling. **Phase 15 is the next executable unit**, so this phase goes after 16 at the earliest.

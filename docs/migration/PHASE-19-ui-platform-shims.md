@@ -1,5 +1,94 @@
 # PHASE-19: UI Platform Shims
 
+> ## STATUS: DONE — 2026-09-05, commit `94a60a4`
+>
+> **Read this box before following anything below it.** Twelve statements in this file are wrong or
+> unbuildable as written, and two of them (1 and 2) make the shim shape this file specifies
+> impossible. One numbered "Do NOT" was deliberately overridden (item 5) and one sub-decision was
+> overridden on evidence (item 3). Full account in `logs/migration.md` → "Phase 19 —
+> `:ui:platform-shims`, and `:ui:chat` off `android.*`".
+>
+> **Cannot be built as specified:**
+>
+> 1. **Every seam is a `@Composable` factory returning a handle, not the bare `expect fun` sketched
+>    here.** `rememberDecodeImageBitmap` cannot be `@Composable`-and-return-a-bitmap: both call sites
+>    decode inside `produceState`'s producer, which is a **suspend** lambda, not a composable scope.
+>    And `rememberFlashPermissionRequester` **must** be composable — the Android actual needs an
+>    `ActivityResultLauncher`, which only `rememberLauncherForActivityResult` can create.
+> 2. **`expect class FlashAudioPlayer` / `expect class FlashVoiceRecorder` cannot be written.** An
+>    `expect class` forces one shared constructor signature; the Android implementations need a
+>    `Context` and the desktop ones must not have one. Both are `interface` + `expect fun remember…`.
+>    This is what costs `ui-chat` two public types (Phase 24 release note).
+> 3. **D7b (FileKit) is overridden — no library was added, so Step 14 is a no-op.** FileKit was read at
+>    source level: (a) 0.15.0 needs Kotlin 2.4.10 / CMP 1.11.1 against this repo's frozen 2.2.10 /
+>    1.9.3, so the newest usable release is 0.11.0 — and D7b's coordinates `com.vinceglb:filekit-compose`
+>    do not exist at any version (it is `io.github.vinceglb:filekit-dialogs-compose`); (b) `audio/*` is
+>    not expressible through `FileKitType`, which maps extensions through `MimeTypeMap` and has no
+>    wildcard-MIME path; (c) `FileKitType.ImageAndVideo` routes to `PickVisualMedia`, whose URIs reject
+>    `takePersistableUriPermission` — the grant the transfer engine needs to keep streaming after this
+>    screen dies. That last one is a functional regression in the transfer path. FileKit's
+>    auto-initialisation from `LocalActivityResultRegistryOwner` **was** verified as fine, so revisit
+>    after a Kotlin bump.
+> 4. **`computeInSampleSize` is a *parameter* of `decode`, not decoder-internal logic.** The tested
+>    implementation is `:ui:chat`'s `FlashMediaViewerMath`, which lives in the module that *depends* on
+>    the shims. Calling it from there is a cycle; copying it forks a tested function.
+>
+> **Wrong counts and wrong quoted code:**
+>
+> 5. **`context` IS deleted from `FlashConversationScreen.kt`, against this file's explicit "Do NOT".**
+>    That prohibition's stated reason — still needed for image decode, file picker, voice recorder —
+>    stops being true once all three go through shims that acquire the context themselves. Nothing
+>    references it afterwards.
+> 6. **It is 9 Android-pinned files out of 48, not "7 of 46".** `FlashMediaDecoder.kt` (9 pins:
+>    `BitmapFactory`, `MediaMetadataRetriever`, `ExifInterface`, `LruCache`, …) is **absent from this
+>    entire file**, never mentioned once, though it is where `:ui:chat`'s decoding lived and is now the
+>    body of `FlashImageDecoder.android.kt`. `FlashVoiceMessageCard.kt` (1 pin) is missing from the
+>    inventory table though the steps reach it.
+> 7. **There are 7 shims, not 8.** Shim 3, `showTransientMessage`, does not exist: D7a=Snackbar makes it
+>    a `SnackbarHostState` in `:ui:chat`, not a shim. The "Risk" header's *"8 distinct shims touch 7
+>    files"* is wrong twice.
+> 8. **The `SnackbarHost` placement is not in the `Scaffold`'s `snackbarHost` slot**, which is what a
+>    literal reading gives. Six of the 13 messages are raised from inside the focus overlay and the
+>    media viewer, both emitted *after* the Scaffold and painted over anything it owns. The host is the
+>    last sibling of the screen body, with navigation-bar insets, and each `showSnackbar` is preceded by
+>    `currentSnackbarData?.dismiss()` to keep Toast's newest-wins behaviour.
+> 9. **`rememberFlashAudioPlayer` narrows the `remember` key set** from
+>    `(attachment.id, attachment.uri, hasAudio)` to `(context, uri)`, with `hasAudio` folded into a
+>    nullable `uri`. `attachment.id` is dropped.
+> 10. **The desktop source set is `jvmMain` and its files are `X.jvm.kt`**, not `desktopMain` /
+>     `X.desktop.kt`. R5 mandates plain `jvm()`, so the real task is **`compileKotlinJvm`** —
+>     `compileKotlinDesktop` does not exist. Android tasks are `compileAndroidMain` and
+>     `testAndroidHostTest`, not `compileDebugKotlin`/`testDebugUnitTest`, because the KMP Android
+>     target is variant-free.
+> 11. **The quoted `ui/chat/build.gradle.kts` is not this repo's.** It claims 71 lines, `compileSdk =
+>     35`, `minSdk = 26`, `VERSION_17`; the real file was **69** lines (74 after this phase) with
+>     `compileSdk = 37`, `minSdk = 24`, `VERSION_11`, plus a `consumerProguardFiles` line, a
+>     `buildTypes { release { … } }` block and a `singleVariant("release") { withSourcesJar() }` block
+>     the quote omits entirely. Pasting it would drop the release config and lower both SDK levels.
+>     Two more stale numbers: `FlashConversationScreen.kt` is 803 lines, not 686; `FlashAudioPlayer.kt`
+>     is 93, not 85 — so the appendix's line-anchored tables cannot be navigated by number.
+> 12. **`libs.androidx.activity.compose` and `libs.androidx.core.ktx` are left in `:ui:chat`** although
+>     nothing there references them any more. Dropping a published runtime dependency is a separate
+>     decision (R1), and Phase 20 rewrites that file anyway.
+>
+> **Two build failures worth inheriting** (both in the log, with output): a KDoc containing the
+> all-files MIME wildcard **terminates the comment** — `*/` closes it no matter how the `/` is escaped,
+> so that wildcard must be written in prose inside block comments; and `compose.ui` ships skiko's Java
+> API but **not** its native library, so a `jvmTest` that touches `toComposeImageBitmap()` needs
+> `implementation(compose.desktop.currentOs)` on the test classpath or six decoder tests fail — or,
+> worse, silently pass while verifying nothing, because `decode`'s `runCatching` reports a missing
+> native as "this image does not decode".
+>
+> **Verified:** `compileKotlinJvm` OK, `compileAndroidMain` OK, `jvmTest` 34/0,
+> `testAndroidHostTest` 4/0, `:ui:chat:assembleDebug` OK, `:ui:chat:testDebugUnitTest` 239/0,
+> `:ui:callui:compileDebugKotlin` OK. Repo-wide **1093 tests / 12 failures / 0 skipped / 146 XMLs**;
+> the 12 are the unchanged pre-existing `:core:persistence` ones. `:ui:chat/src/main` now has **0**
+> `android.*` imports, **0** `androidx.activity`, **0** `LocalContext`/`ContextCompat`.
+>
+> **Not done here, contrary to Phase 18's log:** desktop reduce-motion detection and desktop sound
+> output. This file has no step for either, and both need a library decision (R10). They have **no
+> owning phase** — see the log's Next step table.
+
 **Blocked by:** PHASE-18 (ui:theme KMP)
 **Gated by:** D7 (UI platform shims: build or adopt?) — **DO NOT EXECUTE until D7 answered**
 **Risk:** Significant — 8 distinct shims touch 7 files; Desktop no-op stubs must be verified for correctness

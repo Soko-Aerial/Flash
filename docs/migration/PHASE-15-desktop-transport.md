@@ -1,5 +1,68 @@
 # Phase 15 — Desktop transport (`core:network`)
 
+> **CORRECTION — 2026-09-06. Read this before anything below it.**
+>
+> This file was written on 2026-08-31, before **D1 was answered as Option B**. Its plan is built on
+> an intermediate source set that does not exist and must never be created, so **Steps 3–12 as
+> written are void**. Everything in the correction below was measured in the repo at `ff1d36a`; the
+> phase's *goal* and its *Do NOT* list both survive intact.
+>
+> **Defect 1 — the whole seam strategy is `jvmAndAndroidMain`-based, and that tier is forbidden.**
+> The header requires the shared WS plumbing to be in *"`commonMain` or `jvmAndAndroidMain`"*; the
+> placement table puts `WsLog.kt` and a new `WsFlashNetworkBase.kt` there and moves
+> `WsTransferServer`/`WsConnection`/`WsSession`/`WsTransferClient` there; Seams 1–3 are all
+> "extract into `jvmAndAndroidMain`". **`jvmAndAndroidMain` has never existed in this repo**, and
+> **R5 plus D1 = Option B forbid creating it** (`git log --diff-filter=A -- '*/jvmAndAndroidMain/*'`
+> is empty; `find . -name jvmAndAndroidMain -type d` finds nothing). Its own precondition 4 —
+> *"D1 = A in `DECISIONS.md` (jvmAndAndroidMain intermediate source set exists)"* — is therefore not
+> merely unmet but **unachievable**. Under D1 = B there are exactly two destinations for a file:
+> `commonMain` (and then it may use neither `java.*` nor `android.*`) or one platform source set
+> (and then the other platform gets nothing). There is no shared-JVM middle.
+>
+> **Defect 2 — the "Phase 10 correction note" is already satisfied and describes a state that never
+> occurred.** Lines 15–18 say Phase 10 placed `LanProbeServer.kt` in `jvmAndAndroidMain` and that
+> this is a `compileKotlinJvm` error needing an in-place fix. `LanProbeServer.kt` is in
+> **`androidMain`** today and has been since Phase 10; `compileKotlinJvm` is green and has been for
+> five phases. There is nothing to correct. The underlying observation is still true and still
+> useful — its `onPeerProbed` callback references `LanSession`, which is `androidMain` — so the file
+> cannot move to `commonMain` while that signature stands. That is a fact about a future sub-step,
+> not a defect to repair.
+>
+> **Defect 3 — the census in "Why `core:network` needs a new `jvmMain` class" is wrong in every
+> column.** It claims 13 `commonMain`, 9 `jvmAndAndroidMain`, 12 `androidMain`. Measured at
+> `ff1d36a`:
+>
+> | Source set | This file claims | Actually (2026-09-06) |
+> |---|---|---|
+> | `commonMain` | 13 | **14** |
+> | `jvmAndAndroidMain` | 9 | **does not exist** |
+> | `androidMain` | 12 | **21** |
+> | `jvmMain` | (1 new) | **0** |
+> | `commonTest` | — | **7** (was 1 before Phase 15-1) |
+> | `androidHostTest` | — | **15** (was 21; 14 suites + `SoftwareCertMaker`) |
+> | `jvmTest` | — | **0** |
+>
+> The nine files it wanted in `jvmAndAndroidMain` are all in `androidMain`. That is not a placement
+> error: it is the only legal place for them under D1 = B, because every one of them needs `java.*`.
+>
+> **Defect 4 — two of the four task names in its verification block do not exist.** It calls
+> `:core:network:compileKotlinAndroid` and `:core:network:androidHostTest`. Per **R3.1** the real
+> names are `compileAndroidMain`, `testAndroidHostTest`, `compileKotlinJvm` and `jvmTest`. A copy of
+> its verification block will fail with *"Task 'compileKotlinAndroid' not found"* — and, worse, its
+> baseline claim of *"102 tests across 19 classes"* via `testDebugUnitTest` is from the pre-KMP
+> build. The measured baseline for this module is in the table above and in Phase 15-1's log entry.
+>
+> **What survives the correction, unchanged and binding:** the phase's purpose (give the desktop a
+> `FlashNetwork` that speaks the *same* WS wire protocol as Android's `WsFlashNetwork`), and the whole
+> **Do NOT** list — do not change `PROTOCOL_VERSION`, `HELLO_PREFIX`, port 45822, the handshake or the
+> frame encoding; do not modify `WebSocketCodec.kt`, `SecureSocketUpgrader.kt`,
+> `FlashTlsContextFactory.kt`, `TofuX509TrustManager.kt` or `FlashPinVerifier.kt` (R8-sensitive); do
+> not touch `DataChannelClient.kt`/`DataChannelServer.kt`; do not delete `LanProbeServer.kt`; do not
+> introduce new external dependencies; do not wire the engine composition root (that is Phase 21); do
+> not change `WsFlashNetwork`'s public API, because `Flash.kt:170` must keep compiling.
+>
+<!-- CORRECTION-BLOCK-CONTINUES -->
+
 **Blocked by:** Phases 13 (desktop file I/O) and 14 (desktop discovery). Phase 10 (core:network KMP)
 must be complete — the commonMain `FlashNetwork` contract, `WsConnection.Listener`, `TlsOptions`,
 `WebSocketCodec`, `SecureSocketUpgrader`, and all resilience policies must be in `commonMain` or

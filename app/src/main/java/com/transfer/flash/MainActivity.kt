@@ -795,22 +795,26 @@ private fun FlashShell(
                             if (peerId != null && transfers != null) {
                                 val mime = guessMimeType(displayName)
                                 if (conversationState.header.isGroup) {
-                                    // F4: group media — one intro + one transfer per active member,
-                                    // all sharing the SAME wireFileId so receivers correlate them and
-                                    // a later re-pull resumes the original session.
+                                    // F4: one shared chat identity/file identity, plus a distinct
+                                    // recipient transfer identity carried by both intro and FILE_START.
+                                    val sharedMessageId = java.util.UUID.randomUUID().toString()
                                     val sharedWireFileId = java.util.UUID.randomUUID().toString()
                                     scope.launch {
                                         chatRepository.groupMembers(peerId)
                                             .filter { it.id != engine.localDeviceId }
                                             .forEach { member ->
-                                                val identity = chatRepository.beginGroupAttachment(
+                                                val recipientTransferId = java.util.UUID.randomUUID().toString()
+                                                val announced = chatRepository.beginGroupAttachment(
                                                     groupId = peerId,
                                                     recipientDeviceId = member.id,
+                                                    messageId = sharedMessageId,
+                                                    transferId = recipientTransferId,
+                                                    wireFileId = sharedWireFileId,
                                                     fileName = displayName,
                                                     mimeType = mime,
                                                     sizeBytes = size,
-                                                    wireFileId = sharedWireFileId,
                                                 )
+                                                if (!announced) return@forEach
                                                 val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == member.id }
                                                 val targetDevice = FlashDevice(
                                                     id = FlashDeviceId(member.id),
@@ -819,14 +823,15 @@ private fun FlashShell(
                                                 )
                                                 transfers.sendFile(
                                                     targetDevice, uri, displayName, size,
+                                                    transferId = recipientTransferId,
                                                     wireFileId = sharedWireFileId,
                                                 )
                                             }
-                                        // The sender's own chat row: one bubble per group send,
-                                        // keyed by the shared wire identity.
-                                        chatRepository.sendAttachment(
+                                        // One sender bubble for the group, keyed by its shared message id.
+                                        chatRepository.sendGroupAttachment(
                                             conversationId = peerId,
-                                            transferId = sharedWireFileId,
+                                            messageId = sharedMessageId,
+                                            transferId = sharedMessageId,
                                             fileName = displayName,
                                             mimeType = mime,
                                             sizeBytes = size,
@@ -876,19 +881,24 @@ private fun FlashShell(
                                 }.getOrDefault(0L)
                                 if (conversationState.header.isGroup) {
                                     // F4: identical fan-out to onSendFile's group path, with voice meta.
+                                    val sharedMessageId = java.util.UUID.randomUUID().toString()
                                     val sharedWireFileId = java.util.UUID.randomUUID().toString()
                                     scope.launch {
                                         chatRepository.groupMembers(peerId)
                                             .filter { it.id != engine.localDeviceId }
                                             .forEach { member ->
-                                                chatRepository.beginGroupAttachment(
+                                                val recipientTransferId = java.util.UUID.randomUUID().toString()
+                                                val announced = chatRepository.beginGroupAttachment(
                                                     groupId = peerId,
                                                     recipientDeviceId = member.id,
+                                                    messageId = sharedMessageId,
+                                                    transferId = recipientTransferId,
+                                                    wireFileId = sharedWireFileId,
                                                     fileName = fileName,
                                                     mimeType = "audio/mp4",
                                                     sizeBytes = size,
-                                                    wireFileId = sharedWireFileId,
                                                 )
+                                                if (!announced) return@forEach
                                                 val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == member.id }
                                                 val targetDevice = FlashDevice(
                                                     id = FlashDeviceId(member.id),
@@ -897,12 +907,14 @@ private fun FlashShell(
                                                 )
                                                 transfers.sendFile(
                                                     targetDevice, localPath, fileName, size,
+                                                    transferId = recipientTransferId,
                                                     wireFileId = sharedWireFileId,
                                                 )
                                             }
-                                        chatRepository.sendAttachment(
+                                        chatRepository.sendGroupAttachment(
                                             conversationId = peerId,
-                                            transferId = sharedWireFileId,
+                                            messageId = sharedMessageId,
+                                            transferId = sharedMessageId,
                                             fileName = fileName,
                                             mimeType = "audio/mp4",
                                             sizeBytes = size,

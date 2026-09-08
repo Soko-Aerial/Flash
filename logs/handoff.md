@@ -1,5 +1,41 @@
 # Current Handoff
 
+## 2026-09-08 (d) — Dev + KMP integration assembled and verified on `integration/dev-kmp`
+
+### Current branch
+`integration/dev-kmp`. Dev checkpoint `268487f` preserves the original feature tree; the KMP merge
+is resolved and staged but not committed yet. `New folder/` and root CLI diagnostics remain unrelated
+untracked session data and must never be staged.
+
+### Last verified build
+`:app:assembleDebug` is green. Targeted Android/JVM suites are green across every converted module,
+plus calling, call UI and app. Live results after removing obsolete pre-KMP XML directories:
+**1702 tests / 12 known Windows DataStore failures / 0 errors / 0 skipped across 217 XMLs**. Only
+`:core:persistence:testAndroidHostTest` has failures (the existing DataStore environment set).
+
+### Last change
+- Integrated KMP source sets, Room KMP, Compose Multiplatform resources/shims and desktop JVM tests
+  with all dev features/optimizations.
+- Ported transfer behavior onto Okio/KMP locks/atomics without changing the protected `ChunkFrame`
+  wire codec.
+- Group media identity fixed: shared group message + wire id, exact per-recipient transfer id carried
+  in both GMEDIA and FILE_START; sender row uses the group message id.
+- Group sync now returns per-message SyncAck and partial acks cannot cancel unacknowledged pushes.
+- UI/media optimizations remain behind platform shims; common UI stays Android-free.
+
+### Recommended next task
+1. Review staged merge and create the merge commit when approved.
+2. Move the verified merge result to `dev`.
+3. Run the physical three-device group/media/sync regression matrix.
+4. Continue desktop transport from corrected `docs/migration/PHASE-15-desktop-transport.md`.
+
+### Files most relevant to next task
+- `core/messaging/src/androidMain/.../RealFlashChatRepository.kt`
+- `core/messaging/src/commonMain/.../FlashChatRepository.kt`, `protocol/GroupWireFrame.kt`
+- `core/transfer/src/commonMain/.../RealFlashTransferRepository.kt`
+- `app/src/main/java/com/transfer/flash/MainActivity.kt`
+- `docs/migration/CONVENTIONS.md`, `docs/migration/PHASE-15-desktop-transport.md`
+
 ## 2026-09-08 (c) — F-series: F1–F3 DONE, F4 core DONE (group media in chat), F4b + audit follow-ups queued — uncommitted
 
 ### Current branch

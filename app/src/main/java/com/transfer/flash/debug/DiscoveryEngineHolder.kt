@@ -78,6 +78,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import okio.source
 
 /**
  * Process-wide engine holder for the debug Dev Console and background service.
@@ -522,7 +523,9 @@ object DiscoveryEngineHolder {
                 }
             },
             fileSourceOpener = { uriString ->
-                openSource(uriString, appContext)
+                // Phase 13B-2: FileSourceOpener.open() returns okio.Source; openSource() still
+                // yields the ContentResolver's InputStream, bridged here with `.source()`.
+                openSource(uriString, appContext).source()
             },
             store = RoomTransferStore(db.transferDao(), db.transferChunkDao()),
             // #5: park every outbound send after FILE_START until the receiver accepts (a RESUME).
@@ -674,11 +677,11 @@ object DiscoveryEngineHolder {
         // to SharedPreferences (AndroidPreferencesTrustStore), so paired peers survive restarts.
         val crypto = KeystoreFlashCrypto(appContext)
         val localFingerprintHex =
-            FlashFingerprint.formatHexGroups(FlashFingerprint.fingerprint(crypto.identityPublicKey.encoded))
+            FlashFingerprint.formatHexGroups(FlashFingerprint.fingerprint(crypto.identityPublicKeyEncoded))
         // (trustStore constructed above, shared with the chat repo.)
         // One ephemeral ECDH key reused for the lifetime of this engine (no session encryption is
         // wired yet — the key rides the handshake but is opaque to the current transport).
-        val ephemeralPublicKey = crypto.generateEphemeralEcdhKeyPair().public.encoded
+        val ephemeralPublicKey = crypto.generateEphemeralEcdhKeyPair().publicKeyEncoded
         val pairingCoordinator = PairingCoordinator(
             localFingerprintHex = localFingerprintHex,
             localDeviceId = identity.deviceId.value,

@@ -1,6 +1,72 @@
 ﻿
 # Error Log
 
+## ERROR-037 — Group media intro used a transfer ID the transfer never used (RESOLVED in integration)
+
+### Date
+2026-09-08
+
+### Area
+Group messaging / transfer identity / KMP integration
+
+### Symptoms
+`FLASH_GMEDIA` parked group context under a random transfer ID, while `sendFile` generated a second
+ID for `FILE_START`. On acceptance the receiver looked up the real transfer ID and could not find the
+parked group context, so media could fall back to the sender's direct conversation. The sender also
+created a separate group message ID per recipient while documenting one shared identity.
+
+### Root cause
+The messaging and transfer repositories each minted identity independently. The host ignored the
+identity returned by `beginGroupAttachment`, and the transfer API exposed only a wire-file override,
+not an explicit transfer-ID path.
+
+### Working fix
+The host now creates one shared group message ID and wire-file ID, one transfer ID per recipient, sends
+those exact values in `FLASH_GMEDIA`, and invokes the explicit-identity transfer overload with the
+same transfer/file pair. The sender row is keyed by the shared group message ID. The messaging intro
+fails closed for inactive members.
+
+### Verification
+Focused messaging and transfer Android/JVM suites pass; app compilation and `assembleDebug` pass.
+Physical three-device verification remains required.
+
+### Related files
+- `app/src/main/java/com/transfer/flash/MainActivity.kt`
+- `core/messaging/src/commonMain/.../FlashChatRepository.kt`
+- `core/messaging/src/androidMain/.../RealFlashChatRepository.kt`
+- `core/transfer/src/commonMain/.../FlashTransferRepository.kt`
+- `core/transfer/src/commonMain/.../RealFlashTransferRepository.kt`
+
+### Status
+RESOLVED IN CODE; PHYSICAL DEVICE GATE PENDING
+
+## ERROR-038 — Group sync push never acknowledged and a partial ack retired the batch (RESOLVED in integration)
+
+### Date
+2026-09-08
+
+### Area
+Group catch-up / `FLASH_GSYNC`
+
+### Symptoms
+A requester accepted `SyncPush` but sent no `SyncAck`. Conversely, the holder's first received ack
+marked the entire round complete, so a partial acknowledgement could cancel all remaining messages.
+
+### Root cause
+The requester insert path had no acknowledgement send, and round state had a single boolean instead
+of tracking acknowledged message IDs.
+
+### Working fix
+Every accepted/deduplicated push sends `SyncAck` to its holder. Holder rounds track acknowledged IDs,
+skip them during pushing, and retire only when every message in the round is acknowledged.
+
+### Verification
+Focused repository tests cover ack emission, partial retention and final retirement; messaging Android
+host and JVM suites pass. Multi-device timing/holder election still needs the physical gate.
+
+### Status
+RESOLVED IN CODE; PHYSICAL DEVICE GATE PENDING
+
 ## ERROR-020 - Backgrounded mesh went offline (REOPENED: real root cause found; RESOLVED — verified on Samsung 2026-09-01; Infinix failure re-attributed to low-battery power policy, see EXP-002)
 
 ### Date
@@ -944,7 +1010,9 @@ Connect-glare race between two independent dial engines:
 
 After a session drop (e.g. brief network glitch), both engines dial the same peer
 simultaneously. Both devices dial each other at the same moment → classic glare.
-Each egisterSession runs under its own egistryLock (per-process, no cross-device
+Each
+registerSession runs under its own
+registryLock (per-process, no cross-device
 coordination) → each admits its own outbound dial first; the peer's inbound dial hits
 SessionHardeningPolicy.resolveDuplicate with equal LAN rank (0 == 0) → KeepExisting
 → inbound socket closed.
@@ -970,19 +1038,21 @@ Three-part fix:
    smaller wins. This converges both ends on ONE socket, eliminating the cross-wire
    coin flip entirely.
 
-2. **Sweep dedup** (guard): unAutoConnectSweep skips peers that already have a
+2. **Sweep dedup** (guard):
+runAutoConnectSweep skips peers that already have a
    reconnect loop in flight (isReconnectInFlight), preventing redundant dials from
    the sweep while the #18 engine is already backoff-dialing that peer.
 
-3. **indLanNetwork determinism** (latent fix): WsTransferClient.findLanNetwork
-   now sorts eligible networks by 
-etworkHandle so both devices independently pick
+3. **findLanNetwork determinism** (latent fix): WsTransferClient.findLanNetwork
+   now sorts eligible networks by
+networkHandle so both devices independently pick
    the same network when multiple eligible networks exist (dual-band SSID, cellular
    + Wi-Fi, etc.).
 
 ### Files changed
-- core/network/src/main/java/.../ws/WsFlashNetwork.kt — tiebreaker in egisterSession +
-  esolveGlareTie + isReconnectInFlight accessor
+- core/network/src/main/java/.../ws/WsFlashNetwork.kt — tiebreaker in
+registerSession +
+resolveGlareTie + isReconnectInFlight accessor
 - core/network/src/main/java/.../ws/WsSession.kt — isOutbound constructor param
 - pp/.../debug/DiscoveryEngineHolder.kt — sweep dedup skip
 - core/network/src/main/java/.../ws/WsTransferClient.kt — indLanNetwork deterministic sort

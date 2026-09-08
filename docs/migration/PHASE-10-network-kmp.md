@@ -1,266 +1,324 @@
 # Phase 10 — KMP conversion: `core:network`
 
-**Blocked by:** Phases 06 (pilot), 07 (security), 08 (discovery). **D1 must be `A`.** Written for
-**D1 = A** (`jvmAndAndroidMain`).
-**Risk: MEDIUM-HIGH — the largest core module (34 production, 20 test files) and heavily
-R8-sensitive** (TLS/TOFU trust management + two wire codecs). But like 07/08 it is, under D1 = A,
-a **pure file-move with zero content edits**: no `expect`/`actual`, no rewrites. The complexity is
-in *placement* (three source sets, split within the same packages) and in **two dead dependencies
-plus a third unused project dependency** that must be relocated, not deleted.
+**Blocked by:** Phase 07 (`:core:security` KMP) and Phase 08 (`:core:discovery` KMP). Both are
+real edges in this module's build file, and `commonMain` cannot compile for `jvm()` until every
+module it depends on publishes a `jvm` variant. Phase 09B is **not** a blocker — `:core:network`
+has no persistence edge.
+**Risk: HIGH.** 35 production + 21 test files, and the module owns three things that must not
+move by a byte: the TLS/TOFU trust path, the WebSocket wire codec, and the LAN probe framing.
+The ways to get this wrong are (a) misplacing a file across source sets, (b) "helping" an R8
+file compile for common by rewriting it, and (c) silently losing tests the way Phase 06 nearly
+did.
+**Decisions:** none block this phase. `D6` (desktop discovery) is Phase 14; `D3`/`D4` (desktop
+transport + TLS) are Phase 15. This phase creates **no** desktop transport and **no** seam for
+one. It relocates and shares the *contract* layer only.
+
+> ## REWRITTEN 2026-09-05 for D1 = B
+>
+> The previous text of this file was **written for D1 = A** — the
+> `commonMain → jvmAndAndroidMain → {androidMain, jvmMain}` model — and its entire value
+> proposition was the middle tier: it placed 9 of 34 files in `jvmAndAndroidMain` and claimed
+> a 22-of-34 shared surface.
+>
+> D1 **is** B (`DECISIONS.md`, reaffirmed by the 2026-09-03 amendment at the head of
+> `CONVENTIONS.md`: *"`jvmAndAndroidMain` must never be created; R2 step 2 is void"*). That
+> deletes the middle tier, so the old placement table cannot be executed as written. This file
+> has been rewritten. What changed, and what did not:
+>
+> - **`jvmAndAndroidMain` is gone.** The 9 files it was to hold are ~2 772 lines of
+>   `java.net` / `javax.net.ssl` / `java.io` code. Under B the only two legal moves for them
+>   (CONVENTIONS R2) are *leave them where they are* or *`expect`/`actual` with a per-target
+>   `actual`*. Rewriting the TLS trio and the wire codecs onto multiplatform IO **is Phase 15's
+>   job by this plan's own structure**, and duplicating them into both `androidMain` and
+>   `jvmMain` would create two divergent copies of wire-format code — the exact failure R8
+>   exists to prevent. R2 step 1 applies: they stay Android-only for now.
+> - **The honest shared surface is therefore 14 of 35 files, not 22 of 34.** `jvmMain` gets
+>   **zero** files this phase. That is a correct outcome, not a shortfall — see
+>   "Why 14 and not 22" below. Do not attempt to reach 22.
+> - **A `srcDir`-shared directory is forbidden.** Pointing `androidMain` and `jvmMain` at one
+>   shared folder would functionally restore `jvmAndAndroidMain` under another name and
+>   re-decide D1. D1 is reserved for the human (`DECISIONS.md` preamble). Do not do it.
+> - **The inventory drifted and has been re-derived** (measured 2026-09-05). The old file's
+>   own stop-gate fired: *"if your run reports a different number, STOP — the inventory
+>   drifted and the placement table must be re-derived before moving files."* It is
+>   re-derived below.
+> - **The `android.util.Log` section is deleted as factually wrong.** See "Two claims
+>   disproved by measurement".
+> - **Unchanged and still binding:** the R8 no-content-edit rule for the TLS trio and the
+>   codecs, `api` scope for `:core:common` + `coroutines-core`, the `core-network` root
+>   coordinate, the "no Phase 15 seam" rule, and every `Do NOT` that did not mention
+>   `jvmAndAndroidMain`.
 
 ## What this phase is actually for
 
-Convert `:core:network` from `com.android.library` to the KMP plugin with an Android target and a
-desktop `jvm()` target, moving files into source sets **unedited**. When done:
+Convert `:core:network` from `com.android.library` to
+`com.android.kotlin.multiplatform.library` + `jvm()`, place its 35 source files into the KMP
+source sets by the placement rule, and prove that:
 
-- `:core:network:compileKotlinJvm` compiles — proving the **shared network surface** builds for
-  desktop: the transport **contracts** (`FlashNetwork`, `FlashSession`, connection-state/health
-  models), the **resilience policies** (heartbeat, reconnect, health aggregation, session
-  hardening, bounded send queue, chaos harness), the **TLS/TOFU machinery** (`FlashTlsContextFactory`,
-  `SecureSocketUpgrader`, `TofuX509TrustManager`, `FlashPinVerifier`), and the two **wire codecs**
-  (`WebSocketCodec`, `DataChannelFraming`). That is 22 of 34 files.
-- The Android host tests still run and still pass **at the same count** (102 `@Test` across 19
-  classes).
-- `:core:network` still publishes as `core-network`; `:app:assembleDebug` still resolves it.
+1. the **session and network contract** — `FlashSession`, `FlashNetwork`,
+   `FlashConnectionState`, `FlashConnectionHealth`, `FlashNetworkState`, the four resilience
+   policies, the keepalive verdict machine, the LAN probe message model, and the pin verifier —
+   compiles for the desktop `jvm()` target from `commonMain`;
+2. every concrete transport (WS, TCP/TLS, data-channel) stays isolated in `androidMain`
+   with **not one byte of its content changed**; and
+3. Android still builds and all 126 existing tests still run, plus a new `commonTest` suite.
 
-**What this phase does NOT do:** it does **not** give desktop a *runnable* network. The concrete
-transport (Android's `WsFlashNetwork`/`WsTransferClient`/sessions/`DefaultFlashNetwork`) is
-`androidMain` because it is bound to `android.content.Context` + `ConnectivityManager` (and, for six
-files, `android.util.Log`). Desktop's concrete transport is built later, in **Phase 15 (desktop
-transport)**, against the same contracts. Phase 10 only proves the shared half compiles off Android
-— exactly the 07 pattern (compile the surface; platform impls come later).
+The strategic payoff is narrow but load-bearing: **Phases 11 and 12 cannot start without it.**
+`:core:transfer`, `:core:messaging` and `:core:engine` all consume `FlashSession` and
+`FlashNetwork`; those types must be `commonMain` before any of those three modules can have a
+`commonMain` at all. This phase does not make the network *work* on desktop — Phase 15 does
+that. It makes the network *describable* on desktop.
 
-## Why `core:network` splits 13 / 9 / 12 (read before placing files)
+## Verified starting state — measured 2026-09-05, supersedes the 2026-08-30 figures
 
-- **commonMain (13):** the transport *interfaces* + pure state/policy machines. `FlashNetwork` and
-  `FlashSession` are interfaces; the resilience policies are pure math/state (injected clocks and
-  `random01`, no platform clock); `FlashPinVerifier` is a `fun interface`; `LanProbeMessages` is a
-  text wire format. All reference only `kotlinx.coroutines.*` (multiplatform) and `:core:common`
-  commonMain types.
-- **jvmAndAndroidMain (9):** everything that needs `java.*`/`javax.*` but **not** `android.*` — the
-  TLS trio (`javax.net.ssl`, `java.security`), the two codecs (`java.io`/`java.nio`/`java.security`),
-  the LAN probe server (`java.net.ServerSocket`), and the JDK-collection-backed queue/chaos helpers.
-  These are desktop-safe: `jvm()` has the full JDK.
-- **androidMain (12):** the concrete transport. Six files need `Context`/`ConnectivityManager`
-  (real Android platform network services); six more need **only `android.util.Log`** — a trivial
-  coupling that nonetheless pins them to Android under a move-only phase (see the Log note below).
+| Fact | Value |
+|---|---|
+| Production `.kt` under `src/main/java/**` | **35** |
+| Test `.kt` under `src/test/java/**` | **21** (20 test classes + 1 helper, `tls/SoftwareCertMaker.kt`) |
+| `:core:network:testDebugUnitTest` | **126 tests, 20 classes, 0 failures, 0 skipped** |
+| Published coordinate | `com.transfer.flash:core-network:1.1.0`, packaging `aar` |
+| POM `compile` deps | `core-common`, `kotlinx-coroutines-core`, `kotlin-stdlib` |
+| POM `runtime` deps | `core-security`, `core-discovery`, `androidx.core:core-ktx:1.10.1`, `androidx.lifecycle:lifecycle-runtime-ktx:2.6.1` |
+| `android.util.Log` occurrences | **0** |
+| `expect`/`actual` in module | **0** — and this phase adds none |
+| Line split | commonMain tier **979**, androidMain tier **4 344** (1 572 Android + 2 772 JVM) |
 
-## Preconditions — do not start until all are true
+Per-class baseline, to be compared exactly after the move:
 
-1. **Phases 06, 07, 08 complete and logged.** This phase reuses Phase 06's five DSL facts and
-   depends on `:core:common` (06) and `:core:discovery` (08) being KMP with their consumed types in
-   **commonMain**. Specifically verify in the 06/08 logs that these are commonMain: `FlashDevice`,
-   `FlashDeviceId`, `FlashTransportType`, `FlashPeerPresence`, `FlashResult`, `FlashError`,
-   `FlashInternalApi`, `FlashTextFraming` (all `:core:common`); `FlashDiscoveredEndpoint`
-   (`:core:discovery`). If any is NOT commonMain upstream, a commonMain file here will not compile —
-   stop and reconcile with that module's phase before moving anything.
-2. **D1 = `A`** in `DECISIONS.md`.
-3. **Clean working tree** on the migration branch.
-
-## Verified starting state (read this, do not assume) — confirmed 2026-08-30
-
-**Current `core/network/build.gradle.kts` (the parts that matter):**
-
-```kotlin
-plugins { alias(libs.plugins.android.library); `maven-publish` }
-
-android {
-    namespace = "com.transfer.flash.core.network"
-    compileSdk = 35
-    defaultConfig { minSdk = 24; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        consumerProguardFiles("consumer-rules.pro") }
-    buildTypes { release { isMinifyEnabled = false /* + proguardFiles */ } }
-    compileOptions { sourceCompatibility = JavaVersion.VERSION_11; targetCompatibility = JavaVersion.VERSION_11 }
-    publishing { singleVariant("release") { withSourcesJar() } }
-}
-kotlin { explicitApi() }
-dependencies {
-    api(project(":core:common"))
-    api(libs.kotlinx.coroutines.core)                 // public Flow/StateFlow → api
-    implementation(project(":core:security"))          // <-- ZERO imports in src/main (dead dep)
-    implementation(project(":core:discovery"))         // used ONLY by bridge/DiscoveryRouteBinder
-    implementation(libs.androidx.core.ktx)             // <-- ZERO androidx imports in src/main (dead)
-    implementation(libs.androidx.lifecycle.runtime.ktx)// <-- ZERO androidx imports in src/main (dead)
-    testImplementation(libs.junit)
-    testImplementation(libs.bouncycastle.pkix)         // TEST-ONLY: self-signed certs for JVM TLS tests
-}
-publishing { publications { register<MavenPublication>("release") {
-    artifactId = "core-network"; afterEvaluate { from(components["release"]) } } } }
+```
+DefaultFlashNetworkTest 2   FlashNetworkModelTest 2   DiscoveryRouteBinderTest 4
+BoundedSendQueueTest 9      ChaosResilienceTest 7     ConnectionHealthAggregatorTest 8
+HeartbeatTrackerTest 9      ReconnectPolicyTest 8     SessionHardeningPolicyTest 7
+LanProbeMessagesTest 3      LanSessionHardenedTest 5  FlashPinVerifierTest 3
+SecureSocketUpgraderTest 4  SoftwareCertMakerTest 4   TofuTlsHandshakeTest 4
+TofuX509TrustManagerTest 6  SecureWsTransferLoopbackTest 3   WebSocketCodecTest 14
+WsFlashNetworkTest 9        WsKeepaliveTest 15                        = 126
 ```
 
-**Dependency-usage findings (grep of `src/main`, R11 hygiene — excludes `media-downloader-main/`,
-`build/`, `.git/`, `docs/`):**
+## Two claims disproved by measurement — do not restore them
 
-- **`:core:security` — ZERO imports** (`grep '^import com.transfer.flash.core.security'` = none).
-  It is a **dead project dependency**. Network does its own pinning (`FlashPinVerifier`, defined
-  here in commonMain); it never touches `:core:security` types. Relocate it to
-  `jvmAndAndroidMain.dependencies` for parity (the tier its TLS code would use if it ever did) and
-  flag it grep-unused — a later cleanup phase may delete it. **Do not delete it here** (move-only).
-- **`:core:discovery` — used by exactly one file:** `bridge/DiscoveryRouteBinder.kt` (commonMain)
-  imports `FlashDiscoveredEndpoint`. So `:core:discovery` → **commonMain.dependencies**.
-- **`:core:common` — used everywhere**, including commonMain files → **commonMain.dependencies (api)**.
-- **`androidx.core.ktx` / `androidx.lifecycle.runtime.ktx` — ZERO `import androidx.*`** in src/main
-  (grep-confirmed). Dead AARs; relocate to `androidMain.dependencies`, flag for later cleanup.
-- **`bouncycastle.pkix`** is TEST-ONLY (JVM handshake tests) → `androidHostTest.dependencies`. It is
-  a plain JVM library and never ships in the AAR.
+**1. The file counts were 34 / 20; they are 35 / 21.** `ws/WsKeepalive.kt` (157 lines) and
+`ws/WsKeepaliveTest.kt` (15 tests) were added after 2026-08-30 by the keepalive/liveness work
+(ERROR-025 / ERROR-031). `WsKeepalive` is a **pure** verdict machine whose only import is
+`kotlin.concurrent.Volatile` — it belongs in `commonMain` and the old placement table does not
+mention it at all.
 
-**Directory facts:** production under `core/network/src/main/java/com/transfer/flash/core/network/`
-(34 `.kt` in packages: root, `bridge/`, `resilience/`, `tcp/`, `tls/`, `ws/`, `util/`,
-`datachannel/`). Tests under `src/test/java/.../network/` (20 files = 19 JUnit4 classes + the
-`tls/SoftwareCertMaker.kt` helper). **No `AndroidManifest.xml`, no `res/`, no `assets/`** under
-`src/`. `consumer-rules.pro` + `proguard-rules.pro` at the module root.
+**2. There is no `android.util.Log` in this module.** The old file had a whole section built on
+*"six files pinned to `androidMain` only by `android.util.Log`"* and a rule not to introduce a
+log seam for them. `grep -rn 'android\.util\.Log' core/network/src` returns **0 hits**: Phase 03
+already routed the whole module through `FlashLog`, which is `commonMain` in `:core:common`.
+Those six files are pinned by `android.content.Context` / `android.net.ConnectivityManager` /
+`android.net.NetworkCapabilities` instead — a hard Android pin no seam removes. The section is
+therefore deleted rather than corrected, and the "do not introduce a log seam" rule survives
+only as a `Do NOT` (there is nothing to seam).
 
-## Source-set strategy (D1 = A) — the exact wiring
+## Why 14 and not 22 — read this before you try to "improve" the split
 
-Three source sets, identical topology to Phases 07/08/09. Copy `KMP_ANDROID_DSL_SNIPPET` and
-`KMP_JVM_TARGET_DSL` from the Phase 06 log verbatim; the source-set graph is:
+Under D1 = A the middle tier would have held nine files: the TLS trio
+(`FlashTlsContextFactory`, `SecureSocketUpgrader`, `TofuX509TrustManager`), the WS pair
+(`WebSocketCodec`, `WsConnection`, `WsSession`, `WsTransferServer`), `LanSession`, and
+`BoundedSendQueue`. Under B each has exactly two legal destinations (R2), and each fails both:
 
-```kotlin
-kotlin {
-    explicitApi()
-    androidLibrary { /* PASTE KMP_ANDROID_DSL_SNIPPET: namespace, compileSdk=35, minSdk=24,
-                        withHostTest { }  + consumerProguardFiles */ }
-    jvm()                                   // plain jvm(), NEVER jvm("desktop")
-    sourceSets {
-        val jvmAndAndroidMain = create("jvmAndAndroidMain")
-        jvmAndAndroidMain.dependsOn(getByName("commonMain"))
-        getByName("androidMain").dependsOn(jvmAndAndroidMain)
-        getByName("jvmMain").dependsOn(jvmAndAndroidMain)
-        // ... dependency blocks (see build rewrite below)
-    }
-}
+| File(s) | What pins it | Why not `expect`/`actual` in this phase |
+|---|---|---|
+| TLS trio (462 lines) | `javax.net.ssl.*`, `java.security.cert.X509Certificate` | The whole surface *is* the JVM TLS API. An `expect` would be a re-implementation, i.e. Phase 15 / D4. |
+| `WebSocketCodec`, `WsConnection`, `WsTransferServer` (666) | `java.net.Socket`, `java.io.InputStream/OutputStream` | R8 wire format. Two `actual` copies = two codecs that can drift. |
+| `WsSession` (151) | `public val connection: WsConnection` **in its constructor** | Extracting an interface is a public-ABI change and is the Phase 15 seam decision. |
+| `LanSession` (465) | `java.net.Socket` + `java.io` streams | Same as the codecs; also R8-adjacent framing. |
+| `BoundedSendQueue` (153) | `ReentrantLock` + `lock.newCondition()` + `Condition.awaitNanos` | A `Condition` has **no** common equivalent; `PlatformLock` does not provide one. `takeOrNull(timeoutMs)` is a genuinely blocking timed wait. |
+
+Two more files that look shareable and are not: `ChaosSession` and `ChaosNetworkHarness` use
+`Collections.newSetFromMap(ConcurrentHashMap())`, `Collections.synchronizedList` and
+`CopyOnWriteArrayList`. They would need a lock seam, which would make this the **third**
+`PlatformLock` copy in the repo — the decision Phase 08's Known issue #1 explicitly parks for
+*"whichever phase first finds a third module needing it"*. Chaos test-support code is not worth
+spending that decision on inside a phase not scoped to it. R1: leave them.
+
+So the shared surface is the **contract**, not the **implementation**, and that is sufficient
+for the phases that depend on this one. Phase 11 needs to name a `FlashSession`; it does not
+need to open a socket.
+
+## Placement table — all 35 production files, D1 = B
+
+Paths are relative to `core/network/src/`. Source root is `<set>/kotlin/com/transfer/flash/core/network/`
+(**`kotlin/`, never `java/`** — R5).
+
+### commonMain — 14 files, 979 lines (13 move untouched, 1 has a one-line edit)
+
+| # | File | Why it is common |
+|---|---|---|
+| 1 | `FlashConnectionHealth.kt` | data model, coroutines only |
+| 2 | `FlashConnectionState.kt` | sealed state model |
+| 3 | `FlashNetwork.kt` | the network contract |
+| 4 | `FlashNetworkState.kt` | data model |
+| 5 | `FlashSession.kt` | **the** session contract — **one-line edit, see below** |
+| 6 | `bridge/DiscoveryRouteBinder.kt` | `fun interface EndpointMemory` + binder; only cross-module type is `FlashDiscoveredEndpoint` (commonMain since Phase 08) |
+| 7 | `resilience/ConnectionHealthAggregator.kt` | pure; `MutableStateFlow` only |
+| 8 | `resilience/HeartbeatPolicy.kt` | pure policy |
+| 9 | `resilience/HeartbeatTracker.kt` | pure; `internal enum HeartbeatState` |
+| 10 | `resilience/ReconnectPolicy.kt` | pure backoff arithmetic |
+| 11 | `resilience/SessionHardeningPolicy.kt` | pure; `DuplicateSessionDecision` |
+| 12 | `tcp/LanProbeMessages.kt` | `LanProbeHello` model + **R8 framing** — moves untouched |
+| 13 | `tls/FlashPinVerifier.kt` | 31 lines, string/byte comparison only — no `javax.net.ssl` |
+| 14 | `ws/WsKeepalive.kt` | pure verdict machine; `kotlin.concurrent.Volatile` already correct |
+
+Verified: after stripping comment lines, the only JVM-only token anywhere in these 14 files is
+`FlashSession.kt:29`. `WsKeepalive.kt:75`'s `@Volatile` resolves to the imported
+`kotlin.concurrent.Volatile`, which is multiplatform — **do not "fix" it**.
+
+Their complete import set — nothing outside it is allowed to appear:
+
+```
+com.transfer.flash.core.common.annotation.FlashInternalApi
+com.transfer.flash.core.common.model.{FlashDevice, FlashDeviceId, FlashTransportType}
+com.transfer.flash.core.common.protocol.FlashTextFraming
+com.transfer.flash.core.common.result.FlashResult
+com.transfer.flash.core.discovery.FlashDiscoveredEndpoint
+kotlin.concurrent.Volatile
+kotlinx.coroutines.{Job, launch}
+kotlinx.coroutines.flow.{MutableStateFlow, StateFlow, asStateFlow}
 ```
 
-**Rules that do not change between phases (re-state them so a weak model cannot drift):**
+### androidMain — 21 files, 4 344 lines, all moved **byte-identical**
 
-- Always `getByName("commonMain")` / `getByName("androidMain")` / `getByName("jvmMain")` — **never**
-  the typed accessors `commonMain { }` / `androidMain { }`. Typed accessors are not registered for a
-  hand-created intermediate set and will fail configuration.
-- The intermediate set is created with `create("jvmAndAndroidMain")` and wired with three explicit
-  `dependsOn` calls. Do not rename it, do not use `jvmMain`/`androidMain` as the shared tier.
-- KMP source roots are `src/<sourceSet>/kotlin/…`, **not** `src/<sourceSet>/java/…`. The `git mv`
-  destinations below all target `kotlin/`.
-- Unit tests live in **`androidHostTest`** (Robolectric/JVM host), never instrumented `androidTest`.
-  There is no `jvmTest` here — the 102 `@Test` are the Android host suite and stay one suite.
+Six with a genuine Android API pin (1 572 lines):
 
-## Placement table — every one of the 34 production files (13 / 9 / 12)
+| File | Android pin |
+|---|---|
+| `DefaultFlashNetwork.kt` (394) | `android.content.Context`, `ConnectivityManager` |
+| `resilience/AndroidNetworkWatcher.kt` (62) | `ConnectivityManager`, `NetworkRequest`, `NetworkCapabilities` |
+| `tcp/LanConnectionProbe.kt` (126) | `ConnectivityManager`, `Network`, `NetworkCapabilities` |
+| `util/LocalNetworkAddresses.kt` (51) | `ConnectivityManager`, `Network`, `NetworkCapabilities` |
+| `ws/WsFlashNetwork.kt` (825) | `Context`, `ConnectivityManager` |
+| `ws/WsTransferClient.kt` (114) | `Network`, `NetworkCapabilities` |
 
-Move files **unedited**. The R8-sensitive files (TLS trio, four wire codecs) are flagged; you may
-relocate them but must not touch a byte of their content.
+Fifteen with a JVM-only pin (2 772 lines) — these are the files D1 = A would have shared:
 
-**commonMain — 13** (`src/commonMain/kotlin/com/transfer/flash/core/network/`):
+```
+datachannel/DataChannelClient.kt   (135)   resilience/BoundedSendQueue.kt      (153)
+datachannel/DataChannelFraming.kt   (75)   resilience/ChaosNetworkHarness.kt   (166)
+datachannel/DataChannelServer.kt   (146)   resilience/ChaosSession.kt          (220)
+tcp/LanProbeServer.kt              (133)   tcp/LanSession.kt                   (465)
+tls/FlashTlsContextFactory.kt       (77)   tls/SecureSocketUpgrader.kt         (273)
+tls/TofuX509TrustManager.kt        (112)   ws/WebSocketCodec.kt                (290)
+ws/WsConnection.kt                 (244)   ws/WsSession.kt                     (151)
+ws/WsTransferServer.kt             (132)
+```
 
-| # | File (relative to package root) | Why commonMain |
+`DataChannelFraming.kt`, `WebSocketCodec.kt` and the framing inside `LanSession.kt` are **R8
+wire formats**. `FlashTlsContextFactory.kt`, `SecureSocketUpgrader.kt` and
+`TofuX509TrustManager.kt` are **R8 crypto/trust**. Relocating them is allowed; changing a byte
+is not. No reformatting, no import reordering, no visibility tweaks, no adding `@Suppress`.
+
+### jvmMain — zero files
+
+Deliberate. `jvmMain` exists as a source set (the `jvm()` target creates it) and stays empty
+this phase. Desktop transport is Phase 15. **Do not create a placeholder file, a stub
+`FlashNetwork` implementation, or a `TODO()`-bodied class here** — R2 forbids stubbing to force
+a compile, and an empty `jvmMain` is a truthful statement of where the port stands.
+
+## The single content edit — `FlashSession.kt:29`
+
+```kotlin
+// before
+public suspend fun sendText(text: String): FlashResult<Unit> = send(text.toByteArray(Charsets.UTF_8))
+// after
+public suspend fun sendText(text: String): FlashResult<Unit> = send(text.encodeToByteArray())
+```
+
+`Charsets` and `String.toByteArray(Charset)` are both on the R6 JVM-only list, and
+`encodeToByteArray()` is the substitution R6 names (Phase 07's Rewrite 3 already made it).
+
+**This is not a pure identity and must not be logged as one.** The two differ for exactly one
+input class: unpaired surrogates. `String.getBytes(UTF_8)` on the JVM emits `0x3F` (`?`) per
+unpaired surrogate; `encodeToByteArray()` emits the 3-byte U+FFFD replacement `EF BF BD`. For
+every well-formed string — all ASCII, all multi-byte, all correctly-paired emoji — the output is
+byte-identical.
+
+Who is affected: `WsSession` **overrides** `sendText`, so the WS path is untouched.
+`ChaosSession` delegates (`: FlashSession by delegate`). `LanSession` inherits the default, so
+the LAN text path is the one observable site — and only for malformed input that no Flash
+caller produces (`FlashTextFraming` builds the payloads). Record it in the log; do not hide it.
+
+A new `commonTest` suite pins the identity for the well-formed cases (see below), so the claim
+is executed rather than asserted.
+
+## Tests — 21 files to `androidHostTest` unchanged, plus one new `commonTest` suite
+
+All 21 existing test files move to `src/androidHostTest/kotlin/...` **unmodified**. Every one of
+them is JUnit 4 and most reach for `java.util.concurrent`, real sockets, or BouncyCastle;
+none can be `commonTest`. `tls/SoftwareCertMaker.kt` is a helper, not a test class — it is the
+only consumer of `libs.bouncycastle.pkix` and must move with them.
+
+The new `commonTest` file is required by CONVENTIONS R3.1: a converted module must **execute**
+something on both targets, not merely compile. Without it `jvmTest` is a no-op and the desktop
+target is unproven.
+
+`src/commonTest/kotlin/com/transfer/flash/core/network/FlashSessionSendTextTest.kt` —
+`kotlin.test` only, asserting the `sendText` default path against a recording fake:
+ASCII, multi-byte (`"héllo wörld"`), CJK, a correctly-paired emoji surrogate pair, and the
+empty string all round-trip byte-identically through `encodeToByteArray()`, and `sendText`
+delegates to `send` exactly once with those bytes. That suite runs under **both**
+`testAndroidHostTest` and `jvmTest`.
+
+Consequence for the count gate: `testAndroidHostTest` must report **126 + n**, where `n` is the
+number of `@Test`s in the new suite, and `jvmTest` must report exactly **n**. Record both.
+
+## Cross-module dependency placement
+
+| Dependency | Scope + set | Reason |
 |---|---|---|
-| 1 | `FlashConnectionHealth.kt` | pure state model |
-| 2 | `FlashConnectionState.kt` | pure state model |
-| 3 | `FlashNetworkState.kt` | pure state model |
-| 4 | `FlashNetwork.kt` | transport **interface** (coroutines only) |
-| 5 | `FlashSession.kt` | transport **interface** (coroutines only) |
-| 6 | `bridge/DiscoveryRouteBinder.kt` | pure; imports `FlashDiscoveredEndpoint` (commonMain in 08) |
-| 7 | `resilience/ConnectionHealthAggregator.kt` | pure state machine |
-| 8 | `resilience/HeartbeatPolicy.kt` | pure policy (injected clock) |
-| 9 | `resilience/HeartbeatTracker.kt` | pure policy (injected clock) |
-| 10 | `resilience/ReconnectPolicy.kt` | pure policy (injected `random01`) |
-| 11 | `resilience/SessionHardeningPolicy.kt` | pure policy |
-| 12 | `tcp/LanProbeMessages.kt` | **R8 wire** (text probe format) — move only |
-| 13 | `tls/FlashPinVerifier.kt` | `fun interface`; network's own pinning contract |
+| `project(":core:common")` | `commonMain` **`api`** | Load-bearing: `FlashResult`, `FlashDevice`, `FlashTransportType` are in this module's public signatures. **Do not downgrade to `implementation`** — it silently breaks every consumer. |
+| `libs.kotlinx.coroutines.core` | `commonMain` **`api`** | `StateFlow`/`Flow` appear in public signatures (`FlashSession.connectionState`, `frameAcks`). Same rule. |
+| `project(":core:discovery")` | `commonMain` `implementation` | Real edge — `bridge/DiscoveryRouteBinder.kt` uses `FlashDiscoveredEndpoint`, which is commonMain since Phase 08. |
+| `project(":core:security")` | `androidMain` `implementation` | **Dead**: zero `com.transfer.flash.core.security` references in main *or* test. Relocate, do not delete — see below. |
+| `libs.androidx.core.ktx` | `androidMain` `implementation` | **Dead** (grep-unused). Relocate. |
+| `libs.androidx.lifecycle.runtime.ktx` | `androidMain` `implementation` | **Dead** (grep-unused; the only textual hit is a stale KDoc note in `ConnectionHealthAggregator`). Relocate. |
+| `libs.junit` | `androidHostTest` + `jvmTest` | JUnit 4 for the moved suites; `jvmTest` mirrors `:core:discovery`. |
+| `libs.bouncycastle.pkix` | `androidHostTest` | Test-only, `SoftwareCertMaker.kt` only. |
+| `kotlin("test")` + `libs.kotlinx.coroutines.test` | `commonTest` | The new suite. Both already pinned (coroutines 1.10.2) → R10 clean. No `kotlin-test` version-catalog alias exists; use `kotlin("test")`. |
 
-**jvmAndAndroidMain — 9** (`src/jvmAndAndroidMain/kotlin/com/transfer/flash/core/network/`):
+### Why the three dead dependencies are relocated, not deleted
 
-| # | File | Why this tier (JDK, not `android.*`) |
-|---|---|---|
-| 1 | `datachannel/DataChannelFraming.kt` | **R8 wire**; `java.nio`/`java.io` — move only |
-| 2 | `resilience/BoundedSendQueue.kt` | JDK collections / `@Synchronized` |
-| 3 | `resilience/ChaosNetworkHarness.kt` | JDK-only test-support harness (ships in main) |
-| 4 | `resilience/ChaosSession.kt` | JDK-only |
-| 5 | `tcp/LanProbeServer.kt` | `java.net.ServerSocket` |
-| 6 | `tls/FlashTlsContextFactory.kt` | **R8**; `javax.net.ssl`/`java.security` — move only |
-| 7 | `tls/SecureSocketUpgrader.kt` | **R8**; `javax.net.ssl` — move only |
-| 8 | `tls/TofuX509TrustManager.kt` | **R8**; `javax.net.ssl`/`java.security` — move only |
-| 9 | `ws/WebSocketCodec.kt` | **R8 wire**; `java.io`/`java.security` — move only |
+The previous text of this file said: *"Do NOT delete the three dead dependencies… relocate and
+flag `TODO(cleanup)`; a later phase deletes them."* That instruction is **kept**.
 
-**androidMain — 12** (`src/androidMain/kotlin/com/transfer/flash/core/network/`):
+Be aware that this makes the repo temporarily inconsistent: Phase 08 chose the opposite for
+`:core:discovery`'s two dead `androidx.*` deps and deleted them (logged there as Deviation 1).
+Both dead sets are equally unreferenced, so there is no principled difference — only a
+sequencing preference. Deleting them changes `core-network-android`'s POM, where all three sit
+today as `runtime`-scope entries, and that is a consumer-visible resolution change. It should be
+made once, for every module at once, in the cleanup phase that can prove the whole graph still
+resolves; not module-by-module across ten phases. Relocating to `androidMain` reproduces the
+Android POM exactly and keeps them out of `core-network-jvm`.
 
-| # | File | Why pinned to Android |
-|---|---|---|
-| 1 | `DefaultFlashNetwork.kt` | `Context` / platform wiring |
-| 2 | `resilience/AndroidNetworkWatcher.kt` | `ConnectivityManager` (Phase 15 seam) |
-| 3 | `tcp/LanConnectionProbe.kt` | `ConnectivityManager` (Phase 15 seam) |
-| 4 | `util/LocalNetworkAddresses.kt` | `ConnectivityManager` (Phase 15 seam) |
-| 5 | `ws/WsFlashNetwork.kt` | `Context` |
-| 6 | `ws/WsTransferClient.kt` | `Context`/`ConnectivityManager` (Phase 15 seam) |
-| 7 | `datachannel/DataChannelClient.kt` | **only `android.util.Log`** |
-| 8 | `datachannel/DataChannelServer.kt` | **only `android.util.Log`** |
-| 9 | `tcp/LanSession.kt` | **only `android.util.Log`** |
-| 10 | `ws/WsConnection.kt` | **only `android.util.Log`** |
-| 11 | `ws/WsSession.kt` | **only `android.util.Log`** |
-| 12 | `ws/WsTransferServer.kt` | **only `android.util.Log`** |
+If the cleanup phase never happens, deleting these three lines is a one-line-each change with
+`:app:assembleDebug` as its only gate. Nothing here makes that harder.
 
-## The `android.util.Log` note — six files, do NOT introduce a log seam
+## Phase 15 seam candidates — record, do NOT act
 
-Six androidMain files (rows 7–12 above) are on Android **only** because they call
-`android.util.Log`. Nothing else in them touches `android.*`. It is tempting to define a tiny
-`expect fun logD(tag, msg)` in commonMain with an `actual` per platform and pull these six down to
-`jvmAndAndroidMain`. **Do not.** This is a move-only phase (like 07/08): introducing an
-`expect`/`actual` log abstraction is a content rewrite across six files, it changes what R8 sees,
-and it is exactly the kind of "small improvement" that turns a mechanical phase into a debugging
-session. Leave them in androidMain. If desktop later needs these classes, Phase 15 builds desktop
-transport against the same commonMain contracts and can carry its own logging — the seam is a
-**later** decision, taken deliberately, not smuggled into a file-move.
+1. **`TlsOptions`** is declared as `public class TlsOptions(` at
+   `tls/SecureSocketUpgrader.kt:30`, i.e. inside a 273-line `javax.net.ssl` file, but it is a
+   plain config object imported by `core/engine` and `app` (4 imports). Once
+   `SecureSocketUpgrader.kt` lands in `androidMain`, **`TlsOptions` is unreachable from
+   `commonMain`**, which will block Phase 12 when `:core:engine` tries to make its
+   configuration common. Splitting it into its own `commonMain` file is a zero-ABI-change file
+   split, but it is out of this phase's scope (R1). Flag it as a Phase 12 prerequisite.
+2. **`WsSession`'s `public val connection: WsConnection`** — the constructor parameter that
+   pins the class. Introducing a transport interface is the Phase 15 decision; it is a public
+   ABI change, so it is not a move-only edit.
+3. **`BoundedSendQueue`'s `Condition`** — a timed blocking wait with no common equivalent.
+   Phase 15 must either keep it JVM-side or restate it on `Channel`/`select`.
 
-## Phase 15 seam candidates (record, do not act)
+## The target `core/network/build.gradle.kts` (paste-ready)
 
-Four androidMain files are pinned by real platform network services — `ConnectivityManager` /
-`Context` for address enumeration, connectivity callbacks, and interface probing:
-
-- `resilience/AndroidNetworkWatcher.kt`
-- `util/LocalNetworkAddresses.kt`
-- `tcp/LanConnectionProbe.kt`
-- `ws/WsTransferClient.kt`
-
-These are the natural `expect`/`actual` (or interface-in-commonMain) seams when **Phase 15**
-builds the desktop transport (`java.net.NetworkInterface`-based address enumeration, no
-`ConnectivityManager`). This phase only **names** them so Phase 15 does not have to re-discover
-them. It does **not** create any seam now.
-
-## Cross-module dependency placement (the tricky part of this phase)
-
-Four project/library dependencies move to **different tiers**, and two are dead. Get this exactly
-right — a dependency in the wrong tier either fails to resolve for `compileKotlinJvm` or silently
-leaks an Android-only artifact into the shared surface.
-
-| Dependency | Old scope | New tier + scope | Reason |
-|---|---|---|---|
-| `:core:common` | `api` | **commonMain `api`** | used by commonMain files (interfaces, models) |
-| `libs.kotlinx.coroutines.core` | `api` | **commonMain `api`** | multiplatform; public `Flow`/`StateFlow` |
-| `:core:discovery` | `implementation` | **commonMain `implementation`** | only `DiscoveryRouteBinder` (commonMain) uses it |
-| `:core:security` | `implementation` | **jvmAndAndroidMain `implementation`** | **DEAD** (0 imports); parity tier; flag for cleanup |
-| `libs.androidx.core.ktx` | `implementation` | **androidMain `implementation`** | **DEAD** (0 imports); flag for cleanup |
-| `libs.androidx.lifecycle.runtime.ktx` | `implementation` | **androidMain `implementation`** | **DEAD** (0 imports); flag for cleanup |
-| `libs.junit` | `testImplementation` | **androidHostTest `implementation`** | host unit tests |
-| `libs.bouncycastle.pkix` | `testImplementation` | **androidHostTest `implementation`** | TEST-ONLY JVM cert-gen for TLS tests |
-
-**Why `:core:common` and `coroutines.core` must be `api`, not `implementation`:** `FlashNetwork`
-exposes `StateFlow<FlashNetworkState>` and returns `FlashResult`/`FlashDevice` in its public
-signatures. Those types come from `:core:common` and `kotlinx-coroutines`; a consumer of
-`core-network` must see them transitively or its own code won't compile. `api` was already correct
-in the current build — preserve it, do not "tidy" it to `implementation`.
-
-**Why the three dead deps are relocated, not deleted:** this is a move-only phase. Deleting a
-dependency is a content decision with its own blast radius (it can change what the published POM
-advertises). Relocate each to the tier it *would* live in if it were used (`:core:security` next to
-the TLS code in jvmAndAndroidMain; the two `androidx` AARs in androidMain), and leave a
-`// TODO(cleanup): grep-unused as of Phase 10` marker. A dedicated cleanup phase deletes them after
-the migration is green.
-
-## The target `core/network/build.gradle.kts` (full, paste-ready)
-
-Fill the two `/* PASTE … */` regions from the Phase 06 log (`KMP_ANDROID_DSL_SNIPPET`,
-`KMP_HOST_TEST_BLOCK`). Everything else is literal.
+Mirrors `core/discovery/build.gradle.kts` (the Phase 08 output). Differences from it: no
+`-Xexpect-actual-classes` (this module declares **no** `expect`), and the dead deps sit in
+`androidMain`.
 
 ```kotlin
 plugins {
+    // `com.android.library` is INCOMPATIBLE with the Kotlin Multiplatform plugin under AGP 9+.
     alias(libs.plugins.kotlin.multiplatform)
     alias(libs.plugins.android.kotlin.multiplatform.library)
     `maven-publish`
@@ -269,362 +327,295 @@ plugins {
 kotlin {
     explicitApi()
 
-    androidLibrary {
+    // NOTE: no `compilerOptions { freeCompilerArgs.add("-Xexpect-actual-classes") }` here.
+    // :core:common, :core:security and :core:discovery need it because each declares an
+    // `expect class`. This module declares none, so the flag would be noise.
+
+    android {
         namespace = "com.transfer.flash.core.network"
         compileSdk = 35
-        minSdk = 24
-        // PASTE KMP_HOST_TEST_BLOCK from the Phase 06 log (withHostTest { } enabling the
-        // Android host unit-test compilation + task). core:network needs NO Android resources,
-        // so do NOT add isIncludeAndroidResources here (unlike persistence/Phase 09).
-        // PASTE consumer-proguard wiring: consumerProguardFiles("consumer-rules.pro")
+        minSdk = 24                      // NOT inside defaultConfig — the target is variant-free
+
+        optimization {                   // was defaultConfig { consumerProguardFiles(...) }
+            consumerKeepRules.apply {
+                file("consumer-rules.pro")
+                publish = true
+            }
+        }
+
+        localDependencySelection {       // replaces buildTypes { release { ... } }
+            selectBuildTypeFrom.set(listOf("release"))
+        }
+
+        compilerOptions {                // replaces compileOptions { source/targetCompatibility }
+            jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11)
+        }
+
+        // Creates androidHostTest + the `testAndroidHostTest` task. Omit it and all 21 migrated
+        // test files stop compiling AND running while the build still reports SUCCESS.
+        withHostTest { }
+
+        withDeviceTest {                 // was defaultConfig { testInstrumentationRunner = ... }
+            instrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        }
     }
 
-    jvm()   // plain jvm() — desktop JVM target. NEVER jvm("desktop").
+    // Plain `jvm()`, never `jvm("desktop")` — R5. `compileKotlinJvm` cannot see android.jar,
+    // which is what proves the 14 commonMain files are genuinely Android-free.
+    jvm {
+        compilerOptions {
+            jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11)
+        }
+    }
 
     sourceSets {
-        val jvmAndAndroidMain = create("jvmAndAndroidMain")
-        jvmAndAndroidMain.dependsOn(getByName("commonMain"))
-        getByName("androidMain").dependsOn(jvmAndAndroidMain)
-        getByName("jvmMain").dependsOn(jvmAndAndroidMain)
-
-        getByName("commonMain").dependencies {
+        commonMain.dependencies {
             api(project(":core:common"))
+            // StateFlow/Flow appear in FlashSession's and FlashNetwork's public signatures, so
+            // `implementation` would keep those types off a consumer's compile classpath.
             api(libs.kotlinx.coroutines.core)
-            implementation(project(":core:discovery"))   // only DiscoveryRouteBinder uses it
+            // Real edge: bridge/DiscoveryRouteBinder.kt uses FlashDiscoveredEndpoint, which is
+            // commonMain in :core:discovery since Phase 08.
+            implementation(project(":core:discovery"))
         }
-        getByName("jvmAndAndroidMain").dependencies {
-            // :core:security is grep-unused (0 imports). Relocated here for parity with the TLS
-            // code that would use it. TODO(cleanup): grep-unused as of Phase 10 — a later phase
-            // may delete this dependency outright.
+        androidMain.dependencies {
+            // TODO(cleanup): all three are dead — zero references in main and test. They are
+            // parked here rather than deleted so core-network-android's POM keeps the three
+            // runtime-scope entries 1.1.0 consumers see today. See the phase file.
             implementation(project(":core:security"))
-        }
-        getByName("androidMain").dependencies {
-            // Both AARs are grep-unused (0 androidx imports). TODO(cleanup): grep-unused as of
-            // Phase 10 — relocated, not deleted, under the move-only rule.
             implementation(libs.androidx.core.ktx)
             implementation(libs.androidx.lifecycle.runtime.ktx)
         }
+        // Runs on BOTH the Android host-test JVM and the desktop jvm() target (R3.1).
+        commonTest.dependencies {
+            implementation(kotlin("test"))
+            implementation(libs.kotlinx.coroutines.test)
+        }
+        // The 20 pre-existing suites + 1 helper are JUnit 4 and use java.util.concurrent, real
+        // sockets and BouncyCastle, so they stay on the Android host-test tier, unchanged.
         getByName("androidHostTest").dependencies {
             implementation(libs.junit)
-            implementation(libs.bouncycastle.pkix)   // TEST-ONLY: self-signed certs for TLS tests
+            implementation(libs.bouncycastle.pkix)   // tls/SoftwareCertMaker.kt only
+        }
+        jvmTest.dependencies {
+            implementation(libs.junit)
         }
     }
 }
 
 publishing {
     publications {
+        // KMP generates the publications itself (root `kotlinMultiplatform` + one per target),
+        // so a module must NOT register<MavenPublication>("release") any more. Default
+        // artifactIds derive from the project name (`network`, `network-android`, `network-jvm`);
+        // rename in place to keep the coordinates 1.1.0 consumers already use. Version and group
+        // still come from the root build file — never set them here.
         withType<MavenPublication>().configureEach {
-            // Keep the root coordinate == PR #1's coordinate so existing Android consumers
-            // resolving core-network keep working; the KMP plugin adds -android / -jvm variants.
-            artifactId = artifactId.replace(project.name, "core-network")
+            artifactId = artifactId.replace("network", "core-network")
         }
     }
 }
 ```
 
-**What changed vs. the old file, and why each change is safe:**
+## Steps — in order. Every Gradle command uses `--no-configuration-cache`.
 
-- `com.android.library` → `com.android.kotlin.multiplatform.library` + `kotlin.multiplatform`
-  (AGP 9 requirement; `com.android.library` is incompatible with the KMP plugin).
-- Deleted `buildTypes`/`singleVariant`/`compileOptions`/`testInstrumentationRunner` — none exist in
-  the KMP Android DSL. Host tests are enabled by `withHostTest { }` (omitting it = 0 tests silently
-  pass, the classic trap). `consumerProguardFiles` moves inside `androidLibrary { }`.
-- No `isIncludeAndroidResources` — network has no `res/`/assets and no Robolectric-resource test.
-- The publication block switches from a single hand-registered `release` publication to the KMP
-  `withType<MavenPublication>().configureEach { artifactId = …replace(project.name, "core-network") }`
-  form (the same rewrite every converted module uses; root coordinate stays `core-network`).
-
-## Steps (do them in order; every Gradle command uses `--no-configuration-cache`)
-
-### Step 1 — Record the baseline (paste the outputs into the log)
-
-Before touching anything, capture the two numbers this phase must preserve. Run from repo root:
+Environment for every command in this phase:
 
 ```bash
-./gradlew :core:network:testDebugUnitTest --no-configuration-cache
+export JAVA_HOME="/c/Users/KaliOxygen/.gradle/jdks/jetbrains_s_r_o_-21-amd64-windows.2"
+export JAVA_TOOL_OPTIONS='-Djdk.net.unixdomain.tmpdir=C:\Users\KaliOxygen\.gradle\afunix'
 ```
 
-Record the **exact `@Test` count** it runs. The verified baseline is **102 tests across 19
-classes**; if your run reports a different number, STOP — the inventory drifted and the placement
-table must be re-derived before moving files. Also capture the current publish coordinate:
+### Step 1 — Preconditions. Verify, do not assume.
+
+1. `git status --short` is empty.
+2. `:core:common`, `:core:security`, `:core:discovery` are all KMP — each `build.gradle.kts`
+   applies `libs.plugins.kotlin.multiplatform`. If any still applies `com.android.library`, this
+   phase is blocked; go finish that phase first.
+3. `find core/network/src/main -name '*.kt' | wc -l` → **35**, and
+   `find core/network/src/test -name '*.kt' | wc -l` → **21**. Any other number means the
+   inventory drifted **again**; stop and re-derive the placement table before moving anything.
+
+### Step 2 — Record the baseline (before touching the build file)
 
 ```bash
-./gradlew :core:network:publishToMavenLocal --no-configuration-cache
+./gradlew :core:network:testDebugUnitTest :core:network:publishToMavenLocal --no-configuration-cache
 ```
 
-Confirm it emits `core-network` (root artifactId) today. This is the single coordinate the KMP
-conversion must keep emitting (now with `-android`/`-jvm` variants added).
+Extract the per-class `@Test` counts from `core/network/build/test-results/testDebugUnitTest/TEST-*.xml`
+and the coordinate from `~/.m2/repository/com/transfer/flash/core-network/`. Paste both into the
+log. Expected: **126 / 20 classes / 0 failures**, `core-network:1.1.0` packaging `aar`.
 
-### Step 2 — Create the KMP source-set directories
+### Step 3 — Rewrite `core/network/build.gradle.kts`, alone
 
-KMP uses `kotlin/`, not `java/`. Create the three roots (production) plus the host-test root:
+Replace it wholesale with the block above. **Only this module's build file in this commit** (R4).
+Do not touch `core/discovery/build.gradle.kts`, `core/engine/build.gradle.kts`, or `app/`.
 
-```bash
-cd core/network/src
-mkdir -p commonMain/kotlin/com/transfer/flash/core/network
-mkdir -p jvmAndAndroidMain/kotlin/com/transfer/flash/core/network
-mkdir -p androidMain/kotlin/com/transfer/flash/core/network
-mkdir -p androidHostTest/kotlin/com/transfer/flash/core/network
+### Step 4 — `git mv` the 14 `commonMain` files
+
+Target root: `core/network/src/commonMain/kotlin/com/transfer/flash/core/network/`. Use `git mv`
+so the history is a rename, never `cp` + delete.
+
+```
+FlashConnectionHealth.kt  FlashConnectionState.kt  FlashNetwork.kt  FlashNetworkState.kt
+FlashSession.kt  bridge/DiscoveryRouteBinder.kt  resilience/ConnectionHealthAggregator.kt
+resilience/HeartbeatPolicy.kt  resilience/HeartbeatTracker.kt  resilience/ReconnectPolicy.kt
+resilience/SessionHardeningPolicy.kt  tcp/LanProbeMessages.kt  tls/FlashPinVerifier.kt
+ws/WsKeepalive.kt
 ```
 
-Create the sub-package dirs as needed by the `git mv` targets below (`bridge/`, `resilience/`,
-`tcp/`, `tls/`, `ws/`, `util/`, `datachannel/`). `git mv` will not create intermediate dirs on all
-platforms, so `mkdir -p` each destination sub-package first, or use the per-file moves as written.
+### Step 5 — `git mv` the remaining 21 files to `androidMain`
 
-### Step 3 — Rewrite `core/network/build.gradle.kts`
+Target root: `core/network/src/androidMain/kotlin/com/transfer/flash/core/network/`. After this
+step `find core/network/src/main -name '*.kt'` must print **nothing**; remove the now-empty
+`src/main` tree.
 
-Replace the file with the paste-ready target from the section above, filling the two `/* PASTE … */`
-regions from the Phase 06 log. Do this **before** moving files so the IDE/Gradle sees the new source
-sets when it re-syncs. Do not run a build yet — the files are still in `src/main` and won't be found
-by the new source sets until Step 4.
+### Step 6 — `git mv` all 21 test files to `androidHostTest`
 
-### Step 4 — `git mv` the 34 production files (by explicit file list per set)
+Target root: `core/network/src/androidHostTest/kotlin/com/transfer/flash/core/network/`. After
+this step `find core/network/src/test -name '*.kt'` must print **nothing**. 56 renames total.
 
-Use `git mv` (preserves history + stages the rename). Source root is
-`core/network/src/main/java/com/transfer/flash/core/network/`; abbreviate it as `$SRC` and the three
-destinations as `$COMMON`, `$JVMAND`, `$ANDROID`:
+### Step 7 — The one content edit, then the new `commonTest` suite
 
-```bash
-cd core/network
-SRC=src/main/java/com/transfer/flash/core/network
-COMMON=src/commonMain/kotlin/com/transfer/flash/core/network
-JVMAND=src/jvmAndAndroidMain/kotlin/com/transfer/flash/core/network
-ANDROID=src/androidMain/kotlin/com/transfer/flash/core/network
-mkdir -p $COMMON/bridge $COMMON/resilience $COMMON/tcp $COMMON/tls
-mkdir -p $JVMAND/datachannel $JVMAND/resilience $JVMAND/tcp $JVMAND/tls $JVMAND/ws
-mkdir -p $ANDROID/datachannel $ANDROID/resilience $ANDROID/tcp $ANDROID/util $ANDROID/ws
-```
+Apply the `FlashSession.kt:29` change, then write
+`src/commonTest/kotlin/com/transfer/flash/core/network/FlashSessionSendTextTest.kt`.
+Nothing else in the 35 files may change. Verify with
+`git diff --cached --numstat -- '*/commonMain/*' '*/androidMain/*'` — every moved file must show
+`0 0` except `FlashSession.kt`.
 
-**commonMain (13):**
+## Verification gates — seven, all must pass
 
-```bash
-git mv $SRC/FlashConnectionHealth.kt              $COMMON/FlashConnectionHealth.kt
-git mv $SRC/FlashConnectionState.kt               $COMMON/FlashConnectionState.kt
-git mv $SRC/FlashNetworkState.kt                  $COMMON/FlashNetworkState.kt
-git mv $SRC/FlashNetwork.kt                       $COMMON/FlashNetwork.kt
-git mv $SRC/FlashSession.kt                       $COMMON/FlashSession.kt
-git mv $SRC/bridge/DiscoveryRouteBinder.kt        $COMMON/bridge/DiscoveryRouteBinder.kt
-git mv $SRC/resilience/ConnectionHealthAggregator.kt $COMMON/resilience/ConnectionHealthAggregator.kt
-git mv $SRC/resilience/HeartbeatPolicy.kt         $COMMON/resilience/HeartbeatPolicy.kt
-git mv $SRC/resilience/HeartbeatTracker.kt        $COMMON/resilience/HeartbeatTracker.kt
-git mv $SRC/resilience/ReconnectPolicy.kt         $COMMON/resilience/ReconnectPolicy.kt
-git mv $SRC/resilience/SessionHardeningPolicy.kt  $COMMON/resilience/SessionHardeningPolicy.kt
-git mv $SRC/tcp/LanProbeMessages.kt               $COMMON/tcp/LanProbeMessages.kt
-git mv $SRC/tls/FlashPinVerifier.kt               $COMMON/tls/FlashPinVerifier.kt
-```
-
-**jvmAndAndroidMain (9):**
-
-```bash
-git mv $SRC/datachannel/DataChannelFraming.kt     $JVMAND/datachannel/DataChannelFraming.kt
-git mv $SRC/resilience/BoundedSendQueue.kt        $JVMAND/resilience/BoundedSendQueue.kt
-git mv $SRC/resilience/ChaosNetworkHarness.kt     $JVMAND/resilience/ChaosNetworkHarness.kt
-git mv $SRC/resilience/ChaosSession.kt            $JVMAND/resilience/ChaosSession.kt
-git mv $SRC/tcp/LanProbeServer.kt                 $JVMAND/tcp/LanProbeServer.kt
-git mv $SRC/tls/FlashTlsContextFactory.kt         $JVMAND/tls/FlashTlsContextFactory.kt
-git mv $SRC/tls/SecureSocketUpgrader.kt           $JVMAND/tls/SecureSocketUpgrader.kt
-git mv $SRC/tls/TofuX509TrustManager.kt           $JVMAND/tls/TofuX509TrustManager.kt
-git mv $SRC/ws/WebSocketCodec.kt                  $JVMAND/ws/WebSocketCodec.kt
-```
-
-**androidMain (12):**
-
-```bash
-git mv $SRC/DefaultFlashNetwork.kt                $ANDROID/DefaultFlashNetwork.kt
-git mv $SRC/resilience/AndroidNetworkWatcher.kt   $ANDROID/resilience/AndroidNetworkWatcher.kt
-git mv $SRC/tcp/LanConnectionProbe.kt             $ANDROID/tcp/LanConnectionProbe.kt
-git mv $SRC/util/LocalNetworkAddresses.kt         $ANDROID/util/LocalNetworkAddresses.kt
-git mv $SRC/ws/WsFlashNetwork.kt                  $ANDROID/ws/WsFlashNetwork.kt
-git mv $SRC/ws/WsTransferClient.kt                $ANDROID/ws/WsTransferClient.kt
-git mv $SRC/datachannel/DataChannelClient.kt      $ANDROID/datachannel/DataChannelClient.kt
-git mv $SRC/datachannel/DataChannelServer.kt      $ANDROID/datachannel/DataChannelServer.kt
-git mv $SRC/tcp/LanSession.kt                      $ANDROID/tcp/LanSession.kt
-git mv $SRC/ws/WsConnection.kt                     $ANDROID/ws/WsConnection.kt
-git mv $SRC/ws/WsSession.kt                         $ANDROID/ws/WsSession.kt
-git mv $SRC/ws/WsTransferServer.kt                 $ANDROID/ws/WsTransferServer.kt
-```
-
-**Count check — the load-bearing assertion:**
-
-```bash
-git status --short | grep -c '^R'          # expect 34 renames staged (production only, so far)
-find $SRC -name '*.kt' | wc -l             # expect 0 — src/main must be empty of .kt now
-```
-
-If `src/main` still has `.kt` files, you missed one — reconcile against the three lists (13+9+12=34)
-before continuing. Do not proceed with a non-empty `src/main`.
-
-### Step 5 — `git mv` the 20 test files to `androidHostTest`
-
-All 20 test files (19 JUnit4 classes + the `tls/SoftwareCertMaker.kt` helper) go to
-`androidHostTest`. They stay one suite; there is no `jvmTest` split in this phase. Move the whole
-tree by sub-package (this preserves the package layout the 19 classes expect):
-
-```bash
-cd core/network
-TSRC=src/test/java/com/transfer/flash/core/network
-THOST=src/androidHostTest/kotlin/com/transfer/flash/core/network
-mkdir -p $THOST
-# move every .kt under the test package tree, preserving sub-package dirs:
-git mv $TSRC $THOST/..    # moves the whole 'network' dir under androidHostTest/.../core/
-```
-
-If your Git refuses the directory move (some Windows Git builds do), fall back to per-subpackage
-moves (`git mv $TSRC/tls $THOST/tls`, etc.), then move the root-level test `.kt`. After the move:
-
-```bash
-find src/test -name '*.kt' | wc -l                 # expect 0 — src/test emptied
-find $THOST -name '*.kt' | wc -l                    # expect 20
-git status --short | grep -c '^R'                   # expect 54 total renames (34 prod + 20 test)
-```
-
-`SoftwareCertMaker.kt` is a **helper, not a test class** — it must move with the others (the TLS
-tests instantiate it). Do not drop it.
-
-### Step 6 — Compile the shared surface for desktop JVM
-
-This is the proof the phase exists for — the shared network half builds off Android:
+### Gate 1 — the desktop target compiles (the load-bearing check)
 
 ```bash
 ./gradlew :core:network:compileKotlinJvm --no-configuration-cache
 ```
 
-Must be **BUILD SUCCESSFUL**. If it fails:
+This is the R2 proof: the `jvm()` compilation has no `android.jar`, so success means the 14
+`commonMain` files are genuinely Android-free. It certifies **nothing** about `java.*` (R6.1) —
+Gate 6 covers that.
 
-- `Unresolved reference: FlashDiscoveredEndpoint` (or any `:core:common`/`:core:discovery` type in a
-  commonMain file) ⇒ that upstream type is **not** commonMain — return to Preconditions #1 and fix
-  the upstream module, do not move the file up to androidMain to "solve" it.
-- `Unresolved reference: android` / `Log` in a jvmAndAndroidMain or commonMain file ⇒ a file was
-  placed too low; it belongs in androidMain. Re-check the placement table.
-- `Unresolved reference: javax`/`java.security` in a **commonMain** file ⇒ that file needs the JDK;
-  move it to jvmAndAndroidMain.
+### Gate 2 — Android main compiles
 
-### Step 7 — Run the Android host test suite; assert the baseline count
+```bash
+./gradlew :core:network:compileAndroidMain --no-configuration-cache
+```
+
+### Gate 3 — the Android host tests; the count MUST equal baseline + `commonTest`
 
 ```bash
 ./gradlew :core:network:testAndroidHostTest --no-configuration-cache
 ```
 
-(Use the exact `ANDROID_UNIT_TEST_TASK` recorded in the Phase 06 log if it differs.) Must be
-**BUILD SUCCESSFUL running exactly the Step 1 baseline — 102 `@Test` across 19 classes**. A green
-build running **0 tests** means `withHostTest { }` was omitted or the tests did not land in
-`androidHostTest` — that is the silent-failure trap, not a pass. Compare the reported count to
-Step 1 and paste both into the log.
+`testDebugUnitTest` **no longer exists** in this module (no build variants). Compare the
+per-class table against the Step 2 baseline: 126 pre-existing + the new `commonTest` suite's `n`.
+A total below 126 means tests were silently dropped — the Phase 06 trap — and the phase is not
+done. Paste the full per-class table into the log, not just the total.
 
-### Step 8 — Publish to Maven Local; confirm the coordinate + variants
+### Gate 4 — `jvmTest`: the shared code is executed on desktop, not just compiled
+
+```bash
+./gradlew :core:network:jvmTest --no-configuration-cache
+```
+
+Must report exactly `n` tests — the `commonTest` suite. Zero tests means the suite did not land
+in `commonTest` and the desktop target is unproven (R3.1).
+
+### Gate 5 — published coordinates
 
 ```bash
 ./gradlew :core:network:publishToMavenLocal --no-configuration-cache
+ls ~/.m2/repository/com/transfer/flash/ | grep network
 ```
 
-Inspect `~/.m2/repository/<group>/`. Confirm the **root** `core-network` coordinate is still
-emitted (matching Step 1), now alongside `core-network-android` and `core-network-jvm` variant
-publications with their `.module` metadata. If only `core-network` (no `-jvm`) appears, the `jvm()`
-target did not publish — verify `jvm()` is declared and you ran `publishToMavenLocal` (all
-publications), not a single-target task.
+Must list exactly `core-network`, `core-network-android`, `core-network-jvm`. Any of `network`,
+`network-android`, `network-jvm` means the `artifactId.replace` did not fire. Also confirm
+`core-network-jvm-1.1.0.pom` does **not** contain `core-security`, `core-ktx` or
+`lifecycle-runtime-ktx`, and that `core-network-android-1.1.0.pom` still does.
 
-### Step 9 — Prove the Android app still resolves and builds
+### Gate 6 — the R6.1 purity grep (nothing in the build enforces R6)
+
+```bash
+grep -rnE '\b(android|androidx|java|javax|kotlin\.jvm)\.[A-Za-z]|::class\.java|\bCharsets\b|String\.format' \
+  core/network/src/commonMain --include='*.kt' | grep -vE ':[0-9]+:[[:space:]]*(\*|//|/\*)'
+```
+
+Must print nothing. The comment filter is required: `ConnectionHealthAggregator`'s KDoc mentions
+`androidx.lifecycle` in prose. That note is stale — coroutines has always been a direct `api`
+dependency, not a transitive one — but fixing prose is not this phase's job (R1). Record it as a
+known issue instead.
+
+### Gate 7 — the Android app still resolves and builds, then the repo-wide R3 command
 
 ```bash
 ./gradlew :app:assembleDebug --no-configuration-cache
 ```
 
-Must be **BUILD SUCCESSFUL**. `:app` consumes `core-network` via the root coordinate and must get
-the `-android` variant transparently. A failure here means the Android variant's API surface
-changed — it must not have (move-only). Re-check that no file's `package` or visibility changed.
-
-## Verification gate — all four must be green (paste outputs into the log)
-
-1. `:core:network:compileKotlinJvm` — **BUILD SUCCESSFUL** (shared surface builds off Android).
-2. `:core:network:testAndroidHostTest` — **BUILD SUCCESSFUL, exactly 102 `@Test` / 19 classes**
-   (equal to the Step 1 baseline; a 0-test "pass" is a failure).
-3. `:core:network:publishToMavenLocal` — root `core-network` **plus** `-android` **and** `-jvm`
-   variant publications with `.module` metadata.
-4. `:app:assembleDebug` — **BUILD SUCCESSFUL** (Android consumer unregressed).
-
-Any red ⇒ do not log PASS and do not proceed to Phase 11. Fix the owning cause (placement /
-upstream commonMain / build DSL) and re-run.
+Then the full R3 command from `CONVENTIONS.md`, with `:core:network:testDebugUnitTest` swapped
+for `:core:network:testAndroidHostTest :core:network:jvmTest`. `--continue` is mandatory and
+`BUILD FAILED` is the **expected** outcome: 12 pre-existing failures in `:core:persistence`
+(11 `FlashSettingsDataStoreTest` + 1 `DiscoveryModeSettingTest`). The pass count must be
+**≥ 897 + n** (the Phase 08 floor plus this phase's new tests) with failures still exactly 12
+and all 12 still in `:core:persistence`. Update R3's command line in `CONVENTIONS.md` as part
+of this phase.
 
 ## Do NOT
 
-- **Do NOT edit file contents.** This is a move-only phase. The TLS trio
-  (`FlashTlsContextFactory`, `SecureSocketUpgrader`, `TofuX509TrustManager`) and the four wire
-  codecs (`LanProbeMessages`, `DataChannelFraming`, `WebSocketCodec`, plus the framing in the
-  transport) are **R8-sensitive** — relocating them is allowed, changing a byte of their content is
-  not (R8). No reformatting, no import reordering, no visibility tweaks.
-- **Do NOT introduce an `expect`/`actual` log seam** for the six `android.util.Log`-only files.
-  Leave them in androidMain (see the Log note). The seam, if ever wanted, is a deliberate later
-  decision, not part of a file-move.
-- **Do NOT create any Phase 15 seam now.** Record the four `ConnectivityManager`/`Context`
-  candidates; do not abstract them. Desktop transport is Phase 15.
-- **Do NOT delete the three dead dependencies** (`:core:security`, `androidx.core.ktx`,
-  `androidx.lifecycle.runtime.ktx`). Relocate + flag `TODO(cleanup)`; a later phase deletes them.
-- **Do NOT downgrade `:core:common` / `coroutines.core` from `api` to `implementation`.** They are
-  in public signatures; `api` is correct and load-bearing for transitive consumers.
-- **Do NOT use `jvm("desktop")`, typed source-set accessors, or `src/**/java/` roots.** Plain
-  `jvm()`, `getByName(String)`, `src/**/kotlin/`.
-- **Do NOT omit `withHostTest { }`** — omitting it produces a green build running 0 tests (the
-  silent-failure trap). And do NOT add `isIncludeAndroidResources` — network has no Android
-  resources and no Robolectric-resource test.
-- **Do NOT change the `core-network` root coordinate.** PR #1's Android consumers resolve it; the
-  prefix rewrite keeps it stable while adding the KMP variants.
-- **Do NOT run mid-migration Gradle without `--no-configuration-cache`.**
+- Do **not** create `jvmAndAndroidMain`, or any `srcDir` that two platform source sets share.
+  That re-decides D1, which is the human's call.
+- Do **not** edit the content of the 34 files that are not `FlashSession.kt`. The TLS trio and
+  the four wire codecs are R8-sensitive: relocating them is allowed, changing a byte is not.
+  No reformatting, no import reordering, no visibility tweaks, no `@Suppress`.
+- Do **not** introduce an `expect`/`actual` log seam. There is no `android.util.Log` left to
+  seam — Phase 03 already did this via `FlashLog`.
+- Do **not** create any Phase 15 seam: no transport interface extracted from `WsConnection`, no
+  multiplatform-IO rewrite, no `TlsOptions` file split. Record them, do not act.
+- Do **not** put anything in `jvmMain`, including a stub or a `TODO()`.
+- Do **not** downgrade `:core:common` or `libs.kotlinx.coroutines.core` from `api`.
+- Do **not** delete the three dead dependencies here.
+- Do **not** use `jvm("desktop")`, a `src/**/java/` source root, or typed source-set accessors
+  for hand-created sets (`androidHostTest` needs `getByName`).
+- Do **not** omit `withHostTest { }` — the 21 test files stop running while the build stays green.
+- Do **not** add `isIncludeAndroidResources` or any Robolectric wiring; nothing here needs it.
+- Do **not** change the `core-network` root coordinate, the group, or the version.
+- Do **not** run any Gradle command without `--no-configuration-cache`, and never with
+  `--offline`.
+- Do **not** edit a second module's build file in this commit (R4).
 
-## Completion checklist
+## Completion checklist — every box, or the phase is not done
 
-- [ ] `build.gradle.kts` rewritten to the KMP form (plugins, `androidLibrary`, `jvm()`, three
-      source sets wired with `getByName`, dependency tiers per the table, `withHostTest`, no
-      `isIncludeAndroidResources`, KMP publication rewrite to `core-network`).
-- [ ] 34 production files moved unedited: 13 commonMain / 9 jvmAndAndroidMain / 12 androidMain;
-      `src/main` empty of `.kt`.
-- [ ] 20 test files moved to `androidHostTest` (incl. `SoftwareCertMaker.kt`); `src/test` empty.
-- [ ] `:core:network:compileKotlinJvm` green.
-- [ ] `:core:network:testAndroidHostTest` green at **102 tests** (== baseline).
-- [ ] `publishToMavenLocal` emits `core-network` + `-android` + `-jvm` with `.module`.
-- [ ] `:app:assembleDebug` green.
-- [ ] Three dead deps relocated + `TODO(cleanup)` flagged, not deleted.
-- [ ] Four Phase-15 seam candidates recorded in the log; no seam created.
-- [ ] Log entry appended to `docs/migration/logs/migration.md` (append-only) with pasted outputs.
+- [ ] `core/network/build.gradle.kts` applies the two KMP plugins; `com.android.library` is gone
+- [ ] 14 files in `src/commonMain/kotlin/**`, 21 in `src/androidMain/kotlin/**`, 0 in `src/main`
+- [ ] `src/jvmMain` is empty or absent
+- [ ] 21 test files in `src/androidHostTest/kotlin/**`, 0 in `src/test`
+- [ ] 1 new file in `src/commonTest/kotlin/**`
+- [ ] `git diff` shows exactly one content change across all 35 moved production files
+- [ ] `explicitApi()` preserved; no `-Xexpect-actual-classes` added
+- [ ] Gates 1–7 all pass, with outputs pasted into the log
+- [ ] `testAndroidHostTest` = 126 + n; `jvmTest` = n
+- [ ] `core-network` / `-android` / `-jvm` all published at 1.1.0
+- [ ] `CONVENTIONS.md` R3 command updated
+- [ ] `logs/migration.md` entry appended from `TEMPLATE-phase-log.md`, including the
+      `sendText` behavioural note, the two disproved claims, and the 14-of-35 correction
 
 ## Rollback
 
-Move-only + build-DSL change, so rollback is mechanical and total:
-
-```bash
-git restore --staged core/network
-git checkout -- core/network
-git clean -fd core/network/src/commonMain core/network/src/jvmAndAndroidMain \
-               core/network/src/androidMain core/network/src/androidHostTest
-```
-
-This un-stages the renames, restores the original `build.gradle.kts` and `src/main`/`src/test`
-trees, and removes the empty KMP source-set dirs. Because nothing was published to a remote and no
-content changed, there is no downstream to unwind. If `publishToMavenLocal` ran, the stale
-`~/.m2/repository/.../core-network*` entries are harmless (overwritten on the next real publish) but
-may be deleted for cleanliness.
+One commit, one module. `git revert <sha>` restores `src/main`/`src/test` and the AGP build file
+in a single step, because every move is a `git mv` rename. If the revert is needed after
+`publishToMavenLocal`, also
+`rm -rf ~/.m2/repository/com/transfer/flash/core-network-{android,jvm}` so a stale KMP variant
+cannot satisfy a later resolution.
 
 ## Log entry (mandatory)
 
-Append **one** entry to `docs/migration/logs/migration.md` (append-only, newest at the bottom —
-never edit an earlier entry; never write PASS without pasted command output). Include:
+Append one entry to `logs/migration.md` using `TEMPLATE-phase-log.md`. It must record, at
+minimum:
 
-- The Step 1 **baseline** (`testDebugUnitTest` count = 102/19 classes) and the current
-  `publishToMavenLocal` coordinate (`core-network`), both with pasted output.
-- Confirmation of the split moved: **13 commonMain / 9 jvmAndAndroidMain / 12 androidMain**
-  production + **20 androidHostTest** (incl. `SoftwareCertMaker.kt`); `src/main` and `src/test`
-  empty (paste the `find … | wc -l` = 0 and `git status --short | grep -c '^R'` = 54).
-- The four verification-gate outputs pasted: `compileKotlinJvm` SUCCESS; `testAndroidHostTest`
-  SUCCESS **at 102 tests** (state the number, not just "passed"); `publishToMavenLocal` emitting
-  `core-network` + `-android` + `-jvm` (list the `.m2` dirs observed); `:app:assembleDebug` SUCCESS.
-- The three **dead dependencies** relocated + flagged (`:core:security` → jvmAndAndroidMain;
-  `androidx.core.ktx` + `androidx.lifecycle.runtime.ktx` → androidMain), explicitly noted as
-  grep-unused and **not** deleted.
-- The four **Phase-15 seam candidates** named (`AndroidNetworkWatcher`, `LocalNetworkAddresses`,
-  `LanConnectionProbe`, `WsTransferClient`) for the desktop-transport phase, with a note that no
-  seam was created here.
-- The six `android.util.Log`-only files named, with a note that no log seam was introduced
-  (move-only).
-- The final statement: **`:core:network` is KMP; the shared transport surface (contracts +
-  resilience policies + TLS/TOFU + wire codecs, 22 files) compiles for desktop JVM; the Android
-  host suite is unregressed at 102 tests; the concrete Android transport stays androidMain and
-  desktop transport is deferred to Phase 15.**
+1. the measured baseline (126/20) and the post-move counts;
+2. that the phase file was **rewritten for D1 = B** before execution, and that the shared surface
+   is **14 of 35**, not the old file's 22 of 34, with the R2-step-1 reasoning;
+3. the two claims the old file made that measurement disproved;
+4. the `sendText` UTF-8 change and its exact behavioural boundary (unpaired surrogates only);
+5. the three dead dependencies parked in `androidMain` and the inconsistency with Phase 08;
+6. the Phase 12 blocker (`TlsOptions` unreachable from `commonMain`) and the Phase 15 seams;
+7. the stale `ConnectionHealthAggregator` KDoc note, unfixed by R1.

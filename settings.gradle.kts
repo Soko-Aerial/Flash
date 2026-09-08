@@ -34,6 +34,10 @@ include(":core:messaging")
 include(":core:calling")
 include(":core:engine")
 include(":ui:theme")
+// Phase 19. Sits between `:ui:theme` and `:ui:chat` in the build graph: it owns the seven
+// platform seams (back handling, clipboard, file picking, permissions, image decode, audio
+// playback, voice capture) that `:ui:chat` used to reach through `android.*` imports.
+include(":ui:platform-shims")
 include(":ui:chat")
 include(":ui:callui")
 

@@ -1,5 +1,43 @@
 # Progress Log
 
+## 2026-09-08 — Dev features integrated onto the KMP architecture
+
+### Worked on
+Merged the 47-commit `kmp` source-set migration with the full uncommitted `dev` feature and
+performance stack on `integration/dev-kmp`, resolving the integration semantically rather than
+copying legacy `src/main/java` trees into converted modules.
+
+### Changed
+- Preserved KMP `commonMain`/`androidMain`/`jvmMain`, Room KMP, Compose resources/platform shims,
+  Okio transfer I/O, platform locks/atomics, and the golden-vector-certified `ChunkFrame` codec.
+- Relocated dev group protocol, schema v4, reconnect, pacing, UI, routing and performance work into
+  the correct KMP source sets; pure tests now run on both Android host and JVM where applicable.
+- Ported transfer optimizations onto KMP primitives: explicit identity, quiet call-time watcher,
+  delta-only confirmed progress, compact receiver bookkeeping and reconnect resume.
+- Corrected two defects found during integration: group media now uses one shared message/file id
+  plus the exact per-recipient transfer id in both `FLASH_GMEDIA` and `FILE_START`; `FLASH_GSYNC`
+  now emits per-message acknowledgements and does not let a partial ack retire the remaining batch.
+- Kept Android media allocation/cache behavior behind `:ui:platform-shims` and restored the public
+  system reduce-motion query needed by the Android app host.
+
+### Verification
+- Targeted Android/JVM suites passed for common, discovery, engine, messaging, network, security,
+  transfer, UI theme/chat/platform shims, calling, call UI and app.
+- `:app:assembleDebug` passed.
+- Live result baseline after deleting obsolete pre-KMP XML directories: **1702 tests / 12 known
+  Windows DataStore failures / 0 errors / 0 skipped across 217 XML files**. The 12 failures are the
+  existing `:core:persistence:testAndroidHostTest` set; every other executed suite is green.
+- `git diff --check` and staged diff checks pass.
+
+### Remaining
+- Physical three-device verification for group membership, catch-up, media/resume and 1:1 regression.
+- F4b any-holder media re-pull and later KMP desktop transport phases remain separate work.
+
+### Next AI
+Run the physical device matrix before claiming group media/sync complete. Continue desktop work from
+`docs/migration/PHASE-15-desktop-transport.md`; do not replace KMP transfer primitives with the old
+JVM implementations.
+
 ## 2026-09-08 — F-series: group media/late-join defects fixed (F1–F4 core), GSYNC catch-up implemented (F3)
 
 ### Worked on

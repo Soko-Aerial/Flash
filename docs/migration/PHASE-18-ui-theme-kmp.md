@@ -1,6 +1,132 @@
 # Phase 18 — `ui:theme` KMP conversion
 
-**Blocked by:** Phase 17 (icon resources in CMP `composeResources`) — the `composeResources/` directory and `compose.components.resources` dependency must be in place before the module can compile for `commonMain`.
+> ## STATUS: DONE — 2026-09-05, commit `96e8799`
+>
+> **Read this box before following anything below it.** Fourteen statements in this file are wrong,
+> on top of the six the Phase-17 box below already corrects, and three of them make a step
+> impossible to execute as written. Full account in `logs/migration.md` → "Phase 18 — `:ui:theme`
+> KMP conversion proper".
+>
+> **Contradictions — a step and a rule that cannot both be obeyed:**
+>
+> 1. **Step 5 vs *"Do NOT change test imports"*.** `commonTest` cannot see `org.junit`, and step 5
+>    puts all five suites in `commonTest`. The suites were converted to `kotlin.test`, as
+>    `:core:security` and `:core:discovery` both did. Per R3.1 that is also the only way the three
+>    `actual`s get *executed* on both targets rather than merely compiled.
+> 2. **Step 1a's `isReduceMotionOnPlatform()` cannot compile:** the `actual` calls
+>    `LocalContext.current` from a non-`@Composable` function. The `expect` must be `@Composable`.
+> 3. **Step 1b marks `rememberFlashSounds` `internal actual`.** It is published 1.1.0 public API.
+>    Narrowing it is an API deletion, which **R2 forbids outright**. It stays public.
+>
+> **Wrong claims about the code:**
+>
+> 4. **`FlashSoundPolicy` is not "pure JVM — uses compile-time constants only".** True of the
+>    bytecode, false of the source: the constants were `android.media.AudioManager.RINGER_MODE_*`
+>    and `android.app.NotificationManager.INTERRUPTION_FILTER_*`. They are now five private
+>    `const val`s, read from `platforms/android-37.0/android.jar` with `javap -constants`, with the
+>    public signature and default *values* unchanged.
+> 5. **`FlashThemeSwatches.kt` is not pin-free.** The inventory lists it "None → commonMain". Its
+>    seven `@Preview` functions pass `name`/`showBackground`/`widthDp`/`fontScale`, and CMP 1.9.3's
+>    `org.jetbrains.compose.ui.tooling.preview.Preview` takes **no arguments** — moving it to
+>    `commonMain` silently drops all of them. It is in `androidMain`.
+> 6. **Step 1c's `FlashTheme.android.kt` omits the `androidx.compose.material3.ColorScheme` import**
+>    its own return type needs.
+> 7. **The production file table undercounts** (already in the Phase-17 box): 19 files, not 18.
+>    `FlashBrandAnimation.kt` is missing. 19 = **18 `commonMain` + 1 `androidMain`**.
+>
+> **Step 6's build file is pre-AGP-9 and must not be pasted over Phase 17's:**
+>
+> 8. It uses `androidLibrary { }` — the real block inside `kotlin { }` is **`android { }`**; asserts
+>    `consumerProguardFiles` *"are removed"* when Phase 17 preserved them via
+>    `optimization { consumerKeepRules { file(…); publish = true } }` (they are dropped in **silence**
+>    otherwise); declares `register<MavenPublication>("release") { from(components["release"]) }`,
+>    which a KMP module must not do because KMP generates its own publications; and hardcodes
+>    `version = "1.0.0"` — the exact bug that silently published 1.0.0 for the whole 1.1.0 cycle.
+> 9. **`compose.animation` is missing and is mandatory.** `FlashMotion` and `FlashBrandAnimation`
+>    import `EnterTransition`, `fadeIn`, `Animatable`, `CubicBezierEasing`, `spring`.
+>    `compose.foundation` does not carry them.
+> 10. **It downgrades `compose.components.resources` to `implementation`**, re-breaking what Phase 17
+>     fixed: `DrawableResource` is the declared type of the public `FlashIconSpec.drawableRes`, so it
+>     must stay `api`.
+> 11. **It moves `libs.androidx.compose.ui.tooling.preview` and `libs.androidx.lifecycle.runtime.ktx`
+>     to `commonMain`** — Android-only AARs, which cannot resolve for `jvm()`. Both stay in
+>     `androidMain`, and tooling-preview is load-bearing because of correction 5.
+> 12. **It puts `libs.junit` in `commonTest`**, which must stay platform-free. `kotlin("test")`
+>     resolves to `kotlin-test-junit` on both JVM tiers and needs JUnit 4 at runtime for its runner,
+>     so `libs.junit` is declared in `androidHostTest` **and** `jvmTest` separately.
+> 13. **It hoists `project(":core:common")` to `commonMain`.** The module has zero references to it,
+>     so that would only add a dependency to the new `ui-theme-jvm` POM. It, `libs.androidx.core.ktx`
+>     and `libs.androidx.lifecycle.runtime.ktx` are all unreferenced and all stay where Phase 17 left
+>     them — dropping a published runtime dependency is a separate decision (R1).
+>
+> **Gate table:**
+>
+> 14. **Task names and counts.** `compileKotlinDesktop` → **`compileKotlinJvm`** (also in the
+>     Phase-17 box); `compileDebugKotlin` → **`compileAndroidMain`** (the KMP Android target is
+>     variant-free); `allTests` is not how this repo tallies — CONVENTIONS R3's command line is, and
+>     it now carries `:ui:theme:jvmTest`. Correct file counts: **18** `commonMain`, **4**
+>     `androidMain` (1 moved + 3 `actual`), **3** `jvmMain`, **5** `commonTest`. The
+>     `^internal expect fun` grep expects 3 and matches **2** (`rememberFlashSounds` is public per
+>     correction 3); `^internal actual fun` over `jvmMain` matches **2**, not 3.
+>
+> **Naming:** platform files are `X.jvm.kt`, not `X.desktop.kt` — the repo convention since Phase 08.
+>
+> **Two call-site rewrites this file never mentions**, both argued to behavioural identity in code:
+> `FlashTheme` passes `dynamicScheme?.let { DYNAMIC_ACCENT_MIN_SDK } ?: 0` where it used to pass
+> `Build.VERSION.SDK_INT`, and `Theme.kt`'s `when` folds `dynamicColor && SDK_INT >= S` into
+> `dynamicColor -> flashDynamicColorScheme(...) ?: authored`.
+>
+> **Baseline hit exactly:** 5 XMLs / 37 tests / 0 failures on **both** `testAndroidHostTest` and the
+> new `jvmTest`; repo-wide **1055 / 12 / 0 across 140 XMLs**, the figure the Phase-17 box predicted.
+> The 12 are the known pre-existing `:core:persistence` failures.
+>
+> **Not verified (R9):** the three `@Composable` actuals are executed only insofar as their
+> non-`@Composable` logic is — there is no Compose UI-test harness in this repo and no device,
+> emulator or desktop-window run happened. Desktop sound output and desktop reduce-motion detection
+> are deliberately unimplemented (Phase 19 shim territory), not stubbed work in progress.
+
+
+> ## AMENDED BY PHASE 17 — 2026-09-05 (`23267ed`). Read before executing.
+>
+> Phase 17 could not avoid doing part of this phase's work: its step 4a (keep
+> `com.android.library`, add `org.jetbrains.compose`) is **impossible** under AGP 9, while this
+> phase declares itself blocked by 17 — a circular deadlock. Phase 17 broke it by converting the
+> module and leaving every Kotlin file where it was. So:
+>
+> - **Already done, do not redo.** The plugin pair (`kotlin.multiplatform` +
+>   `android.kotlin.multiplatform.library`), `alias(libs.plugins.jetbrains.compose)`, the
+>   `android { }` block (namespace, compileSdk 37, minSdk 24, `optimization { consumerKeepRules }`,
+>   `localDependencySelection`, `compilerOptions.jvmTarget`, `withHostTest { }`,
+>   `withDeviceTest { }`), the **`jvm()` target**, `compose.resources { packageOfResClass }`, and
+>   the KMP publication rename (`theme*` → `ui-theme*`). `FlashIcons.kt` is already on
+>   `Res.drawable.*` / `DrawableResource` — **do not touch it** beyond moving the file.
+> - **You MUST delete these two lines** from `ui/theme/build.gradle.kts`, as part of the same
+>   commit that moves the files. If you move files and leave the shims, or delete the shims
+>   without moving, the module compiles from neither path:
+>   ```kotlin
+>   getByName("androidMain").kotlin.srcDir("src/main/java")
+>   getByName("androidHostTest").kotlin.srcDir("src/test/java")
+>   ```
+>   They exist precisely so this phase's move table below stays executable verbatim.
+> - **`compileKotlinDesktop` does not exist** anywhere in this repo. R5 mandates plain `jvm()`, so
+>   every occurrence below means **`compileKotlinJvm`**. The Android compile task is
+>   `compileAndroidMain`; the unit-test task is `testAndroidHostTest` (see CONVENTIONS R3.1).
+> - **The file table undercounts: there are 19 production files, not 18.**
+>   `FlashBrandAnimation.kt` is missing from it. Reconcile before trusting the
+>   "expect 14 commonMain / 3–4 androidMain" gate.
+> - **Add `:ui:theme:jvmTest` to the CONVENTIONS R3 command.** Phase 17 added only
+>   `:ui:theme:testAndroidHostTest`, because the five suites are still `androidHostTest`-only and
+>   `jvmTest` would run zero tests. This phase moves them to `commonTest`, so this phase is what
+>   makes `jvmTest` meaningful — and per R3.1, an `actual` that is only compiled is not verified.
+> - **CMP is 1.9.3 and cannot be raised.** 1.11+/1.12 need Kotlin 2.3; R10 freezes 2.2.10. When
+>   this phase replaces the androidx BOM tier with `compose.*` artifacts per D3 = A, note that
+>   `compose.runtime` is **already** in `commonMain` and is **not optional** — the Compose compiler
+>   plugin fails every compilation in the module without it, `@Composable` or not.
+> - **Baseline to preserve:** `:ui:theme:testAndroidHostTest` = 5 XMLs, **37 tests, 0 failures**.
+>   Moving suites to `commonTest` should take this to 37 Android + 37 JVM = **74**, i.e. repo-wide
+>   1018 → 1055 across 135 → 140 XMLs. Anything less means a suite stopped running.
+
+**Blocked by:** Phase 17 (icon resources in CMP `composeResources`) — **satisfied 2026-09-05**; and 17 pre-paid this phase's plugin/target work, so what remains is the file move, the three `expect`/`actual` pairs, the test move, the shim deletion and the dependency rewrite.
 
 **Gated by:** D3 (Compose dependency source — `org.jetbrains.compose` plugin) and D4 (dynamic color replacement — `expect fun flashDynamicColorScheme`). Per DECISIONS.md, both are in the "agent may proceed with the recommendation" class. **This phase is written assuming D3 Option A and D4 Option A.** If D3 is resolved differently, the build-plugin and dependency instructions change; if D4 is resolved differently, the `flashDynamicColorScheme` expect/actual is replaced with a simpler no-op.
 

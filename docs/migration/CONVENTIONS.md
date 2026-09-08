@@ -45,6 +45,16 @@ stable, classes are still Beta (KT-61573) and emit a warning per declaration sit
 only when the seam must carry per-platform state, as `PlatformLock` does, and suppress the
 warning with `-Xexpect-actual-classes` in the module's `kotlin { compilerOptions { } }`.
 
+`PlatformLock` is deliberately **duplicated per module** — `:core:common` (Phase 06),
+`:core:discovery` (Phase 08), `:core:engine` (Phase 12), `:core:transfer` (Phase 13B-1) — because it
+is `internal` and `internal` does not cross a Gradle module boundary. A phase that needs it in a
+fifth module should copy it again rather than hoist: promoting `:core:common`'s copy to `public`
+would add a lock to `core-common`'s published ABI under `explicitApi()` (R7) and edit a second
+module's build file (R4).
+The hoist is a legitimate cleanup, but it is its own phase and no phase in the plan performs it.
+The count is now **four**, which is the number Phase 08 warned about when it asked for the hoist
+"before phases 09–12 make further copies".
+
 When a seam replaces the *body* of an already-published declaration, keep the declaration
 itself in `commonMain` and let it delegate to an `internal expect fun`. Phase 06 did this for
 `SystemTimeSource` and `UuidIdGenerator`: their published FQNs and shapes are unchanged, so
@@ -76,59 +86,159 @@ Phase 06 discovered the replacement task name empirically and recorded it in R3.
 and in `logs/migration.md`. From Phase 06 onward the verification command is:
 
 ```bash
-./gradlew --stop >/dev/null 2>&1; sleep 8; ./gradlew :app:assembleDebug testDebugUnitTest :core:common:testAndroidHostTest --no-configuration-cache --continue --max-workers=2 --console=plain
+./gradlew --stop >/dev/null 2>&1; sleep 8; ./gradlew :app:assembleDebug testDebugUnitTest :core:common:testAndroidHostTest :core:security:testAndroidHostTest :core:security:jvmTest :core:discovery:testAndroidHostTest :core:discovery:jvmTest :core:network:testAndroidHostTest :core:network:jvmTest :core:transfer:testAndroidHostTest :core:transfer:jvmTest :core:messaging:testAndroidHostTest :core:messaging:jvmTest :core:engine:testAndroidHostTest :core:engine:jvmTest :core:persistence:testAndroidHostTest :core:persistence:jvmTest :ui:theme:testAndroidHostTest :ui:theme:jvmTest :ui:platform-shims:testAndroidHostTest :ui:platform-shims:jvmTest :ui:chat:testAndroidHostTest :ui:chat:jvmTest --no-configuration-cache --continue --max-workers=2 --console=plain
 ```
+
+`:ui:theme:testAndroidHostTest` was added by Phase 17, and **`:ui:theme:jvmTest` was added by
+Phase 18**, which moved the module's five suites from `androidHostTest` into `commonTest`. Both now
+run the same 37 tests — Android host and desktop — which is what makes `:ui:theme`'s three desktop
+`actual`s verified rather than merely compiled (R3.1).
+
+**Both `:ui:platform-shims` tasks were added by Phase 19**, which created that module born-KMP. Its
+two tasks are deliberately **asymmetric** — `testAndroidHostTest` runs 4 tests and `jvmTest` runs 34 —
+and that is not a dropped suite: the 4 are the `commonTest` contract, and the other 30 are desktop-only
+because they drive the `jvm` `actual`s directly. The Android `actual`s of the same six seams need a
+device, which no task on this line provides; the log records that explicitly rather than letting a
+green line imply it.
 
 Every converted module must be **named explicitly** on that command line, because the
 unqualified `testDebugUnitTest` no longer reaches it. Add one `:module:testAndroidHostTest`
-per conversion as phases 07–12 land. `--continue` is load-bearing: without it the 12 known
-`:core:persistence` `FlashSettingsDataStoreTest` failures abort the run before later
-modules execute, and the total silently drops.
+per conversion as each phase lands — **and one `:module:jvmTest` if the module has a
+`commonTest`/`jvmTest` suite**, as `:core:security` does since Phase 07, `:core:discovery`
+since Phase 08, `:core:network` since Phase 10, both `:core:transfer` and `:core:messaging`
+since Phase 11, `:core:engine` since Phase 12, `:core:persistence` since Phase 09B-1,
+`:ui:theme` since Phase 18, and `:ui:platform-shims` since Phase 19.
+**Both `:ui:chat` tasks were added by Phase 20.** They are deliberately **symmetric** — 239 tests on
+each tier — because that module's 31 test suites were already engine-free pure-logic tests and moved
+wholesale into `commonTest`, so the desktop tier re-runs the identical suite rather than a subset.
+`--continue` is load-bearing: without it the
+12 known `:core:persistence` failures abort the run before later modules execute, and the total
+silently drops. Those 12 are
+**11 in `FlashSettingsDataStoreTest` + 1 in `DiscoveryModeSettingTest`** (measured Phase 08;
+earlier entries attributed all 12 to the former). Since Phase 09B-1 they surface under
+`:core:persistence:testAndroidHostTest` rather than `testDebugUnitTest`, which is why that
+module now has to be named explicitly like every other converted one — before 09B-1 the
+unqualified `testDebugUnitTest` still reached it, and the failure was the visible sign the
+run had got that far.
 
 Every phase must additionally paste the **test count** from
-`*/build/test-results/**/TEST-*.xml` compared against the current baseline
-(`BASELINE_TEST_TOTAL = 984 / 12 failures / 0 skipped`, **measured** on 2026-09-04 after the task #5
-outbox-drain work: `OutboxDrainScheduleTest` +6, a new file asserting `OutboxDrainSchedule.waitMs` —
-the durable outbox's retry loop was a fixed `while (true) { drain(); delay(1000) }`, i.e. a
-`dueForDelivery` query against SQLCipher every second for the life of the process (~86,400/day)
-against a table that is almost always empty, *and* every retry up to a second later than the ladder
-the code itself computed (EXP-015). Preceding baseline 978 after the
-thumbnail-cache memory-pressure work: `FlashMediaCacheTrimTest` +6, a new file asserting
-`FlashMediaDecoder.cacheTrimFor` — the app had no `onTrimMemory`/`onLowMemory` handler anywhere, so the
-chat thumbnail `LruCache` held its whole `maxMemory / 8` share for the life of the process (EXP-014).
-Preceding baseline 972 after the per-frame-animation scope sweep: `FlashTransfersLogicTest` +4 for
-`progressBarWidthPx`, the arithmetic
-lifted out of `Modifier.fillMaxWidth(fraction)` when the transfer progress fill moved to a layout-phase
-read (EXP-013). Preceding baseline 968 after the call-screen recomposition-scope work:
-`FlashCallDurationTest` +5, which is also the **first** test
-directory in `:ui:callui` (the module already had `testImplementation(libs.junit)` and no `src/test`,
-so a root `testDebugUnitTest` created a new `:ui:callui:testDebugUnitTest` task — expect it in the
-task list, EXP-013). Preceding baseline 963 after the progress-cadence work: `UiPacingTest` +4 and
-`FlashTransfersLogicTest` +1 (EXP-011), on top of
-`ProgressThrottleTest` +4 and `RealFlashChatRepositoryTest` +1 (EXP-010, baseline 958); the preceding
-resume-bookkeeping baseline was 953 with `ResumeBitVectorTest` +4 and `RealFlashTransferRepositoryTest`
-+3 (EXP-008, EXP-009), and the frame-allocation baseline before that was 946 with `WebSocketCodecTest` +2).
+`*/build/test-results/**/TEST-*.xml` compared against the current merged baseline. The latest
+committed KMP baseline before this integration was **1453 / 12 failures / 0 skipped across 189
+XMLs** (Phase 13B-3e); the dev checkpoint added further tests that are being relocated during this
+merge, so this integration must establish and record a new measured baseline after all module tests
+run. A phase that cannot show its test count matches or exceeds the applicable measured baseline is
+not verified.
 
-Per-module, as measured: `:app` 36, `:core:calling` 63, `:core:common` 85 (`testAndroidHostTest`),
-`:core:discovery` 101, `:core:engine` 1, `:core:messaging` 47, `:core:network` 137,
-`:core:persistence` 35 (12 failures), `:core:security` 80, `:core:transfer` 102, `:ui:chat` 255,
-`:ui:theme` 37, `:ui:callui` 5.
+The dev checkpoint's pre-KMP Android-only baseline was **1021 / 12 failures / 0 skipped** after the
+F-series group work. That figure is retained for feature-preservation accounting, not as the KMP
+acceptance baseline: common tests run on both Android host and JVM targets after relocation.
 
-The previous baseline line read 911 and did not reconcile: ERROR-035 added 32 tests
-(`TransferReconnectResumePolicyTest` +9, `Ipv4RoutingTest` +9, `LinkChangeTrackerTest` +10,
-`NsdTransportLogicTest` 36→40), which lands at 943, one short of the measured 944. The residual is
-unattributed — the 911 figure was itself written by hand and its breakdown credited
-`LinkChangeTrackerTest` to ERROR-033, a phase that predates the file. **Prefer the measured
-per-module table above to any hand-maintained delta.** A phase that cannot show its test count
-matches or exceeds baseline is not verified.
+Per-module, as measured in the dev checkpoint before integration: `:app` 36, `:core:calling` 63,
+`:core:common` 85, `:core:discovery` 101, `:core:engine` 1, `:core:messaging` 59,
+`:core:network` 137, `:core:persistence` 38 (12 failures), `:core:security` 80,
+`:core:transfer` 102, `:ui:chat` 265, `:ui:theme` 37, `:ui:callui` 5.
 
-**Count live results, not files on disk.** A raw aggregation over `*/build/test-results/**` used to
-report 49 too many, because stale pre-KMP `core/common/build/test-results/testDebugUnitTest/` XMLs
-survived Phase 06 in a directory Gradle no longer writes and therefore never cleans. That directory was
-deleted on 2026-09-04, so a raw aggregation now agrees with the baseline — but the trap recurs for every
-module converted to KMP. `:core:common`'s live results are the ones under
-`build/test-results/testAndroidHostTest/`. After a conversion, delete the orphaned
-`testDebugUnitTest/` directory; do not "fix" a count that looks too high by assuming tests were added.
+The KMP migration history below explains how to count relocations correctly; preserve it because the
+same arithmetic applies to this merge.
+(`BASELINE_TEST_TOTAL = 863 / 12 failures / 0 skipped`). A phase that cannot show its
+test count matches or exceeds baseline is not verified. Conversions may legitimately *raise*
+the total — Phase 07 took it to **883 / 12 / 0** by adding a 10-test `commonTest` suite that runs
+once per target, Phase 08 took it to **897 / 12 / 0** the same way (7 tests × 2 targets), Phase 10
+to **913 / 12 / 0**, Phase 11 to **945 / 12 / 0** (two 8-test `commonTest` suites × 2 targets),
+Phase 12 to **961 / 12 / 0 across 128 XMLs** (945 + 8 `jvmTest` + 8 `testAndroidHostTest` + 1 for
+`DefaultFlashEngineTest` now counted under `testAndroidHostTest`, − 1 for the stale
+`testDebugUnitTest` results directory the plugin swap orphans), and Phase 13B-1 to
+**977 / 12 / 0 across 132 XMLs** (961 + 8 new `commonTest` cases × 2 targets; 128 + 4 XMLs, because
+two new suites each produce one XML per target).
+Phase 14 took it to **1005 / 12 / 0 across 133 XMLs** (977 + 28 desktop-only `jvmTest` cases in
+one new XML — that figure was pasted in the log entry but not carried up to this list at the time).
+Phase 09B-1 took it to **1018 / 12 / 0 across 135 XMLs** (1005 + 9 for `RetentionPolicyTest`
+now running on the `jvm()` target as well as the Android host + 4 for the new
+`FlashDatabaseJvmTest`; 133 + 2 XMLs. The orphaned `:core:persistence` `testDebugUnitTest`
+results directory was deleted before tallying, per the paragraph below — it held the same 35
+tests that now report under `testAndroidHostTest` and would have inflated the total to 1053).
+Phase 17 left it at **1018 / 12 / 0 across 135 XMLs** — a conversion phase can legitimately leave
+the total *unchanged*: it added no test and only relocated `:ui:theme`'s five suites (37 tests, one
+XML each) from `testDebugUnitTest/` to `testAndroidHostTest/`. In that case the **per-module table
+is the only thing that proves anything**, because an unchanged total is also what a silently
+dropped suite looks like.
+Phase 18 took it to **1055 / 12 / 0 across 140 XMLs** (1018 + the same 37 tests now running a second
+time on the desktop target; 135 + 5 XMLs, one per suite per target). Phase 17's log predicted that
+figure to the digit *before* the move — "anything less means a suite stopped running" — which is the
+cheapest form this check takes: state the arithmetic first, then measure.
+Phase 19 took it to **1093 / 12 / 0 across 146 XMLs** by adding a whole new
+module: 1055 + 4 `commonTest` contract tests × 2 targets + 30 desktop-only `jvmTest` cases (7 picker +
+10 decoder + 7 recorder + 6 audio); 140 + 2 XMLs for the contract suite (one per target) + 4 for the
+`jvm`-only suites. No orphaned results directory to delete this time — `:ui:platform-shims` was born
+KMP and never had the `com.android.library` plugin.
+Phase 20 took it to **1332 / 12 / 0 across 177 XMLs** and is the largest single
+jump in the migration. The arithmetic has a **subtraction** in it, which is the part worth copying:
+1093 − 239 + 478. `:ui:chat` already had 239 Android unit tests reporting under `testDebugUnitTest`;
+those 239 move to `commonTest` and then run **twice** (239 `testAndroidHostTest` + 239 `jvmTest`), so
+the module's contribution goes 239 → 478 and the old figure must be *removed* first, not added to.
+XMLs: 146 − 31 + 62. Predicting "1093 + 478 = 1571" — adding without subtracting — is the specific
+error this note exists to prevent; it was made once mid-phase and caught by the orphaned-directory
+paragraph below, which is the same defect seen from the other side.
+Compare **per module** as well as in total: a total that still matches while one
+module's suite has silently stopped running is exactly the failure mode R3 exists to catch.
+Show the arithmetic, not just the number — a phase that adds N tests to a `commonTest` suite must
+account for **2N**, and a phase that converts a module carrying an existing Android unit test must
+account for the orphaned results directory too.
+
+Phase 13B-2 held it at **1332 / 12 / 0 across 177 XMLs** — a re-typing phase that adds no test
+legitimately leaves the total alone. Phase 13B-3a took it to **1351 / 12 / 0 across 178 XMLs**
+(1332 + 19, where +19 = a 12-test `commonTest` suite × 2 targets − the 5 Android-only tests it
+replaces; +1 XML because the suite's `androidHostTest` XML replaces the one that left while its
+`jvmTest` XML is new). Phase 13B-3b took it to **1359 / 12 / 0 across 180 XMLs**
+(1351 + 4 × 2 = 1359; 178 + 2 XMLs, one per target for the one new suite), and nothing was
+displaced because the file it covers moved from `androidMain` to `commonMain` without any test moving
+with it. Phase 13B-3c took it to **1377 / 12 / 0 across 181 XMLs** — and its
+arithmetic is the 13B-3a shape again, which is the one to copy when a suite *moves* rather than
+appearing: the suite left `androidHostTest` at 6 tests in 1 XML and arrived in `commonTest` at 12,
+which run on both targets, so 24 − 6 = **+18** (1359 + 18 = 1377) and 2 − 1 = **+1** XML
+(180 + 1 = 181). Predicting "+24" — adding the new figure without removing the old — is the same
+error the Phase 20 note above exists to prevent, one sub-step smaller. Both 13B-2's and 13B-3a's
+figures were pasted in their log entries but not carried up to this list at the time, the same lapse
+recorded above for Phase 14; carrying them up matters because a stale number here is what a later
+phase compares against.
+
+Phase 13B-3d took it to **1409 / 12 / 0 across 183 XMLs**. Its arithmetic is the
+**purely additive** shape, and it is worth having one of those recorded next to the subtract-then-add
+ones so the difference is visible: nothing moved between source sets *that had a test*, so nothing was
+displaced. A new 14-test suite in `commonTest` runs on both targets (+28 tests, +2 XMLs — one per
+target, both new), and an existing `androidHostTest` suite grew 8 → 12 in place (+4 tests, +0 XMLs).
+1377 + 28 + 4 = **1409**; 181 + 2 = **183**. The trap in this shape is the mirror of the other one:
+here you must **not** subtract, because the `commonMain` class the new suite covers
+(`TransferCompletionStateMachine`) moved source sets in the very same commit while having **no
+existing test to leave behind**. "A file moved, so a suite must have moved with it" is the wrong
+inference — check whether a test existed before assuming one was displaced.
+
+Phase 13B-3e took it to **1453 / 12 / 0 across 189 XMLs** — the current total. It is the cleanest
+example of the *pure relocation* shape, which is neither of the two above: **six suites moved from
+`androidHostTest` to `commonTest` and not one test was added, deleted or edited.** A moved suite keeps
+its Android run (`testAndroidHostTest` executes `commonTest` too) and gains a `jvmTest` run, so each
+contributes **+1 XML and +N tests**, where N is its own test count — never 2N, and never a subtraction,
+because the Android side neither leaves nor doubles. 8 + 10 + 2 + 15 + 6 + 3 = **+44** (1409 + 44 =
+1453) and **+6** XMLs (183 + 6 = 189). The confirming cross-check is the per-target split, and it is
+worth doing on any relocation phase: `testAndroidHostTest` must come back **unchanged** — it did, at
+137 tests across 18 suites — while `jvmTest` grows by exactly the moved total, 102 = 58 + 44. If the
+Android figure moves at all on a pure relocation, a suite was edited, not moved.
+
+When tallying, delete the dead results directory of any task the conversion removed
+(`<module>/build/test-results/testDebugUnitTest/` survives the plugin swap and will be
+double-counted otherwise — Phase 07 hit this, and Phase 12 hit it again on `:core:engine`; delete
+`build/reports/tests/testDebugUnitTest/` alongside it so the HTML report does not mislead either).
+Phase 20 hit it a third time, on `:ui:chat`, where the orphan was the largest yet: 239 tests in 31
+XMLs, enough to have reported 1571 / 208 instead of 1332 / 177.
+
+Do **not** delete every `test-results/testDebugUnitTest/` you find, though — two of them are live.
+The command line's **unqualified** `testDebugUnitTest` still reaches every module that has kept the
+`com.android.library`/`com.android.application` plugin, which today means `:app` (31 tests, 6 XMLs)
+and `:core:calling` (55 tests, 4 XMLs). Those two directories are refreshed by the run and are part
+of the total; only a module that has *already been converted* can own an orphan. Tally from
+`<module>/build/test-results/<task>/TEST-*.xml` and ignore
+`build/intermediates/unit_test_results/` and `build/tmp/` — AGP keeps its own copies there, and they
+are not what any baseline in this file was measured from.
 
 `--no-configuration-cache` is required because this project enables the
 configuration cache in `gradle.properties`, and KMP source-set wiring is a known
@@ -143,6 +253,7 @@ If verification fails, the phase is **not done**. Do not commit. Do not proceed.
 ANDROID_UNIT_TEST_TASK    = testAndroidHostTest
 ANDROID_MAIN_COMPILE_TASK = compileAndroidMain
 JVM_COMPILE_TASK          = compileKotlinJvm
+JVM_TEST_TASK             = jvmTest          # commonTest + jvmTest, on the desktop target
 ```
 
 Discovered 2026-09-03 on `:core:common` (Gradle 9.5.0 / AGP 9.3.1 / Kotlin 2.2.10).
@@ -153,7 +264,20 @@ JVM target's is `compileKotlinJvm` — there is no `compileKotlinAndroid`.
 
 `compileKotlinJvm` is the **proof task** for R2: the `jvm()` target has no `android.jar` on
 its compile classpath, so a green `compileKotlinJvm` is what certifies `commonMain` is
-genuinely free of Android APIs. Run it on every converted module.
+genuinely free of Android APIs. Run it on every converted module. It certifies **nothing about
+`java.*`** — Phase 07 measured that; see **R6.1**.
+
+`jvmTest` runs the module's `commonTest` sources against the desktop target's `actual`s. Without
+it, a `jvmMain` `actual` is only ever *compiled*, never *executed*: `:core:common`'s three JVM
+`actual`s (`PlatformLock`, `SystemTimeSource`, `UuidIdGenerator`) are in that position today,
+because Phase 06 left all its tests in `androidHostTest`. Any phase that writes an `actual`
+should put at least one behavioural assertion in `commonTest` so both platforms run it. Phase 07's
+parity suite found no divergence — but it is the only thing in the build that *would* have found
+one, since Android runs Conscrypt and the desktop JVM runs SunJCE. Phase 08 followed the rule for
+`:core:discovery`'s own duplicated `PlatformLock`, Phase 12 for `:core:engine`'s third copy, and
+Phase 13B-1 for `:core:transfer`'s fourth: between them, the contention cases in `PlatformLockTest`,
+`AutoConnectGateTest` and `RollingRateMeterTest` are the only tests in the repo that assert a lock
+actually excludes, and all three run on both targets.
 
 
 ## R4 — Never edit two modules' build files in one commit unless the phase says to
@@ -205,6 +329,144 @@ Watch for the JVM-only parts of the **Kotlin** stdlib too, which look common but
 `ByteArray.decodeToString()`, `String.encodeToByteArray()`, and `kotlin.concurrent.Volatile`
 (Phase 05 already migrated all 66 `@Volatile` sites). `kotlin.synchronized` has no common
 equivalent — Phase 06 added `core/common`'s `internal expect class PlatformLock` for it.
+
+### R6.1 — Nothing in the build enforces R6 yet. Grep for it. (measured by Phase 07)
+
+**`java.*` in `commonMain` currently compiles green.** Phase 07 proved this by putting
+
+```kotlin
+internal fun zzProbe(): String = java.util.UUID.randomUUID().toString()
+```
+
+into `core/common/src/commonMain/` and running
+`:core:common:compileCommonMainKotlinMetadata :core:common:compileKotlinJvm --rerun-tasks`.
+Result: `compileCommonMainKotlinMetadata` **SKIPPED**, `compileKotlinJvm` **succeeded**,
+`BUILD SUCCESSFUL`. (Probe deleted afterwards.) The reason is that with only `android()` and
+`jvm()` targets declared, every target sees a JVM classpath, so there is no compilation whose
+classpath lacks `java.*` and the metadata compilation that would check common code in isolation
+does not run at all.
+
+Consequence: `compileKotlinJvm` (R3.1) certifies only that `commonMain` is free of **`android.*`**.
+It says nothing about `java.*`. Until a Kotlin/Native target exists, R6 is enforced by review, so
+every converting phase must run this and paste the output:
+
+```bash
+grep -rnE '\b(java|javax|android|androidx)\.' --include=*.kt core/*/src/commonMain ui/*/src/commonMain 2>/dev/null | grep -vE ':[0-9]+:[[:space:]]*(\*|//|/\*)'
+```
+
+Expected output: nothing. The second `grep -v` drops KDoc and comment lines, which legitimately
+name platform types when documenting a seam (`PlatformCrypto`'s KDoc cites
+`javax.crypto.AEADBadTagException` deliberately).
+
+**The stdlib traps need their own command — they are plain Kotlin and no import line reveals
+them.** Phase 12 added it, because "also re-scan the stdlib traps" as prose is not a check and
+was in fact performed with a broken regex twice (see below):
+
+```bash
+grep -rnE '(@Synchronized|@Volatile|@JvmStatic|@JvmOverloads|@JvmField|@Throws|\bsynchronized[[:space:]]*\(|\bCharsets\b|\.format\(|\bcurrentTimeMillis\b|\bnanoTime\b|\bputIfAbsent\b|\bcomputeIfAbsent\b|::class\.java|\bConcurrentHashMap\b|\bLocale\b|\bMath\.|\bSystem\.)' --include=*.kt core/*/src/commonMain ui/*/src/commonMain 2>/dev/null | grep -vE ':[0-9]+:[[:space:]]*(\*|//|/\*)'
+```
+
+Expected output: nothing, **except** (a) `@Volatile` lines whose file also carries
+`import kotlin.concurrent.Volatile` — that is the legal common form and the annotation is spelled
+identically — and (b) the eight allowlisted `.format(` lines tabulated under Defect A below.
+For `@Volatile`, verify the import rather than the annotation:
+
+```bash
+grep -rln '@Volatile' --include=*.kt core/*/src/commonMain | xargs -r grep -L 'import kotlin.concurrent.Volatile'
+```
+
+Expected output: nothing. Any file listed uses the JVM-only `kotlin.jvm.Volatile`. `xargs -r` is
+load-bearing: without it, an empty first grep leaves `grep -L` reading stdin and the command hangs.
+The check over-reports rather than under-reports — a file that only *mentions* `@Volatile` in a
+comment is listed — which is the safe direction.
+
+> **Do not put `\b` before `@`.** `\b@Synchronized\b` can never match: `\b` requires a
+> word/non-word transition, and both the preceding space and `@` are non-word characters. Phase 10
+> and Phase 11 both ran that form, and it is why the first trap scan of `:core:engine` reported
+> zero hits on a file carrying two `@Synchronized` annotations. No leak actually escaped phases
+> 06–11 — the corrected command was re-run against every converted `commonMain` in Phase 12 and
+> came back clean — but the gate was defective for two phases without anyone noticing.
+
+#### Two further defects in these three commands (found by Phase 20)
+
+**Defect A — `String\.format` misses the form Kotlin actually uses.** The alternative matches the
+literal text `String.format`, i.e. the *static* Java spelling. Kotlin code almost never writes that;
+it writes the **extension on the receiver**: `"%.1f".format(x)`. The trap scan therefore returned
+zero `.format` hits on a `commonMain` containing eight of them. Add this alternative:
+
+```
+\.format\(
+```
+
+It over-reports slightly (`DateTimeFormatter.format(` and the like would match) which is the safe
+direction. Known hits at the time of writing, all pre-existing and **not** fixed by Phase 20 under
+R1 — this is the allowlist, and anything outside it is a new leak:
+
+| File | Lines | Form |
+| --- | --- | --- |
+| `core/messaging/.../model/FlashMessagingModels.kt` | 202, 204 | `"%d:%02d:%02d".format(…)`, `"%d:%02d".format(…)` |
+| `ui/chat/.../FlashFileMessageCard.kt` | 113, 413, 415, 417 | `"%.1f".format(…)` ×3, `"%.2f".format(…)` |
+| `ui/chat/.../FlashStressTestScreen.kt` | 253 | `"%02d:%02d".format(…)` |
+| `ui/chat/.../FlashVoiceMessageCard.kt` | 81 | `":%02d".format(…)` |
+
+The two `%02d`-only cases have an exact common equivalent already used elsewhere in this repo
+(`(x % 60L).toString().padStart(2, '0')` — `FlashMessagingUtils.kt:260`). The four decimal ones do
+**not**: reproducing `java.util.Formatter`'s `%.1f` rounding by hand changes user-visible size and
+speed strings on ties, which is a behaviour change, not a mechanical port. Both belong in the
+native-target phase recommended at the end of this section, with tests — not bolted onto a
+conversion phase whose charter forbids logic changes.
+
+**Defect B — scan 1 has no `androidx.compose.` exemption, so it is unusable on the UI track as
+written.** Compose Multiplatform declares the *same* `androidx.compose.*` package names on every
+target; `import androidx.compose.runtime.Composable` in `ui/*/src/commonMain` is correct common
+code, not a leak. Unfiltered, scan 1 reports several hundred such lines for `:ui:theme`,
+`:ui:platform-shims` and `:ui:chat` and buries any real hit. The filter has to exempt
+`androidx.compose.` **anywhere on the line, not just on `import` lines** — 16 of the hits are
+fully-qualified inline references such as `androidx.compose.ui.platform.LocalDensity.current`
+(`FlashComposer.kt:102`) and `androidx.compose.ui.unit.Dp` used as a parameter type
+(`FlashStateViews.kt:362-364`) — while still failing on the *Jetpack* preview package. `grep -E`
+has no negative lookahead, so use `awk` for the carve-out:
+
+```bash
+grep -rnE '\b(java|javax|android|androidx)\.' --include=*.kt core/*/src/commonMain ui/*/src/commonMain 2>/dev/null \
+  | grep -vE ':[0-9]+:[[:space:]]*(\*|//|/\*)' \
+  | grep -vE 'androidx\.room\.' \
+  | awk '{ if ($0 ~ /androidx\.compose\./ && $0 !~ /androidx\.compose\.ui\.tooling\.preview/) next; print }'
+```
+
+Expected output: nothing. The `awk` clause is what keeps the gate honest — a bare
+`grep -v 'androidx\.compose\.'` would also swallow
+`androidx.compose.ui.tooling.preview.Preview`, the **Jetpack** annotation, which is Android-only
+and must keep failing (`org.jetbrains.compose.ui.tooling.preview.Preview` is the common one, and
+the two differ by one package prefix — see Phase 18's and Phase 20's import swaps).
+`androidx.activity.compose.*` and `androidx.lifecycle.*` are outside the exemption by construction,
+since neither contains `androidx.compose.`. Do **not** exempt `androidx.compose.` in `core/*` — no
+`core` module applies the Compose plugins, so a hit there is a genuine leak; the command above is
+scoped by the exemption's own pattern rather than by path, which is safe only because no
+`core/*/src/commonMain` file references Compose at all (verified Phase 20).
+`:core:persistence`'s `androidx.room.*` lines in `commonMain` are legal for the separate reason
+recorded in Phase 09B-1's entry, and are the only non-Compose `androidx` exemption in the repo.
+
+**Defect C — `Math.` was not on the trap list at all.** `Math.floorMod`, `Math.abs`, `Math.min`
+and friends are `java.lang` but read like stdlib, and no other alternative in the regex catches
+them: `\bSystem\.` covers `System.nanoTime()`/`System.currentTimeMillis()`, and nothing covered
+`Math.`. Phase 20 found `Math.floorMod` in `ui/chat/.../FlashNetworkSimSheet.kt` by manual bare-type
+audit, not by the gate. `\bMath\.` is now in the command above, along with a redundant-but-harmless
+`\bnanoTime\b`. Common replacements: `Int.mod(Int)` for `Math.floorMod` (identical flooring
+semantics), and `kotlin.math.*` for the rest — `kotlin.math.abs`, `minOf`/`maxOf`, `kotlin.math.round`.
+
+The three commands are a review gate, and a review gate that has been wrong four times in fourteen
+phases (the `\b@` form, Defect A, Defect B, Defect C) is the argument for the native-target phase
+below, not a substitute for it. Every defect so far was found by a phase doing an exhaustive manual
+audit *in addition to* running the gate; a phase that only runs the gate proves less than it thinks.
+
+
+**This is a hole in the plan, not just in a phase.** Phases 00–24 never add a Kotlin/Native
+target, so nothing in the current plan ever makes a `java.*` leak fail the build, and nothing
+delivers the Kotlin/Native half of "Linux and all platforms" (the 2026-09-03 amendment above).
+A phase that adds one native target — even `iosSimulatorArm64` with no product intent — would
+turn R6 from a review rule into a compiler error for every module converted so far. Recommended
+as a new phase; not in scope for any existing one (R1).
 
 ## R7 — Preserve `explicitApi()`
 
