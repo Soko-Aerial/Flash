@@ -124,7 +124,7 @@ Execute strictly one at a time; direct 1:1 behavior byte-identical; tick + log a
 - Verify: app assembles; messaging + ui/chat tests green. Device gate owed: image/video/voice
   to group appears in chat on all members with progress; mid-transfer drop resumes.
 
-## F5/F6 — Audit follow-ups (from `docs/ui/app-essentials-audit.md`) — STATUS: PLANNED 2026-09-08, not implemented
+## F5/F6 — Audit follow-ups (from `docs/ui/app-essentials-audit.md`) — STATUS: F5.2 DONE 2026-09-08 (code + tests verified); remaining items planned
 
 Each item is its own small phase. All evidence below was verified in code this session. Execute
 one at a time; direct 1:1 behavior byte-identical; verify + log after each.
@@ -149,7 +149,7 @@ one at a time; direct 1:1 behavior byte-identical; verify + log after each.
   tombstoned rows don't shift labels unexpectedly.
 - **Verify:** unit tests + device (open a thread with messages from two days).
 
-### F5.2 — Group notification naming (partial; ~10-line fix)
+### F5.2 — Group notification naming — STATUS: DONE 2026-09-08 (code + tests verified)
 - **Evidence:** the repository fires `onInboundTextMessage(groupId, senderName, text)`
   (group Message branch of `onInboundGroupWireFrame`), and the app wires it straight to
   `FlashNotificationManager.showMessage`, which titles the notification by **sender name**
@@ -168,6 +168,15 @@ one at a time; direct 1:1 behavior byte-identical; verify + log after each.
 - **Tests:** notification title/body selection logic (pure part of FlashNotificationManager if
   extractable; else logged per the established rationale).
 - **Verify:** unit tests + device (backgrounded group message shows "Team" as title).
+
+- **Implemented:** Android-host callbacks now carry nullable stored group titles without moving any
+  KMP source sets or breaking legacy internal callback sites. Group text (including sync push) and
+  accepted group media pass the stored title; direct text/media explicitly pass `null` and retain
+  their previous sender-title/plain-body behavior. `FlashNotificationManager` uses pure tested
+  content selectors: group title + `"Sender: text"` or `"Sender: Kind: file"`.
+- **Verification:** `:core:messaging:testAndroidHostTest`, `:app:testDebugUnitTest`, and
+  `:app:assembleDebug` passed with the required JDK 21 on 2026-09-08. Physical background-device
+  confirmation remains owed; code/test status is complete.
 
 ### F5.3 — Group typing fan-out (partial)
 - **Evidence:** `setTyping` sends `TypingFrame` to `conversationId` — for a group that is the

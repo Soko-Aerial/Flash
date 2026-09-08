@@ -593,11 +593,24 @@ object DiscoveryEngineHolder {
             // only for rows Room actually inserted, so replayed frames can't double-notify;
             // FlashNotificationManager additionally suppresses the conversation the user
             // is reading right now (foreground + open thread).
-            onInboundTextMessage = { conversationId, senderName, text ->
-                FlashNotificationManager.showMessage(appContext, conversationId, senderName, text)
+            onInboundTextMessageWithGroupTitle = { conversationId, senderName, text, groupTitle ->
+                FlashNotificationManager.showMessage(
+                    appContext,
+                    conversationId,
+                    senderName,
+                    text,
+                    groupTitle,
+                )
             },
-            onInboundAttachment = { conversationId, senderName, fileName, mimeType ->
-                FlashNotificationManager.showAttachment(appContext, conversationId, senderName, fileName, mimeType)
+            onInboundAttachmentWithGroupTitle = { conversationId, senderName, fileName, mimeType, groupTitle ->
+                FlashNotificationManager.showAttachment(
+                    appContext,
+                    conversationId,
+                    senderName,
+                    fileName,
+                    mimeType,
+                    groupTitle,
+                )
             },
             transportSink = { targetDeviceId, wireFrame ->
                 val session = networkImpl.activeSessions.value[FlashDeviceId(targetDeviceId)] as? WsSession

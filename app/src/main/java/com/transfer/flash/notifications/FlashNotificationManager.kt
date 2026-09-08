@@ -47,20 +47,33 @@ object FlashNotificationManager {
     @Volatile
     var openConversationId: String? = null
 
-    fun showMessage(context: Context, conversationId: String, senderName: String?, text: String) {
-        val title = senderName?.ifBlank { null } ?: conversationId
-        post(context, conversationId, title, text)
+    fun showMessage(
+        context: Context,
+        conversationId: String,
+        senderName: String?,
+        text: String,
+        groupTitle: String? = null,
+    ) {
+        val content = messageNotificationContent(conversationId, senderName, text, groupTitle)
+        post(context, conversationId, content.title, content.body)
     }
 
-    fun showAttachment(context: Context, conversationId: String, senderName: String?, fileName: String, mimeType: String) {
-        val title = senderName?.ifBlank { null } ?: conversationId
-        val kind = when {
-            mimeType.startsWith("image/") -> "Photo"
-            mimeType.startsWith("video/") -> "Video"
-            mimeType.startsWith("audio/") -> "Voice message"
-            else -> "File"
-        }
-        post(context, conversationId, title, "$kind: $fileName")
+    fun showAttachment(
+        context: Context,
+        conversationId: String,
+        senderName: String?,
+        fileName: String,
+        mimeType: String,
+        groupTitle: String? = null,
+    ) {
+        val content = attachmentNotificationContent(
+            conversationId,
+            senderName,
+            fileName,
+            mimeType,
+            groupTitle,
+        )
+        post(context, conversationId, content.title, content.body)
     }
 
     /** Clears the notification for a conversation (e.g. the user just opened it). */
@@ -126,4 +139,46 @@ object FlashNotificationManager {
 
     /** Intent extra carrying the conversation to open on notification tap. */
     const val EXTRA_CONVERSATION_ID = "com.transfer.flash.EXTRA_CONVERSATION_ID"
+}
+
+internal data class FlashNotificationContent(
+    val title: String,
+    val body: String,
+)
+
+internal fun messageNotificationContent(
+    conversationId: String,
+    senderName: String?,
+    text: String,
+    groupTitle: String?,
+): FlashNotificationContent {
+    val sender = senderName?.ifBlank { null } ?: conversationId
+    val group = groupTitle?.ifBlank { null }
+    return FlashNotificationContent(
+        title = group ?: sender,
+        body = if (group != null) "$sender: $text" else text,
+    )
+}
+
+internal fun attachmentNotificationContent(
+    conversationId: String,
+    senderName: String?,
+    fileName: String,
+    mimeType: String,
+    groupTitle: String?,
+): FlashNotificationContent {
+    val sender = senderName?.ifBlank { null } ?: conversationId
+    val group = groupTitle?.ifBlank { null }
+    val attachment = "${attachmentKind(mimeType)}: $fileName"
+    return FlashNotificationContent(
+        title = group ?: sender,
+        body = if (group != null) "$sender: $attachment" else attachment,
+    )
+}
+
+private fun attachmentKind(mimeType: String): String = when {
+    mimeType.startsWith("image/") -> "Photo"
+    mimeType.startsWith("video/") -> "Video"
+    mimeType.startsWith("audio/") -> "Voice message"
+    else -> "File"
 }

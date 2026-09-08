@@ -1,5 +1,36 @@
 # Progress Log
 
+## 2026-09-08 — F5.2 group notification naming
+
+### Worked on
+Implemented only F5.2 from `docs/group/ui-phase-plan.md`: correct system-notification naming and
+body formatting for inbound group text and accepted group media.
+
+### Changed
+- Added source-compatible Android-host callback seams carrying nullable `groupTitle`; legacy callback
+  shapes remain default bridges, and KMP source-set placement is unchanged.
+- Group message, sync-push, and group-media ingestion read the stored conversation title; direct
+  message and attachment paths pass `null` and preserve existing behavior.
+- `DiscoveryEngineHolder` forwards the group title into `FlashNotificationManager`.
+- Extracted pure message/attachment notification content selection. Group notifications use the
+  group title with `Sender: …`; direct notifications retain sender title and the prior plain body.
+- Added messaging callback tests and app pure-logic tests for direct/group text and attachments.
+
+### Verification
+- `:core:messaging:testAndroidHostTest` passed.
+- `:app:testDebugUnitTest` passed (41 tests).
+- `:app:assembleDebug` passed.
+- Required JDK: `C:/Users/KaliOxygen/.gradle/jdks/jetbrains_s_r_o_-21-amd64-windows.2`.
+- `git diff --check` passed before documentation updates; final staged diff check recorded in handoff.
+
+### Remaining
+Physical-device gate: background the receiver and confirm group text/media notifications show the
+stored group title. F5.1, F5.3+, F4b, and KMP migration work were not touched.
+
+### Next AI
+Continue only the owner-selected phase from `docs/group/ui-phase-plan.md`; do not fold F5.1 or F5.3
+into F5.2 follow-up work.
+
 ## 2026-09-08 — Dev features integrated onto the KMP architecture
 
 ### Worked on

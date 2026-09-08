@@ -152,12 +152,34 @@ public class RealFlashChatRepository(
     private val onInboundTextMessage: (conversationId: String, senderName: String?, text: String) -> Unit =
         { _, _, _ -> },
     /**
+     * Group-aware host seam. Kept separate and defaulted through the legacy callback so existing
+     * internal hosts remain source-compatible while Android can name group notifications.
+     */
+    private val onInboundTextMessageWithGroupTitle: (
+        conversationId: String,
+        senderName: String?,
+        text: String,
+        groupTitle: String?,
+    ) -> Unit = { conversationId, senderName, text, _ ->
+        onInboundTextMessage(conversationId, senderName, text)
+    },
+    /**
      * Host callback fired when an inbound attachment row is newly inserted (accepted or
      * auto-accepted offers only — a pending offer mints no row, so it fires nothing).
      * Default no-op; see [onInboundTextMessage].
      */
     private val onInboundAttachment: (conversationId: String, senderName: String?, fileName: String, mimeType: String) -> Unit =
         { _, _, _, _ -> },
+    /** Group-aware counterpart to [onInboundAttachment], with the same compatibility bridge. */
+    private val onInboundAttachmentWithGroupTitle: (
+        conversationId: String,
+        senderName: String?,
+        fileName: String,
+        mimeType: String,
+        groupTitle: String?,
+    ) -> Unit = { conversationId, senderName, fileName, mimeType, _ ->
+        onInboundAttachment(conversationId, senderName, fileName, mimeType)
+    },
 ) : FlashChatRepository {
 
     private val _chatListState = MutableStateFlow(FlashChatListUiState())
@@ -1100,7 +1122,13 @@ public class RealFlashChatRepository(
                 touchConversation(media.groupId, now)
                 if (insertedRowId != -1L) {
                     runCatching {
-                        onInboundTextMessage(media.groupId, media.senderName, "")
+                        onInboundAttachmentWithGroupTitle(
+                            media.groupId,
+                            media.senderName,
+                            media.fileName.ifBlank { fileName },
+                            media.mimeType.ifBlank { mimeType },
+                            conversationDao.get(media.groupId)?.title?.ifBlank { null },
+                        )
                     }
                 }
                 return@launch
@@ -1126,7 +1154,13 @@ public class RealFlashChatRepository(
             touchConversation(peerDeviceId, now)
             if (insertedRowId != -1L) {
                 runCatching {
-                    onInboundAttachment(peerDeviceId, peerNameResolver(peerDeviceId), fileName, mimeType)
+                    onInboundAttachmentWithGroupTitle(
+                        peerDeviceId,
+                        peerNameResolver(peerDeviceId),
+                        fileName,
+                        mimeType,
+                        null,
+                    )
                 }
             }
         }
@@ -1306,7 +1340,14 @@ public class RealFlashChatRepository(
                         replyToPreview = frame.replyToPreview,
                     ),
                 )
-                if (inserted != -1L) onInboundTextMessage(frame.groupId, frame.senderName, frame.text)
+                if (inserted != -1L) {
+                    onInboundTextMessageWithGroupTitle(
+                        frame.groupId,
+                        frame.senderName,
+                        frame.text,
+                        conversationDao.get(frame.groupId)?.title?.ifBlank { null },
+                    )
+                }
                 groupTransportSink?.send(
                     frame.from,
                     GroupWireFrame.Receipt(
@@ -1570,7 +1611,14 @@ public class RealFlashChatRepository(
                 replyToPreview = message.replyToPreview,
             ),
         )
-        if (inserted != -1L) onInboundTextMessage(frame.groupId, message.senderName, message.text)
+        if (inserted != -1L) {
+            onInboundTextMessageWithGroupTitle(
+                frame.groupId,
+                message.senderName,
+                message.text,
+                conversationDao.get(frame.groupId)?.title?.ifBlank { null },
+            )
+        }
         groupTransportSink?.send(
             frame.from,
             GroupWireFrame.SyncAck(
@@ -1647,7 +1695,7 @@ public class RealFlashChatRepository(
                 )
                 if (insertedRowId != -1L) {
                     runCatching {
-                        onInboundTextMessage(threadId, frame.senderName, frame.text)
+                        onInboundTextMessageWithGroupTitle(threadId, frame.senderName, frame.text, null)
                     }
                 }
 

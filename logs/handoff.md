@@ -1,5 +1,38 @@
 # Current Handoff
 
+## 2026-09-08 (e) — F5.2 group notification naming complete, staged, uncommitted
+
+### Current branch
+`dev` at `649847a`. Only F5.2 files are staged. `New folder/` and root CLI diagnostic JSONL files are
+unrelated untracked artifacts and remain unstaged.
+
+### Last verified build
+With `JAVA_HOME=C:/Users/KaliOxygen/.gradle/jdks/jetbrains_s_r_o_-21-amd64-windows.2`:
+- `:core:messaging:testAndroidHostTest` passed.
+- `:app:testDebugUnitTest` passed (41 tests).
+- `:app:assembleDebug` passed.
+
+### Last change
+- Inbound Android-host callbacks can now carry nullable stored group titles through additive,
+  default-bridged seams; existing internal hosts remain source-compatible and KMP source sets did
+  not move.
+- Group messages, sync pushes, and accepted group media supply the stored group title; direct paths
+  supply `null` and retain sender-title/plain-body behavior.
+- Notification content selection is pure and tested: group title with `Sender: text` or
+  `Sender: Kind: file`; direct formatting remains unchanged.
+
+### Recommended next task
+Run the physical background-notification gate for group text and group media. Then continue only the
+owner-selected F-series phase; F5.1, F5.3+, F4b, and KMP migration remain separate.
+
+### Files most relevant to this change
+- `core/messaging/src/androidMain/.../RealFlashChatRepository.kt`
+- `core/messaging/src/androidHostTest/.../RealFlashChatRepositoryTest.kt`
+- `app/src/main/.../debug/DiscoveryEngineHolder.kt`
+- `app/src/main/.../notifications/FlashNotificationManager.kt`
+- `app/src/test/.../notifications/FlashNotificationContentTest.kt`
+- `docs/group/ui-phase-plan.md`
+
 ## 2026-09-08 (d) — Dev + KMP integration merged and verified on `dev`
 
 ### Current branch

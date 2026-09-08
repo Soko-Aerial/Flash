@@ -1532,6 +1532,96 @@ class RealFlashChatRepositoryTest {
     }
 
     @Test
+    fun `group text callback supplies stored title while direct callback supplies null`() = runBlocking {
+        data class Inbound(val conversationId: String, val sender: String?, val text: String, val groupTitle: String?)
+
+        val memberDao = FakeGroupMemberDao()
+        val callbacks = java.util.Collections.synchronizedList(mutableListOf<Inbound>())
+        val repository = newRepository(
+            groupMemberDao = memberDao,
+            trustedPeers = setOf("peer-a"),
+            onInboundTextMessageWithGroupTitle = { conversationId, sender, text, groupTitle ->
+                callbacks += Inbound(conversationId, sender, text, groupTitle)
+            },
+        )
+        val groupId = (repository.createGroup("Team", setOf("peer-a")) as FlashResult.Success).value
+
+        repository.onInboundGroupWireFrame(
+            "peer-a",
+            GroupWireFrame.Message(groupId, "group-message", "peer-a", "Alex", 1L, "hello team"),
+        )
+        repository.onInboundWireFrame(
+            MessageWireFrame.TextMessage(
+                localId = "direct-message",
+                conversationId = "my-device-id",
+                senderId = "peer-a",
+                senderName = "Alex",
+                text = "hello direct",
+                sentAt = 2L,
+            ),
+        )
+        kotlinx.coroutines.delay(50)
+
+        assertEquals(
+            setOf(
+                Inbound(groupId, "Alex", "hello team", "Team"),
+                Inbound("peer-a", "Alex", "hello direct", null),
+            ),
+            callbacks.toSet(),
+        )
+    }
+
+    @Test
+    fun `group media callback supplies stored title and attachment metadata`() = runBlocking {
+        data class Inbound(
+            val conversationId: String,
+            val sender: String?,
+            val fileName: String,
+            val mimeType: String,
+            val groupTitle: String?,
+        )
+
+        val memberDao = FakeGroupMemberDao()
+        val callbacks = java.util.Collections.synchronizedList(mutableListOf<Inbound>())
+        val repository = newRepository(
+            groupMemberDao = memberDao,
+            trustedPeers = setOf("peer-a"),
+            onInboundAttachmentWithGroupTitle = { conversationId, sender, fileName, mimeType, groupTitle ->
+                callbacks += Inbound(conversationId, sender, fileName, mimeType, groupTitle)
+            },
+        )
+        val groupId = (repository.createGroup("Team", setOf("peer-a")) as FlashResult.Success).value
+        repository.onInboundGroupWireFrame(
+            "peer-a",
+            GroupWireFrame.GroupMedia(
+                groupId = groupId,
+                messageId = "media-message",
+                transferId = "media-transfer",
+                wireFileId = "media-wire",
+                from = "peer-a",
+                senderName = "Alex",
+                sentAt = 1L,
+                fileName = "voice.m4a",
+                mimeType = "audio/mp4",
+                sizeBytes = 42L,
+            ),
+        )
+        repository.onInboundAttachment(
+            peerDeviceId = "peer-a",
+            transferId = "media-transfer",
+            fileName = "fallback.bin",
+            mimeType = "application/octet-stream",
+            sizeBytes = 42L,
+        )
+        kotlinx.coroutines.delay(50)
+
+        assertEquals(
+            listOf(Inbound(groupId, "Alex", "voice.m4a", "audio/mp4", "Team")),
+            callbacks,
+        )
+    }
+
+    @Test
     fun `group media intro uses explicit identity and rejects inactive member`() = runBlocking {
         val memberDao = FakeGroupMemberDao()
         val messageDao = FakeMessageDao()
@@ -1771,6 +1861,12 @@ class RealFlashChatRepositoryTest {
         trustedPeers: Set<String> = emptySet(),
         groupSink: (suspend (String, GroupWireFrame) -> Boolean)? = null,
         onInboundTextMessage: (String, String?, String) -> Unit = { _, _, _ -> },
+        onInboundTextMessageWithGroupTitle: (String, String?, String, String?) -> Unit =
+            { conversationId, senderName, text, _ ->
+                onInboundTextMessage(conversationId, senderName, text)
+            },
+        onInboundAttachmentWithGroupTitle: (String, String?, String, String, String?) -> Unit =
+            { _, _, _, _, _ -> },
     ) = RealFlashChatRepository(
         localDeviceId = "my-device-id",
         localDisplayName = "Kali",
@@ -1788,6 +1884,8 @@ class RealFlashChatRepositoryTest {
         transportSink = MessageTransportSink { _, _ -> true },
         ioDispatcher = testDispatcher,
         onInboundTextMessage = onInboundTextMessage,
+        onInboundTextMessageWithGroupTitle = onInboundTextMessageWithGroupTitle,
+        onInboundAttachmentWithGroupTitle = onInboundAttachmentWithGroupTitle,
     )
 
     private fun msg(localId: String, conversationId: String, text: String) = MessageEntity(
