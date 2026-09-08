@@ -34,6 +34,7 @@ import com.transfer.flash.core.messaging.protocol.GroupSyncTier
 import com.transfer.flash.core.messaging.protocol.GroupWireFrame
 import com.transfer.flash.core.messaging.protocol.MessageWireFrame
 import com.transfer.flash.core.messaging.protocol.membershipUpdateWins
+import com.transfer.flash.core.messaging.util.assignDaySeparators
 import com.transfer.flash.core.messaging.util.computeMessageGroupPositions
 import com.transfer.flash.core.messaging.util.sortedChatListItems
 import com.transfer.flash.core.messaging.util.throttleLatest
@@ -521,8 +522,13 @@ public class RealFlashChatRepository(
                 // Newest message the PEER sent us (entities are newest-first). Read receipts ack up
                 // to this; when the head is our own outbound message there is nothing to ack.
                 val newestInboundId = entities.firstOrNull { it.senderId != localDeviceId }?.localId
+                val chronologicalEntities = entities.asReversed()
+                val messagesWithSeparators = assignDaySeparators(
+                    messages = chronologicalEntities.zip(messages.asReversed()),
+                    nowMs = System.currentTimeMillis(),
+                ) { entity -> entity.sentAt }
                 ConversationContent(
-                    messages = computeMessageGroupPositions(messages.reversed()),
+                    messages = computeMessageGroupPositions(messagesWithSeparators),
                     draftText = draftEntity?.text.orEmpty(),
                     newestMessageId = newestMessageId,
                     newestInboundId = newestInboundId,

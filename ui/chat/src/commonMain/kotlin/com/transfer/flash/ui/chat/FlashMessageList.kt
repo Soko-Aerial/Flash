@@ -8,6 +8,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -33,7 +34,9 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
@@ -158,7 +161,7 @@ fun FlashMessageList(
 
         itemsIndexed(
             items = ordered,
-            key = { _, message -> message.id },
+            key = { _, message -> flashMessageKey(message) },
             contentType = { _, _ -> "flashMessage" },
         ) { layoutIndex, message ->
             val animateEnter = shouldAnimateMessageEnter(
@@ -186,39 +189,44 @@ fun FlashMessageList(
             val isSelected = message.id in selectedMessageIds
             val isHighlighted = message.id == highlightedMessageId
 
-            FlashMessageBubble(
-                message = message,
-                onOpenActions = { onOpenMessageActions(message) },
-                isSelected = isSelected,
-                inSelectionMode = inSelectionMode,
-                onSelectToggle = { onSelectToggle(message.id) },
-                onToggleReaction = { emoji -> onToggleReaction(message.id, emoji) },
-                onReplySwipe = { onReplySwipe(message) },
-                onJumpToMessage = onJumpToMessage,
-                onImageClick = { index, image -> onImageClick(message, index) },
-                onFileClick = { file -> onFileClick(message, file) },
-                onAcceptOffer = { file -> onAcceptOffer(message, file) },
-                onDeclineOffer = { file -> onDeclineOffer(message, file) },
-                isHighlighted = isHighlighted,
-                searchQuery = searchQuery,
-                suppressSenderHeader = !showSenderHeaders,
-                modifier = Modifier
-                    .padding(bottom = spacingBelow)
-                    .then(flashAnimateItem(motion))
-                    .then(
-                        if (entering) {
-                            Modifier.graphicsLayer {
-                                alpha = enterProgress
-                                translationY = (1f - enterProgress) * (size.height / 4f)
-                                val s = 0.96f + (0.04f * enterProgress)
-                                scaleX = s
-                                scaleY = s
-                            }
-                        } else {
-                            Modifier
-                        },
-                    ),
-            )
+            Column(modifier = Modifier.then(flashAnimateItem(motion))) {
+                message.daySeparator?.let { label ->
+                    FlashDaySeparator(label = label)
+                }
+
+                FlashMessageBubble(
+                    message = message,
+                    onOpenActions = { onOpenMessageActions(message) },
+                    isSelected = isSelected,
+                    inSelectionMode = inSelectionMode,
+                    onSelectToggle = { onSelectToggle(message.id) },
+                    onToggleReaction = { emoji -> onToggleReaction(message.id, emoji) },
+                    onReplySwipe = { onReplySwipe(message) },
+                    onJumpToMessage = onJumpToMessage,
+                    onImageClick = { index, image -> onImageClick(message, index) },
+                    onFileClick = { file -> onFileClick(message, file) },
+                    onAcceptOffer = { file -> onAcceptOffer(message, file) },
+                    onDeclineOffer = { file -> onDeclineOffer(message, file) },
+                    isHighlighted = isHighlighted,
+                    searchQuery = searchQuery,
+                    suppressSenderHeader = !showSenderHeaders,
+                    modifier = Modifier
+                        .padding(bottom = spacingBelow)
+                        .then(
+                            if (entering) {
+                                Modifier.graphicsLayer {
+                                    alpha = enterProgress
+                                    translationY = (1f - enterProgress) * (size.height / 4f)
+                                    val s = 0.96f + (0.04f * enterProgress)
+                                    scaleX = s
+                                    scaleY = s
+                                }
+                            } else {
+                                Modifier
+                            },
+                        ),
+                )
+            }
         }
     }
 
@@ -248,6 +256,37 @@ fun FlashMessageList(
         }
     }
 }
+
+@Composable
+private fun FlashDaySeparator(
+    label: String,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(top = FlashSpacing.space4, bottom = FlashSpacing.space12)
+            .clearAndSetSemantics {
+                heading()
+                contentDescription = daySeparatorContentDescription(label)
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        FlashText(
+            text = label,
+            style = FlashTheme.typography.metadataEmphasis,
+            color = FlashTheme.colors.chatTextSystem,
+            modifier = Modifier
+                .clip(FlashShapes.avatar)
+                .background(FlashTheme.colors.backgroundSurfaceSubtle)
+                .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space4),
+        )
+    }
+}
+
+internal fun flashMessageKey(message: FlashMessageUi): String = message.id
+
+internal fun daySeparatorContentDescription(label: String): String = "Messages from $label"
 
 /**
  * UI-022 Floating "N new messages" pill — accent surface with a down-chevron

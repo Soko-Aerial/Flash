@@ -221,6 +221,8 @@ public data class FlashMessageUi(
     val deliveryStatus: FlashMessageStatus? = null,
     val groupPosition: FlashMessageGroupPosition = FlashMessageGroupPosition.SINGLE,
     val showSenderHeader: Boolean = true,
+    /** Label rendered before this message when it starts a new local calendar day. */
+    val daySeparator: String? = null,
     /** Non-null when this row is a call log entry instead of a text/attachment message. */
     val callEvent: FlashCallEventUi? = null,
 )

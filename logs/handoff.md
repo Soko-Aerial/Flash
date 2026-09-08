@@ -1,5 +1,40 @@
 # Current Handoff
 
+## 2026-09-08 (f) — F5.1 date separators complete, staged, uncommitted
+
+### Current branch
+`dev` at `0948a7f`. Only F5.1 code/tests/docs/logs are staged. `New folder/` and root CLI diagnostic
+JSONL files remain unrelated and unstaged.
+
+### Last verified build
+With `JAVA_HOME=C:/Users/KaliOxygen/.gradle/jdks/jetbrains_s_r_o_-21-amd64-windows.2`:
+- `:core:messaging:testAndroidHostTest` passed.
+- `:core:messaging:jvmTest` passed.
+- `:ui:chat:testAndroidHostTest` passed.
+- `:ui:chat:jvmTest` passed.
+- `:app:assembleDebug` passed.
+
+### Last change
+- Added nullable `FlashMessageUi.daySeparator` without changing existing call sites.
+- Added pure/injectable common day labeling and separator assignment, with Android/JVM calendar
+  actuals for local time zone and locale handling.
+- Android repository mapping computes separators once after Room has filtered tombstones.
+- Common chat UI renders centered accessible day headings while retaining `message.id` LazyColumn keys.
+- Common/JVM tests cover same day, yesterday, older dates, midnight, DST, same-day streaks,
+  day-boundary bubble grouping, filtered tombstones, accessibility text, and key stability.
+
+### Recommended next task
+Run the physical-device gate with a thread spanning two local calendar days. Then continue only the
+owner-selected F-series phase; F5.3+, F4b, and KMP Phase 15 remain separate.
+
+### Files most relevant to this change
+- `core/messaging/src/commonMain/.../model/FlashMessagingModels.kt`
+- `core/messaging/src/commonMain/.../util/DaySeparators.kt`
+- `core/messaging/src/commonMain/.../util/FlashMessagingUtils.kt`
+- `core/messaging/src/androidMain/.../RealFlashChatRepository.kt`
+- `ui/chat/src/commonMain/.../FlashMessageList.kt`
+- `docs/group/ui-phase-plan.md`
+
 ## 2026-09-08 (e) — F5.2 group notification naming complete, staged, uncommitted
 
 ### Current branch

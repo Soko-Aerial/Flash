@@ -16,8 +16,10 @@ public fun computeMessageGroupPositions(messages: List<FlashMessageUi>): List<Fl
     return messages.mapIndexed { index, message ->
         val previous = messages.getOrNull(index - 1)
         val next = messages.getOrNull(index + 1)
-        val sameSenderAsPrevious = previous?.senderName == message.senderName && previous.isMine == message.isMine
-        val sameSenderAsNext = next?.senderName == message.senderName && next.isMine == message.isMine
+        val sameSenderAsPrevious = previous?.senderName == message.senderName &&
+            previous.isMine == message.isMine && message.daySeparator == null
+        val sameSenderAsNext = next?.senderName == message.senderName &&
+            next.isMine == message.isMine && next.daySeparator == null
 
         val position = when {
             !sameSenderAsPrevious && !sameSenderAsNext -> FlashMessageGroupPosition.SINGLE

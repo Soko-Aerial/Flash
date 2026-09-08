@@ -61,7 +61,7 @@ class RealFlashChatRepositoryTest {
         override suspend fun insert(message: MessageEntity): Long {
             if (messages.containsKey(message.localId)) return -1L
             messages[message.localId] = message
-            flow.value = messages.values.toList().sortedByDescending { it.sentAt }
+            flow.value = messages.values.filter { it.deletedAt == null }.sortedByDescending { it.sentAt }
             return 1L
         }
 
@@ -93,7 +93,8 @@ class RealFlashChatRepositoryTest {
             messages[localId]?.let {
                 val updated = it.copy(status = status)
                 messages[localId] = updated
-                flow.value = messages.values.toList().sortedByDescending { m -> m.sentAt }
+                flow.value = messages.values.filter { message -> message.deletedAt == null }
+                    .sortedByDescending { m -> m.sentAt }
             }
         }
 
@@ -102,7 +103,7 @@ class RealFlashChatRepositoryTest {
             val current = messages[localId] ?: return
             if (current.status == "DELIVERED" || current.status == "READ") return
             messages[localId] = current.copy(status = status)
-            flow.value = messages.values.toList().sortedByDescending { m -> m.sentAt }
+            flow.value = messages.values.filter { it.deletedAt == null }.sortedByDescending { m -> m.sentAt }
         }
 
         override suspend fun newestLocalId(conversationId: String): String? =
@@ -134,11 +135,12 @@ class RealFlashChatRepositoryTest {
 
         override suspend fun markDeleted(localId: String, deletedAt: Long) {
             messages[localId]?.let { messages[localId] = it.copy(deletedAt = deletedAt) }
+            flow.value = messages.values.filter { it.deletedAt == null }.sortedByDescending { it.sentAt }
         }
 
         override suspend fun deleteByConversations(ids: List<String>) {
             messages.values.filter { it.conversationId in ids }.forEach { messages.remove(it.localId) }
-            flow.value = messages.values.toList().sortedByDescending { it.sentAt }
+            flow.value = messages.values.filter { it.deletedAt == null }.sortedByDescending { it.sentAt }
         }
 
         override suspend fun searchMessages(query: String, limit: Int): List<MessageEntity> =
@@ -1849,6 +1851,32 @@ class RealFlashChatRepositoryTest {
         kotlinx.coroutines.delay(50)
         assertEquals(0, outboxDao.queue.size)
         assertEquals("DELIVERED", messageDao.messages[messageId]!!.status)
+    }
+
+    @Test
+    fun `conversation mapping assigns separators after tombstones are filtered`() = runBlocking {
+        val messageDao = FakeMessageDao()
+        val repository = newRepository(messageDao = messageDao)
+        val now = System.currentTimeMillis()
+        messageDao.insert(msg("today-1", "conv-days", "one").copy(sentAt = now - 1_000L))
+        messageDao.insert(msg("today-2", "conv-days", "two").copy(sentAt = now - 2_000L))
+        messageDao.insert(
+            msg("deleted", "conv-days", "deleted").copy(
+                sentAt = now - 86_400_000L,
+                deletedAt = now,
+            ),
+        )
+        messageDao.insert(msg("older", "conv-days", "old").copy(sentAt = now - 172_800_000L))
+
+        repository.openConversation("conv-days")
+        kotlinx.coroutines.delay(100)
+
+        val messages = repository.conversationState.value.messages
+        assertEquals(listOf("older", "today-2", "today-1"), messages.map { it.id })
+        assertNotNull(messages[0].daySeparator)
+        assertNotNull(messages[1].daySeparator)
+        assertNull(messages[2].daySeparator)
+        assertFalse(messages.any { it.id == "deleted" })
     }
 
     /** Shared construction for the ERROR-034 tests; every DAO is an in-memory fake. */

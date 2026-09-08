@@ -1,5 +1,38 @@
 # Progress Log
 
+## 2026-09-08 — F5.1 date separators
+
+### Worked on
+Implemented only F5.1 from `docs/group/ui-phase-plan.md`: local-calendar day separators in open
+conversations across the KMP messaging/UI source sets.
+
+### Changed
+- Added additive nullable `FlashMessageUi.daySeparator`.
+- Added pure/injectable common `dayLabelFor` and separator assignment, backed by Android/JVM
+  expect/actual calendar seams with local time zone and locale formatting; no dependency added and no
+  `java.*` entered `commonMain`.
+- Android repository mapping computes labels once per emitted row after Room's tombstone filter.
+- Common `FlashMessageList` renders centered accessible day headings within existing keyed message
+  items, preserving `message.id` keys.
+- Added common and JVM coverage for same day, yesterday, older formatting, midnight, DST gap,
+  same-day streaks, day-boundary bubble grouping, filtered tombstones, key stability, and accessibility text.
+
+### Verification
+- `:core:messaging:testAndroidHostTest` passed.
+- `:core:messaging:jvmTest` passed.
+- `:ui:chat:testAndroidHostTest` passed.
+- `:ui:chat:jvmTest` passed.
+- `:app:assembleDebug` passed.
+- `git diff --check` passed.
+- Required JDK: `C:/Users/KaliOxygen/.gradle/jdks/jetbrains_s_r_o_-21-amd64-windows.2`.
+
+### Remaining
+Physical-device gate: open a thread spanning two local calendar days and verify labels, scrolling,
+and TalkBack. F5.3+, F4b, and KMP Phase 15 were not touched.
+
+### Next AI
+Continue only the owner-selected phase from `docs/group/ui-phase-plan.md` after the device gate.
+
 ## 2026-09-08 — F5.2 group notification naming
 
 ### Worked on

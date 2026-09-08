@@ -124,12 +124,12 @@ Execute strictly one at a time; direct 1:1 behavior byte-identical; tick + log a
 - Verify: app assembles; messaging + ui/chat tests green. Device gate owed: image/video/voice
   to group appears in chat on all members with progress; mid-transfer drop resumes.
 
-## F5/F6 — Audit follow-ups (from `docs/ui/app-essentials-audit.md`) — STATUS: F5.2 DONE 2026-09-08 (code + tests verified); remaining items planned
+## F5/F6 — Audit follow-ups (from `docs/ui/app-essentials-audit.md`) — STATUS: F5.1 + F5.2 DONE 2026-09-08 (code + tests verified); remaining items planned
 
 Each item is its own small phase. All evidence below was verified in code this session. Execute
 one at a time; direct 1:1 behavior byte-identical; verify + log after each.
 
-### F5.1 — Date separators (missing; highest user value)
+### F5.1 — Date separators — STATUS: DONE 2026-09-08 (code + tests verified)
 - **Evidence:** no `DateSeparator`/`isSameDay` anywhere in `ui/` or `core/`; bubbles carry only
   per-message time labels (`formatTime` = `h:mm a`, RealFlashChatRepository.kt ~2257);
   `FlashMessageList` maps messages 1:1 into `itemsIndexed` with no header rows.
@@ -148,6 +148,17 @@ one at a time; direct 1:1 behavior byte-identical; verify + log after each.
 - **Tests:** midnight crossing, DST gap, yesterday boundary, same-day streak emits one label,
   tombstoned rows don't shift labels unexpectedly.
 - **Verify:** unit tests + device (open a thread with messages from two days).
+
+- **Implemented:** `FlashMessageUi` has an additive nullable `daySeparator`. Common messaging owns
+  pure/injectable `dayLabelFor` and separator assignment; Android/JVM actuals provide local calendar,
+  time-zone, and locale handling without `java.*` in `commonMain` or a new dependency. The Android
+  repository computes labels once in its existing filtered mapping. `FlashMessageList` renders the
+  label as a centered accessible heading inside the existing message item, preserving `message.id`
+  keys and breaking bubble grouping at day boundaries.
+- **Verification:** common tests cover same day, yesterday, older labels, same-day streaks, and
+  filtered-row boundaries; JVM tests cover midnight and a DST spring-forward gap. Both
+  `:core:messaging` and `:ui:chat` Android/JVM suites passed on 2026-09-08. Physical two-day thread
+  confirmation remains owed.
 
 ### F5.2 — Group notification naming — STATUS: DONE 2026-09-08 (code + tests verified)
 - **Evidence:** the repository fires `onInboundTextMessage(groupId, senderName, text)`
