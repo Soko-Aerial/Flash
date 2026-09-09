@@ -20,6 +20,7 @@ public object FlashConversationMenuMath {
         add(FlashConversationMenuItem.VIEW_PROFILE)
         add(FlashConversationMenuItem.SEARCH)
         if (canRevokeTrust) add(FlashConversationMenuItem.REVOKE_TRUST)
+        add(FlashConversationMenuItem.MARK_UNREAD)
         add(FlashConversationMenuItem.CLEAR_CONVERSATION)
     }
 
@@ -30,6 +31,7 @@ public object FlashConversationMenuMath {
         add(FlashConversationMenuItem.GROUP_INFO)
         add(FlashConversationMenuItem.ADD_MEMBERS)
         add(FlashConversationMenuItem.SEARCH)
+        add(FlashConversationMenuItem.MARK_UNREAD)
         if (canLeave) add(FlashConversationMenuItem.LEAVE_GROUP)
     }
 }
@@ -38,6 +40,7 @@ public enum class FlashConversationMenuItem(val label: String) {
     VIEW_PROFILE("View profile"),
     SEARCH("Search in conversation"),
     REVOKE_TRUST("Revoke trust"),
+    MARK_UNREAD("Mark as unread"),
     CLEAR_CONVERSATION("Clear conversation"),
     GROUP_INFO("Group info"),
     ADD_MEMBERS("Add members"),

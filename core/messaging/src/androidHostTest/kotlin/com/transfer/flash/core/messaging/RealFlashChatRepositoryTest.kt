@@ -203,7 +203,17 @@ class RealFlashChatRepositoryTest {
         }
 
         override suspend fun updateLastReadCursor(id: String, cursor: String) {
-            conversations[id]?.let { conversations[id] = it.copy(lastReadCursor = cursor) }
+            conversations[id]?.let {
+                conversations[id] = it.copy(lastReadCursor = cursor)
+                flow.value = conversations.values.toList()
+            }
+        }
+
+        override suspend fun clearLastReadCursor(id: String) {
+            conversations[id]?.let {
+                conversations[id] = it.copy(lastReadCursor = null)
+                flow.value = conversations.values.toList()
+            }
         }
 
         override suspend fun deleteConversations(ids: List<String>) {
@@ -1215,6 +1225,62 @@ class RealFlashChatRepositoryTest {
         }
         assertEquals(1, state.items.size)
         assertTrue(state.hasLoaded)
+    }
+
+    @Test
+    fun `markConversationUnread clears the cursor on the repository IO dispatcher`() = runBlocking {
+        val ioThread = Executors.newSingleThreadExecutor { task -> Thread(task, "mark-unread-io") }
+            .asCoroutineDispatcher()
+        try {
+            val conversationDao = object : ConversationDao {
+                val delegate = FakeConversationDao()
+                val clearThreadNames = java.util.Collections.synchronizedList(mutableListOf<String>())
+
+                override suspend fun upsert(conversation: ConversationEntity) = delegate.upsert(conversation)
+                override fun observeAll(): Flow<List<ConversationEntity>> = delegate.observeAll()
+                override suspend fun get(id: String): ConversationEntity? = delegate.get(id)
+                override suspend fun setArchived(id: String, archived: Boolean) = delegate.setArchived(id, archived)
+                override suspend fun setPinned(id: String, pinned: Boolean) = delegate.setPinned(id, pinned)
+                override suspend fun setMuted(id: String, muted: Boolean) = delegate.setMuted(id, muted)
+                override suspend fun updateLastReadCursor(id: String, cursor: String) =
+                    delegate.updateLastReadCursor(id, cursor)
+                override suspend fun clearLastReadCursor(id: String) {
+                    clearThreadNames += Thread.currentThread().name
+                    delegate.clearLastReadCursor(id)
+                }
+                override suspend fun deleteConversations(ids: List<String>) = delegate.deleteConversations(ids)
+            }
+            conversationDao.upsert(
+                ConversationEntity(
+                    id = "conv-unread",
+                    title = "Alex",
+                    isGroup = false,
+                    lastReadCursor = "message-2",
+                ),
+            )
+            val repository = RealFlashChatRepository(
+                localDeviceId = "my-device-id",
+                localDisplayName = "Kali",
+                messageDao = FakeMessageDao(),
+                conversationDao = conversationDao,
+                outboxDao = FakeOutboxDao(),
+                receiptDao = FakeReceiptDao(),
+                draftDao = FakeDraftDao(),
+                recentSearchDao = FakeRecentSearchDao(),
+                reactionDao = FakeReactionDao(),
+                ioDispatcher = ioThread,
+            )
+
+            repository.markConversationUnread("conv-unread")
+            kotlinx.coroutines.withTimeout(5_000) {
+                conversationDao.observeAll().first { rows -> rows.single().lastReadCursor == null }
+            }
+
+            assertEquals(null, conversationDao.get("conv-unread")!!.lastReadCursor)
+            assertTrue(conversationDao.clearThreadNames.single().contains("mark-unread-io"))
+        } finally {
+            ioThread.close()
+        }
     }
 
     // ------------------------------------------------------------------ groups (Phase 1A)

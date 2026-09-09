@@ -165,6 +165,8 @@ fun FlashConversationScreen(
      * Default no-op keeps previews inert; the host routes to deleteConversations + nav back.
      */
     onClearConversation: (conversationId: String) -> Unit = {},
+    /** Mark this conversation unread while keeping the thread open. */
+    onMarkUnread: (conversationId: String) -> Unit = {},
     /**
      * Group Phase D: the id of the conversation this screen renders. Required for the group menu
      * actions (add members / leave) to address the right group; null keeps previews inert.
@@ -443,6 +445,8 @@ fun FlashConversationScreen(
                                         FlashConversationMenuItem.VIEW_PROFILE -> showPeerDetails = true
                                         FlashConversationMenuItem.SEARCH -> isSearchActive = true
                                         FlashConversationMenuItem.REVOKE_TRUST -> onRevokePeerTrust?.invoke()
+                                        FlashConversationMenuItem.MARK_UNREAD ->
+                                            conversationId?.let { onMarkUnread(it) }
                                         FlashConversationMenuItem.CLEAR_CONVERSATION ->
                                             conversationId?.let { onClearConversation(it) }
                                         FlashConversationMenuItem.GROUP_INFO -> showGroupMembers = true

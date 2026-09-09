@@ -113,6 +113,40 @@ class FlashDatabaseJvmTest {
     }
 
     @Test
+    fun `clearing a conversation read cursor re-emits all inbound messages as unread`() = runBlocking {
+        val db = openDatabase()
+        val conversationDao = db.conversationDao()
+        val messageDao = db.messageDao()
+        conversationDao.upsert(
+            com.transfer.flash.core.persistence.db.entity.ConversationEntity(
+                id = "conversation-unread",
+                title = "Unread",
+                isGroup = false,
+                lastReadCursor = "inbound-new",
+            ),
+        )
+        fun message(id: String, senderId: String, sentAt: Long) =
+            com.transfer.flash.core.persistence.db.entity.MessageEntity(
+                localId = id,
+                conversationId = "conversation-unread",
+                senderId = senderId,
+                senderName = senderId,
+                text = id,
+                sentAt = sentAt,
+                status = "DELIVERED",
+            )
+        messageDao.insert(message("inbound-old", "peer", 1L))
+        messageDao.insert(message("self", "self", 2L))
+        messageDao.insert(message("inbound-new", "peer", 3L))
+        assertTrue(messageDao.observeUnreadCounts("self").first().isEmpty())
+
+        conversationDao.clearLastReadCursor("conversation-unread")
+
+        assertNull(conversationDao.get("conversation-unread")!!.lastReadCursor)
+        assertEquals(2, messageDao.observeUnreadCounts("self").first().single().unread)
+    }
+
+    @Test
     fun `group delivery aggregate re-emits and stays scoped to outbound conversation messages`() = runBlocking {
         val db = openDatabase()
         db.conversationDao().upsert(

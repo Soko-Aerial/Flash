@@ -240,17 +240,24 @@ one at a time; direct 1:1 behavior byte-identical; verify + log after each.
 - **Device gate:** send to a group with at least two remote recipients and verify `M/N` advances on
   each ACK; also verify direct, inbound, and media messages without `group_deliveries` show no label.
 
-### F6.1 — Mark as unread (missing; low)
-- **Evidence:** no `markUnread` anywhere; unread = `sentAt > lastReadCursor`'s message
-  (`observeUnreadCounts`, MessageDao ~121).
-- **Design:** conversation menu item (Phase D menu) "Mark as unread" → set
-  `lastReadCursor` to the OLDEST inbound message id minus one position — simplest honest
-  version: set it to null for the thread (DAO needs a `clearLastReadCursor` query), which
-  counts every inbound message unread. UI badge then behaves exactly like any unread thread.
-- **Files:** `ConversationDao` (+1 query), `RealFlashChatRepository.kt` (+1 API + menu action),
-  `FlashConversationMenuMath` (add item), `MainActivity` wiring.
-- **Tests:** DAO clear semantics + unread-count effect via `FlashDatabaseInvariantTest`.
-- **Verify:** device (badge appears after marking a read thread unread).
+### F6.1 — Mark as unread — STATUS: DONE 2026-09-09 (code + Android/JVM tests verified; device gate remains)
+- **Evidence:** unread = `sentAt > lastReadCursor`'s message (`observeUnreadCounts`, MessageDao
+  ~121); a null cursor already means every inbound, non-tombstoned message is unread.
+- **Implemented:** commonMain `ConversationDao.clearLastReadCursor(id)` sets only the existing cursor
+  column to null (query-only; no entity/schema/version/migration change). `FlashChatRepository` gained
+  a default/source-compatible `markConversationUnread` command; `RealFlashChatRepository` launches
+  the clear on its injected IO dispatcher. Direct and group conversation menus both expose
+  `MARK_UNREAD`; `FlashConversationScreen` forwards the active id after the menu dismisses, and
+  `MainActivity` wires it to the repository. Room invalidation then drives the existing unread-count
+  flow and chat-list badge without local UI fabrication.
+- **Files:** `ConversationDao`, `FlashChatRepository`, `RealFlashChatRepository`,
+  `FlashConversationMenu`, `FlashConversationScreen`, `MainActivity`, plus focused persistence,
+  repository, and menu tests.
+- **Verification:** persistence Android host passed the DAO invariant with only the 12 known Windows
+  DataStore atomic-rename failures; persistence JVM, messaging Android host/JVM, UI chat Android
+  host/JVM, app unit tests, and app assemble passed with JDK 21 on 2026-09-09.
+- **Device gate:** mark a previously read direct and group thread unread, return to the chat list, and
+  confirm its badge reflects all inbound non-tombstoned messages.
 
 ### F6.2 — Delete-for-everyone (partial; low)
 - **Evidence:** `deleteMessage` is a local tombstone (`markDeleted`); no wire frame.

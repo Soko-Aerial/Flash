@@ -142,6 +142,34 @@ class FlashDatabaseInvariantTest {
     }
 
     @Test
+    fun clearLastReadCursorMakesAllInboundMessagesUnreadAndFlowReemits() = runTest {
+        val conversationDao = db.conversationDao()
+        val messageDao = db.messageDao()
+        conversationDao.upsert(
+            ConversationEntity(
+                id = "conv-unread",
+                title = "Unread",
+                isGroup = false,
+                lastReadCursor = "inbound-new",
+            ),
+        )
+        messageDao.insert(message("inbound-old", "conv-unread", sentAt = 100L).copy(senderId = "peer"))
+        messageDao.insert(message("self", "conv-unread", sentAt = 150L).copy(senderId = "self"))
+        messageDao.insert(message("inbound-new", "conv-unread", sentAt = 200L).copy(senderId = "peer"))
+        assertTrue(messageDao.observeUnreadCounts("self").first().isEmpty())
+
+        val unreadAfterClear = async {
+            messageDao.observeUnreadCounts("self").first { rows ->
+                rows.any { it.conversationId == "conv-unread" && it.unread == 2 }
+            }
+        }
+        conversationDao.clearLastReadCursor("conv-unread")
+
+        assertNull(conversationDao.get("conv-unread")!!.lastReadCursor)
+        assertEquals(2, unreadAfterClear.await().single { it.conversationId == "conv-unread" }.unread)
+    }
+
+    @Test
     fun readCursorAdvanceFurthestIsMonotonic() = runTest {
         val dao = db.readCursorDao()
 

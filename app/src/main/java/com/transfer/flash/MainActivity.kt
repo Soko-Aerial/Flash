@@ -1041,6 +1041,7 @@ private fun FlashShell(
                             chatRepository.closeConversation()
                             nav.back()
                         },
+                        onMarkUnread = chatRepository::markConversationUnread,
                     )
                     FlashDestination.Transfers -> FlashTransfersScreen(
                         state = transfersUi,

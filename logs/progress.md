@@ -1,5 +1,40 @@
 # Progress Log
 
+## 2026-09-09 — F6.1 mark as unread
+
+### Worked on
+Implemented only F6.1 from `docs/group/ui-phase-plan.md`: mark an open direct or group conversation
+unread through the existing read-cursor and unread-count model.
+
+### Changed
+- Added commonMain `ConversationDao.clearLastReadCursor(id)`, updating only the existing nullable
+  column; no entity, schema, database version, or migration changed.
+- Added default/source-compatible `FlashChatRepository.markConversationUnread` and an Android real
+  implementation that launches the DAO write on its injected IO dispatcher.
+- Added `MARK_UNREAD` to direct and group conversation menus. The dropdown dismisses before dispatch,
+  `FlashConversationScreen` forwards the active conversation id, and `MainActivity` calls the
+  repository without navigating away.
+- The existing Room invalidation and `observeUnreadCounts` flow now repopulate the chat-list badge with
+  all inbound, non-tombstoned messages after the cursor becomes null.
+- Added Android-host DAO invariant, JVM Room query, repository IO/clear, source-compatible no-op, and
+  common menu visibility/order tests.
+
+### Verification
+- `:core:persistence:testAndroidHostTest`: only the 12 known Windows DataStore atomic-rename failures
+  (`FlashSettingsDataStoreTest` 11 + `DiscoveryModeSettingTest` 1); the F6.1 invariant passed.
+- `:core:persistence:jvmTest` passed.
+- `:core:messaging:testAndroidHostTest` and `:core:messaging:jvmTest` passed.
+- `:ui:chat:testAndroidHostTest` and `:ui:chat:jvmTest` passed.
+- `:app:testDebugUnitTest` passed (41 tests); `:app:assembleDebug` passed.
+- `git diff --check` passed; no Room schema diff was generated.
+
+### Remaining
+Physical device gate: mark a previously read direct and group thread unread and confirm the list badge
+updates to all inbound non-tombstoned messages. F6.2, F6.3, F4b, and KMP Phase 15 were not touched.
+
+### Next AI
+Run the F6.1 device gate, then continue only the owner-selected phase.
+
 ## 2026-09-09 — F5.4 delivered to M of N
 
 ### Worked on

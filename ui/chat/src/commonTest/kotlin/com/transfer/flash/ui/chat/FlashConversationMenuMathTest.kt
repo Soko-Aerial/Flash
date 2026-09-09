@@ -14,6 +14,7 @@ class FlashConversationMenuMathTest {
                 FlashConversationMenuItem.VIEW_PROFILE,
                 FlashConversationMenuItem.SEARCH,
                 FlashConversationMenuItem.REVOKE_TRUST,
+                FlashConversationMenuItem.MARK_UNREAD,
                 FlashConversationMenuItem.CLEAR_CONVERSATION,
             ),
             trusted,
@@ -21,6 +22,7 @@ class FlashConversationMenuMathTest {
 
         val unpaired = FlashConversationMenuMath.directItems(canRevokeTrust = false)
         assertFalse(unpaired.contains(FlashConversationMenuItem.REVOKE_TRUST))
+        assertTrue(unpaired.contains(FlashConversationMenuItem.MARK_UNREAD))
     }
 
     @Test
@@ -31,6 +33,7 @@ class FlashConversationMenuMathTest {
                 FlashConversationMenuItem.GROUP_INFO,
                 FlashConversationMenuItem.ADD_MEMBERS,
                 FlashConversationMenuItem.SEARCH,
+                FlashConversationMenuItem.MARK_UNREAD,
                 FlashConversationMenuItem.LEAVE_GROUP,
             ),
             group,
@@ -40,5 +43,6 @@ class FlashConversationMenuMathTest {
         val lastMember = FlashConversationMenuMath.groupItems(canLeave = false)
         assertFalse(lastMember.contains(FlashConversationMenuItem.LEAVE_GROUP))
         assertTrue(lastMember.contains(FlashConversationMenuItem.GROUP_INFO))
+        assertTrue(lastMember.contains(FlashConversationMenuItem.MARK_UNREAD))
     }
 }

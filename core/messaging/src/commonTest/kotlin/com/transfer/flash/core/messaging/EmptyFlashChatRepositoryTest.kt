@@ -60,6 +60,7 @@ class EmptyFlashChatRepositoryTest {
             setConversationsPinned(setOf("conv-anything"), true)
             setConversationsMuted(setOf("conv-anything"), true)
             markConversationsRead(setOf("conv-anything"))
+            markConversationUnread("conv-anything")
             archiveConversation("conv-anything")
             archiveConversations(setOf("conv-anything"))
             clearListSelection()

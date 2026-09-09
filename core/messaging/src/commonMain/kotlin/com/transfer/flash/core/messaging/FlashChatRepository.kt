@@ -161,6 +161,9 @@ public interface FlashChatRepository {
     /** Mute or unmute the selected conversations. */
     public fun setConversationsMuted(ids: Set<String>, muted: Boolean) {}
 
+    /** Mark one conversation unread by clearing its read cursor. */
+    public fun markConversationUnread(conversationId: String) {}
+
     /** Mark the selected conversations read (clears their unread badge). */
     public fun markConversationsRead(ids: Set<String>) {}
 

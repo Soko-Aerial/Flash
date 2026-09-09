@@ -1,5 +1,42 @@
 # Current Handoff
 
+## 2026-09-09 — F6.1 mark as unread complete, staged, uncommitted
+
+### Current branch
+`dev` at `d699888`. Only F6.1 code/tests/docs/logs are intended to be staged; unrelated `New folder/`
+and root CLI diagnostics remain unstaged. No commit was created.
+
+### Last verified build
+With `JAVA_HOME=C:/Users/KaliOxygen/.gradle/jdks/jetbrains_s_r_o_-21-amd64-windows.2`:
+- Persistence Android host ran 40 tests with only the 12 known Windows DataStore atomic-rename
+  failures; the new DAO invariant passed.
+- Persistence JVM passed.
+- Messaging Android host/JVM passed.
+- UI chat Android host/JVM passed.
+- App unit tests passed (41 tests) and `:app:assembleDebug` passed.
+- `git diff --check` passed and no Room schema diff was generated.
+
+### Last change
+- Added query-only commonMain `clearLastReadCursor`; no schema/version/migration change.
+- Added a default/source-compatible repository command and Android implementation on IO.
+- Added Mark as unread to both direct and group menus; selection dismisses the menu, clears the
+  active thread cursor, and leaves navigation unchanged.
+- Existing Room unread-count invalidation updates the chat-list badge; DAO/repository/menu tests pin
+  cursor clearing, unread re-emission, IO dispatch, compatibility, and menu availability.
+
+### Recommended next task
+Run the F6.1 physical-device gate for both direct and group conversations. Continue only the
+owner-selected item; F6.2, F6.3, F4b, and KMP Phase 15 remain separate.
+
+### Files most relevant to this change
+- `core/persistence/src/commonMain/.../dao/ConversationDao.kt`
+- `core/messaging/src/commonMain/.../FlashChatRepository.kt`
+- `core/messaging/src/androidMain/.../RealFlashChatRepository.kt`
+- `ui/chat/src/commonMain/.../FlashConversationMenu.kt`
+- `ui/chat/src/commonMain/.../FlashConversationScreen.kt`
+- `app/src/main/.../MainActivity.kt`
+- `docs/group/ui-phase-plan.md`
+
 ## 2026-09-09 — F5.4 delivered to M of N complete, staged, uncommitted
 
 ### Current branch

@@ -30,6 +30,9 @@ public interface ConversationDao {
     @Query("UPDATE conversations SET lastReadCursor = :cursor WHERE id = :id")
     public suspend fun updateLastReadCursor(id: String, cursor: String)
 
+    @Query("UPDATE conversations SET lastReadCursor = NULL WHERE id = :id")
+    public suspend fun clearLastReadCursor(id: String)
+
     /** Hard-delete conversations (chat-list bulk delete, UI selection mode). Messages are removed
      *  separately via [MessageDao.deleteByConversations] so both tables stay consistent. */
     @Query("DELETE FROM conversations WHERE id IN (:ids)")

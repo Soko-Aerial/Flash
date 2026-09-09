@@ -2212,6 +2212,12 @@ public class RealFlashChatRepository(
         clearListSelection()
     }
 
+    override fun markConversationUnread(conversationId: String) {
+        scope.launch(ioDispatcher) {
+            conversationDao.clearLastReadCursor(conversationId)
+        }
+    }
+
     override fun markConversationsRead(ids: Set<String>) {
         if (ids.isEmpty()) return
         scope.launch(ioDispatcher) {
