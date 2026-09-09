@@ -28,9 +28,15 @@ import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -107,6 +113,11 @@ data class FlashSettingsModel(
     val detectedPerformanceMode: FlashPerformanceMode = FlashPerformanceMode.HIGH,
     val trustedPeerCount: Int = 0,
     val saveLocationLabel: String? = null,
+    /** Last successful received-files scan. Null means no successful scan is cached yet. */
+    val receivedFilesBytes: Long? = null,
+    val storageUsageLoading: Boolean = false,
+    val storageUsageError: Boolean = false,
+    val clearingReceivedFiles: Boolean = false,
     val appVersion: String = "dev",
     val protocolVersion: String = "FLASH_XFER/1",
     val deviceIdShort: String = "00000000",
@@ -220,12 +231,27 @@ fun FlashSettingsScreen(
     onOpenEncryption: () -> Unit = {},
     onOpenTrustedPeers: () -> Unit = {},
     onPickSaveLocation: () -> Unit = {},
+    onRefreshStorageUsage: () -> Unit = {},
+    onClearReceivedFiles: () -> Unit = {},
     /**
      * Opens the system battery-optimisation prompt (ERROR-031 / D7). Host-side because the
      * `ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` intent needs an Activity.
      */
     onOpenBatterySettings: () -> Unit = {},
 ) {
+    var showClearStorageConfirmation by remember { mutableStateOf(false) }
+
+    if (showClearStorageConfirmation) {
+        ClearReceivedFilesDialog(
+            totalBytes = model.receivedFilesBytes,
+            onConfirm = {
+                showClearStorageConfirmation = false
+                onClearReceivedFiles()
+            },
+            onDismiss = { showClearStorageConfirmation = false },
+        )
+    }
+
     LazyColumn(
         modifier = modifier.fillMaxSize().statusBarsPadding(),
         state = listState,
@@ -353,8 +379,18 @@ fun FlashSettingsScreen(
                 )
             }
         }
+        item(key = "storage-label") { StaggerIn(16) { SectionLabel("STORAGE") } }
+        item(key = "storage-usage") {
+            StaggerIn(17) {
+                StorageUsageCard(
+                    model = model,
+                    onRefresh = onRefreshStorageUsage,
+                    onClear = { showClearStorageConfirmation = true },
+                )
+            }
+        }
         item(key = "auto-download-voice") {
-            StaggerIn(16) {
+            StaggerIn(18) {
                 SwitchRow(
                     title = "Auto-download voice",
                     subtitle = "Accept incoming voice messages automatically",
@@ -364,7 +400,7 @@ fun FlashSettingsScreen(
             }
         }
         item(key = "auto-download-image") {
-            StaggerIn(17) {
+            StaggerIn(19) {
                 SwitchRow(
                     title = "Auto-download images",
                     subtitle = "Accept incoming images automatically",
@@ -374,7 +410,7 @@ fun FlashSettingsScreen(
             }
         }
         item(key = "auto-download-video") {
-            StaggerIn(18) {
+            StaggerIn(20) {
                 SwitchRow(
                     title = "Auto-download videos",
                     subtitle = "Accept incoming videos automatically",
@@ -384,7 +420,7 @@ fun FlashSettingsScreen(
             }
         }
         item(key = "auto-download-file") {
-            StaggerIn(19) {
+            StaggerIn(21) {
                 SwitchRow(
                     title = "Auto-download files",
                     subtitle = "Accept incoming files automatically",
@@ -394,9 +430,9 @@ fun FlashSettingsScreen(
             }
         }
 
-        item(key = "calls-label") { StaggerIn(20) { SectionLabel("CALLS") } }
+        item(key = "calls-label") { StaggerIn(22) { SectionLabel("CALLS") } }
         item(key = "prioritise-voice") {
-            StaggerIn(21) {
+            StaggerIn(23) {
                 SwitchRow(
                     title = "Prioritise voice quality",
                     subtitle = FlashSettingsMath.prioritiseVoiceSubtitle(model.prioritiseVoiceQuality),
@@ -406,8 +442,8 @@ fun FlashSettingsScreen(
             }
         }
 
-        item(key = "about-label") { StaggerIn(22) { SectionLabel("ABOUT") } }
-        item(key = "about") { StaggerIn(23) { AboutCard(model) } }
+        item(key = "about-label") { StaggerIn(24) { SectionLabel("ABOUT") } }
+        item(key = "about") { StaggerIn(25) { AboutCard(model) } }
     }
 }
 
@@ -780,6 +816,130 @@ private fun ValueRow(
             )
         }
     }
+}
+
+@Composable
+private fun StorageUsageCard(
+    model: FlashSettingsModel,
+    onRefresh: () -> Unit,
+    onClear: () -> Unit,
+) {
+    val colors = FlashTheme.colors
+    val clearEnabled = FlashStorageMath.canClearReceivedFiles(
+        totalBytes = model.receivedFilesBytes,
+        isLoading = model.storageUsageLoading,
+        hasError = model.storageUsageError,
+        isClearing = model.clearingReceivedFiles,
+    )
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(FlashShapes.radius12))
+            .background(colors.backgroundSurface)
+            .padding(FlashSpacing.space12),
+        verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            FlashIcon(
+                icon = FlashIcons.Archive,
+                tint = colors.textSecondary,
+                size = FlashDimensions.iconMd,
+                contentDescription = null,
+            )
+            Spacer(Modifier.width(FlashSpacing.space12))
+            Column(Modifier.weight(1f)) {
+                FlashText(
+                    text = "Received files",
+                    style = FlashTheme.typography.bodyEmphasis,
+                    color = colors.textPrimary,
+                )
+                FlashText(
+                    text = FlashStorageMath.usageSummary(
+                        totalBytes = model.receivedFilesBytes,
+                        isLoading = model.storageUsageLoading,
+                        hasError = model.storageUsageError,
+                    ),
+                    style = FlashTheme.typography.metadataDefault,
+                    color = if (model.storageUsageError) colors.textError else colors.textTertiary,
+                )
+            }
+            if (model.storageUsageLoading || model.clearingReceivedFiles) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(FlashDimensions.iconMd),
+                    color = colors.accentPrimary,
+                    strokeWidth = 2.dp,
+                )
+            }
+        }
+        FlashText(
+            text = "Per-conversation storage details are not available yet.",
+            style = FlashTheme.typography.metadataDefault,
+            color = colors.textTertiary,
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8, Alignment.End),
+        ) {
+            TextButton(
+                onClick = onRefresh,
+                enabled = !model.storageUsageLoading && !model.clearingReceivedFiles,
+                modifier = Modifier.semantics {
+                    contentDescription = if (model.storageUsageLoading) {
+                        "Refreshing received files storage usage"
+                    } else {
+                        "Refresh received files storage usage"
+                    }
+                },
+            ) {
+                Text("Refresh", color = colors.accentPrimary)
+            }
+            TextButton(
+                onClick = onClear,
+                enabled = clearEnabled,
+                modifier = Modifier.semantics {
+                    contentDescription = if (clearEnabled) {
+                        "Clear all received files"
+                    } else {
+                        "Clear received files unavailable"
+                    }
+                },
+            ) {
+                Text("Clear received files", color = if (clearEnabled) colors.textError else colors.textTertiary)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ClearReceivedFilesDialog(
+    totalBytes: Long?,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val colors = FlashTheme.colors
+    val amount = totalBytes?.let(FlashStorageMath::formatBytes) ?: "these files"
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { FlashText(text = "Clear received files?", style = FlashTheme.typography.headingMedium) },
+        text = {
+            FlashText(
+                text = "Permanently delete $amount from Flash's received-files storage? " +
+                    "This clears all received files and cannot be undone.",
+                style = FlashTheme.typography.bodyDefault,
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text("Delete files", color = colors.textError)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel", color = colors.textSecondary)
+            }
+        },
+        containerColor = colors.backgroundSurface,
+    )
 }
 
 @Composable

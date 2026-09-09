@@ -1,5 +1,38 @@
 # Current Handoff
 
+## 2026-09-09 — F6.3 storage usage complete, staged, uncommitted
+
+### Current branch
+`dev` after `d59e48a`. Only F6.3 code/tests/docs/logs are intended to be staged; unrelated `New folder/`
+and root CLI diagnostics remain unstaged. No commit was created, and KMP Phase 15 was not touched.
+
+### Last verified build
+With JDK 21 and the project AF_UNIX setting:
+- UI chat Android host/JVM passed.
+- App unit tests and `:app:assembleDebug` passed.
+- Common UI Android/JVM compilation passed before the full targeted gate.
+
+### Last change
+- The receive pipeline and Settings host now share `DiscoveryEngineHolder.receivedFilesRoot(context)`,
+  the existing app-owned `<external-files>/FlashReceived` destination.
+- `MainActivity` scans/deletes on IO, caches successful totals, refreshes on launch/request, canonical-
+  checks every traversed path, deletes descendants only, and never accepts an arbitrary path.
+- Common Settings displays loading/error/empty/total states, Refresh, accessible disabled states, and a
+  destructive blanket-clear confirmation. Per-conversation details are explicitly marked unavailable.
+- Pure common `FlashStorageMath` tests cover byte formatting and safe display/clear policy.
+
+### Recommended next task
+Run the F6.3 physical-device gate: compare against the actual received root, clear, confirm only root
+contents disappear, and verify free space. Continue only the owner-selected item.
+
+### Files most relevant to this change
+- `app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt`
+- `app/src/main/java/com/transfer/flash/MainActivity.kt`
+- `ui/chat/src/commonMain/.../settings/FlashSettingsScreen.kt`
+- `ui/chat/src/commonMain/.../settings/FlashStorageMath.kt`
+- `ui/chat/src/commonTest/.../settings/FlashStorageMathTest.kt`
+- `docs/group/ui-phase-plan.md`
+
 ## 2026-09-09 — F6.2 delete for everyone complete, staged, uncommitted
 
 ### Current branch

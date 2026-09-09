@@ -15,6 +15,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.lifecycle.lifecycleScope
 import androidx.core.content.ContextCompat
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.compose.animation.AnimatedVisibility
@@ -56,6 +57,7 @@ import com.transfer.flash.core.common.result.getOrNull
 import com.transfer.flash.core.discovery.FlashDiscoveredEndpoint
 import com.transfer.flash.core.discovery.FlashDiscoveryState
 import com.transfer.flash.di.AppEngine
+import com.transfer.flash.debug.DiscoveryEngineHolder
 import com.transfer.flash.debug.DevConsoleChip
 import com.transfer.flash.debug.FlashBackgroundService
 import com.transfer.flash.debug.FlashDevConsoleScreen
@@ -101,9 +103,14 @@ import com.transfer.flash.ui.theme.FlashTheme
 import com.transfer.flash.ui.theme.rememberFlashMotion
 import com.transfer.flash.ui.theme.rememberSystemReduceMotion
 import dagger.hilt.android.AndroidEntryPoint
+import java.io.File
+import java.io.IOException
 import javax.inject.Inject
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Showcase host (Phase 8 app shell, docs/ui-page-plan.md): four-tab FlashBottomNav +
@@ -111,6 +118,13 @@ import kotlinx.coroutines.launch
  * are reserved for Conversation and overlays. Demo tab states below are shaped exactly
  * like the future C5/C3/C1.4 engine mappings so wiring is substitution, not rewrite.
  */
+data class FlashReceivedStorageState(
+    val totalBytes: Long? = null,
+    val isLoading: Boolean = false,
+    val hasError: Boolean = false,
+    val isClearing: Boolean = false,
+)
+
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
 
@@ -141,6 +155,9 @@ class MainActivity : ComponentActivity() {
      */
     private val ignoringBatteryOptimizations = MutableStateFlow(false)
 
+    private val receivedStorageState = MutableStateFlow(FlashReceivedStorageState())
+    private var receivedStorageJob: Job? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         // Must be called before super.onCreate to take over the theme's splash window.
         // Keep the cold-start splash up for exactly as long as the engine takes to boot:
@@ -169,8 +186,12 @@ class MainActivity : ComponentActivity() {
                 pendingNotificationConversation = pendingNotificationConversation,
                 onEnableBackgroundTransfers = ::requestIgnoreBatteryOptimizations,
                 ignoringBatteryOptimizations = ignoringBatteryOptimizations,
+                receivedStorageState = receivedStorageState,
+                onRefreshStorageUsage = ::refreshReceivedStorageUsage,
+                onClearReceivedFiles = ::clearReceivedFiles,
             )
         }
+        refreshReceivedStorageUsage()
     }
 
     override fun onResume() {
@@ -202,6 +223,81 @@ class MainActivity : ComponentActivity() {
         // Bug 7: notification tap while the activity was alive (CLEAR_TOP|SINGLE_TOP resume).
         pendingNotificationConversation.value =
             intent.getStringExtra(FlashNotificationManager.EXTRA_CONVERSATION_ID)
+    }
+
+    private fun refreshReceivedStorageUsage() {
+        receivedStorageJob?.cancel()
+        receivedStorageJob = lifecycleScope.launch {
+            val cached = receivedStorageState.value.totalBytes
+            receivedStorageState.value = FlashReceivedStorageState(
+                totalBytes = cached,
+                isLoading = true,
+            )
+            val result = withContext(Dispatchers.IO) {
+                runCatching { scanReceivedFilesBytes() }
+            }
+            receivedStorageState.value = result.fold(
+                onSuccess = { total -> FlashReceivedStorageState(totalBytes = total) },
+                onFailure = { FlashReceivedStorageState(totalBytes = cached, hasError = true) },
+            )
+        }
+    }
+
+    private fun clearReceivedFiles() {
+        receivedStorageJob?.cancel()
+        receivedStorageJob = lifecycleScope.launch {
+            val cached = receivedStorageState.value.totalBytes
+            receivedStorageState.value = FlashReceivedStorageState(
+                totalBytes = cached,
+                isClearing = true,
+            )
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    deleteReceivedFilesInsideOwnedRoot()
+                    scanReceivedFilesBytes()
+                }
+            }
+            receivedStorageState.value = result.fold(
+                onSuccess = { total -> FlashReceivedStorageState(totalBytes = total) },
+                onFailure = {
+                    val rescanned = withContext(Dispatchers.IO) {
+                        runCatching { scanReceivedFilesBytes() }.getOrNull()
+                    }
+                    FlashReceivedStorageState(totalBytes = rescanned ?: cached, hasError = true)
+                },
+            )
+        }
+    }
+
+    /** Scans only the exact root constructed and used by DiscoveryEngineHolder's receive pipeline. */
+    private fun scanReceivedFilesBytes(): Long {
+        val root = DiscoveryEngineHolder.receivedFilesRoot(this).canonicalFile
+        if (!root.exists()) return 0L
+        val rootPrefix = root.path + File.separator
+        var total = 0L
+        root.walkBottomUp().forEach { entry ->
+            if (entry == root || !entry.isFile) return@forEach
+            val canonical = entry.canonicalFile
+            check(canonical.path.startsWith(rootPrefix)) { "Received file escaped the app-owned root" }
+            val length = canonical.length().coerceAtLeast(0L)
+            total = if (Long.MAX_VALUE - total < length) Long.MAX_VALUE else total + length
+        }
+        return total
+    }
+
+    /** Deletes children only; the app-owned root itself and every path outside it are preserved. */
+    private fun deleteReceivedFilesInsideOwnedRoot() {
+        val root = DiscoveryEngineHolder.receivedFilesRoot(this).canonicalFile
+        if (!root.exists()) return
+        val rootPrefix = root.path + File.separator
+        root.walkBottomUp().forEach { entry ->
+            if (entry == root) return@forEach
+            val canonical = entry.canonicalFile
+            check(canonical.path.startsWith(rootPrefix)) { "Refusing to delete outside the received-files root" }
+            if (!entry.delete()) {
+                throw IOException("Could not clear received files")
+            }
+        }
     }
 
     /**
@@ -283,6 +379,9 @@ fun FlashApp(
     onEnableBackgroundTransfers: () -> Unit = {},
     /** ERROR-031 / D7: activity-published battery-optimisation exemption, refreshed on resume. */
     ignoringBatteryOptimizations: MutableStateFlow<Boolean> = MutableStateFlow(false),
+    receivedStorageState: MutableStateFlow<FlashReceivedStorageState>,
+    onRefreshStorageUsage: () -> Unit = {},
+    onClearReceivedFiles: () -> Unit = {},
 ) {
     // #14 / UI-049 wiring: Appearance/Haptics are only real if the host applies them, so the settings
     // model lives above the theme. ONE theme scope owns the whole shell — a nested
@@ -315,6 +414,7 @@ fun FlashApp(
     val effectivePerformanceMode by engine.performanceMode.collectAsState()
     val motionOverrideForcesReduce by store.reduceMotionOverrideForcesReduce.collectAsState(initial = null)
     val batteryExempt by ignoringBatteryOptimizations.collectAsState()
+    val receivedStorage by receivedStorageState.collectAsState()
 
     val ready by engine.ready.collectAsState()
     val trustedFallback = remember { MutableStateFlow(emptyList<NearbyTrustedPeerUi>()) }
@@ -344,6 +444,10 @@ fun FlashApp(
         // ifBlank is a real guard, not the normal path: a UUID always survives take(8), but a
         // prefs entry that somehow holds "" would not be caught by the store's null check.
         deviceIdShort = engine.localDeviceId.take(8).ifBlank { "00000000" },
+        receivedFilesBytes = receivedStorage.totalBytes,
+        storageUsageLoading = receivedStorage.isLoading,
+        storageUsageError = receivedStorage.hasError,
+        clearingReceivedFiles = receivedStorage.isClearing,
     )
     val onSettingsChange: (FlashSettingsModel) -> Unit = { updated ->
         persistScope.launch {
@@ -413,6 +517,8 @@ fun FlashApp(
                     onSettingsChange = onSettingsChange,
                     pendingNotificationConversation = pendingNotificationConversation,
                     onEnableBackgroundTransfers = onEnableBackgroundTransfers,
+                    onRefreshStorageUsage = onRefreshStorageUsage,
+                    onClearReceivedFiles = onClearReceivedFiles,
                 )
                 AnimatedVisibility(
                     visible = !dismissSplash,
@@ -434,6 +540,8 @@ private fun FlashShell(
     onSettingsChange: (FlashSettingsModel) -> Unit,
     pendingNotificationConversation: MutableStateFlow<String?>,
     onEnableBackgroundTransfers: () -> Unit,
+    onRefreshStorageUsage: () -> Unit,
+    onClearReceivedFiles: () -> Unit,
 ) {
     val nav = rememberFlashNavigationState()
     // Phase 3.1: Chats bind to the real Room-backed repository once the engine has booted.
@@ -1156,6 +1264,8 @@ private fun FlashShell(
                         // reachable on its own so a user who already flipped that toggle (or who
                         // revoked the exemption later) can still get to it.
                         onOpenBatterySettings = onEnableBackgroundTransfers,
+                        onRefreshStorageUsage = onRefreshStorageUsage,
+                        onClearReceivedFiles = onClearReceivedFiles,
                         modifier = Modifier.fillMaxSize(),
                         listState = settingsScroll,
                         bottomInset = tabBottomInset,

@@ -281,20 +281,23 @@ one at a time; direct 1:1 behavior byte-identical; verify + log after each.
 - **Verification:** messaging Android host/JVM, UI chat Android host/JVM, app unit tests, and app
   assemble passed with JDK 21 on 2026-09-09. Physical two/three-device deletion remains required.
 
-### F6.3 — Storage usage screen (missing; low)
-- **Evidence:** no user-facing storage surface; received files accumulate under
-  `FlashReceived/<transferId>/` (`DiscoveryEngineHolder` receive path); thumbnail trim exists
-  internally (EXP-014) but nothing reports footprint.
-- **Design:** Settings → Storage section: compute on demand (IO dispatcher, cached behind a
-  refresh action) the size of the received-files root via `File.walkBottomUp`; show total +
-  per-conversation breakdown is DEFERRED (needs a DB join of received files ↔ conversations;
-  not modeled today — record honestly). Clear action: confirm dialog → delete directories for
-  transfers whose rows are Completed AND older than N days, or a blanket "Clear received
-  files" (with the same confirmation). Host-owned (app layer) — core never touches disk paths.
-- **Files:** `FlashSettingsScreen.kt` (+section), new `FlashStorageMath` (pure size
-  formatting + policy), `MainActivity` wiring (directory scan + delete), Settings model.
-- **Tests:** `FlashStorageMath` (byte formatting, policy selection).
-- **Verify:** device (footprint matches `du`-style reality; clear frees space).
+### F6.3 — Storage usage screen — STATUS: DONE 2026-09-09 (code + Android/JVM tests verified; device gate remains)
+- **Implemented root ownership:** `DiscoveryEngineHolder.receivedFilesRoot(context)` is now the single
+  constructor used by both the receive pipeline and the host scanner/deleter. It resolves to the
+  existing app-owned `<external-files>/FlashReceived` root; no arbitrary path input is accepted.
+- **Implemented host work:** `MainActivity` scans and clears on `Dispatchers.IO`, caches the latest
+  successful total, refreshes on launch or explicit request, and canonical-checks every traversed path
+  before counting or deleting. Clear removes only descendants and preserves the root itself.
+- **Implemented common UI:** Settings has a Storage section/card with loading, cached refresh, error,
+  empty and total states; Refresh; disabled-state accessibility; and a destructive blanket clear
+  confirmation. UI copy explicitly says per-conversation details are not available yet.
+- **Pure common policy/tests:** `FlashStorageMath` formats binary byte units, never displays negative
+  sizes, does not report an unknown/error total as zero, preserves cached totals during refresh/error,
+  and exposes clear only for a successful non-empty idle scan.
+- **Deferred honestly:** per-conversation breakdown still needs a modeled received-file ↔ conversation
+  join and remains outside F6.3.
+- **Verification:** UI chat Android host/JVM, app unit tests, and app assemble passed with JDK 21 on
+  2026-09-09. Physical device comparison against the received root and freed-space check remain.
 
 ### F5/F6 execution order (owner may reprioritize)
 F5.2 (10-line, immediate UX win) → F5.1 → F5.3 → F5.4 → F6.1 → F6.2 → F6.3.

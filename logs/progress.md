@@ -1,5 +1,33 @@
 # Progress Log
 
+## 2026-09-09 — F6.3 storage usage screen
+
+### Worked on
+Implemented only F6.3 from `docs/group/ui-phase-plan.md`: a user-facing received-files footprint and
+confirmed blanket clear in Settings, backed by host-owned Android filesystem work.
+
+### Changed
+- Centralized the existing receive destination as `DiscoveryEngineHolder.receivedFilesRoot(context)`;
+  both the transfer sink and storage host use the exact app-owned `<external-files>/FlashReceived` root.
+- Added `MainActivity` IO-dispatcher scan/delete with cached totals, launch/on-demand refresh, overflow-
+  safe byte accumulation, canonical containment checks, and deletion of descendants only.
+- Extended the common Settings model/UI with loading, cached refresh, error, empty and total states;
+  accessible Refresh/Clear actions; destructive confirmation; and explicit per-conversation deferral.
+- Added pure common `FlashStorageMath` formatting/safe-display/clear policy and focused tests.
+
+### Verification
+- `:ui:chat:testAndroidHostTest` and `:ui:chat:jvmTest` passed.
+- `:app:testDebugUnitTest` and `:app:assembleDebug` passed.
+- Physical storage comparison and delete/free-space checks were not available in this environment.
+
+### Remaining
+On device, compare the displayed total with the actual `FlashReceived` root, clear it, confirm the root
+remains while descendants disappear, and verify free space increases. Per-conversation breakdown is
+explicitly deferred because no received-file-to-conversation join exists. Phase 15 was not touched.
+
+### Next AI
+Run the F6.3 device gate, then continue only the owner-selected phase.
+
 ## 2026-09-09 — F6.2 delete for everyone
 
 ### Worked on
