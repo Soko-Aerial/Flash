@@ -53,4 +53,11 @@ class FlashStatesLogicTest {
         assertEquals(null, copy.actionLabel)
         assertTrue(copy.body.contains("your network"))
     }
+
+    @Test
+    fun `archived chats empty state has Back to chats CTA`() {
+        val copy = FlashStateCopy.emptyStateCopy(FlashStateCopy.EmptyKind.ArchivedChatsEmpty)
+        assertEquals("No archived chats", copy.headline)
+        assertEquals("Back to chats", copy.actionLabel)
+    }
 }

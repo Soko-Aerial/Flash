@@ -249,10 +249,12 @@ public data class FlashChatListItemUi(
     val previewIsMedia: Boolean = false,
     val previewDelivery: FlashListPreviewDelivery? = null,
     val sortOrder: Long = 0L,
+    val isArchived: Boolean = false,
 )
 
 public data class FlashChatListUiState(
     val items: List<FlashChatListItemUi> = emptyList(),
+    val archivedItems: List<FlashChatListItemUi> = emptyList(),
     val selectionMode: Boolean = false,
     val selectedIds: Set<String> = emptySet(),
     /**

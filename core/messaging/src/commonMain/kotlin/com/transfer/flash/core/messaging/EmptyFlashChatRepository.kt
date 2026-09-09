@@ -81,4 +81,8 @@ public object EmptyFlashChatRepository : FlashChatRepository {
     override fun archiveConversation(conversationId: String) {
         // There is nothing to archive.
     }
+
+    override fun unarchiveConversation(conversationId: String) {
+        // There is nothing to unarchive.
+    }
 }

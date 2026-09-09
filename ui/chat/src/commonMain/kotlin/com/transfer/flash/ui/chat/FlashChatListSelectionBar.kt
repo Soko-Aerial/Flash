@@ -35,6 +35,8 @@ fun FlashChatListSelectionBar(
     onArchive: () -> Unit,
     onDelete: () -> Unit,
     modifier: Modifier = Modifier,
+    isArchivedView: Boolean = false,
+    onUnarchive: () -> Unit = onArchive,
 ) {
     val colors = FlashTheme.colors
     val typography = FlashTheme.typography
@@ -85,10 +87,13 @@ fun FlashChatListSelectionBar(
                 FlashIcon(icon = FlashIcons.Read, contentDescription = "Mark read")
             }
             IconButton(
-                onClick = onArchive,
+                onClick = if (isArchivedView) onUnarchive else onArchive,
                 modifier = Modifier.size(FlashDimensions.minTouchTarget),
             ) {
-                FlashIcon(icon = FlashIcons.Archive, contentDescription = "Archive conversations")
+                FlashIcon(
+                    icon = FlashIcons.Archive,
+                    contentDescription = if (isArchivedView) "Unarchive conversations" else "Archive conversations",
+                )
             }
             IconButton(
                 onClick = onDelete,

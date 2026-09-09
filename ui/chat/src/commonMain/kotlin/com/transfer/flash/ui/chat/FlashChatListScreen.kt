@@ -2,23 +2,43 @@ package com.transfer.flash.ui.chat
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.transfer.flash.core.messaging.model.FlashChatListUiState
 import com.transfer.flash.core.messaging.util.sampleFlashChatListState
+import com.transfer.flash.ui.icons.FlashIcon
+import com.transfer.flash.ui.icons.FlashIcons
+import com.transfer.flash.ui.shims.FlashBackHandler
+import com.transfer.flash.ui.theme.FlashDimensions
+import com.transfer.flash.ui.theme.FlashSpacing
 import com.transfer.flash.ui.theme.FlashTheme
 import com.transfer.flash.ui.theme.flashAnimateItem
 import org.jetbrains.compose.ui.tooling.preview.Preview
@@ -35,6 +55,7 @@ fun FlashChatListScreen(
     onLanClick: (() -> Unit)? = null,
     onConversationLongClick: (String) -> Unit = {},
     onArchiveConversation: (String) -> Unit = {},
+    onUnarchiveConversation: (String) -> Unit = {},
     onToggleSelection: (String) -> Unit = {},
     // UI-013 selection-mode bulk actions (contextual action bar replaces the top bar)
     onCloseSelection: () -> Unit = {},
@@ -42,6 +63,7 @@ fun FlashChatListScreen(
     onMuteSelected: () -> Unit = {},
     onMarkSelectedRead: () -> Unit = {},
     onArchiveSelected: () -> Unit = {},
+    onUnarchiveSelected: () -> Unit = {},
     onDeleteSelected: () -> Unit = {},
     // UI-025 / UI-026 / UI-027 system states
     isLoading: Boolean = false,
@@ -66,13 +88,20 @@ fun FlashChatListScreen(
     val colors = FlashTheme.colors
     val motion = FlashTheme.motion
     val statusSwap = motion.statusCrossfade()
-    val items = state.items
-    val displayItems = remember(items, searchQuery, messageBodyMatches) {
-        FlashChatListSearchMath.filterChats(items, searchQuery, messageBodyMatches)
+
+    var viewingArchived by rememberSaveable { mutableStateOf(false) }
+
+    FlashBackHandler(enabled = viewingArchived) {
+        viewingArchived = false
+    }
+
+    val activeItems = if (viewingArchived) state.archivedItems else state.items
+    val displayItems = remember(activeItems, searchQuery, messageBodyMatches) {
+        FlashChatListSearchMath.filterChats(activeItems, searchQuery, messageBodyMatches)
     }
     val searchActive = FlashChatListSearchMath.isSearchActive(searchQuery)
     val showRecents = isSearching && !searchActive && recentSearches.isNotEmpty()
-    val showEmptyState = !isLoading && errorMessage == null && items.isEmpty() && !isSearching
+    val showEmptyState = !isLoading && errorMessage == null && activeItems.isEmpty() && !isSearching
 
     Scaffold(
         modifier = modifier,
@@ -86,6 +115,8 @@ fun FlashChatListScreen(
                     onMarkRead = onMarkSelectedRead,
                     onArchive = onArchiveSelected,
                     onDelete = onDeleteSelected,
+                    isArchivedView = viewingArchived,
+                    onUnarchive = onUnarchiveSelected,
                 )
             } else if (isSearching) {
                 FlashChatListSearchBar(
@@ -93,6 +124,11 @@ fun FlashChatListScreen(
                     onQueryChanged = onSearchQueryChanged,
                     onClose = onCloseSearch,
                     resultCount = if (searchActive) displayItems.size else null,
+                )
+            } else if (viewingArchived) {
+                FlashArchivedChatsTopBar(
+                    onBackClick = { viewingArchived = false },
+                    onSearchClick = onSearchClick,
                 )
             } else {
                 FlashChatListTopBar(
@@ -137,8 +173,16 @@ fun FlashChatListScreen(
                     ChatListPageState.Loading -> FlashSkeletonChatList()
                     // UI-025 first-run empty state with the P2P next action.
                     ChatListPageState.Empty -> FlashEmptyState(
-                        kind = FlashStateCopy.EmptyKind.ChatListFirstRun,
-                        onAction = onFindDevicesClick,
+                        kind = if (viewingArchived) {
+                            FlashStateCopy.EmptyKind.ArchivedChatsEmpty
+                        } else {
+                            FlashStateCopy.EmptyKind.ChatListFirstRun
+                        },
+                        onAction = if (viewingArchived) {
+                            { viewingArchived = false }
+                        } else {
+                            onFindDevicesClick
+                        },
                     )
                     ChatListPageState.Content -> LazyColumn(
                         modifier = Modifier.fillMaxSize(),
@@ -153,6 +197,18 @@ fun FlashChatListScreen(
                                     recents = recentSearches,
                                     onRecentClick = onRecentSearchClick,
                                     onClearAll = onClearRecentSearches,
+                                )
+                            }
+                        }
+                        if (!viewingArchived && state.archivedItems.isNotEmpty() && !isSearching) {
+                            item(key = "flash-archived-chats-row") {
+                                val unreadArchived = remember(state.archivedItems) {
+                                    state.archivedItems.sumOf { it.unreadCount }
+                                }
+                                FlashArchivedChatsRow(
+                                    archivedCount = state.archivedItems.size,
+                                    unreadCount = unreadArchived,
+                                    onClick = { viewingArchived = true },
                                 )
                             }
                         }
@@ -178,7 +234,8 @@ fun FlashChatListScreen(
                                         onConversationLongClick(item.id)
                                     }
                                 },
-                                onArchive = onArchiveConversation,
+                                onArchive = if (viewingArchived) onUnarchiveConversation else onArchiveConversation,
+                                swipeActionLabel = if (viewingArchived) "Unarchive" else "Archive",
                                 isSelected = item.id in state.selectedIds,
                                 selectionMode = state.selectionMode,
                                 showDivider = showRecents || !isLastRow,

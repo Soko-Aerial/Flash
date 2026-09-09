@@ -1330,6 +1330,7 @@ private fun FlashShell(
                         onConversationLongClick = chatRepository::enterListSelectionMode,
                         onToggleSelection = chatRepository::toggleListSelection,
                         onArchiveConversation = chatRepository::archiveConversation,
+                        onUnarchiveConversation = chatRepository::unarchiveConversation,
                         onCloseSelection = chatRepository::clearListSelection,
                         onPinSelected = {
                             chatRepository.setConversationsPinned(chatListState.selectedIds, true)
@@ -1342,6 +1343,9 @@ private fun FlashShell(
                         },
                         onArchiveSelected = {
                             chatRepository.archiveConversations(chatListState.selectedIds)
+                        },
+                        onUnarchiveSelected = {
+                            chatRepository.unarchiveConversations(chatListState.selectedIds)
                         },
                         onDeleteSelected = {
                             chatRepository.deleteConversations(chatListState.selectedIds)

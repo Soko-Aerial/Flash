@@ -317,19 +317,13 @@ public class RealFlashChatRepository(
             ) { entities, peers, unreadRows, previewRows ->
                 val unreadByConversation = unreadRows.associate { it.conversationId to it.unread }
                 val previewByConversation = previewRows.associate { it.conversationId to it.previewText }
-                entities.filter { !it.archived }.map { entity ->
-                    // Group Phase A: a groupId is not a device id, so the trust-store lookup never
-                    // resolves for groups — use the stored title. For direct chats the friendly
-                    // name still wins (a local send may have stamped the raw device id).
+                suspend fun toUiItem(entity: ConversationEntity): FlashChatListItemUi {
                     val displayTitle = if (entity.isGroup) {
                         entity.title.ifBlank { entity.id }
                     } else {
                         peerNameResolver(entity.id)?.ifBlank { null }
                             ?: entity.title.ifBlank { entity.id }
                     }
-                    // Group aggregate presence (Phase A): a group is Online when any member has a
-                    // live session; the per-row peer check `entity.id in peers.online` can never
-                    // fire for a groupId, which pinned every group row to Offline forever.
                     val presence: FlashPeerPresence
                     val groupOnlineCount: Int
                     if (entity.isGroup) {
@@ -338,8 +332,6 @@ public class RealFlashChatRepository(
                             .orEmpty()
                             .count { it.deviceId in peers.online }
                         groupOnlineCount = onlineMembers
-                        // Group aggregate presence (Phase A): a group is Online when any member
-                        // has a live session; the per-row peer check can never fire for a groupId.
                         presence = if (onlineMembers > 0) FlashPeerPresence.Online else FlashPeerPresence.Offline
                     } else {
                         groupOnlineCount = 0
@@ -349,30 +341,31 @@ public class RealFlashChatRepository(
                             else -> FlashPeerPresence.Offline
                         }
                     }
-                    FlashChatListItemUi(
+                    return FlashChatListItemUi(
                         id = entity.id,
                         title = displayTitle,
                         avatarInitials = computeInitials(displayTitle),
-                        // Real last-message text so the row is informative AND searchable (global
-                        // search matches title OR previewText). Empty threads fall back to a hint.
                         previewText = previewLabel(previewByConversation[entity.id])
                             ?: "Tap to view conversation",
                         timestamp = formatTimestamp(entity.sortOrder),
                         unreadCount = unreadByConversation[entity.id] ?: 0,
-                        // Three honest states (ERROR-031): a peer whose session just dropped reads
-                        // as Connecting for the grace window rather than as a link we can use.
                         presence = presence,
                         isGroup = entity.isGroup,
                         groupOnlineCount = groupOnlineCount,
                         isPinned = entity.pinned,
                         isMuted = entity.muted,
                         sortOrder = entity.sortOrder,
+                        isArchived = entity.archived,
                     )
                 }
-            }.collectLatest { items ->
+                val unarchived = entities.filter { !it.archived }.map { toUiItem(it) }
+                val archived = entities.filter { it.archived }.map { toUiItem(it) }
+                unarchived to archived
+            }.collectLatest { (items, archivedItems) ->
                 _chatListState.update { current ->
                     current.copy(
                         items = sortedChatListItems(items),
+                        archivedItems = sortedChatListItems(archivedItems),
                         // ERROR-034: the first emission is what turns "we don't know yet" into
                         // "this is the list". Set unconditionally — an empty list from Room is a
                         // real answer (a genuinely fresh install) and must be allowed to show the
@@ -2209,8 +2202,8 @@ public class RealFlashChatRepository(
         directFallbackTitle: String? = null,
     ) {
         val existing = conversationDao.get(conversationId)
-        if (existing?.isGroup == true) {
-            conversationDao.upsert(existing.copy(sortOrder = now))
+        if (existing != null) {
+            conversationDao.upsert(existing.copy(sortOrder = now, archived = false))
             return
         }
         conversationDao.upsert(
@@ -2221,6 +2214,7 @@ public class RealFlashChatRepository(
                     ?: conversationId,
                 isGroup = false,
                 sortOrder = now,
+                archived = false,
             ),
         )
     }
@@ -2349,6 +2343,20 @@ public class RealFlashChatRepository(
         if (ids.isEmpty()) return
         scope.launch(ioDispatcher) {
             ids.forEach { conversationDao.setArchived(it, true) }
+        }
+        clearListSelection()
+    }
+
+    override fun unarchiveConversation(conversationId: String) {
+        scope.launch(ioDispatcher) {
+            conversationDao.setArchived(conversationId, false)
+        }
+    }
+
+    override fun unarchiveConversations(ids: Set<String>) {
+        if (ids.isEmpty()) return
+        scope.launch(ioDispatcher) {
+            ids.forEach { conversationDao.setArchived(it, false) }
         }
         clearListSelection()
     }

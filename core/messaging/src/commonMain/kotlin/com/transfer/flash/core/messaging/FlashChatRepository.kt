@@ -180,4 +180,12 @@ public interface FlashChatRepository {
     public fun archiveConversations(ids: Set<String>) {
         ids.forEach { archiveConversation(it) }
     }
+
+    /** Unarchive a single conversation. */
+    public fun unarchiveConversation(conversationId: String) {}
+
+    /** Unarchive the selected conversations. Defaults to unarchiving each individually. */
+    public fun unarchiveConversations(ids: Set<String>) {
+        ids.forEach { unarchiveConversation(it) }
+    }
 }

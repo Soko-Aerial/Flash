@@ -71,6 +71,7 @@ fun FlashChatListRow(
     showDivider: Boolean = true,
     onLongClick: () -> Unit = {},
     onArchive: (String) -> Unit = {},
+    swipeActionLabel: String = "Archive",
 ) {
     val motion = FlashTheme.motion
     val dismissState = rememberSwipeToDismissBoxState(
@@ -102,6 +103,7 @@ fun FlashChatListRow(
             FlashChatListSwipeBackground(
                 dismissValue = dismissState.dismissDirection,
                 showRestingFill = pressInset.value,
+                actionLabel = swipeActionLabel,
             )
         },
         modifier = modifier,
@@ -123,6 +125,7 @@ fun FlashChatListRow(
 private fun FlashChatListSwipeBackground(
     dismissValue: SwipeToDismissBoxValue,
     showRestingFill: Boolean,
+    actionLabel: String = "Archive",
 ) {
     val colors = FlashTheme.colors
     val showArchive = dismissValue == SwipeToDismissBoxValue.EndToStart
@@ -154,7 +157,7 @@ private fun FlashChatListSwipeBackground(
                     tint = colors.textOnAccent,
                 )
                 Text(
-                    text = "Archive",
+                    text = actionLabel,
                     style = FlashTheme.typography.captionEmphasis,
                     color = colors.textOnAccent,
                 )

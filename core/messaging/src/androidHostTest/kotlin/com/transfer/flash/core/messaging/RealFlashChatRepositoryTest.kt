@@ -1725,7 +1725,9 @@ class RealFlashChatRepositoryTest {
             mimeType = "application/octet-stream",
             sizeBytes = 42L,
         )
-        kotlinx.coroutines.delay(200)
+        kotlinx.coroutines.withTimeoutOrNull(2000L) {
+            while (callbacks.isEmpty()) kotlinx.coroutines.delay(20)
+        }
 
         assertEquals(
             listOf(Inbound(groupId, "Alex", "voice.m4a", "audio/mp4", "Team")),

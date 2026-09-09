@@ -1,6 +1,51 @@
 # Progress Log
 
-## 2026-09-09 — High-Speed TCP Data Channel Fix, Instant Wi-Fi Reconnect, Mesh Group Calling & Call Stats Badges
+## 2026-09-09 — Archived Chats Screen, Unarchive Actions & Auto-Unarchive on New Message
+
+### Worked on
+- Implemented full lifecycle access for archived chats:
+  1. An "Archived" entry row pinned at the top of the chat list showing total archived conversation count and cumulative unread badges.
+  2. Dedicated "Archived Chats" screen/view within `FlashChatListScreen` with custom top bar, search, back navigation, and branded empty state.
+  3. Ability to unarchive individual conversations via swipe gesture (with "Unarchive" action label) or bulk unarchive via multi-selection.
+  4. Auto-unarchive mechanism: conversations automatically pop back into the main inbox whenever a new inbound or outbound message is received or sent.
+
+### Changed
+- `core/messaging/model/FlashMessagingModels.kt`:
+  - Added `isArchived: Boolean = false` to `FlashChatListItemUi`.
+  - Added `archivedItems: List<FlashChatListItemUi> = emptyList()` to `FlashChatListUiState`.
+- `core/messaging/FlashChatRepository.kt`:
+  - Added `unarchiveConversation(conversationId: String)` and `unarchiveConversations(ids: Set<String>)` to repository interface with default implementations.
+- `core/messaging/EmptyFlashChatRepository.kt` & `SampleFlashChatRepository.kt`:
+  - Implemented stubs for `unarchiveConversation` and `unarchiveConversations`.
+- `core/messaging/RealFlashChatRepository.kt`:
+  - Updated `observeAll` flow to map both active (`items`) and archived (`archivedItems`) conversation lists concurrently and expose them in `FlashChatListUiState`.
+  - Updated `touchConversation` to reset `archived = false` upon new messages, auto-unarchiving threads.
+  - Implemented `unarchiveConversation` and `unarchiveConversations` calling `conversationDao.setArchived(it, false)`.
+- `ui/chat/FlashArchivedChats.kt` (new):
+  - Created `FlashArchivedChatsRow` with archive medallion, unread badge pill, and total count.
+  - Created `FlashArchivedChatsTopBar` with back button, "Archived Chats" title, and search button.
+- `ui/chat/FlashChatListRow.kt`:
+  - Added `swipeActionLabel: String = "Archive"` parameter to customize swipe dismissal label to "Unarchive" in archived view.
+- `ui/chat/FlashChatListSelectionBar.kt`:
+  - Added `isArchivedView: Boolean = false` and `onUnarchive: () -> Unit = onArchive` to show "Unarchive conversations" in multi-select mode.
+- `ui/chat/FlashStateViews.kt`:
+  - Added `EmptyKind.ArchivedChatsEmpty` with branded copy ("No archived chats", "Back to chats" action) and archive medallion icon.
+- `ui/chat/FlashChatListScreen.kt`:
+  - Added `viewingArchived` state toggle, `FlashBackHandler`, top bar swapping, archived row rendering, and unarchive swipe/bulk actions.
+- `app/src/main/java/com/transfer/flash/MainActivity.kt`:
+  - Wired `onUnarchiveConversation = chatRepository::unarchiveConversation` and `onUnarchiveSelected = { chatRepository.unarchiveConversations(chatListState.selectedIds) }`.
+
+### Verification
+- `:ui:chat:jvmTest` passed (all tests green).
+- `:core:messaging:testAndroidHostTest` passed (all 109 tests green).
+- `:app:assembleDebug` completed successfully.
+
+### Remaining
+- Test UI interaction on physical device when archiving and unarchiving conversations.
+
+### Next AI
+- Continue UI component sequence or field verification on devices.
+
 
 ### Worked on
 - **Instant Wi-Fi Reconnect & Discovery Re-announcement:** Added real-time network connectivity listener that immediately restarts discovery and re-advertises NSD endpoints without debounce delay when Wi-Fi connects or switches.

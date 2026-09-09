@@ -1,5 +1,35 @@
 # Current Handoff
 
+## 2026-09-09 — Archived Chats Screen, Unarchive Actions & Auto-Unarchive on New Message
+
+### Current branch
+`dev` (uncommitted modifications).
+
+### Last verified build
+With JDK 21:
+- `:ui:chat:jvmTest` passed (all tests green).
+- `:core:messaging:testAndroidHostTest` passed (all 109 tests green).
+- `:app:assembleDebug` built successfully.
+
+### Last change
+- **Archived Chats Entry Row:**
+  - Added `FlashArchivedChatsRow` pinned at the top of the chat list when `state.archivedItems.isNotEmpty() && !isSearching`.
+  - Shows total count of archived conversations and cumulatively highlights any unread messages with a badge.
+- **Archived Chats Screen & Navigation:**
+  - Added `FlashArchivedChatsTopBar` with back button, "Archived Chats" title, and search button.
+  - Added `FlashBackHandler(enabled = viewingArchived)` to exit the archived view cleanly on Android system back gesture.
+  - Added `FlashEmptyState(kind = EmptyKind.ArchivedChatsEmpty)` with "Back to chats" action when no archived chats remain.
+- **Swipe & Bulk Unarchive Actions:**
+  - Custom swipe action on archived rows shows "Unarchive" label and triggers `onUnarchiveConversation(id)`.
+  - In multi-select mode while `viewingArchived`, `FlashChatListSelectionBar` shows "Unarchive conversations" button and triggers `onUnarchiveSelected`.
+- **Auto-Unarchive on Message Activity:**
+  - Updated `RealFlashChatRepository.touchConversation` to set `archived = false` whenever a message is sent or received in an archived thread, automatically returning it to the main conversation list.
+- **Wiring in MainActivity:**
+  - Bound `onUnarchiveConversation` to `chatRepository::unarchiveConversation` and `onUnarchiveSelected` to `chatRepository.unarchiveConversations(chatListState.selectedIds)`.
+
+### Recommended next task
+Verify interactive behavior on physical devices: swipe to archive, open archived chats, swipe to unarchive, bulk unarchive, and auto-unarchive upon incoming message.
+
 ## 2026-09-09 — High-Speed TCP Data Channel Fix, Instant Wi-Fi Reconnect, Mesh Group Calling & Call Stats Badges
 
 ### Current branch

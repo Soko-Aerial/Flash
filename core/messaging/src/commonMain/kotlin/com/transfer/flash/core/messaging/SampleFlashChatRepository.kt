@@ -107,6 +107,10 @@ public class SampleFlashChatRepository(
         }
     }
 
+    override fun unarchiveConversation(conversationId: String) {
+        // Sample in-memory stub
+    }
+
     private fun updateListPreview(
         conversationId: String,
         previewText: String,
