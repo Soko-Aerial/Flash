@@ -454,6 +454,11 @@ public class FlashCallSession(
             is CallWireFrame.Answer -> onAnswer(frame)
             is CallWireFrame.IceCandidate -> onIce(frame)
             is CallWireFrame.Invite -> Unit // duplicate invite — host keys sessions by callId
+            is CallWireFrame.GroupInvite,
+            is CallWireFrame.GroupAccept,
+            is CallWireFrame.GroupDecline,
+            is CallWireFrame.GroupJoin,
+            is CallWireFrame.GroupHangup -> Unit // Group frames are managed by FlashGroupCallSession
         }
     }
 
@@ -1225,7 +1230,15 @@ public class FlashCallSession(
             ?: pairs.firstOrNull {
                 it.members.bool("nominated") == true && it.members.str("state") == "succeeded"
             }
-            ?: pairs.firstOrNull { it.members.num("currentRoundTripTime") != null }
+            ?: pairs.firstOrNull { it.members.num("currentRoundTripTime") != null || it.members.num("roundTripTime") != null }
+
+        val rttSec = pair?.members?.num("currentRoundTripTime")
+            ?: pair?.members?.num("roundTripTime")
+            ?: run {
+                val totalRtt = pair?.members?.num("totalRoundTripTime")
+                val resp = pair?.members?.num("responsesReceived")
+                if (totalRtt != null && resp != null && resp > 0) totalRtt / resp else null
+            }
 
         val inbound = all.filter { it.type == "inbound-rtp" }
         val outbound = all.filter { it.type == "outbound-rtp" }
@@ -1262,7 +1275,7 @@ public class FlashCallSession(
 
         return FlashCallStats(
             // currentRoundTripTime is seconds (double) — the whole round trip.
-            rttMs = pair?.members?.num("currentRoundTripTime")?.let { (it * 1000).roundToInt() },
+            rttMs = rttSec?.let { (it * 1000).roundToInt() },
             audioJitterMs = audioIn?.members?.num("jitter")?.let { (it * 1000).roundToInt() },
             videoJitterMs = videoIn?.members?.num("jitter")?.let { (it * 1000).roundToInt() },
             fps = videoIn?.members?.num("framesPerSecond")?.roundToInt(),
@@ -1286,11 +1299,14 @@ public class FlashCallSession(
         return (byteDelta.coerceAtLeast(0L) * 8_000.0 / elapsedUs).roundToInt()
     }
 
-    private fun Map<String, Any>.num(key: String): Double? = (this[key] as? Number)?.toDouble()
+    private fun Map<String, Any>.num(key: String): Double? =
+        (this[key] as? Number)?.toDouble() ?: (this[key] as? String)?.toDoubleOrNull()
 
-    private fun Map<String, Any>.str(key: String): String? = this[key] as? String
+    private fun Map<String, Any>.str(key: String): String? =
+        (this[key] as? String) ?: this[key]?.toString()
 
-    private fun Map<String, Any>.bool(key: String): Boolean? = this[key] as? Boolean
+    private fun Map<String, Any>.bool(key: String): Boolean? =
+        (this[key] as? Boolean) ?: (this[key] as? String)?.toBooleanStrictOrNull()
 
     // ------------------------------------------------------------------ teardown
 

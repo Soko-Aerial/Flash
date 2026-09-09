@@ -65,4 +65,43 @@ public sealed interface CallWireFrame {
         public val sdpMLineIndex: Int,
         public val candidate: String,
     ) : CallWireFrame
+
+    /** Group call: initiator invites group members. */
+    public data class GroupInvite(
+        override val callId: String,
+        override val from: String,
+        public val groupId: String,
+        public val callerName: String,
+        public val video: Boolean,
+        public val members: List<String> = emptyList(),
+    ) : CallWireFrame
+
+    /** Group call: peer accepted and joined the call. */
+    public data class GroupAccept(
+        override val callId: String,
+        override val from: String,
+        public val groupId: String,
+    ) : CallWireFrame
+
+    /** Group call: peer declined the invitation. */
+    public data class GroupDecline(
+        override val callId: String,
+        override val from: String,
+        public val groupId: String,
+    ) : CallWireFrame
+
+    /** Group call: peer announces joining an active call. */
+    public data class GroupJoin(
+        override val callId: String,
+        override val from: String,
+        public val groupId: String,
+        public val participantName: String,
+    ) : CallWireFrame
+
+    /** Group call: peer hung up / left the call. */
+    public data class GroupHangup(
+        override val callId: String,
+        override val from: String,
+        public val groupId: String,
+    ) : CallWireFrame
 }

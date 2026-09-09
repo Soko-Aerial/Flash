@@ -54,6 +54,17 @@ public interface FlashCalling {
     public suspend fun startCall(peerId: String, peerName: String, video: Boolean): Boolean
 
     /**
+     * Places an outgoing group call to [memberIds] in [groupId]. Returns false when a call is
+     * already live or local media capture could not be acquired.
+     */
+    public suspend fun startGroupCall(
+        groupId: String,
+        groupName: String,
+        memberIds: List<String>,
+        video: Boolean,
+    ): Boolean = false
+
+    /**
      * Accepts the ringing inbound call and starts local media. Returns false when there is
      * nothing to accept.
      *

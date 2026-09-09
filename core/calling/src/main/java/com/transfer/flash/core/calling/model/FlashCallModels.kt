@@ -79,6 +79,30 @@ public data class FlashCallUiState(
      * screen renders it verbatim.
      */
     public val videoLimitReason: String? = null,
+    /** Whether this is a multi-participant group call. */
+    public val isGroup: Boolean = false,
+    /** Group chat id if this is a group call. */
+    public val groupId: String? = null,
+    /** Current roster of participants in the call with their connection and speaking status. */
+    public val participants: List<FlashCallParticipantUi> = emptyList(),
+)
+
+/** Connection and presence status of a participant in a group call. */
+public enum class FlashCallParticipantState {
+    INVITED,
+    CONNECTING,
+    CONNECTED,
+    DISCONNECTED,
+    LEFT,
+}
+
+/** One participant in a group call (Phase 2). */
+public data class FlashCallParticipantUi(
+    public val peerId: String,
+    public val name: String,
+    public val isSpeaking: Boolean = false,
+    public val isMuted: Boolean = false,
+    public val state: FlashCallParticipantState = FlashCallParticipantState.CONNECTED,
 )
 
 /**
@@ -114,7 +138,7 @@ public data class FlashCallStats(
 ) {
     /** True once anything at all has been measured (used to gate the UI readout). */
     public val hasData: Boolean
-        get() = rttMs != null || inboundKbps != null || fps != null
+        get() = rttMs != null || inboundKbps != null || outboundKbps != null || fps != null || audioJitterMs != null || packetLoss != null
 
     /** `"1080p"`-style label for the received video, or null before the first frame. */
     public val remoteResolutionLabel: String?

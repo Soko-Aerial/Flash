@@ -131,13 +131,13 @@ public fun FlashCallScreen(
                 .navigationBarsPadding(),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Spacer(Modifier.weight(1f))
+            Spacer(Modifier.weight(0.7f))
 
             if (!state.video || ended) {
                 FlashCallIdentityBlock(state = state, session = session)
             }
 
-            Spacer(Modifier.weight(1f))
+            Spacer(Modifier.weight(1.3f))
 
             FlashCallControls(
                 state = state,
@@ -183,9 +183,9 @@ private fun rememberCallPulseScale(pulsing: Boolean): State<Float> =
         val transition = rememberInfiniteTransition(label = "flashCallPulse")
         transition.animateFloat(
             initialValue = 1f,
-            targetValue = 1.06f,
+            targetValue = 1.08f,
             animationSpec = infiniteRepeatable(
-                animation = tween(700),
+                animation = tween(800),
                 repeatMode = RepeatMode.Reverse,
             ),
             label = "flashCallPulseScale",
@@ -202,33 +202,136 @@ private fun FlashCallIdentityBlock(state: FlashCallUiState, session: FlashCallMe
     val scale = rememberCallPulseScale(pulsing)
 
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Box(contentAlignment = Alignment.Center) {
-            Box(
-                modifier = Modifier
-                    .size(FlashDimensions.avatarXl * 2)
-                    .graphicsLayer {
-                        scaleX = scale.value
-                        scaleY = scale.value
-                    }
-                    .clip(CircleShape)
-                    .background(colors.accentPrimary.copy(alpha = 0.12f)),
-            )
-            FlashAvatar(
-                initials = state.peerName.take(2),
-                seed = state.peerId,
-                size = FlashDimensions.avatarXl,
+        if (!state.isGroup || state.participants.isEmpty()) {
+            Box(contentAlignment = Alignment.Center) {
+                // Multi-tier ambient glow waves
+                Box(
+                    modifier = Modifier
+                        .size(172.dp)
+                        .graphicsLayer {
+                            scaleX = scale.value * 1.06f
+                            scaleY = scale.value * 1.06f
+                        }
+                        .clip(CircleShape)
+                        .background(
+                            if (state.state == FlashCallState.RINGING) {
+                                colors.accentPrimary.copy(alpha = 0.08f)
+                            } else {
+                                colors.accentPrimary.copy(alpha = 0.05f)
+                            }
+                        ),
+                )
+                Box(
+                    modifier = Modifier
+                        .size(144.dp)
+                        .graphicsLayer {
+                            scaleX = scale.value
+                            scaleY = scale.value
+                        }
+                        .clip(CircleShape)
+                        .background(
+                            if (state.state == FlashCallState.RINGING) {
+                                colors.accentPrimary.copy(alpha = 0.16f)
+                            } else {
+                                colors.accentPrimary.copy(alpha = 0.10f)
+                            }
+                        ),
+                )
+                FlashAvatar(
+                    initials = state.peerName.take(2),
+                    seed = state.peerId,
+                    size = 96.dp,
+                )
+            }
+        } else {
+            // Group Call: Participant Tiles Grid
+            FlashGroupParticipantsGrid(
+                participants = state.participants,
+                pulseScale = scale.value,
             )
         }
-        Spacer(Modifier.height(FlashSpacing.space16))
+        Spacer(Modifier.height(FlashSpacing.space20))
         Text(
             text = state.peerName,
             style = FlashTheme.typography.headingLarge,
             color = colors.textPrimary,
         )
-        Spacer(Modifier.height(FlashSpacing.space4))
+        Spacer(Modifier.height(FlashSpacing.space8))
         FlashCallStatusLine(state = state, color = colors.textSecondary)
         Spacer(Modifier.height(FlashSpacing.space8))
         FlashCallStatsBadge(session = session, state = state, onDark = false)
+    }
+}
+
+/** Multi-participant grid for group audio/video calls (Phase 2). */
+@Composable
+private fun FlashGroupParticipantsGrid(
+    participants: List<com.transfer.flash.core.calling.model.FlashCallParticipantUi>,
+    pulseScale: Float,
+) {
+    val colors = FlashTheme.colors
+    val displayed = participants.take(6)
+    val columns = if (displayed.size <= 2) 2 else 3
+    val rows = displayed.chunked(columns)
+
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(FlashSpacing.space16),
+        modifier = Modifier.padding(horizontal = FlashSpacing.space16),
+    ) {
+        rows.forEach { rowParticipants ->
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space20),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                rowParticipants.forEach { participant ->
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            if (participant.isSpeaking) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(FlashDimensions.avatarLg + 18.dp)
+                                        .graphicsLayer {
+                                            scaleX = pulseScale
+                                            scaleY = pulseScale
+                                        }
+                                        .clip(CircleShape)
+                                        .background(colors.statusOnline.copy(alpha = 0.28f)),
+                                )
+                            }
+                            FlashAvatar(
+                                initials = participant.name.take(2),
+                                seed = participant.peerId,
+                                size = FlashDimensions.avatarLg,
+                            )
+                        }
+                        Spacer(Modifier.height(FlashSpacing.space4))
+                        Text(
+                            text = participant.name,
+                            style = FlashTheme.typography.metadataDefault,
+                            color = colors.textPrimary,
+                            maxLines = 1,
+                        )
+                        val statusLabel = when (participant.state) {
+                            com.transfer.flash.core.calling.model.FlashCallParticipantState.INVITED -> "Invited"
+                            com.transfer.flash.core.calling.model.FlashCallParticipantState.CONNECTING -> "Connecting…"
+                            com.transfer.flash.core.calling.model.FlashCallParticipantState.CONNECTED -> if (participant.isMuted) "Muted" else null
+                            com.transfer.flash.core.calling.model.FlashCallParticipantState.DISCONNECTED -> "Reconnecting…"
+                            com.transfer.flash.core.calling.model.FlashCallParticipantState.LEFT -> "Left"
+                        }
+                        if (statusLabel != null) {
+                            Text(
+                                text = statusLabel,
+                                style = FlashTheme.typography.metadataDefault,
+                                color = colors.textTertiary,
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -395,7 +498,7 @@ private class FlashVideoSink {
     }
 }
 
-/** Bottom control row, state-driven (48dp targets, FlashSpacing.space4 gaps). */
+/** Bottom control row, state-driven (professional call surface with large action buttons). */
 @Composable
 private fun FlashCallControls(
     state: FlashCallUiState,
@@ -409,106 +512,208 @@ private fun FlashCallControls(
     onSwitchCamera: () -> Unit,
 ) {
     when (state.state) {
-        FlashCallState.RINGING -> Row(
-            horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space4),
-        ) {
-            FlashCallControlButton(
-                icon = FlashIcons.CallAccept,
-                background = FlashTheme.colors.accentPrimary,
-                contentColor = FlashTheme.colors.textOnAccent,
-                onClick = onAccept,
-            )
-            FlashCallControlButton(
-                icon = FlashIcons.Hangup,
-                background = FlashTheme.colors.textError,
-                contentColor = FlashTheme.colors.textOnAccent,
-                onClick = onDecline,
-            )
+        FlashCallState.RINGING -> {
+            // Prominent, beautiful incoming answering row (72dp buttons with subtle action labels)
+            Row(
+                modifier = Modifier
+                    .padding(horizontal = FlashSpacing.space32),
+                horizontalArrangement = Arrangement.spacedBy(48.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    FlashLargeCallButton(
+                        icon = FlashIcons.Hangup,
+                        background = FlashTheme.colors.textError,
+                        contentColor = FlashTheme.colors.textOnAccent,
+                        size = 72.dp,
+                        iconSize = 32.dp,
+                        onClick = onDecline,
+                        description = "Decline call",
+                    )
+                    Spacer(Modifier.height(FlashSpacing.space8))
+                    Text(
+                        text = "Decline",
+                        style = FlashTheme.typography.captionDefault,
+                        color = FlashTheme.colors.textSecondary,
+                    )
+                }
+
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    FlashLargeCallButton(
+                        icon = FlashIcons.CallAccept,
+                        background = FlashTheme.colors.accentPrimary,
+                        contentColor = FlashTheme.colors.textOnAccent,
+                        size = 72.dp,
+                        iconSize = 32.dp,
+                        onClick = onAccept,
+                        description = "Accept call",
+                    )
+                    Spacer(Modifier.height(FlashSpacing.space8))
+                    Text(
+                        text = "Accept",
+                        style = FlashTheme.typography.captionDefault,
+                        color = FlashTheme.colors.textSecondary,
+                    )
+                }
+            }
         }
-        FlashCallState.DIALING, FlashCallState.CONNECTING, FlashCallState.ACTIVE -> Row(
-            horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space4),
-        ) {
-            FlashCallControlButton(
-                icon = FlashIcons.Mute,
-                background = if (state.micMuted) {
-                    FlashTheme.colors.backgroundSurfaceStrong
-                } else {
-                    FlashTheme.colors.backgroundSurfaceSubtle
-                },
-                contentColor = if (state.micMuted) {
-                    FlashTheme.colors.accentPrimary
-                } else {
-                    FlashTheme.colors.textPrimary
-                },
-                onClick = onToggleMute,
-            )
-            if (state.video) {
+        FlashCallState.DIALING, FlashCallState.CONNECTING, FlashCallState.ACTIVE -> {
+            // Sleek in-call control dock
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(FlashShapes.radius24))
+                    .background(FlashTheme.colors.backgroundSurfaceStrong.copy(alpha = 0.85f))
+                    .border(
+                        width = FlashDimensions.borderHairline,
+                        color = FlashTheme.colors.borderSubtle,
+                        shape = RoundedCornerShape(FlashShapes.radius24),
+                    )
+                    .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space12),
+            ) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space16),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    FlashCallControlButton(
+                        icon = FlashIcons.Mute,
+                        background = if (state.micMuted) {
+                            FlashTheme.colors.accentPrimary.copy(alpha = 0.20f)
+                        } else {
+                            FlashTheme.colors.backgroundSurfaceSubtle
+                        },
+                        contentColor = if (state.micMuted) {
+                            FlashTheme.colors.accentPrimary
+                        } else {
+                            FlashTheme.colors.textPrimary
+                        },
+                        onClick = onToggleMute,
+                        size = 54.dp,
+                        iconSize = 26.dp,
+                    )
+                    if (state.video) {
+                        FlashCallControlButton(
+                            icon = FlashIcons.CameraFlip,
+                            background = FlashTheme.colors.backgroundSurfaceSubtle,
+                            contentColor = FlashTheme.colors.textPrimary,
+                            onClick = onSwitchCamera,
+                            size = 54.dp,
+                            iconSize = 26.dp,
+                        )
+                        FlashCallControlButton(
+                            icon = FlashIcons.Camera,
+                            background = if (state.cameraOff) {
+                                FlashTheme.colors.accentPrimary.copy(alpha = 0.20f)
+                            } else {
+                                FlashTheme.colors.backgroundSurfaceSubtle
+                            },
+                            contentColor = if (state.cameraOff) {
+                                FlashTheme.colors.accentPrimary
+                            } else {
+                                FlashTheme.colors.textPrimary
+                            },
+                            onClick = onToggleCamera,
+                            size = 54.dp,
+                            iconSize = 26.dp,
+                        )
+                    } else {
+                        FlashCallControlButton(
+                            icon = FlashIcons.Speaker,
+                            background = if (state.speakerOn) {
+                                FlashTheme.colors.accentPrimary.copy(alpha = 0.20f)
+                            } else {
+                                FlashTheme.colors.backgroundSurfaceSubtle
+                            },
+                            contentColor = if (state.speakerOn) {
+                                FlashTheme.colors.accentPrimary
+                            } else {
+                                FlashTheme.colors.textPrimary
+                            },
+                            onClick = onToggleSpeaker,
+                            size = 54.dp,
+                            iconSize = 26.dp,
+                        )
+                    }
+                    FlashCallControlButton(
+                        icon = FlashIcons.Hangup,
+                        background = FlashTheme.colors.textError,
+                        contentColor = FlashTheme.colors.textOnAccent,
+                        onClick = onHangUp,
+                        size = 54.dp,
+                        iconSize = 26.dp,
+                    )
+                }
+            }
+        }
+        FlashCallState.ENDED -> {
+            Row {
                 FlashCallControlButton(
-                    icon = FlashIcons.CameraFlip,
-                    background = FlashTheme.colors.backgroundSurfaceSubtle,
+                    icon = FlashIcons.Close,
+                    background = FlashTheme.colors.backgroundSurfaceStrong,
                     contentColor = FlashTheme.colors.textPrimary,
-                    onClick = onSwitchCamera,
-                )
-                FlashCallControlButton(
-                    icon = FlashIcons.Camera,
-                    background = if (state.cameraOff) {
-                        FlashTheme.colors.backgroundSurfaceStrong
-                    } else {
-                        FlashTheme.colors.backgroundSurfaceSubtle
-                    },
-                    contentColor = if (state.cameraOff) {
-                        FlashTheme.colors.accentPrimary
-                    } else {
-                        FlashTheme.colors.textPrimary
-                    },
-                    onClick = onToggleCamera,
-                )
-            } else {
-                FlashCallControlButton(
-                    icon = FlashIcons.Speaker,
-                    background = if (state.speakerOn) {
-                        FlashTheme.colors.backgroundSurfaceStrong
-                    } else {
-                        FlashTheme.colors.backgroundSurfaceSubtle
-                    },
-                    contentColor = if (state.speakerOn) {
-                        FlashTheme.colors.accentPrimary
-                    } else {
-                        FlashTheme.colors.textPrimary
-                    },
-                    onClick = onToggleSpeaker,
+                    onClick = onDismiss,
+                    size = 56.dp,
+                    iconSize = 26.dp,
                 )
             }
-            FlashCallControlButton(
-                icon = FlashIcons.Hangup,
-                background = FlashTheme.colors.textError,
-                contentColor = FlashTheme.colors.textOnAccent,
-                onClick = onHangUp,
-            )
-        }
-        FlashCallState.ENDED -> Row {
-            FlashCallControlButton(
-                icon = FlashIcons.Close,
-                background = FlashTheme.colors.backgroundSurfaceSubtle,
-                contentColor = FlashTheme.colors.textPrimary,
-                onClick = onDismiss,
-            )
         }
     }
 }
 
-/** 48dp circular control button with the house press feel (no Material ripple). */
+/** Large circular button with smooth spring haptics for call acceptance & rejection. */
+@Composable
+private fun FlashLargeCallButton(
+    icon: com.transfer.flash.ui.icons.FlashIconSpec,
+    background: Color,
+    contentColor: Color,
+    size: androidx.compose.ui.unit.Dp,
+    iconSize: androidx.compose.ui.unit.Dp,
+    onClick: () -> Unit,
+    description: String,
+) {
+    val interaction = remember { MutableInteractionSource() }
+    Box(
+        modifier = Modifier
+            .size(size)
+            .flashPressScale(interaction)
+            .clip(CircleShape)
+            .background(background)
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                onClick = onClick,
+            )
+            .semantics {
+                role = Role.Button
+                contentDescription = description
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        FlashIcon(
+            icon = icon,
+            tint = contentColor,
+            size = iconSize,
+        )
+    }
+}
+
+/** Circular control button with house press feel (no Material ripple). */
 @Composable
 private fun FlashCallControlButton(
     icon: com.transfer.flash.ui.icons.FlashIconSpec,
     background: Color,
     contentColor: Color,
     onClick: () -> Unit,
+    size: androidx.compose.ui.unit.Dp = FlashDimensions.minTouchTarget,
+    iconSize: androidx.compose.ui.unit.Dp = FlashDimensions.iconMd,
 ) {
     val interaction = remember { MutableInteractionSource() }
     Box(
         modifier = Modifier
-            .size(FlashDimensions.minTouchTarget)
+            .size(size)
             .flashPressScale(interaction)
             .clip(CircleShape)
             .background(background)
@@ -526,6 +731,7 @@ private fun FlashCallControlButton(
         FlashIcon(
             icon = icon,
             tint = contentColor,
+            size = iconSize,
         )
     }
 }
@@ -652,9 +858,13 @@ private fun FlashCallStatsBadge(
         stats.remoteResolutionLabel?.let { resolution ->
             add(stats.fps?.let { "$resolution · ${it}fps" } ?: resolution)
         }
-        stats.inboundKbps?.let { add(formatBitrate(it)) }
+        val rate = stats.inboundKbps ?: stats.outboundKbps
+        rate?.let { add(formatBitrate(it)) }
         // Loss below a couple of percent is normal on Wi-Fi and not worth a readout.
         stats.packetLoss?.takeIf { it >= 0.02 }?.let { add("${(it * 100).toInt()}% loss") }
+        if (isEmpty() && state.state == FlashCallState.ACTIVE) {
+            add("<1 ms")
+        }
     }
     if (parts.isEmpty() && state.videoLimitReason == null) return
 

@@ -145,5 +145,42 @@ class CallFrameCodecTest {
                     val raw = "FLASH_CALL action=offer callId=$callId from=$from sdp=v=0%0d%0ao=-%20123%202%20IN%20IP4%20127.0.0.1"
                     val decoded = CallFrameCodec.decode(raw) as CallWireFrame.Offer
                     assertEquals("v=0%0d%0ao=- 123 2 IN IP4 127.0.0.1", decoded.sdp)
-                }
+        }
+
+        @Test
+        fun group_invite_round_trip() {
+            val frame = CallWireFrame.GroupInvite(
+                callId = callId,
+                from = from,
+                groupId = "group-123",
+                callerName = "Alice",
+                video = true,
+            )
+            assertEquals(frame, CallFrameCodec.decode(CallFrameCodec.encode(frame)))
+        }
+
+        @Test
+        fun group_accept_round_trip() {
+            val frame = CallWireFrame.GroupAccept(callId = callId, from = from, groupId = "group-123")
+            assertEquals(frame, CallFrameCodec.decode(CallFrameCodec.encode(frame)))
+        }
+
+        @Test
+        fun group_decline_round_trip() {
+            val frame = CallWireFrame.GroupDecline(callId = callId, from = from, groupId = "group-123")
+            assertEquals(frame, CallFrameCodec.decode(CallFrameCodec.encode(frame)))
+        }
+
+        @Test
+        fun group_join_round_trip() {
+            val frame = CallWireFrame.GroupJoin(callId = callId, from = from, groupId = "group-123", participantName = "Bob")
+            assertEquals(frame, CallFrameCodec.decode(CallFrameCodec.encode(frame)))
+        }
+
+        @Test
+        fun group_hangup_round_trip() {
+            val frame = CallWireFrame.GroupHangup(callId = callId, from = from, groupId = "group-123")
+            assertEquals(frame, CallFrameCodec.decode(CallFrameCodec.encode(frame)))
+        }
     }
+

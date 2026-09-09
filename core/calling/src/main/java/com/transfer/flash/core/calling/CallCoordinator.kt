@@ -80,6 +80,7 @@ public class CallCoordinator(
      * caller that does not tier behaves exactly as before.
      */
     private val performanceMode: () -> FlashPerformanceMode = { FlashPerformanceMode.HIGH },
+    private val peerNameResolver: (peerId: String) -> String? = { null },
 ) : FlashCalling {
     private val _activeCall = MutableStateFlow<FlashCallUiState?>(null)
     override val activeCall: StateFlow<FlashCallUiState?> = _activeCall.asStateFlow()
@@ -89,21 +90,27 @@ public class CallCoordinator(
      * quality badge; the concrete session type stays inside this module.
      */
     override val media: FlashCallMedia?
-        get() = currentSession
+        get() = currentSession ?: currentGroupSession
 
     @Volatile
     private var currentSession: FlashCallSession? = null
+
+    @Volatile
+    private var currentGroupSession: FlashGroupCallSession? = null
 
     private var stateCollector: Job? = null
 
     /** Outgoing call entry point (chat header call / video-call buttons). */
     override suspend fun startCall(peerId: String, peerName: String, video: Boolean): Boolean {
         if (!isTrustedPeer(peerId)) return false // trust gate: only paired peers are callable
-        if (currentSession != null) return false // one call at a time
+        if (currentSession != null || currentGroupSession != null) return false // one call at a time
+        val resolvedName = peerNameResolver(peerId)?.ifBlank { null }
+            ?: peerName.takeIf { it.isNotBlank() && it != peerId }
+            ?: peerId
         val session = newSession(
             callId = UUID.randomUUID().toString(),
             peerId = peerId,
-            peerName = peerName,
+            peerName = resolvedName,
             direction = FlashCallDirection.OUTGOING,
             video = video,
         )
@@ -112,51 +119,135 @@ public class CallCoordinator(
         return session.startOutgoing()
     }
 
+    /** Outgoing group call entry point (group chat header call buttons). */
+    override suspend fun startGroupCall(
+        groupId: String,
+        groupName: String,
+        memberIds: List<String>,
+        video: Boolean,
+    ): Boolean {
+        if (currentSession != null || currentGroupSession != null) return false // one call at a time
+        val trustedMembers = memberIds.filter { isTrustedPeer(it) && it != localDeviceId }
+        if (trustedMembers.isEmpty()) return false
+
+        val callId = UUID.randomUUID().toString()
+        val session = FlashGroupCallSession(
+            callId = callId,
+            groupId = groupId,
+            groupName = groupName,
+            direction = FlashCallDirection.OUTGOING,
+            video = video,
+            localDeviceId = localDeviceId,
+            localName = localName,
+            scope = scope,
+            sendFrame = sendFrame,
+            onEnded = { ended ->
+                if (currentGroupSession === ended) {
+                    currentGroupSession = null
+                    stateCollector?.cancel()
+                    stateCollector = null
+                    _activeCall.value = ended.state.value
+                    scope.launch {
+                        kotlinx.coroutines.delay(2_000L)
+                        if (currentSession == null && currentGroupSession == null) {
+                            _activeCall.value = null
+                        }
+                    }
+                }
+            },
+            performanceMode = performanceMode,
+            peerNameResolver = peerNameResolver,
+        )
+        currentGroupSession = session
+        observeGroupSession(session)
+        return session.startOutgoing(trustedMembers)
+    }
+
     /**
      * Host calls this with every inbound `FLASH_CALL` text frame. Returns true when
      * the frame was consumed (a live call exists or an invite was handled), false when
      * the text is not a call frame at all.
      *
      * - Invite with no live call → creates the incoming session (RINGING).
+     * - GroupInvite with no live call → creates the incoming group session (RINGING).
      * - Invite while a call is live → auto-declined "busy" so the caller's UI does not hang.
      * - Frame matching the live call id → routed to the session.
      * - Frame for any other call id → dropped (stale frame for a dead call).
      */
     override suspend fun onInboundText(peerId: String, text: String): Boolean {
         val frame = CallFrameCodec.decode(text) ?: return false
-        val session = currentSession
-        if (session == null) {
+        val p2pSession = currentSession
+        val groupSession = currentGroupSession
+
+        // 1. If currently in a 1:1 call
+        if (p2pSession != null) {
+            if (frame.callId == p2pSession.callId) {
+                if (frame is CallWireFrame.Invite) return true // duplicate invite
+                p2pSession.onInboundFrame(frame)
+                return true
+            }
             if (frame is CallWireFrame.Invite) {
-                // Trust gate: an invite from an unpaired device is auto-declined, never rings.
-                if (!isTrustedPeer(peerId)) {
-                    sendFrame(CallWireFrame.Decline(callId = frame.callId, from = localDeviceId), peerId)
-                    return true
-                }
-                startIncoming(peerId = peerId, frame = frame)
+                sendFrame(CallWireFrame.Decline(callId = frame.callId, from = localDeviceId), peerId)
+                return true
+            }
+            if (frame is CallWireFrame.GroupInvite) {
+                sendFrame(CallWireFrame.GroupDecline(callId = frame.callId, from = localDeviceId, groupId = frame.groupId), peerId)
                 return true
             }
             return false
         }
-        if (frame.callId == session.callId) {
-            if (frame is CallWireFrame.Invite) {
-                return true // duplicate invite — session keys by callId, ignore
+
+        // 2. If currently in a group call
+        if (groupSession != null) {
+            if (frame.callId == groupSession.callId) {
+                groupSession.onInboundFrame(frame, peerId)
+                return true
             }
-            session.onInboundFrame(frame)
+            if (frame is CallWireFrame.Invite) {
+                sendFrame(CallWireFrame.Decline(callId = frame.callId, from = localDeviceId), peerId)
+                return true
+            }
+            if (frame is CallWireFrame.GroupInvite) {
+                sendFrame(CallWireFrame.GroupDecline(callId = frame.callId, from = localDeviceId, groupId = frame.groupId), peerId)
+                return true
+            }
+            return false
+        }
+
+        // 3. Neither 1:1 nor group call is active
+        if (frame is CallWireFrame.Invite) {
+            if (!isTrustedPeer(peerId)) {
+                sendFrame(CallWireFrame.Decline(callId = frame.callId, from = localDeviceId), peerId)
+                return true
+            }
+            startIncoming(peerId = peerId, frame = frame)
             return true
         }
-        if (frame is CallWireFrame.Invite) {
-            // Busy: auto-decline so the caller's UI does not hang on DIALING. The decline
-            // goes to the NEW inviter (peerId), not the live session's peer.
-            sendFrame(CallWireFrame.Decline(callId = frame.callId, from = localDeviceId), peerId)
+
+        if (frame is CallWireFrame.GroupInvite) {
+            if (!isTrustedPeer(peerId)) {
+                sendFrame(CallWireFrame.GroupDecline(callId = frame.callId, from = localDeviceId, groupId = frame.groupId), peerId)
+                return true
+            }
+            startIncomingGroup(peerId = peerId, frame = frame)
+            return true
         }
+
         return false
     }
 
     /** Local user accepted the incoming call. */
-    override suspend fun accept(): Boolean = currentSession?.accept() ?: false
+    override suspend fun accept(): Boolean {
+        currentGroupSession?.let { return it.accept() }
+        return currentSession?.accept() ?: false
+    }
 
     /** Local user declined the incoming call. */
     override suspend fun decline(): Boolean {
+        currentGroupSession?.let {
+            it.decline()
+            return true
+        }
         val session = currentSession ?: return false
         session.decline()
         return true
@@ -164,20 +255,32 @@ public class CallCoordinator(
 
     /** Local user hung up / ended the call. */
     override suspend fun hangUp(): Boolean {
+        currentGroupSession?.let {
+            it.hangUp()
+            return true
+        }
         val session = currentSession ?: return false
         session.hangUp()
         return true
     }
 
-    override fun toggleMute(): Boolean = currentSession?.toggleMute() ?: false
+    override fun toggleMute(): Boolean {
+        currentGroupSession?.let { return it.toggleMute() }
+        return currentSession?.toggleMute() ?: false
+    }
 
-    override fun toggleCamera(): Boolean = currentSession?.toggleCamera() ?: false
+    override fun toggleCamera(): Boolean {
+        currentGroupSession?.let { return it.toggleCamera() }
+        return currentSession?.toggleCamera() ?: false
+    }
 
     override suspend fun switchCamera() {
+        currentGroupSession?.switchCamera()
         currentSession?.switchCamera()
     }
 
     override fun setSpeaker(on: Boolean) {
+        currentGroupSession?.setSpeaker(on)
         currentSession?.setSpeaker(on)
     }
 
@@ -186,6 +289,7 @@ public class CallCoordinator(
         if (currentSession?.peerId == peerId) {
             currentSession?.onSignalingLost()
         }
+        currentGroupSession?.onSignalingLost(peerId)
     }
 
     /**
@@ -196,6 +300,7 @@ public class CallCoordinator(
         if (currentSession?.peerId == peerId) {
             currentSession?.onSignalingRestored()
         }
+        currentGroupSession?.onSignalingRestored(peerId)
     }
 
     private fun newSession(
@@ -276,15 +381,60 @@ public class CallCoordinator(
         }
     }
 
+    private fun observeGroupSession(session: FlashGroupCallSession) {
+        stateCollector?.cancel()
+        stateCollector = scope.launch {
+            session.state.collect { state ->
+                _activeCall.value = state
+            }
+        }
+    }
+
     private fun startIncoming(peerId: String, frame: CallWireFrame.Invite) {
+        val resolvedName = peerNameResolver(peerId)?.ifBlank { null }
+            ?: frame.callerName.takeIf { it.isNotBlank() && it != peerId }
+            ?: peerId
         val session = newSession(
             callId = frame.callId,
             peerId = peerId,
-            peerName = frame.callerName,
+            peerName = resolvedName,
             direction = FlashCallDirection.INCOMING,
             video = frame.video,
         )
         currentSession = session
         observeSession(session)
+    }
+
+    private fun startIncomingGroup(peerId: String, frame: CallWireFrame.GroupInvite) {
+        val session = FlashGroupCallSession(
+            callId = frame.callId,
+            groupId = frame.groupId,
+            groupName = frame.callerName, // or groupId if name unavailable
+            direction = FlashCallDirection.INCOMING,
+            video = frame.video,
+            localDeviceId = localDeviceId,
+            localName = localName,
+            scope = scope,
+            sendFrame = sendFrame,
+            onEnded = { ended ->
+                if (currentGroupSession === ended) {
+                    currentGroupSession = null
+                    stateCollector?.cancel()
+                    stateCollector = null
+                    _activeCall.value = ended.state.value
+                    scope.launch {
+                        kotlinx.coroutines.delay(2_000L)
+                        if (currentSession == null && currentGroupSession == null) {
+                            _activeCall.value = null
+                        }
+                    }
+                }
+            },
+            performanceMode = performanceMode,
+            peerNameResolver = peerNameResolver,
+        )
+        currentGroupSession = session
+        observeGroupSession(session)
+        session.startIncomingRinging(peerId = peerId, callerName = frame.callerName)
     }
 }

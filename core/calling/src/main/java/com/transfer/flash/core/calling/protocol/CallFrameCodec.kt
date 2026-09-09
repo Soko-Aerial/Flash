@@ -77,6 +77,42 @@ public object CallFrameCodec {
                 "index" to frame.sdpMLineIndex.toString(),
                 "candidate" to frame.candidate,
             )
+            is CallWireFrame.GroupInvite -> buildList {
+                add("action" to "ginvite")
+                add("callId" to frame.callId)
+                add("groupId" to frame.groupId)
+                add("from" to frame.from)
+                add("name" to frame.callerName)
+                add("video" to frame.video.toString())
+                if (frame.members.isNotEmpty()) {
+                    add("members" to frame.members.joinToString(","))
+                }
+            }
+            is CallWireFrame.GroupAccept -> listOf(
+                "action" to "gaccept",
+                "callId" to frame.callId,
+                "groupId" to frame.groupId,
+                "from" to frame.from,
+            )
+            is CallWireFrame.GroupDecline -> listOf(
+                "action" to "gdecline",
+                "callId" to frame.callId,
+                "groupId" to frame.groupId,
+                "from" to frame.from,
+            )
+            is CallWireFrame.GroupJoin -> listOf(
+                "action" to "gjoin",
+                "callId" to frame.callId,
+                "groupId" to frame.groupId,
+                "from" to frame.from,
+                "name" to frame.participantName,
+            )
+            is CallWireFrame.GroupHangup -> listOf(
+                "action" to "ghangup",
+                "callId" to frame.callId,
+                "groupId" to frame.groupId,
+                "from" to frame.from,
+            )
         }
         return FlashTextFraming.encodeFields(PREFIX, fields)
     }
@@ -117,6 +153,35 @@ public object CallFrameCodec {
                 sdpMid = fields["mid"]?.ifBlank { null },
                 sdpMLineIndex = fields["index"]?.toIntOrNull() ?: 0,
                 candidate = fields["candidate"] ?: return null,
+            )
+            "ginvite" -> CallWireFrame.GroupInvite(
+                callId = callId,
+                from = from,
+                groupId = fields["groupId"] ?: return null,
+                callerName = fields["name"] ?: "Group Member",
+                video = fields["video"]?.toBooleanStrictOrNull() ?: false,
+                members = fields["members"]?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList(),
+            )
+            "gaccept" -> CallWireFrame.GroupAccept(
+                callId = callId,
+                from = from,
+                groupId = fields["groupId"] ?: return null,
+            )
+            "gdecline" -> CallWireFrame.GroupDecline(
+                callId = callId,
+                from = from,
+                groupId = fields["groupId"] ?: return null,
+            )
+            "gjoin" -> CallWireFrame.GroupJoin(
+                callId = callId,
+                from = from,
+                groupId = fields["groupId"] ?: return null,
+                participantName = fields["name"] ?: "Group Member",
+            )
+            "ghangup" -> CallWireFrame.GroupHangup(
+                callId = callId,
+                from = from,
+                groupId = fields["groupId"] ?: return null,
             )
             else -> null
         }
