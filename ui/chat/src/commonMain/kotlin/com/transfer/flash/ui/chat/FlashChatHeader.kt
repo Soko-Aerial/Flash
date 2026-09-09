@@ -66,6 +66,8 @@ fun FlashChatHeader(
      */
     encryptionState: FlashEncryptionBadgeState = FlashEncryptionBadgeState.None,
     onEncryptionClick: () -> Unit = {},
+    /** Anchored menu slot placed directly under the More button on the top right. */
+    menuContent: @Composable () -> Unit = {},
 ) {
     val colors = FlashTheme.colors
     val haptics = rememberFlashHaptics()
@@ -170,6 +172,7 @@ fun FlashChatHeader(
                 onVideoCallClick = onVideoCallClick,
                 onMenuClick = onMenuClick,
                 onSearchClick = onSearchClick,
+                menuContent = menuContent,
             )
         }
         // Hairline divider (design-system drawn; no Material divider component)
@@ -307,12 +310,13 @@ private fun FlashChatHeaderActions(
     onVideoCallClick: () -> Unit,
     onMenuClick: () -> Unit,
     onSearchClick: () -> Unit = {},
+    menuContent: @Composable () -> Unit = {},
 ) {
     Row(
         horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space2),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        if (state.showCallActions && !state.isGroup) {
+        if (state.showCallActions) {
             FlashHeaderIconButton(onClick = onCallClick, description = "Voice call") {
                 FlashIcon(icon = FlashIcons.Call)
             }
@@ -320,12 +324,11 @@ private fun FlashChatHeaderActions(
                 FlashIcon(icon = FlashIcons.VideoCall)
             }
         }
-        // UI-023: in-chat search available in every conversation.
-        FlashHeaderIconButton(onClick = onSearchClick, description = "Search in conversation") {
-            FlashIcon(icon = FlashIcons.Search)
-        }
-        FlashHeaderIconButton(onClick = onMenuClick, description = "Conversation menu") {
-            FlashIcon(icon = FlashIcons.More)
+        Box {
+            FlashHeaderIconButton(onClick = onMenuClick, description = "Conversation menu") {
+                FlashIcon(icon = FlashIcons.More)
+            }
+            menuContent()
         }
     }
 }

@@ -136,6 +136,9 @@ public interface FlashChatRepository {
         )
     }
 
+    /** Returns active recipient transfer IDs associated with an outbound group message id. */
+    public fun getRecipientTransferIds(messageId: String): Set<String> = emptySet()
+
     public fun enterListSelectionMode(conversationId: String)
     public fun toggleListSelection(conversationId: String)
     public fun clearListSelection()

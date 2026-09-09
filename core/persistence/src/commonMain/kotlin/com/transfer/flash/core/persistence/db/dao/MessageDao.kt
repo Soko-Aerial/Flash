@@ -89,6 +89,18 @@ public interface MessageDao {
     )
     public suspend fun updateAttachmentPath(transferId: String, path: String): Int
 
+    @Query(
+        "UPDATE messages SET conversationId = :groupId, localId = :messageId, " +
+            "senderId = :senderId, senderName = :senderName WHERE attachmentTransferId = :transferId",
+    )
+    public suspend fun updateGroupContext(
+        transferId: String,
+        groupId: String,
+        messageId: String,
+        senderId: String,
+        senderName: String,
+    ): Int
+
     @Query("UPDATE messages SET status = :status WHERE localId = :localId")
     public suspend fun updateStatus(localId: String, status: String)
 

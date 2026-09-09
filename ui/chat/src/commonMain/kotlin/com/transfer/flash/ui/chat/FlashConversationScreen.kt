@@ -438,25 +438,27 @@ fun FlashConversationScreen(
                                 // Group Phase D: the header's More button finally does something —
                                 // it opens the conversation menu anchored to it.
                                 onMenuClick = { menuExpanded = true },
-                            )
-                            FlashConversationMenu(
-                                expanded = menuExpanded,
-                                items = menuItems,
-                                onDismiss = { menuExpanded = false },
-                                onItemSelected = { item ->
-                                    when (item) {
-                                        FlashConversationMenuItem.VIEW_PROFILE -> showPeerDetails = true
-                                        FlashConversationMenuItem.SEARCH -> isSearchActive = true
-                                        FlashConversationMenuItem.REVOKE_TRUST -> onRevokePeerTrust?.invoke()
-                                        FlashConversationMenuItem.MARK_UNREAD ->
-                                            conversationId?.let { onMarkUnread(it) }
-                                        FlashConversationMenuItem.CLEAR_CONVERSATION ->
-                                            conversationId?.let { onClearConversation(it) }
-                                        FlashConversationMenuItem.GROUP_INFO -> showGroupMembers = true
-                                        FlashConversationMenuItem.ADD_MEMBERS -> showAddMembers = true
-                                        FlashConversationMenuItem.LEAVE_GROUP ->
-                                            conversationId?.let { showLeaveConfirm = true }
-                                    }
+                                menuContent = {
+                                    FlashConversationMenu(
+                                        expanded = menuExpanded,
+                                        items = menuItems,
+                                        onDismiss = { menuExpanded = false },
+                                        onItemSelected = { item ->
+                                            when (item) {
+                                                FlashConversationMenuItem.VIEW_PROFILE -> showPeerDetails = true
+                                                FlashConversationMenuItem.SEARCH -> isSearchActive = true
+                                                FlashConversationMenuItem.REVOKE_TRUST -> onRevokePeerTrust?.invoke()
+                                                FlashConversationMenuItem.MARK_UNREAD ->
+                                                    conversationId?.let { onMarkUnread(it) }
+                                                FlashConversationMenuItem.CLEAR_CONVERSATION ->
+                                                    conversationId?.let { onClearConversation(it) }
+                                                FlashConversationMenuItem.GROUP_INFO -> showGroupMembers = true
+                                                FlashConversationMenuItem.ADD_MEMBERS -> showAddMembers = true
+                                                FlashConversationMenuItem.LEAVE_GROUP ->
+                                                    conversationId?.let { showLeaveConfirm = true }
+                                            }
+                                        },
+                                    )
                                 },
                             )
                             // UI-030 connection banner — hidden while fully connected.
@@ -582,11 +584,7 @@ fun FlashConversationScreen(
                     jumpToMessage(targetId)
                 },
                 onImageClick = { msg, index ->
-                    val image = msg.images.getOrNull(index)
-                    if (image != null && image.isVideo) {
-                        // Video plays in the system player, not the in-app photo viewer.
-                        onOpenAttachment(image.uri, image.mimeType, msg.senderName)
-                    } else if (msg.images.isNotEmpty()) {
+                    if (msg.images.isNotEmpty()) {
                         mediaViewerItems = msg.images.map { img ->
                             FlashMediaViewerItem(
                                 image = img,

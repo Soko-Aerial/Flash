@@ -67,6 +67,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -410,11 +413,15 @@ public class RealFlashChatRepository(
                     // had — and must not cancel the collector for every later transfer.
                     val written = runCatching {
                         val changed = messageDao.updateAttachmentPath(transferId, path)
+                        val groupMsgId = transferToGroupMessage[transferId]
+                        if (groupMsgId != null) {
+                            messageDao.updateAttachmentPath(groupMsgId, path)
+                        }
                         // 0 rows changed is ambiguous: the row may already hold this path, or may not
                         // exist yet (a completion that raced its own ingestion). Only the first is
                         // done, so only the first may be cached — otherwise that transfer would
                         // never be stamped at all.
-                        changed > 0 || messageDao.existsAttachment(transferId)
+                        changed > 0 || messageDao.existsAttachment(transferId) || (groupMsgId != null && messageDao.existsAttachment(groupMsgId))
                     }.getOrDefault(false)
                     if (written) stamped.add("$transferId|$path")
                 }
@@ -447,7 +454,7 @@ public class RealFlashChatRepository(
                     title = cachedGroupTitle,
                     avatarInitials = computeInitials(cachedGroupTitle),
                     isGroup = true,
-                    showCallActions = false,
+                    showCallActions = true,
                 ),
                 messages = emptyList(),
             )
@@ -578,9 +585,8 @@ public class RealFlashChatRepository(
                             memberCount = members.size,
                             onlineCount = onlineMembers,
                             typingMemberNames = typingNames,
-                            // Phase 2 owns group voice; until then the buttons must not render —
-                            // tapping them called startCall(groupId) and the trust gate refused silently.
-                            showCallActions = false,
+                            // Group voice & video calls supported via multi-leg full-mesh CallCoordinator
+                            showCallActions = true,
                         ),
                         messages = content.messages,
                         draftText = content.draftText,
@@ -1412,10 +1418,52 @@ public class RealFlashChatRepository(
             }
             is GroupWireFrame.GroupMedia -> {
                 if (!isActiveTrustedMember(members, frame.groupId, frame.from)) return
-                // F4: park the group context; the chat row is minted at ACCEPT time (see
-                // [onInboundAttachment]), which also removes the WS/data-channel arrival race —
-                // the intro frame has the whole offer window to land.
                 pendingGroupMedia[frame.transferId] = frame
+                val now = System.currentTimeMillis()
+                scope.launch(ioDispatcher) {
+                    if (messageDao.existsAttachment(frame.transferId)) {
+                        // If FILE_START beat GroupMedia, the row was provisionally inserted under
+                        // the peer's 1-to-1 conversation. Move it to the group conversation!
+                        messageDao.updateGroupContext(
+                            transferId = frame.transferId,
+                            groupId = frame.groupId,
+                            messageId = frame.messageId,
+                            senderId = frame.from,
+                            senderName = frame.senderName,
+                        )
+                        touchConversation(frame.groupId, now)
+                    } else {
+                        // Mint the group attachment offer bubble now so it appears immediately!
+                        val insertedRowId = messageDao.insert(
+                            MessageEntity(
+                                localId = frame.messageId,
+                                conversationId = frame.groupId,
+                                senderId = frame.from,
+                                senderName = frame.senderName,
+                                text = "",
+                                sentAt = frame.sentAt.takeIf { it > 0 } ?: now,
+                                status = "DELIVERED",
+                                attachmentTransferId = frame.transferId,
+                                attachmentName = frame.fileName,
+                                attachmentMime = frame.mimeType,
+                                attachmentSize = frame.sizeBytes,
+                                attachmentPath = null,
+                            ),
+                        )
+                        touchConversation(frame.groupId, now)
+                        if (insertedRowId != -1L) {
+                            runCatching {
+                                onInboundAttachmentWithGroupTitle(
+                                    frame.groupId,
+                                    frame.senderName,
+                                    frame.fileName,
+                                    frame.mimeType,
+                                    conversationDao.get(frame.groupId)?.title?.ifBlank { null },
+                                )
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -1426,6 +1474,15 @@ public class RealFlashChatRepository(
      * so the attachment row threads into the GROUP conversation.
      */
     private val pendingGroupMedia = ConcurrentHashMap<String, GroupWireFrame.GroupMedia>()
+
+    /** Maps an outbound group message id to all per-recipient transfer ids. */
+    private val groupMessageTransfers = ConcurrentHashMap<String, MutableSet<String>>()
+
+    /** Maps a per-recipient transfer id back to its outbound group message id. */
+    private val transferToGroupMessage = ConcurrentHashMap<String, String>()
+
+    override fun getRecipientTransferIds(messageId: String): Set<String> =
+        groupMessageTransfers[messageId]?.toSet().orEmpty()
 
     /**
      * F4 sender side: announces the host-supplied group media identity to one active recipient.
@@ -1445,6 +1502,8 @@ public class RealFlashChatRepository(
         if (messageId.isBlank() || transferId.isBlank() || wireFileId.isBlank()) return false
         val members = groupMemberDao ?: return false
         if (!isActiveTrustedMember(members, groupId, recipientDeviceId)) return false
+        groupMessageTransfers.getOrPut(messageId) { ConcurrentHashMap.newKeySet() }.add(transferId)
+        transferToGroupMessage[transferId] = messageId
         return groupTransportSink?.send(
             recipientDeviceId,
             GroupWireFrame.GroupMedia(
@@ -1989,13 +2048,20 @@ public class RealFlashChatRepository(
             replyToId = message.replyToId,
             replyToPreview = message.replyToPreview,
         )
+        val results = coroutineScope {
+            pending.map { delivery ->
+                async {
+                    val sent = sink.send(delivery.memberId, frame)
+                    delivery.memberId to sent
+                }
+            }.awaitAll()
+        }
         var anySent = false
-        pending.forEach { delivery ->
-            val sent = sink.send(delivery.memberId, frame)
+        results.forEach { (memberId, sent) ->
             if (sent) anySent = true
             deliveries.reschedule(
                 messageId = item.localId,
-                memberId = delivery.memberId,
+                memberId = memberId,
                 state = if (sent) "SENT" else "PENDING",
                 nextAttemptAt = now + backoffDelayMs(item.attempts + 1),
             )
@@ -2293,18 +2359,92 @@ public class RealFlashChatRepository(
      * bytes are local**; anything else — including media still awaiting acceptance or download —
      * becomes a file card. Text-only rows return unchanged.
      */
+    /**
+     * Infers an accurate MIME type from filename/path when the stored MIME is generic or missing,
+     * ensuring video and image formats (like MKV, MP4, WebM, MOV, JPEG, PNG, etc.) are correctly
+     * recognized for in-bubble preview and playback.
+     */
+    private fun resolveEffectiveMime(storedMime: String?, name: String, path: String?): String {
+        if (!storedMime.isNullOrBlank() &&
+            storedMime != "application/octet-stream" &&
+            storedMime != "*/*" &&
+            storedMime != "application/unknown"
+        ) {
+            return storedMime
+        }
+        val ext = (name.substringAfterLast('.', "")
+            .ifBlank { path?.substringAfterLast('.', "") ?: "" })
+            .lowercase(java.util.Locale.ROOT)
+        return when (ext) {
+            "mkv" -> "video/x-matroska"
+            "mp4", "m4v" -> "video/mp4"
+            "webm" -> "video/webm"
+            "mov" -> "video/quicktime"
+            "avi" -> "video/x-msvideo"
+            "3gp", "3gpp" -> "video/3gpp"
+            "ts" -> "video/mp2t"
+            "flv" -> "video/x-flv"
+            "wmv" -> "video/x-ms-wmv"
+            "jpg", "jpeg" -> "image/jpeg"
+            "png" -> "image/png"
+            "gif" -> "image/gif"
+            "webp" -> "image/webp"
+            "heic" -> "image/heic"
+            "heif" -> "image/heif"
+            "svg" -> "image/svg+xml"
+            "bmp" -> "image/bmp"
+            "mp3" -> "audio/mpeg"
+            "ogg", "opus" -> "audio/ogg"
+            "m4a", "aac" -> "audio/mp4"
+            "wav" -> "audio/wav"
+            "flac" -> "audio/flac"
+            "pdf" -> "application/pdf"
+            "apk" -> "application/vnd.android.package-archive"
+            "zip" -> "application/zip"
+            else -> runCatching {
+                android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext)
+            }.getOrNull() ?: (storedMime?.ifBlank { "*/*" } ?: "*/*")
+        }
+    }
+
     private fun applyAttachment(
         base: FlashMessageUi,
         entity: MessageEntity,
         progressByTransfer: Map<String, FlashAttachmentProgress>,
     ): FlashMessageUi {
         val transferId = entity.attachmentTransferId ?: return base
-        val mime = entity.attachmentMime ?: "application/octet-stream"
         val name = entity.attachmentName ?: "file"
-        val live = progressByTransfer[transferId]
+        val live = progressByTransfer[transferId] ?: run {
+            val recipientTransfers = groupMessageTransfers[transferId]?.mapNotNull { progressByTransfer[it] }
+            if (!recipientTransfers.isNullOrEmpty()) {
+                val allDownloaded = recipientTransfers.all { it.status == FlashFileTransferStatus.Downloaded }
+                val anyTransferring = recipientTransfers.any { it.status == FlashFileTransferStatus.Transferring }
+                val anyAwaiting = recipientTransfers.any { it.status == FlashFileTransferStatus.AwaitingAcceptance }
+                val allFailed = recipientTransfers.all { it.status == FlashFileTransferStatus.Failed }
+                val status = when {
+                    allDownloaded -> FlashFileTransferStatus.Downloaded
+                    anyTransferring -> FlashFileTransferStatus.Transferring
+                    anyAwaiting -> FlashFileTransferStatus.AwaitingAcceptance
+                    allFailed -> FlashFileTransferStatus.Failed
+                    else -> FlashFileTransferStatus.Transferring
+                }
+                val avgProgress = recipientTransfers.map { it.progress }.average().toFloat()
+                val totalSpeed = recipientTransfers.sumOf { it.speedMbps.toDouble() }.toFloat()
+                val maxEta = recipientTransfers.maxOfOrNull { it.etaSeconds } ?: 0
+                val path = recipientTransfers.firstOrNull { !it.localPath.isNullOrBlank() }?.localPath
+                FlashAttachmentProgress(
+                    progress = avgProgress,
+                    status = status,
+                    localPath = path,
+                    speedMbps = totalSpeed,
+                    etaSeconds = maxEta,
+                )
+            } else null
+        }
         // Prefer the live transfer's path (the received file materialises on completion); fall back
         // to the row's stored path (the source URI stamped at send time).
         val path = live?.localPath?.ifBlank { null } ?: entity.attachmentPath
+        val mime = resolveEffectiveMime(entity.attachmentMime, name, path)
         val status = live?.status
             ?: if (path != null) FlashFileTransferStatus.Downloaded else FlashFileTransferStatus.NotDownloaded
         val progress = live?.progress ?: if (status == FlashFileTransferStatus.Downloaded) 1f else 0f

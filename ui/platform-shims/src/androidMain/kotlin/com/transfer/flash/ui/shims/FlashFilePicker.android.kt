@@ -69,5 +69,29 @@ private fun resolveFileMetadata(context: Context, uri: Uri): Pair<String, Long> 
             }
         }
     }
+    // If name lacks an extension, infer it from contentResolver.getType so media format isn't lost
+    if (!name.contains('.')) {
+        val mime = runCatching { context.contentResolver.getType(uri) }.getOrNull()
+        if (!mime.isNullOrBlank()) {
+            val ext = when (mime) {
+                "video/x-matroska" -> "mkv"
+                "video/mp4" -> "mp4"
+                "video/webm" -> "webm"
+                "video/quicktime" -> "mov"
+                "video/3gpp" -> "3gp"
+                "image/jpeg" -> "jpg"
+                "image/png" -> "png"
+                "image/webp" -> "webp"
+                "image/gif" -> "gif"
+                "image/heic" -> "heic"
+                "audio/ogg" -> "ogg"
+                "audio/mpeg" -> "mp3"
+                else -> android.webkit.MimeTypeMap.getSingleton().getExtensionFromMimeType(mime)
+            }
+            if (!ext.isNullOrBlank()) {
+                name = "$name.$ext"
+            }
+        }
+    }
     return name to size
 }

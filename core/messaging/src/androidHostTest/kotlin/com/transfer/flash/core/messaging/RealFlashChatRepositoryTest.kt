@@ -166,6 +166,29 @@ class RealFlashChatRepositoryTest {
             return stale.size
         }
 
+        override suspend fun updateGroupContext(
+            transferId: String,
+            groupId: String,
+            messageId: String,
+            senderId: String,
+            senderName: String,
+        ): Int {
+            val matching = messages.values.filter { it.attachmentTransferId == transferId }
+            matching.forEach {
+                messages.remove(it.localId)
+                messages[messageId] = it.copy(
+                    localId = messageId,
+                    conversationId = groupId,
+                    senderId = senderId,
+                    senderName = senderName,
+                )
+            }
+            if (matching.isNotEmpty()) {
+                flow.value = messages.values.toList().sortedByDescending { it.sentAt }
+            }
+            return matching.size
+        }
+
         override suspend fun markReadUpTo(conversationId: String, selfId: String, upToMessageId: String) {
             val threshold = messages[upToMessageId]?.sentAt ?: return
             messages.values
@@ -1702,7 +1725,7 @@ class RealFlashChatRepositoryTest {
             mimeType = "application/octet-stream",
             sizeBytes = 42L,
         )
-        kotlinx.coroutines.delay(50)
+        kotlinx.coroutines.delay(200)
 
         assertEquals(
             listOf(Inbound(groupId, "Alex", "voice.m4a", "audio/mp4", "Team")),
@@ -1886,7 +1909,7 @@ class RealFlashChatRepositoryTest {
             assertEquals("Design Team", header.title)
             assertTrue(header.isGroup)
             assertEquals(3, header.memberCount)
-            assertEquals(false, header.showCallActions)
+            assertEquals(true, header.showCallActions)
 
             // Phase B: the real roster rides the state — names, owner role, and the local device.
             val members = repository.conversationState.value.members

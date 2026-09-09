@@ -10,6 +10,7 @@ import android.media.ExifInterface
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
+import android.os.ParcelFileDescriptor
 import android.util.LruCache
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -18,6 +19,7 @@ import androidx.compose.ui.graphics.ImageBitmapConfig
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import java.io.File
+import java.io.FileInputStream
 import java.io.InputStream
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -146,6 +148,8 @@ internal object FlashMediaDecoder {
             } else {
                 decodeImage(context, source, maxLongEdge, lowColorDepth, computeInSampleSize)
             }
+        }.onFailure { e ->
+            android.util.Log.w("FlashMediaDecoder", "Decode failed for source: $source, isVideo: $isVideo", e)
         }.getOrNull() ?: return null
         if (memoize) cache.put(key, decoded)
         return decoded
@@ -177,7 +181,11 @@ internal object FlashMediaDecoder {
     }
 
     /**
-     * A representative frame for a video attachment.
+     * A representative frame for a video attachment (MP4, MKV, WebM, MOV, 3GP, etc.).
+     *
+     * Content URIs from SAF must be set via [ParcelFileDescriptor] since passing content:// URIs directly
+     * into MediaMetadataRetriever fails inside the native mediaserver process when Binder permissions
+     * are not propagated.
      *
      * Rotation is deliberately **not** re-applied from `METADATA_KEY_VIDEO_ROTATION`: the platform
      * retriever already returns an upright frame (the same reason `ThumbnailUtils` needs no rotation
@@ -185,18 +193,41 @@ internal object FlashMediaDecoder {
      */
     private fun decodeVideoFrame(context: Context, source: String, maxLongEdge: Int): ImageBitmap? {
         val retriever = MediaMetadataRetriever()
+        var pfd: ParcelFileDescriptor? = null
+        var fis: FileInputStream? = null
         return try {
             when {
-                source.startsWith("content://") || source.startsWith("file://") ->
-                    retriever.setDataSource(context, Uri.parse(source))
+                source.startsWith("content://") -> {
+                    val uri = Uri.parse(source)
+                    pfd = runCatching { context.contentResolver.openFileDescriptor(uri, "r") }.getOrNull()
+                    if (pfd != null) {
+                        retriever.setDataSource(pfd.fileDescriptor)
+                    } else {
+                        retriever.setDataSource(context, uri)
+                    }
+                }
+                source.startsWith("file://") -> {
+                    val path = Uri.parse(source).path ?: source.removePrefix("file://")
+                    val file = File(path)
+                    if (!file.exists() || file.length() == 0L) return null
+                    fis = FileInputStream(file)
+                    retriever.setDataSource(fis.fd)
+                }
                 else -> {
-                    if (!File(source).exists()) return null
-                    retriever.setDataSource(source)
+                    val file = File(source)
+                    if (!file.exists() || file.length() == 0L) return null
+                    fis = FileInputStream(file)
+                    retriever.setDataSource(fis.fd)
                 }
             }
             val frame = scaledFrame(retriever, maxLongEdge) ?: return null
             downscale(frame, maxLongEdge).asImageBitmap()
+        } catch (e: Throwable) {
+            android.util.Log.w("FlashMediaDecoder", "Failed to decode video frame for $source: ${e.message}")
+            null
         } finally {
+            runCatching { fis?.close() }
+            runCatching { pfd?.close() }
             runCatching { retriever.release() }
         }
     }
@@ -204,10 +235,13 @@ internal object FlashMediaDecoder {
     /**
      * `getScaledFrameAtTime` decodes straight into the target size (API 27+); below that, and
      * whenever the clip does not report its dimensions, take the full frame and shrink it after.
+     * Falls back to time 0 with OPTION_CLOSEST for formats like MKV/WebM or short clips where
+     * 200ms with OPTION_CLOSEST_SYNC returns null.
      */
     private fun scaledFrame(retriever: MediaMetadataRetriever, maxLongEdge: Int): Bitmap? {
         val unscaled = {
             retriever.getFrameAtTime(VIDEO_FRAME_TIME_US, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                ?: retriever.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST)
                 ?: retriever.frameAtTime
         }
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O_MR1) return unscaled()
@@ -215,11 +249,18 @@ internal object FlashMediaDecoder {
         val height = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
         if (width <= 0 || height <= 0) return unscaled()
         val scale = minOf(1f, maxLongEdge.toFloat() / maxOf(width, height).toFloat())
+        val targetWidth = (width * scale).toInt().coerceAtLeast(1)
+        val targetHeight = (height * scale).toInt().coerceAtLeast(1)
         return retriever.getScaledFrameAtTime(
             VIDEO_FRAME_TIME_US,
             MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
-            (width * scale).toInt().coerceAtLeast(1),
-            (height * scale).toInt().coerceAtLeast(1),
+            targetWidth,
+            targetHeight,
+        ) ?: retriever.getScaledFrameAtTime(
+            0L,
+            MediaMetadataRetriever.OPTION_CLOSEST,
+            targetWidth,
+            targetHeight,
         ) ?: unscaled()
     }
 
@@ -279,12 +320,23 @@ internal object FlashMediaDecoder {
         return rotated
     }
 
-    /** `file://` goes through the resolver too; a bare path must exist before it is opened. */
-    private fun openStream(context: Context, source: String): InputStream? = when {
-        source.startsWith("content://") || source.startsWith("file://") ->
-            context.contentResolver.openInputStream(Uri.parse(source))
-        else -> File(source).takeIf { it.exists() && it.length() > 0L }?.inputStream()
-    }
+    /**
+     * Resolves an input stream from a content:// or file:// URI or local filesystem path.
+     * ContentResolver can throw on file:// URIs on modern Android, so file:// is handled directly
+     * via File.
+     */
+    private fun openStream(context: Context, source: String): InputStream? = runCatching {
+        when {
+            source.startsWith("content://") -> context.contentResolver.openInputStream(Uri.parse(source))
+            source.startsWith("file://") -> {
+                val path = Uri.parse(source).path ?: source.removePrefix("file://")
+                File(path).takeIf { it.exists() && it.length() > 0L }?.inputStream()
+            }
+            else -> File(source).takeIf { it.exists() && it.length() > 0L }?.inputStream()
+        }
+    }.onFailure { e ->
+        android.util.Log.w("FlashMediaDecoder", "Failed to openStream for $source", e)
+    }.getOrNull()
 
     /**
      * The conventional one-eighth-of-heap bitmap cache share, clamped so a 512 MB-heap tablet does
