@@ -251,6 +251,9 @@ object DiscoveryEngineHolder {
     @Volatile
     var onIncomingOffer: ((String) -> Unit)? = null
 
+    @Volatile
+    private var sendXferControl: ((peerDeviceId: String, action: String, transferId: String) -> Unit)? = null
+
     // #16: recreatable so stopAll can cancel every collector/session job launched on it. A cancelled
     // CoroutineScope stays cancelled, so ensureStarted swaps in a fresh one when restarting.
     private var appScope = newAppScope()
@@ -343,6 +346,7 @@ object DiscoveryEngineHolder {
         )
         val engine = CompositeDiscovery(transports = listOf(transport))
 
+        var boundServerPort = 0
         val networkImpl = WsFlashNetwork(
             context = appContext,
             localDeviceId = identity.deviceId.value,
@@ -352,7 +356,16 @@ object DiscoveryEngineHolder {
             // already watching for it (its own watcher is `internal`, so :app cannot observe the
             // same edge without a second, duplicate ConnectivityManager callback). No-op unless a
             // promotion actually was refused.
-            onUsableNetwork = { FlashBackgroundService.retryPromotionIfRefused(appContext) },
+            onUsableNetwork = {
+                FlashBackgroundService.retryPromotionIfRefused(appContext)
+                appScope.launch {
+                    Log.i(TAG_DISCOVERY, "Wi-Fi network connected/reconnected: restarting discovery instantly")
+                    engine.restartDiscovery()
+                    if (boundServerPort > 0) {
+                        engine.startAdvertising(boundServerPort)
+                    }
+                }
+            },
             // ERROR-033: keepalive cadence and the reconnect ceiling come from the device's tier.
             // A lambda, not a value: pinning a tier from Settings must reach the next connection
             // and the next redial without restarting the engine.
@@ -363,6 +376,7 @@ object DiscoveryEngineHolder {
         // Start WebSocket network server
         val netStartResult = networkImpl.start(0)
         val serverPort = (netStartResult as? FlashResult.Success)?.value ?: 0
+        boundServerPort = serverPort
         check(serverPort > 0) { "Network server failed to start: ${(netStartResult as? FlashResult.Failure)?.error}" }
 
         Log.i(TAG_WS, "WsFlashNetwork server listening on port=$serverPort")
@@ -497,7 +511,7 @@ object DiscoveryEngineHolder {
                     val candidate = com.transfer.flash.core.network.datachannel.DataChannelClient.connect(
                         host = endpoint.first,
                         port = endpoint.second + offset,
-                        targetDeviceId = identity.deviceId.value,
+                        targetDeviceId = peerDeviceId,
                         channelId = channelId,
                         onFrame = { bytes ->
                             // Inbound on OUR outbound channel = receiver ACKs/COMPLETE.
@@ -676,14 +690,24 @@ object DiscoveryEngineHolder {
                         ),
                     )
                 }
-                val sent = session.connection.sendText(frameText)
+                val sent = if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+                    runCatching {
+                        kotlinx.coroutines.runBlocking(kotlinx.coroutines.Dispatchers.IO) {
+                            session.connection.sendText(frameText)
+                        }
+                    }.getOrDefault(false)
+                } else {
+                    session.connection.sendText(frameText)
+                }
                 Log.i(TAG_CHAT, "Dispatched chat frame to $targetDeviceId (success=$sent)")
                 sent
             },
             groupTransportSink = { targetDeviceId, wireFrame ->
                 val session = networkImpl.activeSessions.value[FlashDeviceId(targetDeviceId)] as? WsSession
                     ?: return@RealFlashChatRepository false
-                session.connection.sendText(GroupFrameCodec.encode(wireFrame))
+                val encoded = GroupFrameCodec.encode(wireFrame)
+                session.connection.sendTextAsync(encoded)
+                true
             },
         )
 
@@ -759,6 +783,10 @@ object DiscoveryEngineHolder {
             // ERROR-033: capture size, Opus packetization and the call-recovery windows all come
             // from the device's tier. Read per call for the same reason as above.
             performanceMode = { performanceMode },
+            peerNameResolver = { peerId ->
+                trustStore.getTrustedPeers()[FlashDeviceId(peerId)]
+                    ?: engine.discoveredEndpoints.value.firstOrNull { it.deviceId.value == peerId }?.friendlyName
+            },
             sendFrame = { frame, peerId ->
                 val encoded = CallFrameCodec.encode(frame)
                 val session = networkImpl.activeSessions.value[FlashDeviceId(peerId)] as? WsSession
@@ -847,6 +875,7 @@ object DiscoveryEngineHolder {
                 Log.i(TAG_TRANSFER, "XFER $action → $peerId (sent=$ok) transferId=$transferId")
             }
         }
+        sendXferControl = sendXfer
 
         // Accepts a pending inbound OFFER (#5): resolve the deferred sink FIRST (so no early chunk
         // is dropped), surface it as Transferring + a chat bubble, then RESUME the parked sender.
@@ -1046,6 +1075,15 @@ object DiscoveryEngineHolder {
         this.callCoordinator = callCoordinator
         transferRef = transferImpl
         router.transfer = transferImpl
+        router.onAttachmentStarted = { pid, transferId, fileName, totalBytes ->
+            chatImpl.onInboundAttachment(
+                peerDeviceId = pid,
+                transferId = transferId,
+                fileName = fileName,
+                mimeType = guessMimeType(fileName),
+                sizeBytes = totalBytes,
+            )
+        }
         transferForResume = transferImpl
         // Warm the receiver done-set so a resumed inbound FILE_START seeds its bit-vector (#20).
         appScope.launch { runCatching { transferImpl.preloadReceiverProgress() } }
@@ -1435,6 +1473,22 @@ object DiscoveryEngineHolder {
                             java.util.Collections.newSetFromMap(ConcurrentHashMap())
                         }.add(frame.transferId)
                     }
+                    // If this transfer was already completed locally, reply COMPLETE immediately so the sender
+                    // stops re-offering, and do not redownload or overwrite the local file.
+                    val existing = transferImpl.activeTransfers.value.firstOrNull { it.id.value == frame.transferId }
+                    val existingPath = receivedPaths[frame.transferId] ?: existing?.localPath
+                    val alreadyCompleted = (existing != null && existing.state == com.transfer.flash.core.transfer.model.FlashTransferState.Completed) ||
+                        (existingPath != null && File(existingPath).exists() && File(existingPath).length() == frame.totalBytes)
+
+                    if (alreadyCompleted) {
+                        Log.i(TAG_TRANSFER, "Transfer '${frame.fileName}' transferId=${frame.transferId} already completed locally — replying COMPLETE")
+                        reply(ChunkFrame.serialize(ChunkFrame.Complete(frame.transferId, frame.fileId, verified = true)))
+                        peerDeviceId?.let { pid ->
+                            sendXferControl?.invoke(pid, RealFlashTransferRepository.ACTION_RESUME, frame.transferId)
+                        }
+                        continue
+                    }
+
                     // A re-offer of a transfer this device already accepted is a RETRY, not a new
                     // offer: the previous attempt's session was torn down with the transport (see
                     // cleanupInbound), so the sender's relaunch arrives as a fresh FILE_START and
@@ -1453,6 +1507,10 @@ object DiscoveryEngineHolder {
                             peerDeviceId = peerDeviceId,
                             localPath = receivedPaths[frame.transferId],
                         )
+                        // Release the sender if it parked on requireReceiverAcceptance during relaunch
+                        peerDeviceId?.let { pid ->
+                            sendXferControl?.invoke(pid, RealFlashTransferRepository.ACTION_RESUME, frame.transferId)
+                        }
                         Log.i(TAG_TRANSFER, "Re-offer of accepted transfer '${frame.fileName}' from $peerLabel — resuming (sinkResolved=$opened)")
                         continue
                     }
@@ -1467,6 +1525,11 @@ object DiscoveryEngineHolder {
                         peerName = peerLabel,
                         peerDeviceId = peerDeviceId,
                     )
+                    // Mint the inbound attachment bubble in chat immediately so the receiver sees
+                    // the offer card with Accept/Decline options right away.
+                    peerDeviceId?.let { pid ->
+                        onAttachmentStarted?.invoke(pid, frame.transferId, frame.fileName, frame.totalBytes)
+                    }
                     // Bug 3: auto-download hook. AppEngine sets onIncomingOffer to accept the offer
                     // only when the file's MIME category is enabled in settings (voice/image default
                     // on; video/file default off). When null or policy says no, it stays Offered.
@@ -1529,9 +1592,24 @@ object DiscoveryEngineHolder {
         @Volatile
         var transfer: RealFlashTransferRepository? = null
 
+        @Volatile
+        var onAttachmentStarted: ((peerDeviceId: String, transferId: String, fileName: String, totalBytes: Long) -> Unit)? = null
+
         fun onBytes(peerLabel: String, peerDeviceId: String?, bytes: ByteArray, reply: (ByteArray) -> Boolean) {
             val impl = transfer ?: return
-            handleInboundBinary(impl, receivePipeline, openHandles, incomingMeta, receivedPaths, incomingByPeer, peerLabel, peerDeviceId, bytes, reply)
+            handleInboundBinary(
+                transferImpl = impl,
+                receivePipeline = receivePipeline,
+                openHandles = openHandles,
+                incomingMeta = incomingMeta,
+                receivedPaths = receivedPaths,
+                incomingByPeer = incomingByPeer,
+                peerLabel = peerLabel,
+                peerDeviceId = peerDeviceId,
+                data = bytes,
+                reply = reply,
+                onAttachmentStarted = onAttachmentStarted,
+            )
         }
     }
 
@@ -1728,6 +1806,8 @@ object DiscoveryEngineHolder {
         callRinger = null
         autoConnectGate = null
         localDeviceId = null
+        sendXferControl = null
+        onIncomingOffer = null
         dataServer?.stop()
         dataServer = null
         currentEngine?.stopAll()

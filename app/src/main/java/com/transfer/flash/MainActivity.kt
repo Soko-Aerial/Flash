@@ -901,13 +901,13 @@ private fun FlashShell(
                             val peerId = entry.conversationId
                             val transfers = engine.transfers
                             if (peerId != null && transfers != null) {
-                                val mime = guessMimeType(displayName)
+                                val mime = guessMimeType(displayName, uri, toastContext)
                                 if (conversationState.header.isGroup) {
                                     // F4: one shared chat identity/file identity, plus a distinct
                                     // recipient transfer identity carried by both intro and FILE_START.
                                     val sharedMessageId = java.util.UUID.randomUUID().toString()
                                     val sharedWireFileId = java.util.UUID.randomUUID().toString()
-                                    scope.launch {
+                                    scope.launch(Dispatchers.IO) {
                                         chatRepository.groupMembers(peerId)
                                             .filter { it.id != engine.localDeviceId }
                                             .forEach { member ->
@@ -953,7 +953,7 @@ private fun FlashShell(
                                         friendlyName = conversationState.header.title,
                                         transportType = endpoint?.transportType ?: FlashTransportType.LAN,
                                     )
-                                    scope.launch {
+                                    scope.launch(Dispatchers.IO) {
                                         // Start the P2P transfer, then (B4) drop a local chat row keyed by
                                         // the returned transferId so the attachment shows inline in the
                                         // conversation — image thumbnail / video play button / file card —
@@ -992,7 +992,7 @@ private fun FlashShell(
                                     // F4: identical fan-out to onSendFile's group path, with voice meta.
                                     val sharedMessageId = java.util.UUID.randomUUID().toString()
                                     val sharedWireFileId = java.util.UUID.randomUUID().toString()
-                                    scope.launch {
+                                    scope.launch(Dispatchers.IO) {
                                         chatRepository.groupMembers(peerId)
                                             .filter { it.id != engine.localDeviceId }
                                             .forEach { member ->
@@ -1039,7 +1039,7 @@ private fun FlashShell(
                                         friendlyName = conversationState.header.title,
                                         transportType = endpoint?.transportType ?: FlashTransportType.LAN,
                                     )
-                                    scope.launch {
+                                    scope.launch(Dispatchers.IO) {
                                         val transferId = transfers.sendFile(targetDevice, localPath, fileName, size).getOrNull()
                                         if (transferId != null) {
                                             chatRepository.sendAttachment(
@@ -1073,7 +1073,16 @@ private fun FlashShell(
                         // Retry badge. Same entry point as the Transfers tab's Retry button.
                         onRetryTransfer = { transferId ->
                             engine.transfers?.let { repo ->
-                                scope.launch { repo.resumeTransfer(FlashTransferId(transferId)) }
+                                scope.launch {
+                                    val recipientIds = chatRepository.getRecipientTransferIds(transferId)
+                                    if (recipientIds.isNotEmpty()) {
+                                        recipientIds.forEach { subId ->
+                                            repo.resumeTransfer(FlashTransferId(subId))
+                                        }
+                                    } else {
+                                        repo.resumeTransfer(FlashTransferId(transferId))
+                                    }
+                                }
                             }
                         },
                         onStartCall = {
@@ -1084,8 +1093,22 @@ private fun FlashShell(
                                     Manifest.permission.RECORD_AUDIO,
                                 ) == PackageManager.PERMISSION_GRANTED
                                 if (hasAudio) {
-                                    scope.launch {
-                                        engine.calls?.startCall(peerId, conversationState.header.title, video = false)
+                                    scope.launch(Dispatchers.IO) {
+                                        if (conversationState.header.isGroup) {
+                                            val memberIds = if (conversationState.members.isNotEmpty()) {
+                                                conversationState.members.map { it.id }
+                                            } else {
+                                                chatRepository.groupMembers(peerId).map { it.id }
+                                            }
+                                            engine.calls?.startGroupCall(
+                                                groupId = peerId,
+                                                groupName = conversationState.header.title,
+                                                memberIds = memberIds,
+                                                video = false,
+                                            )
+                                        } else {
+                                            engine.calls?.startCall(peerId, conversationState.header.title, video = false)
+                                        }
                                     }
                                 } else {
                                     audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
@@ -1104,8 +1127,22 @@ private fun FlashShell(
                                     Manifest.permission.CAMERA,
                                 ) == PackageManager.PERMISSION_GRANTED
                                 if (hasAudio && hasCamera) {
-                                    scope.launch {
-                                        engine.calls?.startCall(peerId, conversationState.header.title, video = true)
+                                    scope.launch(Dispatchers.IO) {
+                                        if (conversationState.header.isGroup) {
+                                            val memberIds = if (conversationState.members.isNotEmpty()) {
+                                                conversationState.members.map { it.id }
+                                            } else {
+                                                chatRepository.groupMembers(peerId).map { it.id }
+                                            }
+                                            engine.calls?.startGroupCall(
+                                                groupId = peerId,
+                                                groupName = conversationState.header.title,
+                                                memberIds = memberIds,
+                                                video = true,
+                                            )
+                                        } else {
+                                            engine.calls?.startCall(peerId, conversationState.header.title, video = true)
+                                        }
                                     }
                                 } else {
                                     // Request whichever is missing. The user taps the video button
@@ -1595,12 +1632,57 @@ private fun shareTransferredFile(
     }
 }
 
-/** Coarse MIME from a filename extension; falls back to a permissive wildcard for the chooser. */
-private fun guessMimeType(fileName: String): String {
-    // Locale.ROOT, not getDefault(): MimeTypeMap keys are lowercase ASCII, and under a Turkish
-    // locale getDefault() folds 'I' to the dotless 'ı' so "TIFF"/"GIF"/"MIDI" stop resolving.
-    val ext = fileName.substringAfterLast('.', "").lowercase(java.util.Locale.ROOT)
-    return android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: "*/*"
+/**
+ * Resolves a MIME type from a URI and filename, with explicit mappings for media formats
+ * (MKV, MP4, WebM, MOV, AVI, TS, FLV, JPEG, PNG, etc.) that MimeTypeMap often misses or reports null for.
+ */
+private fun guessMimeType(
+    fileName: String,
+    uriString: String? = null,
+    context: android.content.Context? = null,
+): String {
+    // 1. Try contentResolver.getType if a content URI is provided
+    if (context != null && !uriString.isNullOrBlank() && uriString.startsWith("content://")) {
+        val resolverType = runCatching {
+            context.contentResolver.getType(android.net.Uri.parse(uriString))
+        }.getOrNull()
+        if (!resolverType.isNullOrBlank() && resolverType != "*/*" && resolverType != "application/octet-stream") {
+            return resolverType
+        }
+    }
+
+    // 2. Resolve by extension
+    val ext = (fileName.substringAfterLast('.', "")
+        .ifBlank { uriString?.substringAfterLast('.', "") ?: "" })
+        .lowercase(java.util.Locale.ROOT)
+    return when (ext) {
+        "mkv" -> "video/x-matroska"
+        "mp4", "m4v" -> "video/mp4"
+        "webm" -> "video/webm"
+        "mov" -> "video/quicktime"
+        "avi" -> "video/x-msvideo"
+        "3gp", "3gpp" -> "video/3gpp"
+        "ts" -> "video/mp2t"
+        "flv" -> "video/x-flv"
+        "wmv" -> "video/x-ms-wmv"
+        "jpg", "jpeg" -> "image/jpeg"
+        "png" -> "image/png"
+        "gif" -> "image/gif"
+        "webp" -> "image/webp"
+        "heic" -> "image/heic"
+        "heif" -> "image/heif"
+        "svg" -> "image/svg+xml"
+        "bmp" -> "image/bmp"
+        "mp3" -> "audio/mpeg"
+        "ogg", "opus" -> "audio/ogg"
+        "m4a", "aac" -> "audio/mp4"
+        "wav" -> "audio/wav"
+        "flac" -> "audio/flac"
+        "pdf" -> "application/pdf"
+        "apk" -> "application/vnd.android.package-archive"
+        "zip" -> "application/zip"
+        else -> android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: "*/*"
+    }
 }
 
 /**
@@ -1628,25 +1710,27 @@ private fun resolveShareableUri(
     }
 }
 
-/** UI-018: share a viewed image out via the system chooser (ACTION_SEND). */
+/** UI-018: share a viewed image or video out via the system chooser (ACTION_SEND). */
 private fun shareImageUri(
     context: android.content.Context,
     ref: String?,
     mimeType: String,
 ) {
+    val isVideo = mimeType.startsWith("video/")
     val uri = resolveShareableUri(context, ref)
     if (uri == null) {
-        Toast.makeText(context, "Can't share this image", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, if (isVideo) "Can't share this video" else "Can't share this image", Toast.LENGTH_SHORT).show()
         return
     }
+    val defaultMime = if (isVideo) "video/*" else "image/*"
     val share = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-        type = mimeType.ifBlank { "image/*" }
+        type = mimeType.ifBlank { defaultMime }
         putExtra(android.content.Intent.EXTRA_STREAM, uri)
         addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
     }
     runCatching {
         context.startActivity(
-            android.content.Intent.createChooser(share, "Share image")
+            android.content.Intent.createChooser(share, if (isVideo) "Share video" else "Share image")
                 .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
         )
     }.onFailure {
@@ -1711,9 +1795,21 @@ private fun saveMediaToGallery(
     }
     val failureLabel = if (isVideo) "Couldn't save video" else "Couldn't save image"
     val resolver = context.contentResolver
-    val mime = mimeType.ifBlank { "image/jpeg" }
-    val ext = android.webkit.MimeTypeMap.getSingleton().getExtensionFromMimeType(mime)
-        ?: if (isVideo) "mp4" else "jpg"
+    val mime = mimeType.ifBlank { if (isVideo) "video/mp4" else "image/jpeg" }
+    val ext = when (mime) {
+        "video/x-matroska" -> "mkv"
+        "video/mp4" -> "mp4"
+        "video/webm" -> "webm"
+        "video/quicktime" -> "mov"
+        "video/3gpp" -> "3gp"
+        "image/jpeg" -> "jpg"
+        "image/png" -> "png"
+        "image/webp" -> "webp"
+        "image/gif" -> "gif"
+        "image/heic" -> "heic"
+        else -> android.webkit.MimeTypeMap.getSingleton().getExtensionFromMimeType(mime)
+            ?: if (isVideo) "mp4" else "jpg"
+    }
     val name = "flash_${System.currentTimeMillis()}.$ext"
     val folder = if (isVideo) {
         android.os.Environment.DIRECTORY_MOVIES
@@ -1795,12 +1891,37 @@ private fun openAttachment(
         Toast.makeText(context, "Can't open this file", Toast.LENGTH_SHORT).show()
         return
     }
+    val effectiveMime = if (mimeType.isNotBlank() && mimeType != "*/*" && mimeType != "application/octet-stream") {
+        mimeType
+    } else {
+        guessMimeType(path, path, context)
+    }
     val view = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
-        setDataAndType(uri, mimeType.ifBlank { "*/*" })
+        setDataAndType(uri, effectiveMime.ifBlank { "*/*" })
         addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
         addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
     }
     runCatching { context.startActivity(view) }
-        .onFailure { Toast.makeText(context, "No app to open this file", Toast.LENGTH_SHORT).show() }
+        .onFailure {
+            val fallbackMime = when {
+                effectiveMime.startsWith("video/") -> "video/*"
+                effectiveMime.startsWith("image/") -> "image/*"
+                effectiveMime.startsWith("audio/") -> "audio/*"
+                else -> "*/*"
+            }
+            if (fallbackMime != effectiveMime) {
+                val fallbackIntent = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
+                    setDataAndType(uri, fallbackMime)
+                    addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                runCatching { context.startActivity(fallbackIntent) }
+                    .onFailure {
+                        Toast.makeText(context, "No app to open this file", Toast.LENGTH_SHORT).show()
+                    }
+            } else {
+                Toast.makeText(context, "No app to open this file", Toast.LENGTH_SHORT).show()
+            }
+        }
 }
 

@@ -161,6 +161,7 @@ private class Wiring(
     @Volatile private var dataPort: Int = 0
     @Volatile private var transferRef: RealFlashTransferRepository? = null
     @Volatile private var acceptOffer: ((String) -> Unit)? = null
+    @Volatile private var sendXfer: ((String, String, String) -> Unit)? = null
     private var onPeerConnectionClosed: ((String) -> Unit)? = null
 
     fun build(): FlashEngine {
@@ -184,10 +185,19 @@ private class Wiring(
                 ),
             ),
         )
+        var boundServerPort = 0
         val networkImpl = WsFlashNetwork(
             context = appContext,
             localDeviceId = localId,
             localFriendlyName = identity.friendlyName,
+            onUsableNetwork = {
+                scope.launch {
+                    engine.restartDiscovery()
+                    if (boundServerPort > 0) {
+                        engine.startAdvertising(boundServerPort)
+                    }
+                }
+            },
         )
 
         val db = FlashDatabaseOpener.openEncrypted(
@@ -347,6 +357,7 @@ private class Wiring(
             incomingByPeer.values.forEach { it.remove(transferId) }
         }
         this.acceptOffer = acceptOffer
+        this.sendXfer = sendXfer
         scope.launch {
             transferImpl.incomingControl.collect { control ->
                 when (control.action) {
@@ -412,6 +423,7 @@ private class Wiring(
         scope.launch {
             val netStart = networkImpl.start(0)
             val serverPort = (netStart as? FlashResult.Success)?.value ?: 0
+            boundServerPort = serverPort
             if (serverPort <= 0) {
                 Log.e(TAG, "Network server failed to start: ${(netStart as? FlashResult.Failure)?.error}")
                 return@launch
@@ -554,6 +566,21 @@ private class Wiring(
                     peerDeviceId?.let { pid ->
                         incomingByPeer.getOrPut(pid) { java.util.Collections.newSetFromMap(ConcurrentHashMap()) }.add(frame.transferId)
                     }
+                    // If this transfer was already completed locally, reply COMPLETE immediately so the sender
+                    // stops re-offering, and do not redownload or overwrite the local file.
+                    val existing = transferImpl.activeTransfers.value.firstOrNull { it.id.value == frame.transferId }
+                    val existingPath = receivedPaths[frame.transferId] ?: existing?.localPath
+                    val alreadyCompleted = (existing != null && existing.state == com.transfer.flash.core.transfer.model.FlashTransferState.Completed) ||
+                        (existingPath != null && java.io.File(existingPath).exists() && java.io.File(existingPath).length() == frame.totalBytes)
+
+                    if (alreadyCompleted) {
+                        reply(com.transfer.flash.core.transfer.chunked.ChunkFrame.serialize(com.transfer.flash.core.transfer.chunked.ChunkFrame.Complete(frame.transferId, frame.fileId, verified = true)))
+                        peerDeviceId?.let { pid ->
+                            sendXfer?.invoke(pid, RealFlashTransferRepository.ACTION_RESUME, frame.transferId)
+                        }
+                        continue
+                    }
+
                     // A re-offer of a transfer this device already accepted is a RETRY: the previous
                     // attempt's session died with the transport, so the sender's relaunch arrives as
                     // a fresh FILE_START and would park on the acceptance gate with a deferred sink —
@@ -565,6 +592,9 @@ private class Wiring(
                             frame.transferId, frame.fileId, frame.fileName, frame.totalBytes,
                             peerLabel, peerDeviceId, receivedPaths[frame.transferId],
                         )
+                        peerDeviceId?.let { pid ->
+                            sendXfer?.invoke(pid, RealFlashTransferRepository.ACTION_RESUME, frame.transferId)
+                        }
                         continue
                     }
                     transferImpl.onIncomingOffered(frame.transferId, frame.fileId, frame.fileName, frame.totalBytes, peerLabel, peerDeviceId)
@@ -623,7 +653,7 @@ private class Wiring(
             val candidate = DataChannelClient.connect(
                 host = endpoint.first,
                 port = endpoint.second + offset,
-                targetDeviceId = localId,
+                targetDeviceId = peerDeviceId,
                 channelId = channelId,
                 onFrame = { bytes -> transferRef?.onInboundFrame(bytes) },
                 onClosed = { },

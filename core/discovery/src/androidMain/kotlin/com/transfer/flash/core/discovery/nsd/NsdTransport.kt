@@ -168,7 +168,13 @@ public interface NsdManagerBridge {
      * @return true when observation started. Default false for fakes/hosts with
      *   no connectivity service — callers must degrade, not fail.
      */
-    public fun observeNetworkChanges(onChanged: () -> Unit): Boolean = false
+    public fun observeNetworkChanges(onChanged: () -> Unit): Boolean =
+        observeNetworkChanges(onChanged = { _: Boolean -> onChanged() })
+
+    /**
+     * Overload supporting immediate restart when a network becomes available.
+     */
+    public fun observeNetworkChanges(onChanged: (immediate: Boolean) -> Unit): Boolean = false
 
     /** Stops [observeNetworkChanges]. Idempotent. */
     public fun stopObservingNetworkChanges() {}
@@ -448,7 +454,10 @@ public class RealNsdManagerBridge(
         foundServices.clear()
     }
 
-    override fun observeNetworkChanges(onChanged: () -> Unit): Boolean {
+    override fun observeNetworkChanges(onChanged: () -> Unit): Boolean =
+        observeNetworkChanges { _ -> onChanged() }
+
+    override fun observeNetworkChanges(onChanged: (immediate: Boolean) -> Unit): Boolean {
         val manager = connectivityManager ?: return false
         stopObservingNetworkChanges()
         linkChanges.reset()
@@ -461,14 +470,14 @@ public class RealNsdManagerBridge(
                 linkChanges.reset()
                 capabilitiesByNetwork.clear()
                 linkByNetwork.clear()
-                onChanged()
+                onChanged(true)
             }
 
             override fun onLost(network: android.net.Network) {
                 linkChanges.reset()
                 capabilitiesByNetwork.remove(network.networkHandle)
                 linkByNetwork.remove(network.networkHandle)
-                onChanged()
+                onChanged(false)
             }
 
             override fun onCapabilitiesChanged(
@@ -486,7 +495,7 @@ public class RealNsdManagerBridge(
                     capabilitiesByNetwork.remove(network.networkHandle)
                     linkByNetwork.remove(network.networkHandle)
                 }
-                offerShape(onChanged)
+                offerShape { onChanged(false) }
             }
 
             override fun onLinkPropertiesChanged(
@@ -497,7 +506,7 @@ public class RealNsdManagerBridge(
                 // callback, which the platform always delivers first for a given network.
                 if (capabilitiesByNetwork.containsKey(network.networkHandle)) {
                     linkByNetwork[network.networkHandle] = linkShape(linkProperties)
-                    offerShape(onChanged)
+                    offerShape { onChanged(false) }
                 }
             }
         }
@@ -1446,15 +1455,17 @@ public class NsdTransport(
 
     private fun observeNetworkChangesIfNeeded() {
         if (observingNetwork) return
-        observingNetwork = runCatching { bridge.observeNetworkChanges(::onNetworkChanged) }
-            .getOrElse { false }
+        observingNetwork = runCatching {
+            bridge.observeNetworkChanges { immediate -> onNetworkChanged(immediate) }
+        }.getOrElse { false }
     }
 
     /**
      * Connectivity changed (Wi-Fi joined/dropped, hotspot toggled, or the link reassociated). The
      * browse is unbound and therefore network-blind, so nothing else would notice that the
      * interface it was started on is gone. Debounced because a single Wi-Fi
-     * transition arrives as a burst of callbacks.
+     * transition arrives as a burst of callbacks. When [immediate] is true (new network available),
+     * debounce is skipped to make discovery restart instantly.
      *
      * Three sources reach here, all of them necessarily distinct: availability callbacks for a
      * network appearing or disappearing, a shape change on a network that stayed (a mesh roam, which
@@ -1466,17 +1477,19 @@ public class NsdTransport(
      * so trusting that flag here is what let a device keep "advertising" into a dead interface
      * while every peer saw it drop off.
      */
-    private fun onNetworkChanged() {
+    private fun onNetworkChanged(immediate: Boolean = false) {
         val activeScope = scope ?: return
         networkChangeJob?.cancel()
         networkChangeJob = activeScope.launch(lane) {
-            delay(networkChangeDebounceMs)
+            if (!immediate) {
+                delay(networkChangeDebounceMs)
+            }
             if (advertiseDesired) {
-                logInfo("Connectivity changed; re-registering NSD advertisement")
+                logInfo("Connectivity changed (immediate=$immediate); re-registering NSD advertisement")
                 restartAdvertising()
             }
             if (!browsing) return@launch
-            logInfo("Connectivity changed; forcing NSD browse restart")
+            logInfo("Connectivity changed (immediate=$immediate); forcing NSD browse restart")
             restartBrowsing()
         }
     }
