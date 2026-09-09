@@ -55,11 +55,13 @@ public object DataChannelClient {
     ): DataSendChannel? {
         val socket = Socket()
         return runCatching {
+            socket.sendBufferSize = 1024 * 1024
+            socket.receiveBufferSize = 1024 * 1024
             socket.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
             socket.tcpNoDelay = true
             socket.soTimeout = HANDSHAKE_TIMEOUT_MS
-            val input = BufferedInputStream(socket.getInputStream())
-            val output = BufferedOutputStream(socket.getOutputStream())
+            val input = BufferedInputStream(socket.getInputStream(), 256 * 1024)
+            val output = BufferedOutputStream(socket.getOutputStream(), 256 * 1024)
 
             val joinLine = buildString {
                 append(DataChannelFraming.JOIN_PREFIX)

@@ -514,6 +514,13 @@ public class RealFlashTransferRepository(
         val wirePaused = liveSender &&
             (dispatcher!!.isPaused || registryLock.withLock { transferId.value in pauseIntents })
 
+        // Outbound with no live worker — a Failed or stalled transfer being retried, or a resume
+        // issued after executeSend already retired its registrations. Relaunch a fresh send job!
+        if (transfer.direction == FlashTransferDirection.Sending && !liveSender) {
+            relaunchSend(transfer, notifyPeer = true)
+            return FlashResult.Success(Unit)
+        }
+
         // A live dispatcher that is actually paused MUST be resumable regardless of the tracked
         // state: bailing out on a state mismatch left the wire paused with no way back.
         if (!wirePaused &&
@@ -533,7 +540,11 @@ public class RealFlashTransferRepository(
             updateTransferState(transferId.value) {
                 it.copy(state = FlashTransferState.Transferring, errorMessage = null)
             }
-            emitIncoming(transferId.value, ACTION_RESUME)
+            if (transfer.state == FlashTransferState.Offered) {
+                emitIncoming(transferId.value, ACTION_ACCEPT)
+            } else {
+                emitIncoming(transferId.value, ACTION_RESUME)
+            }
             emitOutgoing(transferId.value, transfer.peerDeviceId, ACTION_RESUME)
             return FlashResult.Success(Unit)
         }
@@ -549,9 +560,7 @@ public class RealFlashTransferRepository(
             return FlashResult.Success(Unit)
         }
 
-        // Outbound with no live worker — a Failed transfer being retried, or a resume issued after
-        // executeSend already retired its registrations. The only way back onto the wire is a fresh
-        // send job.
+        // Outbound fallback with no live worker
         relaunchSend(transfer, notifyPeer = true)
         return FlashResult.Success(Unit)
     }
@@ -573,8 +582,16 @@ public class RealFlashTransferRepository(
         val transferId = transfer.id.value
         // Clear the pending-pause intent first so the fresh dispatcher does not register paused.
         registryLock.withLock { pauseIntents.remove(transferId) }
+        // If requireReceiverAcceptance is on and this transfer never moved any bytes (unaccepted offer),
+        // re-arm the acceptance gate so FILE_START is sent as an offer and chunks are parked.
+        if (requireReceiverAcceptance && transfer.bytesDone == 0L) {
+            registryLock.withLock { pauseIntents.add(transferId) }
+        }
         updateTransferState(transferId) {
-            it.copy(state = FlashTransferState.Queued, errorMessage = null)
+            it.copy(
+                state = FlashTransferState.Queued,
+                errorMessage = if (requireReceiverAcceptance && transfer.bytesDone == 0L) "waiting for receiver to accept" else null,
+            )
         }
         // Tell the peer before the relaunch: a receiver that paused its own intake must re-open
         // the gate, otherwise the fresh dispatcher blocks on backpressure with nothing draining.

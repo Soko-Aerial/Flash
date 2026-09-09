@@ -85,9 +85,11 @@ public class DataChannelServer(
         var joinedChannel = -1
         runCatching {
             socket.tcpNoDelay = true
+            socket.sendBufferSize = 1024 * 1024
+            socket.receiveBufferSize = 1024 * 1024
             socket.soTimeout = HANDSHAKE_TIMEOUT_MS
-            val input = BufferedInputStream(socket.getInputStream())
-            val output = BufferedOutputStream(socket.getOutputStream())
+            val input = BufferedInputStream(socket.getInputStream(), 256 * 1024)
+            val output = BufferedOutputStream(socket.getOutputStream(), 256 * 1024)
 
             val line = DataChannelFraming.readLine(input)
             val parts = line.trim().split(' ')
