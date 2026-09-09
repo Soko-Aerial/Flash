@@ -13,6 +13,8 @@ public object GroupFrameCodec {
     public const val MESSAGE_PREFIX: String = "FLASH_GMSG"
     public const val RECEIPT_PREFIX: String = "FLASH_GRCPT"
     public const val READ_PREFIX: String = "FLASH_GREAD"
+    public const val ACTION_PREFIX: String = "FLASH_GACT"
+    public const val DELETE_ACTION: String = "delete"
     public const val SYNC_PREFIX: String = "FLASH_GSYNC"
     public const val MEDIA_PREFIX: String = "FLASH_GMEDIA"
 
@@ -71,6 +73,13 @@ public object GroupFrameCodec {
                 "from" to frame.from,
                 "upTo" to frame.upToMessageId,
                 "readAt" to frame.readAt.toString(),
+                "keyEpoch" to frame.keyEpoch.toString(),
+            )
+            is GroupWireFrame.DeleteForEveryone -> ACTION_PREFIX to listOf(
+                "action" to DELETE_ACTION,
+                "groupId" to frame.groupId,
+                "msgId" to frame.messageId,
+                "from" to frame.from,
                 "keyEpoch" to frame.keyEpoch.toString(),
             )
             is GroupWireFrame.SyncRequest -> SYNC_PREFIX to listOf(
@@ -177,6 +186,17 @@ public object GroupFrameCodec {
                 fields.required("upTo") ?: return null, fields.long("readAt") ?: return null,
                 fields.long("keyEpoch") ?: 0L,
             )
+        }
+        FlashTextFraming.parseFields(text, ACTION_PREFIX)?.let { fields ->
+            return when (fields["action"]) {
+                DELETE_ACTION -> GroupWireFrame.DeleteForEveryone(
+                    groupId = fields.required("groupId") ?: return null,
+                    messageId = fields.required("msgId") ?: return null,
+                    from = fields.required("from") ?: return null,
+                    keyEpoch = fields.long("keyEpoch") ?: 0L,
+                )
+                else -> null
+            }
         }
         FlashTextFraming.parseFields(text, MEDIA_PREFIX)?.let { fields ->
             return GroupWireFrame.GroupMedia(

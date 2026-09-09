@@ -97,6 +97,20 @@ class GroupFrameCodecTest {
     }
 
     @Test
+    fun deleteForEveryoneRoundTripsAsDistinctGroupAction() {
+        val frame = GroupWireFrame.DeleteForEveryone(
+            groupId = "g-1",
+            messageId = "m-1",
+            from = "peer-a",
+        )
+        val encoded = GroupFrameCodec.encode(frame)
+
+        assertTrue(encoded.startsWith("FLASH_GACT action=delete "))
+        assertEquals(frame, GroupFrameCodec.decode(encoded))
+        assertNull(GroupFrameCodec.decode("FLASH_GACT action=future groupId=g msgId=m from=a"))
+    }
+
+    @Test
     fun groupMessageRoundTripsReplyAndEpoch() {
         val frame = GroupWireFrame.Message(
             groupId = "g",

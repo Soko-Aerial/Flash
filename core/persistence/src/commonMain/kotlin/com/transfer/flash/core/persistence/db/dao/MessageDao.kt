@@ -161,7 +161,7 @@ public interface MessageDao {
     public suspend fun markEdited(localId: String, editedAt: Long)
 
     /** Tombstone only — never deletes the row (history pagination must stay stable). */
-    @Query("UPDATE messages SET deletedAt = :deletedAt WHERE localId = :localId")
+    @Query("UPDATE messages SET deletedAt = :deletedAt WHERE localId = :localId AND deletedAt IS NULL")
     public suspend fun markDeleted(localId: String, deletedAt: Long)
 
     /** Hard-delete every message of the given conversations. Used only by the chat-list bulk

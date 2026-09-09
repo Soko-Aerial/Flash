@@ -1,5 +1,39 @@
 # Progress Log
 
+## 2026-09-09 — F6.2 delete for everyone
+
+### Worked on
+Implemented only F6.2 from `docs/group/ui-phase-plan.md`: author-only delete-for-everyone for direct
+and group messages, with a separately selectable local-delete UI path.
+
+### Changed
+- Added common direct `FLASH_DACT action=delete` and group `FLASH_GACT action=delete` frames/codecs
+  using existing escaped text framing; prefixes are ASCII-safe and distinct from delivery frames.
+- Added public `deleteMessageForEveryone` separately from local `deleteMessage`/`deleteMessages`.
+- Sender loads the stored message, requires local authorship, tombstones locally, drops outbox, then
+  sends to the direct peer or fans out to active trusted group members excluding self.
+- Direct receive binds transport peer, claimed author, direct conversation and stored sender. Group
+  receive additionally requires trusted active membership and matching stored group/sender. Accepted
+  actions tombstone and retire outbox idempotently.
+- Added `Delete for everyone` only to own-message focus/context actions; existing Delete and
+  multi-select remain local-only.
+- Updated both Android hosts, protocol docs, and the F6 phase plan without changing KMP source-set
+  ownership or Room schema.
+
+### Verification
+- `:core:messaging:testAndroidHostTest` and `:core:messaging:jvmTest` passed (109 Android-host tests).
+- `:ui:chat:testAndroidHostTest` and `:ui:chat:jvmTest` passed.
+- `:app:testDebugUnitTest` and `:app:assembleDebug` passed.
+- `git diff --check` passed.
+
+### Remaining
+Physical direct and three-member-group verification: delete an own queued/delivered message and
+confirm it disappears on every eligible phone; confirm another member cannot delete it. F6.3, F4b,
+and KMP Phase 15 were not touched.
+
+### Next AI
+Run the F6.2 device gate, then continue only the owner-selected phase.
+
 ## 2026-09-09 — F6.1 mark as unread
 
 ### Worked on

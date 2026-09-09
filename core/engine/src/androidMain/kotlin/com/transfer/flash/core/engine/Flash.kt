@@ -16,6 +16,7 @@ import com.transfer.flash.core.discovery.nsd.NsdTransport
 import com.transfer.flash.core.engine.store.KeystorePassphraseProvider
 import com.transfer.flash.core.engine.store.RoomTransferStore
 import com.transfer.flash.core.messaging.RealFlashChatRepository
+import com.transfer.flash.core.messaging.protocol.DirectMessageActionCodec
 import com.transfer.flash.core.messaging.protocol.GroupFrameCodec
 import com.transfer.flash.core.messaging.protocol.MessageWireFrame
 import com.transfer.flash.core.network.bridge.DiscoveryRouteBinder
@@ -461,6 +462,10 @@ private class Wiring(
             chatImpl.onInboundGroupWireFrame(peerDeviceId, frame)
             return
         }
+        DirectMessageActionCodec.decode(text)?.let { frame ->
+            chatImpl.onInboundWireFrame(frame, transportPeerId = peerDeviceId)
+            return
+        }
         FlashTextFraming.parseFields(text, MSG_PREFIX)?.let { f ->
             val localId = f["localId"] ?: return
             chatImpl.onInboundWireFrame(
@@ -668,6 +673,7 @@ private class Wiring(
                     "readAt" to wireFrame.readAt.toString(),
                 ),
             )
+            is MessageWireFrame.DeleteForEveryone -> DirectMessageActionCodec.encode(wireFrame)
             is MessageWireFrame.ReactionFrame -> FlashTextFraming.encodeFields(
                 REACT_PREFIX,
                 listOf(

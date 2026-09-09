@@ -84,7 +84,10 @@ fun FlashConversationScreen(
     onTypingChanged: (Boolean) -> Unit = {},
     onAttachmentClick: () -> Unit,
     onSendFile: (uri: String, displayName: String, size: Long) -> Unit = { _, _, _ -> },
+    /** Local-only tombstone used by the existing Delete action and multi-select toolbar. */
     onDeleteMessage: (Set<String>) -> Unit = {},
+    /** Shared tombstone request; shown only for a locally authored focused message. */
+    onDeleteMessageForEveryone: (messageId: String) -> Unit = {},
     /**
      * Open an attachment outside the in-app image viewer: video playback and generic files hand off
      * to the system via an ACTION_VIEW intent (wired in :app). Images keep the in-app viewer (B4).
@@ -674,6 +677,14 @@ fun FlashConversationScreen(
             onDelete = {
                 onDeleteMessage(setOf(msg.id))
                 focusedMessage = null
+            },
+            onDeleteForEveryone = if (msg.isMine) {
+                {
+                    onDeleteMessageForEveryone(msg.id)
+                    focusedMessage = null
+                }
+            } else {
+                null
             },
         )
     }

@@ -1394,6 +1394,13 @@ public class RealFlashChatRepository(
                 // The existing cursor DAO is already per (conversation, member); UI read aggregation
                 // remains a Phase 1 UI follow-up while the durable monotonic record lands now.
             }
+            is GroupWireFrame.DeleteForEveryone -> {
+                if (!isActiveTrustedMember(members, frame.groupId, frame.from)) return
+                val message = messageDao.getByLocalId(frame.messageId) ?: return
+                if (message.conversationId != frame.groupId || message.senderId != frame.from) return
+                messageDao.markDeleted(frame.messageId, System.currentTimeMillis())
+                outboxDao.delete(frame.messageId)
+            }
             is GroupWireFrame.Sync -> {
                 if (!isActiveTrustedMember(members, frame.groupId, frame.from)) return
                 when (frame) {
@@ -1791,6 +1798,15 @@ public class RealFlashChatRepository(
                 publishTyping()
             }
 
+            is MessageWireFrame.DeleteForEveryone -> {
+                val peerId = transportPeerId ?: return
+                if (peerId != frame.from || frame.conversationId != peerId) return
+                val message = messageDao.getByLocalId(frame.messageId) ?: return
+                if (message.conversationId != peerId || message.senderId != frame.from) return
+                messageDao.markDeleted(frame.messageId, System.currentTimeMillis())
+                outboxDao.delete(frame.messageId)
+            }
+
             is MessageWireFrame.ReactionFrame -> {
                 // Apply the peer's reaction delta to the aggregated row, attributed to its memberId
                 // (#7). Self-reaction state is unaffected — that only flips for localDeviceId.
@@ -2181,6 +2197,40 @@ public class RealFlashChatRepository(
             // be transmitted to the peer. The drain loop additionally re-checks the tombstone, so a
             // row already claimed for this tick is discarded rather than sent.
             outboxDao.delete(localId)
+        }
+    }
+
+    override fun deleteMessageForEveryone(localId: String) {
+        scope.launch(ioDispatcher) {
+            val message = messageDao.getByLocalId(localId) ?: return@launch
+            if (message.senderId != localDeviceId || message.deletedAt != null) return@launch
+            val conversation = conversationDao.get(message.conversationId) ?: return@launch
+
+            // Apply the local tombstone before attempting the network, and always retire a queued
+            // message so an older payload cannot be sent after its deletion action.
+            messageDao.markDeleted(localId, System.currentTimeMillis())
+            outboxDao.delete(localId)
+
+            if (conversation.isGroup) {
+                val members = groupMemberDao ?: return@launch
+                val frame = GroupWireFrame.DeleteForEveryone(
+                    groupId = conversation.id,
+                    messageId = localId,
+                    from = localDeviceId,
+                )
+                members.activeMembers(conversation.id)
+                    .filter { it.deviceId != localDeviceId && isTrustedPeer(it.deviceId) }
+                    .forEach { member -> groupTransportSink?.send(member.deviceId, frame) }
+            } else {
+                transportSink?.send(
+                    conversation.id,
+                    MessageWireFrame.DeleteForEveryone(
+                        messageId = localId,
+                        conversationId = conversation.id,
+                        from = localDeviceId,
+                    ),
+                )
+            }
         }
     }
 

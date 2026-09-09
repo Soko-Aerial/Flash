@@ -19,6 +19,7 @@ import com.transfer.flash.core.discovery.core.FlashAdvertisedIdentity
 import com.transfer.flash.core.discovery.core.FlashDiscoveryMode
 import com.transfer.flash.core.messaging.FlashChatRepository
 import com.transfer.flash.core.messaging.RealFlashChatRepository
+import com.transfer.flash.core.messaging.protocol.DirectMessageActionCodec
 import com.transfer.flash.core.messaging.protocol.GroupFrameCodec
 import com.transfer.flash.core.messaging.protocol.GroupWireFrame
 import com.transfer.flash.core.messaging.protocol.MessageWireFrame
@@ -652,6 +653,7 @@ object DiscoveryEngineHolder {
                             "readAt" to wireFrame.readAt.toString(),
                         ),
                     )
+                    is MessageWireFrame.DeleteForEveryone -> DirectMessageActionCodec.encode(wireFrame)
                     is MessageWireFrame.ReactionFrame -> FlashTextFraming.encodeFields(
                         REACT_PREFIX,
                         listOf(
@@ -1306,6 +1308,10 @@ object DiscoveryEngineHolder {
         if (FlashTextFraming.parseFields(text, PAIR_PREFIX) != null) {
             Log.i(TAG_WS, "Inbound pairing frame from id=$peerDeviceId")
             pairing.onInbound(peerDeviceId, text)
+            return
+        }
+        DirectMessageActionCodec.decode(text)?.let { frame ->
+            chatImpl.onInboundWireFrame(frame, transportPeerId = peerDeviceId)
             return
         }
         val msgFields = FlashTextFraming.parseFields(text, MSG_PREFIX)

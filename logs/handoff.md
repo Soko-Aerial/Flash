@@ -1,5 +1,42 @@
 # Current Handoff
 
+## 2026-09-09 — F6.2 delete for everyone complete, staged, uncommitted
+
+### Current branch
+`dev` at `db9c829`. Only F6.2 code/tests/docs/logs are intended to be staged; unrelated `New folder/`
+and root CLI diagnostics remain unstaged. No commit was created.
+
+### Last verified build
+With `JAVA_HOME=C:/Users/KaliOxygen/.gradle/jdks/jetbrains_s_r_o_-21-amd64-windows.2`:
+- Messaging Android host/JVM passed (109 Android-host tests).
+- UI chat Android host/JVM passed.
+- App unit tests and `:app:assembleDebug` passed.
+- `git diff --check` passed.
+
+### Last change
+- Added ASCII-safe direct `FLASH_DACT action=delete` and group `FLASH_GACT action=delete` codecs in
+  commonMain; both Android hosts encode/decode them while KMP source-set boundaries remain intact.
+- Added separate public local-vs-everyone delete commands. Sender enforces local authorship, locally
+  tombstones/drops outbox, and direct-sends or trusted-active group-fans out.
+- Receivers bind transport identity, claimed author and stored row identity; groups also require
+  trusted active membership. Accepted replays remain idempotent.
+- Own-message context actions expose Delete for everyone; local Delete and multi-select are unchanged.
+- Common codec/UI tests and Android repository trust/author/idempotency tests cover the behavior.
+
+### Recommended next task
+Run the F6.2 physical-device gate for direct and group conversations. Continue only the owner-selected
+item; F6.3, F4b, and KMP Phase 15 remain separate.
+
+### Files most relevant to this change
+- `core/messaging/src/commonMain/.../protocol/DirectMessageActionCodec.kt`
+- `core/messaging/src/commonMain/.../protocol/GroupFrameCodec.kt`
+- `core/messaging/src/androidMain/.../RealFlashChatRepository.kt`
+- `core/engine/src/androidMain/.../Flash.kt`
+- `app/src/main/.../debug/DiscoveryEngineHolder.kt`
+- `ui/chat/src/commonMain/.../FlashMessageContextMenu.kt`
+- `docs/protocol.md`
+- `docs/group/ui-phase-plan.md`
+
 ## 2026-09-09 — F6.1 mark as unread complete, staged, uncommitted
 
 ### Current branch

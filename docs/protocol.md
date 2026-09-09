@@ -214,6 +214,26 @@ FLASH_GREAD groupId=<uuid> from=<id> upTo=<msgId> readAt=<ms> keyEpoch=0
   retires (ERROR-031's acknowledgement commit rule, generalized).
 - Resends/reconnects are idempotent: receivers dedup on `msgId` (IGNORE on conflict) and
   re-ack replays, exactly like 1:1 `FLASH_MSG`.
+
+### Delete-for-everyone actions (F6.2, author-only v1)
+
+```text
+FLASH_DACT action=delete messageId=<uuid> conversationId=<peer-id> from=<author-id>
+FLASH_GACT action=delete groupId=<uuid> msgId=<uuid> from=<author-id> keyEpoch=0
+```
+
+- These are control actions, deliberately distinct from `FLASH_DATA`, `FLASH_MSG`, and
+  `FLASH_GMSG`. Both use the existing escaped `FlashTextFraming`; unknown actions are ignored.
+- The sender must load the stored row and may emit a delete only when its `senderId` is the local
+  device. It tombstones locally and drops the message's durable outbox row before network send.
+- Direct receive requires authenticated transport peer == `from`, `conversationId` == that peer,
+  and the stored row's conversation/sender to equal that peer/author.
+- Group receive requires authenticated transport peer == `from`, trusted active membership in
+  `groupId`, and a stored row whose conversation is `groupId` and sender is `from`.
+- Accepted actions set the existing tombstone and delete any outbox row. Replays are idempotent.
+- Group send fans out only to active trusted members excluding self. v1 grants no owner/admin
+  override: only the original author can delete for everyone.
+
 - Attachments are rejected with a logged `unsupported` in Phase 1; group media is Phase 3.
 
 ### Offline catch-up (`FLASH_GSYNC`, Phase 1B — wire reserved, not yet sent)

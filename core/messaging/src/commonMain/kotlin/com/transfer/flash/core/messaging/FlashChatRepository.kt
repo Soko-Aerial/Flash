@@ -145,10 +145,16 @@ public interface FlashChatRepository {
      *  lightweight/sample implementations compiling; the Room-backed repository overrides it. */
     public fun deleteMessage(localId: String) {}
 
-    /** Tombstone several messages at once (conversation multi-select delete). */
+    /** Tombstone several messages locally (conversation multi-select delete). */
     public fun deleteMessages(localIds: Set<String>) {
         localIds.forEach { deleteMessage(it) }
     }
+
+    /**
+     * Tombstone one locally authored message and ask every eligible recipient to tombstone it too.
+     * Kept separate from [deleteMessage] so UI can explicitly choose local versus shared deletion.
+     */
+    public fun deleteMessageForEveryone(localId: String) {}
 
     // Chat-list selection-mode bulk actions (UI-013). Default no-ops keep lightweight/sample
     // implementations compiling; the Room-backed repository overrides them.

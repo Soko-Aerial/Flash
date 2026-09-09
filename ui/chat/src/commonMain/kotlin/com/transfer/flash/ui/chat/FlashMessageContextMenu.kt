@@ -80,6 +80,7 @@ fun FlashMessageFocusOverlay(
     onForward: () -> Unit,
     onSelectMultiple: () -> Unit,
     onDelete: () -> Unit,
+    onDeleteForEveryone: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val colors = FlashTheme.colors
@@ -174,6 +175,12 @@ fun FlashMessageFocusOverlay(
                     onDelete = {
                         onDelete()
                         onDismiss()
+                    },
+                    onDeleteForEveryone = onDeleteForEveryone?.let { deleteForEveryone ->
+                        {
+                            deleteForEveryone()
+                            onDismiss()
+                        }
                     },
                 )
             }
@@ -381,6 +388,7 @@ fun FlashContextMenuCard(
     onForward: () -> Unit,
     onSelectMultiple: () -> Unit,
     onDelete: () -> Unit,
+    onDeleteForEveryone: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val colors = FlashTheme.colors
@@ -418,6 +426,14 @@ fun FlashContextMenuCard(
             thickness = FlashDimensions.borderHairline,
             modifier = Modifier.padding(vertical = FlashSpacing.space4),
         )
+        if (message.isMine && onDeleteForEveryone != null) {
+            FlashContextMenuItem(
+                icon = FlashIcons.Delete,
+                label = "Delete for everyone",
+                onClick = onDeleteForEveryone,
+                isDestructive = true,
+            )
+        }
         FlashContextMenuItem(
             icon = FlashIcons.Delete,
             label = "Delete",
@@ -425,6 +441,16 @@ fun FlashContextMenuCard(
             isDestructive = true,
         )
     }
+}
+
+/** Pure action visibility used by common tests and the context menu. */
+internal fun messageActionLabels(isMine: Boolean): List<String> = buildList {
+    add("Reply")
+    add("Copy Text")
+    add("Forward")
+    add("Select Multiple")
+    if (isMine) add("Delete for everyone")
+    add("Delete")
 }
 
 @Composable

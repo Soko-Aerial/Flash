@@ -96,6 +96,14 @@ public sealed interface GroupWireFrame : ChatWireFrame {
         val keyEpoch: Long = 0L,
     ) : GroupWireFrame
 
+    /** Author-requested tombstone for one group message. */
+    public data class DeleteForEveryone(
+        override val groupId: String,
+        val messageId: String,
+        override val from: String,
+        val keyEpoch: Long = 0L,
+    ) : GroupWireFrame
+
     public sealed interface Sync : GroupWireFrame {
         public val syncId: String
         public val keyEpoch: Long

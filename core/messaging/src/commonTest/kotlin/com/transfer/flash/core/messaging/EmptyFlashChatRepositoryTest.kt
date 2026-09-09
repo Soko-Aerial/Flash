@@ -55,6 +55,7 @@ class EmptyFlashChatRepositoryTest {
             enterListSelectionMode("conv-anything")
             toggleListSelection("conv-anything")
             deleteMessage("m1")
+            deleteMessageForEveryone("m1")
             deleteMessages(setOf("m1", "m2"))
             deleteConversations(setOf("conv-anything"))
             setConversationsPinned(setOf("conv-anything"), true)

@@ -135,7 +135,8 @@ class RealFlashChatRepositoryTest {
         }
 
         override suspend fun markDeleted(localId: String, deletedAt: Long) {
-            messages[localId]?.let { messages[localId] = it.copy(deletedAt = deletedAt) }
+            messages[localId]?.takeIf { it.deletedAt == null }
+                ?.let { messages[localId] = it.copy(deletedAt = deletedAt) }
             flow.value = messages.values.filter { it.deletedAt == null }.sortedByDescending { it.sentAt }
         }
 
@@ -2141,6 +2142,104 @@ class RealFlashChatRepositoryTest {
         assertNotNull(messages[1].daySeparator)
         assertNull(messages[2].daySeparator)
         assertFalse(messages.any { it.id == "deleted" })
+    }
+
+    @Test
+    fun `delete for everyone sends direct action only for the local author`() = runBlocking {
+        val messageDao = FakeMessageDao()
+        val conversationDao = FakeConversationDao()
+        val outboxDao = FakeOutboxDao()
+        conversationDao.upsert(ConversationEntity(id = "peer-a", title = "Peer A", isGroup = false, sortOrder = 1L))
+        messageDao.insert(msg("own", "peer-a", "mine").copy(senderId = "my-device-id"))
+        messageDao.insert(msg("theirs", "peer-a", "theirs").copy(senderId = "peer-a"))
+        outboxDao.enqueue(OutboxEntity("own", attempts = 0, nextAttemptAt = 0L, payloadJson = "mine", createdAt = System.currentTimeMillis()))
+        val sent = mutableListOf<Pair<String, MessageWireFrame>>()
+        val repository = newRepository(
+            messageDao = messageDao,
+            conversationDao = conversationDao,
+            outboxDao = outboxDao,
+            messageSink = { target, frame -> sent += target to frame; true },
+        )
+
+        repository.deleteMessageForEveryone("theirs")
+        repository.deleteMessageForEveryone("own")
+        kotlinx.coroutines.delay(100)
+
+        assertNull(messageDao.messages["theirs"]!!.deletedAt)
+        assertNotNull(messageDao.messages["own"]!!.deletedAt)
+        assertFalse(outboxDao.queue.containsKey("own"))
+        val deleteFrames = sent.filter { it.second is MessageWireFrame.DeleteForEveryone }
+        assertEquals("peer-a", deleteFrames.single().first)
+        assertEquals(
+            MessageWireFrame.DeleteForEveryone("own", "peer-a", "my-device-id"),
+            deleteFrames.single().second,
+        )
+    }
+
+    @Test
+    fun `direct delete receiver rejects spoof and non-author then tombstones idempotently`() = runBlocking {
+        val messageDao = FakeMessageDao()
+        val outboxDao = FakeOutboxDao()
+        messageDao.insert(msg("m-direct", "peer-a", "hello").copy(senderId = "peer-a"))
+        outboxDao.enqueue(OutboxEntity("m-direct", attempts = 0, nextAttemptAt = 0L, payloadJson = "hello", createdAt = System.currentTimeMillis()))
+        val repository = newRepository(messageDao = messageDao, outboxDao = outboxDao)
+        val valid = MessageWireFrame.DeleteForEveryone("m-direct", "peer-a", "peer-a")
+
+        repository.onInboundWireFrame(valid, transportPeerId = "spoof")
+        repository.onInboundWireFrame(valid.copy(from = "peer-b"), transportPeerId = "peer-b")
+        assertNull(messageDao.messages["m-direct"]!!.deletedAt)
+
+        repository.onInboundWireFrame(valid, transportPeerId = "peer-a")
+        val firstDeletedAt = messageDao.messages["m-direct"]!!.deletedAt
+        repository.onInboundWireFrame(valid, transportPeerId = "peer-a")
+
+        assertNotNull(firstDeletedAt)
+        assertEquals(firstDeletedAt, messageDao.messages["m-direct"]!!.deletedAt)
+        assertFalse(outboxDao.queue.containsKey("m-direct"))
+    }
+
+    @Test
+    fun `group delete fans out trusted active members and receiver drops spoof untrusted nonmember`() = runBlocking {
+        val members = FakeGroupMemberDao()
+        val messageDao = FakeMessageDao()
+        val conversationDao = FakeConversationDao()
+        val outboxDao = FakeOutboxDao()
+        val sent = mutableListOf<Pair<String, GroupWireFrame>>()
+        val repository = newRepository(
+            messageDao = messageDao,
+            conversationDao = conversationDao,
+            outboxDao = outboxDao,
+            groupMemberDao = members,
+            trustedPeers = setOf("peer-a", "peer-b", "peer-inactive", "trusted-nonmember"),
+            groupSink = { target, frame -> sent += target to frame; true },
+        )
+        val groupId = (repository.createGroup("Team", setOf("peer-a", "peer-b", "peer-inactive")) as FlashResult.Success).value
+        members.upsert(members.member(groupId, "peer-inactive")!!.copy(isActive = false))
+        messageDao.insert(msg("own-group", groupId, "mine").copy(senderId = "my-device-id"))
+
+        repository.deleteMessageForEveryone("own-group")
+        kotlinx.coroutines.delay(100)
+
+        val deleteTargets = sent.filter { it.second is GroupWireFrame.DeleteForEveryone }.map { it.first }.toSet()
+        assertEquals(setOf("peer-a", "peer-b"), deleteTargets)
+        assertNotNull(messageDao.messages["own-group"]!!.deletedAt)
+
+        messageDao.insert(msg("remote-group", groupId, "remote").copy(senderId = "peer-a"))
+        val valid = GroupWireFrame.DeleteForEveryone(groupId, "remote-group", "peer-a")
+        repository.onInboundGroupWireFrame("peer-b", valid)
+        repository.onInboundGroupWireFrame("stranger", valid.copy(from = "stranger"))
+        repository.onInboundGroupWireFrame(
+            "trusted-nonmember",
+            valid.copy(from = "trusted-nonmember"),
+        )
+        repository.onInboundGroupWireFrame("peer-inactive", valid.copy(from = "peer-inactive"))
+        assertNull(messageDao.messages["remote-group"]!!.deletedAt)
+
+        repository.onInboundGroupWireFrame("peer-a", valid)
+        val firstGroupDeletedAt = messageDao.messages["remote-group"]!!.deletedAt
+        repository.onInboundGroupWireFrame("peer-a", valid)
+        assertNotNull(firstGroupDeletedAt)
+        assertEquals(firstGroupDeletedAt, messageDao.messages["remote-group"]!!.deletedAt)
     }
 
     /** Shared construction for the ERROR-034 tests; every DAO is an in-memory fake. */

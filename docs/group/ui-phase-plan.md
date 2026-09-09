@@ -259,18 +259,27 @@ one at a time; direct 1:1 behavior byte-identical; verify + log after each.
 - **Device gate:** mark a previously read direct and group thread unread, return to the chat list, and
   confirm its badge reflects all inbound non-tombstoned messages.
 
-### F6.2 — Delete-for-everyone (partial; low)
-- **Evidence:** `deleteMessage` is a local tombstone (`markDeleted`); no wire frame.
-- **Design:** new direct text frame `FLASH_DELTE localId=<id>` (name kept ASCII-safe; exact
-  prefix decided at execution to avoid colliding with `FLASH_DATA`) sent to the peer for 1:1,
-  and a group variant carrying groupId (membership-gated, sender must be the message's author
-  or an owner — v1: author-only). Receiver tombstones idempotently (already IGNORE-safe) and
-  drops any pending outbox row. Sender path: after local `markDeleted`, emit the frame per
-  current conversation type.
-- **Files:** `MessageWireFrame` or `GroupWireFrame` (+ frame + codec + round-trip test),
-  repository (send + ingest branches), both host decoders (one line each).
-- **Tests:** codec round-trip, author-only gate, idempotent receiver tombstone.
-- **Verify:** device (deleted message disappears on both phones).
+### F6.2 — Delete-for-everyone — STATUS: DONE 2026-09-09 (code + Android/JVM tests verified; device gate remains)
+- **Implemented wire:** direct control uses the ASCII-safe, delivery-prefix-distinct
+  `FLASH_DACT action=delete messageId=<id> conversationId=<peerId> from=<authorId>` codec. Groups
+  use the existing group codec with `FLASH_GACT action=delete groupId=<id> msgId=<id>
+  from=<authorId> keyEpoch=0`; unknown actions remain forward-compatible drops.
+- **Public API:** `deleteMessageForEveryone(localId)` is separate from local-only `deleteMessage` /
+  `deleteMessages`, so UI explicitly chooses scope.
+- **Sender gate:** repository loads the row and accepts only `senderId == localDeviceId`. It then
+  tombstones locally, drops the pending outbox row, and sends to the direct conversation peer or
+  fans out to active trusted group members excluding self.
+- **Receiver gate:** direct requires authenticated transport peer == `from`, direct conversation ==
+  that peer, and stored sender == `from`. Group additionally requires trusted active membership and
+  stored conversation/group + sender matches. Accepted actions tombstone and drop outbox
+  idempotently.
+- **UI:** focused-message actions retain local `Delete`; `Delete for everyone` appears only on own
+  messages and calls the separate repository command. Multi-select remains local-only.
+- **Tests:** common direct/group codec round trips and unknown-action drops; Android repository tests
+  cover author-only send, direct spoof/non-author rejection, group fan-out, spoof/untrusted/inactive
+  rejection, outbox retirement, and idempotent receive. Common UI test pins own-message visibility.
+- **Verification:** messaging Android host/JVM, UI chat Android host/JVM, app unit tests, and app
+  assemble passed with JDK 21 on 2026-09-09. Physical two/three-device deletion remains required.
 
 ### F6.3 — Storage usage screen (missing; low)
 - **Evidence:** no user-facing storage surface; received files accumulate under

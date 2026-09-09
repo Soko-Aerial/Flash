@@ -63,6 +63,13 @@ public sealed interface MessageWireFrame : ChatWireFrame {
         val timestampMs: Long,
     ) : MessageWireFrame
 
+    /** Author-requested tombstone for one direct message. */
+    public data class DeleteForEveryone(
+        val messageId: String,
+        val conversationId: String,
+        val from: String,
+    ) : MessageWireFrame
+
     /**
      * Reaction update frame.
      */

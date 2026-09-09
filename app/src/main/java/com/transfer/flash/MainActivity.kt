@@ -866,6 +866,7 @@ private fun FlashShell(
                             }
                         },
                         onDeleteMessage = { ids -> chatRepository.deleteMessages(ids) },
+                        onDeleteMessageForEveryone = chatRepository::deleteMessageForEveryone,
                         onOpenAttachment = { path, mime, _ -> openAttachment(toastContext, path, mime) },
                         onSaveImage = { uri, mime -> saveMediaToGallery(toastContext, uri, mime) },
                         onShareImage = { uri, mime -> shareImageUri(toastContext, uri, mime) },
