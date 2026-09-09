@@ -3,7 +3,7 @@
 ## 2026-09-09 — Image Preview Fix (OOM & Native Decode) & In-App Video Playback
 
 ### Current branch
-`dev` (uncommitted modifications).
+`dev` at commit `990324d` (up to date with `origin/dev`, working tree clean).
 
 ### Last verified build
 With JDK 21 / JBR:
