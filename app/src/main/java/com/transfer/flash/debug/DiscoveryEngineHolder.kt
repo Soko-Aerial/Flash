@@ -260,6 +260,9 @@ object DiscoveryEngineHolder {
 
     private fun newAppScope() = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
+    @Volatile
+    private var networkRestartJob: Job? = null
+
     /**
      * CPU wake lock keeping the mesh alive across screen-off / Doze. Without it the CPU is throttled,
      * so the WebSocket keepalive pings stall and inbound frames are processed far too late.
@@ -358,7 +361,8 @@ object DiscoveryEngineHolder {
             // promotion actually was refused.
             onUsableNetwork = {
                 FlashBackgroundService.retryPromotionIfRefused(appContext)
-                appScope.launch {
+                networkRestartJob?.cancel()
+                networkRestartJob = appScope.launch {
                     Log.i(TAG_DISCOVERY, "Wi-Fi network connected/reconnected: restarting discovery instantly")
                     engine.restartDiscovery()
                     if (boundServerPort > 0) {

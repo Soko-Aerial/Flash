@@ -50,6 +50,7 @@ import java.util.concurrent.ConcurrentHashMap
 import kotlin.concurrent.Volatile
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
@@ -186,12 +187,14 @@ private class Wiring(
             ),
         )
         var boundServerPort = 0
+        var networkRestartJob: Job? = null
         val networkImpl = WsFlashNetwork(
             context = appContext,
             localDeviceId = localId,
             localFriendlyName = identity.friendlyName,
             onUsableNetwork = {
-                scope.launch {
+                networkRestartJob?.cancel()
+                networkRestartJob = scope.launch {
                     engine.restartDiscovery()
                     if (boundServerPort > 0) {
                         engine.startAdvertising(boundServerPort)
