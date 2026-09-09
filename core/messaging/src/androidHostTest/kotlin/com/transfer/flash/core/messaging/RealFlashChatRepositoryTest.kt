@@ -11,6 +11,7 @@ import com.transfer.flash.core.persistence.db.dao.ConversationDao
 import com.transfer.flash.core.persistence.db.dao.ConversationPreview
 import com.transfer.flash.core.persistence.db.dao.ConversationUnread
 import com.transfer.flash.core.persistence.db.dao.DraftDao
+import com.transfer.flash.core.persistence.db.dao.GroupDeliveryCount
 import com.transfer.flash.core.persistence.db.dao.GroupDeliveryDao
 import com.transfer.flash.core.persistence.db.dao.GroupMemberDao
 import com.transfer.flash.core.persistence.db.dao.MessageDao
@@ -1271,8 +1272,21 @@ class RealFlashChatRepositoryTest {
 
     private class FakeGroupDeliveryDao : GroupDeliveryDao {
         val rows = ConcurrentHashMap<Pair<String, String>, GroupDeliveryEntity>()
+        private val counts = MutableStateFlow<List<GroupDeliveryCount>>(emptyList())
+
+        private fun publishCounts() {
+            counts.value = rows.values.groupBy { it.messageId }.map { (messageId, deliveries) ->
+                GroupDeliveryCount(
+                    messageId = messageId,
+                    deliveredTo = deliveries.count { it.state == "DELIVERED" },
+                    deliveredTotal = deliveries.size,
+                )
+            }
+        }
+
         override suspend fun insertAll(deliveries: List<GroupDeliveryEntity>) {
-            deliveries.forEach { rows[it.messageId to it.memberId] = it }
+            deliveries.forEach { rows.putIfAbsent(it.messageId to it.memberId, it) }
+            publishCounts()
         }
         override suspend fun pendingForMessage(messageId: String): List<GroupDeliveryEntity> =
             rows.values.filter { it.messageId == messageId && it.state != "DELIVERED" }
@@ -1281,11 +1295,16 @@ class RealFlashChatRepositoryTest {
             rows.values.count { it.messageId == messageId }
         override suspend fun deliveredCount(messageId: String): Int =
             rows.values.count { it.messageId == messageId && it.state == "DELIVERED" }
+        override fun observeDeliveryCounts(
+            conversationId: String,
+            selfId: String,
+        ): Flow<List<GroupDeliveryCount>> = counts
         override suspend fun markDelivered(messageId: String, memberId: String, deliveredAt: Long): Int {
             val key = messageId to memberId
             val row = rows[key] ?: return 0
             if (row.state == "DELIVERED") return 0
             rows[key] = row.copy(state = "DELIVERED", deliveredAt = deliveredAt)
+            publishCounts()
             return 1
         }
         override suspend fun reschedule(messageId: String, memberId: String, state: String, nextAttemptAt: Long) {
@@ -1298,6 +1317,7 @@ class RealFlashChatRepositoryTest {
         }
         override suspend fun deleteForMessage(messageId: String) {
             rows.keys.removeAll { it.first == messageId }
+            publishCounts()
         }
     }
 
@@ -1810,6 +1830,78 @@ class RealFlashChatRepositoryTest {
         }
 
     @Test
+    fun `conversation mapping exposes delivery counts only for outbound group messages with rows`() = runBlocking {
+        val memberDao = FakeGroupMemberDao()
+        val deliveryDao = FakeGroupDeliveryDao()
+        val conversationDao = FakeConversationDao()
+        val messageDao = FakeMessageDao()
+        val repository = newRepository(
+            messageDao = messageDao,
+            conversationDao = conversationDao,
+            groupMemberDao = memberDao,
+            groupDeliveryDao = deliveryDao,
+            trustedPeers = setOf("peer-a", "peer-b"),
+        )
+        val groupId = (repository.createGroup("Team", setOf("peer-a", "peer-b")) as FlashResult.Success).value
+        messageDao.insert(msg("outbound", groupId, "mine").copy(senderId = "my-device-id"))
+        messageDao.insert(msg("inbound", groupId, "theirs").copy(senderId = "peer-a"))
+        messageDao.insert(
+            msg("media-without-deliveries", groupId, "").copy(
+                senderId = "my-device-id",
+                attachmentTransferId = "transfer-1",
+                attachmentName = "photo.jpg",
+                attachmentMime = "image/jpeg",
+            ),
+        )
+        deliveryDao.insertAll(
+            listOf(
+                GroupDeliveryEntity("outbound", "peer-a", state = "DELIVERED", nextAttemptAt = 0L),
+                GroupDeliveryEntity("outbound", "peer-b", nextAttemptAt = 0L),
+                GroupDeliveryEntity("inbound", "peer-b", state = "DELIVERED", nextAttemptAt = 0L),
+            ),
+        )
+
+        repository.openConversation(groupId)
+        val messages = kotlinx.coroutines.withTimeout(5_000) {
+            repository.conversationState.first { state -> state.messages.size == 3 && state.header.isGroup }
+        }.messages.associateBy { it.id }
+
+        assertEquals(1, messages.getValue("outbound").deliveredTo)
+        assertEquals(2, messages.getValue("outbound").deliveredTotal)
+        assertNull(messages.getValue("inbound").deliveredTo)
+        assertNull(messages.getValue("inbound").deliveredTotal)
+        assertNull(messages.getValue("media-without-deliveries").deliveredTo)
+        assertNull(messages.getValue("media-without-deliveries").deliveredTotal)
+
+        deliveryDao.markDelivered("outbound", "peer-b", deliveredAt = 5L)
+        val completed = kotlinx.coroutines.withTimeout(5_000) {
+            repository.conversationState.first { state ->
+                state.messages.firstOrNull { it.id == "outbound" }?.deliveredTo == 2
+            }
+        }.messages.single { it.id == "outbound" }
+        assertEquals(2, completed.deliveredTotal)
+    }
+
+    @Test
+    fun `direct conversation mapping remains without group delivery counts`() = runBlocking {
+        val messageDao = FakeMessageDao()
+        val deliveryDao = FakeGroupDeliveryDao()
+        val repository = newRepository(messageDao = messageDao, groupDeliveryDao = deliveryDao)
+        messageDao.insert(msg("direct-out", "peer-a", "hello").copy(senderId = "my-device-id"))
+        deliveryDao.insertAll(
+            listOf(GroupDeliveryEntity("direct-out", "peer-a", state = "DELIVERED", nextAttemptAt = 0L)),
+        )
+
+        repository.openConversation("peer-a")
+        val direct = kotlinx.coroutines.withTimeout(5_000) {
+            repository.conversationState.first { it.messages.any { message -> message.id == "direct-out" } }
+        }.messages.single { it.id == "direct-out" }
+
+        assertNull(direct.deliveredTo)
+        assertNull(direct.deliveredTotal)
+    }
+
+    @Test
     fun `group send fans out per member and full quorum retires the outbox`() = runBlocking {
         val memberDao = FakeGroupMemberDao()
         val deliveryDao = FakeGroupDeliveryDao()
@@ -1851,6 +1943,12 @@ class RealFlashChatRepositoryTest {
         kotlinx.coroutines.delay(50)
         assertEquals(0, outboxDao.queue.size)
         assertEquals("DELIVERED", messageDao.messages[messageId]!!.status)
+        val mapped = kotlinx.coroutines.withTimeout(5_000) {
+            repository.conversationState.first { state ->
+                state.messages.firstOrNull { it.id == messageId }?.deliveredTo == 2
+            }
+        }.messages.single { it.id == messageId }
+        assertEquals(2, mapped.deliveredTotal)
     }
 
     @Test

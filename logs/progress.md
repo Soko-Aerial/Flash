@@ -1,5 +1,41 @@
 # Progress Log
 
+## 2026-09-09 — F5.4 delivered to M of N
+
+### Worked on
+Implemented only F5.4 from `docs/group/ui-phase-plan.md`: observable per-message group-delivery
+aggregates, repository mapping, and concise common UI progress.
+
+### Changed
+- Added the query-only commonMain `GroupDeliveryCount` projection and
+  `GroupDeliveryDao.observeDeliveryCounts(conversationId, selfId)`, scoped through `messages` to local
+  outbound rows in one conversation. No Room entity, schema, migration, or database version changed.
+- Android repository conversation mapping subscribes to that flow only for stored group
+  conversations and maps counts into nullable `FlashMessageUi.deliveredTo` / `deliveredTotal`.
+- Direct messages, inbound group messages, and media group messages without `group_deliveries` rows
+  retain null counts and unchanged rendering.
+- Common UI renders valid `M/N` immediately beside the existing delivery status and exposes
+  `Delivered to M of N members` accessibility text through pure tested helpers.
+- Added Android-host DAO invariant coverage, Android-host repository mapping/reactivity coverage,
+  persistence JVM query coverage, and common UI model/label/accessibility tests.
+
+### Verification
+- `:core:persistence:testAndroidHostTest`: only the 12 known Windows DataStore atomic-rename failures
+  (`FlashSettingsDataStoreTest` 11 + `DiscoveryModeSettingTest` 1); the DAO invariant passed.
+- `:core:persistence:jvmTest` passed.
+- `:core:messaging:testAndroidHostTest` and `:core:messaging:jvmTest` passed.
+- `:ui:chat:testAndroidHostTest` and `:ui:chat:jvmTest` passed.
+- `:app:assembleDebug` passed.
+- Physical group ACK progression remains unverified.
+
+### Remaining
+Device gate: send to a group with at least two remote recipients and confirm `M/N` advances once per
+member ACK. Confirm direct, inbound, and row-less media messages show no label. F4b, other F items,
+and KMP Phase 15 were not touched.
+
+### Next AI
+Run the F5.4 physical-device gate, then continue only the owner-selected phase.
+
 ## 2026-09-08 — F5.3 group typing fan-out
 
 ### Worked on

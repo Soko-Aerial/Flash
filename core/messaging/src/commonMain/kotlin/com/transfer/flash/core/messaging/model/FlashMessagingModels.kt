@@ -219,6 +219,10 @@ public data class FlashMessageUi(
     val reactions: List<FlashReaction> = emptyList(),
     val replyTo: FlashQuotedReplyUi? = null,
     val deliveryStatus: FlashMessageStatus? = null,
+    /** Delivered recipients for an outbound group message; null when no group-delivery rows exist. */
+    val deliveredTo: Int? = null,
+    /** Total recipient rows for an outbound group message; null outside that aggregate. */
+    val deliveredTotal: Int? = null,
     val groupPosition: FlashMessageGroupPosition = FlashMessageGroupPosition.SINGLE,
     val showSenderHeader: Boolean = true,
     /** Label rendered before this message when it starts a new local calendar day. */

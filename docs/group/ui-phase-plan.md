@@ -223,22 +223,22 @@ one at a time; direct 1:1 behavior byte-identical; verify + log after each.
   `:core:messaging:testAndroidHostTest`, `:core:messaging:jvmTest`, and `:app:assembleDebug` passed
   with JDK 21 on 2026-09-08. Physical multi-device confirmation remains owed.
 
-### F5.4 — "Delivered to M of N" (partial; data already persisted)
+### F5.4 — "Delivered to M of N" — STATUS: DONE 2026-09-09 (code + Android/JVM tests verified; device gate remains)
 - **Evidence:** `group_deliveries` rows carry per-member state (Phase 1A); `GroupDeliveryDao`
-  has `memberCount`/`deliveredCount`; no UI joins them into the outbound bubble.
-- **Design:** repository — the conversation content combine gains a delivery-count flow for the
-  active conversation's outbound group messages (`SELECT messageId, COUNT(*) total,
-  SUM(state='DELIVERED') done FROM group_deliveries WHERE messageId IN (outbound ids of this
-  conversation) GROUP BY messageId` — needs one new DAO query `observeDeliveryCounts`); join
-  into `FlashMessageUi` as an additive `deliveredTo: Int?`/`deliveredTotal: Int?` pair (null
-  for direct chats). UI — `FlashDeliveryStatusIcon`/`FlashFileMessageCard` language: when both
-  non-null and `deliveredTotal > 1`, render the tick with "M/N" or a long-press detail;
-  a 0-progress media bubble shows "Waiting for members" per the plan copy.
-- **Files:** `GroupDeliveryDao.kt` (+1 query), `RealFlashChatRepository.kt` (join),
-  `FlashMessagingModels.kt` (2 additive fields), `FlashDeliveryStatusIcon.kt` or bubble row.
-- **Tests:** DAO query semantics; mapping (only outbound group messages get counts); UI math
-  (M-of-N label) as a pure function.
-- **Verify:** device (send to a 3-member group; ticks advance per member ack).
+  has `memberCount`/`deliveredCount`; no UI joined them into the outbound bubble before this item.
+- **Implemented:** `GroupDeliveryDao.observeDeliveryCounts(conversationId, selfId)` is an observable
+  grouped projection joined through `messages`, so it emits only outbound rows in the active
+  conversation. `RealFlashChatRepository` subscribes only for stored group conversations and maps
+  aggregates onto nullable `FlashMessageUi.deliveredTo`/`deliveredTotal`; direct, inbound, and
+  row-less media messages remain null. The common UI renders concise `M/N` immediately beside the
+  existing delivery icon, with `Delivered to M of N members` semantics and pure validation helpers.
+- **Files:** `GroupDeliveryCount.kt`, `GroupDeliveryDao.kt`, `RealFlashChatRepository.kt`,
+  `FlashMessagingModels.kt`, `FlashMessageBubble.kt`, plus focused DAO/repository/common UI tests.
+- **Verification:** persistence Android host passed except the 12 known Windows DataStore atomic-
+  rename failures; persistence JVM, messaging Android host/JVM, UI chat Android host/JVM, and app
+  assemble passed with JDK 21 on 2026-09-09. No schema/version change (query + projection only).
+- **Device gate:** send to a group with at least two remote recipients and verify `M/N` advances on
+  each ACK; also verify direct, inbound, and media messages without `group_deliveries` show no label.
 
 ### F6.1 — Mark as unread (missing; low)
 - **Evidence:** no `markUnread` anywhere; unread = `sentAt > lastReadCursor`'s message

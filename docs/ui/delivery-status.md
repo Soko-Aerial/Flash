@@ -2,7 +2,7 @@
 
 **Status:** IMPLEMENTED  
 **Component ID:** UI-015  
-**Last updated:** 2026-08-20  
+**Last updated:** 2026-09-09
 **Owner phase:** Premium Chat UI  
 **Master plan:** [flash-premium-chat-ui-implementation.md](flash-premium-chat-ui-implementation.md)  
 **Template:** [component-doc-template.md](component-doc-template.md)
@@ -21,7 +21,8 @@ Provides unambiguous, real-time visual feedback for outgoing message transit lif
 3. **Delivered** — Double vector tick indicating peer device ACK received.
 4. **Read** — Double vector tick illuminated in `colors.accentPrimary` (Flash Teal Pulse) with smooth color morph.
 5. **Failed** — Red warning / retry indicator with tap-to-resend action.
-6. **Accessibility** — Explicit TalkBack state announcements ("Sending", "Sent", "Delivered", "Read", "Failed to send").
+6. **Group quorum progress** — outbound group messages with persisted per-member rows show a concise `M/N` beside the delivery glyph; absent rows show no invented progress.
+7. **Accessibility** — Explicit TalkBack state announcements plus "Delivered to M of N members" for group progress.
 
 ---
 
@@ -131,11 +132,17 @@ Provides unambiguous, real-time visual feedback for outgoing message transit lif
 - `FlashDeliveryStatusIcon.kt` — animated delivery status icon composable with retry support.
 
 ### Modified Files in `:core:messaging`
-- `FlashMessagingModels.kt` — ensure `FlashMessageUi` has `status: FlashMessageStatus? = null`.
+  - `FlashMessagingModels.kt` — additive `deliveredTo: Int?` / `deliveredTotal: Int?` fields for F5.4 group quorum progress.
 
 ### Modified Files in `:ui:chat`
-- `FlashMessageBubble.kt` — wire `FlashDeliveryStatusIcon` into `FlashMessageTimestampRow`.
-- `FlashConversationScreen.kt` — support delivery status retry callbacks.
+- `FlashMessageBubble.kt` — wires `FlashDeliveryStatusIcon` and optional group `M/N` progress into `FlashMessageTimestampRow`.
+- `FlashConversationScreen.kt` — supports delivery status retry callbacks.
+
+### F5.4 persistence/repository extension
+- `GroupDeliveryDao.observeDeliveryCounts(conversationId, selfId)` is a query-only observable aggregate.
+- `RealFlashChatRepository` subscribes only for a stored group conversation and maps counts only to local outbound rows.
+- The nullable UI fields intentionally remain null when media-group paths have no `group_deliveries` rows.
+- A valid aggregate renders `M/N` with `Delivered to M of N members` semantics; invalid or absent aggregates render nothing.
 
 ---
 

@@ -26,6 +26,8 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.layout
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.TextStyle
@@ -394,6 +396,21 @@ private fun FlashMessageTimestampRow(
         )
         if (message.isMine) {
             Spacer(modifier = Modifier.padding(start = FlashSpacing.space4))
+            groupDeliveryLabel(message.deliveredTo, message.deliveredTotal)?.let { label ->
+                FlashText(
+                    text = label,
+                    style = typography.metadataEmphasis,
+                    color = timestampColor,
+                    modifier = Modifier
+                        .padding(end = FlashSpacing.space4)
+                        .clearAndSetSemantics {
+                            contentDescription = groupDeliveryAccessibilityText(
+                                message.deliveredTo,
+                                message.deliveredTotal,
+                            ).orEmpty()
+                        },
+                )
+            }
             if (deliveryStatus != null) {
                 deliveryStatus()
             } else {
@@ -403,6 +420,19 @@ private fun FlashMessageTimestampRow(
         }
     }
 }
+
+/** Concise group-delivery progress; invalid/absent aggregates render nothing. */
+internal fun groupDeliveryLabel(deliveredTo: Int?, deliveredTotal: Int?): String? {
+    if (deliveredTo == null || deliveredTotal == null || deliveredTotal <= 0) return null
+    if (deliveredTo !in 0..deliveredTotal) return null
+    return "$deliveredTo/$deliveredTotal"
+}
+
+/** Spoken equivalent of [groupDeliveryLabel], kept separate from the visual shorthand. */
+internal fun groupDeliveryAccessibilityText(deliveredTo: Int?, deliveredTotal: Int?): String? =
+    groupDeliveryLabel(deliveredTo, deliveredTotal)?.let {
+        "Delivered to $deliveredTo of $deliveredTotal members"
+    }
 
 /**
  * Bubble silhouette for [message]'s position in its sender run.

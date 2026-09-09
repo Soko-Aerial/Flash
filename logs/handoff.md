@@ -1,5 +1,40 @@
 # Current Handoff
 
+## 2026-09-09 — F5.4 delivered to M of N complete, staged, uncommitted
+
+### Current branch
+`dev` at `2afa407`. Only F5.4 code/tests/docs/logs are intended to be staged; unrelated `New folder/`
+and root CLI diagnostics remain unstaged. No commit was created.
+
+### Last verified build
+With `JAVA_HOME=C:/Users/KaliOxygen/.gradle/jdks/jetbrains_s_r_o_-21-amd64-windows.2`:
+- Persistence Android host ran with only the 12 known Windows DataStore atomic-rename failures.
+- Persistence JVM passed.
+- Messaging Android host/JVM passed.
+- UI chat Android host/JVM passed.
+- `:app:assembleDebug` passed.
+
+### Last change
+- Added a commonMain Room delivery aggregate projection/query scoped to outbound messages in one
+  conversation; no schema/version/migration change.
+- Android repository mapping subscribes only for groups and exposes nullable delivery counts.
+- Common UI shows valid `M/N` beside the existing status with explicit accessibility text.
+- Direct, inbound, and group media messages without delivery rows remain unchanged.
+- Focused DAO, repository, persistence JVM, and common UI tests cover invariants and reactivity.
+
+### Recommended next task
+Run the F5.4 physical-device gate with at least three group members and confirm each ACK advances the
+label, then verify direct/inbound/media-without-rows have no label. Continue only the owner-selected
+item; F4b, other F items, and KMP Phase 15 remain separate.
+
+### Files most relevant to this change
+- `core/persistence/src/commonMain/.../dao/GroupDeliveryCount.kt`
+- `core/persistence/src/commonMain/.../dao/GroupDeliveryDao.kt`
+- `core/messaging/src/androidMain/.../RealFlashChatRepository.kt`
+- `core/messaging/src/commonMain/.../FlashMessagingModels.kt`
+- `ui/chat/src/commonMain/.../FlashMessageBubble.kt`
+- `docs/group/ui-phase-plan.md`
+
 ## 2026-09-08 (g) — F5.3 group typing fan-out complete, staged, uncommitted
 
 ### Current branch

@@ -5,6 +5,7 @@ import com.transfer.flash.core.persistence.db.entity.DraftEntity
 import com.transfer.flash.core.persistence.db.entity.GroupDeliveryEntity
 import com.transfer.flash.core.persistence.db.entity.GroupMemberEntity
 import com.transfer.flash.core.persistence.db.entity.MessageEntity
+import kotlinx.coroutines.async
 import com.transfer.flash.core.persistence.db.entity.OutboxEntity
 import com.transfer.flash.core.persistence.db.entity.ReadCursorEntity
 import com.transfer.flash.core.persistence.db.entity.ReceiptEntity
@@ -349,6 +350,45 @@ class FlashDatabaseInvariantTest {
         assertEquals(1, dao.activeCount("g1"))
         assertEquals(false, dao.member("g1", "peer-a")!!.isActive)
         assertEquals(2, dao.observeMembers("g1").first().size)
+    }
+
+    @Test
+    fun groupDeliveryAggregateIsObservableScopedAndCountsEachRecipientOnce() = runTest {
+        val dao = db.groupDeliveryDao()
+        assertTrue(dao.observeDeliveryCounts("group-1", "self").first().isEmpty())
+        db.conversationDao().upsert(ConversationEntity(id = "group-1", title = "Group", isGroup = true))
+        db.conversationDao().upsert(ConversationEntity(id = "group-2", title = "Other", isGroup = true))
+        db.messageDao().insert(message("m1", "group-1", sentAt = 1L).copy(senderId = "self"))
+        db.messageDao().insert(message("m2", "group-2", sentAt = 2L).copy(senderId = "self"))
+        db.messageDao().insert(message("inbound", "group-1", sentAt = 3L).copy(senderId = "peer-a"))
+
+        dao.insertAll(
+            listOf(
+                GroupDeliveryEntity("m1", "peer-a", nextAttemptAt = 10L),
+                GroupDeliveryEntity("m1", "peer-b", nextAttemptAt = 10L),
+                GroupDeliveryEntity("m2", "peer-a", state = "DELIVERED", nextAttemptAt = 10L),
+                GroupDeliveryEntity("inbound", "peer-b", state = "DELIVERED", nextAttemptAt = 10L),
+            ),
+        )
+        val initial = dao.observeDeliveryCounts("group-1", "self").first().associateBy { it.messageId }
+        assertEquals(setOf("m1"), initial.keys)
+        assertEquals(0, initial.getValue("m1").deliveredTo)
+        assertEquals(2, initial.getValue("m1").deliveredTotal)
+
+        val afterReceipt = async {
+            dao.observeDeliveryCounts("group-1", "self").first { rows ->
+                rows.any { it.messageId == "m1" && it.deliveredTo == 1 && it.deliveredTotal == 2 }
+            }
+        }
+        assertEquals(1, dao.markDelivered("m1", "peer-a", deliveredAt = 50L))
+        afterReceipt.await()
+
+        // IGNORE keeps a replayed recipient insert from inflating N.
+        dao.insertAll(listOf(GroupDeliveryEntity("m1", "peer-a", nextAttemptAt = 99L)))
+        assertEquals(
+            2,
+            dao.observeDeliveryCounts("group-1", "self").first().single { it.messageId == "m1" }.deliveredTotal,
+        )
     }
 
     @Test

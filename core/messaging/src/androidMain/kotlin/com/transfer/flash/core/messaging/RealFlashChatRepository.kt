@@ -75,7 +75,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
@@ -469,20 +469,32 @@ public class RealFlashChatRepository(
         var lastAckedInboundId: String? = null
 
         activeConversationJob = scope.launch(ioDispatcher) {
-            // Inner combine (4 flows): pure message content — rows + draft + attachment progress +
-            // reactions. Kept separate from presence/typing so neither combine exceeds 5 inputs.
+            val isGroupConversation = conversationDao.get(conversationId)?.isGroup == true
+            val deliveryCountsFlow = if (isGroupConversation) {
+                groupDeliveryDao?.observeDeliveryCounts(conversationId, localDeviceId) ?: flowOf(emptyList())
+            } else {
+                flowOf(emptyList())
+            }
+            // Inner combine (5 flows): pure message content — rows + draft + attachment progress +
+            // reactions + observable group-delivery aggregates.
             val contentFlow = combine(
                 messageDao.observeConversation(conversationId),
                 draftDao.observeDraft(conversationId),
                 pacedAttachmentProgress,
                 reactionDao.observeForConversation(conversationId),
-            ) { entities, draftEntity, progressByTransfer, reactionRows ->
+                deliveryCountsFlow,
+            ) { entities, draftEntity, progressByTransfer, reactionRows, deliveryCounts ->
                 // Index rows by local id so a reply can resolve its quoted message's author/side for
                 // the in-bubble quote card (#8). Falls back to the wire-carried preview when the
                 // quoted row is not in this window (e.g. paged out).
                 val byLocalId = entities.associateBy { it.localId }
                 // Aggregate reaction rows per message id → UI chips (#7).
                 val reactionsByMessage = reactionRows.groupBy { it.messageId }
+                val deliveryCountsByMessage = if (isGroupConversation) {
+                    deliveryCounts.associateBy { it.messageId }
+                } else {
+                    emptyMap()
+                }
                 val messages = entities.map { entity ->
                     val replyTo = entity.replyToId?.let { quotedId ->
                         val quoted = byLocalId[quotedId]
@@ -503,6 +515,8 @@ public class RealFlashChatRepository(
                             reactorIds = decodeReactorIds(row.reactorIdsJson),
                         )
                     }.orEmpty()
+                    val deliveryCount = deliveryCountsByMessage[entity.localId]
+                        ?.takeIf { entity.senderId == localDeviceId }
                     val base = FlashMessageUi(
                         id = entity.localId,
                         senderName = entity.senderName ?: if (entity.senderId == localDeviceId) "You" else "Peer",
@@ -511,6 +525,8 @@ public class RealFlashChatRepository(
                         text = entity.text,
                         isMine = entity.senderId == localDeviceId,
                         deliveryStatus = mapStatus(entity.status),
+                        deliveredTo = deliveryCount?.deliveredTo,
+                        deliveredTotal = deliveryCount?.deliveredTotal,
                         replyTo = replyTo,
                         reactions = reactions,
                     )

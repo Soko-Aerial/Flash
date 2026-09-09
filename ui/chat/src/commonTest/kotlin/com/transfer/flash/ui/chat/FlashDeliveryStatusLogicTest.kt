@@ -48,6 +48,38 @@ class FlashDeliveryStatusLogicTest {
     }
 
     @Test
+    fun `group delivery model supports nullable aggregate metadata`() {
+        val message = FlashMessageUi(
+            id = "group-msg",
+            senderName = "You",
+            senderInitials = "Y",
+            timeLabel = "10:02",
+            text = "Hello team",
+            isMine = true,
+            deliveredTo = 1,
+            deliveredTotal = 3,
+        )
+        assertEquals(1, message.deliveredTo)
+        assertEquals(3, message.deliveredTotal)
+        assertNull(message.copy(deliveredTo = null, deliveredTotal = null).deliveredTo)
+    }
+
+    @Test
+    fun `group delivery label and accessibility text require a valid aggregate`() {
+        assertEquals("0/3", groupDeliveryLabel(0, 3))
+        assertEquals("2/3", groupDeliveryLabel(2, 3))
+        assertEquals("3/3", groupDeliveryLabel(3, 3))
+        assertEquals("Delivered to 2 of 3 members", groupDeliveryAccessibilityText(2, 3))
+
+        assertNull(groupDeliveryLabel(null, 3))
+        assertNull(groupDeliveryLabel(1, null))
+        assertNull(groupDeliveryLabel(0, 0))
+        assertNull(groupDeliveryLabel(-1, 3))
+        assertNull(groupDeliveryLabel(4, 3))
+        assertNull(groupDeliveryAccessibilityText(null, null))
+    }
+
+    @Test
     fun `a11y descriptions match status states`() {
         fun a11yFor(status: FlashMessageStatus): String = when (status) {
             FlashMessageStatus.Pending -> "Sending message"

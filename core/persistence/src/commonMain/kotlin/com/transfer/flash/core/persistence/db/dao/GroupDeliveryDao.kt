@@ -5,6 +5,7 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import com.transfer.flash.core.persistence.db.entity.GroupDeliveryEntity
+import kotlinx.coroutines.flow.Flow
 
 @Dao
 public interface GroupDeliveryDao {
@@ -22,6 +23,23 @@ public interface GroupDeliveryDao {
 
     @Query("SELECT COUNT(*) FROM group_deliveries WHERE messageId = :messageId AND state = 'DELIVERED'")
     public suspend fun deliveredCount(messageId: String): Int
+
+    /**
+     * Observable aggregate for outbound messages in one conversation that currently have
+     * per-member delivery rows. Messages absent from `group_deliveries` are deliberately absent.
+     */
+    @Query(
+        "SELECT gd.messageId AS messageId, " +
+            "SUM(CASE WHEN gd.state = 'DELIVERED' THEN 1 ELSE 0 END) AS deliveredTo, " +
+            "COUNT(*) AS deliveredTotal FROM group_deliveries gd " +
+            "INNER JOIN messages m ON m.localId = gd.messageId " +
+            "WHERE m.conversationId = :conversationId AND m.senderId = :selfId " +
+            "GROUP BY gd.messageId",
+    )
+    public fun observeDeliveryCounts(
+        conversationId: String,
+        selfId: String,
+    ): Flow<List<GroupDeliveryCount>>
 
     @Query(
         "UPDATE group_deliveries SET state = 'DELIVERED', deliveredAt = :deliveredAt " +

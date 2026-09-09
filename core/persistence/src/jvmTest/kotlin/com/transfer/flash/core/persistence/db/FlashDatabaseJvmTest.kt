@@ -2,6 +2,7 @@ package com.transfer.flash.core.persistence.db
 
 import androidx.room.Room
 import androidx.sqlite.driver.bundled.BundledSQLiteDriver
+import com.transfer.flash.core.persistence.db.entity.GroupDeliveryEntity
 import com.transfer.flash.core.persistence.db.entity.TrustedPeerEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
@@ -109,6 +110,45 @@ class FlashDatabaseJvmTest {
         assertNull(db.reactionDao().get("absent", "+1"), "reactions")
         assertNull(db.draftDao().observeDraft("absent").first(), "drafts")
         assertNull(db.readCursorDao().get("absent", "absent"), "read cursors")
+    }
+
+    @Test
+    fun `group delivery aggregate re-emits and stays scoped to outbound conversation messages`() = runBlocking {
+        val db = openDatabase()
+        db.conversationDao().upsert(
+            com.transfer.flash.core.persistence.db.entity.ConversationEntity(
+                id = "group-1",
+                title = "Group",
+                isGroup = true,
+            ),
+        )
+        db.messageDao().insert(
+            com.transfer.flash.core.persistence.db.entity.MessageEntity(
+                localId = "outbound",
+                conversationId = "group-1",
+                senderId = "self",
+                senderName = "Me",
+                text = "hello",
+                sentAt = 1L,
+                status = "SENT",
+            ),
+        )
+        val dao = db.groupDeliveryDao()
+        dao.insertAll(
+            listOf(
+                GroupDeliveryEntity("outbound", "peer-a", nextAttemptAt = 0L),
+                GroupDeliveryEntity("outbound", "peer-b", nextAttemptAt = 0L),
+            ),
+        )
+        val initial = dao.observeDeliveryCounts("group-1", "self").first().single()
+        assertEquals(0, initial.deliveredTo)
+        assertEquals(2, initial.deliveredTotal)
+
+        dao.markDelivered("outbound", "peer-a", deliveredAt = 2L)
+        val updated = dao.observeDeliveryCounts("group-1", "self").first().single()
+        assertEquals(1, updated.deliveredTo)
+        assertEquals(2, updated.deliveredTotal)
+        assertTrue(dao.observeDeliveryCounts("group-1", "someone-else").first().isEmpty())
     }
 
     @Test
