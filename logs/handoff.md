@@ -1,5 +1,163 @@
 # Current Handoff
 
+## 2026-09-09 — High-Speed TCP Data Channel Fix, Instant Wi-Fi Reconnect, Mesh Group Calling & Call Stats Badges
+
+### Current branch
+`dev` (uncommitted modifications).
+
+### Last verified build
+With JDK 21:
+- `:core:calling:testDebugUnitTest` passed (all 8 tests green).
+- `:core:messaging:testAndroidHostTest` passed (all 109 tests green).
+- `:core:transfer:testAndroidHostTest` passed.
+- `:ui:callui:testDebugUnitTest` passed.
+- `:ui:chat:jvmTest` passed.
+- `:app:compileDebugSources` passed.
+- `:app:assembleDebug` built successfully.
+
+### Last change
+- **Instant Wi-Fi Reconnect & Discovery:**
+  - In `NsdTransport.kt`, added `immediate: Boolean` to bypass debounce on `onAvailable`, immediately triggering `onUsableNetwork`.
+  - In `DiscoveryEngineHolder.kt` and `Flash.kt`, wired `onUsableNetwork` to immediately restart peer discovery and re-announce NSD service on `boundServerPort`.
+- **Prevent Redownload of Completed Voice Notes & Files:**
+  - In `handleInboundBinary` on `ReceiveEvent.SessionStarted`, checked if `transferId` is `Completed` or target file exists on disk with full byte count. If so, immediately replies `ChunkFrame.Complete(verified = true)` without re-downloading or overwriting.
+- **Mesh Group Call 3rd Device Fix & Trickle ICE Queueing:**
+  - In `CallWireFrame.kt` and `CallFrameCodec.kt`, added `members: List<String>` to `GroupInvite`.
+  - In `FlashGroupCallSession.kt`, seeded non-initiator `knownMembers` from invite members list and added early trickle ICE candidate queueing (`pendingIce: ArrayDeque<IceCandidate>`) flushed on `remoteDescriptionSet`.
+  - Broadcasted `GroupJoin` on inbound acceptances so all participants mesh automatically.
+- **Latency & Bandwidth Call Stats Badges:**
+  - Restored real-time connection stats badge on `FlashCallScreen.kt`.
+  - Added stats sampling in `FlashGroupCallSession.kt` aggregating RTT, bitrate (in/out kbps), and packet loss across active mesh legs into `_stats`.
+  - Hardened WebRTC stats sampling in `FlashCallSession.kt`.
+- **Peer Name Resolution in Voice/Video Calls:**
+  - In `CallCoordinator.kt` and `FlashGroupCallSession.kt`, integrated `peerNameResolver: (String) -> String?`.
+  - In `DiscoveryEngineHolder.kt`, resolved peer names from trust store and discovery endpoint cache.
+- **Group Chat Outbox Concurrent Fan-Out:**
+  - In `RealFlashChatRepository.kt`, converted sequential member iteration in `drainGroupMessage` into parallel `async` fan-out with non-blocking `session.connection.sendTextAsync(encoded)`.
+- **High-Speed Transfer / TCP DataChannel Fix:**
+  - Fixed critical `targetDeviceId` bug in `DiscoveryEngineHolder.kt:514` and `Flash.kt:656` (`targetDeviceId = peerDeviceId` instead of `identity.deviceId.value`), allowing raw TCP socket connections to connect immediately on the first probe port instead of failing 20 times and falling back to slow 64KB WebSocket transfers.
+  - Increased TCP socket send and receive buffers to 1 MB (`1024 * 1024`) with `tcpNoDelay = true` in `DataChannelClient.kt` and `DataChannelServer.kt`.
+  - Increased streaming buffer chunk sizes in `DataChannelTransferSink` and `DataChannelTransferSource` from 64 KB to 256 KB.
+
+### Recommended next task
+Field test high-speed raw TCP file transfers and 3-way mesh calling across physical Android devices over LAN.
+
+## 2026-09-09 — In-Chat File Transfer Fixes: Inbound Offers, Group Fan-Out Progress & Resilient Retries
+
+
+### Current branch
+`dev` (uncommitted modifications).
+
+### Last verified build
+With JDK 21:
+- `:core:messaging:testAndroidHostTest` passed.
+- `:core:transfer:testAndroidHostTest` passed.
+- `:core:calling:testDebugUnitTest` passed.
+- `:core:engine:compileAndroidMain` passed.
+- `:app:compileDebugSources` passed.
+- `:app:assembleDebug` built successfully.
+
+### Last change
+- **Fixed 1-to-1 Chat Transfers Stalling at 0%:**
+  - In `DiscoveryEngineHolder.kt` and `DataChannelRouter`, invoked `onAttachmentStarted` (`chatImpl.onInboundAttachment`) on `ReceiveEvent.SessionStarted`. Inbound offer bubbles with Accept and Decline buttons now appear immediately in the receiver's chat thread, allowing manual acceptance when auto-download is disabled.
+- **Fixed Group Chat Media Sending & Progress Tracking:**
+  - Inserted group media offer bubbles in Room immediately upon `GroupWireFrame.GroupMedia` arrival in `RealFlashChatRepository.kt`.
+  - Added `MessageDao.updateGroupContext` to atomically transition provisional 1-to-1 attachment rows into the group conversation if binary `FILE_START` arrives before `GroupMedia`.
+  - Added `groupMessageTransfers` and `transferToGroupMessage` mappings to link shared group message IDs with per-recipient transfer IDs.
+  - In `applyAttachment`, aggregated status, average progress, cumulative speed, max ETA, and local path across recipient transfers so the sender bubble tracks live multi-peer progress.
+  - In `pacedAttachmentProgress.collect`, stamped completed local paths on both `transferId` and `groupMsgId`.
+- **Fixed Retry Deadlocks & Failures:**
+  - In `RealFlashTransferRepository.kt`, updated `resumeTransfer` to relaunch sending transfers whenever `!liveSender` rather than returning a silent no-op.
+  - In `RealFlashTransferRepository.kt`, handled `Offered` inbound transfers by emitting `ACTION_ACCEPT`.
+  - In `relaunchSend`, re-armed `pauseIntents` only if `requireReceiverAcceptance && transfer.bytesDone == 0L`.
+  - In `DiscoveryEngineHolder.kt` and `Flash.kt`, sent `ACTION_RESUME` back to the sender peer upon `isResumableInboundRetry` so retried senders unpause immediately.
+  - In `MainActivity.kt`, updated `onRetryTransfer` to query `chatRepository.getRecipientTransferIds(transferId)` and resume all recipient transfers in group chats.
+
+### Recommended next task
+Field test file transfers in 1-to-1 and group chats across physical Android devices over LAN.
+
+## 2026-09-09 — Image & Video Preview, MKV/MP4 Video Thumbnails, In-App Media Viewer & Playback
+
+### Current branch
+`dev` (uncommitted modifications).
+
+### Last verified build
+With JDK 21:
+- `:ui:chat:jvmTest` passed.
+- `:core:messaging:testAndroidHostTest` passed.
+- `:core:calling:test` passed.
+- `:ui:callui:testDebugUnitTest` passed.
+- `:app:compileDebugSources` passed.
+- `installDebug` installed on physical device `ZX89924000194` (`V760`).
+
+### Last change
+- **Fixed Image Preview & Missing Thumbnails:**
+  - Resolved `openStream` failure on `file://` URIs in `FlashImageDecoder.android.kt` by parsing file path and opening directly via `File(path).inputStream()`, eliminating `FileNotFoundException: No content provider: file:///...` on Android 10+.
+  - Added `resolveEffectiveMime` in `RealFlashChatRepository.kt` to infer actual MIME type from filename/path when `attachmentMime` is generic (`application/octet-stream`, `*/*`, or blank).
+  - Enhanced `FlashFilePicker.android.kt` `resolveFileMetadata` to infer and append missing extensions via `contentResolver.getType(uri)`.
+- **Added Full Video Preview & MKV/MP4/WebM/MOV Support:**
+  - Implemented `MediaMetadataRetriever` frame extraction using `ParcelFileDescriptor` for `content://` URIs and file descriptors for local files in `FlashImageDecoder.android.kt`.
+  - Added keyframe fallback in `scaledFrame` (tries `VIDEO_FRAME_TIME_US` with `OPTION_CLOSEST_SYNC`, then `0L` with `OPTION_CLOSEST`, then `retriever.frameAtTime`), guaranteeing thumbnail frames for MKV, WebM, and short video clips.
+  - Added explicit MIME mapping for `.mkv` (`video/x-matroska`), `.mp4`, `.webm`, `.mov`, `.avi`, `.ts`, `.flv`, `.3gp` in `MainActivity.kt` and `RealFlashChatRepository.kt`.
+- **Integrated Full-Screen Media Viewer for Videos (`FlashConversationScreen.kt` & `FlashMediaViewer.kt`):**
+  - Tapping a video thumbnail in chat messages now opens `FlashMediaViewer`, showing full-screen preview, zoom, swipeable album, sender name, timestamp, and centered circular play button.
+  - Tapping play launches system video player with `openAttachment`.
+  - Added `video/*` intent fallback in `openAttachment` for MKV and formats where third-party video players only register on `video/*`.
+  - Enhanced `saveMediaToGallery` to correctly save MKV and other video formats with proper extensions.
+
+### Recommended next task
+Field test video and image sending/receiving and playback across physical devices over LAN.
+
+## 2026-09-09 — Group Voice Note NetworkOnMainThread Fix, Group Call Header Buttons & Cleaned Search
+
+### Current branch
+`dev` (uncommitted modifications).
+
+### Last verified build
+With JDK 21:
+- `:ui:chat:jvmTest` passed.
+- `:core:messaging:testAndroidHostTest` passed.
+- `:core:calling:test` passed.
+- `:ui:callui:testDebugUnitTest` passed.
+- `:app:compileDebugSources` passed.
+- `installDebug` installed on physical device `ZX89924000195` (`V760`).
+
+### Last change
+- **Fixed `NetworkOnMainThreadException` during voice note/attachment sending:** Dispatched `onSendFile` and `onSendVoiceMessage` to `scope.launch(Dispatchers.IO)`. Added defensive `Looper.getMainLooper()` checks with `runBlocking(Dispatchers.IO)` in `transportSink` and `groupTransportSink` in `DiscoveryEngineHolder.kt`.
+- **Fixed missing Voice and Video Call icons in group chat headers:** Changed `showCallActions = true` for group chat headers in `RealFlashChatRepository.kt`.
+- **Cleaned conversation header:** Removed the redundant standalone search icon button from `FlashChatHeaderActions` in `FlashChatHeader.kt` (search is in the 3-dots conversation menu).
+
+### Recommended next task
+Field test group voice notes and group calls on physical devices over LAN.
+
+## 2026-09-09 — Group Calling (N participants) & 3-Dots Menu Alignment
+
+### Current branch
+`dev` (uncommitted modifications).
+
+### Last verified build
+With JDK 21:
+- `:core:calling:test` passed.
+- `:ui:callui:testDebugUnitTest` passed.
+- `:ui:chat:jvmTest` passed.
+- `:app:testDebugUnitTest` passed.
+
+### Last change
+- Fixed 3-dots conversation menu alignment in `FlashChatHeader.kt` and `FlashConversationScreen.kt` using an in-anchor `menuContent` slot; applied Flash design system custom styling and animations.
+- Added group call wire frames (`GroupInvite`, `GroupAccept`, `GroupDecline`, `GroupJoin`, `GroupHangup`) to `CallWireFrame.kt` and `CallFrameCodec.kt`.
+- Built `FlashGroupCallSession.kt` supporting decentralized $N$-participant full-mesh WebRTC calling with glare-free offer election, independent per-peer legs, seamless member departure, solo grace timeout, and disconnect resilience.
+- Integrated `FlashGroupCallSession` into `CallCoordinator.kt` and hooked group calls into `MainActivity.kt`.
+- Completely redesigned `FlashCallScreen.kt`:
+  - Answering UI: Large 72dp action buttons with 32dp icons (`FlashLargeCallButton`), 48dp separation, and clean "Decline" / "Accept" text labels.
+  - Call identity: Multi-tier ambient breathing halo (172dp outer, 144dp inner) with prominent 96dp avatar.
+  - Active call controls: Elegant floating dock with frosted `backgroundSurfaceStrong`, hairline border, `radius24` corners, and 54dp control buttons with active accent highlights.
+  - Group call grid: Participant roster tiles with dynamic speaking halos, mute badges, and status indicators.
+- Enabled call buttons in group chat headers in `FlashChatHeader.kt`.
+
+### Recommended next task
+Perform multi-device physical testing of group voice/video calling with 3+ devices.
+
+
 ## 2026-09-09 — F6.3 storage usage complete, staged, uncommitted
 
 ### Current branch

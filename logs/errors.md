@@ -1,5 +1,201 @@
-﻿
+
 # Error Log
+
+## ERROR-043 — Redownloading Completed Transfers & Voice Notes on Wi-Fi Reconnect (RESOLVED)
+
+### Date
+2026-09-09
+
+### Area
+Inbound transfer handling / Wi-Fi reconnect / Voice note idempotency
+
+### Symptoms
+When a device disconnected from Wi-Fi and reconnected, voice messages and file attachments that had already been successfully received and completed began redownloading, overwriting local files and causing unnecessary transfer traffic.
+
+### Root cause
+In `DiscoveryEngineHolder.kt` and `Flash.kt`, incoming transfers (`ReceiveEvent.SessionStarted`) were unconditionally accepted and processed without checking whether the transfer ID or target file already existed on disk with the full byte length or was previously marked `Completed` in Room.
+
+### Working fix
+Added an upfront idempotency check in `handleInboundBinary`:
+1. Check if the incoming `transferId` is already tracked as `FlashTransferState.Completed` or `destinationFile.exists() && destinationFile.length() == totalBytes`.
+2. If completed, immediately respond with `ChunkFrame.Complete(verified = true)` to satisfy the sender without downloading chunks, and skip creating a new file sink or overwriting the existing content.
+
+### Verification
+- Tested with `:core:transfer:testAndroidHostTest`.
+- Build verification passed with `:app:assembleDebug`.
+
+### Related files
+- `app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt`
+- `core/engine/src/androidMain/kotlin/com/transfer/flash/core/engine/Flash.kt`
+
+### Status
+RESOLVED
+
+## ERROR-042 — Group Call 3rd Device Stuck in "Connecting" State & Early Trickle ICE Discard (RESOLVED)
+
+### Date
+2026-09-09
+
+### Area
+WebRTC Group Calling / P2P Mesh Roster / Trickle ICE Candidate Queueing
+
+### Symptoms
+In a 3-device group voice or video call, when the 3rd device joined, it got stuck in the "Connecting" state indefinitely and audio/video media was never established between all 3 devices.
+
+### Root cause
+1. **Missing Roster Propagation:** The initiator (D1) sent `GroupInvite` only containing the group ID and call properties. Non-initiators (D2 and D3) only knew about D1 when answering, because the invite frame did not carry the full member list. When D2 accepted, D1 did not broadcast a `GroupJoin` frame to other peers, so D2 and D3 were completely blind to each other's presence in the mesh.
+2. **Early Trickle ICE Candidate Discard:** WebRTC ICE candidates can arrive over the signalling channel before `setRemoteDescription` completes (especially during glare or fast network responses). In `FlashGroupCallSession.kt`, candidates arriving before the remote SDP description was set were simply dropped, leading to ICE connection failure / permanent "Connecting" state.
+
+### Working fix
+1. **Member List in GroupInvite:** Updated `CallWireFrame.GroupInvite` and `CallFrameCodec` to serialize and deserialize `members: List<String>`.
+2. **Mesh Roster Synchronization:** When any peer accepts, the coordinator forwards `GroupJoin` to all other call participants. In non-initiator sessions, members in `GroupInvite` are automatically seeded into `knownMembers`, initiating P2P mesh legs to all peers with tie-breaking offer election (`localDeviceId > remotePeerId`).
+3. **Trickle ICE Buffering:** Added `pendingIce: ArrayDeque<IceCandidate>` and `var remoteDescriptionSet: Boolean` to `GroupLeg`. Early ICE candidates arriving before remote description is installed are queued in `pendingIce` and flushed immediately once `setRemoteDescription` completes.
+
+### Verification
+- `:core:calling:testDebugUnitTest` (all 8 tests pass including codec tests).
+- Codec serialization and deserialization verified with members list.
+
+### Related files
+- `core/calling/src/main/java/com/transfer/flash/core/calling/protocol/CallWireFrame.kt`
+- `core/calling/src/main/java/com/transfer/flash/core/calling/protocol/CallFrameCodec.kt`
+- `core/calling/src/main/java/com/transfer/flash/core/calling/FlashGroupCallSession.kt`
+- `core/calling/src/main/java/com/transfer/flash/core/calling/CallCoordinator.kt`
+
+### Status
+RESOLVED
+
+## ERROR-041 — High-Speed TCP DataChannel Fallback to Slow WebSocket & Socket Buffer Bottleneck (RESOLVED)
+
+### Date
+2026-09-09
+
+### Area
+Core Engine / Transport / DataChannelClient / Raw TCP Transfer / Throughput
+
+### Symptoms
+File transfers were noticeably slow (stuck at 1-3 MB/s instead of 40-80 MB/s over 5GHz Wi-Fi), and transfers took 60-80 seconds just to start or appeared sluggish.
+
+### Root cause
+1. **Target Device ID Inversion Bug:** In `DiscoveryEngineHolder.kt:514` and `Flash.kt:656`, when establishing a raw TCP data channel connection via `DataChannelClient.connect(host, port, targetDeviceId)`, the code passed its own local device ID:
+   ```kotlin
+   targetDeviceId = identity.deviceId.value // BUG: passed localId instead of remote peerId!
+   ```
+   On the receiving end, `DataChannelServer:102` verified:
+   ```kotlin
+   if (handshake.targetDeviceId != localDeviceId) {
+       rejectHandshake(socket, "Target device ID mismatch")
+   }
+   ```
+   Because `targetDeviceId` was the client's local ID (not the server's ID), the server rejected every incoming TCP connection!
+2. **Port Probing & WebSocket Fallback:** The client attempted connecting to up to 20 candidate ports, each taking several seconds before timing out or being rejected, delaying the transfer start by over a minute, after which it silently fell back to transferring data over the control WebSocket with 64 KB chunk frames.
+3. **Suboptimal Socket Buffers:** The default OS socket buffer sizes (typically 64 KB - 128 KB) and stream buffer sizes (8 KB) were severely throttling TCP window scaling on high-throughput Wi-Fi links.
+
+### Working fix
+1. **Target Device ID Fix:** Corrected `targetDeviceId` to pass `peerDeviceId` (the remote server's device ID) in both `DiscoveryEngineHolder.kt` and `Flash.kt`. Raw TCP connections now succeed instantly on the very first port probe (typically port 52144).
+2. **Socket Buffer Expansion:** In `DataChannelClient.kt` and `DataChannelServer.kt`, configured TCP socket send and receive buffers to 1 MB (`socket.sendBufferSize = 1024 * 1024; socket.receiveBufferSize = 1024 * 1024`) with `tcpNoDelay = true`.
+3. **Stream Buffer Tuning:** Increased stream buffer sizes to 256 KB (`262,144` bytes) in `DataChannelTransferSink` and `DataChannelTransferSource` to maximize bandwidth utilization and avoid CPU context switching overhead.
+
+### Verification
+- Tested compilation and unit tests: `:core:transfer:testAndroidHostTest` and `:app:compileDebugSources`.
+- Verified raw TCP handshake protocol.
+
+### Related files
+- `app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt`
+- `core/engine/src/androidMain/kotlin/com/transfer/flash/core/engine/Flash.kt`
+- `core/network/src/androidMain/kotlin/com/transfer/flash/core/network/datachannel/DataChannelClient.kt`
+- `core/network/src/androidMain/kotlin/com/transfer/flash/core/network/datachannel/DataChannelServer.kt`
+
+### Status
+RESOLVED
+
+## ERROR-040 — In-Chat Attachment Transfer Deadlocks, Missing Inbound Offer Bubble & Stalled Retries (RESOLVED)
+
+### Date
+2026-09-09
+
+### Area
+In-chat file transfers / Group media fanout / Transfer-to-Chat bridging / Retry resilience
+
+### Symptoms
+1. **1-to-1 Chat Stalled at 0%:** When sending a file in 1-to-1 chat, the sender stayed indefinitely at 0% ("Waiting for receiver to accept"), while the receiver saw nothing in the chat window. The transfer offer was visible in the separate Transfers tab, but in chat there was no bubble or accept/decline button.
+2. **Group File Sending Failed / Stalled:** In group chats, attachments failed after some time or showed up stalled. The sender bubble showed no live progress or speed/ETA.
+3. **Retry Broken:** Tapping "Tap to retry" on failed cards in group chat failed with "Transfer not found", while in 1-to-1 chat retry resulted in a silent no-op without re-streaming data.
+
+### Root cause
+1. **Missing Inbound Bubble Creation:** In `DiscoveryEngineHolder.kt`, `chatImpl.onInboundAttachment` was only called inside `acceptOffer`, never when `ReceiveEvent.SessionStarted` arrived. Since `autoDownloadFile = false` by default, files were never auto-accepted. The chat bubble was never inserted into Room, giving the receiver no UI to accept the offer. The sender parked waiting for `ACTION_RESUME` from receiver acceptance that could never be tapped.
+2. **Group Attachment Disconnect:** In `MainActivity.kt`, the sender created one group message bubble keyed by `sharedMessageId`, but `transfers.sendFile(...)` ran under individual `recipientTransferId`s. `progressByTransfer[sharedMessageId]` was null, so progress was never aggregated, and retrying tried to resume `sharedMessageId` (which didn't exist in `RealFlashTransferRepository`). On the receiver, `GroupWireFrame.GroupMedia` only parked in memory without inserting a chat bubble.
+3. **Retry & Relaunch Deadlocks:**
+   - In `RealFlashTransferRepository.kt`, `resumeTransfer` returned `Success(Unit)` as a no-op if `transfer.state` was `Transferring` or `Queued` even when `liveSender` was false (sender job had died).
+   - In `DiscoveryEngineHolder.kt` and `Flash.kt`, when `isResumableInboundRetry` resolved the receiver's sink, it never sent `ACTION_RESUME` back to the sender, leaving the relaunched sender parked at 0%.
+
+### Working fix
+1. **Immediate Inbound Offer Bubble:** In `DiscoveryEngineHolder.kt` and `DataChannelRouter`, invoked `onAttachmentStarted` (`chatImpl.onInboundAttachment`) upon `ReceiveEvent.SessionStarted`, immediately inserting the attachment card into Room with `AwaitingAcceptance` state and rendering "Accept" and "Decline" buttons.
+2. **Immediate Group Offer Bubble & Migration:** In `RealFlashChatRepository.kt`, inserted the `MessageEntity` in Room immediately upon `GroupMedia` receipt. Added `MessageDao.updateGroupContext` to atomically transition provisional 1-to-1 rows into the group conversation if `FILE_START` arrived before `GroupMedia`.
+3. **Group Attachment Progress Aggregation:** Mapped outbound group messages to their recipient transfer IDs (`groupMessageTransfers` and `transferToGroupMessage`). In `applyAttachment`, aggregated status, average progress, total throughput, and ETA across active recipient transfers for the sender's bubble.
+4. **Group Path Stamping:** In `pacedAttachmentProgress.collect`, stamped `attachmentPath` on both `transferId` and `groupMsgId`.
+5. **Relaunch on Dead Sender & Reseed Acceptance:** In `RealFlashTransferRepository.kt`, `resumeTransfer` now immediately relaunches sending transfers when `!liveSender`. In `relaunchSend`, re-seeds `pauseIntents` only when `requireReceiverAcceptance && transfer.bytesDone == 0L`.
+6. **Unpause on Retry Re-Offer:** In `DiscoveryEngineHolder.kt` and `Flash.kt`, sent `ACTION_RESUME` to the sender peer when `isResumableInboundRetry` fires.
+7. **Group Retry Lookup:** In `MainActivity.kt`, `onRetryTransfer` checks `chatRepository.getRecipientTransferIds(transferId)` and resumes each recipient transfer.
+
+### Verification
+- `:core:messaging:testAndroidHostTest` passed.
+- `:core:transfer:testAndroidHostTest` passed.
+- `:core:calling:testDebugUnitTest` passed.
+- `:core:engine:compileAndroidMain` passed.
+- `:app:compileDebugSources` and `:app:assembleDebug` passed.
+
+### Related files
+- `core/persistence/src/commonMain/kotlin/com/transfer/flash/core/persistence/db/dao/MessageDao.kt`
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/FlashChatRepository.kt`
+- `core/messaging/src/androidMain/kotlin/com/transfer/flash/core/messaging/RealFlashChatRepository.kt`
+- `core/transfer/src/commonMain/kotlin/com/transfer/flash/core/transfer/RealFlashTransferRepository.kt`
+- `app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt`
+- `core/engine/src/androidMain/kotlin/com/transfer/flash/core/engine/Flash.kt`
+- `app/src/main/java/com/transfer/flash/MainActivity.kt`
+
+### Status
+RESOLVED
+
+## ERROR-039 — NetworkOnMainThreadException during group voice note and media sending (RESOLVED)
+
+### Date
+2026-09-09
+
+### Area
+Group messaging / WebSocket transport / Android StrictMode
+
+### Symptoms
+When sending a voice note or media in a group conversation, the logcat reported:
+```text
+android.os.NetworkOnMainThreadException
+  at android.os.StrictMode$AndroidBlockGuardPolicy.onNetwork(StrictMode.java:1667)
+  at java.net.SocketOutputStream.socketWrite(SocketOutputStream.java:115)
+  at com.transfer.flash.core.network.ws.WebSocketCodec.writeFrame(WebSocketCodec.kt:118)
+  at com.transfer.flash.core.network.ws.WsConnection.send(WsConnection.kt:197)
+  at com.transfer.flash.core.network.ws.WsConnection.sendText(WsConnection.kt:132)
+  at com.transfer.flash.debug.DiscoveryEngineHolder$startEngineLocked$2$chatImpl$4.send(DiscoveryEngineHolder.kt:686)
+  at com.transfer.flash.core.messaging.RealFlashChatRepository.beginGroupAttachment(RealFlashChatRepository.kt:1448)
+```
+The write failed, triggering `close("Write failed")` on the WebSocket connection. The app briefly disconnected and reconnected, and the voice/file message was never delivered to group peers.
+
+### Root cause
+In `MainActivity.kt`, `onSendFile` and `onSendVoiceMessage` launched coroutines on `scope` (which defaulted to `Dispatchers.Main`). When `chatRepository.beginGroupAttachment(...)` was called, it executed `groupTransportSink` synchronously, which called `session.connection.sendText(...)`. This performed synchronous socket I/O on Android's UI thread, triggering StrictMode's `NetworkOnMainThreadException`.
+
+### Working fix
+1. In `MainActivity.kt`, explicitly dispatched `onSendFile`, `onSendVoiceMessage`, `onStartCall`, and `onStartVideoCall` to `scope.launch(Dispatchers.IO)`.
+2. In `DiscoveryEngineHolder.kt`, defensively checked `Looper.myLooper() == Looper.getMainLooper()` inside both `transportSink` and `groupTransportSink`. If called on the main thread, it hops to `runBlocking(Dispatchers.IO)` so socket writes never run on the UI thread under any circumstances.
+
+### Verification
+- Full test suites passed (`:ui:chat:jvmTest`, `:core:messaging:testAndroidHostTest`, `:core:calling:test`, `:ui:callui:testDebugUnitTest`, `:app:compileDebugSources`).
+- `installDebug` deployed and verified on physical Android device (`ZX89924000195` / `V760`).
+
+### Related files
+- `app/src/main/java/com/transfer/flash/MainActivity.kt`
+- `app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt`
+- `core/network/src/androidMain/kotlin/com/transfer/flash/core/network/ws/WsConnection.kt`
+
+### Status
+RESOLVED
 
 ## ERROR-037 — Group media intro used a transfer ID the transfer never used (RESOLVED in integration)
 
@@ -3079,3 +3275,72 @@ clean. On-device retest of create-group is part of the Phase 1A physical gate.
 
 ### Status
 RESOLVED at code level (2026-09-08); on-device confirmation folded into the Phase 1A gate.
+
+---
+
+## ERROR-039 — `NetworkOnMainThreadException` during voice note/attachment sending drops WebSocket session
+
+### Date
+2026-09-09
+
+### Area
+`:app` (`MainActivity.kt`), `:core:messaging`, `:core:network` (`DiscoveryEngineHolder.kt`)
+
+### Symptoms
+Sending an audio voice note or picked attachment triggered:
+```text
+android.os.NetworkOnMainThreadException
+    at com.transfer.flash.core.network.ws.WebSocketCodec.writeFrame(WebSocketCodec.kt:118)
+    at com.transfer.flash.core.network.ws.WsConnection.sendText(WsConnection.kt:132)
+```
+The WebSocket connection caught the exception as a fatal write failure and closed the session.
+
+### Root cause
+`onSendVoiceMessage` and `onSendFile` in `MainActivity.kt` were invoked directly from Compose event callbacks on the main thread and dispatched `beginGroupAttachment` / wire socket frames without hopping to `Dispatchers.IO`. In addition, `groupTransportSink` in `DiscoveryEngineHolder.kt` lacked defensive dispatcher protection when invoked from main thread coroutines.
+
+### Working fix
+1. Dispatched `onSendFile` and `onSendVoiceMessage` to `scope.launch(Dispatchers.IO)` in `MainActivity.kt`.
+2. Guarded `transportSink` and `groupTransportSink` in `DiscoveryEngineHolder.kt` to hop off the main thread if invoked from `Looper.getMainLooper()`.
+
+### Status
+RESOLVED
+
+---
+
+## ERROR-040 — Image previews not loading and video attachments (MP4/MKV) missing thumbnails and viewer integration
+
+### Date
+2026-09-09
+
+### Area
+`:ui:platform-shims` (`FlashImageDecoder.android.kt`, `FlashFilePicker.android.kt`), `:core:messaging` (`RealFlashChatRepository.kt`), `:ui:chat` (`FlashConversationScreen.kt`), `:app` (`MainActivity.kt`)
+
+### Symptoms
+- Sent and received images showed blank/gradient fallback placeholders instead of thumbnail previews.
+- Videos (especially `.mkv`, `.webm`, `.mov`, and short clips) showed generic document/file cards or failed to decode thumbnail frames.
+- Clicking a video thumbnail bypassed `FlashMediaViewer` and attempted an external `ACTION_VIEW` intent with `video/x-matroska`, frequently failing with "No app to open this file".
+
+### Root cause
+1. `FlashMediaDecoder.openStream` called `context.contentResolver.openInputStream(Uri.parse(source))` on `file://` URIs. On modern Android (API 29+), `ContentResolver` throws `FileNotFoundException: No content provider: file:///...` when passed a `file:` scheme.
+2. In `RealFlashChatRepository.applyAttachment`, if stored `attachmentMime` was generic (`*/*`, `application/octet-stream`, or blank), it never inferred the type from `attachmentName`. Thus `.mkv`, `.mp4`, `.jpg`, `.png` attachments fell through to generic file cards.
+3. `FlashImageDecoder.decodeVideoFrame` passed `content://` URIs directly to `retriever.setDataSource(context, uri)`. For SAF document URIs, this fails in the native mediaserver process (`status = 0x80000000`) because Binder permissions are not held across the process boundary; it requires `openFileDescriptor(uri, "r")` and `pfd.fileDescriptor`.
+4. `retriever.getScaledFrameAtTime(200_000L, OPTION_CLOSEST_SYNC, ...)` returned null for MKV, WebM, and short clips where no keyframe sits in the first 200ms.
+5. In `FlashConversationScreen.kt:588`, `onImageClick` had `if (image.isVideo) onOpenAttachment(...)` which completely bypassed `FlashMediaViewer`, and `openAttachment` lacked fallback to `video/*`.
+
+### Working fix
+1. In `FlashImageDecoder.android.kt`, updated `openStream` to parse `file://` URIs and read directly via `File(path).inputStream()`.
+2. In `FlashImageDecoder.android.kt`, updated `decodeVideoFrame` to use `openFileDescriptor(uri, "r")` with `pfd.fileDescriptor` for `content://` URIs and `FileInputStream.fd` for files.
+3. In `FlashImageDecoder.android.kt`, updated `scaledFrame` to fall back to `0L` with `OPTION_CLOSEST` and `retriever.frameAtTime`.
+4. In `RealFlashChatRepository.kt`, added `resolveEffectiveMime` to infer the MIME type from the file extension when the stored MIME is generic.
+5. In `FlashFilePicker.android.kt`, updated `resolveFileMetadata` to append the extension inferred from `contentResolver.getType(uri)` when the picked display name lacks a dot extension.
+6. In `FlashConversationScreen.kt`, updated `onImageClick` so that clicking any media tile (photo or video) opens `FlashMediaViewer`.
+7. In `MainActivity.kt`, added full extension mappings in `guessMimeType` and added `video/*` intent fallback in `openAttachment`.
+
+### Verification
+- Tested unit test suites: `:ui:chat:jvmTest`, `:core:messaging:testAndroidHostTest`, `:core:calling:test`, `:ui:callui:testDebugUnitTest`. All tests passed green.
+- Compiled debug sources (`:app:compileDebugSources`) without errors.
+- Installed APK via `installDebug` onto connected physical device `ZX89924000194` (`V760`).
+
+### Status
+RESOLVED
+

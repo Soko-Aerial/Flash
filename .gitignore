@@ -15,3 +15,5 @@ captures/
 
 # Logo source/generator (derived assets are committed into app/ + core:engine + art/ instead)
 logo-claude/
+New folder/
+logs/*.jsonl
