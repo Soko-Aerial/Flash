@@ -1,6 +1,46 @@
 
 # Error Log
 
+## ERROR-044 — Hotspot Host Inbound Call Reception Failure & Group Call Multi-Device Answering Regression (RESOLVED)
+
+### Date
+2026-09-09
+
+### Area
+WebRTC Mesh Group Calling / Android SoftAP Hotspot Auto-Discovery / Android 14+ FGS Compliance
+
+### Symptoms
+1. **Hotspot Asymmetry in Calling:** A phone hosting a Wi-Fi hotspot could call connected clients and the client received the call, but when the connected client called the hotspot host, the hotspotting device never received the call.
+2. **Multi-Device Group Call Answering Regression:** In a group call with 3 devices, when Device B answered, Leg A-B connected cleanly and showed latency/bandwidth badges. However, as soon as Device C answered, Device B's connected leg flipped back to "Connecting", destroying the connected status and latency badge.
+
+### Root cause
+1. **Hotspot Gateway Auto-Probe Gap:** Over an Android SoftAP hotspot, multicast mDNS packets are dropped, preventing NSD discovery from stations to the host. Although `LocalNetworkAddresses.ipv4Gateways()` detected the host's default gateway IP (`192.168.43.1`), `DiscoveryEngineHolder.runAutoConnectSweep` only dialed `discoveredEndpoints.value` (NSD). Stations never auto-connected to the host unless manually triggered via the Dev Console.
+2. **Android 14+ Foreground Service Restriction During Ringing:** `FlashCallService` declared only `microphone|camera` in `AndroidManifest.xml`. On Android 14 (API 34), claiming `microphone` while the app is in the background throws `SecurityException`. Falling back to `type = 0` (`FGS_TYPE_NONE`) threw `IllegalArgumentException: foregroundServiceType 0x00000000 is not a subset of any of the types in the manifest`. This caused promotion failure or system termination of the incoming call notification when the host was backgrounded or screen off.
+3. **Zero-Tolerance SendFrame Abort in Calling:** In `FlashCallSession.startOutgoing()`, if `sendFrame` returned false because the session was temporarily settling, the call terminated with `ERROR` in 0 ms.
+4. **Target Participant Overwrite in Group Join:** In `FlashGroupCallSession.onInboundFrame`, when Device A fanned out `GroupJoin(from = Device C)` to Device B, `onInboundFrame` received `peerId = Device A` (the transport forwarding peer). Line 279 looked up `legs[peerId]` instead of `legs[frame.from]`, overwriting Device A's leg with `CONNECTING` and failing to register Device C. Device B also re-broadcast `GroupJoin` in a loop.
+
+### Working fix
+1. **Hotspot Gateway Auto-Probe:** In `DiscoveryEngineHolder.kt`, `runAutoConnectSweep` now queries `LocalNetworkAddresses.ipv4Gateways()` and automatically dials `connectManual(gw, 0)` for any unestablished gateway, maintaining persistent sessions to the hotspot host on `PREFERRED_PORT` (45822).
+2. **Android 14+ FGS Compliance:** Added `connectedDevice` to `FlashCallService` in `AndroidManifest.xml`. Updated `FlashCallService.kt` to claim `FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE` while `RINGING` (permitted in background), upgrading to `MICROPHONE|CAMERA` only once the call transitions to `ACTIVE`/`CONNECTING` when user answers.
+3. **SendFrame Grace Wait:** Updated `sendFrame` in `DiscoveryEngineHolder.kt` to await an in-flight session connection for up to 2 seconds before aborting call invites.
+4. **Group Call Participant Leg Protection:** In `FlashGroupCallSession.kt`, `onInboundFrame` extracts `effectivePeerId` from `frame.from`, never regresses a `CONNECTED` leg to `CONNECTING`, targets `ensureLegConnected(effectivePeerId)` with the joining peer, and restricts `GroupJoin` propagation solely to direct `GroupAccept` events.
+
+### Verification
+- `:core:calling:testDebugUnitTest` passed with new tests `forwardedGroupJoin_doesNotCorruptHostConnectedState` and `forwardedGroupJoin_doesNotReBroadcastGroupJoin`.
+- `:app:compileDebugKotlin` and `:app:testDebugUnitTest` passed (all 154 tasks green).
+
+### Related files
+- `core/calling/src/main/java/com/transfer/flash/core/calling/FlashGroupCallSession.kt`
+- `core/calling/src/test/java/com/transfer/flash/core/calling/FlashGroupCallSessionTest.kt`
+- `app/src/main/AndroidManifest.xml`
+- `app/src/main/java/com/transfer/flash/calling/FlashCallService.kt`
+- `app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt`
+
+### Status
+RESOLVED
+
+
+
 ## ERROR-043 — Redownloading Completed Transfers & Voice Notes on Wi-Fi Reconnect (RESOLVED)
 
 ### Date
@@ -3343,4 +3383,51 @@ RESOLVED
 
 ### Status
 RESOLVED
+
+---
+
+## ERROR-041 — Full-screen image preview "Couldn't load image" failure & external video player intent kicking out of app
+
+### Date
+2026-09-09
+
+### Area
+`:ui:platform-shims` (`FlashImageDecoder.android.kt`, `FlashVideoSurface.android.kt`, `FlashVideoSurface.kt`), `:ui:chat` (`FlashMediaViewer.kt`, `FlashVideoPlayer.kt`, `FlashConversationScreen.kt`)
+
+### Symptoms
+- When viewing an image attachment in `FlashMediaViewer`, the full-screen view displayed "Couldn't load image" with a failure icon.
+- Tapping "Share" in the same viewer bottom bar successfully shared the file, confirming the file existed and was intact on disk.
+- Clicking a video message or attachment attempted to launch an external video player application via `ACTION_VIEW`, rather than playing the clip directly in the application.
+
+### Root cause
+1. **Full-Resolution Decode OutOfMemoryError in `FlashMediaViewer`:**
+   `FlashMediaViewerMath.MAX_DECODE_LONG_EDGE` was set to 4096 px. When decoding full camera photos (e.g. 4000x3000), `computeInSampleSize` returned `sample = 1`. This required a single contiguous 48 MB bitmap allocation (`ARGB_8888`), plus another 48 MB allocation during `applyExifRotation`. In Android ART runtime, heap fragmentation caused `OutOfMemoryError`, which was caught by `runCatching` in `FlashMediaDecoder.decode` and swallowed to `null`, resulting in `FlashMediaDecodeState(failed = true)` and "Couldn't load image".
+2. **Unbuffered `FileInputStream` Header Sniffing:**
+   `openStream` returned an unbuffered `FileInputStream`. When Skia/BitmapFactory sniffed format headers across the JNI boundary without stream rewinding support (`markSupported() == false`), `BitmapFactory.decodeStream` returned `null` or `outWidth = -1`.
+3. **Missing In-App Video Playback Surface:**
+   Video pages in `FlashMediaViewer` only rendered a still thumbnail frame with a play button that passed the URI out to `openAttachment`, launching external intents rather than playing within the app.
+
+### Working fix
+1. **Native File & FD Decoding (`FlashImageDecoder.android.kt`):**
+   - Implemented `resolveLocalFile(source)` to detect local files and invoke `BitmapFactory.decodeFile` directly via kernel descriptors instead of unbuffered JVM streams.
+   - For `content://` URIs, used `ParcelFileDescriptor` and `BitmapFactory.decodeFileDescriptor`.
+   - Wrapped fallback streams with `BufferedInputStream`.
+2. **Progressive OOM Retry Backoff (`FlashImageDecoder.android.kt`):**
+   - In both file and stream paths, wrapped decode attempts in a retry loop: on `OutOfMemoryError`, doubles `inSampleSize` (`sample *= 2`) and switches to `inPreferredConfig = RGB_565`.
+   - Added OOM handling in `applyExifRotation` to return the unrotated bitmap rather than failing if rotation allocation fails.
+3. **Viewer Long-Edge Budget (`FlashMediaViewer.kt`):**
+   - Capped `maxLongEdge` at 2048 px for full-screen viewer decoding, ensuring fast, razor-sharp 2x retina display on 1080p mobile panels without massive heap spikes.
+4. **In-App Video Playback (`FlashVideoSurface`, `FlashVideoPlayer`, `FlashMediaViewer`):**
+   - Created `FlashVideoSurface` shim using Android's native `VideoView` in Compose `AndroidView`.
+   - Built rich Compose `FlashVideoPlayer` with play/pause controls, seek timeline scrubber, time readouts, close button, and auto-hiding chrome.
+   - Embedded `FlashVideoPlayer` directly in `FlashMediaViewer`: tapping the play badge starts in-app playback; swiping away stops playback and releases decoders.
+   - Tapping video files or video messages in chat opens in-app playback immediately.
+
+### Verification
+- Unit test suites `:ui:chat:jvmTest`, `:ui:platform-shims:jvmTest`, and `:core:messaging:testAndroidHostTest` passed green.
+- Compiled debug sources (`:app:compileDebugKotlin`) with 0 errors.
+
+### Status
+RESOLVED
+
 

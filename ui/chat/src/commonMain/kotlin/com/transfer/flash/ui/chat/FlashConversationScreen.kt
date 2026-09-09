@@ -598,10 +598,25 @@ fun FlashConversationScreen(
                 },
                 onFileClick = { _, file ->
                     // A failed card advertises "Failed (Tap to retry)" and a Retry badge, so the
-                    // tap has to retry. It used to fall through to onOpenAttachment, i.e. try to
-                    // open a file that was never fully received — the retry affordance did nothing.
+                    // tap has to retry. Downloaded video files play in-app via FlashMediaViewer.
                     if (file.transferStatus == FlashFileTransferStatus.Failed) {
                         onRetryTransfer(file.id)
+                    } else if (file.mimeType.startsWith("video/") && file.localUri != null) {
+                        mediaViewerItems = listOf(
+                            FlashMediaViewerItem(
+                                image = FlashImageAttachmentUi(
+                                    id = file.id,
+                                    uri = file.localUri,
+                                    thumbUri = file.localUri,
+                                    mimeType = file.mimeType,
+                                    isVideo = true,
+                                ),
+                                senderName = file.name,
+                                timeLabel = "",
+                            ),
+                        )
+                        mediaViewerStartIndex = 0
+                        mediaViewerVisible = true
                     } else {
                         onOpenAttachment(file.localUri, file.mimeType, file.name)
                     }
@@ -770,6 +785,7 @@ fun FlashConversationScreen(
             FlashMediaViewer(
                 items = mediaViewerItems,
                 initialIndex = mediaViewerStartIndex,
+                initialPlayVideo = mediaViewerItems.getOrNull(mediaViewerStartIndex)?.image?.isVideo == true,
                 onDismiss = {
                     mediaViewerVisible = false
                 },

@@ -1,5 +1,62 @@
 # Current Handoff
 
+## 2026-09-09 — Image Preview Fix (OOM & Native Decode) & In-App Video Playback
+
+### Current branch
+`dev` (uncommitted modifications).
+
+### Last verified build
+With JDK 21 / JBR:
+- `:ui:chat:jvmTest` passed (all tests green).
+- `:ui:platform-shims:jvmTest` passed (all tests green).
+- `:core:messaging:testAndroidHostTest` passed (all tests green).
+- `:app:compileDebugKotlin` passed (build successful with 0 errors).
+- `:app:assembleDebug` passed (APK built successfully in 22s).
+- Verified installation on physical test device via `adb install` (Success on device `7831e0ce`).
+
+### Last change
+- **Image Preview Fix (OOM Prevention & Native Decoding):**
+  - Resolved `FlashMediaViewer` "Couldn't load image" issue where received images failed to render despite the file being intact and sharing properly.
+  - Replaced stream-based decoding on files with direct native `BitmapFactory.decodeFile` and `BitmapFactory.decodeFileDescriptor`, fixing header-sniffing failures.
+  - Implemented progressive OOM retry loop: on `OutOfMemoryError`, doubles `inSampleSize` (`sample *= 2`) and falls back to `RGB_565` rather than swallowing the error and failing.
+  - Capped full-screen viewer `maxLongEdge` at 2048 px (down from 4096 px) to avoid 50–100 MB heap allocations while maintaining crisp 2x retina clarity on 1080p phone displays.
+  - Added OOM handling around `Bitmap.createBitmap` in `applyExifRotation`.
+- **In-App Video Playback:**
+  - Created `FlashVideoSurface` shim (`commonMain`, `androidMain` via `VideoView`/`AndroidView`, `jvmMain` stub).
+  - Built interactive `FlashVideoPlayer` composable with play/pause toggle, seek slider, time readouts, close button, and auto-hiding chrome.
+  - Embedded `FlashVideoPlayer` directly in `FlashMediaViewer` and `FlashMediaPage`. Tapping the play button on a video page plays it directly in-app with sound and controls; swiping away stops playback and releases decoders.
+  - Tapping a video message in chat automatically launches playback in `FlashMediaViewer`.
+  - Tapping downloaded video attachments in chat cards opens in-app playback via `FlashMediaViewer`.
+
+### Recommended next task
+Verify image preview rendering of high-resolution camera photos and video playback across various codecs (MP4, MKV) on physical test devices.
+
+
+
+### Current branch
+`dev` (uncommitted modifications).
+
+### Last verified build
+With JDK 21 / JBR:
+- `:core:calling:testDebugUnitTest` passed (all tests green).
+- `:app:compileDebugKotlin` and `:app:testDebugUnitTest` passed (154 tasks, all green).
+
+### Last change
+- **Group Call Multi-Device Answering Regression Fix (`FlashGroupCallSession.kt`):**
+  - Resolved `effectivePeerId` from `frame.from` (instead of using transport intermediary `peerId`).
+  - Guarded leg state transition so an active `CONNECTED` leg is never regressed back to `CONNECTING` when an additional participant joins.
+  - Corrected `ensureLegConnected(effectivePeerId)` to connect to the actual participant.
+  - Restricted `GroupJoin` fanout strictly to direct `GroupAccept` events to eliminate broadcast storms and reflective echo loops.
+- **Hotspot Bidirectional Calling Optimization (`DiscoveryEngineHolder.kt`, `FlashCallService.kt`, `AndroidManifest.xml`):**
+  - Integrated automated IPv4 default gateway probing (`LocalNetworkAddresses.ipv4Gateways()`) directly into `runAutoConnectSweep`. Connected stations now auto-dial and maintain sessions to the hotspot host on `PREFERRED_PORT` (45822) without requiring manual Dev Console probing or mDNS.
+  - Fixed Android 14+ (API 34) Foreground Service compliance for incoming ringing calls in `FlashCallService`. Ringing calls claim `FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE` (declared in manifest) while in the background, preventing `SecurityException` / `IllegalArgumentException` crashes when the phone is hotspotting with screen off or backgrounded.
+  - Added a brief 2-second grace period in `sendFrame` for outgoing call invites so initiating a call while a session is finalizing connection does not immediately abort with `ERROR`.
+
+### Recommended next task
+Verify bidirectional calling and 3+ device group calling on physical devices across an Android mobile hotspot.
+
+
+
 ## 2026-09-09 — Archived Chats Screen, Unarchive Actions & Auto-Unarchive on New Message
 
 ### Current branch

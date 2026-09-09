@@ -155,6 +155,22 @@ internal object FlashMediaDecoder {
         return decoded
     }
 
+    private fun resolveLocalFile(source: String): File? = runCatching {
+        val file = when {
+            source.startsWith("file://") -> {
+                val path = Uri.parse(source).path ?: source.removePrefix("file://")
+                File(path)
+            }
+            source.startsWith("file:") -> {
+                val path = Uri.parse(source).path ?: source.removePrefix("file:").trimStart('/')
+                File(path)
+            }
+            !source.startsWith("content://") -> File(source)
+            else -> null
+        }
+        file?.takeIf { it.exists() && it.length() > 0L }
+    }.getOrNull()
+
     /**
      * Two-pass decode: bounds first, then the real thing at a power-of-two sample size. Uses the
      * caller-supplied sizing function — `:ui:chat`'s tested `FlashMediaViewerMath.computeInSampleSize`
@@ -167,16 +183,86 @@ internal object FlashMediaDecoder {
         lowColorDepth: Boolean,
         computeInSampleSize: (width: Int, height: Int, maxLongEdge: Int) -> Int,
     ): ImageBitmap? {
+        val localFile = resolveLocalFile(source)
+        if (localFile != null) {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(localFile.absolutePath, bounds)
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+            var sample = computeInSampleSize(bounds.outWidth, bounds.outHeight, maxLongEdge).coerceAtLeast(1)
+            val options = BitmapFactory.Options().apply {
+                if (lowColorDepth) inPreferredConfig = Bitmap.Config.RGB_565
+            }
+            var bitmap: Bitmap? = null
+            while (bitmap == null && sample <= 32) {
+                options.inSampleSize = sample
+                try {
+                    bitmap = BitmapFactory.decodeFile(localFile.absolutePath, options)
+                } catch (oom: OutOfMemoryError) {
+                    sample *= 2
+                    options.inPreferredConfig = Bitmap.Config.RGB_565
+                }
+            }
+            if (bitmap == null) return null
+            return applyExifRotation(context, source, bitmap, localFile).asImageBitmap()
+        }
+
+        // For content:// URIs, prefer ParcelFileDescriptor for direct seekable native decoding
+        if (source.startsWith("content://")) {
+            val uri = Uri.parse(source)
+            var pfd: ParcelFileDescriptor? = null
+            try {
+                pfd = runCatching { context.contentResolver.openFileDescriptor(uri, "r") }.getOrNull()
+                val fd = pfd?.fileDescriptor
+                if (fd != null) {
+                    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    BitmapFactory.decodeFileDescriptor(fd, null, bounds)
+                    if (bounds.outWidth > 0 && bounds.outHeight > 0) {
+                        var sample = computeInSampleSize(bounds.outWidth, bounds.outHeight, maxLongEdge).coerceAtLeast(1)
+                        val options = BitmapFactory.Options().apply {
+                            if (lowColorDepth) inPreferredConfig = Bitmap.Config.RGB_565
+                        }
+                        var bitmap: Bitmap? = null
+                        while (bitmap == null && sample <= 32) {
+                            options.inSampleSize = sample
+                            try {
+                                bitmap = BitmapFactory.decodeFileDescriptor(fd, null, options)
+                            } catch (oom: OutOfMemoryError) {
+                                sample *= 2
+                                options.inPreferredConfig = Bitmap.Config.RGB_565
+                            }
+                        }
+                        if (bitmap != null) {
+                            return applyExifRotation(context, source, bitmap, null, fd).asImageBitmap()
+                        }
+                    }
+                }
+            } finally {
+                runCatching { pfd?.close() }
+            }
+        }
+
+        // Fallback: Buffered stream decoding with progressive sample backoff
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         openStream(context, source)?.use { BitmapFactory.decodeStream(it, null, bounds) } ?: return null
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        var sample = computeInSampleSize(bounds.outWidth, bounds.outHeight, maxLongEdge).coerceAtLeast(1)
         val options = BitmapFactory.Options().apply {
-            inSampleSize = computeInSampleSize(bounds.outWidth, bounds.outHeight, maxLongEdge)
             if (lowColorDepth) inPreferredConfig = Bitmap.Config.RGB_565
         }
-        val bitmap = openStream(context, source)?.use {
-            BitmapFactory.decodeStream(it, null, options)
-        } ?: return null
+        var bitmap: Bitmap? = null
+        while (bitmap == null && sample <= 32) {
+            options.inSampleSize = sample
+            bitmap = try {
+                openStream(context, source)?.use { BitmapFactory.decodeStream(it, null, options) }
+            } catch (oom: OutOfMemoryError) {
+                null
+            }
+            if (bitmap == null) {
+                sample *= 2
+                options.inPreferredConfig = Bitmap.Config.RGB_565
+            }
+        }
+        if (bitmap == null) return null
         return applyExifRotation(context, source, bitmap).asImageBitmap()
     }
 
@@ -287,15 +373,36 @@ internal object FlashMediaDecoder {
      * the bitmap alone rather than guessing — a missing tag and an unreadable one both mean
      * "no rotation information", and rotating on a guess is worse than not rotating.
      */
-    private fun applyExifRotation(context: Context, source: String, bitmap: Bitmap): Bitmap {
+    private fun applyExifRotation(
+        context: Context,
+        source: String,
+        bitmap: Bitmap,
+        file: File? = null,
+        fd: java.io.FileDescriptor? = null,
+    ): Bitmap {
         val orientation = runCatching {
-            openStream(context, source)?.use { stream ->
-                ExifInterface(stream).getAttributeInt(
+            when {
+                file != null -> ExifInterface(file.absolutePath).getAttributeInt(
                     ExifInterface.TAG_ORIENTATION,
                     ExifInterface.ORIENTATION_NORMAL,
                 )
+                fd != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N -> ExifInterface(fd).getAttributeInt(
+                    ExifInterface.TAG_ORIENTATION,
+                    ExifInterface.ORIENTATION_NORMAL,
+                )
+                else -> openStream(context, source)?.use { stream ->
+                    ExifInterface(stream).getAttributeInt(
+                        ExifInterface.TAG_ORIENTATION,
+                        ExifInterface.ORIENTATION_NORMAL,
+                    )
+                } ?: ExifInterface.ORIENTATION_NORMAL
             }
-        }.getOrNull() ?: return bitmap
+        }.getOrDefault(ExifInterface.ORIENTATION_NORMAL)
+
+        if (orientation == ExifInterface.ORIENTATION_NORMAL || orientation == ExifInterface.ORIENTATION_UNDEFINED) {
+            return bitmap
+        }
+
         val matrix = Matrix()
         when (orientation) {
             ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
@@ -313,9 +420,11 @@ internal object FlashMediaDecoder {
             }
             else -> return bitmap
         }
-        val rotated = runCatching {
+        val rotated = try {
             Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
-        }.getOrNull() ?: return bitmap
+        } catch (oom: OutOfMemoryError) {
+            bitmap
+        }
         if (rotated !== bitmap) bitmap.recycle()
         return rotated
     }
@@ -327,12 +436,16 @@ internal object FlashMediaDecoder {
      */
     private fun openStream(context: Context, source: String): InputStream? = runCatching {
         when {
-            source.startsWith("content://") -> context.contentResolver.openInputStream(Uri.parse(source))
+            source.startsWith("content://") -> context.contentResolver.openInputStream(Uri.parse(source))?.let { java.io.BufferedInputStream(it) }
             source.startsWith("file://") -> {
                 val path = Uri.parse(source).path ?: source.removePrefix("file://")
-                File(path).takeIf { it.exists() && it.length() > 0L }?.inputStream()
+                File(path).takeIf { it.exists() && it.length() > 0L }?.inputStream()?.let { java.io.BufferedInputStream(it) }
             }
-            else -> File(source).takeIf { it.exists() && it.length() > 0L }?.inputStream()
+            source.startsWith("file:") -> {
+                val path = Uri.parse(source).path ?: source.removePrefix("file:").trimStart('/')
+                File(path).takeIf { it.exists() && it.length() > 0L }?.inputStream()?.let { java.io.BufferedInputStream(it) }
+            }
+            else -> File(source).takeIf { it.exists() && it.length() > 0L }?.inputStream()?.let { java.io.BufferedInputStream(it) }
         }
     }.onFailure { e ->
         android.util.Log.w("FlashMediaDecoder", "Failed to openStream for $source", e)

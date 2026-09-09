@@ -235,6 +235,7 @@ fun FlashMediaViewer(
     initialIndex: Int,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
+    initialPlayVideo: Boolean = false,
     onShare: (Int) -> Unit = {},
     onSave: (Int) -> Unit = {},
     onForward: (Int) -> Unit = {},
@@ -313,6 +314,8 @@ fun FlashMediaViewer(
                 FlashMediaPage(
                     item = item,
                     zoomState = zoomState,
+                    isCurrentPage = (pagerState.currentPage == page),
+                    initialPlayVideo = (initialPlayVideo && page == initialIndex),
                     onToggleChrome = { chromeVisible = !chromeVisible },
                     onPlay = { onPlayVideo(page) },
                     onDismissDrag = { dragY -> dismissDragPx.value = dragY },
@@ -418,12 +421,36 @@ private const val ChromeTextAlpha = 0.92f
 private fun FlashMediaPage(
     item: FlashMediaViewerItem,
     zoomState: FlashZoomState,
+    isCurrentPage: Boolean,
+    initialPlayVideo: Boolean,
     onToggleChrome: () -> Unit,
     onPlay: () -> Unit,
     onDismissDrag: (Float) -> Unit,
     onDismissSettle: () -> Unit,
     onDismissConfirm: () -> Unit,
 ) {
+    var isPlayingVideo by remember(item.image.id, initialPlayVideo) {
+        mutableStateOf(item.image.isVideo && initialPlayVideo)
+    }
+
+    // Stop playback when swiped away
+    LaunchedEffect(isCurrentPage) {
+        if (!isCurrentPage && isPlayingVideo) {
+            isPlayingVideo = false
+        }
+    }
+
+    if (isPlayingVideo && item.image.isVideo) {
+        val videoSource = item.image.uri ?: item.image.thumbUri ?: ""
+        FlashVideoPlayer(
+            uri = videoSource,
+            modifier = Modifier.fillMaxSize(),
+            autoPlay = true,
+            onClose = { isPlayingVideo = false },
+        )
+        return
+    }
+
     val imageDecoder = rememberFlashImageDecoder()
     val motion = FlashTheme.motion
     val minimalChrome = FlashTheme.minimalChrome
@@ -440,22 +467,13 @@ private fun FlashMediaPage(
     ) {
         val source = item.image.uri ?: item.image.thumbUri
         value = withContext(Dispatchers.IO) {
-            // Shared with the in-bubble tiles, which buys this page three things it lacked: an EXIF
-            // rotation pass (a portrait photo used to open sideways), a frame for video pages (a
-            // BitmapFactory decode of an mp4 returns null, so swiping onto a clip hit `failed`), and
-            // one code path for the sample-size guard. memoize = false because a 4096-edge bitmap
-            // would evict the entire thumbnail cache to store something nobody asks for twice.
-            //
-            // ERROR-033: below HIGH this is the single largest allocation the app makes, and at 4096
-            // it does not fit — see MAX_DECODE_LONG_EDGE_MINIMAL. The reduced ceiling is still ~3x a
-            // 480 px panel, so it only goes soft near the 4x zoom limit, which beats not decoding.
             imageDecoder.decode(
                 source = source,
                 isVideo = item.image.isVideo,
                 maxLongEdge = if (minimalChrome) {
                     FlashMediaViewerMath.MAX_DECODE_LONG_EDGE_MINIMAL
                 } else {
-                    FlashMediaViewerMath.MAX_DECODE_LONG_EDGE
+                    2048
                 },
                 memoize = false,
                 lowColorDepth = minimalChrome,
@@ -656,7 +674,12 @@ private fun FlashMediaPage(
                     .align(Alignment.Center)
                     .size(FlashDimensions.minTouchTarget)
                     .background(Color(0x99000000), CircleShape)
-                    .clickable(onClick = onPlay)
+                    .clickable(
+                        onClick = {
+                            isPlayingVideo = true
+                            onPlay()
+                        },
+                    )
                     .semantics { role = Role.Button },
             ) {
                 FlashIcon(

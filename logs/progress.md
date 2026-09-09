@@ -1,5 +1,101 @@
 # Progress Log
 
+## 2026-09-09 — Image Preview Fix (OOM & Native Decode) & In-App Video Playback
+
+### Worked on
+- **Image Preview "Couldn't load image" Fix:**
+  1. Resolved failure in `FlashMediaViewer` where images failed to decode and showed "Couldn't load image" despite the file existing and sharing successfully via external apps.
+  2. Implemented direct native file decoding (`BitmapFactory.decodeFile`) and FileDescriptor decoding (`BitmapFactory.decodeFileDescriptor`), eliminating `FileInputStream` header-sniffing failures on unbuffered streams.
+  3. Added progressive `inSampleSize` backoff retry loop with automatic fallback to `RGB_565` upon `OutOfMemoryError`, preventing swallowed OOMs from failing image rendering on high-resolution camera photos.
+  4. Capped full-screen decode long-edge budget in `FlashMediaPage` to 2048 px (down from 4096 px) to avoid 50–100 MB heap allocations while maintaining crisp 2x retina oversampling.
+  5. Added `OutOfMemoryError` safety to EXIF rotation transformation in `applyExifRotation`.
+- **In-App Video Playback:**
+  1. Implemented native in-app video player shim (`FlashVideoSurface` and `FlashVideoPlayer`) using Android `VideoView` and Compose `AndroidView`.
+  2. Integrated in-app video playback directly into `FlashMediaViewer` and `FlashMediaPage`: tapping the Play badge plays the video directly inside the app with audio, timeline scrub slider, play/pause controls, time formatting (`mm:ss / mm:ss`), and auto-hiding chrome.
+  3. Supported auto-playback when opening a video message from chat.
+  4. Wired downloaded video attachments (`file.mimeType.startsWith("video/")`) in `FlashConversationScreen.onFileClick` to open directly in `FlashMediaViewer` rather than kicking users to external apps.
+
+### Changed
+- `ui/platform-shims/src/commonMain/kotlin/com/transfer/flash/ui/shims/FlashVideoSurface.kt`:
+  - Created multiplatform expect composable `FlashVideoSurface`.
+- `ui/platform-shims/src/jvmMain/kotlin/com/transfer/flash/ui/shims/FlashVideoSurface.jvm.kt`:
+  - Created desktop JVM stub for `FlashVideoSurface`.
+- `ui/platform-shims/src/androidMain/kotlin/com/transfer/flash/ui/shims/FlashVideoSurface.android.kt`:
+  - Created Android actual for `FlashVideoSurface` using `VideoView`, supporting content URIs and file paths, media state callbacks, seeking, volume, and lifecycle release.
+- `ui/platform-shims/src/androidMain/kotlin/com/transfer/flash/ui/shims/FlashImageDecoder.android.kt`:
+  - Added `resolveLocalFile` for robust path resolution.
+  - Upgraded `decodeImage` with native `decodeFile`, `ParcelFileDescriptor` for content URIs, and progressive OOM retry backoff (`sample *= 2`).
+  - Added `BufferedInputStream` wrapping for streams.
+  - Added OOM protection in `applyExifRotation`.
+- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashVideoPlayer.kt`:
+  - Created interactive Compose video player with play/pause, timeline scrubber, time readouts, close button, and auto-hiding controls overlay.
+- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashMediaViewer.kt`:
+  - Added `initialPlayVideo` support to `FlashMediaViewer` and `FlashMediaPage`.
+  - Embedded `FlashVideoPlayer` on video pages when active.
+  - Tapping play badge starts in-app playback; swiping away stops playback and releases decoders.
+  - Capped `maxLongEdge` at 2048 px for full-screen viewer.
+- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashConversationScreen.kt`:
+  - Tapping video files routes to `FlashMediaViewer` for in-app playback.
+  - Passed `initialPlayVideo` so tapping video tiles in chat immediately starts playback in the viewer.
+
+### Verification
+- `:ui:chat:jvmTest` passed (all tests green).
+- `:ui:platform-shims:jvmTest` passed (all tests green).
+- `:core:messaging:testAndroidHostTest` passed (all tests green).
+- `:app:compileDebugKotlin` passed (build successful with 0 errors).
+- `:app:assembleDebug` passed (packaged APK successfully in 22s).
+- Physical device install verified: `adb -s 7831e0ce install -r app-debug.apk` completed with `Success`.
+
+### Remaining
+- Test playback of different video container formats (e.g. MKV, MP4, WebM) on physical test devices.
+
+### Next AI
+- Continue with UI research and component sequence (`docs/ui/`).
+
+
+
+### Worked on
+- **Hotspot Bidirectional Calling:**
+  1. Enabled seamless incoming calls on Wi-Fi hotspot hosts when called by connected stations/clients.
+  2. Fixed Android 14+ (API 34) Foreground Service compliance for incoming ringing calls in `FlashCallService`, preventing background `SecurityException` / `IllegalArgumentException` rejections when the phone is hotspotting.
+  3. Integrated automated IPv4 default gateway auto-probing into `runAutoConnectSweep` in `DiscoveryEngineHolder`, ensuring clients connected to an Android SoftAP automatically dial and maintain WebSocket sessions to the host without mDNS dependencies.
+  4. Added brief grace wait in `sendFrame` for outgoing call invites so dialing while a session is settling does not immediately abort with `ERROR`.
+- **Group Call Multi-Device Answering Bug:**
+  1. Fixed regression where answering a second or third peer in a group call reverted an already-connected peer leg back to "Connecting" and removed their latency/stats badge.
+  2. Prevented `GroupJoin` from echoing back into a broadcast storm and correctly routed forwarded wire frames to their originating `from` participant ID rather than the intermediary forwarding peer.
+
+### Changed
+- `core/calling/src/main/java/com/transfer/flash/core/calling/FlashGroupCallSession.kt`:
+  - `onInboundFrame`: extracts `effectivePeerId` from `frame.from` (falling back to transport `peerId`).
+  - Ignores frames originating from `localDeviceId`.
+  - For `GroupAccept` and `GroupJoin`: prevents regressing `leg.state` from `CONNECTED` to `CONNECTING`.
+  - Calls `ensureLegConnected(effectivePeerId)` with the actual joining participant.
+  - Limits mesh propagation of `GroupJoin` solely to direct incoming `GroupAccept` frames to prevent reflective echo loops.
+  - Routes `Offer`, `Answer`, `IceCandidate`, `GroupDecline`, and `GroupHangup` to `effectivePeerId`.
+  - Added test helper methods for inspecting and testing leg states.
+- `app/src/main/AndroidManifest.xml`:
+  - Added `connectedDevice` to `android:foregroundServiceType` for `FlashCallService`.
+- `app/src/main/java/com/transfer/flash/calling/FlashCallService.kt`:
+  - Updated `grantedForegroundServiceType`: claims `FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE` while `RINGING` (or API 34+ fallback), deferring `MICROPHONE`/`CAMERA` claims until `ACTIVE`/`CONNECTING` when user answers and mic is active.
+  - Updated `promoteToForeground`: falls back to `FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE` if typed promotion is rejected in background.
+- `app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt`:
+  - Added default IPv4 gateway probing in `runAutoConnectSweep` via `LocalNetworkAddresses(context).ipv4Gateways()`, auto-dialing the hotspot host on `PREFERRED_PORT`.
+  - Updated `sendFrame` lambda for `callingImpl` to briefly await in-flight session connection (up to 2000 ms) for `Invite`/`GroupInvite` before aborting.
+- `core/calling/src/test/java/com/transfer/flash/core/calling/FlashGroupCallSessionTest.kt`:
+  - Added tests `forwardedGroupJoin_doesNotCorruptHostConnectedState` and `forwardedGroupJoin_doesNotReBroadcastGroupJoin`.
+
+### Verification
+- `:core:calling:testDebugUnitTest` passed (all tests green including new group call regression tests).
+- `:app:compileDebugKotlin` and `:app:testDebugUnitTest` passed (154 tasks, build successful).
+
+### Remaining
+- Verify end-to-end on physical hardware across active Android Wi-Fi hotspot and station peers.
+
+### Next AI
+- Continue with UI research and component sequence (`docs/ui/`).
+
+
+
 ## 2026-09-09 — Archived Chats Screen, Unarchive Actions & Auto-Unarchive on New Message
 
 ### Worked on
