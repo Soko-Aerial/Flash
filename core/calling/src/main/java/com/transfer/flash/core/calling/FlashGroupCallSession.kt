@@ -136,6 +136,13 @@ public class FlashGroupCallSession(
         var remoteDescriptionSet: Boolean = false,
     )
 
+    internal fun getLegStateForTesting(peerId: String): FlashCallParticipantState? = legs[peerId]?.state
+
+    internal fun setLegStateForTesting(peerId: String, state: FlashCallParticipantState) {
+        legs[peerId]?.state = state
+        refreshUiState()
+    }
+
     /** Sets up an incoming ringing group call leg from the inviting caller. */
     public fun startIncomingRinging(peerId: String, callerName: String) {
         val resolvedName = resolveName(peerId, callerName)
@@ -257,12 +264,15 @@ public class FlashGroupCallSession(
     public suspend fun onInboundFrame(frame: CallWireFrame, peerId: String) {
         if (isEnded) return
 
+        val effectivePeerId = if (frame.from.isNotBlank()) frame.from else peerId
+        if (effectivePeerId == localDeviceId) return
+
         when (frame) {
             is CallWireFrame.GroupInvite -> {
                 // Peer invited us to this group call (inbound ringing)
                 sessionMutex.withLock {
-                    legs.getOrPut(peerId) {
-                        GroupLeg(peerId = peerId, peerName = resolveName(peerId, frame.callerName), state = FlashCallParticipantState.INVITED)
+                    legs.getOrPut(effectivePeerId) {
+                        GroupLeg(peerId = effectivePeerId, peerName = resolveName(effectivePeerId, frame.callerName), state = FlashCallParticipantState.INVITED)
                     }
                     frame.members.filter { it != localDeviceId }.forEach { memberId ->
                         legs.getOrPut(memberId) {
@@ -274,56 +284,61 @@ public class FlashGroupCallSession(
             }
 
             is CallWireFrame.GroupAccept, is CallWireFrame.GroupJoin -> {
-                val peerName = resolveName(peerId, if (frame is CallWireFrame.GroupJoin) frame.participantName else null)
+                val peerName = resolveName(effectivePeerId, if (frame is CallWireFrame.GroupJoin) frame.participantName else null)
                 sessionMutex.withLock {
-                    val leg = legs.getOrPut(peerId) {
-                        GroupLeg(peerId = peerId, peerName = peerName)
+                    val leg = legs.getOrPut(effectivePeerId) {
+                        GroupLeg(peerId = effectivePeerId, peerName = peerName)
                     }
                     leg.peerName = peerName
-                    leg.state = FlashCallParticipantState.CONNECTING
+                    if (leg.state != FlashCallParticipantState.CONNECTED) {
+                        leg.state = FlashCallParticipantState.CONNECTING
+                    }
                     refreshUiState()
                 }
 
                 if (isMediaAcquired) {
                     scope.launch {
-                        ensureLegConnected(peerId)
+                        ensureLegConnected(effectivePeerId)
                     }
-                    // Mesh propagation: announce this peer to other known legs so non-initiators connect with each other
-                    val otherPeers = legs.keys.filter { it != localDeviceId && it != peerId }
-                    otherPeers.forEach { otherPeerId ->
-                        scope.launch {
-                            sendFrame(
-                                CallWireFrame.GroupJoin(
-                                    callId = callId,
-                                    from = peerId,
-                                    groupId = groupId,
-                                    participantName = peerName,
-                                ),
-                                otherPeerId,
-                            )
+                    // Mesh propagation: only the direct recipient of a GroupAccept fans out GroupJoin to other known legs.
+                    // GroupJoin frames must NOT be re-fanned out to avoid broadcast loops/echo storms.
+                    if (frame is CallWireFrame.GroupAccept) {
+                        val otherPeers = legs.keys.filter { it != localDeviceId && it != effectivePeerId }
+                        otherPeers.forEach { otherPeerId ->
+                            scope.launch {
+                                sendFrame(
+                                    CallWireFrame.GroupJoin(
+                                        callId = callId,
+                                        from = effectivePeerId,
+                                        groupId = groupId,
+                                        participantName = peerName,
+                                    ),
+                                    otherPeerId,
+                                )
+                            }
                         }
                     }
                 }
             }
 
             is CallWireFrame.GroupDecline -> {
-                handlePeerLeft(peerId, reason = "declined")
+                handlePeerLeft(effectivePeerId, reason = "declined")
             }
 
             is CallWireFrame.GroupHangup -> {
-                handlePeerLeft(peerId, reason = "left")
+                handlePeerLeft(effectivePeerId, reason = "left")
             }
 
             is CallWireFrame.Offer -> {
-                handleInboundOffer(peerId, frame.sdp)
+                handleInboundOffer(effectivePeerId, frame.sdp)
             }
 
             is CallWireFrame.Answer -> {
-                handleInboundAnswer(peerId, frame.sdp)
+                handleInboundAnswer(effectivePeerId, frame.sdp)
             }
 
             is CallWireFrame.IceCandidate -> {
-                handleInboundIce(peerId, frame)
+                handleInboundIce(effectivePeerId, frame)
             }
 
             else -> {

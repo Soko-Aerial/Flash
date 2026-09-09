@@ -71,7 +71,7 @@
         <service
             android:name=".calling.FlashCallService"
             android:exported="false"
-            android:foregroundServiceType="microphone|camera" />
+            android:foregroundServiceType="microphone|camera|connectedDevice" />
 
         <!-- C7 (calling): CallStyle notification action buttons (answer/decline/hang up)
              route through this receiver to the in-process CallCoordinator. -->

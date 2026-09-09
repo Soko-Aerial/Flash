@@ -177,12 +177,16 @@ class FlashCallService : Service() {
                 currentFgsType = desiredType
                 return
             }
-            // Typed promotion refused — an untyped FGS still keeps the process alive and
-            // satisfies the startForegroundService deadline. Don't stopSelf: the call must
-            // continue even without FGS priority.
-            if (desiredType != FGS_TYPE_NONE && tryStartForeground(notification, FGS_TYPE_NONE)) {
+            // If typed promotion was refused (e.g. background microphone restriction on Android 14+),
+            // fallback to connectedDevice (API 34+) or FGS_TYPE_NONE.
+            val fallbackType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+            } else {
+                FGS_TYPE_NONE
+            }
+            if (desiredType != fallbackType && tryStartForeground(notification, fallbackType)) {
                 startForegroundCalled = true
-                currentFgsType = FGS_TYPE_NONE
+                currentFgsType = fallbackType
             }
         }
 
@@ -204,7 +208,7 @@ class FlashCallService : Service() {
         }
 
         /**
-         * The subset of the manifest's `microphone|camera` types this app currently holds
+         * The subset of the manifest's `microphone|camera|connectedDevice` types this app currently holds
          * the runtime permissions for. Camera is only claimed for video calls — an audio
          * call has no camera in use, and claiming an unused type is itself a violation.
          */
@@ -212,12 +216,25 @@ class FlashCallService : Service() {
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
                 return FGS_TYPE_NONE
             }
+            // During RINGING (call not accepted yet), no audio is being captured.
+            // On Android 14+ (API 34), claiming MICROPHONE from background throws SecurityException.
+            // We claim CONNECTED_DEVICE while RINGING, which is valid and permitted for background starts.
+            if (state.state == FlashCallState.RINGING) {
+                return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+                } else {
+                    FGS_TYPE_NONE
+                }
+            }
             var type = FGS_TYPE_NONE
             if (hasPermission(Manifest.permission.RECORD_AUDIO)) {
                 type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
             }
             if (state.video && hasPermission(Manifest.permission.CAMERA)) {
                 type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+            }
+            if (type == FGS_TYPE_NONE && Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                type = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
             }
             return type
         }

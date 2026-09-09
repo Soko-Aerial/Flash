@@ -76,9 +76,11 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import okio.source
 
 /**
@@ -793,7 +795,17 @@ object DiscoveryEngineHolder {
             },
             sendFrame = { frame, peerId ->
                 val encoded = CallFrameCodec.encode(frame)
-                val session = networkImpl.activeSessions.value[FlashDeviceId(peerId)] as? WsSession
+                var session = networkImpl.activeSessions.value[FlashDeviceId(peerId)] as? WsSession
+                if (session == null && (frame is CallWireFrame.Invite || frame is CallWireFrame.GroupInvite)) {
+                    runBlocking {
+                        withTimeoutOrNull(2000L) {
+                            networkImpl.activeSessions.first { sessions ->
+                                sessions.containsKey(FlashDeviceId(peerId))
+                            }
+                        }
+                    }
+                    session = networkImpl.activeSessions.value[FlashDeviceId(peerId)] as? WsSession
+                }
                 if (session != null) {
                     session.connection.sendTextAsync(encoded)
                     Log.i(TAG_WS, "Call sendFrame action=${frame.javaClass.simpleName} peer=$peerId (hasSession=true)")
@@ -1177,6 +1189,33 @@ object DiscoveryEngineHolder {
                 val ok = result is FlashResult.Success
                 Log.i(TAG_WS, "Auto-connect result peer=$id success=$ok")
                 gate.end(id)
+            }
+        }
+
+        // Hotspot host auto-probe: tethered clients cannot discover the host via NSD because Android
+        // SoftAP drops multicast mDNS packets. Probe default IPv4 gateways on active LAN networks.
+        val context = appContextRef
+        if (context != null) {
+            val gateways = runCatching {
+                com.transfer.flash.core.network.util.LocalNetworkAddresses(context).ipv4Gateways()
+            }.getOrDefault(emptyList())
+            for (gw in gateways) {
+                val gwGateId = "gateway:$gw"
+                val hasGwSession = networkImpl.activeSessions.value.values.any { session ->
+                    val ep = networkImpl.endpointOf(session.peerDeviceId.value)
+                    ep?.first == gw
+                }
+                if (!hasGwSession && !networkImpl.isReconnectInFlight(gwGateId) &&
+                    gate.tryBegin(gwGateId, false, System.currentTimeMillis())
+                ) {
+                    appScope.launch {
+                        Log.i(TAG_WS, "Auto-connect dialing gateway at $gw:0 (hotspot host probe)")
+                        val result = runCatching { networkImpl.connectManual(gw, 0) }.getOrNull()
+                        val ok = result is FlashResult.Success
+                        Log.i(TAG_WS, "Auto-connect result gateway $gw success=$ok")
+                        gate.end(gwGateId)
+                    }
+                }
             }
         }
     }
