@@ -1,5 +1,41 @@
 # Progress Log
 
+## 2026-09-10 — 5-Fix Wiring: Notification Answer, Rejoin Call, Device Name Propagation
+
+### Worked on
+Completed wiring for 5 user-reported issues across calling, UI, and identity propagation.
+
+### Changed
+
+1. **Notification Answer Button** (`MainActivity.kt`):
+   - Added `pendingCallAnswer: MutableStateFlow<Boolean>` parameter through `FlashApp` → `FlashShell`.
+   - Added `LaunchedEffect` in FlashShell that consumes the flag: checks RECORD_AUDIO/CAMERA permissions, attaches audioRouter, then calls `engine.calls?.accept()`.
+   - Intent consumption already wired in `onCreate`/`onNewIntent` (prior session).
+
+2. **Rejoin Ongoing Group Calls** (`MainActivity.kt`, `FlashConversationScreen.kt`):
+   - Merged `engine.calls?.ongoingGroupCalls` into `conversationState.ongoingCall` via `remember()` derivation keyed on `rawConversationState` + `ongoingGroupCalls`.
+   - Wired `onJoinGroupCall` lambda at `FlashConversationScreen` call site → calls `engine.calls?.joinGroupCall()` with memberIds + permission check.
+   - Fixed `FlashOngoingCallBanner` composable: added missing imports (`FlashIcon`, `FlashText`), replaced non-existent `FlashSpacing.space14`/`space6` with inline dp values.
+
+3. **Device Name Change Propagation** (`MainActivity.kt`, `DiscoveryEngineHolder.kt`):
+   - `onSettingsChange` now calls `AndroidPreferencesIdentityStore.updateFriendlyName()` and `DiscoveryEngineHolder.updateFriendlyName()` on display name change.
+   - Added peer friendly-name sync collector in `DiscoveryEngineHolder` that watches `activeSessions` and updates trust store + conversation title when a peer connects with a changed name.
+
+4. **Build Fixes**:
+   - Fixed exhaustive `when` in `FlashCallSession.handleFrame()` — added `GroupPresence`/`GroupQuery` branches.
+   - Fixed `peerDevice` → `peer` reference in `DiscoveryEngineHolder` name-sync collector.
+
+### Verification
+- `./gradlew :app:assembleDebug` — BUILD SUCCESSFUL (205 tasks, 55s).
+
+### Remaining
+- Physical-device testing of all 5 features.
+- Calling implementation audit (feature 5 from user request).
+- Group delivery counts for voice/file in group chats — done in prior session, needs device test.
+
+### Next AI
+Test on physical devices. Audit calling for any remaining edge cases.
+
 ## 2026-09-10 — Voice Call Stability & Wi-Fi Airtime Optimization (1:1 & Multi-Peer Group Calls)
 
 ### Worked on

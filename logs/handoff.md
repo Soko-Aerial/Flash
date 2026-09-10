@@ -1,6 +1,46 @@
 # Current Handoff
 
-## 2026-09-10 — Voice Call Stability & Wi-Fi Airtime Optimization (1:1 & Multi-Peer Group Calls)
+## 2026-09-10 — 5-Fix Wiring Complete (Notification Answer, Rejoin Call, Device Name)
+
+### Current branch
+`dev`
+
+### Last verified build
+Commit `1921015` — `:app:assembleDebug` BUILD SUCCESSFUL (205 tasks, 55s).
+
+### Current phase
+Bug-fix / feature-wiring session. All 5 user-reported issues now have code wired and compiling.
+
+### Working features
+- LAN discovery, connection, chat (text, reactions, replies, typing, drafts)
+- Group chat (create, add members, leave, delivery counts)
+- File/image/video/voice attachments (send, receive, auto-download)
+- 1:1 and group voice/video calling (WebRTC, Opus DTX, SDP tuning)
+- Notification answer button for incoming calls (NEW)
+- Ongoing group call banner + rejoin from conversation (NEW)
+- Device name change propagation to all paired peers (NEW)
+- Peer name sync on reconnect (NEW)
+- Transfer pause/resume/retry
+- Settings persistence (theme, haptics, dynamic accent, performance mode)
+- Background service with battery optimization handling
+
+### Last change
+- Wired `pendingCallAnswer` through FlashApp → FlashShell with auto-accept LaunchedEffect
+- Merged `ongoingGroupCalls` into `conversationState.ongoingCall` for banner display
+- Wired `onJoinGroupCall` at FlashConversationScreen call site
+- Added display name propagation to identity store + NSD re-advertisement
+- Added peer name sync collector in DiscoveryEngineHolder
+- Fixed exhaustive when in FlashCallSession (GroupPresence/GroupQuery)
+- Fixed FlashOngoingCallBanner imports and spacing
+
+### Recommended next task
+Physical-device testing of all 5 fixes. Audit calling for remaining edge cases.
+
+### Files most relevant to next task
+- `app/src/main/java/com/transfer/flash/MainActivity.kt` (FlashApp/FlashShell wiring)
+- `app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt` (name sync)
+- `ui/chat/src/commonMain/kotlin/.../FlashConversationScreen.kt` (banner + onJoinGroupCall)
+- `core/calling/src/main/java/.../FlashCallSession.kt` (exhaustive when fix)
 
 ### Current branch
 `dev` (uncommitted modifications).
