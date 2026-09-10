@@ -264,20 +264,27 @@ class FlashCallService : Service() {
 
             when (state.state) {
                 FlashCallState.RINGING -> {
-                    val answerIntent = PendingIntent.getBroadcast(
+                    builder.setFullScreenIntent(contentIntent, true)
+                    val answerActivityIntent = Intent(this, MainActivity::class.java).apply {
+                        action = FlashCallActionReceiver.ACTION_ANSWER
+                        putExtra(FlashCallActionReceiver.EXTRA_ANSWER_CALL, true)
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                    }
+                    val answerIntent = PendingIntent.getActivity(
                         this,
                         REQUEST_ANSWER,
-                        Intent(FlashCallActionReceiver.ACTION_ANSWER).setPackage(packageName),
-                        PendingIntent.FLAG_IMMUTABLE,
+                        answerActivityIntent,
+                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
                     )
                     val declineIntent = PendingIntent.getBroadcast(
                         this,
                         REQUEST_DECLINE,
                         Intent(FlashCallActionReceiver.ACTION_DECLINE).setPackage(packageName),
-                        PendingIntent.FLAG_IMMUTABLE,
+                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
                     )
+                    // Android CallStyle.forIncomingCall signature: (person, declineIntent, answerIntent)
                     builder.setStyle(
-                        Notification.CallStyle.forIncomingCall(person, answerIntent, declineIntent)
+                        Notification.CallStyle.forIncomingCall(person, declineIntent, answerIntent)
                     )
                 }
                 FlashCallState.ACTIVE, FlashCallState.DIALING, FlashCallState.CONNECTING -> {
@@ -285,7 +292,7 @@ class FlashCallService : Service() {
                         this,
                         REQUEST_HANGUP,
                         Intent(FlashCallActionReceiver.ACTION_HANGUP).setPackage(packageName),
-                        PendingIntent.FLAG_IMMUTABLE,
+                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
                     )
                     builder.setStyle(
                         Notification.CallStyle.forOngoingCall(person, hangUpIntent)
@@ -306,7 +313,7 @@ class FlashCallService : Service() {
             state: FlashCallUiState,
             contentIntent: PendingIntent,
         ): Notification {
-            return NotificationCompat.Builder(this, CHANNEL_ID)
+            val builder = NotificationCompat.Builder(this, CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.stat_notify_call_mute)
                 .setContentTitle(title)
                 .setContentText(body)
@@ -316,7 +323,43 @@ class FlashCallService : Service() {
                 .setOnlyAlertOnce(true)
                 // Pre-O there is no channel to silence, so the ringer's exclusivity is asserted here.
                 .setSilent(true)
-                .build()
+
+            when (state.state) {
+                FlashCallState.RINGING -> {
+                    builder.setFullScreenIntent(contentIntent, true)
+                    val answerActivityIntent = Intent(this, MainActivity::class.java).apply {
+                        action = FlashCallActionReceiver.ACTION_ANSWER
+                        putExtra(FlashCallActionReceiver.EXTRA_ANSWER_CALL, true)
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                    }
+                    val answerIntent = PendingIntent.getActivity(
+                        this,
+                        REQUEST_ANSWER,
+                        answerActivityIntent,
+                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                    )
+                    val declineIntent = PendingIntent.getBroadcast(
+                        this,
+                        REQUEST_DECLINE,
+                        Intent(FlashCallActionReceiver.ACTION_DECLINE).setPackage(packageName),
+                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                    )
+                    builder.addAction(android.R.drawable.ic_menu_call, "Answer", answerIntent)
+                    builder.addAction(android.R.drawable.ic_menu_close_clear_cancel, "Decline", declineIntent)
+                }
+                FlashCallState.ACTIVE, FlashCallState.DIALING, FlashCallState.CONNECTING -> {
+                    val hangUpIntent = PendingIntent.getBroadcast(
+                        this,
+                        REQUEST_HANGUP,
+                        Intent(FlashCallActionReceiver.ACTION_HANGUP).setPackage(packageName),
+                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                    )
+                    builder.addAction(android.R.drawable.ic_menu_close_clear_cancel, "Hang up", hangUpIntent)
+                }
+                FlashCallState.ENDED -> {}
+            }
+
+            return builder.build()
         }
 
     /**

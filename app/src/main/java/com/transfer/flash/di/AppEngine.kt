@@ -106,7 +106,7 @@ class AppEngine @Inject constructor(
     val localDeviceId: String get() = localIdentity.first
 
     /** This device's advertised friendly name. */
-    val localFriendlyName: String get() = localIdentity.second
+    val localFriendlyName: String get() = DiscoveryEngineHolder.currentFriendlyName() ?: localIdentity.second
 
     /**
      * #14: persisted user settings (theme / haptics / dynamic accent / background transfers /

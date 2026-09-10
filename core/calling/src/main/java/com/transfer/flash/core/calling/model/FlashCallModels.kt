@@ -182,3 +182,17 @@ public data class FlashCallLogEntry(
     public val missed: Boolean
         get() = durationMs <= 0L && direction == FlashCallDirection.INCOMING
 }
+
+/**
+ * UI representation of an ongoing group call announced by peers in a group chat.
+ */
+public data class OngoingGroupCallUi(
+    public val callId: String,
+    public val groupId: String,
+    public val groupName: String,
+    public val initiatorId: String,
+    public val video: Boolean,
+    public val participantCount: Int = 1,
+    public val lastSeenTimestamp: Long = System.currentTimeMillis(),
+)
+

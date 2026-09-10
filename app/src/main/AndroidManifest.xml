@@ -17,6 +17,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- C7 (calling): full-screen intent for incoming ringing calls over lock screen / heads-up banner -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <!-- B9: voice-message capture via MediaRecorder (runtime-requested on first hold). -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- C7 (calling): camera for video calls (runtime-requested at call start). -->

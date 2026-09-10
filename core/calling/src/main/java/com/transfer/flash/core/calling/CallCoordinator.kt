@@ -4,6 +4,7 @@ import com.transfer.flash.core.calling.model.FlashCallDirection
 import com.transfer.flash.core.calling.model.FlashCallEndReason
 import com.transfer.flash.core.calling.model.FlashCallLogEntry
 import com.transfer.flash.core.calling.model.FlashCallUiState
+import com.transfer.flash.core.calling.model.OngoingGroupCallUi
 import com.transfer.flash.core.calling.protocol.CallFrameCodec
 import com.transfer.flash.core.calling.protocol.CallWireFrame
 import com.transfer.flash.core.common.perf.FlashPerformanceMode
@@ -11,6 +12,7 @@ import java.util.UUID
 import kotlin.concurrent.Volatile
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -85,6 +87,23 @@ public class CallCoordinator(
     private val _activeCall = MutableStateFlow<FlashCallUiState?>(null)
     override val activeCall: StateFlow<FlashCallUiState?> = _activeCall.asStateFlow()
 
+    private val _ongoingGroupCalls = MutableStateFlow<Map<String, OngoingGroupCallUi>>(emptyMap())
+    override val ongoingGroupCalls: StateFlow<Map<String, OngoingGroupCallUi>> = _ongoingGroupCalls.asStateFlow()
+
+    init {
+        scope.launch {
+            while (true) {
+                delay(5_000L)
+                val now = System.currentTimeMillis()
+                val current = _ongoingGroupCalls.value
+                val filtered = current.filterValues { now - it.lastSeenTimestamp < 12_000L }
+                if (filtered.size != current.size) {
+                    _ongoingGroupCalls.value = filtered
+                }
+            }
+        }
+    }
+
     /**
      * Renderable media for the live call, if any. Read by the UI layer to bind renderers and the
      * quality badge; the concrete session type stays inside this module.
@@ -130,6 +149,10 @@ public class CallCoordinator(
         val trustedMembers = memberIds.filter { isTrustedPeer(it) && it != localDeviceId }
         if (trustedMembers.isEmpty()) return false
 
+        val currentMap = _ongoingGroupCalls.value.toMutableMap()
+        currentMap.remove(groupId)
+        _ongoingGroupCalls.value = currentMap
+
         val callId = UUID.randomUUID().toString()
         val session = FlashGroupCallSession(
             callId = callId,
@@ -163,6 +186,66 @@ public class CallCoordinator(
         return session.startOutgoing(trustedMembers)
     }
 
+    /** Joins an ongoing group call announced by peers. */
+    override suspend fun joinGroupCall(
+        groupId: String,
+        callId: String,
+        memberIds: List<String>,
+        video: Boolean,
+    ): Boolean {
+        if (currentSession != null || currentGroupSession != null) return false
+        val trustedMembers = memberIds.filter { isTrustedPeer(it) && it != localDeviceId }
+        if (trustedMembers.isEmpty()) return false
+
+        val groupCallUi = _ongoingGroupCalls.value[groupId]
+        val groupName = groupCallUi?.groupName ?: "Group Call"
+
+        val session = FlashGroupCallSession(
+            callId = callId,
+            groupId = groupId,
+            groupName = groupName,
+            direction = FlashCallDirection.OUTGOING,
+            video = video,
+            localDeviceId = localDeviceId,
+            localName = localName,
+            scope = scope,
+            sendFrame = sendFrame,
+            onEnded = { ended ->
+                if (currentGroupSession === ended) {
+                    currentGroupSession = null
+                    stateCollector?.cancel()
+                    stateCollector = null
+                    _activeCall.value = ended.state.value
+                    scope.launch {
+                        delay(2_000L)
+                        if (currentSession == null && currentGroupSession == null) {
+                            _activeCall.value = null
+                        }
+                    }
+                }
+            },
+            performanceMode = performanceMode,
+            peerNameResolver = peerNameResolver,
+        )
+        currentGroupSession = session
+        observeGroupSession(session)
+
+        val currentMap = _ongoingGroupCalls.value.toMutableMap()
+        currentMap.remove(groupId)
+        _ongoingGroupCalls.value = currentMap
+
+        return session.joinExisting(trustedMembers)
+    }
+
+    /** Queries online members of a group to discover if an active call is ongoing. */
+    override suspend fun queryGroupCall(groupId: String, memberIds: List<String>) {
+        val trustedMembers = memberIds.filter { isTrustedPeer(it) && it != localDeviceId }
+        val frame = CallWireFrame.GroupQuery(from = localDeviceId, groupId = groupId)
+        trustedMembers.forEach { peerId ->
+            sendFrame(frame, peerId)
+        }
+    }
+
     /**
      * Host calls this with every inbound `FLASH_CALL` text frame. Returns true when
      * the frame was consumed (a live call exists or an invite was handled), false when
@@ -176,6 +259,43 @@ public class CallCoordinator(
      */
     override suspend fun onInboundText(peerId: String, text: String): Boolean {
         val frame = CallFrameCodec.decode(text) ?: return false
+
+        if (frame is CallWireFrame.GroupPresence) {
+            if (currentGroupSession?.callId == frame.callId) return true
+            val currentMap = _ongoingGroupCalls.value.toMutableMap()
+            currentMap[frame.groupId] = OngoingGroupCallUi(
+                callId = frame.callId,
+                groupId = frame.groupId,
+                groupName = frame.callerName,
+                initiatorId = frame.from,
+                video = frame.video,
+                participantCount = frame.participantCount,
+                lastSeenTimestamp = System.currentTimeMillis(),
+            )
+            _ongoingGroupCalls.value = currentMap
+            return true
+        }
+
+        if (frame is CallWireFrame.GroupQuery) {
+            val liveSession = currentGroupSession
+            if (liveSession != null && liveSession.groupId == frame.groupId && !liveSession.isSessionEnded) {
+                val count = liveSession.countConnectedParticipants() + 1
+                sendFrame(
+                    CallWireFrame.GroupPresence(
+                        callId = liveSession.callId,
+                        from = localDeviceId,
+                        groupId = liveSession.groupId,
+                        callerName = liveSession.groupName,
+                        video = liveSession.video,
+                        participantCount = count,
+                    ),
+                    peerId,
+                )
+                return true
+            }
+            return false
+        }
+
         val p2pSession = currentSession
         val groupSession = currentGroupSession
 

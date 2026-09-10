@@ -59,7 +59,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 public class WsFlashNetwork(
     private val context: Context?,
     private val localDeviceId: String,
-    private val localFriendlyName: String,
+    localFriendlyName: String,
     private val tlsOptions: TlsOptions? = null,
     private val hardeningPolicy: SessionHardeningPolicy = SessionHardeningPolicy(),
     private val healthAggregator: ConnectionHealthAggregator = ConnectionHealthAggregator(),
@@ -96,8 +96,12 @@ public class WsFlashNetwork(
     private val transportProfile: () -> FlashTransportProfile = { FlashPerformanceMode.HIGH.transport },
 ) : FlashNetwork, EndpointMemory, WsConnection.Listener {
 
+    @Volatile
+    public var localFriendlyName: String = localFriendlyName
+
     private val running = AtomicBoolean(false)
     private var server: WsTransferServer? = null
+    public val serverPort: Int get() = server?.listenPort ?: 0
     private val client = WsTransferClient(context, this, tlsOptions, keepalive = ::keepaliveTiming)
 
     /** The tier's keepalive pair, as [WsConnection] wants it. Read once per new connection. */

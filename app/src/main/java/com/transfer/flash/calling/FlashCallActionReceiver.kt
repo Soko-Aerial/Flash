@@ -53,5 +53,6 @@ class FlashCallActionReceiver : BroadcastReceiver() {
         const val ACTION_ANSWER = "com.transfer.flash.calling.ACTION_ANSWER"
         const val ACTION_DECLINE = "com.transfer.flash.calling.ACTION_DECLINE"
         const val ACTION_HANGUP = "com.transfer.flash.calling.ACTION_HANGUP"
+        const val EXTRA_ANSWER_CALL = "com.transfer.flash.calling.EXTRA_ANSWER_CALL"
     }
 }

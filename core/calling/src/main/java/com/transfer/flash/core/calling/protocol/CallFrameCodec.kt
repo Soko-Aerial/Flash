@@ -113,6 +113,21 @@ public object CallFrameCodec {
                 "groupId" to frame.groupId,
                 "from" to frame.from,
             )
+            is CallWireFrame.GroupPresence -> listOf(
+                "action" to "gpresence",
+                "callId" to frame.callId,
+                "groupId" to frame.groupId,
+                "from" to frame.from,
+                "name" to frame.callerName,
+                "video" to frame.video.toString(),
+                "count" to frame.participantCount.toString(),
+            )
+            is CallWireFrame.GroupQuery -> listOf(
+                "action" to "gquery",
+                "callId" to frame.callId,
+                "groupId" to frame.groupId,
+                "from" to frame.from,
+            )
         }
         return FlashTextFraming.encodeFields(PREFIX, fields)
     }
@@ -179,6 +194,19 @@ public object CallFrameCodec {
                 participantName = fields["name"] ?: "Group Member",
             )
             "ghangup" -> CallWireFrame.GroupHangup(
+                callId = callId,
+                from = from,
+                groupId = fields["groupId"] ?: return null,
+            )
+            "gpresence" -> CallWireFrame.GroupPresence(
+                callId = callId,
+                from = from,
+                groupId = fields["groupId"] ?: return null,
+                callerName = fields["name"] ?: "Group Member",
+                video = fields["video"]?.toBooleanStrictOrNull() ?: false,
+                participantCount = fields["count"]?.toIntOrNull() ?: 1,
+            )
+            "gquery" -> CallWireFrame.GroupQuery(
                 callId = callId,
                 from = from,
                 groupId = fields["groupId"] ?: return null,

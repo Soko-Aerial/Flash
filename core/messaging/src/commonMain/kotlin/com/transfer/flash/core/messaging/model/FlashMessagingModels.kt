@@ -304,6 +304,13 @@ public data class FlashGroupMemberUi(
     val transport: FlashNetworkTransport = FlashNetworkTransport.Unknown,
 )
 
+public data class FlashActiveGroupCallBarUi(
+    val callId: String,
+    val callerName: String,
+    val video: Boolean,
+    val participantCount: Int = 1,
+)
+
 public data class FlashConversationUiState(
     val header: FlashChatHeaderUiState,
     val messages: List<FlashMessageUi>,
@@ -315,6 +322,8 @@ public data class FlashConversationUiState(
      * repository wiring — consumers fall back to header-derived rows when empty.
      */
     val members: List<FlashGroupMemberUi> = emptyList(),
+    /** Active ongoing group call announced by peers, if any. */
+    val ongoingCall: FlashActiveGroupCallBarUi? = null,
 )
 
 public data class FlashConversation(

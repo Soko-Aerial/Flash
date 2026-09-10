@@ -3,6 +3,8 @@ package com.transfer.flash.core.calling
 import com.shepeliev.webrtckmp.VideoTrack
 import com.transfer.flash.core.calling.model.FlashCallStats
 import com.transfer.flash.core.calling.model.FlashCallUiState
+import com.transfer.flash.core.calling.model.OngoingGroupCallUi
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
 /**
@@ -40,6 +42,12 @@ public interface FlashCalling {
     public val activeCall: StateFlow<FlashCallUiState?>
 
     /**
+     * Known ongoing group calls advertised by peers, keyed by [OngoingGroupCallUi.groupId].
+     */
+    public val ongoingGroupCalls: StateFlow<Map<String, OngoingGroupCallUi>>
+        get() = MutableStateFlow(emptyMap())
+
+    /**
      * Renderable media for the active call, or null when no call is in flight. Split out from
      * [activeCall] because tracks and statistics are not state a `data class` can carry — they
      * are live objects bound to the platform renderer.
@@ -63,6 +71,21 @@ public interface FlashCalling {
         memberIds: List<String>,
         video: Boolean,
     ): Boolean = false
+
+    /**
+     * Joins an ongoing group call announced by peers in [groupId].
+     */
+    public suspend fun joinGroupCall(
+        groupId: String,
+        callId: String,
+        memberIds: List<String>,
+        video: Boolean = false,
+    ): Boolean = false
+
+    /**
+     * Queries online members of [groupId] to discover if an active call is ongoing.
+     */
+    public suspend fun queryGroupCall(groupId: String, memberIds: List<String>): Unit {}
 
     /**
      * Accepts the ringing inbound call and starts local media. Returns false when there is

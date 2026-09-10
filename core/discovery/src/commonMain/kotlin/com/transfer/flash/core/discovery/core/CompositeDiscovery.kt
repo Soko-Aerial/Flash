@@ -279,6 +279,13 @@ public class CompositeDiscovery(
     }
 
     /**
+     * Updates the advertised identity (e.g. when the user changes their friendly name in Settings).
+     */
+    public fun updateIdentity(newIdentity: FlashAdvertisedIdentity) {
+        this.identity = newIdentity
+    }
+
+    /**
      * Starts advertising using the identity previously supplied to [startAll].
      * Returns Failure when no identity has been set yet — bare-port advertising
      * cannot construct TXT records.

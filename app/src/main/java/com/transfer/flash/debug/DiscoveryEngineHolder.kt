@@ -23,6 +23,8 @@ import com.transfer.flash.core.messaging.protocol.DirectMessageActionCodec
 import com.transfer.flash.core.messaging.protocol.GroupFrameCodec
 import com.transfer.flash.core.messaging.protocol.GroupWireFrame
 import com.transfer.flash.core.messaging.protocol.MessageWireFrame
+import com.transfer.flash.core.messaging.protocol.PttFrameCodec
+import com.transfer.flash.core.messaging.protocol.PttPingFrame
 import com.transfer.flash.core.network.FlashNetwork
 import com.transfer.flash.core.network.bridge.DiscoveryRouteBinder
 import com.transfer.flash.core.network.ws.WsFlashNetwork
@@ -68,9 +70,15 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
@@ -120,6 +128,18 @@ object DiscoveryEngineHolder {
     private const val XFER_PREFIX = "FLASH_XFER"
     private const val PAIR_PREFIX = "FLASH_PAIR"
 
+    /**
+     * Zello PTT hook emitted by tydtech-firmware clip mics (see docs/android-platform-notes.md).
+     * The same press also emits scanner/lowercase/uppercase variants — this receiver listens
+     * to the Zello down action ONLY so one press fans out exactly once. Single-press v1:
+     * the up action is intentionally not observed.
+     */
+    private const val PTT_DOWN_ACTION = "com.zello.ptt.down"
+    /** Minimum gap between two accepted PTT presses; the OEM emits one down per click. */
+    private const val PTT_DEBOUNCE_MS = 800L
+    /** Cap for the inbound PTT dedup set; PTT is fire-and-forget so replays are not expected. */
+    private const val PTT_SEEN_CAP = 1000
+
     @Volatile
     private var composite: CompositeDiscovery? = null
 
@@ -166,6 +186,10 @@ object DiscoveryEngineHolder {
     @Volatile
     private var localDeviceId: String? = null
 
+    /** Local display name, cached for the PTT ping frame's senderName field. */
+    @Volatile
+    private var localDeviceName: String? = null
+
     /**
      * Attempt budget for restarting roam-killed sends, hoisted to a field so the budget survives
      * individual session-up edges — a per-edge instance would grant an unbounded number of attempts,
@@ -196,6 +220,35 @@ object DiscoveryEngineHolder {
      */
     @Volatile
     private var screenReceiver: BroadcastReceiver? = null
+
+    /**
+     * Hardware PTT receiver, registered for the ENGINE's lifetime like [screenReceiver].
+     * An Activity-registered receiver dies with the UI; PTT must keep working backgrounded.
+     * Implicit OEM broadcasts cannot be manifest-declared on Android 8+, so runtime
+     * registration here is the only option. Held from [startEngineLocked] until [stopAll].
+     */
+    @Volatile
+    private var pttReceiver: BroadcastReceiver? = null
+
+    /** Inbound PTT ping fan-out surface for the UI (notification is posted separately). */
+    private val _pttPings = MutableSharedFlow<PttPingEvent>(extraBufferCapacity = 16)
+    val pttPings: SharedFlow<PttPingEvent> = _pttPings.asSharedFlow()
+
+    /** One accepted inbound PTT ping: the receiver-side half of [PttPingFrame]. */
+    data class PttPingEvent(
+        val eventId: String,
+        val fromDeviceId: String,
+        val senderName: String,
+        val sentAtMs: Long,
+    )
+
+    /** Dedup set for inbound PTT event ids (fire-and-forget wire: no outbox replay exists). */
+    private val seenPttEventIds =
+        java.util.Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
+
+    /** Last accepted hardware PTT down edge, for [PTT_DEBOUNCE_MS] press debouncing. */
+    @Volatile
+    private var lastPttDownMs: Long = 0L
 
     // Bug 3: auto-download settings, mirrored from FlashSettingsDataStore by AppEngine
     @Volatile
@@ -304,6 +357,33 @@ object DiscoveryEngineHolder {
 
     fun currentCallCoordinator(): CallCoordinator? = callCoordinator
 
+    fun currentFriendlyName(): String? = localDeviceName
+
+    fun updateFriendlyName(newName: String) {
+        val trimmed = newName.trim()
+        if (trimmed.isBlank()) return
+        localDeviceName = trimmed
+        (network as? WsFlashNetwork)?.localFriendlyName = trimmed
+        val engine = composite
+        val port = (network as? WsFlashNetwork)?.serverPort ?: 0
+        val id = localDeviceId
+        if (engine != null && port > 0 && id != null) {
+            val newIdentity = FlashAdvertisedIdentity(
+                deviceId = FlashDeviceId(id),
+                friendlyName = trimmed,
+                deviceModel = android.os.Build.MODEL ?: "unknown",
+                protocolVersion = 2,
+            )
+            engine.updateIdentity(newIdentity)
+            appScope.launch {
+                if (engine.state.value.isAdvertising) {
+                    engine.stopAdvertising()
+                    engine.startAdvertising(port)
+                }
+            }
+        }
+    }
+
     /**
      * Boots the whole stack once and returns the live discovery engine; later calls no-op.
      *
@@ -331,6 +411,7 @@ object DiscoveryEngineHolder {
         // an awake CPU and a fully-powered radio, and they now outlive any single service instance.
         acquirePowerLocks(appContext)
         registerScreenReceiver(appContext)
+        registerPttReceiver(appContext)
         val identity0 = AppIdentity(appContext)
         val identity = FlashAdvertisedIdentity(
             deviceId = FlashDeviceId(
@@ -342,6 +423,8 @@ object DiscoveryEngineHolder {
         )
 
         Log.i(TAG_DISCOVERY, "Starting Flash discovery with deviceId=${identity.deviceId.value} friendlyName=${identity.friendlyName}")
+        localDeviceId = identity.deviceId.value
+        localDeviceName = identity.friendlyName
 
         val transport = com.transfer.flash.core.discovery.nsd.NsdTransport(
             context = appContext,
@@ -717,6 +800,24 @@ object DiscoveryEngineHolder {
             },
         )
 
+        // Sync peer friendly name across paired devices when peer connects with an updated name
+        appScope.launch {
+            networkImpl.activeSessions.collect { sessions ->
+                sessions.values.forEach { session ->
+                    val peerId = session.peerDeviceId
+                    val reportedName = session.peer.friendlyName.trim()
+                    if (reportedName.isNotBlank() && trustStore.isTrusted(peerId)) {
+                        val knownName = trustStore.getTrustedPeers()[peerId]
+                        if (knownName != reportedName) {
+                            Log.i(TAG_DISCOVERY, "Syncing updated friendly name for trusted peer ${peerId.value}: '$knownName' -> '$reportedName'")
+                            trustStore.trustPeer(peerId, reportedName)
+                            db.conversationDao().updateDirectTitle(peerId.value, reportedName)
+                        }
+                    }
+                }
+            }
+        }
+
         // ---- pairing (C2/C4): persistent identity fingerprint + trust store, glued to the
         // pure DefaultFlashPairingProtocol by PairingCoordinator. Frames ride the same WS text
         // framing as chat/receipts/transfer control, under the FLASH_PAIR prefix. Trust persists
@@ -1044,7 +1145,15 @@ object DiscoveryEngineHolder {
                         sessionJobs[session] = appScope.launch {
                             launch {
                                 session.incomingText.collect { text ->
-                                    handleInboundText(chatImpl, transferImpl, pairingCoordinator, callCoordinator, session.peerDeviceId.value, text)
+                                    handleInboundText(
+                                        chatImpl,
+                                        transferImpl,
+                                        pairingCoordinator,
+                                        callCoordinator,
+                                        session.peerDeviceId.value,
+                                        text,
+                                        isTrustedPeer = { peerId -> trustStore.isTrusted(peerId) },
+                                    )
                                 }
                             }
                             launch {
@@ -1371,12 +1480,19 @@ object DiscoveryEngineHolder {
         calling: CallCoordinator,
         peerDeviceId: String,
         text: String,
+        isTrustedPeer: (String) -> Boolean,
     ) {
         // Calling signaling first — the most latency-sensitive frame class. Decode returns null
         // for non-call text (and unknown call actions), so chat/pairing fall through untouched.
         if (CallFrameCodec.decode(text) != null) {
             Log.i(TAG_WS, "Inbound call frame from id=$peerDeviceId")
             calling.onInboundText(peerDeviceId, text)
+            return
+        }
+        // PTT ping next: prefix-disjoint from every family below; trust + transport binding
+        // are enforced inside onInboundPttPing (fail-closed, like the group path).
+        PttFrameCodec.decode(text)?.let { frame ->
+            onInboundPttPing(peerDeviceId, frame, isTrustedPeer)
             return
         }
         // Group frames next: their prefixes (FLASH_GROUP/GMSG/GRCPT/GREAD/GSYNC/GMEDIA) are
@@ -1823,6 +1939,125 @@ object DiscoveryEngineHolder {
         runCatching { appContextRef?.unregisterReceiver(receiver) }
     }
 
+    /**
+     * Registers the hardware PTT receiver for the engine's lifetime. Idempotent, mirroring
+     * [registerScreenReceiver]: a second [ensureStarted] cannot stack registrations.
+     */
+    private fun registerPttReceiver(context: Context) {
+        if (pttReceiver != null) return
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                if (intent?.action == PTT_DOWN_ACTION) {
+                    Log.i(TAG_WS, "Hardware PTT down — fanning ping to paired+online peers")
+                    broadcastPttPing()
+                }
+            }
+        }
+        val filter = IntentFilter().apply {
+            addAction(PTT_DOWN_ACTION)
+        }
+        // NOT_EXPORTED: the Zello hook is an implicit OEM broadcast; API 34+ requires an
+        // explicit export flag for every runtime registration.
+        runCatching { ContextCompat.registerReceiver(context, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED) }
+            .onSuccess { pttReceiver = receiver }
+            .onFailure { Log.w(TAG_WS, "PTT receiver registration failed", it) }
+    }
+
+    /** Counterpart of [registerPttReceiver]; only [stopAll] calls it. */
+    private fun unregisterPttReceiver() {
+        val receiver = pttReceiver ?: return
+        pttReceiver = null
+        runCatching { appContextRef?.unregisterReceiver(receiver) }
+    }
+
+    /**
+     * Fans one PTT ping out to every paired + online peer (v1: single press event).
+     *
+     * Safe to call from [BroadcastReceiver.onReceive] (main thread): debouncing is a volatile
+     * timestamp check and the fan-out runs on [appScope]. Sends use `sendTextAsync` — the same
+     * non-blocking path as pairing/call frames — so a main-thread press can never throw
+     * `NetworkOnMainThreadException` and tear down a session. Fire-and-forget: no outbox row,
+     * no retry; peers missing from [WsFlashNetwork.activeSessions] are skipped silently.
+     */
+    fun broadcastPttPing() {
+        val now = System.currentTimeMillis()
+        if (now - lastPttDownMs < PTT_DEBOUNCE_MS) {
+            Log.d(TAG_WS, "PTT down debounced")
+            return
+        }
+        lastPttDownMs = now
+        appScope.launch {
+            val net = network ?: return@launch
+            val selfId = localDeviceId ?: return@launch
+            val sessions = net.activeSessions.value
+            val trustedIds = pairing?.trustedPeers?.value?.mapTo(HashSet()) { it.id } ?: emptySet()
+            val frame = PttFrameCodec.encode(
+                PttPingFrame(
+                    eventId = UUID.randomUUID().toString(),
+                    from = selfId,
+                    senderName = localDeviceName ?: "Peer",
+                    sentAt = now,
+                ),
+            )
+            val legs = sessions.entries.mapNotNull { (deviceId, session) ->
+                val pid = deviceId.value
+                if (pid == selfId || pid !in trustedIds) null
+                else (session as? WsSession)?.let { pid to it }
+            }
+            if (legs.isEmpty()) {
+                Log.i(TAG_WS, "PTT ping: no paired+online peers (sessions=${sessions.size})")
+                return@launch
+            }
+            coroutineScope {
+                legs.map { (_, session) ->
+                    async { runCatching { session.connection.sendTextAsync(frame) } }
+                }.awaitAll()
+            }
+            Log.i(TAG_WS, "PTT ping queued to ${legs.size} peer(s)")
+        }
+    }
+
+    /**
+     * Accepts one inbound PTT ping. Fail-closed: a `from` that does not equal the authenticated
+     * transport peer, or an untrusted peer, is dropped with a warning — same rule as group
+     * frames. Accepted pings are deduplicated on `eventId`, emitted on [pttPings], and posted
+     * as a system notification unless the app is foregrounded (in-app observers cover that
+     * case via the flow). No Room write in v1.
+     */
+    private fun onInboundPttPing(
+        peerDeviceId: String,
+        frame: PttPingFrame,
+        isTrustedPeer: (String) -> Boolean,
+    ) {
+        if (frame.from != peerDeviceId) {
+            Log.w(TAG_WS, "PTT ping dropped: claimed from=${frame.from} != transport peer=$peerDeviceId")
+            return
+        }
+        if (!isTrustedPeer(peerDeviceId)) {
+            Log.w(TAG_WS, "PTT ping dropped: untrusted peer=$peerDeviceId")
+            return
+        }
+        if (!seenPttEventIds.add(frame.eventId)) {
+            Log.d(TAG_WS, "PTT ping duplicate ignored eventId=${frame.eventId}")
+            return
+        }
+        if (seenPttEventIds.size > PTT_SEEN_CAP) seenPttEventIds.clear()
+        val event = PttPingEvent(
+            eventId = frame.eventId,
+            fromDeviceId = peerDeviceId,
+            senderName = frame.senderName,
+            sentAtMs = frame.sentAt,
+        )
+        if (!_pttPings.tryEmit(event)) {
+            appScope.launch { _pttPings.emit(event) }
+        }
+        val ctx = appContextRef
+        if (ctx != null && !FlashNotificationManager.appForeground) {
+            FlashNotificationManager.showPttPing(ctx, frame.senderName)
+        }
+        Log.i(TAG_WS, "PTT ping from '${frame.senderName}' id=$peerDeviceId eventId=${frame.eventId}")
+    }
+
     /** Stops advertising/browsing, sessions, and releases the ephemeral port. Idempotent. */
     suspend fun stopAll() = lifecycleMutex.withLock {
         val currentEngine: CompositeDiscovery?
@@ -1849,6 +2084,7 @@ object DiscoveryEngineHolder {
         callRinger = null
         autoConnectGate = null
         localDeviceId = null
+        localDeviceName = null
         sendXferControl = null
         onIncomingOffer = null
         dataServer?.stop()
@@ -1861,6 +2097,7 @@ object DiscoveryEngineHolder {
         // Nothing left to keep awake, and nothing left to re-arm: this is the only place the
         // engine's power locks are dropped and its screen-on receiver is torn down.
         unregisterScreenReceiver()
+        unregisterPttReceiver()
         releasePowerLocks()
         appContextRef = null
     }

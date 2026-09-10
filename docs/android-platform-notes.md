@@ -317,3 +317,32 @@ The Pixel also showed a system-mediated local-network device prompt that was not
 
 ### Current project implication
 The first LAN implementation uses classic NSD discovery and per-service resolution to keep compatibility down to API 24. A later reliability pass should introduce the newer `registerServiceInfoCallback` path for API levels/extensions where it is available.
+
+## 2026-09-09 - tydtech clip-mic PTT button: 4 intents per press, Zello hook is the public one
+
+### Android version / API level
+Observed on an MT6789 phone (rugged/PTT white-label, tydtech system service tag — a
+Shenzhen ODM firmware layer). Implicit-broadcast rules are API 26+: manifest-declared
+receivers never see these actions, and API 34+ requires an explicit export flag on every
+runtime registration.
+
+### APIs / permissions involved
+- `ContextCompat.registerReceiver(..., RECEIVER_NOT_EXPORTED)`
+- `adb shell am broadcast -a <action>` (hardware-free test path)
+
+### Behavior (logcat, one press of the main button)
+Four broadcasts fire simultaneously for the same press:
+- `shmaker.android.intent.action.SCANER_KEYEVENT_DOWN/UP` (barcode-scanner trigger reuse)
+- `android.intent.action.ptt.down/up` and `android.intent.action.PTT.down/up` (generic conventions)
+- `com.zello.ptt.down/up` (Zello walkie-talkie hook)
+
+Volume/play-pause/voice buttons do NOT produce custom broadcasts: they route through the
+standard `mt6789-mt6366 Headset Jack` input device (normal headset-remote keys, catchable
+in `Activity.onKeyDown` if ever needed — not implemented in v1).
+
+### Project implication
+- Listen to `com.zello.ptt.down` ONLY via an engine-lifetime dynamic receiver
+  (`DiscoveryEngineHolder.registerPttReceiver`); the other three actions would 4x the
+  fan-out and are ignored by the filter.
+- No new permission, no manifest receiver entry.
+- Other vendors will differ; nothing beyond the Zello action is assumed.

@@ -116,8 +116,11 @@ public class FlashGroupCallSession(
     private var localStream: MediaStream? = null
     private var isMediaAcquired = false
     private var isEnded = false
+    public val isSessionEnded: Boolean get() = isEnded
+    public fun countConnectedParticipants(): Int = countConnectedLegs()
     private var soloWaitingJob: Job? = null
     private var statsJob: Job? = null
+    private var presenceJob: Job? = null
     private var lastStatsAtMs = 0L
     private var lastBytesReceived = 0L
     private var lastBytesSent = 0L
@@ -204,6 +207,7 @@ public class FlashGroupCallSession(
                 }
             }
         }
+        armPresenceAnnouncement()
         return true
     }
 
@@ -219,6 +223,8 @@ public class FlashGroupCallSession(
             endSession(FlashCallEndReason.ERROR)
             return false
         }
+
+        armPresenceAnnouncement()
 
         // Broadcast GroupAccept / GroupJoin to known participants
         val currentPeers = legs.keys.toList()
@@ -236,6 +242,78 @@ public class FlashGroupCallSession(
             }
         }
         return true
+    }
+
+    /** Joins an ongoing group call announced by peers. */
+    public suspend fun joinExisting(memberIds: List<String>): Boolean {
+        sessionMutex.withLock {
+            if (isEnded) return false
+            _state.value = _state.value.copy(
+                state = FlashCallState.CONNECTING,
+                connectedAt = System.currentTimeMillis(),
+            )
+            memberIds.filter { it != localDeviceId }.forEach { memberId ->
+                legs[memberId] = GroupLeg(
+                    peerId = memberId,
+                    peerName = resolveName(memberId),
+                    state = FlashCallParticipantState.CONNECTING,
+                )
+            }
+            refreshUiState()
+        }
+
+        val acquired = acquireMedia()
+        if (!acquired) {
+            endSession(FlashCallEndReason.ERROR)
+            return false
+        }
+
+        armPresenceAnnouncement()
+
+        // Announce join to all known members
+        val currentPeers = legs.keys.toList()
+        currentPeers.forEach { peerId ->
+            sendFrame(
+                CallWireFrame.GroupJoin(
+                    callId = callId,
+                    from = localDeviceId,
+                    groupId = groupId,
+                    participantName = localName,
+                ),
+                peerId,
+            )
+        }
+
+        currentPeers.forEach { peerId ->
+            scope.launch {
+                ensureLegConnected(peerId)
+            }
+        }
+        return true
+    }
+
+    private fun armPresenceAnnouncement() {
+        if (presenceJob != null) return
+        presenceJob = scope.launch {
+            while (!isEnded) {
+                val callState = _state.value.state
+                if (callState == FlashCallState.ACTIVE || callState == FlashCallState.CONNECTING || callState == FlashCallState.DIALING) {
+                    val count = countConnectedLegs() + 1
+                    val frame = CallWireFrame.GroupPresence(
+                        callId = callId,
+                        from = localDeviceId,
+                        groupId = groupId,
+                        callerName = groupName,
+                        video = video,
+                        participantCount = count,
+                    )
+                    legs.keys.forEach { peerId ->
+                        sendFrame(frame, peerId)
+                    }
+                }
+                delay(4_000L)
+            }
+        }
     }
 
     /** Declines an incoming ringing group call. */
@@ -303,6 +381,12 @@ public class FlashGroupCallSession(
 
                 if (isMediaAcquired) {
                     scope.launch {
+                        val existingLeg = legs[effectivePeerId]
+                        if (existingLeg != null && existingLeg.state != FlashCallParticipantState.CONNECTED) {
+                            existingLeg.legMutex.withLock {
+                                closeLeg(existingLeg)
+                            }
+                        }
                         ensureLegConnected(effectivePeerId)
                     }
                     // Mesh propagation: only the direct recipient of a GroupAccept fans out GroupJoin to other known legs.
@@ -356,7 +440,12 @@ public class FlashGroupCallSession(
     private suspend fun ensureLegConnected(peerId: String) {
         val leg = legs[peerId] ?: return
         leg.legMutex.withLock {
-            if (leg.peerConnection != null) return
+            if (leg.peerConnection != null) {
+                val isDead = leg.state == FlashCallParticipantState.DISCONNECTED ||
+                    leg.state == FlashCallParticipantState.LEFT
+                if (!isDead) return
+                closeLeg(leg)
+            }
 
             val stream = localStream ?: return
             val pc = createPeerConnectionForLeg(leg, stream)
@@ -729,7 +818,23 @@ public class FlashGroupCallSession(
             leg.state = FlashCallParticipantState.CONNECTING
             refreshUiState()
             scope.launch {
+                leg.legMutex.withLock {
+                    closeLeg(leg)
+                }
                 ensureLegConnected(peerId)
+            }
+            scope.launch {
+                sendFrame(
+                    CallWireFrame.GroupPresence(
+                        callId = callId,
+                        from = localDeviceId,
+                        groupId = groupId,
+                        callerName = groupName,
+                        video = video,
+                        participantCount = countConnectedLegs() + 1,
+                    ),
+                    peerId,
+                )
             }
         }
     }
@@ -795,6 +900,8 @@ public class FlashGroupCallSession(
         if (isEnded) return
         isEnded = true
         cancelSoloWaiting()
+        presenceJob?.cancel()
+        presenceJob = null
         statsJob?.cancel()
         statsJob = null
         _stats.value = null

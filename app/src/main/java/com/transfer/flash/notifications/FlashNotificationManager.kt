@@ -38,6 +38,8 @@ object FlashNotificationManager {
     private const val TAG = "NOTIFY"
     private const val CHANNEL_ID = "flash_messages"
     private const val NOTIFICATION_ID_BASE = 200
+    /** Fixed slot for PTT pings: outside the per-conversation id range, collapses repeats. */
+    private const val PTT_NOTIFICATION_ID = 310
 
     /** Set true in MainActivity.onStart, false in onStop. */
     @Volatile
@@ -81,6 +83,37 @@ object FlashNotificationManager {
         runCatching {
             NotificationManagerCompat.from(context).cancel(notificationIdFor(conversationId))
         }
+    }
+
+    /**
+     * PTT ping alert (v1): a paired device pressed its hardware PTT button. Single shared
+     * slot — repeat pings collapse into one notification. Tap opens the app with no
+     * conversation target. Best-effort like [post]: never crashes the receive path.
+     */
+    fun showPttPing(context: Context, senderName: String?) {
+        val name = senderName?.ifBlank { null } ?: "Paired device"
+        val appContext = context.applicationContext
+        createChannel(appContext)
+        val intent = Intent(appContext, MainActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        }
+        val contentIntent = PendingIntent.getActivity(
+            appContext,
+            PTT_NOTIFICATION_ID,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val notification = NotificationCompat.Builder(appContext, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_notification_flash)
+            .setContentTitle("PTT ping")
+            .setContentText("$name pressed the PTT button")
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setAutoCancel(true)
+            .setContentIntent(contentIntent)
+            .build()
+        runCatching {
+            NotificationManagerCompat.from(appContext).notify(PTT_NOTIFICATION_ID, notification)
+        }.onFailure { Log.w(TAG, "Failed to post PTT ping notification", it) }
     }
 
     private fun post(context: Context, conversationId: String, title: String, body: String) {

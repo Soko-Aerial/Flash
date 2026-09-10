@@ -1078,8 +1078,13 @@ public class RealFlashChatRepository(
         } else {
             ""
         }
+        val members = groupMemberDao
+        val deliveries = groupDeliveryDao
         scope.launch(ioDispatcher) {
             if (conversationDao.get(conversationId)?.isGroup != true) return@launch
+            val recipients = members?.activeMembers(conversationId)
+                ?.filter { it.deviceId != localDeviceId }
+                .orEmpty()
             messageDao.insert(
                 MessageEntity(
                     localId = messageId,
@@ -1088,7 +1093,7 @@ public class RealFlashChatRepository(
                     senderName = localDisplayName,
                     text = rowText,
                     sentAt = now,
-                    status = "SENT",
+                    status = if (recipients.isEmpty()) "SENT" else "PENDING",
                     attachmentTransferId = transferId,
                     attachmentName = fileName,
                     attachmentMime = mimeType,
@@ -1096,6 +1101,17 @@ public class RealFlashChatRepository(
                     attachmentPath = localPath,
                 ),
             )
+            if (recipients.isNotEmpty() && deliveries != null) {
+                deliveries.insertAll(
+                    recipients.map { recipient ->
+                        GroupDeliveryEntity(
+                            messageId = messageId,
+                            memberId = recipient.deviceId,
+                            nextAttemptAt = now,
+                        )
+                    },
+                )
+            }
             touchConversation(conversationId, now)
         }
     }
@@ -1413,6 +1429,15 @@ public class RealFlashChatRepository(
                 if (!isActiveTrustedMember(members, frame.groupId, frame.from)) return
                 pendingGroupMedia[frame.transferId] = frame
                 val now = System.currentTimeMillis()
+                groupTransportSink?.send(
+                    frame.from,
+                    GroupWireFrame.Receipt(
+                        groupId = frame.groupId,
+                        messageId = frame.messageId,
+                        from = localDeviceId,
+                        deliveredAt = now,
+                    ),
+                )
                 scope.launch(ioDispatcher) {
                     if (messageDao.existsAttachment(frame.transferId)) {
                         // If FILE_START beat GroupMedia, the row was provisionally inserted under

@@ -37,4 +37,8 @@ public interface ConversationDao {
      *  separately via [MessageDao.deleteByConversations] so both tables stay consistent. */
     @Query("DELETE FROM conversations WHERE id IN (:ids)")
     public suspend fun deleteConversations(ids: List<String>)
+
+    /** Updates friendly title of a direct (non-group) conversation when peer renames itself. */
+    @Query("UPDATE conversations SET title = :title WHERE id = :id AND isGroup = 0")
+    public suspend fun updateDirectTitle(id: String, title: String)
 }

@@ -4,10 +4,17 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -17,6 +24,18 @@ import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.dp
+import com.transfer.flash.ui.icons.FlashIcons
+import com.transfer.flash.ui.theme.FlashDimensions
+import com.transfer.flash.ui.theme.FlashShapes
+import com.transfer.flash.ui.icons.FlashIcon
+import com.transfer.flash.ui.theme.FlashText
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -136,6 +155,10 @@ fun FlashConversationScreen(
      * previews inert.
      */
     onStartVideoCall: () -> Unit = {},
+    /**
+     * Joins an ongoing group call advertised by peer presence.
+     */
+    onJoinGroupCall: (callId: String, video: Boolean) -> Unit = { _, _ -> },
     /**
      * Re-arm the P2P link behind the connection banner's Retry button: the host (:app) restarts
      * discovery browsing and re-dials known peers. Returns false when the engine has not booted, so
@@ -433,8 +456,22 @@ fun FlashConversationScreen(
                                 onSearchClick = { isSearchActive = true },
                                 encryptionState = encryptionState,
                                 onEncryptionClick = { showEncryptionSheet = true },
-                                onCallClick = onStartCall,
-                                onVideoCallClick = onStartVideoCall,
+                                onCallClick = {
+                                    val ongoing = state.ongoingCall
+                                    if (ongoing != null) {
+                                        onJoinGroupCall(ongoing.callId, false)
+                                    } else {
+                                        onStartCall()
+                                    }
+                                },
+                                onVideoCallClick = {
+                                    val ongoing = state.ongoingCall
+                                    if (ongoing != null) {
+                                        onJoinGroupCall(ongoing.callId, ongoing.video)
+                                    } else {
+                                        onStartVideoCall()
+                                    }
+                                },
                                 // Group Phase D: the header's More button finally does something —
                                 // it opens the conversation menu anchored to it.
                                 onMenuClick = { menuExpanded = true },
@@ -483,6 +520,19 @@ fun FlashConversationScreen(
                                         )
                                     },
                                 )
+                            }
+                            // Ongoing group call banner — displayed when active call presence is detected.
+                            AnimatedVisibility(
+                                visible = state.ongoingCall != null,
+                                enter = fadeIn(motion.tweenNormalSpec()),
+                                exit = fadeOut(motion.tweenFastSpec()),
+                            ) {
+                                state.ongoingCall?.let { ongoing ->
+                                    FlashOngoingCallBanner(
+                                        ongoingCall = ongoing,
+                                        onJoin = { onJoinGroupCall(ongoing.callId, ongoing.video) },
+                                    )
+                                }
                             }
                         }
                     }
@@ -888,6 +938,74 @@ fun toggleMessageReaction(
  */
 private fun notReadyLabel(image: FlashImageAttachmentUi?): String =
     if (image?.isVideo == true) "Video not available yet" else "Image not available yet"
+
+/**
+ * Ongoing call banner displayed at top of group conversation when an active call is ongoing.
+ */
+@Composable
+fun FlashOngoingCallBanner(
+    ongoingCall: com.transfer.flash.core.messaging.model.FlashActiveGroupCallBarUi,
+    modifier: Modifier = Modifier,
+    onJoin: () -> Unit = {},
+) {
+    val colors = FlashTheme.colors
+    val typography = FlashTheme.typography
+    val callGreen = Color(0xFF22C55E)
+    val background = callGreen.copy(alpha = 0.12f)
+    val contentColor = colors.textPrimary
+
+    val typeLabel = if (ongoingCall.video) "Ongoing video call" else "Ongoing call"
+    val countLabel = if (ongoingCall.participantCount > 0) {
+        "$typeLabel • ${ongoingCall.participantCount} in call"
+    } else {
+        typeLabel
+    }
+
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+        modifier = modifier
+            .fillMaxWidth()
+            .heightIn(min = 40.dp)
+            .background(background)
+            .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space8)
+            .semantics(mergeDescendants = true) {
+                contentDescription = countLabel
+            },
+    ) {
+        FlashIcon(
+            icon = if (ongoingCall.video) FlashIcons.VideoCall else FlashIcons.Call,
+            contentDescription = null,
+            tint = callGreen,
+            size = FlashDimensions.iconSm,
+        )
+        FlashText(
+            text = countLabel,
+            style = typography.metadataEmphasis,
+            color = contentColor,
+            modifier = Modifier.weight(1f),
+        )
+        Box(
+            modifier = Modifier
+                .clip(FlashShapes.chip)
+                .background(callGreen)
+                .defaultMinSize(minHeight = 32.dp)
+                .clickable(onClick = onJoin)
+                .semantics(mergeDescendants = true) {
+                    role = Role.Button
+                    contentDescription = "Join call"
+                }
+                .padding(horizontal = 14.dp, vertical = 6.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            FlashText(
+                text = "Join",
+                style = typography.metadataEmphasis,
+                color = Color.White,
+            )
+        }
+    }
+}
 
 @Preview(showBackground = true, widthDp = 390, heightDp = 844)
 @Composable

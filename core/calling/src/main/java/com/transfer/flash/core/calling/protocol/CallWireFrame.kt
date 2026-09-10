@@ -104,4 +104,22 @@ public sealed interface CallWireFrame {
         override val from: String,
         public val groupId: String,
     ) : CallWireFrame
+
+    /** Group call: presence announcement of an active ongoing call. */
+    public data class GroupPresence(
+        override val callId: String,
+        override val from: String,
+        public val groupId: String,
+        public val callerName: String,
+        public val video: Boolean,
+        public val participantCount: Int = 1,
+    ) : CallWireFrame
+
+    /** Group call: query whether an active call is ongoing in the group. */
+    public data class GroupQuery(
+        override val callId: String = "",
+        override val from: String,
+        public val groupId: String,
+    ) : CallWireFrame
 }
+

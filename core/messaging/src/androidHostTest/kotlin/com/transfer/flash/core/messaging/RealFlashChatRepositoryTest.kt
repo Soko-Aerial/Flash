@@ -244,6 +244,15 @@ class RealFlashChatRepositoryTest {
             ids.forEach { conversations.remove(it) }
             flow.value = conversations.values.toList()
         }
+
+        override suspend fun updateDirectTitle(id: String, title: String) {
+            conversations[id]?.let {
+                if (!it.isGroup) {
+                    conversations[id] = it.copy(title = title)
+                    flow.value = conversations.values.toList()
+                }
+            }
+        }
     }
 
     private class FakeOutboxDao : OutboxDao {

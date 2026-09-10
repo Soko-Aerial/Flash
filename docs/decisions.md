@@ -1118,3 +1118,47 @@ Group chat (Phase 1) lands as an operation-log projection over four new text-fra
 ### Revisit when
 Group size demand exceeds 6, attachments land (Phase 3 lifts the rejection), or E2E
 (`keyEpoch` > 0) arrives — at which point per-sender keys replace inherited transport trust.
+
+## ADR-031 — Hardware PTT button fans a fire-and-forget ping to all paired+online peers
+
+### Date
+2026-09-09
+
+### Decision
+1. Press detection = dynamic `BroadcastReceiver` for `com.zello.ptt.down` ONLY, registered
+   for the engine's lifetime in `DiscoveryEngineHolder` (mirroring `registerScreenReceiver`),
+   `RECEIVER_NOT_EXPORTED`. No manifest entry, no Activity-owned receiver.
+2. Wire frame = standalone `FLASH_PTT action=ping` (`PttPingFrame` + `PttFrameCodec` in
+   `:core:messaging` protocol), deliberately NOT a `MessageWireFrame` subtype so both
+   hosts' exhaustive `when` expressions over `MessageWireFrame` keep compiling untouched.
+3. Fan-out = snapshot `activeSessions` keys ∩ `pairing.trustedPeers` ids, parallel
+   `sendTextAsync` (main-safe, same non-blocking path as pairing/call frames). No outbox,
+   no retry; offline peers are skipped silently. 800 ms press debounce; one press = one
+   event (the up action is not observed in v1).
+4. Receiver = fail-closed trust + transport-peer binding (`from` must equal the WS
+   session peer, peer must be trusted), `eventId` dedup (capped set), `pttPings` flow +
+   system notification (suppressed while the app is foregrounded); no Room write in v1.
+   The `core:engine` `Flash` host decodes with the same checks and logs (it has no
+   notification path; UI hosts surface the ping).
+
+### Context
+Tydtech-firmware clip mics broadcast four intents per press (scanner reuse, two generic
+PTT conventions, one Zello hook); the Zello hook is the public one. Owner-locked v1
+scope: single-press ping/alert to all paired+online peers, working backgrounded.
+
+### Alternatives considered
+- **Manifest-declared receiver:** rejected — Android 8+ blocks implicit broadcasts to
+  static receivers.
+- **Activity-registered receiver:** rejected — dies with the UI; PTT must work with the
+  app backgrounded (the whole point of engine-lifetime ownership).
+- **Listening to all four press intents:** rejected — would fan out 4x per click.
+- **MessageWireFrame subtype:** rejected — breaks both hosts' exhaustive `when`
+  (transportSink encoders) for zero benefit.
+- **Durable outbox + retry:** rejected for v1 — a ping is ephemeral; an offline peer
+  simply misses it.
+- **Chat-row write per ping:** deferred — needs a schema/storage decision; the flow +
+  notification carry v1.
+
+### Revisit when
+PTT voice streaming (needs mic path + jitter/buffer design, not a notification),
+chat-thread logging of pings, or group-scoped PTT targeting.

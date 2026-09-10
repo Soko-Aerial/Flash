@@ -251,6 +251,28 @@ FLASH_GSYNC op=ack     groupId=<uuid> syncId=<uuid> from=<id> hasMore=<0|1> msgC
   2 s backup, others stand down; a broadcast batch `ack` cancels backups. Budgets: LOW
   returner 5/sec · 100/round; MEDIUM/HIGH 20/sec · 500/round; TTL 24 h; ≤ 2 copies/message.
 
+## PTT ping (v1, 2026-09-09)
+
+A hardware push-to-talk button press fans one ping out to every paired + online peer.
+Rides the WS mesh as a text frame under a new prefix, encoded with the same
+`FlashTextFraming` field rules as chat/pairing frames. Fire-and-forget: no outbox row,
+no retry, no persistence — peers missing from `activeSessions` at press time are skipped.
+
+```text
+FLASH_PTT action=ping eventId=<uuid> from=<id> senderName=<escaped> sentAt=<ms>
+```
+
+- Receivers MUST verify `from` equals the transport session's peer device id AND that the
+  peer is trusted (paired); otherwise the frame is dropped (fail-closed, same rule as
+  §Groups above).
+- Receivers deduplicate on `eventId` (replays are ignored) and surface a tone +
+  notification. There is deliberately no chat-row write in v1.
+- Unknown `action` values are ignored (forward compatibility).
+- The sender listens to the OEM Zello hook `com.zello.ptt.down` ONLY (single-press v1;
+  the up action is not observed). On tydtech firmware the same press also emits
+  scanner/lowercase/uppercase variants — see `docs/android-platform-notes.md` — which are
+  ignored so one press fans out exactly once.
+
 ## Intended Full Protocol
 
 

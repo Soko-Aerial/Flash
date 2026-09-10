@@ -144,6 +144,7 @@ class MainActivity : ComponentActivity() {
      * MutableStateFlow shared between the activity and the shell in the same process.
      */
     private val pendingNotificationConversation = MutableStateFlow<String?>(null)
+    private val pendingCallAnswer = MutableStateFlow(false)
 
     /**
      * Whether the OS currently exempts Flash from battery optimisation (ERROR-031 / D7).
@@ -174,6 +175,9 @@ class MainActivity : ComponentActivity() {
         // start) — consume the launch intent here too.
         pendingNotificationConversation.value =
             intent?.getStringExtra(FlashNotificationManager.EXTRA_CONVERSATION_ID)
+        if (intent?.getBooleanExtra(com.transfer.flash.calling.FlashCallActionReceiver.EXTRA_ANSWER_CALL, false) == true) {
+            pendingCallAnswer.value = true
+        }
         // Boot the real WS mesh stack once, idempotently. The holder de-dupes against the Dev
         // Console / background service, so this never spins up a second server. Failures are
         // captured into appEngine.startError (permission gating lands in Phase 4).
@@ -184,6 +188,7 @@ class MainActivity : ComponentActivity() {
                 engine = appEngine,
                 showDevConsoleEntry = isDebuggable,
                 pendingNotificationConversation = pendingNotificationConversation,
+                pendingCallAnswer = pendingCallAnswer,
                 onEnableBackgroundTransfers = ::requestIgnoreBatteryOptimizations,
                 ignoringBatteryOptimizations = ignoringBatteryOptimizations,
                 receivedStorageState = receivedStorageState,
@@ -223,6 +228,9 @@ class MainActivity : ComponentActivity() {
         // Bug 7: notification tap while the activity was alive (CLEAR_TOP|SINGLE_TOP resume).
         pendingNotificationConversation.value =
             intent.getStringExtra(FlashNotificationManager.EXTRA_CONVERSATION_ID)
+        if (intent.getBooleanExtra(com.transfer.flash.calling.FlashCallActionReceiver.EXTRA_ANSWER_CALL, false)) {
+            pendingCallAnswer.value = true
+        }
     }
 
     private fun refreshReceivedStorageUsage() {
@@ -375,6 +383,8 @@ fun FlashApp(
     engine: AppEngine,
     showDevConsoleEntry: Boolean = false,
     pendingNotificationConversation: MutableStateFlow<String?> = MutableStateFlow(null),
+    /** Notification answer-button: true when the user tapped "Answer" on the incoming-call notification. */
+    pendingCallAnswer: MutableStateFlow<Boolean> = MutableStateFlow(false),
     /** Bug 6: fired when the user turns ON the Settings "Background transfers" toggle (host-owned). */
     onEnableBackgroundTransfers: () -> Unit = {},
     /** ERROR-031 / D7: activity-published battery-optimisation exemption, refreshed on resume. */
@@ -449,6 +459,9 @@ fun FlashApp(
         storageUsageError = receivedStorage.hasError,
         clearingReceivedFiles = receivedStorage.isClearing,
     )
+    // Captured here (composable scope) so the non-composable lambda below can construct an
+    // AndroidPreferencesIdentityStore when the display name changes.
+    val settingsContext = LocalContext.current.applicationContext
     val onSettingsChange: (FlashSettingsModel) -> Unit = { updated ->
         persistScope.launch {
             if (updated.themeMode != settings.themeMode) {
@@ -469,7 +482,14 @@ fun FlashApp(
             if (updated.performanceMode != settings.performanceMode) {
                 store.setPerformanceMode(updated.performanceMode)
             }
-            if (updated.displayName != settings.displayName) store.setDisplayName(updated.displayName)
+            if (updated.displayName != settings.displayName) {
+                store.setDisplayName(updated.displayName)
+                // Propagate to identity store (persisted) and discovery (live NSD re-advertisement).
+                com.transfer.flash.core.security.identity.AndroidPreferencesIdentityStore(
+                    settingsContext,
+                ).updateFriendlyName(updated.displayName)
+                DiscoveryEngineHolder.updateFriendlyName(updated.displayName)
+            }
         }
     }
 
@@ -516,6 +536,7 @@ fun FlashApp(
                     settings = settings,
                     onSettingsChange = onSettingsChange,
                     pendingNotificationConversation = pendingNotificationConversation,
+                    pendingCallAnswer = pendingCallAnswer,
                     onEnableBackgroundTransfers = onEnableBackgroundTransfers,
                     onRefreshStorageUsage = onRefreshStorageUsage,
                     onClearReceivedFiles = onClearReceivedFiles,
@@ -539,6 +560,7 @@ private fun FlashShell(
     settings: FlashSettingsModel,
     onSettingsChange: (FlashSettingsModel) -> Unit,
     pendingNotificationConversation: MutableStateFlow<String?>,
+    pendingCallAnswer: MutableStateFlow<Boolean>,
     onEnableBackgroundTransfers: () -> Unit,
     onRefreshStorageUsage: () -> Unit,
     onClearReceivedFiles: () -> Unit,
@@ -561,7 +583,29 @@ private fun FlashShell(
     val chatStartError by engine.startError.collectAsState()
     val chatRepository: com.transfer.flash.core.messaging.FlashChatRepository =
         (if (ready) engine.chats else null) ?: EmptyFlashChatRepository
-    val conversationState by chatRepository.conversationState.collectAsState()
+    val rawConversationState by chatRepository.conversationState.collectAsState()
+    // Merge ongoing group calls into the conversation state so the banner composable can show it.
+    val ongoingGroupCalls by (engine.calls?.ongoingGroupCalls
+        ?: remember { MutableStateFlow(emptyMap<String, com.transfer.flash.core.calling.model.OngoingGroupCallUi>()) }
+        ).collectAsState()
+    val conversationState = remember(rawConversationState, ongoingGroupCalls) {
+        val convId = rawConversationState.header.let { h ->
+            if (h.isGroup) nav.current.conversationId else null
+        }
+        val ongoing = convId?.let { ongoingGroupCalls[it] }
+        if (ongoing != null) {
+            rawConversationState.copy(
+                ongoingCall = com.transfer.flash.core.messaging.model.FlashActiveGroupCallBarUi(
+                    callId = ongoing.callId,
+                    callerName = ongoing.initiatorId,
+                    video = ongoing.video,
+                    participantCount = ongoing.participantCount,
+                ),
+            )
+        } else {
+            rawConversationState
+        }
+    }
     val chatListState by chatRepository.chatListState.collectAsState()
     // EXP-012: `chatListState` itself is only ever *read* inside the ChatList branch (the screen and
     // its isLoading), and `conversationState` only inside the Conversation branch — a `by` delegate
@@ -688,6 +732,38 @@ private fun FlashShell(
             audioRouter.attach(engine.calls?.activeCall?.value?.speakerOn == true)
             scope.launch { engine.calls?.accept() }
         }
+    }
+
+    // Notification answer-button: when the user taps "Answer" on the incoming-call notification
+    // (FlashCallActionReceiver → EXTRA_ANSWER_CALL → pendingCallAnswer), auto-accept the ringing
+    // call using the same permission/audioRouter pattern as the in-overlay accept button.
+    val pendingAnswer by pendingCallAnswer.collectAsState()
+    LaunchedEffect(pendingAnswer, ready) {
+        if (!pendingAnswer || !ready) return@LaunchedEffect
+        pendingCallAnswer.value = false
+        val calls = engine.calls ?: return@LaunchedEffect
+        val active = calls.activeCall.value ?: return@LaunchedEffect
+        if (active.state != FlashCallState.RINGING) return@LaunchedEffect
+        val hasAudio = ContextCompat.checkSelfPermission(
+            callCtx, Manifest.permission.RECORD_AUDIO,
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!hasAudio) {
+            pendingCallAccept = true
+            audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            return@LaunchedEffect
+        }
+        if (active.video) {
+            val hasCamera = ContextCompat.checkSelfPermission(
+                callCtx, Manifest.permission.CAMERA,
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!hasCamera) {
+                pendingCallAccept = true
+                cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                return@LaunchedEffect
+            }
+        }
+        audioRouter.attach(active.speakerOn)
+        calls.accept()
     }
 
     // Phase 3.3: Transfers derives from the live transfer repository's activeTransfers. The fallback
@@ -1188,6 +1264,29 @@ private fun FlashShell(
                             nav.back()
                         },
                         onMarkUnread = chatRepository::markConversationUnread,
+                        onJoinGroupCall = { callId, video ->
+                            val peerId = entry.conversationId
+                            if (peerId != null) {
+                                scope.launch(Dispatchers.IO) {
+                                    val memberIds = if (conversationState.members.isNotEmpty()) {
+                                        conversationState.members.map { it.id }
+                                    } else {
+                                        chatRepository.groupMembers(peerId).map { it.id }
+                                    }
+                                    val hasAudio = ContextCompat.checkSelfPermission(
+                                        callCtx, Manifest.permission.RECORD_AUDIO,
+                                    ) == PackageManager.PERMISSION_GRANTED
+                                    if (hasAudio) {
+                                        engine.calls?.joinGroupCall(
+                                            groupId = peerId,
+                                            callId = callId,
+                                            memberIds = memberIds,
+                                            video = video,
+                                        )
+                                    }
+                                }
+                            }
+                        },
                     )
                     FlashDestination.Transfers -> FlashTransfersScreen(
                         state = transfersUi,

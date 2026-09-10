@@ -182,5 +182,29 @@ class CallFrameCodecTest {
             val frame = CallWireFrame.GroupHangup(callId = callId, from = from, groupId = "group-123")
             assertEquals(frame, CallFrameCodec.decode(CallFrameCodec.encode(frame)))
         }
+
+        @Test
+        fun group_presence_round_trip() {
+            val frame = CallWireFrame.GroupPresence(
+                callId = callId,
+                from = from,
+                groupId = "group-123",
+                callerName = "Alice",
+                video = true,
+                participantCount = 3,
+            )
+            assertEquals(frame, CallFrameCodec.decode(CallFrameCodec.encode(frame)))
+        }
+
+        @Test
+        fun group_query_round_trip() {
+            val frame = CallWireFrame.GroupQuery(
+                callId = callId,
+                from = from,
+                groupId = "group-123",
+            )
+            assertEquals(frame, CallFrameCodec.decode(CallFrameCodec.encode(frame)))
+        }
     }
+
 

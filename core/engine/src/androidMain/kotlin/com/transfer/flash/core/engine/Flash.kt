@@ -19,6 +19,7 @@ import com.transfer.flash.core.messaging.RealFlashChatRepository
 import com.transfer.flash.core.messaging.protocol.DirectMessageActionCodec
 import com.transfer.flash.core.messaging.protocol.GroupFrameCodec
 import com.transfer.flash.core.messaging.protocol.MessageWireFrame
+import com.transfer.flash.core.messaging.protocol.PttFrameCodec
 import com.transfer.flash.core.network.bridge.DiscoveryRouteBinder
 import com.transfer.flash.core.network.datachannel.DataChannelClient
 import com.transfer.flash.core.network.datachannel.DataChannelServer
@@ -402,7 +403,13 @@ private class Wiring(
                         sessionJobs[session] = scope.launch {
                             launch {
                                 session.incomingText.collect { text ->
-                                    handleInboundText(chatImpl, transferImpl, session.peerDeviceId.value, text)
+                                    handleInboundText(
+                                        chatImpl,
+                                        transferImpl,
+                                        session.peerDeviceId.value,
+                                        text,
+                                        isTrustedPeer = { peerId -> trustStore.isTrusted(peerId) },
+                                    )
                                 }
                             }
                             launch {
@@ -471,7 +478,24 @@ private class Wiring(
         transferImpl: RealFlashTransferRepository,
         peerDeviceId: String,
         text: String,
+        isTrustedPeer: (String) -> Boolean,
     ) {
+        // PTT ping: prefix-disjoint from the chat families below. Same fail-closed rule as the
+        // app host (claimed from must equal the transport peer, peer must be trusted). This
+        // library host has no notification path, so accepted pings are logged for sample
+        // consumers; UI hosts surface them.
+        PttFrameCodec.decode(text)?.let { frame ->
+            if (frame.from != peerDeviceId) {
+                Log.w(TAG, "PTT ping dropped: claimed from=${frame.from} != transport peer=$peerDeviceId")
+                return
+            }
+            if (!isTrustedPeer(peerDeviceId)) {
+                Log.w(TAG, "PTT ping dropped: untrusted peer=$peerDeviceId")
+                return
+            }
+            Log.i(TAG, "PTT ping from '${frame.senderName}' id=$peerDeviceId eventId=${frame.eventId}")
+            return
+        }
         GroupFrameCodec.decode(text)?.let { frame ->
             Log.i(TAG, "Inbound group frame ${frame.javaClass.simpleName} from id=$peerDeviceId")
             chatImpl.onInboundGroupWireFrame(peerDeviceId, frame)
