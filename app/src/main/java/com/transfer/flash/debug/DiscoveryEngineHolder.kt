@@ -812,6 +812,8 @@ object DiscoveryEngineHolder {
                             Log.i(TAG_DISCOVERY, "Syncing updated friendly name for trusted peer ${peerId.value}: '$knownName' -> '$reportedName'")
                             trustStore.trustPeer(peerId, reportedName)
                             db.conversationDao().updateDirectTitle(peerId.value, reportedName)
+                            // Also update the member's display name in every group they belong to.
+                            db.groupMemberDao()?.updateMemberDisplayName(peerId.value, reportedName)
                         }
                     }
                 }

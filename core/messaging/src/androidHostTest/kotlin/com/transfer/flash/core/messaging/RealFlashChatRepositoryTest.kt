@@ -1367,6 +1367,11 @@ class RealFlashChatRepositoryTest {
             members.values.count { it.groupId == groupId && it.isActive }
         override suspend fun activeGroupIdsFor(deviceId: String): List<String> =
             members.values.filter { it.deviceId == deviceId && it.isActive }.map { it.groupId }.distinct()
+        override suspend fun updateMemberDisplayName(deviceId: String, newName: String) {
+            members.replaceAll { key, entity ->
+                if (key.second == deviceId) entity.copy(displayName = newName) else entity
+            }
+        }
     }
 
     private class FakeGroupDeliveryDao : GroupDeliveryDao {

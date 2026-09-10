@@ -29,4 +29,8 @@ public interface GroupMemberDao {
             "WHERE deviceId = :deviceId AND isActive = 1",
     )
     public suspend fun activeGroupIdsFor(deviceId: String): List<String>
+
+    /** Update display name for a device across every group it belongs to (device-name change). */
+    @Query("UPDATE group_members SET displayName = :newName WHERE deviceId = :deviceId")
+    public suspend fun updateMemberDisplayName(deviceId: String, newName: String)
 }

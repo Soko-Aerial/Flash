@@ -72,7 +72,7 @@ object FlashGroupMembersMath {
 
     /** Pill copy for privileged roles; null for plain members (no badge rendered). */
     fun roleBadgeLabel(role: FlashMemberRole): String? = when (role) {
-        FlashMemberRole.Owner -> "Owner"
+        FlashMemberRole.Owner -> "Creator"
         FlashMemberRole.Admin -> "Admin"
         FlashMemberRole.Member -> null
     }

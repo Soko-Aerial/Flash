@@ -80,7 +80,7 @@ class FlashGroupMembersLogicTest {
 
     @Test
     fun `role badges render for owner and admin only`() {
-        assertEquals("Owner", FlashGroupMembersMath.roleBadgeLabel(FlashMemberRole.Owner))
+        assertEquals("Creator", FlashGroupMembersMath.roleBadgeLabel(FlashMemberRole.Owner))
         assertEquals("Admin", FlashGroupMembersMath.roleBadgeLabel(FlashMemberRole.Admin))
         assertNull(FlashGroupMembersMath.roleBadgeLabel(FlashMemberRole.Member))
     }

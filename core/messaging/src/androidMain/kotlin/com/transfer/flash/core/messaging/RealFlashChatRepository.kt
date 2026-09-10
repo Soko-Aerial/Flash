@@ -843,6 +843,8 @@ public class RealFlashChatRepository(
             initials = computeInitials(displayName),
             isOnline = isOnline,
             role = if (role == "owner") FlashMemberRole.Owner else FlashMemberRole.Member,
+            // Online members share our LAN/WS mesh; offline ones have no known transport.
+            transport = if (isOnline) FlashNetworkTransport.Lan else FlashNetworkTransport.Unknown,
         )
 
     private suspend fun sendGroupText(
