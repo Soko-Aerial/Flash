@@ -94,13 +94,15 @@ public data class FlashVoiceProfile(
         )
 
         /**
-         * 10 ms packets, 32 kbit/s ceiling, DTX off — the stack's existing numbers, unchanged,
-         * so this tier is provably a no-op against the pre-tiering build.
+         * 20 ms packets, 32 kbit/s ceiling, DTX on. 20 ms is the WebRTC global standard
+         * (WhatsApp, Meet, Discord) which halves packet rate to 50 pps, and DTX collapses
+         * silence during listening periods to ~2.5 pps, eliminating Wi-Fi channel contention
+         * and NetEQ jitter buffer bloat in 1:1 and multi-peer group calls.
          */
         public val HIGH: FlashVoiceProfile = FlashVoiceProfile(
-            ptimeMs = 10,
+            ptimeMs = 20,
             maxBitrateBps = 32_000,
-            useDtx = false,
+            useDtx = true,
         )
     }
 }

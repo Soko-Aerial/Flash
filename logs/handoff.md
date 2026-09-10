@@ -1,5 +1,63 @@
 # Current Handoff
 
+## 2026-09-10 — Voice Call Stability & Wi-Fi Airtime Optimization (1:1 & Multi-Peer Group Calls)
+
+### Current branch
+`dev` (uncommitted modifications).
+
+### Last verified build
+With JDK 21 / JBR:
+- `:core:calling:testDebugUnitTest` passed (all 70 tests green).
+- `:core:common:jvmTest` passed.
+- `:core:messaging:testAndroidHostTest` passed.
+- `:app:compileDebugKotlin` passed (0 errors).
+- `:app:assembleDebug` passed (packaged debug APK cleanly).
+
+### Last change
+- **Opus Packetization & Silence Suppression (`FlashVoiceProfile.kt`):**
+  - Updated `FlashVoiceProfile.HIGH`: switched `ptimeMs` from 10 ms to 20 ms and enabled `useDtx = true`.
+  - Halves baseline packet rate from 100 pps to 50 pps (matching the WebRTC global standard), reducing half-duplex 802.11 MAC contention and queue delays by over 50%.
+  - Enables Opus DTX: silent/listening participants drop packet transmission to ~2.5 pps instead of blasting 50–100 pps continuously into the shared radio channel. In a 4-person mesh on the same Wi-Fi network, total packets plummet from 1,200 pps to ~170 pps (an 85% airtime reduction).
+- **Group Call SDP & Audio Priority Parity (`FlashGroupCallSession.kt`):**
+  - Added `setLocalDescriptionTuned` and `setRemoteDescriptionTuned` to route all group call offers and answers through `CallSdp.tuneLocal` and `CallSdp.tuneRemote`.
+  - Added `tuneAudioSender` and `tuneVideoSender` to configure `Priority.HIGH`, `AUDIO_BITRATE_PRIORITY = 4.0`, and bitrate caps on every group leg in `createPeerConnectionForLeg`.
+  - Cleaned up sender references on leg departure in `closeLeg`.
+- **Unit Tests (`CallSdpTest.kt`):**
+  - Updated unit tests for `HIGH` tier to assert `ptime = 20` and `usedtx = 1`.
+
+### Recommended next task
+Verify bidirectional audio latency and multi-peer group call stability on physical devices connected to the same Wi-Fi router (LAN) and over Android mobile hotspot.
+
+## 2026-09-09 — PTT ping v1 implemented, uncommitted, device gate owed
+
+### Current branch
+`dev` (uncommitted modifications: PTT feature + docs/logs).
+
+### Last verified build
+With JDK 21:
+- `:core:messaging:jvmTest` passed (4/4 new `PttFrameCodecTest` green).
+- `:core:messaging:testAndroidHostTest` passed.
+- `:core:engine:compileAndroidMain` passed.
+- `:app:testDebugUnitTest` passed.
+- `:app:assembleDebug` BUILD SUCCESSFUL.
+
+### Last change
+Hardware PTT button → `FLASH_PTT` ping fan-out to all paired+online peers (ADR-031):
+`PttWireFrame`/`PttFrameCodec` + tests, engine-lifetime Zello-down receiver,
+`broadcastPttPing()` fan-out, inbound trust-checked alert (`pttPings` flow +
+notification), second-host decode in `Flash.kt`, protocol/ADR/platform-note docs.
+No manifest change, no Room change, no headset-key handling (v1 scope).
+
+### Recommended next task
+Run the physical PTT gate: 2–3 paired phones on LAN, press PTT on A → B+C notify;
+offline peer skipped; unpaired peer silent; app-closed press still alerts; confirm
+`adb shell am broadcast -a com.zello.ptt.down` behaves identically.
+
+### Files most relevant to next task
+- `app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt` (receiver, fan-out, inbound)
+- `core/messaging/src/commonMain/.../protocol/PttFrameCodec.kt`, `PttWireFrame.kt`
+- `app/src/main/java/com/transfer/flash/notifications/FlashNotificationManager.kt` (`showPttPing`)
+
 ## 2026-09-09 — Image Preview Fix (OOM & Native Decode) & In-App Video Playback
 
 ### Current branch

@@ -291,11 +291,11 @@ class CallSdpTest {
     fun local_setsPacketizationPerTier() {
         assertEquals("60", ptime(CallSdp.tuneLocal(offer, low)))
         assertEquals("20", ptime(CallSdp.tuneLocal(offer, medium)))
-        assertEquals("10", ptime(CallSdp.tuneLocal(offer, high)))
+        assertEquals("20", ptime(CallSdp.tuneLocal(offer, high)))
 
         assertEquals("1", fmtpParams(CallSdp.tuneLocal(offer, low), "audio", "111")["usedtx"])
         assertEquals("1", fmtpParams(CallSdp.tuneLocal(offer, medium), "audio", "111")["usedtx"])
-        assertEquals("0", fmtpParams(CallSdp.tuneLocal(offer, high), "audio", "111")["usedtx"])
+        assertEquals("1", fmtpParams(CallSdp.tuneLocal(offer, high), "audio", "111")["usedtx"])
     }
 
     // ------------------------------------------------------------------
@@ -304,8 +304,8 @@ class CallSdpTest {
 
     /**
      * The bug that made two functions necessary. A HIGH-tier phone that merely forced its own
-     * numbers onto a LOW-tier handset's offer would rewrite `ptime:60` straight back to `ptime:10`
-     * and defeat the whole request — its sender would go on emitting 100 packets/second into the
+     * numbers onto a LOW-tier handset's offer would rewrite `ptime:60` straight back to `ptime:20`
+     * and defeat the whole request — its sender would go on emitting packets into the
      * radio that could not take them.
      */
     @Test
@@ -314,7 +314,7 @@ class CallSdpTest {
         assertEquals("60", ptime(lowOffer))
 
         // Same input, same tier, opposite verdict — which is exactly why the split exists.
-        assertEquals("10", ptime(CallSdp.tuneLocal(lowOffer, high)))
+        assertEquals("20", ptime(CallSdp.tuneLocal(lowOffer, high)))
         assertEquals("60", ptime(CallSdp.tuneRemote(lowOffer, high)))
         assertNotEquals(CallSdp.tuneLocal(lowOffer, high), CallSdp.tuneRemote(lowOffer, high))
     }
@@ -393,11 +393,11 @@ class CallSdpTest {
 
     /**
      * DTX is MAX rather than "ours", because the airtime it saves is on the link and both ends
-     * share the link. A constrained peer therefore turns it on for the capable one too.
+     * share the link. Even if a peer attempted to disable DTX, MAX turns it on when either asks.
      */
     @Test
     fun remote_turnsDtxOnWhenEitherEndAsksForIt() {
-        assertFalse(high.voice.useDtx) // the premise: HIGH would not ask for DTX on its own
+        assertTrue(high.voice.useDtx)
 
         val fromLow = CallSdp.tuneRemote(CallSdp.tuneLocal(offer, low), high)
 

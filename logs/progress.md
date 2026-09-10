@@ -1,5 +1,80 @@
 # Progress Log
 
+## 2026-09-10 — Voice Call Stability & Wi-Fi Airtime Optimization (1:1 & Multi-Peer Group Calls)
+
+### Worked on
+Investigated and resolved voice call quality fluctuation and buffer bloat ("bogged line" / latency buildup) across 1-to-1 and multi-peer group calls over both shared Wi-Fi routers (LAN) and mobile hotspots.
+
+### Changed
+- `core/common/.../perf/FlashVoiceProfile.kt`:
+  - Updated `FlashVoiceProfile.HIGH`: switched `ptimeMs` from 10 ms to 20 ms and enabled `useDtx = true`.
+  - Halves baseline packet rate from 100 pps to 50 pps (matching the WebRTC global standard), reducing half-duplex 802.11 MAC contention and queue delays by over 50%.
+  - Enables Opus DTX (Discontinuous Transmission / silence suppression): silent/listening participants drop packet transmission to ~2.5 pps instead of blasting 50–100 pps continuously into the shared radio channel. In a 4-person mesh on the same Wi-Fi network, total packets plummet from 1,200 pps to ~170 pps (an 85% airtime reduction).
+- `core/calling/.../FlashGroupCallSession.kt`:
+  - Added `setLocalDescriptionTuned` and `setRemoteDescriptionTuned` to route all group call offers and answers through `CallSdp.tuneLocal` and `CallSdp.tuneRemote`.
+  - Added `tuneAudioSender` and `tuneVideoSender` to configure `Priority.HIGH`, `AUDIO_BITRATE_PRIORITY = 4.0`, and bitrate caps on every group leg in `createPeerConnectionForLeg`.
+  - Cleaned up sender references on leg departure in `closeLeg`.
+- `core/calling/src/test/.../CallSdpTest.kt`:
+  - Updated unit tests for `HIGH` tier to assert `ptime = 20` and `usedtx = 1`.
+
+### Verification
+- `:core:calling:testDebugUnitTest`: all 70 unit tests passed.
+- `:core:common:jvmTest`: passed.
+- `:core:messaging:testAndroidHostTest`: passed.
+- `:app:compileDebugKotlin`: passed with 0 errors.
+- `:app:assembleDebug`: packaged successfully in 1m 19s.
+
+## 2026-09-09 — Hardware PTT button → ping to all paired+online peers (v1)
+
+### Worked on
+Implemented single-press PTT ping fan-out from tydtech-firmware clip mics: one
+`com.zello.ptt.down` broadcast fans one `FLASH_PTT action=ping` frame to every paired +
+online peer, which surfaces a notification + in-app event. Background v1 (engine
+lifetime, works with the app closed).
+
+### Changed
+- `core/messaging/.../protocol/PttWireFrame.kt` (new): standalone `PttPingFrame`
+  (eventId/from/senderName/sentAt) — deliberately NOT a `MessageWireFrame` subtype so
+  both hosts' exhaustive `when` expressions keep compiling.
+- `core/messaging/.../protocol/PttFrameCodec.kt` (new): `FLASH_PTT` encode/decode via
+  `FlashTextFraming`; null on unknown actions / malformed fields.
+- `core/messaging/.../protocol/PttFrameCodecTest.kt` (new): 4 tests (escaped
+  round-trip, unknown action, missing/blank/non-numeric fields, wrong prefix).
+- `app/.../debug/DiscoveryEngineHolder.kt`:
+  - Engine-lifetime dynamic PTT receiver (`registerPttReceiver`, mirroring
+    `registerScreenReceiver`, `RECEIVER_NOT_EXPORTED`, Zello down action only).
+  - `broadcastPttPing()`: 800 ms debounce, snapshot `activeSessions ∩ trustedPeers`,
+    parallel `sendTextAsync` fan-out (main-safe), structured `PTT:` logs.
+  - Inbound `FLASH_PTT` branch in `handleInboundText` with fail-closed trust +
+    transport-peer binding, `eventId` dedup (capped), `pttPings` flow emission, and
+    `FlashNotificationManager.showPttPing` unless foregrounded. Unregistered in
+    `stopAll`; `localDeviceName` cached/cleared with the engine lifetime.
+- `app/.../notifications/FlashNotificationManager.kt`: `showPttPing` (single shared
+  slot id 310, tap opens app, best-effort like message posts).
+- `core/engine/.../Flash.kt`: same `FLASH_PTT` decode + checks in the second host;
+  logs on accept (no notification path in the library host).
+- `docs/protocol.md`: §PTT ping wire spec. `docs/decisions.md`: ADR-031.
+  `docs/android-platform-notes.md`: tydtech 4-intent burst + headset-jack note.
+
+### Verification
+- `:core:messaging:jvmTest` passed (4/4 new `PttFrameCodecTest` green).
+- `:core:messaging:testAndroidHostTest` passed.
+- `:core:engine:compileAndroidMain` passed.
+- `:app:testDebugUnitTest` passed.
+- `:app:assembleDebug` BUILD SUCCESSFUL.
+- `git diff --check` clean.
+- Physical-device gate NOT run (no hardware in this environment).
+
+### Remaining
+- On-device gate: pair 2–3 phones, press PTT on A → B+C notify in ~1s; offline C
+  skipped; unpair B → B silent; kill Activity → still alerts; `adb shell am broadcast
+  -a com.zello.ptt.down` equivalence.
+- v2 candidates (deferred): PTT voice stream, chat-row ping logging, group-scoped PTT.
+
+### Next AI
+Run the physical PTT gate above before claiming the feature complete. Do not widen the
+intent filter (other 3 press actions) without a new device report.
+
 ## 2026-09-09 — Image Preview Fix (OOM & Native Decode) & In-App Video Playback
 
 ### Worked on

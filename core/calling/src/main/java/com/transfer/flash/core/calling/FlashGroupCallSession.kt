@@ -13,10 +13,13 @@ import com.shepeliev.webrtckmp.PeerConnectionState
 import com.shepeliev.webrtckmp.RecordAudioPermissionException
 import com.shepeliev.webrtckmp.RtcConfiguration
 import com.shepeliev.webrtckmp.RtcpMuxPolicy
+import com.shepeliev.webrtckmp.RtpSender
 import com.shepeliev.webrtckmp.SessionDescription
 import com.shepeliev.webrtckmp.SessionDescriptionType
 import com.shepeliev.webrtckmp.VideoTrack
 import com.shepeliev.webrtckmp.audioTracks
+import org.webrtc.Priority
+import org.webrtc.RtpParameters.DegradationPreference
 import com.shepeliev.webrtckmp.onConnectionStateChange
 import com.shepeliev.webrtckmp.onIceCandidate
 import com.shepeliev.webrtckmp.onTrack
@@ -134,6 +137,8 @@ public class FlashGroupCallSession(
         var signalingGraceJob: Job? = null,
         val pendingIce: ArrayDeque<IceCandidate> = ArrayDeque(),
         var remoteDescriptionSet: Boolean = false,
+        var audioSender: RtpSender? = null,
+        var videoSender: RtpSender? = null,
     )
 
     internal fun getLegStateForTesting(peerId: String): FlashCallParticipantState? = legs[peerId]?.state
@@ -362,9 +367,9 @@ public class FlashGroupCallSession(
             if (localDeviceId > peerId) {
                 try {
                     val offer = pc.createOffer(OfferAnswerOptions(offerToReceiveAudio = true, offerToReceiveVideo = video))
-                    pc.setLocalDescription(offer)
+                    val applied = setLocalDescriptionTuned(pc, offer)
                     sendFrame(
-                        CallWireFrame.Offer(callId = callId, from = localDeviceId, sdp = offer.sdp),
+                        CallWireFrame.Offer(callId = callId, from = localDeviceId, sdp = applied.sdp),
                         peerId,
                     )
                     FlashLog.i("GROUP_CALL", "Sent offer to peer $peerId for group call $callId")
@@ -388,12 +393,16 @@ public class FlashGroupCallSession(
         // Add shared local tracks to this leg
         val audioTrack = stream.audioTracks.firstOrNull()
         if (audioTrack != null) {
-            pc.addTrack(audioTrack, stream)
+            val audioSender = pc.addTrack(audioTrack, stream)
+            leg.audioSender = audioSender
+            tuneAudioSender(audioSender)
         }
         if (video) {
             val videoTrack = stream.videoTracks.firstOrNull()
             if (videoTrack != null) {
-                pc.addTrack(videoTrack, stream)
+                val videoSender = pc.addTrack(videoTrack, stream)
+                leg.videoSender = videoSender
+                tuneVideoSender(videoSender)
             }
         }
 
@@ -472,13 +481,13 @@ public class FlashGroupCallSession(
             val pc = leg.peerConnection ?: createPeerConnectionForLeg(leg, stream).also { leg.peerConnection = it }
 
             try {
-                pc.setRemoteDescription(SessionDescription(SessionDescriptionType.Offer, sdp))
+                setRemoteDescriptionTuned(pc, SessionDescriptionType.Offer, sdp)
                 leg.remoteDescriptionSet = true
                 flushPendingIce(leg, pc)
                 val answer = pc.createAnswer(OfferAnswerOptions(offerToReceiveAudio = true, offerToReceiveVideo = video))
-                pc.setLocalDescription(answer)
+                val applied = setLocalDescriptionTuned(pc, answer)
                 sendFrame(
-                    CallWireFrame.Answer(callId = callId, from = localDeviceId, sdp = answer.sdp),
+                    CallWireFrame.Answer(callId = callId, from = localDeviceId, sdp = applied.sdp),
                     peerId,
                 )
                 FlashLog.i("GROUP_CALL", "Answered offer from peer $peerId for group call $callId")
@@ -493,7 +502,7 @@ public class FlashGroupCallSession(
         leg.legMutex.withLock {
             val pc = leg.peerConnection ?: return
             try {
-                pc.setRemoteDescription(SessionDescription(SessionDescriptionType.Answer, sdp))
+                setRemoteDescriptionTuned(pc, SessionDescriptionType.Answer, sdp)
                 leg.remoteDescriptionSet = true
                 flushPendingIce(leg, pc)
                 FlashLog.i("GROUP_CALL", "Applied answer from peer $peerId for group call $callId")
@@ -591,6 +600,8 @@ public class FlashGroupCallSession(
             leg.peerConnection?.close()
         } catch (_: Throwable) {}
         leg.peerConnection = null
+        leg.audioSender = null
+        leg.videoSender = null
     }
 
     private fun armStatsPolling() {
@@ -803,5 +814,110 @@ public class FlashGroupCallSession(
             endReason = reason,
         )
         onEnded(this)
+    }
+
+    private suspend fun setLocalDescriptionTuned(
+        pc: PeerConnection,
+        desc: SessionDescription,
+    ): SessionDescription {
+        val tunedSdp = runCatching { CallSdp.tuneLocal(desc.sdp, performanceMode()) }.getOrNull()
+        if (tunedSdp != null && tunedSdp != desc.sdp) {
+            val tuned = SessionDescription(desc.type, tunedSdp)
+            try {
+                pc.setLocalDescription(tuned)
+                FlashLog.i("GROUP_CALL", "local ${desc.type} (tuned) sdp len=${tuned.sdp.length}")
+                return tuned
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                FlashLog.w("GROUP_CALL", "tuned local SDP rejected, using original: ${t.message}")
+            }
+        }
+        FlashLog.i("GROUP_CALL", "local ${desc.type} sdp len=${desc.sdp.length}")
+        pc.setLocalDescription(desc)
+        return desc
+    }
+
+    private suspend fun setRemoteDescriptionTuned(
+        pc: PeerConnection,
+        type: SessionDescriptionType,
+        sdp: String,
+    ) {
+        val tuned = runCatching { CallSdp.tuneRemote(sdp, performanceMode()) }.getOrNull()
+        if (tuned != null && tuned != sdp) {
+            try {
+                pc.setRemoteDescription(SessionDescription(type, tuned))
+                FlashLog.i("GROUP_CALL", "remote $type (tuned) sdp len=${tuned.length}")
+                return
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                FlashLog.w("GROUP_CALL", "tuned remote SDP rejected, using original: ${t.message}")
+            }
+        }
+        FlashLog.i("GROUP_CALL", "remote $type sdp len=${sdp.length}")
+        pc.setRemoteDescription(SessionDescription(type, sdp))
+    }
+
+    private fun tuneAudioSender(sender: RtpSender) {
+        val maxBitrateBps = performanceMode().voice.maxBitrateBps
+        try {
+            val native = sender.android
+            val params = native.parameters
+            if (params.encodings.isEmpty()) {
+                FlashLog.w("GROUP_CALL", "audio sender has no encodings to tune")
+                return
+            }
+            params.encodings.forEach { encoding ->
+                encoding.active = true
+                encoding.networkPriority = Priority.HIGH
+                encoding.bitratePriority = AUDIO_BITRATE_PRIORITY
+                encoding.maxBitrateBps = maxBitrateBps
+            }
+            val applied = native.setParameters(params)
+            FlashLog.i(
+                "GROUP_CALL",
+                "audio sender tuned applied=$applied max=${maxBitrateBps / 1000}kbps " +
+                    "networkPriority=HIGH bitratePriority=$AUDIO_BITRATE_PRIORITY",
+            )
+        } catch (t: Throwable) {
+            FlashLog.w("GROUP_CALL", "audio sender tuning failed: ${t.message}")
+        }
+    }
+
+    private fun tuneVideoSender(sender: RtpSender) {
+        val profile = performanceMode().video
+        try {
+            val native = sender.android
+            val params = native.parameters
+            params.degradationPreference = DegradationPreference.MAINTAIN_FRAMERATE
+            if (params.encodings.isEmpty()) {
+                FlashLog.w("GROUP_CALL", "video sender has no encodings to tune")
+                return
+            }
+            params.encodings.forEach { encoding ->
+                encoding.active = true
+                encoding.maxBitrateBps = profile.maxBitrateKbps * BPS_PER_KBPS
+                encoding.minBitrateBps = profile.minBitrateKbps * BPS_PER_KBPS
+                encoding.maxFramerate = profile.captureFps
+                encoding.scaleResolutionDownBy = 1.0
+                encoding.networkPriority = Priority.LOW
+                encoding.bitratePriority = VIDEO_BITRATE_PRIORITY
+            }
+            val applied = native.setParameters(params)
+            FlashLog.i(
+                "GROUP_CALL",
+                "video sender tuned applied=$applied max=${profile.maxBitrateKbps}kbps " +
+                    "fps=${profile.captureFps} degradation=MAINTAIN_FRAMERATE",
+            )
+        } catch (t: Throwable) {
+            FlashLog.w("GROUP_CALL", "video sender tuning failed: ${t.message}")
+        }
+    }
+
+    private companion object {
+        const val AUDIO_BITRATE_PRIORITY = 4.0
+        const val VIDEO_BITRATE_PRIORITY = 0.5
+        const val BPS_PER_KBPS = 1000
     }
 }
