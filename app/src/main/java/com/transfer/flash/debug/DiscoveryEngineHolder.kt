@@ -511,7 +511,12 @@ object DiscoveryEngineHolder {
             sinkFactory = { start ->
                 val safeName = sanitizePathComponent(start.fileName.ifBlank { "received.bin" })
                 val safeId = sanitizePathComponent(start.transferId)
-                val dest = File(File(receivedDir, safeId), safeName)
+                val canonicalRoot = receivedDir.canonicalFile
+                val dest = File(File(canonicalRoot, safeId), safeName).canonicalFile
+                // SENTINEL: Path traversal guard — canonical containment under FlashReceived
+                require(dest.path.startsWith(canonicalRoot.path + File.separator)) {
+                    "Path traversal escape detected for transferId=${start.transferId}, fileName=${start.fileName}"
+                }
                 dest.parentFile?.mkdirs()
                 receivedPaths[start.transferId] = dest.absolutePath
                 val handle = FileRandomAccessSinkHandle(dest, start.totalBytes)
