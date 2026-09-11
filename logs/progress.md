@@ -1,5 +1,21 @@
 # Progress Log
 
+## 2026-09-10 — ⚡ Bolt: LazyColumn Chat Recomposition & Callback Optimization
+
+### Worked on
+Optimized LazyColumn chat message rendering performance on low-end devices by differentiating `contentType` for composition slot recycling and memoizing per-item event callback lambdas.
+
+### Changed
+- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashMessageList.kt`:
+  - Added `flashMessageContentType(message: FlashMessageUi): String` helper to differentiate message types (`"callEvent"`, `"image"`, `"voice"`, `"file"`, `"text"`).
+  - Updated `itemsIndexed` `contentType` parameter to use `flashMessageContentType(message)` instead of static `"flashMessage"`.
+  - Wrapped per-item event callbacks (`onOpenActions`, `onSelectToggle`, `onToggleReaction`, `onReplySwipe`, `onImageClick`, `onFileClick`, `onAcceptOffer`, `onDeclineOffer`) in `remember(message.id, ...)` to prevent new closure instantiations per recomposition pass.
+  - Added `// BOLT:` performance annotation comment detailing the changes and expected impact.
+
+### Verification
+- `./gradlew :core:messaging:jvmTest :core:messaging:testAndroidHostTest :ui:chat:jvmTest :app:testDebugUnitTest :app:assembleDebug` — BUILD SUCCESSFUL (all tests passed).
+- `git diff --check` — clean.
+
 ## 2026-09-10 — 5-Fix Wiring: Notification Answer, Rejoin Call, Device Name Propagation
 
 ### Worked on
