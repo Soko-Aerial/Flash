@@ -15,7 +15,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -32,7 +31,9 @@ import androidx.compose.ui.unit.dp
 import com.transfer.flash.core.messaging.model.FlashQuotedReplyUi
 import com.transfer.flash.ui.theme.FlashShapes
 import com.transfer.flash.ui.theme.FlashSpacing
+import com.transfer.flash.ui.theme.FlashText
 import com.transfer.flash.ui.theme.FlashTheme
+import com.transfer.flash.ui.theme.flashPressScale
 import org.jetbrains.compose.ui.tooling.preview.Preview
 
 /**
@@ -76,14 +77,16 @@ fun FlashQuotedReplyCard(
     }
 
     val shape = RoundedCornerShape(FlashShapes.radius8)
+    val interactionSource = remember { MutableInteractionSource() }
 
     Box(
         modifier = modifier
             .fillMaxWidth()
+            .flashPressScale(interactionSource)
             .clip(shape)
             .background(cardBg)
             .clickable(
-                interactionSource = remember { MutableInteractionSource() },
+                interactionSource = interactionSource,
                 indication = null,
                 onClick = onJumpToMessage,
             )
@@ -114,14 +117,14 @@ fun FlashQuotedReplyCard(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.Center,
             ) {
-                Text(
+                FlashText(
                     text = quotedReply.senderName,
                     style = typography.captionEmphasis.copy(fontWeight = FontWeight.SemiBold),
                     color = senderColor,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                Text(
+                FlashText(
                     text = quotedReply.textSnippet,
                     style = typography.captionDefault,
                     color = snippetColor,

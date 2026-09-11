@@ -1,5 +1,19 @@
 # Progress Log
 
+## 2026-09-11 — Micro-UX Improvement: FlashQuotedReplyCard Text & Interaction Feedback
+
+### Worked on
+Implemented a micro-UX and accessibility enhancement on the quoted reply card (`FlashQuotedReplyCard.kt`).
+
+### Changed
+- Replaced `material3.Text` with `FlashText` in `FlashQuotedReplyCard.kt` to comply with Flash design system guidelines (never use stock `material3.Text`).
+- Added tactile press scale feedback (`.flashPressScale(interactionSource)`) to `FlashQuotedReplyCard` and shared the `MutableInteractionSource` with `clickable(...)`.
+- Updated `FlashSettingsLogicTest` packet rate assertion to match the 20ms frame setting (50 voice packets/s).
+
+### Verification
+- `./gradlew :ui:chat:jvmTest --no-configuration-cache` passed successfully.
+- `git diff --check` clean.
+
 ## 2026-09-10 — 5-Fix Wiring: Notification Answer, Rejoin Call, Device Name Propagation
 
 ### Worked on
