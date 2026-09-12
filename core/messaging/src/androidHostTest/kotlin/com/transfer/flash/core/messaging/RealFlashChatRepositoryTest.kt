@@ -42,6 +42,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
+import org.junit.Ignore
 import org.junit.Test
 
 class RealFlashChatRepositoryTest {
@@ -60,8 +61,13 @@ class RealFlashChatRepositoryTest {
         val flow = MutableStateFlow<List<MessageEntity>>(emptyList())
 
         override suspend fun insert(message: MessageEntity): Long {
-            if (messages.containsKey(message.localId)) return -1L
-            messages[message.localId] = message
+            // Room's `@Insert(onConflict = IGNORE)` is atomic; a check-then-put is not, and this
+            // harness runs on a 4-thread pool (see `executor`). Two group-media paths mint the same
+            // bubble concurrently (the GMEDIA early-mint branch and the accept path), so a racy fake
+            // reported BOTH inserts as wins - i.e. it invented a duplicate callback that production's
+            // IGNORE would have rejected. Found while chasing a 1-in-3 flake in
+            // `group media callback supplies stored title and attachment metadata`.
+            if (messages.putIfAbsent(message.localId, message) != null) return -1L
             flow.value = messages.values.filter { it.deletedAt == null }.sortedByDescending { it.sentAt }
             return 1L
         }
@@ -1282,6 +1288,8 @@ class RealFlashChatRepositoryTest {
                     delegate.clearLastReadCursor(id)
                 }
                 override suspend fun deleteConversations(ids: List<String>) = delegate.deleteConversations(ids)
+                override suspend fun updateDirectTitle(id: String, title: String) =
+                    delegate.updateDirectTitle(id, title)
             }
             conversationDao.upsert(
                 ConversationEntity(
@@ -2281,8 +2289,279 @@ class RealFlashChatRepositoryTest {
         assertEquals(firstGroupDeletedAt, messageDao.messages["remote-group"]!!.deletedAt)
     }
 
+    // ------------------------------------------------ late-joiner diagnosis (DIAG, no prod change)
+
+    /**
+     * DIAGNOSTIC HARNESS — models three devices as three repositories wired by one fake transport.
+     *
+     * Every `groupTransportSink` send is recorded as a [Hop] and delivered to the target repository
+     * (`onInboundGroupWireFrame(peerDeviceId = from)`), but ONLY while the two devices are linked.
+     * That mirrors a real `WsSession`: a frame written while the session is down is gone unless
+     * something durable re-sends it, and nothing in the harness retries on its own.
+     */
+    private class FakeMesh {
+        data class Hop(
+            val from: String,
+            val target: String,
+            val frame: GroupWireFrame,
+            val delivered: Boolean,
+        )
+
+        private val repositories = ConcurrentHashMap<String, RealFlashChatRepository>()
+        private val links = ConcurrentHashMap.newKeySet<String>()
+        private val recorded = java.util.Collections.synchronizedList(mutableListOf<Hop>())
+
+        fun register(deviceId: String, repository: RealFlashChatRepository) {
+            repositories[deviceId] = repository
+        }
+
+        fun link(a: String, b: String) {
+            links.add(linkKey(a, b))
+        }
+
+        fun unlink(a: String, b: String) {
+            links.remove(linkKey(a, b))
+        }
+
+        private fun linkKey(a: String, b: String): String = listOf(a, b).sorted().joinToString("|")
+
+        suspend fun send(from: String, target: String, frame: GroupWireFrame): Boolean {
+            val receiver = repositories[target]
+            val delivered = receiver != null && linkKey(from, target) in links
+            recorded.add(Hop(from, target, frame, delivered))
+            if (delivered) receiver!!.onInboundGroupWireFrame(from, frame)
+            return delivered
+        }
+
+        fun snapshot(): List<Hop> = synchronized(recorded) { recorded.toList() }
+    }
+
+    /** One device under test: its repository plus the fakes its state can be read back from. */
+    private class Peer(
+        val deviceId: String,
+        val messageDao: FakeMessageDao,
+        val memberDao: FakeGroupMemberDao,
+        val deliveryDao: FakeGroupDeliveryDao,
+        val repository: RealFlashChatRepository,
+    ) {
+        fun activeRoster(groupId: String): List<String> = memberDao.members.values
+            .filter { it.groupId == groupId && it.isActive }
+            .map { it.deviceId }
+            .sorted()
+
+        fun history(groupId: String): List<String> = messageDao.messages.values
+            .filter { it.conversationId == groupId && it.deletedAt == null }
+            .sortedBy { it.sentAt }
+            .map { "${it.senderId}:'${it.text}'" }
+
+        fun hasText(groupId: String, text: String): Boolean = messageDao.messages.values
+            .any { it.conversationId == groupId && it.text == text && it.deletedAt == null }
+
+        fun deliveryRowsFor(memberId: String): List<GroupDeliveryEntity> =
+            deliveryDao.rows.values.filter { it.memberId == memberId }
+    }
+
+    private fun newPeer(deviceId: String, mesh: FakeMesh): Peer {
+        val messageDao = FakeMessageDao()
+        val memberDao = FakeGroupMemberDao()
+        val deliveryDao = FakeGroupDeliveryDao()
+        val repository = newRepository(
+            localDeviceId = deviceId,
+            messageDao = messageDao,
+            groupMemberDao = memberDao,
+            groupDeliveryDao = deliveryDao,
+            trustedPeers = setOf("dev-a", "dev-b", "dev-c"),
+            groupSink = { target, frame -> mesh.send(deviceId, target, frame) },
+        )
+        mesh.register(deviceId, repository)
+        return Peer(deviceId, messageDao, memberDao, deliveryDao, repository)
+    }
+
+    /** Fire-and-forget group sends hop through `scope.launch(ioDispatcher)`, so give them a window. */
+    private suspend fun settle(ms: Long = 300L) {
+        kotlinx.coroutines.delay(ms)
+    }
+
+    private suspend fun awaitText(peer: Peer, groupId: String, text: String) {
+        kotlinx.coroutines.withTimeoutOrNull(3_000L) {
+            while (!peer.hasText(groupId, text)) kotlinx.coroutines.delay(20L)
+        }
+    }
+
+    private fun describeHop(hop: FakeMesh.Hop): String {
+        val detail = when (val frame = hop.frame) {
+            is GroupWireFrame.Create -> "members=${frame.memberIds}"
+            is GroupWireFrame.Add -> "added=${frame.memberIds}"
+            is GroupWireFrame.State -> "roster=${frame.members.map { it.deviceId }}"
+            is GroupWireFrame.Message -> "text='${frame.text}'"
+            is GroupWireFrame.SyncRequest -> "sinceSentAt=${frame.sinceSentAt}"
+            else -> ""
+        }
+        return "${hop.frame::class.simpleName}(from=${hop.from}, delivered=${hop.delivered}, $detail)"
+    }
+
+    /** The observed-facts dump the diagnosis report is built from. Never asserts anything itself. */
+    private fun lateJoinDiagnosis(
+        title: String,
+        mesh: FakeMesh,
+        peers: List<Peer>,
+        groupId: String,
+    ): String {
+        val hops = mesh.snapshot()
+        val lines = mutableListOf<String>()
+        lines += "----- $title (groupId=$groupId) -----"
+        peers.forEach { peer ->
+            val inbound = hops.filter { it.target == peer.deviceId && it.frame !is GroupWireFrame.Receipt }
+            lines += "[${peer.deviceId}] roster(active)=${peer.activeRoster(groupId)}"
+            lines += "[${peer.deviceId}] history=${peer.history(groupId)}"
+            lines += "[${peer.deviceId}] frames addressed to it: " + inbound
+                .groupBy { describeHop(it) }
+                .map { (desc, group) -> if (group.size == 1) desc else "$desc x${group.size}" }
+                .joinToString("; ")
+            lines += "[${peer.deviceId}] delivery rows it owns for dev-c: " + peer
+                .deliveryRowsFor("dev-c")
+                .map { row -> "('${peer.messageDao.messages[row.messageId]?.text ?: row.messageId}', state=${row.state})" }
+                .joinToString("; ")
+        }
+        val membership = hops.filter {
+            it.frame is GroupWireFrame.Create || it.frame is GroupWireFrame.Add ||
+                it.frame is GroupWireFrame.State
+        }
+        lines += "membership frames: " + membership
+            .groupBy { describeHop(it) }
+            .map { (desc, group) -> if (group.size == 1) desc else "$desc x${group.size}" }
+            .joinToString("; ")
+        val syncRequests = hops.filter { it.frame is GroupWireFrame.SyncRequest }
+        lines += "SyncRequest frames: " + if (syncRequests.isEmpty()) {
+            "NONE issued for any group"
+        } else {
+            syncRequests.joinToString("; ") { describeHop(it) }
+        }
+        return lines.joinToString("\n")
+    }
+
+    /**
+     * VARIANT 1 — A (owner) creates a group with B, then adds C while everyone is connected.
+     *
+     * Intended: C ends up with the pre-join history and receives the later messages. Observed on
+     * this test failing means the F5 join-time catch-up regressed.
+     */
+    @Test
+    // F7 (2026-09-11): intended-behaviour test - live again now that the join-time catch-up lands.
+    fun `DIAG variant 1 - late joiner with every device connected`() = runBlocking {
+        val mesh = FakeMesh()
+        val a = newPeer("dev-a", mesh)
+        val b = newPeer("dev-b", mesh)
+        val c = newPeer("dev-c", mesh)
+        mesh.link("dev-a", "dev-b")
+        mesh.link("dev-a", "dev-c")
+        mesh.link("dev-b", "dev-c")
+
+        val groupId = (a.repository.createGroup("Team", setOf("dev-b")) as FlashResult.Success).value
+        settle()
+        // Pre-join history: the messages C is supposed to catch up on.
+        a.repository.openConversation(groupId)
+        a.repository.sendText("A before join")
+        awaitText(a, groupId, "A before join")
+        b.repository.openConversation(groupId)
+        b.repository.sendText("B before join")
+        awaitText(b, groupId, "B before join")
+        settle()
+
+        // A adds C: existing member B gets the Add, newcomer C gets the full State bootstrap.
+        // F7: the join-time catch-up round pushes after BACKUP_DELAY_MS (2 s).
+        a.repository.addGroupMembers(groupId, setOf("dev-c"))
+        settle(1500L)
+
+        a.repository.sendText("A after join")
+        settle()
+        b.repository.sendText("B after join")
+        settle()
+
+        val report = lateJoinDiagnosis("VARIANT 1 all connected", mesh, listOf(a, b, c), groupId)
+        val failed = mutableListOf<String>()
+        val expect: (String, Boolean) -> Unit = { what, ok -> if (!ok) failed += what }
+        expect("C's history lacks A's pre-join message", c.hasText(groupId, "A before join"))
+        expect("C's history lacks B's pre-join message", c.hasText(groupId, "B before join"))
+        expect("C's history lacks A's post-join message", c.hasText(groupId, "A after join"))
+        expect("C's history lacks B's post-join message", c.hasText(groupId, "B after join"))
+        expect("C's roster is not the full group", c.activeRoster(groupId) == listOf("dev-a", "dev-b", "dev-c"))
+        expect("B's roster does not contain C", "dev-c" in b.activeRoster(groupId))
+        expect("no delivery row for C from A", a.deliveryRowsFor("dev-c").isNotEmpty())
+        expect("no delivery row for C from B", b.deliveryRowsFor("dev-c").isNotEmpty())
+        assertTrue(
+            "VARIANT 1 intended behaviour violated: ${failed.joinToString("; ")}\n$report",
+            failed.isEmpty(),
+        )
+    }
+
+    /**
+     * VARIANT 2 — same, but B's link is down while A adds C; B reconnects afterwards and both hosts
+     * run their session-up hooks (Flash.kt:425-427 / DiscoveryEngineHolder.kt:1158-1161).
+     *
+     * Intended: C still gets the history, and the reconnected B still reaches C with new messages.
+     */
+    @Test
+    // F7 (2026-09-11): intended-behaviour test - live again now that the join-time catch-up lands.
+    fun `DIAG variant 2 - late joiner while an existing member is offline`() = runBlocking {
+        val mesh = FakeMesh()
+        val a = newPeer("dev-a", mesh)
+        val b = newPeer("dev-b", mesh)
+        val c = newPeer("dev-c", mesh)
+        mesh.link("dev-a", "dev-b")
+        mesh.link("dev-a", "dev-c")
+        mesh.link("dev-b", "dev-c")
+
+        val groupId = (a.repository.createGroup("Team", setOf("dev-b")) as FlashResult.Success).value
+        settle()
+        a.repository.openConversation(groupId)
+        a.repository.sendText("A before join")
+        awaitText(a, groupId, "A before join")
+        b.repository.openConversation(groupId)
+        b.repository.sendText("B before join")
+        awaitText(b, groupId, "B before join")
+        settle()
+
+        // B drops off the mesh, then A adds C: the Add frame for B has no durable backing.
+        mesh.unlink("dev-a", "dev-b")
+        a.repository.addGroupMembers(groupId, setOf("dev-c"))
+        settle(1500L)
+
+        // B comes back; both hosts fire their session-up hooks exactly as the engine does.
+        mesh.link("dev-a", "dev-b")
+        b.repository.notifyPeerSessionUp("dev-a")
+        b.repository.sendGroupSyncRequests("dev-a")
+        b.repository.reconcileGroupMembership("dev-a")
+        a.repository.notifyPeerSessionUp("dev-b")
+        a.repository.sendGroupSyncRequests("dev-b")
+        a.repository.reconcileGroupMembership("dev-b")
+        settle(600L) // one sync round's claim window is GroupPolicy.CLAIM_WINDOW_MS = 300ms
+
+        a.repository.sendText("A after join")
+        settle()
+        b.repository.sendText("B after join")
+        settle()
+
+        val report = lateJoinDiagnosis("VARIANT 2 B offline during add", mesh, listOf(a, b, c), groupId)
+        val failed = mutableListOf<String>()
+        val expect: (String, Boolean) -> Unit = { what, ok -> if (!ok) failed += what }
+        expect("C's history lacks A's pre-join message", c.hasText(groupId, "A before join"))
+        expect("C's history lacks B's pre-join message", c.hasText(groupId, "B before join"))
+        expect("C's history lacks A's post-join message", c.hasText(groupId, "A after join"))
+        expect("C's history lacks B's post-join message", c.hasText(groupId, "B after join"))
+        expect("B's roster does not contain C after reconnecting", "dev-c" in b.activeRoster(groupId))
+        expect("C's roster is not the full group", c.activeRoster(groupId) == listOf("dev-a", "dev-b", "dev-c"))
+        expect("no delivery row for C from A", a.deliveryRowsFor("dev-c").isNotEmpty())
+        expect("no delivery row for C from B", b.deliveryRowsFor("dev-c").isNotEmpty())
+        assertTrue(
+            "VARIANT 2 intended behaviour violated: ${failed.joinToString("; ")}\n$report",
+            failed.isEmpty(),
+        )
+    }
+
     /** Shared construction for the ERROR-034 tests; every DAO is an in-memory fake. */
     private fun newRepository(
+        localDeviceId: String = "my-device-id",
         messageDao: MessageDao = FakeMessageDao(),
         conversationDao: ConversationDao = FakeConversationDao(),
         outboxDao: OutboxDao = FakeOutboxDao(),
@@ -2299,7 +2578,7 @@ class RealFlashChatRepositoryTest {
         onInboundAttachmentWithGroupTitle: (String, String?, String, String, String?) -> Unit =
             { _, _, _, _, _ -> },
     ) = RealFlashChatRepository(
-        localDeviceId = "my-device-id",
+        localDeviceId = localDeviceId,
         localDisplayName = "Kali",
         messageDao = messageDao,
         conversationDao = conversationDao,
@@ -2310,7 +2589,7 @@ class RealFlashChatRepositoryTest {
         reactionDao = FakeReactionDao(),
         groupMemberDao = groupMemberDao,
         groupDeliveryDao = groupDeliveryDao,
-        isTrustedPeer = { it in trustedPeers || it == "my-device-id" },
+        isTrustedPeer = { it in trustedPeers || it == localDeviceId },
         groupTransportSink = groupSink?.let { sink -> GroupTransportSink { target, frame -> sink(target, frame) } },
         transportSink = MessageTransportSink { target, frame -> messageSink(target, frame) },
         ioDispatcher = testDispatcher,

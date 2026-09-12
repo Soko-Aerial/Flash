@@ -6,6 +6,8 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
+import android.Manifest
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.PowerManager
@@ -24,7 +26,8 @@ import com.transfer.flash.core.messaging.protocol.GroupFrameCodec
 import com.transfer.flash.core.messaging.protocol.GroupWireFrame
 import com.transfer.flash.core.messaging.protocol.MessageWireFrame
 import com.transfer.flash.core.messaging.protocol.PttFrameCodec
-import com.transfer.flash.core.messaging.protocol.PttPingFrame
+import com.transfer.flash.core.messaging.protocol.PttAudioFrame
+import com.transfer.flash.core.messaging.protocol.PttSessionCodec
 import com.transfer.flash.core.network.FlashNetwork
 import com.transfer.flash.core.network.bridge.DiscoveryRouteBinder
 import com.transfer.flash.core.network.ws.WsFlashNetwork
@@ -33,6 +36,7 @@ import com.transfer.flash.core.security.crypto.FlashFingerprint
 import com.transfer.flash.core.security.crypto.KeystoreFlashCrypto
 import com.transfer.flash.core.security.trust.AndroidPreferencesTrustStore
 import com.transfer.flash.core.calling.CallCoordinator
+import com.transfer.flash.core.calling.FlashCalling
 import com.transfer.flash.core.calling.FlashWebRtcEngine
 import com.transfer.flash.core.calling.model.FlashCallDirection
 import com.transfer.flash.core.calling.model.FlashCallState
@@ -41,6 +45,11 @@ import com.transfer.flash.core.calling.protocol.CallWireFrame
 import com.transfer.flash.calling.FlashCallRinger
 import com.transfer.flash.calling.FlashCallService
 import com.transfer.flash.pairing.PairingCoordinator
+import com.transfer.flash.core.ptt.FlashPtt
+import com.transfer.flash.core.ptt.PttPressOutcome
+import com.transfer.flash.core.ptt.PttSessionEngine
+import com.transfer.flash.ptt.PttSessionService
+import com.transfer.flash.core.messaging.ptt.PttFloorState
 import com.transfer.flash.net.AutoConnectGate
 import com.transfer.flash.core.transfer.FlashTransferRepository
 import com.transfer.flash.core.transfer.RealFlashTransferRepository
@@ -57,6 +66,7 @@ import com.transfer.flash.core.transfer.policy.RandomAccessSinkHandle
 import com.transfer.flash.core.transfer.policy.TransferReconnectResumePolicy
 import com.transfer.flash.core.common.result.FlashResult
 import com.transfer.flash.identity.AppIdentity
+import com.transfer.flash.MainActivity
 import com.transfer.flash.notifications.FlashNotificationManager
 import java.io.File
 import java.io.IOException
@@ -70,15 +80,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharedFlow
-import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
@@ -129,16 +133,25 @@ object DiscoveryEngineHolder {
     private const val PAIR_PREFIX = "FLASH_PAIR"
 
     /**
+     * Calling-signaling prefix (C7 / ADR-025). Held here as a prefix the holder recognizes itself
+     * rather than going through `CallFrameCodec.decode`, so the inbound gate and the module's own
+     * `onInboundText` never decode the same frame twice per inbound text frame.
+     */
+    private const val CALL_PREFIX = "FLASH_CALL"
+
+    /**
      * Zello PTT hook emitted by tydtech-firmware clip mics (see docs/android-platform-notes.md).
      * The same press also emits scanner/lowercase/uppercase variants — this receiver listens
      * to the Zello down action ONLY so one press fans out exactly once. Single-press v1:
      * the up action is intentionally not observed.
      */
     private const val PTT_DOWN_ACTION = "com.zello.ptt.down"
-    /** Minimum gap between two accepted PTT presses; the OEM emits one down per click. */
+    /**
+     * Minimum gap between two accepted PTT presses; the OEM emits one down per click. The inbound
+     * ping dedup set that used to live here is gone with the rest of the duplicate ping pipeline —
+     * `FlashPtt` owns it (see [com.transfer.flash.core.ptt.PttSessionEngine]).
+     */
     private const val PTT_DEBOUNCE_MS = 800L
-    /** Cap for the inbound PTT dedup set; PTT is fire-and-forget so replays are not expected. */
-    private const val PTT_SEEN_CAP = 1000
 
     @Volatile
     private var composite: CompositeDiscovery? = null
@@ -158,8 +171,17 @@ object DiscoveryEngineHolder {
     @Volatile
     private var pairing: PairingCoordinator? = null
 
+    /**
+     * Live WebRTC calling engine (C7 / ADR-025). Constructed in [startEngineLocked], torn down in
+     * [stopAll].
+     *
+     * Held as the module's public contract, not as the concrete `CallCoordinator`: every caller in
+     * the app — inbound routing, the signaling-lifecycle collector, [currentCalling], the ringing
+     * service and the notification action receiver — uses interface members only, so the concrete
+     * type is needed nowhere but the construction site itself.
+     */
     @Volatile
-    private var callCoordinator: CallCoordinator? = null
+    private var calling: FlashCalling? = null
 
     /**
      * Owned here rather than by [FlashCallService] or the UI: a call has to ring even when the app
@@ -230,25 +252,20 @@ object DiscoveryEngineHolder {
     @Volatile
     private var pttReceiver: BroadcastReceiver? = null
 
-    /** Inbound PTT ping fan-out surface for the UI (notification is posted separately). */
-    private val _pttPings = MutableSharedFlow<PttPingEvent>(extraBufferCapacity = 16)
-    val pttPings: SharedFlow<PttPingEvent> = _pttPings.asSharedFlow()
-
-    /** One accepted inbound PTT ping: the receiver-side half of [PttPingFrame]. */
-    data class PttPingEvent(
-        val eventId: String,
-        val fromDeviceId: String,
-        val senderName: String,
-        val sentAtMs: Long,
-    )
-
-    /** Dedup set for inbound PTT event ids (fire-and-forget wire: no outbox replay exists). */
-    private val seenPttEventIds =
-        java.util.Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
-
     /** Last accepted hardware PTT down edge, for [PTT_DEBOUNCE_MS] press debouncing. */
     @Volatile
     private var lastPttDownMs: Long = 0L
+
+    /**
+     * Live PTT voice-session driver (ADR-032). Constructed in [startEngineLocked] once pairing
+     * exists; torn down in [stopAll]. Null outside the engine lifetime — every call site treats
+     * null as "engine not started" and degrades (tap-to-talk surface).
+     *
+     * The module owns ping decode/dedup and the session floor; this host only owns the mic grant,
+     * the hardware receiver, the foreground service and the notification surface.
+     */
+    @Volatile
+    private var pttEngine: FlashPtt? = null
 
     // Bug 3: auto-download settings, mirrored from FlashSettingsDataStore by AppEngine
     @Volatile
@@ -355,7 +372,15 @@ object DiscoveryEngineHolder {
 
     fun currentPairing(): PairingCoordinator? = pairing
 
-    fun currentCallCoordinator(): CallCoordinator? = callCoordinator
+    fun currentCalling(): FlashCalling? = calling
+
+    fun currentPttSession(): FlashPtt? = pttEngine
+
+    fun beginVoiceNote(): String? = pttEngine?.acquireVoiceNoteLease() ?: UUID.randomUUID().toString()
+
+    fun endVoiceNote(leaseId: String) {
+        pttEngine?.releaseVoiceNoteLease(leaseId)
+    }
 
     fun currentFriendlyName(): String? = localDeviceName
 
@@ -1134,6 +1159,9 @@ object DiscoveryEngineHolder {
                         // F3: ask the returning peer to push any group messages it holds that we
                         // lack (holder-coordinated catch-up, FLASH_GSYNC).
                         chatImpl.sendGroupSyncRequests(session.peerDeviceId.value)
+                        // F7: heal a membership frame this peer may have missed while it was offline -
+                        // membership frames have no delivery table, so a dropped Add/State is never retried.
+                        chatImpl.reconcileGroupMembership(session.peerDeviceId.value)
                         // Closes any recovery window the matching onSignalingLost opened, so a roam
                         // that resolved in two seconds does not cost the full grace period, and the
                         // ICE restart offer has a channel to travel on (ERROR-033).
@@ -1154,7 +1182,6 @@ object DiscoveryEngineHolder {
                                         callCoordinator,
                                         session.peerDeviceId.value,
                                         text,
-                                        isTrustedPeer = { peerId -> trustStore.isTrusted(peerId) },
                                     )
                                 }
                             }
@@ -1199,7 +1226,74 @@ object DiscoveryEngineHolder {
         transferRepo = transferImpl
         chatRepo = chatImpl
         pairing = pairingCoordinator
-        this.callCoordinator = callCoordinator
+        this.calling = callCoordinator
+        // PTT voice session (ADR-032 Phase 1): all transport access is lazy lambdas over
+        // holder fields, so construction order within this function does not matter.
+        val ptt = PttSessionEngine(
+            localId = { localDeviceId },
+            localName = { localDeviceName },
+            isTrustedPeer = { peerId -> trustStore.isTrusted(peerId) },
+            snapshotMembers = {
+                val selfId = localDeviceId
+                val trusted = pairing?.trustedPeers?.value?.mapTo(HashSet()) { it.id }
+                    ?: emptySet()
+                network?.activeSessions?.value?.keys?.mapNotNull { deviceId ->
+                    deviceId.value.takeIf { it != selfId && it in trusted }
+                } ?: emptyList()
+            },
+            sendControl = { peerId, text ->
+                val session = network?.activeSessions?.value?.get(FlashDeviceId(peerId)) as? WsSession
+                if (session != null) {
+                    runCatching { session.connection.sendText(text) }
+                        .onFailure { Log.w(TAG_WS, "PTT control send failed peer=$peerId", it) }
+                        .getOrDefault(false)
+                } else {
+                    Log.w(TAG_WS, "PTT control dropped: no session for $peerId")
+                    false
+                }
+            },
+            // Blocking socket write by contract: the engine calls this only from its
+            // sender loop on Dispatchers.IO, never from the capture thread or main.
+            sendAudio = { peerId, bytes ->
+                val session = network?.activeSessions?.value?.get(FlashDeviceId(peerId)) as? WsSession
+                if (session == null) {
+                    Log.w(TAG_WS, "PTT audio dropped: no session for $peerId")
+                } else {
+                    runCatching { session.connection.sendBinary(bytes) }
+                        .onFailure { Log.w(TAG_WS, "PTT audio send failed peer=$peerId", it) }
+                }
+            },
+            hasMicPermission = ::hasMicPermission,
+            isCallActive = { callActive },
+            audioRateHz = { if (performanceMode == FlashPerformanceMode.LOW) 8000 else 16000 },
+        )
+        pttEngine = ptt
+        // Surface session notices in logs as well as the Phase 3 overlay toast collector.
+        appScope.launch { ptt.notices.collect { Log.i(TAG_WS, "PTT notice: $it") } }
+        // Inbound ping decode/dedup/fan-out lives in the module now; this host only decides how an
+        // accepted ping surfaces. Foreground stays log-only (the Phase 3 overlay owns the screen
+        // then), backgrounded posts the tap-to-talk notification, exactly as before.
+        appScope.launch {
+            ptt.pings.collect { ping ->
+                val ctx = appContextRef
+                if (ctx != null && !FlashNotificationManager.appForeground) {
+                    FlashNotificationManager.showPttPing(ctx, ping.senderName)
+                }
+                Log.i(TAG_WS, "PTT ping from '${ping.senderName}' id=${ping.fromDeviceId} eventId=${ping.eventId}")
+            }
+        }
+        // Phase 2: session lifetime drives the foreground service (live notification +
+        // process priority). START_NOT_STICKY there: session truth lives in the engine.
+        appScope.launch {
+            ptt.state.collect { sessionState ->
+                val ctx = appContextRef ?: return@collect
+                if (sessionState is PttFloorState.Idle) PttSessionService.stop(ctx)
+                else {
+                    FlashNotificationManager.clearPttTapToTalk(ctx)
+                    PttSessionService.start(ctx)
+                }
+            }
+        }
         transferRef = transferImpl
         router.transfer = transferImpl
         router.onAttachmentStarted = { pid, transferId, fileName, totalBytes ->
@@ -1258,7 +1352,8 @@ object DiscoveryEngineHolder {
                 if (state?.state == FlashCallState.DIALING || state?.state == FlashCallState.RINGING) {
                     FlashCallService.start(appContext)
                 }
-                setCallActive(state?.state == FlashCallState.ACTIVE, engine)
+                val callOwnsAudio = state != null && state.state != FlashCallState.ENDED
+                setCallActive(callOwnsAudio, engine)
             }
         }
 
@@ -1332,13 +1427,12 @@ object DiscoveryEngineHolder {
     }
 
     /**
-     * Voice-call quiet transitions, driven by the [CallCoordinator.activeCall] collector. On the
-     * ACTIVE edge: discovery drops to ECO (advertising continues so the device stays visible;
-     * browse duty-cycles to 20 s bursts with 100 s idle gaps and the auto-connect sweep stops
-     * via [callActive]), and live transfer dispatchers slow their progress watcher via
-     * [RealFlashTransferRepository.voiceCallActive]. On the leaving-ACTIVE edge both are
-     * restored — the ECO→STANDARD switch wakes an in-flight idle gap immediately, so
-     * discovery resumes at full rate without waiting it out.
+     * Call/PTT audio-exclusion transitions, driven by the [CallCoordinator.activeCall] collector. On
+     * the first non-ended call edge, live PTT is torn down and new capture is refused. Discovery
+     * and transfer telemetry also enter call-quiet mode; on the null/ENDED edge all are restored.
+     * Starting the quiet policy before ACTIVE is deliberate: outbound media setup and accepted
+     * calls can acquire the mic during DIALING/CONNECTING, so waiting for ACTIVE admits a capture
+     * race. The ECO→STANDARD switch wakes an in-flight idle gap immediately.
      *
      * `runCatching` guards the mode switch, never the flag: this runs inside the `collect` loop
      * that also drives the ringer, and a throwing transport must not kill that loop. The flag is
@@ -1347,6 +1441,10 @@ object DiscoveryEngineHolder {
     private suspend fun setCallActive(active: Boolean, engine: CompositeDiscovery) {
         if (active == callActive) return
         callActive = active
+        // Mic exclusivity (ADR-032): a starting call tears any PTT session down; the press
+        // path refuses while a call is active, so the floor can never fight the call for
+        // the mic. Voice-message capture uses the same engine-owned gate in MainActivity.
+        if (active) pttEngine?.onCallStarted()
         (transferRepo as? RealFlashTransferRepository)?.voiceCallActive = active
         runCatching {
             engine.setMode(if (active) FlashDiscoveryMode.ECO else FlashDiscoveryMode.STANDARD)
@@ -1475,26 +1573,46 @@ object DiscoveryEngineHolder {
             ?: throw IOException("Content resolver returned null stream for $uriString")
     }
 
+    /**
+     * True when [text] is a `FLASH_CALL …` calling-signaling frame. The recognition half of the
+     * calling branch in [handleInboundText]; see [CALL_PREFIX] for why it is a prefix test.
+     */
+    private fun isCallFrameText(text: String): Boolean =
+        FlashTextFraming.parseFields(text, CALL_PREFIX) != null
+
     private suspend fun handleInboundText(
         chatImpl: RealFlashChatRepository,
         transferImpl: RealFlashTransferRepository,
         pairing: PairingCoordinator,
-        calling: CallCoordinator,
+        calling: FlashCalling,
         peerDeviceId: String,
         text: String,
-        isTrustedPeer: (String) -> Boolean,
     ) {
-        // Calling signaling first — the most latency-sensitive frame class. Decode returns null
-        // for non-call text (and unknown call actions), so chat/pairing fall through untouched.
-        if (CallFrameCodec.decode(text) != null) {
-            Log.i(TAG_WS, "Inbound call frame from id=$peerDeviceId")
-            calling.onInboundText(peerDeviceId, text)
+        // Calling signaling first — the most latency-sensitive frame class, and the module owns its
+        // decode: `onInboundText` returns true for every FLASH_CALL frame it consumed, false when
+        // the text is not a call frame at all. The `CallFrameCodec.decode(text) != null` pre-check
+        // that used to sit here decoded the same frame twice for nothing.
+        //
+        // Fail-closed like the other families below: a *recognized* call frame is never handed to
+        // the chat, pairing or PTT handlers even when the module had nothing to do with it (a stale
+        // call id, a group query with no live call).
+        if (isCallFrameText(text)) {
+            if (!calling.onInboundText(peerDeviceId, text)) {
+                Log.w(TAG_WS, "Call frame dropped (nothing to route it to) peer=$peerDeviceId")
+            }
             return
         }
-        // PTT ping next: prefix-disjoint from every family below; trust + transport binding
-        // are enforced inside onInboundPttPing (fail-closed, like the group path).
-        PttFrameCodec.decode(text)?.let { frame ->
-            onInboundPttPing(peerDeviceId, frame, isTrustedPeer)
+        // PTT next (ADR-032): ping and session control share one entry point, and the module owns
+        // decode, dedup, the fail-closed transport binding/trust check and the floor reduction. It
+        // answers true for recognized-but-rejected frames too, so a PTT frame can never fall
+        // through into the group/chat families below. The drop branch is `else` on purpose: an
+        // engine that is running already parsed both prefixes, and this is the path every inbound
+        // chat frame takes.
+        val ptt = pttEngine
+        if (ptt != null) {
+            if (ptt.onInboundText(peerDeviceId, text)) return
+        } else if (PttFrameCodec.decode(text) != null || PttSessionCodec.decode(text) != null) {
+            Log.w(TAG_WS, "PTT frame dropped (engine not started)")
             return
         }
         // Group frames next: their prefixes (FLASH_GROUP/GMSG/GRCPT/GREAD/GSYNC/GMEDIA) are
@@ -1615,6 +1733,13 @@ object DiscoveryEngineHolder {
         onAttachmentStarted: ((peerDeviceId: String, transferId: String, fileName: String, totalBytes: Long) -> Unit)? = null,
     ) {
         Log.d(TAG_TRANSFER, "Received binary frame: ${data.size} bytes from $peerLabel")
+        // PTT voice audio first (ADR-032): PTT1 magic is disjoint from the transfer pipeline's
+        // FLSH, so this pre-check costs one 4-byte compare — and it returns unconditionally, so
+        // PTT audio can never reach the transfer parser even with no engine started.
+        if (PttAudioFrame.isPttAudio(data)) {
+            pttEngine?.onInboundBinary(peerDeviceId, data)
+            return
+        }
         // 1. First route to active senders (ACKs or COMPLETE from receiver)
         if (transferImpl.onInboundFrame(data)) {
             Log.d(TAG_TRANSFER, "Inbound binary frame consumed by sender dispatcher")
@@ -1950,8 +2075,48 @@ object DiscoveryEngineHolder {
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
                 if (intent?.action == PTT_DOWN_ACTION) {
-                    Log.i(TAG_WS, "Hardware PTT down — fanning ping to paired+online peers")
-                    broadcastPttPing()
+                    val now = System.currentTimeMillis()
+                    if (now - lastPttDownMs < PTT_DEBOUNCE_MS) {
+                        Log.d(TAG_WS, "PTT down debounced")
+                        return
+                    }
+                    lastPttDownMs = now
+                    val eng = pttEngine
+                    val sessionState = eng?.state?.value
+                    if (eng != null && sessionState != null && sessionState !is PttFloorState.Idle) {
+                        // Toggle-off / busy-deny need no mic and no visibility: always direct,
+                        // so stopping works from any state (background included).
+                        eng.onPttButton()
+                        Log.i(TAG_WS, "Hardware PTT down in session — toggle routed")
+                        return
+                    }
+                    if (eng != null && FlashNotificationManager.appForeground && hasMicPermission()) {
+                        // Foreground + permitted: direct start, capture is legal right now.
+                        // The legacy ping stays the no-peers fallback (and the adb-test path).
+                        when (eng.onPttButton()) {
+                            PttPressOutcome.ACCEPTED ->
+                                Log.i(TAG_WS, "Hardware PTT down — session press accepted")
+                            PttPressOutcome.NO_PEERS -> {
+                                Log.i(TAG_WS, "Hardware PTT down — no session peers, ping fallback")
+                                eng.postNotice("No paired devices online")
+                                broadcastPttPing(skipDebounce = true)
+                            }
+                            PttPressOutcome.NO_MIC ->
+                                Log.w(TAG_WS, "Hardware PTT down — refused (mic permission); wire silent")
+                            PttPressOutcome.CALL_ACTIVE ->
+                                Log.w(TAG_WS, "Hardware PTT down — refused (call active); wire silent")
+                            PttPressOutcome.VOICE_NOTE_ACTIVE ->
+                                Log.w(TAG_WS, "Hardware PTT down — refused (voice note active); wire silent")
+                        }
+                        return
+                    }
+                    // Backgrounded, unpermitted, or pre-boot: surface the app — the shell
+                    // completes the press (permission prompt included). Capture from here is
+                    // illegal on API 34+ and silent on API 28+, so the session must never
+                    // start on this path.
+                    Log.i(TAG_WS, "Hardware PTT down — surfacing app for press completion")
+                    context?.let { surfaceAppForPttPress(it) }
+                        ?: Log.w(TAG_WS, "PTT press dropped: no context to surface app")
                 }
             }
         }
@@ -1972,92 +2137,49 @@ object DiscoveryEngineHolder {
         runCatching { appContextRef?.unregisterReceiver(receiver) }
     }
 
+    private fun hasMicPermission(): Boolean =
+        appContextRef?.let {
+            ContextCompat.checkSelfPermission(it, Manifest.permission.RECORD_AUDIO) ==
+                PackageManager.PERMISSION_GRANTED
+        } == true
+
     /**
-     * Fans one PTT ping out to every paired + online peer (v1: single press event).
+     * Surfaces the app after a press that could not start directly (Phase 3). The
+     * activity launch is best-effort — a background start may be silently blocked
+     * (API 29+) — so the tap-to-talk notification below is the guaranteed path: a
+     * notification tap always foregrounds.
+     */
+    private fun surfaceAppForPttPress(context: Context) {
+        val launch = Intent(context.applicationContext, MainActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            putExtra(PttSessionEngine.EXTRA_PTT_PRESS, true)
+        }
+        runCatching { context.startActivity(launch) }
+            .onFailure { Log.w(TAG_WS, "PTT surface-app launch failed", it) }
+        FlashNotificationManager.showPttTapToTalk(context)
+    }
+
+    /**
+     * Sends one PTT ping to every paired + online peer (v1: single press event) — the adb-test
+     * path and the no-peers fallback of [registerPttReceiver].
      *
      * Safe to call from [BroadcastReceiver.onReceive] (main thread): debouncing is a volatile
-     * timestamp check and the fan-out runs on [appScope]. Sends use `sendTextAsync` — the same
-     * non-blocking path as pairing/call frames — so a main-thread press can never throw
-     * `NetworkOnMainThreadException` and tear down a session. Fire-and-forget: no outbox row,
-     * no retry; peers missing from [WsFlashNetwork.activeSessions] are skipped silently.
+     * timestamp check and the fan-out is dispatched to [appScope]. The frame itself is built by
+     * `FlashPtt.sendPing()`, which is blocking by contract like the transport sink behind it — so
+     * this wrapper exists to keep the encode/fan-out (and its trust filter) in one place, in the
+     * module, while the press stays main-safe. Fire-and-forget: no outbox row, no retry.
      */
-    fun broadcastPttPing() {
+    fun broadcastPttPing(skipDebounce: Boolean = false) {
         val now = System.currentTimeMillis()
-        if (now - lastPttDownMs < PTT_DEBOUNCE_MS) {
+        if (!skipDebounce && now - lastPttDownMs < PTT_DEBOUNCE_MS) {
             Log.d(TAG_WS, "PTT down debounced")
             return
         }
         lastPttDownMs = now
         appScope.launch {
-            val net = network ?: return@launch
-            val selfId = localDeviceId ?: return@launch
-            val sessions = net.activeSessions.value
-            val trustedIds = pairing?.trustedPeers?.value?.mapTo(HashSet()) { it.id } ?: emptySet()
-            val frame = PttFrameCodec.encode(
-                PttPingFrame(
-                    eventId = UUID.randomUUID().toString(),
-                    from = selfId,
-                    senderName = localDeviceName ?: "Peer",
-                    sentAt = now,
-                ),
-            )
-            val legs = sessions.entries.mapNotNull { (deviceId, session) ->
-                val pid = deviceId.value
-                if (pid == selfId || pid !in trustedIds) null
-                else (session as? WsSession)?.let { pid to it }
-            }
-            if (legs.isEmpty()) {
-                Log.i(TAG_WS, "PTT ping: no paired+online peers (sessions=${sessions.size})")
-                return@launch
-            }
-            coroutineScope {
-                legs.map { (_, session) ->
-                    async { runCatching { session.connection.sendTextAsync(frame) } }
-                }.awaitAll()
-            }
-            Log.i(TAG_WS, "PTT ping queued to ${legs.size} peer(s)")
+            val sent = pttEngine?.sendPing() ?: false
+            if (!sent) Log.i(TAG_WS, "PTT ping: no paired+online peers")
         }
-    }
-
-    /**
-     * Accepts one inbound PTT ping. Fail-closed: a `from` that does not equal the authenticated
-     * transport peer, or an untrusted peer, is dropped with a warning — same rule as group
-     * frames. Accepted pings are deduplicated on `eventId`, emitted on [pttPings], and posted
-     * as a system notification unless the app is foregrounded (in-app observers cover that
-     * case via the flow). No Room write in v1.
-     */
-    private fun onInboundPttPing(
-        peerDeviceId: String,
-        frame: PttPingFrame,
-        isTrustedPeer: (String) -> Boolean,
-    ) {
-        if (frame.from != peerDeviceId) {
-            Log.w(TAG_WS, "PTT ping dropped: claimed from=${frame.from} != transport peer=$peerDeviceId")
-            return
-        }
-        if (!isTrustedPeer(peerDeviceId)) {
-            Log.w(TAG_WS, "PTT ping dropped: untrusted peer=$peerDeviceId")
-            return
-        }
-        if (!seenPttEventIds.add(frame.eventId)) {
-            Log.d(TAG_WS, "PTT ping duplicate ignored eventId=${frame.eventId}")
-            return
-        }
-        if (seenPttEventIds.size > PTT_SEEN_CAP) seenPttEventIds.clear()
-        val event = PttPingEvent(
-            eventId = frame.eventId,
-            fromDeviceId = peerDeviceId,
-            senderName = frame.senderName,
-            sentAtMs = frame.sentAt,
-        )
-        if (!_pttPings.tryEmit(event)) {
-            appScope.launch { _pttPings.emit(event) }
-        }
-        val ctx = appContextRef
-        if (ctx != null && !FlashNotificationManager.appForeground) {
-            FlashNotificationManager.showPttPing(ctx, frame.senderName)
-        }
-        Log.i(TAG_WS, "PTT ping from '${frame.senderName}' id=$peerDeviceId eventId=${frame.eventId}")
     }
 
     /** Stops advertising/browsing, sessions, and releases the ephemeral port. Idempotent. */
@@ -2072,7 +2194,7 @@ object DiscoveryEngineHolder {
             transferRepo = null
             chatRepo = null
             pairing = null
-            callCoordinator = null
+            calling = null
         }
         binderJob?.cancel()
         binderJob = null
@@ -2098,6 +2220,9 @@ object DiscoveryEngineHolder {
         appScope.cancel()
         // Nothing left to keep awake, and nothing left to re-arm: this is the only place the
         // engine's power locks are dropped and its screen-on receiver is torn down.
+        pttEngine?.shutdown()
+        pttEngine = null
+        appContextRef?.let { PttSessionService.stop(it) }
         unregisterScreenReceiver()
         unregisterPttReceiver()
         releasePowerLocks()

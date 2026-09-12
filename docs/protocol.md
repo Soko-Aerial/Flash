@@ -148,11 +148,67 @@ FLASH_CALL action=ice callId=<uuid> from=<id> mid=<escaped-mid> index=<n> candid
 ### Ordering and failure rules
 
 - Frames for one call are ordered by the single WS session (TCP); no reordering occurs.
-- If the WS session dies mid-call, the call fails immediately on both sides (media may
-  survive briefly, but Flash treats signaling loss as call loss - deterministic and simple).
+- If the WS session dies mid-call, the call is **held, not failed** — the loss opens a recovery
+  window of `FlashTransportProfile.callDisconnectGraceMs` (25 s at LOW; ERROR-033). The window is
+  spent working rather than waiting: the caller loops ICE-restart offers until the transport
+  underneath comes back, because the device that roamed lost signaling and media at the same
+  instant. The host closes the window with `onSignalingRestored` (called whenever a session comes
+  up, not only after a loss); if it expires with signaling still down the call ends `DISCONNECTED`
+  locally **without** a wire frame (`notifyPeer = false`) — there is nobody left to tell. Ending the
+  call the moment signaling drops was the pre-ERROR-033 behavior and made a two-second radio outage
+  indistinguishable from a hang-up.
+- The same budget governs a dead media path: `Disconnected`/`Failed` arm the ICE-recovery loop, and
+  a return to `Connected` cancels it.
 - Unknown `action` values are ignored (forward compatibility).
 - A device supports at most one active call; a second incoming `invite` while busy is
   auto-declined with `reason` omitted (plain `decline`).
+
+### Group call frames (N participants)
+
+Group calls reuse the `FLASH_CALL` prefix, the same `callId`/`from` fields and the same two host
+seams; the frame set is additive, so a peer that predates group calling simply ignores the new
+actions (unknown actions decode to null). `groupId` is the conversation, while `callId` is the call
+instance — one group can host a second call later under a new `callId`.
+
+```text
+FLASH_CALL action=ginvite   callId=<uuid> groupId=<uuid> from=<id> name=<escaped> video=<true|false> members=<id,id,…>
+FLASH_CALL action=gaccept   callId=<uuid> groupId=<uuid> from=<id>
+FLASH_CALL action=gdecline  callId=<uuid> groupId=<uuid> from=<id>
+FLASH_CALL action=gjoin     callId=<uuid> groupId=<uuid> from=<id> name=<escaped>
+FLASH_CALL action=ghangup   callId=<uuid> groupId=<uuid> from=<id>
+FLASH_CALL action=gpresence callId=<uuid> groupId=<uuid> from=<id> name=<escaped> video=<true|false> count=<n>
+FLASH_CALL action=gquery    callId=<uuid> groupId=<uuid> from=<id>
+```
+
+- `ginvite`: initiator -> every invited member. `members` is the comma-separated id list the
+  initiator is inviting (omitted when empty); receivers seed their known-member set from it, which
+  is what lets a third device mesh with the others without having witnessed the original invite.
+- `gaccept`: an invited member -> the initiator. The initiator then opens one leg to that member.
+- `gdecline`: an invited member -> the initiator. No leg is opened.
+- `gjoin`: **broadcast** — a participating member announces that it joined an active call, so every
+  other participant can open a leg to it. This is what makes the mesh converge without a central
+  mixer. The name is the joiner's display name (defaulted to "Group Member" when absent).
+- `ghangup`: a participant -> the others. Closes only that participant's legs; the call continues
+  for everyone else.
+- `gpresence`: announces a live call for the group. Re-announced every 4 s by every participant
+  while the call is dialing/connecting/active, and sent once as the answer to a `gquery`. The `name`
+  field carries the **group name** (not a person's), `video` the media intent, and `count` the
+  participant count including the sender. Receivers store it under `groupId` and surface it as an
+  "ongoing call / rejoin" banner; an entry not re-announced within 12 s — three missed
+  announcements — is pruned locally, so a banner cannot outlive the call it points at.
+- `gquery`: asks the group whether a call is running. Fans out to the group's trusted members; a
+  member with a live session for that `groupId` answers with `gpresence`, everyone else stays
+  silent. Used when presence was missed (a member that was offline when the call started, or a
+  fresh join to an old group).
+- The group call itself is a full mesh: each pair negotiates its own WebRTC leg (SDP `offer`/
+  `answer` and trickled `ice` under the same `callId`), and offer glare is resolved by a
+  deterministic election rather than by a fixed offerer — unlike the 1:1 case, where only the caller
+  offers. A member that leaves closes only its own legs, and the last remaining participant gets a
+  solo-grace window before the call ends.
+- `FLASH_CALL` frame handling is **fail-closed on the sender**: the frame's `from` must equal the
+  authenticated transport peer. For group frames the participant is resolved from that `from` and
+  never from the peer the frame arrived through, because a group frame can be relayed along a mesh
+  leg that is not the sender's own.
 
 ### Call log rows: no wire frame
 
@@ -272,6 +328,67 @@ FLASH_PTT action=ping eventId=<uuid> from=<id> senderName=<escaped> sentAt=<ms>
   the up action is not observed). On tydtech firmware the same press also emits
   scanner/lowercase/uppercase variants — see `docs/android-platform-notes.md` — which are
   ignored so one press fans out exactly once.
+
+## PTT voice session (ADR-032, Phases 0–3 implemented)
+
+Strict half-duplex floor: one holder transmits, all others only receive. Control rides
+the WS mesh as text frames under a new prefix with the same `FlashTextFraming` rules;
+audio rides binary frames (Phase 1). Same scope as the ping: fan-out to all
+paired+online peers, fire-and-forget session invites (a peer that misses `start` is not
+a member; there is no late-join in v1).
+
+```text
+FLASH_PTSS action=start sessionId=<uuid> from=<id> name=<escaped> sentAt=<ms> rate=<8000|16000> pms=<20|40|60>
+FLASH_PTSS action=stop sessionId=<uuid> from=<id> sentAt=<ms>
+FLASH_PTSS action=leave sessionId=<uuid> from=<id> sentAt=<ms>
+FLASH_PTSS action=hb sessionId=<uuid> from=<id> seq=<n> sentAt=<ms> rtt=<ms>
+FLASH_PTSS action=hb-ack sessionId=<uuid> from=<id> seq=<n> sentAt=<ms>
+```
+
+- `start`: holder claims the floor (`rate`/`pms` describe the audio to follow).
+- `stop`: ONLY the holder's own stop ends a session (toggle-press, burst cap, deny);
+  anyone else's `stop` is ignored, so a forged/stale frame cannot kill a transmission.
+- `leave`: receiver-side cancel hint, informational only, never tears anything down.
+- `hb` (1 Hz while TALKING): liveness + broadcaster-measured RTT echo (`rtt` omitted
+  until the first ack arrives). Receivers compute loss% locally from audio seq gaps.
+- `hb-ack`: receiver echo answering `seq`; the holder timestamps these for RTT.
+- Receivers MUST verify `from` equals the transport session's peer id AND trust, exactly
+  like §Groups and the ping. Unknown `action` values ignored. `rate`/`pms` outside the
+  allowlists are rejected (fail-closed: no agreed audio format, no session).
+- Liveness: 5 s without a valid holder audio packet or holder heartbeat auto-closes
+  orphaned receivers; 60 s max burst with 45 s warning; busy floor denies (no
+  preemption in v1). If two trusted peers claim within the 1.5 s collision window, the
+  lexicographically lower device id wins deterministically; late Start replays cannot
+  preempt an established talk.
+- Audio binary framing is implemented in Phase 1. Magic `PTT1` is disjoint from the
+  transfer pipeline's `FLSH` magic, so audio is routed before transfer parsing.
+
+### PTT audio binary frames (Phase 1)
+
+One frame per capture packet, little-endian scalars (transfer-pipeline order):
+
+```text
+magic      4B  "PTT1" (checked before the transfer pipeline with a 4-byte pre-check)
+version    u8  1
+sessionLen u16 sessionId UTF-8 length (<= 128)
+sessionId  N   session UUID
+seq        u32 packet sequence in the session
+captureTs  u64 sender capture clock, ms (scheduling + age stats, never a wall clock)
+pcm        ..  LE int16 mono samples, even length, <= 4096 B
+```
+
+- Rate/duration are NOT repeated per packet: the `start` frame fixes them
+  (8000 Hz × 60 ms on LOW or capture fallback, 16000 Hz × 20 ms otherwise).
+- Receivers bind strictly: current LISTENING session + holder transport peer, exact PCM
+  payload size negotiated by `rate`/`pms`, else drop. Gaps conceal locally (last-frame
+  repeat); loss% derives from ready vs concealed counts.
+- Senders put `start` on each live member's serialized WS stream before enabling capture
+  packet delivery, so no `PTT1` frame can overtake the format/session claim on that leg;
+  legs whose `start` write fails are removed before audio fan-out begins.
+- Transport order (measured-first amendment, 2026-09-10): WS-binary on the live session
+  first — zero setup, sub-ms on LAN for 640–960 B payloads. The TCP data channel stays
+  an optimization iff benchmarks show WS framing/jitter cost dominating; do not build it
+  on assumption.
 
 ## Intended Full Protocol
 

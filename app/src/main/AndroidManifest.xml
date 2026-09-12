@@ -27,6 +27,10 @@
          (Notification.CallStyle, Android 14+ setOngoing). -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <!-- PTT session (ADR-032 Phase 2): receiver-side background playout claims the
+         mediaPlayback type. Install-time (normal) permission, no runtime prompt; the
+         talker side reuses the microphone type above. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <!-- C7 (calling): FlashCallAudioRouter needs this for setMode(MODE_IN_COMMUNICATION),
          setCommunicationDevice/setSpeakerphoneOn and startBluetoothSco. Install-time (normal)
          permission, no runtime prompt. Without it every one of those calls is refused and a
@@ -79,6 +83,19 @@
              route through this receiver to the in-process CallCoordinator. -->
         <receiver
             android:name=".calling.FlashCallActionReceiver"
+            android:exported="false" />
+
+        <!-- PTT session (ADR-032 Phase 2): live-session FGS. The manifest declares the
+             union the service may claim at runtime (talker: microphone, listener:
+             mediaPlayback); each promotion claims only the subset its role holds. -->
+        <service
+            android:name=".ptt.PttSessionService"
+            android:exported="false"
+            android:foregroundServiceType="microphone|mediaPlayback|connectedDevice" />
+
+        <!-- PTT session Stop/Leave notification button routes here to the session engine. -->
+        <receiver
+            android:name=".ptt.PttSessionActionReceiver"
             android:exported="false" />
 
         <provider

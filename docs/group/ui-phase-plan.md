@@ -304,6 +304,41 @@ F5.2 (10-line, immediate UX win) → F5.1 → F5.3 → F5.4 → F6.1 → F6.2 �
 F4b (any-holder re-pull) stays queued ahead of F6.3 if media serving matters more than
 storage reporting.
 
+## F7 - Late-join heal: catch-up on join + membership reconciliation - STATUS: DONE 2026-09-11 (code + tests verified; device gate owed)
+
+Owner report (2026-09-11): "after adding a user later on in the group it doesn't sync messages and
+new messages doesn't come." Full diagnosis and evidence: `logs/errors.md` ERROR-051.
+
+F2 shipped the `State` bootstrap and F3 shipped `FLASH_GSYNC` catch-up, but both only held for
+members that were *connected* when the add happened:
+1. nothing triggered a catch-up for a device that joined during a live session (F3 sync fires only on
+   a session-up edge, which had already passed for that session);
+2. membership frames have no delivery table, so an `Add`/`State` handed to a sink whose target had no
+   session was dropped for good - the target never learned the newcomer, or the newcomer never learned
+   the group, and the membership-gated inbound `Message` then dropped everything addressed to it.
+
+- [x] `requestGroupCatchUp(groupId)` - one F3 `SyncRequest` per other active member, called from the
+      `State` branch after the roster is applied. Every member is asked because each holder only
+      pushes the messages IT owns; a join-time request carries `sinceSentAt = 0`, so it asks for the
+      whole history.
+- [x] `reconcileGroupMembership(peerDeviceId)` + `buildStateFrame(groupId)` - the F2 `State` is
+      re-sent for every group the peer is an active member of, wired into both hosts' session-up
+      edges beside `sendGroupSyncRequests`. The session-up edge becomes the retry point; no durable
+      membership queue and no schema change.
+- [x] `State` conversation upsert made non-destructive (keeps an existing row's `sortOrder`,
+      `groupCreatedBy`, `groupCreatedAt`) - required once `State` can arrive repeatedly.
+- [x] **F7d**: `claimedGroupMedia` atomic claim makes the group-media bubble single-owner - the GMEDIA
+      early-mint branch and the accept path can no longer both insert for one `transferId`, so the
+      tiebreaker is a claim rather than `MessageDao.insert`'s IGNORE rule.
+- [x] Tests: four defect-pinning diagnostics flipped to intended behaviour, the two intended-behaviour
+      tests un-`@Ignore`d, harness session-up edges extended with the reconcile hook, windows widened
+      past `BACKUP_DELAY_MS` (2 s).
+- Verify: `:core:messaging:testAndroidHostTest` green - **172 tests, 0 skipped, 0 failures**;
+      `:core:engine:testAndroidHostTest`, `:sample:consumer:testDebugUnitTest`,
+      `:app:testDebugUnitTest`, `:app:assembleDebug` green.
+- **Device gate owed:** three devices, one offline during the add - group appears, history backfills,
+  and messages flow both ways after the reconnect.
+
 ## Verification env (authoritative)
 ```bash
 export JAVA_HOME="/c/Users/KaliOxygen/.gradle/jdks/jetbrains_s_r_o_-21-amd64-windows.2"
