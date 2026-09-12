@@ -11,11 +11,11 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 
 /**
- * C7 (calling): resolves [com.transfer.flash.core.calling.CallCoordinator] actions
+ * C7 (calling): resolves [com.transfer.flash.core.calling.FlashCalling] actions
  * fired by the call notification's [android.app.Notification.CallStyle] buttons
  * (answer / decline / hang up).
  *
- * The coordinator lives in-process (DiscoveryEngineHolder), so these actions never
+ * The engine lives in-process (DiscoveryEngineHolder), so these actions never
  * leave the app — a broadcast PendingIntent is the standard way to wire CallStyle
  * action buttons.
  */
@@ -24,18 +24,18 @@ class FlashCallActionReceiver : BroadcastReceiver() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     override fun onReceive(context: Context, intent: Intent) {
-        val coordinator = DiscoveryEngineHolder.currentCallCoordinator()
-        if (coordinator == null) {
-            Log.w(TAG, "No call coordinator — ignoring action ${intent.action}")
+        val calling = DiscoveryEngineHolder.currentCalling()
+        if (calling == null) {
+            Log.w(TAG, "No call engine — ignoring action ${intent.action}")
             return
         }
         when (intent.action) {
             ACTION_ANSWER -> {
-                scope.launch { coordinator.accept() }
+                scope.launch { calling.accept() }
                 bringAppToFront(context)
             }
-            ACTION_DECLINE -> scope.launch { coordinator.decline() }
-            ACTION_HANGUP -> scope.launch { coordinator.hangUp() }
+            ACTION_DECLINE -> scope.launch { calling.decline() }
+            ACTION_HANGUP -> scope.launch { calling.hangUp() }
             else -> Log.w(TAG, "Unknown call action ${intent.action}")
         }
     }

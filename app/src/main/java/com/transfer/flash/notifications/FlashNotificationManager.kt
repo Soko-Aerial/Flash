@@ -40,6 +40,8 @@ object FlashNotificationManager {
     private const val NOTIFICATION_ID_BASE = 200
     /** Fixed slot for PTT pings: outside the per-conversation id range, collapses repeats. */
     private const val PTT_NOTIFICATION_ID = 310
+    /** Tap-to-talk prompt slot (Phase 3): a backgrounded hardware press the app surfaces. */
+    private const val PTT_TAP_TO_TALK_ID = 311
 
     /** Set true in MainActivity.onStart, false in onStop. */
     @Volatile
@@ -114,6 +116,45 @@ object FlashNotificationManager {
         runCatching {
             NotificationManagerCompat.from(appContext).notify(PTT_NOTIFICATION_ID, notification)
         }.onFailure { Log.w(TAG, "Failed to post PTT ping notification", it) }
+    }
+
+    /**
+     * Tap-to-talk prompt (Phase 3): a hardware press arrived while the app was backgrounded
+     * or unpermitted, so the session could not start directly. Tapping foregrounds the app
+     * with [com.transfer.flash.core.ptt.PttSessionEngine.EXTRA_PTT_PRESS], and the shell
+     * completes the press (permission prompt included). Best-effort like every post here.
+     */
+    fun showPttTapToTalk(context: Context) {
+        val appContext = context.applicationContext
+        createChannel(appContext)
+        val intent = Intent(appContext, MainActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            putExtra(com.transfer.flash.core.ptt.PttSessionEngine.EXTRA_PTT_PRESS, true)
+        }
+        val contentIntent = PendingIntent.getActivity(
+            appContext,
+            PTT_TAP_TO_TALK_ID,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val notification = NotificationCompat.Builder(appContext, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_notification_flash)
+            .setContentTitle("PTT button pressed")
+            .setContentText("Tap to start talking")
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setAutoCancel(true)
+            .setContentIntent(contentIntent)
+            .build()
+        runCatching {
+            NotificationManagerCompat.from(appContext).notify(PTT_TAP_TO_TALK_ID, notification)
+        }.onFailure { Log.w(TAG, "Failed to post PTT tap-to-talk notification", it) }
+    }
+
+    /** Clears the tap-to-talk prompt (session started, or the shell consumed the press). */
+    fun clearPttTapToTalk(context: Context) {
+        runCatching {
+            NotificationManagerCompat.from(context).cancel(PTT_TAP_TO_TALK_ID)
+        }
     }
 
     private fun post(context: Context, conversationId: String, title: String, body: String) {

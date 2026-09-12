@@ -19,7 +19,9 @@ import com.transfer.flash.core.messaging.RealFlashChatRepository
 import com.transfer.flash.core.messaging.protocol.DirectMessageActionCodec
 import com.transfer.flash.core.messaging.protocol.GroupFrameCodec
 import com.transfer.flash.core.messaging.protocol.MessageWireFrame
+import com.transfer.flash.core.messaging.protocol.PttAudioFrame
 import com.transfer.flash.core.messaging.protocol.PttFrameCodec
+import com.transfer.flash.core.messaging.protocol.PttSessionCodec
 import com.transfer.flash.core.network.bridge.DiscoveryRouteBinder
 import com.transfer.flash.core.network.datachannel.DataChannelClient
 import com.transfer.flash.core.network.datachannel.DataChannelServer
@@ -28,6 +30,7 @@ import com.transfer.flash.core.network.ws.WsSession
 import com.transfer.flash.core.persistence.db.FlashDatabaseOpener
 import com.transfer.flash.core.persistence.db.FlashMigrations
 import com.transfer.flash.core.persistence.settings.FlashSettingsDataStore
+import com.transfer.flash.core.ptt.PttSessionEngine
 import com.transfer.flash.core.security.identity.AndroidPreferencesIdentityStore
 import com.transfer.flash.core.security.trust.AndroidPreferencesTrustStore
 import com.transfer.flash.core.transfer.RealFlashTransferRepository
@@ -122,6 +125,7 @@ public object Flash {
 }
 
 private const val TAG = "FlashEngine"
+private const val CALL_PREFIX = "FLASH_CALL"
 private const val MSG_PREFIX = "FLASH_MSG"
 private const val RECEIPT_PREFIX = "FLASH_RCPT"
 private const val READ_PREFIX = "FLASH_READ"
@@ -135,6 +139,19 @@ private const val AUTO_CONNECT_SWEEP_MS = 5_000L
  * glare to have been resolved, negligible next to the outage that failed the transfer.
  */
 private const val SETTLE_BEFORE_RESUME_MS = 750L
+
+/**
+ * True when [text] is a calling-signaling frame (`FLASH_CALL …`, ADR-025) — the recognition half of
+ * the facade's call routing, and the reason a call frame can never fall through into the chat,
+ * transfer or PTT parsers whether or not an engine is attached.
+ *
+ * A prefix test rather than `CallFrameCodec.decode` on purpose: the codec lives in `:core:calling`,
+ * which this module depends on with `compileOnly`, so a consumer that never attaches calling has no
+ * such class at runtime — and this runs on *every* inbound text frame. Same reason the attached
+ * engine is reached through [FlashEngine.onInboundCallText] rather than `FlashEngine.calls`.
+ */
+internal fun isCallFrameText(text: String): Boolean =
+    FlashTextFraming.parseFields(text, CALL_PREFIX) != null
 
 /**
  * Faithful port of the app's `DiscoveryEngineHolder` wiring, minus the app-only pieces (pairing UI
@@ -165,6 +182,14 @@ private class Wiring(
     @Volatile private var acceptOffer: ((String) -> Unit)? = null
     @Volatile private var sendXfer: ((String, String, String) -> Unit)? = null
     private var onPeerConnectionClosed: ((String) -> Unit)? = null
+
+    /**
+     * The facade this wiring backs, set as soon as it is constructed. Inbound PTT and calling
+     * frames are routed to [FlashEngine.ptt] / [FlashEngine.calls] through it, so an attached engine
+     * has exactly one owner; the session collector below drives the call engine's signaling-recovery
+     * window through the same reference.
+     */
+    @Volatile private var facade: FlashEngine? = null
 
     fun build(): FlashEngine {
         val stored = AndroidPreferencesIdentityStore(appContext).getIdentity()
@@ -391,6 +416,11 @@ private class Wiring(
                 sessionJobs.keys.filterNot { it in sessions.values }.forEach { stale ->
                     sessionJobs.remove(stale)?.cancel()
                     failInboundForPeer(stale.peerDeviceId.value, "peer disconnected")
+                    // A live call cannot carry ICE without its signaling session, but a mesh roam
+                    // takes that session down as a matter of course and the dialer redials it in
+                    // seconds: open a recovery window rather than ending the call (ERROR-033). The
+                    // call engine is the facade's to notify, so the host does not duplicate this.
+                    facade?.onCallSignalingLost(stale.peerDeviceId.value)
                 }
                 sessions.values.forEach { session ->
                     if (session is WsSession && !sessionJobs.containsKey(session)) {
@@ -400,6 +430,13 @@ private class Wiring(
                         chatImpl.notifyPeerSessionUp(session.peerDeviceId.value)
                         // F3: holder-coordinated group catch-up (FLASH_GSYNC) with the returning peer.
                         chatImpl.sendGroupSyncRequests(session.peerDeviceId.value)
+                        // F7: heal a membership frame this peer may have missed while it was offline -
+                        // membership frames have no delivery table, so a dropped Add/State is never retried.
+                        chatImpl.reconcileGroupMembership(session.peerDeviceId.value)
+                        // Closes any recovery window the matching onCallSignalingLost opened, so a
+                        // roam that resolved in two seconds does not cost the full grace period, and
+                        // the ICE restart offer has a channel to travel on (ERROR-033).
+                        facade?.onCallSignalingRestored(session.peerDeviceId.value)
                         // Restart sends the peer's last disconnect killed. Byte-accurate resume
                         // already existed and nothing called it (ERROR-035).
                         scope.launch {
@@ -413,7 +450,6 @@ private class Wiring(
                                         transferImpl,
                                         session.peerDeviceId.value,
                                         text,
-                                        isTrustedPeer = { peerId -> trustStore.isTrusted(peerId) },
                                     )
                                 }
                             }
@@ -460,13 +496,53 @@ private class Wiring(
             }
         }
 
-        return DefaultFlashEngine(
+        val facade = DefaultFlashEngine(
             chats = chatImpl,
             transfers = transferImpl,
             discovery = engine,
             network = networkImpl,
             trustStore = trustStore,
             settings = settings,
+            // PTT (ADR-032) is opt-in and app-hosted: the facade owns identity/trust/session
+            // plumbing, the host owns the mic grant and the foreground service. Wired lazily so an
+            // app that never presses PTT never opens a capture path.
+            pttFactory = { hasMicPermission, isCallActive, audioRateHz ->
+                PttSessionEngine(
+                    localId = { localId },
+                    localName = { identity.friendlyName },
+                    isTrustedPeer = { peerId -> trustStore.isTrusted(FlashDeviceId(peerId)) },
+                    snapshotMembers = {
+                        networkImpl.activeSessions.value.keys
+                            .map { it.value }
+                            .filter { it != localId && trustStore.isTrusted(FlashDeviceId(it)) }
+                    },
+                    // Blocking socket writes by contract, exactly like the app host: the engine
+                    // calls these from its own IO-dispatched loops, never from main or capture.
+                    sendControl = { peerId, text ->
+                        val session = networkImpl.activeSessions.value[FlashDeviceId(peerId)] as? WsSession
+                        if (session == null) {
+                            Log.w(TAG, "PTT control dropped: no session for $peerId")
+                            false
+                        } else {
+                            runCatching { session.connection.sendText(text) }
+                                .onFailure { Log.w(TAG, "PTT control send failed peer=$peerId", it) }
+                                .getOrDefault(false)
+                        }
+                    },
+                    sendAudio = { peerId, bytes ->
+                        val session = networkImpl.activeSessions.value[FlashDeviceId(peerId)] as? WsSession
+                        if (session == null) {
+                            Log.w(TAG, "PTT audio dropped: no session for $peerId")
+                        } else {
+                            runCatching { session.connection.sendBinary(bytes) }
+                                .onFailure { Log.w(TAG, "PTT audio send failed peer=$peerId", it) }
+                        }
+                    },
+                    hasMicPermission = hasMicPermission,
+                    isCallActive = isCallActive,
+                    audioRateHz = audioRateHz,
+                )
+            },
             onClose = {
                 runCatching { dcServer.stop() }
                 kotlinx.coroutines.runBlocking {
@@ -477,28 +553,43 @@ private class Wiring(
                 scope.cancel()
             },
         )
+        // Inbound session collectors below close over this wiring, so they read the seam through
+        // the facade instead of a second copy of the attached-engine reference.
+        this.facade = facade
+        return facade
     }
     private suspend fun handleInboundText(
         chatImpl: RealFlashChatRepository,
         transferImpl: RealFlashTransferRepository,
         peerDeviceId: String,
         text: String,
-        isTrustedPeer: (String) -> Boolean,
     ) {
-        // PTT ping: prefix-disjoint from the chat families below. Same fail-closed rule as the
-        // app host (claimed from must equal the transport peer, peer must be trusted). This
-        // library host has no notification path, so accepted pings are logged for sample
-        // consumers; UI hosts surface them.
-        PttFrameCodec.decode(text)?.let { frame ->
-            if (frame.from != peerDeviceId) {
-                Log.w(TAG, "PTT ping dropped: claimed from=${frame.from} != transport peer=$peerDeviceId")
-                return
+        // Calling first (ADR-025): the most latency-sensitive frame class, and the only handler that
+        // is attached at runtime instead of built by Flash.create. A recognized call frame is
+        // consumed or dropped here — never handed on. `CallCoordinator.onInboundText` answers false
+        // for a frame it has nothing to do with (a stale call id, a group query with no live call),
+        // and that frame still belongs to calling, so the branch returns either way.
+        if (isCallFrameText(text)) {
+            val consumed = facade?.onInboundCallText(peerDeviceId, text) == true
+            if (!consumed) {
+                Log.w(
+                    TAG,
+                    "Call frame dropped (no calling engine attached, or nothing to route it to) peer=$peerDeviceId",
+                )
             }
-            if (!isTrustedPeer(peerDeviceId)) {
-                Log.w(TAG, "PTT ping dropped: untrusted peer=$peerDeviceId")
-                return
-            }
-            Log.i(TAG, "PTT ping from '${frame.senderName}' id=$peerDeviceId eventId=${frame.eventId}")
+            return
+        }
+        // PTT next (ADR-032): ping + voice-session control share one entry point. When an engine
+        // is attached it owns decode, dedup, the fail-closed trust/transport-binding check and the
+        // floor reduction, and it answers true for recognized-but-rejected frames too. The
+        // no-engine branch below is what keeps a frame from falling through when nothing can
+        // handle it — it is deliberately `else`, so an attached engine pays two prefix parses once
+        // instead of twice on every inbound chat frame.
+        val ptt = facade?.ptt
+        if (ptt != null) {
+            if (ptt.onInboundText(peerDeviceId, text)) return
+        } else if (PttFrameCodec.decode(text) != null || PttSessionCodec.decode(text) != null) {
+            Log.w(TAG, "PTT frame dropped (no PTT engine attached) peer=$peerDeviceId")
             return
         }
         GroupFrameCodec.decode(text)?.let { frame ->
@@ -588,6 +679,13 @@ private class Wiring(
         data: ByteArray,
         reply: (ByteArray) -> Boolean,
     ) {
+        // PTT voice audio first (ADR-032): the "PTT1" magic is disjoint from the transfer
+        // pipeline's "FLSH", so this costs one 4-byte compare and PTT audio can never reach the
+        // sender dispatcher or the receive pipeline — attached engine or not.
+        if (PttAudioFrame.isPttAudio(data)) {
+            facade?.ptt?.onInboundBinary(peerDeviceId, data)
+            return
+        }
         // Sender-side ACK/COMPLETE first; if consumed, not a receiver frame.
         if (transferImpl.onInboundFrame(data)) return
         for (event in receivePipeline.onFrame(data)) {

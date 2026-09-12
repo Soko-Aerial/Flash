@@ -1,5 +1,425 @@
 # Progress Log
 
+## 2026-09-11 - Group late-join fix: join-time catch-up + membership reconciliation (ERROR-051)
+
+### Worked on
+Owner report: "after adding a user later on in the group it doesn't sync messages and new messages
+doesn't come." The added device *did* get the group (F2 `State` lands), which ruled out a lost
+bootstrap and pointed at the trigger. Diagnosis ran in the `:core:messaging` host harness (in-process
+mesh, no device) and found two independent mechanisms, both reproduced - see `logs/errors.md`
+ERROR-051. This pass fixes both and flips the defect-pinning diagnostics.
+
+### Changed (production)
+- `core/messaging/src/androidMain/.../RealFlashChatRepository.kt`
+  - `requestGroupCatchUp(groupId)` - one F3 `SyncRequest` per other active member, called from the F2
+    `State` branch after the roster is applied. A newcomer adds a *trigger*; the sync protocol itself
+    is untouched.
+  - `reconcileGroupMembership(peerDeviceId)` + `buildStateFrame(groupId)` - re-sends the F2 `State`
+    for every group the peer is an active member of.
+  - `sendSyncRequestFor(peerDeviceId, groupId)` - the existing per-(group, peer) request shape,
+    extracted so both callers share it.
+  - `State` branch conversation upsert is now non-destructive (`?:` fallbacks keep an existing row's
+    `sortOrder`/`groupCreatedBy`/`groupCreatedAt`), which re-sending `State` requires.
+  - **F7d**: `claimedGroupMedia` (atomic `newKeySet().add`) makes the group-media bubble single-owner.
+    Both mint paths (GMEDIA early-mint, accept path) now claim before inserting, so the loser never
+    inserts, never calls back and never touches the conversation - correctness no longer rests on
+    `MessageDao.insert`'s IGNORE rule as the tiebreaker (ERROR-052's residual smell).
+- `core/engine/src/androidMain/.../Flash.kt` and `app/.../debug/DiscoveryEngineHolder.kt` -
+  `chatImpl.reconcileGroupMembership(peerDeviceId)` added beside `sendGroupSyncRequests(...)` at the
+  session-up edge, the only retry point that exists.
+
+### Changed (tests)
+- `GroupLateJoinDiagnosticTest` - the harness session-up edge now includes the reconcile hook; the
+  four defect-pinning diagnostics assert intended behaviour instead; the `@Ignore`d intended-behaviour
+  test is live; `lateJoinScenario` waits past `BACKUP_DELAY_MS` after the add.
+- `RealFlashChatRepositoryTest` - both `DIAG variant` tests un-ignored and their manual session-up
+  simulation extended with the reconcile hook; variant windows widened to `settle(1500L)`.
+
+### Verified
+- `:core:messaging:testAndroidHostTest --rerun-tasks` - **BUILD SUCCESSFUL, 172 tests / 0 skipped /
+  0 failures** (was 172 / 3 skipped / 6 failed mid-pass).
+- `:core:engine:testAndroidHostTest`, `:sample:consumer:testDebugUnitTest`, `:app:testDebugUnitTest`,
+  `:app:assembleDebug` - BUILD SUCCESSFUL.
+- Note: the F3 push is emitted after `GroupPolicy.BACKUP_DELAY_MS` (2 s), so tests that assert on
+  catch-up need a window longer than `settle()`.
+
+### Not verified / open
+- **No device run.** All evidence is in-process harness + source.
+- Flake hit while re-running the suite, now **fixed** - a test-harness defect, not a product bug:
+  `group media callback supplies stored title and attachment metadata` intermittently reported a
+  duplicate inbound-media callback. `FakeMessageDao.insert` was a non-atomic `containsKey` + put on a
+  4-thread pool, while production's Room insert is `@Insert(onConflict = IGNORE)` and therefore
+  atomic. Two group-media paths can genuinely interleave (the GMEDIA early-mint branch and the accept
+  path), and the racy fake reported BOTH inserts as wins. The fake now uses `putIfAbsent`, mirroring
+  IGNORE. Four consecutive full-suite runs green afterwards (two failures in three before).
+
+## 2026-09-11 — HAZARD-002 given runtime evidence: `:sample:consumer` becomes the umbrella facade's contract test
+
+### Worked on
+The calling seam added earlier today (`compileOnly(project(":core:calling"))`, ADR-033) shipped with
+a hazard that was *argued* but never exercised: on a consumer without `core-calling`, any
+always-executed path that resolves `FlashCalling` would throw `NoClassDefFoundError`. Nothing in the
+repo could observe it — the only classpaths that can run the facade (`:core:engine`'s own host tests)
+have the interface present on purpose (ADR-033 §5). This pass turns the argument into evidence using
+the one module whose runtime classpath genuinely lacks the module: `:sample:consumer` (shape A:
+`:core:engine` and nothing else). No production code and no dependency scope changed — this pass adds
+a test and documentation.
+
+### Changed
+- **New `sample/consumer/src/test/java/com/transfer/flash/sample/consumer/UmbrellaFacadeContractTest.kt`**
+  — 10 tests, plain JUnit 4, no Robolectric and no mocking framework (the sample's value is that it
+  runs real engine classes against the real calling-free classpath). It asserts:
+  1. the precondition (`FlashCalling` and `CallFrameCodec` are not loadable, and the class file is not
+     even a resource — so if this module ever gains `core-calling`, these tests fail instead of
+     silently proving nothing);
+  2. every declared member type of `FlashKt` (`isCallFrameText`), `Wiring` (owning
+     `handleInboundText`) and `Flash` resolves on this classpath;
+  3. **byte level, method bodies included**: scanning every `.class` of the engine package, only
+     `FlashEngine`, `DefaultFlashEngine` and `DefaultFlashEngine$attachCalling$1$1` reference
+     `com/transfer/flash/core/calling` (the runtime form of the published-AAR grep);
+  4. the calling-typed members cannot even be enumerated or looked up reflectively here;
+  5. all 14 frame texts (11 non-calling families + 3 `FLASH_CALL` shapes) driven through
+     `engine.onInboundCallText(peer, frame)` on a hand-assembled `DefaultFlashEngine` throw nothing
+     (the harness catches `Throwable`, so `Error` is covered) and answer `false` — consuming-or-
+     dropping while nothing is attached;
+  6. `engine.ptt` is null, `onCallSignalingLost`/`Restored` are no-ops, `close()` (the README's
+     `finally` block) works and is idempotent;
+  7. `FLASH_CALL` frames are recognized by the calling branch's own expression
+     (`FlashTextFraming.parseFields(text, "FLASH_CALL") != null`) and rejected by every other family
+     parser; and no chat/PTT/group frame is recognized by the calling branch.
+  The file's KDoc states what is covered and, explicitly, what is not: `Wiring.handleInboundText`'s
+  control flow is never executed (file-private, constructor takes an `android.content.Context`), and
+  no device/ART run is covered.
+- **`sample/consumer/build.gradle.kts`** — `testImplementation(libs.junit)` and
+  `testOptions { unitTests { isReturnDefaultValues = true } }`, so a resolved `android.content.Context`
+  in `Wiring`'s signature class-loads without Robolectric. Header comment now states the module's
+  second job (contract test) and that adding `core-calling` here would delete the property under
+  test. Still **not published**: no `maven-publish`, no publishing block.
+- **Docs.** `docs/decisions.md` ADR-033: Status now records the runtime evidence and what is still
+  open; new decision points **§6** (the app host's `onSignalingLost`/`onSignalingRestored` calls are
+  the app's only driver of the ERROR-033 mid-call recovery window — NOT redundant leftovers — and the
+  duplication that WAS removed was the `CallFrameCodec.decode` pre-check) and **§7** (the sample is
+  the contract test; its calling-free classpath is the contract). `logs/errors.md` HAZARD-002: new
+  "Second verification" section with the observed facts, the reflection boundary, and a
+  copy-pasteable AAR reproduction (with the `grep -a` trap); Status moved from "latent" to "no
+  failure ever observed; design covered by an executable contract test", re-open conditions named.
+
+### Verification
+JBR 21 (`JAVA_HOME=…/jetbrains_s_r_o_-21-amd64-windows.2`,
+`JAVA_TOOL_OPTIONS=-Djdk.net.unixdomain.tmpdir=…\afunix`, `--console=plain --max-workers=2`):
+- `:sample:consumer:testDebugUnitTest` — **BUILD SUCCESSFUL, exit 0**;
+  `sample/consumer/build/test-results/testDebugUnitTest/TEST-…UmbrellaFacadeContractTest.xml` on disk
+  reports **tests=10 failures=0 errors=0 skipped=0**. (The test really executes: it failed twice
+  during development — see Problems — and the XML was re-read after the green run.)
+- **Static A.2 evidence re-run from the published AAR** (throwaway repo
+  `build/tmp/aar-check-20260911-125942/m2`, extracted into fresh unique dirs — no delete/force
+  command anywhere): `:core:engine:publishToMavenLocal` BUILD SUCCESSFUL, exit 0;
+  `core-engine-android-1.1.0.aar` → `classes.jar` → **47 `.class` files, exactly 3 referencing the
+  calling package**:
+  `com/transfer/flash/core/engine/DefaultFlashEngine$attachCalling$1$1.class`,
+  `com/transfer/flash/core/engine/DefaultFlashEngine.class`,
+  `com/transfer/flash/core/engine/FlashEngine.class` — **not** `FlashKt.class`, **not** `Flash.class`,
+  **not** `Wiring.class` or any other `Wiring$…` class (including `Wiring$handleInboundText$1.class`
+  and `DefaultFlashEngine$onInboundCallText$1.class`). Sanity check inside `DefaultFlashEngine.class`:
+  `getCalls` has descriptor `()Lcom/transfer/flash/core/calling/FlashCalling;`. The published
+  `core-engine-android` POM still lists eight `core-*` modules and no `core-calling`/`webrtc-kmp`;
+  `grep -ril -e calling -e webrtc` over the whole published tree returns nothing (exit 1).
+  **Trap recorded in HAZARD-002: plain `grep -l` reports *no match* on these `.class` files — the
+  binary-safe `grep -rla` is required, otherwise "no references" is an artifact of grep's binary
+  handling.**
+- **Regression** (same environment): `:core:engine:testAndroidHostTest` — **14 tests / 0 failures**
+  (`DefaultFlashEngineTest` 6, `AutoConnectGateTest` 8; forced with `--rerun-tasks`),
+  `:app:testDebugUnitTest` — **10 suites / 49 tests / 0 failures** (forced with `--rerun`),
+  `:app:compileDebugKotlin`, `:sample:consumer:compileDebugKotlin`,
+  `:sample:consumer-granular:compileDebugKotlin` — green, exit 0. Nothing was committed, reverted or
+  stashed; no unrelated working-tree file was touched.
+
+### Problems
+Three failures during development, all in the new test and all resolved; none was a production bug:
+1. The first version asserted the *call* frames were rejected by the calling branch (they are call
+   frames — my frame map conflated the families). Split into `nonCallFrames()` / `callFrames()`.
+2. Member-level attribution of the calling type by reflection is **impossible** on this classpath:
+   `Class.getDeclaredMethods()` and `Class.getMethod("getCalls")` on `FlashEngine`/`DefaultFlashEngine`
+   throw `NoClassDefFoundError: …/FlashCalling` out of `Class.getDeclaredMethods0` (the JVM resolves
+   the declared types to build `Method` objects). Replaced with a byte-level referrer-set assertion
+   (which also covers method bodies) plus an assertion that those two classes cannot be enumerated at
+   all — the confinement claim now comes from bytes, not from reflection.
+3. `detachCalling()` has no calling type in its *signature* (it reaches the seam through a field), so
+   a signature-only scan under-reports the boundary; the byte scan catches it. This is why both
+   checks exist.
+A fourth observation, worth remembering: an ordinary `import com.transfer.flash.core.common.protocol.FlashTextFraming`
+call from a non-library module needs `@OptIn(FlashInternalApi::class)` — the sample opts in on purpose
+(the app module does the same), because the recognition expression under test is that helper's.
+
+### Remaining
+- **Device/ART verification is still owed**: the failure mode is a runtime resolution error and the
+  whole test runs on HotSpot. A consumer app without `core-calling` running on a physical device (or
+  at least an emulator) is the only thing that closes that gap; HAZARD-002 says so explicitly.
+- `Wiring.handleInboundText`'s control flow (ordering: calling → PTT → group → chat) is still covered
+  only by `:core:engine`'s host tests and the parser-level assertions here, not by executing the
+  dispatcher.
+- The physical two-phone calling gate from the previous pass is unchanged and still owed.
+
+### Next AI
+Do not add `core-calling` (or any sibling) to `:sample:consumer` — read ADR-033 §7 before touching
+that module; the calling-free classpath IS the test's subject. When touching the facade's inbound
+dispatcher, keep call-frame recognition on the plain prefix constant and keep the three routing
+methods typed without `FlashCalling`; `:sample:consumer:testDebugUnitTest` will fail loudly if a new
+engine class starts referencing the package (assertion 3) or if the dependency creeps in
+(assertion 1). If you need to compare against the published artifact, use `grep -rla`, not `grep -l`.
+
+---
+
+## 2026-09-11 — Calling reaches the umbrella facade: `compileOnly` seam, facade routing, app-host de-dup
+
+### Worked on
+The counterpart of the PTT P0 pass, for calling. `FlashEngine` exposed `chats`, `transfers`,
+`discovery`, `network`, `trustStore`, `settings`, `ptt` — but no `calls`, so neither 1:1 nor group
+calling was reachable through `Flash.create` even though `FlashCalling` is a public, exported
+contract. `Flash.kt` imported nothing from `:core:calling`: it did not route `FLASH_CALL` frames and
+did not tell a call when a transport died, which left the app host duplicating both (a
+`CallFrameCodec.decode` pre-check whose only job was to gate a call the module then decoded again,
+plus its own signaling-lost/restored calls).
+
+### Changed
+- **`:core:engine` build.** `compileOnly(project(":core:calling"))` on **androidMain** — the one
+  deliberate difference from the PTT seam, which is `api`. `:core:calling` re-exports
+  `libs.webrtc.kmp` as `api` (~30 MB per ABI); `api` here would break the README's dependency-shape
+  promise that `core-engine` does not pull WebRTC, so the type is on the compile classpath and in
+  the public seam while the published metadata declares neither module. androidMain for the
+  ERROR-049 reason (`:core:calling` is a plain AGP library with no JVM variant). ADR-033 records the
+  decision and the code constraint it imposes.
+- **`FlashEngine` / `DefaultFlashEngine`.** New seam in the PTT style: `calls: FlashCalling?`,
+  `attachCalling(engine)`, `detachCalling()`. No `callsFactory` and no lambda overload — a
+  `CallCoordinator` is built from the host's transport, scope and audio policy, and the mic/camera
+  grants, audio route and `microphone|camera` foreground service are the host's, so the facade has
+  nothing honest to build. Attaching twice keeps the first engine (mirrors `attachPtt`);
+  `detachCalling()` stops routing without ending a call (`FlashCalling` exposes no shutdown, so
+  hang-up stays the host's); `close()` detaches.
+- **Routing without naming the type.** The seam's three routing entry points —
+  `onInboundCallText(peerDeviceId, text)`, `onCallSignalingLost(peerDeviceId)`,
+  `onCallSignalingRestored(peerDeviceId)` — are typed without `FlashCalling` and answer "nothing
+  attached" (false / no-op) instead of throwing, and `DefaultFlashEngine` reaches the attached
+  engine through the function-typed seams captured at attach time. With `compileOnly` a consumer
+  that never attaches calling has no such class at runtime, so a typed read on a path every inbound
+  frame takes would be a `NoClassDefFoundError`; only `calls` / `attachCalling` / `detachCalling`
+  (and the lambda class `attachCalling` creates) mention the type, verified in the published AAR
+  bytecode below.
+- **`Flash.kt` routing.** Inbound `FLASH_CALL` frames are dispatched **first** in
+  `handleInboundText` — calling is the most latency-sensitive family and the only attached-at-
+  runtime handler — and a recognized call frame is consumed or dropped, never passed to the
+  PTT/group/chat/transfer parsers. Recognition is a plain `FLASH_CALL` first-token test
+  (`internal fun isCallFrameText`, new `CALL_PREFIX` constant) rather than `CallFrameCodec.decode`,
+  which is both cheaper (one parse instead of two) and the only compileOnly-safe form. Unattached,
+  the frame is dropped with a warning — unchanged from today's silent ignore, now explicit.
+  `handleInboundText` is still PTT-then-chat after that branch, byte-for-byte.
+- **Signaling lifecycle moved to the facade.** The `activeSessions` collector `Flash.create` already
+  runs now calls `facade.onCallSignalingLost(peer)` on a stale session and
+  `onCallSignalingRestored(peer)` on a session-up edge, i.e. the ERROR-033 recovery window is
+  driven by the facade instead of by each host.
+- **App host (`DiscoveryEngineHolder`).** The duplicate inbound routing is gone: one
+  `isCallFrameText` gate (new `CALL_PREFIX` constant) plus a single `calling.onInboundText(...)`
+  call replaces the `CallFrameCodec.decode(text) != null` pre-check and the module's second decode.
+  The holder's field and accessor are now the interface (`FlashCalling`, `currentCalling()`), as is
+  `FlashCallService`'s snapshot — every caller only ever used interface members
+  (`activeCall`/`accept`/`decline`/`hangUp`), so the concrete `CallCoordinator` type now appears
+  only at its construction site. `FlashCallActionReceiver` and `AppEngine.calls` follow the renamed
+  accessor. `CallFrameCodec` stays imported for the outbound `encode`. Nothing about WebRTC/media
+  construction, the foreground service, notification, ringer or UI changed.
+- **Docs.** README "Voice & video calls" rewritten around the seam (attach, what the facade now
+  routes, the `compileOnly` contract, detach-is-not-hang-up); `core-calling` row and the
+  dependency-shape paragraph in "Published modules" updated; the module-cost paragraph no longer
+  says calling is absent from the umbrella, only that WebRTC is not pulled in. `public-api.md` →
+  1.3.0: §7 intro and "The two host seams" state which seams the facade now owns, §10 gains the
+  calling members, the seven-property note, the routing/`compileOnly` bullets and the
+  `DefaultFlashEngine` note that there is no `callsFactory`. `docs/decisions.md` ADR-033.
+
+### Verification
+Baseline before any edit (JBR 21, `JAVA_TOOL_OPTIONS=-Djdk.net.unixdomain.tmpdir=…\afunix`,
+`--console=plain --max-workers=2`): `:core:engine:compileAndroidMain :core:engine:compileKotlinJvm
+:core:engine:testAndroidHostTest` — BUILD SUCCESSFUL, exit 0 (63 tasks, all up-to-date).
+
+After the pass:
+- `:core:engine:compileAndroidMain` — executed, BUILD SUCCESSFUL: `:core:calling:compileReleaseKotlin`
+  + `bundleLibCompileToJarRelease` were pulled in by the `compileOnly` edge, so the module really
+  compiles against `FlashCalling` without publishing it.
+- `:core:engine:compileKotlinJvm` — UP-TO-DATE (the jvm() target never sees calling; the
+  ERROR-049 failure mode does not recur).
+- `:core:engine:testAndroidHostTest` — **14 tests / 0 failures** in the host-test source set
+  (`DefaultFlashEngineTest` 6 — 1 pre-existing + 5 new — and `AutoConnectGateTest` 8). With
+  `jvmTest`'s 8 that is **22 tests in the module, up from 17**.
+- `:app:compileDebugKotlin`, `:app:testDebugUnitTest`, `:app:assembleDebug` — BUILD SUCCESSFUL in
+  55 s (269 tasks, 14 executed); **49 app tests / 0 failures**, APK 66,970,902 bytes. Re-confirmed
+  with forced re-runs (`:core:engine:testAndroidHostTest --rerun :app:testDebugUnitTest --rerun`,
+  BUILD SUCCESSFUL, exit 0): engine host tests **14 / 0 failures / 0 skipped**, app tests
+  **10 suites, 49 / 0 failures / 0 skipped** (unchanged from the PTT pass's 49 — no regression).
+- `:sample:consumer:compileDebugKotlin` + `:sample:consumer-granular:compileDebugKotlin` —
+  BUILD SUCCESSFUL in 9 s, exit 0 (2 executed). They consume `Flash.create` and do not implement
+  `FlashEngine`; `DefaultFlashEngine` is the only implementation in the repo, so the new interface
+  members break no other implementer.
+- **Publication proof** (the point of the dependency decision). `:core:engine:publishToMavenLocal
+  -Dmaven.repo.local=build/tmp/throwaway-m2` — BUILD SUCCESSFUL, artifacts written at 12:27. The
+  published `core-engine-android-1.1.0.pom` declares `core-ptt`, `core-persistence-android`,
+  `core-common-android`, `core-security-android`, `core-discovery-android`, `core-network-android`,
+  `core-transfer-android`, `core-messaging-android`, `kotlin-stdlib`, `room-runtime-android`,
+  `core-ktx`, `lifecycle-runtime-ktx` — **no `core-calling`, no `webrtc-kmp`** — and a
+  `grep -ril "calling\|webrtc"` over every published `core-engine*` file returns nothing. The
+  `core-engine-android-1.1.0.module` and root `core-engine-1.1.0.module` module lists agree.
+- **Bytecode proof** that the type is nevertheless in the seam and off the hot path: `javap` on the
+  published AAR shows `getCalls()`, `attachCalling(FlashCalling)`, `detachCalling()` and the
+  calling-free routing signatures `onInboundCallText(String, String, Continuation<? super Boolean>)`
+  / `onCallSignalingLost(String)` / `onCallSignalingRestored(String)`; a binary grep for
+  `FlashCalling` across the AAR's engine classes matches only `FlashEngine.class`,
+  `DefaultFlashEngine.class` and `DefaultFlashEngine$attachCalling$1$1.class` — **not**
+  `FlashKt.class` (the prefix helper), **not** `Flash.class`, **not** any `Wiring*` class.
+- New tests pin the decision surface: nothing attached ⇒ `calls == null`, a `FLASH_CALL` frame is
+  recognized and returns false, signaling calls are accepted no-ops, `close()` is safe; attached ⇒
+  the frame reaches the stub with the authenticated peer and the stub's consumed/rejected verdict is
+  the facade's; a second attach is ignored; `detachCalling()` stops routing without touching the
+  host's engine; signaling edges are forwarded in order and stop after detach; and the prefix helper
+  recognizes `FLASH_CALL` only (each other family's parser rejects the same text). No WebRTC engine
+  is constructed anywhere in the suite.
+
+### Problems
+None in this pass: no compile error, no build failure, no test failure, so no new `ERROR-0xx` entry.
+The one thing that did not go as instructed is scoped in *Remaining* below.
+
+### Remaining
+- **The app host cannot "attach to the facade" — it has no facade, and that is pre-existing.** The
+  instruction was to have `DiscoveryEngineHolder` attach its `CallCoordinator` to the facade and
+  delete its signaling-lost/restored calls. It cannot: `:app` never calls `Flash.create`; the app's
+  parallel wiring is `DiscoveryEngineHolder` (an object) surfaced by the Hilt `AppEngine`, and
+  `grep -rn "FlashEngine" app/src` returns nothing. So the *de-duplication* was done where a
+  duplicate actually existed (the second decode; the concrete-typed references) and the holder's own
+  session observer keeps calling `onSignalingLost`/`onSignalingRestored` — deleting those would have
+  removed the app's only caller of the recovery window and regressed ERROR-033 on device. The facade
+  drives the same two edges for facade consumers.
+- Physical-device calling gate still owed (unchanged by this pass): 1:1 audio/video, group call
+  join/rejoin, roaming mid-call (the recovery window this pass moved into the facade), and the
+  notification answer path whose accessors were renamed. Nothing here was tested on hardware.
+- Group calling was not exercised at all — the facade routes `gpresence`/`gquery`/`g*` frames through
+  the same `onInboundText`, which is now the only path, so a device gate should cover them.
+
+### Next AI
+The seam is done; do not re-litigate `compileOnly` (ADR-033 has the alternatives and the revisit
+condition). The next concrete step for this area is the physical two-phone calling gate above. If
+you touch the facade's inbound dispatcher, keep the three calling routing methods typed without
+`FlashCalling` and keep call-frame recognition on the plain prefix constant — both exist because a
+consumer without `core-calling` must be able to run that path.
+
+---
+
+## 2026-09-11 — PTT P0 pass complete: `:core:ptt` is a library, routed through the umbrella facade, app host de-duplicated, publication set fixed
+
+### Worked on
+Finished the interrupted "make PTT library-compliant" pass end to end: the module now compiles as a
+strict `explicitApi()` Android library behind one public seam, the umbrella `Flash.create` engine
+routes PTT text/binary frames instead of logging them, the app host consumes the module instead of
+keeping a second ping pipeline, and both new modules are in the JitPack publication set.
+
+### Changed
+- **`:core:ptt` public seam (`FlashPtt.kt`, `PttSessionEngine.kt`).** Removed the duplicated legacy
+  nested types (`PressOutcome`, `Role`, `PttSessionStats`) that shadowed the top-level declarations
+  and made `override val stats` a type mismatch. The engine now implements the requested properties
+  directly; callers use the top-level `PttPressOutcome` / `PttSessionStats` / `PttRole` /
+  `PttPingEvent`. Restored the lost `SEEN_PING_CAP` constant the inbound ping dedup set is capped by.
+  Added `postNotice` to the interface (the app host already needed it). Ping events are now
+  **engine-owned** (`_pings` + `asSharedFlow()`): the constructor-injected `MutableSharedFlow` seam is
+  gone, because it invited exactly the duplicate decode/dedup/fan-out the app host had grown.
+- **Fixed a real fan-out defect found by the new tests.** `sendPing()` was
+  `recipients.any { sendControl(it, ping) }`, which short-circuits at the first successful write — a
+  press notified exactly one peer. It now writes to every recipient and returns true if any write
+  succeeded. One press is still one `eventId`, so a duplicate delivery on one leg is what a receiver
+  dedups (the wire contract is unchanged).
+- **`:core:engine` facade (`FlashEngine.kt`, `Flash.kt`).** Added the optional PTT seam:
+  `FlashEngine.ptt`, `attachPtt(hasMicPermission, isCallActive, audioRateHz): FlashPtt?` (builds the
+  engine from facade-owned identity/trust/live-session state plus the three host policy lambdas),
+  `attachPtt(engine: FlashPtt)` for a host that owns its own transport, and `detachPtt()`.
+  `DefaultFlashEngine` gained the `pttFactory` constructor parameter (null by default, which is why
+  the lambda overload returns null on a hand-assembled engine rather than pretending). Facade
+  inbound routing: `FLASH_PTT`/`FLASH_PTSS` text and `PTT1` binary frames go to the attached engine
+  **before** the transfer parser; with no engine attached they are still recognized and dropped.
+  `close()` now also detaches/shuts the PTT engine down. The `isTrustedPeer` parameter of
+  `handleInboundText` became dead once the engine took over the trust check and was removed.
+- **App host (`DiscoveryEngineHolder.kt`).** The holder now holds `FlashPtt` (not the concrete
+  class); deleted the duplicate inbound ping pipeline (`_pttPings`, `PttPingEvent`,
+  `seenPttEventIds`, `PTT_SEEN_CAP`, `onInboundPttPing`) and the duplicate outbound frame
+  build/fan-out in `broadcastPttPing`, which now delegates to `FlashPtt.sendPing()` while keeping
+  its main-thread-safe debounce. Inbound routing is one call (`ptt.onInboundText`) plus a prefix drop
+  when no engine is started; the binary pre-check now goes through `FlashPtt.onInboundBinary`. The
+  hardware receiver uses `PttPressOutcome`, and the app consumes `ptt.pings` for the background
+  notification (`FlashNotificationManager.showPttPing`) — same behavior, one owner.
+  `PttSessionService`, `PttSessionOverlay` and `PttSessionActionReceiver` stay in `:app` and now
+  depend on `FlashPtt` rather than the concrete engine. Seven imports that only the deleted code
+  used were removed.
+- **Publication set.** `jitpack.yml` publishes **fourteen** modules now: added
+  `:core:ptt:publishToMavenLocal` and `:ui:platform-shims:publishToMavenLocal`, with the comment
+  explaining both dependency-closure reasons.
+- **Docs.** README: PTT "how to use" section (attach seam, consumer duties), the PTT permission +
+  service snippet, and `core-ptt` / `ui-platform-shims` rows in the published-modules table plus the
+  dependency-shape paragraph. `docs/architecture/public-api.md` bumped to 1.2.0/2026-09-11: §6 gained
+  the group + group-media members, §7 the group-calling surface and `OngoingGroupCallUi`, §10 the PTT
+  seam, and a new §14 documents `:core:ptt`. `docs/protocol.md`: the 1:1 "signaling loss fails the
+  call immediately" rule was **wrong** (ERROR-033 made it a recovery window) and is corrected; the
+  group-call frame family (`ginvite`/`gaccept`/`gdecline`/`gjoin`/`ghangup`/`gpresence`/`gquery`) is
+  now documented from the codec.
+
+### Verification
+Baseline (before any edit), with
+`JAVA_HOME=/c/Users/KaliOxygen/.gradle/jdks/jetbrains_s_r_o_-21-amd64-windows.2` and
+`JAVA_TOOL_OPTIONS=-Djdk.net.unixdomain.tmpdir=C:\Users\KaliOxygen\.gradle\afunix`:
+`:core:ptt:compileDebugKotlin` FAILED with three errors (nested-type `stats` override mismatch,
+unresolved `SEEN_PING_CAP`, assignment mismatch), and `:core:engine`/`:app` never ran because the
+dependency was broken.
+
+After the pass:
+- `:core:ptt:compileDebugKotlin` + `:core:ptt:compileReleaseKotlin` — BUILD SUCCESSFUL.
+- `:core:ptt:testDebugUnitTest` — **19 tests, 0 failures** (new `PttSessionEngineTest`).
+- `:core:engine:compileAndroidMain`, `:core:engine:compileKotlinJvm`, `:core:engine:testAndroidHostTest`
+  — BUILD SUCCESSFUL, 17 host tests / 0 failures.
+- `:app:testDebugUnitTest` + `:app:assembleDebug` — BUILD SUCCESSFUL; 49 tests in 10 suites, 0
+  failures, 0 skipped; APK 66,670,723 bytes.
+- `:core:ptt:publishToMavenLocal` and `:ui:platform-shims:publishToMavenLocal` — BUILD SUCCESSFUL;
+  `~/.m2/repository/com/transfer/flash/{core-ptt, ui-platform-shims, ui-platform-shims-android,
+  ui-platform-shims-jvm}` all present with sources jars, confirming the artifactIds.
+  `:core:engine:publishToMavenLocal` into a throwaway repo shows `core-engine-android` metadata
+  listing `core-ptt` (the transitive edge the README table claims), and `:ui:chat:publishToMavenLocal`
+  shows `ui-chat-android` listing `ui-platform-shims-android` — which is why that module had to join
+  the publication set.
+- New tests: `PttSessionEngineTest` (19) covers ping accept + replay dedup + claimed-from mismatch +
+  untrusted rejection + non-PTT passthrough, the same four cases for session-control frames, `PTT1`
+  vs `FLSH` binary classification (including a null authenticated peer), all four press refusals,
+  the voice-note lease (a foreign id cannot release it; a held lease blocks a second acquisition),
+  and the outbound ping fan-out. Scope is the decision surface only: nothing starts a floor session,
+  because that opens a real `AudioRecord`/`AudioTrack` and needs a device. To run at all on the host
+  JVM the module sets `testOptions.unitTests.isReturnDefaultValues = true`.
+- Grep-verified: no reference to the old `com.transfer.flash.ptt.PttSessionEngine` remains — every
+  reference resolves to `com.transfer.flash.core.ptt`, and only
+  `PttSessionService`/`PttSessionOverlay`/`PttSessionActionReceiver` still live in the app package.
+
+### Problems
+1. `:core:ptt` did not compile at all (three errors) — the half-finished nested-type refactor
+   shadowed the public seam. ERROR-048.
+2. `api(project(":core:ptt"))` in `:core:engine`'s **commonMain** broke the engine's `jvm()` target
+   and `publishToMavenLocal` at variant selection, because `:core:ptt` is a plain AGP Android library
+   with no JVM variant. ERROR-049. It stayed invisible while `:core:engine:compileAndroidMain` was the
+   only task ever run against it.
+3. `PttSessionEngine.sendPing()` notified only the first peer (`any {}` short-circuit). ERROR-050.
+
+### Remaining
+- **Physical-device PTT gate still owed** and unchanged by this pass: simultaneous presses,
+  capture/playout teardown, first-syllable integrity, LOW 8 kHz format, background/notification
+  behavior, rugged-speaker routing. Nothing in this pass was tested on hardware.
+- `FlashPtt` is documented as Experimental in `public-api.md` §14.
+
+### Next AI
+Do not re-open the module split: PTT lives in `:core:ptt` with one seam and one owner per pipeline.
+The next concrete step is the physical two-phone PTT gate (see `logs/handoff.md`); the open design
+question is whether `:core:ptt` should ever gain a `jvm()` target (it would need stub capture and
+playout, and `:core:engine`'s JVM target is the only thing that would use it).
+
+---
+
 ## 2026-09-10 — Sentinel: Path Traversal Containment Guard (CRITICAL Defense)
 
 ### Worked on
@@ -24,6 +444,314 @@ Added canonical path containment verification (`require(dest.path.startsWith(can
 
 ### Remaining
 - Physical-device verification of transfer reception.
+
+## 2026-09-10 — PTT pre-device hardening
+
+### Worked on
+Closed the static-review blockers before the Phase 3 physical-device gate: playout
+progress, control identity binding, Start/audio ordering, liveness, negotiated PCM
+validation, blocking-send dispatch, and voice-note/PTT mic exclusion.
+
+### Changed
+- Began serializing floor reduction and lifecycle-effect execution through one command mutex,
+  so a delayed StartCapture/StartPlayout cannot run after a newer stop/call transition;
+  lifecycle commands that can touch audio or blocking WS control writes execute on IO.
+  Static review found this pass is not complete yet: internal direct dispatches bypass the
+  mutex, while one recursive dispatch path can deadlock because Kotlin `Mutex` is non-reentrant.
+- Fixed `PttPlayout.writeFully()` to advance by the bytes actually written; the old
+  loop replayed one packet forever. Playout now rejects non-negotiated packet sizes.
+- Bound Stop and liveness activity to both current session id and authenticated floor
+  holder. Heartbeat ACKs count only from current members; stale-session Leave cannot
+  prune a newer talk. Pure floor tests cover all three cases.
+- Added negotiated PCM size helpers/tests (`16 kHz × 20 ms = 640 B`, `8 kHz × 60 ms
+  = 960 B`) and fail-closed decode on inbound audio. Capture now returns both its
+  post-open rate and packet duration, so a 16→8 kHz HAL fallback emits and advertises
+  the same 60 ms/960 B format. The sender also drops late queued packets from an old
+  session rather than relabeling them with the current session id.
+- Made PTT Start a synchronous WS write, retained only legs where Start succeeded,
+  and gated capture packet delivery until the floor machine observes Start announced.
+  Binary fan-out now runs on `Dispatchers.IO`.
+- Valid holder audio refreshes the same 5 s liveness clock as heartbeat, matching the
+  protocol contract.
+- Added explicit voice-note/PTT capture arbitration through the app-hosted engine:
+  voice recording refuses during PTT/calls, and PTT refuses while a voice note holds
+  the gate; stop/cancel/screen disposal release it. Call exclusion now covers the whole
+  non-ended call lifecycle (DIALING/RINGING/CONNECTING/ACTIVE), not ACTIVE only.
+- Added the final lifecycle/concurrency pass: one non-reentrant serialized command path;
+  asynchronous capture/playout faults re-enter it externally; session loops are keyed by
+  `(sessionId, role)`; and speculative Start parameter caching was removed in favor of accepted
+  format fields in floor state/effects.
+- Added deterministic simultaneous-claim resolution during a 1.5 s collision window, using the
+  established group-call rule: lexicographically lower device id holds the floor. An established
+  talk does not yield to a late replayed Start.
+- Capture now accumulates positive short reads, timestamps packets with monotonic elapsed time,
+  filters silence callbacks by AudioRecord session id, unregisters callbacks, deduplicates loss,
+  and shuts down its executor on normal and unexpected exits.
+- Playout now owns the live AudioTrack and stop/pause/flush/release unblocks a blocked writer before
+  joining. Session timers, liveness, RTT, and the overlay elapsed clock use monotonic time.
+- Voice-note arbitration now uses an opaque acquisition lease; only the owning conversation can
+  release it. Heartbeat RTT bookkeeping is per `(sequence, member)` rather than first-ACK-wins.
+- Updated ADR/protocol/platform notes, added the PTT overlay design document, and removed stale
+  Phase 0/log-only wording.
+
+### Verification
+- `:core:messaging:jvmTest` passed.
+- `:core:messaging:testAndroidHostTest` passed.
+- `:app:testDebugUnitTest` passed.
+- `:app:assembleDebug` passed (JBR 21, 223 tasks; second run 55 s).
+- Final combined validation passed: `:core:messaging:jvmTest`,
+  `:core:messaging:testAndroidHostTest`, `:ui:chat:jvmTest`, `:app:testDebugUnitTest`, and
+  `:app:assembleDebug` (240 tasks, 34 s with configuration cache).
+- One earlier combined run hit the known wall-clock-sensitive `FlashStressLogicTest` threshold
+  (1446 ms); its isolated rerun passed, and the final full suite passed.
+- `git diff --check` clean; existing `logs/errors.md` CRLF normalization warning only.
+
+### Remaining
+- Physical-device PTT matrix is required: simultaneous-press collision proof, first-syllable
+  integrity, bidirectional talk/stop, receiver Leave and badge pruning, background/notification
+  paths, orphan timeout, mic/call/voice-note exclusion, LOW format, and rugged speaker routing.
+
+### Next AI
+Install the debug APK on the test phones and run the device matrix. Capture `PTT_SESS`, `PTT_CAP`,
+`PTT_OUT`, and `WS` logs, especially during simultaneous presses and stop/leave teardown.
+
+## 2026-09-10 — No-peer PTT error toast + dev console removed
+
+### Worked on
+Owner asks: (1) pressing PTT with nobody online gave zero feedback (log only);
+(2) remove the dev page + floating icon.
+
+### Changed
+- No-peer feedback: holder `NO_PEERS` branch posts `"No paired devices online"` to
+  the engine notices (overlay toasts it, foreground path); the deferred-press effect
+  in the overlay toasts the `onPttButton()` outcome too (`NO_PEERS`, `CALL_ACTIVE`).
+  Ping fallback retained underneath.
+- Dev surface removed: `DevConsoleChip` entry + `FlashDevConsoleScreen` layer +
+  `showDevConsole` state + `showDevConsoleEntry` threading (FlashApp/FlashShell) +
+  console BackHandler + the `chipBottomInset` tween (existed solely for the chip) +
+  orphaned imports (`animateDpAsState`, `offset`, `IntOffset`, both debug imports).
+  Deleted `debug/FlashDevConsoleScreen.kt` (recoverable from git). One self-caught
+  brace error during the Box removal, fixed and recompiled.
+
+### Verification
+- `:app:testDebugUnitTest`, `:app:assembleDebug` BUILD SUCCESSFUL.
+- `git diff --check` clean. Zero remaining refs to dev-console symbols in `:app`.
+- Device proof owed: solo press → toast; deferred press (backgrounded) → same toast.
+
+### Next AI
+Device gate from the Phase 3 entry still stands; add the solo-press toast to it.
+
+## 2026-09-10 — PTT Leave fix (ERROR-046): holder lifetime + broadcaster reflection
+
+### Worked on
+Owner-reported: receiver Leave never reflected on the broadcaster; notification Leave
+appeared dead. Both traced to one ordering bug (shared `stopLocal()` path).
+
+### Changed
+- `PttSessionEngine.stopListen()` keeps `holderId` (was nulled before `sendLeave`
+  read it — the Leave frame never transmitted). Cleared in `shutdown()`, overwritten
+  per session in `startListen()`.
+- Inbound Leave prunes `members` + refreshes stats + logs remaining (was `Log.d`
+  no-op) so the broadcaster badge drops.
+- Delivery-proof logs: `Leave sent` / skip-warn on sender, `Stop action received`
+  in the notification receiver.
+
+### Verification
+- `:app:testDebugUnitTest`, `:app:assembleDebug` green. Ordering itself is not
+  unit-coverable (Android audio host); device proof owed — exact log lines in
+  ERROR-046.
+
+### Remaining
+- Device proof of both symptoms, then commit.
+- Known v1 limit surfaced (not fixed): floor is per-device, so a receiver that leaves
+  and presses starts a rival session the talker ignores — needs floor-state gossip
+  (v2), do not attempt as a hotfix.
+
+## 2026-09-10 — PTT voice session Phase 3: overlay UI + press-to-foreground + toasts
+
+### Worked on
+Final ADR-032 slice: state-driven session overlay (status, mm:ss, RTT·loss, tier-gated
+waveform, Stop/Leave), foreground-gated press routing with tap-to-talk fallback,
+permission-prompt press completion, and notice toasts. Notices are no longer log-only.
+
+### Changed
+- `app/.../ptt/PttSessionOverlay.kt` (new): renders iff floor non-Idle (back-nav safe);
+  consumes deferred presses (perm prompt via the D7c shim, tap-to-talk clear); toasts
+  engine notices; leaf-scoped subscriptions only — state at root, own second-boundary
+  ticker in `PttElapsedText`, 1 Hz sampled stats in `PttStatsText`, 10 Hz sampled
+  pseudo-spectrum bars in `PttLevelMeter` (deterministic per level, no timers);
+  static text on LOW / reduce-motion; `formatPttElapsed` + 4 tests.
+- `app/.../MainActivity.kt`: `pendingPttPress` flow (intent EXTRA on create/new-intent,
+  threaded `FlashApp` like the call-answer precedent); overlay slot in the app `Box`
+  above shell, below splash; `animateLevels = tier != LOW`; Toast wiring.
+- `app/.../debug/DiscoveryEngineHolder.kt`: press routes by visibility — in-session
+  toggle always direct (stop works backgrounded); Idle needs foreground + mic perm or
+  the press surfaces the app (`surfaceAppForPttPress`: best-effort activity launch +
+  guaranteed tap-to-talk notification, since bg activity starts may be blocked).
+- `app/.../notifications/FlashNotificationManager.kt`: `showPttTapToTalk` (doorbell on
+  the messages channel, tap carries the press extra) + clear; holder clears it on
+  session start, overlay on consume.
+- `PttSessionEngine`: public `EXTRA_PTT_PRESS`, `postNotice()` (CALL_ACTIVE path now
+  surfaces instead of logging only).
+- `app/build.gradle.kts`: `:ui:platform-shims` dep (permission seam; documented).
+- Fixed own error: `FlashTheme.shapes` does not exist — standalone `FlashShapes`.
+
+### Verification
+- `:app:testDebugUnitTest` green (8 PTT tests incl. new elapsed/content suites).
+- `:app:assembleDebug` BUILD SUCCESSFUL. `git diff --check` clean.
+- UI behavior, FGS promotion, permission prompt, bg-press paths NOT exercisable here.
+
+### Remaining — the physical-device gate (all phases converge here)
+1. Foreground press → talk → receivers show overlay + speaker audio; 2nd press stops.
+2. Backgrounded press → tap-to-talk → tap → perm prompt → talk (API 34+ unit).
+3. Stop/Leave from notification; chronometer + RTT/loss freshness; orphan timeout on
+   broadcaster kill; busy-deny toast; 60 s cap + 45 s warn; mic-busy and call-active
+   refusals; LOW static UI vs MEDIUM/HIGH animation; rugged-unit speaker routing.
+4. `adb shell am broadcast -a com.zello.ptt.down` equivalence for the direct path.
+
+### Next AI
+Run the gate above on real hardware before any PTT follow-ups (preemption, late-join,
+chat logging). Do not widen the Zello intent filter without a new device report.
+
+## 2026-09-10 — PTT voice session Phase 2: session foreground service + notification
+
+### Worked on
+Service slice of ADR-032: `PttSessionService` keeps the process alive across a session
+and posts the ongoing notification (chronometer seconds, RTT·loss, Stop/Leave), driven
+by `PttSessionEngine.state/stats`. No session UI yet (Phase 3); notices stay log-only.
+
+### Changed
+- `app/.../ptt/PttSessionService.kt` (new): START_NOT_STICKY FGS started/stopped by
+  the holder on session edges; claims `microphone` (talker, granted only) or
+  `mediaPlayback` (listener) with the call-service fallback chain; HIGH-silent
+  `flash_ptt` channel (heads-up on start, never rings); stats flow sampled to 1 Hz so
+  50/s amplitude ticks cannot churn `notify()`; unconditional post (visible even when
+  promotion is refused) + promotion attempt; chronometer for seconds.
+- `app/.../ptt/PttSessionActionReceiver.kt` (new): one Stop/Leave action for both
+  roles (machine routes by role); no bring-to-front (stop is fire-and-forget).
+- Pure `pttSessionContent()` + `PttSessionContentTest` (4/4: talker/loss/rtt shaping,
+  zero-peer and blank-name fallbacks).
+- `app/.../AndroidManifest.xml`: `FOREGROUND_SERVICE_MEDIA_PLAYBACK` perm +
+  `microphone|mediaPlayback|connectedDevice` service + receiver declarations.
+- `PttSessionEngine`: public `stopLocal()`; `shutdown()` resets flows to Idle so the
+  service self-stops. Holder: `currentPttSession()` accessor, session→service
+  collector, explicit service stop in `stopAll`.
+- Known limitation (documented in code): a backgrounded press cannot promote the
+  `microphone` service on API 34+ — session runs, notification posts, promotion is
+  retried never (no retry hook); Phase 3 press-to-foreground closes this.
+
+### Verification
+- `:app:testDebugUnitTest` green (4/4 new content tests, full file green).
+- `:app:assembleDebug` BUILD SUCCESSFUL. `git diff --check` clean.
+- FGS promotion paths NOT exercisable here — device gate (backgrounded press, denied
+  permission, API 34 vs 29 behavior).
+
+### Remaining
+- Phase 3: session UI (banner/screen) + MEDIUM/HIGH waveform animation from packet
+  RMS + toasts + press-to-foreground flow + permission prompt.
+- Device gate: backgrounded-press promotion refusal, Stop/Leave from notification,
+  chronometer + RTT/loss freshness, process survival on ringing-denied devices.
+
+### Next AI
+Phase 3 against `engine.state/stats/notices` + notification tap deep-link. Verify the
+backgrounded-press promotion refusal on a real API 34+ unit before claiming done.
+
+## 2026-09-10 — PTT voice session Phase 1: capture + playout + session engine
+
+### Worked on
+Live-audio slice of ADR-032: AudioRecord capture loop, AudioTrack playout loop with
+jitter buffer, `PTT1` binary framing, and `PttSessionEngine` driving the floor machine
+with heartbeat/RTT, fan-out and call-exclusion wiring. No service/notification/UI yet
+(Phases 2–3); session notices are log-only.
+
+### Changed
+- `core/messaging/.../protocol/PttAudioFrame.kt` (new, common): `PTT1` LE layout
+  (ver/sessionId/seq/captureTs/PCM16), golden-vector + corruption tests (4/4).
+- `core/messaging/.../ptt/PttJitterBuffer.kt` (new, pure): single-threaded playout
+  scheduler (starve → ready → conceal), loss/late/dup/overflow counters (7/7 tests).
+  Threading by contract — engine funnels pushes through the playout thread's
+  drop-oldest channel; no lock (documented on the class).
+- `core/messaging/.../ptt/PttAudioLevel.kt` (new): shared RMS helper for Phase 3
+  animation/badges (3/3 tests).
+- `app/.../ptt/PttCapture.kt` (new): dedicated-thread AudioRecord, VOICE_COMMU-
+  NICATION→MIC fallback, 16k→8k rate fallback, system-silence watchdog (API 29+,
+  Executor overload — the Handler variant is gone from this SDK), unexpected-exit
+  reporting; `stop()` never reports.
+- `app/.../ptt/PttPlayout.kt` (new): STREAM AudioTrack (media path = loudspeaker),
+  owns buffer+thread, repeat-last concealment, volatile/atomic snapshot only.
+- `app/.../ptt/PttSessionEngine.kt` (new): mutex-serialized machine driver; main-safe
+  press outcomes (ACCEPTED/NO_PEERS/NO_MIC/CALL_ACTIVE); 1 Hz heartbeat + RTT echo
+  accounting; 500 ms tick; per-packet WS-binary fan-out off a drop-oldest channel;
+  instance-token stale-callback guards; volatile/concurrent session caches.
+- `app/.../debug/DiscoveryEngineHolder.kt`: engine construction (lazy transport
+  lambdas), press→engine route with ping fallback, PTSS branch→engine, PTT1 first-
+  branch in `handleInboundBinary`, `onCallStarted` hook in `setCallActive`, shutdown
+  in `stopAll`, `skipDebounce` on the ping path.
+- `docs/protocol.md`: audio binary layout + WS-first transport order. ADR-032 points
+  2/3 amended (reasons recorded; data-channel demoted to benchmark-gated).
+- Fixed own compile errors: Executor-only recording-callback overload, `isActive`
+  via `CoroutineScope` loop receivers.
+
+### Verification
+- 45 PTT unit tests green on JVM + Android host (0 failures).
+- `:core:messaging:testAndroidHostTest`, `:app:testDebugUnitTest`,
+  `:app:assembleDebug` BUILD SUCCESSFUL. `git diff --check` clean.
+- Hardware paths (capture/playout/FGS) NOT unit-testable here — device-gated.
+
+### Remaining
+- Phase 2: `PttSessionService` (`microphone` + `mediaPlayback` types) + live
+  notification (chronometer, RTT·loss, Stop/Leave) + `mediaPlayback` manifest perm.
+- Phase 3: session UI + tier-gated animation + toasts + press-to-foreground flow.
+- Device gate: press→first-audio latency, 3-device deny, kill-broadcaster timeout,
+  mic-busy, 2.4 GHz concealment, speaker routing on the rugged unit.
+
+### Next AI
+Phase 2 against `PttSessionEngine.state/stats/notices`. Do not start transmit while a
+call is active (enforced) and do not reuse `FlashCallService` (CallStyle mismatch).
+
+## 2026-09-10 — PTT voice session Phase 0: PTSS codec + floor machine + both-hosts decode
+
+### Worked on
+First ADR-032 implementation slice: `FLASH_PTSS` session control frames, a pure
+floor-control state machine, and decode stubs in both hosts. No audio, no service, no
+UI — execution lands in Phases 1–3.
+
+### Changed
+- `core/messaging/.../protocol/PttSessionFrame.kt` (new): sealed `Start/Stop/Leave/
+  Heartbeat/HeartbeatAck` with shared `sessionId/from/sentAt`; standalone (not a
+  `MessageWireFrame` subtype, same reason as the ping frame).
+- `core/messaging/.../protocol/PttSessionCodec.kt` (new): `FLASH_PTSS` encode/decode;
+  fail-closed on unknown actions, missing fields, non-positive `sentAt`, `rate` outside
+  {8000,16000}, `pms` outside {20,40,60}, negative `seq`; `rtt` optional on heartbeat.
+- `core/messaging/.../ptt/PttFloorMachine.kt` (new, pure common): `(state,event)→
+  (state,effects)` with `Idle/Talking/Listening`, toggle-press, only-holder-ends-talk,
+  busy-deny, receiver-cancel (`SendLeave`), 60 s cap / 45 s warn / 5 s orphan timeout,
+  call-started and mic-denied teardown; user-initiated ends emit no `NotifyEnded`.
+- Tests (commonTest, run on JVM + Android host): `PttSessionCodecTest` 7/7,
+  `PttFloorMachineTest` 20/20 — toggle, foreign-stop immunity, warn-once-then-cap,
+  heartbeat refresh/timeout, busy-deny, quiet receiver cancel, leave no-op.
+- Both hosts decode + fail-closed-check + log (`DiscoveryEngineHolder.handleInboundText`,
+  `Flash.handleInboundText`); execution stubbed with explicit Phase 1 pointer.
+- `docs/protocol.md`: §PTT voice session wire spec incl. reserved `PTT1` audio magic.
+  ADR-032 status → Phase 0 landed.
+- Incidental: one-line `updateDirectTitle` delegate in `RealFlashChatRepositoryTest`
+  (pre-existing HEAD breakage from `1921015`, see ERROR-045).
+
+### Verification
+- `:core:messaging:jvmTest` green (7 + 20 new, 0 failures).
+- `:core:messaging:testAndroidHostTest` green (same suites on host, full file green).
+- `:core:engine:compileAndroidMain`, `:app:compileDebugKotlin`,
+  `:app:assembleDebug` BUILD SUCCESSFUL.
+- `git diff --check` clean. No device gate possible in Phase 0 (no audio path yet).
+
+### Remaining
+- Phase 1: AudioRecord capture loop + AudioTrack playout + jitter buffer + `PTT1`
+  binary framing routed before the transfer pipeline.
+- Phases 2–3: `PttSessionService` + live notification; session UI + tier animation.
+
+### Next AI
+Build Phase 1 against `PttFloorMachine` effects; do not reintroduce WebRTC for audio
+(ADR-032). Run the physical press→audio gate only after Phase 1.
 
 ## 2026-09-10 — 5-Fix Wiring: Notification Answer, Rejoin Call, Device Name Propagation
 
@@ -7045,4 +7773,3 @@ Fixed image previews not loading in chat bubbles, added full video thumbnail/pre
 - `:ui:callui:testDebugUnitTest` passed.
 - `:app:compileDebugSources` passed.
 - Installed debug APK onto physical device `ZX89924000194` (`V760`).
-

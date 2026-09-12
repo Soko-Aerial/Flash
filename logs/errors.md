@@ -1,5 +1,558 @@
 
 # Error Log
+## ERROR-052 - `FakeMessageDao.insert` was non-atomic, so the group harness invented a duplicate inbound-media callback
+
+### Date
+2026-09-11
+
+### Area
+`:core:messaging` androidHostTest harness (`RealFlashChatRepositoryTest.FakeMessageDao`)
+
+### Symptoms
+`group media callback supplies stored title and attachment metadata` failed intermittently - two of
+three full-suite runs during the ERROR-051 pass - with
+`expected: [Inbound(..., fileName=voice.m4a, ...)] but was: [Inbound(...), Inbound(...)]`: one inbound
+`voice.m4a` produced two callbacks with identical arguments. It passed in isolation and on the next
+run, which is exactly what made it read as flake rather than defect.
+
+### Root cause
+The harness runs repository coroutines on `Executors.newFixedThreadPool(4)`. Two paths legitimately
+mint the same group attachment bubble for one `transferId` - the GMEDIA early-mint branch
+(`onInboundGroupWireFrame` -> `is GroupWireFrame.GroupMedia`) and the accept path
+(`onInboundAttachment` consuming `pendingGroupMedia`) - each guarded by an `existsAttachment(transferId)`
+check and each calling back only when `messageDao.insert(...) != -1L`. Production is safe because
+`MessageDao.insert` is `@Insert(onConflict = OnConflictStrategy.IGNORE)`, atomic at the SQL level, so
+the loser receives -1. The fake reproduced the intent but not the atomicity:
+
+```kotlin
+if (messages.containsKey(message.localId)) return -1L
+messages[message.localId] = message
+```
+
+Both coroutines could pass `containsKey` before either put, so both returned `1L` and both fired the
+callback - a duplicate the fake invented, not one production has.
+
+### Working fix
+`if (messages.putIfAbsent(message.localId, message) != null) return -1L`, mirroring IGNORE's
+check-and-insert atomicity.
+
+### Verification
+`:core:messaging:testAndroidHostTest --rerun-tasks` four times in a row - **BUILD SUCCESSFUL** every
+time (two failures in three runs before the fix). Full module totals: `172 tests, 0 skipped, 0 failures`.
+
+### Follow-up (F7d, same day) - the smell above is now fixed
+The tiebreaker no longer lives in the DAO. `RealFlashChatRepository` gained
+`private val claimedGroupMedia = ConcurrentHashMap.newKeySet<String>()`, and both mint paths take it
+with an atomic `add(transferId)` before touching the database:
+
+- the GMEDIA early-mint branch is now `} else if (claimedGroupMedia.add(frame.transferId)) {`;
+- the accept path keeps its `if (media != null) { ... return@launch }` shape (so a group transfer can
+  never fall through to the 1-to-1 fallback) and nests `if (claimedGroupMedia.add(transferId))` inside
+  it, which is the only place that inserts and calls back.
+
+So exactly one path mints, fires the host callback and touches the conversation, and the loser does
+nothing - it no longer depends on `MessageDao.insert` returning -1 to stay quiet. `pendingGroupMedia`
+is still drained unconditionally on accept.
+
+Verification: `:core:messaging:testAndroidHostTest --rerun-tasks` twice, BUILD SUCCESSFUL both times,
+172 tests / 0 skipped / 0 failures. A first attempt merged the claim into the accept path's outer
+condition, which let the loser fall through to the 1-to-1 fallback and produce a
+`fallback.bin` callback alongside the group one - caught by
+`group media callback supplies stored title and attachment metadata` and corrected.
+
+## ERROR-051 - A device added to an existing group got the group but never its history, and members that were offline during the add never learned the newcomer
+
+### Date
+2026-09-11
+
+### Area
+`:core:messaging` - F2 `State` late-join bootstrap and the F3 `FLASH_GSYNC` catch-up trigger
+
+### Symptoms
+Owner report: "after adding a user later on in the group it doesn't sync messages and new messages
+doesn't come." The added device **does** materialize the group (the F2 `State` bootstrap lands) and
+then sits in an empty conversation; messages sent by a member that was offline when the add happened
+never reach it.
+
+### Environment
+- tree `e012bed` + the uncommitted working tree; `:core:messaging` androidHostTest harness (three
+  repository instances wired by an in-process mesh sink that reports `false` when a target has no
+  live session, exactly like the host sinks do)
+- No device involved - the whole finding is harness + source evidence (see "Not verified")
+
+### Root cause - two independent mechanisms, both reproduced
+1. **History: no catch-up is triggered by joining.** `sendGroupSyncRequests` is only ever called from
+   a session-up edge (`core/engine/.../Flash.kt:427`, `app/.../DiscoveryEngineHolder.kt:1161`). A
+   device that joins *during* a live session learns the group from `State`, and that session's sync
+   round already ran - while it had no membership at all - so it never asks again. Nothing on the
+   join path requests catch-up.
+   The cursor is **not** the problem: a join-time request carries `sinceSentAt = 0`, and the holder
+   answers with the whole history - proven by the counterfactual below.
+2. **Membership frames have no delivery table.** `Create`/`Add`/`State` are handed straight to
+   `groupTransportSink`; when the target has no live session the sink drops them and nothing retries.
+   Group *messages* get `GroupDeliveryEntity` rows and are retried on reconnect
+   (`notifyPeerSessionUp` -> `makePendingDueForMember`), so the asymmetry is invisible until a
+   membership frame is the thing that was lost. A member that missed the `Add` keeps a roster without
+   the newcomer and therefore never addresses it; a newcomer that missed the `State` never learns the
+   group at all, and because the inbound `Message` gate requires active membership
+   (`isActiveTrustedMember`), every later message addressed to it is dropped on arrival.
+
+### Evidence
+Reproduced in the host harness (no device needed): with everyone connected, the late joiner ends up
+with an empty history and **zero** `SyncRequest` frames exist for the group while A and B both hold
+the messages it lacks; with a member offline during the add, the `Add` is handed to the sink exactly
+once with `delivered=false`, and after the reconnect that member's roster is still `[dev-a, dev-b]` -
+it creates no delivery row for the newcomer and never addresses it.
+**Counterfactual:** when a session-up edge happens to fire right after the add (cursor still empty),
+the holder **does** return the pre-join history - so the missing piece is the trigger, not the sync
+protocol or the cursor.
+
+### Working fix
+- **F7a - catch-up on join.** `requestGroupCatchUp(groupId)` issues one existing-shape F3
+  `SyncRequest` per other active member, called from the `State` branch once the roster is applied.
+  Every member is asked, not just the bootstrapper, because each holder only pushes the messages it
+  owns.
+- **F7b - membership reconciliation at the session-up edge.** `reconcileGroupMembership(peerDeviceId)`
+  re-sends the F2 `State` for every group the peer is an active member of; called beside
+  `sendGroupSyncRequests(...)` in both hosts. The session-up edge becomes the retry point for
+  membership, so no durable queue and no schema change are needed.
+- **F7c - `State` is no longer destructive.** The `State` branch's conversation upsert now keeps an
+  existing row's `sortOrder`/`groupCreatedBy`/`groupCreatedAt`. Re-sending `State` was otherwise
+  harmful: it rewrote group provenance and re-stamped the chat-list position on every reconnect.
+
+### Verification
+`:core:messaging:testAndroidHostTest` - **BUILD SUCCESSFUL, 172 tests / 0 skipped / 0 failures**.
+The four diagnostics that pinned the defective behaviour were flipped to intended behaviour, and the
+two previously `@Ignore`d intended-behaviour tests now run and pass. Also green:
+`:core:engine:testAndroidHostTest`, `:sample:consumer:testDebugUnitTest`, `:app:testDebugUnitTest`,
+`:app:assembleDebug`.
+
+### Not verified
+No device run: the harness drives repositories in-process and simulates the session-up edge by calling
+the same hooks the hosts call, so real sockets, discovery timing and ART behaviour are untested. The
+F3 push lands after `GroupPolicy.BACKUP_DELAY_MS` (2 s) - this surfaced only as a test-window
+requirement, not as a user-visible complaint.
+
+### Related
+`docs/group/ui-phase-plan.md` F7. F2 (late-join bootstrap) and F3 (catch-up) both shipped with the
+device gate still owed, and this is the first evidence that their flows only held for members that
+were connected at add time.
+
+
+## HAZARD-002 — `compileOnly(project(":core:calling"))`: any always-executed path that names a calling type throws `NoClassDefFoundError` at runtime
+
+### Date
+2026-09-11
+
+### Area
+`:core:engine` dependency scope / calling seam (ADR-033)
+
+### Symptoms
+**No failure was observed.** This entry records a hazard the 2026-09-11 calling-seam pass designed
+around, because its failure mode is invisible in this repository: it would only appear in a
+downstream app that depends on `core-engine` *without* `core-calling`, at the moment an inbound text
+frame arrives, as a `NoClassDefFoundError` thrown inside the WebSocket collector coroutine.
+
+### Environment
+- `core-engine` 1.1.0, `:core:calling` declared `compileOnly` on androidMain
+- Android (ART) runtime; the JVM/Android-host tests cannot reproduce it — both have the class present
+
+### Error
+```text
+java.lang.NoClassDefFoundError: Failed resolution of: Lcom/transfer/flash/core/calling/FlashCalling;
+```
+(anticipated, not observed)
+
+### Root cause
+`compileOnly` puts a module on the compile classpath and nowhere else. `FlashCalling` is therefore in
+`FlashEngine`'s signatures while a consumer that never calls has no such class at runtime, so any
+JVM instruction that *executes* and resolves it — a field access, a getter call, a checkcast —
+throws. `Flash.kt`'s `handleInboundText` runs for every inbound text frame, attached engine or not,
+which makes it the one place this would bite quietly.
+
+### Failed attempts
+None (there was nothing to debug). The rejected alternative is recorded instead: reading
+`facade?.calls?.onInboundText(...)` directly. It is the code a reader expects, and it is exactly the
+resolution that would throw.
+
+### Working fix
+The seam is shaped so the type appears only where a host that owns `core-calling` is the caller:
+- recognition uses a plain `FLASH_CALL` prefix constant (`internal fun isCallFrameText`), not
+  `CallFrameCodec.decode` (a `:core:calling` class);
+- routing goes through `onInboundCallText` / `onCallSignalingLost` / `onCallSignalingRestored`,
+  typed without `FlashCalling`, answering false / no-op when nothing is attached;
+- `DefaultFlashEngine` reaches the attached engine through the function-typed fields captured in
+  `attachCalling`, so only `calls`, `attachCalling`, `detachCalling` and the lambda class
+  `attachCalling` creates mention the type.
+
+### Verification
+Verified against the published artifact rather than a device, because that is where the difference
+exists: in `core-engine-android-1.1.0.aar`, a binary grep for `FlashCalling` matches exactly
+`FlashEngine.class`, `DefaultFlashEngine.class` and `DefaultFlashEngine$attachCalling$1$1.class` —
+not `FlashKt.class`, not `Flash.class`, and not any `Wiring*` class. The published POM/`.module`
+declare neither `core-calling` nor `webrtc-kmp`. **Not verified on a device** (no consumer app
+without `core-calling` exists in this repo to run).
+
+### Second verification — 2026-09-11, on a real calling-free consumer classpath (host JVM)
+`:sample:consumer` (published shape A: `:core:engine` and nothing else) now carries
+`UmbrellaFacadeContractTest`, which runs where the class genuinely does not exist — `:core:engine`'s
+own host tests cannot, because that module's `androidHostTest` has the interface on its classpath by
+design (ADR-033 §5). `./gradlew :sample:consumer:testDebugUnitTest` — BUILD SUCCESSFUL; the XML on
+disk (`sample/consumer/build/test-results/testDebugUnitTest/TEST-…UmbrellaFacadeContractTest.xml`)
+reports **tests=10 failures=0 errors=0 skipped=0**. What that run observed, all with `FlashCalling`
+absent:
+
+- the precondition is asserted, not assumed: `Class.forName("…calling.FlashCalling")` and
+  `…calling.protocol.CallFrameCodec` both throw `ClassNotFoundException`, and
+  `com/transfer/flash/core/calling/FlashCalling.class` is not a resource on that classpath;
+- every declared member type of `FlashKt` (`isCallFrameText`), `Wiring` (the private class owning
+  `handleInboundText`/`handleInboundBinary`) and `Flash` resolves — the JVM resolves each signature;
+- **byte level, method bodies included**: scanning every `.class` of the engine package on that
+  classpath (47 in the published AAR), exactly those three classes reference
+  `com/transfer/flash/core/calling`; `FlashKt`, `Flash`, `FlashConfig`, `Wiring` and every other
+  `Wiring$…` class — including `Wiring$handleInboundText$1.class` and
+  `DefaultFlashEngine$onInboundCallText$1.class` — do not;
+- driving all 14 frame texts (11 non-calling families + 3 `FLASH_CALL` shapes) through
+  `engine.onInboundCallText(peer, frame)` on a hand-assembled `DefaultFlashEngine`
+  (`EmptyFlashChatRepository` + fakes + `FlashSettingsDataStore` over a temp file) throws nothing —
+  `Error` included, the harness catches `Throwable` — and answers
+  `false` for each; `engine.ptt` is null; `onCallSignalingLost`/`Restored` are no-ops; `close()` (the
+  README's `finally` block) works and is idempotent;
+- `FLASH_CALL` frames are recognized by the calling branch's own expression
+  (`FlashTextFraming.parseFields(text, "FLASH_CALL") != null`) and rejected by every other family
+  parser, and no chat/PTT/group frame is recognized by the calling branch.
+
+One JDK-21 HotSpot observation worth keeping, because it is the boundary a reader will hit:
+`Class.getDeclaredMethods()` / `Class.getMethod("getCalls")` on `FlashEngine` and
+`DefaultFlashEngine` throw `NoClassDefFoundError: com/transfer/flash/core/calling/FlashCalling` out of
+`Class.getDeclaredMethods0` — the JVM resolves the declared types to build the `Method` objects. On a
+calling-free classpath the attach seam therefore cannot even be *reflected over*; direct compiled
+calls to the three routing entry points work (the test calls them), and `calls` / `attachCalling` do
+not compile at all without the dependency. Reflection is not a workaround for the compile-time
+boundary.
+
+**Still not verified: a device/ART run of a consumer app without `core-calling`**, and the
+dispatcher's control flow itself — `Wiring.handleInboundText` is file-private in a class whose
+constructor takes an `android.content.Context`, so the test drives the entry points the dispatcher
+calls and the parsers it chooses between, not the dispatcher.
+
+Reproducing the class-level claim from the published AAR (note the `-a`: plain `grep -l` reports *no
+match* on these `.class` files, which would look like proof of absence and is not):
+```text
+./gradlew :core:engine:publishToMavenLocal "-Dmaven.repo.local=<fresh dir>"
+python -c "import zipfile; zipfile.ZipFile('…/core-engine-android-1.1.0.aar').extractall('<fresh dir>/aar')"
+python -c "import zipfile; zipfile.ZipFile('<fresh dir>/aar/classes.jar').extractall('<fresh dir>/classes')"
+grep -rla --include="*.class" "FlashCalling" "<fresh dir>/classes"
+→ 47 class files scanned, 3 match:
+  com/transfer/flash/core/engine/DefaultFlashEngine$attachCalling$1$1.class
+  com/transfer/flash/core/engine/DefaultFlashEngine.class
+  com/transfer/flash/core/engine/FlashEngine.class
+```
+
+### Related files
+- `core/engine/build.gradle.kts` (the `compileOnly` line and its comment)
+- `core/engine/src/androidMain/kotlin/com/transfer/flash/core/engine/{FlashEngine.kt,Flash.kt}`
+- `sample/consumer/src/test/java/com/transfer/flash/sample/consumer/UmbrellaFacadeContractTest.kt`
+- `sample/consumer/build.gradle.kts` (the `testOptions` block and the "no mocking, no Robolectric" rule)
+- `docs/decisions.md` ADR-033 §6/§7
+
+### Status
+AVOIDED BY DESIGN — no failure has ever been observed in production code, and the design that keeps
+it that way now has an executable contract test on a genuinely calling-free consumer classpath (host
+JVM, 10 tests / 0 failures). Re-open if the seam is ever simplified back to a typed `calls` read on
+the inbound path, if `core-calling` is ever added to `:sample:consumer`, or if that test is deleted:
+the guard is the test running, not a build rule.
+
+## ERROR-048 — `:core:ptt` did not compile: the half-finished refactor left nested legacy types shadowing the public seam
+
+### Date
+2026-09-11
+
+### Area
+`:core:ptt` public API / Kotlin type resolution
+
+### Symptoms
+The module tree was mid-refactor and would not build at all. `:core:engine` and `:app` could not be
+compiled either, because they depend on `:core:ptt` (`api(project(":core:ptt"))` and
+`implementation(project(":core:ptt"))` respectively) and Gradle skipped every downstream task.
+
+### Environment
+- Android Studio JBR 21 (`~/.gradle/jdks/jetbrains_s_r_o_-21-amd64-windows.2`)
+- compileSdk 35, minSdk 24, AGP 9.3.1, Kotlin 2.2.x, Gradle 9.5
+- `:core:ptt` is a plain AGP Android library with `explicitApi()`
+
+### Error
+```text
+e: .../core/ptt/src/main/java/com/transfer/flash/core/ptt/PttSessionEngine.kt:97:32 Type of 'stats' is not a subtype of overridden property 'val stats: StateFlow<PttSessionStats?>' defined in 'com/transfer/flash/core/ptt/FlashPtt'.
+e: .../PttSessionEngine.kt:224:45 Unresolved reference 'SEEN_PING_CAP'.
+e: .../PttSessionEngine.kt:685:24 Assignment type mismatch: actual type is 'PttSessionStats?', but 'PttSessionEngine.PttSessionStats?' was expected.
+```
+
+### Root cause
+`FlashPtt.kt` had already been converted to declare the public types as **top-level** declarations
+(`PttPressOutcome`, `PttRole`, `PttSessionStats`, `PttPingEvent`), but `PttSessionEngine.kt` still
+declared its own **nested** `PressOutcome`, `Role` and `PttSessionStats`. Kotlin resolves the
+unqualified name to the nested type inside the class, so `override val stats` was
+`StateFlow<PttSessionEngine.PttSessionStats?>` — a different type from the interface's
+`StateFlow<PttSessionStats?>`, hence "not a subtype of overridden property". The same shadowing made
+`refreshPttSessionStats()` write the *top-level* type into a field declared as the nested one. While
+moving the constant block, `SEEN_PING_CAP` (the cap for the inbound ping dedup set) was dropped.
+
+### Failed attempts
+None — the three errors named the cause directly. Guessing at the third error first (instead of the
+first) would have looked like a data-class mismatch and invited a pointless rewrite of the stats
+path.
+
+### Working fix
+Delete the nested declarations and let the engine implement the interface's types; re-add
+`SEEN_PING_CAP = 1000` to the engine's companion (the value the app host's deleted `PTT_SEEN_CAP`
+used). Update every call site to the top-level names: `PttSessionEngine.PressOutcome` →
+`PttPressOutcome` (app host + overlay), `PttSessionEngine.Stats` → `PttSessionStats`
+(`PttSessionService.render`).
+
+### Verification
+`:core:ptt:compileDebugKotlin`, `:core:ptt:compileReleaseKotlin` and
+`:core:ptt:testDebugUnitTest` are green (19 tests, 0 failures); `:app:compileDebugKotlin`,
+`:app:testDebugUnitTest` and `:app:assembleDebug` are green.
+
+### Related files
+- `core/ptt/src/main/java/com/transfer/flash/core/ptt/FlashPtt.kt`
+- `core/ptt/src/main/java/com/transfer/flash/core/ptt/PttSessionEngine.kt`
+- `app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt`
+- `app/src/main/java/com/transfer/flash/ptt/PttSessionOverlay.kt`
+- `app/src/main/java/com/transfer/flash/ptt/PttSessionService.kt`
+
+### Status
+RESOLVED
+
+## ERROR-049 — `api(project(":core:ptt"))` in `:core:engine`'s commonMain broke the engine's JVM target and its publication
+
+### Date
+2026-09-11
+
+### Area
+Gradle / KMP variant resolution (`:core:engine` × `:core:ptt`)
+
+### Symptoms
+`:core:engine:compileKotlinJvm`, `:core:engine:jvmTest` and `:core:engine:publishToMavenLocal` all
+failed while `:core:engine:compileAndroidMain` stayed green — which is why the defect survived an
+earlier "compile succeeds" check. On JitPack this would have failed the whole install line, since
+`jitpack.yml` publishes `:core:engine:publishToMavenLocal`.
+
+### Environment
+- Gradle 9.5, AGP 9.3.1, Kotlin 2.2.x, `com.android.kotlin.multiplatform.library`
+- `:core:engine` is a KMP module with `androidTarget` + `jvm()`; `:core:ptt` is a plain
+  `com.android.library` module
+
+### Error
+```text
+Could not determine the dependencies of task ':core:engine:compileJvmMainJava'.
+> Could not resolve all dependencies for configuration ':core:engine:jvmMainCompileClasspath'.
+   > The consumer was configured to find a library for use during compile-time, compatible with
+     Java 25 ... However we cannot choose between the following variants of project :core:ptt:
+       - Configuration ':core:ptt:releaseApiElements' variant android-classes-jar ...
+       - Configuration ':core:ptt:releaseApiElements' variant android-lint ...
+       - ...
+```
+
+### Root cause
+`:core:ptt` exposes only Android variants (it is an AGP Android library: `AudioRecord`, `AudioTrack`,
+`android.os.SystemClock`, `android.util.Log`). Declaring it in `commonMain.dependencies` — where the
+six *converted KMP* `:core:*` modules live — makes the dependency visible to `:core:engine`'s `jvm()`
+target too, and a JVM consumer cannot select any variant of an Android-only library. The two orders
+of work that produced the trap: `:core:ptt` was added to the model **after** the KMP conversion
+wave, and the only task ever run to "verify" the new dependency was the Android compile.
+
+### Failed attempts
+None. The error message names the two configurations and the required Java compatibility directly;
+`compileAndroidMain` being green was the misleading signal, not a wrong fix.
+
+### Working fix
+Move `api(project(":core:ptt"))` from `commonMain.dependencies` to `androidMain.dependencies` in
+`core/engine/build.gradle.kts`, with a comment recording why it differs from the six. It stays `api`
+because `FlashPtt` appears in the public `FlashEngine.attachPtt(...)`/`FlashEngine.ptt` signatures;
+nothing in `commonMain` or `jvmMain` names PTT, and `FlashEngine.kt`/`Flash.kt` are both
+`androidMain` sources.
+
+### Verification
+`:core:engine:compileAndroidMain`, `:core:engine:compileKotlinJvm` and
+`:core:engine:testAndroidHostTest` (17 tests) green; `:core:engine:publishToMavenLocal` green, and
+the published `core-engine-android` Gradle metadata lists `core-ptt`.
+
+### Related files
+- `core/engine/build.gradle.kts` (source-set dependency blocks)
+- `core/ptt/build.gradle.kts`
+- `jitpack.yml`
+
+### Status
+RESOLVED
+
+## ERROR-050 — `FlashPtt.sendPing()` notified exactly one peer (`any {}` short-circuit)
+
+### Date
+2026-09-11
+
+### Area
+`:core:ptt` outbound ping fan-out
+
+### Symptoms
+Found while writing the first `:core:ptt` unit tests, before any device run: with two paired online
+peers, a press produced one control write instead of two. The test asserting the fan-out failed with
+`expected:<2> but was:<1>` while everything else passed, which is the signature of an implementation
+bug rather than a bad assertion.
+
+### Environment
+Host JVM unit test (`:core:ptt:testDebugUnitTest`), no device needed.
+
+### Error
+```text
+java.lang.AssertionError: expected:<2> but was:<1>
+	at com.transfer.flash.core.ptt.PttSessionEngineTest.sendPing fans one frame out to trusted online peers only(PttSessionEngineTest.kt:258)
+```
+
+### Root cause
+`sendPing()` ended with `return recipients.any { sendControl(it, ping) }`. `any` short-circuits on the
+first `true`, so only the first recipient whose socket write succeeded ever received the ping. The
+pre-refactor app implementation (`DiscoveryEngineHolder.broadcastPttPing`) fanned out to **all**
+legs with `sendTextAsync`, so the behavior regressed silently during the move into the module — a
+review would have read `any {}` as "true if anybody got it", which is exactly what it means, and
+missed that the writes inside it are the work.
+
+### Failed attempts
+None. The test failure named the line.
+
+### Working fix
+Iterate instead of short-circuiting and keep the return contract:
+```kotlin
+var delivered = false
+recipients.forEach { peerId -> if (sendControl(peerId, ping)) delivered = true }
+return delivered
+```
+The wire contract is unchanged: one press builds ONE frame with one `eventId` and sends it to every
+recipient, so a receiver that gets it twice dedups on `eventId` rather than seeing two presses.
+
+### Verification
+`:core:ptt:testDebugUnitTest` green, 19 tests / 0 failures, including the rewritten fan-out test that
+asserts both recipients are written to and that the shared `eventId` is identical across legs.
+Physical multi-peer delivery is part of the still-open device gate.
+
+### Related files
+- `core/ptt/src/main/java/com/transfer/flash/core/ptt/PttSessionEngine.kt`
+- `core/ptt/src/test/java/com/transfer/flash/core/ptt/PttSessionEngineTest.kt`
+
+### Status
+RESOLVED (host-verified; multi-peer device evidence still owed)
+
+## ERROR-047 — PTT playout repeated one PCM packet forever (FIXED LOCALLY, device verification pending)
+
+### Date
+2026-09-10
+
+### Area
+PTT voice playout (`PttPlayout`)
+
+### Symptoms
+Static review before device testing found that the playout worker could never return
+from its first successful `AudioTrack.write()`: the same PCM slice was written
+repeatedly, so no later jitter-buffer packet could be polled.
+
+### Root cause
+`writeFully()` initialized `offset = 0` but did not add the positive `written` byte
+count. The loop condition therefore stayed true for the lifetime of the session.
+
+### Working fix
+Advance `offset += written` after every successful write. In the same hardening pass,
+inbound PCM now has to match the exact `rate × packet duration × PCM16` size negotiated
+by Start, so malformed packets cannot alter playout pacing.
+
+### Verification
+`:core:messaging:jvmTest`, `:core:messaging:testAndroidHostTest`,
+`:app:testDebugUnitTest`, and `:app:assembleDebug` are green. Physical speaker playout
+and first-syllable proof remain part of the PTT device gate.
+
+### Status
+FIXED LOCALLY — physical speaker playout and first-syllable verification pending
+
+## ERROR-046 — PTT Leave never transmitted: stopListen() cleared holderId before sendLeave() read it (FIXED LOCALLY, device verification pending)
+
+### Date
+2026-09-10
+
+### Area
+PTT voice session (`PttSessionEngine`, `:app` ptt package)
+
+### Symptoms
+1. Receiver taps Leave (overlay or notification): local audio stops, but the
+   broadcaster keeps showing the listener and keeps talking to a gone peer.
+2. Reported as "notification Leave does nothing" — same root cause (both buttons share
+   `stopLocal()`; local teardown worked, the wire frame never left).
+
+### Root cause
+Effect-ordering bug, not a transport bug. The floor machine emits
+`[StopPlayout, SendLeave]` in that order and `execute()` runs effects sequentially:
+`stopListen()` nulled `holderId`, then `sendLeave()` read the nulled field and hit its
+`holder == null` early return. The Leave frame was encoded nowhere — fail-silent by
+construction. Second gap found while fixing: inbound Leave was machine-no-op'd and only
+`Log.d`, so the broadcaster's member set/badge could never have updated anyway.
+
+### Rule for next AI
+Any `sendX()` effect that reads mutable session fields must either run BEFORE the
+teardown effect that clears them, or read fields the teardown preserves. When adding a
+new effect pair, trace field lifetimes across the emission order in the machine test's
+effect lists — the unit tests pin the order, not the lifetimes.
+
+### Working fix
+- `stopListen()` no longer clears `holderId` (overwritten per session in
+  `startListen`, cleared in `shutdown()`).
+- `sendLeave()` logs warn on skip / info on send (was fully silent).
+- Inbound Leave now prunes `members`, refreshes stats, logs remaining count.
+- `PttSessionActionReceiver` logs delivery proof before `stopLocal()`.
+
+### Verification
+- `:app:testDebugUnitTest`, `:app:assembleDebug` green. No unit coverage possible for
+  the ordering itself (Android audio classes in the host); device gate owed:
+  B taps Leave → A logs `Leave sent` (B) + `Listener left … remaining=N` (A) and A's
+  badge count drops; notification Leave shows `Stop action received` (B) first.
+
+### Status
+FIXED LOCALLY — two-device Leave/member-count verification pending
+
+## ERROR-045 — androidHostTest compile break: anonymous ConversationDao missed updateDirectTitle (RESOLVED)
+
+### Date
+2026-09-10
+
+### Area
+`:core:messaging` androidHostTest / Room DAO fakes
+
+### Symptoms
+`:core:messaging:testAndroidHostTest` failed at `compileAndroidHostTest`:
+`Class '<anonymous>' is not abstract and does not implement abstract member:
+suspend fun updateDirectTitle(id: String, title: String)`.
+
+### Root cause
+Commit `1921015` added `ConversationDao.updateDirectTitle` and updated
+`FakeConversationDao`, but missed the anonymous delegating `ConversationDao` inside
+`RealFlashChatRepositoryTest` (`markConversationUnread clears the cursor…`), which
+re-declares every DAO method. Pre-existing on HEAD — unrelated to the PTT Phase 0 work
+that surfaced it.
+
+### Working fix
+One-line delegate override forwarding to the inner `FakeConversationDao`
+(`RealFlashChatRepositoryTest.kt`, same block as the other delegates).
+
+### Rule for next AI
+Adding a DAO method requires updating EVERY `Fake*Dao` AND every anonymous
+decorator implementing that interface in `*Test.kt` — grep `object : <DaoName>` and
+`: <DaoName> by` does not cover anonymous `object :` redeclarations; grep the
+interface name in test sources instead.
+
+### Verification
+Full `:core:messaging:testAndroidHostTest` green after the fix (all pre-existing tests
+plus new PTT suites).
+
+### Status
+RESOLVED
 
 ## ERROR-044 — Hotspot Host Inbound Call Reception Failure & Group Call Multi-Device Answering Regression (RESOLVED)
 
@@ -3429,5 +3982,3 @@ RESOLVED
 
 ### Status
 RESOLVED
-
-

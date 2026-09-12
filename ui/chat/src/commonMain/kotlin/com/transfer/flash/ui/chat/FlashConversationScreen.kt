@@ -128,6 +128,12 @@ fun FlashConversationScreen(
      */
     onSendVoiceMessage: (localPath: String, durationMs: Long, amplitudes: List<Int>) -> Unit = { _, _, _ -> },
     /**
+     * Host-owned mic arbitration. Return an opaque lease id when capture is acquired, or null when
+     * PTT/calling owns it; [onVoiceRecordingStopped] releases only that matching acquisition.
+     */
+    onVoiceRecordingStarting: () -> String? = { "preview" },
+    onVoiceRecordingStopped: (String) -> Unit = {},
+    /**
      * Accept a pending inbound file/video offer from within the chat bubble (Bug 3). [file.id] is
      * the wire transferId; the host (:app) routes it to the transfer repository's acceptIncoming.
      * Default no-op keeps previews inert.
@@ -232,8 +238,17 @@ fun FlashConversationScreen(
     // B9: real microphone capture for voice messages. The recorder lives at screen scope so its
     // encoder survives the composer's gesture recompositions; released when the screen leaves.
     val voiceRecorder = rememberFlashVoiceRecorder()
+    var voiceRecordingLeaseId by remember { mutableStateOf<String?>(null) }
+    fun releaseVoiceRecordingLease() {
+        val leaseId = voiceRecordingLeaseId ?: return
+        voiceRecordingLeaseId = null
+        onVoiceRecordingStopped(leaseId)
+    }
     DisposableEffect(voiceRecorder) {
-        onDispose { voiceRecorder.cancel() }
+        onDispose {
+            voiceRecorder.cancel()
+            releaseVoiceRecordingLease()
+        }
     }
     // Microphone access is requested lazily on the first hold. We can't retroactively start the
     // capture the user just attempted, so a granted result simply enables the next hold to record.
@@ -579,6 +594,7 @@ fun FlashConversationScreen(
                 onSendVoice = { voice ->
                     // Stop capture → file:// URI; route the recording out to :app for real sending.
                     val path = voiceRecorder.stop()
+                    releaseVoiceRecordingLease()
                     if (path != null) {
                         onSendVoiceMessage(path, voice.durationMs, voice.amplitudes)
                     } else {
@@ -602,10 +618,22 @@ fun FlashConversationScreen(
                         }
                         false
                     } else {
-                        voiceRecorder.start()
+                        val leaseId = onVoiceRecordingStarting()
+                        if (leaseId == null) {
+                            showMessage("PTT session active — voice recording unavailable")
+                            false
+                        } else {
+                            voiceRecordingLeaseId = leaseId
+                            val started = voiceRecorder.start()
+                            if (!started) releaseVoiceRecordingLease()
+                            started
+                        }
                     }
                 },
-                onVoiceRecordCancel = { voiceRecorder.cancel() },
+                onVoiceRecordCancel = {
+                    voiceRecorder.cancel()
+                    releaseVoiceRecordingLease()
+                },
                 voiceAmplitudeProvider = { voiceRecorder.maxAmplitude() },
             )
         },

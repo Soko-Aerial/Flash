@@ -35,10 +35,14 @@ Dependency direction is strictly downward, with two deliberate exceptions:
 
 - **`:core:engine` is the only module that knows the wiring.** It `api()`s the seven core modules
   below it, so a consumer adds one artifact and sees every published type.
-- **`:core:calling` sits outside the facade.** `:core:engine` has no dependency on it and
-  `FlashEngine` has no `calls` property: calling needs a signaling channel the host already owns,
-  runtime microphone/camera grants, and a `microphone|camera` foreground service only an app can
-  declare (ADR-025). `:app` and `:ui:callui` depend on it directly.
+- **`:core:calling` reaches the facade through a `compileOnly` seam (ADR-033).** `:core:engine`
+  compiles against `FlashCalling` and exposes it (`FlashEngine.calls`, `attachCalling`,
+  `onInboundCallText`, `onCallSignalingLost`/`Restored`) but does **not** publish the dependency, so
+  ~30 MB per ABI of native WebRTC still never reaches an app that does not call: the host builds the
+  engine and attaches it, because only an app can supply the signaling channel it already owns, the
+  runtime mic/camera grants and the `microphone|camera` foreground service (ADR-025). `:app` and
+  `:ui:callui` depend on `:core:calling` directly. `:core:ptt` is the contrasting case — an `api`
+  dependency, since it carries no native payload.
 - **Persistence is inverted, not depended on.** `:core:messaging` and `:core:transfer` define
   storage ports; the Room-backed adapters live in `:core:engine` (ADR-024), so neither domain module
   depends on `:core:persistence` and no Room type reaches a public signature.
