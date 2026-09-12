@@ -26,6 +26,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -56,6 +57,7 @@ import kotlinx.coroutines.launch
 /**
  * Conversation message list (UI-005 bubbles, UI-006 insertion, UI-007 selection).
  */
+// BOLT: contentType differentiation + per-item callback memoization to eliminate recomposition jank in LazyColumn chat on low-end devices
 @Composable
 fun FlashMessageList(
     messages: List<FlashMessageUi>,
@@ -162,7 +164,7 @@ fun FlashMessageList(
         itemsIndexed(
             items = ordered,
             key = { _, message -> flashMessageKey(message) },
-            contentType = { _, _ -> "flashMessage" },
+            contentType = { _, message -> flashMessageContentType(message) },
         ) { layoutIndex, message ->
             val animateEnter = shouldAnimateMessageEnter(
                 messageId = message.id,
@@ -194,19 +196,38 @@ fun FlashMessageList(
                     FlashDaySeparator(label = label)
                 }
 
+                val currentMessage by rememberUpdatedState(message)
+                val currentOnOpenActions by rememberUpdatedState(onOpenMessageActions)
+                val currentOnSelectToggle by rememberUpdatedState(onSelectToggle)
+                val currentOnToggleReaction by rememberUpdatedState(onToggleReaction)
+                val currentOnReplySwipe by rememberUpdatedState(onReplySwipe)
+                val currentOnImageClick by rememberUpdatedState(onImageClick)
+                val currentOnFileClick by rememberUpdatedState(onFileClick)
+                val currentOnAcceptOffer by rememberUpdatedState(onAcceptOffer)
+                val currentOnDeclineOffer by rememberUpdatedState(onDeclineOffer)
+
+                val onOpenActions = remember { { currentOnOpenActions(currentMessage) } }
+                val onSelectToggleLambda = remember { { currentOnSelectToggle(currentMessage.id) } }
+                val onToggleReactionLambda = remember { { emoji: String -> currentOnToggleReaction(currentMessage.id, emoji) } }
+                val onReplySwipeLambda = remember { { currentOnReplySwipe(currentMessage) } }
+                val onImageClickLambda = remember { { index: Int, _: Any -> currentOnImageClick(currentMessage, index) } }
+                val onFileClickLambda = remember { { file: com.transfer.flash.core.messaging.model.FlashFileAttachmentUi -> currentOnFileClick(currentMessage, file) } }
+                val onAcceptOfferLambda = remember { { file: com.transfer.flash.core.messaging.model.FlashFileAttachmentUi -> currentOnAcceptOffer(currentMessage, file) } }
+                val onDeclineOfferLambda = remember { { file: com.transfer.flash.core.messaging.model.FlashFileAttachmentUi -> currentOnDeclineOffer(currentMessage, file) } }
+
                 FlashMessageBubble(
                     message = message,
-                    onOpenActions = { onOpenMessageActions(message) },
+                    onOpenActions = onOpenActions,
                     isSelected = isSelected,
                     inSelectionMode = inSelectionMode,
-                    onSelectToggle = { onSelectToggle(message.id) },
-                    onToggleReaction = { emoji -> onToggleReaction(message.id, emoji) },
-                    onReplySwipe = { onReplySwipe(message) },
+                    onSelectToggle = onSelectToggleLambda,
+                    onToggleReaction = onToggleReactionLambda,
+                    onReplySwipe = onReplySwipeLambda,
                     onJumpToMessage = onJumpToMessage,
-                    onImageClick = { index, image -> onImageClick(message, index) },
-                    onFileClick = { file -> onFileClick(message, file) },
-                    onAcceptOffer = { file -> onAcceptOffer(message, file) },
-                    onDeclineOffer = { file -> onDeclineOffer(message, file) },
+                    onImageClick = onImageClickLambda,
+                    onFileClick = onFileClickLambda,
+                    onAcceptOffer = onAcceptOfferLambda,
+                    onDeclineOffer = onDeclineOfferLambda,
                     isHighlighted = isHighlighted,
                     searchQuery = searchQuery,
                     suppressSenderHeader = !showSenderHeaders,
@@ -285,6 +306,14 @@ private fun FlashDaySeparator(
 }
 
 internal fun flashMessageKey(message: FlashMessageUi): String = message.id
+
+internal fun flashMessageContentType(message: FlashMessageUi): String = when {
+    message.callEvent != null -> "callEvent"
+    message.images.isNotEmpty() -> "image"
+    message.voiceAttachments.isNotEmpty() -> "voice"
+    message.fileAttachments.isNotEmpty() -> "file"
+    else -> "text"
+}
 
 internal fun daySeparatorContentDescription(label: String): String = "Messages from $label"
 
