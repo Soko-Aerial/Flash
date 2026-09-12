@@ -130,9 +130,9 @@ class FlashSettingsLogicTest {
         assertNotEquals(high, low)
         assertTrue(low.contains("360p15"), "LOW must show its capture size: $low")
         assertTrue(high.contains("1080p30"), "HIGH must show its capture size: $high")
-        // 60 ms frames vs 10 ms: the packet rate is what the Belfone was actually choking on.
+        // 60 ms frames vs 20 ms: the packet rate is what the Belfone was actually choking on.
         assertTrue(low.contains("16 voice packets/s"), "LOW must show its packet rate: $low")
-        assertTrue(high.contains("100 voice packets/s"), "HIGH must show its packet rate: $high")
+        assertTrue(high.contains("50 voice packets/s"), "HIGH must show its packet rate: $high")
         assertTrue(low.contains("animations off"), "LOW must disclose that it stops animating: $low")
         assertFalse(high.contains("animations off"), "HIGH animates, so it must not claim otherwise: $high")
     }

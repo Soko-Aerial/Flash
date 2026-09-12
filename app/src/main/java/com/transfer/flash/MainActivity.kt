@@ -20,7 +20,6 @@ import androidx.core.content.ContextCompat
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.EnterTransition
-import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
@@ -30,7 +29,6 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.navigationBars
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
@@ -46,21 +44,19 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import com.transfer.flash.core.messaging.EmptyFlashChatRepository
 import com.transfer.flash.core.common.model.FlashDevice
 import com.transfer.flash.core.common.model.FlashDeviceId
 import com.transfer.flash.core.common.model.FlashTransportType
 import com.transfer.flash.core.common.perf.FlashMotionPolicy
+import com.transfer.flash.core.common.perf.FlashPerformanceMode
 import com.transfer.flash.core.common.result.getOrNull
 import com.transfer.flash.core.discovery.FlashDiscoveredEndpoint
 import com.transfer.flash.core.discovery.FlashDiscoveryState
 import com.transfer.flash.di.AppEngine
 import com.transfer.flash.debug.DiscoveryEngineHolder
-import com.transfer.flash.debug.DevConsoleChip
 import com.transfer.flash.debug.FlashBackgroundService
-import com.transfer.flash.debug.FlashDevConsoleScreen
 import com.transfer.flash.ui.chat.FlashChatListScreen
 import com.transfer.flash.ui.chat.FlashConversationScreen
 import com.transfer.flash.ui.navigation.FlashAnimatedScreen
@@ -77,6 +73,8 @@ import com.transfer.flash.core.calling.model.FlashCallUiState
 import com.transfer.flash.core.calling.model.FlashCallState
 import com.transfer.flash.calling.FlashCallAudioRouter
 import com.transfer.flash.calling.FlashCallService
+import com.transfer.flash.core.ptt.PttSessionEngine
+import com.transfer.flash.ptt.PttSessionOverlay
 import com.transfer.flash.pairing.PairingUiModel
 import com.transfer.flash.ui.calling.FlashCallScreen
 import com.transfer.flash.ui.settings.FlashSettingsModel
@@ -145,6 +143,13 @@ class MainActivity : ComponentActivity() {
      */
     private val pendingNotificationConversation = MutableStateFlow<String?>(null)
     private val pendingCallAnswer = MutableStateFlow(false)
+    /**
+     * Deferred hardware PTT press (Phase 3): set when a press surfaces the app while
+     * backgrounded/unpermitted/pre-boot. The session overlay consumes it (permission
+     * prompt included) once the engine is ready — the background itself can never start
+     * capture (API 34+ forbids, API 28+ silences).
+     */
+    private val pendingPttPress = MutableStateFlow(false)
 
     /**
      * Whether the OS currently exempts Flash from battery optimisation (ERROR-031 / D7).
@@ -178,17 +183,19 @@ class MainActivity : ComponentActivity() {
         if (intent?.getBooleanExtra(com.transfer.flash.calling.FlashCallActionReceiver.EXTRA_ANSWER_CALL, false) == true) {
             pendingCallAnswer.value = true
         }
+        if (intent?.getBooleanExtra(PttSessionEngine.EXTRA_PTT_PRESS, false) == true) {
+            pendingPttPress.value = true
+        }
         // Boot the real WS mesh stack once, idempotently. The holder de-dupes against the Dev
         // Console / background service, so this never spins up a second server. Failures are
         // captured into appEngine.startError (permission gating lands in Phase 4).
         appEngine.start()
-        val isDebuggable = (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
         setContent {
             FlashApp(
                 engine = appEngine,
-                showDevConsoleEntry = isDebuggable,
                 pendingNotificationConversation = pendingNotificationConversation,
                 pendingCallAnswer = pendingCallAnswer,
+                pendingPttPress = pendingPttPress,
                 onEnableBackgroundTransfers = ::requestIgnoreBatteryOptimizations,
                 ignoringBatteryOptimizations = ignoringBatteryOptimizations,
                 receivedStorageState = receivedStorageState,
@@ -230,6 +237,9 @@ class MainActivity : ComponentActivity() {
             intent.getStringExtra(FlashNotificationManager.EXTRA_CONVERSATION_ID)
         if (intent.getBooleanExtra(com.transfer.flash.calling.FlashCallActionReceiver.EXTRA_ANSWER_CALL, false)) {
             pendingCallAnswer.value = true
+        }
+        if (intent.getBooleanExtra(PttSessionEngine.EXTRA_PTT_PRESS, false)) {
+            pendingPttPress.value = true
         }
     }
 
@@ -381,10 +391,11 @@ object SettingsKeys {
 @Composable
 fun FlashApp(
     engine: AppEngine,
-    showDevConsoleEntry: Boolean = false,
     pendingNotificationConversation: MutableStateFlow<String?> = MutableStateFlow(null),
     /** Notification answer-button: true when the user tapped "Answer" on the incoming-call notification. */
     pendingCallAnswer: MutableStateFlow<Boolean> = MutableStateFlow(false),
+    /** Deferred hardware PTT press (Phase 3): consumed by the session overlay once ready. */
+    pendingPttPress: MutableStateFlow<Boolean> = MutableStateFlow(false),
     /** Bug 6: fired when the user turns ON the Settings "Background transfers" toggle (host-owned). */
     onEnableBackgroundTransfers: () -> Unit = {},
     /** ERROR-031 / D7: activity-published battery-optimisation exemption, refreshed on resume. */
@@ -532,7 +543,6 @@ fun FlashApp(
             Box(modifier = Modifier.fillMaxSize()) {
                 FlashShell(
                     engine = engine,
-                    showDevConsoleEntry = showDevConsoleEntry,
                     settings = settings,
                     onSettingsChange = onSettingsChange,
                     pendingNotificationConversation = pendingNotificationConversation,
@@ -540,6 +550,23 @@ fun FlashApp(
                     onEnableBackgroundTransfers = onEnableBackgroundTransfers,
                     onRefreshStorageUsage = onRefreshStorageUsage,
                     onClearReceivedFiles = onClearReceivedFiles,
+                )
+                // Phase 3: PTT session overlay above every tab (below the boot splash).
+                // State-driven, not nav-driven: back-navigation underneath never kills a
+                // session. Tier-gated animation (never on LOW) + system reduce-motion
+                // handled inside.
+                val pressPending by pendingPttPress.collectAsState()
+                val pttEngine = remember(ready) { DiscoveryEngineHolder.currentPttSession() }
+                val pttToastContext = LocalContext.current
+                PttSessionOverlay(
+                    engine = pttEngine,
+                    pressPending = pressPending,
+                    ready = ready,
+                    animateLevels = effectivePerformanceMode != FlashPerformanceMode.LOW,
+                    onConsumePress = { pendingPttPress.value = false },
+                    showToast = { message ->
+                        Toast.makeText(pttToastContext, message, Toast.LENGTH_SHORT).show()
+                    },
                 )
                 AnimatedVisibility(
                     visible = !dismissSplash,
@@ -556,7 +583,6 @@ fun FlashApp(
 @Composable
 private fun FlashShell(
     engine: AppEngine,
-    showDevConsoleEntry: Boolean,
     settings: FlashSettingsModel,
     onSettingsChange: (FlashSettingsModel) -> Unit,
     pendingNotificationConversation: MutableStateFlow<String?>,
@@ -646,8 +672,6 @@ private fun FlashShell(
             pendingNotificationConversation.value = null
         }
     }
-
-    var showDevConsole by remember { mutableStateOf(false) }
 
     // #14: display-name edit sheet. The identity row's tap now opens a rename dialog whose result is
     // persisted through onSettingsChange (DataStore) instead of being a no-op.
@@ -905,20 +929,17 @@ private fun FlashShell(
         }
     }
 
-    // Console first: while it is up it owns back, and the shell keeps its own handler disabled
-    // so one press never both closes the console and pops the stack.
-    BackHandler(enabled = showDevConsole) { showDevConsole = false }
-    BackHandler(enabled = nav.canGoBack && !showDevConsole) { nav.back() }
+    BackHandler(enabled = nav.canGoBack) { nav.back() }
     // UI-024: while chat-list search is open, Back closes search first (registered last so it
     // takes priority over the stack pop when both are eligible).
-    BackHandler(enabled = isSearching && !showDevConsole) {
+    BackHandler(enabled = isSearching) {
         isSearching = false
         searchQuery = ""
     }
     // UI-013: while chat-list selection mode is active, Back exits selection first (registered
     // last so it wins over the search-close and stack-pop handlers when several are eligible).
     // Reads the derived Boolean, not `chatListState` — see its declaration for why (EXP-012).
-    BackHandler(enabled = chatListSelectionMode && !showDevConsole) {
+    BackHandler(enabled = chatListSelectionMode) {
         chatRepository.clearListSelection()
     }
 
@@ -929,16 +950,6 @@ private fun FlashShell(
     val showBar = FlashNavigationMath.isTabRoot(nav.current.destination)
     val systemBottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
     val tabBottomInset = FlashBottomNavDefaults.contentInset + systemBottomInset
-    // Only the floating Dev Console chip still needs the animated inset — page content is
-    // padded from the inside, so its inset must stay constant to avoid a relayout per frame.
-    // Stays an explicit `State<Dp>`: it is read inside the chip's `offset { }` lambda below, so
-    // a frame of this tween re-places one Box instead of recomposing this ~750-line shell
-    // (EXP-013). Same trick as the theme segment / switch thumb in FlashSettingsScreen.
-    val chipBottomInset = animateDpAsState(
-        targetValue = if (showBar) tabBottomInset else 0.dp,
-        animationSpec = FlashTheme.motion.tweenNormalSpec(),
-        label = "flashShellChipInset",
-    )
 
     Box(
         Modifier
@@ -1054,6 +1065,8 @@ private fun FlashShell(
                         onOpenAttachment = { path, mime, _ -> openAttachment(toastContext, path, mime) },
                         onSaveImage = { uri, mime -> saveMediaToGallery(toastContext, uri, mime) },
                         onShareImage = { uri, mime -> shareImageUri(toastContext, uri, mime) },
+                        onVoiceRecordingStarting = DiscoveryEngineHolder::beginVoiceNote,
+                        onVoiceRecordingStopped = DiscoveryEngineHolder::endVoiceNote,
                         onSendVoiceMessage = { localPath, durationMs, amplitudes ->
                             // B9: a captured voice note rides the same P2P transfer pipeline as any
                             // file, then lands as an inline playback card via sendAttachment (audio/*).
@@ -1501,19 +1514,6 @@ private fun FlashShell(
                     },
                 )
             }
-
-            if (showDevConsoleEntry) {
-                Box(
-                    Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(end = 16.dp, bottom = 16.dp)
-                        // Bottom-aligned, so shifting up by the inset is exactly what
-                        // `bottom = 16.dp + inset` used to do — but in the placement pass.
-                        .offset { IntOffset(0, -chipBottomInset.value.roundToPx()) },
-                ) {
-                    DevConsoleChip(onClick = { showDevConsole = true })
-                }
-            }
         }
 
         Box(Modifier.align(Alignment.BottomCenter)) {
@@ -1543,20 +1543,6 @@ private fun FlashShell(
                     },
                 )
             }
-        }
-
-        // The console is a sibling LAYER, not an early return: replacing the shell wholesale
-        // discarded every remember slot below it (demo state, scroll positions), which is why
-        // closing it used to dump you onto whatever screen had been tapped meanwhile.
-        AnimatedVisibility(
-            visible = showDevConsole,
-            enter = FlashTheme.motion.sheetEnter(),
-            exit = FlashTheme.motion.sheetExit(),
-        ) {
-            FlashDevConsoleScreen(
-                context = LocalContext.current,
-                onClose = { showDevConsole = false },
-            )
         }
 
         if (showRenameDialog) {

@@ -1142,32 +1142,38 @@ public class RealFlashChatRepository(
             // the wire-carried sender name. Consumed once.
             val media = pendingGroupMedia.remove(transferId)
             if (media != null) {
-                val insertedRowId = messageDao.insert(
-                    MessageEntity(
-                        localId = media.messageId,
-                        conversationId = media.groupId,
-                        senderId = media.from,
-                        senderName = media.senderName,
-                        text = "",
-                        sentAt = media.sentAt.takeIf { it > 0 } ?: now,
-                        status = "DELIVERED",
-                        attachmentTransferId = transferId,
-                        attachmentName = media.fileName.ifBlank { fileName },
-                        attachmentMime = media.mimeType.ifBlank { mimeType },
-                        attachmentSize = if (media.sizeBytes > 0) media.sizeBytes else sizeBytes,
-                        attachmentPath = null,
-                    ),
-                )
-                touchConversation(media.groupId, now)
-                if (insertedRowId != -1L) {
-                    runCatching {
-                        onInboundAttachmentWithGroupTitle(
-                            media.groupId,
-                            media.senderName,
-                            media.fileName.ifBlank { fileName },
-                            media.mimeType.ifBlank { mimeType },
-                            conversationDao.get(media.groupId)?.title?.ifBlank { null },
-                        )
+                // F7d: this IS a group transfer either way - the parked intro is drained above, and
+                // `return@launch` below keeps it out of the 1-to-1 fallback. The atomic claim only
+                // decides who mints the bubble, so the loser must not re-insert (that is what the
+                // DB's IGNORE rule used to paper over).
+                if (claimedGroupMedia.add(transferId)) {
+                    val insertedRowId = messageDao.insert(
+                        MessageEntity(
+                            localId = media.messageId,
+                            conversationId = media.groupId,
+                            senderId = media.from,
+                            senderName = media.senderName,
+                            text = "",
+                            sentAt = media.sentAt.takeIf { it > 0 } ?: now,
+                            status = "DELIVERED",
+                            attachmentTransferId = transferId,
+                            attachmentName = media.fileName.ifBlank { fileName },
+                            attachmentMime = media.mimeType.ifBlank { mimeType },
+                            attachmentSize = if (media.sizeBytes > 0) media.sizeBytes else sizeBytes,
+                            attachmentPath = null,
+                        ),
+                    )
+                    touchConversation(media.groupId, now)
+                    if (insertedRowId != -1L) {
+                        runCatching {
+                            onInboundAttachmentWithGroupTitle(
+                                media.groupId,
+                                media.senderName,
+                                media.fileName.ifBlank { fileName },
+                                media.mimeType.ifBlank { mimeType },
+                                conversationDao.get(media.groupId)?.title?.ifBlank { null },
+                            )
+                        }
                     }
                 }
                 return@launch
@@ -1336,14 +1342,19 @@ public class RealFlashChatRepository(
                 if (roster.size > GroupPolicy.MAX_MEMBERS) return
                 val name = GroupPolicy.normalizedName(frame.name) ?: return
                 groupTitleCache[frame.groupId] = name
+                // F7: keep an existing row's provenance and list position. A `State` is no longer
+                // a one-shot bootstrap - [reconcileGroupMembership] re-sends it on every
+                // session-up - so re-stamping sortOrder/groupCreatedAt here would shuffle the chat
+                // list and rewrite the group's creation time on every reconnect.
+                val existingGroupConversation = conversationDao.get(frame.groupId)
                 conversationDao.upsert(
                     ConversationEntity(
                         id = frame.groupId,
                         title = name,
                         isGroup = true,
-                        sortOrder = frame.membershipVersion,
-                        groupCreatedBy = frame.creatorId,
-                        groupCreatedAt = frame.membershipVersion,
+                        sortOrder = existingGroupConversation?.sortOrder ?: frame.membershipVersion,
+                        groupCreatedBy = existingGroupConversation?.groupCreatedBy ?: frame.creatorId,
+                        groupCreatedAt = existingGroupConversation?.groupCreatedAt ?: frame.membershipVersion,
                     ),
                 )
                 roster.forEach { entry ->
@@ -1361,6 +1372,11 @@ public class RealFlashChatRepository(
                         ),
                     )
                 }
+                // F7: the group is new to this device, so it holds no message rows at all and its
+                // catch-up cursor is empty - ask the other members for the history now, because
+                // nothing else will (F3 sync only ever fires on a session-up edge, and this device
+                // is already connected to the peer that just bootstrapped it).
+                requestGroupCatchUp(frame.groupId)
             }
             is GroupWireFrame.Message -> {
                 if (!isActiveTrustedMember(members, frame.groupId, frame.from) ||
@@ -1452,8 +1468,10 @@ public class RealFlashChatRepository(
                             senderName = frame.senderName,
                         )
                         touchConversation(frame.groupId, now)
-                    } else {
+                    } else if (claimedGroupMedia.add(frame.transferId)) {
                         // Mint the group attachment offer bubble now so it appears immediately!
+                        // F7d: the atomic claim above makes this branch the single owner; a losing
+                        // race leaves the mint to the accept path instead (see [claimedGroupMedia]).
                         val insertedRowId = messageDao.insert(
                             MessageEntity(
                                 localId = frame.messageId,
@@ -1494,6 +1512,19 @@ public class RealFlashChatRepository(
      * so the attachment row threads into the GROUP conversation.
      */
     private val pendingGroupMedia = ConcurrentHashMap<String, GroupWireFrame.GroupMedia>()
+
+    /**
+     * F7d: single-owner claim for a group-media bubble.
+     *
+     * Two paths can mint the bubble for one `GroupWireFrame.GroupMedia.transferId` - the GMEDIA
+     * early-mint branch (so the offer appears immediately) and the accept path that consumes
+     * [pendingGroupMedia]. Both are guarded by `existsAttachment`, which is advisory only: these
+     * run on a thread pool, so both checks can pass before either inserts. Only one of them may
+     * insert, fire the host callback and touch the conversation; this set decides that atomically
+     * instead of letting `MessageDao.insert`'s IGNORE rule be the tiebreaker (which would still
+     * leave the loser having run `touchConversation`).
+     */
+    private val claimedGroupMedia = ConcurrentHashMap.newKeySet<String>()
 
     /** Maps an outbound group message id to all per-recipient transfer ids. */
     private val groupMessageTransfers = ConcurrentHashMap<String, MutableSet<String>>()
@@ -1539,6 +1570,98 @@ public class RealFlashChatRepository(
                 sentAt = System.currentTimeMillis(),
             ),
         ) == true
+    }
+
+    // ------------------------------------------------------------------ F7: late-join heal
+
+    /**
+     * F7: ask every other active member of [groupId] to push the history this device lacks.
+     *
+     * Fires when this device has just learned it is a member of a group it did not know (the F2
+     * `State` bootstrap). Its catch-up cursor is empty, so the request asks for the whole history;
+     * each holder answers with the messages IT owns, which is why the request goes to every member
+     * and not just to the peer that bootstrapped us.
+     */
+    internal fun requestGroupCatchUp(groupId: String) {
+        scope.launch(ioDispatcher) {
+            val members = groupMemberDao ?: return@launch
+            members.activeMembers(groupId)
+                .map { it.deviceId }
+                .filter { it != localDeviceId }
+                .forEach { memberId -> sendSyncRequestFor(memberId, groupId) }
+        }
+    }
+
+    /**
+     * F7: hand [peerDeviceId] a fresh `State` for every group we both belong to.
+     *
+     * Membership frames have no delivery table: `Add`/`State` are handed to the transport once and
+     * dropped when the target has no live session, which leaves that target permanently unaware of
+     * a member who joined while it was offline - and, because the inbound message gate requires
+     * active membership, permanently unable to receive that member's messages either. Re-sending
+     * the roster on every session-up edge makes the group converge without a durable queue.
+     */
+    public fun reconcileGroupMembership(peerDeviceId: String) {
+        scope.launch(ioDispatcher) {
+            val members = groupMemberDao ?: return@launch
+            val groupIds = members.activeGroupIdsFor(localDeviceId)
+            for (groupId in groupIds) {
+                val peer = members.member(groupId, peerDeviceId) ?: continue
+                if (!peer.isActive) continue
+                val state = buildStateFrame(groupId) ?: continue
+                groupTransportSink?.send(peerDeviceId, state)
+            }
+        }
+    }
+
+    /**
+     * The F2 `State` frame for [groupId] as this device currently knows it. The frame's version and
+     * creator are only a fallback: the receiver keeps its own conversation provenance.
+     */
+    private suspend fun buildStateFrame(groupId: String): GroupWireFrame.State? {
+        val members = groupMemberDao ?: return null
+        val conversation = conversationDao.get(groupId) ?: return null
+        val roster = members.activeMembers(groupId)
+        if (roster.isEmpty()) return null
+        return GroupWireFrame.State(
+            groupId = groupId,
+            from = localDeviceId,
+            operationId = UUID.randomUUID().toString(),
+            membershipVersion = System.currentTimeMillis(),
+            name = conversation.title.ifBlank { groupId },
+            creatorId = conversation.groupCreatedBy ?: localDeviceId,
+            members = roster.map { member ->
+                GroupWireFrame.RosterEntry(
+                    deviceId = member.deviceId,
+                    displayName = member.displayName,
+                    role = member.role,
+                    joinedAt = member.joinedAt,
+                    membershipVersion = member.membershipVersion,
+                    operationId = member.operationId,
+                    isActive = member.isActive,
+                )
+            },
+        )
+    }
+
+    /** One F3 catch-up request for a single (group, peer) pair - the existing wire shape. */
+    private suspend fun sendSyncRequestFor(peerDeviceId: String, groupId: String) {
+        val newest = messageDao.historyBefore(groupId, Long.MAX_VALUE, "\uFFFF", limit = 1).firstOrNull()
+        val tier = syncTier()
+        val (maxPerSecond, maxTotal) = GroupPolicy.syncLimits(tier)
+        groupTransportSink?.send(
+            peerDeviceId,
+            GroupWireFrame.SyncRequest(
+                groupId = groupId,
+                syncId = UUID.randomUUID().toString(),
+                from = localDeviceId,
+                sinceSentAt = newest?.sentAt ?: 0L,
+                sinceMessageId = newest?.localId ?: "",
+                tier = tier,
+                maxPerSecond = maxPerSecond,
+                maxTotal = maxTotal,
+            ),
+        )
     }
 
     // ------------------------------------------------------------------ F3: FLASH_GSYNC

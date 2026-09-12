@@ -52,9 +52,13 @@ dependencies {
     implementation(project(":core:messaging"))
     implementation(project(":core:engine"))
     implementation(project(":core:calling"))
+    implementation(project(":core:ptt"))
     implementation(project(":ui:theme"))
     implementation(project(":ui:chat"))
     implementation(project(":ui:callui"))
+    // PTT session overlay uses the platform permission seam (D7c) instead of a hand-rolled
+    // ActivityResultLauncher, mirroring the composer voice-record flow.
+    implementation(project(":ui:platform-shims"))
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.compose.material3)

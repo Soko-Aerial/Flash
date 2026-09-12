@@ -646,6 +646,10 @@ A future feature genuinely needs a Room-backed trust store: reintroduce it as an
    the host already owns, runtime mic/camera grants, and a `microphone|camera` foreground
    service only an app's own manifest can declare - none of which `Flash.create` can supply.
    It also keeps ~30 MB of native WebRTC per ABI out of every app that never calls.
+   **SUPERSEDED IN PART by ADR-033 (2026-09-11):** `FlashEngine` now has `calls` and `:core:engine`
+   now depends on `:core:calling` — as `compileOnly`, so the "outside the facade" outcome this point
+   was protecting (the host owns the engine, permissions and foreground service; WebRTC stays out of
+   the umbrella's published metadata) is preserved without keeping calling unreachable.
 3. Media transport: WebRTC via `com.shepeliev:webrtc-kmp:0.125.11` (M125, MIT; wraps
    `io.github.webrtc-sdk:android:125.6422.06.1`, BSD-3). Audio + video tracks over a
    `PeerConnection` with **empty `iceServers`** - Flash is LAN/hotspot-only, so host
@@ -1162,3 +1166,176 @@ scope: single-press ping/alert to all paired+online peers, working backgrounded.
 ### Revisit when
 PTT voice streaming (needs mic path + jitter/buffer design, not a notification),
 chat-thread logging of pings, or group-scoped PTT targeting.
+
+## ADR-032 — PTT voice session: half-duplex PCM floor, all-paired scope
+
+### Date
+2026-09-10
+
+### Status
+Owner-locked design. Phases 0–3 landed 2026-09-10 (codec + floor machine, live audio
+engine, session foreground service, session UI + press-to-foreground). Remaining: the
+physical-device gate. Supersedes the ping-only interaction (ADR-031 ping kept as
+transmit fallback).
+
+### Decision
+1. **Floor model = strict half-duplex.** One floor holder transmits; all others receive.
+   Transmitter never plays, receivers never capture — so no AEC/echo/mixing. Busy floor
+   denies new press with toast (no preemption in v1). Simultaneous claims inside a 1.5 s
+   collision window resolve by the group-call total order: lexicographically lower device id
+   keeps the floor; established talks ignore late/replayed Start frames.
+2. **Audio = raw PCM bursts, WS-binary first.** The existing live WS session avoids
+   opening a second transport before the first audio packet. This is a provisional
+   implementation choice, not a performance conclusion: physical-device benchmarks must
+   measure first-packet latency and jitter for 640–960 B payloads before a dedicated TCP
+   data-channel optimization is considered. 16 kHz/16-bit/mono @20 ms on MEDIUM/HIGH,
+   8 kHz @60 ms on LOW. No Opus/AAC in v1 (OEM variance and added dependencies).
+   Distinct `PTT1` magic + first-branch routing before the transfer pipeline.
+3. **Scope = all paired+online** (snapshot `activeSessions ∩ trustedPeers`, group-invite
+   fan-out pattern). New `FLASH_PTSS` text family: `start/stop/leave/heartbeat/hb-ack`;
+   1 Hz heartbeat doubles as latency source (broadcaster echoes measured RTT; receivers
+   compute loss% from audio seq gaps). 5 s audio+heartbeat timeout auto-closes orphaned
+   receivers. 60 s max burst, warning at 45 s, 2nd press stops early; session ids retired.
+4. **Background press surfaces the app** (incoming-call-style) because API 34+ throws on
+   background `microphone` FGS creation and background `AudioRecord` yields silence.
+   Foreground-only transmit; backgrounded press without surfacing degrades to ADR-031 ping.
+5. **Service = new `PttSessionService`** (not `FlashCallService`; CallStyle semantics are
+   wrong). Broadcaster claims `microphone`; receivers claim `mediaPlayback` (manifest
+   addition required). Ongoing notification: chronometer seconds + `RTT · loss%` +
+   Stop/Leave actions. Receiver playout = `AudioTrack` STREAM, media path (loudspeaker
+   by default) + speaker/headset handling, 60–200 ms adaptive jitter buffer,
+   repeat-last concealment.
+6. **Animation on MEDIUM/HIGH only** (LOW = static receiving UI), driven by real
+   per-packet RMS, draw-phase reads per EXP-013, reduce-motion respected.
+7. **Mutual exclusion with calls and voice-note recording** (mic exclusivity + ADR-026):
+   refuse + toast + log both directions.
+
+### Alternatives considered
+- **Reuse `FlashGroupCallSession` WebRTC legs:** rejected — 30–45 s telephony timeouts,
+  SDP/ICE setup delay hostile to sub-second presses, busy auto-decline wrong for floor
+  semantics, single-active-call guard conflicts, CallStyle UX mismatch.
+- **Opus via MediaCodec:** rejected — OEM encoder variance (see HAL notes), new failure
+  modes; revisit if WAN/interop or bandwidth measurements demand it.
+- **Group-scoped sessions:** rejected — owner locked all-paired scope.
+- **Unlimited bursts:** rejected — stuck-transmitter risk; 60 s cap + 45 s warning.
+
+### Revisit when
+WAN/interop needs (Opus + WebRTC), preemption/floor-priority policy, late-join past
+`start`, or chat-thread session logging (schema decision).
+
+---
+
+## ADR-033 — Calling is a `compileOnly` seam on `FlashEngine`: facade routing without WebRTC in the umbrella
+
+### Date
+2026-09-11
+
+### Status
+Implemented. Supersedes the `:core:engine` half of ADR-025's "calling is not part of the facade"
+position (the module's own design — WebRTC media, WS-mesh signaling, host-owned permissions/FGS —
+is unchanged). The §4 code constraint ("nothing on an always-executed path names a `:core:calling`
+type") now has runtime evidence on a consumer classpath that genuinely lacks the module —
+`UmbrellaFacadeContractTest` in `:sample:consumer`, §7 below. It has **never** been exercised on a
+device: ART behaviour is still unverified, and the dispatcher itself (`Wiring.handleInboundText`) is
+not executed by that test (private class, requires an `android.content.Context`).
+
+### Context
+Calling worked only for a host that wires `CallCoordinator` by hand: `:core:engine` had no
+dependency on `:core:calling`, `FlashEngine` exposed no `calls`, and the app host therefore
+duplicated the facade's inbound routing (`CallFrameCodec.decode` + `onInboundText`) and its
+signaling-loss/restore bookkeeping. PTT had just been given the opposite treatment (ADR-032 seam:
+`ptt` + `attachPtt` + facade routing) as an `api` dependency, so the two optional subsystems read
+as inconsistent for no stated reason.
+
+The obstacle is the dependency itself: `:core:calling` re-exports `libs.webrtc.kmp` with `api`
+(≈30 MB per ABI), and the README promises `core-engine` does not drag WebRTC into an app that never
+places a call. Declaring it `api` would break that promise for every umbrella consumer; declaring
+nothing keeps calling unreachable.
+
+### Decision
+1. **`compileOnly(project(":core:calling"))` on `androidMain`** — not `api`, not `implementation`.
+   `FlashCalling` is therefore in the public seam (`calls`, `attachCalling`, `onInboundCallText`) and
+   on `:core:engine`'s compile classpath, while the published metadata declares neither
+   `core-calling` nor `webrtc-kmp`: a consumer adds `core-calling` itself when it places a call.
+   `androidMain` (not commonMain) because the module is a plain AGP Android library with no JVM
+   variant, exactly like `:core:ptt` (ERROR-049).
+2. **The seam is attach-only: `calls` / `attachCalling(engine)` / `detachCalling()`.** No
+   `callsFactory` and no lambda overload — a `CallCoordinator` is built from the host's `sendFrame`
+   transport, scope and audio policy, and the mic/camera grants, audio route and
+   `microphone|camera` foreground service are the host's. The facade cannot construct one, so it
+   does not pretend to. Attaching twice keeps the first engine (mirrors `attachPtt`); `close()`
+   detaches. Detaching is **not** hang-up: `FlashCalling` exposes no shutdown and the call's media
+   and FGS are the host's, so ending a live call stays with the host's `hangUp()`.
+3. **The facade routes and drives the recovery window; the host does not.**
+   `FlashEngine.onInboundCallText` / `onCallSignalingLost` / `onCallSignalingRestored` are the
+   entry points, and `Flash.create` calls them from the inbound-text dispatcher and from the
+   `activeSessions` collector it already runs. A recognized `FLASH_CALL` frame is consumed or
+   dropped — never handed to the PTT/group/chat/transfer parsers, because `onInboundText`
+   legitimately answers false for frames that still belong to calling (stale call id, `gquery` with
+   no live call).
+4. **Nothing on an always-executed path names a `:core:calling` type.** This is the constraint
+   `compileOnly` imposes on the *code*, not the build file: a consumer that never attaches calling
+   has no such class at runtime, so resolving one would be a `NoClassDefFoundError`.
+   Consequences: (a) call-frame recognition is a plain `FLASH_CALL` prefix test in `Flash.kt`
+   (`isCallFrameText`), not `CallFrameCodec.decode`; (b) the three routing methods are typed without
+   `FlashCalling` and answer "nothing attached" (`false` / no-op) instead of throwing; (c) those
+   methods reach the attached engine through the function-typed fields captured at attach time, not
+   by reading the `FlashCalling`-typed field, so `calls` / `attachCalling` / `detachCalling` are the
+   only members that mention the type — and the only ones that can throw when a host calls them
+   without the dependency.
+5. **`compileOnly` for production, `implementation` for the host test only.** The stub `FlashCalling`
+   that pins the routing semantics lives in `:core:engine`'s `androidHostTest`, which declares
+   `implementation(project(":core:calling"))`. Test classpaths are not published, so the artifact
+   shape is unchanged; the alternative was to leave the consumed/dropped contract untested or to
+   fake coverage by asserting the prefix helper alone.
+6. **The hand-wired app host keeps its own `onSignalingLost`/`onSignalingRestored` calls, and that is
+   a deliberate decision — do not "clean them up".** `:app` never calls `Flash.create`
+   (`grep -rn "FlashEngine" app/src` returns nothing): the app's wiring is `DiscoveryEngineHolder`
+   surfaced through the Hilt `AppEngine`, so the facade's session collector does not run in the app
+   at all, and only a wiring that owns a facade can be driven by it. The holder's two calls are
+   therefore the app's **only** driver of the ERROR-033 mid-call recovery window — those calls are
+   not redundant leftovers — and deleting them as "duplication" would silently regress roaming
+   mid-call: a Wi-Fi roam would kill the signaling session and the call would end instead of
+   renegotiating. The facade drives the same two edges for `Flash.create` consumers; the two drivers
+   exist because there are two wiring paths, not because one of them is a leftover.
+   The duplication that WAS removed is a different thing, and a future reader must be able to tell
+   them apart: the app's inbound path used to run `CallFrameCodec.decode(text) != null` as a
+   pre-check and then hand the same text to `onInboundText`, which decoded it a second time. That
+   pre-check is gone — recognition is the shared prefix test (`CALL_PREFIX` +
+   `FlashTextFraming.parseFields`) now. So: a `CallFrameCodec.decode` near the app's inbound path is
+   the deleted duplicate; an `onSignalingLost`/`onSignalingRestored` pair in
+   `DiscoveryEngineHolder`'s session observer is the kept driver.
+7. **`:sample:consumer` is the facade's contract test for this seam, and its calling-free classpath
+   IS the contract — not an oversight.** `UmbrellaFacadeContractTest` asserts the precondition
+   (`FlashCalling` not loadable and not present as a resource), that the classes an inbound frame
+   runs (`FlashKt`, `Wiring`, `Flash`) resolve every declared member type and reference no calling
+   type in their bytes, that exactly `FlashEngine`, `DefaultFlashEngine` and
+   `DefaultFlashEngine$attachCalling$1$1` do, and that the three routing entry points answer
+   `false`/no-op on a hand-assembled engine — `Error` included, not just `Exception`.
+   **Do not "fix" the sample by adding `core-calling` to it:** that would delete the only
+   calling-free consumer classpath in this repository, and every assertion above would stop proving
+   anything. The test fails loudly when the dependency appears (the precondition asserts absence) and
+   when a new engine class starts referencing the package (the byte scan asserts the exact referrer
+   set). The seam is guarded only for as long as that test runs, with `core-calling` still off that
+   classpath; the guard is a test, not a build rule.
+
+### Alternatives considered
+- **`api(project(":core:calling"))`** (the PTT treatment): rejected — puts ~30 MB/ABI of native
+  WebRTC on every `core-engine` consumer's runtime classpath, for a feature most apps never use.
+- **No facade integration at all** (status quo): rejected — call frames are a protocol family like
+  PTT, and leaving them unrouted means every host re-implements decode recognition, recovery-window
+  bookkeeping and ordering, which is exactly what the app host had duplicated.
+- **A `callsFactory` lambda like `pttFactory`**: rejected — the factory would need the host's
+  transport and media policy anyway, so it would either duplicate `CallCoordinator`'s constructor
+  or fabricate a call engine the host cannot make audible. Absence is the honest API.
+- **Typed dispatch (`facade?.calls?.onInboundText(...)`)**: rejected — it reads a `FlashCalling`
+  getter on the path every inbound text frame takes, which throws `NoClassDefFoundError` on a
+  consumer that never added `core-calling`.
+- **Reflection / optional-class probing instead of a typed seam**: rejected — the seam exists to be
+  compiled against; reflective dispatch would make the API untyped for everyone to serve one case.
+
+### Revisit when
+A desktop/JVM calling target exists (the type would have to move to commonMain with a JVM variant),
+or the published-metadata contract is reworked so `core-engine` may pull a WebRTC-bearing module —
+at which point `api` becomes a one-line change and the routing methods could be simplified to read
+`calls` directly.

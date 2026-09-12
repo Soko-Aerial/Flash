@@ -19,7 +19,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import com.transfer.flash.MainActivity
-import com.transfer.flash.core.calling.CallCoordinator
+import com.transfer.flash.core.calling.FlashCalling
 import com.transfer.flash.core.calling.model.FlashCallState
 import com.transfer.flash.core.calling.model.FlashCallUiState
 import com.transfer.flash.debug.DiscoveryEngineHolder
@@ -39,8 +39,8 @@ import kotlinx.coroutines.launch
  * Started on the RINGING (incoming) / DIALING (outgoing) edge by both the call overlay and
  * [com.transfer.flash.debug.DiscoveryEngineHolder]'s ring collector — the latter because an invite
  * that arrives with the app closed has no activity to start it. Repeated starts are harmless (see
- * the collector guard in [onStartCommand]). Stops itself when the call ends (the coordinator nulls
- * [CallCoordinator.activeCall] after the 2-second ENDED display).
+ * the collector guard in [onStartCommand]). Stops itself when the call ends (the engine nulls
+ * [FlashCalling.activeCall] after the 2-second ENDED display).
  *
  * ## Ringing
  * This service does **not** ring. Its channel is silent and [FlashCallRinger] — owned by the engine,
@@ -63,10 +63,10 @@ import kotlinx.coroutines.launch
 class FlashCallService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private var coordinatorSnapshot: CallCoordinator? = null
+    private var callingSnapshot: FlashCalling? = null
     private var startForegroundCalled = false
 
-    /** The single [CallCoordinator.activeCall] collector; see the guard in [onStartCommand]. */
+    /** The single [FlashCalling.activeCall] collector; see the guard in [onStartCommand]. */
     private var stateJob: Job? = null
 
     /** FGS type bitmask this service is currently running with; -1 == not promoted yet. */
@@ -81,16 +81,16 @@ class FlashCallService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // Observe the coordinator's activeCall state and post/update/remove notifications.
-        // The coordinator outlives this service, so we hold a reference to avoid a second
+        // Observe the engine's activeCall state and post/update/remove notifications.
+        // The engine outlives this service, so we hold a reference to avoid a second
         // lookup on every state tick.
-        val coordinator = coordinatorSnapshot ?: DiscoveryEngineHolder.currentCallCoordinator()
-        if (coordinator == null) {
-            Log.w(TAG, "No call coordinator available — stopping service")
+        val calling = callingSnapshot ?: DiscoveryEngineHolder.currentCalling()
+        if (calling == null) {
+            Log.w(TAG, "No call engine available — stopping service")
             stopSelf()
             return START_NOT_STICKY
         }
-        coordinatorSnapshot = coordinator
+        callingSnapshot = calling
 
         // One collector per service instance, not per start. Both MainActivity's LaunchedEffect and
         // the engine's ring collector call start() on every ringing-state emission, and a started
@@ -98,11 +98,11 @@ class FlashCallService : Service() {
         // added another collector, so a single state tick posted (and re-promoted) N times over.
         if (stateJob?.isActive != true) {
             stateJob = scope.launch {
-                coordinator.activeCall.collectLatest { state ->
+                calling.activeCall.collectLatest { state ->
                     if (state != null) {
                         postCallNotification(state)
                     } else {
-                        // Call fully cleared (coordinator nulled _activeCall).
+                        // Call fully cleared (the engine nulled activeCall).
                         stopForeground(STOP_FOREGROUND_REMOVE)
                         stopSelf()
                     }

@@ -2,19 +2,23 @@
 # JitPack's default JDK is too old for AGP 9.3.1 — pin JDK 17 (the AGP floor).
 # Android SDK + ANDROID_HOME are provided by JitPack; no signing / no publish repo needed.
 #
-# Publish every module the README lists in "Published modules" — all twelve. The set has to
+# Publish every module the README lists in "Published modules" — all fourteen. The set has to
 # be dependency-closed, not just "the ones a consumer names": core:engine api-depends on
-# every other core module, ui:callui api-depends on core:calling and uses ui:theme, and
-# ui:chat uses core:messaging + ui:theme. A module missing from ~/.m2 is a transitive
-# resolution failure for the consumer, not a missing feature.
+# every other core module (including core:ptt), ui:callui api-depends on core:calling and
+# uses ui:theme, ui:chat uses core:messaging + ui:theme AND publishes an
+# implementation(project(":ui:platform-shims")) dependency, so an unpublished shims module
+# leaves every ui-chat consumer with an unresolvable POM. A module missing from ~/.m2 is a
+# transitive resolution failure for the consumer, not a missing feature.
 #
-# 1.1.0 added the last four (core:calling, ui:theme, ui:chat, ui:callui). The ui:* modules
-# build against compileSdk 37 while core:* stay on 35, so they are the ones to look at first
-# if a JitPack build starts failing on an SDK platform it cannot install.
+# 1.1.0 added four (core:calling, ui:theme, ui:chat, ui:callui); the current dev tree adds
+# core:ptt (artifact `core-ptt`, api-depended on by core:engine) and ui:platform-shims
+# (artifact `ui-platform-shims`, a runtime dependency of ui-chat). The ui:* modules build
+# against compileSdk 37 while core:* stay on 35, so they are the ones to look at first if a
+# JitPack build starts failing on an SDK platform it cannot install.
 #
 # -x test -x lint keeps builds fast and avoids test-only deps (bouncycastle,
 # robolectric) failing the publish.
 jdk:
   - openjdk17
 install:
-  - ./gradlew :core:common:publishToMavenLocal :core:security:publishToMavenLocal :core:discovery:publishToMavenLocal :core:network:publishToMavenLocal :core:transfer:publishToMavenLocal :core:persistence:publishToMavenLocal :core:messaging:publishToMavenLocal :core:calling:publishToMavenLocal :core:engine:publishToMavenLocal :ui:theme:publishToMavenLocal :ui:chat:publishToMavenLocal :ui:callui:publishToMavenLocal -x test -x lint
+  - ./gradlew :core:common:publishToMavenLocal :core:security:publishToMavenLocal :core:discovery:publishToMavenLocal :core:network:publishToMavenLocal :core:transfer:publishToMavenLocal :core:persistence:publishToMavenLocal :core:messaging:publishToMavenLocal :core:calling:publishToMavenLocal :core:ptt:publishToMavenLocal :core:engine:publishToMavenLocal :ui:theme:publishToMavenLocal :ui:platform-shims:publishToMavenLocal :ui:chat:publishToMavenLocal :ui:callui:publishToMavenLocal -x test -x lint

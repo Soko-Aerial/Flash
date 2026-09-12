@@ -88,7 +88,7 @@ class AppEngine @Inject constructor(
     val pairing: com.transfer.flash.pairing.PairingCoordinator? get() = DiscoveryEngineHolder.currentPairing()
 
     /** WebRTC voice/video calling contract (C7 / ADR-025), or null before [start]. */
-    val calls: com.transfer.flash.core.calling.FlashCalling? get() = DiscoveryEngineHolder.currentCallCoordinator()
+    val calls: com.transfer.flash.core.calling.FlashCalling? get() = DiscoveryEngineHolder.currentCalling()
 
     // Local identity is read from the same persisted store the holder advertises with, so the
     // Nearby "this device" card matches what peers actually see.
