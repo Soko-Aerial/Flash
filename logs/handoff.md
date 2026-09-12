@@ -1,5 +1,57 @@
 # Current Handoff
 
+## 2026-09-12 - A3/A1 fixed, full local suite run; third stale-harness failure (ERROR-053) found + fixed
+
+### Current branch
+`dev`, this pass committed directly on top of `d1afe03` (which was in sync with `origin/dev`);
+the commit is the newest on `dev` — see `git log -1` for its hash. No unrelated working-tree file
+was touched; no revert or stash happened.
+
+### Current phase
+Local verification replaces CI (A2 billing lock). The two known `:core:common` classifier
+failures (A3) are fixed, the CI workflow now aggregates the KMP suites (A1), and the full local
+sweep surfaced and fixed a third instance of the same pattern in `:core:discovery` (ERROR-053).
+
+### Last change
+- `FlashPerformanceClassifierTest.kt` (A3): the two failing tests pinned the pre-`be57111` HIGH
+  voice profile. Now pin the intended values — HIGH 50 pps / ≥20 kbit/s header overhead; voice
+  tier monotonicity strict→`>=`/`<=` with a strict LOW < HIGH endpoint guard.
+- `.github/workflows/ci.yml` (A1): `allTests testDebugUnitTest assembleDebug` + `dev` push trigger.
+  Inert until the billing lock is cleared.
+- `NsdTransportLogicTest.kt` FakeBridge (ERROR-053): now overrides the primary
+  `(immediate: Boolean) -> Unit` `observeNetworkChanges` overload (production has called it since
+  `414c570`; the fake still overrode the old `() -> Unit` one, so registration silently answered
+  the interface default `false`). `fireNetworkChanged()` drives the debounced path.
+- Docs: `library-compliance-review.md` A3 → RESOLVED; `logs/errors.md` ERROR-053;
+  `logs/progress.md` entry.
+
+### Last verified build
+JBR 21 + AF_UNIX workaround, `--continue` full sweep `allTests testDebugUnitTest assembleDebug`:
+**the only failing task is `:core:persistence:allTests`, only the 12 known Windows-only DataStore
+atomic-rename failures** (documented NTFS environment set; pass on Linux/CI). Everything else
+green — from on-disk XMLs: common 85, discovery 108+35, security 90+10, network 136+45, transfer
+152+113, messaging 172+108, engine 14+8, persistence 40+15, theme 37+37, chat 264+264, shims
+10+34, app 49, sample:consumer 10, callui 5, calling 72, ptt 19 — 0 failures outside the known
+set. `app-debug.apk` built (67,634,031 bytes).
+
+### Known blockers
+A2 (GitHub Actions billing lock) — nothing on the repo side; owner action. The 12 DataStore
+Windows failures are environmental and tracked separately. Device gates (group F2/F3/F7, calling,
+PTT) remain owed as before.
+
+### Recommended next task
+Then either clear A2 and let CI prove the same green set on Linux, or continue the review's
+F-series. Note for any future suite failure: run the full sweep with `--continue` — Gradle
+otherwise stops at the first failing task and masks later-module failures (that is exactly how
+A3 hid ERROR-053).
+
+### Files most relevant to next task
+- `core/common/src/androidHostTest/.../perf/FlashPerformanceClassifierTest.kt` (A3 fix)
+- `.github/workflows/ci.yml` (A1 fix — verify on Linux once Actions is back)
+- `core/discovery/src/androidHostTest/.../nsd/NsdTransportLogicTest.kt` (ERROR-053 fix)
+- `docs/publishing/library-compliance-review.md` (addendum A1-A4 + A3 resolution)
+- `logs/errors.md` ERROR-053
+
 ## 2026-09-11 - Group late-join fixed in `:core:messaging` (ERROR-051); uncommitted
 
 ### Current branch

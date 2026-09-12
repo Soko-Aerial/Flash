@@ -1,5 +1,80 @@
 
 # Error Log
+
+## ERROR-053 - `FakeBridge` overrode the deprecated `observeNetworkChanges` overload, so production silently registered no connectivity observer in the discovery harness
+
+### Date
+2026-09-12
+
+### Area
+`:core:discovery` androidHostTest harness (`NsdTransportLogicTest.FakeBridge`)
+
+### Symptoms
+Running the correct KMP aggregate locally (after the A1 CI fix made that possible - see
+`docs/publishing/library-compliance-review.md` addendum) failed two `NsdTransportLogicTest` cases at
+their **first** assertion:
+
+```text
+NsdTransportLogicTest > connectivityChange_forcesBrowseRestart FAILED
+    java.lang.AssertionError: browsing must register a connectivity observer (NsdTransportLogicTest.kt:971)
+NsdTransportLogicTest > connectivityChange_reRegistersAdvertising_evenWhileItReportsHealthy FAILED
+    java.lang.AssertionError: advertising must register a connectivity observer (NsdTransportLogicTest.kt:1276)
+```
+
+`:core:common`'s two A3 failures had masked these: without `--continue`, Gradle stops at the first
+failing task, and `:core:common:allTests` sorts before `:core:discovery:allTests`. They were never
+flaky - deterministic, and reproducible at `3580666`.
+
+### Root cause
+`NsdManagerBridge` carries two `observeNetworkChanges` overloads. The `() -> Unit` one has an
+interface default that delegates to the `(immediate: Boolean) -> Unit` one, which is the **primary**
+and defaults to `false`. Production's `observeNetworkChangesIfNeeded()` (NsdTransport.kt:1459) calls
+the primary overload.
+
+Commit `414c570` ("instant Wi-Fi reconnect listener", 2026-09-09) added the `immediate` parameter to
+the primary overload and updated `RealNsdManagerBridge` - but `NsdTransportLogicTest`'s `FakeBridge`
+was last touched at `530db70`, before that change. It still overrode only the `() -> Unit` overload,
+so:
+
+1. Production's call hit the **interface default** of the primary overload, returning `false` -
+   `observingNetwork = false`, so every subsequent `observeNetworkChangesIfNeeded` retry also ran
+   (harmless but noisy).
+2. The fake never stored a listener, never set `networkObserved`, and `fireNetworkChanged()` would
+   have thrown `IllegalStateException("not observing")` had the tests reached it.
+3. Both connectivity tests failed at their first assertion: `bridge.networkObserved` was false.
+
+The net effect in the harness: every connectivity-driven re-arm behavior (browse restart, advertise
+re-registration) looked unregistered. Production was never affected - `RealNsdManagerBridge` overrides
+the primary overload correctly (NsdTransport.kt:460).
+
+This is the third instance of the A1 pattern (change lands, test-harness contract silently drifts,
+no suite catches it because the suite was skipped): A3's `FlashPerformanceClassifierTest` and this.
+
+### Failed attempts
+None - the first fix worked. (Recorded for the pattern: overriding "whichever overload existed when
+the fake was written" is the trap; the primary overload is the one to override.)
+
+### Working fix
+`FakeBridge` now overrides the **primary** `(immediate: Boolean) -> Unit` overload; the stored
+listener field and `fireNetworkChanged()` follow the new type. `fireNetworkChanged()` invokes with
+`immediate = false` (the debounced path), which is what both tests exercise - the `immediate` flag
+exists for the `onAvailable` edge and can be driven directly by a future test that wants it.
+
+### Verification
+- `:core:discovery:testAndroidHostTest` - **40 tests / 0 skipped / 0 failures** (was 40/2 failed),
+  XML on disk confirmed.
+- Full combined suite `allTests testDebugUnitTest assembleDebug --continue` - see progress log entry
+  for totals.
+
+### Related files
+- `core/discovery/src/androidHostTest/kotlin/com/transfer/flash/core/discovery/nsd/NsdTransportLogicTest.kt`
+- `core/discovery/src/androidMain/kotlin/com/transfer/flash/core/discovery/nsd/NsdTransport.kt` (bridge
+  overloads at :171/:177, production call at :1459, real bridge at :460)
+- `docs/publishing/library-compliance-review.md` (A1 context)
+
+### Status
+RESOLVED
+
 ## ERROR-052 - `FakeMessageDao.insert` was non-atomic, so the group harness invented a duplicate inbound-media callback
 
 ### Date

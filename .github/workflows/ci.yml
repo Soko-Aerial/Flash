@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, dev ]
   pull_request:
 
 jobs:
@@ -21,7 +21,12 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
 
       - name: Unit tests + assemble debug
-        run: ./gradlew testDebugUnitTest assembleDebug --no-daemon --stacktrace
+        # allTests exists only in the KMP modules (:core:common ... :ui:theme); testDebugUnitTest
+        # exists only in the plain AGP modules (:app, :core:calling, :core:ptt, :ui:callui,
+        # :sample:*). An unqualified task name runs where it exists and silently skips where it
+        # does not, so one command alone covers half the repo — both are needed. Verified via
+        # --dry-run: see docs/publishing/library-compliance-review.md addendum A1.
+        run: ./gradlew allTests testDebugUnitTest assembleDebug --no-daemon --stacktrace
 
       - name: Upload test results on failure
         if: failure()

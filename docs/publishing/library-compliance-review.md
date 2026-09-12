@@ -248,6 +248,22 @@ what A1 makes possible.
 **Fix:** update the classifier's expectations (or the classifier) and re-run `:core:common:allTests`;
 then A1 so it cannot happen silently again.
 
+**Resolved 2026-09-12** (same day, next session): the expectations were the stale side. `be57111`
+retuned `FlashVoiceProfile.HIGH` (ptime 10→20 ms, DTX off→on) deliberately — it updated
+`:core:calling`'s `CallSdpTest` for exactly this change but missed these two `:core:common` pins
+(the file's only other commits are the original `268487f`; `git log be57111..HEAD -- core/common`
+is empty). The production values are the intended ones, so the two tests were updated to pin them:
+
+- `ptime_choice_is_what_moves_header_overhead`: HIGH 50 pps / ≥20 kbit/s header (was 100 / ≥40).
+  The header-overhead *mechanism* the test exists for is unchanged — ptime is still the knob.
+- `tiers_are_monotone_in_cost`: voice monotonicity relaxed from strict to `>=`/`<=` (MEDIUM and
+  HIGH now share 20 ms by design), with a new endpoint assertion that LOW stays strictly cheaper
+  than HIGH so the relaxation cannot mask a full collapse to one ptime.
+
+`:core:common:testAndroidHostTest` — 23 tests / 0 failures after the change. A1's workflow fix
+(`allTests testDebugUnitTest assembleDebug`, `dev` trigger) is applied in the same pass; A2 (billing
+lock) remains the only open item in this addendum.
+
 ### A4 - PR bookkeeping note
 
 Because the branches were merged locally (A2 made the GitHub-side path unavailable), GitHub marked

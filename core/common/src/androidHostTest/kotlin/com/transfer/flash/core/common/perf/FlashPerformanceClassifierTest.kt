@@ -200,22 +200,29 @@ class FlashPerformanceClassifierTest {
         assertTrue(medium.video.maxBitrateKbps < high.video.maxBitrateKbps)
         assertTrue(low.video.captureFps <= medium.video.captureFps)
         assertTrue(medium.video.captureFps <= high.video.captureFps)
-        // Cheaper tier = FEWER packets, so a LONGER ptime and a LOWER packet rate.
-        assertTrue(low.voice.ptimeMs > medium.voice.ptimeMs)
-        assertTrue(medium.voice.ptimeMs > high.voice.ptimeMs)
-        assertTrue(low.voice.packetsPerSecond < medium.voice.packetsPerSecond)
-        assertTrue(medium.voice.packetsPerSecond < high.voice.packetsPerSecond)
+        // Cheaper tier = never MORE packets: a longer-or-equal ptime and a lower-or-equal
+        // packet rate. Only LOW is strictly cheaper than HIGH today: the be57111 packetization
+        // pass moved HIGH onto MEDIUM's 20 ms (the WebRTC global standard), so 20 ms equality
+        // between those two tiers is intended, not drift.
+        assertTrue(low.voice.ptimeMs >= medium.voice.ptimeMs)
+        assertTrue(medium.voice.ptimeMs >= high.voice.ptimeMs)
+        assertTrue(low.voice.packetsPerSecond <= medium.voice.packetsPerSecond)
+        assertTrue(medium.voice.packetsPerSecond <= high.voice.packetsPerSecond)
+        // And the endpoints stay an honest distance apart: LOW is a genuine cut, not a rounding.
+        assertTrue(low.voice.packetsPerSecond < high.voice.packetsPerSecond)
     }
 
     /**
-     * The mechanism behind "even with only voice at 25 kbps it still lags": at HIGH the per-packet
-     * headers alone outweigh the speech they carry, and LOW cuts that by roughly six.
+     * The mechanism behind "even with only voice at 25 kbps it still lags": ptime is the knob that
+     * moves header cost. HIGH was retuned from 10 ms to 20 ms (the WebRTC global standard) in the
+     * be57111 packetization pass, halving it to 50 pps — ~20 kbit/s of header against 32 kbit/s
+     * of speech. LOW (60 ms) cuts the rate and the header bill by roughly three.
      */
     @Test
     fun ptime_choice_is_what_moves_header_overhead() {
-        assertEquals(100, FlashPerformanceMode.HIGH.voice.packetsPerSecond)
+        assertEquals(50, FlashPerformanceMode.HIGH.voice.packetsPerSecond)
         assertEquals(16, FlashPerformanceMode.LOW.voice.packetsPerSecond)
-        assertTrue(FlashPerformanceMode.HIGH.voice.headerOverheadKbps >= 40)
+        assertTrue(FlashPerformanceMode.HIGH.voice.headerOverheadKbps >= 20)
         assertTrue(FlashPerformanceMode.LOW.voice.headerOverheadKbps <= 8)
     }
 

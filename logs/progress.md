@@ -1,5 +1,59 @@
 # Progress Log
 
+## 2026-09-12 - A3 classifier tests fixed; A1 workflow fix applied; full local suite exposed + fixed a third stale-harness failure in `:core:discovery`
+
+### Worked on
+CI is unusable (A2 billing lock), so the owner asked for local verification plus the fixes. This
+pass: fixed the two known `:core:common` classifier failures (A3), applied the CI workflow fix (A1:
+`allTests` + `dev` trigger) so it is correct the day Actions can run, then ran the full combined
+command locally with `--continue` — which exposed and fixed one more previously-invisible failure
+(ERROR-053) in `:core:discovery`.
+
+### Changed
+- **A3 fix** (`core/common/.../perf/FlashPerformanceClassifierTest.kt`): both failing tests were
+  pinning the pre-`be57111` HIGH voice profile (10 ms / 100 pps / DTX off). `be57111` retuned HIGH to
+  20 ms deliberately and updated `:core:calling`'s `CallSdpTest` for exactly this change, but missed
+  these two `:core:common` pins (verified: `git log be57111..HEAD -- core/common` is empty).
+  - `ptime_choice_is_what_moves_header_overhead`: now pins HIGH 50 pps / ≥20 kbit/s header overhead
+    (was 100 / ≥40). The header-overhead mechanism the test exists for is unchanged.
+  - `tiers_are_monotone_in_cost`: voice monotonicity relaxed strict→`>=`/`<=` (MEDIUM and HIGH share
+    20 ms by design since `be57111`), plus a new strict LOW < HIGH endpoint assertion so the
+    relaxation cannot mask a collapse to a single ptime.
+- **A1 fix** (`.github/workflows/ci.yml`): `allTests testDebugUnitTest assembleDebug` (one aggregate
+  covers the 11 KMP modules, the other the 6 plain-AGP ones — dry-run-verified), `dev` added to push
+  triggers, comment records why both words are needed. Inert until A2 is cleared.
+- **ERROR-053 fix** (`core/discovery/.../NsdTransportLogicTest.kt` FakeBridge): the fake overrode the
+  `() -> Unit` `observeNetworkChanges` overload while production (since `414c570`) calls the
+  `(immediate: Boolean) -> Unit` primary, whose interface default returns `false`. The fake now
+  overrides the primary; `fireNetworkChanged()` drives the debounced path (`immediate = false`).
+  Production was never affected — `RealNsdManagerBridge` was updated with `414c570`. Full diagnosis
+  in `logs/errors.md` ERROR-053.
+- **Docs**: `docs/publishing/library-compliance-review.md` A3 marked RESOLVED with the fix details;
+  `logs/errors.md` ERROR-053 added; this entry.
+
+### Verification
+JBR 21 + AF_UNIX workaround, `--console=plain --max-workers=2`:
+- `:core:common:testAndroidHostTest` — 23 tests / 0 failures (was 23/2 failed). XML confirmed.
+- `:core:discovery:testAndroidHostTest` — 40 tests / 0 failures (was 40/2 failed). XML confirmed.
+- Full combined suite `allTests testDebugUnitTest assembleDebug --continue` — **the only failing
+  task was `:core:persistence:allTests`, and only the 12 known Windows-only DataStore
+  atomic-rename failures** (`FlashSettingsDataStoreTest` 11 + `DiscoveryModeSettingTest` 1; the
+  documented NTFS environment set — see handoff 2026-09-08 and F6.1; they pass on Linux). Totals
+  from the on-disk XMLs, every other module 0 failures: KMP host+jvm — common 85, discovery
+  108+35, security 90+10, network 136+45, transfer 152+113, messaging 172+108, engine 14+8,
+  persistence 40+15 (12 fails, all the known set), theme 37+37, chat 264+264, shims 10+34;
+  AGP — app 49, sample:consumer 10, ui:callui 5, core:calling 72, core:ptt 19. `assembleDebug`
+  produced `app-debug.apk` (67,634,031 bytes).
+
+### Notes for the next AI
+- Without `--continue`, Gradle stops at the first failing task and masks later-module failures —
+  that is exactly how `:core:common`'s A3 failures hid `:core:discovery`'s ERROR-053. Always run the
+  full sweep with `--continue` after fixing a suite failure.
+- The interface-overload drift pattern (fake overrides the old overload, production calls the new
+  primary, interface default silently answers `false`) is worth grepping for whenever an interface
+  gains an overload: `override fun observeNetworkChanges(onChanged: () -> Unit)` in a fake is the
+  tell.
+
 ## 2026-09-12 - Landed PRs #3/#4/#5 locally (CI is dark); discovered CI never ran the KMP test suites
 
 ### Worked on

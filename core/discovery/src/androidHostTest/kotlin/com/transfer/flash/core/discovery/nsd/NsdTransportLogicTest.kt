@@ -117,7 +117,7 @@ class NsdTransportLogicTest {
         @Volatile var browseStartCount = 0
 
         @Volatile var networkObserved = false
-        private var networkListener: (() -> Unit)? = null
+        private var networkListener: ((immediate: Boolean) -> Unit)? = null
 
         /**
          * What [linkFingerprint] returns next. A test moves this to stand for a hotspot coming up
@@ -183,7 +183,13 @@ class NsdTransportLogicTest {
             monitorsCancelled = true
         }
 
-        override fun observeNetworkChanges(onChanged: () -> Unit): Boolean {
+        /**
+         * The primary overload — the one production's `observeNetworkChangesIfNeeded` actually
+         * calls. The `() -> Unit` overload has an interface default that delegates here, so
+         * overriding only that one (as this fake did until 414c570 added the immediate flag)
+         * leaves registration silently answering the interface default `false`.
+         */
+        override fun observeNetworkChanges(onChanged: (immediate: Boolean) -> Unit): Boolean {
             networkListener = onChanged
             networkObserved = true
             return true
@@ -199,7 +205,8 @@ class NsdTransportLogicTest {
             return fingerprint
         }
 
-        fun fireNetworkChanged() = requireNotNull(networkListener) { "not observing" }.invoke()
+        /** Fires the debounced change path — the `immediate` flag is for `onAvailable` edges. */
+        fun fireNetworkChanged() = requireNotNull(networkListener) { "not observing" }.invoke(false)
 
         fun fireBrowseStartFailed(errorCode: Int) = browseEvents.onStartFailed(errorCode)
         fun fireServiceFound(name: String) = browseEvents.onServiceFound(name)
