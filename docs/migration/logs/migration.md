@@ -10468,3 +10468,101 @@ Phase 16 — the headless desktop↔Android interop gate. It must cover what thi
 only loopback: a real Android device talking to a desktop JVM over one LAN, TLS on with the
 Android keystore at one end, and the desktop's absence of instant-rejoin (no
 `ConnectivityManager`) observed against a Wi-Fi interruption.
+
+---
+
+## Phase 16 — GATE: headless desktop↔Android interop — harness built, gate CLOSED pending hardware
+
+- **Date:** 2026-09-12
+- **Agent/model:** Claude (z-ai/glm-5.3-free), Claude Code
+- **Commit:** (this commit)
+- **Decisions relied on:** D5 = C (so G7 is in scope once 09B-2 lands, but see below — this pass
+  runs the harness with `store = null` because 09B-2 is still blocked on its three sub-answers);
+  D6 = A (JmDNS); D10 = A (Okio seams, which is why the harness's receive sinks are
+  `OkioRandomAccessSinkHandle` — common code, no per-target port needed)
+
+### Change
+The only code this phase is allowed to add — the harnesses — with zero production edits:
+
+1. **Desktop harness** (`core/engine/src/jvmTest/.../interop/`), never shipped:
+   - `DesktopInteropHarness.kt` — interactive `main()` with `advertise` / `discover` / `send` /
+     `receive` argv verbs, printing peer discoveries, transfer progress, and the SHA-256 of the
+     source/received file at both ends so the operator compares the two lines.
+   - `HarnessTestSupport.kt` (`DesktopEndpointFixture`) — the desktop twin of `androidMain`
+     `Flash.kt`'s Wiring **transfer half**: `JmdnsTransport` + `CompositeDiscovery`
+     (DiscoveryRouteBinder-bound), `JvmWsFlashNetwork`, `RealFlashTransferRepository` (commonMain,
+     `store = null`), and the full inbound port of `handleInboundBinary` — per-transfer
+     `OkioRandomAccessSinkHandle` sinks under a canonical root with the production
+     path-containment discipline, the `#5` accept gate (`requireAcceptance` + deferred sink +
+     RESUME-to-start), the already-completed short-circuit, the resumable-retry auto-accept,
+     ACK/COMPLETE relay, and `FLASH_XFER` control-frame routing.
+   - `DesktopIdentityStore.kt` — file-backed `FlashIdentityStore`/`FlashTrustStore` for the
+     desktop endpoint (identity survives restart; trust is revocable), standing in for the
+     `SharedPreferences`-backed Android stores.
+   - `DesktopInteropHarnessSelfTest.kt` — the software-verifiable half of the gate: two desktop
+     endpoints composed exactly as the harness composes them, one dialing the other over real
+     loopback sockets, pushing a 512 KB file to `Completed`, and asserting **SHA-256 equality**
+     at both ends.
+2. **Android half**: NOT rebuilt. The existing `:app` (Flash app + its Dev Console/stress paths)
+   already drives the same public engine via `Flash.create`, which is the phase's own first
+   choice ("reuse the existing dev console ... if it already exposes send/receive against the
+   public API"). No new instrumented test was added in this pass — see Known issues.
+
+### Verification
+What software can prove, proven:
+- `:core:engine:jvmTest` — the self-test composes **the entire 13B+14+15 desktop stack** (JmDNS
+  discovery engine, `JvmWsFlashNetwork` transport, Okio file seams, common transfer repository,
+  per-transfer random-access receive sinks) and moves a file across the WS wire between two
+  desktop endpoints with matching SHA-256. This is the first time any composition has exercised
+  those phases together.
+- `:app:assembleDebug` green in the same session (Android not regressed).
+
+What this does NOT prove, and the reason the gate stays CLOSED:
+- **No Android endpoint was available** (`adb devices` is empty; no emulator either), so G1–G7
+  were not run. The phase's Do-NOT list forbids counting the desktop↔desktop self-test as a gate
+  scenario, and R9 forbids claiming otherwise.
+- **G7 note:** D5 = C puts resume in scope long-term, but 09B-2 (the encrypted desktop driver) is
+  still blocked on its three sub-answers, so the harness runs `store = null` — desktop
+  resume-across-restart is untestable in this pass and is recorded as BLOCKED ON 09B-2 rather
+  than DEFERRED (D5=A), because D5 is C and the blocker is 09B-2, not the decision.
+
+### G1–G7 status
+| # | Scenario | Status |
+|---|---|---|
+| G1 | Discovery both directions | NOT RUN — no Android endpoint. Harness verbs (`advertise`/`discover`) ready. |
+| G2 | Pairing / SAS match | NOT RUN — no Android endpoint. Desktop trust store + identity are wired. |
+| G3 | Small file both directions | NOT RUN vs Android. Desktop↔desktop proven by the self-test (harness verification, not a gate scenario). |
+| G4 | Large file (≥200 MB) | NOT RUN. `send`/`receive` verbs support arbitrary sizes. |
+| G5 | Progress + cancel | NOT RUN. Harness prints progress ticks; cancel rides `cancelTransfer`. |
+| G6 | Encryption provably on | NOT RUN. Harness leaves the default (encryption on); desktop TLS pair is compile-verified only until run against Android's keystore. |
+| G7 | Resume across restart | BLOCKED ON 09B-2 (D5 = C chosen; driver sub-answers pending) — harness runs `store = null`. |
+
+**Gate verdict: CLOSED** — open scenarios remain, so per the phase charter **no UI phase
+(17–22) may merge** on the strength of this pass. (The UI track is in fact already merged —
+phases 17–20 shipped while this gate waited on 13B–15; that sequencing deviation is recorded
+below, not invented here.)
+
+### Deviations
+1. The README says the gate "blocks the whole UI track (17–22) from merging", but phases 17–20
+   landed before 13B–15 unblocked this gate. That is a pre-existing sequencing deviation in the
+   migration, recorded in the README's own ordering notes (17–20 were "deliberately
+   parallel-capable" and ran on the disjoint UI modules); this pass does not merge any UI phase.
+2. The Android half of the harness was not re-implemented in this pass: the phase permits
+   reuse, and the existing app exposes the public engine; a dedicated instrumented harness can be
+   added when a device is attached if the Dev Console path proves insufficient.
+
+### Known issues
+1. **The gate is hardware-gated, and no hardware is attached.** The next session with a physical
+   Android device on the same LAN as this desktop should run: `G1 advertise`/`discover` both
+   directions, `G3 send`/`receive` with SHA-256 comparison both directions, then G4/G5/G6 per the
+   phase file. Until then the UI track's merge-blocker stands formally CLOSED.
+2. `requireReceiverAcceptance = true` is used in the fixture (matching production), so a
+   non-compliant sender would park forever; the harness auto-accepts immediately, which exercises
+   the accept path but not a human-declined offer.
+3. Desktop TLS remains compile-verified only (see Phase 15-5's entry).
+
+### Next step
+Attach a physical Android device on the same Wi-Fi as this desktop; run the G1→G6 scenarios with
+`DesktopInteropHarness` on the desktop end and the Flash app (Dev Console transfer path) on the
+phone; record each direction's SHA-256 lines in this log and flip the verdict to OPEN/CLOSED
+per the observations. 09B-2's three sub-answers gate G7 independently.

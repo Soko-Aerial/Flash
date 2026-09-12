@@ -1,0 +1,279 @@
+@file:OptIn(com.transfer.flash.core.common.annotation.FlashInternalApi::class)
+
+package com.transfer.flash.core.engine.interop
+
+import com.transfer.flash.core.common.model.FlashDeviceId
+import com.transfer.flash.core.common.result.FlashResult
+import com.transfer.flash.core.discovery.core.CompositeDiscovery
+import com.transfer.flash.core.discovery.core.FlashAdvertisedIdentity
+import com.transfer.flash.core.discovery.core.StandardEndpointDirectory
+import com.transfer.flash.core.discovery.jmdns.JmdnsTransport
+import com.transfer.flash.core.network.bridge.DiscoveryRouteBinder
+import com.transfer.flash.core.network.ws.JvmWsFlashNetwork
+import com.transfer.flash.core.network.ws.WsSession
+import com.transfer.flash.core.transfer.FileSourceOpener
+import com.transfer.flash.core.transfer.RealFlashTransferRepository
+import com.transfer.flash.core.transfer.chunked.ChunkFrame
+import com.transfer.flash.core.transfer.chunked.ChunkSink
+import com.transfer.flash.core.transfer.chunked.ReceiveEvent
+import com.transfer.flash.core.transfer.chunked.ReceivePipeline
+import com.transfer.flash.core.transfer.chunked.RejectReason
+import com.transfer.flash.core.transfer.multistream.StreamChannel
+import com.transfer.flash.core.transfer.model.FlashTransferState
+import com.transfer.flash.core.transfer.policy.RandomAccessChunkSink
+import com.transfer.flash.core.transfer.policy.RandomAccessSinkHandle
+import java.io.File
+import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import okio.FileSystem
+import okio.Path.Companion.toPath
+
+/**
+ * Phase 16 harness support: the desktop twin of `androidMain` `Wiring`'s **transfer half** —
+ * the composition `DesktopInteropHarness.main` drives interactively and this test support
+ * instantiates programmatically.
+ *
+ * Faithfully ports what a transfer gate needs from `Flash.kt`'s wiring:
+ * - per-transfer random-access receive sinks under a canonical root (with the same
+ *   path-containment discipline the production composition applies),
+ * - the `#5` accept gate (`requireAcceptance` + deferred sink + RESUME-to-start),
+ * - inbound binary routing: sender-side ACK/COMPLETE first, then the receive pipeline's events,
+ *   including the already-completed short-circuit and the retry auto-accept,
+ * - outbound control frames (`FLASH_XFER`) on the session's text lane.
+ *
+ * Deliberately NOT ported: chat/PTT/calling (not a transfer gate) and the Room-backed
+ * `TransferStore` (09B-2 pending; `store = null` disables resume-across-restart only).
+ */
+internal class DesktopEndpointFixture(
+    name: String,
+    private val receivedRoot: File,
+) {
+    val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    val stateDir = File(System.getProperty("java.io.tmpdir"), "flash-interop-$name").apply { mkdirs() }
+    val identity = DesktopIdentityStore(stateDir).getIdentity()
+    val network = JvmWsFlashNetwork(
+        localDeviceId = identity.deviceId.value,
+        localFriendlyName = identity.friendlyName,
+    )
+    val discovery = CompositeDiscovery(
+        transports = listOf(
+            JmdnsTransport(
+                directory = StandardEndpointDirectory(),
+                sweep = { _ -> emptyList() },
+            ),
+        ),
+    )
+    val transfer = RealFlashTransferRepository(
+        streamChannelFactory = { channelId, peerDeviceId -> sessionChannel(channelId, peerDeviceId) },
+        fileSourceOpener = FileSourceOpener { uri -> FileSystem.SYSTEM.source(uri.toPath()) },
+        store = null,
+        repositoryScope = scope,
+        requireReceiverAcceptance = true,
+    )
+
+    private val openHandles = ConcurrentHashMap<String, RandomAccessSinkHandle>()
+    private val incomingMeta = ConcurrentHashMap<String, ChunkFrame.FileStart>()
+    private val receivedPaths = ConcurrentHashMap<String, String>()
+
+    /** The inbound pipeline with the same #5 gate + per-transfer sinks as production wiring. */
+    val receivePipeline = ReceivePipeline(
+        sink = { _, _ -> error("legacy shared sink must not be invoked with sinkFactory set") },
+        sinkFactory = { start ->
+            val safeName = sanitize(start.fileName.ifBlank { "received.bin" })
+            val safeId = sanitize(start.transferId)
+            val canonicalRoot = receivedRoot.canonicalFile
+            val dest = File(File(canonicalRoot, safeId), safeName).canonicalFile
+            // Same containment discipline as the production composition (Sentinel).
+            require(dest.path.startsWith(canonicalRoot.path + File.separator)) {
+                "path traversal escape: ${start.fileName}"
+            }
+            dest.parentFile?.mkdirs()
+            receivedPaths[start.transferId] = dest.absolutePath
+            val handle = com.transfer.flash.core.transfer.policy.OkioRandomAccessSinkHandle(
+                dest.absolutePath.toPath(),
+                start.totalBytes,
+            )
+            openHandles[start.transferId] = handle
+            RandomAccessChunkSink(handle, start.chunkSize)
+        },
+        emitSessionStarted = true,
+        requireAcceptance = true,
+    )
+
+    private fun sanitize(component: String): String =
+        component.replace(Regex("[^A-Za-z0-9._-]"), "_").take(120)
+
+    /** One stream channel per channel id, riding the session with the peer. */
+    private suspend fun sessionChannel(channelId: Int, peerDeviceId: String?): StreamChannel? {
+        val session = peerDeviceId
+            ?.let { network.activeSessions.value[FlashDeviceId(it)] }
+            ?: network.activeSessions.value.values.firstOrNull()
+            ?: return null
+        return object : StreamChannel {
+            override val id: Int = channelId
+            override suspend fun sendFrame(frameBytes: ByteArray): Boolean =
+                runCatching { session.send(frameBytes) is FlashResult.Success }.getOrDefault(false)
+        }
+    }
+
+    private fun sendXfer(peerId: String, action: String, transferId: String) {
+        val session = network.activeSessions.value[FlashDeviceId(peerId)] as? WsSession ?: return
+        session.connection.sendText(
+            com.transfer.flash.core.common.protocol.FlashTextFraming.encodeFields(
+                "FLASH_XFER",
+                listOf("action" to action, "transferId" to transferId),
+            ),
+        )
+    }
+
+    /** Inbound binary routing — the desktop port of `Flash.kt`'s `handleInboundBinary`. */
+    private fun handleInboundBinary(peerDeviceId: String, data: ByteArray, reply: (ByteArray) -> Boolean) {
+        if (transfer.onInboundFrame(data)) return // sender-side ACK/COMPLETE consumed it
+        for (event in receivePipeline.onFrame(data)) {
+            when (event) {
+                is ReceiveEvent.SessionStarted -> {
+                    val frame = event.frame
+                    incomingMeta[frame.transferId] = frame
+                    val existing = transfer.activeTransfers.value.firstOrNull { it.id.value == frame.transferId }
+                    val existingPath = receivedPaths[frame.transferId] ?: existing?.localPath
+                    val alreadyCompleted =
+                        (existing != null && existing.state == FlashTransferState.Completed) ||
+                            (existingPath != null && File(existingPath).let { it.isFile && it.length() == frame.totalBytes })
+                    if (alreadyCompleted) {
+                        reply(ChunkFrame.serialize(ChunkFrame.Complete(frame.transferId, frame.fileId, verified = true)))
+                        peerDeviceId?.let { pid ->
+                            sendXfer(pid, RealFlashTransferRepository.ACTION_RESUME, frame.transferId)
+                        }
+                        continue
+                    }
+                    if (transfer.isResumableInboundRetry(frame.transferId)) {
+                        receivePipeline.acceptSession(frame.transferId)
+                        transfer.onIncomingStarted(
+                            frame.transferId, frame.fileId, frame.fileName, frame.totalBytes,
+                            "peer", peerDeviceId, receivedPaths[frame.transferId],
+                        )
+                        peerDeviceId?.let { pid ->
+                            sendXfer(pid, RealFlashTransferRepository.ACTION_RESUME, frame.transferId)
+                        }
+                        continue
+                    }
+                    transfer.onIncomingOffered(frame.transferId, frame.fileId, frame.fileName, frame.totalBytes, "peer", peerDeviceId)
+                    // Harness policy: auto-accept (the gate's G3 does not test consent UI).
+                    acceptOffer(frame.transferId, peerDeviceId)
+                }
+                is ReceiveEvent.AckBatchReady -> {
+                    transfer.onIncomingChunkConfirmed(event.frame.transferId, event.frame.indexes)
+                    reply(ChunkFrame.serialize(event.frame))
+                }
+                is ReceiveEvent.Completed -> {
+                    val transferId = event.frame.transferId
+                    openHandles.remove(transferId)?.let { it.flush(); it.close() }
+                    val path = receivedPaths.remove(transferId)
+                    incomingMeta.remove(transferId)
+                    transfer.onIncomingCompleted(transferId, event.frame.verified, path)
+                    reply(ChunkFrame.serialize(event.frame))
+                }
+                is ReceiveEvent.Rejected -> {
+                    if (event.reason != RejectReason.AWAITING_ACCEPTANCE) {
+                        println("[harness] receiver rejected: ${event.reason} tid=${event.transferId}")
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * The accept path, faithful to production's ordering: resolve the deferred sink FIRST, surface
+     * Transferring + the started transfer, THEN send the sender a RESUME so its parked dispatcher
+     * starts streaming. (Missing the RESUME is the exact bug that would deadlock a compliant
+     * sender — `requireReceiverAcceptance` makes it park until one arrives.)
+     */
+    private fun acceptOffer(transferId: String, peerDeviceId: String?) {
+        val meta = incomingMeta[transferId] ?: return
+        if (receivePipeline.acceptSession(transferId)) {
+            transfer.onIncomingStarted(
+                transferId, meta.fileId, meta.fileName, meta.totalBytes,
+                "peer", peerDeviceId, receivedPaths[transferId],
+            )
+            peerDeviceId?.let { pid ->
+                sendXfer(pid, RealFlashTransferRepository.ACTION_RESUME, transferId)
+            }
+        }
+    }
+
+    private var sessionJobs = ConcurrentHashMap<WsSession, Job>()
+
+    fun start(): Int {
+        val port = runBlocking { (network.start(0) as FlashResult.Success).value }
+        val identityFrame = FlashAdvertisedIdentity(
+            deviceId = identity.deviceId,
+            friendlyName = identity.friendlyName,
+            deviceModel = "desktop",
+            protocolVersion = 2,
+        )
+        runBlocking { discovery.startAll(port, identityFrame) }
+        DiscoveryRouteBinder.observe(scope, discovery.discoveredEndpoints, network)
+        scope.launch {
+            while (isActive) {
+                discovery.discoveredEndpoints.value.forEach { endpoint ->
+                    val id = endpoint.device.id
+                    if (network.activeSessions.value[id] == null && !network.isReconnectInFlight(id.value)) {
+                        runCatching { network.connectManual(endpoint.hostAddress, endpoint.port) }
+                    }
+                }
+                delay(5_000)
+            }
+        }
+        scope.launch {
+            network.activeSessions.collect { sessions ->
+                sessionJobs.keys.filterNot { it in sessions.values }.forEach { stale ->
+                    sessionJobs.remove(stale)
+                }
+                sessions.values.forEach { session ->
+                    if (session is WsSession && sessionJobs.containsKey(session).not()) {
+                        sessionJobs[session] = scope.launch {
+                            launch {
+                                session.incomingBinary.collect { data ->
+                                    handleInboundBinary(
+                                        session.peerDeviceId.value, data,
+                                    ) { bytes -> session.connection.sendBinaryConsuming(bytes) }
+                                }
+                            }
+                            launch {
+                                session.incomingText.collect { text ->
+                                    // XFER control frames — route into the repository.
+                                    val fields = com.transfer.flash.core.common.protocol.FlashTextFraming
+                                        .parseFields(text, "FLASH_XFER")
+                                    if (fields != null) {
+                                        val action = fields["action"]
+                                        val tid = fields["transferId"]
+                                        if (action != null && tid != null) {
+                                            transfer.onRemoteTransferControl(tid, action)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return port
+    }
+
+    fun stop() {
+        runBlocking {
+            discovery.stopAll()
+            network.stop()
+        }
+        scope.cancel()
+    }
+}
