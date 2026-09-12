@@ -41,6 +41,9 @@ include(":ui:theme")
 include(":ui:platform-shims")
 include(":ui:chat")
 include(":ui:callui")
+// Phase 21: the Compose Desktop application shell. A pure-JVM consumer of the KMP library
+// modules — never a dependency of anything. `:app` stays the Android application.
+include(":desktop")
 
 // Test-harness consumers that reproduce a downstream compile classpath (Phase 2 Task 2.3).
 // NOT published — they have no maven-publish plugin. See docs/publishing/PHASE-02-dependency-scope.md.

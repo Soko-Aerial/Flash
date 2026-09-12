@@ -10566,3 +10566,66 @@ Attach a physical Android device on the same Wi-Fi as this desktop; run the G1�
 `DesktopInteropHarness` on the desktop end and the Flash app (Dev Console transfer path) on the
 phone; record each direction's SHA-256 lines in this log and flip the verdict to OPEN/CLOSED
 per the observations. 09B-2's three sub-answers gate G7 independently.
+
+---
+
+## 2026-09-12 — PHASE-21: Desktop app shell (`:desktop`) — BUILT, gate stays CLOSED
+
+- **Date:** 2026-09-12
+- **Agent/model:** Claude Code (glm-5.3-free), autonomous per the session /goal
+- **Commit:** (this commit)
+- **Decisions relied on:** D1=B (strict commonMain; no jvmAndAndroidMain), D5=C (desktop persistence pending 09B-2 — `store = null`, chats bind `EmptyFlashChatRepository`), D8=A (desktop ships the existing chat UI adaptively), R5 (plain `jvm()`), R10 (no version bumps)
+
+### Preconditions status (honest, per R9)
+- Precondition 2 (PHASE-20 committed, ui:chat compiles both targets): **MET** — `:ui:chat:compileKotlinJvm` and `:ui:chat:compileAndroidMain` both green in this session.
+- Precondition 1 (PHASE-16 interop gate **passed**): **NOT MET** — the gate is CLOSED pending hardware (G1–G6 need a physical Android endpoint; `adb devices` empty at `fa42446`). This phase is therefore **built and compile-verified only**, per the C3 disposition authored in the phase file's correction block BEFORE any code was written: the phase's own Do-NOT says "desktop compilation is the gate… Do NOT attempt to run the desktop app", and the interop verdict is untouched. Nothing here claims a gate scenario passed. **`:desktop` must not ship on a release line until a human runs G1–G6.**
+
+### Change
+Created the `:desktop` Compose Desktop application module (pure-JVM KMP `jvm()` consumer; never a dependency of anything; `:app` untouched). Executed per the REVISED SUB-STEP PLAN written into the phase file's correction block before coding:
+
+- **21-1** `desktop/build.gradle.kts` (KMP `jvm()` + `org.jetbrains.compose` + `kotlin-compose` via existing catalog aliases; `compose.desktop.currentOs`; deps: the seven jvm()-capable core modules + `:ui:theme`/`:ui:platform-shims`/`:ui:chat`; deliberately NO `:ui:callui`/`:core:calling`/`:core:ptt` — no JVM variant, ERROR-049) + `include(":desktop")` in settings.gradle.kts. Empty-module compile gate passed first.
+- **21-2** `DesktopEngine.kt` — the desktop composition root. NOT a `FlashEngine` (`DefaultFlashEngine`/`FlashSettingsDataStore` are androidMain-only); a desktop-local facade exposing the members the shell reads. Assembles the **Phase 16-proven harness composition** re-homed from jvmTest into shipped code: `JmdnsTransport`→`CompositeDiscovery` (same `_flash-transfer._tcp`/TxtCodec wire format), `JvmWsFlashNetwork` (FLASH_WS_HELLO v2), `RealFlashTransferRepository` + desktop `FileSourceOpener` (Okio) + `StreamChannel` over the WS binary lane, `ReceivePipeline` with the **#5 accept gate** (`requireAcceptance=true`, deferred sinkFactory, accept→onIncomingStarted→RESUME ordering) and the path-containment Sentinel, auto-dial sweep, session collectors (binary→pipeline, text→XFER control), file-backed `DesktopIdentityStore`/`DesktopTrustStore` under `~/.flash/` (shipped re-homing of the Phase 16 jvmTest stores). Chats bind **`EmptyFlashChatRepository`** (honest empty, ERROR-034; `RealFlashChatRepository` is Room-backed androidMain — desktop chat history is impossible until 09B-2). `store = null` (D5=C pending; G7 already logged BLOCKED ON 09B-2).
+- **21-3** `DesktopMain.kt` (`application { Window(1200×800) { FlashTheme { DesktopShell(engine) } } }`) + `DesktopShell.kt` — Option B per the phase file's own Step 6 recommendation: thin shell over the four shared `:ui:chat` screens with `FlashBottomNav` + `rememberFlashNavigationState`, mirroring FlashShell's data-shaping (unconditional fallback flows, `derivedStateOf` mapping, UI-046 per-tab scroll state, ERROR-034 honest loading/error gating). Inline domain→UI mappers replace the `:app`-scoped `TransfersUiMapper`/`toUiTransport`. Local `throttleLatestDesktop` copy (same rationale as `:app`'s UiPacing third-copy note). No pairing coordinator / calling / PTT / notifications (Android-hosted surfaces).
+- **21-4** `DesktopHelpers.kt` — 6 helper stubs per Step 5: `java.awt.Desktop` open/share, `URLConnection.guessContentTypeFromName`, `file://` URI resolution, `Downloads/Flash/` gallery copy, plus received-storage scan/clear for the Settings tab.
+- **21-5** Verification (below).
+- **21-6** This entry + README rows.
+
+### Files changed
+- **Add:** `desktop/build.gradle.kts`
+- **Add:** `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopMain.kt`
+- **Add:** `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopEngine.kt`
+- **Add:** `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopIdentityStores.kt`
+- **Add:** `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopShell.kt`
+- **Add:** `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopHelpers.kt`
+- **Modify:** `settings.gradle.kts` — `include(":desktop")`
+- **Modify:** `docs/migration/PHASE-21-desktop-app-shell.md` — correction block (C1–C4 + revised sub-step plan) authored BEFORE execution
+- **Modify:** `docs/migration/logs/migration.md`, `docs/migration/README.md` — this entry + row updates
+
+### Verification
+```
+./gradlew :desktop:compileKotlinJvm :ui:chat:compileKotlinJvm :ui:chat:compileAndroidMain :app:assembleDebug --continue
+```
+Result: **BUILD SUCCESSFUL** (all four tasks; JBR 21, Gradle 9.5.0).
+
+Additional checks specific to this phase:
+- R6 scans on `desktop/src`: `^import android\.` → **0**; `^import androidx\.` outside `androidx.compose.*` → **0**; `java.*` confined to jvmMain (legal per R6.1) — **PASS**
+- 5 Kotlin source files in `desktop/src/jvmMain/` — PASS
+- `:desktop` has no tests (phase Do-NOT: no test source sets) — N/A
+- `:core:engine:jvmTest` + `:ui:chat:jvmTest` re-run after the module include to prove no classpath regression — **PASS**: engine 9 tests, chat 264 tests, **0 failures** (`--rerun-tasks`, result XMLs summed)
+
+### Deviations from the phase file
+- **R5-forbidden task/source-set names voided** (correction C1): `jvm("desktop")`/`desktopMain`/`compileKotlinDesktop` → plain `jvm()`/`jvmMain`/`compileKotlinJvm`; `:ui:chat:compileDebugKotlin` (phase's Step 8) does not exist for a KMP-converted module — the R3.1 name is `compileAndroidMain`.
+- **Step 4's symbol census corrected** (C2): `JmmsFlashDiscovery`, `DesktopFileSourceOpener`, `DesktopDestinationPolicy`, `createDataChannelChannel`, and the `DesktopTrustStore` recipe's signature do not exist; the composition uses the real Phase 13B/14/15/16 symbols (`JmdnsTransport`, `FileSourceOpener` lambda, harness `StreamChannel` pattern, contract-correct `FlashTrustStore` impl). `RealFlashChatRepository`/`DefaultFlashEngine`/`FlashSettingsDataStore` are androidMain-only — `DesktopEngine` is not a `FlashEngine`, and chats bind `EmptyFlashChatRepository` until 09B-2.
+- `FlashSettingsModel` is constructed with defaults + real identity/version (no persisted settings tier on desktop until 09B-3; Settings callbacks are no-ops) — a smaller surface than the app shell's, recorded rather than faked.
+- `nativeDistributions` block retained (declarative only; not in any gate) — the phase file's own note allows the icon lines to be omitted; packaging itself stays Phase 24 polish.
+
+### Known issues
+- **The interop gate is still CLOSED.** This module compiles and its composition is the harness-proven one, but desktop↔Android transfer remains unproven until a human runs G1–G6 with a phone on the same LAN.
+- No pairing on desktop: `PairingCoordinator` lives in `:app` (bridges core.security ↔ ui.chat); Nearby's Pair button only dials. A desktop pairing coordinator is follow-up work after the gate opens.
+- No conversation screen reachability: `EmptyFlashChatRepository.openConversation` is a no-op, so Chats renders its honest empty state and the Conversation branch is a defensive chat-list render.
+- No persisted settings on desktop (09B-3); theme/haptics/etc. callbacks are inert.
+- `DesktopEngine` exposes no `FlashSettingsDataStore`-equivalent, so `FlashSettingsScreen`'s storage rows reflect nothing (defaults).
+- Receive-side auto-accept policy: the engine auto-accepts inbound offers (harness parity) — the Transfers tab still shows rows as they resolve, but desktop has no consent UI yet.
+
+### Next step
+The plan's next executable unit is PHASE-22 (adaptive desktop screens), which depends on this phase. The **hard blocker on merging any UI phase (21–22) to a release line remains the Phase 16 hardware run**; a human must attach an Android device, run G1–G6 via `DesktopInteropHarness` + the Flash app, and record the verdict in this log.

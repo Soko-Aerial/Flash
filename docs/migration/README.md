@@ -47,7 +47,7 @@ Status is authoritative; each phase file's own preconditions section holds the d
 | 18 | [PHASE-18-ui-theme-kmp.md](PHASE-18-ui-theme-kmp.md) | **DONE** (`96e8799`) — read its STATUS box before reusing any of it; 14 of its steps were wrong | medium |
 | 19 | [PHASE-19-ui-platform-shims.md](PHASE-19-ui-platform-shims.md) | **DONE** (`94a60a4`) — read its STATUS box before reusing any of it; 12 of its statements were wrong, D7b was overridden on evidence (no FileKit), and there are 7 shims not 8 | medium |
 | 20 | [PHASE-20-ui-chat-kmp.md](PHASE-20-ui-chat-kmp.md) | **DONE** (`c5abd5d`) — read its STATUS box before reusing any of it; Steps 1 and 2 must not be executed (Step 2's "CMP requires `jvm("desktop")`" is false and would break R5 across the UI track), Step 5's build file is unbuildable, and the module ended up **100% common** | high |
-| 21 | [PHASE-21-desktop-app-shell.md](PHASE-21-desktop-app-shell.md) | **WAITING ON 16** — no longer blocked on a decision. 20 is satisfied. **Its 2026-08-31 log entry claims a `:desktop` module that has never existed** — see the CORRECTION appended to it in `logs/migration.md`. | medium |
+| 21 | [PHASE-21-desktop-app-shell.md](PHASE-21-desktop-app-shell.md) | **BUILT 2026-09-12 (compile-verified); NOT mergeable until the Phase 16 hardware gate opens.** The `:desktop` Compose Desktop module now exists: `DesktopEngine` (the desktop composition root — NOT a `FlashEngine`; assembles the Phase 16-proven harness stack: JmDNS discovery + `JvmWsFlashNetwork` + `RealFlashTransferRepository` + the #5 accept gate + file-backed identity/trust under `~/.flash/`, with chats binding `EmptyFlashChatRepository` until 09B-2), `DesktopShell` (Option B thin shell over the four shared `:ui:chat` screens), `DesktopMain`, `DesktopHelpers`, `DesktopIdentityStores`. Executed per the correction block (C1–C4) authored into the phase file **before** coding, which voids its R5-forbidden `jvm("desktop")`/`compileKotlinDesktop` references and its stale symbol census (`JmmsFlashDiscovery`/`DesktopFileSourceOpener`/`DesktopDestinationPolicy`/`createDataChannelChannel` don't exist; `compileDebugKotlin` is not a KMP task — `compileAndroidMain` is). Gates: `:desktop:compileKotlinJvm` + `:ui:chat:compileKotlinJvm` + `:ui:chat:compileAndroidMain` + `:app:assembleDebug` all green; R6 scans clean (0 `android.*`, 0 non-Compose `androidx.*`); engine 9 + chat 264 jvmTest re-run 0-fail. **The Phase 16 interop verdict stays CLOSED — no phone was attached — so this module compiles but must not ship until a human runs G1–G6.** Its old 2026-08-31 "log entry" was fabricated (no such commit existed); the real entry is dated 2026-09-12. | medium |
 | 22 | [PHASE-22-adaptive-desktop-screens.md](PHASE-22-adaptive-desktop-screens.md) | **WAITING ON 21.** D8=A was answered 2026-08-31, so no decision gates it. **Its 2026-08-31 log entry is also false** — same CORRECTION. | medium |
 | 23 | [PHASE-23-interop-matrix.md](PHASE-23-interop-matrix.md) | **WAITING ON 22** | **gate** |
 | 24 | [PHASE-24-publishing.md](PHASE-24-publishing.md) | **WAITING ON 23.** Also owes `sample/consumer-desktop` per D9=A. | medium |
@@ -160,18 +160,17 @@ decision-blocked at all.** D10 = Option A and D11 = Option B were answered, and 
 **The critical path is open again: ~~13B-2~~ (done, `732e7b5`) → ~~13B-3a~~ (done, `5e4e9a5`) →
 ~~13B-3b~~ (done, `a3375e3`) → ~~13B-3c~~ (done, `d51206b`) → ~~13B-3d~~ (done, `293f12b`) →
 ~~13B-3e~~ (done, `fa95d74`) → ~~15~~ (done, 2026-09-12 — 15-1 `ff1d36a`, 15-2 `4f22c1e`, 15-3..15-6
-in the phase's closing commit) → **16 (gate)** → 21 → 22 → 23 (gate) → 24.**
-**Phase 13B and Phase 15 are complete; Phase 16 — the headless desktop↔Android interop gate — is the
-next executable unit.** It needs hardware (one Android device + one desktop on one LAN), which no
-Gradle task can provide: read `PHASE-16-desktop-headless-interop.md` before starting. What a build
-*can* prove has been proven: two `JvmWsFlashNetwork` instances complete the full
-HELLO→session→frame path over real sockets on the desktop tier
-(`JvmWsFlashNetworkLoopbackTest`), and every jvmMain duplicate compiles against the same common
-contracts. What remains unproven is cross-platform wire interop, desktop TLS with a real keystore,
-and the desktop's no-`ConnectivityManager` recovery behaviour under an actual network interruption.
-`:core:network` is also the largest remaining conversion — 14 `commonMain` / 21 `androidMain` / **0**
-`jvmMain` files, with all 21 `androidMain` files importing `java.*`, `javax.*`, `android.*` or
-`androidx.*`, and 21 `androidHostTest` suites against **0** in `jvmTest`.
+in the phase's closing commit) → **16 (gate)** → ~~21~~ (built 2026-09-12, compile-verified; **merge
+stays blocked on the 16 hardware run**) → 22 → 23 (gate) → 24.**
+**Phase 16 — the headless desktop↔Android interop gate — remains the release-line blocker.** It
+needs hardware (one Android device + one desktop on one LAN), which no Gradle task can provide:
+read `PHASE-16-desktop-headless-interop.md` before starting. What a build *can* prove has been
+proven: two `JvmWsFlashNetwork` instances complete the full HELLO→session→frame path over real
+sockets on the desktop tier (`JvmWsFlashNetworkLoopbackTest`), every jvmMain duplicate compiles
+against the same common contracts, and the Phase 21 desktop shell compiles over the whole
+assembled stack. What remains unproven is cross-platform wire interop, desktop TLS with a real
+keystore, and the desktop's no-`ConnectivityManager` recovery behaviour under an actual network
+interruption.
 
 What is still outstanding is narrower than a decision:
 

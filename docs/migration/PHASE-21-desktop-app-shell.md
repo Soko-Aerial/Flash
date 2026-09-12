@@ -6,6 +6,76 @@
 
 ---
 
+> ## ⚠️ CORRECTION BLOCK (2026-09-12, written BEFORE execution — §13B-3 pattern)
+>
+> This phase file was authored 2026-08-31 against a *projected* post-15/16/20 state, not the
+> shipped one. Four corrections are load-bearing; the sub-step plan below supersedes Steps 1–8's
+> details wherever they conflict. The originals are left in place for the record (R9).
+>
+> ### C1 — R5-forbidden constructs voided
+>
+> Lines 43–46 (precondition 2), 897–915 (Step 8 + verification gate) name `jvm("desktop")`,
+> `desktopMain`, `compileKotlinDesktop` for `:ui:chat`. **All void.** CONVENTIONS.md R5 forbids
+> `jvm("desktop")` outright, and Phase 20 shipped `:ui:chat` on **plain `jvm()`** (see
+> `ui/chat/build.gradle.kts:72–81`, which already corrects this phase file in advance). The real
+> task names are `:ui:chat:compileKotlinJvm` (desktop) and `:ui:chat:compileDebugKotlin`
+> (Android). The `:desktop` module's own build file already used `jvm()`/`jvmMain` correctly —
+> only the *references to `:ui:chat`* were wrong. Same correction Phase 15's file carries.
+>
+> ### C2 — Step 4's symbol census is stale: five of eight references don't exist
+>
+> Verified against `dev` at `fa42446` (2026-09-12, `grep`-checked, not assumed):
+>
+> | Step 4 references | Reality |
+> |---|---|
+> | `JmmsFlashDiscovery()` | **No such class.** The Phase 14 transport is `JmdnsTransport(directory, sweep, …)` in `:core:discovery` **jvmMain** (`core/discovery/src/jvmMain/.../jmdns/JmdnsTransport.kt:127`), wrapped in `CompositeDiscovery` exactly as the Phase 16 harness wires it. |
+> | `JvmWsFlashNetwork(…)` | **Exists** (`:core:network` jvmMain, `: FlashNetwork`), ctor `(localDeviceId, localFriendlyName, …)` — matches. |
+> | `DesktopFileSourceOpener()` | **No such class.** Phase 13B-2 moved the seam to `FileSourceOpener` (a `fun interface` in `:core:transfer` **commonMain**) returning `okio.Source`. Desktop wires it as a lambda: `FileSourceOpener { uri -> FileSystem.SYSTEM.source(uri.toPath()) }` — exactly what the Phase 16 harness does. |
+> | `DesktopDestinationPolicy()` | **No such class** — `RealFlashTransferRepository` has no `destinationPolicy` parameter at all. Destination policy lives in the **host's** `ReceivePipeline.sinkFactory` (per-transfer `OkioRandomAccessSinkHandle` under a canonical root, with the path-containment guard), as Phase 16's `DesktopEndpointFixture` demonstrates. |
+> | `createDataChannelChannel(...)` | **No such function.** The desktop stream channel is the harness's `sessionChannel`: a small `StreamChannel` object riding a live `WsSession`'s binary lane. |
+> | `DesktopTrustStore(identityDir)` recipe | **Wrong signature.** `FlashTrustStore` (commonMain) is `isTrusted/trustPeer/revokeTrust/getTrustedPeers` over `FlashDeviceId` — the Phase 16 `DesktopTrustStore` in `core/engine/src/jvmTest/.../interop/DesktopIdentityStore.kt` already implements it faithfully (file-backed, never shipped). This phase re-homes that pattern. |
+> | `RealFlashChatRepository` ctor per Step 4 | **Doesn't exist on desktop at all.** It is `:core:messaging` **androidMain** (Room DAOs, `java.util.*`); the jvm() target cannot see it. commonMain offers `FlashChatRepository`, `EmptyFlashChatRepository` (the app's own pre-boot binding, ERROR-034), `SampleFlashChatRepository` (previews only — KDoc forbids runtime use). **Desktop binds `EmptyFlashChatRepository`** until 09B-2 lands Room-3 KMP persistence. |
+> | `DefaultFlashEngine` + `FlashSettingsDataStore` | **Both androidMain-only** (`core/engine`/`core/persistence`). Neither is on any jvm() classpath. The desktop "engine" is therefore **not a `FlashEngine`** — it is a `DesktopEngine` facade class local to `:desktop` exposing exactly what the shell reads (the same surface `AppEngine` exposes, minus Android-only members). |
+>
+> ### C3 — Precondition 1 vs the goal directive: BUILD-ONLY disposition
+>
+> Precondition 1 demands "PHASE-16 … has **passed**". The gate is **CLOSED pending hardware**
+> (README row 16; `adb devices` empty at `fa42446`; G1–G6 need a physical Android endpoint).
+> The gate's Do-NOT ("no UI phase (17–22) may merge while closed") and this phase's own Do-NOT
+> ("Do NOT attempt to run the desktop app — desktop **compilation** is the gate") together
+> define the only honest disposition: this phase may be **built and compile-verified on a
+> branch-local basis**, with the interop verdict remaining CLOSED and the commit recorded as
+> **not mergeable to a release line** until a human runs G1–G6. Building ahead of the gate does
+> not weaken it: nothing here claims a gate scenario passed, and `:app` (the Android release
+> surface) is untouched. The migration log entry must state this explicitly.
+>
+> ### C4 — `:desktop` consumes only jvm()-capable modules; `:ui:callui` and `:core:calling`/`:core:ptt` are NOT on the list
+>
+> `:core:calling`, `:core:ptt`, `:ui:callui`, `:app` are plain AGP modules with no JVM variant
+> (ERROR-049 precedent in `core/engine/build.gradle.kts:147`). Step 3's dependency list omitted
+> `:ui:callui` — correctly, but for the wrong reason (it said "PHASE-19 adds it"; Phase 19 shipped
+> `:ui:platform-shims` instead). `:desktop` depends on: `core:common`, `core:security`,
+> `core:discovery`, `core:network`, `core:transfer`, `core:messaging`, `core:engine` (all
+> jvm()-capable KMP), `:ui:theme`, `:ui:platform-shims`, `:ui:chat`, plus `compose.desktop.currentOs`.
+> `:core:engine`'s jvm target carries only `PlatformLock.jvm.kt` — it is included for future
+> completion and pulls the six api() core modules transitively.
+>
+> ### REVISED SUB-STEP PLAN (executed in this order)
+>
+> | # | Sub-step | Content |
+> |---|---|---|
+> | 21-1 | Module skeleton | `desktop/build.gradle.kts` (KMP `jvm()` + `org.jetbrains.compose` plugin via existing alias, no `nativeDistributions` — packaging is Phase 24 polish), `include(":desktop")` in settings.gradle.kts, empty `jvmMain` tree. Gate: `:desktop:compileKotlinJvm` on an empty module. |
+> | 21-2 | Desktop engine facade | `DesktopEngine.kt` — no-Hilt class exposing `ready/startError/chats/transfers/network/discovery/localDeviceId/localFriendlyName/settings-less model` surface. Assembles the **proven** Phase 16 harness composition (JmDNS discovery + `JvmWsFlashNetwork` + `RealFlashTransferRepository` + `ReceivePipeline` with the #5 accept gate and RESUME ordering + file-backed identity/trust stores re-homed from jvmTest) as a long-lived desktop composition. Chats bind `EmptyFlashChatRepository` (C2). |
+> | 21-3 | Shell + entry point | `DesktopShell.kt` (Option B: thin shell over the four shared `:ui:chat` tab screens, `FlashBottomNav` + `rememberFlashNavigationState`, inline domain→UI mappers per the phase file's own Option B spec) and `DesktopMain.kt` (`application { Window { FlashTheme { DesktopShell(engine) } } }`). |
+> | 21-4 | Helpers | `DesktopHelpers.kt` — 6 helper stubs per Step 5 (`java.awt.Desktop`, `URLConnection.guessContentTypeFromName`, `Downloads/Flash/` copy). |
+> | 21-5 | Verification | R3 gate: `:desktop:compileKotlinJvm`, `:ui:chat:compileKotlinJvm`, `:ui:chat:compileDebugKotlin`, `:app:assembleDebug`, plus R6 grep scans on `desktop/src` (no `android.*`/`androidx.*` outside `androidx.compose.*` CMP namespace). |
+> | 21-6 | Log + README | Append the honest entry (gate CLOSED, build-only) and update README rows 21. |
+>
+> Steps 1–8 below remain the *reference* for file layout, the six helpers, the Option A/B analysis
+> (Option B confirmed), and the Do-NOT list — corrected by C1–C4 above.
+
+---
+
 ## What this phase is for
 
 Create a **`desktop` application module** that produces a runnable desktop JVM window. This is the
