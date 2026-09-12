@@ -10237,3 +10237,234 @@ written, so neither should start without an instruction:
 |---|---|---|
 | **Kotlin/Native target** | Recommended by R6.1 since Phase 07; no decision blocks adding a target. Converts R6 from a four-times-defective grep into a compiler error. | Must first fix the eight allowlisted `.format(` calls **with rounding tests** — Java `Formatter` is HALF_UP over the decimal, `kotlin.math.round` is half-away-from-zero over the binary double, and they disagree at inputs like 0.35. |
 | **`:core:calling` + `:ui:callui`** | The one genuine plan gap, found above. | Needs the human scope call first: WebRTC on desktop is not a silent assumption. |
+
+---
+
+## Phase 15-1 — six pure-logic suites to `commonTest` (retroactive log entry)
+
+- **Date:** 2026-09-12 (work landed 2026-09-06, `ff1d36a`; entry written late — it is the entry
+  the phase file's 2026-09-06 correction block cites but could not find, because it was never
+  written. A phase with no entry is treated as not done, so this closes the gap.)
+- **Agent/model:** Claude (z-ai/glm-5.3-free), Claude Code
+- **Commit:** `ff1d36a`
+- **Decisions relied on:** D1 = Option B (strict `commonMain`; no `jvmAndAndroidMain`)
+
+### Change
+Moved six pure-logic test suites from `androidHostTest` to `commonTest` so the desktop `jvm()`
+target executes them: `FlashNetworkModelTest`, `ConnectionHealthAggregatorTest`,
+`HeartbeatTrackerTest`, `ReconnectPolicyTest`, `SessionHardeningPolicyTest`,
+`LanProbeMessagesTest`. No production file changed.
+
+### Verification
+`:core:network:testAndroidHostTest` + `:core:network:jvmTest` green after the move; the suites
+report one XML per target. Confirmed live again during Phase 15-2 on 2026-09-12 (androidHostTest
+136, jvmTest 45 at that point).
+
+### Deviations
+Late entry, written under Phase 15-6 by the session executing 15-2..15-5 rather than left missing.
+
+### Known issues
+None from this sub-step.
+
+### Next step
+15-2 (pure helpers to `commonMain`).
+
+---
+
+## Phase 15-2 — pure WS helpers to `commonMain` (`WsKeepaliveTiming`, `Ipv4Routing`)
+
+- **Date:** 2026-09-12
+- **Agent/model:** Claude (z-ai/glm-5.3-free), Claude Code
+- **Commit:** `4f22c1e`
+- **Decisions relied on:** D1 = Option B
+
+### Change
+- `ws/WsKeepaliveTiming.kt` and `util/Ipv4Routing.kt` — zero platform imports — `git mv`'d
+  androidMain → commonMain.
+- `DEFAULT_PING_INTERVAL_MS` / `DEFAULT_LIVENESS_TIMEOUT_MS` hoisted from `WsConnection`
+  (androidMain) into `WsKeepalive`'s companion (commonMain) with identical values (10 000 /
+  25 000 — wire-behaviour numbers, R8-adjacent); `WsConnection` keeps `public const` aliases
+  referencing them so every FQN and value is unchanged.
+- `util/Ipv4RoutingTest.kt` (9 tests) moved `src/test/java` → `commonTest`. **Discovery:** the
+  pre-KMP `src/test/java` directory was orphaned — `:core:network:testAndroid` resolves only to
+  `testAndroidHostTest`, which reads `src/androidHostTest`, so the suite had silently not run
+  since the dev-merge `530db70`. Resurrected rather than dropped because `Ipv4Routing` moved in
+  this sub-step and must not arrive untested.
+- `PHASE-15-desktop-transport.md`: the **revised D1=B sub-step plan (15-2..15-6)** written before
+  execution, replacing the void `jvmAndAndroidMain` Steps 2-12. It also records that original
+  Steps 3-6 (WsLog extraction) were already satisfied by Phase 03's `FlashLog` seam, and the
+  re-measured census (23 androidMain files, not 21 — `fb992c4`/`1921015` added `Ipv4Routing.kt`,
+  `WsKeepaliveTiming.kt` and ~700 lines across the WS stack).
+
+### Verification
+`compileKotlinJvm` + `compileAndroidMain` green. `testAndroidHostTest` **145/0** (was 136, +9),
+`jvmTest` **54/0** (was 45, +9) — the resurrected suite runs on BOTH targets (the 13B-3e
+pure-relocation shape). R6 scans (platform imports / stdlib traps / `@Volatile` import form)
+clean on the module's commonMain.
+
+### Deviations
+None.
+
+### Known issues
+None.
+
+### Next step
+15-3: duplicate the JDK-bound plumbing into `jvmMain`.
+
+---
+
+## Phase 15-3 — JDK-bound WS plumbing duplicated into `jvmMain`
+
+- **Date:** 2026-09-12
+- **Agent/model:** Claude (z-ai/glm-5.3-free), Claude Code
+- **Commit:** (this commit)
+- **Decisions relied on:** D1 = Option B — the load-bearing one. `jvmAndAndroidMain` is
+  forbidden, so "lift the plumbing to a shared tier" translates to: **the androidMain originals
+  stay untouched and jvmMain gets per-target duplicates** (R5 amendment: the duplication is
+  intentional). Duplication is also the only strategy compatible with the phase's Do-NOT-modify
+  list — `WebSocketCodec`, `SecureSocketUpgrader`, `FlashTlsContextFactory`,
+  `TofuX509TrustManager` cannot gain `expect`/`actual` keywords without being "modified".
+
+### Change
+Byte-identical copies (verified mechanically: each copy equals its original modulo a 3-line
+DESKTOP-DUPLICATE provenance note in the class KDoc) of **nine** androidMain files into jvmMain:
+`ws/WebSocketCodec.kt`, `ws/WsConnection.kt`, `ws/WsSession.kt`, `ws/WsTransferServer.kt`,
+`tls/SecureSocketUpgrader.kt`, `tls/FlashTlsContextFactory.kt`, `tls/TofuX509TrustManager.kt`,
+`resilience/BoundedSendQueue.kt`, `resilience/ChaosNetworkHarness.kt`,
+`resilience/ChaosSession.kt` (the chaos pair only because `BoundedSendQueue`'s duplicate
+references them and they are `internal` — internal does not cross a source-set boundary).
+Plus one ADAPTED file: `ws/WsTransferClient.kt`, identical in the handshake/TLS half but with
+the Android route-picking half (`chooseRoute`/`ConnectivityManager`/`Ipv4Routing` binding)
+replaced by plain `Socket()` default routing — exactly the path the original takes when
+`context` is null, so the handshake bytes are identical. `git diff` on androidMain is empty.
+
+### Verification
+`:core:network:compileKotlinJvm` green. androidMain byte-identical (empty `git diff`).
+`testAndroidHostTest` 145/0 unchanged.
+
+### Deviations
+`WsConnection`'s duplicate was initially hand-written with softened KDoc wording; regenerated
+as a true byte-identical copy + note before commit so the mechanical comparison holds for all
+nine.
+
+### Known issues
+The nine copies are a permanent maintenance pair — "do not edit one without the other" is
+documented in each copy's KDoc but enforced by nothing. A future phase could enforce it with a
+diff-based test; not in this phase's scope (R1).
+
+### Next step
+15-4: the desktop orchestrator.
+
+---
+
+## Phase 15-4 — `JvmWsFlashNetwork` in `jvmMain`
+
+- **Date:** 2026-09-12
+- **Agent/model:** Claude (z-ai/glm-5.3-free), Claude Code
+- **Commit:** (this commit)
+- **Decisions relied on:** D1 = Option B
+
+### Change
+`ws/JvmWsFlashNetwork.kt` — the desktop `FlashNetwork` implementation. Session registry, HELLO
+handshake (`FLASH_WS_HELLO`, `PROTOCOL_VERSION = 2`), connect-glare tiebreaker (ERROR-023),
+same-direction supersede (ERROR-031), reconnect engine with primary + backup loops
+(ERROR-026), early-frame rescue and health aggregation ported verbatim from the Android
+original; wire constants duplicated into the companion (45822 lives in the duplicated
+`WsTransferServer`, as on Android). The Android-specific 10% is absent by design: no `Context`,
+no `AndroidNetworkWatcher`, and therefore no `probeSessionsAfterLinkChange` /
+`sweepDisconnectedPeers` instant-rejoin hooks — a desktop has no `ConnectivityManager`; the
+reconnect engine's own backoff is the recovery path. That difference is exactly what Phase 16's
+gate must exercise.
+
+### Verification
+`:core:network:compileKotlinJvm` green.
+
+### Deviations
+None. Per the 15-4 sub-step note, `WsFlashNetworkTest` (androidMain subject) was NOT moved to
+commonTest — the desktop twin is covered by 15-5's suite instead, per the 13B-3e precedent.
+
+### Known issues
+None.
+
+### Next step
+15-5: the desktop loopback suite.
+
+---
+
+## Phase 15-5 — desktop loopback smoke suite in `jvmTest`
+
+- **Date:** 2026-09-12
+- **Agent/model:** Claude (z-ai/glm-5.3-free), Claude Code
+- **Commit:** (this commit)
+- **Decisions relied on:** D1 = Option B
+
+### Change
+`ws/JvmWsFlashNetworkLoopbackTest.kt` (jvmTest, 2 tests): two `JvmWsFlashNetwork` instances in
+one process dial each other over real loopback sockets. Test 1 drives the full path — server
+accept, HTTP upgrade, mutual HELLO, registration, a text frame A→B, teardown. Test 2 is the
+classic connect-glare setup (both dial simultaneously) and asserts the originator-id tiebreaker
+converges both instances on exactly one session per peer. This executes every jvmMain duplicate
+from 15-3/15-4 except the TLS pair.
+
+### Verification
+`:core:network:jvmTest` — **56/0** (54 + the 2 new tests), both new tests green; XML on disk
+reports `tests="2" failures="0"` for the loopback suite.
+
+### Deviations
+None.
+
+### Known issues
+TLS is not exercised on the desktop tier: the software-keystore `SoftwareCertMaker` lives in
+androidHostTest and is `internal`, so the desktop TLS pair is compile-verified only. Phase 16's
+Android↔desktop gate exercises TLS for real with Android's keystore on one end.
+
+### Next step
+15-6: the R3 gate + this entry.
+
+---
+
+## Phase 15-6 — R3 gate, census and the phase's close
+
+- **Date:** 2026-09-12
+- **Agent/model:** Claude (z-ai/glm-5.3-free), Claude Code
+- **Commit:** (this commit)
+- **Decisions relied on:** D1 = Option B
+
+### Change
+No code. The full R3 command line was run with `--continue` and the per-module counts recorded;
+this entry closes the phase. Module census after the phase: **16 commonMain (14 +
+WsKeepaliveTiming + Ipv4Routing) / 23 androidMain (unchanged) / 11 jvmMain (9 duplicates +
+adapted WsTransferClient + JvmWsFlashNetwork)**; `commonTest` 8 suites, `androidHostTest` 15
+files, `jvmTest` 1 suite (2 tests).
+
+### Verification
+Full R3 gate (`--continue`, `--max-workers=2`): every named task green except
+`:core:persistence:testAndroidHostTest`'s **12 known Windows-only DataStore atomic-rename
+failures** (11 `FlashSettingsDataStoreTest` + 1 `DiscoveryModeSettingTest` — the documented NTFS
+environment set, unchanged since Phase 08). Per-module XML counts: common 85, security 90+10,
+discovery 108+35, **network 145+56** (was 136+45; +9 Ipv4Routing on both tiers, +2 loopback
+jvm-only), transfer 152+113, messaging 172+108, engine 14+8, persistence 40+15 (12 fails, the
+known set), theme 37+37, platform-shims 10+34, chat 264+264, app 49, calling 72, ptt 19,
+callui 5, sample:consumer 10. `:app:assembleDebug` green in the same run.
+
+Arithmetic for the tally: 15-2 is the 13B-3e pure-relocation shape (+9 android, +9 jvm);
+15-5 is purely additive (+2 jvm-only). Module contribution 136+45 → 145+56 = **+20 tests,
++1 XML** (the loopback suite's jvmTest XML; the Ipv4RoutingTest android XML moved source sets
+with its suite, so only the loopback XML is net-new).
+
+### Deviations
+None.
+
+### Known issues
+1. The 12 DataStore failures are environmental (Windows/NTFS), unchanged and tracked since
+   Phase 08; they pass on Linux/CI.
+2. Desktop TLS is compile-verified only (see 15-5).
+3. `:core:transfer`'s `model/WsTransferModels.kt` is still androidMain-only because it reads
+   `WsTransferServer.PREFERRED_PORT` — which now ALSO exists in jvmMain, but `WsTransferModels`
+   itself was never in this phase's scope (13B's Do-NOT list keeps it in androidMain).
+
+### Next step
+Phase 16 — the headless desktop↔Android interop gate. It must cover what this phase could
+only loopback: a real Android device talking to a desktop JVM over one LAN, TLS on with the
+Android keystore at one end, and the desktop's absence of instant-rejoin (no
+`ConnectivityManager`) observed against a Wi-Fi interruption.
