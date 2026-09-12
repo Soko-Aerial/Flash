@@ -61,7 +61,67 @@
 > introduce new external dependencies; do not wire the engine composition root (that is Phase 21); do
 > not change `WsFlashNetwork`'s public API, because `Flash.kt:170` must keep compiling.
 >
-<!-- CORRECTION-BLOCK-CONTINUES -->
+> ---
+>
+> **REVISED SUB-STEP PLAN — 2026-09-12. Written before any Phase 15 execution, per the pattern
+> §13B-3 required.** Replaces the void Steps 2–12 below. D1 = Option B is the load-bearing constraint:
+> there is no shared-JVM tier, so "lift the plumbing to `jvmAndAndroidMain`" translates to exactly two
+> legal moves — **pure files go to `commonMain`; JDK-bound files get a per-target duplicate in
+> `jvmMain` while the `androidMain` original stays untouched.** The duplication is the R5-amendment's
+> own instruction ("that duplication is intentional, not an oversight"), and it is also the only
+> strategy compatible with the Do-NOT-modify list: `WebSocketCodec`, `SecureSocketUpgrader`,
+> `FlashTlsContextFactory` and `TofuX509TrustManager` cannot gain `expect`/`actual` keywords without
+> being "modified", so duplication is not merely legal, it is mandatory for them.
+>
+> Re-measured census at `d154747` (the correction block's 2026-09-06 table measured 21 `androidMain`
+> files; `fb992c4` and `1921015` have since added `util/Ipv4Routing.kt` and `ws/WsKeepaliveTiming.kt`
+> and ~700 lines across `WsFlashNetwork`/`WsTransferClient`/`WsTransferServer`): **14 `commonMain` /
+> 23 `androidMain` / 0 `jvmMain`; 7 `commonTest`, 15 `androidHostTest` files (14 suites +
+> `SoftwareCertMaker`), 0 `jvmTest`.**
+>
+> Two further discoveries this re-measurement made, neither of which the 2026-09-06 correction knew:
+>
+> 1. **Steps 3–6 of the original file are already satisfied.** Phase 03's `FlashLog` became the
+>    module-wide common log seam and all four WS stack files already route their logging through it
+>    (`WsTransferServer`'s local `WsLog` is a thin alias over `FlashLog`). There is no `android.util.Log`
+>    import left anywhere in the WS stack, so the "extract WsLog" step has nothing to do.
+> 2. **`core/network/src/test/java/…/util/Ipv4RoutingTest.kt` (9 tests) is orphaned.** The pre-KMP
+>    `src/test/java` directory is on no task's classpath after the plugin swap
+>    (`:core:network:testAndroid` resolves only to `testAndroidHostTest`, which reads
+>    `src/androidHostTest`), so the suite has silently not run since the dev-merge `530db70`. Moving
+>    `Ipv4Routing` to `commonMain` in this phase makes resurrecting its suite phase work, not a
+>    drive-by: the file moves with its subject and the suite moves `src/test/java` → `commonTest`
+>    (pure Kotlin, JUnit 4 — same framework the module's `commonTest` already uses via `libs.junit`).
+>
+> | # | Sub-step | Files | Verify |
+> |---|---|---|---|
+> | 15-2 | **Pure WS helpers to `commonMain`.** `WsKeepaliveTiming` (zero platform imports; references only commonMain `WsKeepalive` + `WsConnection` constants) and `Ipv4Routing` (pure integer arithmetic) `git mv` → `commonMain`. `Ipv4Routing`'s orphaned 9-test suite → `commonTest` (runs both targets). | `ws/WsKeepaliveTiming.kt`, `util/Ipv4Routing.kt`, `util/Ipv4RoutingTest.kt` | `compileKotlinJvm`, `testAndroidHostTest` unchanged 136, `jvmTest` 45→54, R6 scan clean |
+> | 15-3 | **Duplicate the JDK-bound plumbing into `jvmMain`.** Byte-identical copies of `WebSocketCodec`, `WsConnection`, `WsSession`, `WsTransferServer`, `WsTransferClient`, `BoundedSendQueue`, plus TLS (`SecureSocketUpgrader`, `FlashTlsContextFactory`, `TofuX509TrustManager`) and the chaos-test support pair (`ChaosNetworkHarness`, `ChaosSession`) if desktop tests want them. androidMain originals untouched. `WsTransferClient`'s copy drops the `Context`/`ConnectivityManager` route-picking (the `chooseRoute` half is Android-specific; desktop uses plain `Socket()` default routing — the documented `{ null }`-factory equivalent). | 8+ new `jvmMain` files | `compileKotlinJvm` green; Android side byte-identical (`git diff` on androidMain empty); duplicate-declaration check: `commonMain` must NOT re-declare any of these |
+> | 15-4 | **`JvmWsFlashNetwork` in `jvmMain`.** The desktop `FlashNetwork` orchestrator: same session registry, HELLO handshake, glare tiebreaker, reconnect engine, early-frames handling as `WsFlashNetwork`, minus `Context`/`AndroidNetworkWatcher`; its `WsTransferClient` copy uses default routing. Port/protocol constants duplicated into its companion. Copy tests: `WsFlashNetworkTest` is platform-free — move it to `commonTest` so both tiers execute the shared orchestrator logic (its subject is the androidMain class, so this requires an interface-shaped test seam or a per-target subject; see sub-step note). | `ws/JvmWsFlashNetwork.kt` + test placement | `compileKotlinJvm`, `:core:network:jvmTest` green; loopback: desktop client ↔ desktop server HELLO/handshake completes |
+> | 15-5 | **Desktop loopback + interop readiness smoke suite in `jvmTest`.** A `jvmTest` suite that starts a `JvmWsFlashNetwork`, `connectManual` to itself (or a second instance), completes the HELLO handshake, sends a text frame, and tears down — the smallest test that proves the duplicated plumbing actually interoperates with itself, on the same tier that Phase 16's gate will run on. | new `jvmTest` suite(s) | `:core:network:jvmTest` green with the new suite counted |
+> | 15-6 | **R3 gate + census + log.** Full R3 command line; per-module count table; append `logs/migration.md` entry (including the missing Phase 15-1 entry as its own sub-entry — it was never written). | `logs/migration.md` | all named tasks green except the 12 known persistence failures; arithmetic in the log entry |
+>
+> Sub-step notes:
+> - **15-4's test placement:** `WsFlashNetworkTest` asserts on `WsFlashNetwork` (androidMain). Under
+>   duplication the desktop twin is `JvmWsFlashNetwork`. Moving the suite to `commonTest` would
+>   require it to reference a type that exists on both targets; simplest legal shape is to leave the
+>   Android suite where it is and write the 15-5 desktop suite against `JvmWsFlashNetwork` directly.
+>   The 13B-3e precedent (move the file only when its last reference clears) applies.
+> - **15-3's TLS pair:** `SecureSocketUpgrader`/`FlashTlsContextFactory`/`TofuX509TrustManager` are on
+>   the Do-NOT-modify list, which is exactly why duplication (not `expect`/`actual`) is the only
+>   legal move. The desktop copies must not edit the originals; the copies themselves may carry a
+>   header comment naming the phase and the "do not edit one without the other" rule.
+> - **15-2's `WsKeepaliveTiming`:** references `WsConnection.DEFAULT_PING_INTERVAL_MS` /
+>   `DEFAULT_LIVENESS_TIMEOUT_MS`. `WsConnection` is androidMain and stays there (JDK-bound). The
+>   constants therefore must be duplicated as literals into `WsKeepaliveTiming.DEFAULT` or the
+>   companion values hoisted to `WsKeepalive` (commonMain) with `WsConnection` referencing them there.
+>   The second is cleaner and keeps one source of truth; the constants are wire-behaviour numbers
+>   (R8-adjacent), so the move must not change their values.
+
+---
+
+<!-- CORRECTION-BLOCK-CONTINUES (everything below is the void 2026-08-31 original, kept because the
+     log is append-only; do NOT execute Steps 2-12 as written) -->
 
 **Blocked by:** Phases 13 (desktop file I/O) and 14 (desktop discovery). Phase 10 (core:network KMP)
 must be complete — the commonMain `FlashNetwork` contract, `WsConnection.Listener`, `TlsOptions`,

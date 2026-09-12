@@ -12,6 +12,12 @@ import org.junit.Test
  * The cases below are the four real topologies: one LAN, host with two LANs, client with one LAN, and
  * a peer reached through a gateway. Each assertion is about a dial that either lands or burns a 4 s
  * connect timeout.
+ *
+ * Phase 15-2: this suite moved `src/test/java` → `commonTest` together with its subject. The
+ * pre-KMP `src/test/java` directory is on no task's classpath after the plugin swap
+ * (`testAndroid` resolves only to `testAndroidHostTest`, which reads `src/androidHostTest`), so
+ * between the dev-merge `530db70` and this move the suite silently did not run; `commonTest` runs
+ * it on BOTH the Android host and the desktop `jvm()` target.
  */
 class Ipv4RoutingTest {
 

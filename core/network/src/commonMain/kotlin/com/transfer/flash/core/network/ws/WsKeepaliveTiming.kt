@@ -24,10 +24,14 @@ public data class WsKeepaliveTiming(
     }
 
     public companion object {
-        /** [WsConnection]'s shipped numbers: 10 s ping, 25 s liveness. */
+        /**
+         * [WsConnection]'s shipped numbers: 10 s ping, 25 s liveness. The constants live on
+         * [WsKeepalive] (commonMain, Phase 15-2) so this default stays single-sourced while the
+         * connection class itself is per-target.
+         */
         public val DEFAULT: WsKeepaliveTiming = WsKeepaliveTiming(
-            pingIntervalMs = WsConnection.DEFAULT_PING_INTERVAL_MS,
-            livenessTimeoutMs = WsConnection.DEFAULT_LIVENESS_TIMEOUT_MS,
+            pingIntervalMs = WsKeepalive.DEFAULT_PING_INTERVAL_MS,
+            livenessTimeoutMs = WsKeepalive.DEFAULT_LIVENESS_TIMEOUT_MS,
         )
     }
 }

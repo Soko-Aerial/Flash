@@ -245,8 +245,14 @@ public class WsConnection(
     public companion object {
         private const val TAG = "WS"
 
-        /** Idle connections are refreshed 3x per read-timeout window (ping -> pong traffic). */
-        public const val DEFAULT_PING_INTERVAL_MS: Long = 10_000L
+        /**
+         * Idle connections are refreshed 3x per read-timeout window (ping -> pong traffic).
+         *
+         * Hoisted to commonMain [WsKeepalive] in Phase 15-2 (the values are wire-behaviour
+         * constants the pure [WsKeepaliveTiming] must reference); these aliases keep the
+         * declaration site's FQN and visibility unchanged for existing callers.
+         */
+        public const val DEFAULT_PING_INTERVAL_MS: Long = WsKeepalive.DEFAULT_PING_INTERVAL_MS
 
         /**
          * Socket read timeout. NOT a liveness rule — its only job is to keep the read loop from
@@ -260,8 +266,10 @@ public class WsConnection(
          * is pruned. Sized to ~2.5 ping intervals so a live peer that misses one PONG is forgiven,
          * but a dead one is dropped in ~25s regardless of where the read loop is parked. Time the
          * process spent frozen does not count against it (see [WsKeepalive]).
+         *
+         * Hoisted to commonMain [WsKeepalive] in Phase 15-2; alias keeps the FQN unchanged.
          */
-        public const val DEFAULT_LIVENESS_TIMEOUT_MS: Long = 25_000L
+        public const val DEFAULT_LIVENESS_TIMEOUT_MS: Long = WsKeepalive.DEFAULT_LIVENESS_TIMEOUT_MS
 
         /**
          * How long the keepalive loop stays awake before acting on a close verdict that a stalled

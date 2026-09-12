@@ -145,6 +145,26 @@ internal class WsKeepalive(
          */
         internal const val STALL_FACTOR: Long = 2L
 
+        /**
+         * Idle connections are refreshed 3x per read-timeout window (ping -> pong traffic).
+         *
+         * Lives here (commonMain) rather than on [WsConnection] because the connection class is
+         * JDK-bound and per-target (Phase 15), while the numbers are wire-behaviour constants the
+         * common [com.transfer.flash.core.network.ws.WsKeepaliveTiming] must reference. Moved
+         * verbatim in Phase 15-2; the values are R8-adjacent and must not change.
+         */
+        internal const val DEFAULT_PING_INTERVAL_MS: Long = 10_000L
+
+        /**
+         * Watchdog window: if no inbound frame arrives across ticks that ran on schedule, the peer
+         * is pruned. Sized to ~2.5 ping intervals so a live peer that misses one PONG is forgiven,
+         * but a dead one is dropped in ~25s regardless of where the read loop is parked. Time the
+         * process spent frozen does not count against it (see [confirmClose]).
+         *
+         * Moved verbatim in Phase 15-2, same rationale as [DEFAULT_PING_INTERVAL_MS].
+         */
+        internal const val DEFAULT_LIVENESS_TIMEOUT_MS: Long = 25_000L
+
         /** No stall probe is outstanding. Not a valid clock reading. */
         private const val NO_PROBE: Long = Long.MIN_VALUE
 
