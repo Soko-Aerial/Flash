@@ -10629,3 +10629,64 @@ Additional checks specific to this phase:
 
 ### Next step
 The plan's next executable unit is PHASE-22 (adaptive desktop screens), which depends on this phase. The **hard blocker on merging any UI phase (21–22) to a release line remains the Phase 16 hardware run**; a human must attach an Android device, run G1–G6 via `DesktopInteropHarness` + the Flash app, and record the verdict in this log.
+
+---
+
+## 2026-09-12 — PHASE-22: Adaptive desktop screens (list-detail arrangement) — BUILT, gate stays CLOSED
+
+- **Date:** 2026-09-12
+- **Agent/model:** Claude Code (glm-5.3-free), autonomous per the session /goal
+- **Commit:** (this commit)
+- **Decisions relied on:** D8=A (desktop ships the existing chat UI adaptively — answered 2026-08-31; the phase file's `_pending_` framing is stale), D5=C (chats still EmptyFlashChatRepository), R5, R10
+
+### Preconditions status (honest, per R9)
+- Precondition 1 (PHASE-21 committed, DesktopShell composes the four shared screens): **MET** (`7634e1c`).
+- Precondition 2 (`FlashAdaptiveTwoPane`/`rememberFlashWindowSize` exist in ui:chat): **NOT MET — both were DELETED by ERROR-033.** The phase file's two core symbols do not exist; only `FlashWindowSizeClass` + `FlashAdaptiveMath` survived, and their KDoc explicitly recommends `LocalWindowInfo.containerSize` over resurrecting the old `BoxWithConstraints` SubcomposeLayout shape. Handled by correction C2 (below) — this phase builds the two-pane from the surviving math.
+- Precondition 3 (FlashAdaptiveLogicTest passes): **MET** — runs in `:ui:chat` commonTest on both targets (13 cases, part of the 264 jvmTest green from Phase 21's gate).
+- Precondition 5 (baseline `:desktop:compileKotlinJvm`): **MET** (Phase 21's closing state).
+
+### Change
+Executed per the REVISED SUB-STEP PLAN in the phase file's correction block (authored BEFORE coding, same treatment as Phase 15/21):
+
+- **22-1/22-2** `DesktopAdaptive.kt` — `rememberFlashDesktopWindowSize()` (reads `LocalWindowInfo.containerSize.width / LocalDensity` → `FlashAdaptiveMath.windowSizeForWidth`, the surviving KDoc's recommended shape, no SubcomposeLayout) + `DesktopTwoPane` (Row at `FlashAdaptiveMath.listPaneWeight`/`detailPaneWeight` — the tested 0.38/0.62 split — with a hairline divider when `isTwoPaneAllowed`, single child otherwise). Only consumes the adaptive math that survived ERROR-033.
+- **22-3** `DesktopSideBar.kt` — vertical tab bar for expanded widths, per Step 3 with verified symbols (`FlashIcon`/`FlashText`/`FlashSpacing`/`FlashShapes.radius12` via `RoundedCornerShape`/`FlashColors.backgroundSurface{,Subtle,Strong}`/`animateColorAsState`); inline 200.dp width, NOT lifted to `ui:theme` (Step 4's rule). `DesktopSideTab` + `DESKTOP_SIDE_TABS` are one source of truth for both bars.
+- **22-4** `DesktopDetailPanes.kt` — `TransferDetailPane` (file/peer/progress/speed/status via `FlashTransfersMath`), `NearbyDetailPane`, `PlaceholderDetailPane` per Step 5. **C3 correction:** the Step 1 conversation detail pane is void for v1 — desktop binds `EmptyFlashChatRepository` (09B-2 pending), so `conversationState` is permanently empty and the pane would render an inert screen; conversation detail returns when a real chat repository exists.
+- **22-5** `DesktopShell.kt` rewired — Expanded (≥840dp): sidebar + `DesktopTwoPane`, with Transfers row-tap (`onHistoryOpen`) and Nearby pair-tap feeding the detail selection state; Compact/Medium: the Phase 21 single-pane layout with the hanging bottom nav (tab inset drops to 0 in two-pane mode since there is no bottom bar).
+- **22-6** Verification (below). **22-7** this entry + README row.
+
+### Files changed
+- **Add:** `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopAdaptive.kt`
+- **Add:** `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopSideBar.kt`
+- **Add:** `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopDetailPanes.kt`
+- **Modify:** `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopShell.kt` — adaptive container + selection state
+- **Modify:** `docs/migration/PHASE-22-adaptive-desktop-screens.md` — correction block (C1–C5 + revised sub-step plan) authored BEFORE execution
+- **Modify:** `docs/migration/logs/migration.md`, `docs/migration/README.md` — this entry + row updates
+
+### Verification
+```
+./gradlew :desktop:compileKotlinJvm :ui:chat:compileKotlinJvm :ui:chat:compileAndroidMain :app:assembleDebug :ui:chat:jvmTest --continue
+```
+Result: **BUILD SUCCESSFUL** (all five tasks; JBR 21, Gradle 9.5.0).
+
+Additional checks specific to this phase:
+- R6 scans on `desktop/src`: `^import android\.` → **0**; `^import androidx\.` outside `androidx.compose.*` → **0** — **PASS**
+- No `:app` dependency in `desktop/build.gradle.kts` — **PASS** (0 matches)
+- Adaptive math used in desktop src (`FlashAdaptiveMath` referenced in `DesktopAdaptive.kt` + `DesktopShell.kt`) — **PASS**
+- Width-class source + two-pane used (`rememberFlashDesktopWindowSize`/`LocalWindowInfo`, `DesktopTwoPane`) — **PASS** (replaces the phase gate's `FlashAdaptiveTwoPane`/`rememberFlashWindowSize` rows, which name deleted symbols — see C2)
+- `:ui:chat:jvmTest` (incl. `FlashAdaptiveLogicTest`) green in the combined run — **PASS**
+
+### Deviations from the phase file
+- **D8 framing corrected** (C1): answered Option A on 2026-08-31; not `_pending_`. Path unchanged (the file's own contingency says exactly this).
+- **Two deleted symbols replaced** (C2): `FlashAdaptiveTwoPane`/`rememberFlashWindowSize` do not exist (ERROR-033). The desktop-local `DesktopTwoPane` + `rememberFlashDesktopWindowSize` implement the same behaviour from the surviving tested math, following the surviving KDoc's recommended `LocalWindowInfo` shape.
+- **Conversation detail pane deferred** (C3): Step 1's primary detail pane cannot render against `EmptyFlashChatRepository`; v1 ships the file's own fallback panes (transfer/peer info cards + placeholder).
+- **`FlashShapes.button` does not exist** (C4): the sidebar clips with `RoundedCornerShape(FlashShapes.radius12)`.
+- **Gate task names corrected** (C5): `:ui:chat:compileKotlinDesktop`/`compileDebugKotlin`/`:ui:chat:test` are not real tasks — `compileKotlinJvm`/`compileAndroidMain`/`jvmTest` (R3.1) are.
+
+### Known issues
+- Detail panes are minimal info cards (the file's own note); no conversation detail until 09B-2.
+- Two-pane selection state is per-window-session (not persisted) — matching the single-pane shell, which also persists nothing.
+- `onHistoryOpen` in two-pane mode shows the detail pane instead of opening the file externally (single-pane keeps the Phase 21 open behaviour); opening from the pane is future polish.
+- The Phase 16 hardware gate remains CLOSED; this phase changes no wire behaviour and claims no gate scenario.
+
+### Next step
+PHASE-23 — the full 4-way interop matrix gate, which needs the same physical-device runs as Phase 16 plus real Android↔desktop scenarios; it cannot run from this machine without a phone on the LAN. The remaining build-only phase is 24 (publishing prep) plus the TBD calling-stack phase (D11=B; file unwritten; must open with WebRTC-for-desktop-JVM research).

@@ -6,6 +6,71 @@
 
 ---
 
+> ## ⚠️ CORRECTION BLOCK (2026-09-12, written BEFORE execution — same treatment as Phase 15/21)
+>
+> This file was authored 2026-08-31 against a projected state. Five corrections are load-
+> bearing; the sub-step plan below supersedes Steps 1–5's details wherever they conflict.
+>
+> ### C1 — D8 is ANSWERED, not `_pending_`
+>
+> The header and §"D8 dependency" say D8 is still `_pending_`. **It is answered: D8 = Option A
+> (2026-08-31, DECISIONS.md)** — "desktop ships the existing chat UI, adaptively laid out."
+> The contingency section's "If D8 is still `_pending_`: proceed with Option A" resolves to
+> exactly the documented path; nothing is blocked.
+>
+> ### C2 — The two core symbols this phase wraps DO NOT EXIST
+>
+> Preconditions 2 and Steps 1–2 build on `FlashAdaptiveTwoPane` and `rememberFlashWindowSize`.
+> **Both were deleted (ERROR-033)** — `ui/chat/.../adaptive/FlashAdaptiveLayouts.kt:17–27`
+> records it: `FlashAdaptiveTwoPane` had no call site anywhere in the repo, and
+> `rememberFlashWindowSize` wrapped a `BoxWithConstraints` (a `SubcomposeLayout`) writing
+> Compose state from inside the layout pass. Only the pure math survived:
+> `FlashWindowSizeClass` + `FlashAdaptiveMath` (breakpoints, `isTwoPaneAllowed`, weights) —
+> and its KDoc explicitly directs a future consumer to `LocalWindowInfo.containerSize`
+> rather than resurrecting the old shape. **This phase therefore builds a desktop-local
+> two-pane from the surviving math** (`FlashAdaptiveMath.windowSizeForWidth` over
+> `LocalWindowInfo.containerSize.width`), not the deleted composables.
+>
+> ### C3 — Step 1's `FlashConversationScreen` detail pane cannot render
+>
+> Step 1's primary detail pane is the conversation screen. But Phase 21 (C2/C3) records that
+> desktop binds `EmptyFlashChatRepository` until 09B-2: `openConversation` is a no-op and
+> `conversationState` is permanently the empty state — the pane would render an inert empty
+> screen. **The desktop detail pane for v1 is therefore the phase file's own fallback: the
+> minimal `TransferDetailPane` / `NearbyDetailPane` info cards + placeholder.** Conversation
+> detail returns when a real chat repository exists.
+>
+> ### C4 — Step 3's `DesktopSideBar` references real symbols; verified
+>
+> `FlashIcon`/`FlashText` (ui:theme icons/text), `FlashSpacing.space4/8/12/16`,
+> `FlashShapes.radius*` (not `.button` — that member does not exist; use a `RoundedCornerShape`
+> from `FlashShapes.radius12`), `FlashColors.backgroundSurface/Subtle/Strong`,
+> `textPrimary/textSecondary`, `typography.bodyDefault/headingMedium`, `FlashDimensions.iconMd`
+> all exist in `:ui:theme` commonMain. `animateColorAsState` comes from `androidx.compose.animation`
+> (already a `:ui:chat` dependency; `:desktop` inherits it via `compose.animation` transitively —
+> but `:desktop` should declare it explicitly per the ui:chat precedent).
+>
+> ### C5 — Verification-gate task names corrected (same as Phase 21's C1)
+>
+> `:ui:chat:compileKotlinDesktop` and `:ui:chat:compileDebugKotlin` do not exist (R5;
+> `compileKotlinDesktop` never did, `compileDebugKotlin` is not a KMP task). Real names:
+> `:ui:chat:compileKotlinJvm` and `:ui:chat:compileAndroidMain`. `:ui:chat:test` →
+> `:ui:chat:jvmTest` (the `FlashAdaptiveLogicTest` runs in commonTest, both targets).
+>
+> ### REVISED SUB-STEP PLAN (executed in this order)
+>
+> | # | Sub-step | Content |
+> |---|---|---|
+> | 22-1 | Width-class source | `rememberFlashDesktopWindowSize()` in `:desktop` — `LocalWindowInfo.containerSize.width / LocalDensity.current.density` → `FlashAdaptiveMath.windowSizeForWidth` (the KDoc's recommended shape, no SubcomposeLayout). |
+> | 22-2 | Two-pane container | `DesktopTwoPane` in `:desktop` — Row with `FlashAdaptiveMath.listPaneWeight/detailPaneWeight` + hairline divider when `isTwoPaneAllowed`, single child otherwise. Consumes only the surviving `:ui:chat` math. |
+> | 22-3 | Side bar | `DesktopSideBar` per Step 3 (verified symbols; `RoundedCornerShape(FlashShapes.radius12)`; inline 200.dp width, never `ui:theme`). |
+> | 22-4 | Detail panes | `TransferDetailPane` + `NearbyDetailPane` + `PlaceholderDetailPane` per Step 5, driven by explicit selection state (C3: no conversation pane in v1). |
+> | 22-5 | Shell integration | Re-wire `DesktopShell`: sidebar on Expanded, `FlashBottomNav` on Compact/Medium; list pane = current tab screens; detail pane = selection. |
+> | 22-6 | Verification | `:desktop:compileKotlinJvm`, `:ui:chat:compileKotlinJvm`, `:ui:chat:compileAndroidMain`, `:app:assembleDebug`, `:ui:chat:jvmTest`, R6 scans on `desktop/src`. |
+> | 22-7 | Log + README | Honest entry + row update (merge still gated on Phase 16 hardware run). |
+
+---
+
 ## What this phase is for
 
 Desktop windows are wide enough to show **list + detail** side by side, but the current

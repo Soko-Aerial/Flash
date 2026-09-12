@@ -2,17 +2,19 @@ package com.transfer.flash.desktop
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.dp
 import com.transfer.flash.core.common.model.FlashTransportType
 import com.transfer.flash.core.discovery.FlashDiscoveredEndpoint
@@ -21,6 +23,7 @@ import com.transfer.flash.core.messaging.model.FlashNetworkTransport
 import com.transfer.flash.core.transfer.model.FlashTransfer
 import com.transfer.flash.core.transfer.model.FlashTransferDirection as DomainDirection
 import com.transfer.flash.core.transfer.model.FlashTransferState as DomainState
+import com.transfer.flash.ui.adaptive.FlashAdaptiveMath
 import com.transfer.flash.ui.chat.FlashChatListScreen
 import com.transfer.flash.ui.chat.FlashPairingPhase
 import com.transfer.flash.ui.navigation.FlashAnimatedScreen
@@ -50,7 +53,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 
 /**
- * Thin desktop shell (Phase 21, sub-step 21-3) — Option B per the phase file's Step 6
+ * Thin desktop shell (Phase 21 21-3 + Phase 22 22-5) — Option B per the phase file's Step 6
  * analysis: `:app`'s `FlashShell` stays where it is, and this shell composes the four shared
  * `:ui:chat` tab screens directly against `DesktopEngine`'s flows.
  *
@@ -60,6 +63,11 @@ import kotlinx.coroutines.launch
  * desktop coordinator exists), no calling, no PTT, no notification flows. The conversation
  * screen is reachable only once a chat repository exists (it does not until 09B-2 — see
  * [DesktopEngine.chats]); the Chats tab therefore renders its honest empty/loading state.
+ *
+ * Phase 22 adds the adaptive arrangement: at Expanded widths (≥840dp) a `DesktopSideBar` takes
+ * the left edge and the content area becomes list+detail via [DesktopTwoPane] (transfer / peer
+ * selection drives the detail pane); at Compact/Medium the Phase 21 bottom-nav single-pane
+ * layout is kept.
  */
 @Composable
 public fun DesktopShell(engine: DesktopEngine) {
@@ -68,6 +76,12 @@ public fun DesktopShell(engine: DesktopEngine) {
 
     val ready by engine.ready.collectAsState()
     val startError by engine.startError.collectAsState()
+
+    // ── Phase 22: window size + selection state for the two-pane layout ──
+    val sizeClass = rememberFlashDesktopWindowSize()
+    val twoPane = FlashAdaptiveMath.isTwoPaneAllowed(sizeClass)
+    var selectedTransferItem by remember { mutableStateOf<FlashTransferItemUi?>(null) }
+    var selectedNearbyPeer by remember { mutableStateOf<NearbyPeerUi?>(null) }
 
     // ── Chats: EmptyFlashChatRepository until 09B-2 (honest empty per ERROR-034) ──
     val chatRepository = remember(engine) { engine.chats }
@@ -145,13 +159,11 @@ public fun DesktopShell(engine: DesktopEngine) {
     val nearbyScroll = rememberLazyListState()
     val settingsScroll = rememberLazyListState()
 
-    val tabBottomInset = FLASH_BOTTOM_NAV_INSET
+    val tabBottomInset = if (twoPane) 0.dp else FLASH_BOTTOM_NAV_INSET
 
-    Box(
-        Modifier
-            .fillMaxSize()
-            .background(FlashTheme.colors.backgroundApp),
-    ) {
+    // The tab content, shared by both window layouts. In two-pane mode the transfers/nearby
+    // screens additionally drive the detail pane through the selection state.
+    val listPaneContent: @Composable () -> Unit = {
         Box(Modifier.fillMaxSize()) {
             FlashAnimatedScreen(targetState = nav.current) { entry ->
                 when (entry.destination) {
@@ -228,7 +240,13 @@ public fun DesktopShell(engine: DesktopEngine) {
                                 }
                             }
                         },
-                        onHistoryOpen = { item -> DesktopHelpers.openAttachment(item.localPath, DesktopHelpers.guessMimeType(item.fileName)) },
+                        onHistoryOpen = { item ->
+                            // Two-pane: also show the details alongside. Single-pane: open it.
+                            selectedTransferItem = item
+                            if (!twoPane) {
+                                DesktopHelpers.openAttachment(item.localPath, DesktopHelpers.guessMimeType(item.fileName))
+                            }
+                        },
                         onHistoryShare = { item -> DesktopHelpers.shareTransferredFile(item) },
                         modifier = Modifier.fillMaxSize(),
                         listState = transfersScroll,
@@ -244,6 +262,8 @@ public fun DesktopShell(engine: DesktopEngine) {
                             if (endpoint != null && net != null) {
                                 scope.launch { net.connectManual(endpoint.hostAddress, endpoint.port) }
                             }
+                            // Two-pane: show what we know about the peer while it connects.
+                            if (twoPane) selectedNearbyPeer = peer
                         },
                         onChatClick = { peer ->
                             chatRepository.openConversation(peer.id)
@@ -279,28 +299,66 @@ public fun DesktopShell(engine: DesktopEngine) {
                 }
             }
         }
+    }
 
-        // Desktop keeps the app's hanging bottom nav for v1 (Phase 22 will add the expanded
-        // side rail); same capsule, same tab set, same reselect-to-top behaviour.
-        if (FlashNavigationMath.isTabRoot(nav.current.destination)) {
-            Box(Modifier.align(Alignment.BottomCenter)) {
-                FlashBottomNav(
-                    items = DESKTOP_TABS,
+    // The detail pane for two-pane mode: transfer info, peer info, or the placeholder (C3:
+    // no conversation pane in v1 — the empty repository cannot supply conversation state).
+    val detailPaneContent: @Composable () -> Unit = {
+        when {
+            selectedTransferItem != null -> TransferDetailPane(
+                item = selectedTransferItem!!,
+                onClose = { selectedTransferItem = null },
+            )
+            selectedNearbyPeer != null -> NearbyDetailPane(
+                peer = selectedNearbyPeer!!,
+                onClose = { selectedNearbyPeer = null },
+            )
+            else -> PlaceholderDetailPane()
+        }
+    }
+
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(FlashTheme.colors.backgroundApp),
+    ) {
+        if (twoPane) {
+            // Expanded: sidebar on the left edge, list+detail in the remainder.
+            Row(Modifier.fillMaxSize()) {
+                DesktopSideBar(
+                    tabs = DESKTOP_SIDE_TABS,
                     selectedTab = nav.current.destination,
                     onTabSelected = nav::selectTab,
-                    onTabReselected = { destination ->
-                        val listState = when (destination) {
-                            FlashDestination.ChatList -> chatListScroll
-                            FlashDestination.Transfers -> transfersScroll
-                            FlashDestination.NearbyDevices -> nearbyScroll
-                            FlashDestination.Settings -> settingsScroll
-                            else -> null
-                        }
-                        listState?.let { state ->
-                            scope.launch { state.animateScrollToItem(0) }
-                        }
-                    },
                 )
+                DesktopTwoPane(
+                    listPane = listPaneContent,
+                    detailPane = detailPaneContent,
+                    sizeClass = sizeClass,
+                )
+            }
+        } else {
+            // Compact/Medium: the Phase 21 single-pane layout with the hanging bottom nav.
+            listPaneContent()
+            if (FlashNavigationMath.isTabRoot(nav.current.destination)) {
+                Box(Modifier.align(Alignment.BottomCenter)) {
+                    FlashBottomNav(
+                        items = DESKTOP_TABS,
+                        selectedTab = nav.current.destination,
+                        onTabSelected = nav::selectTab,
+                        onTabReselected = { destination ->
+                            val listState = when (destination) {
+                                FlashDestination.ChatList -> chatListScroll
+                                FlashDestination.Transfers -> transfersScroll
+                                FlashDestination.NearbyDevices -> nearbyScroll
+                                FlashDestination.Settings -> settingsScroll
+                                else -> null
+                            }
+                            listState?.let { state ->
+                                scope.launch { state.animateScrollToItem(0) }
+                            }
+                        },
+                    )
+                }
             }
         }
     }
