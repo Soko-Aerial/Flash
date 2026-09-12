@@ -186,3 +186,71 @@ file and expect to update it when dependencies change.
 - JitPack itself was not run; publication evidence comes from local repositories
   (`-Dmaven.repo.local=...`) and from inspecting the generated POM / Gradle Module Metadata.
 - The app/UI tiers were reviewed as consumers of the library, not as product code.
+
+---
+
+## Addendum - 2026-09-12 (findings below were produced by trying to *use* CI)
+
+The three open PRs (#3 Palette, #4 Bolt, #5 Sentinel) were synced with `dev` and landed. Because
+GitHub Actions could not run (see A2), verification was done locally instead - and doing that exposed
+two more findings, one of which is a bigger gap than anything in the main list.
+
+### A1 - CI's test command silently skips every KMP module (High - supersedes the F1/F2 priority)
+
+`.github/workflows/ci.yml` runs `./gradlew testDebugUnitTest assembleDebug`. `testDebugUnitTest` does
+**not exist** for the KMP modules:
+
+```text
+Cannot locate tasks that match ':core:messaging:testDebugUnitTest' as task
+'testDebugUnitTest' not found in project ':core:messaging'.
+```
+
+Gradle does not fail the invocation when a task name matches nothing in a project, so the workflow
+reports success while covering only the plain AGP modules (`:app`, `:core:calling`, `:core:ptt`,
+`:ui:callui`, `:sample:*`). Every KMP module's suite is skipped: `core:common`, `core:discovery`,
+`core:network`, `core:transfer`, `core:messaging`, `core:persistence`, `core:security`, `core:engine`,
+`ui:theme`, `ui:chat`, `ui:platform-shims`.
+
+The aggregate that does exist is `allTests` (present in every KMP module, confirmed by a dry run).
+
+**Fix:** `./gradlew allTests testDebugUnitTest assembleDebug`. That one word is the difference between
+running the library's tests and not running them.
+
+### A2 - GitHub Actions is locked for billing, so no workflow runs at all (blocker)
+
+Every run for all three PRs failed in 2-6 seconds with:
+
+```text
+The job was not started because your account is locked due to a billing issue.
+```
+
+This is an account-level blocker, not a workflow bug, and it must be cleared before F1/F2 are worth
+doing: adding `dev` to the trigger list and adding a publish-then-consume job achieve nothing while
+jobs cannot start. Until then, **all verification in this repository is local-only**.
+
+### A3 - Two pre-existing failures that CI has therefore never seen (High)
+
+Running the correct aggregate locally on the merged `dev` (`2fc4f17`) surfaced:
+
+```text
+:core:common:allTests FAILED
+FlashPerformanceClassifierTest > ptime_choice_is_what_moves_header_overhead FAILED
+FlashPerformanceClassifierTest > tiers_are_monotone_in_cost FAILED
+```
+
+`:core:common` is untouched by any of the three PRs (its last change is `be57111`,
+"perf(calling): optimize voice packetization, enable DTX ..." - the same commit that last touched the
+classifier). The same two failures reproduce at `3580666`, the commit `dev` was on before the merges,
+so they are pre-existing and were not introduced here. They are almost certainly a consequence of that
+perf commit changing `FlashPerformanceClassifier` without its tests being re-run - which is exactly
+what A1 makes possible.
+
+**Fix:** update the classifier's expectations (or the classifier) and re-run `:core:common:allTests`;
+then A1 so it cannot happen silently again.
+
+### A4 - PR bookkeeping note
+
+Because the branches were merged locally (A2 made the GitHub-side path unavailable), GitHub marked
+#3 and #5 as merged on detection of the pushed commits, but #4 had to be closed manually: its head
+commit is already an ancestor of `dev`, so GitHub could not create a merge commit for it. Closing it
+loses no work - it is in `dev` via merge commit `f057331`.

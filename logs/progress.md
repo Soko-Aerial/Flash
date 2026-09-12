@@ -1,5 +1,34 @@
 # Progress Log
 
+## 2026-09-12 - Landed PRs #3/#4/#5 locally (CI is dark); discovered CI never ran the KMP test suites
+
+### Worked on
+Owner asked to write up the library-compliance review, commit and push `dev`, then sync the new
+branches and PRs. After the push, GitHub Actions turned out to be unusable: every run fails in
+2-6 seconds with "The job was not started because your account is locked due to a billing issue".
+Verification was therefore done locally instead - and that exposed a much bigger CI gap.
+
+### Changed
+- new `docs/publishing/library-compliance-review.md` (F1-F10, plus a 2026-09-12 addendum with A1-A4)
+- `logs/errors.md`, `logs/progress.md`, `logs/handoff.md`, `docs/group/ui-phase-plan.md`,
+  `docs/decisions.md`, README and other docs came along in the same commit as the uncommitted tree
+- 3 PR branches synced with `dev` (merge `dev` in, resolve `logs/progress.md` keeping both entries,
+  newest-first) and pushed; PRs #3 and #5 merged, #4 closed (its head is already on `dev`)
+
+### Verified
+- `:core:messaging:testAndroidHostTest` green after the group work: 172 tests, 0 skipped, 0 failures
+- each PR branch: `:ui:chat:jvmTest` / `:core:engine:testAndroidHostTest` /
+  `:core:transfer:testAndroidHostTest` / `:app:compileDebugKotlin` green before its merge
+- full local suite on merged `dev`: everything green **except** A3 below
+
+### Errors / findings
+- **A1 (new, High)**: CI's `testDebugUnitTest` does not exist for KMP modules, so the workflow
+  silently skipped every KMP test suite (`:core:common` ... `:ui:platform-shims`). The correct
+  aggregate is `allTests`.
+- **A2 (blocker)**: GitHub Actions is locked for billing, so no workflow runs at all.
+- **A3 (new, High)**: two pre-existing `:core:common` `FlashPerformanceClassifierTest` failures
+  (`ptime_choice_is_what_moves_header_overhead`, `tiers_are_monotone_in_cost`), reproduced at
+  `3580666` before any merge - invisible until now because of A1.
 ## 2026-09-11 — Micro-UX Improvement: FlashQuotedReplyCard Text & Interaction Feedback
 
 ### Worked on
