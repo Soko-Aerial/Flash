@@ -98,6 +98,10 @@ kotlin {
         // included. Gradle consumers read `.module` metadata instead and see `api`.) Coroutines
         // is not declared: it arrives transitively as `api` from every one of the six, exactly
         // as before.
+        //
+        // The seventh, `:core:ptt`, is deliberately NOT here: it is not a converted KMP module
+        // but a plain AGP Android library, so it has no JVM variant to hand commonMain — see
+        // androidMain below.
         commonMain.dependencies {
             api(project(":core:common"))
             api(project(":core:security"))
@@ -107,6 +111,43 @@ kotlin {
             api(project(":core:messaging"))
         }
         androidMain.dependencies {
+            // `api` for the same reason as `core:persistence` below: `FlashPtt` appears in the
+            // PUBLIC `FlashEngine.attachPtt(...)` / `FlashEngine.ptt` signatures, so a consumer
+            // cannot call them without it on its compile classpath.
+            //
+            // And androidMain rather than commonMain, unlike the six above: `:core:ptt` is a
+            // plain AGP Android library, so it exposes Android variants only. Declaring it in
+            // commonMain makes `jvmMainCompileClasspath` request a JVM-compatible variant of it
+            // and fail variant selection — which broke `:core:engine:compileKotlinJvm`, its
+            // `jvmTest`, and `publishToMavenLocal` (hence the whole JitPack install list) while
+            // `compileAndroidMain` stayed green. Nothing in commonMain or jvmMain names PTT.
+            api(project(":core:ptt"))
+
+            // `compileOnly`, NOT `api` — the module registers this in the OTHER direction.
+            //
+            // `FlashCalling` appears in the PUBLIC calling seam (`FlashEngine.calls`,
+            // `attachCalling(engine)`, `onInboundCallText`), so this module must compile against
+            // it. It is NOT propagated to consumers: `:core:calling` re-exports webrtc-kmp with
+            // `api(libs.webrtc.kmp)`, and the README's dependency-shape promise is that
+            // `core-engine` does not pull native WebRTC (~30 MB per ABI) into an app that never
+            // places a call. `compileOnly` keeps the type on this module's compile classpath
+            // while the published `core-engine` metadata declares neither `core-calling` nor
+            // `webrtc-kmp` — a consumer that actually calls adds `core-calling` itself, which the
+            // README already instructs.
+            //
+            // Consequence to respect in code, not just in the build file: nothing on a path a
+            // NON-calling consumer executes may name a `:core:calling` type, or the JVM resolves
+            // a class that is legitimately absent and throws NoClassDefFoundError. That is why
+            // Flash.kt gates on a plain `FLASH_CALL` prefix constant rather than
+            // `CallFrameCodec.decode`, and why the facade's routing entry points are typed
+            // without `FlashCalling`. See docs/decisions.md (ADR-033).
+            //
+            // androidMain rather than commonMain for the same reason as `:core:ptt` above:
+            // `:core:calling` is a plain AGP Android library with no JVM variant, so a commonMain
+            // entry breaks `:core:engine`'s `jvm()` target at variant selection (ERROR-049).
+            // Nothing in commonMain or jvmMain names calling.
+            compileOnly(project(":core:calling"))
+
             // `api`, not `implementation`: FlashSettingsDataStore appears in the PUBLIC
             // FlashEngine interface (`val settings`), so a consumer cannot use the engine
             // without it on their compile classpath. This is also the pin that keeps
@@ -143,6 +184,14 @@ kotlin {
         // java.io temp file, and uses a backtick method name. Unchanged by the conversion.
         getByName("androidHostTest").dependencies {
             implementation(libs.junit)
+
+            // Test-only, and NOT published: the stub `FlashCalling` that pins the facade's routing
+            // semantics (consumed / dropped / not attached) needs the interface to implement, and a
+            // host test is the only place it can be reached without a real WebRTC engine. The
+            // production dependency stays `compileOnly` (see androidMain above), so this adds
+            // nothing to the published `core-engine` metadata — the artifact a consumer resolves is
+            // built from the main compilations, not from a test classpath.
+            implementation(project(":core:calling"))
         }
         jvmTest.dependencies {
             implementation(libs.junit)

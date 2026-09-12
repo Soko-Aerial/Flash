@@ -321,7 +321,7 @@ The first LAN implementation uses classic NSD discovery and per-service resoluti
 ## 2026-09-09 - tydtech clip-mic PTT button: 4 intents per press, Zello hook is the public one
 
 ### Android version / API level
-Observed on an MT6789 phone (rugged/PTT white-label, tydtech system service tag — a
+Observed on an MT6789 phone (rugged/PTT white-label, tydtech system service tag ï¿½ a
 Shenzhen ODM firmware layer). Implicit-broadcast rules are API 26+: manifest-declared
 receivers never see these actions, and API 34+ requires an explicit export flag on every
 runtime registration.
@@ -338,7 +338,7 @@ Four broadcasts fire simultaneously for the same press:
 
 Volume/play-pause/voice buttons do NOT produce custom broadcasts: they route through the
 standard `mt6789-mt6366 Headset Jack` input device (normal headset-remote keys, catchable
-in `Activity.onKeyDown` if ever needed — not implemented in v1).
+in `Activity.onKeyDown` if ever needed ï¿½ not implemented in v1).
 
 ### Project implication
 - Listen to `com.zello.ptt.down` ONLY via an engine-lifetime dynamic receiver
@@ -346,3 +346,36 @@ in `Activity.onKeyDown` if ever needed — not implemented in v1).
   fan-out and are ignored by the filter.
 - No new permission, no manifest receiver entry.
 - Other vendors will differ; nothing beyond the Zello action is assumed.
+
+## 2026-09-10 - Background PTT transmit must re-enter foreground before microphone capture
+
+### Android version / API level
+Android 12+ restricts starting foreground services from the background, and Android 14+
+additionally checks while-in-use microphone permission when a `microphone` foreground service is
+created. A runtime permission grant does not by itself make background microphone capture eligible.
+
+### APIs / permissions involved
+- `RECORD_AUDIO`
+- `FOREGROUND_SERVICE`
+- `FOREGROUND_SERVICE_MICROPHONE`
+- `ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE`
+- `ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK`
+
+### Official documentation sources
+- Android foreground-service launch restrictions:
+  https://developer.android.com/develop/background-work/services/fgs/restrictions-bg-start
+- Foreground-service types and microphone while-in-use restrictions:
+  https://developer.android.com/develop/background-work/services/fgs/service-types#microphone
+- Restrictions on starting foreground services that need while-in-use permissions:
+  https://developer.android.com/develop/background-work/services/fgs/restrictions-bg-start#wiu-restrictions
+
+### Project implication
+- A hardware PTT broadcast received while Flash is backgrounded must not directly create a
+  microphone foreground service or assume `AudioRecord` will provide usable samples.
+- The press is deferred and surfaced through the foreground activity/notification path; capture
+  starts only after Flash is visible and microphone permission is confirmed. If that path cannot
+  run, v1 may fall back to the non-audio PTT ping rather than silently opening the microphone.
+- A talking session uses the `microphone` service type. A receiving session uses
+  `mediaPlayback`; call semantics and `Notification.CallStyle` are not reused for PTT.
+- This platform rule is separate from Flash's call/PTT/voice-note ownership gate: both Android
+  eligibility and exclusive in-app audio ownership must succeed before capture starts.

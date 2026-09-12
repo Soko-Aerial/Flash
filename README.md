@@ -101,10 +101,12 @@ encrypted database. It is idempotent, so calling it twice is safe.
 
 ## Voice & video calls
 
-Calling is **not** part of `Flash.create`. `FlashEngine` has no `calls` property, because calling
-needs three things only an app can supply: a signaling channel the app already owns, runtime
-microphone/camera grants, and a `microphone|camera` foreground service declared in its own manifest.
-So you depend on `core-calling` directly:
+Calling is reachable through `Flash.create`, but it is **opt-in and host-built**. The facade owns
+the seam — `engine.calls`, `engine.attachCalling(...)`, routing of inbound `FLASH_CALL` frames and
+the signaling-recovery window it drives from the sessions it already observes — while the engine
+itself is yours to construct, because a call needs three things only an app can supply: a signaling
+channel (your `sendFrame`), runtime microphone/camera grants, and a `microphone|camera` foreground
+service declared in your own manifest. So you depend on `core-calling` directly:
 
 ```kotlin
 dependencies {
@@ -113,18 +115,29 @@ dependencies {
 }
 ```
 
-Signaling is plain text (`FLASH_CALL|…`), so any duplex text transport works — the Flash WebSocket
-mesh is simply the one the sample app uses. Wire two seams:
+`core-engine` declares `core-calling` as `compileOnly`, so the `FlashCalling` type is in the
+facade's API but native WebRTC is **not** pulled in by the umbrella (see
+[Published modules](#published-modules)).
+
+Signaling is plain text (`FLASH_CALL …`), so any duplex text transport works — the Flash WebSocket
+mesh is simply the one the sample app uses. Wire the outbound seam at construction and hand the
+engine to the facade:
 
 ```kotlin
-// outbound: hand every frame the module emits to your transport
-val calling: FlashCalling = /* CallCoordinator(sendFrame = { peerId, text -> … }) */
+// outbound: every frame the module emits goes through your transport
+val calling: FlashCalling = CallCoordinator(sendFrame = { peerId, text -> myTransport.send(peerId, text) })
 
-// inbound: offer every received text frame; true means it was a call frame and was consumed
-if (calling.onInboundText(peerId, text)) return
-// and when a transport dies, so the call does not wait for frames that can't arrive:
-calling.onSignalingLost(peerId)
+// attach: from here the facade routes inbound FLASH_CALL frames to it and drives its
+// signaling-recovery window from the live sessions it observes (ERROR-033) — you no longer
+// hand-feed onInboundText / onSignalingLost yourself.
+engine.attachCalling(calling)
 ```
+
+With nothing attached, inbound call frames are recognized and dropped — they never reach the chat,
+transfer or PTT parsers, and no calling class is loaded. `engine.detachCalling()` stops routing;
+`engine.close()` detaches too. Detaching is deliberately not hanging up: the media, the audio route
+and the foreground service are the host's, so ending a live call stays with your own
+`calling.hangUp()`.
 
 `calling.activeCall` is a `StateFlow<FlashCallUiState?>` — non-null while a call is in flight, so a
 navigation layer pushes and pops its call route off that one flow. Pair it with
@@ -132,9 +145,55 @@ navigation layer pushes and pops its call route off that one flow. Pair it with
 video, the camera) **before** calling `startCall`/`accept`: a microphone opened in the wrong audio
 mode does not switch later.
 
-**Cost:** `core-calling` bundles native WebRTC — roughly 30 MB per ABI. Nothing else in Flash pulls
-it in, so an app that does not call simply does not depend on it. See
+**Cost:** `core-calling` bundles native WebRTC — roughly 30 MB per ABI. `core-engine` does not
+declare it for a consumer, so an app that does not call simply does not depend on it. See
 [`docs/architecture/public-api.md`](docs/architecture/public-api.md) §7 for the full contract.
+
+## Push-to-talk (PTT)
+
+PTT is **inside** the umbrella: `core-engine` declares `api(project(":core:ptt"))`, so a
+`core-engine` consumer already has `core-ptt` on its classpath and needs no extra dependency. What
+it is *not* is automatic — a live floor needs a microphone grant and a foreground service that only
+your app's manifest can declare, so nothing is created until you ask for it:
+
+```kotlin
+// 1. Attach the seam. The facade supplies identity, trust and the live sessions; you supply policy.
+val ptt: FlashPtt = engine.attachPtt(
+    hasMicPermission = { checkSelfPermission(RECORD_AUDIO) == PERMISSION_GRANTED },
+    isCallActive = { callTracker.isInCall },          // mic exclusivity: a call tears PTT down
+    audioRateHz = { if (lowEndDevice) 8_000 else 16_000 },
+) ?: return   // null only on a hand-assembled DefaultFlashEngine (no wiring to attach to)
+```
+
+Inbound frames are already routed for you — `Flash.create` dispatches `FLASH_PTT`/`FLASH_PTSS`
+text and `PTT1` binary frames to the attached engine, and recognizes-and-drops them when nothing is
+attached. On the way out:
+
+```kotlin
+ptt.onPttButton()                       // hardware key / UI press: toggles the floor
+ptt.state.collect { /* Idle | Talking | Listening */ }
+ptt.stats.collect { /* elapsed, RTT, loss, level, member count */ }
+ptt.pings.collect { /* someone pressed PTT: tone + your own notification */ }
+ptt.stopLocal()                         // notification "Stop"/"Leave" action
+engine.detachPtt()                      // stops PTT, keeps the engine; engine.close() does this too
+```
+
+| Type | Role |
+|---|---|
+| `FlashPtt` | The whole contract: press, state/stats/notices/pings, inbound seams, leases, shutdown. |
+| `PttSessionEngine` | The one implementation. Hosts construct it directly only when they own their own transport (the sample app does). |
+| `PttPressOutcome` | `ACCEPTED`, `NO_PEERS`, `NO_MIC`, `CALL_ACTIVE`, `VOICE_NOTE_ACTIVE`. |
+| `PttSessionStats` | `sessionId`, `role`, elapsed, RTT, loss, buffer depth, `amplitude01`, members. |
+| `PttPingEvent` | A deduplicated inbound press: `eventId`, `fromDeviceId`, `senderName`, `sentAtMs`. |
+
+Two host duties beyond the attachment: `ptt.acquireVoiceNoteLease()` before your own voice
+recorder opens the mic (returns null when PTT or a call holds it — a lease only its owner can
+release), and `ptt.onCallStarted()` when a call becomes active if your call engine is not the one
+driving `isCallActive`. Frames are fail-closed like the rest of the protocol: a `from` that does not
+match the authenticated transport peer, or an untrusted peer, is dropped — and still consumed, so
+it never reaches the chat handlers. See
+[`docs/architecture/public-api.md`](docs/architecture/public-api.md) §14 and
+[`docs/protocol.md`](docs/protocol.md) for the wire format.
 
 ## Permissions
 
@@ -206,6 +265,38 @@ silently runs on the *media* audio path — no hardware echo cancellation, a lon
 a dead speaker button. Routing to an already-connected Bluetooth headset needs no `BLUETOOTH_*`
 permission, so none is required.
 
+**Only if you use push-to-talk** — a PTT session captures the microphone while talking and plays
+audio while listening, and it must survive the screen turning off:
+
+```xml
+<uses-permission android:name="android.permission.RECORD_AUDIO" />
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+```
+
+```xml
+<service
+    android:name=".ptt.YourPttSessionService"
+    android:exported="false"
+    android:foregroundServiceType="microphone|mediaPlayback" />
+```
+
+| Permission | Why |
+|---|---|
+| `RECORD_AUDIO` | Capture the talker's microphone. Runtime-requested; the host reads it through the `hasMicPermission` lambda so a refusal becomes `PttPressOutcome.NO_MIC` instead of a silent session. |
+| `FOREGROUND_SERVICE` | Run the live session as a foreground service (required on API 26+). |
+| `FOREGROUND_SERVICE_MICROPHONE` | FGS type the talker claims (API 34+); without it a `microphone` promotion is refused. |
+| `FOREGROUND_SERVICE_MEDIA_PLAYBACK` | FGS type a listener claims (API 34+). A listener needs no runtime grant. |
+
+Like calling, PTT ships **no manifest of its own** — the permission declarations and the service
+entry above are yours. The module deliberately does not start that service: `FlashPtt` exposes the
+session state and the host decides how to keep the process alive (the sample app starts its service
+on the Idle→session edge and stops it on return to Idle). `POST_NOTIFICATIONS` is required only if
+you post a session notification, and the platform must be able to promote the service on API 31+ —
+a press that happens while the app is backgrounded cannot promote a `microphone` service there, so
+hosts surface the app and let the user complete the press.
+
 Flash needs **no location permission**: discovery uses Android NSD (mDNS), not a
 Wi-Fi/BLE scan, so no `ACCESS_FINE_LOCATION` is required.
 
@@ -230,8 +321,9 @@ encrypted database, which ships native `.so` libraries for four ABIs (`arm64-v8a
 `armeabi-v7a`, `x86`, `x86_64`). To avoid that footprint, use the **transport-only**
 path (`core-transfer` + `core-network` + `core-discovery`, no database), or restrict
 ABIs with `ndk { abiFilters(...) }` / an ABI split in your app. `core-calling` adds native
-**WebRTC** on top of that (~30 MB per ABI) and is the reason calling is a separate artifact rather
-than part of the umbrella.
+**WebRTC** on top of that (~30 MB per ABI) and is the reason calling is a separate artifact that
+`core-engine` does not put on your compile classpath — the facade declares it `compileOnly` and you
+add it when you call.
 
 ## Published modules
 
@@ -247,8 +339,10 @@ Take the umbrella, or compose only the lightweight pieces:
 | `core-security` | Supported — lightweight | No | Trust store / pairing primitives. |
 | `core-persistence` | Supported — optional storage | Yes | Add cross-restart persistence to a lightweight setup. |
 | `core-messaging` | Experimental — shipped (API may change) | Yes (transitive) | Chat repository; pulled in transitively by `core-engine`. Don't depend on it directly yet. |
-| `core-calling` | Experimental — shipped | No (but ~30 MB WebRTC) | Voice/video calls. **Not** reachable via `Flash.create` — see [Voice & video calls](#voice--video-calls). |
+| `core-calling` | Experimental — shipped | No (but ~30 MB WebRTC) | Voice/video calls. Reachable via `Flash.create` (`engine.attachCalling(...)`) — but the umbrella declares it `compileOnly`, so **add it yourself**; see [Voice & video calls](#voice--video-calls). |
+| `core-ptt` | Experimental — shipped (API may change) | No | Push-to-talk floor, capture, playout and PTT wire codecs. Reachable via `Flash.create` (`engine.attachPtt(...)`) — see [Push-to-talk](#push-to-talk-ptt). |
 | `ui-theme` | Experimental — shipped | No | The Flash design system (colors, typography, motion, icons) for Compose. |
+| `ui-platform-shims` | Experimental — shipped | No | Platform seams (back handling, clipboard, file picking, permissions, image decode, audio playback, voice capture) that `ui-chat` compiles against. Transitive — depend on it only if you are reimplementing the chat UI. |
 | `ui-chat` | Experimental — shipped | No | The chat list / conversation / transfers / settings UI. Stateless; add `core-messaging` for its state types. |
 | `ui-callui` | Experimental — shipped | No (`api`s `core-calling`) | `FlashCallScreen`, the full-screen in-call surface. |
 
@@ -259,6 +353,18 @@ The `ui-*` artifacts are Compose libraries and are deliberately stateless — ev
 `*UiState` plus callbacks and holds no repository, so you can render Flash's UI over your own data
 source, or take the engine and none of the UI. They build against `compileSdk 37` while the `core-*`
 modules stay on 35.
+
+**Dependency shape inside the set:** `core-engine` `api`s every other `core-*` module — including
+`core-ptt`, so an umbrella consumer gets PTT without naming it (it is declared on the Android target,
+because `core-ptt` is an Android-only library and `:core:engine`'s desktop `jvm()` target cannot
+resolve it). `core-calling` is the one exception: it is declared `compileOnly` on the Android
+target, so `FlashCalling` is on `core-engine`'s *compile* classpath and in its public API, while a
+consumer's runtime classpath stays free of `core-calling` and its ~30 MB-per-ABI WebRTC unless the
+consumer adds the dependency itself — which any app that places a call does. `ui-chat` reaches
+`ui-platform-shims` through an `implementation(project(...))`
+dependency, which Gradle writes into the published metadata for the Android target as a runtime
+dependency: that is why the shims module is published too, and why a `ui-chat` consumer resolves it
+without asking for it.
 
 ## License
 

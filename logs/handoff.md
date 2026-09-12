@@ -1,5 +1,399 @@
 # Current Handoff
 
+## 2026-09-11 - Group late-join fixed in `:core:messaging` (ERROR-051); uncommitted
+
+### Current branch
+`dev` at `e012bed` + the large uncommitted working tree (PTT stack, calling/chat fixes, the
+calling-seam pass, the sample contract test, and this one).
+**Nothing was committed, reverted or stashed**, and no unrelated working-tree file was touched.
+
+### Current phase
+Group robustness / pre-device. The owner-reported late-join defect is fixed in code and covered by
+tests; the device gate for the group feature is still owed and is now more clearly the next step.
+
+### Last change
+- `RealFlashChatRepository`: `requestGroupCatchUp` (catch-up on join), `reconcileGroupMembership` +
+  `buildStateFrame` (roster re-sent at the session-up edge), `sendSyncRequestFor` (shared request
+  shape), and a non-destructive `State` conversation upsert.
+- `Flash.kt` + `DiscoveryEngineHolder.kt`: the reconcile hook beside `sendGroupSyncRequests` at the
+  session-up edge.
+- Tests: four defect-pinning diagnostics flipped to intended behaviour; two `@Ignore`d
+  intended-behaviour tests are live; harness session-up edges extended with the reconcile hook;
+  windows widened past `BACKUP_DELAY_MS` (2 s).
+- `FakeMessageDao.insert` made atomic (`putIfAbsent`) to mirror Room's `onConflict = IGNORE` - fixes
+  the intermittent duplicate-callback failure in `group media callback supplies stored title and
+  attachment metadata` (ERROR-052). Test-only change.
+- **F7d**: `claimedGroupMedia` atomic claim makes the group-media bubble single-owner, so the two
+  mint paths can no longer race into the same insert (production-side hardening of the smell
+  ERROR-052 left behind).
+
+### Last verified build
+JBR 21 (`JAVA_HOME=/c/Users/KaliOxygen/.gradle/jdks/jetbrains_s_r_o_-21-amd64-windows.2`,
+`JAVA_TOOL_OPTIONS=-Djdk.net.unixdomain.tmpdir=C:\Users\KaliOxygen\.gradle\afunix`,
+`--console=plain --max-workers=2`):
+- `:core:messaging:testAndroidHostTest --rerun-tasks` - **BUILD SUCCESSFUL**;
+  `172 tests, 0 skipped, 0 failures` across the module's suites.
+- `:core:engine:testAndroidHostTest`, `:sample:consumer:testDebugUnitTest`, `:app:testDebugUnitTest`,
+  `:core:messaging:compileAndroidMain`, `:core:engine:compileAndroidMain`, `:app:compileDebugKotlin`,
+  `:app:assembleDebug` - all green.
+
+### Next up
+1. **Device gate** for the group flows (F2/F3/F7): three devices, one offline for the add, verify the
+   group appears, history backfills, and messages flow both ways after the reconnect.
+2. ~~Known flake~~ **fixed in this pass**: `group media callback supplies stored title and attachment
+   metadata` was a test-harness race, not a product bug - `FakeMessageDao.insert` was a non-atomic
+   check-then-put on a 4-thread pool while Room's `onConflict = IGNORE` is atomic, so it invented a
+   duplicate callback that production rejects. Now `putIfAbsent`; four consecutive full-suite runs
+   green.
+3. Still open from the earlier passes: the version/tag plan (docs are at 1.3.0 while
+   `flashLibraryVersion` is `1.1.0`), the `compileOnly` vs `core:calling-api` split decision, and the
+   human review of the calling seam.
+
+## 2026-09-11 — HAZARD-002 given runtime evidence: `:sample:consumer` is the facade's contract test, uncommitted
+
+### Current branch
+`dev` at `e012bed` + the large uncommitted working tree (PTT stack, calling/chat fixes, docs, the
+calling-seam pass, and this one).
+**Nothing was committed, reverted or stashed in this session**, and no unrelated working-tree file
+was touched. No production code and no dependency scope changed in this pass.
+
+### Current phase
+Library-compliance / pre-device. The calling seam (ADR-033, `compileOnly(project(":core:calling"))`)
+is unchanged; what changed is that its central safety claim — nothing a non-calling consumer
+executes may name a `:core:calling` type — is now backed by an executable test instead of an
+argument.
+
+### Last verified build
+JBR 21 (`JAVA_HOME=/c/Users/KaliOxygen/.gradle/jdks/jetbrains_s_r_o_-21-amd64-windows.2`,
+`JAVA_TOOL_OPTIONS=-Djdk.net.unixdomain.tmpdir=C:\Users\KaliOxygen\.gradle\afunix`,
+`--console=plain --max-workers=2`):
+- `:sample:consumer:testDebugUnitTest` — **BUILD SUCCESSFUL, exit 0**; XML on disk
+  (`sample/consumer/build/test-results/testDebugUnitTest/TEST-…UmbrellaFacadeContractTest.xml`):
+  **tests=10 failures=0 errors=0 skipped=0**.
+- `:core:engine:testAndroidHostTest --rerun-tasks` — BUILD SUCCESSFUL, 60 tasks executed,
+  **14 tests / 0 failures** (fresh execution at 13:04).
+- `:app:testDebugUnitTest --rerun` — BUILD SUCCESSFUL, **10 suites / 49 tests / 0 failures**.
+- `:app:compileDebugKotlin`, `:sample:consumer:compileDebugKotlin`,
+  `:sample:consumer-granular:compileDebugKotlin` — green, exit 0.
+- `:core:engine:publishToMavenLocal "-Dmaven.repo.local=…/build/tmp/aar-check-20260911-125942/m2"`
+  — BUILD SUCCESSFUL; the AAR's `classes.jar` holds 47 class files and exactly **3** reference the
+  calling package (`FlashEngine.class`, `DefaultFlashEngine.class`,
+  `DefaultFlashEngine$attachCalling$1$1.class`); published metadata still declares no
+  `core-calling`/`webrtc-kmp`.
+
+### Last change
+- Added `sample/consumer/src/test/java/com/transfer/flash/sample/consumer/UmbrellaFacadeContractTest.kt`
+  (10 tests): the absence precondition, member-type linkage of `FlashKt`/`Wiring`/`Flash`, a
+  byte-level referrer-set scan of the engine package, the reflective boundary, all 14 frame texts
+  (11 non-calling families + 3 `FLASH_CALL` shapes) driven through `onInboundCallText` on a
+  hand-assembled `DefaultFlashEngine`
+  (no `Throwable`, `false` answers), `ptt == null` + signaling no-ops + safe idempotent `close()`,
+  and `FLASH_CALL` recognition/separability against every real family parser.
+- `sample/consumer/build.gradle.kts`: `testImplementation(libs.junit)`,
+  `testOptions { unitTests { isReturnDefaultValues = true } }`, header comment naming the module's
+  contract-test role. Still unpublished (no `maven-publish`).
+- `docs/decisions.md` ADR-033: Status + new §6/§7 — the app host's
+  `onSignalingLost`/`onSignalingRestored` calls are the app's **only** driver of the ERROR-033
+  mid-call recovery window and are NOT redundant leftovers (the removed duplication was the
+  `CallFrameCodec.decode` pre-check); the sample's calling-free classpath IS the contract and must
+  not be "fixed" by adding `core-calling`.
+- `logs/errors.md` HAZARD-002: second verification section (observed facts, the reflective boundary,
+  the reproduction recipe incl. the `grep -a` trap) and a Status that no longer says "latent".
+
+### Last test
+`./gradlew :sample:consumer:testDebugUnitTest` — BUILD SUCCESSFUL, exit 0, **10 tests / 0 failures**
+(XML read from disk, not inferred from the build result), plus the regression set above.
+**No device was attached in this session: nobody has run a consumer app without `core-calling` on
+ART, and `Wiring.handleInboundText`'s control flow is still not executed by any test.**
+
+### Known blockers
+None in the build. Unchanged real blockers: the physical two-phone calling gate (1:1, group, roaming
+mid-call, notification answer) and the PTT device gate are still owed, and HAZARD-002's ART half is
+owed too.
+
+### Recommended next task
+Physical two-phone calling gate on this tree (1:1 audio + video, group invite/accept/join/rejoin, a
+mid-call Wi-Fi roam — the facade drives that recovery window for `Flash.create` consumers and the app
+host drives its own — notification answer/decline/hangup, and a `FLASH_CALL` frame arriving at an app
+with no calling attached being dropped without a crash). Then commit this pass together with the
+calling-seam and PTT P0 passes.
+
+### Files most relevant to next task
+- `sample/consumer/src/test/java/com/transfer/flash/sample/consumer/UmbrellaFacadeContractTest.kt`
+  (what is proven, and the explicit list of what is not)
+- `sample/consumer/build.gradle.kts` (the calling-free classpath is the subject — do not add deps)
+- `docs/decisions.md` ADR-033 §6/§7, `logs/errors.md` HAZARD-002 (re-open conditions)
+- `core/engine/src/androidMain/kotlin/com/transfer/flash/core/engine/{Flash.kt,FlashEngine.kt}`
+- `app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt` (the kept session-edge
+  recovery calls, and the deleted `CallFrameCodec.decode` pre-check they must not be confused with)
+
+## 2026-09-11 — Calling seam added to the umbrella facade (`compileOnly`, facade routing, app-host de-dup), uncommitted
+
+### Current branch
+`dev` at `e012bed` + the large uncommitted working tree (PTT stack, calling/chat fixes, docs, and
+this pass).
+**Nothing was committed, reverted or stashed in this session**, and no unrelated working-tree file
+was touched.
+
+### Current phase
+Library-compliance / pre-device, following the PTT P0 pass. Calling is now reachable through
+`Flash.create` the way PTT is, with one deliberate difference: `:core:calling` is declared
+`compileOnly` (ADR-033) so the umbrella still does not pull native WebRTC. The app/device feature
+work is unchanged — this pass moved routing and de-duplicated the app host.
+
+### Last verified build
+JBR 21 (`JAVA_HOME=/c/Users/KaliOxygen/.gradle/jdks/jetbrains_s_r_o_-21-amd64-windows.2`,
+`JAVA_TOOL_OPTIONS=-Djdk.net.unixdomain.tmpdir=C:\Users\KaliOxygen\.gradle\afunix`,
+`--console=plain --max-workers=2`):
+- Baseline before edits: `:core:engine:compileAndroidMain`, `:core:engine:compileKotlinJvm`,
+  `:core:engine:testAndroidHostTest` — exit 0, all up-to-date.
+- `:core:engine:compileAndroidMain` — green, and it now *executes* `:core:calling:compileReleaseKotlin`
+  (proof the `compileOnly` edge is real). `:core:engine:compileKotlinJvm` — UP-TO-DATE.
+- `:core:engine:testAndroidHostTest` — green, **14 tests / 0 failures** (5 new calling tests);
+  module total with `jvmTest` **22, up from 17**.
+- `:app:compileDebugKotlin` + `:app:testDebugUnitTest` + `:app:assembleDebug` — BUILD SUCCESSFUL,
+  exit 0 (269 tasks); **49 app tests / 0 failures**; APK 66,970,902 bytes.
+- `:sample:consumer:compileDebugKotlin`, `:sample:consumer-granular:compileDebugKotlin` — green.
+- `:core:engine:publishToMavenLocal -Dmaven.repo.local=…/build/tmp/throwaway-m2` — green.
+  `core-engine-android-1.1.0.pom` / `.module` list eight `core-*` modules including `core-ptt` and
+  **no `core-calling` / `webrtc-kmp`**; `grep -ril "calling\|webrtc"` over the published
+  `core-engine*` tree returns nothing. `javap` on the AAR shows `getCalls()`,
+  `attachCalling(FlashCalling)`, `detachCalling()` and the calling-free routing signatures, and a
+  binary grep for `FlashCalling` matches only `FlashEngine.class`, `DefaultFlashEngine.class` and
+  `DefaultFlashEngine$attachCalling$1$1.class` — not `FlashKt.class`, `Flash.class` or any `Wiring*`.
+
+### Last change
+- `core/engine/build.gradle.kts`: `compileOnly(project(":core:calling"))` on androidMain (comment
+  explains the WebRTC/`api` rationale + the ERROR-049 variant reason); `implementation(project(
+  ":core:calling"))` on androidHostTest only, for the stub.
+- `FlashEngine`/`DefaultFlashEngine`: `calls`, `attachCalling(engine)`, `detachCalling()` (no
+  factory — the facade cannot build a `CallCoordinator`), plus the calling-free routing hook
+  `onInboundCallText` and the lifecycle hooks `onCallSignalingLost`/`onCallSignalingRestored`.
+  `close()` detaches. The attached engine is reached through function-typed fields so no
+  always-executed path resolves a `:core:calling` type.
+- `Flash.kt`: `CALL_PREFIX` + `internal fun isCallFrameText`, a **first** branch in
+  `handleInboundText` that consumes-or-drops recognized call frames (never falling through), and
+  `onCallSignalingLost`/`Restored` calls on the existing `activeSessions` collector edges.
+- `DiscoveryEngineHolder`: one `isCallFrameText` gate + one `calling.onInboundText(...)` call
+  replaces the `CallFrameCodec.decode` pre-check; field/accessor and `FlashCallService`'s snapshot
+  are `FlashCalling`-typed (`currentCalling()`); `FlashCallActionReceiver` and `AppEngine.calls`
+  follow. Media/service/notification/ringer/UI untouched.
+- Docs: README calls section + published-modules rows + dependency-shape paragraph;
+  `docs/architecture/public-api.md` 1.3.0 (§7, §10); `docs/decisions.md` ADR-033;
+  `logs/progress.md`.
+
+### Last test
+`./gradlew :core:engine:compileAndroidMain :core:engine:compileKotlinJvm
+:core:engine:testAndroidHostTest :app:compileDebugKotlin :app:testDebugUnitTest :app:assembleDebug`
+— BUILD SUCCESSFUL in 55 s, exit 0. **No device was attached in this session: no physical-device
+evidence exists for anything in this pass.**
+
+### Known blockers
+None in the build. The real blockers are unchanged from the PTT pass: no physical-phone gates have
+been run for PTT, and calling's 1:1/group gates (including roaming mid-call, which this pass moved
+into the facade) are still owed.
+
+### Recommended next task
+Physical two-phone calling gate on this tree: 1:1 audio + video, group call invite/accept/join/
+rejoin, a mid-call Wi-Fi roam (the facade now owns the recovery window — confirm the call survives
+and renegotiates), notification answer/decline/hangup (the renamed `currentCalling()` feeds
+`FlashCallService` and `FlashCallActionReceiver`), and a check that a peer sending `FLASH_CALL`
+while the app has no calling attached is dropped without a crash. Then commit this pass together
+with the PTT P0 pass.
+
+### Files most relevant to next task
+- `core/engine/src/androidMain/kotlin/com/transfer/flash/core/engine/FlashEngine.kt` (seam)
+- `core/engine/src/androidMain/kotlin/com/transfer/flash/core/engine/Flash.kt` (routing + lifecycle)
+- `core/engine/build.gradle.kts` (`compileOnly` + host-test stub dependency)
+- `core/engine/src/androidHostTest/kotlin/com/transfer/flash/core/engine/DefaultFlashEngineTest.kt`
+  (5 calling tests)
+- `app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt` (host wiring, `currentCalling()`)
+- `app/src/main/java/com/transfer/flash/calling/{FlashCallService,FlashCallActionReceiver}.kt`
+- `docs/decisions.md` ADR-033, `docs/architecture/public-api.md` §7/§10
+
+## 2026-09-11 — PTT P0 pass complete (module split finished, facade routing, publication set), uncommitted
+
+### Current branch
+`dev` at `e012bed` + the large uncommitted working tree (PTT stack, calling/chat fixes, docs).
+**Nothing was committed, reverted or stashed in this session** — the pre-existing unrelated
+modifications are untouched.
+
+### Current phase
+PTT library compliance / pre-device. The LAN + group + calling feature work from earlier sessions
+is unchanged; this pass only moved PTT into `:core:ptt` properly and wired it through the facade.
+
+### Last verified build
+JBR 21 (`JAVA_HOME=/c/Users/KaliOxygen/.gradle/jdks/jetbrains_s_r_o_-21-amd64-windows.2`,
+`JAVA_TOOL_OPTIONS=-Djdk.net.unixdomain.tmpdir=C:\Users\KaliOxygen\.gradle\afunix`):
+- Baseline before edits: `:core:ptt:compileDebugKotlin` FAILED (3 errors) — ERROR-048.
+- `:core:ptt:compileDebugKotlin`, `:core:ptt:compileReleaseKotlin` — green.
+- `:core:ptt:testDebugUnitTest` — 19 tests / 0 failures (new `PttSessionEngineTest`).
+- `:core:engine:compileAndroidMain`, `:core:engine:compileKotlinJvm`,
+  `:core:engine:testAndroidHostTest` — green, 17 host tests / 0 failures.
+- `:app:testDebugUnitTest` + `:app:assembleDebug` — green; 49 tests in 10 suites, 0 failures,
+  APK 66,670,723 bytes.
+- `:core:ptt:publishToMavenLocal`, `:ui:platform-shims:publishToMavenLocal` — green
+  (artifactIds `core-ptt`, `ui-platform-shims*` confirmed in `~/.m2`).
+  `:core:engine:publishToMavenLocal` into a throwaway repo green; `core-engine-android` metadata
+  lists `core-ptt`.
+
+### Last change
+- `:core:ptt`: one public seam (`FlashPtt` + top-level `PttPressOutcome`/`PttRole`/
+  `PttSessionStats`/`PttPingEvent`); nested legacy types deleted; `SEEN_PING_CAP` restored;
+  `postNotice` promoted to the interface; ping events engine-owned (constructor-injected
+  `MutableSharedFlow` seam removed).
+- `sendPing()` fan-out bug fixed (was `any {}`, so exactly one peer was notified) — ERROR-050.
+- `:core:engine`: `FlashEngine.ptt` / `attachPtt(lambdas)` / `attachPtt(engine)` / `detachPtt()`;
+  `DefaultFlashEngine.pttFactory`; inbound `FLASH_PTT`/`FLASH_PTSS`/`PTT1` routed before the
+  transfer parser, recognized-and-dropped when unattached; `close()` detaches PTT.
+- `core/engine/build.gradle.kts`: `api(project(":core:ptt"))` moved commonMain → androidMain
+  (fixed the JVM target + publication) — ERROR-049.
+- App host: `FlashPtt`-typed holder, duplicate ping pipeline and duplicate ping frame build
+  deleted, `broadcastPttPing` delegates to `sendPing()`, `ptt.pings` feeds the background
+  notification; service/overlay/receiver now use the interface.
+- `jitpack.yml` publishes fourteen modules (added `:core:ptt`, `:ui:platform-shims`); README gained
+  a PTT usage section, PTT permissions/service snippet, and two new published-module rows;
+  `public-api.md` → 1.2.0 with §6 groups, §7 group calling, §10 PTT seam, §14 `:core:ptt`;
+  `protocol.md` 1:1 signaling-loss rule corrected and the group-call frames documented.
+
+### Last test
+`./gradlew :app:testDebugUnitTest :app:assembleDebug` — BUILD SUCCESSFUL (2m), 49 tests /
+0 failures / 0 skipped. No device was attached in this session: **no physical-device evidence
+exists for anything in this pass.**
+
+### Known blockers
+None in the build. The real blocker is unchanged: PTT has never been exercised on two physical
+phones (ERROR-047 is still "device verification pending", ERROR-050's multi-peer delivery likewise).
+
+### Recommended next task
+Run the physical two-phone PTT gate on the current tree: simultaneous presses (collision rule),
+A→B audio with an intact first syllable, second press stops, B leaves → A prunes the member badge,
+notification actions, background tap-to-talk, 5 s orphan timeout, voice-note/call exclusions, LOW
+8 kHz format, rugged-speaker routing. Capture `PTT_SESS`, `PTT_CAP`, `PTT_OUT`, `WS` logs. Then
+commit the P0 pass.
+
+### Files most relevant to next task
+- `core/ptt/src/main/java/com/transfer/flash/core/ptt/PttSessionEngine.kt` (floor driver, ping
+  routing, `sendPing`)
+- `core/ptt/src/main/java/com/transfer/flash/core/ptt/{FlashPtt,PttCapture,PttPlayout}.kt`
+- `core/engine/src/androidMain/kotlin/com/transfer/flash/core/engine/{Flash.kt,FlashEngine.kt}`
+  (facade routing + attach seam)
+- `app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt` (host wiring, hardware
+  receiver, pings collector)
+- `app/src/main/java/com/transfer/flash/ptt/{PttSessionService,PttSessionOverlay,PttSessionActionReceiver}.kt`
+- `logs/errors.md` ERROR-048/049/050 (what was broken and what "fixed" was verified against)
+
+## 2026-09-10 — PTT pre-device hardening complete, uncommitted
+
+### Current branch
+`dev` at `e012bed` + uncommitted PTT stack and hardening fixes.
+
+### Last verified build
+With JBR 21 and the AF_UNIX temp-dir workaround:
+- `:core:messaging:jvmTest` green.
+- `:core:messaging:testAndroidHostTest` green.
+- `:app:testDebugUnitTest` green.
+- `:app:assembleDebug` BUILD SUCCESSFUL (223 tasks; final repeat run 21 s).
+- Final combined validation green: `:core:messaging:jvmTest`,
+  `:core:messaging:testAndroidHostTest`, `:ui:chat:jvmTest`, `:app:testDebugUnitTest`, and
+  `:app:assembleDebug` (240 tasks, 34 s with configuration cache).
+- The stale HIGH profile test now matches the implemented 20 ms / 50 pps.
+- An earlier chat stress threshold failure (1446 ms) passed in isolation and on the final full run.
+- `git diff --check` clean (only the pre-existing `logs/errors.md` CRLF warning).
+
+### Last change
+Fixed the pre-device PTT blockers: one non-reentrant state/effect command lane; session/role-keyed
+jobs; deterministic simultaneous-claim resolution; AudioTrack write/stop ownership; accumulated
+AudioRecord short reads, callback/executor cleanup, and monotonic capture timestamps; accepted-state
+PCM parameters; stale PCM rejection; holder/session binding for Stop + liveness; synchronous
+Start-before-audio ordering; per-member RTT; IO transport work; full call exclusion; and owned
+voice-note leases. Updated protocol/ADR/platform/UI docs and expanded pure floor/framing tests.
+
+### Known blocker
+No remaining blocker was found by the focused static pass or local test/build suite. Physical Android
+proof is still required before calling PTT complete: especially simultaneous presses, capture/playout
+teardown, first-syllable integrity, and background/notification behavior.
+
+### Recommended next task
+Install the debug APK on both phones and run the PTT gate: simultaneous press collision, A→B audio
+with intact first syllable, second-press Stop, B Leave → A badge prune, notification actions,
+background tap-to-talk, 5 s orphan timeout, voice-note/call exclusions, LOW 8 kHz format, and rugged
+speaker routing. Capture `PTT_SESS`, `PTT_CAP`, `PTT_OUT`, and `WS` logs.
+
+### Files most relevant to next task
+- `app/src/main/java/com/transfer/flash/ptt/PttSessionEngine.kt`
+- `app/src/main/java/com/transfer/flash/ptt/PttCapture.kt`
+- `app/src/main/java/com/transfer/flash/ptt/PttPlayout.kt`
+- `app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt`
+- `logs/progress.md`
+
+## 2026-09-10 — No-peer toast + dev console removed, uncommitted
+
+### Current branch
+`dev` at `e012bed` + uncommitted PTT stack (Phases 0–3, Leave fix, this change).
+
+### Last verified build
+With JDK 21: `:app:testDebugUnitTest`, `:app:assembleDebug` BUILD SUCCESSFUL.
+
+### Last change
+- Press with nobody online now toasts `"No paired devices online"` (direct + deferred
+  paths); ping fallback kept.
+- Dev console page + floating chip removed (`FlashDevConsoleScreen.kt` deleted;
+  entry, layer, state, param threading, chip-only inset tween and imports gone).
+
+### Recommended next task
+Reinstall both phones; prove solo-press toast + rerun the Phase 3 device gate.
+
+### Files most relevant to next task
+- `app/src/main/java/com/transfer/flash/MainActivity.kt` (entry/layer removal)
+- `app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt` (NO_PEERS notice)
+- `app/src/main/java/com/transfer/flash/ptt/PttSessionOverlay.kt` (outcome toasts)
+
+## 2026-09-10 — ERROR-046 fixed (prior session; device proof still owed)
+
+### Current branch
+`dev` at `e012bed` + uncommitted PTT stack (Phases 0–3 + Leave fix).
+
+### Last verified build
+With JDK 21: `:app:testDebugUnitTest`, `:app:assembleDebug` BUILD SUCCESSFUL.
+
+### Last change
+Leave-never-sent ordering bug (ERROR-046): `stopListen()` kept `holderId` for the
+trailing `SendLeave`; inbound Leave prunes broadcaster members/stats; delivery-proof
+logs on sender, broadcaster and notification receiver.
+
+### Recommended next task
+Reinstall both phones from the new APK, then prove: B Leave → `Leave sent` (B log),
+`Listener left … remaining=N` (A log), A badge drops; notification Leave shows `Stop
+action received` first. Then commit.
+
+### Files most relevant to next task
+- `app/src/main/java/com/transfer/flash/ptt/PttSessionEngine.kt` (stopListen/sendLeave)
+- `logs/errors.md` ERROR-046 (exact log lines to watch)
+
+### Current branch
+`dev` at `e012bed` + uncommitted Phase 0–2 (control, audio engine, session service).
+
+### Last verified build
+With JDK 21:
+- `:app:testDebugUnitTest` green (4/4 new content tests).
+- `:app:assembleDebug` BUILD SUCCESSFUL.
+
+### Last change
+Phase 2: `PttSessionService` (role-claimed FGS types, HIGH-silent channel, 1 Hz sampled
+notification with chronometer + Stop/Leave) + action receiver + tested content fn +
+manifest perm/service/receiver + holder start/stop wiring + engine `stopLocal`/Idle-
+reset. Notices still log-only; no session UI.
+
+### Recommended next task
+Phase 3: session UI + tier-gated animation + toasts + press-to-foreground; verify
+backgrounded-press promotion refusal on API 34+ hardware.
+
+### Files most relevant to next task
+- `app/src/main/java/com/transfer/flash/ptt/PttSessionService.kt` (notification surface)
+- `app/src/main/java/com/transfer/flash/ptt/PttSessionEngine.kt` (state/stats/notices)
+- `ui/chat/.../FlashVoiceRecording.kt`, `FlashVoiceMessageCard.kt` (amplitude/visual patterns to follow)
+
 ## 2026-09-10 — 5-Fix Wiring Complete (Notification Answer, Rejoin Call, Device Name)
 
 ### Current branch
