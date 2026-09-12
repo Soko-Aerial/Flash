@@ -450,6 +450,31 @@ Optimized LazyColumn chat message rendering performance on low-end devices by di
 - `./gradlew :core:messaging:jvmTest :core:messaging:testAndroidHostTest :ui:chat:jvmTest :app:testDebugUnitTest :app:assembleDebug` — BUILD SUCCESSFUL (all tests passed).
 - `git diff --check` — clean.
 
+## 2026-09-10 — Sentinel: Path Traversal Containment Guard (CRITICAL Defense)
+
+### Worked on
+Added canonical path containment verification (`require(dest.path.startsWith(canonicalRoot.path + File.separator))`) to fail closed on any path traversal escape attempts during receive file sink resolution.
+
+### Changed
+- `app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt`:
+  - Added explicit canonical containment check in `sinkFactory` to verify that `dest.canonicalFile` resides strictly within `receivedDir.canonicalFile`.
+  - Added `// SENTINEL:` threat and fix documentation comment.
+- `core/engine/src/androidMain/kotlin/com/transfer/flash/core/engine/Flash.kt`:
+  - Added canonical containment check in `sinkFactory` for `Flash.create` library receiver pipeline.
+  - Added `// SENTINEL:` threat and fix documentation comment.
+- `core/transfer/src/androidHostTest/kotlin/com/transfer/flash/core/transfer/policy/DestinationPolicyTest.kt`:
+  - Added unit test `canonical path containment check rejects path traversal escapes outside received root` validating canonical containment and path escape rejection.
+- `ui/chat/src/commonTest/kotlin/com/transfer/flash/ui/settings/FlashSettingsLogicTest.kt`:
+  - Updated test expectation for `FlashVoiceProfile.HIGH` packet rate (50 voice packets/s).
+
+### Verification
+- Gradle unit tests passed: `./gradlew :core:messaging:jvmTest :ui:chat:jvmTest :app:testDebugUnitTest`.
+- Physical-device test gate remaining per AGENTS.md §12.
+- `git diff --check` passed clean with zero whitespace errors.
+
+### Remaining
+- Physical-device verification of transfer reception.
+
 ## 2026-09-10 — PTT pre-device hardening
 
 ### Worked on

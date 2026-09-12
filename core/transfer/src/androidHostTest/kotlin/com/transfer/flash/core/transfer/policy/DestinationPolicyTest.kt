@@ -65,4 +65,20 @@ class DestinationPolicyTest {
         assertEquals(150, actualBytes.size)
         assertArrayEquals(expectedBytes, actualBytes)
     }
+
+    @Test
+    fun `canonical path containment check rejects path traversal escapes outside received root`() {
+        val rootDir = tempFolder.newFolder("FlashReceived").canonicalFile
+        val validDest = File(File(rootDir, "transfer-1"), "safe.bin").canonicalFile
+        assertTrue(
+            "Valid child destination must pass canonical containment check",
+            validDest.path.startsWith(rootDir.path + File.separator),
+        )
+
+        val escapedDest = File(rootDir, "../escaped.bin").canonicalFile
+        assertFalse(
+            "Escaped path must fail canonical containment check",
+            escapedDest.path.startsWith(rootDir.path + File.separator),
+        )
+    }
 }
