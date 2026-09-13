@@ -18,8 +18,6 @@ import com.shepeliev.webrtckmp.SessionDescription
 import com.shepeliev.webrtckmp.SessionDescriptionType
 import com.shepeliev.webrtckmp.VideoStreamTrack
 import com.shepeliev.webrtckmp.audioTracks
-import org.webrtc.Priority
-import org.webrtc.RtpParameters.DegradationPreference
 import com.shepeliev.webrtckmp.onConnectionStateChange
 import com.shepeliev.webrtckmp.onIceCandidate
 import com.shepeliev.webrtckmp.onTrack
@@ -969,19 +967,11 @@ public class FlashGroupCallSession(
     private fun tuneAudioSender(sender: RtpSender) {
         val maxBitrateBps = performanceMode().voice.maxBitrateBps
         try {
-            val native = sender.android
-            val params = native.parameters
-            if (params.encodings.isEmpty()) {
+            val applied = sender.applyAudioTuning(AudioSendTuning(maxBitrateBps = maxBitrateBps))
+            if (!applied) {
                 FlashLog.w("GROUP_CALL", "audio sender has no encodings to tune")
                 return
             }
-            params.encodings.forEach { encoding ->
-                encoding.active = true
-                encoding.networkPriority = Priority.HIGH
-                encoding.bitratePriority = AUDIO_BITRATE_PRIORITY
-                encoding.maxBitrateBps = maxBitrateBps
-            }
-            val applied = native.setParameters(params)
             FlashLog.i(
                 "GROUP_CALL",
                 "audio sender tuned applied=$applied max=${maxBitrateBps / 1000}kbps " +
@@ -995,23 +985,20 @@ public class FlashGroupCallSession(
     private fun tuneVideoSender(sender: RtpSender) {
         val profile = performanceMode().video
         try {
-            val native = sender.android
-            val params = native.parameters
-            params.degradationPreference = DegradationPreference.MAINTAIN_FRAMERATE
-            if (params.encodings.isEmpty()) {
+            val applied = sender.applyVideoTuning(
+                VideoSendTuning(
+                    maxBitrateBps = profile.maxBitrateKbps * BPS_PER_KBPS,
+                    minBitrateBps = profile.minBitrateKbps * BPS_PER_KBPS,
+                    maxFramerate = profile.captureFps.toDouble(),
+                    scaleResolutionDownBy = 1.0,
+                    demoteForVoice = true,
+                    maintainFramerate = true,
+                ),
+            )
+            if (!applied) {
                 FlashLog.w("GROUP_CALL", "video sender has no encodings to tune")
                 return
             }
-            params.encodings.forEach { encoding ->
-                encoding.active = true
-                encoding.maxBitrateBps = profile.maxBitrateKbps * BPS_PER_KBPS
-                encoding.minBitrateBps = profile.minBitrateKbps * BPS_PER_KBPS
-                encoding.maxFramerate = profile.captureFps
-                encoding.scaleResolutionDownBy = 1.0
-                encoding.networkPriority = Priority.LOW
-                encoding.bitratePriority = VIDEO_BITRATE_PRIORITY
-            }
-            val applied = native.setParameters(params)
             FlashLog.i(
                 "GROUP_CALL",
                 "video sender tuned applied=$applied max=${profile.maxBitrateKbps}kbps " +
@@ -1023,8 +1010,8 @@ public class FlashGroupCallSession(
     }
 
     private companion object {
-        const val AUDIO_BITRATE_PRIORITY = 4.0
-        const val VIDEO_BITRATE_PRIORITY = 0.5
+        // AUDIO_BITRATE_PRIORITY / VIDEO_BITRATE_PRIORITY moved to the sender-tuning seam
+        // (RtpSenderTuning.kt) with the rest of the native-knob plumbing (S2e).
         const val BPS_PER_KBPS = 1000
     }
 }

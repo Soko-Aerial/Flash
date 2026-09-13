@@ -47,9 +47,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import org.webrtc.Priority
-import org.webrtc.RtpParameters.DegradationPreference
-
 /**
  * One 1:1 WebRTC call session (C7, ADR-025).
  *
@@ -837,19 +834,11 @@ public class FlashCallSession(
         }
         val maxBitrateBps = performanceMode().voice.maxBitrateBps
         try {
-            val native = sender.android
-            val params = native.parameters
-            if (params.encodings.isEmpty()) {
+            val applied = sender.applyAudioTuning(AudioSendTuning(maxBitrateBps = maxBitrateBps))
+            if (!applied) {
                 FlashLog.w("CALL", "audio sender has no encodings to tune")
                 return
             }
-            params.encodings.forEach { encoding ->
-                encoding.active = true
-                encoding.networkPriority = Priority.HIGH
-                encoding.bitratePriority = AUDIO_BITRATE_PRIORITY
-                encoding.maxBitrateBps = maxBitrateBps
-            }
-            val applied = native.setParameters(params)
             FlashLog.i(
                 "CALL",
                 "audio sender tuned applied=$applied max=${maxBitrateBps / 1000}kbps " +
@@ -887,26 +876,21 @@ public class FlashCallSession(
         val profile = performanceMode().video
         try {
             val voiceFirst = prioritiseVoice()
-            val native = sender.android
-            val params = native.parameters
-            params.degradationPreference = DegradationPreference.MAINTAIN_FRAMERATE
-            if (params.encodings.isEmpty()) {
+            val applied = sender.applyVideoTuning(
+                VideoSendTuning(
+                    maxBitrateBps = profile.maxBitrateKbps * BPS_PER_KBPS,
+                    minBitrateBps = profile.minBitrateKbps * BPS_PER_KBPS,
+                    maxFramerate = profile.captureFps.toDouble(),
+                    // Send at capture resolution; adaptation drives this down on its own.
+                    scaleResolutionDownBy = 1.0,
+                    demoteForVoice = voiceFirst,
+                    maintainFramerate = true,
+                ),
+            )
+            if (!applied) {
                 FlashLog.w("CALL", "video sender has no encodings to tune")
                 return
             }
-            params.encodings.forEach { encoding ->
-                encoding.active = true
-                encoding.maxBitrateBps = profile.maxBitrateKbps * BPS_PER_KBPS
-                encoding.minBitrateBps = profile.minBitrateKbps * BPS_PER_KBPS
-                encoding.maxFramerate = profile.captureFps
-                // Send at capture resolution; adaptation drives this down on its own.
-                encoding.scaleResolutionDownBy = 1.0
-                if (voiceFirst) {
-                    encoding.networkPriority = Priority.LOW
-                    encoding.bitratePriority = VIDEO_BITRATE_PRIORITY
-                }
-            }
-            val applied = native.setParameters(params)
             FlashLog.i(
                 "CALL",
                 "video sender tuned applied=$applied max=${profile.maxBitrateKbps}kbps " +
@@ -1189,16 +1173,14 @@ public class FlashCallSession(
         val ceiling = (profile.maxBitrateKbps * BPS_PER_KBPS * level.bitrateScale).toInt()
         val floor = profile.minBitrateKbps * BPS_PER_KBPS
         try {
-            val native = sender.android
-            val params = native.parameters
-            if (params.encodings.isEmpty()) return
-            params.encodings.forEach { encoding ->
-                encoding.active = level.videoActive
-                encoding.maxBitrateBps = ceiling
-                encoding.minBitrateBps = if (level.holdsBitrateFloor) floor else null
-                encoding.scaleResolutionDownBy = level.scaleResolutionDownBy
-            }
-            val applied = native.setParameters(params)
+            val applied = sender.applyVideoTuning(
+                VideoSendTuning(
+                    maxBitrateBps = ceiling,
+                    minBitrateBps = if (level.holdsBitrateFloor) floor else null,
+                    scaleResolutionDownBy = level.scaleResolutionDownBy,
+                    active = level.videoActive,
+                ),
+            )
             FlashLog.i(
                 "CALL",
                 "voice priority: video → $level applied=$applied max=${ceiling / 1000}kbps " +
@@ -1429,13 +1411,8 @@ public class FlashCallSession(
          * be ugly regardless.
          *
          * Not tiered: these are ratios, and the ratio voice needs does not depend on the handset.
-         */
-        const val AUDIO_BITRATE_PRIORITY = 4.0
-        const val VIDEO_BITRATE_PRIORITY = 0.5
-
-        /**
-         * The profiles state bitrates in kbit/s because that is how SDP does; `RtpParameters`
-         * wants bit/s.
+         * (AUDIO_BITRATE_PRIORITY / VIDEO_BITRATE_PRIORITY moved to the sender-tuning seam
+         * (RtpSenderTuning.kt) with the rest of the native-knob plumbing — S2e.)
          */
         const val BPS_PER_KBPS = 1_000
     }

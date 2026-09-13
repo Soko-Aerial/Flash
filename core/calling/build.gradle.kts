@@ -59,14 +59,13 @@ kotlin {
             api(project(":core:common"))
             // Public API exposes Flow/StateFlow call-state streams.
             api(libs.kotlinx.coroutines.core)
+            // LEGAL in commonMain since S2c: the vendored fork (ADR-034) substitutes the same
+            // com.shepeliev:webrtc-kmp coordinates with a build that has BOTH android and jvm
+            // variants, so the old F1/ERROR-049 wall no longer applies. Before the fork, this
+            // edge HAD to stay androidMain (Maven webrtc-kmp 0.125.11 has no JVM target).
+            api(libs.webrtc.kmp)
         }
         androidMain.dependencies {
-            // `api` exactly as before conversion. MUST stay androidMain (Phase 25 F1):
-            // webrtc-kmp 0.125.11 publishes no JVM variant, so a commonMain edge is the
-            // ERROR-049 wall — dependency resolution fails before any code question. The
-            // vendored fork (ADR-034) is what eventually makes both variants exist.
-            api(libs.webrtc.kmp)
-
             // TODO(cleanup): both androidx entries are dead — grep finds zero
             // `androidx.core` / `androidx.lifecycle` references in this module's main and
             // test sources. Parked on androidMain rather than deleted so the published
