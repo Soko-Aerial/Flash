@@ -10822,3 +10822,46 @@ human's version decision, and nothing about the publication tree suggests it wou
 Unchanged from the 2026-09-12 census: the plan's build-only phases are exhausted (21/22 built;
 23 blocked on hardware + the desktop pairing gap; 24's publish steps blocked on 23; 09B-2/09B-3
 and the calling-stack A–D pick are human inputs).
+
+---
+
+## 2026-09-13 — PHASE-24 Step 2: `sample/consumer-desktop` built and green (D9=A applied; publish still NOT run)
+
+- **Date:** 2026-09-13
+- **Agent/model:** Claude Code (glm-5.3-free), autonomous per the session /goal
+- **Commit:** (this commit)
+- **Decisions relied on:** D9 = Option A ("add a pure-JVM `sample/consumer-desktop` in Phase 24 to validate the desktop artifact" — the phase file's own header says "may be applied by the agent; record that it did so in the log": **applied, recorded here**), R10, Phase 24 precondition 1 — **still respected: no tag, no JitPack, no release.**
+
+### Change
+- **Add:** `sample/consumer-desktop/` — a plain `kotlin("jvm")` module (never published, no `maven-publish`) that mirrors the two Android samples' shapes on the desktop tier: the **umbrella** shape (`core-engine` only, like `:sample:consumer`) and the **granular** shape (`core-network` only, like `:sample:consumer-granular`), in both cases as the **ROOT published coordinate** `com.transfer.flash:core-engine:1.1.0` / `core-network:1.1.0` — the identical string an Android consumer writes. Zero `project()` dependencies: the whole point is that published metadata, not source-set edges, carries the API.
+- **Add:** `sample/consumer-desktop/src/main/.../DesktopConsumer.kt` — compile-only proof referencing the api-exposed vocabulary (`FlashResult`, `FlashDeviceId`, `FlashTransportType`, `FlashNetwork`, `Flow`) plus the granular property (`FlashDevice` arriving transitively through `core-network`'s api edge, Phase 2 Task 2.1's flip now proven on the JVM tier too).
+- **Modify:** `settings.gradle.kts` — `include(":sample:consumer-desktop")` and `mavenLocal()` added FIRST to `dependencyResolutionManagement.repositories` (the root uses `FAIL_ON_PROJECT_REPOS`, so the repository could not live in the module; the settings-level addition is what lets the consumer resolve the published tree and is inert for every project-dependency module — mavenLocal only shadows coordinates that exist there).
+
+### Verification
+```
+./gradlew :sample:consumer-desktop:compileKotlin
+./gradlew :sample:consumer-desktop:dependencies --configuration compileClasspath
+./gradlew :sample:consumer:assembleDebug :app:assembleDebug --continue
+```
+Results: **all BUILD SUCCESSFUL** (JBR 21, Gradle 9.5.0).
+
+The decisive evidence — the dependency graph shows the root coordinate selecting the **`-jvm` variant** through Gradle module metadata:
+```
++--- com.transfer.flash:core-engine:1.1.0
+|    \--- com.transfer.flash:core-engine-jvm:1.1.0
+|         +--- com.transfer.flash:core-common:1.1.0
+|         |    \--- com.transfer.flash:core-common-jvm:1.1.0
+|         |         +--- org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2
+|         |              \--- kotlinx-coroutines-core-jvm:1.10.2
+```
+A `kotlin("jvm")` consumer writing the **same coordinate** an Android consumer writes gets the `-jvm` artifact and compiles the public API — the KMP structural fact Phase 24 exists to prove, now demonstrated against the real published tree (from the 2026-09-13 Step-1 dry-run).
+
+Android regression: `:sample:consumer:assembleDebug` + `:app:assembleDebug` green with the settings-level `mavenLocal()` in place.
+
+Module config notes (recorded for the phase's own Step-2 row): the module sets Kotlin `jvmTarget = JVM_11` + a Java 21 toolchain with `JavaCompile.options.release = 11` — the plain-JVM module otherwise inherits the default JDK target (25) and fails Kotlin's Java/Kotlin consistency gate; the JBR-21-toolchain-compiling-to-11 pair is the same effective configuration every other module uses.
+
+### What this does NOT discharge
+Steps 3–5 (tag → JitPack build → fresh out-of-repo consumers on both platforms) are publish actions. Phase 23 is CLOSED (no hardware run), so per Phase 24's precondition 1 and Do-NOT list they remain with the human. The out-of-repo fresh-consumer test (Step 4) additionally cannot be honestly run from inside this repo by definition.
+
+### Next step
+Unchanged: everything buildable from this machine across the whole plan is now built and verified. The remaining plan items are, exhaustively: the Phase 16 hardware run (phone on this LAN; G1–G6 via the harness + app), the desktop pairing gap (must be scoped before the Phase 23 matrix can pass its desktop M2), 09B-2/09B-3 sub-answers, the calling-stack A–D pick on top of the research report, and then 23 → 24's publish steps.

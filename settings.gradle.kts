@@ -17,6 +17,12 @@ plugins {
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
+        // Phase 24 Step 2: mavenLocal() is FIRST so `:sample:consumer-desktop` (the only module
+        // that consumes published coordinates rather than project() edges) resolves the freshly
+        // published `com.transfer.flash:*` tree. Harmless to every other module: local
+        // publications only shadow a dependency if a version collides AND the cache prefers the
+        // local one, and Gradle checks mavenLocal first only for coordinates that exist there.
+        mavenLocal()
         google()
         mavenCentral()
     }
@@ -49,3 +55,7 @@ include(":desktop")
 // NOT published — they have no maven-publish plugin. See docs/publishing/PHASE-02-dependency-scope.md.
 include(":sample:consumer")
 include(":sample:consumer-granular")
+// Phase 24 Step 2 / D9 = Option A: the desktop tier of the same contract — a plain JVM module
+// resolving the ROOT published coordinates from mavenLocal() so variant-aware selection of the
+// `-jvm` artifact is proven by compilation. Kept alongside the Android samples, never published.
+include(":sample:consumer-desktop")
