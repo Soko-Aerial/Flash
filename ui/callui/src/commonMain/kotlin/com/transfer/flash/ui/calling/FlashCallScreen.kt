@@ -1,7 +1,7 @@
+@file:OptIn(com.transfer.flash.core.common.annotation.FlashInternalApi::class)
+
 package com.transfer.flash.ui.calling
 
-import android.util.Log
-import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -39,6 +39,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import com.transfer.flash.core.common.logging.FlashLog
+import com.transfer.flash.ui.shims.FlashBackHandler
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -49,7 +51,6 @@ import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
 import com.shepeliev.webrtckmp.VideoStreamTrack
 import com.shepeliev.webrtckmp.WebRtc
 import com.transfer.flash.core.calling.FlashCallMedia
@@ -68,8 +69,6 @@ import com.transfer.flash.ui.theme.flashPressScale
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import org.webrtc.RendererCommon
-import org.webrtc.SurfaceViewRenderer
 
 /**
  * Full-screen in-call surface (UI-050, docs/ui/calling-ui.md).
@@ -103,7 +102,7 @@ public fun FlashCallScreen(
     val colors = FlashTheme.colors
     val ended = state.state == FlashCallState.ENDED
 
-    BackHandler(enabled = true) {
+    FlashBackHandler(enabled = true) {
         when {
             state.state == FlashCallState.RINGING -> onDecline()
             ended -> onDismiss()
@@ -347,9 +346,9 @@ private fun FlashCallVideoSurfaces(
     val localTrack = rememberVideoStreamTrack(session?.localVideoStreamTrack)
 
     Box(modifier = modifier) {
-        FlashVideoRenderer(
+        FlashCallVideoSurface(
             track = if (pipIsLocal) localTrack else remoteTrack,
-            scalingType = RendererCommon.ScalingType.SCALE_ASPECT_BALANCED,
+            fit = CallVideoFit.Balanced,
             modifier = Modifier
                 .fillMaxSize()
                 .clickable(
@@ -358,9 +357,9 @@ private fun FlashCallVideoSurfaces(
                 ) { pipIsLocal = !pipIsLocal },
         )
 
-        FlashVideoRenderer(
+        FlashCallVideoSurface(
             track = if (pipIsLocal) remoteTrack else localTrack,
-            scalingType = RendererCommon.ScalingType.SCALE_ASPECT_FIT,
+            fit = CallVideoFit.Fit,
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .statusBarsPadding()
@@ -405,97 +404,6 @@ private fun FlashCallVideoSurfaces(
 private fun rememberVideoStreamTrack(flow: StateFlow<VideoStreamTrack?>?): VideoStreamTrack? {
     val source = remember(flow) { flow ?: MutableStateFlow<VideoStreamTrack?>(null) }
     return source.collectAsState().value
-}
-
-/**
- * One [SurfaceViewRenderer] bound to whichever [VideoStreamTrack] it is currently pointed at.
- *
- * The renderer is initialised exactly once (in [AndroidView]'s factory) and released only
- * when the view itself is discarded. Track changes swap sinks; they must not release.
- *
- * This is the whole bug that made video calls show two black tiles: the previous version
- * released the renderer from a `DisposableEffect(track)`, so the very first track arrival
- * (null → live, one recomposition after media started) tore down the EGL render thread.
- * `factory` never runs twice, [org.webrtc.EglRenderer.release] is terminal — it nulls the
- * render-thread handler permanently — and every decoded frame from then on was answered
- * with "Dropping frame - Not initialized or already released." for the rest of the call.
- */
-@Composable
-private fun FlashVideoRenderer(
-    track: VideoStreamTrack?,
-    scalingType: RendererCommon.ScalingType,
-    modifier: Modifier = Modifier,
-) {
-    val holder = remember { FlashVideoSink() }
-
-    AndroidView(
-        factory = { context -> SurfaceViewRenderer(context).also { holder.attach(it, scalingType) } },
-        modifier = modifier,
-        update = { holder.bind(track) },
-        onRelease = { holder.release() },
-    )
-
-    // onRelease covers the view being discarded; this covers the composable leaving the
-    // tree (call ended, screen dismissed). Both land on the same idempotent teardown.
-    DisposableEffect(holder) {
-        onDispose { holder.release() }
-    }
-}
-
-/**
- * Owns one [SurfaceViewRenderer]'s EGL lifetime and its current sink binding.
- *
- * Confined to the main thread: every entry point is an [AndroidView] callback
- * (factory / update / onRelease) or a Compose effect disposal.
- */
-private class FlashVideoSink {
-
-    private var view: SurfaceViewRenderer? = null
-    private var bound: VideoStreamTrack? = null
-
-    fun attach(renderer: SurfaceViewRenderer, scalingType: RendererCommon.ScalingType) {
-        view = renderer
-        bound = null
-        runCatching {
-            renderer.init(WebRtc.rootEglBase.eglBaseContext, null)
-            renderer.setScalingType(scalingType)
-            renderer.setEnableHardwareScaler(true)
-        }.onFailure { Log.w(TAG, "renderer init failed", it) }
-    }
-
-    /** Points the surface at [track], detaching whatever it was showing before. */
-    fun bind(track: VideoStreamTrack?) {
-        if (track === bound) return
-        val renderer = view ?: return
-        // runCatching on both sides: a track can be stopped and disposed by the session
-        // (peer hung up) between the flow emission and this frame's applyChanges.
-        bound?.let { previous ->
-            runCatching { previous.removeSink(renderer) }
-                .onFailure { Log.w(TAG, "removeSink failed", it) }
-        }
-        bound = track
-        if (track == null) {
-            renderer.clearImage()
-            return
-        }
-        runCatching { track.addSink(renderer) }
-            .onFailure { Log.w(TAG, "addSink failed", it) }
-    }
-
-    /** Terminal: after this the renderer can never draw again. Idempotent. */
-    fun release() {
-        val renderer = view ?: return
-        view = null
-        bound?.let { track ->
-            runCatching { track.removeSink(renderer) }
-        }
-        bound = null
-        runCatching { renderer.release() }
-    }
-
-    private companion object {
-        const val TAG = "CALLUI"
-    }
 }
 
 /** Bottom control row, state-driven (professional call surface with large action buttons). */
@@ -744,7 +652,7 @@ private fun FlashCallControlButton(
  * them non-restartable: the `mutableStateOf` tick inside [activeDuration] is recorded against the
  * nearest restartable scope *above* them, i.e. whichever composable called `statusLine(state)`. Both
  * call sites were large — [FlashCallIdentityBlock] (avatar, infinite pulse transition) and
- * [FlashCallVideoSurfaces] (two `AndroidView` renderers and their whole modifier chains) — so an
+ * [FlashCallVideoSurfaces] (two video-surface composables and their whole modifier chains) — so an
  * ACTIVE call recomposed them once per second, which is not what [activeDuration]'s own KDoc
  * describes. A Unit-returning composable is always restartable, so putting the call behind one stops
  * the invalidation here, at the single `Text` that actually shows the changing value.

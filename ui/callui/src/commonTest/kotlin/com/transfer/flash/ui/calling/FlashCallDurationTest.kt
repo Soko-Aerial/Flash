@@ -1,7 +1,7 @@
 package com.transfer.flash.ui.calling
 
-import org.junit.Assert.assertEquals
-import org.junit.Test
+import kotlin.test.Test
+import kotlin.test.assertEquals
 
 /**
  * JVM tests for the call screen's `mm:ss` counter.
