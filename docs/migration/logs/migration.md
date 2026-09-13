@@ -11163,3 +11163,39 @@ Still hardware-gated: the harness is now *runnable* but there is no phone on thi
 (`adb devices` empty). G2/G6 (pairing) remain deferred under the P3 scoping; G7 blocked on
 09B-2. Running instructions delivered to the human in-conversation (prereqs: assembleDebug +
 adb install, same Wi-Fi, Windows firewall allow for Java; verb per gate scenario).
+
+## 2026-09-13 — Phase 16 gate: first LIVE cross-platform results (desktop↔Android on real LAN)
+
+### What was run
+The human executed the harness from PowerShell against a Flash app running on a phone
+(`Prince Ayaata`, 192.168.0.63). Two defects surfaced and were fixed (commit `5f6d9ec`);
+the run then proceeded:
+
+1. `JmDNS bind failed … Invalid argument: setsockopt` on EVERY interface incl. the unbound
+   fallback — first real-JmDNS execution ever on this host (unit tests use a fake bridge).
+   Classic Windows/JDK IPv6-stack-preferred multicast failure →
+   `-Djava.net.preferIPv4Stack=true` on the `interopHarness` task.
+2. `discover 30` waited 30 **ms** — the verb's duration arg was read as milliseconds while
+   the usage text says seconds → `secondsArg()` conversion.
+
+### Verified live (recorded from observed output)
+- **G1 desktop→phone**: `discover` resolved the phone (`[peer] id=0a3bd2e8… name=Prince
+  Ayaata addr=192.168.0.63:45822`).
+- **G1 phone→desktop**: `advertise FlashDesktop` → phone discovered the desktop AND dialed
+  its WS port (server log: inbound connection from 192.168.0.63). TXT decode note: the
+  desktop's own announcement loops back as `Dropping mDNS endpoint without device_id
+  name=Flash Flash Desktop` — the self-filter by deviceId correctly discards our own
+  advertisement seen via the other responder.
+- **G3 desktop→phone @100 MB**: `send` → phone Transfers tab → Accept → Completed 104857600/
+  104857600 in ~35 s. The #5 accept gate verified end-to-end on a real wire: sender Queued →
+  Paused until the receiver's FLASH_XFER resume arrived (`I/TRANSFER: remote control
+  action=resume`), then chunks moved. SHA-256 of source printed (`20492a4d…`); receiver-side
+  hash check pending the phone's confirmation but byte count exact.
+- Windows firewall: no prompt needed on this host (existing Java allow rule).
+
+### Still open in Phase 16
+- G3 reverse (phone→desktop), G4 @200 MB, G5 cancel both directions — commands ready, run
+  when the human repeats the session.
+- G2/G6 (pairing): human picked **P2** (persist a software keypair under ~/.flash/) —
+  discussed/planned, NOT implemented (see the P2 plan paragraph in this entry's successor).
+- G7 (chat): blocked on 09B-2 as before.
