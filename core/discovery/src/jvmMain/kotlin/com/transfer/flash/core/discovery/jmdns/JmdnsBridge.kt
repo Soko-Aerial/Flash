@@ -69,6 +69,16 @@ public data class JmdnsResolvedService(
     val port: Int,
     val serviceName: String,
     val attributes: Map<String, String>,
+    /**
+     * Size of the raw TXT payload JmDNS delivered, or -1 when it delivered none.
+     *
+     * Carried for diagnostics only, and it is the single fact that separates two failures which
+     * look identical from the outside: "the peer advertised nothing" (0/-1) versus "the peer
+     * advertised bytes we could not read" (>0 with an empty [attributes] map). It is a COUNT and
+     * never the bytes — a TXT record is unauthenticated wire data from an arbitrary peer, so its
+     * contents do not belong in a log.
+     */
+    val txtByteCount: Int = -1,
 )
 
 /**
@@ -222,6 +232,7 @@ internal fun ServiceInfo.toNeutral(): JmdnsResolvedService {
         port = port,
         serviceName = name,
         attributes = attributes,
+        txtByteCount = textBytes?.size ?: -1,
     )
 }
 

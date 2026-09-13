@@ -403,7 +403,7 @@ public class JmdnsTransport(
             logInfo(
                 "Dropping mDNS endpoint without device_id name=${data.serviceName} " +
                     "host=${data.hostAddress} port=${data.port} " +
-                    "txtKeys=${data.attributes.keys.sorted()}",
+                    "txtKeys=${data.attributes.keys.sorted()} txtBytes=${data.txtByteCount}",
             )
             return
         }

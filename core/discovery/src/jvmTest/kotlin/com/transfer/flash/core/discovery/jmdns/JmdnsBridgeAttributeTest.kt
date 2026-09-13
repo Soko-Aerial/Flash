@@ -45,6 +45,18 @@ public class JmdnsBridgeAttributeTest {
             ),
         )
 
+        // THE DECISIVE HALF. `RealJmdnsBridge.register` builds its record with exactly this call.
+        // A non-empty property map proves nothing about what goes on the wire — JmDNS could hold
+        // the map locally and announce nothing. These bytes ARE the wire record. If this is null
+        // or empty, every peer receives an advertisement with no TXT, `device_id` can never parse,
+        // and the drop log is correct: the advertiser is what is broken, not the reader.
+        val textBytes = info.textBytes
+        assertTrue(
+            "props must be serialised into wire TXT bytes or nothing is advertised; " +
+                "textBytes=${textBytes?.toList()}",
+            textBytes != null && textBytes.isNotEmpty(),
+        )
+
         val neutral = info.toNeutral()
 
         assertEquals(SERVICE_NAME, neutral.serviceName)
@@ -58,6 +70,11 @@ public class JmdnsBridgeAttributeTest {
             "every advertised key must arrive, not just the one we happen to read",
             setOf("device_id", "name", "model", "proto"),
             neutral.attributes.keys,
+        )
+        assertTrue(
+            "txtByteCount must report the bytes JmDNS delivered; it is what separates " +
+                "'nothing advertised' from 'bytes we could not read' at the drop site",
+            neutral.txtByteCount > 0,
         )
     }
 
