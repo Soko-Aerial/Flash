@@ -10981,3 +10981,29 @@ pre-21 baseline. Nothing regressed.
 Unchanged from the 2026-09-13 Step-2 entry. Everything buildable from this machine is built,
 verified, and committed; the plan now waits on the human inputs (hardware day, P decision,
 09B-2/09B-3, calling-stack A–D).
+
+---
+
+## 2026-09-13 — Release dry-run: jitpack.yml install line green against the current tree
+
+- **Date:** 2026-09-13
+- **Agent/model:** Claude Code (glm-5.3-free), autonomous per the session /goal
+- **Commit:** (this commit)
+- **Decisions relied on:** the release-dry-run discipline recorded in the project memory (run jitpack.yml's install line before any tagging work — release-variant failures invisible to debug builds), R9
+
+### Verification
+```
+./gradlew :core:common:publishToMavenLocal :core:security:publishToMavenLocal :core:discovery:publishToMavenLocal :core:network:publishToMavenLocal :core:transfer:publishToMavenLocal :core:persistence:publishToMavenLocal :core:messaging:publishToMavenLocal :core:calling:publishToMavenLocal :core:ptt:publishToMavenLocal :core:engine:publishToMavenLocal :ui:theme:publishToMavenLocal :ui:platform-shims:publishToMavenLocal :ui:chat:publishToMavenLocal :ui:callui:publishToMavenLocal -x test -x lint
+```
+Result: **BUILD SUCCESSFUL** (539 actionable tasks; the verbatim `jitpack.yml:24` line, under the repo's real JBR 21 + AF_UNIX environment).
+
+This closes the loop on the day's two repo-wide configuration changes: the settings-level
+`mavenLocal()` (Phase 24 Step 2) and the two new modules (`:desktop`, `sample/consumer-desktop`)
+do not disturb the JitPack publish set — all fourteen published modules still publish, and the
+exact command a JitPack build will run at tag time is green. Note for the eventual tag day: this
+dry-run was on JBR 21; JitPack itself pins `openjdk17` per `jitpack.yml:22`, which the memory
+records as the AGP floor and which prior releases used successfully.
+
+### Change
+- Docs/log only (this entry); the README's new desktop-consumer section (`0f5f1a2`) is the
+  Step-5 draft the human can finalize at tag time.
