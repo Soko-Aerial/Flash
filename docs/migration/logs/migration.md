@@ -11125,3 +11125,41 @@ image, then Device Manager → Create Device).
 ### Change
 - Docs/log only (this entry). Nothing in the repo changed; the working tree is clean at
   `33b1b3b`.
+
+## 2026-09-13 — Phase 16 harness made runnable: receive half wired + `interopHarness` Gradle task
+
+### Context
+The human found `DesktopInteropHarness.kt` and asked how to run it for G1–G5. Inspecting it
+revealed the interactive harness was **half-implemented** relative to what its own KDoc claimed:
+
+1. **No receive path.** It wired discovery + send only — no `ReceivePipeline`, no inbound
+   binary routing, no session collectors — so `receive`/`advertise` verbs could not complete
+   a phone→desktop transfer (G3 reverse direction, G4, G5's receiver side).
+2. **Non-compliant sender.** `requireReceiverAcceptance=false`, meaning the harness sender
+   streamed chunks into the pre-accept window. A compliant receiver (the real Android app)
+   parks the sender after FILE_START until its RESUME arrives (#5 gate); chunks sent before
+   that are lost and the transfer corrupts. The harness could only interop with itself.
+
+### Change
+- `DesktopInteropHarness.kt` rewritten against the *self-test-proven* fixture pattern
+  (`DesktopEndpointFixture`, unchanged): full `DesktopEndpoint` with `ReceivePipeline`
+  (`requireAcceptance=true`, deferred `sinkFactory`, OkioRandomAccessSinkHandle,
+  path-containment check), `handleInboundBinary` mirroring `Flash.kt`'s routing
+  (auto-accept → `acceptSession` → `onIncomingStarted` → RESUME), FLASH_XFER text-frame
+  routing to `onRemoteTransferControl`, auto-dial loop, already-completed short-circuit,
+  resumable-retry auto-accept, and a `cancel` verb (G5: sends, then cancels once
+  `bytesDone > 0 && < bytesTotal`). Entry point restructured to a top-level `fun main`
+  facade (`DesktopInteropHarnessKt`) because a Kotlin `object`'s private ctor cannot be
+  invoked by JavaExec.
+- `core/engine/build.gradle.kts`: added `interopHarness` JavaExec task (jvmTest classpath,
+  `--args="…"`, wired stdin, workingDir = repo root). Never published — lives in the task,
+  not any artifact.
+- Verified: `interopHarness --args=help` → usage + BUILD SUCCESSFUL;
+  `:core:engine:jvmTest :core:engine:testAndroidHostTest` → BUILD SUCCESSFUL (self-test
+  green — it exercises the unchanged fixture, and the harness now matches its pattern).
+
+### Phase 16 status — unchanged
+Still hardware-gated: the harness is now *runnable* but there is no phone on this LAN
+(`adb devices` empty). G2/G6 (pairing) remain deferred under the P3 scoping; G7 blocked on
+09B-2. Running instructions delivered to the human in-conversation (prereqs: assembleDebug +
+adb install, same Wi-Fi, Windows firewall allow for Java; verb per gate scenario).

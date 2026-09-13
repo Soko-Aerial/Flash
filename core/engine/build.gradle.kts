@@ -199,6 +199,27 @@ kotlin {
     }
 }
 
+// Phase 16 hardware-day runner: `./gradlew :core:engine:interopHarness --args="<verb> …"`
+// runs DesktopInteropHarness.main with the jvmTest classpath (which is the only place the
+// harness lives — never shipped). Typical invocations, per the gate script in the log:
+//   interopHarness --args="discover 30"
+//   interopHarness --args="send <phone-ip> <port> <file>"
+//   interopHarness --args="receive flash-received 120"
+//   interopHarness --args="cancel <phone-ip> <port> <file>"
+// `-Pargs` alternative is deliberately NOT provided: --args quoting is the documented Gradle
+// form and survives spaces in paths.
+val interopHarness by tasks.registering(JavaExec::class) {
+    group = "interop"
+    description = "Runs the Phase 16 desktop interop harness (jvmTest classpath; never published)."
+    mainClass.set("com.transfer.flash.core.engine.interop.DesktopInteropHarnessKt")
+    // Reuse the jvmTest task's own resolved classpath: it already wires the test compilation's
+    // output + runtime + dependency files correctly for this Kotlin/Gradle pair.
+    classpath = tasks.named<Test>("jvmTest").get().classpath
+    // Interactive verbs print/loop; wire stdin so a Ctrl-C in the terminal reaches the harness.
+    standardInput = System.`in`
+    workingDir = rootProject.projectDir
+}
+
 publishing {
     publications {
         // KMP generates the publications itself (root `kotlinMultiplatform`, plus one per
