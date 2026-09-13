@@ -376,15 +376,28 @@ public object DesktopInteropHarness {
         val outDir = File("flash-received").apply { mkdirs() }
         val endpoint = DesktopEndpoint("discover", outDir)
         endpoint.start()
+        println("[discover] watching ${seconds}s — peers print as they appear; Ctrl-C to stop early")
         runBlocking {
-            runCatching {
-                withTimeout(seconds) {
-                    endpoint.discovery.discoveredEndpoints.first { it.isNotEmpty() }
+            // Stream for the WHOLE window, and print each peer the first time it is seen.
+            //
+            // The previous shape was `discoveredEndpoints.first { it.isNotEmpty() }`, which
+            // RETURNED at the first non-empty roster — so a verb whose whole purpose is "who is on
+            // this network, and do they stay there" printed one line and quit the instant it saw
+            // anything. That also hid the failure mode this gate exists to catch: a peer that
+            // appears and then vanishes, or one whose records are dropped. It now observes for the
+            // full window like `advertise` does.
+            val deadline = System.currentTimeMillis() + seconds * 1_000L
+            val seen = LinkedHashMap<String, String>()
+            while (System.currentTimeMillis() < deadline) {
+                endpoint.discovery.discoveredEndpoints.value.forEach { p ->
+                    val id = p.device.id.value
+                    if (seen.put(id, p.device.friendlyName) == null) {
+                        println("[peer] id=$id name=${p.device.friendlyName} addr=${p.hostAddress}:${p.port}")
+                    }
                 }
+                delay(500)
             }
-            endpoint.discovery.discoveredEndpoints.value.forEach { p ->
-                println("[peer] id=${p.device.id.value} name=${p.device.friendlyName} addr=${p.hostAddress}:${p.port}")
-            }
+            println("[discover] window closed; ${seen.size} distinct peer(s): ${seen.values.toList()}")
         }
         endpoint.stop()
     }

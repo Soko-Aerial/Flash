@@ -1,5 +1,10 @@
+// FlashLog is @FlashInternalApi — library-internal, opted into here for the same reason
+// DiscoveryEngineHolder and the desktop tier do: the pairing narrative is diagnostics, not API.
+@file:OptIn(com.transfer.flash.core.common.annotation.FlashInternalApi::class)
+
 package com.transfer.flash.pairing
 
+import com.transfer.flash.core.common.logging.FlashLog
 import com.transfer.flash.core.common.model.FlashDeviceId
 import com.transfer.flash.core.common.time.FlashTimeSource
 import com.transfer.flash.core.common.time.SystemTimeSource
@@ -114,6 +119,13 @@ class PairingCoordinator(
 
     /** Initiator: tap Pair. Needs the peer's fingerprint (from its hello) to derive the shared code. */
     suspend fun beginPair(peerId: String, peerName: String) {
+        // Logged on entry as well as on failure: the interesting case is "Pair was tapped and
+        // NOTHING was emitted", which is invisible if only the failure path logs.
+        FlashLog.i(
+            TAG,
+            "beginPair peer=$peerId name=$peerName " +
+                "fingerprintKnown=${synchronized(fingerprints) { fingerprints.containsKey(peerId) }}",
+        )
         synchronized(fingerprints) { fingerprints[peerId] }?.let { fingerprint ->
             protocol.beginRequest(peerId, peerName, fingerprint)
             return
@@ -301,10 +313,16 @@ class PairingCoordinator(
             .sortedBy { it.name.lowercase() }
 
     private fun emitMessage(text: String) {
+        // Also to logcat. These lines are the only narrative explaining why a pairing attempt did
+        // or did not proceed, and the in-app surface for them is transient — a message that
+        // scrolls away turns a diagnosable failure into a mystery. `adb logcat -s FLASH_PAIRING`
+        // now reads the same story the desktop tier prints to its console.
+        FlashLog.i(TAG, text)
         _messages.tryEmit(text)
     }
 
     private companion object {
+        const val TAG = "FLASH_PAIRING"
         const val TICK_MS = 1000L
         const val FINGERPRINT_WAIT_MS = 3000L
         const val FINGERPRINT_POLL_MS = 100L

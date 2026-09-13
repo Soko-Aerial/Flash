@@ -1504,7 +1504,18 @@ public class NsdTransport(
             fallbackProto = FlashProtocol.VERSION,
         )
         val deviceIdString = parsed.deviceId ?: run {
-            logInfo("Dropping NSD endpoint without device_id name=${data.serviceName}")
+            // Mirrors JmdnsTransport's drop line exactly, because these two transports must accept
+            // and reject the same peers for the Phase 16 gate to mean anything — and because the
+            // failure this exists to diagnose is only visible when both ends report the same
+            // fields. `txtKeys=[]` means the TXT record carried no attributes at all; a non-empty
+            // key set without `device_id` means the peer published under different names. KEYS
+            // ONLY, never values: a TXT record is unauthenticated wire data from an arbitrary
+            // peer.
+            logInfo(
+                "Dropping NSD endpoint without device_id name=${data.serviceName} " +
+                    "host=${data.hostAddress} port=${data.port} " +
+                    "txtKeys=${data.attributes.keys.sorted()}",
+            )
             return
         }
         val deviceId = runCatching { FlashDeviceId(deviceIdString) }.getOrElse {
