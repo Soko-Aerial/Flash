@@ -53,7 +53,8 @@ import okio.Path.Companion.toPath
  * `TransferStore` (09B-2 pending; `store = null` disables resume-across-restart only).
  */
 internal class DesktopEndpointFixture(
-    name: String,
+    /** Also the mDNS instance-name tag; see [start] on why endpoints must not advertise as the app. */
+    private val name: String,
     private val receivedRoot: File,
 ) {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -215,7 +216,26 @@ internal class DesktopEndpointFixture(
         val port = runBlocking { (network.start(0) as FlashResult.Success).value }
         val identityFrame = FlashAdvertisedIdentity(
             deviceId = identity.deviceId,
-            friendlyName = identity.friendlyName,
+            // NOT identity.friendlyName. `DesktopIdentityStore` defaults every fresh state
+            // directory to the hardcoded name "Flash Desktop" (DesktopIdentityStores.kt:55), and
+            // JmdnsTransport advertises as "Flash " + friendlyName. So a harness endpoint and the
+            // `:desktop` app both claim the mDNS instance name "Flash Flash Desktop" — two
+            // advertisers, one name, on one host.
+            //
+            // That is not cosmetic. JmDNS resolves the conflict by renaming and re-registering,
+            // and the collision corrupts the cache: the name then resolves with an SRV from one
+            // registration and a TXT from another, and the losing registration carries JmDNS's
+            // EMPTY_TXT (`new byte[]{0}`, ByteWrangler.java:43). The reader sees one byte, an
+            // empty property map, no device_id — and drops the peer. Observed exactly that:
+            // `name=Flash Flash Desktop ... txtKeys=[] txtBytes=1`, for the app's OWN name.
+            //
+            // It also outlives the app: `advertise` runs `while (true)` until Ctrl-C, so a
+            // forgotten harness keeps the name on the network and phones keep listing a desktop
+            // that is not running.
+            //
+            // A harness endpoint is a test artifact and must never be mistakable for the product,
+            // so it gets a name the app cannot produce.
+            friendlyName = "Harness $name",
             deviceModel = "desktop",
             protocolVersion = 2,
         )

@@ -403,7 +403,13 @@ public class JmdnsTransport(
             logInfo(
                 "Dropping mDNS endpoint without device_id name=${data.serviceName} " +
                     "host=${data.hostAddress} port=${data.port} " +
-                    "txtKeys=${data.attributes.keys.sorted()} txtBytes=${data.txtByteCount}",
+                    "txtKeys=${data.attributes.keys.sorted()} txtBytes=${data.txtByteCount}" +
+                    // txtBytes of 0 or 1 is JmDNS's EMPTY_TXT (`new byte[]{0}`,
+                    // ByteWrangler.java:43): the record carries no attributes at all. The usual
+                    // cause is an mDNS instance-name collision — two advertisers claiming one
+                    // name, so JmDNS renames and re-registers, and the cache ends up serving one
+                    // registration's SRV/address with another's empty TXT.
+                    if (data.txtByteCount <= 1) " (empty TXT: peer advertised no attributes)" else "",
             )
             return
         }

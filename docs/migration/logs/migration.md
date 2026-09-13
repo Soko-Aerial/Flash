@@ -11518,3 +11518,68 @@ per-surface.
 are blocked on D5=C's sub-answers and 09B-3's ABI option respectively. The desktop GUI has still
 never been launched by an agent in this repo — the compile and the underlying JVM stack are verified,
 the window is not.
+
+---
+
+## 2026-09-13 — Desktop pairing "not working" DIAGNOSED: mDNS instance-name collision
+
+**Symptom.** `:desktop:run` starts, persists its identity, binds its WS port, discovers mDNS
+traffic — and drops every peer: `Dropping mDNS endpoint without device_id`, repeatedly, for the
+phone AND for its own advertised name. The Nearby list shows only peers read from
+`~/.flash/trust.properties` (a local file, no discovery needed — `DesktopShell.kt:165–176`), so
+tapping one finds no endpoint to dial and the console reports `pairing: Couldn't reach …`.
+
+**Measured, not guessed.** Four facts, each verified against source or a live run:
+
+1. `txtBytes=1` with `txtKeys=[]`. JmDNS's `ByteWrangler.EMPTY_TXT` is `new byte[]{0}`
+   (`ByteWrangler.java:43`) — one byte, and `readProperties` clears the whole property map on a
+   zero-length character-string (`:86–90`). So **the record carries no attributes at all**, and it
+   is still non-empty, which is why `ServiceInfoImpl.hasData()` (which requires
+   `getTextBytes().length > 0`) lets the resolution event through.
+2. **Our read path is correct.** `toNeutral` copies every TXT key through unchanged —
+   `JmdnsBridgeAttributeTest`, new this session, is the first coverage that function has ever had
+   (`JmdnsTransportTest` drives a `FakeJmdnsBridge` by design, so `RealJmdnsBridge`'s parse half had
+   only ever been compiled — CONVENTIONS R3.1 applies to it as much as to an `actual`).
+3. **Our write path is correct.** `ServiceInfo.create(..., Map)` does serialise props into wire TXT
+   bytes; asserted in the same suite.
+4. **Discovery itself works.** `./gradlew :core:engine:interopHarness --args="discover 30"` resolved
+   the phone on this host, same day, same phone: `[peer] id=0a3bd2e8-… name=Prince Ayaata
+   addr=192.168.0.228:45822`.
+
+**Root cause: two advertisers, one mDNS instance name, one host.**
+`DesktopIdentityStore` hardcodes the default friendly name (`DesktopIdentityStores.kt:55`:
+`props.setProperty("friendlyName", "Flash Desktop")`), and `JmdnsTransport.startAdvertising`
+advertises as `"$instancePrefix ${identity.friendlyName}"`. So the `:desktop` app and every
+`DesktopEndpointFixture` advertise the **same** instance name, `Flash Flash Desktop` — and the
+harness's `advertise` subcommand runs `while (true)` until Ctrl-C, so a forgotten harness keeps that
+name on the network after the app exits. That is what the human observed independently: the phone
+still listed the desktop with the desktop app closed.
+
+JmDNS resolves the collision by renaming and re-registering, and the cache then serves one
+registration's SRV/address with another's empty TXT — which is precisely `txtBytes=1` against the
+app's own name and port.
+
+**Fixed in this entry (test artifact only, no product behaviour changed):**
+`DesktopEndpointFixture.start()` now advertises a harness-distinct name, so a harness endpoint can
+never be mistaken for the product or collide with it. The drop log also names the EMPTY_TXT
+signature instead of leaving `txtBytes=1` to be decoded by hand.
+
+**NOT fixed, and it is a real product bug worth its own phase:** two *desktop installs* on one LAN
+both default to `Flash Desktop`, so they collide with each other exactly the same way. mDNS requires
+instance names to be unique; the display name does not have to be. The correct shape is to advertise
+a unique instance name (e.g. the friendly name plus a short device-id suffix) while the TXT `name`
+attribute keeps carrying the human name — readers already prefer that attribute
+(`JmdnsTransport`'s `friendlyName = attributes[KEY_NAME] ?: fallbackName`). This belongs with
+Phase 31 (Nearby/pairing) rather than being patched in passing.
+
+**Also learned:** a same-host multicast test of `RealJmdnsBridge` is impossible —
+`mdnsHostnameFor(address)` gives two bridges on one machine the same hostname and JmDNS ignores
+records from its own host. An attempt at a two-bridge wire test resolved nothing and was deleted
+rather than kept as a test that cannot pass.
+
+**Immediate next step for the human:** kill any stray JVM still holding the name — a leftover
+`advertise` from this morning is the prime suspect — then re-run `:desktop:run` and confirm the drop
+lines stop. `Get-Process java | Select-Object Id, StartTime` finds candidates.
+
+**Verified:** `:core:discovery:jvmTest` 34/34, `:core:engine:compileTestKotlinJvm`,
+`:desktop:compileKotlinJvm` all green.
