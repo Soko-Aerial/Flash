@@ -87,7 +87,7 @@ public object DesktopInteropHarness {
         when (args.firstOrNull()) {
             null, "help" -> printUsage()
             "advertise" -> advertise(args.getOrNull(1) ?: "Flash Desktop")
-            "discover" -> discover(args.getOrNull(1)?.toLongOrNull() ?: 30_000L)
+            "discover" -> discover(secondsArg(args.getOrNull(1), 30L))
             "send" -> send(
                 host = args.getOrNull(1) ?: error("send needs <host> <port> <filePath>"),
                 port = args.getOrNull(2)?.toIntOrNull() ?: error("send needs <host> <port> <filePath>"),
@@ -102,7 +102,7 @@ public object DesktopInteropHarness {
             )
             "receive" -> receive(
                 outDir = args.getOrNull(1) ?: "flash-received",
-                seconds = args.getOrNull(2)?.toLongOrNull() ?: 120_000L,
+                seconds = secondsArg(args.getOrNull(2), 120L),
             )
             else -> printUsage()
         }
@@ -470,6 +470,14 @@ public object DesktopInteropHarness {
         }
         endpoint.stop()
     }
+
+    /**
+     * Duration args are SECONDS (the usage text's unit), converted to ms here. The first live
+     * run passed "30" and got a 30 ms window — read as milliseconds, the verb exited before
+     * mDNS could resolve anything.
+     */
+    private fun secondsArg(raw: String?, defaultSeconds: Long): Long =
+        (raw?.toLongOrNull() ?: defaultSeconds) * 1_000L
 
     private fun sanitize(component: String): String =
         component.replace(Regex("[^A-Za-z0-9._-]"), "_").take(120)
