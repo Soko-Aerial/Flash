@@ -11728,3 +11728,28 @@ that run needs the phone on the network.
   dash that mojibakes in a cp1252 console.
 
 **Verified:** `:core:discovery:jvmTest` 34/34, `:core:engine:compileTestKotlinJvm` green.
+
+### CONFIRMED — 2026-09-13, real hardware, both directions
+
+The fix above is verified, not just argued. `./gradlew :core:engine:interopHarness --args="discover 30"`
+with the phone on the network:
+
+```
+W/JmdnsTransport: mDNS responders=1 candidates=[192.168.0.126] bound=[flash-192-168-0-126.local.]
+[discover] watching 30s - peers print as they appear; Ctrl-C to stop early
+[peer] id=0a3bd2e8-b713-4aae-9eff-48bb17a901cf name=Prince Ayaata addr=192.168.0.188:45822
+[discover] window closed; 1 distinct peer(s): [Prince Ayaata]
+```
+
+**Zero drop lines**, where the same command previously produced a continuous burst. The resolved
+peer carries a real `device_id` and friendly name, which is only possible if the TXT record now
+attaches correctly — so the empty-TXT resolution is gone rather than merely retried into silence.
+
+The human independently confirms the phone now shows the desktop as well. **Discovery works in both
+directions.** Note the phone's address moved from `192.168.0.228` to `192.168.0.188` (a fresh DHCP
+lease), so the record being read is genuinely live rather than cached.
+
+This clears the blocker on Phase 16's **G2/G6** and Phase 23's desktop cells: the endpoints can see
+each other, so pairing now has a session to ride on. The next step is the manual ladder in
+[PAIRING-GATE-RUNBOOK.md](../PAIRING-GATE-RUNBOOK.md) — L0 through L9, with **L2 step (c)** being
+the one that matters (both devices must display an identical 6-digit code).
