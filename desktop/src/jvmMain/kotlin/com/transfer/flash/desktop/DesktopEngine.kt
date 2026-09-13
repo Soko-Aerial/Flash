@@ -102,6 +102,17 @@ public class DesktopEngine(
     public val identity: com.transfer.flash.core.security.identity.FlashIdentity
         get() = identityStore.getIdentity()
 
+    /**
+     * The desktop identity crypto — Phase 26 (P2, ADR-035): a P-256 identity keypair generated
+     * once, DPAPI-protected at rest under `<stateDir>/identity/id-key.bin`, surviving restarts.
+     * This is what will make TOFU trust durable and pairing (G2/G6) possible on desktop; the
+     * pairing-session coordinator + numeric-comparison dialog that CONSUME it are the remaining
+     * 26-3 work. Falls back LOUDLY to an in-memory identity if the vault is unreadable — see
+     * [PersistedFlashCrypto]'s degradation contract.
+     */
+    public val crypto: com.transfer.flash.core.security.crypto.FlashCrypto =
+        com.transfer.flash.core.security.crypto.PersistedFlashCrypto(stateDir)
+
     // --- Subsystems; non-null once [ready] flips true ---
     private var networkImpl: JvmWsFlashNetwork? = null
     private var discoveryImpl: CompositeDiscovery? = null

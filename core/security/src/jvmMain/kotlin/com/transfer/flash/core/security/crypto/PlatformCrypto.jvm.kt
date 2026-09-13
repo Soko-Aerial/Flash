@@ -6,6 +6,7 @@ import java.security.MessageDigest
 import java.security.SecureRandom
 import java.security.Signature
 import java.security.spec.ECGenParameterSpec
+import java.security.spec.PKCS8EncodedKeySpec
 import java.security.spec.X509EncodedKeySpec
 import javax.crypto.Cipher
 import javax.crypto.KeyAgreement
@@ -101,6 +102,12 @@ internal actual fun ecP256Verify(
 } catch (_: Exception) {
     false
 }
+
+internal actual fun ecP256ExportPrivateKeyPkcs8(privateKey: PlatformEcPrivateKey): ByteArray =
+    privateKey.encoded // JCA PKCS#8 (PrivateKeyInfo) — the identity key is never a raw/hardware handle here
+
+internal actual fun ecP256ParsePrivateKeyPkcs8(encoded: ByteArray): PlatformEcPrivateKey =
+    KeyFactory.getInstance("EC").generatePrivate(PKCS8EncodedKeySpec(encoded))
 
 internal actual fun ecP256SharedSecret(
     privateKey: PlatformEcPrivateKey,

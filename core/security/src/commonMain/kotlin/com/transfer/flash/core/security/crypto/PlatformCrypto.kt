@@ -117,3 +117,25 @@ internal expect fun ecP256SharedSecret(
     privateKey: PlatformEcPrivateKey,
     peerPublicKeyEncoded: ByteArray,
 ): ByteArray
+
+// ─── Private-key persistence (Phase 26 / ADR-035) ────────────────────────────────
+//
+// The two functions below exist ONLY so the desktop's PersistedFlashCrypto can round-trip its
+// identity key through `~/.flash/identity/id-key.bin`. Android does not use them (the identity
+// key is Keystore-generated and non-exportable by design — R8); they are included in the shared
+// seam so the encoding is pinned in ONE place with the same bit-exactness discipline as above.
+
+/**
+ * Exports [privateKey] in PKCS#8 (`PrivateKeyInfo`) encoding — the JCA `getEncoded()` form for
+ * an EC key. Paired with [ecP256ParsePrivateKeyPkcs8]; the round trip is pinned by
+ * `PersistedFlashCryptoTest`.
+ */
+internal expect fun ecP256ExportPrivateKeyPkcs8(privateKey: PlatformEcPrivateKey): ByteArray
+
+/**
+ * Parses a PKCS#8-encoded EC P-256 private key (as produced by [ecP256ExportPrivateKeyPkcs8]).
+ *
+ * Throws a platform-defined exception on malformed input (`InvalidKeySpecException` on JVM
+ * targets); [PersistedFlashCrypto] treats any throw as "vault unreadable" and degrades loudly.
+ */
+internal expect fun ecP256ParsePrivateKeyPkcs8(encoded: ByteArray): PlatformEcPrivateKey

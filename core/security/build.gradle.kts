@@ -68,6 +68,15 @@ kotlin {
             implementation(libs.androidx.core.ktx)
             implementation(libs.androidx.lifecycle.runtime.ktx)
         }
+        jvmMain.dependencies {
+            // Phase 26 (ADR-035): JNA carries the Windows DPAPI calls behind
+            // IdentityKeyVault.Dpapi — the desktop identity key's at-rest protection. JVM
+            // target only, never Android (the Android identity key is Keystore-backed and
+            // never leaves the TEE). `implementation`, not `api`: DPAPI is an implementation
+            // detail of the vault; no consumer type mentions it.
+            implementation(libs.jna)
+            implementation(libs.jna.platform)
+        }
         // Runs on BOTH the Android host-test JVM and the desktop jvm() target, so the two
         // PlatformCrypto actual sets are executed, not merely compiled. See
         // crypto/PlatformCryptoParityTest.kt.

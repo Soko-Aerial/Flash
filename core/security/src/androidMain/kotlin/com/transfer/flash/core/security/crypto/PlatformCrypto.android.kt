@@ -6,6 +6,7 @@ import java.security.MessageDigest
 import java.security.SecureRandom
 import java.security.Signature
 import java.security.spec.ECGenParameterSpec
+import java.security.spec.PKCS8EncodedKeySpec
 import java.security.spec.X509EncodedKeySpec
 import javax.crypto.Cipher
 import javax.crypto.KeyAgreement
@@ -101,6 +102,16 @@ internal actual fun ecP256Verify(
 } catch (_: Exception) {
     false
 }
+
+// Phase 26 (ADR-035): included for seam completeness — Android's identity key is
+// Keystore-generated and non-exportable, so NO production Android path calls these. If one
+// ever does, treat it as a security regression, not a feature.
+
+internal actual fun ecP256ExportPrivateKeyPkcs8(privateKey: PlatformEcPrivateKey): ByteArray =
+    privateKey.encoded // software keys only — Keystore handles throw here by design
+
+internal actual fun ecP256ParsePrivateKeyPkcs8(encoded: ByteArray): PlatformEcPrivateKey =
+    KeyFactory.getInstance("EC").generatePrivate(PKCS8EncodedKeySpec(encoded))
 
 internal actual fun ecP256SharedSecret(
     privateKey: PlatformEcPrivateKey,
