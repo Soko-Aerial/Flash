@@ -11440,3 +11440,81 @@ done — and never was part of D12 — is *product* wiring: `:desktop` does not 
 call UI in the desktop shell, no desktop call service/ringer equivalent). That is new feature
 work for a future phase, not a migration gap. Desktop screen sharing remains the separately
 logged future feature.
+
+---
+
+## 2026-09-13 — Phases 27–33 AUTHORED (the desktop product track) + the pairing gate runbook
+
+**No production code was written in this entry.** It is planning plus two verified build facts. Every
+claim below was checked against the tree at authoring time and cites file:line; where a claim
+contradicts an earlier entry, the earlier entry is corrected here (R9).
+
+### The framing that changed
+
+The request was "a phase for each screen so we can modify each to work with desktop but still keep it
+the same for mobile". Verifying that premise first showed it was already true:
+
+- `FlashChatListScreen` — `MainActivity.kt:1422` **and** `DesktopShell.kt:207`
+- `FlashTransfersScreen` — `MainActivity.kt:1304` **and** `DesktopShell.kt:241`
+- `FlashNearbyScreen` — `MainActivity.kt:1346` **and** `DesktopShell.kt:292`
+- `FlashSettingsScreen` — `MainActivity.kt:1376` **and** `DesktopShell.kt:327`
+- `FlashPairingDialog` — reached by **both** shells through the same `FlashNearbyScreen.kt:164–173`
+  call site; neither shell calls it directly
+
+All four are `:ui:chat/commonMain`. So there is no port to do. What is duplicated is the **frame**:
+`:app`'s `FlashShell` is ~1,052 lines (584–1635) inside a 2,016-line `MainActivity.kt`, and
+`:desktop`'s `DesktopShell.kt` is a second one. Phases 27–33 close the *stubs* that make the shared
+screens behave differently on desktop, and unify the frame. Phase 27 is the prerequisite; 28–33 are
+per-surface.
+
+### Findings that correct or extend the record
+
+1. **Desktop cannot send a file at all.** `desktop/src/**` has zero references to `JFileChooser`,
+   `FileDialog`, `FlashFilePicker` or any send path. It receives fine. The JVM file-picker actual
+   already exists and is tested (`ui/platform-shims/src/jvmMain/.../FlashFilePicker.jvm.kt`,
+   `FlashFilePickerJvmTest`) — the desktop shell simply never calls it. Phase 16's G3 proved the
+   engine does both directions; nothing wired the app, so **G3-reverse is harness-only today**.
+2. **09B-2 is narrower than the record implies.** `core/persistence` already has a `jvm()` target and
+   `src/jvmTest/.../FlashDatabaseJvmTest.kt` proves the generated Room tier **runs on the JVM** —
+   all 11 tables, `OnConflictStrategy.IGNORE`, `InvalidationTracker` re-emission, read cursors,
+   group-delivery aggregates. That is 09B-1, and it is green. The one missing piece is an
+   **encrypted, file-backed** JVM driver; the test's own KDoc forbids putting `BundledSQLiteDriver`
+   on a path ("B without C under D5's charter"). Narrows Phase 29's decision considerably.
+3. **`RealFlashChatRepository` is Android-only by residence, not content** — no `android.*` import at
+   all, but five `java.*` ones: `UUID` (8 call sites), `ConcurrentHashMap` (2), and a
+   `SimpleDateFormat`/`Date`/`Locale` trio. `UuidIdGenerator` and `SystemTimeSource` already exist;
+   `SyncMap`/`SyncList` exist but are `internal` to `:core:calling` and need promoting. Its ~2,600-line
+   suite lives in `androidHostTest` with ~20 construction sites. Phase 29 is a move **plus** a D1
+   cleanup **plus** a test migration.
+4. **`:desktop`'s `:ui:callui` comment is stale.** `desktop/build.gradle.kts:42–43` says `:ui:callui`
+   is "still `com.android.library`; no phase converts it yet" — Phase 25 S3b converted it to KMP with
+   a `jvm()` target. The dependency is still absent, so the conclusion held while the reason rotted.
+5. **No manual-IP entry exists on either host.** Every `connectManual` call site in the repo passes an
+   already-discovered endpoint's host/port; the only raw host/port entry is the headless harness
+   (`DesktopInteropHarness.kt:393`). Since discovery is the flakiest link on this hardware
+   (Phase 16's `setsockopt`; the hotspot asymmetry; client isolation), Phase 31 adds one as a
+   *diagnostic*, not a product feature.
+6. **Desktop settings is a control panel wired to nothing.** `DesktopShell.kt:327–342` passes six
+   callbacks, five of them `{ }`; the other eight parameters in `FlashSettingsScreen`'s signature
+   fall through to `= {}` defaults. Android persists all of them via `FlashSettingsDataStore`.
+
+### Executed in this entry
+
+- `desktop/build.gradle.kts`: `jvmArgs += listOf("-Djava.net.preferIPv4Stack=true")` on the
+  `compose.desktop.application` block, commit `69453f0`. This is the **second** appearance of the
+  same Windows/JDK multicast bug — Phase 16 fixed it on `:core:engine`'s `interopHarness` task, and
+  `run` forks its own JVM so it never inherited it. Without it `DesktopEngine.start()`'s JmDNS
+  transport fails to bind and the desktop never advertises. **Verified:** `:desktop:compileKotlinJvm`
+  green, `:desktop:run` configures with the arg present, `:app:assembleDebug` green.
+- Authored `PHASE-27` … `PHASE-33`, plus `PAIRING-GATE-RUNBOOK.md` (the L0–L9 manual ladder for
+  Phase 16's G2/G6 and Phase 23's desktop cells, with a symptom→layer diagnosis table).
+- README: rows 25/26 had their `TBD` phase numbers filled in; rows 27–33 added under a heading that
+  states the framing above.
+
+### Not done, stated plainly
+
+**No phase here has been executed and the runbook has not been run.** Phase 27 needs a human pick
+(where the shared shell and its engine facade live) before it is execution-ready; Phases 29 and 32
+are blocked on D5=C's sub-answers and 09B-3's ABI option respectively. The desktop GUI has still
+never been launched by an agent in this repo — the compile and the underlying JVM stack are verified,
+the window is not.
