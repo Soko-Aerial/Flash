@@ -47,8 +47,32 @@ showed **Pair** instead of **Chat** for the desktop, forever.
 | Desktop | `rm -rf ~/.flash` — deletes `identity.properties`, `trust.properties`, `identity/id-key.bin`. **The next launch mints a new identity**, so the phone's trust in the old one is dead. |
 | Desktop | Optionally `rm -rf ~/FlashReceived` (received files). |
 | Phone | Settings → Apps → Flash → **Storage → Clear data** (not just cache — cache does not hold the identity). |
+| **Phone** | **Toggle Wi-Fi off and on.** This clears the phone's mDNS cache — see the warning below, it will otherwise show peers that are not running. |
+| **Desktop** | **Exit the app cleanly** (close the window, or Ctrl+C and let it finish). **Never** end it with `Terminate batch job (Y/N)? y`, and never kill the JVM. |
 
 Clearing only one side is a legitimate test too — see **L6b**.
+
+> ### ⚠️ A killed process leaves a visible ghost — read this before believing a peer list
+>
+> A clean shutdown runs `JmdsTransport.stop()`, which calls `unregisterAll()` and sends the mDNS
+> **goodbye** (TTL=0), so peers drop the device immediately. A **killed** JVM sends nothing, and
+> every peer keeps the record until its **TTL expires — up to ~75 minutes** for SRV/PTR.
+>
+> Consequence: after an unclean exit, the phone keeps listing a desktop that is not running, and
+> `Terminate batch job` in the Gradle console is the usual cause. This cost an entire evening on
+> 2026-09-13 — it was twice mistaken for a code defect.
+>
+> **Before reporting "device X is visible but not running" as a bug:** toggle the phone's Wi-Fi, or
+> reboot it, then re-check. And confirm no advertiser is live by finding any stray JVM:
+>
+> ```powershell
+> Get-CimInstance Win32_Process -Filter "Name='java.exe'" |
+>   Select-Object ProcessId, CreationDate, CommandLine | Format-List
+> ```
+>
+> The **Kotlin compile daemon and the Gradle daemon are not suspects** — neither binds mDNS.
+> A `DesktopInteropHarness` command line is one, though `main` now forces exit so a finished verb
+> cannot linger. A **peer that still appears with the list empty** is cache, not a live advertiser.
 
 ---
 

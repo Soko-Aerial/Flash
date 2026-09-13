@@ -11786,3 +11786,35 @@ Get-CimInstance Win32_Process -Filter "Name='java.exe'" |
 
 and stop that PID specifically — not `java` wholesale, which would take the Gradle and Kotlin daemons
 with it. **The Kotlin compile daemon and the Gradle daemon are not suspects**: neither binds mDNS.
+
+### Resolved: the "ghost" was a cached record from an unclean exit — and my first two explanations were both wrong
+
+Follow-up to the entry above, and it closes the loop on the human's very first observation.
+
+**The evidence:** the human killed the stray java processes and re-ran the process query — **it
+returned nothing at all**, no `java.exe` on the machine. The phone still listed `Harness discover`.
+
+**Therefore nothing was advertising it.** The record was **cached on the phone**, left there by an
+**unclean exit**:
+
+- `JmdsTransport.stop()` calls `bridge.unregisterAll()` then `close()` — which **is** the mDNS
+  goodbye (TTL=0), so a clean shutdown makes peers forget the device immediately.
+- A **killed** JVM runs none of that and sends nothing. Peers keep the record until its TTL expires —
+  up to ~75 minutes for SRV/PTR.
+- `Terminate batch job (Y/N)? y` in the Gradle console is exactly that: it kills the wrapper and the
+  forked JVM without a clean shutdown.
+
+So the original symptom — *"the phone still shows the desktop even when the app is closed"* — was
+correct, and both explanations offered for it were wrong: first "the phone's trust store" (it was not
+a trusted entry), then "a stale advertiser" (there was none at that moment). It was cache.
+
+**This is normal mDNS behaviour, not a defect in our code.** But it is a serious testing hazard,
+because an unclean exit makes a *stopped* device look *live* — and it twice sent this session chasing
+a code bug that did not exist. Guidance added to
+[PAIRING-GATE-RUNBOOK.md](../PAIRING-GATE-RUNBOOK.md)'s reset section: toggle the phone's Wi-Fi
+between runs, exit the desktop app cleanly, and treat "peer visible with the process list empty" as
+cache rather than an advertiser.
+
+**Note:** the `exitProcess(0)` fix from the entry above is still correct and does not worsen this —
+`discover` calls `endpoint.stop()` (goodbyes sent) *before* returning, so the forced exit follows a
+clean shutdown rather than replacing one.
