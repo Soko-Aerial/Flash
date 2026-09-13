@@ -1,6 +1,6 @@
 package com.transfer.flash.core.calling
 
-import com.shepeliev.webrtckmp.AudioTrack
+import com.shepeliev.webrtckmp.AudioStreamTrack
 import com.shepeliev.webrtckmp.BundlePolicy
 import com.shepeliev.webrtckmp.CameraPermissionException
 import com.shepeliev.webrtckmp.IceCandidate
@@ -16,7 +16,7 @@ import com.shepeliev.webrtckmp.RtcpMuxPolicy
 import com.shepeliev.webrtckmp.RtpSender
 import com.shepeliev.webrtckmp.SessionDescription
 import com.shepeliev.webrtckmp.SessionDescriptionType
-import com.shepeliev.webrtckmp.VideoTrack
+import com.shepeliev.webrtckmp.VideoStreamTrack
 import com.shepeliev.webrtckmp.audioTracks
 import com.shepeliev.webrtckmp.onConnectionStateChange
 import com.shepeliev.webrtckmp.onIceCandidate
@@ -70,7 +70,7 @@ import org.webrtc.RtpParameters.DegradationPreference
  * - `createOffer/createAnswer(options)` require [OfferAnswerOptions].
  * - SDP types are [SessionDescriptionType] (no "SdpType" in 0.125.11).
  * - `IceCandidate(sdpMid: String, ...)` — mid is non-null on the wire ("" when absent).
- * - `VideoTrack.switchCamera()` is suspend.
+ * - `VideoStreamTrack.switchCamera()` is suspend.
  * - Permissions are checked at getUserMedia time (throws on missing).
  */
 @OptIn(com.transfer.flash.core.common.annotation.FlashInternalApi::class)
@@ -174,7 +174,7 @@ public class FlashCallSession(
      */
     override val stats: StateFlow<FlashCallStats?> = _stats.asStateFlow()
 
-    private val _localVideoTrack = MutableStateFlow<VideoTrack?>(null)
+    private val _localVideoStreamTrack = MutableStateFlow<VideoStreamTrack?>(null)
 
     /**
      * Local camera track — OBSERVABLE, because the renderer that binds it is composed
@@ -185,9 +185,9 @@ public class FlashCallSession(
      * immediately) and nothing ever told it to look again. Null for audio calls and after
      * [releaseMedia].
      */
-    override val localVideoTrack: StateFlow<VideoTrack?> = _localVideoTrack.asStateFlow()
+    override val localVideoStreamTrack: StateFlow<VideoStreamTrack?> = _localVideoStreamTrack.asStateFlow()
 
-    private val _remoteVideoTrack = MutableStateFlow<VideoTrack?>(null)
+    private val _remoteVideoStreamTrack = MutableStateFlow<VideoStreamTrack?>(null)
 
     /**
      * Remote camera track, published from [PeerConnection.onTrack].
@@ -198,11 +198,11 @@ public class FlashCallSession(
      * carries no video track at all and the ordering of the two callbacks decides whether
      * a stream snapshot ever contains video. The track in hand always does.
      */
-    override val remoteVideoTrack: StateFlow<VideoTrack?> = _remoteVideoTrack.asStateFlow()
+    override val remoteVideoStreamTrack: StateFlow<VideoStreamTrack?> = _remoteVideoStreamTrack.asStateFlow()
 
     private var peerConnection: PeerConnection? = null
     private var localStream: MediaStream? = null
-    private var remoteAudio: AudioTrack? = null
+    private var remoteAudio: AudioStreamTrack? = null
 
     /**
      * Our own RTP senders, kept because tuning them is not a one-shot act (D8).
@@ -220,7 +220,7 @@ public class FlashCallSession(
 
     /** Local microphone track once media is started; null before/after. Not public: an audio
      *  track is not renderable, so nothing outside this module has a use for it. */
-    private val localAudioTrack: AudioTrack? get() = localStream?.audioTracks?.firstOrNull()
+    private val localAudioStreamTrack: AudioStreamTrack? get() = localStream?.audioTracks?.firstOrNull()
 
     /** ICE candidates that arrived before the remote description was set (trickle buffer). */
     private val pendingIce = mutableListOf<IceCandidate>()
@@ -376,7 +376,7 @@ public class FlashCallSession(
 
     /** Toggle local mic mute. Returns the new muted state; no-op (returns current) without media. */
     public fun toggleMute(): Boolean {
-        val track = localAudioTrack ?: return _state.value.micMuted
+        val track = localAudioStreamTrack ?: return _state.value.micMuted
         track.enabled = !track.enabled
         val muted = !track.enabled
         _state.value = _state.value.copy(micMuted = muted)
@@ -385,7 +385,7 @@ public class FlashCallSession(
 
     /** Toggle local camera on/off (video calls). Returns the new off state. */
     public fun toggleCamera(): Boolean {
-        val track = _localVideoTrack.value ?: return _state.value.cameraOff
+        val track = _localVideoStreamTrack.value ?: return _state.value.cameraOff
         track.enabled = !track.enabled
         val off = !track.enabled
         _state.value = _state.value.copy(cameraOff = off)
@@ -394,7 +394,7 @@ public class FlashCallSession(
 
     /** Switch front/back camera (video calls). No-op without a video track. */
     public suspend fun switchCamera() {
-        _localVideoTrack.value?.switchCamera()
+        _localVideoStreamTrack.value?.switchCamera()
     }
 
     /** Speakerphone toggle state (audio routing is host-owned; ADR-025). */
@@ -738,7 +738,7 @@ public class FlashCallSession(
             localStream = stream
             // Publish before the PeerConnection exists: the preview renderer is already
             // composed and waiting on this flow.
-            _localVideoTrack.value = stream.videoTracks.firstOrNull()
+            _localVideoStreamTrack.value = stream.videoTracks.firstOrNull()
             val pc = PeerConnection(
                 RtcConfiguration(
                     iceServers = emptyList(), // LAN-only: host candidates (ADR-025).
@@ -938,13 +938,13 @@ public class FlashCallSession(
         eventJobs += scope.launch {
             pc.onTrack.collect { event ->
                 // The event's own track, not a snapshot of event.streams — see the
-                // [remoteVideoTrack] doc for why the stream wrapper is unreliable here.
+                // [remoteVideoStreamTrack] doc for why the stream wrapper is unreliable here.
                 val track = event.track
-                if (track is VideoTrack) {
+                if (track is VideoStreamTrack) {
                     FlashLog.i("CALL", "remote video track id=${track.id} call=$callId")
-                    _remoteVideoTrack.value = track
+                    _remoteVideoStreamTrack.value = track
                 }
-                if (track is AudioTrack) {
+                if (track is AudioStreamTrack) {
                     FlashLog.i("CALL", "remote audio track id=${track.id} call=$callId")
                     remoteAudio = track
                 }
@@ -1356,8 +1356,8 @@ public class FlashCallSession(
         eventJobs.clear()
         // Unpublish first: the UI unbinds its renderer sinks off the back of these flows,
         // and every track they hold is about to be stopped.
-        _localVideoTrack.value = null
-        _remoteVideoTrack.value = null
+        _localVideoStreamTrack.value = null
+        _remoteVideoStreamTrack.value = null
         remoteAudio = null
         // The governor's rung and the encoder's parameters have to agree, so the only place the
         // governor is allowed to forget is the place the encoder ceases to exist.

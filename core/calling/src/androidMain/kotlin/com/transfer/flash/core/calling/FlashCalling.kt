@@ -1,6 +1,6 @@
 package com.transfer.flash.core.calling
 
-import com.shepeliev.webrtckmp.VideoTrack
+import com.shepeliev.webrtckmp.VideoStreamTrack
 import com.transfer.flash.core.calling.model.FlashCallStats
 import com.transfer.flash.core.calling.model.FlashCallUiState
 import com.transfer.flash.core.calling.model.OngoingGroupCallUi
@@ -164,7 +164,7 @@ public interface FlashCalling {
  * the object. A renderer must re-bind on every emission and must **not** be released on a track
  * change; releasing an `EglRenderer` is terminal and leaves the surface permanently black.
  *
- * [VideoTrack] comes from webrtc-kmp. This is the one place Flash lets a third-party type through
+ * [VideoStreamTrack] comes from webrtc-kmp. This is the one place Flash lets a third-party type through
  * a public boundary: a renderer has to be handed the real track, and any wrapper would have to
  * expose it again to be useful (ADR-025). `:core:calling` re-exports webrtc-kmp via `api()` so
  * consumers get the type transitively.
@@ -178,8 +178,8 @@ public interface FlashCallMedia {
     public val stats: StateFlow<FlashCallStats?>
 
     /** The local camera track, or null on an audio-only call or while the camera is off. */
-    public val localVideoTrack: StateFlow<VideoTrack?>
+    public val localVideoStreamTrack: StateFlow<VideoStreamTrack?>
 
     /** The remote camera track, or null until the peer publishes video. */
-    public val remoteVideoTrack: StateFlow<VideoTrack?>
+    public val remoteVideoStreamTrack: StateFlow<VideoStreamTrack?>
 }

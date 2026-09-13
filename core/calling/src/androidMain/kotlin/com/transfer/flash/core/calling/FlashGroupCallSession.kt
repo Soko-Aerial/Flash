@@ -1,6 +1,6 @@
 package com.transfer.flash.core.calling
 
-import com.shepeliev.webrtckmp.AudioTrack
+import com.shepeliev.webrtckmp.AudioStreamTrack
 import com.shepeliev.webrtckmp.BundlePolicy
 import com.shepeliev.webrtckmp.CameraPermissionException
 import com.shepeliev.webrtckmp.IceCandidate
@@ -16,7 +16,7 @@ import com.shepeliev.webrtckmp.RtcpMuxPolicy
 import com.shepeliev.webrtckmp.RtpSender
 import com.shepeliev.webrtckmp.SessionDescription
 import com.shepeliev.webrtckmp.SessionDescriptionType
-import com.shepeliev.webrtckmp.VideoTrack
+import com.shepeliev.webrtckmp.VideoStreamTrack
 import com.shepeliev.webrtckmp.audioTracks
 import org.webrtc.Priority
 import org.webrtc.RtpParameters.DegradationPreference
@@ -104,11 +104,11 @@ public class FlashGroupCallSession(
     private val _stats = MutableStateFlow<FlashCallStats?>(null)
     override val stats: StateFlow<FlashCallStats?> = _stats.asStateFlow()
 
-    private val _localVideoTrack = MutableStateFlow<VideoTrack?>(null)
-    override val localVideoTrack: StateFlow<VideoTrack?> = _localVideoTrack.asStateFlow()
+    private val _localVideoStreamTrack = MutableStateFlow<VideoStreamTrack?>(null)
+    override val localVideoStreamTrack: StateFlow<VideoStreamTrack?> = _localVideoStreamTrack.asStateFlow()
 
-    private val _remoteVideoTrack = MutableStateFlow<VideoTrack?>(null)
-    override val remoteVideoTrack: StateFlow<VideoTrack?> = _remoteVideoTrack.asStateFlow()
+    private val _remoteVideoStreamTrack = MutableStateFlow<VideoStreamTrack?>(null)
+    override val remoteVideoStreamTrack: StateFlow<VideoStreamTrack?> = _remoteVideoStreamTrack.asStateFlow()
 
     private val legs = ConcurrentHashMap<String, GroupLeg>()
     private val sessionMutex = Mutex()
@@ -500,8 +500,8 @@ public class FlashGroupCallSession(
             pc.onTrack.collect { trackEvent ->
                 val track = trackEvent.track
                 FlashLog.i("GROUP_CALL", "Received track on leg ${leg.peerId}: ${track?.kind}")
-                if (track is VideoTrack) {
-                    _remoteVideoTrack.value = track
+                if (track is VideoStreamTrack) {
+                    _remoteVideoStreamTrack.value = track
                 }
             }
         }
@@ -854,7 +854,7 @@ public class FlashGroupCallSession(
     }
 
     public suspend fun switchCamera() {
-        _localVideoTrack.value?.switchCamera()
+        _localVideoStreamTrack.value?.switchCamera()
     }
 
     public fun setSpeaker(on: Boolean) {
@@ -879,7 +879,7 @@ public class FlashGroupCallSession(
         return try {
             val stream = MediaDevices.getUserMedia(audio = true, video = video)
             localStream = stream
-            _localVideoTrack.value = stream.videoTracks.firstOrNull()
+            _localVideoStreamTrack.value = stream.videoTracks.firstOrNull()
             isMediaAcquired = true
             true
         } catch (e: CameraPermissionException) {
@@ -913,8 +913,8 @@ public class FlashGroupCallSession(
             localStream?.release()
         } catch (_: Throwable) {}
         localStream = null
-        _localVideoTrack.value = null
-        _remoteVideoTrack.value = null
+        _localVideoStreamTrack.value = null
+        _remoteVideoStreamTrack.value = null
 
         _state.value = _state.value.copy(
             state = FlashCallState.ENDED,

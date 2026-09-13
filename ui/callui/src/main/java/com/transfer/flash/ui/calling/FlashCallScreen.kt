@@ -50,7 +50,7 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import com.shepeliev.webrtckmp.VideoTrack
+import com.shepeliev.webrtckmp.VideoStreamTrack
 import com.shepeliev.webrtckmp.WebRtc
 import com.transfer.flash.core.calling.FlashCallMedia
 import com.transfer.flash.core.calling.model.FlashCallEndReason
@@ -343,8 +343,8 @@ private fun FlashCallVideoSurfaces(
     modifier: Modifier = Modifier,
 ) {
     var pipIsLocal by remember { mutableStateOf(false) }
-    val remoteTrack = rememberVideoTrack(session?.remoteVideoTrack)
-    val localTrack = rememberVideoTrack(session?.localVideoTrack)
+    val remoteTrack = rememberVideoStreamTrack(session?.remoteVideoStreamTrack)
+    val localTrack = rememberVideoStreamTrack(session?.localVideoStreamTrack)
 
     Box(modifier = modifier) {
         FlashVideoRenderer(
@@ -402,13 +402,13 @@ private fun FlashCallVideoSurfaces(
  * composable call (which would re-key the `remember` slots underneath it).
  */
 @Composable
-private fun rememberVideoTrack(flow: StateFlow<VideoTrack?>?): VideoTrack? {
-    val source = remember(flow) { flow ?: MutableStateFlow<VideoTrack?>(null) }
+private fun rememberVideoStreamTrack(flow: StateFlow<VideoStreamTrack?>?): VideoStreamTrack? {
+    val source = remember(flow) { flow ?: MutableStateFlow<VideoStreamTrack?>(null) }
     return source.collectAsState().value
 }
 
 /**
- * One [SurfaceViewRenderer] bound to whichever [VideoTrack] it is currently pointed at.
+ * One [SurfaceViewRenderer] bound to whichever [VideoStreamTrack] it is currently pointed at.
  *
  * The renderer is initialised exactly once (in [AndroidView]'s factory) and released only
  * when the view itself is discarded. Track changes swap sinks; they must not release.
@@ -422,7 +422,7 @@ private fun rememberVideoTrack(flow: StateFlow<VideoTrack?>?): VideoTrack? {
  */
 @Composable
 private fun FlashVideoRenderer(
-    track: VideoTrack?,
+    track: VideoStreamTrack?,
     scalingType: RendererCommon.ScalingType,
     modifier: Modifier = Modifier,
 ) {
@@ -451,7 +451,7 @@ private fun FlashVideoRenderer(
 private class FlashVideoSink {
 
     private var view: SurfaceViewRenderer? = null
-    private var bound: VideoTrack? = null
+    private var bound: VideoStreamTrack? = null
 
     fun attach(renderer: SurfaceViewRenderer, scalingType: RendererCommon.ScalingType) {
         view = renderer
@@ -464,7 +464,7 @@ private class FlashVideoSink {
     }
 
     /** Points the surface at [track], detaching whatever it was showing before. */
-    fun bind(track: VideoTrack?) {
+    fun bind(track: VideoStreamTrack?) {
         if (track === bound) return
         val renderer = view ?: return
         // runCatching on both sides: a track can be stopped and disposed by the session
@@ -932,7 +932,7 @@ private fun FlashCallStatsBadge(
 
 /**
  * Observes the session's metrics flow, tolerating a null session without a conditional
- * composable call — same shape as [rememberVideoTrack] and for the same reason.
+ * composable call — same shape as [rememberVideoStreamTrack] and for the same reason.
  */
 @Composable
 private fun rememberCallStats(flow: StateFlow<FlashCallStats?>?): FlashCallStats? {

@@ -29,6 +29,14 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "Flash"
+
+// ADR-034 (D12): the vendored webrtc-kmp fork (com.shepeliev:webrtc-kmp with a jvm() target).
+// Because the fork declares the SAME group:name as the Maven original, Gradle's composite-build
+// dependency substitution redirects every `libs.webrtc.kmp` edge here automatically — the
+// consuming modules' dependency lines do not change. See third_party/webrtc-kmp/README note
+// in its build files.
+includeBuild("third_party/webrtc-kmp")
+
 include(":app")
 include(":core:common")
 include(":core:persistence")

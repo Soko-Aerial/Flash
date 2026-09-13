@@ -134,13 +134,13 @@ class FlashCallSessionTest {
     fun videoTracks_publishNothingUntilMediaExists() = runTest {
         val session = newSession(FlashCallDirection.INCOMING, video = true)
 
-        assertNull(session.localVideoTrack.value)
-        assertNull(session.remoteVideoTrack.value)
+        assertNull(session.localVideoStreamTrack.value)
+        assertNull(session.remoteVideoStreamTrack.value)
 
         assertFalse("media cannot start on the JVM", session.accept())
 
-        assertNull("a failed startMedia must publish no camera", session.localVideoTrack.value)
-        assertNull(session.remoteVideoTrack.value)
+        assertNull("a failed startMedia must publish no camera", session.localVideoStreamTrack.value)
+        assertNull(session.remoteVideoStreamTrack.value)
     }
 
     // ------------------------------------------------------------------

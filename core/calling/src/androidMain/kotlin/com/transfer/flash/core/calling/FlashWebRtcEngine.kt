@@ -19,7 +19,7 @@ import org.webrtc.audio.JavaAudioDeviceModule
  *
  * webrtc-kmp builds its `PeerConnectionFactory` lazily and never sets an audio device
  * module, so libwebrtc creates a default `JavaAudioDeviceModule` on first use — and that
- * default has `useLowLatency = false`, i.e. `AudioTrack` runs in the normal performance
+ * default has `useLowLatency = false`, i.e. `AudioStreamTrack` runs in the normal performance
  * mode with the standard output buffer. On the playout path that is tens of milliseconds
  * of buffering that nothing else in the stack can claw back: it is upstream of the jitter
  * buffer, upstream of the decoder, and not reachable from any per-call API.
@@ -105,7 +105,7 @@ public object FlashWebRtcEngine {
                 val adm = JavaAudioDeviceModule.builder(appContext)
                     // The point of this whole object on capable hardware:
                     // PERFORMANCE_MODE_LOW_LATENCY and a smaller output buffer on the playout
-                    // AudioTrack. Skipped on LOW-tier hardware (see [configureOnce]): the small
+                    // AudioStreamTrack. Skipped on LOW-tier hardware (see [configureOnce]): the small
                     // buffer underruns there, and an underrun-driven NetEQ stretch jitters more
                     // than the default buffer ever costs.
                     .setUseLowLatency(lowLatencyPlayout)
