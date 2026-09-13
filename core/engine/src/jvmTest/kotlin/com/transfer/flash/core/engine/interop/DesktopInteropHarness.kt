@@ -126,7 +126,10 @@ public object DesktopInteropHarness {
      * The full endpoint: transfer send + receive (pipeline + accept gate), discovery, auto-dial.
      * Same composition as `DesktopEndpointFixture`, parameterised for the interactive verbs.
      */
-    private class DesktopEndpoint(name: String, receivedRoot: File) {
+    private class DesktopEndpoint(
+        private val name: String,
+        receivedRoot: File,
+    ) {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         val stateDir = File(System.getProperty("java.io.tmpdir"), "flash-interop-$name").apply { mkdirs() }
         val identity = DesktopIdentityStore(stateDir).getIdentity()
@@ -181,7 +184,11 @@ public object DesktopInteropHarness {
             val port = runBlocking { (network.start(0) as FlashResult.Success).value }
             val identityFrame = FlashAdvertisedIdentity(
                 deviceId = identity.deviceId,
-                friendlyName = identity.friendlyName,
+                // NOT identity.friendlyName — see the sibling fixture in HarnessTestSupport.kt.
+                // This class is the one `advertise`/`discover`/`send`/`receive` actually use, so a
+                // harness endpoint that advertises the app's name makes the harness
+                // indistinguishable from the product on the wire.
+                friendlyName = "Harness $name",
                 deviceModel = "desktop",
                 protocolVersion = 2,
             )

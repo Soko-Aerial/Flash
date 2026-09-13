@@ -140,6 +140,16 @@ public class RealJmdnsBridge(
                 .onFailure { logWarn("unbound JmDNS fallback failed", it) }
         }
         if (responders.isEmpty()) throw IOException("no usable mDNS interface on this host")
+        // Diagnostic, and the reason it exists: on 2026-09-13 this host resolved its OWN
+        // just-registered service back as `txtKeys=[] txtBytes=1` while the object itself still
+        // held a well-formed 91-byte TXT (measured before and after `registerService`). Which
+        // responder we are on — a real per-interface bind or the unbound fallback — changes what
+        // that means, and it is not otherwise visible from outside.
+        logWarn(
+            "mDNS responders=${responders.size} candidates=${candidates.map { it.hostAddress }} " +
+                "bound=${responders.map { it.hostName }}",
+            null,
+        )
     }
 
     override fun register(request: JmdnsAdvertiseRequest) {

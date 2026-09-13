@@ -11583,3 +11583,73 @@ lines stop. `Get-Process java | Select-Object Id, StartTime` finds candidates.
 
 **Verified:** `:core:discovery:jvmTest` 34/34, `:core:engine:compileTestKotlinJvm`,
 `:desktop:compileKotlinJvm` all green.
+
+---
+
+## 2026-09-13 — Desktop discovery: measurements, two dead theories, and an open root cause
+
+Follow-up to the entry above. The collision theory was **wrong** and is corrected here (R9).
+
+### Ruled out, each by measurement rather than argument
+
+| Theory | How it died |
+|---|---|
+| A stray advertiser ("ghost") on this host holds the name | `Get-CimInstance Win32_Process -Filter "Name='java.exe'"` listed only the Kotlin compile daemon and the Gradle daemon. No ghost exists. |
+| The app and the harness collide, so they must be separated | Separating them changed nothing — see the experiment below. |
+| Multiple interfaces produce a self name-conflict | The bridge now logs its bind state: `responders=1 candidates=[192.168.0.126] bound=[flash-192-168-0-126.local.]`. One address, one real per-interface bind, not the unbound fallback. |
+| `requestServiceInfo(..., persistent = true)` loses the TXT | Flipped to `false`; identical behaviour. Reverted. |
+| Our reader loses the keys | `JmdnsBridgeAttributeTest` (new) pins `toNeutral`: every key copied through. |
+| Our writer drops them | Measured live in the bridge: `textBytes=91 attrs=4`, decoding to `46,'device_id=3bd5ed8f-647f…'`, **and still 91 after `registerService` returns**. The object is never corrupted. |
+| The `(n)` suffixes mean third-party collisions | They are Android NSD renaming its own registration after conflicts, and they appear only while the phone is on the network. |
+
+### The experiment that killed the collision theory
+
+The harness's own `DesktopEndpoint` (`DesktopInteropHarness.kt:129` — **not** the
+`DesktopEndpointFixture` the first fix touched; the interactive verbs use this one) was changed to
+advertise `Harness discover` instead of the app's `Flash Flash Desktop`, so the two could not
+collide. Result:
+
+```
+DIAG before register: name='Flash Harness discover' attrs=4 textBytes=91 text=[46,100,101,...]
+DIAG after  register: name='Flash Harness discover' textBytes=91 text=[46,100,101,...]
+Dropping mDNS endpoint without device_id name=Flash Harness discover host=192.168.0.126 port=45822 txtKeys=[] txtBytes=1
+```
+
+**Same name out, same name back, 91 bytes out and 1 byte back, from the only responder in the
+process, with the LAN otherwise empty.** The name was never the problem.
+
+### What is actually established
+
+`txtByteCount = 1` is JmDNS's empty TXT — `EMPTY_TXT` is `new byte[]{0}` (`ByteWrangler.java:43`),
+and `encodeText("")` produces the same single byte. So a `ServiceInfo` reaches us whose text is one
+zero byte while its **address and port resolved correctly** — and `hasData()`, which requires only
+`length > 0`, lets it through to `serviceResolved`.
+
+That combination matches a JmDNS `ServiceInfo` created as a resolution *placeholder* (no props) and
+then populated with SRV/A but never with TXT. It also explains why the same host sometimes resolves
+the phone correctly: when the TXT response does land, the record is fine.
+
+**Not yet proven, and not to be treated as established.** The next step is to instrument the
+resolution path itself rather than the registration path — log `event.info.textBytes` and the raw
+first byte inside `RealJmdsBridge.serviceResolved`, and issue an explicit re-resolve on the
+`txtByteCount <= 1` signature to see whether a second pass fills it in. If a re-resolve works, the
+fix is in `JmdsTransport` (retry instead of drop); if it never fills in, the fault is inside JmDNS
+and the options are a newer version, a different TXT read path, or replacing the transport.
+
+### Kept from this round
+
+- **`DesktopInteropHarness`'s own `DesktopEndpoint`** now advertises `Harness <verb>` — the class the
+  interactive verbs actually use. A test artifact must not be mistakable for the product.
+- **`RealJmdsBridge.open()` logs its bind state** (responders, candidate addresses, bound hostnames).
+  It is the only way to tell a real per-interface bind from the unbound fallback from outside.
+- The `txtByteCount` diagnostic and the empty-TXT hint in the drop log.
+
+### Reverted from this round
+
+- A "register on one responder only" change. It was justified by an apparent 2-drops-to-1
+  improvement that was **noise**: with `responders=1` the old code already registered exactly once,
+  so the change was a no-op and the improvement was coincidence. Reverted rather than kept on a
+  story that does not hold.
+
+**Verified:** `:core:discovery:jvmTest` 34/34, `:core:discovery:testAndroidHostTest`,
+`:core:engine:compileTestKotlinJvm`, `:desktop:compileKotlinJvm` all green.
