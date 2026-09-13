@@ -11248,3 +11248,32 @@ the run then proceeded:
 G1 both directions + G3 desktop→phone @100 MB verified live earlier today (see the previous
 entry). This phase file pair is what unblocks G2/G6 and phone→desktop transfer on hardware day.
 NOTHING implemented yet — phase files and decisions only, per the human's instruction.
+
+## 2026-09-13 — Phase 25 Stage 1 EXECUTED (A1–A5 all green): `:core:calling` is now KMP
+
+### Sub-steps (each verified before the next; one commit each per R1)
+- **A1 (`328e86e`)**: AGP→KGP pair swap per the canonical converted-module shape. Consumer
+  ProGuard rules preserved via `optimization { consumerKeepRules }` — they are load-bearing
+  native-JNI keeps, not comment-only. `api(libs.webrtc.kmp)` moved to androidMain (F1 wall).
+  All sources relocated to androidMain/androidHostTest byte-for-byte; 72/0 host tests unchanged.
+- **A2 (`de3db16`)**: 5 platform-pure files → commonMain (models, CallFrameCodec, CallWireFrame,
+  CallQualityGovernor, CallSdp). Cross-check 72/0.
+- **A3 (`6f95718`)**: **CENSUS DEFECT #2 — verified by executing the move.** CallCoordinator
+  implements `FlashCalling` (public `VideoTrack` exposure — the phase file's "pure" claim and
+  constructor-types claim were both false) and references the androidMain session classes; 8
+  unresolved-reference errors, reverted cleanly. It stays androidMain for the Stage-2 (S2e)
+  seam work. Verified census: **5 pure files, not 7** (FlashCalling was defect #1, caught at A1).
+- **A4 (`6f95718`)**: 3 platform-free suites → commonTest, JUnit4→kotlin.test (54 message-first
+  assertions re-ordered; kotlin.test's message-LAST signature and the absence of
+  `(message, Boolean)` overloads silently mis-resolve all-String 3-arg calls — two such were
+  caught by the run, one passing JUnit 3-arg test was failing under the wrong order).
+- **A5 (this entry)**: full gate green — compileAndroidMain, compileKotlinJvm, testAndroidHostTest
+  (72/0 = 59 common + 13 session), jvmTest (59/0 — **first JVM execution of the common suites**),
+  publishToMavenLocal (root `core-calling` 1.1.0 umbrella + `core-calling-android` +
+  **`core-calling-jvm`** — the Phase 24 tree shape extends to calling), `:ui:callui:compileDebugKotlin`
+  green, `:app:assembleDebug` green, R6 scans on commonMain/commonTest clean.
+
+### Note
+CONVENTIONS.md R3's canonical command line names `:core:calling:compileDebugKotlin`, which
+ceased to exist at A1 (R3.1: now `:core:calling:compileAndroidMain`). Swept with the next
+conventions touch so the line stays runnable end-to-end.
