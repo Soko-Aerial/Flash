@@ -11396,3 +11396,47 @@ jvmTest 59/0 + host 72/0, `:app:assembleDebug` — all green.
   self-initializes; nothing to port from the Android ADM) and **S3b (`:ui:callui` conversion)**.
 - CONVENTIONS.md R3 line still names `:core:calling:compileDebugKotlin` (obsolete since A1).
 - Phase 24 publish steps 3–5 remain forbidden while 23 is CLOSED; 09B-2/09B-3 open.
+
+## 2026-09-13 — Phase 25 Stage 3 EXECUTED (S3a proven, S3b done) → Phase 25 COMPLETE
+
+### S3a — the desktop media stack is PROVEN to run (commit `270e413`)
+The fork's JVM backend had only ever been compile-verified. `DesktopMediaStackSmokeTest` (jvmTest)
+now proves it on a real host: the PeerConnection factory initialises (loading webrtc-java's
+native library — the step the 0.8.0→0.17.0 bump could have broken), a connection constructs with
+Flash's own LAN-only configuration, `createOffer` returns a real SDP offer with an
+`m=application` section (a data channel is created first — modern libwebrtc emits no `m=` line
+for a transceiver-less connection, and `offerToReceiveAudio` is legacy under Unified Plan; the
+test's first version asserted `m=` on a bare offer and correctly failed — the ASSERTION was
+wrong, not the stack), and ICE gathers host candidates. Also surfaced: the native library must be
+on the test runtime classpath (the API jar is Java-only), so `:core:calling`'s jvmTest declares
+the per-OS classifier artifact the same way the fork's own jvmTest does.
+
+### S3b — `:ui:callui` converted (commit `91e4c5e`)
+The last Android-only UI module in the desktop scope. The screen moved to commonMain (its three
+`android.util.Log` sites were all inside the renderer; `BackHandler` → `FlashBackHandler`;
+`:ui:platform-shims` joined commonMain). The renderer — the only reason the module was
+androidMain — became the `FlashCallVideoSurface`/`CallVideoFit` seam, and **the desktop actual is
+a real renderer, not a stub**: a Swing `JPanel` implementing webrtc-java's `VideoTrackSink`,
+hosted by Compose's `SwingPanel`, converting frames through `VideoBufferConverter.convertFromI420`
+(one native call) into a `BufferedImage`, scaled at paint time with the same two fit modes
+(letterbox / fill-and-crop). Both actuals honour the renderer-lifetime invariant documented on
+the expect declaration. `FlashCallDurationTest` → commonTest: the module now EXECUTES 5/5 on both
+targets instead of Android alone. Publishes `ui-callui` + `-android` + `-jvm`.
+
+### Conventions debt paid
+CONVENTIONS.md R3's line named `:core:calling:compileDebugKotlin` / `:ui:callui:compileDebugKotlin`
+— tasks that ceased to exist when both modules converted. It now carries their R3.1
+`testAndroidHostTest` + `jvmTest` pairs (strictly stronger: executed, not merely compiled).
+
+### Full R3 sweep (2026-09-13, after all of the above)
+Green everywhere except `:core/persistence`'s **12 known NTFS failures** (JUnit `TemporaryFolder`
+"Unable to rename" — environment, passes on Linux) — the only red in the repository, unchanged
+from the pre-existing baseline. `:core:calling` jvmTest 61/0 (was 59).
+
+### Phase 25 status: COMPLETE (Stages 1, 2, 3)
+Desktop calling is no longer a promise: the stack compiles, publishes a `-jvm` variant, runs on a
+real host, and its UI module is multiplatform with a working desktop video renderer. What is NOT
+done — and never was part of D12 — is *product* wiring: `:desktop` does not yet place calls (no
+call UI in the desktop shell, no desktop call service/ringer equivalent). That is new feature
+work for a future phase, not a migration gap. Desktop screen sharing remains the separately
+logged future feature.
