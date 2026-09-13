@@ -10865,3 +10865,58 @@ Steps 3–5 (tag → JitPack build → fresh out-of-repo consumers on both platf
 
 ### Next step
 Unchanged: everything buildable from this machine across the whole plan is now built and verified. The remaining plan items are, exhaustively: the Phase 16 hardware run (phone on this LAN; G1–G6 via the harness + app), the desktop pairing gap (must be scoped before the Phase 23 matrix can pass its desktop M2), 09B-2/09B-3 sub-answers, the calling-stack A–D pick on top of the research report, and then 23 → 24's publish steps.
+
+---
+
+## 2026-09-13 — Desktop pairing gap scoped (decision request; no code changed)
+
+- **Date:** 2026-09-13
+- **Agent/model:** Claude Code (glm-5.3-free), autonomous per the session /goal
+- **Commit:** (this commit)
+- **Decisions relied on:** R8 (security posture — why the crypto choice is the human's), R9 (record the blocker before the hardware day, not during it), D11's research-before-conversion precedent
+
+### What this entry records
+
+The 2026-09-12 census named the desktop pairing gap as something to "scope deliberately before
+the hardware day". That scoping now exists:
+`docs/migration/research/desktop-pairing-gap-scoping.md`. No code changed with it — the one
+thing blocking the gap is a **security-posture decision** under R8's shadow, and the document
+exists to put that decision in front of the human with a recommendation, not to improvise it.
+
+Findings recorded there (all measured):
+
+- **The whole pairing math is already desktop-ready.** `DefaultFlashPairingProtocol`, the session
+  state machine, `FlashPairingFrames`, and the SAS derivation (`NumericComparisonCode` — a pure
+  symmetric function of both fingerprints, platform parity already pinned by Phase 07 tests on
+  both targets) are all `:core:security` **commonMain**. `PairingCoordinator` + `PairingFraming`
+  + `PairingUiMapper` (493 lines, `:app`) are platform-pure Kotlin with zero
+  `android.*`/`java.*` imports. `:ui:chat`'s pairing dialog renders on desktop today.
+- **The gap is exactly one decision + mechanical wiring.** The decision: how a desktop
+  constructs its `FlashCrypto` identity. `SoftwareFlashCrypto` is `internal` and its KDoc
+  explicitly forbids production identity use ("tracked as security debt"); `KeystoreFlashCrypto`
+  is androidMain. P1 (publicize the software path — accepts the debt), P2 (persist a software
+  keypair under `~/.flash/` — new security-relevant code needing the R8 review), P3 (defer
+  pairing-desktop until the 09B-2 encrypted-storage review, same shape as G7's existing
+  deferral). **Recommendation: P3 for the first hardware run** — it lets the gate prove the four
+  transfer directions + discovery on day one and records the pairing-desktop cells as DEFERRED
+  with a named reason, then folds P1/P2 into the review that already has to happen.
+- The wiring facts are verified in-repo: the Android route is `FLASH_PAIR` →
+  `pairing.onInbound(peerId, text)` (`DiscoveryEngineHolder.kt:1631–1634`), the session-up hello
+  is `pairingCoordinator.onSessionUp(...)` (`:1159`), and desktop's `sendTextAsync` exists in
+  jvmMain (`WsConnection.kt:140`).
+
+### Change
+- **Add:** `docs/migration/research/desktop-pairing-gap-scoping.md`
+- **Modify:** `docs/migration/README.md` — Phase 23 row now points at the scoping doc instead of
+  describing the gap in one breathless sentence.
+
+### Verification
+Docs-only; every code fact cited in the scoping document was checked against the tree before
+writing (grep/line references in the doc's own text).
+
+### Next step
+For the human: answer P (P1/P2/P3). If P3, the hardware day can be booked now — script: G1, G3,
+G4, G5 both directions + W→W/A→A via `DesktopInteropHarness` and the Flash app; record G2-desktop,
+G6-desktop, M2-desktop, M7-desktop as DEFERRED (P) alongside G7's existing 09B-2 deferral. If
+P1/P2, a small pairing phase runs first (the scoping doc sketches its four sub-steps), then the
+full matrix.
