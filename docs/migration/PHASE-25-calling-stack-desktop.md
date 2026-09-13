@@ -169,11 +169,18 @@ the Android test count must come back **unchanged**.
 
 `Priority`/`DegradationPreference` set per-track audio/video priority (R8-adjacent behaviour —
 users hear the difference). Under Option A these files **stay in androidMain**, so the imports
-stay legal. The split to an `expect`/`actual` seam is **Option B's** first media-adjacent step
-(B6), not A's.
+stay legal. The split to an `expect`/`actual` seam is **Stage 2's** first media-adjacent step
+(S2e), not A's.
 
-`CallCoordinator.kt` moves to `commonMain` (pure Kotlin; its constructor types are all
-common — `CallWireFrame`, `FlashCallLogEntry`, lambdas, `FlashTimeSource`).
+> **CORRECTION BLOCK (A3, 2026-09-13) — census defect #2, verified by executing the move.**
+> The original A3 text claimed "`CallCoordinator.kt` moves to `commonMain` (its constructor
+> types are all common)". FALSE. `CallCoordinator` **implements `FlashCalling`** — whose public
+> API exposes `com.shepeliev.webrtckmp.VideoTrack` (defect #1, caught at A1) — and directly
+> references `FlashCallSession`/`FlashGroupCallSession`/`FlashCallMedia` (all androidMain
+> residents; the attempt failed with 8 unresolved-reference errors and was reverted cleanly).
+> `CallCoordinator` therefore stays androidMain and joins `FlashCalling` in the Stage-2 seam
+> re-typing (S2e). With this correction, A3's deliverable under Stage 1 is: **no code moves** —
+> the verified census stands at 5 pure files (A2), not 7.
 
 ### A4 — Move the 5 test suites to `commonTest`
 

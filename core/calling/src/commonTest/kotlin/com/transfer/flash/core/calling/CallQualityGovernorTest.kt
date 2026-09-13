@@ -1,10 +1,10 @@
 package com.transfer.flash.core.calling
 
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNull
-import org.junit.Assert.assertTrue
-import org.junit.Test
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /**
  * JVM tests for the audio-protective governor (ERROR-031 / D8).
@@ -37,7 +37,7 @@ class CallQualityGovernorTest {
     fun `each audio symptom on its own is enough to degrade`() {
         listOf(jittery(), lossy(), laggy()).forEach { bad ->
             val governor = CallQualityGovernor()
-            assertNull("one bad sample must not be enough: $bad", governor.onSample(bad))
+            assertNull(governor.onSample(bad), "one bad sample must not be enough: $bad")
             assertEquals(VideoConcession.REDUCED_BITRATE, governor.onSample(bad))
         }
     }
@@ -105,10 +105,7 @@ class CallQualityGovernorTest {
             recoverSamples++
         }
 
-        assertTrue(
-            "recovery ($recoverSamples) must take longer than degradation ($degradeSamples)",
-            recoverSamples > degradeSamples,
-        )
+        assertTrue(recoverSamples > degradeSamples, "recovery ($recoverSamples) must take longer than degradation ($degradeSamples)")
     }
 
     @Test
@@ -116,7 +113,7 @@ class CallQualityGovernorTest {
         val governor = CallQualityGovernor()
         repeat(40) { index ->
             val verdict = governor.onSample(if (index % 2 == 0) jittery() else clean())
-            assertNull("alternating link must hold its rung, changed at $index", verdict)
+            assertNull(verdict, "alternating link must hold its rung, changed at $index")
         }
         assertEquals(VideoConcession.FULL, governor.level)
     }
@@ -146,7 +143,7 @@ class CallQualityGovernorTest {
             val sample = if (index % 3 == 0) greyZone() else jittery()
             if (governor.onSample(sample) != null) stepped = true
         }
-        assertTrue("two-in-three bad seconds must eventually step video down", stepped)
+        assertTrue(stepped, "two-in-three bad seconds must eventually step video down")
     }
 
     @Test
@@ -181,7 +178,7 @@ class CallQualityGovernorTest {
 
         assertTrue(VideoConcession.FULL.holdsBitrateFloor)
         VideoConcession.entries.filter { it != VideoConcession.FULL }.forEach {
-            assertFalse("$it must not pin a bitrate floor", it.holdsBitrateFloor)
+            assertFalse(it.holdsBitrateFloor, "$it must not pin a bitrate floor")
         }
     }
 
@@ -194,9 +191,9 @@ class CallQualityGovernorTest {
         assertNull(VideoConcession.FULL.reason)
         VideoConcession.entries.filter { it != VideoConcession.FULL }.forEach { level ->
             val reason = level.reason
-            assertTrue("$level must carry a reason", !reason.isNullOrBlank())
-            assertTrue("$level must name video: $reason", reason!!.contains("Video"))
-            assertTrue("$level must name audio: $reason", reason.contains("audio"))
+            assertTrue(!reason.isNullOrBlank(), "$level must carry a reason")
+            assertTrue(reason!!.contains("Video"), "$level must name video: $reason")
+            assertTrue(reason.contains("audio"), "$level must name audio: $reason")
         }
     }
 
@@ -204,14 +201,8 @@ class CallQualityGovernorTest {
     fun `the ladder descends monotonically in cost`() {
         val rungs = VideoConcession.entries
         rungs.zipWithNext { gentler, harsher ->
-            assertTrue(
-                "$harsher must not spend more bitrate than $gentler",
-                harsher.bitrateScale <= gentler.bitrateScale,
-            )
-            assertTrue(
-                "$harsher must not send more pixels than $gentler",
-                harsher.scaleResolutionDownBy >= gentler.scaleResolutionDownBy,
-            )
+            assertTrue(harsher.bitrateScale <= gentler.bitrateScale, "$harsher must not spend more bitrate than $gentler")
+            assertTrue(harsher.scaleResolutionDownBy >= gentler.scaleResolutionDownBy, "$harsher must not send more pixels than $gentler")
         }
         assertNull(VideoConcession.FULL.gentler)
         assertNull(VideoConcession.PAUSED.harsher)
