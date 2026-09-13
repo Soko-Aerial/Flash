@@ -69,6 +69,20 @@ compose.desktop {
     application {
         mainClass = "com.transfer.flash.desktop.DesktopMainKt"
 
+        // Windows/JDK multicast fix, same one Phase 16 needed on `:core:engine`'s
+        // `interopHarness` task. `DesktopEngine.start()` starts `CompositeDiscovery`, whose
+        // JmDNS transport binds a socket per interface; on this host the JDK's IPv6-preferred
+        // stack makes that bind fail with `Invalid argument: setsockopt` on BOTH the interface
+        // and the fallback path, so discovery never advertises and the desktop is invisible to
+        // phones. `run` forks a new JVM, so the flag has to be declared here — it is not
+        // inherited from the Gradle daemon's JAVA_TOOL_OPTIONS.
+        //
+        // Trade-off, stated plainly: this disables IPv6 for the app's JVM. Flash is LAN/hotspot
+        // only and reachability is by host candidates, so v4-only is acceptable today; a future
+        // phase that wants v6 peers must replace this with a per-transport bind fix in
+        // `JmdnsTransport` rather than dropping the flag globally.
+        jvmArgs += listOf("-Djava.net.preferIPv4Stack=true")
+
         // Native distribution packaging (MSI/DEB/DMG) is Phase 24 polish, deliberately NOT
         // wired into any verification gate here — the phase's own Do-NOT list forbids it
         // (packaging tools may not be installed). This block exists only so the entry point is
