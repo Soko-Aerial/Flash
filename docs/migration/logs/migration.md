@@ -10690,3 +10690,73 @@ Additional checks specific to this phase:
 
 ### Next step
 PHASE-23 — the full 4-way interop matrix gate, which needs the same physical-device runs as Phase 16 plus real Android↔desktop scenarios; it cannot run from this machine without a phone on the LAN. The remaining build-only phase is 24 (publishing prep) plus the TBD calling-stack phase (D11=B; file unwritten; must open with WebRTC-for-desktop-JVM research).
+
+---
+
+## 2026-09-12 — D11 research discharged + 23/24 blocker census (no phase completed)
+
+- **Date:** 2026-09-12
+- **Agent/model:** Claude Code (glm-5.3-free), autonomous per the session /goal
+- **Commit:** (this commit)
+- **Decisions relied on:** D11=B (calling stack in desktop scope; research mandated BEFORE any conversion proposal), D8=A, R8, R9
+
+### What this entry records (and why no phase commit)
+
+Phases 21 and 22 are built and committed (`7634e1c`, `920029f`). Everything after 22 in the
+critical path is gated on hardware that is not attached, so per R9 this entry records what was
+actually done instead of a phase: the D11-mandated WebRTC-for-desktop-JVM research (now written
+and committed as a standalone report), and a precise census of what blocks 23/24 so the human
+knows exactly what the hardware day must include.
+
+### Change
+- **Add:** `docs/migration/research/calling-stack-desktop-jvm-research.md` — the D11-mandated
+  research report. Headline finding (**measured, not speculated**, from the artifact's own Gradle
+  module metadata in the local cache): `com.shepeliev:webrtc-kmp:0.125.11` publishes **no JVM
+  target** — variants are android (`release*`), iosArm64/iosSimulatorArm64/iosX64, js, wasmJs +
+  metadata; platform types `androidJvm`/`js`/`native`/`wasm`/`common`, **no `jvm`**. So
+  `:core:calling` cannot declare `jvm()` at all — dependency resolution fails (the ERROR-049
+  wall), before a single line of its code matters. The report also censuses the module's
+  Android pins (4 of 10 files; `FlashWebRtcEngine`'s whole ADR-025/ERROR-032 audio path;
+  raw `org.webrtc.Priority`/`DegradationPreference` in both session files — which even a
+  hypothetical webrtc-kmp JVM target would not satisfy), and lays out options A–D
+  (signaling-only conversion / adopt a plain-JVM webrtc artifact — a human R10 dependency
+  decision / defer until upstream ships JVM / reopen D11) **without picking one**, because that
+  pick is the human's. The calling-stack phase file must be written on top of this report.
+- **Modify:** `docs/migration/README.md` — TBD row now records the research as DONE with the
+  no-JVM-target headline; Phase 23/24 rows now carry their precise blockers (below) instead of
+  bare "WAITING ON".
+
+### Verification
+No build gate: documentation + research only. The research's F1 claim was verified twice against
+the cached artifact (`webrtc-kmp-0.125.11.module`: 22 variant names, zero `jvm*`; platform-type
+attribute census: androidJvm/js/native/wasm/common only) and against the POM (depends on
+`webrtc-kmp-android` + `webrtc-kmp-js` only). File/line censuses by grep/wc as recorded in the
+report's own "Verification of this report's claims" section.
+
+### The 23/24 blocker census (for the human's hardware day)
+
+1. **Phase 16 (gate before 23):** CLOSED pending hardware. `adb devices` is empty on this
+   machine. G1–G6 need one Android device + this desktop on one LAN; the harness verbs
+   (`DesktopInteropHarness` advertise/discover/send/receive) + the Flash app are the script.
+   G7 is BLOCKED ON 09B-2 independently (D5=C).
+2. **Phase 23 (the 4-way matrix):** additionally blocked by its own precondition 1 ("If 16 is
+   closed, stop"), and by a **newly-censused desktop pairing gap** that would fail desktop
+   M2/SAS even with hardware attached: `PairingCoordinator` is `:app`-scoped; desktop has no
+   public `FlashCrypto` construction path (`SoftwareFlashCrypto` is `internal`,
+   `KeystoreFlashCrypto` is androidMain); and neither the Phase 16 harness nor `DesktopEngine`
+   parses `FLASH_PAIR` frames (only `FLASH_XFER`), so the Android app's session-up pairing hello
+   (DiscoveryEngineHolder.kt:1159) lands nowhere on desktop. Closing this gap is real engineering
+   plus a crypto-surface decision — it should be scoped as deliberate work BEFORE the hardware
+   day, not improvised during a gate run.
+3. **Phase 24:** its precondition 1 says STOP while 23 is CLOSED, and its Do-NOT forbids
+   tagging/publishing while closed. The local-only Steps 1–2 (publishToMavenLocal tree
+   inspection, D9=A's `sample/consumer-desktop`) may be run as preparation when the tree is
+   otherwise idle; the tag/JitPack/fresh-consumer Steps 3–5 are publish actions and stay with
+   the human.
+
+### Next step
+The build-only phases in this plan are exhausted: 21 and 22 are built and compile-verified;
+23/16-gate and 24 need the human's hardware run (plus the deliberately-scoped desktop pairing
+work); 09B-2/09B-3 need their sub-answers; the calling stack needs the human's A–D pick on top of
+the research report. Until one of those human inputs arrives, the honest state is: **critical
+path blocked on hardware + human decisions, everything buildable from this machine is built.**
