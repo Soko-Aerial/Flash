@@ -11007,3 +11007,60 @@ records as the AGP floor and which prior releases used successfully.
 ### Change
 - Docs/log only (this entry); the README's new desktop-consumer section (`0f5f1a2`) is the
   Step-5 draft the human can finalize at tag time.
+
+---
+
+## 2026-09-13 — PHASE-25 phase file authored (calling stack); execution stays blocked on the A–D pick
+
+- **Date:** 2026-09-13
+- **Agent/model:** Claude Code (glm-5.3-free), autonomous per the session /goal
+- **Commit:** (this commit)
+- **Decisions relied on:** D11 = Option B (research before conversion — discharged 2026-09-12), R1/R2 (phase-file-authored-ahead is this repo's own pattern), R8, R10, R9
+
+### What this entry records
+
+The plan's last unwritten phase file now exists: `PHASE-25-calling-stack-desktop.md`. It is
+authored **on top of** the 2026-09-12 research report (its findings F1/F3/F4/F5 are declared
+binding inputs, restated in a READ-FIRST block), and its execution is explicitly blocked on the
+human's A–D pick — the four options the research laid out (A signaling-only / B adopt a
+plain-JVM webrtc artifact / C defer / D reopen D11). No sub-step may begin before that answer;
+the file's own "Do NOT" list says so in bold.
+
+What the phase file adds beyond the report — all measured 2026-09-13, not assumed:
+
+- **Verified starting-state census:** `:core:calling`'s 10 files split into six pure-Kotlin
+  files (models/codec/wire-frame/governor/`FlashCalling`/SDP, ~1,234 lines), `CallCoordinator`
+  (560 lines, pure Kotlin over host seams), the two session files (2,472 lines; raw
+  `org.webrtc.*` pins), and `FlashWebRtcEngine` (~200 lines, Android by nature — the
+  ADR-025/ERROR-032 audio path). **All 5 test suites are platform-free** (grep-verified) —
+  commonTest-eligible as-is. `:ui:callui`'s one screen: `Log` (4 sites), `BackHandler`
+  (the Phase 19 shim exists), ~49 legal `androidx.compose.*` imports, and the WebRTC renderer
+  surface (~10 sites, the webrtc-renderer-lifetime subtleties).
+- **Option A's sub-steps A1–A5 written out** (the only shape executable without further input):
+  the KMP build-file swap with `api(libs.webrtc.kmp)` staying on **androidMain** (the F1 wall
+  made structural), the six pure files + `CallCoordinator` to commonMain, byte-for-byte
+  relocation discipline with the R3 relocation cross-check, the 5 suites to commonTest, and the
+  gate incl. the publication-tree delta (release note: `core-calling` becomes three artifacts).
+  Option B's B6–B8 sketched behind the human dependency decision; C/D are one-paragraph closes.
+- **The honest scope label** the log entry must carry under A: "signaling + call model on both
+  targets; no desktop audio/video — desktop media is Option B, gated on a dependency decision."
+
+### Change
+- **Add:** `docs/migration/PHASE-25-calling-stack-desktop.md`
+- **Modify:** `docs/migration/README.md` — the TBD row becomes "PHASE FILE WRITTEN; EXECUTION
+  BLOCKED ON THE HUMAN'S A–D PICK"; the stale "no phase file mentions it at all" prose and the
+  "gate wiring is a side-effect to do" paragraph updated to done-state (the R3 line has carried
+  both compile tasks since 2026-09-13, green); `sample/consumer-desktop`'s existence folded
+  into the D9 paragraph.
+
+### Verification
+Docs-only commit. Every code fact in the phase file was measured before writing (file census
+by grep/wc; platform-import scans; the 5 test suites' purity; `:ui:callui`'s dependency shape).
+No build gate applies; no module changed.
+
+### Next step
+The human's, from here: (1) the A–D pick for Phase 25; (2) the P pick for desktop pairing
+(scoping doc, 2026-09-13); (3) the hardware day for Phase 16/23 (script: harness verbs + the
+Flash app; under P3 run G1/G3/G4/G5 + M1/M3–M6 and record the pairing-desktop cells DEFERRED);
+(4) 09B-2/09B-3 sub-answers; (5) then 23 → 24's publish steps. Everything buildable from this
+machine across the entire plan is built, verified, and committed.

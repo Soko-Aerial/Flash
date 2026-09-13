@@ -51,7 +51,7 @@ Status is authoritative; each phase file's own preconditions section holds the d
 | 22 | [PHASE-22-adaptive-desktop-screens.md](PHASE-22-adaptive-desktop-screens.md) | **BUILT 2026-09-12 (compile-verified); NOT mergeable until the Phase 16 hardware gate opens.** Executed per its correction block (C1–C5, authored before coding): the file's two core symbols **do not exist** — `FlashAdaptiveTwoPane` and `rememberFlashWindowSize` were deleted by ERROR-033 — so the desktop got local equivalents built from the surviving tested math (`DesktopTwoPane` + `rememberFlashDesktopWindowSize` over `LocalWindowInfo`, exactly the shape the surviving `FlashAdaptiveLayouts.kt` KDoc recommends) plus `DesktopSideBar` (inline 200.dp, never ui:theme) and the Step-5 detail panes (conversation pane deferred: desktop binds `EmptyFlashChatRepository` until 09B-2). Expanded windows (≥840dp) get sidebar + list-detail at the tested 0.38/0.62 weights; compact keeps the Phase 21 bottom-nav layout. Gates: `:desktop:compileKotlinJvm`, `:ui:chat:compileKotlinJvm` + `compileAndroidMain`, `:app:assembleDebug`, `:ui:chat:jvmTest` all green; R6 clean; no `:app` dep. Its old 2026-08-31 "log entry" was fabricated; the real entry is dated 2026-09-12. | medium |
 | 23 | [PHASE-23-interop-matrix.md](PHASE-23-interop-matrix.md) | **BLOCKED ON HARDWARE + ONE DESKTOP GAP (now scoped).** Its precondition 1 is explicit: "Phase 16 is OPEN… If 16 is closed, stop" — and 16 is CLOSED pending hardware (`adb devices` empty, 2026-09-12). It needs two endpoints of EACH platform driven through the real UI (4 cells × M1–M7), which no Gradle task can provide. **The desktop pairing gap that would fail its desktop M2/M7 even with hardware attached is now scoped:** [research/desktop-pairing-gap-scoping.md](research/desktop-pairing-gap-scoping.md) measures what is already desktop-ready (the whole pairing math is commonMain and platform-pure, including the SAS derivation; `:ui:chat`'s dialog renders on desktop today) and isolates the ONE decision blocking it — how a desktop constructs its `FlashCrypto` identity (`SoftwareFlashCrypto` is `internal` and its KDoc forbids production identity use; `KeystoreFlashCrypto` is androidMain). Options P1/P2/P3 are laid out with a recommendation (**P3 for the first hardware run**: run G1/G3/G4/G5 + M1/M3–M6, record the pairing-desktop cells DEFERRED alongside G7's existing 09B-2 deferral — then fold the P1/P2 choice into the 09B-2 security review). The mechanical wiring after the P decision is small (lift the 493 platform-pure pairing lines to a shared home + two routing lines + one shell block). | **gate** |
 | 24 | [PHASE-24-publishing.md](PHASE-24-publishing.md) | **Steps 1–2 DONE as local dry-run 2026-09-13; Steps 3–5 (the publish) WAITING ON 23.** Step 1: aggregate `publishToMavenLocal` verified — **all 11 converted modules emit the full three-publication layout at 1.1.0** (root jar+`.module`+`.pom`+sources, `-android`, `-jvm`), Gradle module metadata intact; `core-calling`/`core-ptt` publish their expected unconverted AARs; samples unpublished by design. Step 2: **`sample/consumer-desktop` exists and is green** (D9=A applied) — a plain `kotlin("jvm")` module with zero `project()` deps resolving the ROOT coordinates from mavenLocal(); its dependency graph proves the structural fact: `core-engine:1.1.0 → core-engine-jvm:1.1.0 → core-common-jvm:1.1.0 → coroutines-core-jvm`. Android samples + app regression green. The tag → JitPack → fresh-out-of-repo-consumer steps (3–5) are publish actions and stay with the human while 23 is CLOSED, per the phase's own precondition 1 and Do-NOT list. | medium |
-| TBD | *(no file yet)* — calling stack | **RESEARCH DONE 2026-09-12; PHASE FILE NOT WRITTEN.** **D11 = Option B** (2026-09-05): `:core:calling` + `:ui:callui` are in desktop scope, and the phase must open with the WebRTC-for-desktop-JVM research. **That research now exists** — [research/calling-stack-desktop-jvm-research.md](research/calling-stack-desktop-jvm-research.md) — and its headline finding is a hard blocker measured from the published Gradle module metadata: `com.shepeliev:webrtc-kmp:0.125.11` publishes **no JVM target at all** (android/ios/js/wasmJs only), so `:core:calling` cannot declare `jvm()` at dependency resolution — the ERROR-049 wall. The report lays out options A–D (signaling-only conversion / adopt a plain-JVM webrtc artifact behind jvmMain — a human R10 dependency decision / defer until upstream ships JVM / reopen D11) and **does not pick one**: that pick is the human's, and the phase file must be written on top of the report. Raw `org.webrtc.Priority`/`DegradationPreference` imports in the two session files mean even a hypothetical webrtc-kmp JVM target would need re-typing onto the KMP surface. Must not be inserted ahead of 15/16 — the Phase 16 interop gate outranks calling. | high |
+| TBD | [PHASE-25-calling-stack-desktop.md](PHASE-25-calling-stack-desktop.md) — calling stack | **PHASE FILE WRITTEN 2026-09-13; RESEARCH DONE 2026-09-12; EXECUTION BLOCKED ON THE HUMAN'S A–D PICK.** D11 = Option B's research gate is discharged — [research/calling-stack-desktop-jvm-research.md](research/calling-stack-desktop-jvm-research.md) — and its headline binds the phase file: `com.shepeliev:webrtc-kmp:0.125.11` publishes **no JVM target at all** (measured from its Gradle module metadata), so `:core:calling` cannot declare `jvm()` at dependency resolution (the ERROR-049 wall) — the `api(libs.webrtc.kmp)` edge stays on androidMain under every option. The phase file presents the four execution shapes (**A** signaling-only — the one executable without further input: codecs/call-model/SDP/governor/`CallCoordinator` are pure Kotlin, the 5 test suites are platform-free, desktop gets call-model classes with no media; **B** adopt a plain-JVM webrtc artifact — needs a human R10 dependency/licence decision; **C** defer; **D** reopen D11) and its sub-steps A1–A5 (+B6–B8) are written per-option. **No sub-step may begin before the human answers A–D.** Raw `org.webrtc.Priority`/`DegradationPreference` imports in the two session files stay androidMain under A (re-typed only under B). The R3 gate line has carried both compile tasks since 2026-09-13 (green). | high |
 
 ### Two log entries near the top of `logs/migration.md` are false — do not trust them
 
@@ -104,28 +104,31 @@ of that was **wrong** and is corrected here.
 
 **Their scope is now decided: `D11 = Option B` (2026-09-05) — they ARE in desktop scope, and the phase
 that handles them must open with a WebRTC-for-desktop-JVM research step and report its findings before
-proposing any conversion.** The phase file does not exist yet, and it must not be inserted ahead of
+proposing any conversion.** The research is done (2026-09-12) and the phase file now exists
+([PHASE-25-calling-stack-desktop.md](PHASE-25-calling-stack-desktop.md), written 2026-09-13 on top of the
+report) — but its execution is blocked on the human's A–D pick, and it was correctly not inserted ahead of
 15/16: D10 = A unblocked the critical path and **the whole of 13B is now done** (13B-2 `732e7b5`,
-13B-3a `5e4e9a5`, 13B-3b `a3375e3`, 13B-3c `d51206b`, 13B-3d `293f12b`, 13B-3e `fa95d74`), so the next
-executable unit is Phase 15 — and the Phase 16 interop gate outranks calling.
+13B-3a `5e4e9a5`, 13B-3b `a3375e3`, 13B-3c `d51206b`, 13B-3d `293f12b`, 13B-3e `fa95d74`) — 15 is
+done and 16's harness is built, and the Phase 16 interop gate still outranks calling.
 
-- **`:core:calling`** — grepping every file in `docs/migration/` for `core:calling` returns hits in
-  `CONVENTIONS.md` and this README only. **No phase file mentions it at all.** It is still
-  `com.android.library`, and it is the WebRTC module, so it is the substantive half of the problem —
+- **`:core:calling`** — it is still `com.android.library` (correctly, until the A–D pick), and it
+  is the WebRTC module, so it is the substantive half of the problem —
   and the reason D11 mandates research before conversion.
 - **`:ui:callui`** — depends on `:ui:theme` (`ui/callui/build.gradle.kts:62`) and names
   `FlashIconSpec` (`FlashCallScreen.kt:486`), so it sits inside the blast radius of Phase
   17 (done), 18 (done) and 19 (done), yet no phase converts it or even compiles it as a gate. The
   verification runs for 09B-1, 17, 18 and 19 added `:ui:callui:compileDebugKotlin` by hand for
   exactly that reason — and as of Phase 18 it is compiling against a `:ui:theme` that is now
-  multiplatform, so the gap is widening rather than holding still. D11's answer also directs that the
-  compile gate be wired into the documented R3 command line as a cheap side-effect, so the gap is
-  measured rather than assumed, whatever the research concludes.
+  multiplatform, so the gap was widening rather than holding still. **The gate wiring D11's answer
+  directs is now done (2026-09-13): both compile tasks are on the R3 canonical command line
+  (CONVENTIONS.md) and green**, so the gap is measured rather than assumed — whatever the A–D
+  pick concludes.
 
 **`:sample:consumer-granular` is not an open question.** `D9 = Option A` (answered 2026-08-31) names
 it explicitly: keep `sample/consumer` **and** `sample/consumer-granular` Android-only as-is through
 Phase 23, then add a pure-JVM `sample/consumer-desktop` in Phase 24 to validate the desktop artifact.
-`PHASE-24-publishing.md:83` carries the same instruction. Any backlog that still lists this module as
+`PHASE-24-publishing.md:83` carries the same instruction — **and `sample/consumer-desktop` now exists
+and is green (2026-09-13, Phase 24 Step 2)**. Any backlog that still lists this module as
 "no plan — needs a human scope decision" (including the one in Phase 20's log entry) is repeating this
 README's error, not reporting a real gap.
 
