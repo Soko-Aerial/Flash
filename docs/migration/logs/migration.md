@@ -10920,3 +10920,64 @@ G4, G5 both directions + W→W/A→A via `DesktopInteropHarness` and the Flash a
 G6-desktop, M2-desktop, M7-desktop as DEFERRED (P) alongside G7's existing 09B-2 deferral. If
 P1/P2, a small pairing phase runs first (the scoping doc sketches its four sub-steps), then the
 full matrix.
+
+---
+
+## 2026-09-13 — Post-21/22 full-suite verification (R3 sweep; known-environmental failures only)
+
+- **Date:** 2026-09-13
+- **Agent/model:** Claude Code (glm-5.3-free), autonomous per the session /goal
+- **Commit:** (this commit)
+- **Decisions relied on:** R3 / R3.1 (canonical command line + test-count arithmetic), R9
+
+### What this entry records
+
+Phases 21/22 added the `:desktop` module and Phase 24's dry-run added `sample/consumer-desktop`
+plus a settings-level `mavenLocal()` repository — the one change today that touches every
+module's dependency-resolution configuration. The R3 canonical full sweep (CONVENTIONS.md:89)
+was therefore re-run before closing the session's work.
+
+### Verification
+```
+./gradlew :app:assembleDebug testDebugUnitTest :core:common:testAndroidHostTest :core:security:{testAndroidHostTest,jvmTest} :core:discovery:{testAndroidHostTest,jvmTest} :core:network:{testAndroidHostTest,jvmTest} :core:transfer:{testAndroidHostTest,jvmTest} :core:messaging:{testAndroidHostTest,jvmTest} :core:engine:{testAndroidHostTest,jvmTest} :core:persistence:{testAndroidHostTest,jvmTest} :ui:theme:{testAndroidHostTest,jvmTest} :ui:platform-shims:{testAndroidHostTest,jvmTest} :ui:chat:{testAndroidHostTest,jvmTest} --no-configuration-cache --continue --max-workers=2 --console=plain
+```
+Result: **1847 tests / 12 failures / 0 skipped across 243 XMLs.** The 12 failures are exactly
+the known environmental set, unchanged in composition: `:core:persistence:testAndroidHostTest`
+→ `FlashSettingsDataStoreTest` 11/13 + `DiscoveryModeSettingTest` 1/6 (Windows NTFS DataStore
+atomic-rename; pass on Linux; documented since Phase 09B-1 and in every sweep since). No other
+module has any failure, and every `jvmTest` suite is 0-failure.
+
+Per-module (tests/failures, XML count):
+
+| Module | testDebugUnitTest | testAndroidHostTest | jvmTest |
+|---|---|---|---|
+| :app | 49/0 (10) | — | — |
+| core:common | — | 85/0 (11) | — |
+| core:security | — | 90/0 (12) | 10/0 (1) |
+| core:discovery | — | 108/0 (9) | 35/0 (3) |
+| core:network | — | 145/0 (22) | 56/0 (9) |
+| core:transfer | — | 152/0 (19) | 113/0 (14) |
+| core:messaging | — | 172/0 (19) | 108/0 (15) |
+| core:engine | — | 14/0 (2) | 9/0 (2) |
+| core:persistence | — | 40/12 (4) | 15/0 (2) |
+| ui:theme | — | 37/0 (5) | 37/0 (5) |
+| ui:platform-shims | — | 10/0 (2) | 34/0 (5) |
+| ui:chat | — | 264/0 (36) | 264/0 (36) |
+
+(Tallied from `build/test-results/<task>/TEST-*.xml` per R3. `:core:calling`'s 55 tests ride
+the unqualified `testDebugUnitTest` and are green; `:desktop` and the samples carry no test
+source sets by design.)
+
+Arithmetic vs the last recorded total (1453/12/0 at 13B-3e, + 56 network jvm tests and the
+engine interop self-test from Phases 15/16's own entries): all growth is accounted for by the
+suites those phases added; the Android column's per-module counts are unchanged for every
+module that did not gain a suite, and the failure set is byte-identical in composition to the
+pre-21 baseline. Nothing regressed.
+
+### Change
+- **Modify:** `docs/migration/logs/migration.md` — this entry only.
+
+### Next step
+Unchanged from the 2026-09-13 Step-2 entry. Everything buildable from this machine is built,
+verified, and committed; the plan now waits on the human inputs (hardware day, P decision,
+09B-2/09B-3, calling-stack A–D).
