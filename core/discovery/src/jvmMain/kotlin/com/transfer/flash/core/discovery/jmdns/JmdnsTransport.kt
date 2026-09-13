@@ -389,7 +389,22 @@ public class JmdnsTransport(
             fallbackProto = FlashProtocol.VERSION,
         )
         val deviceIdString = parsed.deviceId ?: run {
-            logInfo("Dropping mDNS endpoint without device_id name=${data.serviceName}")
+            // Diagnostic detail, because "without device_id" alone cannot distinguish the three
+            // causes and they have completely different fixes:
+            //   txtKeys=[]                     JmDNS delivered no TXT at all (resolution or
+            //                                  transport problem — the record is a bare
+            //                                  announcement)
+            //   txtKeys=[...] without device_id the peer published a record with other keys
+            //   txtKeys=[device_id, ...]       a codec/key mismatch — we failed to read a key
+            //                                  that IS present
+            // KEYS ONLY, never values: a TXT record is unauthenticated wire data from an
+            // arbitrary peer, so its values are attacker-controlled strings and do not belong in
+            // a log. The key set is bounded and is the part that answers the question.
+            logInfo(
+                "Dropping mDNS endpoint without device_id name=${data.serviceName} " +
+                    "host=${data.hostAddress} port=${data.port} " +
+                    "txtKeys=${data.attributes.keys.sorted()}",
+            )
             return
         }
         val deviceId = runCatching { FlashDeviceId(deviceIdString) }.getOrElse {

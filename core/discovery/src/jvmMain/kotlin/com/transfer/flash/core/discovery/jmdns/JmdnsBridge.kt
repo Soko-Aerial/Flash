@@ -202,8 +202,14 @@ public class RealJmdnsBridge(
  * JmDNS exposes TXT data as `getPropertyNames(): Enumeration<String>` + `getPropertyString(key)`.
  * PHASE-14's sample code reads `info.txtMap`, which does not exist on this class — verified with
  * `javap` against `jmdns-3.5.12.jar`.
+ *
+ * `internal` rather than `private` so `JmdnsBridgeAttributeTest` can drive it directly. That test
+ * is the only coverage this function has: it cannot be reached from a same-host multicast test,
+ * because JmDNS ignores records whose hostname matches its own
+ * ([multicastCapableAddresses] + [mdnsHostnameFor] give two bridges on one machine the same
+ * hostname, so they never see each other).
  */
-private fun ServiceInfo.toNeutral(): JmdnsResolvedService {
+internal fun ServiceInfo.toNeutral(): JmdnsResolvedService {
     val attributes = LinkedHashMap<String, String>()
     val keys = propertyNames
     while (keys.hasMoreElements()) {
