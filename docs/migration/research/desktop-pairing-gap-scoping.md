@@ -2,10 +2,10 @@
 
 **Date:** 2026-09-13
 **Author:** Claude Code (glm-5.3-free), autonomous per the session /goal
-**Status:** SCOPING + DECISION REQUEST — this document does not implement anything. It exists
-because the 2026-09-12 blocker census found that Phase 16's G2/G6 and Phase 23's desktop M2/M7
-would **fail even with a phone attached** until this gap closes, and R9 requires that be
-recorded before the human books hardware time, not discovered during it.
+**Status:** **DECIDED 2026-09-13: P2, with at-rest = Windows DPAPI via JNA (ADR-035).**
+Execution is phase-filed as [`../PHASE-26-desktop-identity-p2.md`](../PHASE-26-desktop-identity-p2.md).
+This document's P1/P2/P3 analysis and recommendation (P3) below remain as written for the
+record; the human weighed them and picked P2.
 
 ---
 

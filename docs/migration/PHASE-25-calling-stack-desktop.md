@@ -1,15 +1,17 @@
 # Phase 25 (TBD-number) — Calling stack on desktop (`:core:calling` + `:ui:callui`)
 
-**Status:** AUTHORIZED (D11 = Option B, 2026-09-05), RESEARCH DONE (2026-09-12), **EXECUTION
-BLOCKED ON THE HUMAN'S A–D PICK** — see "The decision this phase waits on".
+**Status:** AUTHORIZED (D11 = Option B, 2026-09-05), RESEARCH DONE (2026-09-12), **DECISION
+MADE (2026-09-13): Option B, realized as the vendored webrtc-kmp fork — see "The decision"
+below.** Execution authorized; sub-steps run in stage order.
 **Blocked by:** nothing in the phase graph (15/16 are done/built; the README's "must not be
-inserted ahead of 15/16" is satisfied) — but its *first execution sub-step cannot be chosen*
-until the A–D decision below is answered, because the options determine the module shape.
+inserted ahead of 15/16" is satisfied).
 **Risk:** HIGH — `:core:calling` is the WebRTC module; R8-adjacent (the ADR-025 audio path), and
-the published `core-calling` coordinate is already consumed at 1.1.0.
-**Decisions relied on:** D11 = B (in scope, research first — discharged), D1 = B (strict
-commonMain), R5 (plain `jvm()`), R8 (crypto/security + ADR-025 audio behaviour untouchable),
-R10 (no version bumps — **and no new dependency adoptions without a human decision**).
+the published `core-calling` coordinate is already consumed at 1.1.0. NEW: the fork is code we
+now own (ADR-034).
+**Decisions relied on:** D11 = B (in scope, research first — discharged), **D12 = vendored fork
+(2026-09-13, ADR-034)**, D1 = B (strict commonMain), R5 (plain `jvm()`), R8 (crypto/security +
+ADR-025 audio behaviour untouchable), R10 (no version bumps — the fork's webrtc-java bump IS the
+human-authorized exception, recorded in D12).
 
 ---
 
@@ -49,20 +51,46 @@ Bring the calling stack — `:core:calling` (10 files, 4,047 lines, `explicitApi
 release behaviour (R8: the ADR-025/ERROR-032 audio path in `FlashWebRtcEngine` is the product's
 call-quality core and must stay bit-identical) and without touching the frozen toolchain (R10).
 
-## The decision this phase waits on (the human's)
+## The decision (made 2026-09-13 — the human's, recorded as D12 / ADR-034)
 
-Presented in full in the research report; summarized as the four execution shapes:
+The human evaluated the four shapes against the research report and a live verification pass of
+the community fork (2026-09-13, same day). **Pick: Option B, realized by vendoring
+`aschulz90/webrtc-kmp` (the fork of our own library that adds a `jvm()` target) into this
+repository as a composite build — "Shape B".** Fallback if the bring-up fails its stability gate:
+roll the thin JVM layer directly over `dev.onvoid.webrtc:webrtc-java` ("Shape C") — the Stage-1
+abstraction work is identical either way, so nothing is lost by trying the fork first.
 
-| Option | Shape | What execution looks like | What it needs from the human |
-|---|---|---|---|
-| **A — Signaling-only conversion** | Wire codecs, call model, SDP, quality governor, and `CallCoordinator`'s state machines move to `commonMain` behind the existing host seams; `FlashWebRtcEngine` + the two session files stay androidMain; **desktop gets call-model classes with no media** (can ring/connect/exchange SDP+ICE text, cannot capture or render) | Sub-steps A1–A5 below | Nothing further — executable now |
-| **B — Adopt a plain-JVM WebRTC artifact** | A (or its subset) + a `jvmMain` media actual over e.g. `io.github.webrtc-sdk`'s JVM flavour; real desktop audio/video eventually | Sub-steps A1–A5 then B6–B8 | **A new dependency decision**: version movement + licence review + maintenance assessment (the same class of input as D5=C's driver questions). R10 forbids the agent making it |
-| **C — Defer the conversion** | Nothing converts; the R3 gate line (already wired 2026-09-13) keeps measuring the widening gap | None — close this phase as DEFERRED and revisit | A "not now" |
-| **D — Reopen D11 (drop desktop calling)** | Nothing converts; D11's answer is amended | None — amend DECISIONS.md | An explicit reversal of the 2026-09-05 answer |
+### Fork facts verified 2026-09-13 (measured from its sources, not its README)
 
-**The report recommends nothing**; D11's own text is why — "WebRTC on desktop is not a small
-assumption to make silently — that is exactly why this is a decision and not an agent judgement
-call."
+- **Real fork of `com.shepeliev:webrtc-kmp`** with a `jvm()` target; 27 JVM implementation files
+  in `webrtc-kmp/src/jvmMain` (PeerConnection, tracks, MediaDevices, DataChannel, …). Same
+  `com.shepeliev.webrtckmp` package + API surface — common code compiles unchanged.
+- **Published NOWHERE.** Its build publishes via the author's own Sonatype credentials with
+  `version = env VERSION ?: "0.0.0"`; Maven Central's `com.shepeliev:webrtc-kmp` is the ORIGINAL
+  (27 versions, latest 0.125.9). Hence Shape B's composite build — no publication involved.
+- **Unmaintained:** last push 2024-11-15, 0 stars, 1 fork. The claim that its author "tested
+  Windows desktop ↔ Android, video/screenshare/audio all worked" appears NOWHERE in the repo —
+  treat as unverified; our own bring-up is the test.
+- **Backend skew:** it pins `dev.onvoid.webrtc:webrtc-java:0.8.0` (2023-10-14). webrtc-java is
+  actively maintained — v0.17.0 released 2026-09-13 (libwebrtc branch 7977 = Chrome M152;
+  Windows ARM64 added in 0.17.0). **The D12-authorized exception to R10** is bumping the fork's
+  catalog `0.8.0 → 0.17.0` and fixing whatever the wrapper churn breaks.
+- **Android side stays M125:** the fork's Android/iOS SDK pins are `125.6422.05` — exactly what
+  we resolve today, so the Android release path does not move.
+- **No JVM screenshare in the wrapper** (its own feature table shows no JVM checkmark) —
+  webrtc-java's native layer HAS desktop capture (`DesktopCapturer` since ≤0.8; Wayland/PipeWire
+  in 0.16.0), the KMP wrapper just never exposed it.
+
+### 📌 FUTURE FEATURE (do not lose this): desktop screen sharing
+
+Screen sharing on desktop is a **planned future feature, deliberately out of scope for this
+phase**. The native layer already exists (webrtc-java `DesktopCapturer`, Wayland/PipeWire since
+0.16.0); what is missing is exposure through the vendored wrapper's KMP API (its own feature
+table shows screen capture with NO JVM checkmark). When implemented, it lands as a wrapper
+addition in `third_party/webrtc-kmp` (a JVM `ScreenCaptureTrack` actual over
+`dev.onvoid.webrtc.desktop.*`) plus a desktop source-picker UI — a phase file of its own,
+authored when the human schedules it. This file's conversion must NOT be shaped in a way that
+forecloses it (keep the track-abstraction seams wide enough for a capture-backed track).
 
 ## Verified starting state (census taken 2026-09-13, measured not assumed)
 
@@ -109,10 +137,13 @@ reaches `FlashCalling` through `compileOnly` (the no-`NoClassDefFoundError` disc
 
 ---
 
-## Execution — Option A (signaling-only; the only option executable without further input)
+## Execution — D12 Shape B, in three stages
 
-> If the human picks B, run A first (B contains A), then continue to B6. If C/D, close this
-> phase as DEFERRED/DROPPED with a one-paragraph log entry and no code change.
+> Stages are ordered so nothing is wasted if the fallback triggers: Stage 1 is identical under
+> Shape B and Shape C (the direct webrtc-java layer). The stability gate at the end of Stage 2
+> decides which way Stage 3 goes.
+
+### Stage 1 — signal the module (was Option A1–A5; unchanged by D12)
 
 ### A1 — Convert `:core:calling` to KMP (android + jvm targets)
 
@@ -164,40 +195,67 @@ jvmTest run is only compiled, not executed).
   forms)
 
 **Honest scope label for the log:** "signaling + call model on both targets; **no desktop
-audio/video** — desktop media is Option B, gated on a dependency decision."
+audio/video yet** — desktop media is Stage 2/3."
 
-### B6–B8 — Option B additions (only after the human's dependency decision)
+### Stage 2 — bring up the vendored fork (Shape B proper; ADR-034)
 
-- **B6:** re-type the two raw `org.webrtc.*` touch points onto the chosen JVM artifact's
-  surface (or an `expect`/`actual` priority seam) and re-home the session files into
-  `commonMain` + per-target media actuals.
-- **B7:** a desktop `FlashWebRtcEngine` equivalent over the chosen artifact's audio module —
+- **S2a — vendor:** copy `aschulz90/webrtc-kmp` (default branch `main`, last push 2024-11-15)
+  into `third_party/webrtc-kmp/` as a plain source copy (not a submodule — atomic commits, no
+  second remote to manage; Apache-2.0 licence + attribution files stay in place verbatim).
+- **S2b — trim targets:** delete the fork's iOS (`iosX64`/`iosArm64`/`iosSimulatorArm64`),
+  `js`, and `wasmJs` targets from its build script — every target removed is one never built or
+  fixed. Remaining: `androidTarget` + `jvm()`. Its Android SDK pin (`125.6422.05`) stays — the
+  Android release path must not move (R10 baseline preserved).
+- **S2c — composite build:** one line in `settings.gradle.kts` —
+  `includeBuild("third_party/webrtc-kmp")`. The fork declares the SAME coordinates as the
+  original (`com.shepeliev:webrtc-kmp`), so Gradle's dependency substitution redirects our
+  existing `api(libs.webrtc.kmp)` edges automatically. No version-catalog change, no
+  publication, no JitPack (JitPack is NOT viable here: KMP multi-target builds on JitPack's
+  Linux runners fail or need target-skipping gymnastics; the fork is unpublished anyway).
+- **S2d — bump the backend (the D12-authorized R10 exception):** in the fork's
+  `gradle/libs.versions.toml`, `webrtc-java-sdk = "0.8.0"` → `"0.17.0"`. Compile
+  `webrtc-kmp/src/jvmMain` and fix the churn. **Stability gate:** if the 27 files need more
+  than mechanical adaptation (rewritten APIs, missing natives, structural changes), STOP —
+  that is the trigger for Shape C (thin own layer over webrtc-java), and Stage 1 carries over
+  untouched.
+- **S2e — re-type the two raw `org.webrtc.*` touch points** (`Priority`,
+  `RtpParameters.DegradationPreference` in `FlashCallSession`/`FlashGroupCallSession`) onto an
+  `expect`/`actual` priority seam so the session files can move toward commonMain. There is NO
+  `org.webrtc` package on the JVM target (webrtc-java is `dev.onvoid.webrtc.*`) — these two
+  imports are the last compile blockers for a JVM variant of the session files.
+
+### Stage 3 — desktop media + UI (was B7–B8)
+
+- **S3a — desktop `FlashWebRtcEngine` equivalent** over webrtc-java's audio module —
   **this is new security/latency-sensitive code**; the ADR-025 hardware-AEC gating and
   ERROR-032 probe discipline do not transfer mechanically and the desktop equivalent needs its
   own rationale (Java Sound has no hardware AEC path; libwebrtc's software APM is the whole
-  story on desktop).
-- **B8:** `:ui:callui` conversion — `Log` → `FlashLog` facade (Phase 03 pattern),
+  story on desktop). `FlashWebRtcEngine` itself stays androidMain verbatim (R8).
+- **S3b — `:ui:callui` conversion** — `Log` → `FlashLog` facade (Phase 03 pattern),
   `BackHandler` → the `FlashBackHandler` shim, and the renderer surface behind a video-display
   seam (the `FlashVideoSurface` shim exists in `:ui:platform-shims`; its jvm actual is where a
-  desktop renderer lands). Publishes as `ui-callui` + children.
+  desktop renderer lands — the webrtc-renderer-lifetime invariants apply to any renderer we
+  add). Publishes as `ui-callui` + children.
+- **Explicitly OUT of scope (future feature, see the box above):** desktop screen sharing.
 
 ## Do NOT
 
-- **Do NOT begin any sub-step before the human answers A–D.** D11's answer is explicit that the
-  research reports *before* any conversion is proposed; this file is the proposal, and the
-  pick is not the agent's.
-- **Do NOT put `api(libs.webrtc.kmp)` (or any webrtc dependency) in commonMain** — it is the
-  F1 wall; the build failure is the guard, not the signal.
+- **Do NOT run the stages out of order.** Stage 1 first (it is the fallback insurance), then
+  the Stage-2 gate decides the path.
+- **Do NOT put `api(libs.webrtc.kmp)` (or any webrtc dependency) in commonMain** until the
+  vendored fork supplies a JVM variant through substitution — then commonMain becomes legal
+  because BOTH variants exist. The build failure is the guard, not the signal.
 - **Do NOT touch `FlashWebRtcEngine`'s ADM configuration** (ADR-025 / ERROR-032) — R8. It stays
-  androidMain verbatim under every option.
-- **Do NOT adopt the JVM webrtc artifact under Option B without the human's explicit
-  dependency/licence decision recorded in DECISIONS.md** (R10; the same precedent as D5=C's
-  driver questions).
+  androidMain verbatim.
+- **Do NOT bump anything else under R10.** The ONLY authorized version movement is the fork's
+  `webrtc-java-sdk` 0.8.0 → 0.17.0 (D12/ADR-034). The fork's Android/iOS SDK pins do not move.
+- **Do NOT delete or modify the fork's licence/attribution files** when vendoring (Apache-2.0
+  obligations).
 - **Do NOT regress the Android release**: `core-calling`'s 1.1.0 consumers must resolve
   unchanged (root coordinate preserved by the publication block, exactly as the other twelve
-  conversions did).
-- **Do NOT count this phase as delivering desktop calls** under Option A — a desktop that rings
-  but cannot carry media is signaling parity, and the log entry must say so.
+  conversions did; the Android variant must stay M125-equivalent).
+- **Do NOT promise desktop screen sharing from this phase** — it is a documented future feature
+  requiring its own phase file; this phase only keeps its seams open.
 
 ## Rollback
 
@@ -207,7 +265,8 @@ module both ways (it used `compileDebugKotlin` before conversion and the R3.1 na
 
 ## Log entry (mandatory)
 
-One entry per R9: the option the human picked (with the DECISIONS.md record), the sub-steps
-run, the honest scope label, the test-count arithmetic (relocation cross-check per R3), the
-publication tree delta (`core-calling` root → umbrella + `-jvm`), and — under Option A — the
-explicit statement that desktop media remains absent pending the B decision.
+One entry per R9: D12 (with the ADR-034 pointer), the sub-steps run, the honest scope label,
+the test-count arithmetic (relocation cross-check per R3), the publication tree delta
+(`core-calling` root → umbrella + `-jvm`), the Stage-2 stability-gate verdict (fork survived or
+Shape C triggered), and — after Stage 1 only — the explicit statement that desktop media
+remains absent pending Stages 2–3.

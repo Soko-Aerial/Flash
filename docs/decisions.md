@@ -1339,3 +1339,88 @@ A desktop/JVM calling target exists (the type would have to move to commonMain w
 or the published-metadata contract is reworked so `core-engine` may pull a WebRTC-bearing module —
 at which point `api` becomes a one-line change and the routing methods could be simplified to read
 `calls` directly.
+
+## ADR-034 — Desktop calling via the vendored webrtc-kmp fork (composite build), backend bumped to webrtc-java 0.17.0
+
+**Date:** 2026-09-13 · **Decides:** D12 (the Phase 25 calling-stack execution shape) · **Status:** Accepted
+
+### Context
+`com.shepeliev:webrtc-kmp:0.125.11` publishes no JVM target (F1, measured) — `:core:calling`
+cannot declare `jvm()` against Maven Central. The research report's Option B ("adopt a
+plain-JVM artifact") needed a concrete artifact. Community fork `aschulz90/webrtc-kmp` adds the
+`jvm()` target over `dev.onvoid.webrtc:webrtc-java`, same `com.shepeliev.webrtckmp` API, but:
+published nowhere (author's own Sonatype credentials, `version ?: "0.0.0"`), unmaintained
+(last push 2024-11-15, 0 stars), pins webrtc-java 0.8.0 (2023) while webrtc-java is now 0.17.0
+(Chrome M152), no JVM screenshare in the wrapper, and its README's "tested Windows ↔ Android"
+claim is unverifiable.
+
+### Decision
+Vendor the fork into `third_party/webrtc-kmp/` as a plain source copy (Apache-2.0, attribution
+preserved), trim its iOS/JS/wasmJs targets (keeping Android + `jvm()`), and expose it via
+`includeBuild` in `settings.gradle.kts` — Gradle dependency substitution redirects the existing
+`com.shepeliev:webrtc-kmp` edges with no version-catalog or publication change. The ONE
+authorized version movement (R10 exception): the fork's `webrtc-java-sdk` 0.8.0 → 0.17.0. The
+fork's Android/iOS SDK pins (125.6422.05, = today's Android resolution) do not move.
+Stability gate after the bump: more-than-mechanical wrapper churn triggers the fallback — a
+thin own JVM layer over webrtc-java directly — with the Stage-1 `org.webrtc` abstraction work
+carrying over untouched. Desktop screen sharing is a recorded future feature: webrtc-java's
+native capture layer exists (`DesktopCapturer`, Wayland/PipeWire since 0.16.0); the KMP wrapper
+never exposed it; it needs its own phase file when scheduled, and this conversion keeps its
+track seams wide enough.
+
+### Alternatives considered
+- **JitPack (`com.github.…`)**: rejected — the fork is unpublished AND a multi-target KMP build
+  on JitPack's Linux runners is fragile; we would not control the artifact.
+- **Own thin layer over webrtc-java (no wrapper)**: kept as the fallback, not the first move —
+  it rewrites the fork's 27 JVM wrapper files that otherwise come free.
+- **Wait for upstream** (`shepeliev/webrtc-kmp` added nothing JVM through 2026-09): rejected —
+  D11=B commits to desktop calling now, and the wrapper is small enough to own.
+- **Vendoring as a git submodule**: rejected — atomic commits in this repo beat a second
+  remote to manage on this host.
+
+### Revisit when
+Upstream webrtc-kmp ships an official JVM target (then evaluate rebasing and de-vendoring), or
+webrtc-java makes a breaking release we choose not to follow.
+
+## ADR-035 — Desktop identity: persisted software keypair, DPAPI-protected at rest (the P2 pick)
+
+**Date:** 2026-09-13 · **Decides:** the desktop pairing gap's P pick (P2 over P1/P3) · **Status:** Accepted
+
+### Context
+The pairing math is commonMain and target-free; the ONE blocker for G2/G6 (pairing gates) and
+phone→desktop transfers is the desktop `FlashCrypto` identity: `SoftwareFlashCrypto` is
+in-memory by design (its KDoc forbids production identity storage), so every desktop restart
+mints a fresh identity and TOFU trust cannot survive. The scoped options were P1 (publicize the
+software path — identity still lost on restart), P2 (persist a keypair under `~/.flash/`),
+P3 (defer to the 09B-2 review).
+
+### Decision
+P2, with the at-rest question answered: **Windows DPAPI via JNA**
+(`com.sun.jna.platform.win32.Crypt32Util`, no custom JNI) protects the PKCS#8 identity key
+stored at `~/.flash/identity/id-key.bin` behind a 1-byte format-version header. A new
+`IdentityKeyVault` seam (`protect`/`unprotect`) carries the OS-specific edge — jvmMain actual =
+DPAPI, test actual = pass-through, future actuals = macOS Keychain / Linux keyring. A new
+`PersistedFlashCrypto` reuses the existing ephemeral-ECDH + HKDF path verbatim and differs from
+`SoftwareFlashCrypto` only in identity-key handling; it degrades to an in-memory identity ONLY
+on vault-read failure, logged loudly. JNA (5.x, JVM-variant-only scope) is the new dependency
+this decision authorizes. Security tier stated plainly: DPAPI-persisted software identity is
+strictly better than restart-amnesia, strictly weaker than Android's non-exportable hardware
+key — same-user malware can unprotect the blob. `SoftwareFlashCrypto`/`KeystoreFlashCrypto`
+are untouched (R8).
+
+### Alternatives considered
+- **P1 (publicize the in-memory path)**: rejected — solves nothing; the identity still dies
+  with the process, so pairing can never outlive a session.
+- **P3 (defer to 09B-2)**: rejected by the human — G2/G6 are the remaining Phase 16 gates and
+  the phone→desktop transfer direction is unreachable without trust.
+- **Plaintext PKCS#8 with restrictive ACLs**: rejected — same-user malware reads it outright;
+  this is the tier P2 exists to improve on.
+- **App-local wrapping key beside the file**: rejected — obfuscation, not protection.
+- **Passphrase-derived key**: rejected for now — needs a passphrase UX decision that is not
+  this phase's call; the vault seam accommodates it later if product changes its mind.
+- **BouncyCastle or another crypto provider**: rejected — JCA + the existing `PlatformCrypto`
+  jvmMain actuals cover P-256 sign/ECDH/HKDF; a new provider is a new ADR with its own review.
+
+### Revisit when
+macOS/Linux desktop targets become real (new vault actuals), 09B-2 revisits the security-tier
+model (a hardware-backed desktop option may then exist), or a passphrase UX is productized.

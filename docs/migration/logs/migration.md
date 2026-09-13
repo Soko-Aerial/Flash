@@ -11199,3 +11199,52 @@ the run then proceeded:
 - G2/G6 (pairing): human picked **P2** (persist a software keypair under ~/.flash/) —
   discussed/planned, NOT implemented (see the P2 plan paragraph in this entry's successor).
 - G7 (chat): blocked on 09B-2 as before.
+
+## 2026-09-13 — D12 + P2 decided; Phase 25 re-planned (Shape B), Phase 26 authored
+
+### The human's two decisions
+1. **Calling stack (D12 / ADR-034):** Option B realized as **Shape B — vendor the community
+   fork** `aschulz90/webrtc-kmp` (the fork of our own library that adds `jvm()`) into
+   `third_party/webrtc-kmp/`, expose via composite build, bump its backend webrtc-java
+   0.8.0 → 0.17.0. Desktop screen sharing recorded as a **future feature** in the phase file
+   (native capture exists in webrtc-java; the wrapper never exposed it).
+2. **Desktop pairing (P2 / ADR-035):** persist a software keypair under `~/.flash/`, protected
+   at rest by **Windows DPAPI via JNA**, behind an `IdentityKeyVault` seam.
+
+### Verification performed before authoring (the fork claims were checked, not trusted)
+- Fork EXISTS and matches its description structurally (fork of shepeliev/webrtc-kmp, `jvm()`
+  target, 27 JVM wrapper files, per-OS classifier). NOT published anywhere (author's own
+  Sonatype creds, `version ?: 0.0.0`); Maven Central's `com.shepeliev:webrtc-kmp` is the
+  original (latest 0.125.9; we pin 0.125.11).
+- **Overstated claim caught:** the "author tested Windows↔Android, video/screenshare/audio all
+  worked" claim appears nowhere in the fork's repo; 0 stars, last push 2024-11-15.
+- **Backend skew measured:** fork pins webrtc-java 0.8.0 (2023-10-14); webrtc-java today is
+  v0.17.0 (released 2026-09-13, libwebrtc M152, Windows ARM64). Fork's Android/iOS pins are
+  125.6422.05 — identical to our Android resolution, so the release path does not move.
+- **Our repo:** 3 files import raw `org.webrtc.*` (`FlashCallSession`/`FlashGroupCallSession`:
+  `Priority`, `DegradationPreference`; `FlashWebRtcEngine`: `org.webrtc.audio`) — no
+  `org.webrtc` package exists on the JVM target (webrtc-java is `dev.onvoid.webrtc.*`), so the
+  Stage-1 abstraction is a compile blocker for any JVM path, fork or not.
+- **P2 ground truth:** pairing math already commonMain (`core/security/.../pairing/`);
+  `SoftwareFlashCrypto` is in-memory with a NOT-FOR-PRODUCTION KDoc; jvmMain `PlatformCrypto`
+  actuals are complete; `DesktopEngine` has no pairing member; desktop state layout is
+  `~/.flash/*.properties` (Phase 21).
+
+### Files
+- `PHASE-25-calling-stack-desktop.md` — decision recorded; execution restructured into
+  Stage 1 (KMP conversion + `org.webrtc` pin abstraction) / Stage 2 (fork bring-up +
+  stability gate) / Stage 3 (desktop media + `:ui:callui`); Do-NOT list updated (the only
+  R10 exception is the fork's webrtc-java bump; Android SDK pins frozen).
+- `PHASE-26-desktop-identity-p2.md` — authored: `IdentityKeyVault` seam (DPAPI actual +
+  test actual), `PersistedFlashCrypto` (generate-once → `~/.flash/identity/id-key.bin`,
+  1-byte format version, zeroize on load, loud in-memory fallback), `DesktopEngine` pairing
+  wiring over the commonMain protocol classes, honest security-tier statement, execution
+  order 26-1…26-4.
+- `docs/decisions.md` — ADR-034, ADR-035 appended.
+- `README.md` phase index — row 23 gap note → DECIDED; rows 25 (decided) and 26 (new).
+- `research/desktop-pairing-gap-scoping.md` — status header records the pick (analysis kept).
+
+### Phase 16 gate status after this
+G1 both directions + G3 desktop→phone @100 MB verified live earlier today (see the previous
+entry). This phase file pair is what unblocks G2/G6 and phone→desktop transfer on hardware day.
+NOTHING implemented yet — phase files and decisions only, per the human's instruction.
