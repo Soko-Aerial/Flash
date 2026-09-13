@@ -88,6 +88,23 @@ kotlin {
         }
         jvmTest.dependencies {
             implementation(libs.junit)
+            // Phase 25 S3a: the native libwebrtc for THIS host. `webrtc-java`'s main jar is the
+            // Java API only — the native library arrives as a per-OS/arch classified artifact,
+            // exactly the mechanism the vendored fork's own jvmTest uses. Without it every JVM
+            // media call dies in class initialisation (ExceptionInInitializerError from the
+            // native loader), which is what DesktopMediaStackSmokeTest exists to catch.
+            val osName = System.getProperty("os.name")
+            val hostOS = when {
+                osName == "Mac OS X" -> "macos"
+                osName.startsWith("Win") -> "windows"
+                osName.startsWith("Linux") -> "linux"
+                else -> error("Unsupported OS: $osName")
+            }
+            val hostArch = when (val arch = System.getProperty("os.arch").lowercase()) {
+                "amd64" -> "x86_64"
+                else -> arch
+            }
+            implementation("dev.onvoid.webrtc:webrtc-java:0.17.0:$hostOS-$hostArch")
         }
     }
 }
