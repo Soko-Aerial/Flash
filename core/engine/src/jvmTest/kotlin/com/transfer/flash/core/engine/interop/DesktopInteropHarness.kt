@@ -26,6 +26,7 @@ import com.transfer.flash.core.transfer.policy.RandomAccessSinkHandle
 import java.io.File
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.system.exitProcess
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -527,4 +528,16 @@ public object DesktopInteropHarness {
  */
 public fun main(args: Array<String>) {
     DesktopInteropHarness.run(args)
+    // Finite verbs (discover/send/cancel/receive) return here. `advertise` deliberately never does.
+    //
+    // Forcing the exit is deliberate, not laziness. `DesktopEndpoint.stop()` closes discovery and
+    // the network and cancels its scope, but JmDNS spawns its OWN non-daemon threads, so the JVM
+    // can outlive the verb and keep ADVERTISING. Observed 2026-09-13: a leftover `discover` process
+    // left the phone listing a `Harness discover` peer that no running app owned — which reads
+    // exactly like a product bug, and which cost a long detour when the same symptom appeared
+    // earlier from an equally stale advertiser.
+    //
+    // A headless gate tool must not keep a service on the network after it has printed its result:
+    // the peer roster it reports is supposed to describe OTHER devices, never itself.
+    exitProcess(0)
 }

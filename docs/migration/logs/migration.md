@@ -11753,3 +11753,36 @@ This clears the blocker on Phase 16's **G2/G6** and Phase 23's desktop cells: th
 each other, so pairing now has a session to ride on. The next step is the manual ladder in
 [PAIRING-GATE-RUNBOOK.md](../PAIRING-GATE-RUNBOOK.md) — L0 through L9, with **L2 step (c)** being
 the one that matters (both devices must display an identical 6-digit code).
+
+### The ghost was real after all — a harness JVM that outlived its verb
+
+The human reported, with the desktop app **not** running, the phone still listing a peer named
+**"Harness discover"**. That name only exists after the harness-renaming commit (`67be041`), so it
+was not a stale record from an older build: a `discover` JVM from a recent run was **still alive and
+still advertising**.
+
+**This also corrects an earlier entry.** The human's very first observation — "the phone still shows
+the desktop even when the app is closed" — was recorded as *probably the phone's trust store* and set
+aside. It was a real signal, and it was pointing at a stale advertiser all along. The process check
+that "disproved" the ghost was taken at a moment when no stray existed; that made the retraction
+correct for that instant and wrong as a conclusion.
+
+**Why a finite verb can linger.** `DesktopEndpoint.stop()` closes discovery and the network and
+cancels its scope, but **JmDNS spawns its own non-daemon threads**. So `discover` can print its
+result, return from `main`, and leave a JVM that is still answering mDNS queries — a headless gate
+tool advertising a service for a run that is over.
+
+**Fix:** `main` now calls `exitProcess(0)` after `run(args)` returns. Finite verbs
+(`discover`/`send`/`cancel`/`receive`) reach it; `advertise` deliberately never returns. The peer
+roster the harness prints is supposed to describe *other* devices — never itself.
+
+**If a stale advertiser is suspected:** it is a `java.exe` whose command line contains
+`DesktopInteropHarness`. Find it with
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name='java.exe'" |
+  Select-Object ProcessId, CreationDate, CommandLine | Format-List
+```
+
+and stop that PID specifically — not `java` wholesale, which would take the Gradle and Kotlin daemons
+with it. **The Kotlin compile daemon and the Gradle daemon are not suspects**: neither binds mDNS.
