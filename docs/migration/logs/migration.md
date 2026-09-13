@@ -11277,3 +11277,54 @@ NOTHING implemented yet — phase files and decisions only, per the human's inst
 CONVENTIONS.md R3's canonical command line names `:core:calling:compileDebugKotlin`, which
 ceased to exist at A1 (R3.1: now `:core:calling:compileAndroidMain`). Swept with the next
 conventions touch so the line stays runnable end-to-end.
+
+## 2026-09-13 — Phase 25 Stage 2 EXECUTED + S2e: the fork is live, sessions are commonMain
+
+### Stage 2 (commit `c329e0c`)
+- Vendored `aschulz90/webrtc-kmp` → `third_party/webrtc-kmp/` (Apache-2.0 kept), targets
+  trimmed to Android+JVM, publish/signing machinery stripped, version stamped
+  `0.125.11-flash-1`. Adapted to the consuming toolchain: Gradle 9.5 / AGP 9.3.1 / Kotlin
+  2.2.10 — including swapping the fork's old `com.android.library`+KMP pattern (illegal under
+  AGP 9) for `com.android.kotlin.multiplatform.library`, source sets renamed
+  (androidUnitTest→androidHostTest, androidInstrumentedTest→androidDeviceTest), compileSdk 35.
+- `includeBuild` in settings — dependency substitution on the identical
+  `com.shepeliev:webrtc-kmp` coordinates; consuming dependency lines unchanged.
+- **S2d STABILITY GATE PASSED**: webrtc-java 0.8.0 → 0.17.0 (the D12 R10 exception) needed
+  exactly 3 mechanical fixes in 27 wrapper files: `RTCStats.members`→`.attributes` (renamed);
+  `removeIceCandidates`/`onIceCandidatesRemoved` (deleted upstream with the native binding —
+  JVM actual is now an honest no-op returning false; JVM never emits RemovedIceCandidates).
+- API alignment: the fork predates upstream's track-class rename
+  (`AudioStreamTrack`/`VideoStreamTrack` vs 0.125.11's `AudioTrack`/`VideoTrack`) — our 6
+  files re-typed to the fork's names, no compat shims. Android SDK pin unchanged (125.6422.05).
+
+### S2e (commits `e3f2cf1`, `90f3777`)
+- Sender-tuning seam: `AudioSendTuning`/`VideoSendTuning` payloads + expect/actual
+  `RtpSender.applyAudioTuning/applyVideoTuning`. Android actual = the org.webrtc reach-through
+  moved verbatim; JVM actual = webrtc-java get/setParameters — which exposes NO pacer priority
+  and NO degradation preference (logged once; bitrate windows still apply).
+- `api(libs.webrtc.kmp)` moved androidMain → commonMain — the phase file's own condition is
+  met (the fork supplies both variants through substitution). **The F1/ERROR-049 wall is
+  formally gone.**
+- `PlatformMonitor` + `SyncList`/`SyncMap` (commonMain, lock-guarded) replace
+  CopyOnWriteArrayList/ConcurrentHashMap semantics; stats executor →
+  `Dispatchers.IO.limitedParallelism(1)`.
+- **FlashCalling, FlashCallSession, FlashGroupCallSession, CallCoordinator all moved to
+  commonMain.** Only `FlashWebRtcEngine` (Android ADM, ERROR-032 probe, consumed only by
+  `:app`) remains androidMain. `:core:calling`'s JVM target now carries the complete 1:1 +
+  group call state machines, signaling, SDP tuning and the concession ladder.
+- Fork permission exceptions (CameraPermission/RecordAudioPermission) moved to the fork's
+  commonMain so common code can catch them.
+
+### Verified after every step
+compileAndroidMain + compileKotlinJvm + testAndroidHostTest (72/0) + jvmTest (59/0) +
+`:app:assembleDebug` green throughout. First time the whole Android consumer path resolves
+its webrtc-kmp dependency from in-repo source.
+
+### Remaining in Phase 25 (Stage 3)
+- **S3a**: desktop factory check — with the fork, the JVM PeerConnectionFactory self-initializes
+  (webrtc-java owns its audio module); the Android ADM configuration has no desktop equivalent
+  to port. A validation of the JVM factory + docs is what remains, folded into the desktop
+  calling wiring when `:desktop` gains calls (a product decision: call UI on desktop).
+- **S3b**: `:ui:callui` KMP conversion (Log→FlashLog, BackHandler shim, renderer behind the
+  `FlashVideoSurface` seam). Deliberately NOT rushed: the webrtc-renderer-lifetime invariants
+  live in exactly this file.
