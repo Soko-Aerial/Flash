@@ -86,8 +86,19 @@ Phase 06 discovered the replacement task name empirically and recorded it in R3.
 and in `logs/migration.md`. From Phase 06 onward the verification command is:
 
 ```bash
-./gradlew --stop >/dev/null 2>&1; sleep 8; ./gradlew :app:assembleDebug testDebugUnitTest :core:common:testAndroidHostTest :core:security:testAndroidHostTest :core:security:jvmTest :core:discovery:testAndroidHostTest :core:discovery:jvmTest :core:network:testAndroidHostTest :core:network:jvmTest :core:transfer:testAndroidHostTest :core:transfer:jvmTest :core:messaging:testAndroidHostTest :core:messaging:jvmTest :core:engine:testAndroidHostTest :core:engine:jvmTest :core:persistence:testAndroidHostTest :core:persistence:jvmTest :ui:theme:testAndroidHostTest :ui:theme:jvmTest :ui:platform-shims:testAndroidHostTest :ui:platform-shims:jvmTest :ui:chat:testAndroidHostTest :ui:chat:jvmTest --no-configuration-cache --continue --max-workers=2 --console=plain
+./gradlew --stop >/dev/null 2>&1; sleep 8; ./gradlew :app:assembleDebug testDebugUnitTest :core:common:testAndroidHostTest :core:security:testAndroidHostTest :core:security:jvmTest :core:discovery:testAndroidHostTest :core:discovery:jvmTest :core:network:testAndroidHostTest :core:network:jvmTest :core:transfer:testAndroidHostTest :core:transfer:jvmTest :core:messaging:testAndroidHostTest :core:messaging:jvmTest :core:engine:testAndroidHostTest :core:engine:jvmTest :core:persistence:testAndroidHostTest :core:persistence:jvmTest :ui:theme:testAndroidHostTest :ui:theme:jvmTest :ui:platform-shims:testAndroidHostTest :ui:platform-shims:jvmTest :ui:chat:testAndroidHostTest :ui:chat:jvmTest :core:calling:compileDebugKotlin :ui:callui:compileDebugKotlin --no-configuration-cache --continue --max-workers=2 --console=plain
 ```
+
+**The two calling-stack compile tasks were added 2026-09-13** per D11 = Option B's answer
+("Option C's gate wiring should be folded in as a cheap side-effect regardless of what the
+research concludes, since it costs one line in the R3 command and turns an assumption into a
+measurement"). `:core:calling` and `:ui:callui` are the two remaining unconverted `com.android.library`
+modules; they still carry `compileDebugKotlin` (variant tasks, not KMP tasks) precisely because
+they are NOT converted — these two names are correct for them, unlike the R3.1 names the
+converted modules use. The widening gap the README describes — `:ui:callui` compiling against a
+multiplatform `:ui:theme` with only hand-added compile tasks as a net — is now measured by
+every sweep rather than assumed. See `research/calling-stack-desktop-jvm-research.md` for the
+research that precedes any conversion of either module.
 
 `:ui:theme:testAndroidHostTest` was added by Phase 17, and **`:ui:theme:jvmTest` was added by
 Phase 18**, which moved the module's five suites from `androidHostTest` into `commonTest`. Both now
