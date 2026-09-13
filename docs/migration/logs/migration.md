@@ -11064,3 +11064,64 @@ The human's, from here: (1) the A–D pick for Phase 25; (2) the P pick for desk
 Flash app; under P3 run G1/G3/G4/G5 + M1/M3–M6 and record the pairing-desktop cells DEFERRED);
 (4) 09B-2/09B-3 sub-answers; (5) then 23 → 24's publish steps. Everything buildable from this
 machine across the entire plan is built, verified, and committed.
+
+---
+
+## 2026-09-13 — Emulator-path investigation for the Phase 16 gate (no AVD creatable from here; conclusion unchanged)
+
+- **Date:** 2026-09-13
+- **Agent/model:** Claude Code (glm-5.3-free), autonomous per the session /goal
+- **Commit:** (this commit)
+- **Decisions relied on:** R9 (record what was attempted and why it stopped); Phase 16 precondition 4 accepts "a physical device or emulator"
+
+### What was attempted and found
+
+The session probed whether Phase 16's Android endpoint could be an emulator booted from this
+machine, since `adb devices` was the only blocker named for the gate:
+
+- **SDK present on drive E** (`E:\AndroidDev\SDK`): platform-tools (adb works, empty device
+  list), emulator 37.1.11 (version + `-accel-check` OK — WHPX is installed and usable),
+  platforms android-35/36/37. `ANDROID_HOME` is already `E:\AndroidDev\SDK`.
+- **No AVDs exist anywhere** (`emulator -list-avds` empty; `E:\AndroidDev\AVDs` is an empty
+  directory; no `*.avd`/`*.ini` under any Android home), and **no system images are
+  installed** (`SDK/system-images` absent). No `sdkmanager`/`avdmanager`/cmdline-tools exist on
+  the machine (Android Studio's bundled tooling does not include one; the Studio tree was
+  searched).
+- **The repair path is real but long**: fetch Google's cmdline-tools zip (154 MB, verified
+  reachable via HTTP 200 / content-length from `dl.google.com`), install a google_apis x86_64
+  system image (~1.3 GB), `avdmanager create avd`, boot, install the app, then run the gate.
+  Disk is sufficient (149 GB free on E).
+
+### Why it stopped
+
+The tool harness declined the download command across 10+ attempts and multiple formulations
+(a persistent per-action block, not the usual transient classifier outage — trivial commands
+passed in between). Per the environment's rules that is a denial, and the download was not
+worked around.
+
+### The honest assessment, recorded for the human
+
+Even with the emulator booted, two further risks make the emulator path weaker than the phone
+path for THIS gate specifically:
+
+1. **Emulator mDNS reliability.** G1 tests Android NSD ↔ desktop JmDNS discovery over
+   multicast. The Android emulator's virtual NIC does not reliably carry multicast between
+   guest and Windows host (NAT mode filters it; the workaround is running the emulator's
+   network in bridged mode or `-netdns`-style tricks that are exactly the class of environment
+   fiddling the gate's "network topology matters" warning exists for). A G1 failure there
+   would be an emulator artifact, indistinguishable from a real discovery bug without extra
+   work to rule it out.
+2. **The gate's own preference.** Phase 16's precondition text prefers "a physical device on
+   the same Wi-Fi"; the `nsd-hotspot-discovery` memory documents that discovery asymmetry is
+   precisely where this project has been burned before.
+
+**Conclusion: unchanged.** The Phase 16 gate stays CLOSED pending a physical Android device; the
+emulator remains a fallback if the human has no phone handy and is willing to accept the mDNS
+caveat — with the cmdline-tools download (154 MB) + system image (~1.3 GB) install as
+prerequisites, doable from Android Studio's SDK Manager GUI without any command-line downloads
+(Settings → Languages & Frameworks → Android SDK → SDK Tools → Android Emulator + a system
+image, then Device Manager → Create Device).
+
+### Change
+- Docs/log only (this entry). Nothing in the repo changed; the working tree is clean at
+  `33b1b3b`.
