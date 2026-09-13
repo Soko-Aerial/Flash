@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -26,6 +27,7 @@ import com.transfer.flash.core.transfer.model.FlashTransferState as DomainState
 import com.transfer.flash.ui.adaptive.FlashAdaptiveMath
 import com.transfer.flash.ui.chat.FlashChatListScreen
 import com.transfer.flash.ui.chat.FlashPairingPhase
+import com.transfer.flash.ui.chat.FlashPairingRequestUi
 import com.transfer.flash.ui.navigation.FlashAnimatedScreen
 import com.transfer.flash.ui.navigation.FlashDestination
 import com.transfer.flash.ui.navigation.FlashNavigationMath
@@ -105,7 +107,30 @@ public fun DesktopShell(engine: DesktopEngine) {
         }
     }
 
-    // ── Nearby: real discovery endpoints + trust store; no pairing dialog ──
+    // ── Nearby: discovery endpoints + trust store + the Phase 26-3 pairing dialog ──
+    val pairingUi by engine.pairing.pairing.collectAsState()
+    // Console-grade status lines (the desktop tier has no toast surface yet): "Connecting to X…",
+    // "Paired with X.", "Pairing ended (…)". Collected so a failure is never silent.
+    LaunchedEffect(engine) {
+        engine.pairing.messages.collect { println("[flash-desktop] pairing: $it") }
+    }
+
+    // Pairing UI phase mapping (the app's PairingUiMapper, re-stated here because :app is not a
+    // dependency of :desktop): the engine's two in-flight responder sub-states collapse into the
+    // actionable consent card, and a protocol Failure reads as a decline — the dialog has no
+    // failure card.
+    val pairingPhase = when (pairingUi?.phase) {
+        null, com.transfer.flash.core.security.pairing.PairingPhase.Idle -> FlashPairingPhase.Idle
+        com.transfer.flash.core.security.pairing.PairingPhase.RequestReceived,
+        com.transfer.flash.core.security.pairing.PairingPhase.AwaitingLocalDecision ->
+            FlashPairingPhase.RequestReceived
+        com.transfer.flash.core.security.pairing.PairingPhase.AwaitingPeerConfirmation ->
+            FlashPairingPhase.AwaitingPeerConfirmation
+        com.transfer.flash.core.security.pairing.PairingPhase.Confirmed -> FlashPairingPhase.Paired
+        com.transfer.flash.core.security.pairing.PairingPhase.DeclinedByPeer -> FlashPairingPhase.Declined
+        com.transfer.flash.core.security.pairing.PairingPhase.Expired -> FlashPairingPhase.Expired
+        com.transfer.flash.core.security.pairing.PairingPhase.Failed -> FlashPairingPhase.Declined
+    }
     val fallbackEndpoints = remember { MutableStateFlow(emptyList<FlashDiscoveredEndpoint>()) }
     val fallbackDiscoveryState = remember { MutableStateFlow(FlashDiscoveryState()) }
     val discoveredEndpoints by (engine.discovery?.discoveredEndpoints ?: fallbackEndpoints).collectAsState()
@@ -137,9 +162,21 @@ public fun DesktopShell(engine: DesktopEngine) {
                         )
                     },
                 trustedPeers = trustedPeers,
-                pairingRequest = null,
-                pairingPhase = FlashPairingPhase.Idle,
-                pairingSecondsLeft = 0,
+                pairingRequest = pairingUi?.let { ui ->
+                    FlashPairingRequestUi(
+                        peerName = ui.peerName,
+                        peerInitials = ui.peerName.trim().split(" ")
+                            .filter { it.isNotBlank() }
+                            .take(2)
+                            .joinToString("") { it.first().uppercase() }
+                            .ifBlank { "?" },
+                        numericCode = ui.numericCode,
+                        transport = com.transfer.flash.core.messaging.model.FlashNetworkTransport.Lan,
+                        expiresInSeconds = ui.secondsLeft,
+                    )
+                },
+                pairingPhase = pairingPhase,
+                pairingSecondsLeft = pairingUi?.secondsLeft ?: 0,
             )
         }
     }
@@ -255,16 +292,23 @@ public fun DesktopShell(engine: DesktopEngine) {
                     FlashDestination.NearbyDevices -> FlashNearbyScreen(
                         state = nearby,
                         onPairClick = { peer ->
-                            // Ensure a session exists (dial is idempotent), like the app — minus
-                            // beginPair, which needs a PairingCoordinator (Android-only, C2/C4).
+                            // Ensure a session exists (dial is idempotent/coalesced), then start
+                            // the handshake — the desktop twin of the app's flow (Phase 26-3).
                             val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == peer.id }
                             val net = engine.network
                             if (endpoint != null && net != null) {
-                                scope.launch { net.connectManual(endpoint.hostAddress, endpoint.port) }
+                                scope.launch {
+                                    net.connectManual(endpoint.hostAddress, endpoint.port)
+                                    engine.pairing.beginPair(peer.id, peer.name)
+                                }
+                            } else {
+                                engine.pairing.beginPair(peer.id, peer.name)
                             }
                             // Two-pane: show what we know about the peer while it connects.
                             if (twoPane) selectedNearbyPeer = peer
                         },
+                        onAcceptPairing = { engine.pairing.acceptLocal() },
+                        onDeclinePairing = { engine.pairing.declineLocal() },
                         onChatClick = { peer ->
                             chatRepository.openConversation(peer.id)
                             nav.navigate(FlashDestination.Conversation, conversationId = peer.id)

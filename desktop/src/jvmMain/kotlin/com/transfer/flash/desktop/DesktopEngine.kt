@@ -113,6 +113,38 @@ public class DesktopEngine(
     public val crypto: com.transfer.flash.core.security.crypto.FlashCrypto =
         com.transfer.flash.core.security.crypto.PersistedFlashCrypto(stateDir)
 
+    /**
+     * Desktop pairing (Phase 26-3, ADR-035): the SAME `DefaultFlashPairingProtocol` and
+     * `FLASH_PAIR` wire framing the phone runs, over [trustStore] and the identity above. What
+     * makes this durable — and what P2 existed for — is that [crypto]'s keypair survives a
+     * restart, so the fingerprint both devices compared stays the same fingerprint.
+     *
+     * `sendToPeer` mirrors the app host's contract: non-blocking, returns false when there is no
+     * live session (the coordinator uses that for its "couldn't reach" feedback).
+     */
+    public val pairing: DesktopPairingCoordinator = DesktopPairingCoordinator(
+        localFingerprintHex = com.transfer.flash.core.security.crypto.FlashFingerprint.formatHexGroups(
+            com.transfer.flash.core.security.crypto.FlashFingerprint.fingerprint(crypto.identityPublicKeyEncoded),
+        ),
+        localDeviceId = identity.deviceId.value,
+        localName = identity.friendlyName,
+        localModel = "desktop",
+        // One ephemeral ECDH key for the engine's lifetime, as the app host does (the key rides
+        // the handshake; no session encryption is wired to it yet).
+        ephemeralPublicKey = crypto.generateEphemeralEcdhKeyPair().publicKeyEncoded,
+        trustStore = trustStore,
+        scope = scope,
+        sendToPeer = { peerId, text ->
+            val session = networkImpl?.activeSessions?.value?.get(FlashDeviceId(peerId)) as? WsSession
+            if (session != null) {
+                session.connection.sendTextAsync(text)
+                true
+            } else {
+                false
+            }
+        },
+    )
+
     // --- Subsystems; non-null once [ready] flips true ---
     private var networkImpl: JvmWsFlashNetwork? = null
     private var discoveryImpl: CompositeDiscovery? = null
@@ -271,6 +303,10 @@ public class DesktopEngine(
                 }
                 sessions.values.forEach { session ->
                     if (session is WsSession && !sessionJobs.containsKey(session)) {
+                        // Pairing hello on every session-up, exactly like the app host: it is what
+                        // lets the peer derive the shared 6-digit code the moment either side taps
+                        // Pair (FLASH_PAIR hello carries the identity fingerprint).
+                        pairing.onSessionUp(session.peerDeviceId.value)
                         sessionJobs[session] = scope.launch {
                             launch {
                                 session.incomingBinary.collect { data ->
@@ -374,6 +410,12 @@ public class DesktopEngine(
 
     /** FLASH_XFER control frames — route into the repository (both directions). */
     private fun handleInboundText(peerDeviceId: String, text: String) {
+        // Phase 26-3: pairing traffic shares the FLASH_XFER routing point but its own prefix —
+        // check it FIRST so a pairing line is never handed to the transfer repository.
+        if (FlashTextFraming.parseFields(text, "FLASH_PAIR") != null) {
+            pairing.onInbound(peerDeviceId, text)
+            return
+        }
         val transfer = transferImpl ?: return
         val fields = FlashTextFraming.parseFields(text, "FLASH_XFER")
         if (fields != null) {
