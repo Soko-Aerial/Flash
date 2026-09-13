@@ -11328,3 +11328,40 @@ its webrtc-kmp dependency from in-repo source.
 - **S3b**: `:ui:callui` KMP conversion (Log→FlashLog, BackHandler shim, renderer behind the
   `FlashVideoSurface` seam). Deliberately NOT rushed: the webrtc-renderer-lifetime invariants
   live in exactly this file.
+
+## 2026-09-13 — Phase 26 EXECUTED (26-1/26-2 complete, 26-3 half): persisted desktop identity
+
+Per the /goal "start with phase 25 verify then 26" — Phase 25 verified first (Stage 1 A1–A5,
+Stage 2 fork bring-up + S2e; see the two previous entries), then 26:
+
+- **26-1 (vault):** `IdentityKeyVault` in `core/security` jvmMain — the ADR-035 at-rest seam.
+  Production instance = Windows DPAPI via JNA 5.17.0 (`Crypt32Util` — no custom JNI;
+  JVM-variant-only dependency, never Android). Test instance = honest pass-through so the
+  file/format logic is exercised on any OS. DPAPI round-trip + tamper-rejection verified FOR
+  REAL on this Windows host (assumption-guarded for a Linux CI run).
+- **26-2 (persisted crypto):** `PersistedFlashCrypto` — identity generated ONCE, persisted at
+  `<stateDir>/identity/id-key.bin` as `1-byte version (0x01) || vault.protect(4-byte len ||
+  PKCS#8 private || X.509 public)`, tmp-file-rename writes, zeroized intermediates. Load-bearing
+  failure choice: unreadable vault (wrong user/corruption/unknown version) degrades LOUDLY to
+  in-memory and does NOT overwrite the file. Seam extension
+  `ecP256ExportPrivateKeyPkcs8`/`ecP256ParsePrivateKeyPkcs8` on both JVM-family actuals
+  (Android actuals exist for seam completeness; no Android production path may call them).
+- **Two real defects the tests caught (the reason tests were written first-run):**
+  1. Pass-through vault ALIASED the staging buffer, so the post-protect zeroize wiped the bytes
+     before they reached the file — the vault now gets its own copy.
+  2. PKCS#8 has no checksum: a mid-payload corruption parses "successfully" into a different
+     valid key. Payload integrity is the VAULT's job (DPAPI authenticates); the file layer's
+     corruption test now flips the DER structure byte, which fails deterministically.
+- **26-3 (wiring, first half):** `DesktopEngine.crypto` = `PersistedFlashCrypto` over
+  `~/.flash/identity/id-key.bin`. The pairing-session coordinator + numeric-comparison dialog
+  that consume it remain (logged open — they also need the FlashPairingProtocol adapter over
+  the WS session, the desktop twin of `:app`'s PairingCoordinator).
+
+Verified: `:core:security` compileAndroidMain + compileKotlinJvm + testAndroidHostTest +
+jvmTest **17/0** (was 10) green; `:desktop:compileKotlinJvm` + `:app:assembleDebug` green.
+Commit `f009e66`.
+
+### Open after this entry
+- 26-3 second half: pairing adapter + UI (the remaining work to make G2/G6 runnable).
+- Phase 25 Stage 3 (S3a desktop factory validation, S3b `:ui:callui` conversion).
+- CONVENTIONS.md R3 line still names `:core:calling:compileDebugKotlin` (obsolete since A1).
