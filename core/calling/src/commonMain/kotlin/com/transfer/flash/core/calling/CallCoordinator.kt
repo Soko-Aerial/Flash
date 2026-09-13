@@ -1,3 +1,5 @@
+@file:OptIn(com.transfer.flash.core.common.annotation.FlashInternalApi::class)
+
 package com.transfer.flash.core.calling
 
 import com.transfer.flash.core.calling.model.FlashCallDirection
@@ -8,7 +10,7 @@ import com.transfer.flash.core.calling.model.OngoingGroupCallUi
 import com.transfer.flash.core.calling.protocol.CallFrameCodec
 import com.transfer.flash.core.calling.protocol.CallWireFrame
 import com.transfer.flash.core.common.perf.FlashPerformanceMode
-import java.util.UUID
+import com.transfer.flash.core.common.time.SystemTimeSource
 import kotlin.concurrent.Volatile
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -94,7 +96,7 @@ public class CallCoordinator(
         scope.launch {
             while (true) {
                 delay(5_000L)
-                val now = System.currentTimeMillis()
+                val now = SystemTimeSource.nowMs()
                 val current = _ongoingGroupCalls.value
                 val filtered = current.filterValues { now - it.lastSeenTimestamp < 12_000L }
                 if (filtered.size != current.size) {
@@ -127,7 +129,7 @@ public class CallCoordinator(
             ?: peerName.takeIf { it.isNotBlank() && it != peerId }
             ?: peerId
         val session = newSession(
-            callId = UUID.randomUUID().toString(),
+            callId = com.transfer.flash.core.common.id.UuidIdGenerator.newId(),
             peerId = peerId,
             peerName = resolvedName,
             direction = FlashCallDirection.OUTGOING,
@@ -153,7 +155,7 @@ public class CallCoordinator(
         currentMap.remove(groupId)
         _ongoingGroupCalls.value = currentMap
 
-        val callId = UUID.randomUUID().toString()
+        val callId = com.transfer.flash.core.common.id.UuidIdGenerator.newId()
         val session = FlashGroupCallSession(
             callId = callId,
             groupId = groupId,
@@ -270,7 +272,7 @@ public class CallCoordinator(
                 initiatorId = frame.from,
                 video = frame.video,
                 participantCount = frame.participantCount,
-                lastSeenTimestamp = System.currentTimeMillis(),
+                lastSeenTimestamp = SystemTimeSource.nowMs(),
             )
             _ongoingGroupCalls.value = currentMap
             return true
@@ -476,7 +478,7 @@ public class CallCoordinator(
      */
     private fun publishCallLog(session: FlashCallSession) {
         val state = session.state.value
-        val endedAt = System.currentTimeMillis()
+        val endedAt = SystemTimeSource.nowMs()
         val durationMs = state.connectedAt?.let { (endedAt - it).coerceAtLeast(0L) } ?: 0L
         onCallLog(
             FlashCallLogEntry(

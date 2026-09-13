@@ -71,5 +71,8 @@ internal class SyncMap<K : Any, V : Any> {
 
     fun keysSnapshot(): List<K> = monitor.withLock { backing.keys.toList() }
 
+    /** Snapshot of the values — see [keysSnapshot]. */
+    fun valuesSnapshot(): List<V> = monitor.withLock { backing.values.toList() }
+
     fun clear() = monitor.withLock { backing.clear() }
 }

@@ -32,14 +32,13 @@ import com.transfer.flash.core.common.logging.FlashLog
 import com.transfer.flash.core.common.perf.FlashPerformanceMode
 import com.transfer.flash.core.common.perf.FlashTransportProfile
 import com.transfer.flash.core.common.perf.FlashVideoProfile
-import java.util.concurrent.CopyOnWriteArrayList
-import java.util.concurrent.Executors
+import com.transfer.flash.core.common.time.SystemTimeSource
 import kotlin.math.roundToInt
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.ExecutorCoroutineDispatcher
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -245,9 +244,9 @@ public class FlashCallSession(
      * Copy-on-write because [end] can clear it from a WebRTC callback thread while the
      * signaling path is appending under [signalMutex].
      */
-    private val deferredFrames = CopyOnWriteArrayList<CallWireFrame>()
+    private val deferredFrames = SyncList<CallWireFrame>()
 
-    private val eventJobs = CopyOnWriteArrayList<Job>()
+    private val eventJobs = SyncList<Job>()
     private var dialTimeoutJob: Job? = null
     private var connectTimeoutJob: Job? = null
     private var disconnectGraceJob: Job? = null
@@ -267,7 +266,7 @@ public class FlashCallSession(
      * to exactly one thread for exactly one job, rather than adding a dispatcher dependency to
      * a hot path, for that reason.
      */
-    private var statsDispatcher: ExecutorCoroutineDispatcher? = null
+    private var statsDispatcher: CoroutineDispatcher? = null
 
     /**
      * Wall clock of the last ICE restart offer, so a link that flaps cannot become an offer storm.
@@ -429,7 +428,7 @@ public class FlashCallSession(
                     FlashLog.w("CALL", "deferred buffer full, dropping ${frame.javaClass.simpleName}")
                     return@withLock
                 }
-                deferredFrames += frame
+                deferredFrames.add(frame)
                 FlashLog.i(
                     "CALL",
                     "deferred ${frame.javaClass.simpleName} until media is ready " +
@@ -919,7 +918,7 @@ public class FlashCallSession(
     }
 
     private fun observeEvents(pc: PeerConnection) {
-        eventJobs += scope.launch {
+        eventJobs.add(scope.launch {
             pc.onTrack.collect { event ->
                 // The event's own track, not a snapshot of event.streams — see the
                 // [remoteVideoStreamTrack] doc for why the stream wrapper is unreliable here.
@@ -933,8 +932,8 @@ public class FlashCallSession(
                     remoteAudio = track
                 }
             }
-        }
-        eventJobs += scope.launch {
+        })
+        eventJobs.add(scope.launch {
             pc.onConnectionStateChange.collect { cs ->
                 FlashLog.i("CALL", "peer connection state=$cs call=$callId")
                 when (cs) {
@@ -950,7 +949,7 @@ public class FlashCallSession(
                             // First connect only. Now that a call can genuinely reconnect, stamping
                             // this again would restart the duration the call log reports and turn a
                             // ten-minute call that survived a roam into a ten-second one.
-                            connectedAt = _state.value.connectedAt ?: System.currentTimeMillis(),
+                            connectedAt = _state.value.connectedAt ?: SystemTimeSource.nowMs(),
                         )
                         armStatsPolling(pc)
                     }
@@ -970,8 +969,8 @@ public class FlashCallSession(
                     -> Unit
                 }
             }
-        }
-        eventJobs += scope.launch {
+        })
+        eventJobs.add(scope.launch {
             pc.onIceCandidate.collect { candidate ->
                 sendFrame(
                     CallWireFrame.IceCandidate(
@@ -983,7 +982,7 @@ public class FlashCallSession(
                     ),
                 )
             }
-        }
+        })
     }
 
     // --------------------------------------------------------------- ICE recovery
@@ -1034,17 +1033,17 @@ public class FlashCallSession(
      */
     private suspend fun recoverIce(pc: PeerConnection) {
         val minIntervalMs = performanceMode().transport.iceRestartMinIntervalMs
-        val deadline = System.currentTimeMillis() + disconnectGraceMs
+        val deadline = SystemTimeSource.nowMs() + disconnectGraceMs
         if (direction != FlashCallDirection.OUTGOING) {
             // Answerer: nothing to send, just hold the window open.
             delay(disconnectGraceMs)
             return
         }
         while (true) {
-            val remaining = deadline - System.currentTimeMillis()
+            val remaining = deadline - SystemTimeSource.nowMs()
             if (remaining <= 0L) return
-            if (System.currentTimeMillis() - lastIceRestartAtMs >= minIntervalMs) {
-                lastIceRestartAtMs = System.currentTimeMillis()
+            if (SystemTimeSource.nowMs() - lastIceRestartAtMs >= minIntervalMs) {
+                lastIceRestartAtMs = SystemTimeSource.nowMs()
                 attemptIceRestart(pc)
             }
             delay(minOf(minIntervalMs, remaining))
@@ -1107,10 +1106,11 @@ public class FlashCallSession(
         lastPacketsReceived = 0L
         lastIntervalLoss = null
         val intervalMs = performanceMode().transport.callStatsIntervalMs
+        // S2e: was a dedicated single-thread executor (JVM-only API). A limited view of the
+        // shared IO pool keeps the same serialization and off-the-main-loop guarantee; there
+        // is no dedicated OS thread to close, so teardown just drops the reference.
         val sampler = statsDispatcher
-            ?: Executors.newSingleThreadExecutor { r ->
-                Thread(r, "FlashCallStats").apply { isDaemon = true }
-            }.asCoroutineDispatcher().also { statsDispatcher = it }
+            ?: Dispatchers.IO.limitedParallelism(1).also { statsDispatcher = it }
         statsJob = scope.launch(sampler) {
             while (!ended) {
                 val sample = try {
@@ -1331,10 +1331,9 @@ public class FlashCallSession(
         statsJob = null
         // The sampler thread belongs to the call, not the process: a finished call must not
         // hold it. `close()` is idempotent and releaseMedia is too, so a second pass is a no-op.
-        statsDispatcher?.close()
         statsDispatcher = null
         _stats.value = null
-        eventJobs.forEach { it.cancel() }
+        eventJobs.toList().forEach { it.cancel() }
         eventJobs.clear()
         // Unpublish first: the UI unbinds its renderer sinks off the back of these flows,
         // and every track they hold is about to be stopped.

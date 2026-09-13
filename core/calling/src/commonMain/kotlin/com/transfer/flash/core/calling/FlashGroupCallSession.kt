@@ -33,7 +33,7 @@ import com.transfer.flash.core.calling.protocol.CallWireFrame
 import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.common.logging.FlashLog
 import com.transfer.flash.core.common.perf.FlashPerformanceMode
-import java.util.concurrent.ConcurrentHashMap
+import com.transfer.flash.core.common.time.SystemTimeSource
 import kotlin.math.roundToInt
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -108,7 +108,7 @@ public class FlashGroupCallSession(
     private val _remoteVideoStreamTrack = MutableStateFlow<VideoStreamTrack?>(null)
     override val remoteVideoStreamTrack: StateFlow<VideoStreamTrack?> = _remoteVideoStreamTrack.asStateFlow()
 
-    private val legs = ConcurrentHashMap<String, GroupLeg>()
+    private val legs = SyncMap<String, GroupLeg>()
     private val sessionMutex = Mutex()
 
     private var localStream: MediaStream? = null
@@ -225,7 +225,7 @@ public class FlashGroupCallSession(
         armPresenceAnnouncement()
 
         // Broadcast GroupAccept / GroupJoin to known participants
-        val currentPeers = legs.keys.toList()
+        val currentPeers = legs.keysSnapshot()
         currentPeers.forEach { peerId ->
             sendFrame(
                 CallWireFrame.GroupAccept(callId = callId, from = localDeviceId, groupId = groupId),
@@ -248,7 +248,7 @@ public class FlashGroupCallSession(
             if (isEnded) return false
             _state.value = _state.value.copy(
                 state = FlashCallState.CONNECTING,
-                connectedAt = System.currentTimeMillis(),
+                connectedAt = SystemTimeSource.nowMs(),
             )
             memberIds.filter { it != localDeviceId }.forEach { memberId ->
                 legs[memberId] = GroupLeg(
@@ -269,7 +269,7 @@ public class FlashGroupCallSession(
         armPresenceAnnouncement()
 
         // Announce join to all known members
-        val currentPeers = legs.keys.toList()
+        val currentPeers = legs.keysSnapshot()
         currentPeers.forEach { peerId ->
             sendFrame(
                 CallWireFrame.GroupJoin(
@@ -305,7 +305,7 @@ public class FlashGroupCallSession(
                         video = video,
                         participantCount = count,
                     )
-                    legs.keys.forEach { peerId ->
+                    legs.keysSnapshot().forEach { peerId ->
                         sendFrame(frame, peerId)
                     }
                 }
@@ -316,7 +316,7 @@ public class FlashGroupCallSession(
 
     /** Declines an incoming ringing group call. */
     public suspend fun decline() {
-        legs.keys.forEach { peerId ->
+        legs.keysSnapshot().forEach { peerId ->
             sendFrame(
                 CallWireFrame.GroupDecline(callId = callId, from = localDeviceId, groupId = groupId),
                 peerId,
@@ -329,7 +329,7 @@ public class FlashGroupCallSession(
     public suspend fun hangUp() {
         sessionMutex.withLock {
             if (isEnded) return
-            legs.keys.forEach { peerId ->
+            legs.keysSnapshot().forEach { peerId ->
                 scope.launch {
                     sendFrame(
                         CallWireFrame.GroupHangup(callId = callId, from = localDeviceId, groupId = groupId),
@@ -390,7 +390,7 @@ public class FlashGroupCallSession(
                     // Mesh propagation: only the direct recipient of a GroupAccept fans out GroupJoin to other known legs.
                     // GroupJoin frames must NOT be re-fanned out to avoid broadcast loops/echo storms.
                     if (frame is CallWireFrame.GroupAccept) {
-                        val otherPeers = legs.keys.filter { it != localDeviceId && it != effectivePeerId }
+                        val otherPeers = legs.keysSnapshot().filter { it != localDeviceId && it != effectivePeerId }
                         otherPeers.forEach { otherPeerId ->
                             scope.launch {
                                 sendFrame(
@@ -533,7 +533,7 @@ public class FlashGroupCallSession(
                             if (_state.value.state != FlashCallState.ACTIVE) {
                                 _state.value = _state.value.copy(
                                     state = FlashCallState.ACTIVE,
-                                    connectedAt = _state.value.connectedAt ?: System.currentTimeMillis(),
+                                    connectedAt = _state.value.connectedAt ?: SystemTimeSource.nowMs(),
                                 )
                             }
                             refreshUiState()
@@ -674,7 +674,7 @@ public class FlashGroupCallSession(
     }
 
     private fun countConnectedLegs(): Int =
-        legs.values.count { it.state == FlashCallParticipantState.CONNECTED }
+        legs.valuesSnapshot().count { it.state == FlashCallParticipantState.CONNECTED }
 
     private fun closeLeg(leg: GroupLeg) {
         leg.iceJob?.cancel()
@@ -709,7 +709,7 @@ public class FlashGroupCallSession(
     }
 
     private suspend fun sampleMeshStats() {
-        val activeLegs = legs.values.filter { it.state == FlashCallParticipantState.CONNECTED && it.peerConnection != null }
+        val activeLegs = legs.valuesSnapshot().filter { it.state == FlashCallParticipantState.CONNECTED && it.peerConnection != null }
         if (activeLegs.isEmpty()) {
             _stats.value = null
             return
@@ -758,7 +758,7 @@ public class FlashGroupCallSession(
             totalReceived += inbound.sumOf { it.members.num("packetsReceived")?.toLong() ?: 0L }
         }
 
-        val nowMs = System.currentTimeMillis()
+        val nowMs = SystemTimeSource.nowMs()
         val elapsedMs = if (lastStatsAtMs > 0L) nowMs - lastStatsAtMs else 0L
         val inKbps = if (elapsedMs > 0L) {
             val deltaBytes = (totalBytesIn - lastBytesReceived).coerceAtLeast(0L)
@@ -860,7 +860,7 @@ public class FlashGroupCallSession(
     }
 
     private fun refreshUiState() {
-        val participants = legs.values.map { leg ->
+        val participants = legs.valuesSnapshot().map { leg ->
             FlashCallParticipantUi(
                 peerId = leg.peerId,
                 name = leg.peerName,
@@ -904,7 +904,7 @@ public class FlashGroupCallSession(
         statsJob = null
         _stats.value = null
 
-        legs.values.forEach { closeLeg(it) }
+        legs.valuesSnapshot().forEach { closeLeg(it) }
         legs.clear()
 
         try {
