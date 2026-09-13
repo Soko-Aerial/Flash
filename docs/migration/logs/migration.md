@@ -10760,3 +10760,65 @@ The build-only phases in this plan are exhausted: 21 and 22 are built and compil
 work); 09B-2/09B-3 need their sub-answers; the calling stack needs the human's A–D pick on top of
 the research report. Until one of those human inputs arrives, the honest state is: **critical
 path blocked on hardware + human decisions, everything buildable from this machine is built.**
+
+---
+
+## 2026-09-13 — PHASE-24 Step-1 dry-run: Maven-Local publication tree verified (publish NOT run)
+
+- **Date:** 2026-09-13
+- **Agent/model:** Claude Code (glm-5.3-free), autonomous per the session /goal
+- **Commit:** (this commit)
+- **Decisions relied on:** D9=A (samples stay Android-only; `sample/consumer-desktop` is a Phase 24 step), R10, R9; Phase 24 precondition 1 (23 must be OPEN before the actual publish) — **respected: no tag, no JitPack, no release.**
+
+### What this entry records
+
+The build-verifiable half of Phase 24, executed as a dry-run: aggregate `publishToMavenLocal` +
+the Step-1 tree inspection. This is precedented build verification (every converted module's
+phase ran `publishToMavenLocal` as a gate: Phase 06/07/08/10/11/12 logs), it touches only this
+machine's `~/.m2`, and it is NOT the publish — Steps 3–5 (tag, JitPack, fresh consumers) stay
+with the human while Phase 23 is CLOSED, per the phase's own precondition and Do-NOT list.
+
+### Verification
+```
+./gradlew publishToMavenLocal --continue
+```
+Result: **BUILD SUCCESSFUL** (Gradle 9.5.0, JBR 21, all publications, `--continue`).
+
+Step-1 tree inspection, `~/.m2/repository/com/transfer/flash/`, version 1.1.0 (`flashLibraryVersion`):
+
+| Module | root (`jar`+`.module`+`.pom`+sources) | `-android` | `-jvm` |
+|---|---|---|---|
+| core-common | ✅ | ✅ | ✅ |
+| core-security | ✅ | ✅ | ✅ |
+| core-discovery | ✅ | ✅ | ✅ |
+| core-network | ✅ | ✅ | ✅ |
+| core-transfer | ✅ | ✅ | ✅ |
+| core-messaging | ✅ | ✅ | ✅ |
+| core-engine | ✅ | ✅ | ✅ |
+| core-persistence | ✅ | ✅ | ✅ |
+| ui-theme | ✅ | ✅ | ✅ |
+| ui-platform-shims | ✅ | ✅ | ✅ |
+| ui-chat | ✅ | ✅ | ✅ |
+
+Every KMP-converted module emits the full three-publication layout with Gradle module metadata
+intact (spot-checked `.module` presence on root, `-jvm`, and `ui-chat-jvm`). The unconverted AGP
+modules publish their expected single AAR publications: `core-calling`, `core-ptt` (both 1.1.0),
+and the samples are unpublished (no `maven-publish`, by design). `1.0.0` version dirs present
+for some modules are stale local-cache entries from pre-conversion runs, not a mixed-version
+publication — the fresh run wrote only 1.1.0.
+
+**One Phase 24 open item this dry-run does NOT discharge:** Step 2's `sample/consumer-desktop`
+(D9=A) — a real module to create against these Maven-Local artifacts. Left for the phase proper
+along with Steps 3–5; creating it now would front-run the phase file's own ordering without the
+human's version decision, and nothing about the publication tree suggests it would fail.
+
+### Change
+- **Modify:** `docs/migration/logs/migration.md` — this entry. (No production change; `:desktop` is an application module and is not published, correctly.)
+
+### Known issues
+- None new. The Phase 16 hardware gate remains the release-line blocker for 23 → 24.
+
+### Next step
+Unchanged from the 2026-09-12 census: the plan's build-only phases are exhausted (21/22 built;
+23 blocked on hardware + the desktop pairing gap; 24's publish steps blocked on 23; 09B-2/09B-3
+and the calling-stack A–D pick are human inputs).
