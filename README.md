@@ -366,6 +366,40 @@ dependency, which Gradle writes into the published metadata for the Android targ
 dependency: that is why the shims module is published too, and why a `ui-chat` consumer resolves it
 without asking for it.
 
+### Desktop JVM consumers (KMP, since the migration)
+
+Every `core-*` and `ui-*` module above is now a **Kotlin Multiplatform** library: the same root
+coordinate that an Android consumer writes also serves a plain **desktop JVM** app. Variant-aware
+resolution picks the per-target artifact automatically — `-android` for an Android build, `-jvm`
+for a JVM build — so the dependency line is identical on both platforms:
+
+```kotlin
+// Desktop app/build.gradle.kts  (plugins { kotlin("jvm") })
+dependencies {
+    // Same umbrella coordinate as the Android snippet above:
+    implementation("com.github.Kali452345.Flash:core-engine:v1.1.0")
+}
+```
+
+Gradle then resolves `core-engine-jvm` (and `core-common-jvm`, coroutines-jvm, …) from that root
+coordinate's module metadata. This is proven in-repo by `sample/consumer-desktop`, a plain
+`kotlin("jvm")` module with zero project dependencies whose compile gate is exactly this
+resolution against the published tree.
+
+Two desktop caveats, both honest limits of the current migration state:
+
+- **`core-engine`'s desktop target is engine-facade-less.** The `jvm()` artifact carries the
+  shared core (models, protocol, repositories' common halves, discovery/transport plumbing) but
+  **not** `Flash.create`/`DefaultFlashEngine` — those live in the Android target (they need Room
+  + Android Keystore). A desktop consumer today assembles the stack the way the `:desktop` app
+  shell does: `RealFlashTransferRepository` + `ReceivePipeline` + `JvmWsFlashNetwork` +
+  `JmdnsTransport`, with `store = null` (encrypted desktop persistence is pending) and chats
+  bound to `EmptyFlashChatRepository`.
+- **`core-calling`, `core-ptt` and `ui-callui` are Android-only** (no JVM variant exists — the
+  WebRTC dependency publishes no JVM target), and `ui-chat`'s conversation screen needs a
+  repository with state (desktop chat history is also pending). See the repo's
+  `docs/migration/` tree for the full state.
+
 ## License
 
 Flash is licensed under the [Apache License 2.0](LICENSE). Copyright The Flash
