@@ -186,6 +186,9 @@ public class JmdnsTransport(
     override val events: SharedFlow<FlashTransportEvent> = _events.asSharedFlow()
 
     @Volatile private var ownDeviceId: FlashDeviceId? = null
+
+    /** Per-service re-resolve budget for JmDNS's empty-TXT resolution; lane-confined. */
+    private val emptyTxtRetries = mutableMapOf<String, Int>()
     @Volatile private var advertising = false
     @Volatile private var browsing = false
     @Volatile private var opened = false
@@ -389,30 +392,48 @@ public class JmdnsTransport(
             fallbackProto = FlashProtocol.VERSION,
         )
         val deviceIdString = parsed.deviceId ?: run {
-            // Diagnostic detail, because "without device_id" alone cannot distinguish the three
-            // causes and they have completely different fixes:
-            //   txtKeys=[]                     JmDNS delivered no TXT at all (resolution or
-            //                                  transport problem — the record is a bare
-            //                                  announcement)
-            //   txtKeys=[...] without device_id the peer published a record with other keys
-            //   txtKeys=[device_id, ...]       a codec/key mismatch — we failed to read a key
-            //                                  that IS present
-            // KEYS ONLY, never values: a TXT record is unauthenticated wire data from an
-            // arbitrary peer, so its values are attacker-controlled strings and do not belong in
-            // a log. The key set is bounded and is the part that answers the question.
+            // An EMPTY TXT is not the same thing as "this peer published no attributes", and
+            // treating it as one is what made the desktop invisible on 2026-09-13.
+            //
+            // JmDNS 3.5.12 delivers a ServiceInfo whose text is `ByteWrangler.EMPTY_TXT`
+            // (`new byte[]{0}`, ByteWrangler.java:43) whenever the TXT record has not reached its
+            // cache by the time the service is assembled — and its own recovery path for that case
+            // is DEAD CODE:
+            //
+            //   ServiceInfoImpl.getTextBytes() (ServiceInfoImpl.java:545) returns EMPTY_TXT, one
+            //   byte, whenever `_text` is null. So the guard
+            //     if (cachedInfo.getTextBytes().length == 0) cachedInfo._setText(srvBytes);
+            //   in JmDNSImpl.getServiceInfo (JmDNSImpl.java:834) can never be true, and the
+            //   SRV-derived text fallback never runs. The ServiceInfo is built with `(byte[]) null`
+            //   text at :797 and its A/AAAA loops overwrite `_text` with EMPTY_TXT at :810/:823.
+            //
+            // `ServiceInfoImpl.hasData()` only checks `getTextBytes().length > 0` — one byte
+            // satisfies it — so the hollow ServiceInfo is delivered as a successful resolution,
+            // with a correct address and port and no attributes at all. Measured: `txtBytes=1`
+            // against the app's OWN name and port.
+            //
+            // The record itself is fine; it simply has not been seen yet. So retry a bounded
+            // number of times instead of dropping the peer permanently — JmDNS caches the TXT when
+            // it arrives, and the next resolution then carries it. `requestResolveInfo` blocks for
+            // its own timeout, which spaces the attempts naturally.
+            if (data.txtByteCount <= 1 && data.attributes.isEmpty() && retryEmptyTxt(data.serviceName)) {
+                return
+            }
+            // Dropped for real. KEYS ONLY, never values: a TXT record is unauthenticated wire data
+            // from an arbitrary peer, so its contents do not belong in a log. The key set is
+            // bounded and is the part that answers the question — `txtKeys=[]` means no attributes
+            // arrived even after retrying, while a non-empty set without `device_id` means the peer
+            // published under different names, and those have different fixes.
             logInfo(
                 "Dropping mDNS endpoint without device_id name=${data.serviceName} " +
                     "host=${data.hostAddress} port=${data.port} " +
-                    "txtKeys=${data.attributes.keys.sorted()} txtBytes=${data.txtByteCount}" +
-                    // txtBytes of 0 or 1 is JmDNS's EMPTY_TXT (`new byte[]{0}`,
-                    // ByteWrangler.java:43): the record carries no attributes at all. The usual
-                    // cause is an mDNS instance-name collision — two advertisers claiming one
-                    // name, so JmDNS renames and re-registers, and the cache ends up serving one
-                    // registration's SRV/address with another's empty TXT.
-                    if (data.txtByteCount <= 1) " (empty TXT: peer advertised no attributes)" else "",
+                    "txtKeys=${data.attributes.keys.sorted()} txtBytes=${data.txtByteCount}",
             )
             return
         }
+        // Resolved with real attributes; forget any retry budget for this name so a later
+        // re-announcement starts clean.
+        emptyTxtRetries.remove(data.serviceName)
         val deviceId = runCatching { FlashDeviceId(deviceIdString) }.getOrElse {
             logWarn("Invalid device_id '$deviceIdString' from ${data.serviceName}")
             return
@@ -618,6 +639,25 @@ public class JmdnsTransport(
     }
 
     /**
+     * Bounded re-resolve budget for a service that resolved with JmDNS's empty TXT.
+     *
+     * Confined to [lane] (only [handleServiceResolved] touches it), so no lock is needed.
+     *
+     * @return true when a retry was scheduled and the caller should NOT drop the peer yet;
+     *   false when the budget is exhausted, which is the caller's cue to drop and log.
+     */
+    private fun retryEmptyTxt(serviceName: String): Boolean {
+        val used = emptyTxtRetries[serviceName] ?: 0
+        if (used >= MAX_EMPTY_TXT_RETRIES) {
+            emptyTxtRetries.remove(serviceName)
+            return false
+        }
+        emptyTxtRetries[serviceName] = used + 1
+        requestResolveOffLane(serviceName)
+        return true
+    }
+
+    /**
      * Publishes browse state. Reports the BROWSE flag alone, never `advertising || browsing`:
      * `CompositeDiscovery.applyBrowseState` treats `browsing = true` as "this radio is healthy",
      * so an advertising-only transport claiming to browse can never be watchdog-recovered.
@@ -643,6 +683,14 @@ public class JmdnsTransport(
 
         public const val DEFAULT_MAX_RESTARTS: Int = 5
         public const val MAX_NAME_LENGTH: Int = 24
+
+        /**
+         * How many times a service resolving with JmDNS's empty TXT is re-resolved before the peer
+         * is dropped. Small on purpose: each attempt blocks for JmDNS's own service-info timeout,
+         * and a peer that genuinely publishes no attributes must still end up rejected rather than
+         * retried forever.
+         */
+        private const val MAX_EMPTY_TXT_RETRIES: Int = 3
         public const val DEFAULT_LOST_DEBOUNCE_MS: Long = 6_000L
         public const val DEFAULT_PRESENCE_HEARTBEAT_MS: Long = 10_000L
         internal const val EVENT_BUFFER: Int = 64

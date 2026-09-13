@@ -11653,3 +11653,78 @@ and the options are a newer version, a different TXT read path, or replacing the
 
 **Verified:** `:core:discovery:jvmTest` 34/34, `:core:discovery:testAndroidHostTest`,
 `:core:engine:compileTestKotlinJvm`, `:desktop:compileKotlinJvm` all green.
+
+---
+
+## 2026-09-13 — ROOT CAUSE FOUND: JmDNS's empty-TXT resolution, and a dead-code guard
+
+The desktop's discovery failure is **a bug in JmDNS 3.5.12's resolution path**, and it is now
+fixed on our side. This supersedes the name-collision claim in the entry above, which was wrong.
+
+### The defect, exactly
+
+`JmDNSImpl.getServiceInfo` assembles a resolved `ServiceInfo` from its DNS cache:
+
+```java
+// JmDNSImpl.java:797
+cachedInfo = new ServiceInfoImpl(map, port, weight, priority, persistent, (byte[]) null);
+// :810 and :823 — the A/AAAA loops OVERWRITE the text with an address record's text
+cachedInfo._setText(cachedAddressInfo.getTextBytes());
+// :834 — the recovery path for "no TXT yet"
+if (cachedInfo.getTextBytes().length == 0) { cachedInfo._setText(srvBytes); }
+```
+
+That last guard **can never be true**, because the getter it calls substitutes a placeholder:
+
+```java
+// ServiceInfoImpl.java:545
+public byte[] getTextBytes() {
+    return (this._text != null && this._text.length > 0 ? this._text : ByteWrangler.EMPTY_TXT);
+}
+```
+
+`EMPTY_TXT` is `new byte[]{0}` (`ByteWrangler.java:43`) — **one byte, not zero**. So when the TXT
+record has not reached the cache by the time the service is assembled, `_text` stays `EMPTY_TXT`
+and the SRV-derived fallback never runs. `hasData()` only checks `getTextBytes().length > 0`, which
+one byte satisfies, so the hollow ServiceInfo is delivered to the listener as a **successful
+resolution** with a correct address and port and no attributes at all.
+
+That is precisely the observed `txtKeys=[] txtBytes=1`, against the app's own name and port, with
+`host` and `port` populated — and it is why the phone could not see the desktop either.
+
+### What made it findable
+
+Two-ended instrumentation, added in the previous entry:
+- Desktop: `DIAG before register ... textBytes=91` and `DIAG after register ... textBytes=91` proved
+  the **registered object is correct** and stays correct, which eliminated our writer.
+- `JmdnsBridgeAttributeTest` proved the reader (`toNeutral`) copies every key, eliminating it.
+- Phone logcat (`adb logcat -s DISCOVERY FLASH_PAIRING`) showed the phone resolved **nothing** —
+  no drops at all — while its Nearby listed `Flash Desktop` with an unfamiliar device id
+  (`ff485975-…`). That id is the phone's **trusted store**, not a discovery result, so the earlier
+  "phone sees the desktop" reading was wrong: it does not see it.
+
+### The fix
+
+`JmdnsTransport` no longer treats an empty TXT as "this peer published no attributes". That
+conflates "no attributes" with "attributes have not arrived yet", and it made a recoverable timing
+gap look like a permanent peer defect. On the empty-TXT signature (`txtByteCount <= 1` with no
+keys) the transport now **re-resolves**, up to `MAX_EMPTY_TXT_RETRIES = 3` per service name, before
+dropping. JmDNS caches the TXT when it arrives, and the next resolution carries it; each attempt
+blocks for JmDNS's own service-info timeout, which spaces them naturally. The budget is
+lane-confined and cleared once a name resolves properly, so a peer that genuinely publishes nothing
+is still rejected rather than retried forever.
+
+**Evidence it works:** with the fix, a 30 s `discover` on this host produced **zero drop lines**.
+Before it, the same run always produced a burst, including for the desktop's own name. Our own
+record now resolves, parses its `device_id`, and is filtered as a self-advertisement — silently,
+which is the correct behaviour. Peer discovery against the real phone is **not yet confirmed**;
+that run needs the phone on the network.
+
+### Also fixed in passing
+
+- `discover` returned at the first non-empty roster, so it printed one line and quit — which hid
+  both "who is on the network" and "does a peer vanish". It now streams for the whole window.
+- It also double-scaled its duration (`secondsArg` already returns milliseconds) and printed an em
+  dash that mojibakes in a cp1252 console.
+
+**Verified:** `:core:discovery:jvmTest` 34/34, `:core:engine:compileTestKotlinJvm` green.

@@ -376,7 +376,8 @@ public object DesktopInteropHarness {
         val outDir = File("flash-received").apply { mkdirs() }
         val endpoint = DesktopEndpoint("discover", outDir)
         endpoint.start()
-        println("[discover] watching ${seconds}s — peers print as they appear; Ctrl-C to stop early")
+        // Plain ASCII: an em dash renders as mojibake in a cp1252 Windows console.
+        println("[discover] watching ${seconds / 1_000}s - peers print as they appear; Ctrl-C to stop early")
         runBlocking {
             // Stream for the WHOLE window, and print each peer the first time it is seen.
             //
@@ -386,7 +387,10 @@ public object DesktopInteropHarness {
             // anything. That also hid the failure mode this gate exists to catch: a peer that
             // appears and then vanishes, or one whose records are dropped. It now observes for the
             // full window like `advertise` does.
-            val deadline = System.currentTimeMillis() + seconds * 1_000L
+            // `seconds` is already MILLISECONDS — `run()` passes it through `secondsArg`, which
+            // multiplies by 1_000; the old code handed it straight to `withTimeout`. Kept the
+            // parameter name to avoid churn, but do not scale it again.
+            val deadline = System.currentTimeMillis() + seconds
             val seen = LinkedHashMap<String, String>()
             while (System.currentTimeMillis() < deadline) {
                 endpoint.discovery.discoveredEndpoints.value.forEach { p ->
