@@ -11365,3 +11365,34 @@ Commit `f009e66`.
 - 26-3 second half: pairing adapter + UI (the remaining work to make G2/G6 runnable).
 - Phase 25 Stage 3 (S3a desktop factory validation, S3b `:ui:callui` conversion).
 - CONVENTIONS.md R3 line still names `:core:calling:compileDebugKotlin` (obsolete since A1).
+
+## 2026-09-13 — Phase 26 COMPLETE (26-3 second half): desktop pairing adapter + UI
+
+Commit `c57de5f`. The desktop can now pair with an unmodified phone — G2/G6 are runnable.
+
+- `DesktopPairingCoordinator` (desktop jvmMain): same `DefaultFlashPairingProtocol`, same
+  `FLASH_PAIR` framing, protocol recreation on terminal phases, pending-pair + fingerprint-poll
+  begin flow ported as-is, initiator's PAIR_CONFIRM send, instance-bound 1 Hz expiry ticker,
+  revoke via the trust store. PersistedFlashCrypto behind it is what makes the compared
+  fingerprint survive a restart — the point of P2.
+- **Parity bugs caught by verifying against the app codec before compiling** (each would have
+  been a silent no-handshake against a real phone): `PairRequest` field names are
+  `senderDeviceId/senderName/senderModel/senderFingerprintHex/senderEphemeralPublicKey/createdAt`;
+  `PairConfirm` carries `codeHashHex`; `Paired` carries `peerFingerprintHex` +
+  `peerEphemeralPublicKey`; Base64 is the **standard** variant, not UrlSafe.
+- `DesktopEngine`: coordinator built over the persisted crypto + trust store; pairing hello on
+  every session-up; `FLASH_PAIR` routed **before** `FLASH_XFER`; non-blocking `sendToPeer`.
+- `DesktopShell`: the Nearby screen's hardcoded idle pairing state (and its "no pairing dialog"
+  comment) replaced with live state; Pair now begins the handshake; accept/decline wired to the
+  screen's existing callbacks; status lines console-grade (desktop has no toast surface).
+  Core→UI phase mapping restated in the shell because `:app`'s `PairingUiMapper` is unreachable
+  from `:desktop`.
+
+Verified: `:desktop:compileKotlinJvm`, `:core:security` jvmTest 17/0 + host 72/0, `:core:calling`
+jvmTest 59/0 + host 72/0, `:app:assembleDebug` — all green.
+
+### What remains
+- **Phase 25 Stage 3**: S3a (desktop factory validation — with the fork the JVM factory
+  self-initializes; nothing to port from the Android ADM) and **S3b (`:ui:callui` conversion)**.
+- CONVENTIONS.md R3 line still names `:core:calling:compileDebugKotlin` (obsolete since A1).
+- Phase 24 publish steps 3–5 remain forbidden while 23 is CLOSED; 09B-2/09B-3 open.
