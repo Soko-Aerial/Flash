@@ -1895,6 +1895,8 @@ public class RealFlashChatRepository(
     public suspend fun onInboundWireFrame(frame: MessageWireFrame, transportPeerId: String? = null) {
         when (frame) {
             is MessageWireFrame.TextMessage -> {
+                // SENTINEL: Fail closed on claimed-author vs transport-peer mismatch
+                if (transportPeerId != null && frame.senderId != transportPeerId) return
                 // conversationId doubles as the transport routing key (a device id). The sender
                 // addressed US by OUR id, so `frame.conversationId` is the receiver's own device id
                 // — threading the message under it would key our reply's routing to ourselves (the
@@ -1948,6 +1950,7 @@ public class RealFlashChatRepository(
             }
 
             is MessageWireFrame.DeliveryReceipt -> {
+                if (transportPeerId != null && frame.memberId != transportPeerId) return
                 receiptDao.insert(
                     ReceiptEntity(
                         messageId = frame.messageId,
@@ -1967,6 +1970,7 @@ public class RealFlashChatRepository(
             }
 
             is MessageWireFrame.ReadReceipt -> {
+                if (transportPeerId != null && frame.memberId != transportPeerId) return
                 // The peer reports it has read up to frame.upToMessageId. On OUR device the peer's
                 // thread is keyed by the reader's device id (`frame.memberId`), and the messages that
                 // should flip to Read are the ones WE authored (`localDeviceId`). The old code instead
@@ -2010,6 +2014,7 @@ public class RealFlashChatRepository(
             }
 
             is MessageWireFrame.ReactionFrame -> {
+                if (transportPeerId != null && frame.memberId != transportPeerId) return
                 // Apply the peer's reaction delta to the aggregated row, attributed to its memberId
                 // (#7). Self-reaction state is unaffected — that only flips for localDeviceId.
                 applyReactionDelta(

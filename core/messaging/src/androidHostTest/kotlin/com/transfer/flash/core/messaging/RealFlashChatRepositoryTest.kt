@@ -515,6 +515,69 @@ class RealFlashChatRepositoryTest {
     }
 
     @Test
+    fun `onInboundWireFrame drops frames when transportPeerId does not match claim author`() = runBlocking {
+        val messageDao = FakeMessageDao()
+        val conversationDao = FakeConversationDao()
+        val outboxDao = FakeOutboxDao()
+        val receiptDao = FakeReceiptDao()
+        val draftDao = FakeDraftDao()
+        val recentSearchDao = FakeRecentSearchDao()
+        val reactionDao = FakeReactionDao()
+
+        val repository = RealFlashChatRepository(
+            localDeviceId = "my-device-id",
+            localDisplayName = "Kali",
+            messageDao = messageDao,
+            conversationDao = conversationDao,
+            outboxDao = outboxDao,
+            receiptDao = receiptDao,
+            draftDao = draftDao,
+            recentSearchDao = recentSearchDao,
+            reactionDao = reactionDao,
+            transportSink = null,
+            ioDispatcher = testDispatcher,
+        )
+
+        val spoofedText = MessageWireFrame.TextMessage(
+            localId = "spoof-1",
+            conversationId = "my-device-id",
+            senderId = "victim-device-id",
+            senderName = "Victim",
+            text = "Spoofed text",
+            sentAt = System.currentTimeMillis(),
+        )
+
+        // Transport peer is "attacker-device-id", but claimed senderId is "victim-device-id"
+        repository.onInboundWireFrame(spoofedText, transportPeerId = "attacker-device-id")
+        assertNull(messageDao.messages["spoof-1"])
+
+        // Valid transport peer matching senderId
+        repository.onInboundWireFrame(spoofedText, transportPeerId = "victim-device-id")
+        assertNotNull(messageDao.messages["spoof-1"])
+
+        // Spoofed DeliveryReceipt
+        val spoofedReceipt = MessageWireFrame.DeliveryReceipt(
+            messageId = "msg-1",
+            conversationId = "my-device-id",
+            memberId = "victim-device-id",
+            deliveredAt = System.currentTimeMillis(),
+        )
+        repository.onInboundWireFrame(spoofedReceipt, transportPeerId = "attacker-device-id")
+        assertEquals(0, receiptDao.receipts.size)
+
+        // Spoofed ReactionFrame
+        val spoofedReaction = MessageWireFrame.ReactionFrame(
+            messageId = "msg-1",
+            conversationId = "my-device-id",
+            memberId = "victim-device-id",
+            emoji = "👍",
+            isAdded = true,
+        )
+        repository.onInboundWireFrame(spoofedReaction, transportPeerId = "attacker-device-id")
+        assertNull(reactionDao.get("msg-1", "👍"))
+    }
+
+    @Test
     fun `onInboundTextMessage fires once per new row and stays silent for replayed frames`() =
         runBlocking {
             val messageDao = FakeMessageDao()

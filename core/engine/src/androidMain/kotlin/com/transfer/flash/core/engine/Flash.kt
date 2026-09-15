@@ -619,6 +619,7 @@ private class Wiring(
                     replyToId = f["replyToId"]?.ifBlank { null },
                     replyToPreview = f["replyToPreview"]?.ifBlank { null },
                 ),
+                transportPeerId = peerDeviceId,
             )
             return
         }
@@ -630,6 +631,7 @@ private class Wiring(
                     memberId = f["memberId"] ?: "",
                     deliveredAt = f["deliveredAt"]?.toLongOrNull() ?: System.currentTimeMillis(),
                 ),
+                transportPeerId = peerDeviceId,
             )
             return
         }
@@ -641,6 +643,7 @@ private class Wiring(
                     upToMessageId = f["upToMessageId"] ?: return,
                     readAt = f["readAt"]?.toLongOrNull() ?: System.currentTimeMillis(),
                 ),
+                transportPeerId = peerDeviceId,
             )
             return
         }
@@ -653,6 +656,7 @@ private class Wiring(
                     emoji = f["emoji"] ?: return,
                     isAdded = f["isAdded"]?.toBooleanStrictOrNull() ?: true,
                 ),
+                transportPeerId = peerDeviceId,
             )
             return
         }
