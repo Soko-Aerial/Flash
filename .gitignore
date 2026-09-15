@@ -1,20 +1,18 @@
-*.iml
+﻿build/
+*.hprof
+*.hprof.p*
 .gradle/
-.gradle-user-home/
-.gradle-user-home-verify/
-.kotlin/
 .idea/
 local.properties
 .DS_Store
-build/
 captures/
 .externalNativeBuild/
 .cxx/
 *.log
-.omo/
-
-# Logo source/generator (derived assets are committed into app/ + core:engine + art/ instead)
 logo-claude/
-New folder/
-logs/*.jsonl
-testfile.bin
+.kotlin/
+.codegraph/
+.omo/
+.gradle-user-home/
+.gradle-user-home-verify/
+.kilo/
