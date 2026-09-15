@@ -56,6 +56,13 @@ class Base64Test {
     }
 
     @Test
+    fun decode_non_ascii_char_throws_illegal_argument() {
+        assertThrows(IllegalArgumentException::class.java) {
+            Base64.decode("SGVsbG8€")
+        }
+    }
+
+    @Test
     fun decode_bad_padding_throws() {
         assertThrows(IllegalArgumentException::class.java) {
             Base64.decode("SGVsbA=")

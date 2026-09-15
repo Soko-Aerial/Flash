@@ -115,8 +115,9 @@ public object Base64 {
      */
     public fun decodeUtf8(encoded: String): String = decode(encoded).decodeToString()
 
+    // SENTINEL: Bounds check c.code to prevent IndexOutOfBoundsException on non-ASCII input (>0xFF)
     private fun decodeChar(c: Char): Int {
-        val v = DECODE_TABLE[c.code]
+        val v = if (c.code in 0..255) DECODE_TABLE[c.code] else -1
         if (v == -1) {
             throw IllegalArgumentException("Invalid base64 character: '$c' (0x${c.code.toString(16)})")
         }
