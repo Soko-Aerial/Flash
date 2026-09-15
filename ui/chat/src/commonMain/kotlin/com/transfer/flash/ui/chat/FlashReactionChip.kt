@@ -23,7 +23,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -40,7 +39,9 @@ import com.transfer.flash.core.messaging.model.FlashReaction
 import com.transfer.flash.ui.theme.FlashDimensions
 import com.transfer.flash.ui.theme.FlashHaptic
 import com.transfer.flash.ui.theme.FlashSpacing
+import com.transfer.flash.ui.theme.FlashText
 import com.transfer.flash.ui.theme.FlashTheme
+import com.transfer.flash.ui.theme.flashPressScale
 import com.transfer.flash.ui.theme.rememberFlashHaptics
 import org.jetbrains.compose.ui.tooling.preview.Preview
 
@@ -103,14 +104,17 @@ fun FlashReactionChip(
         append(". Tap to toggle.")
     }
 
+    val interactionSource = remember { MutableInteractionSource() }
+
     Box(
         modifier = modifier
             .sizeIn(minWidth = 36.dp, minHeight = 28.dp)
+            .flashPressScale(interactionSource)
             .clip(CircleShape)
             .background(backgroundColor)
             .border(BorderStroke(borderWidth, borderColor), CircleShape)
             .combinedClickable(
-                interactionSource = remember { MutableInteractionSource() },
+                interactionSource = interactionSource,
                 indication = null,
                 onClick = {
                     haptics(FlashHaptic.Tick)
@@ -132,10 +136,9 @@ fun FlashReactionChip(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.Center,
         ) {
-            Text(
+            FlashText(
                 text = reaction.emoji,
-                fontSize = 14.sp,
-                lineHeight = 16.sp,
+                style = typography.captionDefault,
             )
 
             if (reaction.count > 0) {
@@ -155,7 +158,7 @@ fun FlashReactionChip(
                     },
                     label = "reactionCountRoll",
                 ) { count ->
-                    Text(
+                    FlashText(
                         text = count.toString(),
                         style = if (reaction.isSelfReacted) {
                             typography.numericEmphasis
