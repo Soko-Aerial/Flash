@@ -192,12 +192,16 @@ internal object FlashMediaDecoder {
             val options = BitmapFactory.Options().apply {
                 if (lowColorDepth) inPreferredConfig = Bitmap.Config.RGB_565
             }
+            // BOLT: step sample size and fallback to RGB_565 on decode failure/OOM to prevent infinite while-loop thread spin and reduce heap allocation
             var bitmap: Bitmap? = null
             while (bitmap == null && sample <= 32) {
                 options.inSampleSize = sample
                 try {
                     bitmap = BitmapFactory.decodeFile(localFile.absolutePath, options)
                 } catch (oom: OutOfMemoryError) {
+                    bitmap = null
+                }
+                if (bitmap == null) {
                     sample *= 2
                     options.inPreferredConfig = Bitmap.Config.RGB_565
                 }
@@ -227,6 +231,9 @@ internal object FlashMediaDecoder {
                             try {
                                 bitmap = BitmapFactory.decodeFileDescriptor(fd, null, options)
                             } catch (oom: OutOfMemoryError) {
+                                bitmap = null
+                            }
+                            if (bitmap == null) {
                                 sample *= 2
                                 options.inPreferredConfig = Bitmap.Config.RGB_565
                             }
