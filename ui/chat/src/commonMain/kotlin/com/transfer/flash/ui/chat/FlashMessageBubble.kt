@@ -177,7 +177,8 @@ private fun FlashBubbleSurface(
 
     val interactionSource = remember { MutableInteractionSource() }
     val pressed by interactionSource.collectIsPressedAsState()
-    val pressScale by animateFloatAsState(
+    // BOLT: Keep pressScale as State<Float> and read pressScale.value inside graphicsLayer to defer reads to draw phase and eliminate recomposition jank during press animations
+    val pressScale = animateFloatAsState(
         targetValue = if (pressed && !motion.reduceMotion) BubblePressScale else 1f,
         animationSpec = motion.springSnappySpec(),
         label = "flashBubblePressScale",
@@ -199,8 +200,8 @@ private fun FlashBubbleSurface(
         modifier = Modifier
             .bubbleWidthCap()
             .graphicsLayer {
-                scaleX = pressScale
-                scaleY = pressScale
+                scaleX = pressScale.value
+                scaleY = pressScale.value
             }
             .clip(shape)
             .background(if (message.isMine) colors.chatBgOutgoing else colors.chatBgIncoming)
