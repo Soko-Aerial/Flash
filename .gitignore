@@ -9,6 +9,10 @@ captures/
 .externalNativeBuild/
 .cxx/
 *.log
+session-export*/
+session-export-*/
+logs/cli-diagnostics*.jsonl
+testfile.bin
 logo-claude/
 .kotlin/
 .codegraph/
