@@ -34,6 +34,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.transfer.flash.core.messaging.model.FlashReaction
 import com.transfer.flash.ui.theme.FlashDimensions
 import com.transfer.flash.ui.theme.FlashHaptic
@@ -137,7 +138,7 @@ fun FlashReactionChip(
         ) {
             FlashText(
                 text = reaction.emoji,
-                style = typography.bodyDefault,
+                style = typography.bodyDefault.copy(fontSize = 14.sp, lineHeight = 16.sp),
             )
 
             if (reaction.count > 0) {
