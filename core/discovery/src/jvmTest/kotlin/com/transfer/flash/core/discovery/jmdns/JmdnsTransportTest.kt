@@ -106,19 +106,24 @@ public class JmdnsTransportTest {
         sweep: (Long) -> List<EndpointDirectory.Diff.Lost> = { emptyList() },
         mode: FlashDiscoveryMode = FlashDiscoveryMode.STANDARD,
         lostDebounceMs: Long = 0L,
+        // Injectable so a test can advance the clock across a cooldown without waiting for one.
+        nowMs: () -> Long = { 1_000L },
+        // Captures the transport's own narrative; the drop lines are its only rate measurement.
+        logInfo: (String) -> Unit = { },
         block: suspend (JmdnsTransport, FakeJmdnsBridge, MutableList<FlashTransportEvent>) -> Unit,
     ) = runBlocking {
         val transport = JmdnsTransport(
             directory = directory,
             sweep = sweep,
             initialModePolicy = DiscoveryModePolicy.forMode(mode),
-            timeSourceMs = { 1_000L },
+            timeSourceMs = nowMs,
             sleep = { },
             presenceSleep = { },
             maxPresenceTicks = 0,
             lostDebounceMs = lostDebounceMs,
             dispatcher = Dispatchers.Unconfined,
             bridgeOverride = bridge,
+            logInfo = logInfo,
         )
         val seen = mutableListOf<FlashTransportEvent>()
         // Unconfined starts the collector eagerly, so the subscription is live before the first
@@ -130,6 +135,19 @@ public class JmdnsTransportTest {
             collector.cancel()
         }
     }
+
+    /**
+     * The hollow resolution JmDNS 3.5.12 hands back when the TXT has not reached its cache:
+     * correct address and port, `EMPTY_TXT` (one zero byte, `txtByteCount = 1`), no attributes.
+     */
+    private fun hollow(serviceName: String = "Flash Pixel") =
+        JmdnsResolvedService(
+            hostAddress = "192.168.1.20",
+            port = 8080,
+            serviceName = serviceName,
+            attributes = emptyMap(),
+            txtByteCount = 1,
+        )
 
     private fun resolved(
         deviceId: String? = "peer-1",
@@ -451,6 +469,82 @@ public class JmdnsTransportTest {
             assertTrue(seen.none { it is FlashTransportEvent.Found })
         }
 
+    @Test
+    public fun emptyTxt_isRetriedOnABudget_andNeverSpins() {
+        // An empty TXT means "the attributes have not arrived yet", not "this peer publishes none",
+        // so the transport re-resolves instead of dropping. The trap that made this dangerous: our
+        // own `requestServiceInfo(persistent = true)` makes JmDNS re-deliver the SAME cached
+        // ServiceInfo, so `handleServiceResolved` is re-entered immediately. A budget that merely
+        // counted attempts and reset itself on exhaustion therefore re-armed a fresh burst on every
+        // re-delivery — an unbounded resolve→drop→resolve loop, one BLOCKING JmDNS query per
+        // attempt on a fresh dispatcher task, which pegged a core and grew the heap for as long as
+        // the hollow record stayed cached.
+        //
+        // The measurement is the point: the work must depend on the budget, not on how often JmDNS
+        // re-delivers, and the drop line must be a per-cooldown report and not a per-delivery one.
+        val bridge = FakeJmdnsBridge()
+        var now = 1_000L
+        val drops = mutableListOf<String>()
+        withTransport(bridge = bridge, nowMs = { now }, logInfo = { drops += it }) { transport, _, _ ->
+            transport.startBrowsing()
+            bridge.calls.clear()
+
+            // The cache hands back the same attribute-less record again and again.
+            repeat(20) { bridge.events!!.onServiceResolved(hollow()) }
+            val resolvesAfterTwenty = bridge.resolveRequests.size
+            repeat(180) { bridge.events!!.onServiceResolved(hollow()) }
+
+            assertTrue(
+                "a hollow record must be re-resolved a bounded number of times " +
+                    "(got $resolvesAfterTwenty)",
+                resolvesAfterTwenty in 1..5,
+            )
+            assertEquals(
+                "200 deliveries must cost exactly what 20 did — no progress, no extra work",
+                resolvesAfterTwenty,
+                bridge.resolveRequests.size,
+            )
+            assertTrue(
+                "the drop is reported at the cooldown boundary, not once per delivery",
+                drops.isEmpty(),
+            )
+
+            // Past the cooldown: one report, and the next cycle is armed so a late TXT still lands.
+            now += 61_000L
+            bridge.events!!.onServiceResolved(hollow())
+            assertEquals(1, drops.size)
+            assertTrue(drops.single().startsWith("Dropping mDNS endpoint without device_id"))
+            val resolvesAtCooldown = bridge.resolveRequests.size
+            bridge.events!!.onServiceResolved(hollow())
+            assertEquals(
+                "the cooldown boundary must start a fresh retry cycle",
+                resolvesAtCooldown + 1,
+                bridge.resolveRequests.size,
+            )
+        }
+    }
+
+    @Test
+    public fun emptyTxt_thatLaterResolvesWithAttributes_isAcceptedAndClearsItsBudget() {
+        // The retry exists so a slow TXT is not a permanent peer defect. Once the record arrives
+        // with attributes the peer must be Found, and its budget must be forgotten so a later
+        // re-announcement starts from a clean count.
+        val bridge = FakeJmdnsBridge()
+        var now = 1_000L
+        val drops = mutableListOf<String>()
+        withTransport(bridge = bridge, nowMs = { now }, logInfo = { drops += it }) { transport, _, seen ->
+            transport.startBrowsing()
+            repeat(4) { bridge.events!!.onServiceResolved(hollow()) }
+            assertTrue(seen.none { it is FlashTransportEvent.Found })
+
+            bridge.events!!.onServiceResolved(resolved(serviceName = "Flash Pixel"))
+            val found = seen.filterIsInstance<FlashTransportEvent.Found>()
+            assertEquals(1, found.size)
+            assertEquals("peer-1", found.single().endpoint.deviceId.value)
+            assertTrue(drops.isEmpty())
+        }
+    }
+
     // -- Mode policy -----------------------------------------------------------
 
     @Test
@@ -548,4 +642,50 @@ public class JmdnsTransportTest {
         assertEquals("_flash-transfer._tcp.local.", desktopForm.type)
         assertEquals(desktopForm.type, androidForm.type)
     }
+
+    // -- capability logging -----------------------------------------------------
+
+    @Test
+    public fun peerCapabilitiesAreLoggedOncePerServiceNotOnEveryResolve(): Unit {
+        // Reported 2026-09-14 as "it's looping": the desktop console filled with
+        // `Peer capabilities caps=mobile name=Flash V760` for a phone that was simply sitting
+        // there. The line was emitted on every resolve, and the same resolve is re-delivered
+        // constantly — `presenceTick` re-queries each vouched peer every 10 s with
+        // `persistent = true`, so JmDNS hands back its cached record immediately.
+        val lines = mutableListOf<String>()
+        withTransport(logInfo = { lines += it }) { transport, bridge, _ ->
+            transport.startBrowsing()
+            val resolution = resolved(caps = "mobile")
+            bridge.events!!.onServiceResolved(resolution)
+            bridge.events!!.onServiceResolved(resolution)
+            bridge.events!!.onServiceResolved(resolution)
+
+            // JUnit 4 argument order: message FIRST. (`kotlin.test` puts it last; this file
+            // imports `org.junit.Assert`.)
+            assertEquals(
+                "a static peer attribute must not be re-logged on every sighting",
+                1,
+                lines.count { it.contains("Peer capabilities") },
+            )
+        }
+    }
+
+    @Test
+    public fun aChangedCapabilitySetIsLoggedAgain(): Unit {
+        // The gate is "changed", not "once ever": a peer that starts advertising a different kind
+        // must still say so, or the line would be a one-shot that hides the transition it exists to
+        // make visible.
+        val lines = mutableListOf<String>()
+        withTransport(logInfo = { lines += it }) { transport, bridge, _ ->
+            transport.startBrowsing()
+            bridge.events!!.onServiceResolved(resolved(caps = "mobile"))
+            bridge.events!!.onServiceResolved(resolved(caps = "mobile"))
+            bridge.events!!.onServiceResolved(resolved(caps = "desktop"))
+
+            val capsLines = lines.filter { it.contains("Peer capabilities") }
+            assertEquals("the transition must be reported once", 2, capsLines.size)
+            assertTrue("the new set must be the one reported", capsLines.last().contains("caps=desktop"))
+        }
+    }
+
 }

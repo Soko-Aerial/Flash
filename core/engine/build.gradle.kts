@@ -217,6 +217,12 @@ val interopHarness by tasks.registering(JavaExec::class) {
     // stack is preferred and IP_MULTICAST_IF cannot be set. Force the IPv4 stack, which is also
     // what mDNS interop with Android NSD expects (the bridge picks Inet4Address candidates only).
     jvmArgs("-Djava.net.preferIPv4Stack=true")
+    // UTF-8 stdout. Since JDK 18 `stdout.encoding` follows the CONSOLE's encoding, so on a Windows
+    // console in cp437/cp850 every "—" and "…" in the harness's output renders as mojibake
+    // (`paired ∩┐╜`), which is exactly the output a human reads during a hardware run. The strings
+    // themselves are shared with the Android UI, where they are fine, so the fix belongs here and
+    // not in the messages. `sun.stdout.encoding` is kept for JDK 17 and earlier.
+    jvmArgs("-Dstdout.encoding=UTF-8", "-Dsun.stdout.encoding=UTF-8", "-Dfile.encoding=UTF-8")
     // Reuse the jvmTest task's own resolved classpath: it already wires the test compilation's
     // output + runtime + dependency files correctly for this Kotlin/Gradle pair.
     classpath = tasks.named<Test>("jvmTest").get().classpath

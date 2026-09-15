@@ -14,6 +14,7 @@ import android.os.PowerManager
 import android.util.Log
 import androidx.core.content.ContextCompat
 import com.transfer.flash.core.common.model.FlashDeviceId
+import com.transfer.flash.core.common.model.FlashDeviceKind
 import com.transfer.flash.core.common.perf.FlashPerformanceMode
 import com.transfer.flash.core.common.protocol.FlashTextFraming
 import com.transfer.flash.core.discovery.core.CompositeDiscovery
@@ -398,6 +399,7 @@ object DiscoveryEngineHolder {
                 friendlyName = trimmed,
                 deviceModel = android.os.Build.MODEL ?: "unknown",
                 protocolVersion = 2,
+                capabilities = setOf(FlashDeviceKind.CAP_MOBILE),
             )
             engine.updateIdentity(newIdentity)
             appScope.launch {
@@ -445,6 +447,7 @@ object DiscoveryEngineHolder {
             friendlyName = identity0.friendlyName.ifBlank { "Flash Device" },
             deviceModel = android.os.Build.MODEL ?: "unknown",
             protocolVersion = 2,
+            capabilities = setOf(FlashDeviceKind.CAP_MOBILE),
         )
 
         Log.i(TAG_DISCOVERY, "Starting Flash discovery with deviceId=${identity.deviceId.value} friendlyName=${identity.friendlyName}")
@@ -457,7 +460,31 @@ object DiscoveryEngineHolder {
             directory = com.transfer.flash.core.discovery.core.StandardEndpointDirectory(),
             sweep = { _ -> emptyList() },
         )
-        val engine = CompositeDiscovery(transports = listOf(transport))
+
+        // ADDITIVE second LAN transport (UDP multicast with self-announcement).
+        //
+        // NSD is NOT replaced, and this is not a fallback: Android↔Android discovery over NSD works
+        // and keeps working exactly as it did. What the multicast transport adds is the two things
+        // DNS-SD structurally cannot provide, both of which cost this project a debugging session:
+        //
+        //  - **Identity and address arrive in the same datagram.** There is no resolve step whose
+        //    failure leaves a peer with a correct address and no device id — the `txtKeys=[] txtBytes=1`
+        //    hollow-ServiceInfo state that made the desktop log "Dropping mDNS endpoint without
+        //    device_id" every 30 s and never dial the phone.
+        //  - **A lease bounds liveness.** Every peer re-announces on a cadence, so a peer that stops
+        //    (app killed, radio off) is gone from the list in ~60 s. mDNS has no periodic positive
+        //    signal, so it can only wait for a cache TTL nobody controls — an hour by JmDNS default —
+        //    which is why the phone kept showing a desktop that had been closed.
+        //
+        // CompositeDiscovery dedups the two by device id, so a peer both transports see appears once,
+        // and it fails soft: if this transport cannot bind (Wi-Fi off, cellular only) it degrades and
+        // repairs itself rather than failing the composite's startAll.
+        val multicastTransport = com.transfer.flash.core.discovery.multicast.MulticastTransport(
+            socketFactory =
+                com.transfer.flash.core.discovery.multicast.AndroidMulticastSocketFactory(appContext),
+            directory = com.transfer.flash.core.discovery.core.StandardEndpointDirectory(),
+        )
+        val engine = CompositeDiscovery(transports = listOf(transport, multicastTransport))
 
         var boundServerPort = 0
         val networkImpl = WsFlashNetwork(
@@ -497,8 +524,19 @@ object DiscoveryEngineHolder {
 
         engine.setMode(FlashDiscoveryMode.STANDARD)
         val result = engine.startAll(serverPort, identity)
-        check(result.isSuccess) {
-            "Discovery startAll failed: ${(result as? FlashResult.Failure)?.error}"
+        // A partial transport failure must NOT abort the bring-up — see the sibling comment in
+        // DesktopEngine.assemble(). `startAll` aggregates advertising+browsing across EVERY
+        // transport and returns Failure if ANY one failed, while the transports that started keep
+        // running. Throwing here (this was a `check`) killed everything after it — the database
+        // open, the receive infrastructure, the session collectors and the auto-connect sweep —
+        // because of a single radio. It is the same coupling that made the desktop show a peer in
+        // its roster with `active sessions=[]` and "Couldn't reach …" on tap.
+        (result as? FlashResult.Failure)?.let { failure ->
+            Log.w(
+                TAG_DISCOVERY,
+                "Discovery startAll reported a partial failure; continuing with the transports " +
+                    "that started — ${failure.error}",
+            )
         }
 
         // Full-database encryption via SQLCipher with a keystore-wrapped passphrase; explicit
@@ -1338,6 +1376,29 @@ object DiscoveryEngineHolder {
                     runAutoConnectSweep(engine, networkImpl, identity.deviceId.value, gate)
                 }
                 delay(AUTO_CONNECT_SWEEP_MS)
+            }
+        }
+
+        // Dial the MOMENT a peer is discovered, not up to a tick later.
+        //
+        // Pairing needs a live session, and `beginPair` waits only 3 s for the peer's hello
+        // (`FINGERPRINT_WAIT_MS`) while this sweep ticks every `AUTO_CONNECT_SWEEP_MS` (5 s). A user
+        // who taps Pair as soon as the row appears therefore loses a race that started before they
+        // could see it and gets `Couldn't reach …`, which reads as a pairing bug — measured exactly
+        // that way on the desktop on 2026-09-14 (peer found, `active sessions=[]`, no dial line at
+        // all). The same window exists here, and the phone is the other half of a two-sided failure:
+        // whichever device taps first is the one that loses it.
+        //
+        // `runAutoConnectSweep` is reused rather than reimplemented, so this trigger inherits the
+        // `AutoConnectGate` attempt-bounding and the `isReconnectInFlight` / `hasLiveSession`
+        // guards: an emission for a peer we already have, or just tried, is a no-op. `discoveredEndpoints`
+        // is a StateFlow over a 5 s sweep, so this is at most a few sweeps per minute — it changes
+        // *when* the first dial happens, not how often retries do.
+        appScope.launch {
+            engine.discoveredEndpoints.collect {
+                if (!callActive) {
+                    runAutoConnectSweep(engine, networkImpl, identity.deviceId.value, autoConnectGate ?: return@collect)
+                }
             }
         }
 

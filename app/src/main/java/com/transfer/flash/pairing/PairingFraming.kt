@@ -41,6 +41,18 @@ object PairingFraming {
     private const val KEY_CREATED_AT = "ts"
     private const val KEY_CODE_HASH = "ch"
 
+    /**
+     * Present-and-`"1"` on a hello that **asks** the receiver to answer with its own hello.
+     *
+     * Absent on answers, and absent on the session-up announcement. That asymmetry is what makes the
+     * exchange terminate by construction: a request draws at most one answer, an answer draws none —
+     * so there is no set of "already answered" peers to track and no ping-pong to bound.
+     *
+     * Mirrors `FlashPairingCoordinator`'s flag in `:core:security` (added 2026-09-14). An older peer
+     * that does not know this key ignores it and behaves exactly as before, so the field is additive.
+     */
+    private const val KEY_HELLO_REQUEST = "hrq"
+
     private const val TYPE_HELLO = "hello"
     private const val TYPE_REQUEST = "req"
     private const val TYPE_ACCEPT = "acc"
@@ -49,15 +61,29 @@ object PairingFraming {
 
     /** A decoded inbound pairing line: either an identity [Hello] or a handshake [Frame]. */
     sealed interface Inbound {
-        data class Hello(val fingerprintHex: String) : Inbound
+        /**
+         * [request] is true when the sender is asking for our hello back. Only a request is ever
+         * answered, and an answer never asks.
+         */
+        data class Hello(val fingerprintHex: String, val request: Boolean = false) : Inbound
         data class Frame(val frame: FlashPairingFrame) : Inbound
     }
 
-    /** Encodes this device's identity fingerprint as a hello line. */
-    fun encodeHello(fingerprintHex: String): String =
+    /**
+     * Encodes this device's identity fingerprint as a hello line.
+     *
+     * Pass `request = true` only where the sender needs the peer's hello *now* and cannot rely on
+     * having caught the peer's one session-up announcement — that is [PairingCoordinator.beginPair],
+     * and nothing else. The session-up announcement stays a plain hello.
+     */
+    fun encodeHello(fingerprintHex: String, request: Boolean = false): String =
         FlashTextFraming.encodeFields(
             PREFIX,
-            listOf(KEY_TYPE to TYPE_HELLO, KEY_FINGERPRINT to fingerprintHex),
+            buildList {
+                add(KEY_TYPE to TYPE_HELLO)
+                add(KEY_FINGERPRINT to fingerprintHex)
+                if (request) add(KEY_HELLO_REQUEST to "1")
+            },
         )
 
     /** Encodes a handshake [frame] as a `FLASH_PAIR` line. */
@@ -102,7 +128,9 @@ object PairingFraming {
     fun decode(text: String): Inbound? {
         val fields = FlashTextFraming.parseFields(text, PREFIX) ?: return null
         return when (fields[KEY_TYPE]) {
-            TYPE_HELLO -> fields[KEY_FINGERPRINT]?.let { Inbound.Hello(it) }
+            TYPE_HELLO -> fields[KEY_FINGERPRINT]?.let {
+                Inbound.Hello(it, request = fields[KEY_HELLO_REQUEST] == "1")
+            }
             TYPE_REQUEST -> {
                 val requestId = fields[KEY_REQUEST_ID] ?: return null
                 val deviceId = fields[KEY_DEVICE_ID] ?: return null

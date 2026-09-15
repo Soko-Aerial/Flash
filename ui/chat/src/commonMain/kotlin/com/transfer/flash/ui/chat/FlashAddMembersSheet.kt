@@ -9,12 +9,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -39,7 +35,6 @@ import com.transfer.flash.ui.theme.FlashTheme
  * six-member cap math with creation; the host pre-filters peers who are already members, so the
  * sheet counts only the NEW additions against the cap. Calls [onAdd] once with the selection.
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 public fun FlashAddMembersSheet(
     availablePeers: List<FlashCreateGroupPeerUi>,
@@ -50,16 +45,9 @@ public fun FlashAddMembersSheet(
     val colors = FlashTheme.colors
     var selected by remember { mutableStateOf(emptySet<String>()) }
     val canAdd = selected.isNotEmpty()
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
+    FlashSheetHost(
+        onDismiss = onDismiss,
         containerColor = colors.backgroundSurface,
-        shape = RoundedCornerShape(
-            topStart = FlashShapes.radius24,
-            topEnd = FlashShapes.radius24,
-        ),
         modifier = modifier,
     ) {
         Column(
@@ -144,8 +132,9 @@ public fun FlashLeaveGroupDialog(
     onDismiss: () -> Unit,
 ) {
     val colors = FlashTheme.colors
-    AlertDialog(
-        onDismissRequest = onDismiss,
+    FlashConfirmHost(
+        onDismiss = onDismiss,
+        containerColor = colors.backgroundSurface,
         title = { FlashText(text = "Leave group?", style = FlashTheme.typography.headingMedium) },
         text = {
             FlashText(
@@ -163,6 +152,5 @@ public fun FlashLeaveGroupDialog(
                 Text("Cancel", color = colors.textSecondary)
             }
         },
-        containerColor = colors.backgroundSurface,
     )
 }

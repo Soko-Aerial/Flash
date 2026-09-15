@@ -101,7 +101,17 @@ internal class DesktopTrustStore(private val stateDir: File) : FlashTrustStore {
                 file.inputStream().use { input: InputStream -> props.load(input) }
                 props.stringPropertyNames()
                     .filter { it.startsWith("trusted.") }
-                    .forEach { key -> cache[FlashDeviceId(key.removePrefix("trusted."))] = "" }
+                    .forEach { key ->
+                        // The VALUE is the peer's friendly name — `persist()` writes
+                        // `trusted.<deviceId> = <name>`. This used to hard-code `""`, so every name
+                        // was silently discarded on the way back in: the trust survived a restart and
+                        // the name did not, and a paired device came back as an empty labelled row
+                        // (a real user hit exactly that, and the row was unrecognisable and
+                        // unselectable in any meaningful way). The identity store next door has always
+                        // read its property back properly; this one lost the value.
+                        cache[FlashDeviceId(key.removePrefix("trusted."))] =
+                            props.getProperty(key).orEmpty()
+                    }
             }
         }
     }

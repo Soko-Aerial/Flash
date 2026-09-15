@@ -47,7 +47,12 @@ import org.jetbrains.compose.ui.tooling.preview.Preview
 fun FlashChatListScreen(
     state: FlashChatListUiState,
     onConversationClick: (String) -> Unit,
-    onSearchClick: () -> Unit,
+    /**
+     * Opens chat search. Nullable so a host that cannot deliver results HIDES the icon rather than
+     * rendering a dead button — see [onNewGroupClick]. Android passes a real handler; the desktop
+     * shell did not, and showed a search icon that did nothing.
+     */
+    onSearchClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
     listState: LazyListState = rememberLazyListState(),
     /** Space the hanging shell bar occupies; rows scroll under it (UI-046). */
@@ -82,8 +87,15 @@ fun FlashChatListScreen(
     /** Conversation ids with a full-history message-body match for [searchQuery] (#12), resolved by
      *  the repository; folded into the client-side title/preview filter so buried matches surface. */
     messageBodyMatches: Set<String> = emptySet(),
-    /** Group Phase 1A: opens the create-group sheet. */
-    onNewGroupClick: () -> Unit = {},
+    /**
+     * Group Phase 1A: opens the create-group sheet; null HIDES the action.
+     *
+     * This was `() -> Unit = {}` — non-null, so it could never be null, and it was forwarded to
+     * `FlashChatListTopBar`'s nullable parameter where the `!= null` check therefore always passed.
+     * A host that did not supply one got a rendered, tappable "New group" button that did nothing.
+     * That is the trap this signature removes: an unpassed action is now absent, not inert.
+     */
+    onNewGroupClick: (() -> Unit)? = null,
 ) {
     val colors = FlashTheme.colors
     val motion = FlashTheme.motion

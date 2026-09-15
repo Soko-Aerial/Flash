@@ -15,9 +15,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -78,7 +75,6 @@ object FlashPeerDetailsMath {
  * [FlashChatHeaderUiState]; when the peer is trusted the host (:app) supplies
  * [onRevokeTrust] to drop the pairing. No stock list-item components.
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FlashPeerDetailsSheet(
     header: FlashChatHeaderUiState,
@@ -88,7 +84,6 @@ fun FlashPeerDetailsSheet(
     onRevokeTrust: (() -> Unit)? = null,
 ) {
     val colors = FlashTheme.colors
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val presenceLabel = remember(header.presence) {
         FlashPeerDetailsMath.presenceLabel(header.presence)
     }
@@ -96,14 +91,9 @@ fun FlashPeerDetailsSheet(
         FlashPeerDetailsMath.isReachable(header.presence)
     }
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
+    FlashSheetHost(
+        onDismiss = onDismiss,
         containerColor = colors.backgroundSurface,
-        shape = RoundedCornerShape(
-            topStart = FlashShapes.radius24,
-            topEnd = FlashShapes.radius24,
-        ),
         dragHandle = {
             Box(
                 modifier = Modifier
@@ -113,7 +103,6 @@ fun FlashPeerDetailsSheet(
                     .background(colors.borderSubtle),
             )
         },
-        contentWindowInsets = { WindowInsets.navigationBars },
         modifier = modifier,
     ) {
         Column(

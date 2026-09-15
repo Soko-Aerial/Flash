@@ -39,6 +39,45 @@ showed **Pair** instead of **Chat** for the desktop, forever.
 5. **`-Djava.net.preferIPv4Stack=true` is on the `:desktop:run` task** — it is, as of commit
    `69453f0`. Without it JmDNS cannot bind on this host and step L1 fails with a `setsockopt`
    error in the console. If you see that error, the flag has been lost.
+6. **Windows firewall: the desktop's JVM must be the binary the rule names.** Verified state on this
+   machine (2026-09-14):
+
+   ```
+   Name    : Flash desktop (JBR 21 java.exe)
+   Enabled : True     Dir: Inbound     Action: Allow
+   Proto   : Any      Port: Any
+   Program : C:\Users\KaliOxygen\.gradle\jdks\jetbrains_s_r_o_-21-amd64-windows.2\bin\java.exe
+   ```
+
+   Read it yourself with:
+
+   ```powershell
+   Get-NetFirewallRule -DisplayName "Flash*" | ForEach-Object {
+     $p = $_ | Get-NetFirewallPortFilter; $a = $_ | Get-NetFirewallApplicationFilter
+     [pscustomobject]@{ Name=$_.DisplayName; Enabled=$_.Enabled; Dir=$_.Direction; Action=$_.Action
+                        Proto=$p.Protocol; Port=$p.LocalPort; Program=$a.Program } } | Format-List
+   ```
+
+   Two consequences worth internalising:
+
+   - **`Proto: Any` / `Port: Any` means inbound UDP 45823 is already covered** — the multicast
+     transport needs no new rule on this machine. (An earlier revision of this precondition told you
+     to add one; that was written from the assumption of a TCP-only rule and is wrong here.)
+   - **The rule is PROGRAM-scoped**, so it only applies when the listening JVM is *that* `java.exe`.
+     A desktop app launched under a different JDK is invisible to it, and the symptom is the phone's
+     dial timing out while nothing else looks wrong — which is a live hypothesis for the 2026-09-14
+     `connect timeout` on the phone's side, because the harness (a Gradle `JavaExec`, i.e. this JBR)
+     *is* reachable from the phone while the app was not. Confirm which binary owns the port before
+     believing any "the network is broken" conclusion:
+
+     ```powershell
+     Get-NetTCPConnection -LocalPort 45822 -State Listen |
+       ForEach-Object { Get-Process -Id $_.OwningProcess } |
+       Select-Object Id, Path, ProcessName
+     ```
+
+     If `Path` is not the JBR above, either run with that JVM or widen the rule
+     (`-Program Any` scoped to `-LocalPort 45822,45823`).
 
 ## Reset to a clean slate (do this before the first run, and between L6 runs)
 
@@ -103,6 +142,95 @@ below tells you which layer to look at.
    - **Desktop sees the phone but the phone does not see the desktop** → historically the asymmetric
      case (see the project's `nsd-hotspot-discovery` note on past incidents). Suspect the desktop's
      advertise path first.
+4. **The multicast transport's own evidence** (as of 2026-09-14, discovery runs over mDNS *and* UDP
+   multicast, and each names itself in the logs, so a rung that passes tells you which path carried it):
+   - **Desktop console:** `Multicast bound on <iface> (224.0.0.168:45823)` → it bound and is
+     listening. `No usable interface for multicast on 224.0.0.168:45823 — retrying` → no usable
+     interface (it retries every 5 s; Wi-Fi/network coming up clears it). `Found <name> at
+     <ip>:<port>` → **this** path found the peer, and `<ip>` is the datagram's source address.
+   - **Phone:** `adb logcat -s MulticastTransport:* DISCOVERY:*` — same lines.
+   - **`Multicast bound` on both sides and neither logs `Found`** → the announcements are not
+     crossing: this is where the **UDP 45823 firewall rule (precondition 6)** and client isolation
+     both live, and it is the case where the mDNS path can still carry the rung. Note which path
+     found the peer before reporting a discovery failure.
+   - **A peer that is gone stays listed** → expected while the *mDNS* view still holds it (the union
+     in `CompositeDiscovery` keeps a peer alive while any transport reports it, and the phone's
+     resolver cache is the slow one). The multicast lease does not expire a peer mDNS still lists;
+     its own view dies 60 s after the last announcement.
+
+> ### ⚠️ A file transfer that worked does NOT mean pairing should work
+>
+> Observed on 2026-09-14: a 100 MB `testfile.bin` went desktop → phone, the user accepted it on the
+> **Transfers** page, no pairing involved — and Pair still failed. That is not contradictory, and
+> reading it as contradictory cost real time here.
+>
+> **Transfers and chat are not trust-gated.** `RealFlashTransferRepository` has no `isTrustedPeer`
+> parameter at all: it needs discovery (the sender must know the receiver's address and port), a live
+> WebSocket session, and the accept gate — nothing more. Only **calls** are gated on pairing, plus
+> pairing itself and PTT.
+>
+> **`"Couldn't reach <peer>"` is NOT a network error.** It is emitted when `sendToPeer` returns false,
+> i.e. *"there is no live session at all"* (`app/src/main/java/com/transfer/flash/pairing/PairingCoordinator.kt`
+> ~line 138). Pairing additionally needs the peer's **hello**, which also rides a session — so a phone
+> log showing `beginPair … fingerprintKnown=false` together with `Couldn't reach …` means one thing:
+> **there was no session at that moment** (both facts are session-derived, so they corroborate each
+> other rather than being two failures).
+>
+> Consequence for diagnosis: a finished transfer proves a session **existed then**. It says nothing
+> about a session **now** — and re-establishing one is exactly where the two known blockers live
+> (the desktop's inbound path, and the desktop having no dialable endpoint for the phone). If a
+> transfer works in one direction and Pair fails right after, **check for a live session first** —
+> `Auto-connect result peer=… success=false` / `no session` in the logs — before touching the
+> pairing code, which is almost certainly not the layer at fault.
+
+> ### ⚠️ The two "can't reach" messages mean different things
+>
+> Read them literally; they are two different code paths (`PairingCoordinator.beginPair`):
+>
+> | Message | Cause |
+> |---|---|
+> | `Couldn't reach <name>. Make sure both devices are on the same network, then try again.` | `sendToPeer` returned false → **there is no live session at all**. |
+> | `Still can't reach <name>. Check that it's nearby and try Pair again.` | The session **was live** and our hello **went out** (`hasSession=true`), but no hello came back within `FINGERPRINT_WAIT_MS` (3000 ms) → **the peer never answered**. |
+>
+> Both are covered by unit tests (`FlashPairingCoordinatorTest.beginPair_withNoSession_…`), including
+> the 3 s gap between them, so a wording change breaks a test rather than a human's diagnosis.
+>
+> A peer that produces the *second* message while running an old build is a peer with no pairing
+> implementation: `interopHarness` was exactly that until 2026-09-14 — its header said so
+> (*"Pairing (G2/G6) is NOT wired on desktop"*), and a Pair tap against it always timed out. **It
+> pairs now** (see L2 below), so a timeout against a current harness is a real failure worth chasing.
+>
+> Third thing to watch: `Session up` → `Cancelled collectors for stale session` within seconds,
+> repeating. Sessions are being replaced faster than an app-layer handshake can finish, so a hello
+> exchange can die mid-flight — a *stability* failure, not a reachability one.
+
+> ### L2/L3 from the CLI (added 2026-09-14)
+>
+> The interop harness now drives the **same** coordinator `:desktop:run` does
+> (`FlashPairingCoordinator`, moved into `:core:security` for exactly this reason), so the ladder can
+> be run without the GUI:
+>
+> ```
+> ./gradlew :core:engine:interopHarness --args="pair 120"                    # L2: answer the phone's tap
+> ./gradlew :core:engine:interopHarness --args="pair <phone-ip> 45822 120"   # L3: pair from this side
+> ```
+>
+> It prints the 6-digit code, prints the peer's, and waits for a literal `y` at the prompt — the
+> trust decision is never automatic, and end-of-input counts as a decline. Both forms exit early once
+> a **new** peer is trusted, and both read the same file-backed state dir as every other verb
+> (`<tmp>/flash-interop-pair` and `…-pair-init`), so trust left by an earlier run is printed as
+> already-trusted rather than mistaken for success. The two roles use different state dirs on
+> purpose: the dir holds the device id, which is the multicast self-filter, so one identity wearing
+> both roles would hide from itself.
+>
+> **If the prompt never appears** (a Gradle-daemon stdin that is not forwarded to the task — the
+> reason `pair --accept` exists), re-run with `--accept`: it prints the code and accepts without
+> asking, and the comparison with the peer's screen stays yours to make. If the prompt *does* appear
+> but your `y` does nothing, that is the same stdin problem, not a protocol one.
+>
+> Before a hardware run, verify the wiring alone (no phone needed):
+> `./gradlew :core:engine:jvmTest --tests "*DesktopPairingLoopbackTest*"` — two endpoints pair over
+> loopback and agree on the code.
 
 ### L2 — pairing, phone → desktop (the primary direction)
 
@@ -201,6 +329,10 @@ routing through a relay that should not exist.
 | Neither endpoint sees the other | network | client isolation; manual connect to confirm TCP works |
 | One-way discovery only | JmDNS advertise | the `nsd-hotspot-discovery` note; suspect the desktop's advertise |
 | Pair tapped, nothing happens | session | is a WS session up? `connectManual` needs a reachable host/port |
+| Peer visible in the roster, but **no** `Auto-connect dialing` line and `active sessions=[]` | **bring-up, not pairing** | read `~/.flash/desktop.log` and look for `[bring-up] … assemble complete`. No breadcrumbs at all, or a gap, means the composition did not finish — grep for `discovery startAll reported a partial failure`, `desktop stack bring-up FAILED`, and `engine stop()`. **The harness working while the app cannot is the signature of the scope being cancelled** (`DesktopMain`'s bare `engine.stop()`, fixed 2026-09-14): the harness has no Compose and no teardown call, so it cannot exhibit this. A peer row without a dial line is never a pairing problem |
+| Transports demonstrably alive (`Found …`, lease expiries) yet nothing else happens | **engine scope** | `jstack <pid>`: if no thread is inside `assemble()`/`startAll` and the workers are idle, the engine's scope was cancelled mid-bring-up — check the log for `engine stop()` |
+| Request shows on the peer but **no dialog on the desktop** | **UI state, not pairing** | read `~/.flash/desktop.log` for `[shell] engine pairing state:` vs `[shell] Nearby screen state:`. A request that arrives while the phase stays `Idle` is a `derivedStateOf` reading a plain `val` — fixed 2026-09-14; the guard is that anything such a lambda reads must be snapshot state or read inside it |
+| Peer visible, dial line present, `Couldn't reach` on a tap within ~5 s of the row appearing | **timing, not pairing** | the dial used to wait for the next 5 s sweep while `beginPair` waits 3 s — fixed 2026-09-14 by dialing on the discovery edge (both hosts). If it recurs, the tap beat the discovery event itself: wait for the dial line, then tap |
 | Pairing dialog appears on one side only | framing | `FLASH_PAIR` frame not crossing — check the console status lines |
 | **Codes differ** | **security** | **stop and record; do not retry** |
 | Codes same, accept does nothing | state machine | `PairingSessionStateMachine` transition; check both consoles |

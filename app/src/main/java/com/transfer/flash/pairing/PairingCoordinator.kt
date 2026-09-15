@@ -102,6 +102,14 @@ class PairingCoordinator(
         when (val inbound = PairingFraming.decode(text)) {
             is PairingFraming.Inbound.Hello -> {
                 synchronized(fingerprints) { fingerprints[peerId] = inbound.fingerprintHex }
+                // Answer a REQUEST, and answer with a PLAIN hello: the flag is never echoed, so the
+                // exchange terminates by construction (a request draws at most one answer; an answer
+                // draws none). Before this existed the responder announced itself exactly once, on
+                // its session-up edge, so any interleaving that lost that one frame — a session that
+                // came up in a different order than the announcement assumed — made pairing
+                // permanently impossible on that connection while every other signal looked healthy.
+                // The initiator re-asks inside its wait window; this is the half that answers.
+                if (inbound.request) sendToPeer(peerId, PairingFraming.encodeHello(localFingerprintHex))
                 // If the user already tapped Pair for this peer, the fingerprint just arrived — fire
                 // the request now instead of leaving them staring at a dead button.
                 val pending = synchronized(pendingLock) {
@@ -134,7 +142,7 @@ class PairingCoordinator(
         // handler completes it), re-announce our fingerprint to prompt theirs, and tell the user —
         // never fail silently. `sendToPeer` returning false means there is no live session at all.
         synchronized(pendingLock) { pendingPair = peerId to peerName }
-        val delivered = sendToPeer(peerId, PairingFraming.encodeHello(localFingerprintHex))
+        val delivered = sendToPeer(peerId, PairingFraming.encodeHello(localFingerprintHex, request = true))
         emitMessage(
             if (delivered) "Connecting to $peerName…"
             else "Couldn't reach $peerName. Make sure both devices are on the same network, then try again.",
@@ -171,10 +179,24 @@ class PairingCoordinator(
         _trustedPeers.value = loadTrusted()
     }
 
+    /**
+     * Waits for the peer's hello, **re-asking** as it goes.
+     *
+     * Re-asking rather than merely re-waiting is the fix: a hello sent once is a single point of
+     * failure, and the peer only ever volunteered one on its session-up edge. The re-ask is bounded
+     * by the window (<= 8 asks at 400 ms) and each ask draws at most one answer, so the burst is
+     * finite by construction rather than by a counter we would have to keep.
+     */
     private suspend fun awaitFingerprint(peerId: String): String? {
         val deadline = timeSource.nowMs() + FINGERPRINT_WAIT_MS
+        var lastAskMs = timeSource.nowMs()
         while (timeSource.nowMs() < deadline) {
             synchronized(fingerprints) { fingerprints[peerId] }?.let { return it }
+            val now = timeSource.nowMs()
+            if (now - lastAskMs >= HELLO_RESEND_MS) {
+                lastAskMs = now
+                sendToPeer(peerId, PairingFraming.encodeHello(localFingerprintHex, request = true))
+            }
             delay(FINGERPRINT_POLL_MS)
         }
         return synchronized(fingerprints) { fingerprints[peerId] }
@@ -326,6 +348,13 @@ class PairingCoordinator(
         const val TICK_MS = 1000L
         const val FINGERPRINT_WAIT_MS = 3000L
         const val FINGERPRINT_POLL_MS = 100L
+
+        /**
+         * Re-ask cadence inside [FINGERPRINT_WAIT_MS]: at most 8 asks, each answered at most once.
+         * Same value as `FlashPairingCoordinator`'s in `:core:security` — the two must agree or the
+         * two hosts behave differently under the same lost frame.
+         */
+        const val HELLO_RESEND_MS = 400L
         const val PAIRED_LINGER_MS = 1800L
         const val TERMINAL_LINGER_MS = 2500L
         const val REQUEST_WINDOW_SECONDS = 30

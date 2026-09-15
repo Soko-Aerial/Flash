@@ -3,14 +3,21 @@
 package com.transfer.flash.core.engine.interop
 
 import com.transfer.flash.core.common.model.FlashDeviceId
+import com.transfer.flash.core.common.model.FlashDeviceKind
 import com.transfer.flash.core.common.result.FlashResult
 import com.transfer.flash.core.discovery.core.CompositeDiscovery
 import com.transfer.flash.core.discovery.core.FlashAdvertisedIdentity
 import com.transfer.flash.core.discovery.core.StandardEndpointDirectory
 import com.transfer.flash.core.discovery.jmdns.JmdnsTransport
+import com.transfer.flash.core.discovery.multicast.JvmMulticastSocketFactory
+import com.transfer.flash.core.discovery.multicast.MulticastTransport
 import com.transfer.flash.core.network.bridge.DiscoveryRouteBinder
 import com.transfer.flash.core.network.ws.JvmWsFlashNetwork
 import com.transfer.flash.core.network.ws.WsSession
+import com.transfer.flash.core.security.crypto.FlashCrypto
+import com.transfer.flash.core.security.crypto.FlashFingerprint
+import com.transfer.flash.core.security.crypto.PersistedFlashCrypto
+import com.transfer.flash.core.security.pairing.FlashPairingCoordinator
 import com.transfer.flash.core.transfer.FileSourceOpener
 import com.transfer.flash.core.transfer.RealFlashTransferRepository
 import com.transfer.flash.core.transfer.chunked.ChunkFrame
@@ -62,13 +69,21 @@ internal class DesktopEndpointFixture(
     val identity = DesktopIdentityStore(stateDir).getIdentity()
     val network = JvmWsFlashNetwork(
         localDeviceId = identity.deviceId.value,
-        localFriendlyName = identity.friendlyName,
+        // "Harness $name" — see the sibling in DesktopInteropHarness.kt: the WS hello must not name
+        // the harness as the product.
+        localFriendlyName = "Harness $name",
     )
     val discovery = CompositeDiscovery(
         transports = listOf(
             JmdnsTransport(
                 directory = StandardEndpointDirectory(),
                 sweep = { _ -> emptyList() },
+            ),
+            // Mirrors the product's additive second transport; see the sibling in
+            // DesktopInteropHarness.kt for why the harness must not measure DNS-SD alone.
+            MulticastTransport(
+                socketFactory = JvmMulticastSocketFactory(),
+                directory = StandardEndpointDirectory(),
             ),
         ),
     )
@@ -78,6 +93,37 @@ internal class DesktopEndpointFixture(
         store = null,
         repositoryScope = scope,
         requireReceiverAcceptance = true,
+    )
+
+    /**
+     * Pairing, so the fixture covers everything the product composition covers — added 2026-09-14
+     * with the harness's `pair` verb, and the only reason `DesktopPairingLoopbackTest` can exist.
+     *
+     * No console front-end here: the trust decision belongs to a human, and a test must not be able
+     * to make it. `acceptLocal()` is called by the test, which is what makes the assertion "the two
+     * sides agreed on a code" meaningful rather than "something auto-accepted".
+     */
+    val trustStore = DesktopTrustStore(stateDir)
+    private val crypto: FlashCrypto = PersistedFlashCrypto(stateDir)
+    val pairing: FlashPairingCoordinator = FlashPairingCoordinator(
+        localFingerprintHex = FlashFingerprint.formatHexGroups(
+            FlashFingerprint.fingerprint(crypto.identityPublicKeyEncoded),
+        ),
+        localDeviceId = identity.deviceId.value,
+        localName = "Harness $name",
+        localModel = "desktop",
+        ephemeralPublicKey = crypto.generateEphemeralEcdhKeyPair().publicKeyEncoded,
+        trustStore = trustStore,
+        scope = scope,
+        sendToPeer = { peerId, text ->
+            val session = network.activeSessions.value[FlashDeviceId(peerId)] as? WsSession
+            if (session != null) {
+                session.connection.sendTextAsync(text)
+                true
+            } else {
+                false
+            }
+        },
     )
 
     private val openHandles = ConcurrentHashMap<String, RandomAccessSinkHandle>()
@@ -238,6 +284,8 @@ internal class DesktopEndpointFixture(
             friendlyName = "Harness $name",
             deviceModel = "desktop",
             protocolVersion = 2,
+            // Same kind the real desktop advertises — see DesktopInteropHarness.
+            capabilities = setOf(FlashDeviceKind.CAP_DESKTOP),
         )
         runBlocking { discovery.startAll(port, identityFrame) }
         DiscoveryRouteBinder.observe(scope, discovery.discoveredEndpoints, network)
@@ -246,7 +294,13 @@ internal class DesktopEndpointFixture(
                 discovery.discoveredEndpoints.value.forEach { endpoint ->
                     val id = endpoint.device.id
                     if (network.activeSessions.value[id] == null && !network.isReconnectInFlight(id.value)) {
-                        runCatching { network.connectManual(endpoint.hostAddress, endpoint.port) }
+                        // Logged on attempt and outcome — see the sibling in DesktopInteropHarness.kt
+                        // for why a swallowed dial result is a diagnostic dead end.
+                        println("[dial] ${endpoint.friendlyName} ${endpoint.hostAddress}:${endpoint.port} ...")
+                        val result = runCatching {
+                            network.connectManual(endpoint.hostAddress, endpoint.port)
+                        }.getOrNull()
+                        println("[dial] ${endpoint.friendlyName} success=${result is FlashResult.Success}")
                     }
                 }
                 delay(5_000)
@@ -259,6 +313,9 @@ internal class DesktopEndpointFixture(
                 }
                 sessions.values.forEach { session ->
                     if (session is WsSession && sessionJobs.containsKey(session).not()) {
+                        // Pairing hello on every session-up, as both product hosts do: without it the
+                        // peer has no fingerprint and cannot derive the numeric-comparison code.
+                        pairing.onSessionUp(session.peerDeviceId.value)
                         sessionJobs[session] = scope.launch {
                             launch {
                                 session.incomingBinary.collect { data ->
@@ -269,6 +326,14 @@ internal class DesktopEndpointFixture(
                             }
                             launch {
                                 session.incomingText.collect { text ->
+                                    // Pairing FIRST, like the product hosts: its own prefix, and a
+                                    // pairing line must never reach the transfer repository.
+                                    if (com.transfer.flash.core.common.protocol.FlashTextFraming
+                                            .parseFields(text, "FLASH_PAIR") != null
+                                    ) {
+                                        pairing.onInbound(session.peerDeviceId.value, text)
+                                        return@collect
+                                    }
                                     // XFER control frames — route into the repository.
                                     val fields = com.transfer.flash.core.common.protocol.FlashTextFraming
                                         .parseFields(text, "FLASH_XFER")

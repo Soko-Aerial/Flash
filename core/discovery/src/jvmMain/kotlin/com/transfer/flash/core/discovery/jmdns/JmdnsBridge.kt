@@ -122,6 +122,7 @@ public class RealJmdnsBridge(
 
     override fun open() {
         if (responders.isNotEmpty()) return
+        applyAdvertisementTtl()
         val candidates = runCatching(addresses).getOrElse {
             logWarn("network interface enumeration failed", it)
             emptyList()
@@ -152,8 +153,35 @@ public class RealJmdnsBridge(
         )
     }
 
-    override fun register(request: JmdnsAdvertiseRequest) {
-        for (responder in responders) {
+    /**
+     * Shortens the TTL every record this bridge advertises carries, from JmDNS's one-hour default
+     * to [ADVERTISED_TTL_SECONDS].
+     *
+     * **Why this exists.** An mDNS record outlives the process that published it whenever the
+     * process does not say goodbye: a clean shutdown runs `unregisterAllServices()`, whose Canceler
+     * sends the TTL=0 announcement, but a killed JVM sends nothing and every peer keeps the record
+     * until its TTL expires. JmDNS's default is `DNSConstants.DNS_TTL =
+     * Integer.getInteger("net.dns.ttl", 60 * 60)` — **one hour** — so a `Terminate batch job` left
+     * the phone listing a desktop that was not running for up to that long, and it was twice
+     * diagnosed as a code defect (see the pairing gate runbook's ghost warning).
+     *
+     * **Why shortening it is safe.** `JmDNSImpl` starts a `Renewer` per registered service that
+     * re-announces every record at `ANNOUNCED_RENEWAL_TTL_INTERVAL = DNS_TTL * 500` ms — exactly
+     * half the TTL (`Renewer.java:55`) — and Bonjour's cache maintenance re-queries ahead of expiry
+     * for records with an active browse client. Both paths refresh a live advertiser, so the only
+     * cache that ever reaches expiry is one whose advertiser is gone, which is the whole point.
+     *
+     * The property must be set before `DNSConstants` initialises, because the TTL is read once into
+     * a static field; this function is the first statement of [open] and nothing in this process
+     * touches `javax.jmdns` earlier. An operator-supplied `-Dnet.dns.ttl=` still wins.
+     */
+    private fun applyAdvertisementTtl() {
+        if (System.getProperty(TTL_PROPERTY) == null) {
+            System.setProperty(TTL_PROPERTY, ADVERTISED_TTL_SECONDS.toString())
+        }
+    }
+
+    override fun register(request: JmdnsAdvertiseRequest) {        for (responder in responders) {
             // A ServiceInfo remembers the JmDNS that registered it, so handing the SAME object to
             // a second responder throws IllegalStateException. Build one per responder.
             val info = ServiceInfo.create(
@@ -213,6 +241,18 @@ public class RealJmdnsBridge(
         listeners.keys.toList().forEach { stopBrowse(it) }
         responders.forEach { runCatching { it.close() } }
         responders.clear()
+    }
+
+    private companion object {
+        /** JmDNS's TTL knob; read once, when `DNSConstants` initialises. */
+        const val TTL_PROPERTY = "net.dns.ttl"
+
+        /**
+         * Two minutes: long enough that a live advertiser is never missed (renewed every 60 s), and
+         * short enough that a peer which died without a goodbye disappears from its neighbours'
+         * lists within a couple of minutes instead of an hour.
+         */
+        const val ADVERTISED_TTL_SECONDS = 120
     }
 }
 

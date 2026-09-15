@@ -11,6 +11,14 @@ kotlin = "2.2.10"
 composeBom = "2025.12.00"
 room = "2.8.4"
 sqlcipher = "4.17.0"
+# Phase 09B-2 (D5 = C's three sub-answers, given 2026-09-14): the ENCRYPTED JVM SQLite driver.
+# `io.github.willena:sqlite-jdbc` is a fork of xerial's sqlite-jdbc — "SQLite JDBC library with
+# encryption and authentication support" (github.com/Willena/sqlite-jdbc-crypt), Apache-2.0, so it
+# satisfies both halves of the answer: real encryption (D5 = C's charter) and OSS-only licensing
+# (the human ruled out Zetetic's commercial SQLCipher). NOT file-format compatible with Android's
+# SQLCipher, which the human explicitly recorded as not required — desktop stores are per-device
+# and are never transferred.
+sqliteJdbcCrypt = "3.50.1.0"
 sqliteKtx = "2.6.2"
 datastore = "1.1.7"
 coroutinesTest = "1.10.2"
@@ -108,6 +116,9 @@ androidx-sqlite-core = { group = "androidx.sqlite", name = "sqlite", version.ref
 # jvmTest dependency block and only with `:memory:`. PHASE-09B verification gate 5 greps for it.
 androidx-sqlite-bundled = { group = "androidx.sqlite", name = "sqlite-bundled", version.ref = "sqliteKtx" }
 sqlcipher-android = { group = "net.zetetic", name = "sqlcipher-android", version.ref = "sqlcipher" }
+# Product dependency (NOT test-only, unlike `androidx-sqlite-bundled` above): the encrypted JVM
+# driver `:core:persistence`'s jvmMain adapter is built over. Declared in jvmMain only.
+sqlite-jdbc-crypt = { group = "io.github.willena", name = "sqlite-jdbc", version.ref = "sqliteJdbcCrypt" }
 androidx-datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastore" }
 kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutinesTest" }
 kotlinx-coroutines-core = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-core", version.ref = "coroutines" }

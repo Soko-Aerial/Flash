@@ -1,5 +1,6 @@
 package com.transfer.flash.ui.nearby
 
+import com.transfer.flash.core.common.model.FlashDeviceKind
 import com.transfer.flash.core.messaging.model.FlashNetworkTransport
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -54,6 +55,43 @@ class FlashNearbyLogicTest {
             NearbyIdentityUi("Pixel", "abcdef123456", 4747),
         )
         assertEquals("id abcdef12 · port 4747", subtitle)
+    }
+
+    @Test
+    fun `trusted row takes its device kind from the peer's current advertisement`() {
+        // Trust is persisted as id + name only, so the PC/Phone badge on a trusted row is a JOIN
+        // against what the peer is advertising right now — not a stored field that could go stale.
+        val rows = FlashNearbyMath.withDeviceKinds(
+            trusted = listOf(NearbyTrustedPeerUi("pc-1", "Flash Desktop")),
+            discovered = listOf(NearbyPeerUi("pc-1", "Flash Desktop", transport(), deviceKind = FlashDeviceKind.DESKTOP)),
+        )
+        assertEquals(FlashDeviceKind.DESKTOP, rows.single().deviceKind)
+    }
+
+    @Test
+    fun `a trusted peer that is not currently discovered gets no kind`() {
+        // The restart case: trust survived, the phone has not been re-found yet. The row still
+        // renders and still offers Chat — it simply shows no badge, because nothing has told us
+        // what the device is since it went away.
+        val rows = FlashNearbyMath.withDeviceKinds(
+            trusted = listOf(NearbyTrustedPeerUi("phone-1", "Flash V760")),
+            discovered = emptyList(),
+        )
+        assertEquals(FlashDeviceKind.UNKNOWN, rows.single().deviceKind)
+        assertEquals("Flash V760", rows.single().name)
+    }
+
+    @Test
+    fun `the join does not confuse two peers`() {
+        // Both sections key on device id; a peer must never inherit the other's kind.
+        val rows = FlashNearbyMath.withDeviceKinds(
+            trusted = listOf(NearbyTrustedPeerUi("phone-1", "Flash V760")),
+            discovered = listOf(
+                NearbyPeerUi("pc-1", "Flash Desktop", transport(), deviceKind = FlashDeviceKind.DESKTOP),
+                NearbyPeerUi("phone-1", "Flash V760", transport(), deviceKind = FlashDeviceKind.PHONE),
+            ),
+        )
+        assertEquals(FlashDeviceKind.PHONE, rows.single().deviceKind)
     }
 
     private fun transport() = FlashNetworkTransport.Lan

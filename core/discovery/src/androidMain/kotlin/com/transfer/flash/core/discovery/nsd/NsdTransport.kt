@@ -9,6 +9,7 @@ import android.net.wifi.WifiManager
 import android.util.Log
 import com.transfer.flash.core.common.model.FlashDevice
 import com.transfer.flash.core.common.model.FlashDeviceId
+import com.transfer.flash.core.common.model.FlashDeviceKind
 import com.transfer.flash.core.common.model.FlashPeerPresence
 import com.transfer.flash.core.common.model.FlashTransportType
 import com.transfer.flash.core.common.net.LinkChangeTracker
@@ -1535,8 +1536,13 @@ public class NsdTransport(
         }
 
         // Caps are INFORMATIONAL on an unauthenticated wire (RFC 6762): accepted
-        // as-is, logged, never retained on the shared endpoint model. Any
-        // caps-based peer filtering happens at CONNECT time (C3.10 seam).
+        // as-is, logged, and never used to FILTER or to make a trust decision — any
+        // caps-based peer filtering still happens at CONNECT time (C3.10 seam).
+        //
+        // Retaining a classification on the endpoint (below) does not weaken that rule: what is
+        // kept is a display label for the Nearby row, it gates nothing, and it is recomputed from
+        // each advertisement rather than persisted. A peer that lies about being a desktop gets a
+        // wrong icon and nothing else.
         if (parsed.capabilities.isNotEmpty()) {
             logInfo("Peer capabilities caps=${parsed.capabilities.joinToString(",")} name=${data.serviceName}")
         }
@@ -1553,6 +1559,7 @@ public class NsdTransport(
             hostAddress = hostAddress,
             port = data.port,
             serviceName = data.serviceName,
+            deviceKind = FlashDeviceKind.fromCapabilities(parsed.capabilities),
         )
         val diff = directory.applySeen(endpoint, timeSourceMs())
         synchronized(deviceIdsByServiceName) {
@@ -1572,7 +1579,18 @@ public class NsdTransport(
     private fun handleMonitorLost(serviceName: String?) {
         if (serviceName == null) return
         scope?.launch(lane) {
-            if (!browsing) return@launch
+            // Deliberately NOT gated on `browsing`, unlike every other bridge callback here.
+            //
+            // Those callbacks do work that only means something while a browse is live, so a stale
+            // one is dropped. A loss is the opposite: it is the ONLY signal that can retire a
+            // [monitoredServices] entry (see that map's KDoc — NSD gives no periodic re-sighting),
+            // and the debounce below plus [pendingLost]'s re-find cancellation already tell a real
+            // loss from a transient flap without knowing whether a browse is up. Dropping it
+            // instead stranded the entry permanently: [presenceTick] kept re-affirming a peer whose
+            // record the platform had already withdrawn, no timeout could age it out, and the peer
+            // stayed in Nearby for as long as the process lived. That is one of the two ways a
+            // stopped device remains listed.
+            //
             // Debounce transient radio goodbyes (mDNS over Wi-Fi / hotspot flaps constantly): defer
             // the removal by [lostDebounceMs]; a re-find (handleServiceUpdated) cancels it. Always
             // replace any prior pending job for this service so a stale (cancelled-scope) entry can
@@ -1580,8 +1598,7 @@ public class NsdTransport(
             pendingLost.remove(serviceName)?.cancel()
             val job = scope?.launch(lane) {
                 delay(lostDebounceMs)
-                if (!browsing) return@launch
-                pendingLost.remove(serviceName)
+                    pendingLost.remove(serviceName)
                 // The platform has withdrawn its vouch for this service: drop it from the
                 // liveness map BEFORE the directory bookkeeping, so a heartbeat racing this
                 // job cannot re-affirm a peer we are in the middle of evicting.

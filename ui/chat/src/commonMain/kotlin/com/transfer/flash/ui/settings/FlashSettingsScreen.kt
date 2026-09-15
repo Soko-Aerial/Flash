@@ -28,7 +28,6 @@ import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -50,6 +49,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import com.transfer.flash.core.common.perf.FlashPerformanceMode
 import com.transfer.flash.ui.icons.FlashIcon
+import com.transfer.flash.ui.chat.FlashConfirmHost
 import com.transfer.flash.ui.icons.FlashIcons
 import com.transfer.flash.ui.theme.FlashDimensions
 import com.transfer.flash.ui.theme.FlashHaptic
@@ -65,6 +65,7 @@ import com.transfer.flash.ui.theme.rememberFlashHaptics
  * rows — no Material ListItems/switches. Demo model today; C1.4 DataStore substitutes at wiring.
  */
 enum class FlashThemeMode { System, Light, Dark }
+
 
 data class FlashSettingsModel(
     val displayName: String = "Flash device",
@@ -213,9 +214,13 @@ object FlashSettingsMath {
 fun FlashSettingsScreen(
     model: FlashSettingsModel,
     onThemeModeSelected: (FlashThemeMode) -> Unit,
-    onDynamicAccentChanged: (Boolean) -> Unit,
-    onHapticsChanged: (Boolean) -> Unit,
-    onBackgroundTransfersChanged: (Boolean) -> Unit,
+    // These three were the only REQUIRED callbacks on this screen while the other twenty-odd
+    // default to `{}`. That asymmetry is what made a host's cheapest option a no-op — and a no-op is
+    // exactly what makes a row "a control panel connected to nothing". Defaulting them costs
+    // nothing and removes the pressure to write one.
+    onDynamicAccentChanged: (Boolean) -> Unit = {},
+    onHapticsChanged: (Boolean) -> Unit = {},
+    onBackgroundTransfersChanged: (Boolean) -> Unit = {},
     onAutoDownloadVoiceChanged: (Boolean) -> Unit = {},
     onAutoDownloadImageChanged: (Boolean) -> Unit = {},
     onAutoDownloadVideoChanged: (Boolean) -> Unit = {},
@@ -918,8 +923,9 @@ private fun ClearReceivedFilesDialog(
 ) {
     val colors = FlashTheme.colors
     val amount = totalBytes?.let(FlashStorageMath::formatBytes) ?: "these files"
-    AlertDialog(
-        onDismissRequest = onDismiss,
+    FlashConfirmHost(
+        onDismiss = onDismiss,
+        containerColor = colors.backgroundSurface,
         title = { FlashText(text = "Clear received files?", style = FlashTheme.typography.headingMedium) },
         text = {
             FlashText(
@@ -938,7 +944,6 @@ private fun ClearReceivedFilesDialog(
                 Text("Cancel", color = colors.textSecondary)
             }
         },
-        containerColor = colors.backgroundSurface,
     )
 }
 

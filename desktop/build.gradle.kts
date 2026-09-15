@@ -62,6 +62,20 @@ kotlin {
                 implementation(libs.okio)
             }
         }
+
+        // The module's FIRST test source set, and it exists for one job nothing else can do:
+        // boot the REAL `DesktopEngine` headlessly. `:desktop:run` needs a window, a human and a
+        // phone, so a bring-up step that throws after discovery is already advertising is
+        // invisible there — which is exactly how a `require(startAll.isSuccess)` in `assemble()`
+        // ran for a whole session: the roster showed a peer, `active sessions` stayed empty, and
+        // there was nothing on the console to read. `jvmTest` closes that hole.
+        val jvmTest by getting {
+            dependencies {
+                implementation(kotlin("test"))
+                implementation(libs.junit)
+                implementation(libs.kotlinx.coroutines.core)
+            }
+        }
     }
 }
 
@@ -83,6 +97,19 @@ compose.desktop {
         // `JmdnsTransport` rather than dropping the flag globally.
         jvmArgs += listOf("-Djava.net.preferIPv4Stack=true")
 
+        // Heap ceiling. Without one the JVM takes the default of a quarter of physical RAM, which
+        // on this 20 GB host is ~5 GB — and on 2026-09-14 the app actually reached 5.19 GB committed
+        // / 2.93 GB live while merely discovering peers (a leaked-coroutine bug in
+        // `DesktopEngine`'s session collector, since fixed).
+        //
+        // 1 GB rather than something tighter: a Compose/Skiko app wants several hundred MB of
+        // headroom, and capping too low turns a bounded-heap problem into a GC-thrash one, which
+        // shows up as high CPU — the very symptom this exists to prevent. The ceiling is a seatbelt,
+        // not the fix. If the heap pins at this value again, something is leaking and
+        // `jcmd <pid> GC.heap_info` will show it.
+        jvmArgs += listOf("-Xmx1g", "-XX:+HeapDumpOnOutOfMemoryError")
+
+
         // Native distribution packaging (MSI/DEB/DMG) is Phase 24 polish, deliberately NOT
         // wired into any verification gate here — the phase's own Do-NOT list forbids it
         // (packaging tools may not be installed). This block exists only so the entry point is
@@ -97,4 +124,17 @@ compose.desktop {
             // note allows leaving them out.
         }
     }
+}
+
+// The SAME IPv4 flag as `run` above, for the same reason — a test JVM does not inherit the
+// application block's jvmArgs. Without it the boot test would measure an environment the product
+// never runs in (JmDNS failing its per-interface bind with `Invalid argument: setsockopt`), and a
+// test that passes only because the transports under test are broken proves nothing.
+//
+// `showStandardStreams` is load-bearing for this suite rather than a convenience: `DesktopEngine`
+// reports through `FlashLog` (console), and the lines that matter during a bring-up failure —
+// the partial-`startAll` warning, the auto-dial attempts, the roster — exist nowhere else.
+tasks.named<Test>("jvmTest") {
+    jvmArgs("-Djava.net.preferIPv4Stack=true")
+    testLogging { showStandardStreams = true }
 }

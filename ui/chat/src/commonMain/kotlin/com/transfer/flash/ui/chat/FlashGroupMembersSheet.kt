@@ -16,9 +16,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -85,7 +82,6 @@ object FlashGroupMembersMath {
  * UI-029 Group members sheet — custom member rows (avatar, online dot, transport,
  * role badge) inside a ModalBottomSheet. No stock list-item components.
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FlashGroupMembersSheet(
     members: List<FlashGroupMemberUi>,
@@ -101,16 +97,9 @@ fun FlashGroupMembersSheet(
             online = members.count { it.isOnline },
         )
     }
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
+    FlashSheetHost(
+        onDismiss = onDismiss,
         containerColor = colors.backgroundSurface,
-        shape = RoundedCornerShape(
-            topStart = FlashShapes.radius24,
-            topEnd = FlashShapes.radius24,
-        ),
         dragHandle = {
             Box(
                 modifier = Modifier
@@ -120,7 +109,6 @@ fun FlashGroupMembersSheet(
                     .background(colors.borderSubtle),
             )
         },
-        contentWindowInsets = { WindowInsets.navigationBars },
         modifier = modifier,
     ) {
         Column(

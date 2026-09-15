@@ -9,11 +9,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -70,7 +67,6 @@ public object FlashCreateGroupMath {
  * fail-closed by construction. Calls [onCreate] once with the normalized title and the selected
  * peer ids (the local device is implicit and never listed).
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 public fun FlashCreateGroupSheet(
     peers: List<FlashCreateGroupPeerUi>,
@@ -82,16 +78,9 @@ public fun FlashCreateGroupSheet(
     var title by rememberSaveable { mutableStateOf("") }
     var selected by remember { mutableStateOf(emptySet<String>()) }
     val canCreate = FlashCreateGroupMath.canCreate(title, selected)
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
+    FlashSheetHost(
+        onDismiss = onDismiss,
         containerColor = colors.backgroundSurface,
-        shape = RoundedCornerShape(
-            topStart = FlashShapes.radius24,
-            topEnd = FlashShapes.radius24,
-        ),
         modifier = modifier,
     ) {
         Column(

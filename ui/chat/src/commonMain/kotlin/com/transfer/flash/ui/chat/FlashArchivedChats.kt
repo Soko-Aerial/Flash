@@ -145,7 +145,8 @@ fun FlashArchivedChatsRow(
 @Composable
 fun FlashArchivedChatsTopBar(
     onBackClick: () -> Unit,
-    onSearchClick: () -> Unit,
+    /** Null hides the action — same contract as `FlashChatListTopBar`. */
+    onSearchClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val colors = FlashTheme.colors
@@ -178,11 +179,13 @@ fun FlashArchivedChatsTopBar(
                 style = typography.headingMedium,
                 color = colors.textPrimary,
             )
-            IconButton(
-                onClick = onSearchClick,
-                modifier = Modifier.size(FlashDimensions.minTouchTarget),
-            ) {
-                FlashIcon(icon = FlashIcons.Search, contentDescription = "Search archived chats")
+            if (onSearchClick != null) {
+                IconButton(
+                    onClick = onSearchClick,
+                    modifier = Modifier.size(FlashDimensions.minTouchTarget),
+                ) {
+                    FlashIcon(icon = FlashIcons.Search, contentDescription = "Search archived chats")
+                }
             }
         }
     }

@@ -5,6 +5,7 @@ package com.transfer.flash.core.discovery.jmdns
 import com.transfer.flash.core.common.logging.FlashLog
 import com.transfer.flash.core.common.model.FlashDevice
 import com.transfer.flash.core.common.model.FlashDeviceId
+import com.transfer.flash.core.common.model.FlashDeviceKind
 import com.transfer.flash.core.common.model.FlashPeerPresence
 import com.transfer.flash.core.common.model.FlashTransportType
 import com.transfer.flash.core.common.protocol.FlashProtocol
@@ -30,6 +31,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.concurrent.Volatile
 
 /**
@@ -188,7 +190,40 @@ public class JmdnsTransport(
     @Volatile private var ownDeviceId: FlashDeviceId? = null
 
     /** Per-service re-resolve budget for JmDNS's empty-TXT resolution; lane-confined. */
-    private val emptyTxtRetries = mutableMapOf<String, Int>()
+    private val emptyTxtRetries = mutableMapOf<String, EmptyTxtRetryState>()
+
+    /**
+     * Service names JmDNS has already been asked to resolve, so a repeated announcement does not
+     * ask again. See [requestResolveOffLane] for why a repeat is harmful rather than merely
+     * redundant.
+     *
+     * **Concurrent, not lane-confined** — unlike the two maps above. `onServiceAdded` runs on a
+     * JmDNS callback thread, not on [lane], and it is the caller that made this necessary.
+     *
+     * Bounded by [pruneResolveRequested], because service names are attacker-influenced wire data
+     * and a peer re-registering on collision produces `Name (2)`, `Name (6)`, … for ever.
+     */
+    private val resolveRequested: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+    /**
+     * The capability set last LOGGED for each service name; lane-confined.
+     *
+     * Exists only to keep [logInfo]'s "Peer capabilities" line from repeating. It is not
+     * state anything reads — the parsed capabilities themselves are used directly.
+     */
+    private val loggedCapabilities = mutableMapOf<String, String>()
+
+    /**
+     * Retry bookkeeping for one service name that keeps resolving with JmDNS's empty TXT.
+     *
+     * [attempts] counts the re-resolves used in the CURRENT cycle and [lastAttemptAtMs] is when the
+     * last one was issued — the pair is what makes the budget time-bounded. See
+     * [emptyTxtDecision] for why a bare counter is not enough.
+     */
+    private class EmptyTxtRetryState(var attempts: Int = 0, var lastAttemptAtMs: Long = 0L)
+
+    /** What to do with a service that resolved with JmDNS's empty TXT; see [emptyTxtDecision]. */
+    private enum class EmptyTxtDecision { Retry, Suppressed, Drop }
     @Volatile private var advertising = false
     @Volatile private var browsing = false
     @Volatile private var opened = false
@@ -416,8 +451,49 @@ public class JmdnsTransport(
             // number of times instead of dropping the peer permanently — JmDNS caches the TXT when
             // it arrives, and the next resolution then carries it. `requestResolveInfo` blocks for
             // its own timeout, which spaces the attempts naturally.
-            if (data.txtByteCount <= 1 && data.attributes.isEmpty() && retryEmptyTxt(data.serviceName)) {
-                return
+            //
+            // "Bounded" has to mean bounded in TIME, not per delivery: our own re-resolve makes
+            // JmDNS re-deliver the same cached, attribute-less ServiceInfo, so the decision is
+            // asked again immediately, and a bare attempt counter that resets on exhaustion
+            // re-armed a fresh burst on the very next delivery. That was an unbounded
+            // resolve→drop→resolve loop — one blocking JmDNS query per attempt, on a fresh
+            // dispatcher task each time — and it pegged a core and grew the heap for as long as a
+            // hollow record stayed in the cache. `emptyTxtDecision` now rate-limits the cycle.
+            if (data.txtByteCount <= 1 && data.attributes.isEmpty()) {
+                // ONCE THIS NAME HAS RESOLVED FOR REAL, never retry a hollow delivery again.
+                //
+                // The budget below is per CYCLE, and a cycle is reset by a successful resolve —
+                // `emptyTxtRetries.remove(serviceName)` on the success path just above. So a peer
+                // whose real and hollow records ALTERNATE re-armed the budget on every good
+                // delivery, and the "bounded" retry ran unbounded. Measured 2026-09-14: 633,997
+                // resolve requests in ~50 seconds from two service names, every one of them
+                // `force=true` on this branch, which is what put 62 threads inside
+                // `JmDNSImpl.addListener` and held the app at ~670% of one core.
+                //
+                // A vouch is exactly the fact needed here: the radio resolved this instance with
+                // real attributes, so the `persistent = true` subscription is registered and every
+                // later announcement arrives on its own. A hollow re-delivery after that is a cache
+                // artefact, not a failure to resolve, and re-asking fixes nothing.
+                if (data.serviceName in vouchedServices) return
+                when (emptyTxtDecision(data.serviceName, timeSourceMs())) {
+                    EmptyTxtDecision.Retry -> {
+                        // `force`: this name is already in `resolveRequested` (the first ask came
+                        // from `onServiceAdded`), and the retry is the whole point of this branch.
+                        // Safe to force because `emptyTxtDecision` bounds it to a handful of
+                        // attempts per cooldown, so it cannot become the unbounded stream that the
+                        // non-forced path exists to prevent.
+                        requestResolveOffLane(data.serviceName, force = true)
+                        return
+                    }
+                    // Inside the cooldown: this name has already had its retries and been
+                    // reported. Re-deciding it on every re-delivery is exactly the loop above, so
+                    // stay silent — one drop line per cooldown is the useful signal, not a
+                    // hundred.
+                    EmptyTxtDecision.Suppressed -> return
+                    // Budget spent and the cooldown elapsed: fall through and report it once,
+                    // which also starts the next cycle.
+                    EmptyTxtDecision.Drop -> Unit
+                }
             }
             // Dropped for real. KEYS ONLY, never values: a TXT record is unauthenticated wire data
             // from an arbitrary peer, so its contents do not belong in a log. The key set is
@@ -453,10 +529,20 @@ public class JmdnsTransport(
         }
         if (parsed.capabilities.isNotEmpty()) {
             // Informational on an unauthenticated wire (RFC 6762); enforcement is at connect time.
-            logInfo(
-                "Peer capabilities caps=${parsed.capabilities.joinToString(",")} " +
-                    "name=${data.serviceName}",
-            )
+            //
+            // Logged once per service, and again only if the set actually changes — NOT on every
+            // resolve. This used to fire on each one, and the same resolution is re-delivered
+            // constantly: `presenceTick` re-queries every vouched peer every
+            // [DEFAULT_PRESENCE_HEARTBEAT_MS] with `persistent = true`, which makes JmDNS hand back
+            // the cached record immediately. So a peer that was simply sitting there printed this
+            // line for ever, burying every real log line behind it (reported 2026-09-14 as "it's
+            // looping"). The set is static for a running peer, so once is the whole value.
+            val capsSummary = parsed.capabilities.sorted().joinToString(",")
+            if (loggedCapabilities[data.serviceName] != capsSummary) {
+                pruneLoggedCapabilities()
+                loggedCapabilities[data.serviceName] = capsSummary
+                logInfo("Peer capabilities caps=$capsSummary name=${data.serviceName}")
+            }
         }
         val hostAddress = data.hostAddress ?: return // resolved without an address; wait for more
         val endpoint = FlashDiscoveredEndpoint(
@@ -470,9 +556,15 @@ public class JmdnsTransport(
             hostAddress = hostAddress,
             port = data.port,
             serviceName = data.serviceName,
+            deviceKind = FlashDeviceKind.fromCapabilities(parsed.capabilities),
         )
         val diff = directory.applySeen(endpoint, timeSourceMs())
         deviceIdsByServiceName[data.serviceName] = deviceId
+        // A resolved service needs no further asks for as long as it stays in the directory; the
+        // `persistent = true` subscription from the original request covers every later
+        // announcement. Kept in the set so a re-announcement does not ask again — see
+        // `requestResolveOffLane`.
+        pruneResolveRequested()
         // A successful resolve is the radio vouching for this instance: it is what later presence
         // ticks are allowed to re-affirm, and it cancels any debounced removal in flight.
         vouchedServices += data.serviceName
@@ -496,6 +588,11 @@ public class JmdnsTransport(
                 // Withdraw the vouch BEFORE the directory bookkeeping, so a presence tick racing
                 // this job cannot re-affirm a peer that is being evicted.
                 vouchedServices -= serviceName
+                loggedCapabilities.remove(serviceName)
+                // Cleared so a peer that goes away and comes back is asked for again. Without this
+                // the flag would outlive the sighting and a returning peer would never be resolved
+                // a second time — the failure mode of making a retry once-only.
+                resolveRequested.remove(serviceName)
                 val deviceId = deviceIdsByServiceName.remove(serviceName) ?: return@launch
                 // The typed Lost below already carries the serviceName, so the generic Diff.Lost
                 // mapping is skipped — one radio goodbye must not produce two Lost events.
@@ -537,9 +634,29 @@ public class JmdnsTransport(
             val serviceName = entry.endpoint.serviceName
             if (serviceName !in vouchedServices) return@forEach
             emitEvent(FlashTransportEvent.Presence(entry.endpoint))
-            // Belt and braces: re-query so an address change is picked up even if JmDNS's own
-            // cache refresh does not fire. Blocking, hence off-lane.
-            requestResolveOffLane(serviceName)
+            // NO re-resolve here. There used to be a `requestResolveOffLane(serviceName)` on this
+            // line, "belt and braces" so an address change would be picked up even if JmDNS's own
+            // cache refresh did not fire. It was actively harmful, and the mechanism is worth
+            // stating because it is invisible from the call site:
+            //
+            // `requestResolveOffLane` asks with `persistent = true`. JmDNS implements that by
+            // building a fresh `ServiceInfoResolver` and ADDING A LISTENER to a synchronised
+            // collection on every call — it does not replace one. So a request per peer per tick
+            // accumulated a listener per peer per tick, for ever, and every one of them contends on
+            // that collection's monitor.
+            //
+            // Measured on a two-peer LAN, 2026-09-14: 75 `DefaultDispatcher` workers, of which 42
+            // were BLOCKED in `JmDNSImpl.addListener` and 15 in `JmDNSImpl.updateRecord`; the app sat
+            // at 369% of one core and 5.19 GB committed heap while doing nothing but discovering.
+            // Because those workers share `Dispatchers.Default` with the dial and session code, the
+            // starvation also surfaced as `WS handshake timed out` and sessions appearing then
+            // vanishing — i.e. it was the cause of the flaky pairing, not just of the CPU load.
+            //
+            // Dropping it loses nothing, which is the part that makes this a fix rather than a
+            // trade: `persistent = true` already means ONE request per service keeps a listener
+            // registered for every later announcement, so re-asking could only ever duplicate what
+            // was already subscribed. The first resolve still comes from `onServiceAdded`, and a peer
+            // whose TXT arrives late is still recovered by the bounded empty-TXT budget.
         }
         sweep(now).forEach { agedOut ->
             emitEvent(
@@ -592,10 +709,13 @@ public class JmdnsTransport(
         heartbeatJob?.cancel()
         heartbeatJob = null
         pendingLost.values.forEach { it.cancel() }
+        // BEFORE the bridge is closed, not after: `opened = false` is what makes an in-flight
+        // empty-TXT retry stand down (see requestResolveOffLane), and setting it afterwards leaves a
+        // window in which a retry passes the check and then hits JmDNS's terminated executor.
+        opened = false
         runCatching { bridge.stopBrowse(serviceType) }
         runCatching { bridge.unregisterAll() }
         runCatching { bridge.close() }
-        opened = false
         scope?.cancel()
         scope = null
         // Scope is down, so nothing can touch these concurrently any more.
@@ -630,9 +750,41 @@ public class JmdnsTransport(
         )
     }
 
-    private fun requestResolveOffLane(serviceName: String) {
+    private fun requestResolveOffLane(serviceName: String, force: Boolean = false) {
         val active = scope ?: return
+        // ONCE per service name, unless a caller explicitly forces a retry.
+        //
+        // This is the fix for the desktop's CPU and memory runaway, and the reason is not obvious
+        // from here — it is a property of JmDNS. `requestServiceInfo` is asked with `persistent =
+        // true`, and JmDNS implements that by constructing a fresh `ServiceInfoResolver` which ADDS
+        // A LISTENER to a synchronised collection; it does not replace the previous one. So asking
+        // again does not refresh a subscription, it stacks another one, for ever.
+        //
+        // `onServiceAdded` fires on EVERY announcement, not merely the first, and a phone announces
+        // every few seconds. So this method was being called continuously for the lifetime of the
+        // process. Measured 2026-09-14 with two peers on the LAN: 61 threads blocked in
+        // `JmDNSImpl.addListener`, 129 live threads, 530% of one core, and 950 MB of a 1 GB heap —
+        // for an app that was only discovering. The starvation also hit the WS handshake coroutines,
+        // which share `Dispatchers.Default`, and that is what surfaced as `WS handshake timed out`
+        // and peers appearing then vanishing: the flaky pairing had the same root cause as the load.
+        //
+        // Skipping the repeat costs nothing. `persistent = true` means the FIRST request keeps a
+        // listener registered for every later announcement, so a second one can only duplicate what
+        // is already subscribed. Recovery paths that genuinely need a re-ask pass `force = true`:
+        // the bounded empty-TXT budget, and a service that was removed and announced again (which
+        // clears its entry below).
+        if (!force && !resolveRequested.add(serviceName)) return
+        // A retry queued by the empty-TXT budget can outlive the browse session that scheduled it.
+        // `bridge.close()` shuts JmDNS's own executor down, so a request that lands after it is
+        // rejected with "Task ... rejected from ThreadPoolExecutor[Terminated]" — noise in the middle
+        // of teardown, where it reads like a real failure. Observed 2026-09-14 in the interop
+        // harness's exit, right after `[discover] window closed`.
+        //
+        // Checked on both sides of the launch: before it, so a closed bridge costs nothing, and
+        // inside it, because the coroutine may be scheduled before `stop()` runs and executed after.
+        if (!opened) return
         active.launch(dispatcher) {
+            if (!opened) return@launch
             runCatching { bridge.requestServiceInfo(serviceType, serviceName) }
                 .onFailure { logWarn("resolve request failed for $serviceName: ${it.message}") }
         }
@@ -643,18 +795,74 @@ public class JmdnsTransport(
      *
      * Confined to [lane] (only [handleServiceResolved] touches it), so no lock is needed.
      *
-     * @return true when a retry was scheduled and the caller should NOT drop the peer yet;
-     *   false when the budget is exhausted, which is the caller's cue to drop and log.
+     * **The budget is per cycle, and a cycle is rate-limited in time.** A bare attempt counter is
+     * not enough here, because the caller is re-entered by our own retry: `requestServiceInfo` is
+     * asked with `persistent = true`, so JmDNS re-delivers the same cached ServiceInfo, which comes
+     * back through [handleServiceResolved] as another empty-TXT resolution. Resetting the counter
+     * on exhaustion therefore started a fresh burst of retries on the very next delivery — an
+     * unbounded loop of blocking JmDNS queries, one dispatcher task each, that burned CPU and grew
+     * the heap for as long as the hollow record stayed cached.
+     *
+     * @return [EmptyTxtDecision.Retry] when a re-resolve was issued and the caller must not drop
+     *   the peer; [EmptyTxtDecision.Suppressed] while the cooldown is running (the name has already
+     *   had its cycle and been reported); [EmptyTxtDecision.Drop] once per cooldown, which is when
+     *   the caller should log the drop and the next cycle begins.
      */
-    private fun retryEmptyTxt(serviceName: String): Boolean {
-        val used = emptyTxtRetries[serviceName] ?: 0
-        if (used >= MAX_EMPTY_TXT_RETRIES) {
-            emptyTxtRetries.remove(serviceName)
-            return false
+    private fun emptyTxtDecision(serviceName: String, nowMs: Long): EmptyTxtDecision {
+        pruneEmptyTxtRetries(nowMs)
+        val state = emptyTxtRetries.getOrPut(serviceName) { EmptyTxtRetryState() }
+        if (state.attempts < MAX_EMPTY_TXT_RETRIES) {
+            state.attempts += 1
+            state.lastAttemptAtMs = nowMs
+            return EmptyTxtDecision.Retry
         }
-        emptyTxtRetries[serviceName] = used + 1
-        requestResolveOffLane(serviceName)
-        return true
+        if (nowMs - state.lastAttemptAtMs < EMPTY_TXT_COOLDOWN_MS) {
+            return EmptyTxtDecision.Suppressed
+        }
+        // Cooldown elapsed: report the drop (the caller logs it) and arm the next cycle, so the
+        // following delivery is Retry again. Without the reset the name would be Suppressed for
+        // ever after its first drop, and a peer whose TXT arrived late could never be re-seen.
+        state.attempts = 0
+        state.lastAttemptAtMs = nowMs
+        return EmptyTxtDecision.Drop
+    }
+
+    /**
+     * Keeps [emptyTxtRetries] bounded: service names are attacker-influenced wire data (a peer that
+     * re-registers on collision produces `Name (2)`, `Name (6)`, … for ever), so the map needs an
+     * eviction rule and not just the success-path removal.
+     */
+    private fun pruneEmptyTxtRetries(nowMs: Long) {
+        if (emptyTxtRetries.size <= MAX_EMPTY_TXT_TRACKED_NAMES) return
+        emptyTxtRetries.entries.removeAll { nowMs - it.value.lastAttemptAtMs >= EMPTY_TXT_COOLDOWN_MS }
+    }
+
+    /**
+     * Keeps [loggedCapabilities] bounded.
+     *
+     * Same reason as [pruneEmptyTxtRetries] — a peer that re-registers on collision produces
+     * `Name (2)`, `Name (6)`, … for ever, so the map grows with every collision and only shrinks on
+     * a removal event, which a collision-renamed service never gets. That is a leak in a structure
+     * whose entire job is to suppress log lines.
+     *
+     * Dropping the whole map rather than evicting by age is deliberate: this is a LOGGING
+     * optimisation and not state anything reads, so the worst case of a clear is one repeated line
+     * per live peer. Ageing entries would need a timestamp per name and buy nothing.
+     */
+    private fun pruneLoggedCapabilities() {
+        if (loggedCapabilities.size > MAX_LOGGED_CAPABILITY_NAMES) loggedCapabilities.clear()
+    }
+
+    /**
+     * Keeps [resolveRequested] bounded. Same reasoning as [pruneEmptyTxtRetries]: names come from the
+     * wire, and a peer re-registering on collision mints a new one each time.
+     *
+     * Clearing wholesale is safe here in a way it would not be for `emptyTxtRetries`: the worst case
+     * is that a live peer's name is asked for once more, which is exactly what the code did on every
+     * announcement before, so it degrades to the old behaviour rather than to a wrong one.
+     */
+    private fun pruneResolveRequested() {
+        if (resolveRequested.size > MAX_RESOLVE_REQUESTED_NAMES) resolveRequested.clear()
     }
 
     /**
@@ -691,6 +899,23 @@ public class JmdnsTransport(
          * retried forever.
          */
         private const val MAX_EMPTY_TXT_RETRIES: Int = 3
+
+        /**
+         * How long a service that exhausted its retries is left alone before its next cycle. This
+         * is what makes the budget a rate rather than a count: a peer whose TXT never arrives costs
+         * [MAX_EMPTY_TXT_RETRIES] blocking queries and ONE drop line per cooldown, instead of a
+         * resolve→drop→resolve loop for as long as the hollow record stays cached.
+         */
+        private const val EMPTY_TXT_COOLDOWN_MS: Long = 60_000L
+
+        /** Above this many tracked names, entries idle for a full cooldown are evicted. */
+        internal const val MAX_EMPTY_TXT_TRACKED_NAMES: Int = 64
+
+        /** Bound on [loggedCapabilities]; see [pruneLoggedCapabilities]. */
+        internal const val MAX_LOGGED_CAPABILITY_NAMES: Int = 256
+
+        /** Bound on [resolveRequested]; see [pruneResolveRequested]. */
+        internal const val MAX_RESOLVE_REQUESTED_NAMES: Int = 256
         public const val DEFAULT_LOST_DEBOUNCE_MS: Long = 6_000L
         public const val DEFAULT_PRESENCE_HEARTBEAT_MS: Long = 10_000L
         internal const val EVENT_BUFFER: Int = 64

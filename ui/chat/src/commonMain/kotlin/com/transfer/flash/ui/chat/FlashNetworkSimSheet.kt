@@ -17,9 +17,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.State
 import androidx.compose.runtime.mutableStateOf
@@ -113,7 +110,6 @@ fun rememberSimulatedHealth(
  * radius24 top corners, manual drag handle, navigationBars insets.
  * Not user-facing product surface — must stay out of release entry points.
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FlashNetworkSimSheet(
     currentHealth: FlashConnectionHealth,
@@ -125,14 +121,9 @@ fun FlashNetworkSimSheet(
     val typography = FlashTheme.typography
     val states = remember { FlashNetworkSimMath.simulatableStates }
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+    FlashSheetHost(
+        onDismiss = onDismiss,
         containerColor = colors.backgroundSurface,
-        shape = RoundedCornerShape(
-            topStart = FlashShapes.radius24,
-            topEnd = FlashShapes.radius24,
-        ),
         dragHandle = {
             Box(
                 modifier = Modifier
@@ -142,7 +133,6 @@ fun FlashNetworkSimSheet(
                     .background(colors.borderSubtle),
             )
         },
-        contentWindowInsets = { WindowInsets.navigationBars },
         modifier = modifier,
     ) {
         Column(

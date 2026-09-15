@@ -22,7 +22,8 @@ import org.jetbrains.compose.ui.tooling.preview.Preview
 
 @Composable
 fun FlashChatListTopBar(
-    onSearchClick: () -> Unit,
+    /** Null hides the action, matching [onNewGroupClick]/[onLanClick]. */
+    onSearchClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
     title: String = "Chats",
     onLanClick: (() -> Unit)? = null,
@@ -61,11 +62,13 @@ fun FlashChatListTopBar(
                     FlashIcon(icon = FlashIcons.Group, contentDescription = "New group")
                 }
             }
-            IconButton(
-                onClick = onSearchClick,
-                modifier = Modifier.size(FlashDimensions.minTouchTarget),
-            ) {
-                FlashIcon(icon = FlashIcons.Search, contentDescription = "Search chats")
+            if (onSearchClick != null) {
+                IconButton(
+                    onClick = onSearchClick,
+                    modifier = Modifier.size(FlashDimensions.minTouchTarget),
+                ) {
+                    FlashIcon(icon = FlashIcons.Search, contentDescription = "Search chats")
+                }
             }
             if (onLanClick != null) {
                 IconButton(

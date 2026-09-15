@@ -63,6 +63,7 @@ import com.transfer.flash.ui.navigation.FlashAnimatedScreen
 import com.transfer.flash.ui.navigation.FlashDestination
 import com.transfer.flash.ui.navigation.FlashNavigationMath
 import com.transfer.flash.ui.navigation.rememberFlashNavigationState
+import com.transfer.flash.ui.nearby.FlashNearbyMath
 import com.transfer.flash.ui.nearby.FlashNearbyScreen
 import com.transfer.flash.ui.nearby.NearbyIdentityUi
 import com.transfer.flash.ui.nearby.NearbyPeerUi
@@ -893,6 +894,17 @@ private fun FlashShell(
     val nearby by remember(engine, engine.discovery, engine.pairing) {
         derivedStateOf {
             val trustedIds = trustedPeers.mapTo(HashSet()) { it.id }
+            // Every discovered peer as a row, BEFORE the trusted filter: the badge join below looks
+            // a trusted peer up here, and trusted peers are deliberately excluded from `peers`.
+            val discoveredRows = discoveredEndpoints.map { ep ->
+                NearbyPeerUi(
+                    id = ep.deviceId.value,
+                    name = ep.friendlyName,
+                    transport = ep.transportType.toUiTransport(),
+                    isTrusted = false,
+                    deviceKind = ep.deviceKind,
+                )
+            }
             NearbyUiState(
                 identity = NearbyIdentityUi(
                     // ERROR-034: real identity, not "Flash device" / "00000000". See the settings model
@@ -911,17 +923,15 @@ private fun FlashShell(
                 // A trusted peer lives in the TRUSTED section (with its own Chat/Revoke), so exclude
                 // it from DISCOVERED — otherwise the same device renders in both sections, which both
                 // duplicates the row and (sharing a device-id key) crashed the Nearby LazyColumn.
-                peers = discoveredEndpoints
-                    .filter { it.deviceId.value !in trustedIds }
-                    .map { ep ->
-                        NearbyPeerUi(
-                            id = ep.deviceId.value,
-                            name = ep.friendlyName,
-                            transport = ep.transportType.toUiTransport(),
-                            isTrusted = false,
-                        )
-                    },
-                trustedPeers = trustedPeers,
+                peers = discoveredRows.filter { it.id !in trustedIds },
+                // The trusted row's PC/Phone badge is a JOIN against the current advertisement,
+                // not a stored field: trust is persisted as id + name only, so a trusted peer that
+                // is not on the network right now has no kind and shows no badge. Same helper the
+                // desktop shell calls — a display rule that differed per host would be a bug.
+                trustedPeers = FlashNearbyMath.withDeviceKinds(
+                    trusted = trustedPeers,
+                    discovered = discoveredRows,
+                ),
                 pairingRequest = pairingModel?.request,
                 pairingPhase = pairingModel?.phase ?: FlashPairingPhase.Idle,
                 pairingSecondsLeft = pairingModel?.secondsLeft ?: 0,

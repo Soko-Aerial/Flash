@@ -137,6 +137,9 @@ class NsdTransportLogicTest {
 
         /** Non-null makes [advertise] report an asynchronous registration failure. */
         var advertiseFailureCode: Int? = null
+
+        /** Fires from inside [stopBrowse] — i.e. while the transport's `browsing` flag is down. */
+        var onStopBrowse: (() -> Unit)? = null
         private var advertiseEventsRef: AdvertiseEvents? = null
 
         override fun setMulticastLock(active: Boolean) {
@@ -170,6 +173,10 @@ class NsdTransportLogicTest {
         override fun stopBrowse() {
             stopBrowseCalled = true
             stopBrowseCount += 1
+            // The platform can deliver a loss for a service it is withdrawing while we are tearing
+            // the browse down. That arrival point is the whole point of this hook — see
+            // `monitorLost_arrivingWhileBrowsingIsDown_isStillHonored`.
+            onStopBrowse?.invoke()
         }
 
         override fun monitor(request: MonitorRequest, events: MonitorEvents): Boolean {
@@ -514,10 +521,42 @@ class NsdTransportLogicTest {
         recorder.cancel()
     }
 
+    @Test
+    fun monitorLost_arrivingWhileBrowsingIsDown_isStillHonored() {
+        // A loss is the ONLY signal that can retire a `monitoredServices` entry — NSD gives no
+        // periodic positive re-sighting — so it must not be dropped merely because it lands while
+        // the browse is torn down (a forced restart, a failed browse, a Doze idle phase). Dropping
+        // it stranded the entry: `presenceTick` went on re-affirming a peer whose record the
+        // platform had already withdrawn, no timeout could age it out, and the peer stayed in
+        // Nearby for the life of the process. The debounce is what separates a real loss from a
+        // transient flap, and it works with the browse in either state.
+        val bridge = FakeBridge()
+        val directory = FakeDirectory()
+        val transport = newTransport(apiLevel = 34, directory = directory, bridge = bridge)
+        runBlocking { transport.startBrowsing() }
+        val recorder = EventRecorder(transport)
+
+        directory.seenResults.addLast(DiffFound(endpointOf("peer-1")))
+        bridge.fireServiceFound("Flash Peer")
+        bridge.fireMonitorUpdated(resolvedData())
+
+        // Withdraw the service exactly while `browsing` is false: restartBrowsing() clears the flag
+        // before it calls stopBrowse().
+        directory.lostResult = DiffLost("peer-1")
+        bridge.onStopBrowse = { bridge.fireMonitorLost("Flash Peer") }
+        runBlocking { transport.restartBrowsing() }
+
+        assertEquals(listOf(FlashDeviceId("peer-1")), directory.lostCalls)
+        assertTrue(
+            "the peer must be reported gone",
+            recorder.received.filterIsInstance<FlashTransportEvent.Lost>().isNotEmpty(),
+        )
+        recorder.cancel()
+    }
+
     // ------------------------------------------------------------------
     // Retry policy re-browse (C3.3) + API-level branch selection (C3.4)
     // ------------------------------------------------------------------
-
     @Test
     fun legacyApi_browsesWithoutNetworkRequest_andResolvesViaQueue() {
         val bridge = FakeBridge()

@@ -20,11 +20,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.SheetState
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -99,7 +96,7 @@ enum class FlashAttachmentType(
  * Categorized action palette featuring media picker, document transfer, camera,
  * and high-speed local-first Flash P2P transfers.
  */
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun FlashAttachmentSheet(
     onDismiss: () -> Unit,
@@ -108,16 +105,9 @@ fun FlashAttachmentSheet(
 ) {
     val colors = FlashTheme.colors
     val actions = remember { FlashAttachmentType.values().toList() }
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
+    FlashSheetHost(
+        onDismiss = onDismiss,
         containerColor = colors.backgroundSurface,
-        shape = RoundedCornerShape(
-            topStart = FlashShapes.radius24,
-            topEnd = FlashShapes.radius24,
-        ),
         dragHandle = {
             Box(
                 modifier = Modifier
@@ -127,7 +117,6 @@ fun FlashAttachmentSheet(
                     .background(colors.borderSubtle),
             )
         },
-        contentWindowInsets = { WindowInsets.navigationBars },
         modifier = modifier,
     ) {
         Column(

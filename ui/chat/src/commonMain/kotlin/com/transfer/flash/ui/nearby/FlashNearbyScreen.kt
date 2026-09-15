@@ -7,6 +7,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -38,6 +39,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.transfer.flash.core.common.model.FlashDeviceKind
 import com.transfer.flash.core.messaging.model.FlashNetworkTransport
 import com.transfer.flash.ui.chat.FlashPairingDialog
 import com.transfer.flash.ui.chat.FlashPairingPhase
@@ -72,11 +74,26 @@ data class NearbyPeerUi(
     val transport: FlashNetworkTransport,
     /** True once this peer is a saved trusted device — flips the row CTA from Pair to Chat. */
     val isTrusted: Boolean = false,
+    /**
+     * Whether the peer is a PC or a phone, as it declared in its advertisement.
+     *
+     * Defaults to [FlashDeviceKind.UNKNOWN], which renders no badge at all — a peer that did not say
+     * must not be labelled with a guess.
+     */
+    val deviceKind: FlashDeviceKind = FlashDeviceKind.UNKNOWN,
 )
 
 data class NearbyTrustedPeerUi(
     val id: String,
     val name: String,
+    /**
+     * The trusted peer's kind, when it is currently discovered.
+     *
+     * Trust is persisted as id + name only, so a trusted peer that is not on the network right now
+     * has no advertisement to read and stays [FlashDeviceKind.UNKNOWN]. The host joins the two at
+     * its edge rather than persisting a kind that could go stale across a platform change.
+     */
+    val deviceKind: FlashDeviceKind = FlashDeviceKind.UNKNOWN,
 )
 
 data class NearbyUiState(
@@ -115,6 +132,32 @@ object FlashNearbyMath {
 
     fun identitySubtitle(identity: NearbyIdentityUi): String =
         "id ${identity.deviceIdShort.take(8)} · port ${identity.port}"
+
+    /**
+     * Fills in each trusted row's [NearbyTrustedPeerUi.deviceKind] from the peer's CURRENT
+     * advertisement.
+     *
+     * Trust is persisted as id + name only — a kind stored alongside it would go stale the moment a
+     * peer changed platform, and would claim knowledge about a device nobody has seen for weeks. So
+     * the kind is a **join**, not a stored field, and it is [FlashDeviceKind.UNKNOWN] whenever the
+     * peer is not currently discovered. The badge simply does not render then.
+     *
+     * Shared by both hosts on purpose: this is the same class of decision that let the app's and the
+     * desktop's pairing codecs drift apart, and a display rule that differs per host is a bug report
+     * waiting for someone to notice one screen disagrees with the other.
+     *
+     * Linear, not hashed: both lists are a handful of peers, and building a map would allocate more
+     * than the scan it replaces.
+     */
+    fun withDeviceKinds(
+        trusted: List<NearbyTrustedPeerUi>,
+        discovered: List<NearbyPeerUi>,
+    ): List<NearbyTrustedPeerUi> = trusted.map { row ->
+        row.copy(
+            deviceKind = discovered.firstOrNull { it.id == row.id }?.deviceKind
+                ?: FlashDeviceKind.UNKNOWN,
+        )
+    }
 }
 
 @Composable
@@ -363,6 +406,41 @@ private fun IdentityCard(identity: NearbyIdentityUi) {
     }
 }
 
+/**
+ * "PC" / "Phone" chip for a nearby peer, from what the peer declared in its advertisement.
+ *
+ * Renders **nothing** for [FlashDeviceKind.UNKNOWN]. That is the whole design: the badge is a claim
+ * about a device the user cannot see, so a peer that did not declare a kind gets no label rather
+ * than a guess from its model string. An older build therefore shows a bare row, which is true.
+ *
+ * Deliberately text, not an icon: there is no phone/computer glyph in `FlashIcons` (only a generic
+ * `Device`), and adding drawable assets to `:ui:resources` for this would be a larger change than
+ * the feature warrants.
+ */
+@Composable
+private fun FlashDeviceKindBadge(kind: FlashDeviceKind, modifier: Modifier = Modifier) {
+    val label = when (kind) {
+        FlashDeviceKind.DESKTOP -> "PC"
+        FlashDeviceKind.PHONE -> "Phone"
+        FlashDeviceKind.UNKNOWN -> return
+    }
+    val colors = FlashTheme.colors
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = modifier
+            .clip(FlashShapes.chip)
+            .border(FlashDimensions.borderHairline, colors.borderSubtle, FlashShapes.chip)
+            .padding(horizontal = FlashSpacing.space8, vertical = FlashSpacing.space4)
+            .semantics(mergeDescendants = true) { contentDescription = label },
+    ) {
+        FlashText(
+            text = label,
+            style = FlashTheme.typography.metadataDefault,
+            color = colors.textSecondary,
+        )
+    }
+}
+
 @Composable
 private fun PeerRow(
     peer: NearbyPeerUi,
@@ -409,7 +487,13 @@ private fun PeerRow(
                 style = FlashTheme.typography.bodyDefault,
                 color = colors.textPrimary,
             )
-            FlashTransportBadge(transport = peer.transport)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space4),
+            ) {
+                FlashTransportBadge(transport = peer.transport)
+                FlashDeviceKindBadge(kind = peer.deviceKind)
+            }
         }
         Box(
             Modifier
@@ -466,6 +550,7 @@ private fun TrustedRow(
             color = colors.textSecondary,
             modifier = Modifier.weight(1f),
         )
+        FlashDeviceKindBadge(kind = trusted.deviceKind, modifier = Modifier.padding(end = FlashSpacing.space8))
         Box(
             Modifier
                 .height(FlashDimensions.minTouchTarget)

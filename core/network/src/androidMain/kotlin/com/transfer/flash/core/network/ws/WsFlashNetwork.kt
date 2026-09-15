@@ -464,9 +464,12 @@ public class WsFlashNetwork(
      */
     private fun registerSession(session: WsSession): Boolean {
         var superseded: WsSession? = null
-        synchronized(registryLock) {
+        // The REASON a candidate was refused, computed inside the lock and logged outside it: every
+        // line below is I/O (stderr + a file sink on desktop), and the registry lock is shared with
+        // every other registration. A `null` here means the session was admitted.
+        val rejected = synchronized(registryLock) {
             if (!hardeningPolicy.canAcceptSession(sessionsById.size)) {
-                return false
+                return@synchronized "session cap reached (${sessionsById.size} live)"
             }
             val existing = sessionsById[session.peerDeviceId]
             if (existing != null && existing !== session) {
@@ -482,7 +485,8 @@ public class WsFlashNetwork(
                     ) == DuplicateSessionDecision.KeepExisting
                 }
                 if (keepExisting) {
-                    return false
+                    return@synchronized "connect glare: the tiebreaker kept the incumbent " +
+                        "incumbent(${describe(existing)}) candidate(${describe(session)})"
                 }
                 superseded = existing
                 sessionByConnection.remove(existing.connection)
@@ -498,12 +502,33 @@ public class WsFlashNetwork(
             drainEarlyFrames(session.connection, session)
 
             _activeSessions.value = sessionsById.toMap()
+            null
+        }
+        if (rejected != null) {
+            // The loser of a connect glare is rejected SILENTLY by contract — its dialer then waits
+            // out the full 6 s `ConnectionTimeout` with nothing to distinguish "lost a race" from
+            // "the peer is busy". Two endpoints emit the same `I/WS:` lines into one stream (two
+            // engines in one JVM during the auto-dial test), so without the local id this line cannot
+            // be attributed to a side, and a run that failed to converge could not be read at all.
+            // That is the whole reason it exists.
+            FlashLog.i(
+                TAG,
+                "[session] local=${shortId(localDeviceId)} REJECTED " +
+                    "peer=${shortId(session.peerDeviceId.value)} candidate(${describe(session)}) — $rejected",
+            )
+            return false
         }
         // Close the incumbent only AFTER the newcomer is in the registry. WsSession.disconnect fires
         // its onDisconnected callback synchronously, so onSessionDisconnected re-enters here; with
         // the slot already refilled it correctly declines to schedule a redial against the session
         // we just admitted.
         superseded?.let { old ->
+            FlashLog.i(
+                TAG,
+                "[session] local=${shortId(localDeviceId)} ADOPTED " +
+                    "peer=${shortId(session.peerDeviceId.value)} candidate(${describe(session)}) " +
+                    "over incumbent(${describe(old)})",
+            )
             old.disconnect(
                 if (old.isOutbound == session.isOutbound) "Superseded by a newer connection"
                 else "Superseded by richer path",
@@ -513,6 +538,27 @@ public class WsFlashNetwork(
         refreshHealthFromSessions()
         return true
     }
+
+    /**
+     * A session's two identifying facts, as the glare tiebreak sees them.
+     *
+     * The ORIGINATOR is the value [resolveGlareTie] actually compares (mirrored across the pair:
+     * A's outbound is B's inbound, and both call its originator A). Printing it beside the direction
+     * is what makes a glare decision checkable by eye — "kept outbound/origin-aaa over
+     * inbound/origin-aaa" is a same-origin tie, and a tie is a bug, not a preference.
+     */
+    private fun describe(s: WsSession): String =
+        "dir=${if (s.isOutbound) "outbound" else "inbound"} origin=${shortId(originOf(s))}"
+
+    /**
+     * The session's ORIGINATOR — the id the tiebreak compares. Our own for a dial we made, the
+     * peer's for one we accepted. [resolveGlareTie] uses this same function rather than restating the
+     * rule, so a logged decision and the decision itself cannot drift apart.
+     */
+    private fun originOf(s: WsSession): String =
+        if (s.isOutbound) localDeviceId else s.peerDeviceId.value
+
+    private fun shortId(id: String): String = id.take(8)
 
     /**
      * Deterministic connect-glare tiebreaker (ERROR-023) for the two directions of ONE TCP pair.
@@ -530,8 +576,8 @@ public class WsFlashNetwork(
      * only for `existing.isOutbound != candidate.isOutbound`.
      */
     private fun resolveGlareTie(existing: WsSession, candidate: WsSession): Boolean {
-        val existingOrigin = if (existing.isOutbound) localDeviceId else existing.peerDeviceId.value
-        val candidateOrigin = if (candidate.isOutbound) localDeviceId else candidate.peerDeviceId.value
+        val existingOrigin = originOf(existing)
+        val candidateOrigin = originOf(candidate)
         // Prefer the session whose ORIGINATOR is the smaller id.
         return existingOrigin <= candidateOrigin
     }

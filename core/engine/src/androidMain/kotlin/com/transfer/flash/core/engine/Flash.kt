@@ -5,6 +5,7 @@ package com.transfer.flash.core.engine
 import android.content.Context
 import android.util.Log
 import com.transfer.flash.core.common.model.FlashDeviceId
+import com.transfer.flash.core.common.model.FlashDeviceKind
 import com.transfer.flash.core.common.protocol.FlashTextFraming
 import com.transfer.flash.core.common.result.FlashResult
 import com.transfer.flash.core.discovery.core.CompositeDiscovery
@@ -199,6 +200,10 @@ private class Wiring(
                 ?: stored.friendlyName.ifBlank { "Flash Device" },
             deviceModel = android.os.Build.MODEL ?: "unknown",
             protocolVersion = 2,
+            // Declares this endpoint's kind so a desktop's Nearby row can say "Phone" rather than
+            // guessing from `Build.MODEL`. Rides the existing `caps` field — no wire key is added,
+            // and a peer that does not send it shows no badge instead of a wrong one.
+            capabilities = setOf(FlashDeviceKind.CAP_MOBILE),
         )
         val localId = identity.deviceId.value
 

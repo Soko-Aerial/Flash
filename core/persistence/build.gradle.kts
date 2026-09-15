@@ -123,6 +123,15 @@ kotlin {
             implementation(kotlin("test"))
             implementation(libs.kotlinx.coroutines.test)
         }
+        // Phase 09B-2 (D5 = C answered 2026-09-14): the ENCRYPTED file-backed JVM driver tier.
+        // This is the source set PHASE-09B recorded as never created ("`jvmMain` was never created
+        // for this module", amendment 8) — the one artifact 09B-2 was blocked on. `sqlite-jdbc-crypt`
+        // is an encrypted SQLite build, so unlike `androidx-sqlite-bundled` (jvmTest, `:memory:`
+        // only) this one may legally open a FILE. Adding it here is what makes D5 = C satisfiable
+        // on desktop at all; the driver adapter over it lives in `src/jvmMain`.
+        jvmMain.dependencies {
+            implementation(libs.sqlite.jdbc.crypt)
+        }
         // FlashDatabaseInvariantTest is Robolectric + JUnit 4 and drives the Android Support
         // stack; the two settings suites are Android-only for the same reason as their subjects.
         getByName("androidHostTest").dependencies {

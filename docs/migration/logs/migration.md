@@ -11818,3 +11818,724 @@ cache rather than an advertiser.
 **Note:** the `exitProcess(0)` fix from the entry above is still correct and does not worsen this —
 `discover` calls `endpoint.stop()` (goodbyes sent) *before* returning, so the forced exit follows a
 clean shutdown rather than replacing one.
+
+---
+
+## 2026-09-14 — ADDITIVE: a self-announcing UDP-multicast LAN transport, beside NSD and JmDNS
+
+- **Date:** 2026-09-14
+- **Agent/model:** Claude Code (autonomous, human-directed)
+- **Commit:** not committed — pending the human's hardware verdict
+- **Decisions relied on:** ADR-025 (LAN-only); and the human's rule for this work: *"build alongside our design, because Android to Android works fine — we shouldn't destroy that"*
+
+### Change
+Added a third LAN transport — `MulticastTransport` (commonMain) over a per-platform
+`MulticastSocketFactory` (Android/JVM) — and registered it in **both** composition roots as an
+**additional** entry in `CompositeDiscovery(transports = listOf(...))`. **Neither NSD nor JmDNS was
+modified, replaced or reordered**: `NsdTransport` is still the first transport on Android and
+`JmdsTransport` the first on the desktop, and Android↔Android discovery is untouched. (List order is
+not by itself the precedence rule — all three transports carry unranked names, so the composite picks
+by rank then by freshest sighting; see Known issues.) The design
+is the one measured from LocalSend (cloned and read for this): one announcement datagram per cadence
+carrying identity **and** server port, the peer's address taken from the datagram's SOURCE, one socket
+per interface, TTL 1, group `224.0.0.168` (deliberately *not* LocalSend's `224.0.0.167`, so both apps
+can run on one LAN), port `45823` (the WS port is 45822).
+
+It exists for the two properties DNS-SD structurally cannot provide, both of which cost this project
+real sessions:
+
+1. **Identity and address arrive in the same datagram.** There is no resolve step whose failure
+   produces the state the desktop logged as `Dropping mDNS endpoint without device_id …
+   txtKeys=[] txtBytes=1` — a peer with a correct address and no device id, which therefore could
+   never be dialed.
+2. **A lease bounds liveness.** Every peer re-announces every ~20 s and expires after 60 s of silence,
+   so a peer seen *this way* is gone a minute after it stops. mDNS has no periodic positive signal and
+   can only wait out a cache TTL nobody here controls.
+
+   **Careful — this is not a fix for the ghost the phone reported.** `CompositeDiscovery` unions its
+   transports' views: `sweep()` ages each transport's directory independently and `applyLoss` keeps a
+   peer alive while *any* transport still reports it. So a peer that NSD still lists (its cache has
+   not expired, and `NsdTransport`'s presence heartbeat keeps re-asserting it) stays visible no matter
+   what this transport's lease says. The ghost was bounded by the **TTL and `Lost`-guard** work in the
+   entries above — ~120 s of advertised TTL for a JmDNS peer, plus retiring `monitoredServices` on a
+   platform `Lost` — **not by this.** What the multicast transport contributes here is narrower and
+   worth stating exactly: a peer visible *only* via multicast dies in 60 s, and the union gives the
+   composite a second opinion rather than a veto. Making the union expire a peer whose only evidence
+   is a stale mDNS view is a separate decision and was deliberately not taken (it would mean
+   overriding NSD's view, which is the "don't destroy what works" line).
+
+Two failure modes were found and closed **during** construction, both of which matter only because
+this transport is additive:
+
+- **A bind failure could have refused to boot a working stack.** `CompositeDiscovery.startAll`
+  aggregates every transport's outcome, and both hosts turn a failed `startAll` into a boot failure
+  (`check(...)` in `DiscoveryEngineHolder`, `require(...)` in `DesktopEngine`). A phone with Wi-Fi off
+  at boot has no multicast-capable IPv4 interface, so the naive version would have made Flash unable
+  to start because a *second*, optional transport was unavailable. The transport now treats "no
+  interface yet" as a degraded state it owns: `startAdvertising`/`startBrowsing` return success, the
+  degradation is reported once per episode, and the sweep loop re-attempts the bind and starts the
+  receive loops the moment an interface exists.
+- **`supportsMulticast()` was dropped from the Android interface filter.** It is per-driver and its
+  answer differs by OEM and API level; a wrong `false` on a working `wlan0` means this transport
+  silently hears nobody and is heard by nobody. The join attempt is authoritative (`joinGroup` throws
+  on an interface that cannot carry multicast, and `bind` already catches per interface), so on
+  Android the attempt *is* the test. The desktop factory keeps the filter, matching `JmdsBridge`'s
+  rule, where virtual adapters make it earn its place.
+
+And one defect the transport shipped with for part of this session, found on a second pass and worth
+recording because of *how* it hid:
+
+- **The shared state was documented as "lane-confined, therefore lock-free" — and it was not.**
+  `startReceiveLoops` launches **one blocking receive loop per interface** on the same dispatcher, and
+  the default dispatcher is `Dispatchers.IO`, which runs them in parallel; the sweep loop is a third
+  writer. `StandardEndpointDirectory`'s KDoc is explicit that it is not thread-safe and that "the
+  owner guards access", so two interfaces hearing two peers at once meant two threads mutating one
+  `LinkedHashMap` — whose classic outcomes are a corrupted map and an entry list that loops forever.
+  `NsdTransport` can keep a bare map because the platform hands it one callback at a time; **here the
+  concurrency is ours, so the guard has to be ours too.** The state is now behind
+  `PlatformLock` (the same reentrant monitor `CompositeDiscovery` uses), held across state transitions
+  only — never across a socket send or receive. Pinned by a new JVM-only suite (see below) that
+  **was verified to fail against the unguarded version** before the guard was restored.
+  The lesson for the next transport: a comment claiming a serial lane is a load-bearing claim, and it
+  needs to name *what makes* the lane serial.
+
+### Files changed
+- **Add:** `core/discovery/src/commonMain/.../multicast/MulticastProtocol.kt` — announcement codec
+  (prefix `FLASH_MCAST`, `v=1`, identity fields + `port`), bounded to one Ethernet frame by degrading
+  model → name → optional fields rather than fragmenting; `decode` is total (never throws on hostile
+  input) and discards unknown keys instead of failing the datagram on them.
+- **Add:** `core/discovery/src/commonMain/.../multicast/MulticastSocketFactory.kt` — the socket seam
+  (`bind` → one `MulticastSocketBinding` per interface; `MulticastDatagram` with content equality).
+- **Add:** `core/discovery/src/commonMain/.../multicast/MulticastTransport.kt` — `FlashRadioTransport`:
+  lease map, announcement burst + jittered cadence, rate-limited first-contact reply, `Presence` on
+  every unchanged re-announcement, `Lost` on lease expiry, GHOST/ECO mode support, full-rebind
+  `restartBrowsing`, and the degraded-bind repair above.
+- **Add:** `core/discovery/src/androidMain/.../multicast/AndroidMulticastSocketFactory.kt` — per-interface
+  join; `WifiManager` multicast lock only below API 34 (mirrors `NsdTransport`'s threshold), released on
+  close and on a failed bind.
+- **Add:** `core/discovery/src/jvmMain/.../multicast/JvmMulticastSocketFactory.kt` — the desktop twin
+  without the lock.
+- **Add:** `core/discovery/src/commonTest/.../multicast/MulticastProtocolTest.kt` (8 tests) and
+  `MulticastTransportTest.kt` (15 tests) — protocol round trip and hostile input; address-from-source,
+  self-filter by identity, protocol-compat gate, address move → Updated, unchanged → Presence, lease
+  expiry → Lost, announce on every bound socket, no reply to known peers, GHOST suppresses announcing
+  but keeps listening, stop/rebind lifecycle, and a degraded start repairing itself.
+- **Add:** `core/discovery/src/jvmTest/.../multicast/MulticastTransportConcurrencyTest.kt` (2 tests,
+  JVM-only because it needs real threads, a barrier and a dwell) — no two threads inside the directory
+  at once, for inbound datagrams arriving together and for a sweep racing a sighting. Verified to fail
+  (both tests, at the overlap assertion) when the lock is stubbed out.
+- **Modify:** `app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt` — constructs
+  `AndroidMulticastSocketFactory(appContext)` + `MulticastTransport` and adds it as a second transport.
+- **Modify:** `desktop/src/jvmMain/.../DesktopEngine.kt` — same, with `JvmMulticastSocketFactory()`.
+- From the same session, still uncommitted and covered by the entries above rather than this one: the
+  JmDNS advertised-TTL fix, the `NsdTransport.handleMonitorLost` guard removal, the empty-TXT retry
+  budget, and the desktop trust-list observability fix.
+
+### Verification
+Command run:
+```
+./gradlew :core:discovery:jvmTest :core:discovery:testAndroidHostTest :core:engine:jvmTest
+```
+Result: **PASS** — `BUILD SUCCESSFUL in 15s`. Counts from the JUnit XML: `jvmTest 63 tests, 0 failures`;
+`testAndroidHostTest 131 tests, 0 failures`. The new suite runs on **both** targets (23 tests each on
+`jvmTest`/`testAndroidHostTest`, plus the 2 JVM-only concurrency tests = 25 on `jvmTest`).
+
+```
+./gradlew :desktop:compileKotlinJvm :app:compileDebugKotlin
+```
+Result: **PASS** — `BUILD SUCCESSFUL in 32s` (both composition roots compile with the transport wired).
+
+### What is NOT verified, and cannot be from here
+**No byte of this transport has crossed a real LAN.** This agent's shell is network-isolated: a
+listener it starts is invisible to the host's `netstat` and unreachable from the LAN. Every claim
+above is therefore a claim about code and tests, not about the two devices. Unverified:
+- whether the phone and the desktop actually see each other's announcements;
+- whether the desktop's **inbound UDP 45823** is permitted. This is a live risk and needs a human: the
+  earlier `New-NetFirewallRule` covered **TCP 45822** for the JBR `java.exe`, and blocked UDP 45823
+  would present exactly as "the transport is silent" — the same blind alley as the empty-TXT bug.
+- whether adding a second transport changes anything the user sees on Android↔Android (expected: only
+  the disappearance of peers that are actually gone, since the composite dedups by device id).
+
+### Known issues
+- **Windows firewall / UDP 45823** — *resolved, and my earlier warning was wrong.* The existing rule
+  `Flash desktop (JBR 21 java.exe)` is `Proto: Any / Port: Any`, so inbound UDP 45823 was already
+  allowed; no new rule is needed. What that rule's scope DOES mean is subtler and more interesting:
+  it is **program-scoped**, so it only covers the JBR `java.exe`. A desktop app launched under any
+  other JDK is invisible to it — and the phone reaching the *harness* (a Gradle `JavaExec`, i.e. that
+  JBR) while failing to reach the *app* makes "the app was listening under a different JVM" a live
+  hypothesis for the phone's 4 s connect timeout. Procedure to confirm is precondition 6 of
+  `PAIRING-GATE-RUNBOOK.md`.
+- The interop harness (`DesktopInteropHarness` / `DesktopEndpointFixture`) now includes the multicast
+  transport too (2026-09-14). It had JmDNS only, so `interopHarness --args="discover 30"` was
+  measuring the one path that cannot describe this phone and reporting `0 distinct peer(s)` against a
+  device that was up and reachable — a gate that cannot see what the product sees is not a gate.
+- Group/port `224.0.0.168:45823` is ours by convention only. A future LAN device squatting on it would
+  be read as a peer; the format version (`v=1`) plus the protocol-compat gate is what stops us acting
+  on it.
+- The composite's dedup tie-break among equally-ranked transports — `nsd`, `jmdns` and `multicast` are
+  all unranked, so all tie — is "most recently seen wins"
+  (`core/discovery/src/commonMain/.../core/CompositeDiscovery.kt:671-700`). With two value-identical
+  views of one peer this is invisible; a *field* difference between them would surface as an `Updated`
+  event on whichever view ticked last. Not investigated further: this change does not introduce the
+  tie-break, it only adds a third equally-ranked view.
+- Two pre-existing compiler warnings are left alone because they are not this change:
+  `NsdTransport.kt:307` ("Condition is always 'true'") and the deprecated `NsdManager.resolveService`
+  path.
+
+### Why a working file transfer does NOT imply pairing works (asked by the human, 2026-09-14)
+
+The human transferred 100 MB desktop → phone *with this change in the tree*, by hand, and asked how
+pairing can then fail. Both observations are correct and they measure different things:
+
+- **Transfers and chat are not trust-gated.** `RealFlashTransferRepository`'s constructor has no
+  `isTrustedPeer` parameter at all. A transfer needs discovery (the sender must know the receiver's
+  address and port), a live WebSocket session, and the accept gate — and nothing else. Only **calls**
+  are gated on pairing, plus pairing itself and PTT.
+- **`"Couldn't reach <peer>"` is not a network error.** It is emitted the moment `sendToPeer` returns
+  false, which `PairingCoordinator` documents as *"there is no live session at all"* (~line 138). The
+  phone's `beginPair … fingerprintKnown=false` is the same fact from the other side, since the
+  fingerprint arrives in the peer's hello, which also rides a session. Two symptoms, one cause: **no
+  session at the moment Pair was tapped.**
+- `interopHarness --args="send 192.168.0.188 45822 testfile.bin"` succeeds because it calls
+  `connectManual(host, port)` — a **hardcoded dial that never consults the peer roster**. It proves the
+  WS handshake, the session registry and the transfer pipeline (including the `Paused` → `resume`
+  accept gate) all work. It proves nothing about discovery, because it does not use it, and nothing
+  about pairing, because it does not involve it.
+
+So the transfer proves a session *existed then*; Pair failed because none existed *then*. Wired into
+the runbook as a warning above L2, because "the transfer worked, so pairing should work" is exactly
+the inference that made this look like a pairing bug.
+
+### Meanwhile, on hardware: the discovery half is CONFIRMED
+
+Two live runs later the same day, with the same phone:
+
+| | `interopHarness --args="discover N"` |
+|---|---|
+| Before (JmDNS only) | `[discover] window closed; 0 distinct peer(s): []` |
+| After (JmDNS + multicast) | `Multicast bound on wireless_32768 (224.0.0.168:45823)` then `[peer] id=0a3bd2e8… name=Prince Ayaata addr=192.168.0.63:45822` |
+
+In the same log JmDNS was still failing to describe that phone
+(`requestServiceInfo(Flash Prince Ayaata (2)) failed`), i.e. the hollow-TXT state that made the
+desktop unable to build an endpoint for it. The multicast datagram carried identity, address and
+port together, so it did not care. **The desktop→phone discovery direction is closed.** Note the
+phone's address had changed (`.188` → `.63`): take it from the discovery output, never reuse a typed
+one.
+
+### Pairing: WIRED INTO THE HARNESS, and PROVEN over the wire (2026-09-14)
+
+The harness could not pair at all — its own header said *"Pairing (G2/G6) is NOT wired on desktop"* —
+so a Pair tap against it produced `Still can't reach Harness discover` after exactly 3 s
+(`FINGERPRINT_WAIT_MS`), which is indistinguishable from a real failure. That is now fixed, and the
+fix is deliberately NOT a harness-only responder:
+
+- **`FlashPairingCoordinator` moved from `:desktop` into `:core:security`'s `jvmMain`** (next to
+  `DefaultFlashPairingProtocol`). Two reasons: the harness must exercise *the same code* the app the
+  human tests runs — "a gate that cannot see what the product sees is not a gate", the rule that put
+  the multicast transport into the harness the same day — and it was about to become the **third copy
+  of the same wire codec** (the app keeps its own because `:app`'s `PairingFraming` is `internal`).
+  One codec, one coordinator, two hosts. `:desktop` keeps a 12-line UI adapter at its edge, because a
+  Compose-era `NearbyTrustedPeerUi` must not enter a published security module's API.
+- **`interopHarness` gained `pair [seconds]` (L2, responder) and `pair <host> <port> [seconds]` (L3,
+  initiator)**, driven by `HarnessPairingConsole`. It prints the numeric-comparison code and waits for
+  a literal `y`; end-of-input is a decline, so an unattended run cannot silently trust a peer. Every
+  other verb answers pairing frames at the protocol level but never steals stdin — during
+  `send`/`receive` a blocking read would sit in the middle of a run.
+- **Both sides' state dirs differ per role** (`flash-interop-pair` / `…-pair-init`): the dir holds the
+  device id, which is the multicast self-filter *and* the session key, so one identity wearing both
+  roles would filter itself out of discovery.
+- **Evidence it works without a phone** — `DesktopPairingLoopbackTest` (new, `:core:engine` jvmTest):
+  two endpoints dial over loopback, exchange hellos on session-up, derive codes, and both persist
+  trust. First run's failure message is worth recording, because it shows the handshake completing:
+  `responder … msgs=[Paired with Harness pairtest-init.] | initiator … msgs=[Connecting to Harness
+  pairtest-resp…, Paired with Harness pairtest-resp.]` — the assertion was wrong (it checked the
+  responder for its own id), not the protocol.
+- **`FlashPairingCoordinatorTest`** (new, `:core:security` jvmTest) pins the four things the ladder
+  depends on: both sides derive the **same** code, both persist and publish trust, a `beginPair` that
+  lands **before** the peer's hello still completes (the phone's `fingerprintKnown=false` case), and
+  the two failure wordings stay distinct. It also guards against passing for a trivial reason: a test
+  asserts two *different* identity pairs derive *different* codes.
+
+**One bug caught by the first live run of the new verb:** `pair` passed its window through raw
+`toLongOrNull()` instead of `secondsArg()`, giving it a **0 ms window** — the verb exited instantly.
+The file's own KDoc records that the same unit confusion bit `discover` on its first live run. Units
+now go through the helper.
+
+**One bug caught while writing the loopback test's assertions:** the fixtures keep durable trust in
+`java.io.tmpdir`, so a second run would have found the peer already trusted and passed **without
+pairing**. The test now revokes everything on both sides before it starts, and asserts exactly one
+trusted peer — a test that can pass for the wrong reason is worse than no test, and this is the only
+automated cover the desktop's pairing has.
+
+Verification: `:core:security:jvmTest 21/0`, `:core:engine:jvmTest 10/0`, `:core:discovery:jvmTest
+63/0`, `:core:discovery:testAndroidHostTest 131/0`, plus `:desktop:compileKotlinJvm` and
+`:app:compileDebugKotlin` — `BUILD SUCCESSFUL in 33s`.
+
+### HARNESS PAIRING CONFIRMED on hardware (2026-09-14), and the app half split cleanly
+
+Against a real phone (`Flash V760`, `92d2c543-…`, `192.168.1.104:45822`), from a clean state dir:
+
+```
+[pair] dialing 192.168.1.104:45822 ...
+[pair] session up; peer=Flash V760 id=92d2c543-bd11-40e6-a3ac-065079a6eb7c
+[pair] code = 758117 — COMPARE with the peer's screen, then accept there
+[pair] Confirmed peer=Flash V760 code=758117
+[pair] Paired with Flash V760.
+[pair] PAIRED — Flash V760 (92d2c543-…)
+```
+
+That is the whole L3 handshake against real hardware through the moved `FlashPairingCoordinator`, with
+the operator's accept happening on the phone. Note what this retires: the runbook's old rule "never
+test Pair against the harness" — and with it the previous day's conclusion that a Pair tap "just
+times out." It timed out because the harness had no pairing code, not because the protocol was broken.
+
+**The app half then split into a pass and a fail, which is exactly why both hosts matter.**
+
+- **PASS — discovery, in the product.** `:desktop:run` logged
+  `I/MulticastTransport: Found Flash V760 at 192.168.1.104:45822 via wireless_32768`, i.e. the new
+  transport found the phone inside the real app, while JmDNS produced nothing for it. The user's
+  Nearby row existed and named the phone, so the composite merged it and the UI saw it.
+- **FAIL — the session, in the product.** Tapping Pair produced `[flash-desktop] pairing: Couldn't
+  reach Flash V760.` — and `Couldn't reach` means `sendToPeer` returned false, i.e. **no live
+  session at the moment of the tap**. Pairing was never reached; the layer below it was missing.
+
+Two candidate causes, both now instrumented rather than argued about:
+
+1. **The 5 s dead window.** The desktop dials from a `delay(AUTO_CONNECT_SWEEP_MS)` loop, so a peer
+   that appears just after a tick is not dialled for up to 5 s — while `beginPair` gives up waiting
+   for the peer's hello after **3 s** (`FINGERPRINT_WAIT_MS`). A user who taps Pair the moment the row
+   appears can therefore lose before the first dial. The app host has the same window (its sweep is
+   also 5 s), so this is a shared, real design gap, not a desktop quirk. **Not changed yet** — the
+   next run should distinguish it from (2) first: waiting ~6 s before tapping should make it pass.
+2. **An id mismatch** between the discovered endpoint and the WS-hello id, which would make both the
+   auto-dial guard and `sendToPeer` miss a session that exists (and would show up as the phone's
+   session churning every 5 s while the desktop dials again and again).
+
+Instrumentation added so the next tap names the cause instead of leaving it to inference:
+
+- `DesktopEngine`'s `sendToPeer` now logs **both** branches like the app host, and on a miss prints
+  the **set of ids it does hold sessions for**: `Pairing sendToPeer id=… has NO session; active
+  sessions=[…]`. A miss that prints only the id it looked for cannot be told from "we never connected
+  at all" — which is the ambiguity that made this session's earlier pairing failures so expensive.
+- The harness task now forces **UTF-8 stdout** (`-Dstdout.encoding=UTF-8`, plus the pre-18
+  `sun.stdout.encoding`). JDK 18+ takes `stdout.encoding` from the console, so on a cp437 Windows
+  console every "—" and "…" in the output rendered as `∩┐╜` — in the very log a human reads during a
+  hardware run. The strings are shared with the Android UI where they render correctly, so the fix
+  belongs in the launcher, not the messages.
+
+### Next step
+Run the desktop app with a clean capture (**`--console=plain` and tee it to a file**: Gradle's progress
+renderer overwrites lines, and the two log lines that matter most were missing from the last paste for
+that reason), then tap Pair *after* the peer row has been up for ~6 s and read three lines:
+`Discovered endpoints: …id=… at …`, `Auto-connect dialing/result peer=… success=…`, and the new
+`Pairing sendToPeer id=… has NO session; active sessions=[…]`. Together they distinguish the dead
+window from an id mismatch. If it pairs, (1) is confirmed and the fix is to dial on discovery
+(reactive) instead of only on a 5 s poll — in both hosts, since the app host shares the window.
+
+### The product's bring-up aborted on a PARTIAL discovery failure — the third candidate, and the one that fits (2026-09-14)
+
+The previous entry left two candidates and asked the next run to choose between them: (1) the 5 s dial
+window vs the 3 s fingerprint wait, (2) a discovery-vs-hello id mismatch. Both are real, and both are
+now instrumented. Neither explains what the run actually printed, because **both of them would still
+have printed the roster line**:
+
+```
+I/WS: Discovered endpoints: 'Flash V760' id=92d2c543-… at 192.168.1.104:45822
+I/WS: Auto-connect dialing peer='Flash V760' id=92d2c543-… at 192.168.1.104:45822
+```
+
+The run had neither — with a peer it could see in the UI, and with `Found Flash V760 …` in the console
+proving the multicast transport was bound and receiving. Those two facts together pin the failure at a
+single statement, because the roster collector and the dial loop are launched **five lines below** it:
+
+```kotlin
+val startedAll = runBlocking { discovery.startAll(serverPort, identityFrame) }
+require(startedAll.isSuccess) { "discovery startAll failed: ${(startedAll as FlashResult.Failure).error}" }
+// …auto-dial loop, roster collector, session collectors, all BELOW this line
+```
+
+**The defect.** `CompositeDiscovery.startAll` returns `Failure` if *any* transport failed at advertising
+**or** browsing, while the transports that did start keep running — that is its documented contract, and
+it is the right one. The product turned that partial news into a hard abort. So one unhappy radio
+(here: JmDNS, which on this host has a documented `setsockopt` bind failure mode) silently disabled the
+auto-dial sweep, the roster collector and every session collector — the whole path that turns a
+discovered row into a session. The user sees a discovered peer, taps Pair, and gets `Couldn't reach`,
+which reads as a pairing bug and is a bring-up bug three layers down.
+
+**Why the harness never had it.** `DesktopInteropHarness.start` throws the same result away:
+
+```kotlin
+runBlocking { discovery.startAll(port, identityFrame) }   // ← result discarded, deliberately or not
+```
+
+That single difference is the whole of "pairing works in the harness but not in the app". The harness
+was not a better implementation; it was an *unchecked* one, and it accidentally had the tolerance the
+product lacked. It now prints the failure instead of swallowing it
+(`[discovery] startAll PARTIAL FAILURE — …`), so a half-started discovery can no longer look healthy.
+
+### Fixed
+
+- **`DesktopEngine.assemble()`** no longer `require`s the aggregate result; it logs
+  `discovery startAll reported a partial failure; continuing with the transports that started — …` and
+  proceeds. Nothing below it is conditional on a radio that the user cannot see.
+- **`DesktopEngine.start()`** logs the aborting throwable (`desktop stack bring-up FAILED`) before
+  parking it in `startError`. A bring-up failure is precisely the case where the console is what a
+  human reads, and this one was reachable only through the transfers tab's error surface.
+- **`DiscoveryEngineHolder`** (the Android host) had the identical `check(result.isSuccess)` after the
+  identical `startAll`. Same fix, same reasoning: the phone's bring-up could be killed by one radio
+  too, which is the other half of "couldn't reach on the phone and also still couldn't reach".
+- **`DesktopPairingLoopbackTest`** now quotes both coordinators' status lines, both phases and both
+  session-id sets when its first wait times out. That wait is the one that failed, and it reported
+  `timed out waiting: responder must see the request — ` with nothing after the dash.
+
+### Verification
+
+New suite `:desktop:jvmTest` — the module's first test source set, and the only place `DesktopEngine`
+itself is ever booted:
+
+```
+./gradlew :desktop:jvmTest
+```
+
+- `DesktopEngineBootTest` — `assemble()` reaches `ready` with no `startError` over temp state dirs. This
+  is the assertion that would have failed on the evening above, in one line, on any machine.
+- `DesktopEngineAutoDialTest` — **two engines in one JVM** discover each other, and each must arrive at
+  a live session with the other. That is the broken link asserted hermetically: roster →
+  `AUTO_CONNECT_SWEEP_MS` → `activeSessions` → the session `pairing.sendToPeer` rides. Observed:
+
+```
+I/WS: Auto-connect dialing peer='Flash Desktop' id=8cff0839-… at 192.168.1.110:61686
+I/WS: Auto-connect result peer=8cff0839-… success=true
+I/WS: Session up peer='Flash Desktop' id=8cff0839-… outbound=true — sending pairing hello
+```
+
+It also reached the real phone from the test JVM (`dialing peer='Flash V760' … success=true`), which
+retires candidate (2) for this host: the discovered endpoint id and the WS-hello id are the same id.
+
+`tasks.named<Test>("jvmTest")` sets `-Djava.net.preferIPv4Stack=true`, the same flag `compose.desktop`'s
+`run` sets, so the suite measures the environment the app actually runs in rather than a kinder one.
+
+Full-suite runs after the change: `:core:discovery:jvmTest`, `:core:security:jvmTest`,
+`:core:engine:jvmTest` (10 tests), `:desktop:jvmTest` (2 tests) — all green, plus
+`:app:compileDebugKotlin` and `:desktop:compileKotlinJvm`.
+
+### Known flake, left standing on purpose
+
+`DesktopPairingLoopbackTest` failed once inside a multi-module invocation and passed 5/5 alone
+(~25 s each). The failure was the 3 s `FINGERPRINT_WAIT_MS` window expiring while the responder's
+pairing hello had not arrived: the initiator's `sendToPeer` was fine and a session was live. A hello
+over loopback does not take 3 s, so this is JVM scheduling under load, not protocol loss — `WsSession`
+delivers inbound text through a **buffered** `Channel`, so an early hello cannot be dropped.
+
+What it does mean is that the exchange has no recovery: the hello carrying our fingerprint is sent
+**once**, on the session-up edge, and `beginPair`'s only fallback is to ask the human to tap again
+(`Still can't reach … then Pair again`). That is worth fixing properly — a `req` flag on the hello so
+an unknown peer can be *asked* for its fingerprint, re-requested during the wait — but it is a wire
+change with two codec copies (the app host's and `core/security`'s), so it is recorded here rather than
+done speculatively on the night the abort above was found.
+
+### Side finding from the new `:desktop:jvmTest`: connect glare can end with ONE side holding the session (2026-09-14)
+
+Two engines in one JVM discover each other and dial **simultaneously** — which is `registerSession`'s
+connect-glare case (ERROR-023), and which is *routine in the product*: the desktop's sweep and the
+phone's sweep are both 5 s, so both devices normally dial each other inside the same window.
+
+One `--rerun-tasks` run of `DesktopEngineAutoDialTest` ended with **alpha holding a session and beta
+holding none after the full 30 s window**:
+
+```
+I/WS: Auto-connect dialing peer='Flash Desktop' id=09168aad-… at 192.168.1.110:45822
+I/WS: Auto-connect result peer=09168aad-… success=false detail=Failure(error=ConnectionTimeout(timeoutMs=6000, message=WS handshake timed out))
+I/WS: Session up peer='Flash Desktop' id=ffa3584c-… outbound=false — sending pairing hello
+```
+
+A `ConnectionTimeout` on the handshake means the listener accepted the TCP connection and then never
+answered the WS hello. Three sweeps later the same dial got `Connection refused` (the server had closed
+by then — teardown). The interpretation that fits: the glare **loser** is dropped silently, so its
+dialer hangs the full 6 s rather than being told it lost — and in that run the two sides did not
+converge on the winning connection within 30 s. `resolveGlareTie` (`existingOrigin <= candidateOrigin`,
+origin = the dialer's device id) is supposed to make both sides keep the same connection.
+
+Not diagnosed further here, and deliberately not papered over: the test asserts the **union** of the two
+directions (a session must exist somewhere), which is what the abort bug needed, and its KDoc says so.
+Worth a focused follow-up, with per-side logging (both engines print the same `I/WS:` lines into one
+stream, which made this run's id→engine mapping ambiguous): either the sweep's dial should surface a
+*glare loss* as a distinct result instead of a 6 s timeout, or the loser should be told immediately.
+
+The same run is also the strongest evidence yet that the product's auto-dial works end to end, since
+these are real `DesktopEngine`s:
+
+```
+I/WS: Auto-connect dialing peer='Flash V760' id=92d2c543-… at 192.168.1.104:45822
+I/WS: Auto-connect result peer=92d2c543-… success=true
+I/WS: Session up peer='Flash V760' id=92d2c543-… outbound=true — sending pairing hello
+```
+
+It also discovered a second peer on the LAN, `Prince Ayaata` (`0a3bd2e8-…` at `192.168.1.113:45822`),
+whose dials fail with `PeerUnavailable … Connection refused` — expected when that app is not listening.
+
+### The second run: the abort was gone, the dial still was not there — dialing on the discovery edge (2026-09-14)
+
+The run after the abort fix cleared it and still failed, which retired the first explanation:
+
+```
+I/WS: WS transfer server listening on port 45822 tls=false
+I/MulticastTransport: Found Flash V760 at 192.168.1.104:45822 via wireless_32768
+W/WS: Pairing sendToPeer id=92d2c543-… has NO session; active sessions=[]
+[flash-desktop] pairing: Couldn't reach Flash V760.
+```
+
+No `discovery startAll reported a partial failure` line — so `startAll` succeeded and nothing aborted. The
+peer was found, the app was up, the tap still landed on an empty session table with no dial line. That
+leaves the window the previous entry had already sized up and left unfixed: **the desktop only dialed on
+a 5 s poll, and `beginPair` gives up after 3 s.** A user who taps Pair the moment the row appears loses a
+race that began before they could see it, and `Couldn't reach …` reads exactly like a pairing bug. The
+run is the measurement: row discovered, `active sessions=[]`, zero dial attempts.
+
+### Fixed — dial on the discovery edge, in BOTH hosts
+
+- **`DesktopEngine`**: `dialIfNeeded(network, endpoint)` is now called from a collector on
+  `discoveredEndpoints` (immediate) **and** from the 5 s sweep (retry path, unchanged). The sweep stays:
+  it is what retries a refused or timed-out dial. The dial is launched, not awaited — the sweep used to
+  await it inline, so one unreachable peer stalled the whole pass for the full 6 s handshake timeout and
+  every peer after it in the list waited its turn.
+- **`DiscoveryEngineHolder`** (Android): the same, reusing the existing `runAutoConnectSweep` — so the
+  phone inherits the `AutoConnectGate` attempt-bounding and the `isReconnectInFlight`/`hasLiveSession`
+  guards for free. The phone was always the other half of this: whichever device taps first is the one
+  that loses the window.
+- A local `dialing` set guards `connectManual` in `DesktopEngine`. `isReconnectInFlight` covers the
+  resilience layer's redials, **not** `connectManual`, so without it the reactive edge and a sweep tick a
+  millisecond later would both dial the same peer — and two crossings between one pair of devices is
+  precisely the connect-glare case (`registerSession`, ERROR-023) where the loser hangs 6 s.
+
+Measured effect, from `:desktop:jvmTest` — dials now happen on the discovery emission, not up to 5 s
+after it:
+
+```
+I/WS: Auto-connect dialing peer='Flash Desktop' id=a5a95f41-… at 192.168.1.110:45822
+I/WS: Auto-connect dialing peer='Flash V760' id=92d2c543-… at 192.168.1.104:45822
+```
+
+### `~/.flash/desktop.log` — because the console is not a record
+
+`DesktopMain.installDesktopLogSink()` tees `FlashLog` to stderr **and** to `<stateDir>/desktop.log`,
+truncated per run, in the platform sink's exact `I/WS: message` format so every grep above still works.
+This is not convenience: two diagnoses in a row were argued from the *absence* of a line in a pasted
+console, where `:desktop:run` is a Gradle `JavaExec` under a progress renderer that rewrites lines. The
+file is complete and ordered. Deliberately installed in `main()`, not in `DesktopEngine` — the engine is
+constructed by tests, which must not write to a user's home directory.
+
+### Not a separate process — asked and checked
+
+The UI is not a second process and cannot be the reason anything fails to connect. `DesktopMain.main()`
+constructs `DesktopEngine()` and calls `engine.start()` in the **same JVM** that composes the window;
+discovery, the WS server, the multicast sockets and the session machinery are coroutines on that
+engine's scope, and their `I/WS:` lines land on that process's stderr.
+
+Resource use on the same run (reported as 100% CPU / 97% RAM) is not yet attributed: `:desktop:run`
+puts a Gradle daemon **plus** the forked app JVM on the machine, so a system-wide RAM percentage is not
+the app's. Named consumers visible in code: JmDNS's per-interface responders and timers (the desktop runs
+JmDNS *and* multicast by design — the additive rule), one blocking multicast receive thread per
+interface, and Compose/Skiko rendering, which is CPU-bound when there is no GPU acceleration.
+
+### ROOT CAUSE: `DesktopMain` cancelled the engine's scope one line after starting it — and THAT is why the harness paired and the app did not (2026-09-14)
+
+The answer to the question the whole session kept circling: *why does `interopHarness --args="pair …"`
+work while `:desktop:run` cannot hold a session?* **Because the harness has no Compose `application { }`,
+and the desktop has this:**
+
+```kotlin
+public fun main() = application {
+    val engine = remember { DesktopEngine() }
+    engine.start()
+    Window(...) { FlashTheme { DesktopShell(engine) } }
+    engine.stop()      // ← a bare statement in a COMPOSABLE body
+}
+```
+
+A composable body is not `main`: it re-executes, and `Window(...)` does **not** block until close —
+`application { }` is what keeps the process alive (its `runBlocking` parks the main thread; that is
+literally what the thread dump shows). So `engine.stop()` ran immediately after the first composition,
+~300 ms after `start()`, and called `scope.cancel()` on an engine whose `assemble()` was still in
+flight:
+
+- The **blocking** half of the bring-up still completed — the WS server bound, JmDNS and multicast
+  started, and the transports kept their own loops — so the console looked *healthy*: `Multicast bound`,
+  `Found Flash V760`, leases expiring on schedule.
+- Every `scope.launch` from that moment on was created on a cancelled scope and silently never ran:
+  the dial triggers, the roster collector, the session collectors, and the session-up pairing hello.
+  Hence **a peer in the roster, `active sessions=[]` forever, not one dial attempt, and a Pair tap that
+  reports `Couldn't reach …`** — the exact symptom the session opened with, including "nothing happens
+  if I click pair on desktop".
+- `discoveryImpl?.stopAll()` / `networkImpl?.stop()` inside `stop()` were **no-ops**, because at that
+  instant `assemble()` had not yet assigned those fields. That is why the transports outlived the engine
+  that owned them — and why every "the transports are fine, therefore discovery is fine" reading of the
+  console was wrong.
+- `_ready` stayed false, so the shell stayed in its loading state: the transfers tab never resolving,
+  which earlier entries had noted and attributed elsewhere.
+
+**How it was finally caught, after two wrong theories.** Not by reading the console — by reading the
+live process. `jstack` on the stalled app showed 19 idle `DefaultDispatcher` workers, **no thread
+anywhere inside `assemble()` or `startAll`**, no BLOCKED threads and no deadlock, while the multicast
+receive thread sat in `receive()` and the lease-expiry lines kept appearing. "The bring-up is not
+running, did not throw, and its transports are alive" has exactly one shape: something cancelled the
+scope. The `[bring-up]` breadcrumbs added in the same round then made it self-evident on the next run —
+the *fixed* log reads, with elapsed times:
+
+```
+I/WS: [bring-up] assemble entered (+0ms)
+I/WS: [bring-up] ws server bound port=45822; entering discovery startAll (+113ms)
+I/WS: [bring-up] discovery startAll returned (ok) (+315ms)
+I/WS: [bring-up] dial triggers armed (discovery edge + 5000ms sweep) (+316ms)
+I/WS: [bring-up] session collectors armed — assemble complete (+319ms)
+I/WS: Discovered endpoints: 'Flash V760' id=92d2c543-… at 192.168.1.104:45822
+I/WS: Auto-connect dialing peer='Flash V760' id=92d2c543-… at 192.168.1.104:45822
+I/WS: Session up peer='Flash V760' id=92d2c543-… outbound=true — sending pairing hello
+I/WS: Auto-connect result peer=92d2c543-… success=true
+```
+
+**A live session with the phone, from the real app** — the first time.
+
+### Fixed
+
+- **`DesktopMain`**: teardown moved into `DisposableEffect(Unit) { onDispose { engine.stop() } }`,
+  keyed on `Unit` so it disposes only when the content leaves the composition (exit /
+  `exitApplication`), never on a recomposition.
+- **`DesktopEngine.stop()`** logs `engine stop() — cancelling scope (ready=…)`, first and
+  unconditionally. A premature teardown is otherwise indistinguishable from a stalled engine: the
+  transports keep running and the roster still fills. This line is the tell, and it now exists.
+- **`DisposableEffect(Unit)` verification caveat, stated plainly:** the fix is confirmed by
+  `assemble complete (+319ms)` followed by dials and a session — i.e. by the absence of an early
+  cancellation. Compose's real exit path was not exercised (the run was killed, not closed through
+  `exitApplication`), so "resources are released on a clean exit" remains unverified.
+
+### What this says about the two earlier entries in this log
+
+Both fixes in them are real and stay: a partial `startAll` failure must not abort the composition
+(`require` removed in both hosts), and a discovered peer must be dialled on the discovery edge rather
+than up to 5 s later. Neither was the blocker — the scope was already dead before any of it mattered —
+and neither was harmful. But the lesson is worth keeping: two rounds of reasoning from a *pasted
+console* produced two plausible, real, and **wrong** explanations, because Gradle's progress renderer
+and a forked JVM's stderr make absence-of-a-line unfalsifiable. `~/.flash/desktop.log` and `jstack`
+settled it in one round.
+
+### The desktop pairing dialog: a plain `val` captured by a `remember`ed `derivedStateOf` (2026-09-14)
+
+The request showed on the phone and never on the PC. The engine was innocent — a headless test proved
+`beginPair` publishes `AwaitingPeerConfirmation` on the initiator and `RequestReceived` on the responder,
+with matching codes — and the shell's own collector proved the flow reached it:
+`[shell] engine pairing state: phase=RequestReceived code=856950`.
+
+Two log lines, one boundary apart, named the bug:
+
+```
+[pairing-diag] dialog body: request=true phase=Idle visible=false
+[shell] engine pairing state: phase=RequestReceived code=856950
+```
+
+`FlashPairingDialog` renders iff `visible = request != null && phase != Idle`. The **request was handed
+down fresh; the phase arrived stuck at `Idle`** — so the body took its early return, drew no scrim and no
+card, for a pairing the phone was displaying at that exact moment.
+
+**The cause** was in `DesktopShell`:
+
+```kotlin
+val pairingPhase = when (pairingUi?.phase) { … }          // a PLAIN val, computed in the body
+val nearby by remember(engine, engine.discovery) {
+    derivedStateOf { … NearbyUiState(pairingRequest = pairingUi?.let { … }, pairingPhase = pairingPhase) }
+}
+```
+
+`pairingUi` is a `collectAsState()` delegate, so reading it **inside** the lambda registers a snapshot
+read and the derived state re-evaluates when it changes. `pairingPhase` was a plain value computed
+outside and captured by the closure, and a `derivedStateOf` does not track plain values: it stayed frozen
+at the composition that *created* the remembered derived state — the first one, when no pairing existed.
+Fresh request, permanently `Idle` phase. Nothing platform-specific, and nothing Android-vs-desktop.
+
+**Fixed** by deriving the phase inside the lambda from the same tracked read
+(`pairingPhaseOf(ui?.phase)`, a private function — a function, not a `val`, precisely so it cannot be
+hoisted back out and re-captured). Verified with the same harness-driven request:
+
+```
+[pairing-diag] dialog body: request=true phase=RequestReceived visible=true
+```
+
+The general rule for that screen, written at the call site: **anything a `derivedStateOf` lambda reads
+must be snapshot state, or read inside the lambda.** A plain `val` computed above it is a constant from
+the derived state's point of view. This is the same family as the two other stale-read bugs this shell
+already carries comments about (the trust-store derivation, and `remember` keys that read a
+non-observable getter).
+
+**Accepting**, asked and answered with a test rather than a hope: the dialog's Accept button calls
+`acceptLocal()`, and `DesktopEnginePairingTest` now calls the same thing and asserts four frames plus
+durable trust on **both** sides — `Confirmed` on both, `trust.isTrusted(peer)` on both.
+
+**Ruled out along the way**, with evidence rather than reasoning: the dialog body *was* re-entering (so
+not a dead composable), the platform is **not** at fault, and Compose Multiplatform **1.9.3** is pinned —
+long past the 1.6.11 popup/dialog positioning fix, so that class of known desktop bug does not apply
+here. The `AlertDialog`-based group sheet is a separate matter: on desktop that family renders through
+`androidx.compose.ui.window.Dialog`, a separate native window with its own stacking, which is a real
+difference from Android and is not implicated in this bug at all.
+
+### The one-shot fingerprint hello: request/answer, loop-free (2026-09-14)
+
+Reproduced live, twice, on the *desktop↔harness* path (both endpoints run the same shared
+`FlashPairingCoordinator`, so it is the cleanest reproduction available):
+
+```
+[pair] session up; peer=Flash Desktop id=ff485975-…
+[pair] Connecting to Flash Desktop…
+[pair] Still can't reach Flash Desktop. Check that it is nearby, then Pair again.
+```
+
+A session was up. The initiator sent its hello. It never got the responder's hello back, waited out
+`FINGERPRINT_WAIT_MS` (3 s), and told the human to try again — **forever**, because the responder's
+hello is sent *once*, on its session-up edge, and nothing ever asks for it again. Any interleaving that
+loses that one frame (a session that comes up in a different order than the announcement assumes) made
+pairing permanently impossible on that connection while every other signal looked healthy.
+
+**Fixed in `core/security/.../FlashPairingCoordinator.kt`** (the shared coordinator — desktop, harness,
+and anything else that links it):
+
+- The hello carries `hrq=1` when it **asks** for the peer's hello. `onSessionUp` still announces without
+  the flag; only `beginPair` asks.
+- A receiver **answers** a request with a **plain** hello — the flag is never echoed. That is what makes
+  it terminate by construction: a request draws at most one answer, an answer draws none. No set of
+  "already answered" peers to keep, no ping-pong.
+- The initiator **re-asks** every `HELLO_RESEND_MS` (400 ms) inside the wait window — ≤ 8 asks, each
+  answered at most once — instead of only re-waiting. One lost frame is now a non-event.
+
+Verified against the same reproduction: `[pair] code = 856950 — COMPARE with the peer's screen`.
+
+**NOT yet mirrored to the phone.** The app host has its own codec —
+`app/src/main/java/com/transfer/flash/pairing/PairingFraming.kt` (`encodeHello`, `decodeInbound`) and
+`app/src/main/java/com/transfer/flash/pairing/PairingCoordinator.kt` — which does not know the flag yet.
+The change is backwards-compatible in the meantime (an older peer ignores `hrq` and behaves exactly as
+before), so this is a strict improvement and not a break: the phone simply cannot yet be the *answerer*
+of a re-ask, and cannot itself re-ask.
+
+### Still open, with locations (next session's queue)
+
+1. **Mirror the hello request/answer into the app host** — `PairingFraming.kt` (`encodeHello`,
+   `TYPE_HELLO` decode) + `PairingCoordinator.kt` (`onInbound` Hello branch, `beginPair` wait loop).
+   Same three rules: ask, answer-without-asking, re-ask inside the window.
+2. **Connect glare: the loser is dropped silently.** `JvmWsFlashNetwork.registerSession` /
+   `resolveGlareTie` (`core/network/src/{jvmMain,androidMain}`) returns `false` for the glare loser, and
+   its dialer then hangs the full 6 s `ConnectionTimeout` with no way to tell "lost a race" from "peer
+   is busy". Measured: `DesktopEngineAutoDialTest`, one `--rerun-tasks` run ended with alpha holding a
+   session and beta holding none after the full 30 s window. The reconciliation is supposed to converge
+   both sides on the min-origin connection. Do this with per-side logging first — both endpoints emit
+   the same `I/WS:` lines into one stream, which made that run's id→engine mapping ambiguous.
+3. **Desktop not showing the newly trusted peer immediately after accepting** — needs the `[shell]`
+   PAIRING lines from a live run (instrumentation is in place). The trust row *and its name* are now
+   correct after a restart (`DesktopTrustStore.load` no longer discards the name), so the remaining
+   question is the in-session update only.
+
+### Fixed this round: the trusted row's empty name
+
+`DesktopTrustStore.load()` read each `trusted.<deviceId>` key and stored `""` as the value, so the
+peer's friendly name — written correctly by `persist()` and present on disk
+(`trusted.92d2c543-…=Flash V760`) — was discarded on every relaunch. Trust survived, the name did not,
+and the trusted list came back with an unlabelled row. Regression test:
+`DesktopTrustStoreTest` builds a **second store over the same directory**, because a same-process
+assertion cannot see this (the in-memory cache still holds the name just written).

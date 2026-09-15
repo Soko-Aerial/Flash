@@ -27,6 +27,42 @@ class PairingFramingTest {
     }
 
     @Test
+    fun hello_doesNotAskByDefault() {
+        // The session-up announcement is a plain hello. If it asked, every session edge would draw an
+        // answer from the peer, and every answer would draw... nothing — but the *announcement* would
+        // still have provoked a reply it has no use for. `beginPair` is the only asker.
+        val inbound = PairingFraming.decode(PairingFraming.encodeHello("AB"))
+        assertEquals(PairingFraming.Inbound.Hello("AB", request = false), inbound)
+    }
+
+    @Test
+    fun hello_withRequest_roundTripsAndAsks() {
+        val fp = "AB:CD:EF:01:23:45"
+        val inbound = PairingFraming.decode(PairingFraming.encodeHello(fp, request = true))
+        assertEquals(PairingFraming.Inbound.Hello(fp, request = true), inbound)
+    }
+
+    @Test
+    fun hello_flagIsOnlyHonouredAtExactlyOne() {
+        // Forward-compat and hostile-input both: the flag is a request iff it carries `1`. A peer
+        // that sends `hrq=0`, or garbage, must NOT draw an answer from us — otherwise a malformed or
+        // future-peer hello could put two devices into a reply exchange neither of them expects.
+        val text = PairingFraming.encodeHello("AB").replace("fp=AB", "fp=AB hrq=banana")
+        assertEquals(PairingFraming.Inbound.Hello("AB", request = false), PairingFraming.decode(text))
+    }
+
+    @Test
+    fun hello_requestDoesNotEchoTheFlagIntoTheAnswer() {
+        // The termination proof, asserted rather than argued: a request carries `hrq`, and the answer
+        // to it (`encodeHello` with the default) does not. If this ever inverts, two peers would
+        // answer each other forever.
+        val request = PairingFraming.encodeHello("AB", request = true)
+        val answer = PairingFraming.encodeHello("CD")
+        assertTrue("the request must carry the flag: $request", request.contains("hrq=1"))
+        assertTrue("the answer must not: $answer", !answer.contains("hrq"))
+    }
+
+    @Test
     fun pairRequest_roundTripsIncludingBase64Key() {
         // Length 4 → Base64 emits '=' padding, which FlashTextFraming escapes as %3D.
         val key = byteArrayOf(0, 127, -1, 64)

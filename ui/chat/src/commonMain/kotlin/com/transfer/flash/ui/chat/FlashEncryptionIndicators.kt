@@ -18,9 +18,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -203,7 +200,6 @@ fun FlashEncryptionBadge(
  * Container styling matches [FlashAttachmentSheet]: radius24 top corners, manual drag
  * handle, navigationBars insets. All visible content stays Flash-owned (tokens only).
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FlashEncryptionSheet(
     state: FlashEncryptionBadgeState,
@@ -214,14 +210,9 @@ fun FlashEncryptionSheet(
     val typography = FlashTheme.typography
     val explainerLines = rememberExplainerLines(state)
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+    FlashSheetHost(
+        onDismiss = onDismiss,
         containerColor = colors.backgroundSurface,
-        shape = RoundedCornerShape(
-            topStart = FlashShapes.radius24,
-            topEnd = FlashShapes.radius24,
-        ),
         dragHandle = {
             Box(
                 modifier = Modifier
@@ -231,7 +222,6 @@ fun FlashEncryptionSheet(
                     .background(colors.borderSubtle),
             )
         },
-        contentWindowInsets = { WindowInsets.navigationBars },
         modifier = modifier,
     ) {
         Column(

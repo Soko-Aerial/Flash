@@ -1,15 +1,10 @@
 @file:OptIn(com.transfer.flash.core.common.annotation.FlashInternalApi::class)
 
-package com.transfer.flash.desktop
+package com.transfer.flash.core.security.pairing
 
 import com.transfer.flash.core.common.model.FlashDeviceId
 import com.transfer.flash.core.common.protocol.FlashTextFraming
 import com.transfer.flash.core.common.time.SystemTimeSource
-import com.transfer.flash.core.security.crypto.FlashFingerprint
-import com.transfer.flash.core.security.pairing.DefaultFlashPairingProtocol
-import com.transfer.flash.core.security.pairing.FlashPairingEvent
-import com.transfer.flash.core.security.pairing.FlashPairingFrame
-import com.transfer.flash.core.security.pairing.PairingPhase
 import com.transfer.flash.core.security.trust.FlashTrustStore
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
@@ -27,26 +22,48 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 /**
- * Desktop twin of `:app`'s `PairingCoordinator` — Phase 26-3 second half (ADR-035).
+ * A paired peer as the hosts display it.
  *
- * Drives the SAME commonMain protocol ([DefaultFlashPairingProtocol]) over the SAME
- * `FLASH_PAIR` wire framing, so a desktop pairs with a phone with no phone-side change: the
- * phone's Nearby screen shows the desktop as a discovered peer, either side taps Pair, both
- * dialogs display the same 6-digit numeric-comparison code, and trust persists on both ends
- * (desktop: `DesktopTrustStore`; the identity key that fingerprints it:
- * `PersistedFlashCrypto` — the P2 point of this phase).
- *
- * Differences from the app twin, all deliberate:
- * - The wire codec lives HERE rather than being shared, because the app's `PairingFraming` is
- *   `:app`-internal (not a published type) and `:desktop` cannot depend on `:app`. Byte-for-
- *   byte the same framing: `FLASH_PAIR` prefix, `t` discriminates hello/req/acc/con/paired,
- *   the ephemeral key rides Base64 in `epk` (same `kotlin.io.encoding` — JVM-safe).
- * - UI model is a plain data snapshot, not Compose: the desktop shell renders it in its
- *   pairing pane. `messages` are console-grade status lines.
- * - The begin-flow race handling (pending-pair + fingerprint poll) is ported as-is: it is
- *   protocol-level behaviour, not Android UI detail.
+ * A `core`-owned type on purpose: this class is shared, and the desktop's Nearby row model
+ * (`NearbyTrustedPeerUi`, a Compose-era UI type) must not leak into a published security module.
+ * Hosts map this at their edge.
  */
-public class DesktopPairingCoordinator(
+public data class FlashTrustedPeer(val id: String, val name: String)
+
+/**
+ * The JVM-side pairing driver: the SAME [DefaultFlashPairingProtocol] and the same `FLASH_PAIR`
+ * wire framing the phone runs, so a desktop pairs with a phone with no phone-side change.
+ *
+ * ## Why this lives here (moved 2026-09-14)
+ *
+ * It was `:desktop`'s `DesktopPairingCoordinator`. It moved into `:core:security`'s `jvmMain` — next
+ * to the protocol it drives — for two reasons:
+ *
+ * 1. **The interop harness must exercise THIS code, not a copy.** The harness is the CLI gate for
+ *    the hardware ladder; if it drove its own responder, "pairing passes in the harness" would prove
+ *    nothing about the desktop app the human actually tests. That is the same "a gate that cannot
+ *    see what the product sees is not a gate" rule that put the multicast transport into the harness
+ *    the same day.
+ * 2. **It was about to become the third copy of the same wire codec.** The app keeps its own
+ *    (`:app`'s `PairingFraming` is `internal`, so `:desktop` could not import it); a harness copy
+ *    would have been the third. One codec, in one place, is what makes a mismatch impossible.
+ *
+ * `jvmMain` rather than `commonMain` because both consumers are JVM (the desktop app and the
+ * harness) and this file uses `ConcurrentHashMap`. Hoisting a `commonMain` version so the Android
+ * host can drop its twin is a follow-up, not a prerequisite.
+ *
+ * ## Behaviour the hosts rely on
+ *
+ * - [onSessionUp] must be called on **every** session-up edge: the hello it sends carries our
+ *   identity fingerprint, and the peer cannot derive the numeric-comparison code without it.
+ * - [beginPair] is invoked from a UI tap and must never block on a socket write: [sendToPeer] is
+ *   non-blocking by contract and returns **false when there is no live session**, which is the only
+ *   thing that distinguishes "we never reached the peer" from "the peer never answered"
+ *   (`Couldn't reach` vs `Still can't reach`).
+ * - The begin-flow race (a tap that lands before the peer's hello arrives) is handled by
+ *   [pendingPair] plus a bounded fingerprint poll, exactly as the app twin does.
+ */
+public class FlashPairingCoordinator(
     private val localFingerprintHex: String,
     private val localDeviceId: String,
     private val localName: String,
@@ -57,7 +74,7 @@ public class DesktopPairingCoordinator(
     private val sendToPeer: (peerId: String, text: String) -> Boolean,
 ) {
 
-    /** UI snapshot for the pairing pane; null when no pairing is in flight. */
+    /** UI snapshot for a pairing pane; null when no pairing is in flight. */
     public data class PairingUi(
         val peerName: String,
         val numericCode: String,
@@ -68,10 +85,22 @@ public class DesktopPairingCoordinator(
     private val _pairing = MutableStateFlow<PairingUi?>(null)
     public val pairing: StateFlow<PairingUi?> = _pairing.asStateFlow()
 
+    /**
+     * Trusted peers, as an observable flow.
+     *
+     * Published from here because a plain trust store is not observable: a host that derives its
+     * peer list with `derivedStateOf { trust.getTrustedPeers() }` reads nothing reactive, computes
+     * once, and never invalidates — which left the desktop's Nearby showing a just-paired peer as
+     * **Pair** (and a revoked peer as **Chat**) forever, breaking ladder steps L2(e) and L7. This
+     * coordinator is the only place that knows when trust changed.
+     */
+    private val _trustedPeers = MutableStateFlow(loadTrusted())
+    public val trustedPeers: StateFlow<List<FlashTrustedPeer>> = _trustedPeers.asStateFlow()
+
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = MESSAGE_BUFFER)
     public val messages: SharedFlow<String> = _messages.asSharedFlow()
 
-    /** peerId -> fingerprint hex, learned from FLASH_PAIR hellos (initiator needs it). */
+    /** peerId -> fingerprint hex, learned from FLASH_PAIR hellos (an initiator needs it). */
     private val fingerprints = ConcurrentHashMap<String, String>()
 
     private val pendingLock = Any()
@@ -91,6 +120,12 @@ public class DesktopPairingCoordinator(
         when (val inbound = decodeInbound(text)) {
             is Inbound.Hello -> {
                 fingerprints[peerId] = inbound.fingerprintHex
+                // Answer, and answer with a PLAIN hello: the request flag is never echoed, so this
+                // cannot ping-pong. This is the half that did not exist before — a responder only
+                // ever announced itself once, on its session-up edge, so a hello that was missed (or
+                // that raced the initiator's own session) left the initiator permanently unable to
+                // pair, with `Still can't reach … then Pair again` as its only feedback, forever.
+                if (inbound.request) sendToPeer(peerId, encodeHello(localFingerprintHex))
                 val pending = synchronized(pendingLock) {
                     pendingPair?.takeIf { it.first == peerId }?.also { pendingPair = null }
                 }
@@ -103,7 +138,7 @@ public class DesktopPairingCoordinator(
         }
     }
 
-    /** Initiator: user picked Pair on [peerId]. Needs the peer's fingerprint (from its hello). */
+    /** Initiator: the user picked Pair on [peerId]. Needs the peer's fingerprint (from its hello). */
     public fun beginPair(peerId: String, peerName: String, onNeedRetry: (String) -> Unit = {}) {
         val known = fingerprints[peerId]
         if (known != null) {
@@ -111,13 +146,23 @@ public class DesktopPairingCoordinator(
             return
         }
         synchronized(pendingLock) { pendingPair = peerId to peerName }
-        val delivered = sendToPeer(peerId, encodeHello(localFingerprintHex))
+        val delivered = sendToPeer(peerId, encodeHello(localFingerprintHex, request = true))
         _messages.tryEmit(if (delivered) "Connecting to $peerName…" else "Couldn't reach $peerName.")
         scope.launch {
             val deadline = SystemTimeSource.nowMs() + FINGERPRINT_WAIT_MS
             var arrived: String? = null
+            var lastAskMs = SystemTimeSource.nowMs()
             while (SystemTimeSource.nowMs() < deadline) {
                 fingerprints[peerId]?.let { arrived = it; break }
+                // Re-ask rather than merely re-wait. One hello sent once is a single point of failure:
+                // a session that comes up in a different order than the peer's announcement assumes
+                // loses it, and nothing retries. Bounded by the window (≤ 8 asks at 400 ms), and each
+                // ask draws at most one answer.
+                val now = SystemTimeSource.nowMs()
+                if (now - lastAskMs >= HELLO_RESEND_MS) {
+                    lastAskMs = now
+                    sendToPeer(peerId, encodeHello(localFingerprintHex, request = true))
+                }
                 delay(FINGERPRINT_POLL_MS)
             }
             val claimed = synchronized(pendingLock) {
@@ -146,7 +191,13 @@ public class DesktopPairingCoordinator(
     /** Forget a trusted peer (persisted via the trust store). */
     public fun revoke(peerId: String) {
         trustStore.revokeTrust(FlashDeviceId(peerId))
+        _trustedPeers.value = loadTrusted()
     }
+
+    private fun loadTrusted(): List<FlashTrustedPeer> =
+        trustStore.getTrustedPeers()
+            .map { (id, name) -> FlashTrustedPeer(id = id.value, name = name) }
+            .sortedBy { it.name.lowercase() }
 
     // ------------------------------------------------------------------ internals
 
@@ -167,6 +218,7 @@ public class DesktopPairingCoordinator(
                 s.peerDeviceId?.let { peerId ->
                     val name = s.peerName?.ifBlank { null } ?: peerId.take(SHORT_ID)
                     trustStore.trustPeer(FlashDeviceId(peerId), name)
+                    _trustedPeers.value = loadTrusted()
                 }
                 _messages.tryEmit("Paired with ${s.peerName ?: s.peerDeviceId?.take(SHORT_ID) ?: "peer"}.")
                 scope.launch {
@@ -184,11 +236,11 @@ public class DesktopPairingCoordinator(
                     resetProtocol()
                 }
             }
-            is FlashPairingEvent.RequestReceived -> Unit // session collector raises the dialog.
+            is FlashPairingEvent.RequestReceived -> Unit // a host raises its dialog off `pairing`.
         }
     }
 
-    private fun recomputeUi(s: com.transfer.flash.core.security.pairing.PairingSessionState) {
+    private fun recomputeUi(s: PairingSessionState) {
         if (s.phase == PairingPhase.Idle) {
             _pairing.value = null
             return
@@ -252,14 +304,24 @@ public class DesktopPairingCoordinator(
     // ------------------------------------------------------------------ wire codec
 
     private sealed interface Inbound {
-        data class Hello(val fingerprintHex: String) : Inbound
+        /**
+         * [request] asks the receiver to answer with ITS hello. Only a REQUEST is ever answered,
+         * and an answer never asks — that is what makes the exchange terminate by construction:
+         * a request produces at most one answer, an answer produces none.
+         */
+        data class Hello(val fingerprintHex: String, val request: Boolean = false) : Inbound
         data class Frame(val frame: FlashPairingFrame) : Inbound
     }
 
-    private fun encodeHello(fingerprintHex: String): String = FlashTextFraming.encodeFields(
-        PREFIX,
-        listOf(KEY_TYPE to TYPE_HELLO, KEY_FINGERPRINT to fingerprintHex),
-    )
+    private fun encodeHello(fingerprintHex: String, request: Boolean = false): String =
+        FlashTextFraming.encodeFields(
+            PREFIX,
+            buildList {
+                add(KEY_TYPE to TYPE_HELLO)
+                add(KEY_FINGERPRINT to fingerprintHex)
+                if (request) add(KEY_HELLO_REQUEST to "1")
+            },
+        )
 
     private fun encodeFrame(frame: FlashPairingFrame): String = when (frame) {
         is FlashPairingFrame.PairRequest ->
@@ -305,7 +367,9 @@ public class DesktopPairingCoordinator(
     private fun decodeInbound(text: String): Inbound? {
         val fields = FlashTextFraming.parseFields(text, PREFIX) ?: return null
         return when (fields[KEY_TYPE]) {
-            TYPE_HELLO -> fields[KEY_FINGERPRINT]?.let { Inbound.Hello(it) }
+            TYPE_HELLO -> fields[KEY_FINGERPRINT]?.let {
+                Inbound.Hello(it, request = fields[KEY_HELLO_REQUEST] == "1")
+            }
             TYPE_REQUEST -> {
                 val rid = fields[KEY_REQUEST_ID] ?: return null
                 val did = fields[KEY_DEVICE_ID] ?: return null
@@ -357,6 +421,9 @@ public class DesktopPairingCoordinator(
         const val KEY_EPHEMERAL_KEY = "epk"
         const val KEY_CREATED_AT = "ts"
         const val KEY_CODE_HASH = "ch"
+        /** Present-and-"1" on a hello that asks for the peer's hello back. Absent on answers and
+         *  on the session-up announcement, which is what keeps the exchange acyclic. */
+        const val KEY_HELLO_REQUEST = "hrq"
         const val TYPE_HELLO = "hello"
         const val TYPE_REQUEST = "req"
         const val TYPE_ACCEPT = "acc"
@@ -365,6 +432,8 @@ public class DesktopPairingCoordinator(
         const val TICK_MS = 1000L
         const val FINGERPRINT_WAIT_MS = 3000L
         const val FINGERPRINT_POLL_MS = 100L
+        /** Re-ask cadence inside [FINGERPRINT_WAIT_MS]: ≤ 8 asks, each answered at most once. */
+        const val HELLO_RESEND_MS = 400L
         const val PAIRED_LINGER_MS = 1800L
         const val TERMINAL_LINGER_MS = 2500L
         const val SHORT_ID = 8
