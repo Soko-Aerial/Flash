@@ -1,5 +1,19 @@
 # Progress Log
 
+## 2026-09-16 - Inbound transfer live progress + speed telemetry fixed on desktop + repository
+
+### Worked on
+- User live-tested image transfer (fast start verified!) and video/file streaming (verified!).
+- Reported issue: on Desktop when receiving, progress circle did not move, MB/s speed did not display in chat card, and in Transfers tab the speed was missing and progress bar did not advance (transfer completed successfully at the end).
+- Root causes:
+  1. `DesktopEngine.kt` did not call `updateIncomingProgress` on `ReceiveEvent.AckBatchReady` (inbound confirmed chunks were acknowledged to sender, but `onIncomingProgress` was never called on the transfer repository, leaving `bytesDone = 0L` until completion).
+  2. `RealFlashTransferRepository.onIncomingProgress` updated only `bytesDone`, never computing `speedBytesPerSec` or `etaSeconds` for inbound transfers.
+- Fixes:
+  1. `DesktopEngine.kt`: added `updateIncomingProgress` calculation from `receivePipeline.doneIndexes()` and invoked it on every `ReceiveEvent.AckBatchReady` and on `acceptOffer`.
+  2. `RealFlashTransferRepository.kt`: wired a `RollingRateMeter` per incoming transfer (locked, cleaned up on terminal states `onIncomingCompleted`, `onIncomingFailed`, `declineIncoming`, `cancelTransfer`), computing live `speedBytesPerSec` and `etaSeconds` on each progress tick.
+  3. Added comprehensive unit test in `RealFlashTransferRepositoryTest.kt`.
+- Verification: `:core:transfer:testAndroidHostTest` and `:desktop:jvmTest` all passed. Updated APK built and installed to device; `:desktop:run` restarted with fresh binary.
+
 ## 2026-09-16 - Owner live-verified desktop voice playback; session handoff refreshed
 
 ### Worked on

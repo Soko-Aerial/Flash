@@ -1,5 +1,28 @@
 # Current Handoff
 
+## 2026-09-16 — Inbound transfer progress + speed fixed & re-deployed; items 1 & 2 verified fast
+
+### Current branch
+`dev` at `f2f2341`. Working tree clean except untracked `session-ses_*.md`.
+
+### Live-verified working (owner hardware runs, phone .113 ↔ desktop .110)
+- **1:1 voice calls** (ERROR-061 closed live): select+init once pre-factory, engine owns
+  start/stop, `bytesOut > 0`, audio both ways.
+- **Desktop voice-note playback** (ERROR-063 voice part closed live 2026-09-16): AAC/m4a
+  decodes via JCodec to the same `Clip` (`AAC voice note decoded via JCodec:` log line).
+- **Fast image transfer & video/file streaming to desktop** (ERROR-062): user confirmed fast start,
+  desktop chat accept, and file completion.
+
+### Fixed in code, live retest owed
+- **Desktop receiver progress & speed telemetry**: `DesktopEngine.kt` now calls `updateIncomingProgress`
+  on every `ReceiveEvent.AckBatchReady` (and seeds it on `acceptOffer`); `RealFlashTransferRepository`
+  now maintains a `RollingRateMeter` per incoming transfer, calculating live `speedBytesPerSec` and `etaSeconds`
+  on each progress tick and clearing upon completion/failure.
+- **Android double video overlay**: badge fired in-app player AND external intent; now
+  in-app only, viewer chrome hides during playback, external is error-banner fallback.
+- **Desktop video**: no in-app surface by owner decision — banner offers system player
+  (wired through `onOpenAttachment`).
+
 ## 2026-09-16 — Desktop voice playback live-verified (JCodec/AAC works); full state below
 
 ### Current branch
