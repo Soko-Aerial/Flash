@@ -39,13 +39,20 @@ internal object MediaDevicesImpl : MediaDevices, DeviceChangeListener {
             val audioDevices = NativeMediaDevices.getAudioCaptureDevices()
 
             if (audioDevices.isNotEmpty()) {
-                val device = constraints.audio.deviceId?.let { deviceId ->
-                    audioDevices.first { device ->
-                        device.descriptor == deviceId
-                    }
-                } ?: NativeMediaDevices.getDefaultAudioCaptureDevice()
-
-                WebRtc.setAudioInputDevice(device)
+                // Deliberately NO ADM touch here (ERROR-061): the default builder selected +
+                // initialized both directions before the factory was built, and init is sticky —
+                // any per-acquire set/stop/start either throws ("Set recording device failed" on
+                // every 2nd+ acquire) or races the engine's transport registration ("Failed to
+                // set audio transport since media was active", ERROR-060). The engine starts
+                // capture when this track is added to a negotiated connection and stops it at
+                // teardown. An explicitly requested deviceId can only be honored pre-factory
+                // (see WebRtc.setAudioInputDevice); after that it is a loud no-op.
+                constraints.audio.deviceId?.let { deviceId ->
+                    println(
+                        "[webrtc-jvm] getUserMedia deviceId='$deviceId' noted: capture device " +
+                            "selection is pre-factory-only; using the startup-selected device",
+                    )
+                }
 
                 val mediaConstraints = AudioOptions().apply {
                     this.autoGainControl = constraints.audio.autoGainControl?.value == true
@@ -66,6 +73,9 @@ internal object MediaDevicesImpl : MediaDevices, DeviceChangeListener {
             videoTrack = getLocalVideoStreamTrack(constraints.video)
         }
 
+        // No ADM start here, and no select either (see above): every getUserMedia caller is
+        // a call session or a test, and the engine owns all media transitions from stream
+        // lifetime. There is no preview/meter path needing a separate device.
         return MediaStream().apply {
             if (audioTrack != null) addTrack(audioTrack)
             if (videoTrack != null) addTrack(videoTrack)
