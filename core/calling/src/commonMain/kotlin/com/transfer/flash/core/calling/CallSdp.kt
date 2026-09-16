@@ -138,10 +138,15 @@ internal object CallSdp {
                 if (line.startsWith("a=ssrc-group:FID ")) {
                     continue
                 }
+                // RFC 7741 specifies no fmtp parameters for VP8. In modern libwebrtc,
+                // VideoDecoderFactoryTemplate strictly checks supported_format.parameters == format.parameters.
+                // Since VP8 supported format has empty parameters {}, any fmtp line (e.g. x-google-* bitrate params)
+                // causes decoder lookup to fail and fall back to NullVideoDecoder.
+                if (line.startsWith(FMTP_PREFIX)) {
+                    continue
+                }
                 val pt = if (line.startsWith(RTPMAP_PREFIX)) {
                     line.removePrefix(RTPMAP_PREFIX).substringBefore(' ')
-                } else if (line.startsWith(FMTP_PREFIX)) {
-                    line.removePrefix(FMTP_PREFIX).substringBefore(' ')
                 } else if (line.startsWith("a=rtcp-fb:")) {
                     line.removePrefix("a=rtcp-fb:").substringBefore(' ')
                 } else null

@@ -646,21 +646,19 @@ public class FlashCallSession(
         pc: PeerConnection,
         desc: SessionDescription,
     ): SessionDescription {
-        val sdpWithCodecs = CallSdp.enforceVp8Only(desc.sdp)
-        val tunedSdp = runCatching { CallSdp.tuneLocal(sdpWithCodecs, performanceMode()) }.getOrNull()
-        if (tunedSdp != null && tunedSdp != desc.sdp) {
-            val tuned = SessionDescription(desc.type, tunedSdp)
-            try {
-                pc.setLocalDescription(tuned)
-                logSdp("local ${desc.type} (tuned)", tuned.sdp)
-                return tuned
-            } catch (e: CancellationException) {
-                throw e
-            } catch (t: Throwable) {
-                FlashLog.w("CALL", "tuned local SDP rejected, using original: ${t.message}")
-            }
+        val tunedSdp = runCatching { CallSdp.tuneLocal(desc.sdp, performanceMode()) }.getOrNull()
+        val sdpWithCodecs = CallSdp.enforceVp8Only(tunedSdp ?: desc.sdp)
+        val finalDesc = if (sdpWithCodecs != desc.sdp) SessionDescription(desc.type, sdpWithCodecs) else desc
+        try {
+            pc.setLocalDescription(finalDesc)
+            logSdp("local ${desc.type} (tuned)", finalDesc.sdp)
+            return finalDesc
+        } catch (e: CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            FlashLog.w("CALL", "tuned local SDP rejected, using original: ${t.message}")
         }
-        val fallbackDesc = if (sdpWithCodecs != desc.sdp) SessionDescription(desc.type, sdpWithCodecs) else desc
+        val fallbackDesc = SessionDescription(desc.type, CallSdp.enforceVp8Only(desc.sdp))
         logSdp("local ${desc.type}", fallbackDesc.sdp)
         pc.setLocalDescription(fallbackDesc)
         return fallbackDesc
@@ -683,21 +681,20 @@ public class FlashCallSession(
         type: SessionDescriptionType,
         sdp: String,
     ) {
-        val sdpWithCodecs = CallSdp.enforceVp8Only(sdp)
-        val tuned = runCatching { CallSdp.tuneRemote(sdpWithCodecs, performanceMode()) }.getOrNull()
-        if (tuned != null && tuned != sdp) {
-            try {
-                pc.setRemoteDescription(SessionDescription(type, tuned))
-                logSdp("remote $type (tuned)", tuned)
-                return
-            } catch (e: CancellationException) {
-                throw e
-            } catch (t: Throwable) {
-                FlashLog.w("CALL", "tuned remote SDP rejected, using original: ${t.message}")
-            }
+        val tuned = runCatching { CallSdp.tuneRemote(sdp, performanceMode()) }.getOrNull()
+        val sdpWithCodecs = CallSdp.enforceVp8Only(tuned ?: sdp)
+        try {
+            pc.setRemoteDescription(SessionDescription(type, sdpWithCodecs))
+            logSdp("remote $type (tuned)", sdpWithCodecs)
+            return
+        } catch (e: CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            FlashLog.w("CALL", "tuned remote SDP rejected, using original: ${t.message}")
         }
-        logSdp("remote $type", sdpWithCodecs)
-        pc.setRemoteDescription(SessionDescription(type, sdpWithCodecs))
+        val fallbackSdp = CallSdp.enforceVp8Only(sdp)
+        logSdp("remote $type", fallbackSdp)
+        pc.setRemoteDescription(SessionDescription(type, fallbackSdp))
     }
 
     /**

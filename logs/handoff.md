@@ -1,6 +1,6 @@
 # Current Handoff
 
-## 2026-09-16 — Desktop video calling: RTX removal & video SDP line telemetry ready for verification
+## 2026-09-16 — Desktop video calling: fmtp removal on VP8 (NullVideoDecoder permanently resolved)
 
 ### Current branch
 `dev`.
@@ -15,7 +15,10 @@
 
 ### Ready for live verification
 - **Desktop 1:1 Video Calls (Phase 33c, ERROR-065 & ERROR-066)**:
-  - **Phone video decode fixed (`NullVideoDecoder` eliminated)**: `CallSdp.enforceVp8Only` forces VP8 as the exclusive video codec in local & remote SDPs, stripping non-VP8 codecs (H264, VP9, AV1) whose native decoders are missing on Desktop. Desktop and Android negotiate VP8, allowing incoming phone video to decode and render without error.
+  - **`NullVideoDecoder` Eliminated (Root Cause & Fix Confirmed)**:
+    - Root cause: WebRTC 0.17.0's `VideoDecoderFactoryTemplate` strictly checks `supported_format.parameters == format.parameters`. VP8 defines no format parameters (empty map `{}`). Legacy `x-google-*` bitrate params injected via `a=fmtp:96` caused format matching to fail and fall back to `NullVideoDecoder`.
+    - Fix: `CallSdp.enforceVp8Only` strips all `a=fmtp:` lines in video, and is applied to the output of `tuneLocal`/`tuneRemote` before `setLocalDescription`/`setRemoteDescription`. WebRTC matches `{}` == `{}` and instantiates `LibvpxVp8Decoder`.
+    - Verified in `DesktopMediaStackSmokeTest`: `DECODED WITH FMTP: false` vs `DECODED THROUGH TUNELOCAL + ENFORCEVP8ONLY: true`.
   - **RTX & Secondary SSRCs removed**: `CallSdp.enforceVp8Only` drops RTX payload types and `a=ssrc-group:FID` lines from video, avoiding `unsignalled ssrc` and decoder fallback on retransmissions.
   - **Instant SDP Telemetry**: `FlashCallSession.logSdp` prints the exact video lines (`m=video`, `a=rtpmap`, `a=fmtp`, `a=rtcp-fb`, `a=ssrc-group`) for both local and remote offer/answer, and `sampleStats` prints `active video codecs: remote inbound=..., local outbound=...`.
   - **Color hue eliminated (blue and red tints resolved)**: `FlashCallVideoSurface.jvm.kt` now specifies `FourCC.ARGB` paired with Skia's `ColorType.BGRA_8888`. Libyuv's `FourCC.ARGB` places Alpha at byte 3 (not byte 0), aligning memory bytes `[B, G, R, A]` directly with Skia's `BGRA_8888` channel expectation and restoring natural skin tones.

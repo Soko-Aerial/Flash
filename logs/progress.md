@@ -1,5 +1,22 @@
 # Progress Log
 
+## 2026-09-16 — Desktop video calling: VideoDecoderFactoryTemplate exact match fix (fmtp parameter removal on VP8) (ERROR-066)
+
+### Worked on
+1. **Root Cause Diagnosis for `NullVideoDecoder` on VP8**:
+   - WebRTC 0.17.0 (`webrtc-java`) uses `VideoDecoderFactoryTemplate` on desktop. Its decoder lookup method `IsFormatInList` evaluates `supported_format.name == format.name && supported_format.parameters == format.parameters`.
+   - Per RFC 7741, VP8 defines no fmtp parameters, so WebRTC's internal `SupportedFormats()` publishes `SdpVideoFormat("VP8", {})` with an empty parameters map.
+   - `CallSdp.tuneLocal` and `tuneRemote` synthesized legacy `a=fmtp:96 x-google-start-bitrate=...;x-google-min-bitrate=...;x-google-max-bitrate=...` into the SDP. Because `tuneLocal`/`tuneRemote` ran after `enforceVp8Only`, `format.parameters` became `{"x-google-start-bitrate": ...}`.
+   - The equality check `{}` == `{"x-google-start-bitrate": ...}` failed, `VideoDecoderFactoryTemplate` returned `nullptr`, and `VideoReceiveStream2` instantiated `NullVideoDecoder`, causing `The NullVideoDecoder doesn't support decoding` on every incoming frame.
+2. **Fix**:
+   - In `CallSdp.enforceVp8Only`: stripped all `a=fmtp:` lines in the video section, ensuring VP8 has an empty parameter map `{}`.
+   - In `FlashCallSession.kt` and `FlashGroupCallSession.kt`: routed the result of `tuneLocal`/`tuneRemote` through `CallSdp.enforceVp8Only` immediately before installing `setLocalDescription` and `setRemoteDescription`, guaranteeing that the installed and transmitted SDP has clean VP8 format parameters.
+   - Bitrate windows and frame rate limits remain fully applied natively on the senders via `RtpSender.applyVideoTuning`.
+3. **Verification**:
+   - `DesktopMediaStackSmokeTest`: reproduced failure with `DECODED WITH FMTP: false`, and verified resolution with `DECODED THROUGH TUNELOCAL + ENFORCEVP8ONLY: true`.
+   - `:core:calling:jvmTest` and `:ui:callui:jvmTest` passed cleanly.
+   - `:desktop:compileKotlinJvm` and `:app:assembleDebug` completed with 0 errors.
+
 ## 2026-09-16 — Desktop video calling: RTX removal from SDP & video negotiation diagnostics (ERROR-066)
 
 ### Worked on

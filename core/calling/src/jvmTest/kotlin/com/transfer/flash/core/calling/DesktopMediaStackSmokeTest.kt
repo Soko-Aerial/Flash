@@ -209,4 +209,61 @@ class DesktopMediaStackSmokeTest {
             scope.cancel()
         }
     }
+
+    @Test
+    fun `verify tuneLocal with x-google params causes NullVideoDecoder vs clean VP8`() = runBlocking {
+        val pc1 = PeerConnection(RtcConfiguration(bundlePolicy = BundlePolicy.MaxBundle, iceServers = emptyList(), rtcpMuxPolicy = RtcpMuxPolicy.Require))
+        val pc2 = PeerConnection(RtcConfiguration(bundlePolicy = BundlePolicy.MaxBundle, iceServers = emptyList(), rtcpMuxPolicy = RtcpMuxPolicy.Require))
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        try {
+            scope.launch { pc1.onIceCandidate.collect { runCatching { pc2.addIceCandidate(it) } } }
+            scope.launch { pc2.onIceCandidate.collect { runCatching { pc1.addIceCandidate(it) } } }
+
+            val stream = MediaDevices.getUserMedia {
+                video { width(640); height(480) }
+            }
+            stream.tracks.forEach { pc1.addTrack(it, stream) }
+
+            var remoteFrameReceived = false
+            scope.launch {
+                pc2.onTrack.collect { event ->
+                    val track = event.track
+                    if (track is com.shepeliev.webrtckmp.VideoStreamTrack) {
+                        track.addSink(object : dev.onvoid.webrtc.media.video.VideoTrackSink {
+                            override fun onVideoFrame(frame: dev.onvoid.webrtc.media.video.VideoFrame) {
+                                remoteFrameReceived = true
+                            }
+                        })
+                    }
+                }
+            }
+
+            val offer = pc1.createOffer(OfferAnswerOptions(offerToReceiveVideo = true))
+            val tunedOffer = CallSdp.tuneLocal(offer.sdp, com.transfer.flash.core.common.perf.FlashPerformanceMode.HIGH)
+            val cleanOffer = CallSdp.enforceVp8Only(tunedOffer)
+
+            pc1.setLocalDescription(SessionDescription(SessionDescriptionType.Offer, cleanOffer))
+            pc2.setRemoteDescription(SessionDescription(SessionDescriptionType.Offer, cleanOffer))
+
+            val answer = pc2.createAnswer(OfferAnswerOptions(offerToReceiveVideo = true))
+            val tunedAnswer = CallSdp.tuneLocal(answer.sdp, com.transfer.flash.core.common.perf.FlashPerformanceMode.HIGH)
+            val cleanAnswer = CallSdp.enforceVp8Only(tunedAnswer)
+
+            pc2.setLocalDescription(SessionDescription(SessionDescriptionType.Answer, cleanAnswer))
+            pc1.setRemoteDescription(SessionDescription(SessionDescriptionType.Answer, cleanAnswer))
+
+            val decodedWithoutFmtp = runCatching {
+                withTimeout(6_000) {
+                    while (!remoteFrameReceived) delay(200)
+                }
+                true
+            }.getOrDefault(false)
+            println("DECODED THROUGH TUNELOCAL + ENFORCEVP8ONLY: $decodedWithoutFmtp")
+            assertTrue("VP8 filtered through enforceVp8Only must decode successfully", decodedWithoutFmtp)
+        } finally {
+            pc1.close()
+            pc2.close()
+            scope.cancel()
+        }
+    }
 }
