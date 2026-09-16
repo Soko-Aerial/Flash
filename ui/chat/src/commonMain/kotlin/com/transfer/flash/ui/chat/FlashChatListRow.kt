@@ -27,10 +27,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
-import androidx.compose.material3.Text
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.State
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -54,12 +54,14 @@ import com.transfer.flash.ui.icons.FlashIconSpec
 import com.transfer.flash.ui.icons.FlashIcons
 import com.transfer.flash.ui.theme.FlashDimensions
 import com.transfer.flash.ui.theme.FlashSpacing
+import com.transfer.flash.ui.theme.FlashText
 import com.transfer.flash.ui.theme.FlashTheme
 import org.jetbrains.compose.ui.tooling.preview.Preview
 
 /** Resting -> pressed scale of a chat-list row; mirrors `Modifier.flashPressScale`'s default. */
 private const val RowPressedScale = 0.98f
 
+// BOLT: replaced stock material3.Text with FlashText (BasicText + draw-phase ColorProducer) and fixed stale closure capture in swipe dismiss callback
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun FlashChatListRow(
@@ -74,10 +76,12 @@ fun FlashChatListRow(
     swipeActionLabel: String = "Archive",
 ) {
     val motion = FlashTheme.motion
+    val currentItemId by rememberUpdatedState(item.id)
+    val currentOnArchive by rememberUpdatedState(onArchive)
     val dismissState = rememberSwipeToDismissBoxState(
         confirmValueChange = { value ->
             if (value == SwipeToDismissBoxValue.EndToStart) {
-                onArchive(item.id)
+                currentOnArchive(currentItemId)
             }
             false
         },
@@ -156,7 +160,7 @@ private fun FlashChatListSwipeBackground(
                     contentDescription = null,
                     tint = colors.textOnAccent,
                 )
-                Text(
+                FlashText(
                     text = actionLabel,
                     style = FlashTheme.typography.captionEmphasis,
                     color = colors.textOnAccent,
@@ -247,17 +251,16 @@ private fun FlashChatListRowContent(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(
+                    FlashText(
                         text = item.title,
                         modifier = Modifier.weight(1f),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         style = if (item.unreadCount > 0) typography.bodyEmphasis else typography.bodyDefault,
                         color = colors.textPrimary,
-                        fontWeight = if (item.unreadCount > 0) FontWeight.SemiBold else FontWeight.Normal,
                     )
                     Spacer(modifier = Modifier.width(FlashSpacing.space8))
-                    Text(
+                    FlashText(
                         text = item.timestamp,
                         maxLines = 1,
                         style = typography.metadataDefault,
@@ -278,7 +281,7 @@ private fun FlashChatListRowContent(
                         modifier = Modifier.weight(1f),
                         label = "flashChatListPreview",
                     ) {
-                        Text(
+                        FlashText(
                             text = previewLabel(item),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
@@ -356,7 +359,7 @@ private fun BoxScope.FlashChatListGroupOnlineBadge(onlineCount: Int) {
             .padding(horizontal = 5.dp, vertical = 1.dp)
             .semantics { contentDescription = "$onlineCount members online" },
     ) {
-        Text(
+        FlashText(
             text = onlineCount.toString(),
             style = FlashTheme.typography.metadataEmphasis,
             color = colors.backgroundSurface,
@@ -457,7 +460,7 @@ private fun FlashUnreadBadge(count: Int) {
             .padding(horizontal = FlashSpacing.space4),
         contentAlignment = Alignment.Center,
     ) {
-        Text(
+        FlashText(
             text = label,
             style = typography.metadataEmphasis,
             color = colors.textOnAccent,

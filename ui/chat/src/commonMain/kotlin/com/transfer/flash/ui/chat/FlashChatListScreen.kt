@@ -224,9 +224,11 @@ fun FlashChatListScreen(
                                 )
                             }
                         }
+                        // BOLT: contentType differentiation for direct vs group rows to optimize LazyColumn composition slot recycling
                         itemsIndexed(
                             items = displayItems,
                             key = { _, item -> item.id },
+                            contentType = { _, item -> if (item.isGroup) "group" else "direct" },
                         ) { index, item ->
                             val isLastRow =
                                 !showRecents && index == displayItems.lastIndex
