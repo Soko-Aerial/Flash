@@ -484,4 +484,47 @@ class CallSdpTest {
         assertEquals(body, CallSdp.tuneLocal(body, low))
         assertEquals(body, CallSdp.tuneRemote(body, low))
     }
+
+    @Test
+    fun stripH264_removesH264AndItsRtxFromVideoSection() {
+        val input = sdp(
+            "v=0",
+            "m=video 9 UDP/TLS/RTP/SAVPF 96 97 98 99 100",
+            "a=rtpmap:96 VP8/90000",
+            "a=rtcp-fb:96 nack pli",
+            "a=rtpmap:97 rtx/90000",
+            "a=fmtp:97 apt=96",
+            "a=rtpmap:98 H264/90000",
+            "a=fmtp:98 level-asymmetry-allowed=1;packetization-mode=1",
+            "a=rtpmap:99 rtx/90000",
+            "a=fmtp:99 apt=98",
+            "a=rtpmap:100 ulpfec/90000",
+        )
+        val stripped = CallSdp.stripH264(input)
+
+        val videoLines = section(stripped, "video")
+        assertEquals("m=video 9 UDP/TLS/RTP/SAVPF 96 97 100", videoLines.first())
+        assertFalse(stripped.contains("H264"))
+        assertFalse(stripped.contains("a=rtpmap:98"))
+        assertFalse(stripped.contains("a=fmtp:98"))
+        assertFalse(stripped.contains("a=rtpmap:99"))
+        assertFalse(stripped.contains("a=fmtp:99"))
+        assertTrue(stripped.contains("a=rtpmap:96 VP8/90000"))
+        assertTrue(stripped.contains("a=rtpmap:97 rtx/90000"))
+        assertTrue(stripped.contains("a=fmtp:97 apt=96"))
+        assertTrue(stripped.contains("a=rtpmap:100 ulpfec/90000"))
+    }
+
+    @Test
+    fun stripH264_leavesSdpWithoutH264Unchanged() {
+        val sdpWithoutH264 = sdp(
+            "v=0",
+            "m=video 9 UDP/TLS/RTP/SAVPF 96 97",
+            "a=rtpmap:96 VP8/90000",
+            "a=rtpmap:97 rtx/90000",
+            "a=fmtp:97 apt=96",
+        )
+        assertEquals(sdpWithoutH264, CallSdp.stripH264(sdpWithoutH264))
+        assertEquals("", CallSdp.stripH264(""))
+    }
 }

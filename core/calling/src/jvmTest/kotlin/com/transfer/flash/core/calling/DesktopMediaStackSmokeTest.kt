@@ -9,6 +9,7 @@ import com.shepeliev.webrtckmp.OfferAnswerOptions
 import com.shepeliev.webrtckmp.PeerConnection
 import com.shepeliev.webrtckmp.RtcConfiguration
 import com.shepeliev.webrtckmp.RtcpMuxPolicy
+import com.shepeliev.webrtckmp.SessionDescription
 import com.shepeliev.webrtckmp.SessionDescriptionType
 import com.shepeliev.webrtckmp.onIceCandidate
 import kotlinx.coroutines.CoroutineScope
@@ -108,5 +109,29 @@ class DesktopMediaStackSmokeTest {
         // Explicit Unit: JUnit 4 requires void test methods, and runBlocking would otherwise
         // infer Boolean from the trailing assertTrue (InvalidTestClassError).
         Unit
+    }
+
+    @Test
+    fun `webrtc accepts video offer with H264 stripped`() = runBlocking {
+        val pc = PeerConnection(
+            RtcConfiguration(
+                bundlePolicy = BundlePolicy.MaxBundle,
+                iceServers = emptyList(),
+                rtcpMuxPolicy = RtcpMuxPolicy.Require,
+            ),
+        )
+        try {
+            val stream = MediaDevices.getUserMedia {
+                audio { echoCancellation(true) }
+                video { width(640); height(480) }
+            }
+            stream.tracks.forEach { pc.addTrack(it, stream) }
+            val offer = pc.createOffer(OfferAnswerOptions())
+            val strippedSdp = CallSdp.stripH264(offer.sdp)
+            assertTrue("stripped SDP must not contain H264", !strippedSdp.contains("H264"))
+            pc.setLocalDescription(SessionDescription(SessionDescriptionType.Offer, strippedSdp))
+        } finally {
+            pc.close()
+        }
     }
 }

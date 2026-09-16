@@ -110,12 +110,14 @@ public fun FlashCallScreen(
         }
     }
 
+    val isVideoActive = state.video && state.state == FlashCallState.ACTIVE
+
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(if (state.video) Color.Black else colors.backgroundApp),
+            .background(if (isVideoActive) Color.Black else colors.backgroundApp),
     ) {
-        if (state.video && !ended) {
+        if (isVideoActive) {
             FlashCallVideoSurfaces(
                 state = state,
                 session = session,
@@ -132,7 +134,7 @@ public fun FlashCallScreen(
         ) {
             Spacer(Modifier.weight(0.7f))
 
-            if (!state.video || ended) {
+            if (!isVideoActive || ended) {
                 FlashCallIdentityBlock(state = state, session = session)
             }
 
@@ -763,9 +765,18 @@ private fun FlashCallStatsBadge(
 
     val parts = buildList {
         stats.rttMs?.let { add("$it ms") }
-        stats.remoteResolutionLabel?.let { resolution ->
-            add(stats.fps?.let { "$resolution · ${it}fps" } ?: resolution)
+        val resolutionText = when {
+            stats.remoteResolutionLabel != null && stats.sendResolutionLabel != null -> {
+                val recv = stats.fps?.let { "${stats.remoteResolutionLabel} · ${it}fps" } ?: stats.remoteResolutionLabel
+                "$recv (↑${stats.sendResolutionLabel})"
+            }
+            stats.remoteResolutionLabel != null -> {
+                stats.fps?.let { "${stats.remoteResolutionLabel} · ${it}fps" } ?: stats.remoteResolutionLabel
+            }
+            stats.sendResolutionLabel != null -> "↑${stats.sendResolutionLabel}"
+            else -> null
         }
+        resolutionText?.let { add(it) }
         val rate = stats.inboundKbps ?: stats.outboundKbps
         rate?.let { add(formatBitrate(it)) }
         // Loss below a couple of percent is normal on Wi-Fi and not worth a readout.

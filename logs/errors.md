@@ -4741,3 +4741,51 @@ Two distinct telemetry pipeline gaps:
 
 ### Status
 RESOLVED (pending live user re-test)
+
+## ERROR-065 — Desktop video calling: AWT SwingPanel occlusion, ringing blank screen, H264 NullVideoDecoder failure, and stats badge visibility
+
+### Date
+2026-09-16
+
+### Area
+Desktop calling (:ui:callui, :core:calling, Compose Desktop)
+
+### Symptoms
+When testing 1:1 video calling on Desktop:
+1. When receiving an incoming video call on Desktop, the entire window turned white, the answer/decline buttons and caller name were completely invisible, preventing answering from Desktop.
+2. When answering a video call from Desktop (or calling from Desktop), Desktop displayed its own camera in a small PiP at the top right, but the phone's remote video was not displayed full-screen.
+3. Bottom call controls (Hang Up, Mute, Camera switch) and the top-left stats badge (latency, resolution, bitrate) were completely invisible on Desktop.
+4. Libwebrtc logged decoding errors:
+   (null_video_decoder.cc:23): Can't initialize NullVideoDecoder.
+   (null_video_decoder.cc:35): Can't register decode complete callback on NullVideoDecoder.
+   (null_video_decoder.cc:29): The NullVideoDecoder doesn't support decoding.
+
+### Root cause
+1. Heavyweight AWT vs Lightweight Compose Occlusion:
+   FlashCallVideoSurface.jvm.kt used SwingPanel hosting FlashVideoPanel : JPanel(). In Compose Multiplatform Desktop, native AWT components render on an OS windowing layer on top of all Compose drawings in the same window. The full-screen video panel was placed inside the same Box as FlashCallControls and FlashCallStatsBadge, drawing over and occluding all Compose UI elements underneath it.
+2. Premature Video Surface Composition & Caller Identity Hidden:
+   In FlashCallScreen.kt, FlashCallVideoSurfaces was composed during state.state == FlashCallState.RINGING (if (state.video && !ended)), before any video stream was active. With no video frames arrived yet, the AWT panel painted the Windows default blank/white background over the whole window. Additionally, FlashCallIdentityBlock (caller avatar and name) was conditionally hidden whenever state.video was true, so callee was blinded during incoming video calls.
+3. Missing H264 Native Decoder on Windows:
+   webrtc-java 0.17.0 DLL on Windows compiles VideoDecoderFactoryTemplate with LibvpxVp8DecoderTemplateAdapter and OpenH264DecoderTemplateAdapter. OpenH264Decoder::Create attempts to dynamically load Cisco's openh264.dll, which is not bundled. When Android offered H264, Desktop negotiated H264 but failed to load the decoder, falling back to NullVideoDecoder and rejecting all incoming phone video frames.
+4. Sent Resolution Telemetry:
+   FlashCallStats and FlashCallStatsBadge only tracked and displayed received resolution, not the video resolution being encoded/sent.
+
+### Working fix
+1. Pure Compose Skia Video Rendering (FlashCallVideoSurface.jvm.kt):
+   Replaced SwingPanel / FlashVideoPanel with a pure Compose implementation. DesktopVideoSink implements VideoTrackSink, converts incoming I420 frames to FourCC.BGRA via SIMD into a reused buffer, constructs org.jetbrains.skia.Image.makeRaster, and emits an ndroidx.compose.ui.graphics.ImageBitmap to Compose state. Rendered via standard Compose Image(bitmap = bitmap, modifier = Modifier.fillMaxSize(), contentScale = ...) inside Box(modifier = modifier.background(Color.Black)). This completely eliminates native AWT layering issues, allowing controls, overlays, PiP clipping, and stats badges to render natively on top.
+2. Ringing State & Visibility (FlashCallScreen.kt):
+   Gated FlashCallVideoSurfaces on isVideoActive = state.video && state.state == FlashCallState.ACTIVE. During RINGING (or audio calls or ended), FlashCallIdentityBlock is always displayed, and the background uses colors.backgroundApp, showing the caller avatar, name, status, and Answer/Decline buttons clearly.
+3. Codec Sanitization (CallSdp.kt, FlashCallSession.kt, FlashGroupCallSession.kt):
+   Added CallSdp.stripH264(sdp) which removes H264 payload types and their RTX payload types from m=video and drops their =rtpmap, =fmtp, =rtcp-fb lines. Applied in setLocalDescriptionTuned and setRemoteDescriptionTuned, forcing negotiation of VP8 (statically bundled and hardware/software supported across Android and Desktop).
+4. Telemetry Enhancement (FlashCallModels.kt, FlashCallScreen.kt):
+   Added sendResolutionLabel (minOf(sendWidth, sendHeight)p) to FlashCallStats. Updated FlashCallStatsBadge to display latency (ms with color dot), bitrate, packet loss, and resolution format showing both received and sent resolutions (e.g. 720p (↑720p) · 30fps).
+
+### Verification
+- :ui:callui:jvmTest all passed (including new DesktopVideoRenderingTest validating Skia raster conversion and FourCC format compatibility).
+- :core:calling:jvmTest all passed (including CallSdpTest verifying stripH264 and DesktopMediaStackSmokeTest verifying local description acceptance).
+- :desktop:jvmTest all passed (51/51 tasks).
+- :desktop:compileKotlinJvm succeeded.
+- :ui:callui:compileCommonMainKotlinMetadata succeeded.
+
+### Status
+RESOLVED (ready for live user testing)

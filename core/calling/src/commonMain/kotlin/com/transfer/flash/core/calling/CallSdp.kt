@@ -72,6 +72,70 @@ internal object CallSdp {
     fun tuneRemote(sdp: String, mode: FlashPerformanceMode): String =
         rewrite(sdp, mode, force = false)
 
+    /**
+     * Strips H264 and its associated retransmission (RTX) payload types from the video section.
+     *
+     * WebRTC on Windows/Desktop (webrtc-java) ships without Cisco's openh264.dll and fails with
+     * `NullVideoDecoder` when attempting to decode incoming H264 streams from Android phones.
+     * Stripping H264 ensures both sides negotiate VP8 (which is statically bundled in both Android
+     * and Desktop WebRTC builds).
+     */
+    fun stripH264(sdp: String): String {
+        if (sdp.isBlank()) return sdp
+        val eol = if (sdp.contains("\r\n")) "\r\n" else "\n"
+        val lines = sdp.split(eol)
+
+        // Find H264 payload types: a=rtpmap:<pt> H264/...
+        val h264Pts = lines.filter { it.startsWith(RTPMAP_PREFIX) }
+            .mapNotNull { line ->
+                val body = line.removePrefix(RTPMAP_PREFIX)
+                val pt = body.substringBefore(' ', "")
+                val codec = body.substringAfter(' ', "").substringBefore('/').uppercase()
+                if (codec == "H264" && pt.isNotEmpty() && pt.all(Char::isDigit)) pt else null
+            }.toSet()
+
+        if (h264Pts.isEmpty()) return sdp
+
+        // Find RTX payload types associated with H264: a=fmtp:<pt> apt=<h264Pt>
+        val rtxPts = lines.filter { it.startsWith(FMTP_PREFIX) }
+            .mapNotNull { line ->
+                val body = line.removePrefix(FMTP_PREFIX)
+                val pt = body.substringBefore(' ', "")
+                val params = body.substringAfter(' ', "")
+                val apt = params.split(';')
+                    .firstOrNull { it.trim().startsWith("apt=") }
+                    ?.substringAfter("apt=")?.trim()
+                if (apt in h264Pts && pt.isNotEmpty() && pt.all(Char::isDigit)) pt else null
+            }.toSet()
+
+        val dropPts = h264Pts + rtxPts
+
+        val out = ArrayList<String>(lines.size)
+        var inVideo = false
+        for (line in lines) {
+            if (line.startsWith("m=")) {
+                inVideo = line.startsWith("m=video ")
+            }
+            if (inVideo && line.startsWith("m=video ")) {
+                val parts = line.split(' ')
+                val header = parts.take(3)
+                val pts = parts.drop(3).filter { it !in dropPts }
+                out += (header + pts).joinToString(" ")
+                continue
+            }
+            if (inVideo) {
+                val isDropAttribute = dropPts.any { pt ->
+                    line.startsWith("a=rtpmap:$pt ") ||
+                        line.startsWith("a=fmtp:$pt ") ||
+                        line.startsWith("a=rtcp-fb:$pt ")
+                }
+                if (isDropAttribute) continue
+            }
+            out += line
+        }
+        return out.joinToString(eol)
+    }
+
     private fun opusParams(voice: FlashVoiceProfile): List<Param> = listOf(
         // The shortest frame we are willing to RECEIVE. Same value as our own ptime: a peer sending
         // us shorter frames than we send it gains nothing and costs us the packet rate anyway.

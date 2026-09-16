@@ -1,5 +1,35 @@
 # Progress Log
 
+## 2026-09-16 — Desktop video calling: pure Compose rendering, H264 codec fix, ringing state, and resolution/latency telemetry (ERROR-065)
+
+### Worked on
+- Resolved four major video calling issues on Desktop:
+  1. Blank white screen during incoming ringing: eliminated heavyweight AWT `SwingPanel` occlusion and gated `FlashCallVideoSurfaces` on `state.state == FlashCallState.ACTIVE`.
+  2. Caller identity: `FlashCallIdentityBlock` is now always shown during `RINGING` and audio calls, ensuring caller avatar, name, and Answer/Decline buttons are clearly visible.
+  3. Video decoding failure (`NullVideoDecoder`): Android's hardware H264 encoder was negotiated by default, but `webrtc-java` on Windows lacks Cisco's `openh264.dll`. Implemented `CallSdp.stripH264` to enforce VP8 (supported natively on both Android and Desktop).
+  4. Call controls and stats badge: rendered video via pure Compose Skia `ImageBitmap` so `FlashCallControls` and `FlashCallStatsBadge` (latency ms with color indicator, received + sent resolution e.g. `720p (↑720p) · 30fps`, bitrate, packet loss) render crisply on top of the video with proper clipping.
+
+### Changed
+- `ui/callui/src/jvmMain/kotlin/.../FlashCallVideoSurface.jvm.kt`: Replaced Swing `JPanel` / `SwingPanel` with pure Compose rendering via `VideoTrackSink` + `VideoBufferConverter` (SIMD BGRA) + Skia `Image.makeRaster` -> `toComposeImageBitmap()`.
+- `ui/callui/src/commonMain/kotlin/.../FlashCallScreen.kt`:
+  - Gated video surface mounting on `isVideoActive = state.video && state.state == FlashCallState.ACTIVE`.
+  - Always rendered `FlashCallIdentityBlock` when call is not active.
+  - Enhanced `FlashCallStatsBadge` to display `sendResolutionLabel` alongside `remoteResolutionLabel` (e.g. `720p (↑720p) · 30fps`).
+- `core/calling/src/commonMain/kotlin/.../CallSdp.kt`: Added `stripH264` to strip H264 and its RTX payload types from `m=video`.
+- `core/calling/src/commonMain/kotlin/.../FlashCallSession.kt` & `FlashGroupCallSession.kt`: Applied `CallSdp.stripH264` in `setLocalDescriptionTuned` and `setRemoteDescriptionTuned`.
+- `core/calling/src/commonMain/kotlin/.../FlashCallModels.kt`: Added `sendResolutionLabel` and updated `hasData`.
+- `ui/callui/build.gradle.kts`: Added `implementation(compose.desktop.currentOs)` to `jvmTest.dependencies`.
+- Added tests:
+  - `DesktopVideoRenderingTest.kt` in `ui:callui`: verified Skia `makeRaster`, `toComposeImageBitmap()`, and `FourCC` formats.
+  - `CallSdpTest.kt` in `core:calling`: verified `stripH264` removes H264/RTX while preserving VP8.
+
+### Verification
+- `:ui:callui:jvmTest` passed (all tests green).
+- `:core:calling:jvmTest` passed (all tests green).
+- `:desktop:jvmTest` passed (51/51 tasks green).
+- `:desktop:compileKotlinJvm` and `:ui:callui:compileCommonMainKotlinMetadata` passed.
+- Did NOT run or install to devices per user instruction.
+
 ## 2026-09-16 — Desktop video calling enabled (Phase 33c) & camera switching fixed
 
 ### Worked on

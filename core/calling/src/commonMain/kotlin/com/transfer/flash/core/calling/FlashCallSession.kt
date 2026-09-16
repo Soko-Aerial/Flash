@@ -645,7 +645,8 @@ public class FlashCallSession(
         pc: PeerConnection,
         desc: SessionDescription,
     ): SessionDescription {
-        val tunedSdp = runCatching { CallSdp.tuneLocal(desc.sdp, performanceMode()) }.getOrNull()
+        val sdpWithCodecs = CallSdp.stripH264(desc.sdp)
+        val tunedSdp = runCatching { CallSdp.tuneLocal(sdpWithCodecs, performanceMode()) }.getOrNull()
         if (tunedSdp != null && tunedSdp != desc.sdp) {
             val tuned = SessionDescription(desc.type, tunedSdp)
             try {
@@ -658,9 +659,10 @@ public class FlashCallSession(
                 FlashLog.w("CALL", "tuned local SDP rejected, using original: ${t.message}")
             }
         }
-        logSdp("local ${desc.type}", desc.sdp)
-        pc.setLocalDescription(desc)
-        return desc
+        val fallbackDesc = if (sdpWithCodecs != desc.sdp) SessionDescription(desc.type, sdpWithCodecs) else desc
+        logSdp("local ${desc.type}", fallbackDesc.sdp)
+        pc.setLocalDescription(fallbackDesc)
+        return fallbackDesc
     }
 
     /**
@@ -680,7 +682,8 @@ public class FlashCallSession(
         type: SessionDescriptionType,
         sdp: String,
     ) {
-        val tuned = runCatching { CallSdp.tuneRemote(sdp, performanceMode()) }.getOrNull()
+        val sdpWithCodecs = CallSdp.stripH264(sdp)
+        val tuned = runCatching { CallSdp.tuneRemote(sdpWithCodecs, performanceMode()) }.getOrNull()
         if (tuned != null && tuned != sdp) {
             try {
                 pc.setRemoteDescription(SessionDescription(type, tuned))
@@ -692,8 +695,8 @@ public class FlashCallSession(
                 FlashLog.w("CALL", "tuned remote SDP rejected, using original: ${t.message}")
             }
         }
-        logSdp("remote $type", sdp)
-        pc.setRemoteDescription(SessionDescription(type, sdp))
+        logSdp("remote $type", sdpWithCodecs)
+        pc.setRemoteDescription(SessionDescription(type, sdpWithCodecs))
     }
 
     /**

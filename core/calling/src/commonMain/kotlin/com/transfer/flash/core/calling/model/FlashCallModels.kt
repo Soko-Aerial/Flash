@@ -138,13 +138,22 @@ public data class FlashCallStats(
 ) {
     /** True once anything at all has been measured (used to gate the UI readout). */
     public val hasData: Boolean
-        get() = rttMs != null || inboundKbps != null || outboundKbps != null || fps != null || audioJitterMs != null || packetLoss != null
+        get() = rttMs != null || inboundKbps != null || outboundKbps != null || fps != null || audioJitterMs != null || packetLoss != null || sendWidth != null
 
     /** `"1080p"`-style label for the received video, or null before the first frame. */
     public val remoteResolutionLabel: String?
         get() {
             val w = remoteWidth ?: return null
             val h = remoteHeight ?: return null
+            if (w <= 0 || h <= 0) return null
+            return "${minOf(w, h)}p"
+        }
+
+    /** `"1080p"`-style label for the video being sent, or null before first frame. */
+    public val sendResolutionLabel: String?
+        get() {
+            val w = sendWidth ?: return null
+            val h = sendHeight ?: return null
             if (w <= 0 || h <= 0) return null
             return "${minOf(w, h)}p"
         }

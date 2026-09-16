@@ -1,6 +1,6 @@
 # Current Handoff
 
-## 2026-09-16 — Desktop video calling enabled (Phase 33c) & camera switching fixed
+## 2026-09-16 — Desktop video calling: pure Compose rendering, H264 codec fix, ringing state, and telemetry (ERROR-065)
 
 ### Current branch
 `dev`. Working tree clean except untracked `session-ses_*.md`.
@@ -14,7 +14,12 @@
   desktop chat accept, and file completion.
 
 ### Ready for live verification
-- **Desktop 1:1 Video Calls (Phase 33c)**: Video call button enabled in desktop conversation header (`showVideoCallAction = true`), `placeVideoCall` wired to shared `CallCoordinator.startCall(video = true)`. Video rendering via Swing `VideoTrackSink` + `VideoBufferConverter` (`FlashCallVideoSurface.jvm.kt`). WebRTC native camera capture verified on hardware (`Integrated Camera`). JVM `LocalVideoStreamTrack.switchCamera()` bug fixed (gracefully cycles or keeps active camera streaming instead of un-started stop).
+- **Desktop 1:1 Video Calls (Phase 33c & ERROR-065)**:
+  - Video call button enabled in desktop conversation header (`showVideoCallAction = true`).
+  - Ringing state fixed: `FlashCallIdentityBlock` shows caller avatar, name, and Answer/Decline buttons; no white blank screen.
+  - Video rendering replaced with pure Compose Skia `ImageBitmap` (no heavyweight AWT `SwingPanel`), allowing Call Controls (Hangup, Mute, Camera) and PiP rounded corners to render properly on top.
+  - Codec negotiation: `CallSdp.stripH264` strips H264 to eliminate Windows `NullVideoDecoder` failure and force VP8, allowing phone video to decode and display full-screen on Desktop.
+  - Telemetry: `FlashCallStatsBadge` displays latency (ms with status dot), received + sent video resolution (e.g. `720p (↑720p) · 30fps`), bitrate, and packet loss like on mobile.
 - **Desktop receiver progress & speed telemetry**: `DesktopEngine.kt` now calls `updateIncomingProgress`
   on every `ReceiveEvent.AckBatchReady` (and seeds it on `acceptOffer`); `RealFlashTransferRepository`
   now maintains a `RollingRateMeter` per incoming transfer, calculating live `speedBytesPerSec` and `etaSeconds`

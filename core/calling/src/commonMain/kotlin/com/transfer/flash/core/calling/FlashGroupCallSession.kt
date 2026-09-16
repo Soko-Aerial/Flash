@@ -1010,7 +1010,8 @@ public class FlashGroupCallSession(
         pc: PeerConnection,
         desc: SessionDescription,
     ): SessionDescription {
-        val tunedSdp = runCatching { CallSdp.tuneLocal(desc.sdp, performanceMode()) }.getOrNull()
+        val sdpWithCodecs = CallSdp.stripH264(desc.sdp)
+        val tunedSdp = runCatching { CallSdp.tuneLocal(sdpWithCodecs, performanceMode()) }.getOrNull()
         if (tunedSdp != null && tunedSdp != desc.sdp) {
             val tuned = SessionDescription(desc.type, tunedSdp)
             try {
@@ -1023,9 +1024,10 @@ public class FlashGroupCallSession(
                 FlashLog.w("GROUP_CALL", "tuned local SDP rejected, using original: ${t.message}")
             }
         }
-        FlashLog.i("GROUP_CALL", "local ${desc.type} sdp len=${desc.sdp.length}")
-        pc.setLocalDescription(desc)
-        return desc
+        val fallbackDesc = if (sdpWithCodecs != desc.sdp) SessionDescription(desc.type, sdpWithCodecs) else desc
+        FlashLog.i("GROUP_CALL", "local ${desc.type} sdp len=${fallbackDesc.sdp.length}")
+        pc.setLocalDescription(fallbackDesc)
+        return fallbackDesc
     }
 
     private suspend fun setRemoteDescriptionTuned(
@@ -1033,7 +1035,8 @@ public class FlashGroupCallSession(
         type: SessionDescriptionType,
         sdp: String,
     ) {
-        val tuned = runCatching { CallSdp.tuneRemote(sdp, performanceMode()) }.getOrNull()
+        val sdpWithCodecs = CallSdp.stripH264(sdp)
+        val tuned = runCatching { CallSdp.tuneRemote(sdpWithCodecs, performanceMode()) }.getOrNull()
         if (tuned != null && tuned != sdp) {
             try {
                 pc.setRemoteDescription(SessionDescription(type, tuned))
@@ -1045,8 +1048,8 @@ public class FlashGroupCallSession(
                 FlashLog.w("GROUP_CALL", "tuned remote SDP rejected, using original: ${t.message}")
             }
         }
-        FlashLog.i("GROUP_CALL", "remote $type sdp len=${sdp.length}")
-        pc.setRemoteDescription(SessionDescription(type, sdp))
+        FlashLog.i("GROUP_CALL", "remote $type sdp len=${sdpWithCodecs.length}")
+        pc.setRemoteDescription(SessionDescription(type, sdpWithCodecs))
     }
 
     private fun tuneAudioSender(sender: RtpSender) {
