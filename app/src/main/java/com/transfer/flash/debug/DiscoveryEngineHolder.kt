@@ -561,6 +561,16 @@ object DiscoveryEngineHolder {
         /** Per-peer resolved data-port offset from its advertised WS port (probed once). */
         val dataPortCache = ConcurrentHashMap<String, Int>()
 
+        /**
+         * Per-peer "no data server" expiry (epoch ms). A full 1..20 probe sweep that finds
+         * nothing means the peer runs no `DataChannelServer` — desktops never do (JVM has no
+         * counterpart), and re-probing on every channel open / retry turned each desktop send
+         * into minutes of 4s timeouts before WS fallback (ERROR-062). Entries expire so a peer
+         * that gains a server (rebuild/upgrade) is re-probed; a success clears the entry.
+         */
+        val noDataServerUntil = ConcurrentHashMap<String, Long>()
+        val NO_DATA_SERVER_TTL_MS = 10 * 60 * 1000L
+
         // Late-bound so the receive pipeline's resume seam (built before the repo) can read the
         // repo's in-memory receiver done-set synchronously (#20).
         var transferForResume: RealFlashTransferRepository? = null
@@ -657,6 +667,24 @@ object DiscoveryEngineHolder {
                 val endpoint = networkImpl.endpointOf(peerDeviceId) ?: return@RealFlashTransferRepository wsFallback()
 
                 // Probe peer's data port: convention is wsPort+1..+20 (server binds its own).
+                // Two short-circuits straight to WS fallback (ERROR-062 — a full sweep is up to
+                // 20 × 4s per channel open, all of it pure timeout against a peer with no server):
+                // 1. DESKTOP peers (discovery caps) run no DataChannelServer — the JVM has no
+                //    counterpart — so probing is doomed by construction. PHONE/UNKNOWN still probe.
+                // 2. A peer whose last full sweep found nothing, until the negative-cache TTL.
+                // A later success clears the negative entry (see below).
+                val nowMs = System.currentTimeMillis()
+                val peerKind = engine.discoveredEndpoints.value
+                    .firstOrNull { it.deviceId.value == peerDeviceId }?.deviceKind
+                val negativeUntil = noDataServerUntil[peerDeviceId] ?: 0L
+                if (peerKind == com.transfer.flash.core.common.model.FlashDeviceKind.DESKTOP) {
+                    Log.i(TAG_TRANSFER, "StreamChannel[$channelId] peer is DESKTOP (caps) — no data server by construction; WS fallback")
+                    return@RealFlashTransferRepository wsFallback()
+                }
+                if (negativeUntil > nowMs) {
+                    Log.i(TAG_TRANSFER, "StreamChannel[$channelId] peer had no data server recently — skipping probe; WS fallback")
+                    return@RealFlashTransferRepository wsFallback()
+                }
                 var probeOffset = dataPortCache[peerDeviceId]
                 var channel: com.transfer.flash.core.network.datachannel.DataChannelClient.DataSendChannel? = null
                 val offsets = listOfNotNull(probeOffset) + (1..20).filter { it != probeOffset }
@@ -675,10 +703,16 @@ object DiscoveryEngineHolder {
                     )
                     if (candidate != null) {
                         dataPortCache[peerDeviceId] = offset
+                        noDataServerUntil.remove(peerDeviceId)
                         channel = candidate
                         Log.i(TAG_TRANSFER, "StreamChannel[$channelId] real socket → ${endpoint.first}:${endpoint.second + offset}")
                         break
                     }
+                }
+                if (channel == null) {
+                    // Full sweep failed: remember so retries/re-offers (and the other channels
+                    // of this transfer) skip straight to WS fallback until the TTL expires.
+                    noDataServerUntil[peerDeviceId] = System.currentTimeMillis() + NO_DATA_SERVER_TTL_MS
                 }
 
                 channel?.let { dc ->

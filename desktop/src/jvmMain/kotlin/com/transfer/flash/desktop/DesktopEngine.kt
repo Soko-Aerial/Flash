@@ -29,6 +29,7 @@ import com.transfer.flash.core.messaging.protocol.ChatTextFrameCodec
 import com.transfer.flash.core.messaging.protocol.DirectMessageActionCodec
 import com.transfer.flash.core.messaging.protocol.GroupFrameCodec
 import com.transfer.flash.core.messaging.protocol.MessageWireFrame
+import com.transfer.flash.core.messaging.util.FlashMimeTypes
 import com.transfer.flash.core.persistence.db.FlashDatabase
 import com.transfer.flash.core.persistence.db.openEncryptedFlashDatabase
 import com.transfer.flash.core.network.bridge.DiscoveryRouteBinder
@@ -882,6 +883,31 @@ public class DesktopEngine(
                         continue
                     }
                     transfer.onIncomingOffered(frame.transferId, frame.fileId, frame.fileName, frame.totalBytes, "peer", peerDeviceId)
+                    // Offer chat bubble, parity with the app host (`onAttachmentStarted`): the
+                    // offer must be visible (and acceptable) in the conversation, not only in the
+                    // Transfers tab. ERROR-062: the owner expected accept-in-chat and it was absent.
+                    val offerMime = guessOfferMime(frame.fileName)
+                    chatImpl?.onInboundAttachment(
+                        peerDeviceId = peerDeviceId,
+                        transferId = frame.transferId,
+                        fileName = frame.fileName,
+                        mimeType = offerMime,
+                        sizeBytes = frame.totalBytes,
+                    )
+                    // Auto-download parity with the app host (Bug 3): voice/image auto-accept, but
+                    // ONLY from trusted peers, and video/file still park for consent — so no paired
+                    // device can silently land an executable while the consent gate keeps its meaning
+                    // for everything risky. Desktop has no settings toggle yet; the defaults match
+                    // the app's (voice/image on). TODO: wire to DesktopSettingsStore when it gains rows.
+                    val offerTrusted = trustStore.isTrusted(FlashDeviceId(peerDeviceId))
+                    val offerAuto = offerMime.startsWith("audio/") || offerMime.startsWith("image/")
+                    if (offerTrusted && offerAuto) {
+                        FlashLog.i(
+                            TAG_WS,
+                            "Auto-accepting '${frame.fileName}' (mime=$offerMime) tid=${frame.transferId}",
+                        )
+                        acceptOffer(frame.transferId, peerDeviceId)
+                    }
                     // CONSENT GATE — deliberately NOT auto-accepted.
                     //
                     // This used to call `acceptOffer` here, with the comment "no consent UI on
@@ -966,6 +992,14 @@ public class DesktopEngine(
             }
         }
     }
+
+    /**
+     * Shared extension→MIME table (also the auto-download classifier). Unknown extensions fall
+     * back to the generic octet-stream so the offer still renders as a file card.
+     */
+    private fun guessOfferMime(fileName: String): String =
+        FlashMimeTypes.fromExtension(fileName.substringAfterLast('.', ""))
+            ?: "application/octet-stream"
 
     /**
      * The accept path, faithful to production's ordering: resolve the deferred sink FIRST,
