@@ -4574,3 +4574,65 @@ fit a process with >=1 earlier acquire (the log excerpt starts mid-run).
 
 ### Status
 CODE-COMPLETE (live verification owed)
+
+
+## ERROR-062 — Phone→desktop image/video send fails; data-port probes all time out (OPEN, under diagnosis)
+
+### Date
+2026-09-16
+
+### Area
+File transfer phone → desktop (bulk path). Voice call owner-verified working same day
+(ERROR-061 live criteria met: call connects, audio flows).
+
+### Symptoms (owner log, phone .113 → peer .110)
+- `DATA: data connect failed host=192.168.1.110:45836..45839 + 45823..45826` — every TCP
+  probe times out after 4000ms (note: TIMEOUT, not fast-refused), two channels probing in
+  parallel (threads 9065/9059), wsPort base 45822 + offsets 1..20 per the wsPort+1..+20
+  convention.
+- Gateway hotspot probe (192.168.1.1:45822) fails — routine noise on home LAN, unrelated.
+- Desktop shows NOTHING in its logs.
+
+### Established by code inspection (this session)
+1. **Probes MUST fail against the desktop**: `DataChannelServer` exists only in
+   `core/network/.../datachannel` androidMain — there is no JVM counterpart, so the
+   desktop listens on nothing in 45823+. The designed path phone→desktop is WS fallback
+   (`wsFallback()` after the probe gauntlet), not raw TCP.
+2. **"Nothing in desktop logs" was structural**: `handleInboundBinary/SessionStarted`
+   logged nothing on offer arrival (only the Transfers-tab row appeared). Added an
+   `Inbound file offer tid=… name=… bytes=…` line on desktop AND the same line on the app
+   host (`DiscoveryEngineHolder`), commit `3317298`.
+3. **Same commit: desktop chat path had the pre-#11 hole** — `transportPeerId` passed for
+   typing ONLY (copied from the stale side of the parking conflict). Now passed for all
+   five direct families, parity with both Android call sites (codec is direct-family-only;
+   group frames travel separately — verified before changing).
+4. **Timeout-vs-refused is unexplained**: with no listener the Windows stack should RST
+   (fast-refused), not time out. Candidates: Windows Defender Firewall DROP on inbound
+   (outbound unaffected — WS client + WebRTC still work), or L2/AP weirdness. Counter:
+   voice media (inbound UDP to desktop) works, so the path is not fully closed.
+
+### Not yet known (owner input requested 2026-09-16)
+- Is .110 the desktop (vs another phone)? Was the working voice call with .110 itself?
+- Phone `TRANSFER`-tag lines around the send: "WS fallback" vs "no session for peer" vs
+  parked-at-0% (consent gate: desktop offer needs an Accept tap in Transfers tab)?
+- Did the desktop Transfers tab show the incoming offer at all?
+- TCP reachability: `telnet 192.168.1.110 45822` (WS — expect connect) vs `45823`
+  (expect fast-refused if stack reachable; timeout implicates firewall DROP).
+- Full unfiltered desktop log around the send attempt.
+
+### Candidate failure chains (ranked, pending the logs above)
+1. Phone has no usable WS session to desktop at send time → `wsFallback()` null → "all
+   channels failed" → user-visible FAIL. (Probes burn minutes first: each channel open
+   walks up to 20 offsets × 4s before falling back — perceived as hang then fail.)
+2. Offer arrives but nobody accepts on desktop (consent gate parks; phone waits at 0%).
+3. Desktop WS receive/binary routing broken for this direction (least likely — wired and
+   reviewed; the new offer line will prove/deny arrival).
+
+### Related files
+- `core/network/.../datachannel/DataChannelClient.kt` (probe), `DataChannelServer.kt`
+  (androidMain only — the gap)
+- `app/.../DiscoveryEngineHolder.kt` (~streamChannelFactory probe+fallback)
+- `desktop/.../DesktopEngine.kt` (handleInboundBinary, handleInboundText, acceptOffer)
+
+### Status
+OPEN
