@@ -3,7 +3,7 @@
 ## 2026-09-16 — Inbound transfer progress + speed fixed & re-deployed; items 1 & 2 verified fast
 
 ### Current branch
-`dev` at `f2f2341`. Working tree clean except untracked `session-ses_*.md`.
+`dev` at `055df6b`. Working tree clean except untracked `session-ses_*.md`.
 
 ### Live-verified working (owner hardware runs, phone .113 ↔ desktop .110)
 - **1:1 voice calls** (ERROR-061 closed live): select+init once pre-factory, engine owns
