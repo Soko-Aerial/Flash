@@ -4667,3 +4667,40 @@ in chat + Transfers tab and stream on accept.
 
 ### Status
 FIXED-in-code (live re-test owed)
+
+
+## ERROR-063 — Media playback gaps: desktop chat accept unwired, Android double-player, desktop AAC/video shims (OPEN, part-fixed)
+
+### Date
+2026-09-16
+
+### Area
+Playback UX (ui/chat commonMain, desktop shell, platform shims)
+
+### Reports (owner, live)
+1. Desktop chat bubble Accept does nothing (Transfers tab works).
+2. Desktop voice note stuck on play icon (never plays).
+3. Desktop received video does not play; Android plays but shows two overlays.
+
+### Root causes (all code-confirmed)
+1. `DesktopShell` never passed `onAcceptOffer/onDeclineOffer/onRetryTransfer/onOpenAttachment`
+   to `FlashConversationScreen` (all default no-ops). Fixed: wired to the same repository
+   calls the Transfers tab uses (`acceptIncoming` → ACTION_ACCEPT → engine sink+RESUME).
+2. Desktop voice = AAC/m4a (Android `MediaRecorder`); JVM `javax.sound.sampled` decodes
+   WAV/AU/AIFF only → `UnsupportedAudioFileException` in `JvmAudioPlayer` degrade path
+   (the exact log line the owner pasted). No code fix without a decoder dependency — R10
+   decision asked 2026-09-16 (options: JavaCPP-ffmpeg for voice+video, WAV voiceNotes, …).
+3. Badge tap fired BOTH in-app player AND the external system intent (`isPlayingVideo=true`
+   + `onPlayVideo→onOpenAttachment`). Fixed: badge is in-app only; external is now strictly
+   the error-banner fallback (`onOpenExternally`). Same commit hides viewer chrome during
+   playback (viewer top/bottom bars stacked over player close/scrubber = second doubling).
+   Desktop JVM stub now reports `onError` once (LaunchedEffect) so the banner + system-player
+   button appears instead of a black surface; desktop external path works through the
+   already-wired `onOpenAttachment`.
+
+### Verification
+`:ui:chat:jvmTest`, `:ui:platform-shims:jvmTest`, `:desktop:jvmTest`, `:app:compileDebugKotlin`
+green. Live re-test owed on all three reports.
+
+### Status
+OPEN (desktop voice/video real playback blocked on the player-dependency decision)
