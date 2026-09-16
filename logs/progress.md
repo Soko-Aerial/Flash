@@ -1,5 +1,60 @@
 # Progress Log
 
+## 2026-09-16 - Merged PRs #13-#17 code-only; rescued dangling pre-PR-merge stash
+
+### Worked on
+Continued the branch merges: PR #13 was staged-but-uncommitted, PRs #14-#17 were open on GitHub
+with no local counterpart. All five are now in `dev` as single-parent code commits
+(`c50f6f2`..`55e5e4b`), same pattern as #6-#12: bot code in, bot `logs/` hunks out.
+Also rescued the dangling stash commit `b2c03c8` ("pre-pr-merge parking: calling 056-060, ...",
+stash ref already dropped, reachable from nothing) as branch
+`parking/pre-pr-merge-20260915` so the parked calling/messaging work cannot be GC'd.
+
+### Changed
+- **#13 bolt lazycolumn recycling** (`FlashMessageList.kt` only): isMine-differentiated contentType
+  + `initialMessageIds` keyed on first message id. Staged change verified byte-identical to the bot
+  tip (`git diff f0ff6d9` empty); committed as found.
+- **#14 sentinel media-decoder traversal guard**: `resolveLocalFile` canonicalizes + requires
+  `isFile`; video-frame + `openStream` paths route all non-content URIs through it (the `file:`
+  single-slash branch survives inside the central helper). New `FlashMediaDecoderSecurityTest`.
+  - Merge fix (mine, recorded so it is not "fixed back"): the bot's test called `decode()` with
+    the default `memoize=true`, which touches `android.util.LruCache.get` — an android.jar stub
+    that throws on host (`Method get ... not mocked`). Per the module's established pattern
+    (`FlashMediaCacheTrimTest` only exercises pure helpers), the test now passes `memoize=false`,
+    which skips the cache tier and exercises the guard path directly.
+- **#15 palette reaction-chip**: net-new code vs dev was one line — explicit
+  `pressedScale = 0.94f` (theme default is 0.98f). Resolved a cherry-pick auto-merge duplication
+  (bot re-added `val interactionSource`; ours from #9 stands, bot's duplicate deleted) and kept
+  both `.jules/palette.md` journal entries.
+- **#16 bolt chat-list**: `rememberUpdatedState` stale-closure fix in the swipe-dismiss callback,
+  `Text`→`FlashText` (6 sites; the title site's explicit `fontWeight` went away with it because
+  `bodyEmphasis`/`bodyDefault` already encode the unread emphasis), chat-list `contentType`
+  direct/group. Auto-merged clean.
+- **#17 sentinel fail-closed fingerprint**: `RequestReceived`/`BeginRequested`/`Paired` now go to
+  `Failed("invalid-fingerprint")` when the local or peer hex normalizes empty, instead of deriving
+  a comparison code from garbage. Plus 3 pinning tests.
+
+### Verification (JBR 21 + AF_UNIX workaround, `--console=plain --max-workers=2`)
+- #13: `:ui:chat:jvmTest` green before commit.
+- #14: `:ui:platform-shims:jvmTest` 34/34 + `:ui:platform-shims:testAndroidHostTest` 12/12 green
+  (XML-confirmed, incl. the 2 new security tests) after the memoize fix; before the fix the new
+  test failed on the LruCache stub (see above — harness, not product).
+- #15/#16: `:ui:chat:jvmTest` green after each (only pre-existing `FlashTypingIndicator` deprecation
+  warnings in an untouched file).
+- #17: `:core:security` host suite green incl. `PairingSessionStateMachineTest` 26/26 (3 new);
+  module JVM suite 0 failures. `git diff --check` clean throughout.
+- NOT run: full sweep, device gates, `:app:assembleDebug` — no manifest/service surface changed,
+  but the next full-suite pass should still cover these commits.
+
+### Remaining / next AI
+- GitHub-side PRs #6-#17 are all still OPEN (local merges never close them) — owner decision how
+  to close/merge them remotely. Nothing further to merge locally: every open PR's code is in dev.
+- `parking/pre-pr-merge-20260915` (calling 056-060 + messaging migration + desktop persistence)
+  is preserved but NOT merged — it deletes `RealFlashChatRepository.kt` among 28 files and needs
+  its own review pass.
+- `session-ses_f59c.md` (previous session transcript) is untracked in the worktree; left alone.
+- Physical-device gates (calling, PTT, group) remain owed as before.
+
 ## 2026-09-12 - A3 classifier tests fixed; A1 workflow fix applied; full local suite exposed + fixed a third stale-harness failure in `:core:discovery`
 
 ### Worked on

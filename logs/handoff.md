@@ -1,5 +1,31 @@
 # Current Handoff
 
+## 2026-09-16 - PRs #13-#17 merged code-only (dev @ 55e5e4b); nothing left to merge locally
+
+### Current branch
+`dev` at `55e5e4b`. Five single-parent code commits on top of `e9afca0` (#12):
+`c50f6f2` (#13), `eb9490f` (#14), `08e91dc` (#15), `db3203c` (#16), `55e5e4b` (#17).
+New branch `parking/pre-pr-merge-20260915` preserves the rescued dangling stash `b2c03c8`.
+Working tree clean except untracked `session-ses_f59c.md` (user's transcript, left alone).
+
+### Last verified build
+JBR 21 + AF_UNIX workaround, per-PR module suites only (all XML-confirmed, 0 failures):
+`:ui:chat:jvmTest` (#13/#15/#16), `:ui:platform-shims` jvm 34 + host 12 (#14),
+`:core:security` host incl. pairing 26/26 (#17). No full sweep, no device run this pass.
+
+### Known blockers
+None new. GitHub PRs #6-#17 still OPEN remotely (local merges don't close them). A2 billing lock
+and physical-device gates unchanged from 2026-09-12.
+
+### Recommended next task
+Owner call on GitHub-side PR disposition (#6-#17), then the owed device gates. Do NOT merge
+`parking/pre-pr-merge-20260915` without its own review (28 files, incl. a deleted repository).
+
+### Files most relevant to next task
+- `logs/progress.md` 2026-09-16 entry (per-PR deltas + the two merge fixes)
+- `ui/platform-shims/.../FlashMediaDecoderSecurityTest.kt` (memoize=false harness note)
+- `core/security/.../pairing/PairingSessionStateMachine.kt` (fail-closed guards)
+
 ## 2026-09-12 - A3/A1 fixed, full local suite run; third stale-harness failure (ERROR-053) found + fixed
 
 ### Current branch
