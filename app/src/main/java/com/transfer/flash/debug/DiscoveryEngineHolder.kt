@@ -1716,6 +1716,10 @@ object DiscoveryEngineHolder {
             when (event) {
                 is ReceiveEvent.SessionStarted -> {
                     val frame = event.frame
+                    // Offer-arrival line: without it an inbound offer is invisible in logcat until
+                    // the user accepts/declines, which reads as "nothing arrives". (Desktop got the
+                    // same line; 2026-09-16 phone→desktop image/video failure investigation.)
+                    Log.i(TAG_TRANSFER, "Inbound file offer tid=${frame.transferId} name='${frame.fileName}' bytes=${frame.totalBytes} from peer=$peerDeviceId")
                     incomingMeta[frame.transferId] = frame
                     // Register under the peer so a transport drop can fail this transfer (#4).
                     peerDeviceId?.let { pid ->

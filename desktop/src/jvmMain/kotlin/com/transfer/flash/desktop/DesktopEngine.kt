@@ -858,6 +858,14 @@ public class DesktopEngine(
             when (event) {
                 is ReceiveEvent.SessionStarted -> {
                     val frame = event.frame
+                    // Offer arrival is otherwise invisible: no log line fires between the WS frame
+                    // and the Transfers-tab row, which makes "nothing in desktop logs" indistinguishable
+                    // from "nothing arrived". Log the offer; acceptance still needs the user (consent gate).
+                    FlashLog.i(
+                        TAG_WS,
+                        "Inbound file offer tid=${frame.transferId} name='${frame.fileName}' " +
+                            "bytes=${frame.totalBytes} from peer=$peerDeviceId",
+                    )
                     incomingMeta[frame.transferId] = frame
                     val existing = transfer.activeTransfers.value.firstOrNull { it.id.value == frame.transferId }
                     val existingPath = receivedPaths[frame.transferId] ?: existing?.localPath
@@ -935,9 +943,13 @@ public class DesktopEngine(
         when (val decoded = ChatTextFrameCodec.decode(text, System.currentTimeMillis(), peerDeviceId)) {
             is ChatTextFrameCodec.DecodeResult.Frame -> {
                 val frame = decoded.frame
+                // transportPeerId for ALL direct families, not just typing: the codec decodes the
+                // direct-chat family only (group frames travel a separate path), so the frame
+                // author IS the transport peer — and the repository's fail-closed spoof guards
+                // (PR #11) only fire when it is non-null. Same fix as both Android call sites.
                 chatImpl?.onInboundWireFrame(
                     frame,
-                    transportPeerId = if (frame is MessageWireFrame.TypingFrame) peerDeviceId else null,
+                    transportPeerId = peerDeviceId,
                 )
                 return
             }
