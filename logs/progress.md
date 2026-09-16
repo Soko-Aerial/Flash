@@ -1,5 +1,24 @@
 # Progress Log
 
+## 2026-09-16 — Desktop video calling enabled (Phase 33c) & camera switching fixed
+
+### Worked on
+- Enabled 1:1 video calling on Desktop (Phase 33c).
+- Substrate review: verified shared `CallCoordinator`, `FlashCallSession`, `FlashCallScreen`, and `FlashCallVideoSurface.jvm.kt` (Swing `VideoTrackSink` + `VideoBufferConverter` I420->ARGB) are fully present and tested.
+- Hardware probe: verified camera enumeration on desktop (`Integrated Camera` detected, `videoTracks: 1` acquired via `webrtc-java` 0.17.0).
+- Bug fix in JVM `webrtc-kmp`: `LocalVideoStreamTrack.switchCamera()` previously stopped the video source with no restart when called with `deviceId == null`, permanently freezing video if the user tapped camera switch. Fixed to track `currentDevice`, cycle across available capture devices if multiple exist, and keep active camera streaming if only 1 camera exists. Initialized `currentDevice` in `MediaDevices.kt`.
+- UI & Shell wiring:
+  - Added `placeVideoCall(peerId, peerName)` in `DesktopShell.kt`.
+  - Wired `onStartVideoCall` in `FlashConversationScreen` and set `showVideoCallAction = true`.
+  - Added unit test in `DesktopCallingTest.kt` verifying untrusted video calls are rejected before media access.
+  - Added unit test in `DesktopMediaDevicesTest.kt` validating video capture, track acquisition, and `switchCamera()`.
+
+### Verification
+- `:desktop:jvmTest` all passed (51/51 tasks successful).
+- `:core:calling:jvmTest` and `:ui:callui:jvmTest` all passed.
+- `:desktop:compileKotlinJvm` and `:app:compileDebugKotlin` all passed.
+- Did NOT run or install to devices per user instruction ("dont install or start the desktop for me i will do the testing and the rest of the testing").
+
 ## 2026-09-16 - Inbound transfer live progress + speed telemetry fixed on desktop + repository
 
 ### Worked on

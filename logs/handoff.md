@@ -1,9 +1,9 @@
 # Current Handoff
 
-## 2026-09-16 — Inbound transfer progress + speed fixed & re-deployed; items 1 & 2 verified fast
+## 2026-09-16 — Desktop video calling enabled (Phase 33c) & camera switching fixed
 
 ### Current branch
-`dev` at `055df6b`. Working tree clean except untracked `session-ses_*.md`.
+`dev`. Working tree clean except untracked `session-ses_*.md`.
 
 ### Live-verified working (owner hardware runs, phone .113 ↔ desktop .110)
 - **1:1 voice calls** (ERROR-061 closed live): select+init once pre-factory, engine owns
@@ -13,7 +13,8 @@
 - **Fast image transfer & video/file streaming to desktop** (ERROR-062): user confirmed fast start,
   desktop chat accept, and file completion.
 
-### Fixed in code, live retest owed
+### Ready for live verification
+- **Desktop 1:1 Video Calls (Phase 33c)**: Video call button enabled in desktop conversation header (`showVideoCallAction = true`), `placeVideoCall` wired to shared `CallCoordinator.startCall(video = true)`. Video rendering via Swing `VideoTrackSink` + `VideoBufferConverter` (`FlashCallVideoSurface.jvm.kt`). WebRTC native camera capture verified on hardware (`Integrated Camera`). JVM `LocalVideoStreamTrack.switchCamera()` bug fixed (gracefully cycles or keeps active camera streaming instead of un-started stop).
 - **Desktop receiver progress & speed telemetry**: `DesktopEngine.kt` now calls `updateIncomingProgress`
   on every `ReceiveEvent.AckBatchReady` (and seeds it on `acceptOffer`); `RealFlashTransferRepository`
   now maintains a `RollingRateMeter` per incoming transfer, calculating live `speedBytesPerSec` and `etaSeconds`
