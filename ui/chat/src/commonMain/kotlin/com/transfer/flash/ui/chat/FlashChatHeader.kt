@@ -55,6 +55,14 @@ fun FlashChatHeader(
     modifier: Modifier = Modifier,
     onCallClick: () -> Unit = {},
     onVideoCallClick: () -> Unit = {},
+    /**
+     * Whether the video button renders alongside the voice button (Phase 33a).
+     *
+     * Defaulted true so existing hosts are unchanged. The desktop passes false until 33c:
+     * 33a is audio-only, and a visible video button with nowhere to go would be the dead-
+     * control trap again.
+     */
+    showVideoCallAction: Boolean = true,
     onMenuClick: () -> Unit = {},
     /** UI-028: group-only search-in-conversation action. */
     onSearchClick: () -> Unit = {},
@@ -170,6 +178,7 @@ fun FlashChatHeader(
                 state = state,
                 onCallClick = onCallClick,
                 onVideoCallClick = onVideoCallClick,
+                showVideoCallAction = showVideoCallAction,
                 onMenuClick = onMenuClick,
                 onSearchClick = onSearchClick,
                 menuContent = menuContent,
@@ -308,6 +317,7 @@ private fun FlashChatHeaderActions(
     state: FlashChatHeaderUiState,
     onCallClick: () -> Unit,
     onVideoCallClick: () -> Unit,
+    showVideoCallAction: Boolean,
     onMenuClick: () -> Unit,
     onSearchClick: () -> Unit = {},
     menuContent: @Composable () -> Unit = {},
@@ -320,8 +330,10 @@ private fun FlashChatHeaderActions(
             FlashHeaderIconButton(onClick = onCallClick, description = "Voice call") {
                 FlashIcon(icon = FlashIcons.Call)
             }
-            FlashHeaderIconButton(onClick = onVideoCallClick, description = "Video call") {
-                FlashIcon(icon = FlashIcons.VideoCall)
+            if (showVideoCallAction) {
+                FlashHeaderIconButton(onClick = onVideoCallClick, description = "Video call") {
+                    FlashIcon(icon = FlashIcons.VideoCall)
+                }
             }
         }
         Box {

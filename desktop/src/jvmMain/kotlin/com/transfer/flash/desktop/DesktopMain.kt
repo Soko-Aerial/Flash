@@ -19,6 +19,8 @@ import com.transfer.flash.core.common.logging.FlashLogLevel
 import com.transfer.flash.core.common.logging.FlashLogSink
 import com.transfer.flash.ui.settings.FlashSettingsMath
 import com.transfer.flash.ui.theme.FlashTheme
+import com.shepeliev.webrtckmp.WebRtc
+import dev.onvoid.webrtc.logging.Logging
 import java.io.File
 import java.io.FileWriter
 import java.io.PrintWriter
@@ -41,6 +43,7 @@ import java.io.PrintWriter
  */
 public fun main() = application {
     installDesktopLogSink()
+    installNativeWebRtcLogging()
     val engine = remember { DesktopEngine() }
     engine.start()
 
@@ -115,6 +118,22 @@ public fun main() = application {
     // `stop()` stays a plain synchronous call.
     DisposableEffect(Unit) {
         onDispose { engine.stop() }
+    }
+}
+
+/**
+ * Forwards webrtc-java's NATIVE log (WASAPI/COM HRESULTs, ADM device opens, APM init) to the
+ * console. Java exceptions never carry these failures — the silent buzz/zeros failure mode is
+ * only visible here. WARNING, not INFO: INFO logs every ICE ping and buries the call.
+ * Raise to [Logging.Severity.INFO] (or VERBOSE) for one run when chasing a live audio fault.
+ * Must run before the first call: the fork reads the builder once at factory init.
+ * Test-safe: `DesktopEngine` in tests never touches this (no factory init without a call).
+ */
+private fun installNativeWebRtcLogging() {
+    try {
+        WebRtc.configureBuilder { loggingSeverity = Logging.Severity.WARNING }
+    } catch (_: Throwable) {
+        // Native logging is diagnostic-only; never fail the launch for it.
     }
 }
 

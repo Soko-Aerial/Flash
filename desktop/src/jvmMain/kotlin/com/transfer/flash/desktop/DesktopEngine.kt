@@ -6,6 +6,12 @@ import com.transfer.flash.core.common.logging.FlashLog
 import com.transfer.flash.core.common.model.FlashDeviceId
 import com.transfer.flash.core.common.model.FlashDeviceKind
 import com.transfer.flash.core.common.protocol.FlashTextFraming
+import com.transfer.flash.core.common.perf.FlashPerformanceMode
+import com.transfer.flash.core.calling.CallCoordinator
+import com.transfer.flash.core.calling.FlashCalling
+import com.transfer.flash.core.calling.model.FlashCallDirection
+import com.transfer.flash.core.calling.protocol.CallFrameCodec
+import com.transfer.flash.core.calling.protocol.CallWireFrame
 import com.transfer.flash.core.discovery.core.CompositeDiscovery
 import com.transfer.flash.core.discovery.core.FlashAdvertisedIdentity
 import com.transfer.flash.core.discovery.core.FlashDiscoveryMode
@@ -16,6 +22,15 @@ import com.transfer.flash.core.discovery.multicast.MulticastTransport
 import com.transfer.flash.core.security.pairing.FlashPairingCoordinator
 import com.transfer.flash.core.messaging.EmptyFlashChatRepository
 import com.transfer.flash.core.messaging.FlashChatRepository
+import com.transfer.flash.core.messaging.RealFlashChatRepository
+import com.transfer.flash.core.messaging.model.FlashAttachmentProgress
+import com.transfer.flash.core.messaging.model.FlashFileTransferStatus
+import com.transfer.flash.core.messaging.protocol.ChatTextFrameCodec
+import com.transfer.flash.core.messaging.protocol.DirectMessageActionCodec
+import com.transfer.flash.core.messaging.protocol.GroupFrameCodec
+import com.transfer.flash.core.messaging.protocol.MessageWireFrame
+import com.transfer.flash.core.persistence.db.FlashDatabase
+import com.transfer.flash.core.persistence.db.openEncryptedFlashDatabase
 import com.transfer.flash.core.network.bridge.DiscoveryRouteBinder
 import com.transfer.flash.core.network.ws.JvmWsFlashNetwork
 import com.transfer.flash.core.network.ws.WsSession
@@ -49,9 +64,12 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import okio.FileSystem
 import okio.Path.Companion.toPath
 
@@ -82,9 +100,10 @@ import okio.Path.Companion.toPath
  * - Identity/trust: file-backed stores under `~/.flash/` (desktop stand-ins for the
  *   SharedPreferences-backed Android ones; contract-identical — see the Phase 16 KDoc).
  *
- * **Chats bind [EmptyFlashChatRepository]** until 09B-2 lands: `RealFlashChatRepository` is
- * Room-backed androidMain, so a desktop chat history is impossible today. The shell follows the
- * app's own ERROR-034 discipline — an honest empty repository, never fabricated content.
+ * **Chats are durable since slice 4**: `RealFlashChatRepository` over an encrypted
+ * file database under `<stateDir>/chat/flash.db` (the slice-1 seam). Before boot
+ * completes [chats] is still the honest empty repository below; the shell already
+ * renders that state.
  *
  * **Resume across restart is off** (`store = null`, D5 = C pending): the Phase 16 harness runs
  * the same way, and G7 is already logged BLOCKED ON 09B-2.
@@ -169,6 +188,9 @@ public class DesktopEngine(
     private var networkImpl: JvmWsFlashNetwork? = null
     private var discoveryImpl: CompositeDiscovery? = null
     private var transferImpl: RealFlashTransferRepository? = null
+    private var chatImpl: RealFlashChatRepository? = null
+    private var chatDb: FlashDatabase? = null
+    private var callsImpl: CallCoordinator? = null
 
     // --- Persisted desktop preferences (today: the Appearance selection) ---
     //
@@ -186,7 +208,19 @@ public class DesktopEngine(
         settingsStore.setThemeMode(mode)
     }
 
-    public val chats: FlashChatRepository = EmptyFlashChatRepository
+    /**
+     * Chat history. The real repository once [assemble] has built it; the honest empty
+     * repository before that (and if the database ever fails to open) — the shell renders
+     * both, per ERROR-034.
+     */
+    public val chats: FlashChatRepository get() = chatImpl ?: EmptyFlashChatRepository
+
+    /**
+     * Voice/video calling. The shared coordinator once [assemble] has built it; null before
+     * that (and the shell renders no call UI until it exists). Nullable like [transfers]
+     * rather than an empty stand-in: there is no honest "empty call", only absence.
+     */
+    public val calls: FlashCalling? get() = callsImpl
     public val transfers: FlashTransferRepository? get() = transferImpl
     public val network: FlashNetwork? get() = networkImpl
     public val discovery: FlashDiscovery? get() = discoveryImpl
@@ -279,6 +313,30 @@ public class DesktopEngine(
      * a symlink-resolved twin of it.
      */
     public val receivedDirectory: File get() = canonicalRoot
+
+    /**
+     * Passphrase for the chat database. Random hex generated once and kept in
+     * `<stateDir>/chat/db-key.bin`, inheriting whatever OS protections `stateDir` has —
+     * the same trust model as the identity and trust stores beside it.
+     *
+     * Per-device by design (D5 = C: no SQLCipher parity): losing this file means the next
+     * boot mints a fresh key and the old history fails loudly (wrong-key reads are an
+     * error, never an empty chat list — proven by `JdbcCipherSQLiteDriverTest`), rather
+     * than silently decrypting.
+     */
+    private fun chatDbKey(): String {
+        val dir = File(stateDir, "chat").apply { mkdirs() }
+        val keyFile = File(dir, "db-key.bin")
+        val saved = runCatching { keyFile.takeIf { it.isFile }?.readText()?.trim() }
+            .getOrNull().orEmpty()
+        if (saved.isNotEmpty()) return saved
+        val fresh = ByteArray(32)
+            .also { java.security.SecureRandom().nextBytes(it) }
+            .joinToString("") { "%02x".format(it) }
+        runCatching { keyFile.writeText(fresh) }
+        return fresh
+    }
+
     private val openHandles = ConcurrentHashMap<String, RandomAccessSinkHandle>()
     private val incomingMeta = ConcurrentHashMap<String, ChunkFrame.FileStart>()
     private val receivedPaths = ConcurrentHashMap<String, String>()
@@ -399,6 +457,131 @@ public class DesktopEngine(
             requireReceiverAcceptance = true,
         )
         transferImpl = transfer
+
+        // ---- durable chat (slice 4): the same repository the phone runs ----
+        // Built after the transfer repository because the attachment-progress join reads
+        // it, and before the WS server binds because inbound frames can arrive as soon as
+        // sessions do. A database failure must not abort boot (chat degrades to the honest
+        // empty repository; transfers/discovery/pairing are unaffected).
+        runCatching {
+            val db = openEncryptedFlashDatabase(File(File(stateDir, "chat"), FlashDatabase.DATABASE_NAME), chatDbKey())
+            chatDb = db
+            chatImpl = RealFlashChatRepository(
+                localDeviceId = localId,
+                localDisplayName = friendlyName,
+                conversationDao = db.conversationDao(),
+                messageDao = db.messageDao(),
+                outboxDao = db.outboxDao(),
+                receiptDao = db.receiptDao(),
+                draftDao = db.draftDao(),
+                recentSearchDao = db.recentSearchDao(),
+                reactionDao = db.reactionDao(),
+                groupMemberDao = db.groupMemberDao(),
+                groupDeliveryDao = db.groupDeliveryDao(),
+                isTrustedPeer = { peerId -> trustStore.isTrusted(FlashDeviceId(peerId)) },
+                onlinePeerIds = network.activeSessions.map { sessions ->
+                    sessions.keys.mapTo(HashSet()) { it.value }
+                },
+                peerNameResolver = { id -> trustStore.getTrustedPeers()[FlashDeviceId(id)] },
+                attachmentProgress = transfer.activeTransfers.map { transfers ->
+                    transfers.associate { t ->
+                        t.id.value to FlashAttachmentProgress(
+                            progress = if (t.bytesTotal > 0L) {
+                                (t.bytesDone.toFloat() / t.bytesTotal.toFloat()).coerceIn(0f, 1f)
+                            } else {
+                                0f
+                            },
+                            status = when (t.state) {
+                                FlashTransferState.Completed,
+                                FlashTransferState.Verifying ->
+                                    FlashFileTransferStatus.Downloaded
+                                FlashTransferState.Failed,
+                                FlashTransferState.Cancelled ->
+                                    FlashFileTransferStatus.Failed
+                                FlashTransferState.Offered ->
+                                    FlashFileTransferStatus.AwaitingAcceptance
+                                else ->
+                                    FlashFileTransferStatus.Transferring
+                            },
+                            localPath = t.localPath ?: t.sourceUri,
+                            speedMbps = t.speedBytesPerSec / 1_000_000f,
+                            etaSeconds = t.etaSeconds.toInt(),
+                        )
+                    }
+                },
+                transportSink = { targetDeviceId, wireFrame -> sendChatFrame(network, targetDeviceId, wireFrame) },
+                groupTransportSink = { targetDeviceId, wireFrame ->
+                    val session = network.activeSessions.value[FlashDeviceId(targetDeviceId)] as? WsSession
+                    if (session == null) {
+                        FlashLog.w(TAG_WS, "Group frame dropped: no active session for $targetDeviceId")
+                        false
+                    } else {
+                        session.connection.sendTextAsync(GroupFrameCodec.encode(wireFrame))
+                        true
+                    }
+                },
+                // No desktop notification surface; the conversation Flow drives the UI and the
+                // log line carries the record (same reasoning as the pairing snackbar comment
+                // in DesktopShell).
+                onInboundTextMessage = { conversationId, senderName, text ->
+                    FlashLog.i(TAG_WS, "Inbound chat in $conversationId from ${senderName ?: "?"}: ${text.take(120)}")
+                },
+                scope = scope,
+            )
+            boot("chat repository opened (${File(File(stateDir, "chat"), FlashDatabase.DATABASE_NAME).absolutePath})")
+        }.onFailure { e ->
+            FlashLog.w(TAG_WS, "Chat database unavailable; chats will be empty this run: ${e.message}")
+            chatImpl = null
+        }
+
+        // ---- voice/video calling, 33a: audio-only, outgoing only ----
+        //
+        // 33-2 verdict (recorded, not deferred): there is NO desktop counterpart to
+        // `FlashWebRtcEngine`. That object exists for two Android-only reasons — installing a
+        // low-latency ADM before libwebrtc's lazy factory init, and probing OEM-HAL capture
+        // breakage. webrtc-java has no JavaAudioDeviceModule class (its own ADM instead) and
+        // the HAL failure mode is an Android audio-stack bug. `DesktopMediaStackSmokeTest`
+        // already constructs a working PeerConnection with zero configuration, so the honest
+        // outcome is no engine object. If desktop capture misbehaves live, suspect the
+        // `preferIPv4Stack` flag's effect on ICE first (phase doc Do-NOT), not a missing shim.
+        callsImpl = CallCoordinator(
+            localDeviceId = localId,
+            localName = friendlyName,
+            scope = scope,
+            // Group Phase 0 trust closure, like the app host: only paired peers can place or
+            // receive calls; an inbound invite from a stranger is auto-declined, never rung.
+            isTrustedPeer = { peerId -> trustStore.isTrusted(FlashDeviceId(peerId)) },
+            // Honest desktop defaults (no settings DataStore tier until 09B-3): voice
+            // priority on, HIGH tier (the stack's pre-tiering behaviour). Read per call via
+            // lambdas so a future settings row takes effect without re-wiring.
+            prioritiseVoice = { true },
+            performanceMode = { FlashPerformanceMode.HIGH },
+            peerNameResolver = { peerId ->
+                trustStore.getTrustedPeers()[FlashDeviceId(peerId)]
+                    ?: discovery.discoveredEndpoints.value.firstOrNull { it.deviceId.value == peerId }?.friendlyName
+            },
+            sendFrame = { frame, peerId -> sendCallFrame(network, peerId, frame) },
+            // Every terminated call becomes a row in the peer's thread (UI-050), mirroring the
+            // app host. Each side writes its own row — no wire frame involved. Fires on
+            // whichever thread ended the call, so this only logs + launches into the repo.
+            onCallLog = { entry ->
+                FlashLog.i(
+                    TAG_WS,
+                    "Call log peer=${entry.peerId} video=${entry.video} " +
+                        "reason=${entry.endReason} durationMs=${entry.durationMs}",
+                )
+                chatImpl?.recordCallEvent(
+                    peerDeviceId = entry.peerId,
+                    callId = entry.callId,
+                    peerName = entry.peerName,
+                    outgoing = entry.direction == FlashCallDirection.OUTGOING,
+                    video = entry.video,
+                    durationMs = entry.durationMs,
+                    endedAt = entry.endedAt,
+                )
+            },
+        )
+        boot("call coordinator built")
 
         val pipeline = ReceivePipeline(
             sink = { _, _ -> error("legacy shared sink must not be invoked with sinkFactory set") },
@@ -523,6 +706,10 @@ public class DesktopEngine(
                     // tiebreak, or a re-dial after a peer's address changes — so this accumulated
                     // steadily rather than only in a rare path.
                     sessionJobs.remove(stale)?.cancel()
+                    // Signaling death opens the call recovery window (ERROR-033) rather than
+                    // dropping the call: a Wi-Fi roam takes the session down and redials it
+                    // within seconds. Without this every roam would read as a hang-up.
+                    callsImpl?.onSignalingLost(stale.peerDeviceId.value)
                     FlashLog.i(
                         TAG_WS,
                         "Session gone peer='${stale.peer.friendlyName}' id=${stale.peerDeviceId.value}",
@@ -540,6 +727,9 @@ public class DesktopEngine(
                         // lets the peer derive the shared 6-digit code the moment either side taps
                         // Pair (FLASH_PAIR hello carries the identity fingerprint).
                         pairing.onSessionUp(session.peerDeviceId.value)
+                        // A live session again: close any recovery window so a renegotiation that
+                        // needs this channel (ICE restart after a roam) can travel on it.
+                        callsImpl?.onSignalingRestored(session.peerDeviceId.value)
                         sessionJobs[session] = scope.launch {
                             launch {
                                 session.incomingBinary.collect { data ->
@@ -722,12 +912,37 @@ public class DesktopEngine(
     }
 
     /** FLASH_XFER control frames — route into the repository (both directions). */
-    private fun handleInboundText(peerDeviceId: String, text: String) {
+    private suspend fun handleInboundText(peerDeviceId: String, text: String) {
+        // Calling signaling first — the most latency-sensitive frame class, mirroring the app
+        // host. `onInboundText` answers true for every FLASH_CALL frame it consumed and false
+        // when the text is not a call frame at all, so chat/pairing/transfer never see call
+        // traffic either way.
+        if (callsImpl?.onInboundText(peerDeviceId, text) == true) return
         // Phase 26-3: pairing traffic shares the FLASH_XFER routing point but its own prefix —
         // check it FIRST so a pairing line is never handed to the transfer repository.
         if (FlashTextFraming.parseFields(text, "FLASH_PAIR") != null) {
             pairing.onInbound(peerDeviceId, text)
             return
+        }
+        // Group + direct-chat families into the chat repository (slice 4) — the same order
+        // both Android hosts use (minus calling/PTT, which the desktop does not run).
+        // Typing travels WITH the transport peer (the repository keys direct typing under
+        // it); invalid-but-recognized frames drop rather than falling into XFER below.
+        GroupFrameCodec.decode(text)?.let { frame ->
+            chatImpl?.onInboundGroupWireFrame(peerDeviceId, frame)
+            return
+        }
+        when (val decoded = ChatTextFrameCodec.decode(text, System.currentTimeMillis(), peerDeviceId)) {
+            is ChatTextFrameCodec.DecodeResult.Frame -> {
+                val frame = decoded.frame
+                chatImpl?.onInboundWireFrame(
+                    frame,
+                    transportPeerId = if (frame is MessageWireFrame.TypingFrame) peerDeviceId else null,
+                )
+                return
+            }
+            ChatTextFrameCodec.DecodeResult.RecognizedButInvalid -> return
+            null -> Unit
         }
         val transfer = transferImpl ?: return
         val fields = FlashTextFraming.parseFields(text, "FLASH_XFER")
@@ -774,6 +989,61 @@ public class DesktopEngine(
     /** The peer a parked offer came from, for routing the RESUME when the offer is accepted. */
     private fun peerIdFor(transferId: String): String =
         transferImpl?.activeTransfers?.value?.firstOrNull { it.id.value == transferId }?.peerDeviceId.orEmpty()
+
+    /**
+     * Outbound call signaling frame → text, mirroring the app host. An invite races session
+     * establishment (the user taps Call on a discovered peer whose session is still coming
+     * up), so invites wait up to 2 s for the session the way the holder does; anything else
+     * sends only on a live session. Blocking `sendTextAsync`, like the host.
+     */
+    private suspend fun sendCallFrame(
+        network: JvmWsFlashNetwork,
+        peerId: String,
+        frame: CallWireFrame,
+    ): Boolean {
+        val encoded = CallFrameCodec.encode(frame)
+        var session = network.activeSessions.value[FlashDeviceId(peerId)] as? WsSession
+        if (session == null && (frame is CallWireFrame.Invite || frame is CallWireFrame.GroupInvite)) {
+            runBlocking {
+                withTimeoutOrNull(2000L) {
+                    network.activeSessions.first { sessions ->
+                        sessions.containsKey(FlashDeviceId(peerId))
+                    }
+                }
+            }
+            session = network.activeSessions.value[FlashDeviceId(peerId)] as? WsSession
+        }
+        if (session != null) {
+            session.connection.sendTextAsync(encoded)
+            FlashLog.i(TAG_WS, "Call sendFrame action=${frame.javaClass.simpleName} peer=$peerId (hasSession=true)")
+            return true
+        }
+        FlashLog.i(TAG_WS, "Call sendFrame action=${frame.javaClass.simpleName} peer=$peerId no session")
+        return false
+    }
+
+    /**
+     * Outbound chat frame → text, mirroring `Flash.kt`'s `sendChatFrame`: the five
+     * direct-chat families through the shared codec, delete through its own. Blocking
+     * `sendText`, like the app host — the caller is the repository's IO-scoped send.
+     */
+    private fun sendChatFrame(
+        network: JvmWsFlashNetwork,
+        targetDeviceId: String,
+        wireFrame: MessageWireFrame,
+    ): Boolean {
+        val session = network.activeSessions.value[FlashDeviceId(targetDeviceId)] as? WsSession
+            ?: return false
+        val frameText = when (wireFrame) {
+            is MessageWireFrame.DeleteForEveryone -> DirectMessageActionCodec.encode(wireFrame)
+            is MessageWireFrame.TextMessage,
+            is MessageWireFrame.DeliveryReceipt,
+            is MessageWireFrame.ReadReceipt,
+            is MessageWireFrame.ReactionFrame,
+            is MessageWireFrame.TypingFrame -> ChatTextFrameCodec.encode(wireFrame) ?: return false
+        }
+        return session.connection.sendText(frameText)
+    }
 
     private fun sanitize(component: String): String =
         component.replace(Regex("[^A-Za-z0-9._-]"), "_").take(120)

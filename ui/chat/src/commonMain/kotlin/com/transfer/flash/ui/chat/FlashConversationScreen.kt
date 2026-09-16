@@ -162,6 +162,12 @@ fun FlashConversationScreen(
      */
     onStartVideoCall: () -> Unit = {},
     /**
+     * Whether the header's video button renders (Phase 33a). Defaulted true so existing
+     * hosts are unchanged; a host that only implements voice calls passes false rather
+     * than showing a button with nowhere to go.
+     */
+    showVideoCallAction: Boolean = true,
+    /**
      * Joins an ongoing group call advertised by peer presence.
      */
     onJoinGroupCall: (callId: String, video: Boolean) -> Unit = { _, _ -> },
@@ -461,6 +467,7 @@ fun FlashConversationScreen(
                             FlashChatHeader(
                                 state = state.header,
                                 onBack = onBack,
+                                showVideoCallAction = showVideoCallAction,
                                 onAvatarClick = {
                                     if (state.header.isGroup) {
                                         showGroupMembers = true

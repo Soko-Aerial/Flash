@@ -28,9 +28,9 @@ kotlin {
             dependencies {
                 // Engine + core modules — all jvm()-capable KMP. `:core:engine`'s jvm target
                 // is thin (PlatformLock only) but carries the six api() core modules, so this
-                // one line brings the whole stack. `:core:calling`/`:core:ptt` are NOT here:
-                // plain AGP modules with no JVM variant (ERROR-049), and calling is Phase 22+
-                // scope (D11 = B).
+                // one line brings the whole stack. `:core:ptt` is NOT here: a plain AGP module
+                // with no JVM variant (ERROR-049). `:core:calling` converted to KMP in Phase 25
+                // and joins below for Phase 33a (D11 = B).
                 implementation(project(":core:engine"))
                 implementation(project(":core:common"))
                 implementation(project(":core:security"))
@@ -38,12 +38,21 @@ kotlin {
                 implementation(project(":core:network"))
                 implementation(project(":core:transfer"))
                 implementation(project(":core:messaging"))
+                // Phase 2 slice 4: the chat repository's DAOs + the encrypted database open
+                // seam (`openEncryptedFlashDatabase`) live in `:core:persistence`. The cipher
+                // driver itself stays `implementation`-scoped there — this module never names it.
+                implementation(project(":core:persistence"))
 
-                // UI modules — all KMP since Phase 17–20. `:ui:callui` deliberately absent
-                // (still `com.android.library`; no phase converts it yet — see README).
+                // UI modules — all KMP since Phase 17–20. `:ui:callui` joined for
+                // Phase 33a (the call overlay is shared commonMain; desktop renders it
+                // directly rather than porting a screen).
                 implementation(project(":ui:theme"))
                 implementation(project(":ui:platform-shims"))
                 implementation(project(":ui:chat"))
+                implementation(project(":ui:callui"))
+                // Phase 33a: the shared call engine. webrtc-kmp arrives transitively via
+                // `:core:calling`'s api() edge (ADR-025 re-export), so no direct webrtc dep here.
+                implementation(project(":core:calling"))
 
                 // Desktop native windowing for the CURRENT OS. This is the artifact that
                 // supplies `androidx.compose.ui.window.Window`/`application` on a JVM.
@@ -60,6 +69,27 @@ kotlin {
                 implementation(libs.kotlinx.coroutines.core)
                 // Okio: FileSourceOpener opens sources over okio's FileSystem (13B-2 seam).
                 implementation(libs.okio)
+                // Phase 33a: the NATIVE libwebrtc for THIS host at product runtime.
+                // `webrtc-java`'s main jar (arriving transitively via `:core:calling`) is the
+                // Java API only; the native library is a per-OS/arch classified artifact that
+                // `:core:calling` declares test-only (its `jvmTest` block — which is why the
+                // media smoke test passed while `:desktop:run` died in `NativeLoader` with an
+                // NPE inside `Files.copy`: the classes were there, the natives were not).
+                // `runtimeOnly`, not `implementation`: no API comes from it, only the `.dll`
+                // the loader extracts. OS/arch mapping mirrors calling's block exactly so the
+                // two can never disagree about which artifact this host needs.
+                val osName = System.getProperty("os.name")
+                val hostOS = when {
+                    osName == "Mac OS X" -> "macos"
+                    osName.startsWith("Win") -> "windows"
+                    osName.startsWith("Linux") -> "linux"
+                    else -> error("Unsupported OS: $osName")
+                }
+                val hostArch = when (val arch = System.getProperty("os.arch").lowercase()) {
+                    "amd64" -> "x86_64"
+                    else -> arch
+                }
+                runtimeOnly("dev.onvoid.webrtc:webrtc-java:0.17.0:$hostOS-$hostArch")
             }
         }
 

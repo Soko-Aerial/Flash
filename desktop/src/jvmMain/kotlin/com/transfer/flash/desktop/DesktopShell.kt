@@ -37,6 +37,7 @@ import com.transfer.flash.core.transfer.model.FlashTransfer
 import com.transfer.flash.core.transfer.model.FlashTransferDirection as DomainDirection
 import com.transfer.flash.core.transfer.model.FlashTransferState as DomainState
 import com.transfer.flash.ui.adaptive.FlashAdaptiveMath
+import com.transfer.flash.ui.calling.FlashCallScreen
 import com.transfer.flash.ui.chat.FlashChatListScreen
 import com.transfer.flash.ui.chat.FlashConversationScreen
 import com.transfer.flash.ui.chat.FlashPairingPhase
@@ -116,15 +117,39 @@ public fun DesktopShell(
     var selectedTransferItem by remember { mutableStateOf<FlashTransferItemUi?>(null) }
     var selectedNearbyPeer by remember { mutableStateOf<NearbyPeerUi?>(null) }
 
-    // ── Chats: EmptyFlashChatRepository until 09B-2 (honest empty per ERROR-034) ──
-    val chatRepository = remember(engine) { engine.chats }
+    // ── Chats: the real repository once boot builds it, honest-empty before that ──
+    // Keyed on `ready` (not just `engine`): `engine.chats` swaps from the empty stand-in
+    // to the durable repository during `assemble()`, and a `remember(engine)` alone would
+    // pin whichever one was current at first composition — the empty one — forever.
+    val chatRepository = remember(engine, ready) { engine.chats }
     val chatListState by chatRepository.chatListState.collectAsState()
-    // The conversation screen's whole state. `EmptyFlashChatRepository` publishes an honest empty
-    // conversation, so the screen renders its empty state — which is what makes it reachable at all
-    // and is why this is wired now rather than with the repository move.
+    // The conversation screen's whole state. Before boot the repository is still the honest
+    // empty stand-in, so the screen renders its empty state rather than nothing.
     val repositoryConversation by chatRepository.conversationState.collectAsState()
 
-    // ── Transfers: fallback remembered unconditionally, swapped after boot; paced ──
+    // ── Calls, 33a: the shared coordinator behind the shared overlay ──
+    // `calls` is null until assemble builds it; the empty flow keeps this collect
+    // unconditional (same slot-table reasoning as the chats line above).
+    val calls = remember(engine, ready) { engine.calls }
+    val activeCall by remember(calls) {
+        calls?.activeCall ?: MutableStateFlow(null)
+    }.collectAsState()
+
+    // 33a entry: voice call to a trusted peer. A false return (no session, no microphone,
+    // call already live) surfaces on the snackbar — the "Couldn't reach…" pattern pairing
+    // uses — rather than failing silently. Callers pass the name they already show, so this
+    // stays above the Nearby roster declarations it would otherwise need to read.
+    fun placeVoiceCall(peerId: String, peerName: String) {
+        scope.launch {
+            val ok = calls?.startCall(peerId, peerName, video = false) == true
+            if (!ok) {
+                snackbarHostState.showSnackbar(
+                    message = "Couldn't start the call. Make sure the peer is reachable, then try again.",
+                    duration = SnackbarDuration.Short,
+                )
+            }
+        }
+    }
     val fallbackTransfers = remember { MutableStateFlow(emptyList<FlashTransfer>()) }
     val transfersSource = engine.transfers?.activeTransfers ?: fallbackTransfers
     val pacedTransfers = remember(transfersSource) {
@@ -236,9 +261,9 @@ public fun DesktopShell(
 
     // ── Conversation header: derived from what the desktop actually knows about the peer ──
     // Declared HERE, after the Nearby section, because it reads the trust list and the discovery
-    // roster. `EmptyFlashChatRepository` publishes a placeholder header, so opening a chat from
-    // Nearby showed a blank name and no online dot for a peer whose name the desktop was already
-    // holding. See `desktopConversationHeader` for exactly what is filled in and why the call
+    // roster. The repository's own header cannot know the desktop's trust names, so opening
+    // a chat from Nearby would show a blank name and no online dot for a peer whose name the
+    // desktop is holding in its trust store the whole time. See `desktopConversationHeader` for exactly what is filled in and why the call
     // actions stay hidden.
     // Trust is a plain lookup against the list the Nearby rows use, so the two screens cannot
     // disagree about whether a peer is paired.
@@ -348,6 +373,15 @@ public fun DesktopShell(
                             null
                         },
                         onSendText = { chatRepository.sendText(it) },
+                        // 33a entry: voice call from the header. Video stays hidden until 33c
+                        // (`showVideoCallAction = false`): 33a is audio-only, and a video button
+                        // with nowhere to go would be the dead-control trap again.
+                        onStartCall = {
+                            nav.current.conversationId?.let { id ->
+                                placeVoiceCall(id, conversationState.header.title)
+                            }
+                        },
+                        showVideoCallAction = false,
                         // The desktop picker seam exists and is tested (`FlashFilePicker.jvm`), but
                         // wiring it to a send is Phase 30's job; until then this is an honest no-op
                         // rather than a stub that swallows a picked file.
@@ -467,6 +501,12 @@ public fun DesktopShell(
                         onChatTrustedClick = { trusted ->
                             chatRepository.openConversation(trusted.id)
                             nav.navigate(FlashDestination.Conversation, conversationId = trusted.id)
+                        },
+                        // 33a entry: voice call straight from the trusted row. Only trusted rows
+                        // offer it — the coordinator refuses untrusted peers anyway (Group Phase
+                        // 0 closure), so offering it elsewhere would be a button that always fails.
+                        onCallTrustedClick = { trusted ->
+                            placeVoiceCall(trusted.id, trusted.name)
                         },
                         modifier = Modifier.fillMaxSize(),
                         listState = nearbyScroll,
@@ -597,6 +637,32 @@ public fun DesktopShell(
                 }
             }
         }
+
+        // Voice/video calls, 33a: the shared screen as a topmost overlay, mirroring Android's
+        // `if (activeCall != null) FlashCallScreen(...)`. Last sibling so it paints above the
+        // layout (same z-order rule as the snackbar host above). No permission gates (desktop
+        // has no runtime grants) and no audio router (no AudioManager; the webrtc-java ADM
+        // default output stands). Camera toggles pass through; the screen gates them on the
+        // call's video flag, and 33a only ever places audio calls. Dismiss minimizes — the
+        // call continues, the coordinator keeps state (the screen's own contract).
+        val ringingCall = activeCall
+        if (ringingCall != null) {
+            FlashCallScreen(
+                state = ringingCall,
+                session = calls?.media,
+                onAccept = { scope.launch { calls?.accept() } },
+                onDecline = { scope.launch { calls?.decline() } },
+                onHangUp = { scope.launch { calls?.hangUp() } },
+                onToggleMute = { calls?.toggleMute() },
+                onToggleSpeaker = {
+                    val next = !(calls?.activeCall?.value?.speakerOn ?: false)
+                    calls?.setSpeaker(next)
+                },
+                onToggleCamera = { calls?.toggleCamera() },
+                onSwitchCamera = { scope.launch { calls?.switchCamera() } },
+                onDismiss = { },
+            )
+        }
     }
 }
 
@@ -707,17 +773,16 @@ private fun pairingPhaseOf(
 /**
  * The conversation header, filled from what the DESKTOP already knows about the peer.
  *
- * Until the chat repository moves to `commonMain`, `EmptyFlashChatRepository` publishes a header with
- * a placeholder title and no presence — so opening a chat from Nearby showed a blank name and no
- * online dot for a peer the user had just tapped, whose name the desktop is holding in its trust
- * store the whole time. This derives the header from that real data instead of inventing any:
+ * The repository's header cannot know the desktop's trust names, so this derives the
+ * header from that real data instead of inventing any:
  *
  *  - **title** is the peer's trusted name, falling back to the name discovery is currently reporting;
  *  - **presence** is `Online` exactly when discovery can see the peer right now, which is the same
  *    fact the Nearby dot is drawn from — not a guess and not a heartbeat;
- *  - **showCallActions is false.** Desktop calling is Phase 33 and is not implemented; the buttons
- *    would be dead. `:app` sets this true because its call path exists. Hiding an action that cannot
- *    work is the honest choice, and it is a one-line change once 33 lands.
+ *  - **showCallActions is true since 33a.** The voice button starts an audio call via
+ *    the shared coordinator; the video button stays hidden until 33c (the shell passes
+ *    `showVideoCallAction = false`), because 33a is audio-only and a video button with
+ *    nowhere to go would be the dead-control trap again.
  *
  * Returns null when the conversation is not a known peer, so the caller falls back to the
  * repository's own state rather than to a fabricated one.
@@ -744,7 +809,7 @@ internal fun desktopConversationHeader(
         // Direct chat, and encrypted in transit on the LAN, as the Nearby/LAN badge already says.
         isGroup = false,
         isEncrypted = true,
-        showCallActions = false,
+        showCallActions = true,
     )
 }
 

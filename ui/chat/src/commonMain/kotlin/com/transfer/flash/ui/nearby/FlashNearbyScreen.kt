@@ -173,6 +173,14 @@ fun FlashNearbyScreen(
     bottomInset: Dp = 0.dp,
     onAcceptPairing: (FlashPairingRequestUi) -> Unit = {},
     onDeclinePairing: (FlashPairingRequestUi) -> Unit = {},
+    /**
+     * Voice-call action for trusted rows (Phase 33a). Nullable on purpose, like the
+     * search/group icon params elsewhere: a host that does not implement calling passes
+     * nothing and the row shows no Call button, rather than a rendered button that does
+     * nothing. The desktop passes it; Android keeps its header call buttons and is
+     * unchanged.
+     */
+    onCallTrustedClick: ((NearbyTrustedPeerUi) -> Unit)? = null,
 ) {
     val statusSwap = FlashTheme.motion.statusCrossfade()
     Box(modifier.fillMaxSize()) {
@@ -197,6 +205,7 @@ fun FlashNearbyScreen(
                         onChatClick = onChatClick,
                         onRevokeClick = onRevokeClick,
                         onChatTrustedClick = onChatTrustedClick,
+                        onCallTrustedClick = onCallTrustedClick,
                         listState = listState,
                         bottomInset = bottomInset,
                     )
@@ -237,6 +246,7 @@ private fun PopulatedContent(
     onChatClick: (NearbyPeerUi) -> Unit,
     onRevokeClick: (NearbyTrustedPeerUi) -> Unit,
     onChatTrustedClick: (NearbyTrustedPeerUi) -> Unit,
+    onCallTrustedClick: ((NearbyTrustedPeerUi) -> Unit)?,
     listState: LazyListState,
     bottomInset: Dp,
 ) {
@@ -288,6 +298,12 @@ private fun PopulatedContent(
                     onChat = {
                         haptics(FlashHaptic.Tick)
                         onChatTrustedClick(trusted)
+                    },
+                    onCall = onCallTrustedClick?.let { handler ->
+                        {
+                            haptics(FlashHaptic.Tick)
+                            handler(trusted)
+                        }
                     },
                     onRevoke = {
                         haptics(FlashHaptic.Confirm)
@@ -524,10 +540,12 @@ private fun TrustedRow(
     trusted: NearbyTrustedPeerUi,
     modifier: Modifier = Modifier,
     onChat: () -> Unit,
+    onCall: (() -> Unit)?,
     onRevoke: () -> Unit,
 ) {
     val colors = FlashTheme.colors
     val chatInteraction = remember { MutableInteractionSource() }
+    val callInteraction = remember { MutableInteractionSource() }
     val revokeInteraction = remember { MutableInteractionSource() }
     Row(
         modifier
@@ -571,6 +589,31 @@ private fun TrustedRow(
                 style = FlashTheme.typography.captionEmphasis,
                 color = colors.textOnAccent,
             )
+        }
+        // Voice call (Phase 33a). Rendered only when the host supplies the action — an
+        // untrusted peer can never reach this row, so no trust check is needed here; the
+        // coordinator itself refuses untrusted peers as well (Group Phase 0 closure).
+        // Text-style rather than filled, so the row keeps one primary CTA.
+        if (onCall != null) {
+            Box(
+                Modifier
+                    .height(FlashDimensions.minTouchTarget)
+                    .flashPressScale(callInteraction)
+                    .clickable(
+                        interactionSource = callInteraction,
+                        indication = null,
+                        onClickLabel = "Call",
+                        onClick = onCall,
+                    )
+                    .padding(horizontal = FlashSpacing.space12),
+                contentAlignment = Alignment.Center,
+            ) {
+                FlashText(
+                    text = "Call",
+                    style = FlashTheme.typography.captionEmphasis,
+                    color = colors.accentPrimary,
+                )
+            }
         }
         Box(
             Modifier

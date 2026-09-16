@@ -108,10 +108,11 @@ class DesktopConversationHeaderTest {
     }
 
     @Test
-    fun theHeaderIsHonestAboutWhatDesktopCannotDo() {
-        // Deliberate, and pinned so it cannot be "fixed" by accident: desktop calling is Phase 33, so
-        // the voice and video buttons would be dead. `:app` sets this true because its call path
-        // exists. When 33 lands this expectation is the one line that changes.
+    fun theHeaderOffersVoiceCallsSince33a() {
+        // 33a flipped this from false to true: the voice button starts an audio call via the
+        // shared coordinator. Pinned so a regression cannot silently re-hide it. Video stays
+        // out until 33c — but that lives in the shell (`showVideoCallAction = false`), not in
+        // this header, so there is nothing to pin here for it.
         val header = assertNotNull(
             desktopConversationHeader(
                 conversationId = PEER_ID,
@@ -120,7 +121,7 @@ class DesktopConversationHeaderTest {
             ),
         )
 
-        assertEquals(false, header.showCallActions)
+        assertEquals(true, header.showCallActions)
         assertEquals(false, header.isGroup, "a Nearby peer is a direct chat")
         assertEquals(true, header.isEncrypted, "LAN traffic is encrypted in transit, as the badge says")
         assertEquals(FlashNetworkTransport.Lan, header.transport)
