@@ -4700,7 +4700,44 @@ Playback UX (ui/chat commonMain, desktop shell, platform shims)
 
 ### Verification
 `:ui:chat:jvmTest`, `:ui:platform-shims:jvmTest`, `:desktop:jvmTest`, `:app:compileDebugKotlin`
-green. Live re-test owed on all three reports.
+green. Live re-test:
+- Report 1 (desktop chat-accept): RESOLVED live (owner confirmed video/file sending + accept works).
+- Report 2 (desktop voice note): RESOLVED live via ADR-039 (JCodec AAC decode; owner confirmed audio works).
+- Report 3 (Android double video + desktop video banner): Fixed in code; pending owner confirmation.
 
 ### Status
-OPEN (desktop voice/video real playback blocked on the player-dependency decision)
+PARTIALLY VERIFIED (voice + chat-accept verified live; video player checks pending)
+
+
+## ERROR-064 — Inbound transfer progress & speed telemetry missing on receiver
+
+### Date
+2026-09-16
+
+### Area
+Transfer progress telemetry (`:core:transfer` + `:desktop`)
+
+### Symptoms
+During incoming file transfer on Desktop:
+- In the conversation screen, the attachment progress ring remained at 0% / stationary and the transfer speed (e.g. `MB/s`) did not display (only showing "Receiving...").
+- In the Transfers tab, the progress bar remained empty at 0%, and speed (`0.0 MB/s`) or ETA was absent.
+- The transfer completed successfully at the end, writing all bytes to disk correctly.
+
+### Root cause
+Two distinct telemetry pipeline gaps:
+1. `DesktopEngine.kt`: On receiving chunks, `ReceiveEvent.AckBatchReady` emitted ACKs back to the sender, but never informed `RealFlashTransferRepository` via `onIncomingProgress`. The repo's `bytesDone` stayed at `0L` until `onIncomingCompleted` was called at the end.
+2. `RealFlashTransferRepository.onIncomingProgress`: The repository only updated `bytesDone`, but never calculated `speedBytesPerSec` or `etaSeconds` for incoming transfers (it had rate meters only for outbound transfers). As a result, receiving speed was always `0L` across all UI consumers (`attachmentProgress` in chat cards and `transfersState` in the Transfers tab).
+
+### Working fix
+1. `DesktopEngine.kt`: Added `updateIncomingProgress(transfer, receivePipeline, incomingMeta, transferId)` to compute cumulative verified bytes from `receivePipeline.doneIndexes() * chunkSize`. Called this on every `ReceiveEvent.AckBatchReady` and seeded it in `acceptOffer` (for resumed transfers).
+2. `RealFlashTransferRepository.kt`: Added a thread-safe `receiverRateMeters` map (`RollingRateMeter`) per inbound transfer. In `onIncomingStarted`, initialized the meter; in `onIncomingProgress`, recorded progress ticks and updated `speedBytesPerSec` and `etaSeconds`; in terminal callbacks (`onIncomingCompleted`, `onIncomingFailed`, `declineIncoming`, `cancelTransfer`), cleaned up the rate meter and reset speed/ETA to 0.
+3. Added unit test in `RealFlashTransferRepositoryTest` verifying that `onIncomingProgress` correctly updates `bytesDone`, `speedBytesPerSec`, and `etaSeconds`.
+
+### Verification
+- `:core:transfer:testAndroidHostTest` passed.
+- `:desktop:jvmTest` passed.
+- Rebuilt APK and reinstalled to test phone.
+- Relaunched desktop client with new binary.
+
+### Status
+RESOLVED (pending live user re-test)
