@@ -57,6 +57,12 @@ fun FlashVideoPlayer(
     modifier: Modifier = Modifier,
     autoPlay: Boolean = true,
     onClose: () -> Unit = {},
+    /**
+     * External fallback, offered on the error banner. In-app is the only automatic path;
+     * this fires solely on user tap when the platform surface cannot play (e.g. the desktop
+     * stub, which reports an error immediately).
+     */
+    onOpenExternally: () -> Unit = {},
 ) {
     var isPlaying by remember { mutableStateOf(autoPlay) }
     var durationMs by remember { mutableStateOf(0L) }
@@ -134,6 +140,20 @@ fun FlashVideoPlayer(
                         style = FlashTheme.typography.metadataDefault,
                         color = Color.White.copy(alpha = 0.85f),
                     )
+                    Spacer(modifier = Modifier.height(FlashSpacing.space4))
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier
+                            .clickable(role = Role.Button, onClick = onOpenExternally)
+                            .background(colors.accentPrimary, CircleShape)
+                            .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space8),
+                    ) {
+                        FlashText(
+                            text = "Open in system player",
+                            style = FlashTheme.typography.bodyEmphasis,
+                            color = Color.White,
+                        )
+                    }
                 }
             }
         }

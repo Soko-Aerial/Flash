@@ -901,9 +901,9 @@ fun FlashConversationScreen(
                     }
                 },
                 onPlayVideo = { index ->
-                    // Reachable by swiping: a message's images and videos share one album, and a
-                    // video page renders a still frame, so the badge hands playback to the system
-                    // player exactly as tapping the tile does.
+                    // Error-banner fallback only: badge playback is in-app now (double-player
+                    // fix); this opens the clip in the system player when the platform has no
+                    // in-app surface (desktop stub reports an error, banner offers this).
                     val item = mediaViewerItems.getOrNull(index)
                     val uri = item?.image?.uri
                     if (item != null && uri != null) {

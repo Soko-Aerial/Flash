@@ -240,9 +240,9 @@ fun FlashMediaViewer(
     onSave: (Int) -> Unit = {},
     onForward: (Int) -> Unit = {},
     /**
-     * Play the video on page [Int] in the platform player. Video pages show a frame like any other
-     * page, so without this the badge would be decoration and a clip reachable only by swiping
-     * (images and videos share one album) would be unplayable.
+     * Fallback opener for a video page [Int]. Playback itself is in-app (badge starts the
+     * embedded player); this fires only from the player's error banner ("open externally"),
+     * which is currently the only playback path on platforms without an in-app surface.
      */
     onPlayVideo: (Int) -> Unit = {},
 ) {
@@ -260,6 +260,11 @@ fun FlashMediaViewer(
     )
 
     var chromeVisible by remember { mutableStateOf(true) }
+    // Which page (by image id) currently plays video, if any. While set, the viewer's own
+    // chrome hides — otherwise the viewer top/bottom bars stack over the player's own close,
+    // badge and scrubber (the reported double overlay).
+    var playingPageId by remember { mutableStateOf<String?>(null) }
+    val chromeEffective = chromeVisible && playingPageId == null
 
     // Dismiss drag distance in px; read only inside draw/graphicsLayer scopes so the
     // gesture never recomposes — it only redraws backdrop alpha + page transform.
@@ -317,7 +322,10 @@ fun FlashMediaViewer(
                     isCurrentPage = (pagerState.currentPage == page),
                     initialPlayVideo = (initialPlayVideo && page == initialIndex),
                     onToggleChrome = { chromeVisible = !chromeVisible },
-                    onPlay = { onPlayVideo(page) },
+                    onPlayingChanged = { id, playing ->
+                        playingPageId = if (playing) id else if (playingPageId == id) null else playingPageId
+                    },
+                    onOpenExternally = { onPlayVideo(page) },
                     onDismissDrag = { dragY -> dismissDragPx.value = dragY },
                     onDismissSettle = { dismissDragPx.value = 0f },
                     onDismissConfirm = {
@@ -328,9 +336,9 @@ fun FlashMediaViewer(
             }
         }
 
-        // Top chrome bar — counter + close
+        // Top chrome bar — counter + close (hidden while a video plays; the player has its own)
         AnimatedVisibility(
-            visible = chromeVisible,
+            visible = chromeEffective,
             enter = fadeIn(motion.tweenNormalSpec()),
             exit = fadeOut(motion.tweenFastSpec()),
             modifier = Modifier.align(Alignment.TopCenter),
@@ -364,9 +372,9 @@ fun FlashMediaViewer(
             }
         }
 
-        // Bottom chrome bar — attribution + actions
+        // Bottom chrome bar — attribution + actions (hidden while a video plays, same reason)
         AnimatedVisibility(
-            visible = chromeVisible,
+            visible = chromeEffective,
             enter = fadeIn(motion.tweenNormalSpec()),
             exit = fadeOut(motion.tweenFastSpec()),
             modifier = Modifier.align(Alignment.BottomCenter),
@@ -424,7 +432,8 @@ private fun FlashMediaPage(
     isCurrentPage: Boolean,
     initialPlayVideo: Boolean,
     onToggleChrome: () -> Unit,
-    onPlay: () -> Unit,
+    onOpenExternally: () -> Unit,
+    onPlayingChanged: (pageId: String, playing: Boolean) -> Unit = { _, _ -> },
     onDismissDrag: (Float) -> Unit,
     onDismissSettle: () -> Unit,
     onDismissConfirm: () -> Unit,
@@ -440,6 +449,11 @@ private fun FlashMediaPage(
         }
     }
 
+    // Report play state up so the viewer can hide its own chrome (double-overlay fix)
+    LaunchedEffect(isPlayingVideo, item.image.id) {
+        onPlayingChanged(item.image.id, isPlayingVideo)
+    }
+
     if (isPlayingVideo && item.image.isVideo) {
         val videoSource = item.image.uri ?: item.image.thumbUri ?: ""
         FlashVideoPlayer(
@@ -447,6 +461,7 @@ private fun FlashMediaPage(
             modifier = Modifier.fillMaxSize(),
             autoPlay = true,
             onClose = { isPlayingVideo = false },
+            onOpenExternally = onOpenExternally,
         )
         return
     }
@@ -666,7 +681,9 @@ private fun FlashMediaPage(
         // A frame is a still: a video page needs an explicit "play" target, offered as soon as the
         // decode settles either way — an undecodable frame says nothing about whether the clip
         // plays. It sits above the page's own gesture scopes, so tapping the badge plays while
-        // tapping anywhere else still toggles chrome.
+        // tapping anywhere else still toggles chrome. In-app ONLY: it used to also fire onPlay()
+        // (external system player), which stacked two players — the reported double overlay.
+        // The external player is now strictly the error-banner fallback inside FlashVideoPlayer.
         if (item.image.isVideo && (result.bitmap != null || result.failed)) {
             Box(
                 contentAlignment = Alignment.Center,
@@ -677,7 +694,6 @@ private fun FlashMediaPage(
                     .clickable(
                         onClick = {
                             isPlayingVideo = true
-                            onPlay()
                         },
                     )
                     .semantics { role = Role.Button },
