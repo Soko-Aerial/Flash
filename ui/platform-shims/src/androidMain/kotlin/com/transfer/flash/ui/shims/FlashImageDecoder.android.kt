@@ -155,6 +155,7 @@ internal object FlashMediaDecoder {
         return decoded
     }
 
+    // SENTINEL: Path traversal guard — canonical normalization & file validation for media decoder sources
     private fun resolveLocalFile(source: String): File? = runCatching {
         val file = when {
             source.startsWith("file://") -> {
@@ -168,7 +169,8 @@ internal object FlashMediaDecoder {
             !source.startsWith("content://") -> File(source)
             else -> null
         }
-        file?.takeIf { it.exists() && it.length() > 0L }
+        val canonical = file?.canonicalFile ?: return@runCatching null
+        canonical.takeIf { it.exists() && it.isFile && it.length() > 0L }
     }.getOrNull()
 
     /**
@@ -299,16 +301,8 @@ internal object FlashMediaDecoder {
                         retriever.setDataSource(context, uri)
                     }
                 }
-                source.startsWith("file://") -> {
-                    val path = Uri.parse(source).path ?: source.removePrefix("file://")
-                    val file = File(path)
-                    if (!file.exists() || file.length() == 0L) return null
-                    fis = FileInputStream(file)
-                    retriever.setDataSource(fis.fd)
-                }
                 else -> {
-                    val file = File(source)
-                    if (!file.exists() || file.length() == 0L) return null
+                    val file = resolveLocalFile(source) ?: return null
                     fis = FileInputStream(file)
                     retriever.setDataSource(fis.fd)
                 }
@@ -442,17 +436,10 @@ internal object FlashMediaDecoder {
      * via File.
      */
     private fun openStream(context: Context, source: String): InputStream? = runCatching {
-        when {
-            source.startsWith("content://") -> context.contentResolver.openInputStream(Uri.parse(source))?.let { java.io.BufferedInputStream(it) }
-            source.startsWith("file://") -> {
-                val path = Uri.parse(source).path ?: source.removePrefix("file://")
-                File(path).takeIf { it.exists() && it.length() > 0L }?.inputStream()?.let { java.io.BufferedInputStream(it) }
-            }
-            source.startsWith("file:") -> {
-                val path = Uri.parse(source).path ?: source.removePrefix("file:").trimStart('/')
-                File(path).takeIf { it.exists() && it.length() > 0L }?.inputStream()?.let { java.io.BufferedInputStream(it) }
-            }
-            else -> File(source).takeIf { it.exists() && it.length() > 0L }?.inputStream()?.let { java.io.BufferedInputStream(it) }
+        if (source.startsWith("content://")) {
+            context.contentResolver.openInputStream(Uri.parse(source))?.let { java.io.BufferedInputStream(it) }
+        } else {
+            resolveLocalFile(source)?.inputStream()?.let { java.io.BufferedInputStream(it) }
         }
     }.onFailure { e ->
         android.util.Log.w("FlashMediaDecoder", "Failed to openStream for $source", e)
