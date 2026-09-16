@@ -105,6 +105,12 @@ kotlin {
         getByName("androidHostTest").dependencies {
             implementation(libs.junit)
         }
+        // ERROR-063: pure-Java MP4 demux + AAC decode for desktop voice notes (`.m4a`), which
+        // `javax.sound.sampled` cannot open. jvmMain only — the Android actual plays through
+        // MediaPlayer and never names this.
+        jvmMain.dependencies {
+            implementation(libs.jcodec)
+        }
         jvmTest.dependencies {
             implementation(libs.junit)
             // Skiko's NATIVE runtime, and only for the test classpath.

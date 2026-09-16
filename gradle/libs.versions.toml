@@ -29,6 +29,15 @@ ksp = "2.3.11"
 # Phase 14 (desktop mDNS). Pinned to the version PHASE-14 names; 3.6.3 exists on
 # Maven Central but R10 authorises only what the phase specifies.
 jmdns = "3.5.12"
+# Desktop voice-note playback (ERROR-063, human-authorized 2026-09-16). Pure-Java MP4
+# demux + AAC decoder for `.m4a` voice notes, which `javax.sound.sampled` cannot open.
+# Alternatives ruled out in the decision: JAAD (GPL — incompatible with this repo's
+# Apache-2.0 LICENSE), JavaCPP-ffmpeg (Apache-2.0 but heavy per-platform natives for a
+# voice-note job), JavaFX media (same weight class), WAV voice notes (10x file size,
+# changes the Android product). License verified BSD-2-Clause in the published jar
+# (see progress 2026-09-16 entry). Zero runtime transitive dependencies, Java 6-era
+# bytecode (no Kotlin-metadata or stdlib-bump risk against frozen 2.2.10).
+jcodec = "0.2.5"
 # Phase 17 (enacts D3 = Option A). Compose Multiplatform: the `composeResources/`
 # directory, the generated `Res` accessors and the `painterResource(DrawableResource)`
 # overload all come from here.
@@ -129,6 +138,10 @@ bouncycastle-pkix = { group = "org.bouncycastle", name = "bcpkix-jdk18on", versi
 # JVM-variant-only scope; the human-authorized new dependency of the P2 decision.
 jna = { group = "net.java.dev.jna", name = "jna", version = "5.17.0" }
 jna-platform = { group = "net.java.dev.jna", name = "jna-platform", version = "5.17.0" }
+# ERROR-063 (human-authorized 2026-09-16): pure-Java MP4 demux + AAC decode for desktop
+# voice notes. `implementation` in `:ui:platform-shims` jvmMain only — no public signature
+# mentions it (PCM stays inside the player), so nothing leaks into the published POM.
+jcodec = { group = "org.jcodec", name = "jcodec", version.ref = "jcodec" }
 hilt-android = { group = "com.google.dagger", name = "hilt-android", version.ref = "hilt" }
 hilt-compiler = { group = "com.google.dagger", name = "hilt-compiler", version.ref = "hilt" }
 webrtc-kmp = { group = "com.shepeliev", name = "webrtc-kmp", version = "0.125.11" }

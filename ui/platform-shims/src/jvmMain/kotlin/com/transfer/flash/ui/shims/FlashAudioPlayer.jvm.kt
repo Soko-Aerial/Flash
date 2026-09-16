@@ -2,29 +2,38 @@ package com.transfer.flash.ui.shims
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.net.URI
+import java.nio.ByteBuffer
+import javax.sound.sampled.AudioFormat
+import javax.sound.sampled.AudioInputStream
 import javax.sound.sampled.AudioSystem
 import javax.sound.sampled.Clip
+import javax.sound.sampled.UnsupportedAudioFileException
+import org.jcodec.codecs.aac.AACDecoder
+import org.jcodec.common.Codec
+import org.jcodec.common.io.NIOUtils
+import org.jcodec.containers.mp4.demuxer.MP4Demuxer
 
 @Composable
 public actual fun rememberFlashAudioPlayer(uri: String?): FlashAudioPlayer? =
     remember(uri) { if (uri != null) JvmAudioPlayer(uri) else null }
 
 /**
- * `javax.sound.sampled.Clip`.
+ * `javax.sound.sampled.Clip`, with a pure-Java AAC fallback for voice notes.
  *
- * **What this can and cannot play, stated plainly.** The JDK's sampled-audio SPI decodes WAV, AU and
- * AIFF. It does **not** decode AAC, and Flash voice notes are AAC in an MP4 container (`.m4a`) — see
- * `FlashVoiceRecorder`'s Android actual. So on desktop today a Flash voice note does not play: the
- * source fails to open and every method degrades to "nothing plays", which is the same contract the
- * Android implementation offers for a malformed recording, and the same outcome the bubble already
- * renders for a note whose transfer has not finished.
+ * Two tiers, in order:
+ * 1. The JDK's sampled-audio SPI (WAV/AU/AIFF) — zero dependencies, hardware-mixed.
+ * 2. JCodec (`org.jcodec:jcodec`, BSD-2-Clause): MP4 demux + AAC decode to PCM for `.m4a`
+ *    voice notes (AAC/MPEG-4, see `FlashVoiceRecorder`'s Android actual), which the JDK
+ *    rejects with `UnsupportedAudioFileException`. The PCM is fed to the same `Clip`, so
+ *    play/pause/seek/position semantics are identical on both tiers.
  *
- * This is a platform capability gap, not a stub to force a compile (R2): the implementation is real
- * and plays every format the JDK supports, which is what makes it useful the moment desktop capture or
- * an AAC decoder library exists. Adding that library is a dependency decision (R10) and belongs to a
- * phase with a human answer behind it — it is on the backlog with desktop sound playback from Phase 18.
+ * Anything else (missing file, non-audio container, non-AAC track, corrupt frames) degrades
+ * to "nothing plays" without throwing — the same contract as the Android implementation for
+ * a malformed recording.
  *
  * Not thread-safe — drive from the composition's main thread, as on Android.
  */
@@ -47,17 +56,55 @@ internal class JvmAudioPlayer(private val uri: String) : FlashAudioPlayer {
             failed = true
             return null
         }
-        return try {
+        // Tier 1: JDK-native containers.
+        runCatching {
             AudioSystem.getAudioInputStream(file).use { stream ->
                 AudioSystem.getClip().apply {
                     open(stream)
                     clip = this
                 }
             }
-        } catch (t: Throwable) {
-            // `println`, not a logging framework: PHASE-19 forbids `android.util.Log` here, and
-            // `:ui:platform-shims` has no logger dependency. `:core:common`'s FlashLog is not on this
-            // module's classpath and adding it to reach one warning is not worth the edge.
+            return clip
+        }.exceptionOrNull()?.let { tier1 ->
+            // Tier 2: AAC-in-MP4 voice notes via JCodec — but ONLY for the JDK's "I don't know
+            // this container" signal. Any other failure (missing mixer/headless CI, IO error) is
+            // not a codec problem and decoding would fail the same way downstream at Clip.open.
+            if (tier1 !is UnsupportedAudioFileException) {
+                println("[FlashAudioPlayer] Voice playback failed to prepare: $tier1")
+                runCatching { clip?.close() }
+                clip = null
+                failed = true
+                return null
+            }
+        }
+        return runCatching {
+            val pcm = decodeAacM4aToPcm(file) ?: run {
+                failed = true
+                return null
+            }
+            val format = AudioFormat(
+                pcm.sampleRateHz.toFloat(),
+                16,
+                pcm.channels,
+                true,
+                pcm.bigEndian,
+            )
+            AudioInputStream(
+                ByteArrayInputStream(pcm.bytes),
+                format,
+                pcm.bytes.size.toLong() / format.frameSize,
+            ).use { stream ->
+                AudioSystem.getClip().apply {
+                    open(stream)
+                    clip = this
+                }
+            }
+            println(
+                "[FlashAudioPlayer] AAC voice note decoded via JCodec: " +
+                    "${pcm.bytes.size} bytes PCM ${pcm.sampleRateHz}Hz ${pcm.channels}ch",
+            )
+            clip
+        }.getOrElse { t ->
             println("[FlashAudioPlayer] Voice playback failed to prepare: $t")
             runCatching { clip?.close() }
             clip = null
@@ -116,3 +163,62 @@ internal fun resolveFile(uri: String): File? = when {
     uri.startsWith("file:") -> runCatching { File(URI(uri)) }.getOrNull()
     else -> File(uri)
 }?.takeIf { it.isFile && it.length() > 0L }
+
+/** Decoded voice-note PCM: 16-bit signed, interleaved, `bigEndian` as flagged. */
+internal data class DecodedPcm(
+    val bytes: ByteArray,
+    val sampleRateHz: Int,
+    val channels: Int,
+    val bigEndian: Boolean,
+)
+
+/** Refuse absurd outputs before they become heap: a voice note never decodes to this. */
+private const val MAX_PCM_BYTES = 32 * 1024 * 1024
+
+/**
+ * Demuxes the first audio track of an MP4/M4A file and AAC-decodes it to PCM.
+ *
+ * Fail-closed by construction: not-an-MP4, no audio track, non-AAC track, missing decoder
+ * config, corrupt frames, non-16-bit output, or an over-large result all yield null (the
+ * caller then renders "nothing plays"). Never throws.
+ */
+internal fun decodeAacM4aToPcm(file: File): DecodedPcm? = runCatching {
+    NIOUtils.readableChannel(file).use { channel ->
+        val demuxer = MP4Demuxer.createMP4Demuxer(channel)
+        val track = demuxer.audioTracks.firstOrNull() ?: return null
+        if (track.meta.codec != Codec.AAC) return null
+        val esds = track.meta.codecPrivate ?: return null
+        val decoder = AACDecoder(esds)
+        // One AAC frame is 1024 samples; 64K holds the largest legal frame (8ch S16) 4x over.
+        // Reused across frames: decodeFrame writes from the buffer's position, so clear first.
+        val out = ByteBuffer.allocate(65536)
+        val pcm = ByteArrayOutputStream()
+        var sampleRateHz = 0
+        var channels = 0
+        var bigEndian = false
+        var sawAudio = false
+        while (true) {
+            val packet = track.nextFrame() ?: break
+            val data = packet.data ?: continue
+            if (!data.hasRemaining()) continue
+            out.clear()
+            val decoded = decoder.decodeFrame(data, out) ?: continue
+            val format = decoded.format ?: continue
+            if (format.sampleSizeInBits != 16) return null
+            if (sawAudio && (format.sampleRate != sampleRateHz || format.channels != channels)) {
+                // Mid-stream format change: refuse rather than splice mismatched PCM.
+                return null
+            }
+            sampleRateHz = format.sampleRate
+            channels = format.channels
+            bigEndian = format.isBigEndian
+            sawAudio = true
+            val bytes = ByteArray(decoded.data.remaining())
+            decoded.data.get(bytes)
+            if (pcm.size() + bytes.size > MAX_PCM_BYTES) return null
+            pcm.write(bytes)
+        }
+        if (!sawAudio || sampleRateHz <= 0 || channels <= 0) return null
+        DecodedPcm(pcm.toByteArray(), sampleRateHz, channels, bigEndian)
+    }
+}.getOrNull()

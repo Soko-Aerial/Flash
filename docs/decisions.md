@@ -1549,3 +1549,46 @@ Android-before/after screenshot pair and the metric-pin test output as mandatory
 ### Revisit when
 A desktop type scale is wanted independently of density, an encrypted cross-platform settings ABI
 (09B-3) makes the UI-scale a shared preference, or OS-scaling behaviour changes on Compose Desktop.
+
+
+
+## ADR-039 — Desktop voice notes decode AAC via JCodec; desktop video stays external
+
+### Date
+2026-09-16 (owner decision, ERROR-063)
+
+### Context
+Android records voice as AAC in MP4 (`.m4a`). The desktop JVM's `javax.sound.sampled` opens
+WAV/AU/AIFF only, so every voice note failed with `UnsupportedAudioFileException` (live log).
+Desktop video has no in-app surface at all (JVM stub). Both gaps reported together by the owner.
+
+### Decision
+- Voice: `org.jcodec:jcodec:0.2.5` in `:ui:platform-shims` jvmMain only. MP4 demux + AAC→PCM
+  decode feeds the same `Clip`, so play/pause/seek semantics are identical on both tiers.
+  Android keeps MediaPlayer (hardware path, untouched).
+- Video: NO new player. Badge plays in-app only on Android (the double-player overlay is
+  fixed); the desktop stub reports to the error banner, whose button opens the system player
+  through the already-wired `onOpenAttachment`. Real desktop video needs JavaFX/VLC/ffmpeg —
+  deferred, explicitly.
+
+### Alternatives considered
+- JAAD standalone: GPL — incompatible with this repo's Apache-2.0 LICENSE. (JCodec vendors a
+  JAAD-derived AAC core inside its FreeBSD-licensed artifact per its published POM; the POM
+  license is the operative declaration.)
+- JavaCPP-ffmpeg: Apache-2.0 but per-platform natives for a voice-note job — disproportionate.
+- JavaFX media: same weight class, module setup, still no test story headless.
+- WAV voice notes: zero deps and plays everywhere, but ~10x file size and changes the
+  Android product (recorder, MIME, transfer sizes). Rejected for now; revisit if AAC ever
+  misbehaves live.
+
+### Verification
+- License: `FreeBSD` in the published POM (checked in Gradle cache 2026-09-16). Zero runtime
+  transitives; Java 6-era bytecode (no stdlib/metadata risk vs frozen Kotlin 2.2.10).
+- API verified against the jar with javap before coding (demux/track/esds/decode calls).
+- `:ui:platform-shims:jvmTest` 8/8 incl. fail-closed AAC-garbage test + synthesized-WAV feed
+  test. Positive AAC decode of a real `.m4a` is live-only (no fixture, no headless mixer) —
+  owner hardware run owed; success prints a decode line in the desktop log.
+
+### Revisit when
+Desktop video goes in-app (that decision re-opens the player question wholesale), or a live
+voice note decodes wrong (format/endianness/channel edge the fixture-less suite cannot pin).
