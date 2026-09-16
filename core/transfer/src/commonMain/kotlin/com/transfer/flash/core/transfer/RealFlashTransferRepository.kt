@@ -18,8 +18,10 @@ import com.transfer.flash.core.transfer.model.FlashTransfer
 import com.transfer.flash.core.transfer.model.FlashTransferDirection
 import com.transfer.flash.core.transfer.model.FlashTransferId
 import com.transfer.flash.core.transfer.model.FlashTransferState
+import com.transfer.flash.core.common.time.SystemTimeSource
 import com.transfer.flash.core.transfer.multistream.MultiStreamDispatcher
 import com.transfer.flash.core.transfer.multistream.MultiStreamResult
+import com.transfer.flash.core.transfer.multistream.RollingRateMeter
 import com.transfer.flash.core.transfer.multistream.StreamChannelFactory
 import com.transfer.flash.core.transfer.store.TransferStore
 import kotlinx.coroutines.CoroutineDispatcher
@@ -618,6 +620,7 @@ public class RealFlashTransferRepository(
 
     override suspend fun cancelTransfer(transferId: FlashTransferId): FlashResult<Unit> {
         val transfer = _activeTransfers.value.find { it.id == transferId }
+        receiverRateMetersLock.withLock { receiverRateMeters.remove(transferId.value) }
         val job = registryLock.withLock { runningJobs.remove(transferId.value) }
         // Drop the pause intent BEFORE unpausing: a dispatcher registering concurrently must not
         // re-enter the paused state and swallow the cancellation.
@@ -772,6 +775,8 @@ public class RealFlashTransferRepository(
      */
     private val receiverDoneLock = PlatformLock()
     private val receiverDone = mutableMapOf<String, ResumeBitVector>()
+    private val receiverRateMetersLock = PlatformLock()
+    private val receiverRateMeters = mutableMapOf<String, RollingRateMeter>()
 
     /** Warms [receiverDone] from persisted chunk rows. Call once during transport startup. */
     public suspend fun preloadReceiverProgress() {
@@ -873,6 +878,7 @@ public class RealFlashTransferRepository(
 
     override suspend fun declineIncoming(transferId: FlashTransferId): FlashResult<Unit> {
         val id = transferId.value
+        receiverRateMetersLock.withLock { receiverRateMeters.remove(id) }
         val transfer = _activeTransfers.value.find { it.id.value == id }
             ?: return FlashResult.Failure(FlashError.TransferFailed(id, "unknown transfer"))
         if (transfer.state != FlashTransferState.Offered) {
@@ -901,6 +907,14 @@ public class RealFlashTransferRepository(
         peerDeviceId: String?,
         localPath: String?,
     ) {
+        receiverRateMetersLock.withLock {
+            val meter = receiverRateMeters.getOrPut(transferId) {
+                RollingRateMeter(SystemTimeSource::nowMs)
+            }
+            meter.reset()
+            val existing = _activeTransfers.value.find { it.id.value == transferId }
+            meter.record(existing?.bytesDone ?: 0L)
+        }
         _activeTransfers.update { list ->
             if (list.any { it.id.value == transferId }) {
                 // Row already present (an accepted OFFER, or a retry re-opening a session for a
@@ -944,11 +958,31 @@ public class RealFlashTransferRepository(
     }
 
     override fun onIncomingProgress(transferId: String, bytesDone: Long) {
+        val (rate, eta) = receiverRateMetersLock.withLock {
+            val meter = receiverRateMeters.getOrPut(transferId) {
+                RollingRateMeter(SystemTimeSource::nowMs)
+            }
+            meter.record(bytesDone)
+            val now = SystemTimeSource.nowMs()
+            val instantRate = meter.instantBytesPerSec(now)
+            val computedSpeed = instantRate.coerceAtLeast(0.0).toLong()
+            val transfer = _activeTransfers.value.find { it.id.value == transferId }
+            val computedEta = if (computedSpeed > 0L && transfer != null && transfer.bytesTotal > bytesDone) {
+                ((transfer.bytesTotal - bytesDone) / computedSpeed)
+            } else {
+                -1L
+            }
+            computedSpeed to computedEta
+        }
         updateTransferState(transferId) { transfer ->
             if (transfer.direction == FlashTransferDirection.Receiving &&
                 transfer.state == FlashTransferState.Transferring
             ) {
-                transfer.copy(bytesDone = maxOf(transfer.bytesDone, bytesDone))
+                transfer.copy(
+                    bytesDone = maxOf(transfer.bytesDone, bytesDone),
+                    speedBytesPerSec = rate,
+                    etaSeconds = eta,
+                )
             } else {
                 transfer
             }
@@ -956,6 +990,7 @@ public class RealFlashTransferRepository(
     }
 
     override fun onIncomingCompleted(transferId: String, verified: Boolean, localPath: String?) {
+        receiverRateMetersLock.withLock { receiverRateMeters.remove(transferId) }
         updateTransferState(transferId) { transfer ->
             transfer.copy(
                 bytesDone = transfer.bytesTotal,
@@ -969,6 +1004,7 @@ public class RealFlashTransferRepository(
     }
 
     override fun onIncomingFailed(transferId: String, reason: String) {
+        receiverRateMetersLock.withLock { receiverRateMeters.remove(transferId) }
         updateTransferState(transferId) { transfer ->
             // Never clobber a terminal state: a declined/cancelled offer or an already-completed
             // transfer must not be relabelled Failed by a late teardown callback.

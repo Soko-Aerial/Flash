@@ -476,6 +476,40 @@ class RealFlashTransferRepositoryTest {
     }
 
     @Test
+    fun `onIncomingProgress updates bytesDone, speedBytesPerSec, and etaSeconds`() = runBlocking {
+        val repo = offerRepo()
+        val totalBytes = 10_000_000L
+        repo.onIncomingOffered("tx-prog", "fx-prog", "big.mp4", totalBytes, "Pixel", "peer-5")
+        repo.onIncomingStarted("tx-prog", "fx-prog", "big.mp4", totalBytes, "Pixel", "peer-5", "/tmp/big.mp4")
+
+        var snapshot = repo.snapshot(FlashTransferId("tx-prog"))
+        assertEquals(0L, snapshot.bytesDone)
+        assertEquals(0L, snapshot.speedBytesPerSec)
+
+        // Advance progress
+        repo.onIncomingProgress("tx-prog", 2_000_000L)
+        snapshot = repo.snapshot(FlashTransferId("tx-prog"))
+        assertEquals(2_000_000L, snapshot.bytesDone)
+        assertEquals(FlashTransferState.Transferring, snapshot.state)
+
+        // Further progress calculates non-zero speed and ETA
+        Thread.sleep(20)
+        repo.onIncomingProgress("tx-prog", 5_000_000L)
+        snapshot = repo.snapshot(FlashTransferId("tx-prog"))
+        assertEquals(5_000_000L, snapshot.bytesDone)
+        assertTrue("speedBytesPerSec should be > 0, was ${snapshot.speedBytesPerSec}", snapshot.speedBytesPerSec > 0L)
+        assertTrue("etaSeconds should be >= 0, was ${snapshot.etaSeconds}", snapshot.etaSeconds >= 0L)
+
+        // On completion, bytesDone becomes totalBytes, speed and ETA reset to 0
+        repo.onIncomingCompleted("tx-prog", verified = true, localPath = "/tmp/big.mp4")
+        snapshot = repo.snapshot(FlashTransferId("tx-prog"))
+        assertEquals(totalBytes, snapshot.bytesDone)
+        assertEquals(FlashTransferState.Completed, snapshot.state)
+        assertEquals(0L, snapshot.speedBytesPerSec)
+        assertEquals(0L, snapshot.etaSeconds)
+    }
+
+    @Test
     fun `sendFile preserves an explicit wire file id`() = runBlocking {
         val repo = RealFlashTransferRepository(
             chunker = Chunker(),

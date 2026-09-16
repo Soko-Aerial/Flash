@@ -924,6 +924,7 @@ public class DesktopEngine(
                 }
                 is ReceiveEvent.AckBatchReady -> {
                     transfer.onIncomingChunkConfirmed(event.frame.transferId, event.frame.indexes)
+                    updateIncomingProgress(transfer, receivePipeline, incomingMeta, event.frame.transferId)
                     reply(ChunkFrame.serialize(event.frame))
                 }
                 is ReceiveEvent.Completed -> {
@@ -943,6 +944,22 @@ public class DesktopEngine(
                 }
             }
         }
+    }
+
+    /** Recomputes verified bytes for an inbound transfer from the pipeline's done-set. */
+    private fun updateIncomingProgress(
+        transferImpl: RealFlashTransferRepository,
+        receivePipeline: ReceivePipeline,
+        incomingMeta: ConcurrentHashMap<String, ChunkFrame.FileStart>,
+        transferId: String,
+    ) {
+        val start = incomingMeta[transferId] ?: return
+        val done = receivePipeline.doneIndexes(transferId) ?: return
+        var bytes = 0L
+        for (index in done) {
+            bytes += minOf(start.chunkSize.toLong(), start.totalBytes - index.toLong() * start.chunkSize)
+        }
+        transferImpl.onIncomingProgress(transferId, bytes)
     }
 
     /** FLASH_XFER control frames — route into the repository (both directions). */
@@ -1014,6 +1031,7 @@ public class DesktopEngine(
                 transferId, meta.fileId, meta.fileName, meta.totalBytes,
                 "peer", peerDeviceId, receivedPaths[transferId],
             )
+            receivePipeline?.let { updateIncomingProgress(transfer, it, incomingMeta, transferId) }
             sendXfer(peerDeviceId, RealFlashTransferRepository.ACTION_RESUME, transferId)
         }
     }
