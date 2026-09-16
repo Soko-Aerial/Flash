@@ -7,3 +7,7 @@ Action: Whenever adding press feedback to clickable/combinedClickable Flash comp
 ## 2026-09-11 - Interactive Reaction Chip Tactile Feedback & Design Token Compliance
 Learning: Reaction chips (`FlashReactionChip.kt`) were using bare `material3.Text` instead of `FlashText` and lacked tactile press scale feedback. When adding `Modifier.flashPressScale(interactionSource)` to clickable surfaces that use custom `interactionSource` (like `combinedClickable`), passing the exact same `interactionSource` instance ensures the spring press scaling is perfectly synchronized with press events.
 Action: Always pass a shared `remember { MutableInteractionSource() }` to both `flashPressScale` and `combinedClickable`/`clickable`, and replace any stock Material `Text` with `FlashText`.
+
+## 2026-09-12 - Tactile Press Scale on CombinedClickable Chips (PR #15)
+Learning: In Flash Compose UI, interactive chips (like `FlashReactionChip`) using `combinedClickable` need a single shared `MutableInteractionSource` passed to both `.flashPressScale(interactionSource, pressedScale = 0.94f)` and `.combinedClickable(interactionSource = interactionSource, indication = null, ...)` to ensure smooth tactile scale feedback without recomposition or ripple conflicts. Always replace stock `material3.Text` with `FlashText` to comply with Flash design system guidelines.
+Action: Pass a shared `remember { MutableInteractionSource() }` to `.flashPressScale(interactionSource)` before `.combinedClickable` and use `FlashText`.

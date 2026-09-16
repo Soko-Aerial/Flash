@@ -65,6 +65,7 @@ fun FlashReactionChip(
     val typography = FlashTheme.typography
     val motion = FlashTheme.motion
     val haptics = rememberFlashHaptics()
+    val interactionSource = remember { MutableInteractionSource() }
 
     val backgroundColor by animateColorAsState(
         targetValue = if (reaction.isSelfReacted) {
@@ -104,12 +105,10 @@ fun FlashReactionChip(
         append(". Tap to toggle.")
     }
 
-    val interactionSource = remember { MutableInteractionSource() }
-
     Box(
         modifier = modifier
             .sizeIn(minWidth = 36.dp, minHeight = 28.dp)
-            .flashPressScale(interactionSource)
+            .flashPressScale(interactionSource, pressedScale = 0.94f)
             .clip(CircleShape)
             .background(backgroundColor)
             .border(BorderStroke(borderWidth, borderColor), CircleShape)
