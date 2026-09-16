@@ -4057,3 +4057,520 @@ RESOLVED
 
 ### Status
 RESOLVED
+
+## ERROR-054 â€” Desktop chat crash: `SQLite JDBC: inconsistent internal state` in JdbcCipherStatement
+
+### Date
+2026-09-15
+
+### Area
+Desktop encrypted database driver (`:core:persistence` `jvmMain`) / desktop chat
+
+### Symptoms
+Live `:desktop:run` against a paired phone threw repeatedly (one per chat read) on
+`DefaultDispatcher` workers, killing `openConversation`, `sendText`, and inbound-message
+handling â€” sending worked from neither side even though frames dispatched (`success=true`):
+```text
+java.sql.SQLException: SQLite JDBC: inconsistent internal state
+    at org.sqlite.core.CoreResultSet.checkCol(CoreResultSet.java:97)
+    at org.sqlite.jdbc3.JDBC3ResultSet.getColumnCount(JDBC3ResultSet.java:602)
+    at ...persistence.db.JdbcCipherStatement.getColumnCount(JdbcCipherStatement.kt:106)
+    at ...ConnectionWithLock$CachedStatement.getColumnCount(...)
+    ... at ConversationDao_Impl.get ...
+```
+
+### Environment
+- Desktop JVM (JetBrains JBR 21), willena `sqlite-jdbc-crypt` 3.50.1.0, Room 2.8.4 KMP.
+- Triggered by sustained chat use (multiple collectors hitting `ConversationDao`), never
+  in unit tests.
+
+### Root cause
+Two defects in `JdbcCipherStatement`, the first masking as the second:
+1. **Post-close metadata reads throw.** xerial binds a `PreparedStatement`'s metadata
+   object to its current result set: once that result set is closed,
+   `statement.metaData` throws on ANY read (probed: fresh/bind/live all fine, post-close
+   always throws, re-execute heals). Our `columnMeta()` preferred the live result set and
+   fell back to `statement.metaData` â€” so after our own `reset()` closed the result set,
+   the NEXT query's prepare-time `getColumnCount()` (Room resolves indices before
+   `step()`) died on the previous query's corpse. Proved deterministically: prepare â†’
+   meta â†’ step â†’ reset â†’ meta throws without any threads involved.
+2. **Zero synchronization on shared mutable state.** `resultSet`/`executed` had no guard
+   while Room's statement cache hands one instance to whatever thread queries next (two
+   workers died inside the same DAO read simultaneously). `androidx.sqlite`'s contract
+   (`SQLiteDriver.hasConnectionPool`) puts thread-safety on our side when the driver
+   reports no pool.
+
+### Failed attempts
+None â€” went straight to bytecode (`javap` on the cached driver jar showed `checkCol`
+throws exactly when `colsMeta == null`) plus a metadata-lifecycle probe before writing
+the fix, per the repo's evidence-first lesson.
+
+### Working fix
+`core/persistence/.../db/JdbcCipherStatement.kt`:
+- Column metadata is snapshotted once (names + mapped types) and served from memory;
+  sound because metadata is a pure function of the SQL text, which one statement
+  instance never changes. Live-RS preference kept for the snapshot itself (computed
+  columns).
+- Every method body runs under one lock; `columnMeta()` also skips closed result sets.
+- Regression suite `JdbcCipherStatementConcurrencyTest` (3 tests): snapshot survival
+  across reset/close, sequential Room-pattern cycles, concurrent metadata hammer.
+
+### Verification
+- New suite 3/3; full `:core:persistence:jvmTest` 25/25.
+- Forced full `:core:messaging:testAndroidHostTest` (188 tests incl. unmodified
+  `RealFlashChatRepositoryTest` 47/47): green. `:core:messaging:jvmTest`,
+  `:desktop:jvmTest`, `:core:engine` (both), `:core:common`, `:app:testDebugUnitTest`:
+  green.
+- Awaits the owner's live rerun (`:desktop:run` + phone) to confirm the exception is
+  gone on device-adjacent load.
+
+### Related files
+- `core/persistence/src/jvmMain/.../db/JdbcCipherStatement.kt`
+- `core/persistence/src/jvmTest/.../db/JdbcCipherStatementConcurrencyTest.kt`
+
+### Status
+RESOLVED (pending live confirmation)
+
+## ERROR-055 â€” Desktop calls die in startMedia: webrtc-java natives missing from :desktop:run
+
+### Date
+2026-09-15
+
+### Area
+Desktop calling (Phase 33a) / Gradle runtime classpath
+
+### Symptoms
+Live `:desktop:run`: outbound Invite sent, inbound invite arrived, then both directions
+died in `startMedia` â€” outbound ended ERROR, inbound accept declined ERROR:
+```text
+Caused by: java.lang.RuntimeException: Load library 'webrtc-java' failed
+    at dev.onvoid.webrtc.media.MediaDevices.<clinit>(MediaDevices.java:33)
+Caused by: java.lang.NullPointerException
+    at java.base/java.util.Objects.requireNonNull(Objects.java:220)
+    at java.base/java.nio.file.Files.copy(Files.java:2831)
+    at dev.onvoid.webrtc.internal.NativeLoader.loadLibrary(NativeLoader.java:64)
+```
+Signaling itself was healthy throughout (Invite/Hangup/Decline frames, call-log rows);
+only media init failed. The coordinator's failure handling worked as designed (ended
+ERROR, notified the peer, wrote the log row).
+
+### Environment
+- Desktop JVM run (`:desktop:run`), webrtc-java 0.17.0, Windows x86_64.
+
+### Root cause
+`webrtc-java`'s main jar is Java-API-only; the native library ships as a per-OS/arch
+classified artifact that `:core:calling` declares **test-only** (`jvmTest` block â€” its own
+comment predicts exactly this failure for any JVM media call without it). That is why
+`DesktopMediaStackSmokeTest` passed while the product run died: same classes, different
+runtime classpaths. The NPE is `NativeLoader` copying a classpath resource that is not
+there (`getResourceAsStream` â†’ null â†’ `Files.copy` â†’ `requireNonNull`).
+
+### Failed attempts
+None â€” the stack named the mechanism directly.
+
+### Working fix
+`desktop/build.gradle.kts` `jvmMain`: `runtimeOnly("dev.onvoid.webrtc:webrtc-java:0.17.0:$hostOS-$hostArch")`
+with the same OS/arch mapping as calling's block (cross-referenced both ways).
+`runtimeOnly`, not `implementation`: no API comes from it, only the native lib.
+Regression test `DesktopMediaDevicesTest` exercises the exact crashed path
+(`webrtc-kmp` `MediaDevices` static init â†’ native load â†’ enumeration) on the desktop
+runtime classpath; hardware-free (lists devices, never captures).
+
+### Verification
+- New test green, reporting `webrtc devices: 3` on the dev host.
+- Awaits the owner's live rerun (real call both directions).
+
+### Related files
+- `desktop/build.gradle.kts`
+- `desktop/src/jvmTest/.../DesktopMediaDevicesTest.kt`
+
+### Status
+RESOLVED (pending live confirmation)
+
+## ERROR-056 â€” Desktop calls one-way: mic opens but sends zero frames; no AEC; output switch kills playout
+
+### Date
+2026-09-15
+
+### Area
+Desktop calling (Phase 33a) / vendored webrtc-kmp fork JVM audio (`third_party/webrtc-kmp/.../jvmMain`)
++ `:core:calling` capture constraints
+
+### Symptoms
+Live `:desktop:run` vs phone, every call after the ERROR-055 natives fix: signaling perfect
+(Invite/Offer/Answer/ICE/Connected, clean hangups, call-log rows), desktop `stats flow`
+shows `bytesIn` climbing steadily (~3.5 kB/sample â‰ˆ 32 kbit/s Opus â€” the phone IS sending)
+but `bytesOut=0` and `audioLevel=0` for the whole call. Neither side hears voice; laptop
+speakers intermittently squeal ("eeking"); with a BT headset connected the inbound audio is
+a buzz, still nothing outbound. Windows shows the mic in-use.
+
+### Root cause â€” three independent defects, one symptom family
+1. **Recording never started (the bytesOut=0).** The fork's `WebRtc.setAudioInputDevice`
+did stopâ†’setâ†’init but never `startRecording()`. webrtc-java's ADM is app-driven â€” init AND
+start are both required (official jrtc.dev audio-device/headless guides; the fork's own
+builder eagerly starts playout for the same reason). So the mic opened (OS indicator lit)
+but delivered zero frames; with DTX collapsing silence, zero RTP was ever sent. Nothing in
+the fork or app called `startRecording()` anywhere (grep-verified).
+2. **No voice processing (the squeal).** `FlashCallSession.startMedia` used bare `audio(true)`,
+leaving AEC/NS/AGC null, which the JVM backend maps to `AudioOptions` all-false. Mic +
+speakers with no echo cancellation howls. Same gap in `FlashGroupCallSession.acquireMedia`.
+3. **Output-device switch stopped playout (latent).** `WebRtc.setAudioOutputDevice` did
+stopâ†’setâ†’init with no restart â€” switching output mid-call would have silenced remote audio
+until restart. Same bug class as (1), found by symmetry.
+4. **Diagnostic bug:** `audioLevel` (W3C 0.0â€“1.0 double) was truncated `.toInt()`, so the
+mic-liveness witness read 0 for anything below full scale â€” it would have stayed blind even
+with a working mic on quiet speech.
+
+### Failed attempts
+None â€” the fork's own playout init+start vs recording init-only asymmetry named the
+mechanism, confirmed against the webrtc-java docs before editing.
+
+### Working fix
+- `third_party/.../jvmMain/.../WebRtc.kt`: `startRecording()` after `initRecording()` in
+`setAudioInputDevice`; `startPlayout()` after `initPlayout()` in `setAudioOutputDevice`;
+both log the selected device name (`[webrtc-jvm] recording/playing on 'â€¦'` â€” answers the
+BT-headset "which device?" question on the next run).
+- `third_party/.../jvmMain/.../LocalAudioStreamTrack.kt`: `onStop()` stops ADM recording,
+so hangup releases the mic (recording is now started, so it must be stopped; teardown runs
+through `MediaStream.release()` â†’ track stop).
+- `FlashCallSession.startMedia` + `FlashGroupCallSession.acquireMedia`: explicit
+`echoCancellation(true) / noiseSuppression(true) / autoGainControl(true)` (Android: goog*
+mandatory+optional; JVM: AudioOptions true).
+- `FlashCallSession.sampleStats`: `audioLevel` kept as Double in the `stats flow` line.
+
+### Verification
+- New `DesktopMediaDevicesTest.audio capture starts and releasesâ€¦` exercises the exact
+production path (APM constraints â†’ device select + init + start â†’ release + capture stop):
+green, `[webrtc-jvm] recording on 'Microphone Array (Realtek High Definition Audio)'`,
+`webrtc audio tracks: 1`.
+- `:core:calling:jvmTest` 61/61, `:core:calling:testAndroidHostTest` 72/72,
+`:desktop:jvmTest` full suite green (XML-confirmed, 0 failures) â€” BUILD SUCCESSFUL.
+- Live two-way audio still owed: needs owner + phone (`:desktop:run` place a call, speak both
+ways). Watch for: `bytesOut` moving + `audioLevel` in (0,1] (capture proven), device-name
+lines (which mic/speaker), whether the buzz persists with AEC on (points at BT-HFP/stale
+output device â†’ 33c device picker owns the full fix).
+
+### Related files
+- `third_party/webrtc-kmp/webrtc-kmp/src/jvmMain/.../WebRtc.kt`
+- `third_party/webrtc-kmp/webrtc-kmp/src/jvmMain/.../LocalAudioStreamTrack.kt`
+- `core/calling/src/commonMain/.../FlashCallSession.kt` (constraints, audioLevel)
+- `core/calling/src/commonMain/.../FlashGroupCallSession.kt` (constraints)
+- `desktop/src/jvmTest/.../DesktopMediaDevicesTest.kt`
+
+### Status
+RESOLVED (pending live confirmation)
+
+### Follow-up 2026-09-15 â€” startRecording landed, capture still dead; prime suspect: native index-0 fallback
+
+Live run with the fix: `[webrtc-jvm] recording on 'Microphone Array (Realtekâ€¦)'` prints,
+`media ready audio=1`, call connects â€” but `bytesOut=0`, `audioLevel=0.0` for the whole
+16 s call while `bytesIn` climbs. No exception from init/start (the JNI throws on failure),
+so capture is "running" but delivering zeros. Owner adds: buzz sometimes starts before the
+call is even up (no RTP flowing yet â€” no ringback exists in the desktop app, grep-verified).
+
+Web research (as requested):
+- webrtc-java `JNI_AudioDeviceModuleBase::setRecordingDevice` matches by GUID and
+**silently falls back to index 0 on no match** (Issue #33, bug still in the fetched source).
+If the `MediaDevices`-enumerated descriptor never matches the ADM's own list, we record
+from device 0 â€” possibly a dead device delivering digital silence. Same fallback on playout.
+- webrtc-java docs confirm init AND start are both app-driven (our fix stands regardless).
+- Buzz-with-mic-open-but-idle is a known DTX/comfort-noise + sample-rate-mismatch symptom;
+BT-HFP (8 kHz SCO) vs 48 kHz playout is the standing desktop suspect â€” output device picker
+is 33c scope.
+
+Diagnostics added (one live run away from the fix):
+- Fork logs the native GUID match per select: requested name/descriptor, `matchIndex`, and
+the ADM's full device list â€” `matchIndex=-1` proves the index-0 fallback.
+- Fork logs ADM mic mute + mic volume after start.
+- `stats flow` now carries `audioEnergy`/`audioDurationS`: frozen duration = ADM pulls no
+frames; growing duration + frozen energy = wrong/muted device delivering zeros.
+- Candidate fix if match fails: pass the ADM list's own `AudioDevice` object (ADM-native
+descriptor, guaranteed match) instead of the `MediaDevices`-enumerated one.
+
+## ERROR-057 — All native WebRTC calls hopped pool threads; JVM audio now pinned to one thread (WASAPI/COM)
+
+### Date
+2026-09-15
+
+### Area
+`:core:calling` threading (1:1 + group sessions), desktop entry point logging
+
+### Symptoms (unchanged)
+Desktop?phone: signaling perfect, `bytesIn` climbs, `bytesOut=0`, `audioLevel=0.0`,
+inbound buzz. Recording-start fix deployed and confirmed in the log, still zeros.
+
+### Task 1 — audit (which dispatchers drove native WebRTC)
+- `DesktopEngine.scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)` (DesktopEngine.kt:117)
+— a 64-thread pool. `CallCoordinator` hands this SAME scope to every session, so
+`startMedia` (factory init, ADM select, PC create, addTrack), every SDP op
+(createOffer/Answer, setLocal/setRemote), `addIceCandidate`, `recoverIce` and teardown each
+ran on a random pool thread — hopping on every suspension (mutex, delay, WS send).
+- `FlashCallSession` stats sampler: `Dispatchers.IO.limitedParallelism(1)` — one thread, but a
+DIFFERENT one from the rest.
+- UI thread straight into native: `toggleMute()`/`toggleCamera()` (track.enabled setters) and
+`switchCamera()` from `DesktopShell` compose callbacks; `accept()`/`onInboundFrame()` START on
+the caller thread (Main/UI) and run natively until first suspension.
+- Group session: same shape — `acquireMedia`, per-leg PC create/offer/answer/ICE/close,
+`sampleMeshStats`, toggles, all on whatever thread resumed them.
+- Verdict: the factory was routinely created on one thread while capture/playout/SDP ran on
+others — exactly the WASAPI/COM-hostile pattern. (Android is unaffected in practice: its
+`JavaAudioDeviceModule` owns its audio threads and JNI attaches anywhere.)
+
+### Task 2 — the pin
+- New `CallThreading.kt` `expect val callMediaDispatcher`: JVM actual = one daemon
+`flash-call-media` single-thread executor (process-wide, matches the factory/ADM singleton
+lifetime); Android actual = `Dispatchers.Default` (behavior bit-for-bit).
+- Both sessions route EVERY native touch through `onMediaThread` (1:1: startMedia,
+onAccept/Offer/Answer/Ice, flushPendingIce, attemptIceRestart, sampleStats, releaseMedia;
+group: acquireMedia, ensureLegConnected, handleInboundOffer/Answer/Ice, flushPendingIce,
+closeLeg, endSession, sampleMeshStats). Event/ICE collectors and stats loops launch pinned.
+- Plain-fun entry points stay sync-safe: toggles flip UI state immediately and hop only the
+native setter; `end()` guards + publishes synchronously, teardown hops. `endSession`/
+`closeLeg` (group) became suspend — all callers already suspend.
+- Nesting is deadlock-free (`withContext` suspends + re-queues on the same thread).
+
+### Tasks 3/5/6/7
+- (3) webrtc-java is 0.17.0 — well past 0.14; the #43 ComInitializer era (0.4/0.5) is ancient.
+No upgrade needed. (6) Native log wired: `DesktopMain` sets fork `loggingSeverity=WARNING`
+(pre-factory-init; raise to INFO/VERBOSE for one run when chasing). (5) APM-off control
+already exists as evidence: the pre-056 live runs had `AudioOptions` all-false and STILL
+buzzed — the raw path is implicated with APM out of the picture, so the AEC fix stays.
+(4) Device-match logging landed last pass. (7) No plain-demo module exists and one needs
+human ears anyway — the pinned live run IS the control experiment.
+
+### Verification
+- New `CallMediaDispatcherTest` (jvmTest): 32 launches land on ONE `flash-call-media`
+daemon thread — the contract is now executable, not a comment.
+- `:core:calling:jvmTest` 62/62, `:core:calling:testAndroidHostTest` 72/72,
+`:desktop:jvmTest` 35/35 (XML-confirmed) — BUILD SUCCESSFUL. Public session APIs unchanged
+(toggles still sync-Boolean, end() same signature), so Android callers are untouched.
+- Live verdict owed: one `:desktop:run` call. Watch `bytesOut`/`audioLevel`/energy FIRST
+(capture alive?), then voice clarity (buzz gone?), plus any native WASAPI/COM lines.
+
+### Related files
+- `core/calling/.../CallThreading.kt`, `CallThreading.android.kt`, `CallThreading.jvm.kt`
+- `core/calling/.../FlashCallSession.kt`, `FlashGroupCallSession.kt`
+- `core/calling/src/jvmTest/.../CallMediaDispatcherTest.kt`
+- `desktop/.../DesktopMain.kt` (native logging)
+
+### Status
+CODE-COMPLETE (live verification owed — whether pinning resolves buzz/no-mic is unknown
+until the owner runs it)
+
+## ERROR-058 — Eager playout blocked audio-transport registration forever (desktop both-directions dead)
+
+### Date
+2026-09-15
+
+### Area
+Vendored fork JVM audio lifecycle (`third_party/.../jvmMain/.../WebRtc.kt`,
+`MediaDevices.kt`, `LocalAudioStreamTrack.kt`)
+
+### Symptoms (same run, with native log now on)
+`matchIndex=0` (GUID match SUCCEEDS — the index-0-fallback suspect is dead), yet
+`bytesOut=0`, `audioLevel/energy/duration` all frozen at 0 while `bytesIn` climbs. Native log:
+`audio_device_buffer.cc: Invalid audio transport` on every capture AND render callback, plus
+`audio_device_core_win.cc: nSamples(0) != _playBlockSize480` (starved WASAPI playout = the buzz).
+
+### Root cause — verified at libwebrtc source level
+`AudioDeviceBuffer::RegisterAudioCallback` REFUSES registration while media is active
+(`if (playing_ || recording_) return -1`, "Failed to set audio transport since media was
+active"), and the voice engine registers exactly once (factory construction), never retried.
+Our fork builder did `initPlayout(); startPlayout()` BEFORE `PeerConnectionFactory(ADM)` —
+so registration failed permanently: null transport forever, capture frames dropped at the
+buffer, render starved. The startRecording fix (056) only added a second early-media leg to
+the same wall. Single-thread pinning (057) was necessary hygiene but orthogonal — thread
+affinity cannot help a transport that was never registered.
+
+### Working fix (lifecycle: init early, start per call, stop at release)
+- Builder: select + init default render device, NEVER start.
+- `getUserMedia`: `ensurePlayoutStarted()` after track setup (post-factory, idempotent).
+- `setAudioInputDevice/OutputDevice`: flag-guarded stop before re-select; start; flags set.
+- `LocalAudioStreamTrack.onStop` ? new `stopCallAudio()` stops BOTH directions (neither may
+stay active past the call — active media is what blocks the next registration).
+
+### Verification
+- `:core:calling:jvmTest` 62/62, host 72/72, `:desktop:jvmTest` 35/35 (XML-confirmed) —
+BUILD SUCCESSFUL, incl. the capture smoke exercising start/stop without throwing.
+- Falsifiable prediction: pre-fix `~/.flash/desktop.log` contains "Failed to set audio
+transport since media was active" at factory init (LS_ERROR, always printed). Owner: grep it.
+- Live verdict owed: one `:desktop:run` call. Expect: no more "Invalid audio transport"
+lines, `audioDurationS` climbing, `bytesOut` moving, voice both ways.
+
+### Related files
+- `third_party/.../jvmMain/.../WebRtc.kt` (builder, flags, ensure/stop)
+- `third_party/.../jvmMain/.../MediaDevices.kt` (playout start site)
+- `third_party/.../jvmMain/.../LocalAudioStreamTrack.kt` (stop site)
+
+### Status
+CODE-COMPLETE (live verification owed)
+
+## ERROR-059 — ADM/factory instance audit: singletons confirmed, teardown serialized, init race closed
+
+### Date
+2026-09-15
+
+### Area
+Fork `WebRtc` singleton lifecycle + session teardown ordering (follows ERROR-058)
+
+### Tasks 1-2 verdict — NO instance mismatch exists in code
+- `AudioDeviceModule()` has exactly ONE construction site (default builder); `PeerConnectionFactory`
+exactly ONE (initializePeerConnectionFactory); fork `PeerConnection` builds from the singleton
+factory; per-call acquire creates tracks + PCs only — never ADM/factory. No preview/meter
+feature, no per-call disposal (`disposePeerConnectionFactory` has zero product callers).
+- So the "second instance torn down at startMedia" cannot be ours: transports never had a
+second pair to split across. The destructor line is factory-construction fallout, not a cause.
+- Residual risk closed anyway: init was null-check-then-build unsynchronized — now fully
+guarded, so a double-init orphan ADM is impossible even under racing first touches.
+- Decisive live proof now prints once per process: `ADM created @H`, `factory bound @F adm=@A`,
+then `adm=@A` on every select. One of each + matching hashes = mismatch theory falsified.
+
+### Task 4 — teardown-before-acquire without breaking `end()`''s sync signature
+New `mediaLifecycleMutex` (both sessions): acquire bodies and teardown sections hold it;
+`releaseMedia`/`closeLeg` split into locking wrappers + Locked variants for already-held paths
+(non-reentrant by construction — holders never call locking entries). Next acquisition cannot
+observe mid-teardown `close()`/release on any enqueuer interleaving, on top of the single-thread
+ordering. `end()` still guards/publishes synchronously, teardown hops pinned+locked.
+
+### Tasks 3/5
+- (3) Already the official pattern: ONE ADM + ONE factory, app lifetime, never disposed
+mid-process (PeerConnectionExample parity — minus its finally-dispose, which buys nothing at
+process exit and risks native teardown crashes). Per-call device changes already target the
+same bound instance.
+- (5) Init sequence confirmed in code: builder select+init render pre-factory (Issue #33
+requirement), capture select+init+start per call post-factory, render start per call.
+
+### Verification
+- `:core:calling:jvmTest` 62/62, host 72/72, `:desktop:jvmTest` 35/35 (XML-confirmed) —
+BUILD SUCCESSFUL. Nothing committed.
+- Task 6 (owner live run) still owed for 058: invalid-transport lines gone, bytesOut > 0,
+non-zero audioLevel — plus the new single ADM/factory hash triple.
+
+### Related files
+- `third_party/.../jvmMain/.../WebRtc.kt` (guarded init, identity logs)
+- `core/calling/.../FlashCallSession.kt`, `FlashGroupCallSession.kt` (lifecycle mutex)
+
+### Status
+CODE-COMPLETE (live verification owed)
+
+## ERROR-060 — Manual ADM start was self-inflicted: engine owns start/stop, app does select+init
+
+### Date
+2026-09-15
+
+### Area
+Fork JVM audio lifecycle (correction of our own 056/058 fixes)
+
+### What the owner''s log proved
+Single ADM + single factory (hashes match everywhere) — mismatch falsified. Present together:
+"Failed to set audio transport since media was active" + "Unable to set playout device" +
+"Attempt to set Windows AEC with recording already initialized" + OUR OWN "[webrtc-jvm]
+recording on..." / "playout started" lines immediately before them. The engine tried to
+configure/register the ADM and found media already running — media OUR code started.
+
+### Failed approach (preserved)
+- ERROR-056 added `startRecording()` in `setAudioInputDevice` (believed ADM fully app-driven
+from the standalone-ADM docs — true without a PeerConnection, false with a voice engine).
+- ERROR-058 moved playout start per-call into `getUserMedia` — still before engine registration.
+- Both were necessary-looking, both were the blocker. Lesson: for a factory-bound ADM the
+engine owns start/stop exclusively; the app may only select + init. Standalone-ADM docs
+(AudioRecorder, headless) do not transfer to the PeerConnection path.
+
+### Working fix
+- `setAudioInputDevice/OutputDevice`: select + init only (mute/volume reads kept as diagnostics).
+- Deleted `ensurePlayoutStarted`, `stopCallAudio`, both started-flags; `getUserMedia` no longer
+starts render; `LocalAudioStreamTrack` reverted (no onStop hook — engine stops at teardown).
+- No preview/meter feature exists anywhere (grep-verified): nothing else needed moving.
+- Lifecycle mutex + pinning + identity logs + native logging all stand (orthogonal, still correct).
+
+### Verification
+- `:core:calling:jvmTest` 62/62, host 72/72, `:desktop:jvmTest` green incl. capture smoke
+(XML-confirmed) — BUILD SUCCESSFUL. Nothing committed.
+- Live criteria (owner): "Failed to set audio transport…", "Unable to set playout device",
+"recording already initialized", "Invalid audio transport", "nSamples(0)" ALL gone;
+bytesOut > 0, non-zero audioLevel, voice both ways, mic indicator clearing on hangup.
+
+### Related files
+- `third_party/.../jvmMain/.../WebRtc.kt`, `MediaDevices.kt`, `LocalAudioStreamTrack.kt`
+- `desktop/.../DesktopMediaDevicesTest.kt` (comment corrected)
+
+### Status
+CODE-COMPLETE (live verification owed)
+
+### Follow-up 2026-09-15 — live "Set recording device failed" ? stop-first hygiene restored (no start)
+
+Live run after the removal: every `startMedia` dies deterministically at
+`setRecordingDevice` (native JavaError), 3/3 calls, while the same call succeeds in tests.
+Temporary double-acquire probe on the same machine proved the mechanism: acquire #1 OK
+(tracks=1), acquire #2 THROWS identically. A previous acquire leaves the recording side
+initialized and `SetRecordingDevice` on an initialized side fails; the 056/059 stop-first
+sequence had been masking this all along (probe deleted after diagnosis).
+
+Fix: `setAudioInputDevice` does stop (hygiene — nothing streams at acquire time, so it is a
+native no-op on fresh state) ? set ? init. Still no start anywhere: engine owns all media
+transitions, transport registration stays unblocked. The exact live failure is now a
+permanent regression test (double acquire in `DesktopMediaDevicesTest`, both green).
+
+Verification: `:desktop:jvmTest` focused run `acquire 1: 1, acquire 2: 1` green; full
+`:core:calling:jvmTest` 62/62, host 72/72, `:desktop:jvmTest` green — BUILD SUCCESSFUL.
+
+
+## ERROR-061 â€” Sticky-init: stop-first hygiene cannot fix per-acquire re-select; selection is once, pre-factory
+
+### Date
+2026-09-16
+
+### Area
+Fork JVM audio lifecycle (supersedes ERROR-060's per-acquire select+init approach)
+
+### Symptoms
+With ERROR-060's state live (select + init + stop-first, no starts), the owner's run still
+failed EVERY call deterministically at `setRecordingDevice` ("Set recording device failed",
+3/3 `startMedia` attempts) â€” including the stop-first fix the previous session added last.
+
+### Root cause
+Init state is sticky: `stopRecording()` stops streaming but does NOT un-initialize the
+recording side, and `SetRecordingDevice` on an initialized side always throws. So ANY
+per-acquire re-select is impossible, not just racy â€” the first acquire of a process
+initializes the side, and every later acquire throws no matter what hygiene precedes it.
+(The earlier double-acquire probe showed acquire #1 OK / #2 throwing; the stop-first fix
+only papered over teardown timing, it could not un-initialize.) The owner's 3/3 failures
+fit a process with >=1 earlier acquire (the log excerpt starts mid-run).
+
+### Failed approach (preserved)
+- ERROR-060: select + init per acquire, no start. Correct about the engine owning
+  start/stop, wrong about re-select: init-once is a native precondition.
+- Stop-first hygiene (ERROR-060 follow-up): `stopRecording()` before set. Harmless but
+  ineffective â€” stop is not un-init.
+
+### Working fix (official order, audio guide + PeerConnectionExample)
+- `defaultAudioDeviceModuleBuilder`: selects + initializes BOTH directions (render AND
+  capture â€” capture was missing), starts NEITHER, all before `PeerConnectionFactory(ADM)`.
+- `MediaDevicesImpl.getUserMedia`: no ADM touch at all (the `setAudioInputDevice` call is
+  deleted; an explicit `deviceId` constraint logs that selection is pre-factory-only).
+  The engine starts capture/render from stream lifetime (track + negotiated SDP).
+- `setAudioInputDevice/OutputDevice`: pre-factory only. Post-factory calls are loud no-ops
+  (println naming the ignored device) instead of native throws. A settings-driven device
+  change before the first call still works; mid-process switching is a documented limitation.
+- Kept from the 056-060 saga: `initLock` (init race), identity-hash order logs,
+  `logDeviceMatch` (native silent-fallback-to-index-0 diagnostic), thread pinning +
+  `mediaLifecycleMutex` in both sessions (orthogonal, still correct).
+
+### Verification
+- `:desktop:jvmTest` green incl. `DesktopMediaDevicesTest` double-acquire 2/2 under the new
+  rule (no ADM touch per acquire â€” passes trivially AND by construction).
+- `:core:calling` jvm + host, `:core:messaging` jvm + host (48/48 repo tests incl. #11 spoof
+  pins), `:core:common`, `:core:discovery` jvm, `:core:persistence` jvm, `:core:engine`,
+  `:app` compile + unit â€” green. Only failures anywhere: the 12 known Windows-only
+  DataStore atomic-rename failures (NTFS environment set, pre-existing).
+- Live criteria (owner, updated): "Failed to set audio transportâ€¦", "Unable to set playout
+  device", "recording already initialized", "Invalid audio transport", "nSamples(0)" absent;
+  `ADM created` + `factory bound` + `recording selected`/`playout selected` exactly once at
+  startup in official order; `bytesOut > 0` with non-zero `audioLevel`; voice both ways.
+
+### Related files
+- `third_party/.../jvmMain/.../WebRtc.kt`, `MediaDevices.kt`
+- `desktop/.../DesktopMediaDevicesTest.kt` (KDoc rewritten for the once-pre-factory rule)
+
+### Status
+CODE-COMPLETE (live verification owed)

@@ -1,2 +1,3 @@
-__pycache__/
+# Never commit the local search key.
 .tavily_api_key
+__pycache__/

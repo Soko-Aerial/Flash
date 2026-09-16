@@ -1,9 +1,9 @@
 ﻿# responsive-layout
 
-**Status:** DESIGNED → IMPLEMENTED
+**Status:** PARTIAL — breakpoint/pane math IMPLEMENTED + VERIFIED; the two-pane arrangement is IN PROGRESS under [`../migration/ADAPTIVE-UI-PLAN.md`](../migration/ADAPTIVE-UI-PLAN.md) (phases AD-1…AD-8)
 **Component ID:** UI-034
-**Last updated:** 2026-08-22
-**Owner phase:** Premium chat UI — component sequence
+**Last updated:** 2026-09-15
+**Owner phase:** Premium chat UI — component sequence (adaptive work now sequenced by the AD phases)
 
 ---
 
@@ -255,3 +255,52 @@ the two-pane experience is unmistakably the same product as the phone one: same
 hairlines, same surfaces, same P2P-aware list, just more room. And true to the
 project's engineering memory culture, the decision to *not* take the official
 dependency is documented with its exact revisit triggers rather than silently buried.
+
+---
+
+## Addendum 2026-09-15 — status correction, and where the remaining work is sequenced
+
+This document's earlier header claimed `DESIGNED → IMPLEMENTED` while
+[`ui-research-index.md`](ui-research-index.md) listed the same component as `NOT STARTED`. Both
+descriptions were wrong, and the honest status is **PARTIAL**:
+
+- **Implemented and verified:** the pure math — `FlashWindowSizeClass`, `FlashAdaptiveMath`
+  (600/840 breakpoints, `isTwoPaneAllowed`, the 0.38/0.62 weights) and its
+  `FlashAdaptiveLogicTest` (13 cases, commonTest → runs on Android *and* JVM).
+- **Deleted, not implemented:** `FlashAdaptiveTwoPane` and `rememberFlashWindowSize` were removed in
+  **ERROR-033** (the container had no call site; the size-class composable wrote Compose state from
+  inside a `SubcomposeLayout`'s layout pass).
+- **Re-created desktop-locally:** `rememberFlashDesktopWindowSize` + `DesktopTwoPane`
+  (`desktop/.../DesktopAdaptive.kt`), wired into `DesktopShell`.
+- **Still wrong or missing:** the chat list / conversation arrangement (the conversation renders in the
+  *list* pane, not the detail pane — verified in `DesktopShell.kt:302–528`), any desktop sizing or
+  density policy, resize/geometry design (min window size, persisted window geometry, pane min/max
+  widths, a splitter), wide-pane content measure, and **all of Android** — no rail, no two-pane, no
+  width-class read in `MainActivity.kt`.
+
+**The remaining work is now sequenced outside this document**, in
+[`../migration/ADAPTIVE-UI-PLAN.md`](../migration/ADAPTIVE-UI-PLAN.md) as phases **AD-1…AD-8**
+(desktop scale & metrics → window/pane geometry → conversation-in-detail-pane → pointer/keyboard
+idioms → wide-screen content → Android tablet → state continuity → verification gate).
+
+Everything in the §Testing checklist above stays valid as acceptance criteria; the AD phases add the
+measurements, the screenshot matrix and the evidence rules on top of it. The two unchecked device
+items in that checklist (two-pane on a tablet; phone behaviour unchanged) are the same two items AD-6
+and AD-8 discharge.
+
+### Addendum 2 — 2026-09-15, decision **AD-D1 answered = (B)**
+
+The owner answered the desktop scale-policy decision in
+[`../migration/ADAPTIVE-UI-PLAN.md`](../migration/ADAPTIVE-UI-PLAN.md) §5.1: honour the OS display scale
+as the baseline **and** add a **desktop-only** user UI-scale control (0.75–1.5, default **1.00**),
+applied as a density multiplier with **`fontScale` never overridden**; force `Density(1f)` is rejected.
+The owner's binding constraint is that **Android's look is preserved, or improved — never degraded**.
+
+For this component that means two things:
+
+- UI-034's *math* (breakpoints, the two-pane decision, pane widths) stays platform-neutral in
+  `FlashAdaptiveMath` — only the **host** supplies a density multiplier, and only `:desktop` does.
+- Any future adaptive work that touches a shared value must prove Android is unchanged (metric-pin test
+  + before/after screenshots), or list the change as an approved improvement. Android tablet work (AD-6)
+  deliberately does **not** consume the desktop UI-scale switch; a tablet's scaling stays with the OS
+  display-size setting.

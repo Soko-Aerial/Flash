@@ -1,5 +1,53 @@
 # Progress Log
 
+## 2026-09-16 - Parking resolved: messaging KMP migration + calling audio rework + desktop landed
+
+### Worked on
+Resolved the 28-file parked stash (`b2c03c8`, now also branched as
+`parking/pre-pr-merge-20260915`) onto `dev` via `cherry-pick -m 1 -n` + untracked restore
+from its 3rd parent. Five conflicts, all resolved by review (no blind takes).
+
+### Changed
+- **Messaging androidMain → commonMain**: `RealFlashChatRepository` + `PresenceHold` moved;
+  new `ChatTextFrameCodec` (direct-text family slice), `FlashMimeTypes`,
+  `PlatformChatTimeFormat` expect/actual (android+jvm), `SyncCollections` (promoted from
+  calling's `PlatformMonitor`, now public in `:core:common`), `CallThreading` expect/actual
+  (common+android+jvm), `JvmFlashDatabaseOpener`, `tavily_search.py` tool.
+- **PR #11 preserved across the move**: the stash migration was written pre-#11 and its two
+  holder call sites passed `transportPeerId` for typing ONLY — which would have silently
+  deadened #11's spoof guards for the other four families. Both call sites
+  (`DiscoveryEngineHolder`, engine `Flash.kt`) now take the codec dispatch but pass
+  `peerDeviceId` for ALL five direct families (codec is direct-family-only; group frames go
+  elsewhere), and the four guards + signature were ported into the commonMain repository.
+  #11's androidHostTest stays in place (same package) and passes unmoved.
+- **ERROR-061 (calling audio, supersedes ERROR-060)**: per-acquire re-select is impossible —
+  init is sticky, stop is not un-init, set-after-init always throws (this is what the owner's
+  3/3 "Set recording device failed" run proved). New rule = the official order: the default
+  builder selects + inits BOTH directions once pre-factory and starts neither;
+  `getUserMedia` never touches the ADM; setters are pre-factory-only with loud post-factory
+  no-ops. Details + updated live criteria in `logs/errors.md` ERROR-061.
+- **Desktop/persistence**: `DesktopEngine`/`DesktopShell`/`DesktopMain` Phase-2/33a slices,
+  `JdbcCipherStatement` rework + concurrency test, desktop `build.gradle`, new desktop tests
+  (`DesktopCallingTest`, `DesktopMediaDevicesTest` double-acquire), `DesktopConversationHeaderTest`
+  updates; ui `showVideoCallAction` / `onCallTrustedClick` (all defaulted/nullable).
+- **Docs**: AGENTS §13 desktop-fact rule + search helper, ADRs 034/035/036/037/038 (the stash had
+  TWO ADR-037s — the WebRtcEngine one is now ADR-038; only `decisions.md` referenced it),
+  ADAPTIVE-UI-PLAN + migration docs, ERROR-056..060 history merged in from the stash.
+- **NOT restored**: `session-ses_f5bc.md` (transcript, left inside the parking branch only).
+
+### Verification (JBR 21 + AF_UNIX workaround)
+- `:core:messaging` jvm + host green (repo suite 48/48 incl. #11 spoof pins; new codec/mime
+  suites 10+6).
+- `:core:calling` jvm + host (incl. new `CallMediaDispatcherTest`), `:core:common` (incl. new
+  `SyncCollectionsTest` 3/3), `:core:discovery` jvm (incl. new `JmdnsResolveStormTest` 7/7),
+  `:core:persistence` jvm (incl. opener + concurrency tests), `:core:engine` host 14/14,
+  `:desktop:jvmTest` (double-acquire 2/2 under ERROR-061 rule, calling 3/3), `:ui:chat:jvmTest`,
+  `:app` compile + unit — all green, XML-confirmed where counted.
+- Only failures anywhere: the 12 known Windows-only DataStore atomic-rename failures (NTFS
+  environment set, pre-existing, untouched by this pass).
+- Live audio still owed: owner run per ERROR-061 criteria (order lines once at startup,
+  bytesOut > 0, voice both ways).
+
 ## 2026-09-16 - Merged PRs #13-#17 code-only; rescued dangling pre-PR-merge stash
 
 ### Worked on
@@ -54,6 +102,91 @@ stash ref already dropped, reachable from nothing) as branch
   its own review pass.
 - `session-ses_f59c.md` (previous session transcript) is untracked in the worktree; left alone.
 - Physical-device gates (calling, PTT, group) remain owed as before.
+## 2026-09-15 — Adaptive UI plan created (phone → tablet → desktop, phases AD-1…AD-8); planning only, no product code
+
+### Worked on
+The owner reported that the Windows desktop app "looks big", that the chat list should be left with the
+conversation on the right, and asked for a phase-by-phase plan for optimizing the screens from Android
+small-screen up to desktop and tablet, including resizing. This pass produced that plan after auditing
+the actual code — no product code was changed.
+
+### Changed (docs only)
+- **New:** `docs/migration/ADAPTIVE-UI-PLAN.md` — the phase-by-phase plan (AD-1…AD-8) with a verified
+  current-state audit (file:line evidence), per-phase sub-steps, gates, risks, do-not lists, the
+  decisions the owner must answer (AD-D1…AD-D5, to be recorded as D13+), evidence rules, and an
+  append-only "results recorded by executing phases" section.
+- `docs/migration/README.md` — the plan added as read-first item 4, plus a new "Adaptive UI track (AD
+  phases) — separate from 00–33" section stating what does and does not depend on phases 27/28.
+- `docs/ui/responsive-layout.md` — UI-034 status corrected from "DESIGNED → IMPLEMENTED" to **PARTIAL**
+  with a 2026-09-15 addendum recording what is implemented (the pure math), what was deleted
+  (ERROR-033), what was re-created desktop-locally (PHASE-22), and what is still wrong.
+- `docs/ui/ui-research-index.md` — the responsive/adaptive row corrected from "NOT STARTED" (which
+  contradicted the component doc) to PARTIAL with a link to the plan.
+
+### Why
+Two documents disagreed about UI-034's state, and no document anywhere owned the three real defects found:
+(1) the desktop conversation renders inside the 38% **list** pane instead of the detail pane
+(`DesktopShell.kt:302–528`); (2) nothing in the repo decides desktop sizing — no `LocalDensity` provider
+anywhere, only phone-shaped metrics (`FlashDimensions.minTouchTarget = 48.dp`,
+`chatListRowHeight = 72.dp`), and a hard-coded 1200×800dp window with no minimum size or persistence;
+(3) Android consumes none of the adaptive math (`MainActivity.kt` is single-pane).
+
+### Verification
+Documentation-only pass; no build was run because no code changed. Every claim in the plan's audit
+section was read out of the working tree (grep/Select-String over `desktop/src`, `app/src`, `ui/`,
+`docs/`) and is cited with file:line so a later agent can re-verify. The plan explicitly refuses to
+assert the density story: AD-1's first sub-step is a measurement to be run at 100/125/150% Windows
+display scale before any metric is touched.
+
+### Decision recorded: AD-D1 ANSWERED = (B) (same day, owner)
+The owner answered the desktop scale-policy decision and added a binding constraint:
+- **Desktop scale policy = (B):** keep the OS display scale as the baseline **and** add a **desktop-only**
+  user UI-scale control (0.75–1.5, default **1.00**), applied as a density *multiplier* at `:desktop`'s
+  window root, with **`fontScale` never overridden**. Option (C) force `Density(1f)` is **rejected**.
+- **Constraint: "it should not change the android too much … it should preserve android's look or should
+  be an improvement."** → Android's look is now a *contract* in the plan: unchanged by default
+  (metric-pin test + before/after Android screenshots), improved only when deliberately listed and
+  owner-approved.
+- **How it is enforced structurally** (plan §2.2 rules 4 and 9): shared `FlashMetrics.touch()` defaults
+  equal today's `FlashDimensions` values; the density multiplier, the UI-scale setting, pointer metrics
+  and window geometry are wired **only** at `:desktop`'s window root and are unreachable from
+  `commonMain`/`:app`.
+- **Plan updates:** header status, §2.1 ordering (AD-2 is independent of AD-1), §2.2 rules 4/9, §2.3
+  status table (AD-1 **READY**, AD-2 **READY**), AD-1 goal + sub-steps (decision implemented as written,
+  new UI-scale-control sub-step, an "Android-affecting changes: none by default" block, strengthened
+  tests/gate/do-not), §5 decision table + new **§5.1 full decision record**, §6 DoD item 4, §7
+  prohibitions, §9 summary. Also `docs/ui/responsive-layout.md` Addendum 2.
+- **Owed, deliberately NOT done here:** mirroring AD-D1 into `DECISIONS.md` (next free D-number) and an
+  ADR in `docs/decisions.md` — both files are being edited by a concurrent uncommitted pass in this same
+  working tree, and R8 makes `docs/decisions.md` append-only. The plan's §5.1 is the authoritative record
+  until the owning pass adds the entry.
+- **Still not implemented:** no code was written; AD-1/AD-2 remain unstarted by explicit instruction
+  ("modify plan accordingly dont implement yet").
+
+### Not verified / open
+- **Nothing in the plan has been executed.** All eight phases are NOT STARTED.
+- The density hypothesis (OS display scale multiplying dp metrics) is *not* yet measured — AD-1 owns it.
+  The official Kotlin desktop window docs document **no** density/DPI control at all (checked
+  2026-09-15), so measuring is the only way to establish it.
+- AD-D1…AD-D5 need owner answers before AD-1, AD-2, AD-4 and AD-6 respectively.
+- **Concurrent work in the same working tree (not mine, do not commit/undo on my behalf):** another
+  pass is landing desktop chat persistence ("Phase 2 slice 4") — `desktop/build.gradle.kts`
+  (`:core:persistence`), `desktop/src/jvmMain/.../DesktopEngine.kt` (+~170 lines),
+  `DesktopShell.kt` (repository now keyed on `ready`), plus `docs/decisions.md`. Those files were
+  *not* touched by this pass and the plan's file:line citations were re-derived around them.
+
+### Also added
+- `tools/tavily_search.py` + git-ignored `tools/.tavily_api_key` — a dev-only web-search helper for
+  AGENTS §13 platform verification (nothing in the product depends on it). Verified working; used to
+  produce the plan's §1.7 platform-facts table.
+- `AGENTS.md` §13 now points at that helper and states the desktop-fact recording rule.
+
+### Next AI
+If executing: start with **AD-2** if the owner has not answered AD-D1 yet (it needs no decision and
+adds tested pane math), otherwise **AD-1** beginning with its measurement sub-step — paste the numbers
+into the plan's §4 "AD-1 results" and `logs/experiments.md`. **AD-3** is the "chat list left, conversation
+right" fix. Do not start AD-4 before PHASE-28, and do not add the adaptive dependency AD-D4 asks about
+without a recorded decision.
 
 ## 2026-09-12 - A3 classifier tests fixed; A1 workflow fix applied; full local suite exposed + fixed a third stale-harness failure in `:core:discovery`
 
@@ -7941,3 +8074,444 @@ Fixed image previews not loading in chat bubbles, added full video thumbnail/pre
 - `:ui:callui:testDebugUnitTest` passed.
 - `:app:compileDebugSources` passed.
 - Installed debug APK onto physical device `ZX89924000194` (`V760`).
+
+## 2026-09-15 — Purge big blobs for GitLab push
+
+### Worked on
+Removed multi-GB heap dumps and junk folders from git history so the repo can push to GitLab.
+
+### Changed
+- Purged from all history via `python -m git_filter_repo --path-glob 'desktop/*.hprof*' --path session-export-1788124308699 --path media-downloader-main --invert-paths --force`:
+  - `desktop/java_pid11448.hprof` (1729 MB), `java_pid23400.hprof` (1705 MB), `java_pid14876.hprof` (827 MB), `java_pid14572.hprof*` (10–19 MB each)
+  - Entire `session-export-1788124308699/` folder (incl. 6.39 MB + 4.14 MB jsonl)
+  - Entire `media-downloader-main/` folder (owner-requested deletion)
+- Restored `origin` + `gitlab` remotes after filter-repo stripped them.
+- Hardened `.gitignore`: `session-export*/`, `session-export-*/`, `logs/cli-diagnostics*.jsonl`, `testfile.bin` (committed as `256b80f`).
+- Note: `desktop/build.gradle.kts` unstaged deletion was restored by the rewrite (file is tracked and intended).
+
+### Verification
+- `git count-objects -vH`: `size-pack` 662.41 MiB → 8.74 MiB, `in-pack` 9668 → 8490.
+- Top-20 blobs now max 0.79 MB (`docs/migration/logs/migration.md`); no `hprof` / `session-export` / `media-downloader-main` in `git rev-list --objects --all` or `git ls-files`.
+- `git status --short` clean (previous junk now covered by `git check-ignore`).
+- `git log --oneline -1`: `256b80f chore(git): harden ignore for hprof/session-export/diagnostics bins`.
+
+### Remaining
+- Push rewritten `dev` to GitLab (new branch there, no force needed): `git push gitlab dev`.
+- Do NOT normal-push to `origin` — hashes changed, it will need `git push --force-with-lease origin dev` only if GitHub should also be rewritten. Coordinate before force-pushing shared branches.
+- Optional local cleanup: `Remove-Item testfile.bin` (100 MB untracked, now ignored) if not needed.
+
+### Next AI
+Do not re-add `*.hprof`, `session-export*/`, or `media-downloader-main/`. Verify `git rev-list` top blobs stay small before any GitLab push.
+
+## 2026-09-15 — Phase 2 slice 1: JVM database open seam
+
+### Worked on
+First slice of desktop chat send/receive: a public open path for `FlashDatabase` on the JVM so `:desktop` can one day stop binding `EmptyFlashChatRepository`. Chosen by owner over MimeTypeMap extraction, MSG codec extraction, and the full repo move.
+
+### Changed
+- `core/persistence/.../db/JvmFlashDatabaseOpener.kt` (new, `jvmMain`): `openEncryptedFlashDatabase(file, key)` builds the internal `JdbcCipherSQLiteDriver` and delegates to `openFlashDatabase(name, driver)`, which opens via `Room.databaseBuilder(name, factory = FlashDatabaseConstructor::initialize)` + `setDriver` + `Dispatchers.IO`. Driver stays `internal`; desktop never names it.
+- `core/persistence/.../db/FlashDatabaseOpenSeamTest.kt` (new, `jvmTest`): 3 tests through the public seam — round-trip across reopen, file-is-not-plaintext, empty-key rejection.
+- `desktop/build.gradle.kts`: `:desktop` gains `implementation(project(":core:persistence"))` so the seam is resolvable when wiring lands (driver itself is `implementation`-scoped in persistence, so it stays hidden at compile time but present at runtime).
+
+### Correction during work
+First attempt put `openFlashDatabase` in `commonMain`. It broke `:core:persistence:compileAndroidMain`: this Room version's `Room.databaseBuilder` is expect/actual per platform and the no-`Context` overload exists only on JVM — there is no common no-Context overload. Moved the seam to `jvmMain`. This is also sufficient by design: `RealFlashChatRepository` takes DAOs, never a database, so the open always happens in platform code (Android keeps `FlashDatabaseOpener` untouched).
+
+### Verification
+- `:core:persistence:jvmTest`: green, including new `FlashDatabaseOpenSeamTest` 3/3 (`tests="3" failures="0" errors="0"`).
+- `:core:persistence:compileAndroidMain`: green — Android compilation byte-identical in behavior, no Android file touched.
+- `:desktop:compileKotlinJvm`: green with the new dependency.
+- Toolchain note: `java` not on PATH and no `JAVA_HOME`; used `C:\Users\KaliOxygen\.gradle\jdks\jetbrains_s_r_o_-21-amd64-windows.2` + `JAVA_TOOL_OPTIONS=-Djdk.net.unixdomain.tmpdir=C:\Users\KaliOxygen\.gradle\afunix` (same as prior session). `E:` drive present again.
+
+### Remaining (Phase 2 slices 2–4)
+- Slice 2: replace `android.webkit.MimeTypeMap` at `RealFlashChatRepository.kt:2563` with shared guesser + clean `java.*` imports.
+- Slice 3: extract `FLASH_MSG` codec from `DiscoveryEngineHolder`/`Flash.kt` into shared codec.
+- Slice 4: move `RealFlashChatRepository` (2822 lines) `androidMain` → `commonMain`, wire `DesktopEngine.chats` to it, route `FLASH_MSG` in `DesktopEngine.handleInboundText` (currently drops everything except `FLASH_PAIR`/`FLASH_XFER`).
+- Untracked pre-existing: `core/discovery/.../jmdns/JmdnsResolveStormTest.kt` (from prior session, not mine).
+
+### Next AI
+Nothing committed (working tree: 3 new seam files + `desktop/build.gradle.kts` + this log + pre-existing untracked storm test). Continue with slice 2 unless owner reprioritizes.
+
+## 2026-09-15 — Phase 2 slice 2: shared MIME table, MimeTypeMap out
+
+### Worked on
+Second slice of desktop chat send/receive: removed the `android.webkit.MimeTypeMap` call (the JVM compile blocker in the chat repository) and replaced it with a shared platform-free table.
+
+### Changed
+- `core/messaging/.../util/FlashMimeTypes.kt` (new, `commonMain`): `fromExtension()` over an explicit extension→MIME map. Media rows mirror `resolveEffectiveMime`'s table one-for-one (including the `m4a`/`aac` → `audio/mp4` quirk, pinned by test rather than "fixed" silently); document/archive rows cover what the framework used to answer (`txt`, `html`, `csv`, `json`, office, archives, fonts). Unknown/blank → `null`, never a guess.
+- `RealFlashChatRepository.kt`: `else` branch now `FlashMimeTypes.fromExtension(ext) ?: (storedMime...)`; added the `util.FlashMimeTypes` import. No `android.*` API references remain in the file (only a string literal + comment mention).
+- `core/messaging/.../util/FlashMimeTypesTest.kt` (new, `commonTest`): 6 tests.
+- Other mime copies (`Flash.kt`, `MainActivity`, `DiscoveryEngineHolder`, `DesktopHelpers`) deliberately untouched — Android behavior must not change under an untested refactor.
+
+### Correction during work
+New files used `` `*/*` `` inside KDoc block comments — the `*/` inside terminates the comment and produced ~100 cascading "Expecting a top level declaration" errors. Reworded to "star-slash-star"/"wildcard" in all block comments (line comments are unaffected). Lesson: never write a literal wildcard MIME inside KDoc.
+
+### Verification
+- `:core:messaging:jvmTest`: green, incl. new `FlashMimeTypesTest` 6/6.
+- `:core:messaging:testAndroidHostTest --tests RealFlashChatRepositoryTest`: 47/47 green — the live Android chat path is behavior-identical.
+- Honest delta: exotic extensions only `MimeTypeMap` knew now fall to stored MIME / wildcard (generic card, same on both hosts).
+
+### Remaining (Phase 2 slices 3–4)
+- Slice 3: extract `FLASH_MSG` codec from `DiscoveryEngineHolder`/`Flash.kt` into a shared codec.
+- Slice 4: move `RealFlashChatRepository` (2822 lines) `androidMain` → `commonMain` — still needs `UUID` → `UuidIdGenerator` (`:core:common`, exists), `SimpleDateFormat`/`Date`/`Locale` → Phase-04 time shims, `ConcurrentHashMap` → promote `SyncMap`/`SyncList` out of `:core:calling` (currently `internal`); then wire `DesktopEngine.chats` + route `FLASH_MSG` in `handleInboundText`.
+
+### Next AI
+Nothing committed. Continue with slice 3 unless owner reprioritizes.
+
+## 2026-09-15 — Phase 2 slice 3: shared direct-chat text codec
+
+### Worked on
+Third slice of desktop chat send/receive: extracted the duplicated `FLASH_MSG`/`FLASH_RCPT`/`FLASH_READ`/`FLASH_REACT`/`FLASH_TYPING` encode+decode logic from both Android chat hosts into one shared codec. Both hosts now call it; the desktop engine (slice 4) will reuse it instead of copying it a third time.
+
+### Changed
+- `core/messaging/.../protocol/ChatTextFrameCodec.kt` (new, `commonMain`): `encode(MessageWireFrame): String?` for the five text types (`null` otherwise — `DeleteForEveryone` keeps `DirectMessageActionCodec`), `decode(text, nowMs, transportPeerId): DecodeResult?` where `DecodeResult` is `Frame` | `RecognizedButInvalid`, `null` = not ours. Field mapping/defaults transcribed verbatim from both holders (verified identical first).
+- `DiscoveryEngineHolder.kt` (`:app`) + `Flash.kt` (`:core:engine`): outbound `when` collapsed to codec call (Delete arm kept, `when` stays exhaustive); inbound five blocks replaced by one codec dispatch preserving the two call shapes (typing WITH transport peer, rest without). Removed the ten now-dead private prefix consts; added the import. `FlashTextFraming` imports stay (XFER/PAIR/CALL families untouched).
+
+### Design point worth knowing
+`RecognizedButInvalid` exists because both holders `?: return` (drop) on missing key fields. A plain nullable decode would let a key-less `FLASH_MSG` line fall through into the transfer family instead of being discarded — a silent misroute. The sealed result makes drop-vs-fallthrough explicit at each call site.
+
+### Verification
+- New `ChatTextFrameCodecTest` (commonTest): 10/10 on JVM — round-trips x5, invalid-key drop rule, holder defaults, typing peer fallback, unknown-prefix null, Delete excluded.
+- `:core:messaging:jvmTest`: green.
+- `:core:engine:testAndroidHostTest --tests DefaultFlashEngineTest`: 6/6 green (covers `FLASH_MSG`/call-frame routing).
+- `:app:compileDebugKotlin`: green (holder switchover compiles).
+
+### Remaining (Phase 2 slice 4 only)
+- Move `RealFlashChatRepository` (2827 lines) `androidMain` → `commonMain`: `UUID` → `UuidIdGenerator` (`:core:common`, exists), `SimpleDateFormat`/`Date`/`Locale` → Phase-04 time shims, `ConcurrentHashMap` → promote `SyncMap`/`SyncList` out of `:core:calling` (currently `internal`); then wire `DesktopEngine.chats` to it + route `FLASH_MSG` via the new codec in `DesktopEngine.handleInboundText` (currently drops everything except `FLASH_PAIR`/`FLASH_XFER`).
+
+### Next AI
+Nothing committed. Slice 4 is the big one (live Android chat path moves) — full sweep at the end, not squeezed in.
+
+## 2026-09-15 — Phase 2 slice 4: desktop chat send/receive live
+
+### Worked on
+Final Phase-2 slice: moved `RealFlashChatRepository` (2827 lines) + `PresenceHold` to `commonMain`, wired `DesktopEngine.chats` to the real repository over the encrypted file DB, and routed the chat frame families inbound on desktop. Chat list, conversation, send, and receive now work on desktop against the same repository the phone runs.
+
+### Changed
+- `RealFlashChatRepository.kt`, `PresenceHold.kt`: `androidMain` → `commonMain` (same package).
+  - `UUID` → `UuidIdGenerator.newId()`; `System.currentTimeMillis()` → injected `FlashTimeSource` (default `SystemTimeSource`, ctor-compatible with all 15+ existing call sites); `ConcurrentHashMap`/`newKeySet()` → `SyncMap`/`SyncSet`; `SimpleDateFormat` labels → `internal expect` time-format actuals (Android/JVM, same patterns); locale case-folds → locale-independent (also fixes Turkish-I for initials).
+- `SyncMap`/`SyncSet` promoted to `:core:common` `concurrent` (`@FlashInternalApi`); `:core:calling`'s internal `SyncMap` deleted, its mesh re-imported (import-only change).
+- `:core:messaging` `commonMain` gains the `:core:persistence` edge (per-target Room types); Android target untouched.
+- `DesktopEngine`: builds the repository in `assemble()` after transfer (DB at `<stateDir>/chat/flash.db`, key in `db-key.bin` generated once); Android-mirrored sinks (chat/group), trust/presence/progress joins, `FlashLog`-only inbound notice; `handleInboundText` routes group + all five chat families (pairing still first); `chats` falls back to the honest empty repo pre-boot/DB-failure. New `sendChatFrame` mirror.
+- `DesktopShell`: `chatRepository` re-keyed on `ready` (a `remember(engine)` alone would pin the pre-boot empty repo forever); stale 09B-2 comments refreshed.
+- `docs/decisions.md`: ADR-036.
+- Tests: `SyncCollectionsTest` (`:core:common`), `PlatformChatTimeFormat` actuals on both targets.
+
+### Corrections during work
+- First seam attempt in `commonMain` broke Android compile (no common no-`Context` Room overload) — moved to `jvmMain` (slice 1 log).
+- `` `*/*` `` inside KDoc terminates the comment — reworded (slice 2 log).
+- `commonMain` move surfaced two unaudited siblings: `PresenceHold` (moved too) and a dropped `private` on a ctor val (restored; explicitApi caught it).
+- `desktop/build.gradle.kts` lost the slice-1 persistence edge (concurrent tree edits by another session) — re-added; watch for recurrence.
+- Full-suite run showed 1 timing flake (`separators after tombstones`, empty-list race on `delay(100)`); passes in isolation and in class runs (47/47). Same flake class as the transcript's known flakes — logged, not chased.
+
+### Verification (full sweep, BUILD SUCCESSFUL)
+- `:core:messaging:jvmTest` + full `:core:messaging:testAndroidHostTest` (incl. unmodified 47-test `RealFlashChatRepositoryTest`): green.
+- `:core:common:testAndroidHostTest` (new `SyncCollectionsTest`), `:core:persistence:jvmTest`, `:core:engine:jvmTest` + `:core:engine:testAndroidHostTest`, `:desktop:jvmTest`, `:app:testDebugUnitTest`, `:core:calling` compiles both targets: green.
+- Desktop boot tests print `chat repository opened (.../chat/flash.db)` and still reach live sessions — wiring proven without a human run.
+
+### Remaining
+- Human run: pair phone↔desktop, send both directions, confirm bubbles/typing/receipts; group flows need a second device.
+- Commit (nothing committed; tree also holds another session's doc edits — coordinate before add).
+- Voice/video remains Phase 33 (`:core:calling` not a desktop dep; buttons stay hidden).
+
+### Next AI
+Phase 2 is done. Next: owner-directed hardening or Phase 33 scoping.
+
+## 2026-09-15 — Fix live desktop-chat crash (ERROR-054, driver metadata race)
+
+### Worked on
+Owner's live `:desktop:run` died in every chat read with `SQLite JDBC: inconsistent
+internal state` at `JdbcCipherStatement.getColumnCount`, breaking send/receive both
+directions while frames still dispatched fine.
+
+### Changed
+- `JdbcCipherStatement.kt`: column metadata now snapshotted once and served from memory
+  (pure function of the SQL text); every method serialized under one lock; metadata reads
+  skip closed result sets. See ERROR-054 for the bytecode-level root cause (xerial binds
+  statement metadata to its result set; post-close reads throw; our `reset()` closed it,
+  so each reused cached statement died on its second query — plus unguarded fields under
+  concurrent DAO load).
+- New `JdbcCipherStatementConcurrencyTest` (3 tests).
+
+### Verification
+- New suite 3/3; `:core:persistence:jvmTest` 25/25.
+- Forced full `:core:messaging:testAndroidHostTest` (188 tests): green.
+- `:core:messaging:jvmTest`, `:desktop:jvmTest`, `:core:engine` (both targets),
+  `:core:common`, `:app:testDebugUnitTest`: green.
+- Needs the owner's live rerun to confirm on real load.
+
+### Next AI
+Nothing committed. If the live run is clean, Phase 2 is fully closed.
+
+## 2026-09-15 — Fix desktop native load for calls (ERROR-055, follows 33a live run)
+
+### Worked on
+Owner's live 33a run: signaling perfect both directions, media init dead both directions
+(`Load library 'webrtc-java' failed` → calls ended ERROR, correctly notified + logged).
+
+### Changed
+- `desktop/build.gradle.kts`: `runtimeOnly` host-classified `webrtc-java` natives (the
+  artifact `:core:calling` keeps test-only — hence smoke-green/run-red).
+- New `DesktopMediaDevicesTest`: green, `webrtc devices: 3` on the dev host.
+
+### Verification
+- New test green; full sweep from 33a still stands (only a build-file dep added).
+- Awaits the owner's live rerun: place a call, speak both directions.
+
+### Next AI
+Nothing committed. If the live run is clean, Phase 2 is fully closed.
+
+## 2026-09-15 — Phase 33a: desktop outgoing voice calls wired (incoming visual, no tray yet)
+
+### Worked on
+First calling slice per the agreed split: audio-only, outgoing-only desktop calls on the
+shared coordinator + shared overlay. Owner answers recorded above (33a first, both entry
+points, tray deferred to the tray feature — tracked, not dropped).
+
+### Changed
+- `desktop/build.gradle.kts`: `:ui:callui` + `:core:calling` edges; fixed two stale
+  comments (callui "still AGP", calling "no JVM variant" — both KMP since Phase 25).
+- `DesktopEngine`: builds `CallCoordinator` in `assemble()` (trust closure, honest
+  HIGH/voice defaults, trust+discovery name resolution, WS send with the holder's 2 s
+  invite race, call-log rows into the real chat repo); `calls: FlashCalling?` getter;
+  calling-first inbound branch; `onSignalingLost/Restored` on session gone/up;
+  `sendCallFrame` mirror. 33-2 verdict recorded in code: no `FlashWebRtcEngine`
+  equivalent (ADR-037).
+- `DesktopShell`: shared `FlashCallScreen` as topmost overlay (no perms/router on
+  desktop); voice entry on trusted Nearby rows + conversation header; `showVideoCallAction
+  = false` (video hidden until 33c); repo re-keyed reads already covered this.
+- Shared UI, additive + defaulted (Android unchanged): `onCallTrustedClick` (nullable,
+  conditional Call button) on `FlashNearbyScreen`; `showVideoCallAction = true` default
+  through `FlashChatHeader` → `FlashConversationScreen`.
+- `desktopConversationHeader`: `showCallActions` false→true (the test named this moment);
+  video hiding lives in the shell, not the header.
+- Tests: `DesktopCallingTest` (built+idle, trust-gate refusal without touching media,
+  chat fall-through).
+
+### Verification
+- New tests 3/3; header suite 7/7.
+- `:ui:chat` (JVM + Android host), `:core:calling` (JVM + host), full `:desktop:jvmTest`
+  (boot still reaches live sessions with coordinator built), `:app:compileDebugKotlin`:
+  green.
+- NOT verified: real audio both directions, AEC behavior, mic-less failure UX — owner
+  hardware gate (needs phone + human). Tuning gap (bitrate-only) and AEC measurement
+  explicitly open per the phase doc.
+
+### Remaining (33b/33c + tray)
+- 33b: ringing polish + tray notification with Answer/Decline (the deferred decision —
+  implement in the tray feature; `FlashCallActionReceiver` is the behavior reference).
+- 33c: video (renderer ready) + device picker + unhide video buttons.
+- Nothing committed.
+
+## 2026-09-15 — Phase 33 scope agreed (33a first; tray deferred but tracked)
+
+### Decisions (owner, pre-implementation)
+- Start with **33a** (audio-only, outgoing-only) per the phase doc's split recommendation.
+- Call entry points in **both** places: Call action on Nearby trusted-peer rows + unhide
+  the conversation-header voice/video buttons (hidden during chat work, pinned by test).
+- Incoming-call-while-minimized UX **deferred to a planned whole-tray feature** (tray
+  notification with Answer/Decline). NOT dropped: when 33b starts, the decision is "tray
+  notification" and the remaining work is implementing it in the tray feature — see also
+  `FlashCallActionReceiver` (Android) as the behavior reference. Do not invent a window-
+  attention hack in the meantime.
+
+## 2026-09-15 — 33a live run: signaling perfect, no audio either way; added stats-shape dump
+
+### Live result (owner run)
+Three calls (2 outbound, 1 inbound): Invite/Offer/Answer/ICE/Connected every time,
+clean hangups, call-log rows. But neither side hears voice; desktop shows no latency
+badge (phone shows green + latency); intermittent squeak through laptop speakers; mic
+shows in-use in Windows.
+
+### Read
+Negotiation is proven working — this is the audio path, not signaling. `durationMs`
+counting does NOT prove RTP flowed. Two open hypotheses: (a) nothing flows (capture or
+network), (b) flows but silent/wrong device. The intermittent squeak suggests the
+playout path exists but misbehaves (or acoustic feedback: mic + speakers live, AEC
+unknown on webrtc-java defaults — measurement still owed per the phase doc).
+
+### Changed
+- `FlashCallSession`: one-shot `stats shape` log on the first sample per call —
+  report types + member keys + bytesIn/bytesOut + packets. Diagnoses both whether the
+  JVM report fields match Android's (badge stays hidden if not) and whether any bytes
+  move in either direction. Permanent, one line per call. Calling suites green both
+  targets.
+
+### Needed from the owner next run
+- The `stats shape` line from the desktop log (one per call).
+- Headphones on the laptop if available (kills the feedback variable for the squeak).
+- Whether the phone hears ANYTHING from the laptop (room noise counts).
+
+## 2026-09-15 — Stats dialect fixed + flow-change log (follow-up to shape dump)
+
+### Read of the owner's shape dump
+Two findings: (a) JVM report types are UPPER_SNAKE (`CANDIDATE_PAIR`, `OUTBOUND_RTP`)
+while `sampleStats` matches lowercase-hyphen (`candidate-pair`, `inbound-rtp`) — so the
+desktop never resolved RTT/jitter/kbps and the badge stayed empty on connected calls;
+member keys are camelCase on both. (b) `bytesIn=0 bytesOut=0`, no `INBOUND_RTP` section
+at t=0 — but a one-shot sample cannot say whether anything ever moves.
+
+### Changed
+- `FlashCallSession`: type matching normalized both dialects (`normStatType`); new
+  `stats flow` line logged only when byte counters move (bytesIn/bytesOut + mic-liveness
+  `audioLevel`), so the next run shows a time series instead of one point.
+
+### Verification
+- `:core:calling:jvmTest` + `:core:calling:testAndroidHostTest`: green.
+
+### Needed from the owner next run
+- Whether the desktop badge now shows RTT (proves the dialect fix; visible even with
+  zero RTP).
+- Any `stats flow` lines (proves direction: `bytesOut` moving = laptop sends;
+  `bytesIn` moving = laptop receives; `audioLevel` nonzero = mic delivers frames).
+- Headphones test for the squeak if available.
+## 2026-09-15 � Desktop one-way audio fixed (ERROR-056: recording never started + no AEC)
+
+### Read of the owner''s flow logs
+Two calls, both `bytesIn` climbing (~3.5 kB/sample, the phone sending 32 kbit/s Opus) with
+`bytesOut=0` and `audioLevel=0` throughout, plus the BT-headset follow-up ("buzzing in,
+nothing out � not hardware"). Direction proven: desktop receives, never sends, mic silent.
+
+### Root cause (three defects + one diagnostic bug, all in the desktop/JVM audio path)
+- The vendored fork''s `WebRtc.setAudioInputDevice` did stop?set?init with no
+`startRecording()` � webrtc-java''s ADM is app-driven (init AND start required per jrtc.dev;
+the fork''s own builder eagerly starts playout). Mic opened (Windows in-use lit), zero frames
+flowed, DTX sent zero RTP. Grep proved nothing ever called `startRecording()`.
+- Bare `audio(true)` constraints ? JVM `AudioOptions` all-false ? no AEC/NS/AGC (the speaker
+squeal). Same gap in group `acquireMedia`.
+- `setAudioOutputDevice` switch path left playout stopped (latent, same class).
+- `audioLevel` (W3C 0.0�1.0 double) truncated `.toInt()` � witness blind below full scale.
+
+### Changed
+- `third_party/.../jvmMain/.../WebRtc.kt`: start recording / restart playout + log selected
+device names (`[webrtc-jvm] recording/playing on ''�''`).
+- `third_party/.../jvmMain/.../LocalAudioStreamTrack.kt`: `onStop()` stops ADM capture (mic
+released on hangup via `MediaStream.release()`).
+- `FlashCallSession.startMedia` + `FlashGroupCallSession.acquireMedia`: explicit AEC/NS/AGC.
+- `sampleStats`: `audioLevel` kept Double. New `DesktopMediaDevicesTest` capture smoke.
+
+### Verification
+- JBR 21: `:core:calling:jvmTest` 61/61, `:core:calling:testAndroidHostTest` 72/72,
+`:desktop:jvmTest` full green (XML-confirmed) � BUILD SUCCESSFUL. New test prints
+`recording on ''Microphone Array (Realtek High Definition Audio)'', audio tracks: 1`.
+- NOT verified: live two-way voice (needs owner + phone). Nothing committed.
+
+### Needed from the owner next run (`:desktop:run`, call the phone, speak both ways)
+- `bytesOut` moving + `audioLevel` in (0,1] = capture proven, phone should hear the laptop.
+- `[webrtc-jvm]` device lines = which mic/speaker is actually used.
+- Whether the buzz persists with AEC on (if yes ? BT-HFP/stale-output-device, owned by the
+33c device picker; try Windows default output = speakers as a control).
+
+## 2026-09-15 � ERROR-056 follow-up: capture still dead after startRecording; GUID-match diagnostics added
+
+### Live result with the fix
+`[webrtc-jvm] recording on ''Microphone Array (Realtek�)''` prints, `media ready audio=1`,
+call connects, `bytesIn` climbs � but `bytesOut=0`, `audioLevel=0.0` all 16 s. JNI throws on
+init/start failure and nothing threw, so capture "runs" yet delivers zeros. Owner clue: buzz
+sometimes precedes the call (no RTP yet; desktop has no ringback � grep-verified).
+
+### Web research (owner-requested)
+- `JNI_AudioDeviceModuleBase::setRecordingDevice` (fetched source): GUID match with silent
+index-0 fallback, still present (Issue #33). Prime suspect: descriptor mismatch ? recording
+a dead device. Same fallback exists on playout.
+- jrtc.dev confirms init+start both app-driven (fix stands). DTX comfort-noise +
+sample-rate mismatch is a known idle-buzz cause; BT-HFP remains the playout suspect (33c picker).
+
+### Changed (diagnostics, one live run from the fix)
+- Fork logs per-select GUID `matchIndex` + full ADM device list, mic mute + mic volume.
+- `stats flow` gains `audioEnergy`/`audioDurationS` (no-frames vs silent-frames split).
+
+### Verification
+- `:core:calling:jvmTest` 61/61, `:core:calling:testAndroidHostTest` 72/72,
+`:desktop:jvmTest` green (XML-confirmed) � BUILD SUCCESSFUL. Nothing committed.
+
+### Next AI / owner
+One `:desktop:run` call; paste the `[webrtc-jvm] recording/playout select` lines + a `stats flow`
+line. `matchIndex=-1` ? apply the ADM-object fix; frozen duration ? ADM-state issue; growing
+duration + frozen energy ? wrong/muted device.
+
+## 2026-09-15 � ERROR-057: native WebRTC pinned to one JVM thread (WASAPI/COM audit + fix)
+
+### Worked on
+Owner-supplied diagnosis (symmetric buzz + dead mic = Windows WASAPI/COM thread-affinity
+failure, coroutine hopping). Audited every native-touching call path, pinned them all,
+wired native logging, answered tasks 3/5/6/7 from evidence.
+
+### Changed
+- New `callMediaDispatcher` expect/actual (JVM: `flash-call-media` daemon single thread;
+Android: `Dispatchers.Default`, unchanged behavior).
+- 1:1 + group sessions: all native work via `onMediaThread`; collectors/stats pinned;
+toggles optimistic + async native; `end()` sync-guard + async teardown; group
+`endSession`/`closeLeg` now suspend.
+- `DesktopMain`: webrtc-java native log at WARNING (pre-factory-init).
+- New `CallMediaDispatcherTest`: single-thread contract, executable.
+
+### Verification
+- `:core:calling:jvmTest` 62/62, host 72/72, `:desktop:jvmTest` 35/35 � BUILD SUCCESSFUL.
+Nothing committed. Live verdict owed (one `:desktop:run` call: bytesOut/audioLevel/energy
+first, then clarity, then native log lines).
+
+### Next AI
+If the live run is STILL zeros: GUID-match lines decide (ADM-object fix). If capture lives
+but buzz remains: output-device/HFP hunt (33c picker) with native log + INFO bump.
+
+## 2026-09-15 � ERROR-058: ROOT CAUSE � eager playout blocked transport registration; lifecycle fixed
+
+### Read of the owner''s native log
+`matchIndex=0` kills the fallback suspect. The real mechanism, source-verified:
+`AudioDeviceBuffer::RegisterAudioCallback` refuses while media is active, voice engine
+registers once at factory construction � and our builder started playout BEFORE constructing
+the factory. Null transport forever = "Invalid audio transport" every callback both ways +
+starved WASAPI (`nSamples(0) != _playBlockSize480` = the buzz) + frozen duration. Fixes 056
+(start) and 057 (pinning) were necessary but insufficient; this was the wall behind them.
+
+### Changed (fork lifecycle only)
+Builder init-without-start; per-call start (capture in setAudioInputDevice, render in
+getUserMedia); flag-guarded stops; both directions stopped on audio-track release.
+
+### Verification
+- Suites green (62+72+35, XML-confirmed), BUILD SUCCESSFUL. Nothing committed.
+- Owner, two checks: (1) grep `~/.flash/desktop.log` for "Failed to set audio transport
+since media was active" (predicts present in old runs); (2) one `:desktop:run` call � expect
+no "Invalid audio transport", duration climbing, bytesOut moving, voice both ways.
+
+## 2026-09-15 � ERROR-059: instance audit (singletons, no mismatch) + teardown serialization
+
+### Audit verdict (tasks 1-2)
+ONE `AudioDeviceModule()` site, ONE `PeerConnectionFactory` site, both singletons, zero
+product disposals, per-call acquire makes only tracks/PCs. No second pair exists to split �
+mismatch theory has nowhere to hide; live identity triple (ADM created / factory bound /
+select) will prove it in one run. Init race closed with a guard regardless.
+
+### Changed (task 4, no API break)
+`mediaLifecycleMutex` in both sessions + Locked-split teardown; init guard + identity logs
+in fork `WebRtc`.
+
+### Verification
+Suites green (62+72+35, XML-confirmed), BUILD SUCCESSFUL. Nothing committed. Task 6 live run
+(058 criteria + hash triple) still owed.
+
+## 2026-09-15 � ERROR-060: removed our own manual ADM starts (engine owns start/stop)
+
+### What changed and why
+Owner log: single ADM/factory (mismatch dead) + engine config failures caused by OUR
+"[webrtc-jvm] recording/playout started" lines. 056/058 starts deleted: setters do select +
+init only, no preview path exists to relocate, track hook reverted. Engine drives all media
+transitions from stream lifetime.
+
+### Verification
+Suites green (62+72+desktop), BUILD SUCCESSFUL. Nothing committed. Live criteria in ERROR-060.
+
+## 2026-09-15 � ERROR-060 follow-up: stop-first hygiene back (no start), double-acquire now a test
+
+### What happened
+First live run after removing manual starts: deterministic "Set recording device failed" in
+every call. Same-machine probe: acquire #1 OK, acquire #2 throws � initialized-side set
+fails; stop-first (present in 056/059, dropped in 060) was load-bearing hygiene. Restored
+stop WITHOUT start: engine registration still unblocked (nothing streams at acquire).
+
+### Changed
+- Fork `setAudioInputDevice`: stop ? set ? init. Temp probe deleted; double-acquire folded
+into `DesktopMediaDevicesTest` permanently (acquire 1+2 green).
+
+### Verification
+Full suites green (62+72+desktop), BUILD SUCCESSFUL. Nothing committed. Same live criteria.

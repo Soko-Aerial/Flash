@@ -599,3 +599,24 @@ and which must not be inserted ahead of 15/16 — D10 = A has unblocked the crit
 of Phase 13B is now done** (13B-2 `732e7b5`, 13B-3a `5e4e9a5`, 13B-3b `a3375e3`, 13B-3c `d51206b`,
 13B-3d `293f12b` all landed 2026-09-05; 13B-3e `fa95d74` on 2026-09-06), and the Phase 16 interop gate
 outranks calling. **Phase 15 is the next executable unit**, so this phase goes after 16 at the earliest.
+
+---
+
+## D13 — Desktop scale policy for the adaptive UI track (AD-D1)
+
+Added 2026-09-15. The owner answered the AD track's open scale-policy decision (§5 of
+[`ADAPTIVE-UI-PLAN.md`](ADAPTIVE-UI-PLAN.md)); this entry numbers and dates it so no later decision
+can collide with it. **Canonical answer: Option B.** Full record in
+`ADAPTIVE-UI-PLAN.md` §5.1 and `docs/decisions.md` ADR-037.
+
+**Option A — honour OS scale, fix only the metric set (pointer-sized targets/rows).**
+Cheapest, guaranteed-accessible, but leaves users on a 150%-scaled display with no way to shrink the
+app without touching their whole OS.
+
+**Option B — A plus a user "UI scale" control (CHOSEN 2026-09-15, D13, ADR-037).** A desktop-only
+UI-scale (0.75–1.5, default 1.00) applied as a density *multiplier* at the desktop window root, with
+`fontScale` never overridden. Owner's binding constraint: **Android's look is preserved, or improved —
+never degraded** (§2.2 rules 4 and 9 make that structural).
+
+**Option C — force `Density(1f)` (REJECTED).** Would make the app ignore the OS display scale and hurt
+exactly the users who raised the complaint.

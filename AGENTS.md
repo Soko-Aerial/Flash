@@ -488,6 +488,22 @@ Include:
 - Official documentation source.
 - Actual project implication.
 
+For **desktop / Compose Multiplatform** platform facts, record them in the plan or doc that depends on
+them together with the URL and the date checked — `docs/migration/ADAPTIVE-UI-PLAN.md` §1.7 is the
+worked example (including the rule that a source must be marked *verified*, *reported* or *community
+claim*).
+
+**Search helper (developer tool, not product code):**
+
+```bash
+python tools/tavily_search.py "<query>"
+python tools/tavily_search.py --domains=kotlinlang.org,developer.android.com "<query>"
+```
+
+Key resolution: `TAVILY_API_KEY`, `--key`, or the git-ignored `tools/.tavily_api_key`. Never commit the
+key, and never make product code depend on this tool. A search result is context, not evidence about
+this app — measure when the two can disagree.
+
 ---
 
 # 14. LAN Discovery Rules
@@ -894,7 +910,9 @@ This section must be updated by the AI as implementation progresses.
 
 ## Current Phase
 
-**Premium Chat UI — component sequence underway (UI-001/002/003/004/005/006/037 implemented; UI-011 or UI-007 research next).** LAN MVP networking continues in parallel. Authoritative live status: `logs/handoff.md` + `docs/ui/ui-research-index.md`.
+**Adaptive UI — phone → tablet → desktop (planning done 2026-09-15, phases AD-1…AD-8 NOT STARTED; decision AD-D1 = (B) answered).** Premium chat UI component sequence is largely implemented (UI-001–UI-050); LAN MVP networking continues in parallel. Authoritative live status: `logs/handoff.md` + `docs/ui/ui-research-index.md`; authoritative plan for sizing/resize/pane/layout work: `docs/migration/ADAPTIVE-UI-PLAN.md` (AD-D1's desktop-scale decision is recorded in its §5.1: OS scale baseline + a desktop-only UI-scale, Android's look preserved or improved).
+
+**Before any layout, sizing, density, resize or pane work, read `docs/migration/ADAPTIVE-UI-PLAN.md`.** It records three verified defects (the desktop conversation renders in the list pane; no desktop sizing policy exists, so everything looks phone-sized; Android has no adaptive layout) and sequences the fixes.
 
 ## Stable Features
 
@@ -910,11 +928,13 @@ This section must be updated by the AI as implementation progresses.
 
 - Android Studio project implementation.
 - LAN discovery MVP and persistent `LanSession`.
-- Premium chat UI component sequence (`docs/ui/`) — next: **UI-011 composer** or **UI-007 selection** research (docs NOT STARTED).
+- Premium chat UI component sequence (`docs/ui/`) — UI-001–UI-050 largely implemented; device verification and the UI-045 quality gate remain.
+- **Adaptive UI upgrade** (`docs/migration/ADAPTIVE-UI-PLAN.md`) — phases AD-1…AD-8 planned 2026-09-15, none executed. AD-1 (desktop scale/metrics), AD-2 (window & pane geometry), AD-3 (conversation in the detail pane) are the owner-visible ones.
 
 ## Not Yet Implemented
 
 - Custom composer, selection, context menu, reactions (UI-007–UI-013) per research-first plan.
+- **Adaptive layout execution** — desktop scale/metrics policy (AD-1), window & pane resize geometry (AD-2), conversation-in-detail-pane (AD-3), pointer/keyboard idioms (AD-4), wide-screen content measure (AD-5), Android tablet/foldable (AD-6), resize state continuity (AD-7), adaptive quality gate (AD-8). See `docs/migration/ADAPTIVE-UI-PLAN.md`.
 - Complete LAN transfer.
 - Wi‑Fi Direct transfer path.
 - Pairing.

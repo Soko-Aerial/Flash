@@ -1424,3 +1424,128 @@ are untouched (R8).
 ### Revisit when
 macOS/Linux desktop targets become real (new vault actuals), 09B-2 revisits the security-tier
 model (a hardware-backed desktop option may then exist), or a passphrase UX is productized.
+
+## ADR-036 — RealFlashChatRepository moves androidMain → commonMain for desktop chat
+
+### Date
+2026-09-15
+
+### Decision
+Move `RealFlashChatRepository` (+ its `PresenceHold` helper) from `:core:messaging`
+`androidMain` to `commonMain`, and run it on desktop over the slice-1 encrypted JVM
+database. Constructor is unchanged (all new seams defaulted); Android call sites were
+not touched.
+
+### Context
+Desktop chat showed an empty conversation because `DesktopEngine.chats` bound
+`EmptyFlashChatRepository`: the real repository was Room-backed `androidMain`, and the
+`FLASH_MSG` codec lived inline in the two Android hosts. Slices 1–3 removed the
+blockers one by one (JVM open seam, shared MIME table, shared text codec); this ADR
+records the move itself and the substitutions it required.
+
+### Substitutions (behavior-preserving by test)
+- `UUID.randomUUID()` → `:core:common` `UuidIdGenerator.newId()` (same canonical v4 form).
+- `System.currentTimeMillis()` → injected `FlashTimeSource` (default `SystemTimeSource`).
+- `ConcurrentHashMap`/`newKeySet()` → promoted `SyncMap`/`SyncSet` (new
+  `:core:common` `concurrent` types, `@FlashInternalApi`; `:core:calling`'s internal copy
+  deleted, its one consumer re-imported).
+- `SimpleDateFormat`/`Date` labels → `internal expect` time-format functions with
+  Android/JVM actuals (same patterns, same default locale).
+- `uppercase(Locale.getDefault())` → locale-independent `uppercase()` (also fixes the
+  Turkish-I hazard `Flash.kt` documents; initials only).
+- `transportPeerId` routing, drop-vs-fallthrough decode rules, receipt/read/react
+  semantics: untouched — proven by the unmodified 47-test Android suite.
+
+### Alternatives considered
+- **Duplicate the repository for desktop**: rejected — two copies of 2800 lines of chat
+  logic is how the pairing codecs drifted apart before.
+- **Move the 2600-line test suite to commonTest too**: deferred — `androidHostTest`
+  already runs on the JVM host and passes unmodified; moving it buys nothing for the
+  desktop and risks the live path.
+- **DPAPI/vault-wrapped chat DB key**: deferred — the chat key is a random file beside
+  the database (same trust model as the identity/trust stores); a vault seam can adopt
+  it later without changing the repository.
+
+### Desktop key note
+`<stateDir>/chat/db-key.bin` holds a random 64-hex-char passphrase, generated once.
+Losing it orphans the history by design (wrong-key reads fail loudly — never an empty
+chat list). No SQLCipher parity (D5 = C, recorded).
+
+### Revisit when
+A desktop key-vault UX exists (adopt `db-key.bin`), or Linux/macOS targets need new
+time-format actuals.
+
+## ADR-038 — No desktop counterpart to FlashWebRtcEngine (33a bring-up verdict)
+
+### Date
+2026-09-15
+
+### Decision
+Desktop calling wires `CallCoordinator` directly with no bring-up object. There is no
+desktop `FlashWebRtcEngine`, deliberately — not as deferred work.
+
+### Context
+`FlashWebRtcEngine.configureOnce` exists for two Android-only reasons: installing a
+low-latency `JavaAudioDeviceModule` before libwebrtc's lazy factory init, and probing
+OEM-HAL capture breakage (ERROR-032). webrtc-java has no such module class (its own ADM
+instead), and the HAL failure mode is an Android audio-stack bug. `DesktopMediaStackSmokeTest`
+constructs a working `PeerConnection` with zero configuration, which is the positive
+evidence that nothing is needed.
+
+### Revisit when
+Desktop capture misbehaves live — but suspect the `preferIPv4Stack` flag's effect on ICE
+first (it gates interface binding on this host), not a missing shim. If a desktop-only
+audio quirk ever needs one-time setup, that object is where it goes.
+
+## ADR-037 — Desktop scale policy (AD-D1): OS scale baseline + desktop-only UI scale, Android look preserved
+
+### Date
+2026-09-15
+
+### Decides
+D13 (`docs/migration/DECISIONS.md`); answers AD-D1 in `docs/migration/ADAPTIVE-UI-PLAN.md` §5.
+
+### Decision
+Implement option B. The desktop honours the OS display scale as its baseline **and** offers a
+**desktop-only** user UI-scale control (0.75–1.5, default **1.00**), applied as a density *multiplier*
+at the desktop window root. **`fontScale` is never overridden.** Option C (force `Density(1f)`) is
+rejected. Android's look is preserved by default; any Android-facing change must be a listed,
+owner-approved improvement.
+
+### Context
+`ADAPTIVE-UI-PLAN.md` §1 audit: the desktop window opens at a hard-coded 1200×800 dp with no minimum
+size or persistence (`DesktopMain.kt`), no `LocalDensity` provider anywhere in `desktop/src`, `app/src`
+or `ui/`, and only phone-shaped metrics (`FlashDimensions`: 48dp touch targets, 72dp chat rows, 320dp
+bubble cap). The official Compose Multiplatform window-management guide (checked 2026-09-15,
+plan §1.7) documents no density/DPI control, so the cause of "everything looks big" is to be established
+by measurement (AD-1 sub-step 1), not assumed. Meanwhile the chat list/conversation two-pane is wired
+backwards (`DesktopShell.kt` `listPaneContent` / `detailPaneContent`) and Android has no adaptive layout
+at all — those are separate defects (AD-3, AD-6), not consequences of this decision.
+
+### Structural enforcement (not a promise)
+- One shared metric type (`FlashMetrics`, `:ui:theme` `commonMain`); its default is the touch set, pinned
+  field-by-field to today's `FlashDimensions` values by a regression test.
+- The density multiplier, the UI-scale setting, the pointer metric set and the window geometry are wired
+  **only** at `:desktop`'s window root — unreachable from `commonMain` and `:app` (plan §2.2 rule 9).
+- Any desktop fix that would move an Android pixel must be listed in the phase's "Android-affecting
+  changes" section and approved, or it is a defect (plan §2.2 rule 4).
+
+### Alternatives considered
+- **(A) metric set only, no UI-scale**: rejected as the full answer — correct and accessible but gives a
+  150%-scaled display no relief; it is only the fallback if AD-1's probe shows `density` is already 1.0
+  on the owner's machine (recorded in AD-1's log entry, not here).
+- **(C) force `Density(1f)`**: rejected — defeats OS low-vision scaling and recouples the app to every
+  OS change.
+- **Platform-detection seam (`expect`/`actual`)**: rejected — the host already knows which host it is,
+  so detection adds R6 risk for nothing.
+- **Second desktop typography scale**: out of scope — AD-D1 scales density only; smaller desktop type is
+  a future decision with its own record, never a side effect (plan AD-5 Do-NOT).
+
+### Consequences
+AD-5's content measure and AD-2's pane math inherit the multiplier for free (both are host-dp geometry).
+AD-6 (Android tablet) must **not** consume the UI-scale switch. UI-045's evidence set gains the
+Android-before/after screenshot pair and the metric-pin test output as mandatory items.
+
+### Revisit when
+A desktop type scale is wanted independently of density, an encrypted cross-platform settings ABI
+(09B-3) makes the UI-scale a shared preference, or OS-scaling behaviour changes on Compose Desktop.

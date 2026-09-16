@@ -1,6 +1,6 @@
 # Current Handoff
 
-## 2026-09-16 - PRs #13-#17 merged code-only (dev @ 55e5e4b); nothing left to merge locally
+## 2026-09-16 - Parking resolution IN PROGRESS (was: PRs #13-#17 merged; now landing the 28-file stash)
 
 ### Current branch
 `dev` at `55e5e4b`. Five single-parent code commits on top of `e9afca0` (#12):
@@ -18,13 +18,287 @@ None new. GitHub PRs #6-#17 still OPEN remotely (local merges don't close them).
 and physical-device gates unchanged from 2026-09-12.
 
 ### Recommended next task
-Owner call on GitHub-side PR disposition (#6-#17), then the owed device gates. Do NOT merge
-`parking/pre-pr-merge-20260915` without its own review (28 files, incl. a deleted repository).
+Parking resolution (this session): messaging KMP migration + calling ADM rework + desktop
+persistence + the two holder call-site conflicts (done: codec dispatch kept, transportPeerId now
+passed for all five direct families so PR #11's guards stay live). Still to do here: WebRtc.kt
+official-order rework, calling-session review, log merge, verify, commit, push.
 
 ### Files most relevant to next task
-- `logs/progress.md` 2026-09-16 entry (per-PR deltas + the two merge fixes)
-- `ui/platform-shims/.../FlashMediaDecoderSecurityTest.kt` (memoize=false harness note)
-- `core/security/.../pairing/PairingSessionStateMachine.kt` (fail-closed guards)
+- `logs/progress.md` 2026-09-16 entries (PR merges + this parking resolution)
+- `third_party/.../jvmMain/.../WebRtc.kt` (stale ERROR-060 approach — must be reworked, see progress)
+- `core/messaging/.../commonMain/.../RealFlashChatRepository.kt` (#11 guards ported from androidMain)
+
+## 2026-09-15 — ERROR-060 follow-up: stop-first hygiene restored, double-acquire is a test
+
+### Current branch
+`dev` at `256b80f` + the uncommitted working tree + this pass. **Nothing committed.**
+
+### What changed and why
+Removing ALL ADM stops broke the 2nd+ acquire per process ("Set recording device failed",
+probe-proven: #1 OK, #2 throws). Stop-first is load-bearing hygiene on an initialized side;
+restored WITHOUT any start (engine registration unaffected — nothing streams at acquire).
+Temp probe deleted; double-acquire is now permanent in `DesktopMediaDevicesTest`.
+
+### Last verified build
+JBR 21: `:core:calling:jvmTest` 62/62, host 72/72, `:desktop:jvmTest` green (double-acquire
+1+1 tracks) — BUILD SUCCESSFUL.
+
+### Recommended next task
+Owner live run per ERROR-060 criteria (all five error lines gone, bytesOut > 0, non-zero
+audioLevel, voice both ways, mic indicator clearing). Paste `stats flow` + `[webrtc-jvm]` +
+native audio lines.
+
+### Current branch
+`dev` at `256b80f` + the uncommitted working tree + this pass. **Nothing committed.**
+
+### What changed and why
+Owner log proved single ADM/factory AND that our own start lines caused the engine''s
+registration failures. Deleted: `ensurePlayoutStarted`, `stopCallAudio`, started-flags,
+track-stop hook. Setters now select + init only. No preview/meter path exists.
+
+### Last verified build
+JBR 21: `:core:calling:jvmTest` 62/62, host 72/72, `:desktop:jvmTest` green — BUILD SUCCESSFUL.
+
+### Recommended next task
+Owner live run per ERROR-060 criteria: all five error lines gone, bytesOut > 0, non-zero
+audioLevel, voice both ways, mic indicator clearing on hangup. Paste `stats flow` +
+`[webrtc-jvm]` + native audio lines.
+
+### Files most relevant to next task
+- `logs/errors.md` ERROR-060 (criteria) + ERROR-058 (mechanism)
+
+### Current branch
+`dev` at `256b80f` + the uncommitted working tree + this pass. **Nothing committed.**
+
+### Verdict
+No instance mismatch can occur: one ADM site, one factory site, zero disposals, per-call
+acquire makes only tracks/PCs. Init race closed; identity triple logs it live.
+`mediaLifecycleMutex` guarantees teardown-before-acquire with `end()` signature unchanged.
+
+### Last verified build
+JBR 21: `:core:calling:jvmTest` 62/62, host 72/72, `:desktop:jvmTest` 35/35 — BUILD SUCCESSFUL.
+
+### Recommended next task
+Owner live run: (1) single `ADM created` + `factory bound` + matching `adm=@` (kills mismatch
+theory), (2) no "Invalid audio transport", (3) bytesOut > 0 + non-zero audioLevel, (4) voice
+both ways. Paste first `stats flow` + `[webrtc-jvm]` lines.
+
+### Files most relevant to next task
+- `logs/errors.md` ERROR-058 (root cause) + ERROR-059 (audit)
+
+### Current branch
+`dev` at `256b80f` + the uncommitted working tree + this pass (fork lifecycle fix, logs).
+**Nothing was committed, reverted or stashed.**
+
+### The causal chain (source-verified)
+Fork builder started playout BEFORE `PeerConnectionFactory(ADM)`; libwebrtc refuses audio-
+transport registration while media is active (once, never retried) → null transport forever →
+"Invalid audio transport" every callback both ways, frozen `audioDurationS`, `bytesOut=0`,
+starved WASAPI buzz. Fix: builder init-only; per-call start; both stopped on track release.
+
+### Last verified build
+JBR 21: `:core:calling:jvmTest` 62/62, host 72/72, `:desktop:jvmTest` 35/35 — BUILD SUCCESSFUL.
+
+### Recommended next task
+Owner, two checks: (1) grep `~/.flash/desktop.log` for "Failed to set audio transport since
+media was active" (should be in OLD runs — confirms the mechanism); (2) one `:desktop:run`
+call — expect no "Invalid audio transport", duration climbing, `bytesOut` moving, voice both
+ways. Report the first `stats flow` + any native audio lines.
+
+### Files most relevant to next task
+- `third_party/.../jvmMain/.../WebRtc.kt`
+- `logs/errors.md` ERROR-058
+
+### Current branch
+`dev` at `256b80f` + the uncommitted working tree + this pass (pinning, logging, tests, logs).
+**Nothing was committed, reverted or stashed.**
+
+### What changed and why
+Owner diagnosis: symmetric buzz + dead mic = WASAPI/COM thread-affinity failure from
+coroutine hopping. Audit confirmed native calls ran on UI thread + random IO-pool threads +
+a separate stats thread. Fix: `callMediaDispatcher` (JVM single daemon thread, Android
+unchanged) + `onMediaThread` around every native touch in both sessions + pinned launches +
+async-safe toggles/teardown + native log at WARNING in `DesktopMain`.
+
+### Last verified build
+JBR 21: `:core:calling:jvmTest` 62/62 (incl. new single-thread contract test),
+`:core:calling:testAndroidHostTest` 72/72, `:desktop:jvmTest` 35/35 — BUILD SUCCESSFUL.
+
+### Recommended next task
+Owner: one `:desktop:run` call. Report order: (1) `bytesOut`/`audioLevel`/energy (capture
+alive?), (2) voice clarity (buzz gone?), (3) any native WASAPI/COM lines, (4) GUID-match
+lines. If still zeros → ADM-object fix; if buzz remains → output/HFP hunt (33c).
+
+### Files most relevant to next task
+- `core/calling/.../CallThreading*.kt`
+- `core/calling/.../FlashCallSession.kt`, `FlashGroupCallSession.kt`
+- `logs/errors.md` ERROR-057 (task-by-task record)
+
+### Current branch
+`dev` at `256b80f` + the uncommitted working tree + this pass's diagnostics and logs.
+**Nothing was committed, reverted or stashed.**
+
+### What the live run proved
+Fix deployed (`recording on 'Microphone Array (Realtek…)'`), call connects, `bytesIn`
+climbs — but `bytesOut=0`, `audioLevel=0.0` for 16 s. No JNI exception, so capture "runs"
+yet delivers zeros. Native source fetched: `setRecordingDevice` silently falls back to
+index 0 on GUID mismatch — prime suspect (wrong/dead device). Buzz-before-call noted;
+desktop has no ringback (grep-verified), BT-HFP still the playout suspect (33c picker).
+
+### Last change (diagnostics only)
+- Fork logs GUID `matchIndex` + full ADM device list + mic mute/volume per select.
+- `stats flow` gains `audioEnergy`/`audioDurationS` (no-frames vs silent-frames split).
+- `logs/errors.md` ERROR-056 follow-up, `logs/progress.md` entry, this file.
+
+### Last verified build
+JBR 21: `:core:calling:jvmTest` 61/61, `:core:calling:testAndroidHostTest` 72/72,
+`:desktop:jvmTest` green (XML-confirmed) — BUILD SUCCESSFUL.
+
+### Recommended next task
+Owner: one `:desktop:run` call; paste the `[webrtc-jvm] recording/playout select` lines +
+one `stats flow` line. `matchIndex=-1` → pass the ADM list's own `AudioDevice` object;
+frozen duration → ADM-state issue; growing duration + frozen energy → wrong/muted device.
+
+### Files most relevant to next task
+- `third_party/webrtc-kmp/webrtc-kmp/src/jvmMain/.../WebRtc.kt` (`logDeviceMatch`)
+- `core/calling/src/commonMain/.../FlashCallSession.kt` (`stats flow`)
+- `logs/errors.md` ERROR-056 follow-up
+
+## 2026-09-15 — Desktop one-way audio fixed in code (ERROR-056), live two-way gate owed
+
+> **Superseded same day by the follow-up below: startRecording landed but capture is still
+> dead live (`bytesOut=0`, `audioLevel=0.0`); GUID-match + energy diagnostics added, one live
+> run away from the fix. The build/test record in this section still stands.**
+
+### Current branch
+`dev` at `256b80f` + the pre-existing uncommitted working tree + this pass's calling/fork
+fixes and logs. **Nothing was committed, reverted or stashed.**
+
+### Current phase
+Phase 33a desktop voice calls — signaling was already proven live; the audio path is now
+fixed in code and unit-verified, awaiting the owner's live `:desktop:run` vs phone.
+
+### Last change
+- `third_party/.../jvmMain/.../WebRtc.kt`: start ADM recording on input select, restart
+playout on output switch, log selected device names.
+- `third_party/.../jvmMain/.../LocalAudioStreamTrack.kt`: stop ADM capture on track stop
+(mic released on hangup).
+- `FlashCallSession.startMedia` + `FlashGroupCallSession.acquireMedia`: explicit AEC/NS/AGC.
+- `sampleStats`: `audioLevel` kept as Double (was truncated to Int).
+- `DesktopMediaDevicesTest`: new capture-start/release smoke test.
+- `logs/errors.md` ERROR-056, `logs/progress.md` entry (this file updated).
+
+### Last verified build
+JBR 21 + AF_UNIX workaround: `:core:calling:jvmTest` 61/61, `:core:calling:testAndroidHostTest`
+72/72, `:desktop:jvmTest` full suite green (XML-confirmed, 0 failures) — BUILD SUCCESSFUL.
+New test: `recording on 'Microphone Array (Realtek High Definition Audio)', audio tracks: 1`.
+
+### Known blockers
+- Live two-way voice gate owed (owner + phone). If the inbound buzz persists with AEC on,
+it points at BT-HFP/stale output device → 33c device picker owns the full fix.
+- Unchanged: Phase 16 hardware interop gate, two-phone calling gate, PTT device gate, A2 billing lock.
+
+### Recommended next task
+Owner: `:desktop:run`, call the phone, speak both ways; report `bytesOut`/`audioLevel`,
+`[webrtc-jvm]` device lines, and whether the buzz persists.
+
+### Files most relevant to next task
+- `third_party/webrtc-kmp/webrtc-kmp/src/jvmMain/.../WebRtc.kt`
+- `core/calling/src/commonMain/.../FlashCallSession.kt` (`startMedia`, `sampleStats`)
+- `logs/errors.md` ERROR-056 (what to watch for in the live log)
+
+## 2026-09-15 — Adaptive UI plan exists; the desktop sizing/pane defects are now named and sequenced (planning pass, no code)
+
+### Current branch
+`dev` at `256b80f` + the pre-existing uncommitted working tree (messaging/platform-shim migration files,
+`logs/progress.md`) + this docs-only pass. **Nothing was committed, reverted or stashed**, and no
+unrelated working-tree file was touched.
+
+### Current phase
+Adaptive UI (phone → tablet → desktop). New authority:
+[`docs/migration/ADAPTIVE-UI-PLAN.md`](../docs/migration/ADAPTIVE-UI-PLAN.md) — phases **AD-1…AD-8**, all
+NOT STARTED. This is the owner's 2026-09-15 request: desktop "looks big", chat list should be left with
+the conversation right, plus resize optimization.
+
+### Also in this pass
+- **AD-D1 answered by the owner = (B)** (desktop scale policy): OS display scale stays the baseline, a
+  **desktop-only** user UI-scale (0.75–1.5, default 1.00) is applied as a density multiplier at
+  `:desktop`'s window root, `fontScale` is never overridden, and force-`Density(1f)` is rejected.
+  Binding constraint added by the owner: **Android's look is preserved, or improved — never degraded.**
+  The plan now enforces that structurally (shared `FlashMetrics.touch()` defaults pinned to today's
+  `FlashDimensions`; density/multiplier/pointer metrics/window geometry host-scoped to `:desktop`).
+  Full record: `docs/migration/ADAPTIVE-UI-PLAN.md` **§5.1**; status table now marks **AD-1 and AD-2
+  READY** (AD-2 turned out to be independent of AD-1).
+- **Owed (DONE 2026-09-15):** mirrored AD-D1 as **D13** in `DECISIONS.md` (appended at the end; no existing
+  text touched) and as **ADR-037** in `docs/decisions.md` (appended at the end, after the other pass's
+  ADR-036/Phase-2 material; verified neither number was taken there first — D12/ADR-034 came from the
+  calling-stack row and were never recorded as entries, so D13/ADR-037 slot in cleanly). The plan's §5.1
+  stays the authoritative record; the README's read-first table now counts D1–D13 and the plan's §5/table
+  entries were updated so nothing still claims D13 is free.
+- `tools/tavily_search.py` (+ git-ignored `tools/.tavily_api_key`) — dev-only web-search helper so
+  AGENTS §13 platform checks can be done from a shell; `AGENTS.md` §13 now documents it. **Nothing in
+  the product depends on it.**
+- The plan's §1.7 records the platform facts checked with it, each with URL + status
+  (*verified* / *reported* / *community claim*): the official desktop window docs document no
+  density/DPI control; the experimental v2 window API provides `minSize`/`maxSize`; legacy
+  `window.minimumSize` is AWT **pixels** with a reported Windows-11-at-200% scaling problem; and
+  `WindowSizeClass` is reportedly absent from CMP common (supports the zero-dependency default for
+  AD-D4).
+
+### Working-tree warning for the next agent
+**Do not commit, revert or "fix" on this session's behalf.** Another pass is concurrently landing
+desktop chat persistence in the same tree (`desktop/build.gradle.kts` + `:core:persistence`,
+`DesktopEngine.kt` +~170 lines, `DesktopShell.kt` repository keyed on `ready`, `docs/decisions.md`).
+This planning pass touched **only** docs + `tools/` + `AGENTS.md`, and re-derived its `DesktopShell.kt`
+line citations around those changes (symbols are named alongside every line number because they drift).
+
+### Last change (docs only)
+- New `docs/migration/ADAPTIVE-UI-PLAN.md`: verified audit + 8 phases + gates + the decisions needed
+  (AD-D1…AD-D5 → to be recorded as D13+).
+- `docs/migration/README.md`: plan registered as read-first item 4 + a dedicated "Adaptive UI track"
+  section (no renumbering of phases 00–33).
+- `docs/ui/responsive-layout.md`: UI-034 status corrected to **PARTIAL**, with a 2026-09-15 addendum.
+- `docs/ui/ui-research-index.md`: responsive/adaptive row corrected to PARTIAL + pointer to the plan.
+- `logs/progress.md`: 2026-09-15 entry.
+
+### The three defects the plan was written against (all verified, with file:line in the plan)
+1. **Conversation renders in the list pane.** `DesktopShell.kt:304` builds `listPaneContent` and the
+   `FlashDestination.Conversation -> FlashConversationScreen(...)` branch is at `:327`, all inside that
+   lambda (verified again 2026-09-15), so at ≥840dp the conversation occupies the 0.38-weighted left
+   column (≈319dp at 840dp) while the detail pane (`detailPaneContent`, `:518`) shows a placeholder.
+   `DesktopTwoPane` is called at `:571`.
+2. **No desktop sizing policy.** No `LocalDensity` provider anywhere in `desktop/src`, `app/src`, `ui/`;
+   only phone metrics (`FlashDimensions`: 48dp targets, 72dp chat rows, 320dp bubble cap); window is a
+   hard-coded `1200.dp × 800.dp` with no minimum and no persistence (`DesktopMain.kt:47–51`).
+3. **Android has no adaptive layout.** `FlashAdaptiveMath` is read only by `:desktop` and its tests;
+   `MainActivity.kt` (2,026 lines) is single-pane (Conversation `:972`, ChatList `:1432`, BottomNav `:1535`).
+
+### Last verified build
+None in this session (documentation-only). The last verified build is unchanged from 2026-09-12 — see the
+section below; nothing in this pass can affect it.
+
+### Known blockers
+- AD-D2…AD-D5 still open (recommendations stand; AD-D3's recommendation is in play for AD-2).
+- **AD-4 needs PHASE-28** executed (it owns the pointer-idiom seam).
+- **AD-6 prefers PHASE-27**, which is itself blocked on a human A/B/C pick.
+- Unchanged real blockers from earlier sessions: the Phase 16 hardware interop gate, the physical
+  two-phone calling gate, the PTT device gate, and the A2 GitHub Actions billing lock.
+
+### Recommended next task
+Either (a) **AD-2** — window & pane resize geometry — which needs no decision and adds tested pane math to
+`FlashAdaptiveMath`, a `DesktopPaneSplitter`, min window size and persisted geometry; or (b) run
+**AD-1**'s measurement sub-step first (100/125/150% Windows scale) so the "everything looks big"
+claim is quantified before any metric changes. Per "dont implement yet" neither is authorised to start
+except on a fresh owner request. **AD-3** (chat list left / conversation right) is the fix
+the owner asked for by name and depends only on AD-2's geometry.
+
+### Files most relevant to next task
+- `docs/migration/ADAPTIVE-UI-PLAN.md` — read §1 (audit), §3 (AD-1…AD-8), §5 (decisions)
+- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/adaptive/FlashAdaptiveLayouts.kt` (+ its test)
+- `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopAdaptive.kt` / `DesktopShell.kt` /
+  `DesktopMain.kt` / `DesktopSideBar.kt`
+- `ui/theme/src/commonMain/kotlin/com/transfer/flash/ui/theme/FlashDimensions.kt`
+- `docs/ui/responsive-layout.md` (UI-034) — now PARTIAL with the 2026-09-15 addendum
 
 ## 2026-09-12 - A3/A1 fixed, full local suite run; third stale-harness failure (ERROR-053) found + fixed
 

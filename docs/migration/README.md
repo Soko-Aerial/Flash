@@ -9,7 +9,8 @@ That file is now a short charter. **All executable work lives here.**
 |---|---|---|
 | 1 | [CONVENTIONS.md](CONVENTIONS.md) | Rules every executing agent MUST follow. Non-negotiable. |
 | 2 | [AUDIT.md](AUDIT.md) | Verified ground truth about the repo. Supersedes any claim in the old plan. |
-| 3 | [DECISIONS.md](DECISIONS.md) | Decisions D1–**D11**. **All eleven are answered** — D1–D9 on 2026-08-31, then **D10 = Option A** and the new **D11 = Option B** on 2026-09-05, together with an explicit **R8 authorisation** for 13B-3's `ChunkFrame` rewrite (byte-identical output required). Ignore any older framing about D1 gating Phase 06 or D10 being `_pending_`. **No phase is blocked on a decision any more**; what remains blocked is blocked on a predecessor phase. Two narrower human inputs are still open and are *not* decisions: D5=C's three implementation sub-answers (09B-2) and the settings-tier ABI option (09B-3). |
+| 3 | [DECISIONS.md](DECISIONS.md) | Decisions D1–**D13**. **All thirteen through D13 are answered** — D1–D9 on 2026-08-31, **D10 = Option A** and the new **D11 = Option B** on 2026-09-05, D12 = the Phase 25 calling-stack execution shape (ADR-034, 2026-09-13), and **D13 = the AD-track desktop scale policy** (AD-D1 = Option B, ADR-037, 2026-09-15) — together with an explicit **R8 authorisation** for 13B-3's `ChunkFrame` rewrite (byte-identical output required). Ignore any older framing about D1 gating Phase 06 or D10 being `_pending_`. **No phase is blocked on a decision any more**; what remains blocked is blocked on a predecessor phase. Two narrower human inputs are still open and are *not* decisions: D5=C's three implementation sub-answers (09B-2) and the settings-tier ABI option (09B-3). |
+| 4 | [ADAPTIVE-UI-PLAN.md](ADAPTIVE-UI-PLAN.md) | **Adaptive UI track — phone → tablet → desktop** (phases AD-1…AD-8, largely separate from phases 00–33). Read before any sizing, density, resize, pane or layout work. Its own §2.3 table is the status authority for AD phases; the AD-track decision log starts at **D13** (answered: desktop scale policy, ADR-037). |
 
 ## Phases
 
@@ -181,6 +182,23 @@ test files in `commonTest`, and no `androidMain`, `jvmMain` or platform-specific
 That is Phase 19's doing — the seven shims it extracted were the only reason the module ever touched
 `android.*`.
 
+## Adaptive UI track (AD phases) — separate from 00–33
+
+[`ADAPTIVE-UI-PLAN.md`](ADAPTIVE-UI-PLAN.md) plans the *adaptive layout* work the owner asked for on
+2026-09-15: desktop sizing/density (AD-1), window & pane resize geometry (AD-2), chat-list-left /
+conversation-right routing (AD-3), pointer & keyboard idioms (AD-4), wide-screen content measure (AD-5),
+Android tablet & foldable (AD-6), state continuity across breakpoints (AD-7), and the whole-system
+verification gate AD-8.
+
+- These phases **do not renumber, replace or reorder** phases 00–33, and they are not rows in the
+  table above. Their status authority is the plan's own §2.3 table (all NOT STARTED as of 2026-09-15).
+- AD-1, AD-2, AD-3, AD-5, AD-7 need **no** phase from the table above and can execute now.
+- **AD-4 waits on Phase 28** (that phase authors the pointer-idiom seam AD-4 extends). Do not write a
+  second pointer seam.
+- **AD-6 prefers Phase 27's shared shell**; an Android-local route is allowed but must be recorded.
+- New decision numbers for this track start at **D13** — which is now taken by this track's own
+  desktop-scale decision (D13 = AD-D1 = Option B, ADR-037, 2026-09-15). The next AD-track decision is
+  **D14**; **re-verify the tail of `DECISIONS.md` before claiming it**, since concurrent passes edit that file.
 **Every unblocked phase in this plan is complete, and as of 2026-09-05 the plan is no longer
 decision-blocked at all.** D10 = Option A and D11 = Option B were answered, and the R8 exception for
 13B-3's `ChunkFrame` rewrite was granted with byte-identical output as the hard acceptance criterion —

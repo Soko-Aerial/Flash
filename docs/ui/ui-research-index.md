@@ -30,7 +30,7 @@ Per-component docs use [`component-doc-template.md`](component-doc-template.md).
 | UI-037 | Motion design system | [motion-system.md](motion-system.md) | IMPLEMENTED | UI-001 |
 | UI-002 | Custom icon system | [icon-system.md](icon-system.md) | IMPLEMENTED | UI-001 |
 | — | Cross-cutting accessibility | [accessibility.md](accessibility.md) | NOT STARTED | UI-001, UI-037 |
-| — | Responsive / adaptive layout | [responsive-layout.md](responsive-layout.md) | NOT STARTED | UI-001 |
+| — | Responsive / adaptive layout | [responsive-layout.md](responsive-layout.md) | PARTIAL — math IMPLEMENTED/VERIFIED; two-pane arrangement + desktop sizing IN PROGRESS under [`../migration/ADAPTIVE-UI-PLAN.md`](../migration/ADAPTIVE-UI-PLAN.md) (AD-1…AD-8) | UI-001 |
 | — | UI performance gates | [performance.md](performance.md) | NOT STARTED | — |
 
 ---
