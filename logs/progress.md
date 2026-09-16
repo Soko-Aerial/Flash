@@ -1,5 +1,19 @@
 # Progress Log
 
+## 2026-09-16 - ERROR-062 fixed in code: desktop probe-skip + chat offer + auto-download parity
+
+### Worked on
+Owner live run (voice OK; image/video to desktop stalled). New desktop offer line proved all
+three offers arrive over WS fallback with RESUME+ACKs flowing — the stall was the probe
+gauntlet: up to 20×4s per channel open, sequential, against a desktop that runs no data
+server, restarted by every re-offer. Fixed: DESKTOP-kind peers (caps) skip probes to WS
+fallback + 10-min negative cache; desktop mints the chat offer bubble; desktop auto-accepts
+trusted audio/image (video/file still need consent). Full story in ERROR-062 follow-up.
+
+### Verification
+`:desktop:jvmTest` + `:app:compileDebugKotlin` green. Live re-test owed (image should start
+in seconds; video offers in chat, streams on accept).
+
 ## 2026-09-16 - Parking resolved: messaging KMP migration + calling audio rework + desktop landed
 
 ### Worked on

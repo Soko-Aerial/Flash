@@ -4636,3 +4636,34 @@ File transfer phone → desktop (bulk path). Voice call owner-verified working s
 
 ### Status
 OPEN
+
+
+### Follow-up 2026-09-16 — root cause + fix (probe gauntlet vs a peer with no server)
+
+Owner re-ran with the offer line: all three offers (mp4 + jpg + jpg-retry) ARRIVE over WS
+fallback, desktop→phone RESUME + ACKs flow (`action=resume`, 110/98/87-byte ACKs consumed
+by the sender dispatcher) — so signaling, fallback transport and the accept path all work.
+What "fails"/"takes a long time" is throughput-to-start: every `factory.open` walks up to
+20 offsets × 4s *per channel, sequentially*, against a desktop that listens on none of
+them (no JVM `DataChannelServer` by design). Minutes of timeouts precede (and interleave)
+streaming; each re-offer (new tid, e.g. the jpg retry) restarts the gauntlet AND needs a
+fresh desktop accept.
+
+Fix (commit `26bc863`, all verified green, pushed):
+- Phone `streamChannelFactory`: skip probes entirely for `deviceKind == DESKTOP`
+  (discovery caps; straight to WS fallback with a log line), plus a 10-min negative cache
+  after any full-sweep failure (retries/re-offers skip too; a later success clears it).
+  PHONE/UNKNOWN peers probe exactly as before.
+- Desktop `SessionStarted`: mints the chat offer bubble (`onInboundAttachment`, parity
+  with the app host) so accept-in-chat works.
+- Desktop auto-download parity: trusted peer + audio/image MIME auto-accepts (same
+  defaults as the app); video/file still park for consent. MIME via shared
+  `FlashMimeTypes`; TODO wires it to `DesktopSettingsStore` when it gains rows.
+
+Verification: `:desktop:jvmTest` + `:app:compileDebugKotlin` green (dialer/calling suites
+unaffected). Live re-test owed: phone→desktop image should start within seconds (one
+"peer is DESKTOP … WS fallback" line, no probe storm) and auto-accept; video should offer
+in chat + Transfers tab and stream on accept.
+
+### Status
+FIXED-in-code (live re-test owed)
