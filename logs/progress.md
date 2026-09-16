@@ -1,5 +1,23 @@
 # Progress Log
 
+## 2026-09-16 — Desktop video calling: VP8-only SDP enforcement (NullVideoDecoder fix) & Skia RGBA color mapping (blue hue fix) (ERROR-066)
+
+### Worked on
+1. **Phone video black on Desktop (`NullVideoDecoder` failure)**:
+   - Root cause: `webrtc-java` on Desktop advertises receiver support for AV1, VP9, and H264 in its SDP capabilities, but only statically links the libvpx VP8 decoder. It lacks Cisco's `openh264.dll` and `dav1d.dll`. When `CallSdp.stripH264` previously stripped only H264, Android and Desktop negotiated AV1 or VP9. At stream startup, Desktop WebRTC fell back to `NullVideoDecoder` (`The NullVideoDecoder doesn't support decoding`), rendering incoming video black.
+   - Fix: Implemented `CallSdp.enforceVp8Only(sdp: String): String`. In the `m=video` section, strips all non-VP8 payload types (H264, VP9, AV1, and their respective RTX), keeping exclusively VP8 (`a=rtpmap:<pt> VP8/90000`) and its associated RTX. Applied across `FlashCallSession.kt` and `FlashGroupCallSession.kt` on both local generation and remote intake.
+2. **Desktop video blue hue (inverted red/blue color channels)**:
+   - Root cause: In `FlashCallVideoSurface.jvm.kt`, `VideoBufferConverter.convertFromI420(buffer, bytes, FourCC.BGRA)` was paired with Skia's `ColorType.BGRA_8888`. Libyuv's `I420ToBGRA` writes memory in byte order `[R, G, B, A]`. Skia's `ColorType.BGRA_8888` on Windows treats byte 0 as Blue and byte 2 as Red, swapping Red and Blue (causing reddish skin tones to render as blue/cyan).
+   - Fix: Switched Skia's image specification to `ColorType.RGBA_8888` (`ImageInfo(width, height, ColorType.RGBA_8888, ColorAlphaType.PREMUL)`). Verified via Compose `toPixelMap()` that `bytes[0] = 255 (Red)` renders as pure Red (`red=1.0, blue=0.0`).
+3. **Smoke & Loopback Testing**:
+   - Extended `DesktopMediaStackSmokeTest.kt` with a live loopback test connecting two peer connections locally via `getUserMedia`, negotiating SDP with `enforceVp8Only`, and streaming real 640x480 video frames into `VideoTrackSink.onVideoFrame`. Verified real frames decode continuously via VP8.
+
+### Verification
+- `:ui:callui:jvmTest` passed (including `verifyRgbaColorChannelMapping`).
+- `:core:calling:jvmTest` passed (including `CallSdpTest.enforceVp8Only_*` and `DesktopMediaStackSmokeTest` real VP8 loopback decode).
+- `:desktop:compileKotlinJvm` passed cleanly.
+- Did NOT run `:desktop:run` or install debug APK per user constraint.
+
 ## 2026-09-16 — Desktop video calling: pure Compose rendering, H264 codec fix, ringing state, and resolution/latency telemetry (ERROR-065)
 
 ### Worked on

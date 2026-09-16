@@ -486,10 +486,10 @@ class CallSdpTest {
     }
 
     @Test
-    fun stripH264_removesH264AndItsRtxFromVideoSection() {
+    fun enforceVp8Only_removesAllNonVp8CodecsFromVideoSection() {
         val input = sdp(
             "v=0",
-            "m=video 9 UDP/TLS/RTP/SAVPF 96 97 98 99 100",
+            "m=video 9 UDP/TLS/RTP/SAVPF 96 97 98 99 100 101",
             "a=rtpmap:96 VP8/90000",
             "a=rtcp-fb:96 nack pli",
             "a=rtpmap:97 rtx/90000",
@@ -498,33 +498,37 @@ class CallSdpTest {
             "a=fmtp:98 level-asymmetry-allowed=1;packetization-mode=1",
             "a=rtpmap:99 rtx/90000",
             "a=fmtp:99 apt=98",
-            "a=rtpmap:100 ulpfec/90000",
+            "a=rtpmap:100 VP9/90000",
+            "a=rtpmap:101 AV1/90000",
         )
-        val stripped = CallSdp.stripH264(input)
+        val stripped = CallSdp.enforceVp8Only(input)
 
         val videoLines = section(stripped, "video")
-        assertEquals("m=video 9 UDP/TLS/RTP/SAVPF 96 97 100", videoLines.first())
+        assertEquals("m=video 9 UDP/TLS/RTP/SAVPF 96 97", videoLines.first())
         assertFalse(stripped.contains("H264"))
+        assertFalse(stripped.contains("VP9"))
+        assertFalse(stripped.contains("AV1"))
         assertFalse(stripped.contains("a=rtpmap:98"))
         assertFalse(stripped.contains("a=fmtp:98"))
         assertFalse(stripped.contains("a=rtpmap:99"))
         assertFalse(stripped.contains("a=fmtp:99"))
+        assertFalse(stripped.contains("a=rtpmap:100"))
+        assertFalse(stripped.contains("a=rtpmap:101"))
         assertTrue(stripped.contains("a=rtpmap:96 VP8/90000"))
         assertTrue(stripped.contains("a=rtpmap:97 rtx/90000"))
         assertTrue(stripped.contains("a=fmtp:97 apt=96"))
-        assertTrue(stripped.contains("a=rtpmap:100 ulpfec/90000"))
     }
 
     @Test
-    fun stripH264_leavesSdpWithoutH264Unchanged() {
-        val sdpWithoutH264 = sdp(
+    fun enforceVp8Only_leavesSdpWithVp8OnlyUnchanged() {
+        val sdpWithVp8Only = sdp(
             "v=0",
             "m=video 9 UDP/TLS/RTP/SAVPF 96 97",
             "a=rtpmap:96 VP8/90000",
             "a=rtpmap:97 rtx/90000",
             "a=fmtp:97 apt=96",
         )
-        assertEquals(sdpWithoutH264, CallSdp.stripH264(sdpWithoutH264))
-        assertEquals("", CallSdp.stripH264(""))
+        assertEquals(sdpWithVp8Only, CallSdp.enforceVp8Only(sdpWithVp8Only))
+        assertEquals("", CallSdp.enforceVp8Only(""))
     }
 }

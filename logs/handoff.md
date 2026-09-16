@@ -1,6 +1,6 @@
 # Current Handoff
 
-## 2026-09-16 — Desktop video calling: pure Compose rendering, H264 codec fix, ringing state, and telemetry (ERROR-065)
+## 2026-09-16 — Desktop video calling: VP8-only SDP enforcement (NullVideoDecoder fix) & Skia RGBA color mapping (blue hue fix) (ERROR-066)
 
 ### Current branch
 `dev`. Working tree clean except untracked `session-ses_*.md`.
@@ -14,12 +14,12 @@
   desktop chat accept, and file completion.
 
 ### Ready for live verification
-- **Desktop 1:1 Video Calls (Phase 33c & ERROR-065)**:
-  - Video call button enabled in desktop conversation header (`showVideoCallAction = true`).
-  - Ringing state fixed: `FlashCallIdentityBlock` shows caller avatar, name, and Answer/Decline buttons; no white blank screen.
-  - Video rendering replaced with pure Compose Skia `ImageBitmap` (no heavyweight AWT `SwingPanel`), allowing Call Controls (Hangup, Mute, Camera) and PiP rounded corners to render properly on top.
-  - Codec negotiation: `CallSdp.stripH264` strips H264 to eliminate Windows `NullVideoDecoder` failure and force VP8, allowing phone video to decode and display full-screen on Desktop.
-  - Telemetry: `FlashCallStatsBadge` displays latency (ms with status dot), received + sent video resolution (e.g. `720p (↑720p) · 30fps`), bitrate, and packet loss like on mobile.
+- **Desktop 1:1 Video Calls (Phase 33c, ERROR-065 & ERROR-066)**:
+  - **Phone video decode fixed (`NullVideoDecoder` eliminated)**: `CallSdp.enforceVp8Only` forces VP8 as the exclusive video codec in local & remote SDPs, stripping non-VP8 codecs (H264, VP9, AV1) whose native decoders are missing on Desktop. Desktop and Android negotiate VP8, allowing incoming phone video to decode and render without error.
+  - **Blue hue eliminated**: `FlashCallVideoSurface.jvm.kt` now specifies `ColorType.RGBA_8888` to match the byte layout output by `VideoBufferConverter.convertFromI420(..., FourCC.BGRA)`. Inverted red/blue channels are restored so face skin tones display with their natural colors.
+  - **Ringing state fixed**: `FlashCallIdentityBlock` shows caller avatar, name, and Answer/Decline buttons; no white blank screen.
+  - **Video rendering in pure Compose**: Skia `ImageBitmap` eliminates heavyweight AWT `SwingPanel` occlusion, allowing Call Controls (Hangup, Mute, Camera) and PiP rounded corners to render smoothly on top.
+  - **Telemetry**: `FlashCallStatsBadge` displays latency (ms with status dot), received + sent video resolution (e.g. `720p (↑720p) · 30fps`), bitrate, and packet loss like on mobile.
 - **Desktop receiver progress & speed telemetry**: `DesktopEngine.kt` now calls `updateIncomingProgress`
   on every `ReceiveEvent.AckBatchReady` (and seeds it on `acceptOffer`); `RealFlashTransferRepository`
   now maintains a `RollingRateMeter` per incoming transfer, calculating live `speedBytesPerSec` and `etaSeconds`

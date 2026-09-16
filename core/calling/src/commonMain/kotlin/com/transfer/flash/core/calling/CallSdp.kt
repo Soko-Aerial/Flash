@@ -73,30 +73,35 @@ internal object CallSdp {
         rewrite(sdp, mode, force = false)
 
     /**
-     * Strips H264 and its associated retransmission (RTX) payload types from the video section.
+     * Enforces VP8 as the exclusive video codec in the SDP description.
      *
-     * WebRTC on Windows/Desktop (webrtc-java) ships without Cisco's openh264.dll and fails with
-     * `NullVideoDecoder` when attempting to decode incoming H264 streams from Android phones.
-     * Stripping H264 ensures both sides negotiate VP8 (which is statically bundled in both Android
-     * and Desktop WebRTC builds).
+     * WebRTC on Windows/Desktop (`webrtc-java` 0.17.0) statically bundles the VP8 encoder/decoder
+     * (LibvpxVp8Decoder), but advertises AV1, VP9, and H264 in receiver capabilities without bundling
+     * their required native dynamic libraries (e.g. Cisco openh264.dll or dav1d.dll). When negotiating
+     * with an Android phone offering AV1, VP9, or H264, WebRTC on Desktop falls back to
+     * `NullVideoDecoder` ("Can't initialize NullVideoDecoder. The NullVideoDecoder doesn't support decoding."),
+     * rendering incoming phone video completely black.
+     *
+     * Filtering the video section to VP8 (and its RTX retransmission payload type) guarantees that
+     * both Desktop and Android negotiate VP8, which succeeds across all supported platforms.
      */
-    fun stripH264(sdp: String): String {
+    fun enforceVp8Only(sdp: String): String {
         if (sdp.isBlank()) return sdp
         val eol = if (sdp.contains("\r\n")) "\r\n" else "\n"
         val lines = sdp.split(eol)
 
-        // Find H264 payload types: a=rtpmap:<pt> H264/...
-        val h264Pts = lines.filter { it.startsWith(RTPMAP_PREFIX) }
+        // Find VP8 payload types: a=rtpmap:<pt> VP8/...
+        val vp8Pts = lines.filter { it.startsWith(RTPMAP_PREFIX) }
             .mapNotNull { line ->
                 val body = line.removePrefix(RTPMAP_PREFIX)
                 val pt = body.substringBefore(' ', "")
                 val codec = body.substringAfter(' ', "").substringBefore('/').uppercase()
-                if (codec == "H264" && pt.isNotEmpty() && pt.all(Char::isDigit)) pt else null
+                if (codec == "VP8" && pt.isNotEmpty() && pt.all(Char::isDigit)) pt else null
             }.toSet()
 
-        if (h264Pts.isEmpty()) return sdp
+        if (vp8Pts.isEmpty()) return sdp
 
-        // Find RTX payload types associated with H264: a=fmtp:<pt> apt=<h264Pt>
+        // Find RTX payload types associated with VP8: a=fmtp:<pt> apt=<vp8Pt>
         val rtxPts = lines.filter { it.startsWith(FMTP_PREFIX) }
             .mapNotNull { line ->
                 val body = line.removePrefix(FMTP_PREFIX)
@@ -105,13 +110,15 @@ internal object CallSdp {
                 val apt = params.split(';')
                     .firstOrNull { it.trim().startsWith("apt=") }
                     ?.substringAfter("apt=")?.trim()
-                if (apt in h264Pts && pt.isNotEmpty() && pt.all(Char::isDigit)) pt else null
+                if (apt in vp8Pts && pt.isNotEmpty() && pt.all(Char::isDigit)) pt else null
             }.toSet()
 
-        val dropPts = h264Pts + rtxPts
+        val allowedPts = vp8Pts + rtxPts
 
         val out = ArrayList<String>(lines.size)
         var inVideo = false
+        var dropPts = emptySet<String>()
+
         for (line in lines) {
             if (line.startsWith("m=")) {
                 inVideo = line.startsWith("m=video ")
@@ -119,22 +126,32 @@ internal object CallSdp {
             if (inVideo && line.startsWith("m=video ")) {
                 val parts = line.split(' ')
                 val header = parts.take(3)
-                val pts = parts.drop(3).filter { it !in dropPts }
-                out += (header + pts).joinToString(" ")
+                val allPts = parts.drop(3)
+                val retainedPts = allPts.filter { it in allowedPts }
+                dropPts = (allPts.toSet() - allowedPts)
+                out += (header + (if (retainedPts.isNotEmpty()) retainedPts else allPts)).joinToString(" ")
                 continue
             }
             if (inVideo) {
-                val isDropAttribute = dropPts.any { pt ->
-                    line.startsWith("a=rtpmap:$pt ") ||
-                        line.startsWith("a=fmtp:$pt ") ||
-                        line.startsWith("a=rtcp-fb:$pt ")
+                val pt = if (line.startsWith(RTPMAP_PREFIX)) {
+                    line.removePrefix(RTPMAP_PREFIX).substringBefore(' ')
+                } else if (line.startsWith(FMTP_PREFIX)) {
+                    line.removePrefix(FMTP_PREFIX).substringBefore(' ')
+                } else if (line.startsWith("a=rtcp-fb:")) {
+                    line.removePrefix("a=rtcp-fb:").substringBefore(' ')
+                } else null
+
+                if (pt != null && pt in dropPts) {
+                    continue
                 }
-                if (isDropAttribute) continue
             }
             out += line
         }
         return out.joinToString(eol)
     }
+
+    /** Compatibility alias for [enforceVp8Only]. */
+    fun stripH264(sdp: String): String = enforceVp8Only(sdp)
 
     private fun opusParams(voice: FlashVoiceProfile): List<Param> = listOf(
         // The shortest frame we are willing to RECEIVE. Same value as our own ptime: a peer sending

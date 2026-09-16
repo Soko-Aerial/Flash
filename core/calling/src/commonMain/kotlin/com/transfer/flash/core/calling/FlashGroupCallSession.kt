@@ -1010,7 +1010,7 @@ public class FlashGroupCallSession(
         pc: PeerConnection,
         desc: SessionDescription,
     ): SessionDescription {
-        val sdpWithCodecs = CallSdp.stripH264(desc.sdp)
+        val sdpWithCodecs = CallSdp.enforceVp8Only(desc.sdp)
         val tunedSdp = runCatching { CallSdp.tuneLocal(sdpWithCodecs, performanceMode()) }.getOrNull()
         if (tunedSdp != null && tunedSdp != desc.sdp) {
             val tuned = SessionDescription(desc.type, tunedSdp)
@@ -1035,7 +1035,7 @@ public class FlashGroupCallSession(
         type: SessionDescriptionType,
         sdp: String,
     ) {
-        val sdpWithCodecs = CallSdp.stripH264(sdp)
+        val sdpWithCodecs = CallSdp.enforceVp8Only(sdp)
         val tuned = runCatching { CallSdp.tuneRemote(sdpWithCodecs, performanceMode()) }.getOrNull()
         if (tuned != null && tuned != sdp) {
             try {

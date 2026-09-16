@@ -12,6 +12,7 @@ import com.shepeliev.webrtckmp.RtcpMuxPolicy
 import com.shepeliev.webrtckmp.SessionDescription
 import com.shepeliev.webrtckmp.SessionDescriptionType
 import com.shepeliev.webrtckmp.onIceCandidate
+import com.shepeliev.webrtckmp.onTrack
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -132,6 +133,79 @@ class DesktopMediaStackSmokeTest {
             pc.setLocalDescription(SessionDescription(SessionDescriptionType.Offer, strippedSdp))
         } finally {
             pc.close()
+        }
+    }
+
+    @Test
+    fun inspectCapabilities() {
+        val factory = dev.onvoid.webrtc.PeerConnectionFactory()
+        try {
+            val recvCaps = factory.getRtpReceiverCapabilities(dev.onvoid.webrtc.media.MediaType.VIDEO)
+            println("Receiver video codecs:")
+            recvCaps.codecs.forEach { println("  name=${it.name} mime=${it.mimeType} fmtp=${it.sdpFmtp}") }
+            val sendCaps = factory.getRtpSenderCapabilities(dev.onvoid.webrtc.media.MediaType.VIDEO)
+            println("Sender video codecs:")
+            sendCaps.codecs.forEach { println("  name=${it.name} mime=${it.mimeType} fmtp=${it.sdpFmtp}") }
+        } finally {
+            factory.dispose()
+        }
+    }
+
+    @Test
+    fun `two peer connections can stream video locally and decode frames`() = runBlocking {
+        val pc1 = PeerConnection(RtcConfiguration(bundlePolicy = BundlePolicy.MaxBundle, iceServers = emptyList(), rtcpMuxPolicy = RtcpMuxPolicy.Require))
+        val pc2 = PeerConnection(RtcConfiguration(bundlePolicy = BundlePolicy.MaxBundle, iceServers = emptyList(), rtcpMuxPolicy = RtcpMuxPolicy.Require))
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        try {
+            scope.launch { pc1.onIceCandidate.collect { runCatching { pc2.addIceCandidate(it) } } }
+            scope.launch { pc2.onIceCandidate.collect { runCatching { pc1.addIceCandidate(it) } } }
+
+            val stream = MediaDevices.getUserMedia {
+                video { width(640); height(480) }
+            }
+            stream.tracks.forEach { pc1.addTrack(it, stream) }
+
+            var remoteFrameReceived = false
+            scope.launch {
+                pc2.onTrack.collect { event ->
+                    val track = event.track
+                    println("PC2 received track kind=${track?.kind} track=$track")
+                    if (track is com.shepeliev.webrtckmp.VideoStreamTrack) {
+                        track.addSink(object : dev.onvoid.webrtc.media.video.VideoTrackSink {
+                            override fun onVideoFrame(frame: dev.onvoid.webrtc.media.video.VideoFrame) {
+                                println("PC2 DECODED VIDEO FRAME: ${frame.buffer?.width}x${frame.buffer?.height}")
+                                remoteFrameReceived = true
+                            }
+                        })
+                    }
+                }
+            }
+
+            val offer = pc1.createOffer(OfferAnswerOptions(offerToReceiveVideo = true))
+            println("Offer video line: " + offer.sdp.lines().firstOrNull { it.startsWith("m=video") })
+            val strippedOffer = CallSdp.enforceVp8Only(offer.sdp)
+            println("Stripped offer video line: " + strippedOffer.lines().firstOrNull { it.startsWith("m=video") })
+
+            pc1.setLocalDescription(SessionDescription(SessionDescriptionType.Offer, strippedOffer))
+            pc2.setRemoteDescription(SessionDescription(SessionDescriptionType.Offer, strippedOffer))
+
+            val answer = pc2.createAnswer(OfferAnswerOptions(offerToReceiveVideo = true))
+            println("Answer video line: " + answer.sdp.lines().firstOrNull { it.startsWith("m=video") })
+            val strippedAnswer = CallSdp.enforceVp8Only(answer.sdp)
+
+            pc2.setLocalDescription(SessionDescription(SessionDescriptionType.Answer, strippedAnswer))
+            pc1.setRemoteDescription(SessionDescription(SessionDescriptionType.Answer, strippedAnswer))
+
+            withTimeout(15_000) {
+                while (!remoteFrameReceived) {
+                    delay(200)
+                }
+            }
+            assertTrue("remote frame must be received and decoded", remoteFrameReceived)
+        } finally {
+            pc1.close()
+            pc2.close()
+            scope.cancel()
         }
     }
 }
