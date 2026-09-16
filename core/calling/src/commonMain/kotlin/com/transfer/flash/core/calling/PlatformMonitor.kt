@@ -41,38 +41,3 @@ internal class SyncList<T> {
 
     fun clear() = monitor.withLock { backing.clear() }
 }
-
-/**
- * A lock-guarded [MutableMap] — the commonMain stand-in for `ConcurrentHashMap` where the
- * group-call mesh stores its legs.
- *
- * Semantic deltas from CHM, deliberate and documented:
- * - [getOrPut] computes [missing] while HOLDING the lock (CHM computes outside it): leg
- *   creation is serialized instead of racing. Correctness is unchanged — `PlatformMonitor`
- *   is reentrant, so a [missing] that re-enters this map cannot deadlock — and the group
- *   mesh never creates legs concurrently in practice (inbound frames arrive serialized
- *   per session).
- * - [keysSnapshot] returns a snapshot where CHM's `keys` is weakly consistent: every
- *   existing call site either already called `.toList()` or is stronger under a snapshot.
- */
-internal class SyncMap<K : Any, V : Any> {
-    private val monitor = PlatformMonitor()
-    private val backing = HashMap<K, V>()
-
-    operator fun get(key: K): V? = monitor.withLock { backing[key] }
-
-    operator fun set(key: K, value: V) {
-        monitor.withLock { backing[key] = value }
-    }
-
-    fun getOrPut(key: K, missing: () -> V): V = monitor.withLock { backing.getOrPut(key, missing) }
-
-    fun remove(key: K): V? = monitor.withLock { backing.remove(key) }
-
-    fun keysSnapshot(): List<K> = monitor.withLock { backing.keys.toList() }
-
-    /** Snapshot of the values — see [keysSnapshot]. */
-    fun valuesSnapshot(): List<V> = monitor.withLock { backing.values.toList() }
-
-    fun clear() = monitor.withLock { backing.clear() }
-}

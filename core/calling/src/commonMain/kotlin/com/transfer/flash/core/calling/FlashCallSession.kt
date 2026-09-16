@@ -37,7 +37,6 @@ import kotlin.math.roundToInt
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineDispatcher
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -46,6 +45,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 /**
  * One 1:1 WebRTC call session (C7, ADR-025).
  *
@@ -236,6 +236,27 @@ public class FlashCallSession(
     private val signalMutex = Mutex()
 
     /**
+     * Serializes media acquisition against native teardown: the next call's [startMedia] cannot
+     * enter while the previous call's [releaseMedia] is still inside `close()`/track-stop, and
+     * vice versa. Both already run on the single media thread (ordering), but a suspend point
+     * inside either could otherwise interleave them on that thread (atomicity) — and cross-thread
+     * end()/acquire pairs (UI hangup vs inbound-answer acquire) have no dispatcher ordering at
+     * all. Non-reentrant by construction: holders never call a locking entry point (see
+     * [releaseMediaLocked]).
+     */
+    private val mediaLifecycleMutex = Mutex()
+
+    /**
+     * Confines [block] to [callMediaDispatcher]: every native WebRTC touch in this session
+     * goes through here. Hosts call into the session from UI threads, IO-pool collectors and
+     * timer jobs; without this each of those would drive WASAPI/COM from a different OS
+     * thread (silent buzz + dead capture on Windows). Nesting is safe — `withContext` on
+     * the media thread from the media thread suspends and re-queues.
+     */
+    private suspend fun <T> onMediaThread(block: suspend CoroutineScope.() -> T): T =
+        withContext(callMediaDispatcher, block)
+
+    /**
      * Signaling frames that arrived before the [PeerConnection] existed. Replayed in
      * order once media is up — never dropped: a dropped offer is an unrecoverable call
      * that hangs in CONNECTING, which is exactly the failure this session is designed
@@ -254,17 +275,11 @@ public class FlashCallSession(
     private var statsJob: Job? = null
 
     /**
-     * Dedicated single thread for the `getStats()` sampler (call-latency work): one pass walks
-     * every report the native stack holds, and running that walk on the host's shared
-     * `Dispatchers.Default` pool meant it both stole quanta from transfer/crypto/Room work on
-     * 4-core hardware and was itself preempted by them — jittering the very numbers it samples
-     * (bitrate/loss denominators) and the governor tick riding them. A parked sampler costs one
-     * sleeping thread and nothing else; it is created on first arm and closed in [releaseMedia],
-     * so a finished call holds no thread. Daemon, so a missed teardown can never pin the process.
-     *
-     * This is the first production thread pool in the tree (the rest is coroutines-only) — kept
-     * to exactly one thread for exactly one job, rather than adding a dispatcher dependency to
-     * a hot path, for that reason.
+     * Override point for the `getStats()` sampler's dispatcher (tests). Defaults to
+     * [callMediaDispatcher] at arming: the sampler's `getStats()` is a native call and belongs
+     * on the pinned media thread, and sharing that thread keeps the sampler off the host's
+     * transfer/crypto/Room pools (the S2e rationale, now satisfied without a second thread).
+     * Nulled in [releaseMedia]; a finished call holds no thread.
      */
     private var statsDispatcher: CoroutineDispatcher? = null
 
@@ -281,6 +296,16 @@ public class FlashCallSession(
     private var lastStatsAtUs: Long = 0L
     private var lastBytesReceived: Long = 0L
     private var lastBytesSent: Long = 0L
+    /** Previous mic witnesses (see sampleStats): split "no frames" from "silent frames". */
+    private var lastAudioEnergy: Long = 0L
+    private var lastAudioDurationS: Double = 0.0
+    /**
+     * One-shot report-shape dump, reset per arming. webrtc-java's report field names are
+     * assumed (not verified) identical to Android's libwebrtc — if the desktop badge stays
+     * empty while calls connect, this line says whether the fields exist at all and whether
+     * any bytes are moving in either direction.
+     */
+    private var loggedReportShape: Boolean = false
 
     /**
      * Previous packet counters, and the loss fraction over the LAST interval only.
@@ -370,27 +395,44 @@ public class FlashCallSession(
         end(FlashCallEndReason.NORMAL, notifyPeer = false)
     }
 
-    /** Toggle local mic mute. Returns the new muted state; no-op (returns current) without media. */
+    /**
+     * Toggle local mic mute. Returns the new muted state; no-op (returns current) without media.
+     *
+     * The UI state flips synchronously so the button never lies; the native `enabled` flip hops
+     * to the media thread (this is called straight from UI callbacks). A teardown racing the hop
+     * finds no track and the runCatching drops it — mute-after-hangup is meaningless anyway.
+     */
     public fun toggleMute(): Boolean {
-        val track = localAudioStreamTrack ?: return _state.value.micMuted
-        track.enabled = !track.enabled
-        val muted = !track.enabled
+        val muted = !_state.value.micMuted
         _state.value = _state.value.copy(micMuted = muted)
+        val track = localAudioStreamTrack
+        if (track != null) {
+            scope.launch(callMediaDispatcher) {
+                runCatching { track.enabled = !muted }
+            }
+        }
         return muted
     }
 
-    /** Toggle local camera on/off (video calls). Returns the new off state. */
+    /**
+     * Toggle local camera on/off (video calls). Same optimistic-state + pinned-native shape
+     * as [toggleMute].
+     */
     public fun toggleCamera(): Boolean {
-        val track = _localVideoStreamTrack.value ?: return _state.value.cameraOff
-        track.enabled = !track.enabled
-        val off = !track.enabled
+        val off = !_state.value.cameraOff
         _state.value = _state.value.copy(cameraOff = off)
+        val track = _localVideoStreamTrack.value
+        if (track != null) {
+            scope.launch(callMediaDispatcher) {
+                runCatching { track.enabled = !off }
+            }
+        }
         return off
     }
 
     /** Switch front/back camera (video calls). No-op without a video track. */
     public suspend fun switchCamera() {
-        _localVideoStreamTrack.value?.switchCamera()
+        onMediaThread { _localVideoStreamTrack.value?.switchCamera() }
     }
 
     /** Speakerphone toggle state (audio routing is host-owned; ADR-025). */
@@ -489,7 +531,9 @@ public class FlashCallSession(
             return
         }
         // Caller is the offerer (glare-free: only the caller offers — ADR-025).
+        // Pinned: createOffer + setLocalDescription are native.
         val pc = peerConnection ?: return
+        onMediaThread {
         try {
             val offer = pc.createOffer(
                 OfferAnswerOptions(offerToReceiveAudio = true, offerToReceiveVideo = video),
@@ -510,6 +554,7 @@ public class FlashCallSession(
             FlashLog.e("CALL", "onAccept SDP flow failed: ${e.message}", e)
             end(FlashCallEndReason.ERROR, notifyPeer = true)
         }
+        }
     }
 
     private suspend fun onOffer(frame: CallWireFrame.Offer) {
@@ -522,6 +567,8 @@ public class FlashCallSession(
             )
             return
         }
+        // Pinned: setRemote/createAnswer/setLocal are native.
+        onMediaThread {
         try {
             setRemoteDescriptionTuned(pc, SessionDescriptionType.Offer, frame.sdp)
             flushPendingIce()
@@ -542,6 +589,7 @@ public class FlashCallSession(
             FlashLog.e("CALL", "onOffer SDP flow failed: ${e.message}", e)
             end(FlashCallEndReason.ERROR, notifyPeer = true)
         }
+        }
     }
 
     private suspend fun onAnswer(frame: CallWireFrame.Answer) {
@@ -553,6 +601,8 @@ public class FlashCallSession(
             )
             return
         }
+        // Pinned: setRemoteDescription is native.
+        onMediaThread {
         try {
             setRemoteDescriptionTuned(pc, SessionDescriptionType.Answer, frame.sdp)
             flushPendingIce()
@@ -561,6 +611,7 @@ public class FlashCallSession(
         } catch (e: Exception) {
             FlashLog.e("CALL", "onAnswer SDP flow failed: ${e.message}", e)
             end(FlashCallEndReason.ERROR, notifyPeer = true)
+        }
         }
     }
 
@@ -669,11 +720,15 @@ public class FlashCallSession(
             candidate = frame.candidate,
         )
         iceMutex.withLock {
+            // Pinned: addIceCandidate is native (candidates may also arrive from the UI
+            // thread via onInboundFrame — the pin, not the caller, decides the thread).
+            onMediaThread {
             if (pc.remoteDescription != null) {
                 pc.addIceCandidate(candidate)
             } else {
                 // Remote description not applied yet — buffer (webrtc-kmp sample pattern).
                 pendingIce.add(candidate)
+            }
             }
         }
     }
@@ -681,8 +736,10 @@ public class FlashCallSession(
     private suspend fun flushPendingIce() {
         val pc = peerConnection ?: return
         iceMutex.withLock {
+            onMediaThread {
             while (pendingIce.isNotEmpty()) {
                 pc.addIceCandidate(pendingIce.removeAt(0))
+            }
             }
         }
     }
@@ -715,14 +772,28 @@ public class FlashCallSession(
     private suspend fun startMedia(): Boolean {
         if (peerConnection != null) return true
         val videoProfile = performanceMode().video
-        return try {
+        // Pinned: factory init, ADM device select, PeerConnection(), addTrack and the sender
+        // tuning all touch native audio from here. Lifecycle-locked against teardown (see
+        // mediaLifecycleMutex): the ended-path unwind uses the Locked variant (no re-lock).
+        return onMediaThread {
+            mediaLifecycleMutex.withLock {
+            try {
             FlashLog.i(
                 "CALL",
                 "startMedia video=$video tier=${performanceMode().key} " +
                     "capture=${videoProfile.label} call=$callId",
             )
             val stream = MediaDevices.getUserMedia {
-                audio(true)
+                audio {
+                    // Voice-call processing, stated explicitly: bare audio(true) leaves all
+                    // three null, and the JVM backend maps null to false — the desktop then
+                    // runs with no echo cancellation (open speakers howl), no noise
+                    // suppression and no gain control. On Android the same trues land as
+                    // goog* mandatory+optional constraints.
+                    echoCancellation(true)
+                    noiseSuppression(true)
+                    autoGainControl(true)
+                }
                 if (video) {
                     video {
                         width(videoProfile.captureWidth)
@@ -769,29 +840,31 @@ public class FlashCallSession(
                 // during these ~130 ms of native init. end()'s teardown ran before this
                 // connection existed — release it here or the mic stays hot forever.
                 FlashLog.i("CALL", "media became ready after the call ended — releasing")
-                releaseMedia()
-                return false
+                releaseMediaLocked()
+                return@onMediaThread false
             }
             FlashLog.i(
                 "CALL",
                 "media ready audio=${stream.audioTracks.size} video=${stream.videoTracks.size}",
             )
             true
-        } catch (e: CameraPermissionException) {
-            FlashLog.e("CALL", "startMedia: CAMERA permission not granted", e)
-            false
-        } catch (e: RecordAudioPermissionException) {
-            FlashLog.e("CALL", "startMedia: RECORD_AUDIO permission not granted", e)
-            false
-        } catch (e: CancellationException) {
-            throw e
-        } catch (t: Throwable) {
-            // Throwable, not Exception: the first PeerConnectionFactory touch loads
-            // libjingle_peerconnection_so, so a device with a missing/mismatched ABI
-            // fails with UnsatisfiedLinkError/NoClassDefFoundError. A call that cannot
-            // start media must end cleanly, not take the process down.
-            FlashLog.e("CALL", "startMedia failed: ${t.message}", t)
-            false
+            } catch (e: CameraPermissionException) {
+                FlashLog.e("CALL", "startMedia: CAMERA permission not granted", e)
+                false
+            } catch (e: RecordAudioPermissionException) {
+                FlashLog.e("CALL", "startMedia: RECORD_AUDIO permission not granted", e)
+                false
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                // Throwable, not Exception: the first PeerConnectionFactory touch loads
+                // libjingle_peerconnection_so, so a device with a missing/mismatched ABI
+                // fails with UnsatisfiedLinkError/NoClassDefFoundError. A call that cannot
+                // start media must end cleanly, not take the process down.
+                FlashLog.e("CALL", "startMedia failed: ${t.message}", t)
+                false
+            }
+            }
         }
     }
 
@@ -918,7 +991,9 @@ public class FlashCallSession(
     }
 
     private fun observeEvents(pc: PeerConnection) {
-        eventJobs.add(scope.launch {
+        // Collectors ride the media thread: the flows only emit, but pinning the
+        // collection keeps every continuation touching call state on one thread.
+        eventJobs.add(scope.launch(callMediaDispatcher) {
             pc.onTrack.collect { event ->
                 // The event's own track, not a snapshot of event.streams — see the
                 // [remoteVideoStreamTrack] doc for why the stream wrapper is unreliable here.
@@ -933,7 +1008,7 @@ public class FlashCallSession(
                 }
             }
         })
-        eventJobs.add(scope.launch {
+        eventJobs.add(scope.launch(callMediaDispatcher) {
             pc.onConnectionStateChange.collect { cs ->
                 FlashLog.i("CALL", "peer connection state=$cs call=$callId")
                 when (cs) {
@@ -970,7 +1045,7 @@ public class FlashCallSession(
                 }
             }
         })
-        eventJobs.add(scope.launch {
+        eventJobs.add(scope.launch(callMediaDispatcher) {
             pc.onIceCandidate.collect { candidate ->
                 sendFrame(
                     CallWireFrame.IceCandidate(
@@ -1063,6 +1138,8 @@ public class FlashCallSession(
      */
     private suspend fun attemptIceRestart(pc: PeerConnection): Boolean = signalMutex.withLock {
         if (ended) return@withLock false
+        // Pinned: createOffer + setLocalDescription are native.
+        onMediaThread {
         try {
             val offer = pc.createOffer(
                 OfferAnswerOptions(
@@ -1083,6 +1160,7 @@ public class FlashCallSession(
             FlashLog.w("CALL", "ICE restart offer failed: ${t.message}")
             false
         }
+        }
     }
 
     // ------------------------------------------------------------------ metrics
@@ -1102,15 +1180,18 @@ public class FlashCallSession(
         lastStatsAtUs = 0L
         lastBytesReceived = 0L
         lastBytesSent = 0L
+        lastAudioEnergy = 0L
+        lastAudioDurationS = 0.0
         lastPacketsLost = 0L
         lastPacketsReceived = 0L
         lastIntervalLoss = null
+        loggedReportShape = false
         val intervalMs = performanceMode().transport.callStatsIntervalMs
-        // S2e: was a dedicated single-thread executor (JVM-only API). A limited view of the
-        // shared IO pool keeps the same serialization and off-the-main-loop guarantee; there
-        // is no dedicated OS thread to close, so teardown just drops the reference.
+        // S2e: was a dedicated single-thread executor (JVM-only API). The sampler now rides
+        // the shared media thread ([callMediaDispatcher] — single on JVM, pool on Android),
+        // which also puts getStats() on the pinned thread where WASAPI/COM wants it.
         val sampler = statsDispatcher
-            ?: Dispatchers.IO.limitedParallelism(1).also { statsDispatcher = it }
+            ?: callMediaDispatcher.also { statsDispatcher = it }
         statsJob = scope.launch(sampler) {
             while (!ended) {
                 val sample = try {
@@ -1192,6 +1273,17 @@ public class FlashCallSession(
     }
 
     /**
+     * Stats type-dialect normalizer (measured 2026-09-15, desktop live run).
+     *
+     * Android's libwebrtc reports W3C-style lowercase-hyphen types (`candidate-pair`,
+     * `inbound-rtp`); webrtc-java on the desktop reports the same taxonomy as UPPER_SNAKE
+     * (`CANDIDATE_PAIR`, `OUTBOUND_RTP`). Member keys are camelCase on both. Matching on the
+     * normalized form keeps one parser for both hosts — without it the desktop never
+     * resolves RTT/jitter/kbps and the latency badge stays empty on connected calls.
+     */
+    private fun normStatType(type: String): String = type.lowercase().replace('_', '-')
+
+    /**
      * One `getStats()` pass reduced to the handful of numbers the call screen shows.
      *
      * Byte counters are cumulative, so bitrate needs two samples — the first pass reports
@@ -1202,14 +1294,15 @@ public class FlashCallSession(
      * Returns null when the connection has no report to give (closed transport).
      */
     private suspend fun sampleStats(pc: PeerConnection): FlashCallStats? {
-        val report = pc.getStats() ?: return null
+        // Pinned: getStats() walks native reports.
+        val report = onMediaThread { pc.getStats() } ?: return null
         val all = report.stats.values
 
         // RTT lives on the SELECTED candidate pair. The transport stat names it outright;
         // the nominated-and-succeeded pair is the fallback for older report shapes.
-        val selectedId = all.firstOrNull { it.type == "transport" }
+        val selectedId = all.firstOrNull { normStatType(it.type) == "transport" }
             ?.members?.get("selectedCandidatePairId") as? String
-        val pairs = all.filter { it.type == "candidate-pair" }
+        val pairs = all.filter { normStatType(it.type) == "candidate-pair" }
         val pair = pairs.firstOrNull { it.id == selectedId }
             ?: pairs.firstOrNull {
                 it.members.bool("nominated") == true && it.members.str("state") == "succeeded"
@@ -1224,14 +1317,40 @@ public class FlashCallSession(
                 if (totalRtt != null && resp != null && resp > 0) totalRtt / resp else null
             }
 
-        val inbound = all.filter { it.type == "inbound-rtp" }
-        val outbound = all.filter { it.type == "outbound-rtp" }
+        val inbound = all.filter { normStatType(it.type) == "inbound-rtp" }
+        val outbound = all.filter { normStatType(it.type) == "outbound-rtp" }
         val audioIn = inbound.firstOrNull { it.members.str("kind") == "audio" }
         val videoIn = inbound.firstOrNull { it.members.str("kind") == "video" }
         val videoOut = outbound.firstOrNull { it.members.str("kind") == "video" }
 
         val bytesIn = inbound.sumOf { it.members.num("bytesReceived")?.toLong() ?: 0L }
         val bytesOut = outbound.sumOf { it.members.num("bytesSent")?.toLong() ?: 0L }
+        // Flow movement, logged on change only: the one-shot shape dump below proves the
+        // fields exist, but a single t=0 sample cannot say whether anything ever moves.
+        // Compared BEFORE the lasts update — after it they are equal by construction.
+        // `audioLevel` is the mic-liveness witness — nonzero means capture delivers frames
+        // even when the network carries nothing. W3C reports it as a 0.0–1.0 double, so it
+        // must stay a Double: truncating to Int reads 0 for anything below full scale and
+        // the witness goes blind on quiet speech.
+        val audioSource = all
+            .filter { normStatType(it.type) == "media-source" }
+            .firstOrNull { it.members.str("kind") == "audio" }
+        val audioLevel = audioSource?.members?.num("audioLevel")
+        // totalSamplesDuration grows iff the ADM pulls frames at all; totalAudioEnergy grows
+        // iff those frames are non-silent. Frozen duration = capture not running (wrong ADM
+        // state); growing duration with frozen energy = a dead/muted device delivering zeros
+        // (wrong device selected — the native index-0 fallback — or OS-muted).
+        val audioEnergy = audioSource?.members?.num("totalAudioEnergy")?.toLong() ?: 0L
+        val audioDurationS = audioSource?.members?.num("totalSamplesDuration") ?: 0.0
+        if (bytesIn != lastBytesReceived || bytesOut != lastBytesSent ||
+            audioEnergy != lastAudioEnergy || audioDurationS != lastAudioDurationS
+        ) {
+            FlashLog.i(
+                "CALL",
+                "stats flow bytesIn=$bytesIn bytesOut=$bytesOut audioLevel=$audioLevel " +
+                    "audioEnergy=$audioEnergy audioDurationS=$audioDurationS",
+            )
+        }
         val nowUs = report.timestampUs
         val elapsedUs = if (lastStatsAtUs > 0L) nowUs - lastStatsAtUs else 0L
         val inboundKbps = kbps(bytesIn - lastBytesReceived, elapsedUs)
@@ -1239,9 +1358,22 @@ public class FlashCallSession(
         lastStatsAtUs = nowUs
         lastBytesReceived = bytesIn
         lastBytesSent = bytesOut
+        lastAudioEnergy = audioEnergy
+        lastAudioDurationS = audioDurationS
 
         val lost = inbound.sumOf { it.members.num("packetsLost")?.toLong() ?: 0L }
         val received = inbound.sumOf { it.members.num("packetsReceived")?.toLong() ?: 0L }
+        if (!loggedReportShape) {
+            loggedReportShape = true
+            val shape = all.groupBy { it.type }.mapValues { (_, reports) ->
+                reports.firstOrNull()?.members?.keys?.sorted()
+            }
+            FlashLog.i(
+                "CALL",
+                "stats shape types=$shape bytesIn=$bytesIn bytesOut=$bytesOut " +
+                    "packetsReceived=$received packetsLost=$lost",
+            )
+        }
 
         // Interval loss for the governor, differenced like the byte counters and gated on the
         // same "is there a previous sample" test. Null on the first pass rather than a figure
@@ -1312,7 +1444,10 @@ public class FlashCallSession(
             state = FlashCallState.ENDED,
             endReason = reason,
         )
-        releaseMedia()
+        // Native teardown hops to the media thread: end() is routinely called from UI
+        // callbacks and pool timer jobs. Async is safe — ended=true already guards every
+        // path, and releaseMedia is idempotent (a racing startMedia unwinds itself).
+        scope.launch(callMediaDispatcher) { releaseMedia() }
         if (notifyPeer) {
             scope.launch {
                 sendFrame(CallWireFrame.Hangup(callId = callId, from = localDeviceId))
@@ -1323,10 +1458,17 @@ public class FlashCallSession(
 
     /**
      * Closes the PeerConnection, stops the event collectors and releases the microphone
-     * and camera. Idempotent, and safe to call from any thread — the only caller that is
-     * not [end] is [startMedia] unwinding media it created for an already-dead call.
+     * and camera. Idempotent. Lifecycle-locked: runs to completion before any concurrent
+     * [startMedia] may enter, so the next acquisition never observes mid-teardown native
+     * state. Runs on the media thread ([onMediaThread]): `close()` and stream/track release
+     * are native calls. Callers: [end] (via a pinned launch) and [startMedia]'s unwind.
      */
-    private fun releaseMedia() {
+    private suspend fun releaseMedia() {
+        mediaLifecycleMutex.withLock { releaseMediaLocked() }
+    }
+
+    /** [releaseMedia] with the lifecycle lock already held (startMedia's ended-path). */
+    private suspend fun releaseMediaLocked(): Unit = onMediaThread {
         statsJob?.cancel()
         statsJob = null
         // The sampler thread belongs to the call, not the process: a finished call must not

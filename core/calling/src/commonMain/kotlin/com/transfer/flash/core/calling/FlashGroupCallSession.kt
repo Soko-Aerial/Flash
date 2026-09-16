@@ -31,6 +31,7 @@ import com.transfer.flash.core.calling.model.FlashCallStats
 import com.transfer.flash.core.calling.model.FlashCallUiState
 import com.transfer.flash.core.calling.protocol.CallWireFrame
 import com.transfer.flash.core.common.annotation.FlashInternalApi
+import com.transfer.flash.core.common.concurrent.SyncMap
 import com.transfer.flash.core.common.logging.FlashLog
 import com.transfer.flash.core.common.perf.FlashPerformanceMode
 import com.transfer.flash.core.common.time.SystemTimeSource
@@ -45,6 +46,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 /**
  * Multi-peer WebRTC mesh session for Group Calls (Phase 2, docs/group/phase-2-group-voice.md).
@@ -110,6 +112,24 @@ public class FlashGroupCallSession(
 
     private val legs = SyncMap<String, GroupLeg>()
     private val sessionMutex = Mutex()
+
+    /**
+     * Serializes media acquisition against native teardown (same contract as the 1:1
+     * session's lock): [acquireMedia] and [endSession]'s native section never interleave, so a
+     * rejoin acquire cannot observe a previous leg's mid-teardown `close()`/release.
+     * Non-reentrant by construction: holders call only the Locked variants ([closeLegLocked]).
+     */
+    private val mediaLifecycleMutex = Mutex()
+
+    /**
+     * Confines [block] to [callMediaDispatcher]: every native WebRTC touch in this session
+     * goes through here. Legs are driven from IO-pool collectors, timer jobs and UI-thread
+     * toggles; without this each drives WASAPI/COM from a different OS thread (silent buzz +
+     * dead capture on Windows). Nesting is safe — `withContext` on the media thread from the
+     * media thread suspends and re-queues.
+     */
+    private suspend fun <T> onMediaThread(block: suspend CoroutineScope.() -> T): T =
+        withContext(callMediaDispatcher, block)
 
     private var localStream: MediaStream? = null
     private var isMediaAcquired = false
@@ -434,18 +454,19 @@ public class FlashGroupCallSession(
         }
     }
 
-    /** Ensures a WebRTC leg is established with [peerId]. */
+    /** Ensures a WebRTC leg is established with [peerId]. Pinned: PC create + offer are native. */
     private suspend fun ensureLegConnected(peerId: String) {
         val leg = legs[peerId] ?: return
         leg.legMutex.withLock {
+            onMediaThread {
             if (leg.peerConnection != null) {
                 val isDead = leg.state == FlashCallParticipantState.DISCONNECTED ||
                     leg.state == FlashCallParticipantState.LEFT
-                if (!isDead) return
+                if (!isDead) return@onMediaThread
                 closeLeg(leg)
             }
 
-            val stream = localStream ?: return
+            val stream = localStream ?: return@onMediaThread
             val pc = createPeerConnectionForLeg(leg, stream)
             leg.peerConnection = pc
 
@@ -464,10 +485,13 @@ public class FlashGroupCallSession(
                     FlashLog.e("GROUP_CALL", "Failed to create offer for leg $peerId", t)
                 }
             }
+            }
         }
     }
 
     private fun createPeerConnectionForLeg(leg: GroupLeg, stream: MediaStream): PeerConnection {
+        // Callers (ensureLegConnected / handleInboundOffer) already run pinned; the collectors
+        // below are pinned at launch so no leg continuation escapes the media thread.
         val pc = PeerConnection(
             RtcConfiguration(
                 iceServers = emptyList(),
@@ -494,7 +518,7 @@ public class FlashGroupCallSession(
         }
 
         // Listen for remote tracks
-        leg.trackJob = scope.launch {
+        leg.trackJob = scope.launch(callMediaDispatcher) {
             pc.onTrack.collect { trackEvent ->
                 val track = trackEvent.track
                 FlashLog.i("GROUP_CALL", "Received track on leg ${leg.peerId}: ${track?.kind}")
@@ -505,7 +529,7 @@ public class FlashGroupCallSession(
         }
 
         // Trickle local ICE candidates to this specific peer
-        leg.iceJob = scope.launch {
+        leg.iceJob = scope.launch(callMediaDispatcher) {
             pc.onIceCandidate.collect { candidate ->
                 sendFrame(
                     CallWireFrame.IceCandidate(
@@ -521,7 +545,7 @@ public class FlashGroupCallSession(
         }
 
         // Monitor connection state
-        leg.connJob = scope.launch {
+        leg.connJob = scope.launch(callMediaDispatcher) {
             pc.onConnectionStateChange.collect { connState ->
                 FlashLog.i("GROUP_CALL", "Leg ${leg.peerId} state changed to $connState")
                 when (connState) {
@@ -564,7 +588,9 @@ public class FlashGroupCallSession(
     private suspend fun handleInboundOffer(peerId: String, sdp: String) {
         val leg = legs.getOrPut(peerId) { GroupLeg(peerId = peerId, peerName = resolveName(peerId)) }
         leg.legMutex.withLock {
-            val stream = localStream ?: return
+            // Pinned: PC create + setRemote/createAnswer/setLocal are native.
+            onMediaThread {
+            val stream = localStream ?: return@onMediaThread
             val pc = leg.peerConnection ?: createPeerConnectionForLeg(leg, stream).also { leg.peerConnection = it }
 
             try {
@@ -581,13 +607,16 @@ public class FlashGroupCallSession(
             } catch (t: Throwable) {
                 FlashLog.e("GROUP_CALL", "Failed to answer offer from $peerId", t)
             }
+            }
         }
     }
 
     private suspend fun handleInboundAnswer(peerId: String, sdp: String) {
         val leg = legs[peerId] ?: return
         leg.legMutex.withLock {
-            val pc = leg.peerConnection ?: return
+            // Pinned: setRemoteDescription is native.
+            onMediaThread {
+            val pc = leg.peerConnection ?: return@onMediaThread
             try {
                 setRemoteDescriptionTuned(pc, SessionDescriptionType.Answer, sdp)
                 leg.remoteDescriptionSet = true
@@ -595,6 +624,7 @@ public class FlashGroupCallSession(
                 FlashLog.i("GROUP_CALL", "Applied answer from peer $peerId for group call $callId")
             } catch (t: Throwable) {
                 FlashLog.e("GROUP_CALL", "Failed to apply answer from $peerId", t)
+            }
             }
         }
     }
@@ -607,6 +637,8 @@ public class FlashGroupCallSession(
             candidate = frame.candidate,
         )
         leg.legMutex.withLock {
+            // Pinned: addIceCandidate is native.
+            onMediaThread {
             val pc = leg.peerConnection
             if (pc != null && leg.remoteDescriptionSet) {
                 try {
@@ -617,10 +649,14 @@ public class FlashGroupCallSession(
             } else {
                 leg.pendingIce.add(candidate)
             }
+            }
         }
     }
 
     private suspend fun flushPendingIce(leg: GroupLeg, pc: PeerConnection) {
+        // Pinned: addIceCandidate is native. Callers already run pinned; the wrap keeps the
+        // guarantee local so a future caller cannot escape the media thread.
+        onMediaThread {
         while (leg.pendingIce.isNotEmpty()) {
             val candidate = leg.pendingIce.removeFirst()
             try {
@@ -628,6 +664,7 @@ public class FlashGroupCallSession(
             } catch (t: Throwable) {
                 FlashLog.w("GROUP_CALL", "Failed to flush pending ICE candidate on leg ${leg.peerId}: ${t.message}")
             }
+        }
         }
     }
 
@@ -651,7 +688,7 @@ public class FlashGroupCallSession(
     }
 
     /** If only 1 member remains in an active call, enter a grace window rather than abruptly failing. */
-    private fun checkSoloState() {
+    private suspend fun checkSoloState() {
         if (_state.value.state != FlashCallState.ACTIVE) return
         val connectedCount = countConnectedLegs()
         if (connectedCount == 0 && soloWaitingJob == null) {
@@ -676,7 +713,15 @@ public class FlashGroupCallSession(
     private fun countConnectedLegs(): Int =
         legs.valuesSnapshot().count { it.state == FlashCallParticipantState.CONNECTED }
 
-    private fun closeLeg(leg: GroupLeg) {
+    private suspend fun closeLeg(leg: GroupLeg) {
+        mediaLifecycleMutex.withLock { closeLegLocked(leg) }
+    }
+
+    /** [closeLeg] with the lifecycle lock already held (endSession's teardown section). */
+    private suspend fun closeLegLocked(leg: GroupLeg) {
+        // Pinned: peerConnection.close() is native. Callers run pinned already; the wrap keeps
+        // the guarantee local.
+        onMediaThread {
         leg.iceJob?.cancel()
         leg.trackJob?.cancel()
         leg.connJob?.cancel()
@@ -689,12 +734,14 @@ public class FlashGroupCallSession(
         leg.peerConnection = null
         leg.audioSender = null
         leg.videoSender = null
+        }
     }
 
     private fun armStatsPolling() {
         if (statsJob != null) return
         val intervalMs = performanceMode().transport.callStatsIntervalMs
-        statsJob = scope.launch {
+        // Pinned: getStats() is native.
+        statsJob = scope.launch(callMediaDispatcher) {
             while (!isEnded) {
                 try {
                     sampleMeshStats()
@@ -723,8 +770,9 @@ public class FlashGroupCallSession(
 
         for (leg in activeLegs) {
             val pc = leg.peerConnection ?: continue
+            // Pinned: getStats() is native.
             val report = try {
-                pc.getStats()
+                onMediaThread { pc.getStats() }
             } catch (_: Throwable) {
                 null
             } ?: continue
@@ -837,22 +885,37 @@ public class FlashGroupCallSession(
         }
     }
 
+    /**
+     * Group mute/camera toggles use the same optimistic-state + pinned-native shape as the 1:1
+     * session: the button state flips synchronously, the track `enabled` flip hops to the media
+     * thread (these are called straight from UI callbacks).
+     */
     public fun toggleMute(): Boolean {
         val next = !_state.value.micMuted
-        localStream?.audioTracks?.forEach { it.enabled = !next }
         _state.value = _state.value.copy(micMuted = next)
+        val tracks = localStream?.audioTracks.orEmpty()
+        if (tracks.isNotEmpty()) {
+            scope.launch(callMediaDispatcher) {
+                tracks.forEach { runCatching { it.enabled = !next } }
+            }
+        }
         return next
     }
 
     public fun toggleCamera(): Boolean {
         val next = !_state.value.cameraOff
-        localStream?.videoTracks?.forEach { it.enabled = !next }
         _state.value = _state.value.copy(cameraOff = next)
+        val tracks = localStream?.videoTracks.orEmpty()
+        if (tracks.isNotEmpty()) {
+            scope.launch(callMediaDispatcher) {
+                tracks.forEach { runCatching { it.enabled = !next } }
+            }
+        }
         return next
     }
 
     public suspend fun switchCamera() {
-        _localVideoStreamTrack.value?.switchCamera()
+        onMediaThread { _localVideoStreamTrack.value?.switchCamera() }
     }
 
     public fun setSpeaker(on: Boolean) {
@@ -874,8 +937,21 @@ public class FlashGroupCallSession(
 
     private suspend fun acquireMedia(): Boolean {
         if (isMediaAcquired) return true
-        return try {
-            val stream = MediaDevices.getUserMedia(audio = true, video = video)
+        // Pinned: getUserMedia drives ADM device select + factory init. Lifecycle-locked
+        // against endSession's teardown (see mediaLifecycleMutex).
+        return onMediaThread {
+            mediaLifecycleMutex.withLock {
+        try {
+            // Same explicit voice processing as 1:1 startMedia: bare audio(true) leaves
+            // AEC/NS/AGC null, which the JVM backend maps to off (desktop howls).
+            val stream = MediaDevices.getUserMedia {
+                audio {
+                    echoCancellation(true)
+                    noiseSuppression(true)
+                    autoGainControl(true)
+                }
+                if (video) video()
+            }
             localStream = stream
             _localVideoStreamTrack.value = stream.videoTracks.firstOrNull()
             isMediaAcquired = true
@@ -892,9 +968,11 @@ public class FlashGroupCallSession(
             FlashLog.e("GROUP_CALL", "Failed to acquire media for group call", t)
             false
         }
+            }
+        }
     }
 
-    private fun endSession(reason: FlashCallEndReason) {
+    private suspend fun endSession(reason: FlashCallEndReason) {
         if (isEnded) return
         isEnded = true
         cancelSoloWaiting()
@@ -904,13 +982,20 @@ public class FlashGroupCallSession(
         statsJob = null
         _stats.value = null
 
-        legs.valuesSnapshot().forEach { closeLeg(it) }
+        // Pinned: leg close + stream release are native. All callers are suspend (public
+        // hangUp/decline, session/leg mutex paths, timer launches), so awaiting here is safe.
+        // Lifecycle-locked with the Locked leg variant: a rejoin acquire cannot interleave.
+        onMediaThread {
+            mediaLifecycleMutex.withLock {
+        legs.valuesSnapshot().forEach { closeLegLocked(it) }
         legs.clear()
 
         try {
             localStream?.release()
         } catch (_: Throwable) {}
         localStream = null
+            }
+        }
         _localVideoStreamTrack.value = null
         _remoteVideoStreamTrack.value = null
 
