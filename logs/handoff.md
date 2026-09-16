@@ -20,15 +20,13 @@ known Windows DataStore NTFS failures (pre-existing).
 Owner live-audio run per ERROR-061 criteria, then GitHub-side PR disposition (#6-#17 still
 OPEN remotely) and the owed device gates.
 
-### Push state 2026-09-16 (sync request)
-- GitHub `origin`: `dev` REJECTED non-fast-forward (local history was rebuilt after the
-  Sep-12 push; merge-base with `origin/dev` is ancient `b09b233`, ±134/198 commits).
-  Pushed instead, both new branches, no destruction:
-  `sync/dev-20260916-parking-resolved` (= this tip) and `parking/pre-pr-merge-20260915`
-  (pre-resolution snapshot). Origin `dev` untouched — owner decides: force-update it from
-  the sync branch, merge `origin/dev` into `dev` locally first, or leave it.
-- GitLab: push FAILED, HTTPS auth rejected (token incorrect/expired/scoped). Owner action
-  (refresh token); nothing was changed remotely.
+### Push state 2026-09-16 (sync request — DONE per owner answers)
+- GitHub `origin/dev`: FORCE-UPDATED to local `b956818` per owner ("local has priority").
+  Pre-force state preserved on `parking/pre-pr-merge-20260915` (stash snapshot) — the 134
+  replaced origin commits were content-duplicates of rebuilt local history (verified: review
+  addendum + PTT/calling/group work all present on dev). Redundant sync branch deleted.
+- PRs #6-#17: all CLOSED on GitHub with "merged locally" comments. Zero open PRs remain.
+- GitLab: SKIPPED per owner. Auth failure recorded above for a future token refresh.
 
 ## 2026-09-15 — ERROR-060 follow-up: stop-first hygiene restored, double-acquire is a test
 
