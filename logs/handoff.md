@@ -1,5 +1,55 @@
 # Current Handoff
 
+## 2026-09-16 — Desktop voice playback live-verified (JCodec/AAC works); full state below
+
+### Current branch
+`dev`, synced with `origin/dev` (force-updated with owner approval after the history rebuild;
+all 12 bot PRs #6-#17 merged code-only then closed on GitHub; zero open PRs; GitLab skipped
+by owner choice — its token is expired). Working tree clean except untracked session
+transcripts (`session-ses_*.md`, never committed). Pre-resolution snapshot preserved on
+branch `parking/pre-pr-merge-20260915`.
+
+### Live-verified working (owner hardware runs, phone .113 ↔ desktop .110)
+- **1:1 voice calls** (ERROR-061 closed live): select+init once pre-factory, engine owns
+  start/stop, `bytesOut > 0`, audio both ways.
+- **Desktop voice-note playback** (ERROR-063 voice part closed live 2026-09-16): AAC/m4a
+  decodes via JCodec to the same `Clip` (`AAC voice note decoded via JCodec:` log line).
+  Owner: "the audio is working".
+
+### Fixed in code, live retest owed
+- **Phone→desktop file stall** (ERROR-062): was a probe gauntlet (20×4s per channel vs a
+  desktop with no data server). Now: DESKTOP-caps peers skip to WS fallback + 10-min
+  negative cache; desktop auto-accepts trusted audio/image; video parks for consent.
+  Offers/RESUME/ACKs were proven flowing before the fix.
+- **Desktop chat accept** was unwired no-ops; now calls the same repo methods as the
+  Transfers tab (`9a6e864`, compiled+tested, NOT live-retested yet).
+- **Android double video overlay**: badge fired in-app player AND external intent; now
+  in-app only, viewer chrome hides during playback, external is error-banner fallback.
+  NOT live-retested yet.
+- **Desktop video**: no in-app surface by owner decision — banner offers system player
+  (wired through `onOpenAttachment`). NOT live-retested yet.
+
+### Standing decisions (do not re-litigate without the owner)
+- ADR-039: JCodec 0.2.5 (BSD/FreeBSD per POM, zero transitives) for desktop AAC; Android
+  keeps MediaPlayer; desktop video stays external (JavaFX/ffmpeg deferred).
+- Consent gate stands: desktop auto-download is trusted-peers + audio/image only.
+- `parking/` branch is a snapshot, not a source — do not merge it.
+
+### Known blockers / owed
+- 12 Windows-only DataStore test failures (NTFS env set, pre-existing, unrelated).
+- Physical-device gates for PTT/group remain owed; A2 billing lock unchanged.
+
+### Recommended next task
+Owner retest of the four "fixed in code" items above (image→desktop fast start, video
+offer→chat-accept→stream, Android single-player playback, desktop video via system
+player), then continue AD-track or device gates per owner.
+
+### Files most relevant to next task
+- `logs/errors.md` ERROR-061/062/063 (mechanisms, criteria, what was proven where)
+- `docs/decisions.md` ADR-034…039
+- `desktop/.../DesktopEngine.kt` (transfer receive/accept), `ui/chat/.../FlashMediaViewer.kt`,
+  `FlashVideoPlayer.kt`, `ui/platform-shims/.../FlashAudioPlayer.jvm.kt`
+
 ## 2026-09-16 - Parking RESOLVED + pushed (dev @ 21052c3); live-audio run now unblocked
 
 ### Current branch

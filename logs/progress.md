@@ -1,5 +1,18 @@
 # Progress Log
 
+## 2026-09-16 - Owner live-verified desktop voice playback; session handoff refreshed
+
+### Worked on
+- Owner confirmed desktop voice notes play (JCodec decode line + audible audio) — ERROR-063
+  voice part is now closed live; updated its status.
+- Committed the previously-uncommitted desktop chat-accept wiring (`9a6e864`).
+- Refreshed `logs/handoff.md` head entry as a full new-chat briefing (branch/sync state,
+  live-verified vs fixed-pending-retest split, standing decisions, files map).
+
+### Remaining for the owner run
+Image→desktop fast start, video chat-accept→stream, Android single-player, desktop video
+via system player (all fixed in code, none live-retested yet).
+
 ## 2026-09-16 - ERROR-062 fixed in code: desktop probe-skip + chat offer + auto-download parity
 
 ### Worked on
