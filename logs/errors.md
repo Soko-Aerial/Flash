@@ -20,17 +20,19 @@ Desktop Calling / SDP Negotiation (`core:calling`) & Video Rendering (`ui:callui
 ### Root cause
 1. `NullVideoDecoder`: `webrtc-java` 0.17.0 advertises AV1, VP9, and H264 in its receiver capabilities, but only statically bundles the libvpx VP8 decoder. It does not bundle `dav1d.dll` or dynamic VP9 libraries. When `CallSdp.stripH264` only stripped H264, Android and Desktop negotiated AV1 or VP9. At initialization, Desktop's WebRTC decoder factory failed to create a native decoder for the negotiated codec and fell back to `NullVideoDecoder`, failing decode initialization and dropping all incoming video packets.
 2. Hue tint: Libyuv's `FourCC.BGRA` writes memory in byte order `[A, R, G, B]` (byte 0 is Alpha = 255). Skia's `_8888` formats expect Alpha at byte 3. When paired with `ColorType.BGRA_8888`, Skia read byte 0 (Alpha = 255) as Blue -> continuous Blue tint. When switched to `ColorType.RGBA_8888`, Skia read byte 0 (Alpha = 255) as Red -> continuous Red tint.
+3. RTX retransmission demuxing: Retransmission payload types (`rtx/90000`) and `a=ssrc-group:FID` in SDP created secondary SSRCs that triggered `unsignalled ssrc` and `Failed to unprotect SRTP packet` warnings on desktop when WebRTC attempted to route retransmission packets through the decoder factory.
 
 ### Fix
-1. In `CallSdp.kt`, replaced `stripH264` with `enforceVp8Only(sdp: String): String`. In the `m=video` section, strips all payload types and attributes except VP8 (`a=rtpmap:<pt> VP8/90000`) and its associated RTX (`apt=<vp8Pt>`). Both endpoints are forced to negotiate VP8, which is statically supported across all platforms.
+1. In `CallSdp.kt`, replaced `stripH264` with `enforceVp8Only(sdp: String): String`. In the `m=video` section, strips all payload types and attributes except VP8 (`a=rtpmap:<pt> VP8/90000`). Dropped RTX payload types and stripped `a=ssrc-group:FID` lines from video, forcing a single clean VP8 media stream where packet loss is handled via NACK/PLI keyframe requests.
 2. In `FlashCallVideoSurface.jvm.kt`, switched to `VideoBufferConverter.convertFromI420(buffer, bytes, FourCC.ARGB)` paired with Skia's `ColorType.BGRA_8888`. Libyuv's `FourCC.ARGB` writes `[B, G, R, A]` (Alpha at byte 3), exactly matching Skia's `ColorType.BGRA_8888` channel expectation (byte 0=B, 1=G, 2=R, 3=A). Both blue and red tints are eliminated and natural RGB colors are restored.
-3. Added RTCStats video codec query in `FlashCallSession.sampleStats` to log active inbound and outbound `mimeType`.
+3. In `FlashCallSession.kt`, enhanced `logSdp` to extract and log video section lines (`m=video`, `a=rtpmap`, `a=fmtp`, `a=rtcp-fb`, `a=ssrc-group`) on every offer and answer for instant negotiation diagnostics. Also added RTCStats video codec query in `sampleStats` to log active inbound and outbound `mimeType`.
 
 ### Verification
 - Unit test in `ui:callui` (`verifyLibyuvArgbWithSkiaBgraProducesCorrectRgb`) verified `FourCC.ARGB` layout produces pure red `[0, 0, 255, 255]` -> `red=1.0, blue=0.0, alpha=1.0` in Compose.
-- Unit test in `core:calling` (`CallSdpTest.enforceVp8Only_*`) verified SDP parsing and attribute dropping.
+- Unit test in `core:calling` (`CallSdpTest.enforceVp8Only_*`) verified SDP parsing, attribute dropping, and RTX removal.
 - Loopback smoke test in `core:calling` (`DesktopMediaStackSmokeTest`) verified continuous 640x480 frame decoding using `enforceVp8Only`.
-- `:desktop:compileKotlinJvm` passed cleanly.
+- `:core:calling:jvmTest`, `:ui:callui:jvmTest`, and `:desktop:jvmTest` all passed cleanly.
+- `:desktop:compileKotlinJvm` and `:app:assembleDebug` completed with 0 errors.
 
 ### Status
 RESOLVED

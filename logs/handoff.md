@@ -1,9 +1,9 @@
 # Current Handoff
 
-## 2026-09-16 — Desktop video calling: VP8-only SDP enforcement (NullVideoDecoder fix) & Skia RGBA color mapping (blue hue fix) (ERROR-066)
+## 2026-09-16 — Desktop video calling: RTX removal & video SDP line telemetry ready for verification
 
 ### Current branch
-`dev`. Working tree clean except untracked `session-ses_*.md`.
+`dev`.
 
 ### Live-verified working (owner hardware runs, phone .113 ↔ desktop .110)
 - **1:1 voice calls** (ERROR-061 closed live): select+init once pre-factory, engine owns
@@ -16,8 +16,9 @@
 ### Ready for live verification
 - **Desktop 1:1 Video Calls (Phase 33c, ERROR-065 & ERROR-066)**:
   - **Phone video decode fixed (`NullVideoDecoder` eliminated)**: `CallSdp.enforceVp8Only` forces VP8 as the exclusive video codec in local & remote SDPs, stripping non-VP8 codecs (H264, VP9, AV1) whose native decoders are missing on Desktop. Desktop and Android negotiate VP8, allowing incoming phone video to decode and render without error.
+  - **RTX & Secondary SSRCs removed**: `CallSdp.enforceVp8Only` drops RTX payload types and `a=ssrc-group:FID` lines from video, avoiding `unsignalled ssrc` and decoder fallback on retransmissions.
+  - **Instant SDP Telemetry**: `FlashCallSession.logSdp` prints the exact video lines (`m=video`, `a=rtpmap`, `a=fmtp`, `a=rtcp-fb`, `a=ssrc-group`) for both local and remote offer/answer, and `sampleStats` prints `active video codecs: remote inbound=..., local outbound=...`.
   - **Color hue eliminated (blue and red tints resolved)**: `FlashCallVideoSurface.jvm.kt` now specifies `FourCC.ARGB` paired with Skia's `ColorType.BGRA_8888`. Libyuv's `FourCC.ARGB` places Alpha at byte 3 (not byte 0), aligning memory bytes `[B, G, R, A]` directly with Skia's `BGRA_8888` channel expectation and restoring natural skin tones.
-  - **Codec telemetry**: `FlashCallSession.sampleStats` logs active inbound and outbound video codec mimeTypes (from `RTCStats`) for immediate verification.
   - **Ringing state fixed**: `FlashCallIdentityBlock` shows caller avatar, name, and Answer/Decline buttons; no white blank screen.
   - **Video rendering in pure Compose**: Skia `ImageBitmap` eliminates heavyweight AWT `SwingPanel` occlusion, allowing Call Controls (Hangup, Mute, Camera) and PiP rounded corners to render smoothly on top.
   - **Telemetry badge**: `FlashCallStatsBadge` displays latency (ms with status dot), received + sent video resolution (e.g. `720p (↑720p) · 30fps`), bitrate, and packet loss like on mobile.

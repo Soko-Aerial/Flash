@@ -1,5 +1,25 @@
 # Progress Log
 
+## 2026-09-16 — Desktop video calling: RTX removal from SDP & video negotiation diagnostics (ERROR-066)
+
+### Worked on
+1. **RTX Demuxing / Secondary SSRC Elimination**:
+   - In `CallSdp.enforceVp8Only`, changed `allowedPts = vp8Pts` (dropping RTX payload types such as 97) and filtered out `a=ssrc-group:FID` lines from the video section.
+   - Eliminates secondary RTX SSRCs that triggered WebRTC warnings (`unsignalled ssrc`, `Failed to unprotect SRTP packet`, and `NullVideoDecoder` fallback when routing retransmissions through the decoder factory). On 1:1 LAN calls, packet recovery is handled reliably via NACK and PLI keyframe requests.
+2. **Video SDP Negotiation Diagnostics**:
+   - Enhanced `FlashCallSession.logSdp` to extract and print video section SDP lines (`m=video`, `a=rtpmap`, `a=fmtp`, `a=rtcp-fb`, `a=ssrc-group`) directly into logcat/console on every offer and answer (`local/remote Offer/Answer video SDP: ...`).
+   - Combined with `FlashCallSession.sampleStats` logging runtime `active video codecs: remote inbound=..., local outbound=...`, provides instantaneous confirmation of negotiated media parameters.
+3. **Build & Test Verification**:
+   - Executed `:core:calling:jvmTest` (`CallSdpTest` and `DesktopMediaStackSmokeTest` loopback video decoding all pass).
+   - Executed `:ui:callui:jvmTest` (`verifyLibyuvArgbWithSkiaBgraProducesCorrectRgb` and Compose rendering all pass).
+   - Executed `:desktop:jvmTest` (51/51 tasks pass).
+   - Verified clean rebuilds for `:desktop:compileKotlinJvm` and `:app:assembleDebug`.
+
+### Verification
+- All test suites green across `core:calling`, `ui:callui`, and `desktop`.
+- Debug APK assembled at `app/build/outputs/apk/debug/app-debug.apk`.
+- Did NOT run `:desktop:run` or install debug APK per user constraint.
+
 ## 2026-09-16 — Desktop video calling: VP8-only SDP enforcement (NullVideoDecoder fix) & Skia RGBA color mapping (blue hue fix) (ERROR-066)
 
 ### Worked on

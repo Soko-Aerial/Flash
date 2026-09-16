@@ -504,10 +504,12 @@ class CallSdpTest {
         val stripped = CallSdp.enforceVp8Only(input)
 
         val videoLines = section(stripped, "video")
-        assertEquals("m=video 9 UDP/TLS/RTP/SAVPF 96 97", videoLines.first())
+        assertEquals("m=video 9 UDP/TLS/RTP/SAVPF 96", videoLines.first())
         assertFalse(stripped.contains("H264"))
         assertFalse(stripped.contains("VP9"))
         assertFalse(stripped.contains("AV1"))
+        assertFalse(stripped.contains("a=rtpmap:97"))
+        assertFalse(stripped.contains("a=fmtp:97"))
         assertFalse(stripped.contains("a=rtpmap:98"))
         assertFalse(stripped.contains("a=fmtp:98"))
         assertFalse(stripped.contains("a=rtpmap:99"))
@@ -515,18 +517,14 @@ class CallSdpTest {
         assertFalse(stripped.contains("a=rtpmap:100"))
         assertFalse(stripped.contains("a=rtpmap:101"))
         assertTrue(stripped.contains("a=rtpmap:96 VP8/90000"))
-        assertTrue(stripped.contains("a=rtpmap:97 rtx/90000"))
-        assertTrue(stripped.contains("a=fmtp:97 apt=96"))
     }
 
     @Test
     fun enforceVp8Only_leavesSdpWithVp8OnlyUnchanged() {
         val sdpWithVp8Only = sdp(
             "v=0",
-            "m=video 9 UDP/TLS/RTP/SAVPF 96 97",
+            "m=video 9 UDP/TLS/RTP/SAVPF 96",
             "a=rtpmap:96 VP8/90000",
-            "a=rtpmap:97 rtx/90000",
-            "a=fmtp:97 apt=96",
         )
         assertEquals(sdpWithVp8Only, CallSdp.enforceVp8Only(sdpWithVp8Only))
         assertEquals("", CallSdp.enforceVp8Only(""))

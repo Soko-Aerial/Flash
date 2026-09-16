@@ -113,7 +113,8 @@ internal object CallSdp {
                 if (apt in vp8Pts && pt.isNotEmpty() && pt.all(Char::isDigit)) pt else null
             }.toSet()
 
-        val allowedPts = vp8Pts + rtxPts
+        // Allowed video payload types: strictly VP8 (dropping RTX prevents mismatched SSRC/FID demux errors)
+        val allowedPts = vp8Pts
 
         val out = ArrayList<String>(lines.size)
         var inVideo = false
@@ -133,6 +134,10 @@ internal object CallSdp {
                 continue
             }
             if (inVideo) {
+                // Drop FID (RTX) ssrc groups in video when RTX is not used
+                if (line.startsWith("a=ssrc-group:FID ")) {
+                    continue
+                }
                 val pt = if (line.startsWith(RTPMAP_PREFIX)) {
                     line.removePrefix(RTPMAP_PREFIX).substringBefore(' ')
                 } else if (line.startsWith(FMTP_PREFIX)) {

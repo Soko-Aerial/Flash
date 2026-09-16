@@ -701,8 +701,8 @@ public class FlashCallSession(
     }
 
     /**
-     * Logs SDP diagnostics (length, first line, empty flag) without logging the full
-     * body — SDP contains IPs/candidates but no secrets; still, keep logs lean.
+     * Logs SDP diagnostics (length, first line, empty flag) and video section lines
+     * (m=video, a=rtpmap, a=fmtp, a=rtcp-fb, a=ssrc-group) for codec/SSRC negotiation diagnosis.
      */
     private fun logSdp(label: String, sdp: String) {
         val firstLine = sdp.lineSequence().firstOrNull().orEmpty()
@@ -710,6 +710,27 @@ public class FlashCallSession(
             "CALL",
             "$label sdp len=${sdp.length} empty=${sdp.isEmpty()} first=${firstLine.take(80)}",
         )
+        var inVideo = false
+        val videoLines = mutableListOf<String>()
+        for (rawLine in sdp.lineSequence()) {
+            val line = rawLine.trim()
+            if (line.startsWith("m=")) {
+                inVideo = line.startsWith("m=video")
+            }
+            if (inVideo) {
+                if (line.startsWith("m=video") ||
+                    line.startsWith("a=rtpmap:") ||
+                    line.startsWith("a=fmtp:") ||
+                    line.startsWith("a=rtcp-fb:") ||
+                    line.startsWith("a=ssrc-group:")
+                ) {
+                    videoLines.add(line)
+                }
+            }
+        }
+        if (videoLines.isNotEmpty()) {
+            FlashLog.i("CALL", "$label video SDP: ${videoLines.joinToString(" | ")}")
+        }
     }
 
     private suspend fun onIce(frame: CallWireFrame.IceCandidate) {
