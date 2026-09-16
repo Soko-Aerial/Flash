@@ -167,6 +167,19 @@ internal object PairingSessionStateMachine {
         return when (event) {
             is PairingSessionEvent.RequestReceived -> {
                 if (state.phase != PairingPhase.Idle) return state
+                // SENTINEL: Fail closed on missing/invalid fingerprint hex from peer or local
+                if (NumericComparisonCode.normalizeHex(localFingerprintHex).isEmpty() ||
+                    NumericComparisonCode.normalizeHex(event.peerFingerprintHex).isEmpty()
+                ) {
+                    return state.copy(
+                        phase = PairingPhase.Failed,
+                        requestId = event.requestId,
+                        peerDeviceId = event.peerDeviceId,
+                        peerName = event.peerName,
+                        peerFingerprintHex = event.peerFingerprintHex,
+                        failureReason = "invalid-fingerprint",
+                    )
+                }
                 val code = NumericComparisonCode.derive(localFingerprintHex, event.peerFingerprintHex)
                 state.copy(
                     phase = PairingPhase.RequestReceived,
@@ -185,6 +198,19 @@ internal object PairingSessionStateMachine {
 
             is PairingSessionEvent.BeginRequested -> {
                 if (state.phase != PairingPhase.Idle) return state
+                // SENTINEL: Fail closed on missing/invalid fingerprint hex from peer or local
+                if (NumericComparisonCode.normalizeHex(localFingerprintHex).isEmpty() ||
+                    NumericComparisonCode.normalizeHex(event.peerFingerprintHex).isEmpty()
+                ) {
+                    return state.copy(
+                        phase = PairingPhase.Failed,
+                        requestId = event.requestId,
+                        peerDeviceId = event.peerDeviceId,
+                        peerName = event.peerName,
+                        peerFingerprintHex = event.peerFingerprintHex,
+                        failureReason = "invalid-fingerprint",
+                    )
+                }
                 val code = NumericComparisonCode.derive(localFingerprintHex, event.peerFingerprintHex)
                 state.copy(
                     phase = PairingPhase.AwaitingPeerConfirmation,
@@ -254,6 +280,13 @@ internal object PairingSessionStateMachine {
 
             is PairingSessionEvent.Paired -> {
                 if (state.phase != PairingPhase.AwaitingPeerConfirmation) return state
+                // SENTINEL: Fail closed on missing/invalid fingerprint hex in PAIRED frame
+                if (NumericComparisonCode.normalizeHex(event.peerFingerprintHex).isEmpty()) {
+                    return state.copy(
+                        phase = PairingPhase.Failed,
+                        failureReason = "invalid-fingerprint",
+                    )
+                }
                 state.copy(
                     phase = PairingPhase.Confirmed,
                     peerFingerprintHex = event.peerFingerprintHex,

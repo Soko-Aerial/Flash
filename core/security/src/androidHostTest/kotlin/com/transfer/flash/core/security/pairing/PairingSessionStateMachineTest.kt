@@ -242,6 +242,47 @@ class PairingSessionStateMachineTest {
         assertEquals(PairingPhase.Idle, s.phase)
     }
 
+    @Test
+    fun `requestReceived with blank or invalid fingerprint fails closed`() {
+        val blankFpEvent = PairingSessionEvent.RequestReceived(
+            requestId = "req-1",
+            peerDeviceId = "peer-1",
+            peerName = "Pixel 9",
+            peerFingerprintHex = ":::",
+            peerEphemeralPublicKey = peerKey,
+            receivedAtMs = receivedAt,
+        )
+        val s = reduce(PairingSessionState.IDLE, blankFpEvent)
+        assertEquals(PairingPhase.Failed, s.phase)
+        assertEquals("invalid-fingerprint", s.failureReason)
+    }
+
+    @Test
+    fun `beginRequested with blank or invalid fingerprint fails closed`() {
+        val event = PairingSessionEvent.BeginRequested(
+            requestId = "req-1",
+            peerDeviceId = "peer-1",
+            peerName = "Pixel 9",
+            peerFingerprintHex = "   ",
+            startedAtMs = receivedAt,
+        )
+        val s = reduce(PairingSessionState.IDLE, event)
+        assertEquals(PairingPhase.Failed, s.phase)
+        assertEquals("invalid-fingerprint", s.failureReason)
+    }
+
+    @Test
+    fun `paired with blank or invalid fingerprint fails closed`() {
+        var s = reduce(
+            PairingSessionState.IDLE,
+            PairingSessionEvent.BeginRequested("req-9", "peer-1", null, peerFp, receivedAt),
+        )
+        s = reduce(s, PairingSessionEvent.PeerAccepted("req-9"))
+        s = reduce(s, PairingSessionEvent.Paired("", byteArrayOf(9, 8)))
+        assertEquals(PairingPhase.Failed, s.phase)
+        assertEquals("invalid-fingerprint", s.failureReason)
+    }
+
     // ----------------------------------------------------------- terminal
 
     @Test
