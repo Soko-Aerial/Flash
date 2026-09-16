@@ -2,6 +2,7 @@ package com.transfer.flash.desktop
 
 import com.shepeliev.webrtckmp.MediaDevices
 import com.shepeliev.webrtckmp.audioTracks
+import com.shepeliev.webrtckmp.videoTracks
 import kotlin.test.Test
 import kotlinx.coroutines.runBlocking
 
@@ -55,6 +56,32 @@ class DesktopMediaDevicesTest {
             } finally {
                 stream.release()
             }
+        }
+    }
+
+    @Test
+    fun `video capture starts and releases without throwing on the desktop runtime`() = runBlocking {
+        val devices = MediaDevices.enumerateDevices()
+        devices.forEach { println("device: kind=${it.kind} label='${it.label}' id='${it.deviceId}'") }
+        val stream = MediaDevices.getUserMedia {
+            audio {
+                echoCancellation(true)
+                noiseSuppression(true)
+                autoGainControl(true)
+            }
+            video {
+                width(1280)
+                height(720)
+                frameRate(30.0)
+            }
+        }
+        try {
+            val videoTrack = stream.videoTracks.firstOrNull()
+            println("audio tracks: ${stream.audioTracks.size}, video tracks: ${stream.videoTracks.size}")
+            videoTrack?.switchCamera()
+            println("switchCamera() completed without error")
+        } finally {
+            stream.release()
         }
     }
 }

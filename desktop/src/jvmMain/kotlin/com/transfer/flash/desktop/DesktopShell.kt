@@ -150,6 +150,18 @@ public fun DesktopShell(
             }
         }
     }
+
+    fun placeVideoCall(peerId: String, peerName: String) {
+        scope.launch {
+            val ok = calls?.startCall(peerId, peerName, video = true) == true
+            if (!ok) {
+                snackbarHostState.showSnackbar(
+                    message = "Couldn't start the video call. Make sure the peer is reachable, then try again.",
+                    duration = SnackbarDuration.Short,
+                )
+            }
+        }
+    }
     val fallbackTransfers = remember { MutableStateFlow(emptyList<FlashTransfer>()) }
     val transfersSource = engine.transfers?.activeTransfers ?: fallbackTransfers
     val pacedTransfers = remember(transfersSource) {
@@ -373,15 +385,18 @@ public fun DesktopShell(
                             null
                         },
                         onSendText = { chatRepository.sendText(it) },
-                        // 33a entry: voice call from the header. Video stays hidden until 33c
-                        // (`showVideoCallAction = false`): 33a is audio-only, and a video button
-                        // with nowhere to go would be the dead-control trap again.
+                        // Voice & video calls from the conversation header (Phase 33a/33c).
                         onStartCall = {
                             nav.current.conversationId?.let { id ->
                                 placeVoiceCall(id, conversationState.header.title)
                             }
                         },
-                        showVideoCallAction = false,
+                        onStartVideoCall = {
+                            nav.current.conversationId?.let { id ->
+                                placeVideoCall(id, conversationState.header.title)
+                            }
+                        },
+                        showVideoCallAction = true,
                         // Offer accept/decline/retry/open, parity with the Transfers tab (which
                         // calls the same repository methods): the chat bubble params default to
                         // no-ops, and leaving them unwired is exactly the "accept in chat does
@@ -808,10 +823,8 @@ private fun pairingPhaseOf(
  *  - **title** is the peer's trusted name, falling back to the name discovery is currently reporting;
  *  - **presence** is `Online` exactly when discovery can see the peer right now, which is the same
  *    fact the Nearby dot is drawn from — not a guess and not a heartbeat;
- *  - **showCallActions is true since 33a.** The voice button starts an audio call via
- *    the shared coordinator; the video button stays hidden until 33c (the shell passes
- *    `showVideoCallAction = false`), because 33a is audio-only and a video button with
- *    nowhere to go would be the dead-control trap again.
+ *  - **showCallActions is true since 33a.** The voice and video buttons start calls via
+ *    the shared coordinator (video live since 33c).
  *
  * Returns null when the conversation is not a known peer, so the caller falls back to the
  * repository's own state rather than to a fabricated one.

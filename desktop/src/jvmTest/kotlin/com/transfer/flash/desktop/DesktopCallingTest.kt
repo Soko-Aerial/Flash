@@ -83,6 +83,16 @@ class DesktopCallingTest {
     }
 
     @Test
+    fun `an untrusted peer cannot be video called and no media is touched`() = runBlocking {
+        val calls = assertNotNull(bootEngine().calls)
+        assertFalse(
+            calls.startCall("stranger-device", "Stranger", video = true),
+            "outbound video calls to untrusted peers must be refused (Group Phase 0 closure)",
+        )
+        assertNull(calls.activeCall.value, "a refused video call must not go live")
+    }
+
+    @Test
     fun `chat traffic is not a call frame and falls through`() = runBlocking {
         val calls = assertNotNull(bootEngine().calls)
         assertFalse(

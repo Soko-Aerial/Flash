@@ -108,6 +108,7 @@ internal object MediaDevicesImpl : MediaDevices, DeviceChangeListener {
                 return LocalVideoStreamTrack(
                     native = nativeTrack,
                     videoSource = videoSource,
+                    currentDevice = matchingDevice.first,
                     settings = MediaTrackSettings(),
                 )
             }
