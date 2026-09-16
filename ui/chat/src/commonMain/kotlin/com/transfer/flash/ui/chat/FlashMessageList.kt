@@ -103,7 +103,8 @@ fun FlashMessageList(
     }
 
     // --- UI-021 unseen tracking: arrivals while scrolled up increment the pill counter. ---
-    var previousTailId by remember { mutableStateOf(messages.lastOrNull()?.id) }
+    // BOLT: Key previousTailId on initialMessageIds to prevent state leak across conversation switches
+    var previousTailId by remember(initialMessageIds) { mutableStateOf(messages.lastOrNull()?.id) }
     var unseenCount by remember { mutableIntStateOf(0) }
 
     LaunchedEffect(messages) {
@@ -135,6 +136,16 @@ fun FlashMessageList(
             }
         }
     }
+
+    // BOLT: Hoist list-level callback State objects out of LazyColumn itemsIndexed to avoid 9 State allocations per visible item during scroll
+    val currentOnOpenMessageActions by rememberUpdatedState(onOpenMessageActions)
+    val currentOnSelectToggle by rememberUpdatedState(onSelectToggle)
+    val currentOnToggleReaction by rememberUpdatedState(onToggleReaction)
+    val currentOnReplySwipe by rememberUpdatedState(onReplySwipe)
+    val currentOnImageClick by rememberUpdatedState(onImageClick)
+    val currentOnFileClick by rememberUpdatedState(onFileClick)
+    val currentOnAcceptOffer by rememberUpdatedState(onAcceptOffer)
+    val currentOnDeclineOffer by rememberUpdatedState(onDeclineOffer)
 
     val ordered = messages.asReversed()
 
@@ -196,24 +207,14 @@ fun FlashMessageList(
                     FlashDaySeparator(label = label)
                 }
 
-                val currentMessage by rememberUpdatedState(message)
-                val currentOnOpenActions by rememberUpdatedState(onOpenMessageActions)
-                val currentOnSelectToggle by rememberUpdatedState(onSelectToggle)
-                val currentOnToggleReaction by rememberUpdatedState(onToggleReaction)
-                val currentOnReplySwipe by rememberUpdatedState(onReplySwipe)
-                val currentOnImageClick by rememberUpdatedState(onImageClick)
-                val currentOnFileClick by rememberUpdatedState(onFileClick)
-                val currentOnAcceptOffer by rememberUpdatedState(onAcceptOffer)
-                val currentOnDeclineOffer by rememberUpdatedState(onDeclineOffer)
-
-                val onOpenActions = remember { { currentOnOpenActions(currentMessage) } }
-                val onSelectToggleLambda = remember { { currentOnSelectToggle(currentMessage.id) } }
-                val onToggleReactionLambda = remember { { emoji: String -> currentOnToggleReaction(currentMessage.id, emoji) } }
-                val onReplySwipeLambda = remember { { currentOnReplySwipe(currentMessage) } }
-                val onImageClickLambda = remember { { index: Int, _: Any -> currentOnImageClick(currentMessage, index) } }
-                val onFileClickLambda = remember { { file: com.transfer.flash.core.messaging.model.FlashFileAttachmentUi -> currentOnFileClick(currentMessage, file) } }
-                val onAcceptOfferLambda = remember { { file: com.transfer.flash.core.messaging.model.FlashFileAttachmentUi -> currentOnAcceptOffer(currentMessage, file) } }
-                val onDeclineOfferLambda = remember { { file: com.transfer.flash.core.messaging.model.FlashFileAttachmentUi -> currentOnDeclineOffer(currentMessage, file) } }
+                val onOpenActions = remember(message) { { currentOnOpenMessageActions(message) } }
+                val onSelectToggleLambda = remember(message.id) { { currentOnSelectToggle(message.id) } }
+                val onToggleReactionLambda = remember(message.id) { { emoji: String -> currentOnToggleReaction(message.id, emoji) } }
+                val onReplySwipeLambda = remember(message) { { currentOnReplySwipe(message) } }
+                val onImageClickLambda = remember(message) { { index: Int, _: Any -> currentOnImageClick(message, index) } }
+                val onFileClickLambda = remember(message) { { file: com.transfer.flash.core.messaging.model.FlashFileAttachmentUi -> currentOnFileClick(message, file) } }
+                val onAcceptOfferLambda = remember(message) { { file: com.transfer.flash.core.messaging.model.FlashFileAttachmentUi -> currentOnAcceptOffer(message, file) } }
+                val onDeclineOfferLambda = remember(message) { { file: com.transfer.flash.core.messaging.model.FlashFileAttachmentUi -> currentOnDeclineOffer(message, file) } }
 
                 FlashMessageBubble(
                     message = message,

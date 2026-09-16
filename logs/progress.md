@@ -8542,3 +8542,18 @@ into `DesktopMediaDevicesTest` permanently (acquire 1+2 green).
 
 ### Verification
 Full suites green (62+72+desktop), BUILD SUCCESSFUL. Nothing committed. Same live criteria.
+
+## 2026-09-17 — Bolt: LazyColumn item allocation optimization & conversation tail state leak fix
+
+### Worked on
+Optimized `FlashMessageList` in `:ui:chat` for low-end device performance and fixed a state leak bug when switching conversations.
+
+### Changed
+- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashMessageList.kt`:
+  - Hoisted list-level callback `rememberUpdatedState` declarations (`onOpenMessageActions`, `onSelectToggle`, `onToggleReaction`, `onReplySwipe`, `onImageClick`, `onFileClick`, `onAcceptOffer`, `onDeclineOffer`) outside `LazyColumn` to top-level `FlashMessageList` scope. Prevents allocating 8 `MutableState` objects per item on every composition pass during scroll.
+  - Keyed `previousTailId` state on `initialMessageIds` (`remember(initialMessageIds)`), resetting tail tracking when switching conversations or loading chat history to prevent false unseen pill counters or auto-scroll triggers.
+  - Added a `// BOLT:` explanatory comment.
+
+### Verification
+- Gradle verification suite passed (`./gradlew :core:messaging:jvmTest :core:messaging:testAndroidHostTest :ui:chat:jvmTest :app:testDebugUnitTest :app:assembleDebug`).
+- `git diff --check` passed clean with 0 warnings.
