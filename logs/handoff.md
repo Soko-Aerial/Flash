@@ -1,32 +1,24 @@
 # Current Handoff
 
-## 2026-09-16 - Parking resolution IN PROGRESS (was: PRs #13-#17 merged; now landing the 28-file stash)
+## 2026-09-16 - Parking RESOLVED + pushed (dev @ 21052c3); live-audio run now unblocked
 
 ### Current branch
-`dev` at `55e5e4b`. Five single-parent code commits on top of `e9afca0` (#12):
-`c50f6f2` (#13), `eb9490f` (#14), `08e91dc` (#15), `db3203c` (#16), `55e5e4b` (#17).
-New branch `parking/pre-pr-merge-20260915` preserves the rescued dangling stash `b2c03c8`.
-Working tree clean except untracked `session-ses_f59c.md` (user's transcript, left alone).
+`dev` at `21052c3`. Parking landed as five commits on top of `2d9a73d`:
+`667189b` (messaging commonMain move), `6ddc7ef` (calling threading/lifecycle),
+`e5298b5` (desktop+persistence+UI gating), `10cd82a` (ERROR-061 ADM rework),
+`21052c3` (docs+logs). Branch `parking/pre-pr-merge-20260915` kept as the pre-resolution
+snapshot. Working tree clean except untracked `session-ses_f59c.md`.
 
 ### Last verified build
-JBR 21 + AF_UNIX workaround, per-PR module suites only (all XML-confirmed, 0 failures):
-`:ui:chat:jvmTest` (#13/#15/#16), `:ui:platform-shims` jvm 34 + host 12 (#14),
-`:core:security` host incl. pairing 26/26 (#17). No full sweep, no device run this pass.
-
-### Known blockers
-None new. GitHub PRs #6-#17 still OPEN remotely (local merges don't close them). A2 billing lock
-and physical-device gates unchanged from 2026-09-12.
+JBR 21 + AF_UNIX workaround. `:core:messaging` jvm+host (repo 48/48), `:core:calling`
+jvm+host, `:core:common`, `:core:discovery` jvm, `:core:persistence` jvm,
+`:core:engine` host 14/14, `:desktop:jvmTest` (double-acquire 2/2, calling 3/3),
+`:ui:chat:jvmTest`, `:app` compile+unit — green, XML-confirmed. Only failures: the 12
+known Windows DataStore NTFS failures (pre-existing).
 
 ### Recommended next task
-Parking resolution (this session): messaging KMP migration + calling ADM rework + desktop
-persistence + the two holder call-site conflicts (done: codec dispatch kept, transportPeerId now
-passed for all five direct families so PR #11's guards stay live). Still to do here: WebRtc.kt
-official-order rework, calling-session review, log merge, verify, commit, push.
-
-### Files most relevant to next task
-- `logs/progress.md` 2026-09-16 entries (PR merges + this parking resolution)
-- `third_party/.../jvmMain/.../WebRtc.kt` (stale ERROR-060 approach — must be reworked, see progress)
-- `core/messaging/.../commonMain/.../RealFlashChatRepository.kt` (#11 guards ported from androidMain)
+Owner live-audio run per ERROR-061 criteria, then GitHub-side PR disposition (#6-#17 still
+OPEN remotely) and the owed device gates.
 
 ## 2026-09-15 — ERROR-060 follow-up: stop-first hygiene restored, double-acquire is a test
 
