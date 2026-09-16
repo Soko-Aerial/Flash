@@ -306,6 +306,7 @@ public class FlashCallSession(
      * any bytes are moving in either direction.
      */
     private var loggedReportShape: Boolean = false
+    private var loggedVideoCodecs: String? = null
 
     /**
      * Previous packet counters, and the loss fraction over the LAST interval only.
@@ -1376,6 +1377,17 @@ public class FlashCallSession(
                 "stats shape types=$shape bytesIn=$bytesIn bytesOut=$bytesOut " +
                     "packetsReceived=$received packetsLost=$lost",
             )
+        }
+
+        val codecs = all.filter { normStatType(it.type) == "codec" }.associateBy { it.id }
+        val videoInCodec = videoIn?.members?.str("codecId")?.let { codecs[it]?.members?.str("mimeType") }
+        val videoOutCodec = videoOut?.members?.str("codecId")?.let { codecs[it]?.members?.str("mimeType") }
+        if (videoInCodec != null || videoOutCodec != null) {
+            val currentCodecs = "inbound=$videoInCodec, outbound=$videoOutCodec"
+            if (currentCodecs != loggedVideoCodecs) {
+                loggedVideoCodecs = currentCodecs
+                FlashLog.i("CALL", "active video codecs: remote inbound=$videoInCodec, local outbound=$videoOutCodec")
+            }
         }
 
         // Interval loss for the governor, differenced like the byte counters and gated on the

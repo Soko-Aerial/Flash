@@ -50,29 +50,23 @@ class DesktopVideoRenderingTest {
     }
 
     @Test
-    fun verifyRgbaColorChannelMapping() {
-        val bytes = byteArrayOf(
-            255.toByte(), // byte 0 = 255
-            0,            // byte 1 = 0
-            0,            // byte 2 = 0
-            255.toByte(), // byte 3 = 255
+    fun verifyLibyuvArgbWithSkiaBgraProducesCorrectRgb() {
+        // Libyuv FourCC.ARGB outputs memory byte order: [B, G, R, A]
+        // For a pure red pixel (R=255, G=0, B=0, A=255):
+        val redPixelBytes = byteArrayOf(
+            0,            // byte 0 = B (Blue)
+            0,            // byte 1 = G (Green)
+            255.toByte(), // byte 2 = R (Red)
+            255.toByte(), // byte 3 = A (Alpha)
         )
-        // With RGBA_8888: byte 0 is R, byte 1 is G, byte 2 is B, byte 3 is A
-        val infoRgba = ImageInfo(1, 1, ColorType.RGBA_8888, ColorAlphaType.PREMUL)
-        val skiaRgba = Image.makeRaster(infoRgba, bytes, 4)
-        val composeRgba = skiaRgba.toComposeImageBitmap()
-        val pixelRgba = composeRgba.toPixelMap()[0, 0]
-        println("RGBA_8888 pixel: red=${pixelRgba.red}, green=${pixelRgba.green}, blue=${pixelRgba.blue}")
-        assertEquals("Red channel must be 1.0", 1.0f, pixelRgba.red, 0.01f)
-        assertEquals("Blue channel must be 0.0", 0.0f, pixelRgba.blue, 0.01f)
-
-        // With BGRA_8888: byte 0 is B, byte 1 is G, byte 2 is R, byte 3 is A
-        val infoBgra = ImageInfo(1, 1, ColorType.BGRA_8888, ColorAlphaType.PREMUL)
-        val skiaBgra = Image.makeRaster(infoBgra, bytes, 4)
-        val composeBgra = skiaBgra.toComposeImageBitmap()
-        val pixelBgra = composeBgra.toPixelMap()[0, 0]
-        println("BGRA_8888 pixel: red=${pixelBgra.red}, green=${pixelBgra.green}, blue=${pixelBgra.blue}")
-        assertEquals("Red channel in BGRA must be 0.0", 0.0f, pixelBgra.red, 0.01f)
-        assertEquals("Blue channel in BGRA must be 1.0", 1.0f, pixelBgra.blue, 0.01f)
+        // Paired with Skia ColorType.BGRA_8888 (where byte 0 is B, byte 1 is G, byte 2 is R, byte 3 is A):
+        val info = ImageInfo(1, 1, ColorType.BGRA_8888, ColorAlphaType.PREMUL)
+        val skiaImg = Image.makeRaster(info, redPixelBytes, 4)
+        val composeBitmap = skiaImg.toComposeImageBitmap()
+        val pixel = composeBitmap.toPixelMap()[0, 0]
+        assertEquals("Red channel must be 1.0", 1.0f, pixel.red, 0.01f)
+        assertEquals("Green channel must be 0.0", 0.0f, pixel.green, 0.01f)
+        assertEquals("Blue channel must be 0.0", 0.0f, pixel.blue, 0.01f)
+        assertEquals("Alpha channel must be 1.0", 1.0f, pixel.alpha, 0.01f)
     }
 }

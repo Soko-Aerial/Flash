@@ -15,18 +15,19 @@ Desktop Calling / SDP Negotiation (`core:calling`) & Video Rendering (`ui:callui
    (null_video_decoder.cc:35): Can't register decode complete callback on NullVideoDecoder.
    (null_video_decoder.cc:29): The NullVideoDecoder doesn't support decoding.
    ```
-2. Desktop local video preview (PiP) displayed with a distinct blue/cyan tint on skin tones (faces appeared blue instead of natural flesh tone), while the phone showed the desktop video with normal colors.
+2. Desktop video hue tint: local video preview (PiP) displayed with a distinct blue/cyan tint under BGRA, and when switched to RGBA rendered with a red hue over the entire frame.
 
 ### Root cause
 1. `NullVideoDecoder`: `webrtc-java` 0.17.0 advertises AV1, VP9, and H264 in its receiver capabilities, but only statically bundles the libvpx VP8 decoder. It does not bundle `dav1d.dll` or dynamic VP9 libraries. When `CallSdp.stripH264` only stripped H264, Android and Desktop negotiated AV1 or VP9. At initialization, Desktop's WebRTC decoder factory failed to create a native decoder for the negotiated codec and fell back to `NullVideoDecoder`, failing decode initialization and dropping all incoming video packets.
-2. Blue Hue: In `FlashCallVideoSurface.jvm.kt`, `VideoBufferConverter.convertFromI420(buffer, bytes, FourCC.BGRA)` was converted into Skia via `ImageInfo(width, height, ColorType.BGRA_8888, ...)`. Libyuv's `I420ToBGRA` writes memory in byte order `[R, G, B, A]`. Skia's `ColorType.BGRA_8888` on Windows treats byte 0 as Blue and byte 2 as Red. This inverted the Red and Blue channels, transforming high-red skin tones into high-blue cyan.
+2. Hue tint: Libyuv's `FourCC.BGRA` writes memory in byte order `[A, R, G, B]` (byte 0 is Alpha = 255). Skia's `_8888` formats expect Alpha at byte 3. When paired with `ColorType.BGRA_8888`, Skia read byte 0 (Alpha = 255) as Blue -> continuous Blue tint. When switched to `ColorType.RGBA_8888`, Skia read byte 0 (Alpha = 255) as Red -> continuous Red tint.
 
 ### Fix
 1. In `CallSdp.kt`, replaced `stripH264` with `enforceVp8Only(sdp: String): String`. In the `m=video` section, strips all payload types and attributes except VP8 (`a=rtpmap:<pt> VP8/90000`) and its associated RTX (`apt=<vp8Pt>`). Both endpoints are forced to negotiate VP8, which is statically supported across all platforms.
-2. In `FlashCallVideoSurface.jvm.kt`, changed Skia `ColorType` to `ColorType.RGBA_8888` to align with the `[R, G, B, A]` memory buffer output from `VideoBufferConverter.convertFromI420(..., FourCC.BGRA)`.
+2. In `FlashCallVideoSurface.jvm.kt`, switched to `VideoBufferConverter.convertFromI420(buffer, bytes, FourCC.ARGB)` paired with Skia's `ColorType.BGRA_8888`. Libyuv's `FourCC.ARGB` writes `[B, G, R, A]` (Alpha at byte 3), exactly matching Skia's `ColorType.BGRA_8888` channel expectation (byte 0=B, 1=G, 2=R, 3=A). Both blue and red tints are eliminated and natural RGB colors are restored.
+3. Added RTCStats video codec query in `FlashCallSession.sampleStats` to log active inbound and outbound `mimeType`.
 
 ### Verification
-- Unit test in `ui:callui` (`verifyRgbaColorChannelMapping`) verified `bytes[0] = 255` produces pure red in Compose (`red=1.0, blue=0.0`).
+- Unit test in `ui:callui` (`verifyLibyuvArgbWithSkiaBgraProducesCorrectRgb`) verified `FourCC.ARGB` layout produces pure red `[0, 0, 255, 255]` -> `red=1.0, blue=0.0, alpha=1.0` in Compose.
 - Unit test in `core:calling` (`CallSdpTest.enforceVp8Only_*`) verified SDP parsing and attribute dropping.
 - Loopback smoke test in `core:calling` (`DesktopMediaStackSmokeTest`) verified continuous 640x480 frame decoding using `enforceVp8Only`.
 - `:desktop:compileKotlinJvm` passed cleanly.

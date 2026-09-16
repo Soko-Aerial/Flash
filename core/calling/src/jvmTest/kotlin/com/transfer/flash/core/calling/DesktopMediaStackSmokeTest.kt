@@ -173,7 +173,8 @@ class DesktopMediaStackSmokeTest {
                     if (track is com.shepeliev.webrtckmp.VideoStreamTrack) {
                         track.addSink(object : dev.onvoid.webrtc.media.video.VideoTrackSink {
                             override fun onVideoFrame(frame: dev.onvoid.webrtc.media.video.VideoFrame) {
-                                println("PC2 DECODED VIDEO FRAME: ${frame.buffer?.width}x${frame.buffer?.height}")
+                                val buf = frame.buffer ?: return
+                                println("PC2 DECODED VIDEO FRAME: ${buf.width}x${buf.height}")
                                 remoteFrameReceived = true
                             }
                         })

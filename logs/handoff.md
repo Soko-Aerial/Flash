@@ -16,10 +16,11 @@
 ### Ready for live verification
 - **Desktop 1:1 Video Calls (Phase 33c, ERROR-065 & ERROR-066)**:
   - **Phone video decode fixed (`NullVideoDecoder` eliminated)**: `CallSdp.enforceVp8Only` forces VP8 as the exclusive video codec in local & remote SDPs, stripping non-VP8 codecs (H264, VP9, AV1) whose native decoders are missing on Desktop. Desktop and Android negotiate VP8, allowing incoming phone video to decode and render without error.
-  - **Blue hue eliminated**: `FlashCallVideoSurface.jvm.kt` now specifies `ColorType.RGBA_8888` to match the byte layout output by `VideoBufferConverter.convertFromI420(..., FourCC.BGRA)`. Inverted red/blue channels are restored so face skin tones display with their natural colors.
+  - **Color hue eliminated (blue and red tints resolved)**: `FlashCallVideoSurface.jvm.kt` now specifies `FourCC.ARGB` paired with Skia's `ColorType.BGRA_8888`. Libyuv's `FourCC.ARGB` places Alpha at byte 3 (not byte 0), aligning memory bytes `[B, G, R, A]` directly with Skia's `BGRA_8888` channel expectation and restoring natural skin tones.
+  - **Codec telemetry**: `FlashCallSession.sampleStats` logs active inbound and outbound video codec mimeTypes (from `RTCStats`) for immediate verification.
   - **Ringing state fixed**: `FlashCallIdentityBlock` shows caller avatar, name, and Answer/Decline buttons; no white blank screen.
   - **Video rendering in pure Compose**: Skia `ImageBitmap` eliminates heavyweight AWT `SwingPanel` occlusion, allowing Call Controls (Hangup, Mute, Camera) and PiP rounded corners to render smoothly on top.
-  - **Telemetry**: `FlashCallStatsBadge` displays latency (ms with status dot), received + sent video resolution (e.g. `720p (↑720p) · 30fps`), bitrate, and packet loss like on mobile.
+  - **Telemetry badge**: `FlashCallStatsBadge` displays latency (ms with status dot), received + sent video resolution (e.g. `720p (↑720p) · 30fps`), bitrate, and packet loss like on mobile.
 - **Desktop receiver progress & speed telemetry**: `DesktopEngine.kt` now calls `updateIncomingProgress`
   on every `ReceiveEvent.AckBatchReady` (and seeds it on `acceptOffer`); `RealFlashTransferRepository`
   now maintains a `RollingRateMeter` per incoming transfer, calculating live `speedBytesPerSec` and `etaSeconds`

@@ -121,8 +121,8 @@ private class DesktopVideoSink(
                 bytes = ByteArray(size)
                 byteBuffer = bytes
             }
-            VideoBufferConverter.convertFromI420(buffer, bytes, FourCC.BGRA)
-            val info = ImageInfo(width, height, ColorType.RGBA_8888, ColorAlphaType.PREMUL)
+            VideoBufferConverter.convertFromI420(buffer, bytes, FourCC.ARGB)
+            val info = ImageInfo(width, height, ColorType.BGRA_8888, ColorAlphaType.PREMUL)
             val skiaImg = SkiaImage.makeRaster(info, bytes, width * 4)
             frameState.value = skiaImg.toComposeImageBitmap()
         } catch (t: Throwable) {
