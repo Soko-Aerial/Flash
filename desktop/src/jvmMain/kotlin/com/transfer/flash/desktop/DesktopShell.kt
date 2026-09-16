@@ -382,6 +382,35 @@ public fun DesktopShell(
                             }
                         },
                         showVideoCallAction = false,
+                        // Offer accept/decline/retry/open, parity with the Transfers tab (which
+                        // calls the same repository methods): the chat bubble params default to
+                        // no-ops, and leaving them unwired is exactly the "accept in chat does
+                        // nothing" report (ERROR-062 follow-up). acceptIncoming emits ACTION_ACCEPT,
+                        // which the engine collector turns into sink-then-RESUME like a tab accept.
+                        onAcceptOffer = { tid ->
+                            engine.transfers?.let { repo ->
+                                scope.launch {
+                                    repo.acceptIncoming(com.transfer.flash.core.transfer.model.FlashTransferId(tid))
+                                }
+                            }
+                        },
+                        onDeclineOffer = { tid ->
+                            engine.transfers?.let { repo ->
+                                scope.launch {
+                                    repo.declineIncoming(com.transfer.flash.core.transfer.model.FlashTransferId(tid))
+                                }
+                            }
+                        },
+                        onRetryTransfer = { tid ->
+                            engine.transfers?.let { repo ->
+                                scope.launch {
+                                    repo.resumeTransfer(com.transfer.flash.core.transfer.model.FlashTransferId(tid))
+                                }
+                            }
+                        },
+                        onOpenAttachment = { path, mime, _ ->
+                            DesktopHelpers.openAttachment(path, mime)
+                        },
                         // The desktop picker seam exists and is tested (`FlashFilePicker.jvm`), but
                         // wiring it to a send is Phase 30's job; until then this is an honest no-op
                         // rather than a stub that swallows a picked file.
