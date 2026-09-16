@@ -57,7 +57,7 @@ import kotlinx.coroutines.launch
 /**
  * Conversation message list (UI-005 bubbles, UI-006 insertion, UI-007 selection).
  */
-// BOLT: contentType differentiation + per-item callback memoization to eliminate recomposition jank in LazyColumn chat on low-end devices
+// BOLT: contentType isMine differentiation + initialMessageIds conversation reset to eliminate recomposition/layout jank in LazyColumn chat on low-end devices
 @Composable
 fun FlashMessageList(
     messages: List<FlashMessageUi>,
@@ -89,7 +89,7 @@ fun FlashMessageList(
     val motion = FlashTheme.motion
     val coroutineScope = rememberCoroutineScope()
 
-    val initialMessageIds = remember { messages.mapTo(HashSet()) { it.id } }
+    val initialMessageIds = remember(messages.firstOrNull()?.id) { messages.mapTo(HashSet()) { it.id } }
 
     val stickThresholdPx = with(LocalDensity.current) { FlashDimensions.chatBottomStickThreshold.toPx() }
     val atBottom = remember(stickThresholdPx) {
@@ -308,11 +308,11 @@ private fun FlashDaySeparator(
 internal fun flashMessageKey(message: FlashMessageUi): String = message.id
 
 internal fun flashMessageContentType(message: FlashMessageUi): String = when {
-    message.callEvent != null -> "callEvent"
-    message.images.isNotEmpty() -> "image"
-    message.voiceAttachments.isNotEmpty() -> "voice"
-    message.fileAttachments.isNotEmpty() -> "file"
-    else -> "text"
+    message.callEvent != null -> if (message.isMine) "callEvent_out" else "callEvent_in"
+    message.images.isNotEmpty() -> if (message.isMine) "image_out" else "image_in"
+    message.voiceAttachments.isNotEmpty() -> if (message.isMine) "voice_out" else "voice_in"
+    message.fileAttachments.isNotEmpty() -> if (message.isMine) "file_out" else "file_in"
+    else -> if (message.isMine) "text_out" else "text_in"
 }
 
 internal fun daySeparatorContentDescription(label: String): String = "Messages from $label"
