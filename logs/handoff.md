@@ -1,6 +1,6 @@
 # Current Handoff
 
-## 2026-09-16 — Desktop video calling: fmtp removal on VP8 (NullVideoDecoder permanently resolved)
+## 2026-09-16 — Desktop video calling: frame rotation handling (upright portrait video rendering)
 
 ### Current branch
 `dev`.
@@ -15,13 +15,17 @@
 
 ### Ready for live verification
 - **Desktop 1:1 Video Calls (Phase 33c, ERROR-065 & ERROR-066)**:
+  - **Upright Video Frame Rotation (Sideways Phone Video Fixed)**:
+    - `FlashCallVideoSurface.jvm.kt` now reads `VideoFrame.rotation` (0, 90, 180, 270) and renders using Compose `Canvas` with hardware-accelerated GPU matrix transformation (`canvas.translate` + `canvas.rotate`).
+    - Swaps effective width/height when rotated 90° or 270°, allowing `CallVideoFit.Fit` and `CallVideoFit.Balanced` to calculate aspect ratio scaling correctly for portrait mobile streams.
+    - Zero CPU pixel re-allocation or memory copying; verified with full unit test suite covering 0°, 90°, 180°, 270° in `DesktopVideoRenderingTest`.
   - **`NullVideoDecoder` Eliminated (Root Cause & Fix Confirmed)**:
     - Root cause: WebRTC 0.17.0's `VideoDecoderFactoryTemplate` strictly checks `supported_format.parameters == format.parameters`. VP8 defines no format parameters (empty map `{}`). Legacy `x-google-*` bitrate params injected via `a=fmtp:96` caused format matching to fail and fall back to `NullVideoDecoder`.
     - Fix: `CallSdp.enforceVp8Only` strips all `a=fmtp:` lines in video, and is applied to the output of `tuneLocal`/`tuneRemote` before `setLocalDescription`/`setRemoteDescription`. WebRTC matches `{}` == `{}` and instantiates `LibvpxVp8Decoder`.
     - Verified in `DesktopMediaStackSmokeTest`: `DECODED WITH FMTP: false` vs `DECODED THROUGH TUNELOCAL + ENFORCEVP8ONLY: true`.
   - **RTX & Secondary SSRCs removed**: `CallSdp.enforceVp8Only` drops RTX payload types and `a=ssrc-group:FID` lines from video, avoiding `unsignalled ssrc` and decoder fallback on retransmissions.
   - **Instant SDP Telemetry**: `FlashCallSession.logSdp` prints the exact video lines (`m=video`, `a=rtpmap`, `a=fmtp`, `a=rtcp-fb`, `a=ssrc-group`) for both local and remote offer/answer, and `sampleStats` prints `active video codecs: remote inbound=..., local outbound=...`.
-  - **Color hue eliminated (blue and red tints resolved)**: `FlashCallVideoSurface.jvm.kt` now specifies `FourCC.ARGB` paired with Skia's `ColorType.BGRA_8888`. Libyuv's `FourCC.ARGB` places Alpha at byte 3 (not byte 0), aligning memory bytes `[B, G, R, A]` directly with Skia's `BGRA_8888` channel expectation and restoring natural skin tones.
+  - **Color hue eliminated (blue and red tints resolved)**: `FlashCallVideoSurface.jvm.kt` specifies `FourCC.ARGB` paired with Skia's `ColorType.BGRA_8888`. Libyuv's `FourCC.ARGB` places Alpha at byte 3 (not byte 0), aligning memory bytes `[B, G, R, A]` directly with Skia's `BGRA_8888` channel expectation and restoring natural skin tones.
   - **Ringing state fixed**: `FlashCallIdentityBlock` shows caller avatar, name, and Answer/Decline buttons; no white blank screen.
   - **Video rendering in pure Compose**: Skia `ImageBitmap` eliminates heavyweight AWT `SwingPanel` occlusion, allowing Call Controls (Hangup, Mute, Camera) and PiP rounded corners to render smoothly on top.
   - **Telemetry badge**: `FlashCallStatsBadge` displays latency (ms with status dot), received + sent video resolution (e.g. `720p (↑720p) · 30fps`), bitrate, and packet loss like on mobile.

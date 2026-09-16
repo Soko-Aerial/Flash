@@ -1,5 +1,31 @@
 # Progress Log
 
+## 2026-09-16 — Desktop video calling: frame rotation handling (upright portrait camera rendering) (ERROR-065 / ERROR-066)
+
+### Worked on
+1. **Desktop Video Frame Rotation**:
+   - Mobile phone camera sensors capture frames in landscape relative to the sensor hardware (e.g. 1280x720). When held upright in portrait mode, the Android camera HAL tags WebRTC frames with `VideoFrame.rotation` = 90° (or 270°).
+   - `FlashCallVideoSurface.jvm.kt` previously ignored `frame.rotation`, rendering raw 1280x720 bitmaps horizontally. This caused portrait phone camera feeds to appear sideways on Desktop.
+   - Introduced `RenderedVideoFrame(val bitmap: ImageBitmap, val rotation: Int)` in `FlashCallVideoSurface.jvm.kt` to preserve the WebRTC rotation angle on each received frame.
+2. **Hardware-Accelerated Compose Canvas Rotation & Aspect Ratio Adaptation**:
+   - Replaced `Image` with a hardware-accelerated Compose `Canvas`.
+   - On each frame, normalized rotation (`(rotation % 360 + 360) % 360`). When `rotation == 90 || rotation == 270`, effective dimensions are swapped (`effectiveW = rawH`, `effectiveH = rawW`).
+   - Calculated aspect scaling:
+     - `CallVideoFit.Fit`: `minOf(width / effectiveW, height / effectiveH)`.
+     - `CallVideoFit.Balanced`: `maxOf(width / effectiveW, height / effectiveH)`.
+   - Used `drawIntoCanvas`:
+     - `canvas.save()`
+     - `canvas.clipRect(0, 0, width, height)` (ensuring crop cleanly bounds to container)
+     - `canvas.translate(width / 2f, height / 2f)`
+     - `canvas.rotate(rotation)`
+     - `canvas.drawImageRect(...)` with remembered `Paint` (`isAntiAlias = true, filterQuality = FilterQuality.Medium`).
+     - `canvas.restore()`
+   - Zero intermediate Bitmap allocations or CPU pixel copying per frame — Skia executes the transformation matrix on the GPU.
+3. **Comprehensive Unit Testing**:
+   - In `DesktopVideoRenderingTest.kt`, added `verifyRotatedCanvasDraw` (90° clockwise: top becomes red, bottom becomes blue from a 2x1 horizontal image), `verify270DegreeRotationCanvasDraw` (270° clockwise: top becomes blue, bottom becomes red), `verify180DegreeRotationCanvasDraw` (180° upside down), and `verifyRotationGeometryCalculations` for `Fit` and `Balanced` dimensions.
+   - All tests pass cleanly under `:ui:callui:jvmTest`.
+   - Verified `:desktop:compileKotlinJvm` builds with 0 errors.
+
 ## 2026-09-16 — Desktop video calling: VideoDecoderFactoryTemplate exact match fix (fmtp parameter removal on VP8) (ERROR-066)
 
 ### Worked on
