@@ -59,11 +59,11 @@ kotlin {
     }
 
     // Desktop/Linux/CI target. Plain `jvm()`, never `jvm("desktop")` — CONVENTIONS.md R5.
-    // `compileKotlinJvm` cannot see android.jar, which is what proves the 4 commonMain files
-    // (the FlashChatRepository contract + its sample implementation, the 20-type messaging UI
-    // model set that Phases 17–20 render, MessageWireFrame, and the grouping/preview helpers)
-    // are Android-free. A green compile here also proves no Room type reached the desktop
-    // classpath, because the jvm() target has no `:core:persistence` edge at all.
+    // `compileKotlinJvm` cannot see android.jar, which is what proves newly moved commonMain
+    // files are genuinely Android-free. A green compile here also proves no Android type
+    // reached the desktop classpath — with one recorded exception: `:core:persistence`,
+    // whose entities/DAOs live in ITS commonMain and resolve per target (androidMain and
+    // jvmMain both exist there), so sharing them from here is KMP-clean.
     jvm {
         compilerOptions {
             jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11)
@@ -77,13 +77,16 @@ kotlin {
             // must be `api` (implementation would keep those return types off a consumer's
             // classpath).
             api(libs.kotlinx.coroutines.core)
+            // Phase 2 slice 4: RealFlashChatRepository moved androidMain → commonMain. It
+            // consumes the Room DAO/entity types, which live in :core:persistence's OWN
+            // commonMain and resolve per target — so this edge is multiplatform-safe, unlike
+            // the SQLCipher opener and the settings DataStore tier, which stay androidMain-only
+            // (see below).
+            implementation(project(":core:persistence"))
         }
         androidMain.dependencies {
-            // RealFlashChatRepository consumes 16 Room types — 7 DAOs, 7 entities and the 2 DAO
-            // projections ConversationPreview/ConversationUnread. This is the module's one
-            // genuinely load-bearing Android edge, and it is why that 1306-line file is
-            // androidMain. Nothing in commonMain and nothing on the jvm() target sees Room.
-            implementation(project(":core:persistence"))
+            // The SQLCipher open path, the settings DataStore tier and room-ktx stay here: all
+            // Android-only. The repository itself no longer is.
             // TODO(cleanup): `:core:security`, `:core:network` and both androidx entries are dead
             // — grep finds zero references to any of them in this module's main and test sources.
             // Parked here rather than deleted so core-messaging-android's POM keeps the four

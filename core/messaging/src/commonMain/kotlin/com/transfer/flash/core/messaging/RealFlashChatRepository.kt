@@ -2,10 +2,13 @@
 
 package com.transfer.flash.core.messaging
 
+import com.transfer.flash.core.common.id.UuidIdGenerator
 import com.transfer.flash.core.common.logging.FlashLog
 import com.transfer.flash.core.common.model.FlashPeerPresence
 import com.transfer.flash.core.common.result.FlashError
 import com.transfer.flash.core.common.result.FlashResult
+import com.transfer.flash.core.common.time.FlashTimeSource
+import com.transfer.flash.core.common.time.SystemTimeSource
 import com.transfer.flash.core.messaging.model.FlashAttachmentProgress
 import com.transfer.flash.core.messaging.model.FlashCallEventKind
 import com.transfer.flash.core.messaging.model.FlashCallEventUi
@@ -36,6 +39,11 @@ import com.transfer.flash.core.messaging.protocol.MessageWireFrame
 import com.transfer.flash.core.messaging.protocol.membershipUpdateWins
 import com.transfer.flash.core.messaging.util.assignDaySeparators
 import com.transfer.flash.core.messaging.util.computeMessageGroupPositions
+import com.transfer.flash.core.messaging.util.FlashMimeTypes
+import com.transfer.flash.core.messaging.util.platformFormatMonthDay
+import com.transfer.flash.core.messaging.util.platformFormatTimeOfDay
+import com.transfer.flash.core.common.concurrent.SyncMap
+import com.transfer.flash.core.common.concurrent.SyncSet
 import com.transfer.flash.core.messaging.util.sortedChatListItems
 import com.transfer.flash.core.messaging.util.throttleLatest
 import com.transfer.flash.core.persistence.db.dao.ConversationDao
@@ -56,11 +64,6 @@ import com.transfer.flash.core.persistence.db.entity.OutboxEntity
 import com.transfer.flash.core.persistence.db.entity.ReactionEntity
 import com.transfer.flash.core.persistence.db.entity.ReceiptEntity
 import com.transfer.flash.core.persistence.db.entity.RecentSearchEntity
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
-import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
 import kotlin.concurrent.Volatile
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -184,6 +187,13 @@ public class RealFlashChatRepository(
     ) -> Unit = { conversationId, senderName, fileName, mimeType, _ ->
         onInboundAttachment(conversationId, senderName, fileName, mimeType)
     },
+    /**
+     * Wall clock. Defaulted to [SystemTimeSource] so every existing call site (production
+     * wiring, all tests) compiles unchanged; tests that need determinism pass a fake.
+     * A seam rather than a direct call because common code cannot reach
+     * `System.currentTimeMillis()`.
+     */
+    private val timeSource: FlashTimeSource = SystemTimeSource,
 ) : FlashChatRepository {
 
     private val _chatListState = MutableStateFlow(FlashChatListUiState())
@@ -195,7 +205,7 @@ public class RealFlashChatRepository(
      * starved the shared test executor, and on the UI thread it would block main. A group
      * opened cold from the chat list is corrected by the combine's first Room emission.
      */
-    private val groupTitleCache = ConcurrentHashMap<String, String>()
+    private val groupTitleCache = SyncMap<String, String>()
 
     /**
      * F3: this device's performance tier as seen by the sync protocol — it paces pushes TO us
@@ -246,12 +256,12 @@ public class RealFlashChatRepository(
 
     // Ephemeral in-memory typing state: conversationId -> (memberId -> memberName) currently typing.
     // Mirrored into [typingFlow] so the conversation UI can observe it (#11). Never persisted.
-    private val typingStates = ConcurrentHashMap<String, ConcurrentHashMap<String, String>>()
+    private val typingStates = SyncMap<String, SyncMap<String, String>>()
     private val typingFlow = MutableStateFlow<Map<String, List<String>>>(emptyMap())
 
     private fun publishTyping() {
-        typingFlow.value = typingStates
-            .mapValues { (_, members) -> members.values.toList() }
+        typingFlow.value = typingStates.toMap()
+            .mapValues { (_, members) -> members.valuesSnapshot() }
             .filterValues { it.isNotEmpty() }
     }
 
@@ -347,7 +357,7 @@ public class RealFlashChatRepository(
                         avatarInitials = computeInitials(displayTitle),
                         previewText = previewLabel(previewByConversation[entity.id])
                             ?: "Tap to view conversation",
-                        timestamp = formatTimestamp(entity.sortOrder),
+                        timestamp = formatTimestamp(entity.sortOrder, timeSource.nowMs()),
                         unreadCount = unreadByConversation[entity.id] ?: 0,
                         presence = presence,
                         isGroup = entity.isGroup,
@@ -541,7 +551,7 @@ public class RealFlashChatRepository(
                 val chronologicalEntities = entities.asReversed()
                 val messagesWithSeparators = assignDaySeparators(
                     messages = chronologicalEntities.zip(messages.asReversed()),
-                    nowMs = System.currentTimeMillis(),
+                    nowMs = timeSource.nowMs(),
                 ) { entity -> entity.sentAt }
                 ConversationContent(
                     messages = computeMessageGroupPositions(messagesWithSeparators),
@@ -610,7 +620,7 @@ public class RealFlashChatRepository(
                                 conversationId = conversationId,
                                 memberId = localDeviceId,
                                 upToMessageId = newestInboundId,
-                                readAt = System.currentTimeMillis(),
+                                readAt = timeSource.nowMs(),
                             ),
                         )
                     }
@@ -703,9 +713,9 @@ public class RealFlashChatRepository(
         }
         val members = groupMemberDao
             ?: return FlashResult.Failure(FlashError.Unknown("Group storage unavailable"))
-        val now = System.currentTimeMillis()
-        val groupId = UUID.randomUUID().toString()
-        val operationId = UUID.randomUUID().toString()
+        val now = timeSource.nowMs()
+        val groupId = UuidIdGenerator.newId()
+        val operationId = UuidIdGenerator.newId()
         // Stamp before any suspend point that could race a fast openConversation().
         groupTitleCache[groupId] = groupName
         conversationDao.upsert(
@@ -763,8 +773,8 @@ public class RealFlashChatRepository(
         if ((existing.map { it.deviceId }.toSet() + memberIds).size > GroupPolicy.MAX_MEMBERS) {
             return FlashResult.Failure(FlashError.Unknown("Groups support at most ${GroupPolicy.MAX_MEMBERS} members"))
         }
-        val now = System.currentTimeMillis()
-        val operationId = UUID.randomUUID().toString()
+        val now = timeSource.nowMs()
+        val operationId = UuidIdGenerator.newId()
         memberIds.forEach { memberId ->
             val current = members.member(groupId, memberId)
             val candidate = GroupMembershipVersion(now, operationId)
@@ -820,8 +830,8 @@ public class RealFlashChatRepository(
             ?: return FlashResult.Failure(FlashError.Unknown("Group storage unavailable"))
         val current = members.member(groupId, localDeviceId)
             ?: return FlashResult.Failure(FlashError.Unknown("Unknown group"))
-        val now = System.currentTimeMillis()
-        val operationId = UUID.randomUUID().toString()
+        val now = timeSource.nowMs()
+        val operationId = UuidIdGenerator.newId()
         members.upsert(current.copy(membershipVersion = now, operationId = operationId, isActive = false))
         val frame = GroupWireFrame.Leave(groupId, localDeviceId, operationId, now, localDeviceId)
         members.activeMembers(groupId).filter { it.deviceId != localDeviceId }.forEach { target ->
@@ -891,8 +901,8 @@ public class RealFlashChatRepository(
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return
         val conversationId = activeConversationId ?: return
-        val now = System.currentTimeMillis()
-        val localId = UUID.randomUUID().toString()
+        val now = timeSource.nowMs()
+        val localId = UuidIdGenerator.newId()
 
         scope.launch(ioDispatcher) {
             val conversation = conversationDao.get(conversationId)
@@ -947,8 +957,8 @@ public class RealFlashChatRepository(
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return
         val conversationId = activeConversationId ?: return
-        val now = System.currentTimeMillis()
-        val localId = UUID.randomUUID().toString()
+        val now = timeSource.nowMs()
+        val localId = UuidIdGenerator.newId()
 
         scope.launch(ioDispatcher) {
             val conversation = conversationDao.get(conversationId)
@@ -1005,7 +1015,7 @@ public class RealFlashChatRepository(
                     DraftEntity(
                         conversationId = conversationId,
                         text = text,
-                        updatedAt = System.currentTimeMillis(),
+                        updatedAt = timeSource.nowMs(),
                     ),
                 )
             }
@@ -1022,8 +1032,8 @@ public class RealFlashChatRepository(
         voiceDurationMs: Long,
         voiceAmplitudes: List<Int>,
     ) {
-        val now = System.currentTimeMillis()
-        val localId = UUID.randomUUID().toString()
+        val now = timeSource.nowMs()
+        val localId = UuidIdGenerator.newId()
         // Voice notes carry no body text; stash duration + waveform in the text column so the
         // playback card can render a real waveform without a schema change (B9). Parsed back out
         // in [applyAttachment]; see [encodeVoiceMeta]/[decodeVoiceMeta].
@@ -1074,7 +1084,7 @@ public class RealFlashChatRepository(
         voiceDurationMs: Long,
         voiceAmplitudes: List<Int>,
     ) {
-        val now = System.currentTimeMillis()
+        val now = timeSource.nowMs()
         val rowText = if (mimeType.startsWith("audio/")) {
             encodeVoiceMeta(voiceDurationMs, voiceAmplitudes)
         } else {
@@ -1136,7 +1146,7 @@ public class RealFlashChatRepository(
         if (peerDeviceId.isBlank() || transferId.isBlank()) return
         scope.launch(ioDispatcher) {
             if (messageDao.existsAttachment(transferId)) return@launch
-            val now = System.currentTimeMillis()
+            val now = timeSource.nowMs()
             // F4: a parked GroupMedia intro promotes this transfer to a GROUP attachment —
             // threaded under the groupId with the sender's own messageId (re-pull dedup) and
             // the wire-carried sender name. Consumed once.
@@ -1182,7 +1192,7 @@ public class RealFlashChatRepository(
             // real insert result is what lets the host notify (Bug 7).
             val insertedRowId = messageDao.insert(
                 MessageEntity(
-                    localId = UUID.randomUUID().toString(),
+                    localId = UuidIdGenerator.newId(),
                     conversationId = peerDeviceId,
                     senderId = peerDeviceId,
                     senderName = peerNameResolver(peerDeviceId),
@@ -1244,7 +1254,7 @@ public class RealFlashChatRepository(
             connected -> FlashCallEventKind.Incoming
             else -> FlashCallEventKind.Missed
         }
-        val at = if (endedAt > 0L) endedAt else System.currentTimeMillis()
+        val at = if (endedAt > 0L) endedAt else timeSource.nowMs()
         val resolvedPeerName = peerNameResolver(peerDeviceId)?.ifBlank { null }
             ?: peerName?.ifBlank { null }
         scope.launch(ioDispatcher) {
@@ -1409,7 +1419,7 @@ public class RealFlashChatRepository(
                         groupId = frame.groupId,
                         messageId = frame.messageId,
                         from = localDeviceId,
-                        deliveredAt = System.currentTimeMillis(),
+                        deliveredAt = timeSource.nowMs(),
                     ),
                 )
             }
@@ -1431,7 +1441,7 @@ public class RealFlashChatRepository(
                 if (!isActiveTrustedMember(members, frame.groupId, frame.from)) return
                 val message = messageDao.getByLocalId(frame.messageId) ?: return
                 if (message.conversationId != frame.groupId || message.senderId != frame.from) return
-                messageDao.markDeleted(frame.messageId, System.currentTimeMillis())
+                messageDao.markDeleted(frame.messageId, timeSource.nowMs())
                 outboxDao.delete(frame.messageId)
             }
             is GroupWireFrame.Sync -> {
@@ -1446,7 +1456,7 @@ public class RealFlashChatRepository(
             is GroupWireFrame.GroupMedia -> {
                 if (!isActiveTrustedMember(members, frame.groupId, frame.from)) return
                 pendingGroupMedia[frame.transferId] = frame
-                val now = System.currentTimeMillis()
+                val now = timeSource.nowMs()
                 groupTransportSink?.send(
                     frame.from,
                     GroupWireFrame.Receipt(
@@ -1511,7 +1521,7 @@ public class RealFlashChatRepository(
      * per-member transferId. Consulted (and consumed) when the receiver accepts the transfer,
      * so the attachment row threads into the GROUP conversation.
      */
-    private val pendingGroupMedia = ConcurrentHashMap<String, GroupWireFrame.GroupMedia>()
+    private val pendingGroupMedia = SyncMap<String, GroupWireFrame.GroupMedia>()
 
     /**
      * F7d: single-owner claim for a group-media bubble.
@@ -1524,13 +1534,13 @@ public class RealFlashChatRepository(
      * instead of letting `MessageDao.insert`'s IGNORE rule be the tiebreaker (which would still
      * leave the loser having run `touchConversation`).
      */
-    private val claimedGroupMedia = ConcurrentHashMap.newKeySet<String>()
+    private val claimedGroupMedia = SyncSet<String>()
 
     /** Maps an outbound group message id to all per-recipient transfer ids. */
-    private val groupMessageTransfers = ConcurrentHashMap<String, MutableSet<String>>()
+    private val groupMessageTransfers = SyncMap<String, SyncSet<String>>()
 
     /** Maps a per-recipient transfer id back to its outbound group message id. */
-    private val transferToGroupMessage = ConcurrentHashMap<String, String>()
+    private val transferToGroupMessage = SyncMap<String, String>()
 
     override fun getRecipientTransferIds(messageId: String): Set<String> =
         groupMessageTransfers[messageId]?.toSet().orEmpty()
@@ -1553,7 +1563,7 @@ public class RealFlashChatRepository(
         if (messageId.isBlank() || transferId.isBlank() || wireFileId.isBlank()) return false
         val members = groupMemberDao ?: return false
         if (!isActiveTrustedMember(members, groupId, recipientDeviceId)) return false
-        groupMessageTransfers.getOrPut(messageId) { ConcurrentHashMap.newKeySet() }.add(transferId)
+        groupMessageTransfers.getOrPut(messageId) { SyncSet() }.add(transferId)
         transferToGroupMessage[transferId] = messageId
         return groupTransportSink?.send(
             recipientDeviceId,
@@ -1567,7 +1577,7 @@ public class RealFlashChatRepository(
                 fileName = fileName,
                 mimeType = mimeType,
                 sizeBytes = sizeBytes,
-                sentAt = System.currentTimeMillis(),
+                sentAt = timeSource.nowMs(),
             ),
         ) == true
     }
@@ -1626,8 +1636,8 @@ public class RealFlashChatRepository(
         return GroupWireFrame.State(
             groupId = groupId,
             from = localDeviceId,
-            operationId = UUID.randomUUID().toString(),
-            membershipVersion = System.currentTimeMillis(),
+            operationId = UuidIdGenerator.newId(),
+            membershipVersion = timeSource.nowMs(),
             name = conversation.title.ifBlank { groupId },
             creatorId = conversation.groupCreatedBy ?: localDeviceId,
             members = roster.map { member ->
@@ -1653,7 +1663,7 @@ public class RealFlashChatRepository(
             peerDeviceId,
             GroupWireFrame.SyncRequest(
                 groupId = groupId,
-                syncId = UUID.randomUUID().toString(),
+                syncId = UuidIdGenerator.newId(),
                 from = localDeviceId,
                 sinceSentAt = newest?.sentAt ?: 0L,
                 sinceMessageId = newest?.localId ?: "",
@@ -1671,13 +1681,13 @@ public class RealFlashChatRepository(
         val requestedAtMs: Long,
         val requesterIsLow: Boolean,
         val requesterMaxPerSecond: Int,
-        val messageIds: MutableSet<String>,
-        val acknowledgedMessageIds: MutableSet<String>,
-        val claimants: MutableMap<String, GroupSyncTier>,
+        val messageIds: SyncSet<String>,
+        val acknowledgedMessageIds: SyncSet<String>,
+        val claimants: SyncMap<String, GroupSyncTier>,
     )
 
     /** syncId → round. Bounded by [GroupPolicy.MAX_PENDING_SYNC_MESSAGES] semantics via ack/TTL. */
-    private val syncRounds = ConcurrentHashMap<String, SyncRound>()
+    private val syncRounds = SyncMap<String, SyncRound>()
 
     /** Test-observable protocol state without exposing the mutable round itself. */
     internal fun pendingSyncMessageIds(syncId: String): Set<String> =
@@ -1702,7 +1712,7 @@ public class RealFlashChatRepository(
                     peerDeviceId,
                     GroupWireFrame.SyncRequest(
                         groupId = groupId,
-                        syncId = UUID.randomUUID().toString(),
+                        syncId = UuidIdGenerator.newId(),
                         from = localDeviceId,
                         sinceSentAt = newest?.sentAt ?: 0L,
                         sinceMessageId = newest?.localId ?: "",
@@ -1730,7 +1740,7 @@ public class RealFlashChatRepository(
             ),
             cursor = GroupSyncCursor(frame.sinceSentAt, frame.sinceMessageId),
             maxTotal = maxTotal,
-            nowMs = System.currentTimeMillis(),
+            nowMs = timeSource.nowMs(),
             sentAt = { it.sentAt },
             messageId = { it.localId },
             deletedAt = { it.deletedAt },
@@ -1738,14 +1748,14 @@ public class RealFlashChatRepository(
         if (owned.isEmpty()) return
         // The requester is who the pushes and the ack go back to.
         syncRequesters[frame.syncId] = frame.from
-        val round = syncRounds.computeIfAbsent(frame.syncId) {
+        val round = syncRounds.getOrPut(frame.syncId) {
             SyncRound(
-                requestedAtMs = System.currentTimeMillis(),
+                requestedAtMs = timeSource.nowMs(),
                 requesterIsLow = frame.tier == GroupSyncTier.LOW,
                 requesterMaxPerSecond = frame.maxPerSecond,
-                messageIds = ConcurrentHashMap.newKeySet(),
-                acknowledgedMessageIds = ConcurrentHashMap.newKeySet(),
-                claimants = ConcurrentHashMap(),
+                messageIds = SyncSet(),
+                acknowledgedMessageIds = SyncSet(),
+                claimants = SyncMap(),
             )
         }
         owned.forEach { round.messageIds.add(it.localId) }
@@ -1813,7 +1823,7 @@ public class RealFlashChatRepository(
     }
 
     /** syncId → the device that requested the round (pushes and acks are unicast to it). */
-    private val syncRequesters = ConcurrentHashMap<String, String>()
+    private val syncRequesters = SyncMap<String, String>()
 
     private fun MessageEntity.toSyncMessage() = GroupWireFrame.Message(
         groupId = conversationId,
@@ -1944,7 +1954,7 @@ public class RealFlashChatRepository(
                         messageId = frame.localId,
                         conversationId = threadId,
                         memberId = localDeviceId,
-                        deliveredAt = System.currentTimeMillis(),
+                        deliveredAt = timeSource.nowMs(),
                     ),
                 )
             }
@@ -1995,7 +2005,7 @@ public class RealFlashChatRepository(
                     // than the wire conversation id (which names this receiver). Preserve that behavior.
                     transportPeerId ?: frame.conversationId
                 }
-                val convTyping = typingStates.computeIfAbsent(typingConversationId) { ConcurrentHashMap() }
+                val convTyping = typingStates.getOrPut(typingConversationId) { SyncMap() }
                 if (frame.isTyping) {
                     convTyping[frame.memberId] = frame.memberName
                 } else {
@@ -2009,7 +2019,7 @@ public class RealFlashChatRepository(
                 if (peerId != frame.from || frame.conversationId != peerId) return
                 val message = messageDao.getByLocalId(frame.messageId) ?: return
                 if (message.conversationId != peerId || message.senderId != frame.from) return
-                messageDao.markDeleted(frame.messageId, System.currentTimeMillis())
+                messageDao.markDeleted(frame.messageId, timeSource.nowMs())
                 outboxDao.delete(frame.messageId)
             }
 
@@ -2059,7 +2069,7 @@ public class RealFlashChatRepository(
                 delay(OutboxDrainSchedule.MIN_WAIT_MS)
                 continue
             }
-            val waitMs = OutboxDrainSchedule.waitMs(outboxNextDueAt, System.currentTimeMillis())
+            val waitMs = OutboxDrainSchedule.waitMs(outboxNextDueAt, timeSource.nowMs())
             // Whichever lands first: a write to the outbox table, or the earliest deadline we hold.
             // Both resume the same next statement — another drain — so it does not matter which won,
             // and a wake that races the timeout costs nothing even if the cancellation discards it.
@@ -2075,7 +2085,7 @@ public class RealFlashChatRepository(
      * [drainOutboxLoop] sleeps until.
      */
     private suspend fun drainOutboxOnce(): Boolean = drainMutex.withLock {
-        val now = System.currentTimeMillis()
+        val now = timeSource.nowMs()
         // A repository may be configured for direct chat, group chat, or both. Do not let an
         // absent direct sink suppress an otherwise deliverable group outbox.
         if (transportSink == null && groupTransportSink == null) return@withLock false
@@ -2239,7 +2249,7 @@ public class RealFlashChatRepository(
      */
     public fun notifyPeerSessionUp(peerDeviceId: String? = null) {
         scope.launch(ioDispatcher) {
-            val now = System.currentTimeMillis()
+            val now = timeSource.nowMs()
             // Direct rows stay globally reset (Bug 5 unchanged); a named peer additionally makes
             // that member's group deliveries retryable, so a returning member drains its backlog
             // without waking deliveries for members that are still offline.
@@ -2297,7 +2307,7 @@ public class RealFlashChatRepository(
                 memberId = localDeviceId,
                 memberName = localDisplayName,
                 isTyping = isTyping,
-                timestampMs = System.currentTimeMillis(),
+                timestampMs = timeSource.nowMs(),
             )
             if (conversationDao.get(conversationId)?.isGroup == true) {
                 groupMemberDao?.activeMembers(conversationId)
@@ -2407,7 +2417,7 @@ public class RealFlashChatRepository(
         scope.launch(ioDispatcher) {
             // Tombstone rather than hard-delete so history keyset pagination stays stable; the
             // observe/history queries filter `deletedAt IS NULL`, so it vanishes from the thread.
-            messageDao.markDeleted(localId, System.currentTimeMillis())
+            messageDao.markDeleted(localId, timeSource.nowMs())
             // Also drop any pending outbox row: a message deleted before it drained must NOT still
             // be transmitted to the peer. The drain loop additionally re-checks the tombstone, so a
             // row already claimed for this tick is discarded rather than sent.
@@ -2423,7 +2433,7 @@ public class RealFlashChatRepository(
 
             // Apply the local tombstone before attempting the network, and always retire a queued
             // message so an older payload cannot be sent after its deletion action.
-            messageDao.markDeleted(localId, System.currentTimeMillis())
+            messageDao.markDeleted(localId, timeSource.nowMs())
             outboxDao.delete(localId)
 
             if (conversation.isGroup) {
@@ -2537,7 +2547,7 @@ public class RealFlashChatRepository(
         }
         val ext = (name.substringAfterLast('.', "")
             .ifBlank { path?.substringAfterLast('.', "") ?: "" })
-            .lowercase(java.util.Locale.ROOT)
+            .lowercase()
         return when (ext) {
             "mkv" -> "video/x-matroska"
             "mp4", "m4v" -> "video/mp4"
@@ -2564,9 +2574,13 @@ public class RealFlashChatRepository(
             "pdf" -> "application/pdf"
             "apk" -> "application/vnd.android.package-archive"
             "zip" -> "application/zip"
-            else -> runCatching {
-                android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext)
-            }.getOrNull() ?: (storedMime?.ifBlank { "*/*" } ?: "*/*")
+            // Shared table, not `android.webkit.MimeTypeMap`: the framework call is an Android
+            // API that hard-fails a JVM compile, which blocks this file's move to `commonMain`
+            // (slice 4). `FlashMimeTypes` mirrors these explicit rows one-for-one and covers the
+            // common document/archive cases the framework used to answer; anything exotic falls
+            // through to the stored MIME / `*/*` — a generic card, never a wrong preview.
+            else -> FlashMimeTypes.fromExtension(ext)
+                ?: (storedMime?.ifBlank { "*/*" } ?: "*/*")
         }
     }
 
@@ -2578,7 +2592,7 @@ public class RealFlashChatRepository(
         val transferId = entity.attachmentTransferId ?: return base
         val name = entity.attachmentName ?: "file"
         val live = progressByTransfer[transferId] ?: run {
-            val recipientTransfers = groupMessageTransfers[transferId]?.mapNotNull { progressByTransfer[it] }
+            val recipientTransfers = groupMessageTransfers[transferId]?.toList().orEmpty().mapNotNull { progressByTransfer[it] }
             if (!recipientTransfers.isNullOrEmpty()) {
                 val allDownloaded = recipientTransfers.all { it.status == FlashFileTransferStatus.Downloaded }
                 val anyTransferring = recipientTransfers.any { it.status == FlashFileTransferStatus.Transferring }
@@ -2715,7 +2729,7 @@ public class RealFlashChatRepository(
         decodeCallMeta(text)?.let { event ->
             val what = if (event.video) "Video call" else "Voice call"
             return when (event.kind) {
-                FlashCallEventKind.Missed -> "Missed ${what.lowercase(Locale.getDefault())}"
+                FlashCallEventKind.Missed -> "Missed ${what.lowercase()}"
                 FlashCallEventKind.Unanswered -> "$what, no answer"
                 else -> what
             }
@@ -2754,22 +2768,20 @@ public class RealFlashChatRepository(
         val parts = name.trim().split("\\s+".toRegex()).filter { it.isNotEmpty() }
         return when {
             parts.isEmpty() -> "FL"
-            parts.size == 1 -> parts[0].take(2).uppercase(Locale.getDefault())
-            else -> "${parts[0].first()}${parts[1].first()}".uppercase(Locale.getDefault())
+            parts.size == 1 -> parts[0].take(2).uppercase()
+            else -> "${parts[0].first()}${parts[1].first()}".uppercase()
         }
     }
 
-    private fun formatTime(millis: Long): String =
-        SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(millis))
+    private fun formatTime(millis: Long): String = platformFormatTimeOfDay(millis)
 
-    private fun formatTimestamp(millis: Long): String {
-        val now = System.currentTimeMillis()
-        val diff = now - millis
+    private fun formatTimestamp(millis: Long, nowMs: Long): String {
+        val diff = nowMs - millis
         return when {
             diff < 60_000 -> "Now"
             diff < 3600_000 -> "${diff / 60_000}m"
             diff < 86400_000 -> "${diff / 3600_000}h"
-            else -> SimpleDateFormat("MMM d", Locale.getDefault()).format(Date(millis))
+            else -> platformFormatMonthDay(millis)
         }
     }
 

@@ -22,6 +22,7 @@ import com.transfer.flash.core.discovery.core.FlashAdvertisedIdentity
 import com.transfer.flash.core.discovery.core.FlashDiscoveryMode
 import com.transfer.flash.core.messaging.FlashChatRepository
 import com.transfer.flash.core.messaging.RealFlashChatRepository
+import com.transfer.flash.core.messaging.protocol.ChatTextFrameCodec
 import com.transfer.flash.core.messaging.protocol.DirectMessageActionCodec
 import com.transfer.flash.core.messaging.protocol.GroupFrameCodec
 import com.transfer.flash.core.messaging.protocol.GroupWireFrame
@@ -125,11 +126,6 @@ object DiscoveryEngineHolder {
      */
     private const val SETTLE_BEFORE_RESUME_MS = 750L
 
-    private const val MSG_PREFIX = "FLASH_MSG"
-    private const val RECEIPT_PREFIX = "FLASH_RCPT"
-    private const val READ_PREFIX = "FLASH_READ"
-    private const val REACT_PREFIX = "FLASH_REACT"
-    private const val TYPING_PREFIX = "FLASH_TYPING"
     private const val XFER_PREFIX = "FLASH_XFER"
     private const val PAIR_PREFIX = "FLASH_PAIR"
 
@@ -792,60 +788,16 @@ object DiscoveryEngineHolder {
                     return@RealFlashChatRepository false
                 }
                 // Field-encoded text framing (colon-safe; message text may contain any characters).
+                // The five direct-chat families encode through the shared codec (slice 3);
+                // DeleteForEveryone keeps its own (DirectMessageActionCodec).
                 val frameText = when (wireFrame) {
-                    is MessageWireFrame.TextMessage -> FlashTextFraming.encodeFields(
-                        MSG_PREFIX,
-                        listOf(
-                            "localId" to wireFrame.localId,
-                            "conversationId" to wireFrame.conversationId,
-                            "senderId" to wireFrame.senderId,
-                            "senderName" to (wireFrame.senderName ?: "Peer"),
-                            "sentAt" to wireFrame.sentAt.toString(),
-                            "text" to wireFrame.text,
-                            // Reply/quote metadata (#8); empty string when this is not a reply.
-                            "replyToId" to (wireFrame.replyToId ?: ""),
-                            "replyToPreview" to (wireFrame.replyToPreview ?: ""),
-                        ),
-                    )
-                    is MessageWireFrame.DeliveryReceipt -> FlashTextFraming.encodeFields(
-                        RECEIPT_PREFIX,
-                        listOf(
-                            "messageId" to wireFrame.messageId,
-                            "conversationId" to wireFrame.conversationId,
-                            "memberId" to wireFrame.memberId,
-                            "deliveredAt" to wireFrame.deliveredAt.toString(),
-                        ),
-                    )
-                    is MessageWireFrame.ReadReceipt -> FlashTextFraming.encodeFields(
-                        READ_PREFIX,
-                        listOf(
-                            "conversationId" to wireFrame.conversationId,
-                            "memberId" to wireFrame.memberId,
-                            "upToMessageId" to wireFrame.upToMessageId,
-                            "readAt" to wireFrame.readAt.toString(),
-                        ),
-                    )
                     is MessageWireFrame.DeleteForEveryone -> DirectMessageActionCodec.encode(wireFrame)
-                    is MessageWireFrame.ReactionFrame -> FlashTextFraming.encodeFields(
-                        REACT_PREFIX,
-                        listOf(
-                            "messageId" to wireFrame.messageId,
-                            "conversationId" to wireFrame.conversationId,
-                            "memberId" to wireFrame.memberId,
-                            "emoji" to wireFrame.emoji,
-                            "isAdded" to wireFrame.isAdded.toString(),
-                        ),
-                    )
-                    is MessageWireFrame.TypingFrame -> FlashTextFraming.encodeFields(
-                        TYPING_PREFIX,
-                        listOf(
-                            "conversationId" to wireFrame.conversationId,
-                            "memberId" to wireFrame.memberId,
-                            "memberName" to wireFrame.memberName,
-                            "isTyping" to wireFrame.isTyping.toString(),
-                            "timestampMs" to wireFrame.timestampMs.toString(),
-                        ),
-                    )
+                    is MessageWireFrame.TextMessage,
+                    is MessageWireFrame.DeliveryReceipt,
+                    is MessageWireFrame.ReadReceipt,
+                    is MessageWireFrame.ReactionFrame,
+                    is MessageWireFrame.TypingFrame -> ChatTextFrameCodec.encode(wireFrame)
+                        ?: return@RealFlashChatRepository false
                 }
                 val sent = if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
                     runCatching {
@@ -1698,81 +1650,23 @@ object DiscoveryEngineHolder {
             chatImpl.onInboundWireFrame(frame, transportPeerId = peerDeviceId)
             return
         }
-        val msgFields = FlashTextFraming.parseFields(text, MSG_PREFIX)
-        if (msgFields != null) {
-            val localId = msgFields["localId"] ?: return
-            chatImpl.onInboundWireFrame(
-                MessageWireFrame.TextMessage(
-                    localId = localId,
-                    conversationId = msgFields["conversationId"] ?: "",
-                    senderId = msgFields["senderId"] ?: "",
-                    senderName = msgFields["senderName"] ?: "Peer",
-                    sentAt = msgFields["sentAt"]?.toLongOrNull() ?: System.currentTimeMillis(),
-                    text = msgFields["text"] ?: "",
-                    // Reply/quote metadata (#8); blank fields (non-reply / legacy peer) → null.
-                    replyToId = msgFields["replyToId"]?.ifBlank { null },
-                    replyToPreview = msgFields["replyToPreview"]?.ifBlank { null },
-                ),
-                transportPeerId = peerDeviceId,
-            )
-            return
-        }
-        val receiptFields = FlashTextFraming.parseFields(text, RECEIPT_PREFIX)
-        if (receiptFields != null) {
-            chatImpl.onInboundWireFrame(
-                MessageWireFrame.DeliveryReceipt(
-                    messageId = receiptFields["messageId"] ?: return,
-                    conversationId = receiptFields["conversationId"] ?: "",
-                    memberId = receiptFields["memberId"] ?: "",
-                    deliveredAt = receiptFields["deliveredAt"]?.toLongOrNull() ?: System.currentTimeMillis(),
-                ),
-                transportPeerId = peerDeviceId,
-            )
-            return
-        }
-        val readFields = FlashTextFraming.parseFields(text, READ_PREFIX)
-        if (readFields != null) {
-            chatImpl.onInboundWireFrame(
-                MessageWireFrame.ReadReceipt(
-                    conversationId = readFields["conversationId"] ?: "",
-                    memberId = readFields["memberId"] ?: return,
-                    upToMessageId = readFields["upToMessageId"] ?: return,
-                    readAt = readFields["readAt"]?.toLongOrNull() ?: System.currentTimeMillis(),
-                ),
-                transportPeerId = peerDeviceId,
-            )
-            return
-        }
-        val reactFields = FlashTextFraming.parseFields(text, REACT_PREFIX)
-        if (reactFields != null) {
-            chatImpl.onInboundWireFrame(
-                MessageWireFrame.ReactionFrame(
-                    messageId = reactFields["messageId"] ?: return,
-                    conversationId = reactFields["conversationId"] ?: "",
-                    memberId = reactFields["memberId"] ?: return,
-                    emoji = reactFields["emoji"] ?: return,
-                    isAdded = reactFields["isAdded"]?.toBooleanStrictOrNull() ?: true,
-                ),
-                transportPeerId = peerDeviceId,
-            )
-            return
-        }
-        val typingFields = FlashTextFraming.parseFields(text, TYPING_PREFIX)
-        if (typingFields != null) {
-            chatImpl.onInboundWireFrame(
-                MessageWireFrame.TypingFrame(
-                    // Preserve the wire-carried conversation id: direct senders encode the receiver
-                    // id, while group fan-out encodes the group id. The repository uses the trusted
-                    // transport peer below to distinguish/directly key and authenticate these cases.
-                    conversationId = typingFields["conversationId"] ?: peerDeviceId,
-                    memberId = typingFields["memberId"] ?: return,
-                    memberName = typingFields["memberName"] ?: "Peer",
-                    isTyping = typingFields["isTyping"]?.toBooleanStrictOrNull() ?: false,
-                    timestampMs = typingFields["timestampMs"]?.toLongOrNull() ?: System.currentTimeMillis(),
-                ),
-                transportPeerId = peerDeviceId,
-            )
-            return
+        // Direct-chat text family through the shared codec (slice 3). Invalid-but-recognized
+        // frames drop, exactly as before — they must not fall through into the transfer family
+        // below. transportPeerId is passed for ALL five families: the codec decodes the direct-chat
+        // family only (group frames travel a separate path), so for legit traffic the frame author
+        // IS the transport peer — and PR #11's fail-closed spoof guards (`transportPeerId != null`
+        // checks) only fire when it is non-null. Passing null here would silently neutralize them.
+        when (val decoded = ChatTextFrameCodec.decode(text, System.currentTimeMillis(), peerDeviceId)) {
+            is ChatTextFrameCodec.DecodeResult.Frame -> {
+                val frame = decoded.frame
+                chatImpl.onInboundWireFrame(
+                    frame,
+                    transportPeerId = peerDeviceId,
+                )
+                return
+            }
+            ChatTextFrameCodec.DecodeResult.RecognizedButInvalid -> return
+            null -> Unit
         }
         val xferFields = FlashTextFraming.parseFields(text, XFER_PREFIX)
         if (xferFields != null) {

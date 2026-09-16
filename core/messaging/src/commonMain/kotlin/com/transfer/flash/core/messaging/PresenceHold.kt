@@ -1,5 +1,6 @@
 package com.transfer.flash.core.messaging
 
+import com.transfer.flash.core.common.time.SystemTimeSource
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
@@ -58,7 +59,8 @@ internal fun Flow<Set<String>>.withReconnectGrace(holdMs: Long): Flow<PresenceSn
 
         suspend fun publish() {
             guard.withLock {
-                val now = System.currentTimeMillis()
+                // Common code cannot read the clock directly; the shared seam (Phase 06) instead.
+                val now = SystemTimeSource.nowMs()
                 // A grace ends when the peer is back (it is Online again) or when its own deadline
                 // passes — never because some other peer's event arrived.
                 graceStartedAt.entries.removeAll { (id, since) -> id in live || now - since >= holdMs }
@@ -70,11 +72,11 @@ internal fun Flow<Set<String>>.withReconnectGrace(holdMs: Long): Flow<PresenceSn
             }
         }
 
-        upstream.collect { sessions ->
+            upstream.collect { sessions ->
             val departed = guard.withLock {
                 val gone = live - sessions
                 live = sessions
-                val now = System.currentTimeMillis()
+                val now = SystemTimeSource.nowMs()
                 // putIfAbsent, not put: a peer that flaps must not be able to push its own deadline
                 // into the future on every bounce.
                 gone.forEach { graceStartedAt.putIfAbsent(it, now) }
