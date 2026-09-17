@@ -1,9 +1,14 @@
 # Current Handoff
 
-## 2026-09-17 — Milestone 1: Pairwise End-to-End Message Encryption (AES-256-GCM + ECDH P-256)
+## 2026-09-17 — Milestone 1 E2E Message Encryption & 3 Merged Feature Branches
 
 ### Current branch
-`dev`
+`dev` (synchronized with `origin/dev` at `7f97c89`)
+
+### Merged Branches
+1. `origin/sentinel/call-author-peer-mismatch-14100850912045090110` (enforce claimed-author transport-peer match in 1:1 calls)
+2. `origin/perf/bolt-lazycolumn-allocations-17360316406813036724` (hoist callback rememberUpdatedState out of LazyColumn in FlashMessageList)
+3. `origin/palette/archived-chats-ux-18426119121340510079` (tactile press scale & FlashText tokens in Archived Chats)
 
 ### Completed & Verified
 1. **Pairwise Shared Secret Derivation**:
