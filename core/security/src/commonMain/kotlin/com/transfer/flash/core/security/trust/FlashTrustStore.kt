@@ -29,4 +29,18 @@ public interface FlashTrustStore {
 
     /** Returns all currently trusted peers mapped by device ID to friendly name. */
     public fun getTrustedPeers(): Map<FlashDeviceId, String>
+
+    /** Persists a derived shared session key (e.g. 32-byte AES-256 key) for [deviceId]. */
+    public fun saveSessionKey(deviceId: FlashDeviceId, key: ByteArray): FlashResult<Unit> =
+        FlashResult.Success(Unit)
+
+    /** Convenience overload saving session key by raw string device ID. */
+    public fun saveSessionKey(deviceId: String, key: ByteArray): FlashResult<Unit> =
+        saveSessionKey(FlashDeviceId(deviceId), key)
+
+    /** Retrieves the derived shared session key for [deviceId], or null if none is stored. */
+    public fun getSessionKey(deviceId: FlashDeviceId): ByteArray? = null
+
+    /** Convenience overload retrieving session key by raw string device ID. */
+    public fun getSessionKey(deviceId: String): ByteArray? = getSessionKey(FlashDeviceId(deviceId))
 }

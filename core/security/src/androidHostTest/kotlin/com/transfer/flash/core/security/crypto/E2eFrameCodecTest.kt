@@ -1,3 +1,5 @@
+@file:OptIn(com.transfer.flash.core.common.annotation.FlashInternalApi::class)
+
 package com.transfer.flash.core.security.crypto
 
 import java.security.SecureRandom
@@ -71,5 +73,50 @@ class E2eFrameCodecTest {
         assertThrows(IllegalArgumentException::class.java) {
             E2eFrameCodec.encrypt("x", ByteArray(16))
         }
+    }
+
+    @Test
+    fun `wire frame encrypt and decrypt roundtrip restores original frame text`() {
+        val key = freshSessionKey()
+        val plainFrame = "FLASH_MSG localId=abc-1 conversationId=peer-2 text=Hello%20World sentAt=12345"
+
+        val wireFrame = E2eFrameCodec.encryptToWireFrame(plainFrame, key)
+        org.junit.Assert.assertTrue(E2eFrameCodec.isSecuredFrame(wireFrame))
+        org.junit.Assert.assertTrue(wireFrame.startsWith("FLASH_SEC payload="))
+
+        val restored = E2eFrameCodec.decryptWireFrame(wireFrame, key)
+        assertEquals(plainFrame, restored)
+    }
+
+    @Test
+    fun `wire frame decrypt with wrong key fails closed returning null`() {
+        val key1 = freshSessionKey()
+        val key2 = freshSessionKey()
+        val plainFrame = "FLASH_MSG localId=abc-1 text=Secret"
+
+        val wireFrame = E2eFrameCodec.encryptToWireFrame(plainFrame, key1)
+        val restored = E2eFrameCodec.decryptWireFrame(wireFrame, key2)
+        org.junit.Assert.assertNull(restored)
+    }
+
+    @Test
+    fun `wire frame decrypt on tampered frame fails closed returning null`() {
+        val key = freshSessionKey()
+        val plainFrame = "FLASH_MSG localId=abc-1 text=Secret"
+
+        val wireFrame = E2eFrameCodec.encryptToWireFrame(plainFrame, key)
+        // Corrupt the base64 payload
+        val tampered = wireFrame.substring(0, wireFrame.length - 2) + "=="
+        val restored = E2eFrameCodec.decryptWireFrame(tampered, key)
+        org.junit.Assert.assertNull(restored)
+    }
+
+    @Test
+    fun `wire frame decrypt on non-secured frame returns null`() {
+        val key = freshSessionKey()
+        val plainFrame = "FLASH_MSG localId=abc-1 text=Secret"
+
+        org.junit.Assert.assertFalse(E2eFrameCodec.isSecuredFrame(plainFrame))
+        org.junit.Assert.assertNull(E2eFrameCodec.decryptWireFrame(plainFrame, key))
     }
 }

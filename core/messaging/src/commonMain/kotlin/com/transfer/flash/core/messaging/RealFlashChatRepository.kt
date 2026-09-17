@@ -125,6 +125,8 @@ public class RealFlashChatRepository(
     private val groupDeliveryDao: GroupDeliveryDao? = null,
     /** Only already-paired peers can create, join, or send group traffic. */
     private val isTrustedPeer: (String) -> Boolean = { false },
+    /** Checks whether E2E encryption is established with [conversationId]. */
+    private val isChannelEncrypted: (String) -> Boolean = { false },
     private val groupTransportSink: GroupTransportSink? = null,
     private val transportSink: MessageTransportSink? = null,
     private val scope: CoroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
@@ -467,6 +469,7 @@ public class RealFlashChatRepository(
                 header = FlashChatHeaderUiState(
                     title = seedTitle,
                     avatarInitials = computeInitials(seedTitle),
+                    isEncrypted = isChannelEncrypted(conversationId),
                 ),
                 messages = emptyList(),
             )
@@ -671,6 +674,7 @@ public class RealFlashChatRepository(
                     FlashNetworkTransport.Unknown
                 },
                 typingMemberNames = typingNames,
+                isEncrypted = isChannelEncrypted(conversationId),
             ),
             messages = content.messages,
             // Restore any unsent composer text (#9); blank when there is no saved draft.

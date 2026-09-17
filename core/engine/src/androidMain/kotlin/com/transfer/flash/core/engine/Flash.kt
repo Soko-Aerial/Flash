@@ -18,6 +18,7 @@ import com.transfer.flash.core.engine.store.KeystorePassphraseProvider
 import com.transfer.flash.core.engine.store.RoomTransferStore
 import com.transfer.flash.core.messaging.RealFlashChatRepository
 import com.transfer.flash.core.messaging.protocol.ChatTextFrameCodec
+import com.transfer.flash.core.security.crypto.E2eFrameCodec
 import com.transfer.flash.core.messaging.protocol.DirectMessageActionCodec
 import com.transfer.flash.core.messaging.protocol.GroupFrameCodec
 import com.transfer.flash.core.messaging.protocol.MessageWireFrame
@@ -35,6 +36,7 @@ import com.transfer.flash.core.persistence.settings.FlashSettingsDataStore
 import com.transfer.flash.core.ptt.PttSessionEngine
 import com.transfer.flash.core.security.identity.AndroidPreferencesIdentityStore
 import com.transfer.flash.core.security.trust.AndroidPreferencesTrustStore
+import com.transfer.flash.core.security.trust.FlashTrustStore
 import com.transfer.flash.core.transfer.RealFlashTransferRepository
 import com.transfer.flash.core.transfer.chunked.ChunkFrame
 import com.transfer.flash.core.transfer.chunked.IncrementalSha256
@@ -187,6 +189,7 @@ private class Wiring(
      * window through the same reference.
      */
     @Volatile private var facade: FlashEngine? = null
+    @Volatile private var trustStoreRef: FlashTrustStore? = null
 
     fun build(): FlashEngine {
         val stored = AndroidPreferencesIdentityStore(appContext).getIdentity()
@@ -236,6 +239,7 @@ private class Wiring(
             *FlashMigrations.ALL,
         )
         val trustStore = AndroidPreferencesTrustStore(appContext)
+        this.trustStoreRef = trustStore
         val settings = FlashSettingsDataStore(
             produceFile = { File(appContext.filesDir, "flash_settings.preferences_pb") },
             scope = scope,
@@ -306,6 +310,7 @@ private class Wiring(
             groupMemberDao = db.groupMemberDao(),
             groupDeliveryDao = db.groupDeliveryDao(),
             isTrustedPeer = { peerId -> trustStore.isTrusted(peerId) },
+            isChannelEncrypted = { peerId -> trustStore.getSessionKey(FlashDeviceId(peerId)) != null },
             onlinePeerIds = networkImpl.activeSessions.map { sessions ->
                 sessions.keys.mapTo(HashSet()) { it.value }
             },
@@ -600,7 +605,18 @@ private class Wiring(
             chatImpl.onInboundGroupWireFrame(peerDeviceId, frame)
             return
         }
-        DirectMessageActionCodec.decode(text)?.let { frame ->
+        val plainText = if (E2eFrameCodec.isSecuredFrame(text)) {
+            val sessionKey = trustStoreRef?.getSessionKey(FlashDeviceId(peerDeviceId))
+            if (sessionKey != null) {
+                E2eFrameCodec.decryptWireFrame(text, sessionKey) ?: return
+            } else {
+                return
+            }
+        } else {
+            text
+        }
+
+        DirectMessageActionCodec.decode(plainText)?.let { frame ->
             chatImpl.onInboundWireFrame(frame, transportPeerId = peerDeviceId)
             return
         }
@@ -610,7 +626,7 @@ private class Wiring(
         // family only (group frames travel a separate path), so for legit traffic the frame author
         // IS the transport peer — and PR #11's fail-closed spoof guards (`transportPeerId != null`
         // checks) only fire when it is non-null. Passing null here would silently neutralize them.
-        when (val decoded = ChatTextFrameCodec.decode(text, System.currentTimeMillis(), peerDeviceId)) {
+        when (val decoded = ChatTextFrameCodec.decode(plainText, System.currentTimeMillis(), peerDeviceId)) {
             is ChatTextFrameCodec.DecodeResult.Frame -> {
                 val frame = decoded.frame
                 chatImpl.onInboundWireFrame(
@@ -781,7 +797,13 @@ private class Wiring(
             is MessageWireFrame.ReactionFrame,
             is MessageWireFrame.TypingFrame -> ChatTextFrameCodec.encode(wireFrame) ?: return false
         }
-        return session.connection.sendText(frameText)
+        val sessionKey = trustStoreRef?.getSessionKey(FlashDeviceId(targetDeviceId))
+        val wirePayload = if (sessionKey != null) {
+            E2eFrameCodec.encryptToWireFrame(frameText, sessionKey)
+        } else {
+            frameText
+        }
+        return session.connection.sendText(wirePayload)
     }
     private fun verifyWholeFile(path: String?, expectedHex: String?): Boolean {
         if (path.isNullOrBlank() || expectedHex.isNullOrBlank() || !Sha256.isValidHex(expectedHex)) return false

@@ -329,6 +329,7 @@ public fun DesktopShell(
                 conversationId = nav.current.conversationId,
                 trusted = trustedPeersByCoordinator,
                 discovered = discoveredEndpoints,
+                isEncrypted = nav.current.conversationId?.let { engine.trust.getSessionKey(it) != null } ?: false,
             )
         }
         val withHeader = if (header != null) repositoryConversation.copy(header = header) else repositoryConversation
@@ -1434,6 +1435,7 @@ internal fun desktopConversationHeader(
     conversationId: String?,
     trusted: List<FlashTrustedPeer>,
     discovered: List<FlashDiscoveredEndpoint>,
+    isEncrypted: Boolean = false,
 ): FlashChatHeaderUiState? {
     if (conversationId == null) return null
     val trustedName = trusted.firstOrNull { it.id == conversationId }?.name
@@ -1450,8 +1452,7 @@ internal fun desktopConversationHeader(
         presence = if (endpoint != null) FlashPeerPresence.Online else FlashPeerPresence.Offline,
         transport = FlashNetworkTransport.Lan,
         isGroup = false,
-        // Honest wire parity with mobile: wire TLS is not active in production mesh yet (Phase 16).
-        isEncrypted = false,
+        isEncrypted = isEncrypted,
         showCallActions = true,
     )
 }

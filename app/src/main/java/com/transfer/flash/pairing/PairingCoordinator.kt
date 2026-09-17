@@ -9,6 +9,8 @@ import com.transfer.flash.core.common.model.FlashDeviceId
 import com.transfer.flash.core.common.time.FlashTimeSource
 import com.transfer.flash.core.common.time.SystemTimeSource
 import com.transfer.flash.core.messaging.model.FlashNetworkTransport
+import com.transfer.flash.core.security.crypto.FlashCrypto
+import com.transfer.flash.core.security.crypto.FlashEcKeyPair
 import com.transfer.flash.core.security.pairing.DefaultFlashPairingProtocol
 import com.transfer.flash.core.security.pairing.FlashPairingEvent
 import com.transfer.flash.core.security.pairing.FlashPairingFrame
@@ -42,11 +44,31 @@ data class PairingUiModel(
 )
 
 /**
- * App-level glue between the pure pairing protocol ([DefaultFlashPairingProtocol]), the persistent
- * trust store, and the Nearby UI. Lives in `:app` because it bridges `core.security` and `ui.chat`
- * types the way [com.transfer.flash.debug.DiscoveryEngineHolder] bridges the rest of the stack.
+ * Android coordinator for the Flash pairing flow (ADR-028, Phase 25/Phase 26-2).
  *
- * Owns the protocol instance so it can recreate it after a terminal outcome — the protocol's session
+ * Sits between:
+ * - the pure multiplatform state machine ([DefaultFlashPairingProtocol], `core/security`),
+ * - the Nearby UI ([PairingUiModel], mapped via [PairingUiMapper]), and
+ * - the live WebSocket connection ([sendToPeer] lambda).
+ *
+ * Responsibilities:
+ * - Exposes [pairing] as a [StateFlow] so the Nearby tab and consent dialog react to lifecycle
+ *   transitions without holding the protocol instance directly.
+ * - Handles the "announce hello when session comes up" edge so a peer learns our fingerprint and can
+ *   derive the comparison code before the user taps "Pair".
+ * - Translates [FlashPairingEvent] into user-visible side effects (e.g. saves trusted peer to
+ *   [FlashTrustStore] on [FlashPairingEvent.Confirmed]).
+ * - Enforces the single-flight rule: once in a non-Idle state, subsequent requests are dropped or
+ *   rejected until the active pairing completes, is declined, or expires.
+ *
+ * ## Lifecycle and expiry (ADR-028 §4)
+ *
+ * Resets back to [PairingPhase.Idle] via [resetProtocol] on any terminal state:
+ * - [FlashPairingEvent.Confirmed]: after [PAIRED_LINGER_MS] so the user sees the "Paired" checkmark.
+ * - [FlashPairingEvent.Expired] / [FlashPairingEvent.PeerDeclined] / [FlashPairingEvent.Failed]: after
+ *   [TERMINAL_LINGER_MS] so the user sees the terminal banner.
+ *
+ * [resetProtocol] tears down the active protocol and creates a fresh instance. The underlying state
  * machine absorbs all events once terminal and exposes no public reset, so "pair again" (retry after
  * decline/expire, or pair a second device) requires a fresh instance. Recreation swaps the field and
  * relaunches the collectors, the 1 Hz expiry ticker among them: it is a child of the same job, bound
@@ -62,6 +84,8 @@ class PairingCoordinator(
     private val scope: CoroutineScope,
     private val sendToPeer: (peerId: String, text: String) -> Boolean,
     private val timeSource: FlashTimeSource = SystemTimeSource,
+    private val crypto: FlashCrypto? = null,
+    private val ephemeralKeyPair: FlashEcKeyPair? = null,
 ) {
     private val _pairing = MutableStateFlow<PairingUiModel?>(null)
     val pairing: StateFlow<PairingUiModel?> = _pairing.asStateFlow()
@@ -219,6 +243,16 @@ class PairingCoordinator(
                 s.peerDeviceId?.let { peerId ->
                     val name = s.peerName?.ifBlank { null } ?: peerId.take(SHORT_ID)
                     trustStore.trustPeer(FlashDeviceId(peerId), name)
+                    val peerPubKey = event.ephemeralPubKey.takeIf { it.isNotEmpty() }
+                        ?: s.peerEphemeralPublicKey
+                    val c = crypto
+                    val kp = ephemeralKeyPair
+                    if (peerPubKey != null && kp != null && c != null) {
+                        runCatching {
+                            val sessionKey = c.ecdhSessionKey(kp, peerPubKey)
+                            trustStore.saveSessionKey(FlashDeviceId(peerId), sessionKey)
+                        }
+                    }
                     _trustedPeers.value = loadTrusted()
                 }
                 scope.launch {

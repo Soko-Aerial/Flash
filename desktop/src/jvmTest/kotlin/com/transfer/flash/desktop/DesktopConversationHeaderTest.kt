@@ -128,6 +128,19 @@ class DesktopConversationHeaderTest {
     }
 
     @Test
+    fun theHeaderReflectsEncryptionStatus() {
+        val encryptedHeader = assertNotNull(
+            desktopConversationHeader(
+                conversationId = PEER_ID,
+                trusted = listOf(FlashTrustedPeer(PEER_ID, "Pixel 7a")),
+                discovered = listOf(endpoint(PEER_ID, "Pixel 7a")),
+                isEncrypted = true,
+            ),
+        )
+        assertEquals(true, encryptedHeader.isEncrypted)
+    }
+
+    @Test
     fun theAvatarInitialsComeFromTheDisplayedName() {
         val header = assertNotNull(
             desktopConversationHeader(

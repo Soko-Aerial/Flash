@@ -1,5 +1,46 @@
 # Progress Log
 
+## 2026-09-17 — Milestone 1: Pairwise End-to-End Message Encryption (AES-256-GCM + ECDH P-256)
+
+### Worked on
+Implemented Layer 1 pairwise end-to-end encryption for all chat message frames between paired devices across Android and Desktop:
+
+1. **Session Key Persistence (`FlashTrustStore`)**:
+   - Extended `FlashTrustStore` interface with `saveSessionKey(deviceId, key: ByteArray)` and `getSessionKey(deviceId): ByteArray?`.
+   - In `AndroidPreferencesTrustStore`, persisted Base64-encoded session keys in `SharedPreferences` (`session_key_<deviceId>`), and cleaned them up in `revokeTrust(deviceId)`.
+   - In `DesktopIdentityStores.kt` (`DesktopTrustStore`) and `DesktopIdentityStore.kt` (test harness), persisted Base64 session keys in `trust.properties` (`session_key.<deviceId>`) with in-memory `ConcurrentHashMap` caching and clean eviction in `revokeTrust(deviceId)`.
+
+2. **Secure Wire Framing (`E2eFrameCodec`)**:
+   - Exposed `E2eFrameCodec` as `@FlashInternalApi public object E2eFrameCodec`.
+   - Added `isSecuredFrame(text: String): Boolean` checking for `FLASH_SEC` framing prefix.
+   - Added `encryptToWireFrame(plainText: String, sessionKey: ByteArray): String` using AES-256-GCM with a 12-byte random nonce, versioned AAD (`flash-e2e-v<version>`), producing `FLASH_SEC payload=<base64>`.
+   - Added `decryptWireFrame(text: String, sessionKey: ByteArray): String?` with fail-closed semantics (tampered frames, corrupted nonces, or invalid tags return null).
+
+3. **ECDH Key Agreement on Pairing Confirmation**:
+   - Updated `FlashPairingCoordinator` (JVM/Desktop) and `PairingCoordinator` (Android):
+     - Generated ephemeral P-256 keypairs (`crypto.generateEphemeralEcdhKeyPair()`).
+     - On `FlashPairingEvent.Confirmed`, computed pairwise shared secret via `crypto.ecdhSessionKey(ephemeralKeyPair, peerPublicKeyEncoded)` (HKDF-SHA256 derivation yielding a 32-byte AES key).
+     - Persisted session key to `trustStore.saveSessionKey(peerDeviceId, sessionKey)`.
+
+4. **Host Wiring & Chat Framing Encryption/Decryption**:
+   - In `DesktopEngine.kt`, `DiscoveryEngineHolder.kt` (Android App), and `Flash.kt` (Android Core Engine):
+     - Outbound frames (`sendChatFrame` / `transportSink`): Direct chat families (`FLASH_MSG`, `FLASH_RCPT`, `FLASH_READ`, `FLASH_REACT`, `FLASH_TYPING`) and DM actions are transparently encrypted into `FLASH_SEC` frames when a paired session key exists, or fall back to plaintext if unpaired.
+     - Inbound frames (`handleInboundText`): Intercepts `FLASH_SEC` frames, decrypts them with the sender's stored session key, and forwards the deciphered payload to existing wire frame decoders. Unrecognized or unauthenticated payloads are dropped fail-closed.
+     - Truthful encryption state: passed `isChannelEncrypted = { peerId -> trustStore.getSessionKey(peerId) != null }` to `RealFlashChatRepository`.
+
+5. **UI Encryption Indicator Parity**:
+   - Updated `RealFlashChatRepository.kt` to accept `isChannelEncrypted: (String) -> Boolean` and dynamically set `isEncrypted = isChannelEncrypted(conversationId)` on `FlashChatHeaderUiState` for both seed state and direct chat updates.
+   - Updated `DesktopShell.kt` to bind `isEncrypted = nav.current.conversationId?.let { engine.trust.getSessionKey(it) != null } ?: false` to `desktopConversationHeader`.
+   - Header lock badge and sheet security status now truthfully reflect encrypted status if and only if a pairwise session key is active.
+
+### Verification
+- `:core:security:testAndroidHostTest`: PASSED (all tests passed, including new `E2eFrameCodecTest` wire framing, tampering detection, wrong key rejection, and `FlashTrustStoreTest` session key persistence/revocation).
+- `:core:security:jvmTest`: PASSED (parity vectors, HKDF, P-256 agreement, AES-GCM tag tampering checks).
+- `:desktop:jvmTest`: PASSED (all test suites and `DesktopConversationHeaderTest` passed).
+- `:app:compileDebugKotlin`: BUILD SUCCESSFUL.
+
+---
+
 ## 2026-09-17 — Desktop Reactive Modes (Theme & Performance), Truthful Encryption Status, and Manual Retry
 
 ### Worked on

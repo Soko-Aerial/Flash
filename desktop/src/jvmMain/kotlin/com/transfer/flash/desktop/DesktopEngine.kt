@@ -26,6 +26,7 @@ import com.transfer.flash.core.messaging.RealFlashChatRepository
 import com.transfer.flash.core.messaging.model.FlashAttachmentProgress
 import com.transfer.flash.core.messaging.model.FlashFileTransferStatus
 import com.transfer.flash.core.messaging.protocol.ChatTextFrameCodec
+import com.transfer.flash.core.security.crypto.E2eFrameCodec
 import com.transfer.flash.core.messaging.protocol.DirectMessageActionCodec
 import com.transfer.flash.core.messaging.protocol.GroupFrameCodec
 import com.transfer.flash.core.messaging.protocol.MessageWireFrame
@@ -154,6 +155,8 @@ public class DesktopEngine(
     public val crypto: com.transfer.flash.core.security.crypto.FlashCrypto =
         com.transfer.flash.core.security.crypto.PersistedFlashCrypto(stateDir)
 
+    private val ephemeralKeyPair = crypto.generateEphemeralEcdhKeyPair()
+
     /**
      * Desktop pairing (Phase 26-3, ADR-035): the SAME `DefaultFlashPairingProtocol` and
      * `FLASH_PAIR` wire framing the phone runs, over [trustStore] and the identity above. What
@@ -170,9 +173,8 @@ public class DesktopEngine(
         localDeviceId = identity.deviceId.value,
         localName = identity.friendlyName,
         localModel = "desktop",
-        // One ephemeral ECDH key for the engine's lifetime, as the app host does (the key rides
-        // the handshake; no session encryption is wired to it yet).
-        ephemeralPublicKey = crypto.generateEphemeralEcdhKeyPair().publicKeyEncoded,
+        // One ephemeral ECDH key for the engine's lifetime, used to derive AES-256 session keys.
+        ephemeralPublicKey = ephemeralKeyPair.publicKeyEncoded,
         trustStore = trustStore,
         scope = scope,
         sendToPeer = { peerId, text ->
@@ -196,6 +198,8 @@ public class DesktopEngine(
                 false
             }
         },
+        crypto = crypto,
+        ephemeralKeyPair = ephemeralKeyPair,
     )
 
     // --- Subsystems; non-null once [ready] flips true ---
@@ -526,6 +530,7 @@ public class DesktopEngine(
                 groupMemberDao = db.groupMemberDao(),
                 groupDeliveryDao = db.groupDeliveryDao(),
                 isTrustedPeer = { peerId -> trustStore.isTrusted(FlashDeviceId(peerId)) },
+                isChannelEncrypted = { peerId -> trustStore.getSessionKey(FlashDeviceId(peerId)) != null },
                 onlinePeerIds = network.activeSessions.map { sessions ->
                     sessions.keys.mapTo(HashSet()) { it.value }
                 },
@@ -1043,15 +1048,30 @@ public class DesktopEngine(
             pairing.onInbound(peerDeviceId, text)
             return
         }
-        // Group + direct-chat families into the chat repository (slice 4) — the same order
-        // both Android hosts use (minus calling/PTT, which the desktop does not run).
-        // Typing travels WITH the transport peer (the repository keys direct typing under
-        // it); invalid-but-recognized frames drop rather than falling into XFER below.
-        GroupFrameCodec.decode(text)?.let { frame ->
+        val plainText = if (E2eFrameCodec.isSecuredFrame(text)) {
+            val sessionKey = peerDeviceId?.let { trustStore.getSessionKey(FlashDeviceId(it)) }
+            if (sessionKey != null) {
+                E2eFrameCodec.decryptWireFrame(text, sessionKey) ?: run {
+                    FlashLog.w(TAG_WS, "Failed to decrypt FLASH_SEC frame from $peerDeviceId", null)
+                    return
+                }
+            } else {
+                FlashLog.w(TAG_WS, "Received FLASH_SEC from $peerDeviceId with no stored session key; dropping", null)
+                return
+            }
+        } else {
+            text
+        }
+
+        DirectMessageActionCodec.decode(plainText)?.let { frame ->
+            chatImpl?.onInboundWireFrame(frame, transportPeerId = peerDeviceId)
+            return
+        }
+        GroupFrameCodec.decode(plainText)?.let { frame ->
             chatImpl?.onInboundGroupWireFrame(peerDeviceId, frame)
             return
         }
-        when (val decoded = ChatTextFrameCodec.decode(text, System.currentTimeMillis(), peerDeviceId)) {
+        when (val decoded = ChatTextFrameCodec.decode(plainText, System.currentTimeMillis(), peerDeviceId)) {
             is ChatTextFrameCodec.DecodeResult.Frame -> {
                 val frame = decoded.frame
                 // transportPeerId for ALL direct families, not just typing: the codec decodes the
@@ -1174,7 +1194,13 @@ public class DesktopEngine(
             is MessageWireFrame.ReactionFrame,
             is MessageWireFrame.TypingFrame -> ChatTextFrameCodec.encode(wireFrame) ?: return false
         }
-        return session.connection.sendText(frameText)
+        val sessionKey = trustStore.getSessionKey(FlashDeviceId(targetDeviceId))
+        val wirePayload = if (sessionKey != null) {
+            E2eFrameCodec.encryptToWireFrame(frameText, sessionKey)
+        } else {
+            frameText
+        }
+        return session.connection.sendText(wirePayload)
     }
 
     private fun sanitize(component: String): String =

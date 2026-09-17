@@ -1,5 +1,6 @@
 package com.transfer.flash.core.security.crypto
 
+import com.transfer.flash.core.common.annotation.FlashInternalApi
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFails
@@ -24,6 +25,7 @@ import kotlin.test.assertTrue
  * Appendix A) and `FlashFingerprintTest`; those run on the Android host JVM only, so anything they
  * would catch on a new target has a counterpart here.
  */
+@OptIn(FlashInternalApi::class)
 class PlatformCryptoParityTest {
 
     @Test

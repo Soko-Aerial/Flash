@@ -92,6 +92,7 @@ internal class DesktopTrustStore(private val stateDir: File) : FlashTrustStore {
     private val file = File(stateDir, "trust.properties")
     private val lock = Any()
     private val cache = ConcurrentHashMap<FlashDeviceId, String>()
+    private val sessionKeys = ConcurrentHashMap<FlashDeviceId, ByteArray>()
 
     init {
         stateDir.mkdirs()
@@ -112,6 +113,16 @@ internal class DesktopTrustStore(private val stateDir: File) : FlashTrustStore {
                         cache[FlashDeviceId(key.removePrefix("trusted."))] =
                             props.getProperty(key).orEmpty()
                     }
+                props.stringPropertyNames()
+                    .filter { it.startsWith("session_key.") }
+                    .forEach { key ->
+                        val id = FlashDeviceId(key.removePrefix("session_key."))
+                        val encoded = props.getProperty(key).orEmpty()
+                        runCatching { com.transfer.flash.core.common.protocol.Base64.decode(encoded) }
+                            .getOrNull()?.let { bytes ->
+                                sessionKeys[id] = bytes
+                            }
+                    }
             }
         }
     }
@@ -119,6 +130,9 @@ internal class DesktopTrustStore(private val stateDir: File) : FlashTrustStore {
     private fun persist() {
         val props = Properties()
         cache.forEach { (id, name) -> props.setProperty("trusted.${id.value}", name) }
+        sessionKeys.forEach { (id, key) ->
+            props.setProperty("session_key.${id.value}", com.transfer.flash.core.common.protocol.Base64.encode(key))
+        }
         file.outputStream().use { output: OutputStream -> props.store(output, "Flash desktop trust") }
     }
 
@@ -132,9 +146,20 @@ internal class DesktopTrustStore(private val stateDir: File) : FlashTrustStore {
         return FlashResult.Success(Unit)
     }
 
+    override fun saveSessionKey(deviceId: FlashDeviceId, key: ByteArray): FlashResult<Unit> {
+        synchronized(lock) {
+            sessionKeys[deviceId] = key
+            runCatching { persist() }
+        }
+        return FlashResult.Success(Unit)
+    }
+
+    override fun getSessionKey(deviceId: FlashDeviceId): ByteArray? = sessionKeys[deviceId]
+
     override fun revokeTrust(deviceId: FlashDeviceId): FlashResult<Unit> {
         synchronized(lock) {
             cache.remove(deviceId)
+            sessionKeys.remove(deviceId)
             runCatching { persist() }
         }
         return FlashResult.Success(Unit)

@@ -5,6 +5,8 @@ package com.transfer.flash.core.security.pairing
 import com.transfer.flash.core.common.model.FlashDeviceId
 import com.transfer.flash.core.common.protocol.FlashTextFraming
 import com.transfer.flash.core.common.time.SystemTimeSource
+import com.transfer.flash.core.security.crypto.FlashCrypto
+import com.transfer.flash.core.security.crypto.FlashEcKeyPair
 import com.transfer.flash.core.security.trust.FlashTrustStore
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
@@ -72,6 +74,8 @@ public class FlashPairingCoordinator(
     private val trustStore: FlashTrustStore,
     private val scope: CoroutineScope,
     private val sendToPeer: (peerId: String, text: String) -> Boolean,
+    private val crypto: FlashCrypto? = null,
+    private val ephemeralKeyPair: FlashEcKeyPair? = null,
 ) {
 
     /** UI snapshot for a pairing pane; null when no pairing is in flight. */
@@ -218,6 +222,16 @@ public class FlashPairingCoordinator(
                 s.peerDeviceId?.let { peerId ->
                     val name = s.peerName?.ifBlank { null } ?: peerId.take(SHORT_ID)
                     trustStore.trustPeer(FlashDeviceId(peerId), name)
+                    val peerPubKey = event.ephemeralPubKey.takeIf { it.isNotEmpty() }
+                        ?: s.peerEphemeralPublicKey
+                    val c = crypto
+                    val kp = ephemeralKeyPair
+                    if (peerPubKey != null && kp != null && c != null) {
+                        runCatching {
+                            val sessionKey = c.ecdhSessionKey(kp, peerPubKey)
+                            trustStore.saveSessionKey(FlashDeviceId(peerId), sessionKey)
+                        }
+                    }
                     _trustedPeers.value = loadTrusted()
                 }
                 _messages.tryEmit("Paired with ${s.peerName ?: s.peerDeviceId?.take(SHORT_ID) ?: "peer"}.")

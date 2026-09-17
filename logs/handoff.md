@@ -1,5 +1,35 @@
 # Current Handoff
 
+## 2026-09-17 — Milestone 1: Pairwise End-to-End Message Encryption (AES-256-GCM + ECDH P-256)
+
+### Current branch
+`dev`
+
+### Completed & Verified
+1. **Pairwise Shared Secret Derivation**:
+   - Both Android (`PairingCoordinator.kt`) and Desktop (`FlashPairingCoordinator.kt`) generate ephemeral ECDH P-256 keypairs.
+   - On pairing confirmation (`FlashPairingEvent.Confirmed`), computes HKDF-SHA256 session key (`32-byte` AES key) from peer's public key.
+   - Session keys persisted to `FlashTrustStore` (`AndroidPreferencesTrustStore` and `DesktopTrustStore`).
+2. **End-to-End Wire Framing (`E2eFrameCodec`)**:
+   - Implemented `FLASH_SEC payload=<base64>` framing with 12-byte random nonce and AES-256-GCM.
+   - Transparently encrypts outbound frames (`FLASH_MSG`, `FLASH_RCPT`, `FLASH_READ`, `FLASH_REACT`, `FLASH_TYPING`, `FLASH_ACTION`) when a session key exists for the target peer.
+   - Decrypts inbound `FLASH_SEC` frames in `DesktopEngine.kt`, `DiscoveryEngineHolder.kt`, and `Flash.kt`, failing closed on tamper or wrong key.
+   - Graceful fallback: unpaired peers or sessions without keys communicate via plain frames without error.
+3. **Truthful UI Encryption State**:
+   - Wired `isChannelEncrypted = { peerId -> trustStore.getSessionKey(peerId) != null }` into `RealFlashChatRepository` and `DesktopShell`.
+   - Header lock icon and security details sheet honestly reflect encryption status.
+
+### Verification
+- `:core:security:testAndroidHostTest`: PASSED (all tests passed, including `E2eFrameCodecTest` and `FlashTrustStoreTest`).
+- `:core:security:jvmTest`: PASSED.
+- `:desktop:jvmTest`: PASSED.
+- `:app:compileDebugKotlin`: BUILD SUCCESSFUL.
+
+### Recommended Next Step
+- Milestone 2: Stream-level encryption (TLS / WSS) or file-transfer payload chunk encryption.
+
+---
+
 ## 2026-09-17 — Desktop Reactive Modes, Truthful Encryption Status, and Manual Reconnect
 
 ### Current branch

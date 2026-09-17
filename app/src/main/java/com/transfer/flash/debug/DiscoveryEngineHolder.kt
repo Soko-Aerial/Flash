@@ -34,6 +34,7 @@ import com.transfer.flash.core.network.FlashNetwork
 import com.transfer.flash.core.network.bridge.DiscoveryRouteBinder
 import com.transfer.flash.core.network.ws.WsFlashNetwork
 import com.transfer.flash.core.network.ws.WsSession
+import com.transfer.flash.core.security.crypto.E2eFrameCodec
 import com.transfer.flash.core.security.crypto.FlashFingerprint
 import com.transfer.flash.core.security.crypto.KeystoreFlashCrypto
 import com.transfer.flash.core.security.trust.AndroidPreferencesTrustStore
@@ -167,6 +168,9 @@ object DiscoveryEngineHolder {
 
     @Volatile
     private var pairing: PairingCoordinator? = null
+
+    @Volatile
+    private var trustStoreRef: AndroidPreferencesTrustStore? = null
 
     /**
      * Live WebRTC calling engine (C7 / ADR-025). Constructed in [startEngineLocked], torn down in
@@ -739,6 +743,7 @@ object DiscoveryEngineHolder {
         // Trust store is shared by chat (peer-name resolution) and pairing (persisted trust). One
         // instance, created before the chat repo so its name resolver can capture it.
         val trustStore = AndroidPreferencesTrustStore(appContext)
+        trustStoreRef = trustStore
 
         val chatImpl = RealFlashChatRepository(
             localDeviceId = identity.deviceId.value,
@@ -753,6 +758,7 @@ object DiscoveryEngineHolder {
             groupMemberDao = db.groupMemberDao(),
             groupDeliveryDao = db.groupDeliveryDao(),
             isTrustedPeer = { peerId -> trustStore.isTrusted(peerId) },
+            isChannelEncrypted = { peerId -> trustStore.getSessionKey(peerId) != null },
             // Online indicator: a peer is online iff it has a live session. activeSessions is keyed
             // by the peer's FlashDeviceId, and a conversationId IS that peer id, so the repo can key
             // presence directly off this id set.
@@ -835,16 +841,22 @@ object DiscoveryEngineHolder {
                     is MessageWireFrame.TypingFrame -> ChatTextFrameCodec.encode(wireFrame)
                         ?: return@RealFlashChatRepository false
                 }
+                val sessionKey = trustStore.getSessionKey(targetDeviceId)
+                val wirePayload = if (sessionKey != null) {
+                    E2eFrameCodec.encryptToWireFrame(frameText, sessionKey)
+                } else {
+                    frameText
+                }
                 val sent = if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
                     runCatching {
                         kotlinx.coroutines.runBlocking(kotlinx.coroutines.Dispatchers.IO) {
-                            session.connection.sendText(frameText)
+                            session.connection.sendText(wirePayload)
                         }
                     }.getOrDefault(false)
                 } else {
-                    session.connection.sendText(frameText)
+                    session.connection.sendText(wirePayload)
                 }
-                Log.i(TAG_CHAT, "Dispatched chat frame to $targetDeviceId (success=$sent)")
+                Log.i(TAG_CHAT, "Dispatched chat frame to $targetDeviceId (encrypted=${sessionKey != null}, success=$sent)")
                 sent
             },
             groupTransportSink = { targetDeviceId, wireFrame ->
@@ -884,9 +896,9 @@ object DiscoveryEngineHolder {
         val localFingerprintHex =
             FlashFingerprint.formatHexGroups(FlashFingerprint.fingerprint(crypto.identityPublicKeyEncoded))
         // (trustStore constructed above, shared with the chat repo.)
-        // One ephemeral ECDH key reused for the lifetime of this engine (no session encryption is
-        // wired yet — the key rides the handshake but is opaque to the current transport).
-        val ephemeralPublicKey = crypto.generateEphemeralEcdhKeyPair().publicKeyEncoded
+        // One ephemeral ECDH key reused for the lifetime of this engine, used to derive AES-256 session keys.
+        val ephemeralKeyPair = crypto.generateEphemeralEcdhKeyPair()
+        val ephemeralPublicKey = ephemeralKeyPair.publicKeyEncoded
         val pairingCoordinator = PairingCoordinator(
             localFingerprintHex = localFingerprintHex,
             localDeviceId = identity.deviceId.value,
@@ -908,10 +920,16 @@ object DiscoveryEngineHolder {
                     Log.i(TAG_WS, "Pairing sendToPeer id=$peerId queued (hasSession=true)")
                     true
                 } else {
-                    Log.i(TAG_WS, "Pairing sendToPeer id=$peerId no session")
+                    Log.w(
+                        TAG_WS,
+                        "Pairing sendToPeer id=$peerId has NO session; " +
+                            "active sessions=${networkImpl.activeSessions.value.keys.map { it.value }}",
+                    )
                     false
                 }
             },
+            crypto = crypto,
+            ephemeralKeyPair = ephemeralKeyPair,
         )
 
         // ---- calling (C7 / ADR-025 / UI-050): WebRTC voice/video, signaling over the same WS
@@ -1682,7 +1700,22 @@ object DiscoveryEngineHolder {
             pairing.onInbound(peerDeviceId, text)
             return
         }
-        DirectMessageActionCodec.decode(text)?.let { frame ->
+        val plainText = if (E2eFrameCodec.isSecuredFrame(text)) {
+            val sessionKey = trustStoreRef?.getSessionKey(peerDeviceId)
+            if (sessionKey != null) {
+                E2eFrameCodec.decryptWireFrame(text, sessionKey) ?: run {
+                    Log.w(TAG_CHAT, "Failed to decrypt FLASH_SEC frame from $peerDeviceId")
+                    return
+                }
+            } else {
+                Log.w(TAG_CHAT, "Received FLASH_SEC frame from $peerDeviceId with no stored session key; dropping")
+                return
+            }
+        } else {
+            text
+        }
+
+        DirectMessageActionCodec.decode(plainText)?.let { frame ->
             chatImpl.onInboundWireFrame(frame, transportPeerId = peerDeviceId)
             return
         }
@@ -1692,7 +1725,7 @@ object DiscoveryEngineHolder {
         // family only (group frames travel a separate path), so for legit traffic the frame author
         // IS the transport peer — and PR #11's fail-closed spoof guards (`transportPeerId != null`
         // checks) only fire when it is non-null. Passing null here would silently neutralize them.
-        when (val decoded = ChatTextFrameCodec.decode(text, System.currentTimeMillis(), peerDeviceId)) {
+        when (val decoded = ChatTextFrameCodec.decode(plainText, System.currentTimeMillis(), peerDeviceId)) {
             is ChatTextFrameCodec.DecodeResult.Frame -> {
                 val frame = decoded.frame
                 chatImpl.onInboundWireFrame(
@@ -2209,6 +2242,7 @@ object DiscoveryEngineHolder {
             transferRepo = null
             chatRepo = null
             pairing = null
+            trustStoreRef = null
             calling = null
         }
         binderJob?.cancel()

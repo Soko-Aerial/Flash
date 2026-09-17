@@ -56,4 +56,26 @@ class FlashTrustStoreTest {
         assertEquals("Device 1", peers[FlashDeviceId("id-1")])
         assertEquals("Device 2", peers[FlashDeviceId("id-2")])
     }
+
+    @Test
+    fun saveSessionKey_persistsAndRetrievesSessionKey() {
+        val prefs = FakeSharedPreferences()
+        val store = AndroidPreferencesTrustStore(prefs)
+        val peerId = FlashDeviceId("peer-device-uuid-999")
+        val sampleKey = ByteArray(32) { (it + 1).toByte() }
+
+        org.junit.Assert.assertNull(store.getSessionKey(peerId))
+
+        val result = store.saveSessionKey(peerId, sampleKey)
+        assertTrue(result is FlashResult.Success)
+
+        val retrieved = store.getSessionKey(peerId)
+        org.junit.Assert.assertNotNull(retrieved)
+        org.junit.Assert.assertArrayEquals(sampleKey, retrieved)
+
+        // revokeTrust cleans up both trust and session key
+        store.revokeTrust(peerId)
+        org.junit.Assert.assertNull(store.getSessionKey(peerId))
+        assertFalse(prefs.contains("session_key_peer-device-uuid-999"))
+    }
 }

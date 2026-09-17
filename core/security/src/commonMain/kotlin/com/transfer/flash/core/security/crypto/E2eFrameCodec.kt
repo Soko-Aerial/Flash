@@ -2,7 +2,10 @@
 
 package com.transfer.flash.core.security.crypto
 
+import com.transfer.flash.core.common.annotation.FlashInternalApi
+import com.transfer.flash.core.common.protocol.Base64
 import com.transfer.flash.core.common.protocol.FlashProtocol
+import com.transfer.flash.core.common.protocol.FlashTextFraming
 
 /**
  * Frame-level end-to-end encryption (D4, plan step C2.7).
@@ -30,22 +33,33 @@ import com.transfer.flash.core.common.protocol.FlashProtocol
  * multi-hop sessions, add explicit epoch/rekey negotiation here and document the counter in
  * docs/protocol.md before shipping.
  */
-internal object E2eFrameCodec {
+@FlashInternalApi
+public object E2eFrameCodec {
 
     /** GCM-standard 96-bit nonce length. */
-    const val NONCE_BYTES = 12
+    public const val NONCE_BYTES: Int = 12
 
     /** Full-strength GCM authentication tag. */
-    const val TAG_BITS = 128
+    public const val TAG_BITS: Int = 128
+
+    /** Frame prefix for wire-level encrypted chat frames. */
+    public const val SEC_PREFIX: String = "FLASH_SEC"
+
+    /** Payload field key for `FLASH_SEC` frames. */
+    public const val KEY_PAYLOAD: String = "payload"
 
     /** Additional authenticated data binding frames to the negotiated protocol version. */
     private fun aad(): ByteArray = "flash-e2e-v${FlashProtocol.VERSION}".encodeToByteArray()
 
+    /** Returns true if [text] starts with the `FLASH_SEC` frame prefix. */
+    public fun isSecuredFrame(text: String): Boolean =
+        text.startsWith("$SEC_PREFIX ") || text == SEC_PREFIX
+
     /**
-     * Encrypts a JSON payload into `[nonce | ciphertext+tag]` under the shared 32-byte
+     * Encrypts a payload into `[nonce | ciphertext+tag]` under the shared 32-byte
      * AES-256 session key.
      */
-    fun encrypt(payloadJson: String, sessionKey: ByteArray): ByteArray {
+    public fun encrypt(payloadJson: String, sessionKey: ByteArray): ByteArray {
         require(sessionKey.size == FlashCrypto.SESSION_KEY_SIZE_BYTES) {
             "Session key must be ${FlashCrypto.SESSION_KEY_SIZE_BYTES} bytes (AES-256), was ${sessionKey.size}"
         }
@@ -65,7 +79,7 @@ internal object E2eFrameCodec {
      * attempt delivery. The exception type is platform-defined
      * (`javax.crypto.AEADBadTagException` on JVM targets); see [aesGcmOpen].
      */
-    fun decrypt(frame: ByteArray, sessionKey: ByteArray): String {
+    public fun decrypt(frame: ByteArray, sessionKey: ByteArray): String {
         require(sessionKey.size == FlashCrypto.SESSION_KEY_SIZE_BYTES) {
             "Session key must be ${FlashCrypto.SESSION_KEY_SIZE_BYTES} bytes (AES-256), was ${sessionKey.size}"
         }
@@ -79,5 +93,27 @@ internal object E2eFrameCodec {
             ciphertext = frame.copyOfRange(NONCE_BYTES, frame.size),
         )
         return plaintext.decodeToString()
+    }
+
+    /**
+     * Encrypts plaintext wire frame [plainText] using [sessionKey] (32-byte AES-256)
+     * and wraps it into a `FLASH_SEC` wire frame string.
+     */
+    public fun encryptToWireFrame(plainText: String, sessionKey: ByteArray): String {
+        val encryptedBytes = encrypt(plainText, sessionKey)
+        val payloadBase64 = Base64.encode(encryptedBytes)
+        return FlashTextFraming.encodeFields(SEC_PREFIX, KEY_PAYLOAD to payloadBase64)
+    }
+
+    /**
+     * Attempts to decrypt an incoming `FLASH_SEC` wire frame using [sessionKey].
+     * Returns the decrypted plaintext frame string, or null if the frame is invalid,
+     * not a secured frame, or authentication failed (e.g. bad tag, tampered, wrong key).
+     */
+    public fun decryptWireFrame(text: String, sessionKey: ByteArray): String? {
+        val fields = FlashTextFraming.parseFields(text, SEC_PREFIX) ?: return null
+        val payloadBase64 = fields[KEY_PAYLOAD] ?: return null
+        val encryptedBytes = runCatching { Base64.decode(payloadBase64) }.getOrNull() ?: return null
+        return runCatching { decrypt(encryptedBytes, sessionKey) }.getOrNull()
     }
 }
