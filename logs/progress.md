@@ -363,6 +363,20 @@ Implemented full feature parity between Android (`MainActivity.kt`) and Desktop 
   3. Added comprehensive unit test in `RealFlashTransferRepositoryTest.kt`.
 - Verification: `:core:transfer:testAndroidHostTest` and `:desktop:jvmTest` all passed. Updated APK built and installed to device; `:desktop:run` restarted with fresh binary.
 
+## 2026-09-17 — Tactile Press Feedback on Archived Chats Row & FlashText Tokens
+
+### Worked on
+- Implemented micro-UX and design token compliance enhancements in `FlashArchivedChats.kt`.
+
+### Changed
+- Added `.flashPressScale(interactionSource)` to `FlashArchivedChatsRow` for tactile spring press feedback upon tapping the row.
+- Replaced stock `material3.Text` composables in `FlashArchivedChatsRow` and `FlashArchivedChatsTopBar` with `FlashText` design token composables.
+- Configured Gradle settings repository mirroring (`settings.gradle.kts` and `third_party/webrtc-kmp/settings.gradle.kts`) to point Maven Central to Google's official mirror, mitigating Cloudflare HTTP 429 rate limits.
+
+### Verification
+- `./gradlew :ui:chat:jvmTest :app:testDebugUnitTest` passed cleanly (193 tasks executed, BUILD SUCCESSFUL).
+- `git diff --check` passed clean.
+
 ## 2026-09-16 - Owner live-verified desktop voice playback; session handoff refreshed
 
 ### Worked on
