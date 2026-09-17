@@ -1,6 +1,27 @@
 # Current Handoff
 
-## 2026-09-17 — Android Large-File Transfer OOM Fix, Desktop DnD Enhancement, In-Bubble Transfer Controls & Message Options
+## 2026-09-17 — Transfer Pause/Resume State Fix & Bi-Directional Restart/Retry After Cancel
+
+### Current branch
+`dev`
+
+### Completed & Ready for Live Verification
+1. **Transfer Pause/Resume State Fix**:
+   - Added `Paused` state to `FlashFileTransferStatus`.
+   - Connected `FlashTransferState.Paused` across `DesktopEngine`, Android `Flash.kt`, and `DiscoveryEngineHolder`.
+   - Chat bubbles now correctly update to `Paused`: badge flips to a Play/Resume icon with circular progress ring, subtitle shows `"$formattedSize • $pct% • Paused (Tap to resume)"`, and trailing buttons offer Resume and Cancel.
+   - Clicking badge or card when paused triggers `onResumeTransfer()`, unpausing the transfer instead of looping in `pauseTransfer`.
+2. **Transfer Restart/Retry After Cancel (Sender & Receiver)**:
+   - Removed `Cancelled` from the terminal early-exit check in `RealFlashTransferRepository.kt:resumeTransfer`.
+   - Cancelled or failed transfers can now be resumed/retried from either side:
+     - **Sender side:** Relaunches worker with original `sourceUri` and `wireFileId`, sends `ACTION_RESUME` to receiver, and resumes chunk streaming.
+     - **Receiver side:** Emits incoming `ACTION_RESUME` to un-gate intake and sends wire `ACTION_RESUME` to sender; sender receives control frame and relaunches send automatically.
+   - Guarded `relaunchSend` so that receiver-initiated resumes do not re-park the transfer waiting for acceptance.
+
+### Recommended next task
+User verifies pausing and resuming in-chat transfers (confirming icon turns to Play and clicking it resumes), and verifies clicking Cancel followed by Retry/Resume from both sender and receiver sides to confirm transfer restart.
+
+
 
 ### Current branch
 `dev`

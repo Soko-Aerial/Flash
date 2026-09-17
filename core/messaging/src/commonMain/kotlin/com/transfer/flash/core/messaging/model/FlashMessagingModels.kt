@@ -89,6 +89,7 @@ public enum class FlashFileTransferStatus {
     NotDownloaded,
     AwaitingAcceptance,
     Transferring,
+    Paused,
     Downloaded,
     Failed,
 }

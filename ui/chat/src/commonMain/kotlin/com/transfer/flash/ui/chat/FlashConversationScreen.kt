@@ -690,8 +690,8 @@ fun FlashConversationScreen(
                 onFileClick = { _, file ->
                     // A failed card advertises "Failed (Tap to retry)" and a Retry badge, so the
                     // tap has to retry. Downloaded video files play in-app via FlashMediaViewer.
-                    if (file.transferStatus == FlashFileTransferStatus.Failed) {
-                        onRetryTransfer(file.id)
+                    if (file.transferStatus == FlashFileTransferStatus.Failed || file.transferStatus == FlashFileTransferStatus.Paused) {
+                        onResumeTransfer(file.id)
                     } else if (file.mimeType.startsWith("video/") && file.localUri != null) {
                         mediaViewerItems = listOf(
                             FlashMediaViewerItem(

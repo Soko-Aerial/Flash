@@ -318,7 +318,7 @@ private fun FlashBubbleSurface(
                         onActionClick = {
                             if (file.transferStatus == FlashFileTransferStatus.Transferring) {
                                 onPauseTransfer(file)
-                            } else if (file.transferStatus == FlashFileTransferStatus.Failed) {
+                            } else if (file.transferStatus == FlashFileTransferStatus.Paused || file.transferStatus == FlashFileTransferStatus.Failed) {
                                 onResumeTransfer(file)
                             } else {
                                 onFileClick(file)

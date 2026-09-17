@@ -2596,11 +2596,13 @@ public class RealFlashChatRepository(
             if (!recipientTransfers.isNullOrEmpty()) {
                 val allDownloaded = recipientTransfers.all { it.status == FlashFileTransferStatus.Downloaded }
                 val anyTransferring = recipientTransfers.any { it.status == FlashFileTransferStatus.Transferring }
+                val anyPaused = recipientTransfers.any { it.status == FlashFileTransferStatus.Paused }
                 val anyAwaiting = recipientTransfers.any { it.status == FlashFileTransferStatus.AwaitingAcceptance }
                 val allFailed = recipientTransfers.all { it.status == FlashFileTransferStatus.Failed }
                 val status = when {
                     allDownloaded -> FlashFileTransferStatus.Downloaded
                     anyTransferring -> FlashFileTransferStatus.Transferring
+                    anyPaused -> FlashFileTransferStatus.Paused
                     anyAwaiting -> FlashFileTransferStatus.AwaitingAcceptance
                     allFailed -> FlashFileTransferStatus.Failed
                     else -> FlashFileTransferStatus.Transferring

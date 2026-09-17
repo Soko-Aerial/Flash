@@ -370,7 +370,8 @@ private fun FlashVoiceBadge(
 
     val badgeColor = when (transferStatus) {
         FlashFileTransferStatus.Downloaded -> colors.accentPrimary
-        FlashFileTransferStatus.Transferring -> colors.accentSecondary
+        FlashFileTransferStatus.Transferring,
+        FlashFileTransferStatus.Paused -> colors.accentSecondary
         FlashFileTransferStatus.NotDownloaded -> Color(0xFF5A6472)
         FlashFileTransferStatus.AwaitingAcceptance -> colors.accentSecondary
         FlashFileTransferStatus.Failed -> colors.textError
@@ -380,6 +381,7 @@ private fun FlashVoiceBadge(
         FlashFileTransferStatus.NotDownloaded -> FlashIcons.Download to "Download voice message"
         FlashFileTransferStatus.Failed -> FlashIcons.Retry to "Retry download"
         FlashFileTransferStatus.Transferring -> FlashIcons.Clock to "Downloading voice message"
+        FlashFileTransferStatus.Paused -> FlashIcons.Play to "Resume downloading voice message"
         FlashFileTransferStatus.AwaitingAcceptance -> FlashIcons.Clock to "Voice message waiting to download"
         FlashFileTransferStatus.Downloaded ->
             if (isPlaying) FlashIcons.Pause to "Pause voice message" else FlashIcons.Play to "Play voice message"

@@ -512,6 +512,8 @@ public class DesktopEngine(
                                     FlashFileTransferStatus.Failed
                                 FlashTransferState.Offered ->
                                     FlashFileTransferStatus.AwaitingAcceptance
+                                FlashTransferState.Paused ->
+                                    FlashFileTransferStatus.Paused
                                 else ->
                                     FlashFileTransferStatus.Transferring
                             },

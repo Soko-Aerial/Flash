@@ -119,18 +119,23 @@ fun FlashFileMessageCard(
                 val etaStr = if (attachment.etaSeconds > 0) " • ${attachment.etaSeconds}s left" else ""
                 "$formattedSize • $pct%$speedStr$etaStr"
             }
+            FlashFileTransferStatus.Paused -> {
+                val pct = (attachment.transferProgress * 100).toInt().coerceIn(0, 100)
+                "$formattedSize • $pct% • Paused (Tap to resume)"
+            }
             FlashFileTransferStatus.NotDownloaded -> "$formattedSize • Tap to download"
             FlashFileTransferStatus.AwaitingAcceptance -> "$formattedSize • Awaiting your acceptance"
             FlashFileTransferStatus.Downloaded -> {
                 if (extension.isNotEmpty()) "$formattedSize • ${extension.uppercase()}" else formattedSize
             }
-            FlashFileTransferStatus.Failed -> "$formattedSize • Paused / Failed (Tap to retry)"
+            FlashFileTransferStatus.Failed -> "$formattedSize • Failed / Cancelled (Tap to retry)"
         }
     }
 
     val a11yDesc = remember(attachment.name, formattedSize, attachment.transferStatus) {
         when (attachment.transferStatus) {
             FlashFileTransferStatus.Transferring -> "Transferring ${attachment.name}, $formattedSize"
+            FlashFileTransferStatus.Paused -> "Paused transfer of ${attachment.name}, $formattedSize. Double-tap to resume."
             FlashFileTransferStatus.NotDownloaded -> "${attachment.name}, $formattedSize. Double-tap to download."
             FlashFileTransferStatus.AwaitingAcceptance -> "${attachment.name}, $formattedSize. Waiting for you to accept the transfer."
             FlashFileTransferStatus.Downloaded -> "${attachment.name}, $formattedSize. Double-tap to open."
@@ -188,7 +193,9 @@ fun FlashFileMessageCard(
                 onActionClick = {
                     if (attachment.transferStatus == FlashFileTransferStatus.Transferring) {
                         onPause()
-                    } else if (attachment.transferStatus == FlashFileTransferStatus.Failed) {
+                    } else if (attachment.transferStatus == FlashFileTransferStatus.Paused ||
+                        attachment.transferStatus == FlashFileTransferStatus.Failed
+                    ) {
                         onResume()
                     } else {
                         onActionClick()
@@ -253,7 +260,7 @@ fun FlashFileMessageCard(
                         tint = colors.textError,
                     )
                 }
-            } else if (attachment.transferStatus == FlashFileTransferStatus.Failed) {
+            } else if (attachment.transferStatus == FlashFileTransferStatus.Paused) {
                 Spacer(modifier = Modifier.width(FlashSpacing.space4))
                 IconButton(
                     onClick = {
@@ -265,6 +272,36 @@ fun FlashFileMessageCard(
                     FlashIcon(
                         icon = FlashIcons.Play,
                         contentDescription = "Resume transfer",
+                        size = 16.dp,
+                        tint = colors.accentPrimary,
+                    )
+                }
+                IconButton(
+                    onClick = {
+                        haptics(FlashHaptic.Tick)
+                        onCancel()
+                    },
+                    modifier = Modifier.size(28.dp),
+                ) {
+                    FlashIcon(
+                        icon = FlashIcons.Close,
+                        contentDescription = "Cancel transfer",
+                        size = 16.dp,
+                        tint = colors.textError,
+                    )
+                }
+            } else if (attachment.transferStatus == FlashFileTransferStatus.Failed) {
+                Spacer(modifier = Modifier.width(FlashSpacing.space4))
+                IconButton(
+                    onClick = {
+                        haptics(FlashHaptic.Tick)
+                        onResume()
+                    },
+                    modifier = Modifier.size(28.dp),
+                ) {
+                    FlashIcon(
+                        icon = FlashIcons.Retry,
+                        contentDescription = "Retry transfer",
                         size = 16.dp,
                         tint = colors.accentPrimary,
                     )
@@ -410,6 +447,22 @@ fun FlashFileIconBadge(
                 FlashIcon(
                     icon = FlashIcons.Pause,
                     contentDescription = "Pause transfer",
+                    tint = Color.White,
+                    size = FlashDimensions.iconSm,
+                )
+            }
+
+            FlashFileTransferStatus.Paused -> {
+                CircularProgressIndicator(
+                    progress = { animatedProgress },
+                    modifier = Modifier.size(44.dp),
+                    color = colors.accentPrimary.copy(alpha = 0.5f),
+                    trackColor = Color.White.copy(alpha = 0.25f),
+                    strokeWidth = 2.5.dp,
+                )
+                FlashIcon(
+                    icon = FlashIcons.Play,
+                    contentDescription = "Resume transfer",
                     tint = Color.White,
                     size = FlashDimensions.iconSm,
                 )

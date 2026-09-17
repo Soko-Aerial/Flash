@@ -327,6 +327,8 @@ private class Wiring(
                                 com.transfer.flash.core.messaging.model.FlashFileTransferStatus.Failed
                             com.transfer.flash.core.transfer.model.FlashTransferState.Offered ->
                                 com.transfer.flash.core.messaging.model.FlashFileTransferStatus.AwaitingAcceptance
+                            com.transfer.flash.core.transfer.model.FlashTransferState.Paused ->
+                                com.transfer.flash.core.messaging.model.FlashFileTransferStatus.Paused
                             else ->
                                 com.transfer.flash.core.messaging.model.FlashFileTransferStatus.Transferring
                         },

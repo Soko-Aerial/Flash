@@ -498,9 +498,7 @@ public class RealFlashTransferRepository(
             ?: return FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Transfer not found: ${transferId.value}"))
 
         // Terminal transfers have nothing to resume.
-        if (transfer.state == FlashTransferState.Completed ||
-            transfer.state == FlashTransferState.Cancelled
-        ) {
+        if (transfer.state == FlashTransferState.Completed) {
             return FlashResult.Success(Unit)
         }
 
@@ -516,7 +514,7 @@ public class RealFlashTransferRepository(
         val wirePaused = liveSender &&
             (dispatcher!!.isPaused || registryLock.withLock { transferId.value in pauseIntents })
 
-        // Outbound with no live worker — a Failed or stalled transfer being retried, or a resume
+        // Outbound with no live worker — a Failed, Cancelled, or stalled transfer being retried, or a resume
         // issued after executeSend already retired its registrations. Relaunch a fresh send job!
         if (transfer.direction == FlashTransferDirection.Sending && !liveSender) {
             relaunchSend(transfer, notifyPeer = true)
@@ -527,7 +525,8 @@ public class RealFlashTransferRepository(
         // state: bailing out on a state mismatch left the wire paused with no way back.
         if (!wirePaused &&
             transfer.state != FlashTransferState.Paused &&
-            transfer.state != FlashTransferState.Failed
+            transfer.state != FlashTransferState.Failed &&
+            transfer.state != FlashTransferState.Cancelled
         ) {
             return FlashResult.Success(Unit)
         }
@@ -586,7 +585,9 @@ public class RealFlashTransferRepository(
         registryLock.withLock { pauseIntents.remove(transferId) }
         // If requireReceiverAcceptance is on and this transfer never moved any bytes (unaccepted offer),
         // re-arm the acceptance gate so FILE_START is sent as an offer and chunks are parked.
-        if (requireReceiverAcceptance && transfer.bytesDone == 0L) {
+        // If the peer is the one that asked for the resume (notifyPeer == false), the receiver has already
+        // explicitly requested/accepted the transfer, so we do not re-park.
+        if (requireReceiverAcceptance && transfer.bytesDone == 0L && notifyPeer) {
             registryLock.withLock { pauseIntents.add(transferId) }
         }
         updateTransferState(transferId) {

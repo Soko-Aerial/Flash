@@ -1,6 +1,31 @@
 # Progress Log
 
-## 2026-09-17 — Android Large-File Transfer OOM Fix, Desktop DnD Enhancement, In-Bubble Transfer Controls & Message Options
+## 2026-09-17 — Transfer Pause/Resume State Fix & Bi-Directional Restart/Retry After Cancel
+
+### Worked on
+1. **Transfer Pause/Resume State Desync**:
+   - Diagnosed issue where pausing a transfer in chat caused the icon to stay as Pause, and clicking it sent `pauseTransfer` repeatedly with no way to resume.
+   - Root cause: `FlashFileTransferStatus` lacked a `Paused` enum state. When `FlashTransferState.Paused` occurred in `core:transfer`, `DesktopEngine.kt`, `Flash.kt`, and `DiscoveryEngineHolder.kt` fell into `else -> FlashFileTransferStatus.Transferring`. The UI considered the transfer still transferring, rendered a Pause icon, and repeatedly called `onPauseTransfer`.
+   - Added `Paused` to `FlashFileTransferStatus`.
+   - Updated engine mapping in `DesktopEngine.kt`, `Flash.kt`, and `DiscoveryEngineHolder.kt` to map `FlashTransferState.Paused -> FlashFileTransferStatus.Paused`.
+   - Updated `FlashFileMessageCard.kt`:
+     - Rendered paused progress ring with `FlashIcons.Play` icon in the center.
+     - Subtitle updates to `"$formattedSize • $pct% • Paused (Tap to resume)"`.
+     - Trailing controls display a Resume/Play button (`FlashIcons.Play`) and Cancel button (`FlashIcons.Close`).
+     - Clicking the badge or card when `Paused` invokes `onResume()`.
+     - In `FlashMessageBubble.kt` and `FlashConversationScreen.kt`, clicking a paused item calls `onResumeTransfer()`.
+2. **Transfer Restart/Retry After Cancel (Sender & Receiver)**:
+   - Diagnosed issue where clicking Cancel left no way to restart or resume the transfer, even though the sender still has the local file and the receiver has accumulated partial data.
+   - Root cause: `RealFlashTransferRepository.kt:resumeTransfer` explicitly checked `if (transfer.state == FlashTransferState.Completed || transfer.state == FlashTransferState.Cancelled) return FlashResult.Success(Unit)` and blocked non-failed/non-paused transfers, completely ignoring resume/retry requests on cancelled transfers.
+   - Removed `Cancelled` from the terminal check in `resumeTransfer`:
+     - Outbound (`Sending`): `relaunchSend(transfer, notifyPeer = true)` relaunches a fresh send worker reading from `transfer.sourceUri`, sends `ACTION_RESUME` to the receiver, and resumes chunk streaming.
+     - Inbound (`Receiving`): sets state to `Transferring`, emits `ACTION_RESUME` on `incomingControl` to ungate intake, and sends wire `ACTION_RESUME` to `transfer.peerDeviceId`. The sender receives `ACTION_RESUME` on `onRemoteTransferControl` and automatically relaunches sending (`relaunchSend(transfer, notifyPeer = false)`).
+     - Guarded `relaunchSend` so that when `notifyPeer == false` (i.e. the receiver requested the resume), the sender does not re-park itself waiting for acceptance.
+3. **Verification**:
+   - Compiles cleanly on `:ui:chat:compileKotlinJvm`, `:ui:chat:compileAndroidMain`, `:desktop:compileKotlinJvm`, and `:app:compileDebugKotlin` (BUILD SUCCESSFUL).
+   - Ran unit test suite: `:core:transfer:jvmTest`, `:core:messaging:jvmTest`, `:ui:chat:jvmTest`, and `:desktop:jvmTest` (59 tasks, all passed with 0 errors).
+
+
 
 ### Worked on
 1. **Android Large-File Transfer Crash Fix (ERROR-067)**:
