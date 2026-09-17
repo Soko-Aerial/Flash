@@ -244,6 +244,26 @@ public class DesktopEngine(
     public val localFriendlyName: String get() = identity.friendlyName
 
     /**
+     * Forces an immediate rediscovery and reconnect sweep across discovered endpoints, matching
+     * the Android host's `AppEngine.reconnectNow()`.
+     *
+     * @return false when the engine has not booted yet.
+     */
+    public fun reconnectNow(): Boolean {
+        val net = networkImpl ?: return false
+        val disc = discoveryImpl ?: return false
+        scope.launch {
+            FlashLog.i(TAG_DISCOVERY, "Manual retry: restarting discovery and triggering redials")
+            runCatching { disc.restartDiscovery() }
+                .onFailure { FlashLog.w(TAG_DISCOVERY, "Discovery restart failed", it) }
+            disc.discoveredEndpoints.value.forEach { ep ->
+                dialIfNeeded(net, ep)
+            }
+        }
+        return true
+    }
+
+    /**
      * This device's advertisement, rebuilt from the CURRENT identity.
      *
      * Was built inline at boot from a captured `friendlyName`, so a rename could update the store and
@@ -441,6 +461,7 @@ public class DesktopEngine(
         val network = JvmWsFlashNetwork(
             localDeviceId = localId,
             localFriendlyName = friendlyName,
+            transportProfile = { (_settings.value.performanceMode ?: FlashPerformanceMode.HIGH).transport },
         )
         networkImpl = network
 
@@ -1165,6 +1186,9 @@ public class DesktopEngine(
 
         /** AGENTS.md §24 tag for the WS mesh; matches the app host's `TAG_WS`. */
         const val TAG_WS = "WS"
+
+        /** AGENTS.md §24 tag for Discovery; matches the app host's `TAG_DISCOVERY`. */
+        const val TAG_DISCOVERY = "DISCOVERY"
     }
 
     // The receive pipeline is assembled inside [assemble] but stored here so the private

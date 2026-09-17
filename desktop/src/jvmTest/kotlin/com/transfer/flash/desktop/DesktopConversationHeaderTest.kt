@@ -123,7 +123,7 @@ class DesktopConversationHeaderTest {
 
         assertEquals(true, header.showCallActions)
         assertEquals(false, header.isGroup, "a Nearby peer is a direct chat")
-        assertEquals(true, header.isEncrypted, "LAN traffic is encrypted in transit, as the badge says")
+        assertEquals(false, header.isEncrypted, "Wire TLS is not active yet; matches mobile's truthful isEncrypted=false")
         assertEquals(FlashNetworkTransport.Lan, header.transport)
     }
 

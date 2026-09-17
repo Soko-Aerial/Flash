@@ -1,5 +1,28 @@
 # Current Handoff
 
+## 2026-09-17 — Desktop Reactive Modes, Truthful Encryption Status, and Manual Reconnect
+
+### Current branch
+`dev`
+
+### Completed & Verified
+1. **Desktop Reactive Theme & Performance Modes**:
+   - `DesktopMain.kt` now collects `desktopSettings by engine.settings.collectAsState()`, resolving theme mode immediately upon settings change.
+   - Wrapped root in `FlashMaterialTheme(darkTheme = darkTheme, dynamicColor = desktopSettings.dynamicAccent)` so Material 3 controls react properly.
+   - Propagated `minimalChrome` and `motion = rememberFlashMotion(reduceMotionResolved)` to `FlashTheme`.
+   - Connected `transportProfile` in `DesktopEngine.kt` to update keepalive profiles dynamically based on selected performance mode.
+2. **Truthful Wire Encryption Status Parity**:
+   - Corrected `desktopConversationHeader` in `DesktopShell.kt` from hardcoded `isEncrypted = true` to `isEncrypted = false`, achieving honest parity with Android and actual unencrypted `ws://` transport prior to Phase 16.
+   - Updated `DesktopConversationHeaderTest.kt` assertion to match.
+3. **Desktop Manual Reconnection & Retry**:
+   - Implemented `DesktopEngine.reconnectNow(): Boolean` to trigger rediscovery and an endpoint redial sweep.
+   - Wired `onRetryConnection = { engine.reconnectNow() }` in `DesktopShell.kt` for `FlashConversationScreen`.
+
+### Verification
+- `:desktop:compileKotlinJvm` BUILD SUCCESSFUL.
+- `:desktop:jvmTest` BUILD SUCCESSFUL.
+- `:app:compileDebugKotlin` BUILD SUCCESSFUL.
+
 ## 2026-09-17 — Desktop Shell Feature Parity with Android Complete
 
 ### Current branch

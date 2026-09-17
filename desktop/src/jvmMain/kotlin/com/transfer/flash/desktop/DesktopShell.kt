@@ -719,6 +719,7 @@ public fun DesktopShell(
                             chatRepository.closeConversation()
                             nav.back()
                         },
+                        onRetryConnection = { engine.reconnectNow() },
                         // Whether this peer is in the trust store, from the same list the Nearby
                         // screen's rows and this screen's header already read.
                         isPeerTrusted = conversationIdIsTrusted,
@@ -1448,9 +1449,9 @@ internal fun desktopConversationHeader(
         avatarSeed = name,
         presence = if (endpoint != null) FlashPeerPresence.Online else FlashPeerPresence.Offline,
         transport = FlashNetworkTransport.Lan,
-        // Direct chat, and encrypted in transit on the LAN, as the Nearby/LAN badge already says.
         isGroup = false,
-        isEncrypted = true,
+        // Honest wire parity with mobile: wire TLS is not active in production mesh yet (Phase 16).
+        isEncrypted = false,
         showCallActions = true,
     )
 }

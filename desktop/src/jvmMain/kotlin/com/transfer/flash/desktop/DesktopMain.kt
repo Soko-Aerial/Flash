@@ -6,6 +6,7 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -17,8 +18,11 @@ import androidx.compose.ui.window.rememberWindowState
 import com.transfer.flash.core.common.logging.FlashLog
 import com.transfer.flash.core.common.logging.FlashLogLevel
 import com.transfer.flash.core.common.logging.FlashLogSink
+import com.transfer.flash.core.common.perf.FlashPerformanceMode
 import com.transfer.flash.ui.settings.FlashSettingsMath
+import com.transfer.flash.ui.theme.FlashMaterialTheme
 import com.transfer.flash.ui.theme.FlashTheme
+import com.transfer.flash.ui.theme.rememberFlashMotion
 import com.shepeliev.webrtckmp.WebRtc
 import dev.onvoid.webrtc.logging.Logging
 import java.io.File
@@ -52,45 +56,52 @@ public fun main() = application {
         title = "Flash",
         state = rememberWindowState(width = 1200.dp, height = 800.dp),
     ) {
-        // Appearance. The selection is owned here because it has to sit ABOVE `FlashTheme` — the
-        // theme cannot hold the state that selects it. Seeded from the persisted value so it
-        // survives a restart, and resolved through the SHARED `FlashSettingsMath.resolveDarkTheme`
-        // so desktop and Android cannot drift on what "System" means.
-        //
-        // This replaces `FlashTheme { }`, whose argument-less form pinned the desktop to whatever
-        // `isSystemInDarkTheme()` reported: the Settings → Appearance control existed, moved, and
-        // changed nothing.
-        var themeMode by remember { mutableStateOf(engine.storedThemeMode()) }
+        // Reactive settings: Theme Mode and Performance Mode are observed directly from the engine's
+        // StateFlow so changes in Settings take effect immediately without requiring an app restart.
+        val desktopSettings by engine.settings.collectAsState()
         val darkTheme = FlashSettingsMath.resolveDarkTheme(
-            mode = themeMode,
+            mode = desktopSettings.themeMode,
             systemDark = isSystemInDarkTheme(),
         )
-        FlashTheme(darkTheme = darkTheme) {
-            // Baseline text colour for the whole desktop window.
-            //
-            // `FlashTypography` sets no colour, so an unstyled `FlashText` falls through to
-            // `BasicText`'s default of `LocalContentColor` — and **nothing in this repo provides
-            // that local**. On Android it is supplied by whatever Material3 surface the content sits
-            // in (`Scaffold`, `AlertDialog`, `ModalBottomSheet`); the desktop shell is a plain `Box`
-            // with a `.background(...)`, so there is no such surface and every unstyled string drew
-            // `Color.Black`.
-            //
-            // On the dark palette that is black-on-black: the whole Transfer Details and Peer Details
-            // panes (`DesktopDetailPanes.kt`) were unreadable, and the clear-received-files
-            // confirmation's title and body were invisible. Providing the token once here fixes all
-            // of them, and reaches the sheets and dialogs too — a `Dialog` layer inherits the
-            // ambient `CompositionLocalContext`, so `FlashOverlayLayer` sees this value even though
-            // it composes into its own scene layer.
-            CompositionLocalProvider(LocalContentColor provides FlashTheme.colors.textPrimary) {
-                DesktopShell(
-                    engine = engine,
-                    themeMode = themeMode,
-                    onThemeModeSelected = { mode ->
-                        themeMode = mode
-                        engine.storeThemeMode(mode)
-                    },
-                    window = window,
-                )
+        val effectivePerformanceMode = desktopSettings.performanceMode ?: FlashPerformanceMode.HIGH
+        val reduceMotionResolved = effectivePerformanceMode.reduceMotion
+
+        FlashMaterialTheme(
+            darkTheme = darkTheme,
+            dynamicColor = desktopSettings.dynamicAccent,
+        ) {
+            FlashTheme(
+                darkTheme = darkTheme,
+                dynamicAccent = desktopSettings.dynamicAccent,
+                hapticsEnabled = false,
+                minimalChrome = effectivePerformanceMode.minimalChrome,
+                motion = rememberFlashMotion(reduceMotionResolved),
+            ) {
+                // Baseline text colour for the whole desktop window.
+                //
+                // `FlashTypography` sets no colour, so an unstyled `FlashText` falls through to
+                // `BasicText`'s default of `LocalContentColor` — and **nothing in this repo provides
+                // that local**. On Android it is supplied by whatever Material3 surface the content sits
+                // in (`Scaffold`, `AlertDialog`, `ModalBottomSheet`); the desktop shell is a plain `Box`
+                // with a `.background(...)`, so there is no such surface and every unstyled string drew
+                // `Color.Black`.
+                //
+                // On the dark palette that is black-on-black: the whole Transfer Details and Peer Details
+                // panes (`DesktopDetailPanes.kt`) were unreadable, and the clear-received-files
+                // confirmation's title and body were invisible. Providing the token once here fixes all
+                // of them, and reaches the sheets and dialogs too — a `Dialog` layer inherits the
+                // ambient `CompositionLocalContext`, so `FlashOverlayLayer` sees this value even though
+                // it composes into its own scene layer.
+                CompositionLocalProvider(LocalContentColor provides FlashTheme.colors.textPrimary) {
+                    DesktopShell(
+                        engine = engine,
+                        themeMode = desktopSettings.themeMode,
+                        onThemeModeSelected = { mode ->
+                            engine.storeThemeMode(mode)
+                        },
+                        window = window,
+                    )
+                }
             }
         }
     }

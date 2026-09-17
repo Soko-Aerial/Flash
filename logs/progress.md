@@ -1,5 +1,33 @@
 # Progress Log
 
+## 2026-09-17 — Desktop Reactive Modes (Theme & Performance), Truthful Encryption Status, and Manual Retry
+
+### Worked on
+1. **Desktop Reactive Theme & Performance Modes**:
+   - `DesktopMain.kt` previously stored a local non-reactive `var themeMode` and never observed `engine.settings`. It also omitted `FlashMaterialTheme` and never passed `minimalChrome` or `motion` to `FlashTheme`.
+   - Updated `DesktopMain.kt`:
+     - Collects `desktopSettings by engine.settings.collectAsState()`.
+     - Derives `darkTheme = FlashSettingsMath.resolveDarkTheme(desktopSettings.themeMode, isSystemInDarkTheme())`.
+     - Derives `effectivePerformanceMode = desktopSettings.performanceMode ?: FlashPerformanceMode.HIGH` and `reduceMotionResolved = effectivePerformanceMode.reduceMotion`.
+     - Wraps root in `FlashMaterialTheme(darkTheme = darkTheme, dynamicColor = desktopSettings.dynamicAccent)`.
+     - Passes `minimalChrome = effectivePerformanceMode.minimalChrome` and `motion = rememberFlashMotion(reduceMotionResolved)` to `FlashTheme`.
+   - Updated `DesktopEngine.kt`:
+     - Wired `transportProfile = { (_settings.value.performanceMode ?: FlashPerformanceMode.HIGH).transport }` when constructing `JvmWsFlashNetwork`, dynamically synchronizing keepalive timing with selected performance mode.
+
+2. **Truthful Wire Encryption Status Parity**:
+   - Discovered that `desktopConversationHeader` in `DesktopShell.kt` was hardcoding `isEncrypted = true` while Android (`RealFlashChatRepository.kt`) defaulted to `isEncrypted = false` (accurate wire state, as WebSocket mesh currently runs unencrypted `ws://` prior to Phase 16 TLS graduation).
+   - Changed `desktopConversationHeader` in `DesktopShell.kt` to `isEncrypted = false` to match mobile and reflect the true wire state honestly to the user.
+   - Updated `DesktopConversationHeaderTest.kt` to assert `header.isEncrypted == false`.
+
+3. **Desktop Manual Reconnection & Retry**:
+   - Implemented `DesktopEngine.reconnectNow(): Boolean` which restarts discovery and sweeps all discovered endpoints with redial logic.
+   - Connected `onRetryConnection = { engine.reconnectNow() }` in `DesktopShell.kt` for `FlashConversationScreen`, providing retry capability if a connection drops.
+
+### Verification
+- `:desktop:compileKotlinJvm` BUILD SUCCESSFUL.
+- `:desktop:jvmTest` BUILD SUCCESSFUL (all 51 tasks and suites passed, including `DesktopConversationHeaderTest`).
+- `:app:compileDebugKotlin` BUILD SUCCESSFUL (75 actionable tasks passed).
+
 ## 2026-09-17 — Desktop Shell Feature Parity with Android (Search, Selection, Groups, Calls, Settings, Manual Connect)
 
 ### Worked on
