@@ -15,13 +15,19 @@
    - Handled `RealFlashTransferRepository.ACTION_CANCEL` in `DesktopEngine.kt`'s `incomingControl` to clean up receive sessions and open handles symmetrically with Android.
    - Added unit test in `DestinationPolicyTest.kt`: verifies `writeAt` after `close()` does not throw and safely discards data.
 
+2. **Sender Completion & NoClassDefFoundError on Recompiled Classpath**:
+   - Diagnosed `NoClassDefFoundError: MultiStreamResult$Completed` when completion arrived on a long-running `:desktop:run` process whose classpath classes were recompiled in the background.
+   - Wrapped `transfer.onInboundFrame(data)` in `try-catch (t: Throwable)` across `DesktopEngine.kt`, `DiscoveryEngineHolder.kt`, and `Flash.kt`.
+   - Broadened `catch (e: Exception)` to `catch (t: Throwable)` around `dispatcher.send()` in `RealFlashTransferRepository.kt` to ensure any LinkageError or system error transitions the transfer to `Failed` rather than hanging in limbo.
+   - Note for testing: Always restart `:desktop:run` after Gradle rebuilds to load fresh class files into the JVM classloader.
+
 ### Verification
 - `:core:transfer:testAndroidHostTest` passed (all 18 test suites passed).
-- `:core:engine:jvmTest` passed.
+- `:core:engine:jvmTest` and `:desktop:jvmTest` passed.
 - `:desktop:compileKotlinJvm` and `:app:compileDebugKotlin` passed without errors.
 
 ### Recommended next task
-User verifies cancelling an active file transfer on physical Android device and Desktop to confirm there are no crashes and both sides cleanly transition to cancelled state, and tests resuming/restarting afterwards.
+Stop the running `:desktop:run` process in the terminal and relaunch it (`gradlew.bat :desktop:run`) to load the cleanly compiled classes. Then test sending a file from Desktop to Phone to verify that upon download completion, both Phone and Desktop show Completed ("done").
 
 ## 2026-09-17 — Transfer Pause/Resume State Fix & Bi-Directional Restart/Retry After Cancel
 

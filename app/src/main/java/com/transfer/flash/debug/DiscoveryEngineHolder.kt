@@ -1741,7 +1741,13 @@ object DiscoveryEngineHolder {
             return
         }
         // 1. First route to active senders (ACKs or COMPLETE from receiver)
-        if (transferImpl.onInboundFrame(data)) {
+        val consumedBySender = try {
+            transferImpl.onInboundFrame(data)
+        } catch (t: Throwable) {
+            Log.w(TAG_TRANSFER, "Failed to route inbound frame to sender: ${t.message}")
+            false
+        }
+        if (consumedBySender) {
             Log.d(TAG_TRANSFER, "Inbound binary frame consumed by sender dispatcher")
             return
         }

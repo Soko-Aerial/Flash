@@ -645,7 +645,13 @@ private class Wiring(
             return
         }
         // Sender-side ACK/COMPLETE first; if consumed, not a receiver frame.
-        if (transferImpl.onInboundFrame(data)) return
+        val consumedBySender = try {
+            transferImpl.onInboundFrame(data)
+        } catch (t: Throwable) {
+            Log.w(TAG, "Failed to route inbound frame to sender: ${t.message}")
+            false
+        }
+        if (consumedBySender) return
         val events = try {
             receivePipeline.onFrame(data)
         } catch (e: Throwable) {

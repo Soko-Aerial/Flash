@@ -13,10 +13,14 @@
    - In `DiscoveryEngineHolder.kt` and `Flash.kt`: reordered `cleanupInbound` to invoke `receivePipeline.cancelSession(transferId)` *before* closing the sink handle in `openHandles`. This cancels future chunk routing in the pipeline before the handle is torn down.
    - Wrapped `receivePipeline.onFrame(data)` in a `try-catch` inside `DiscoveryEngineHolder.kt`, `Flash.kt`, and `DesktopEngine.kt` to ensure unexpected binary frame decoding or processing issues cannot crash the background frame reader coroutine.
    - In `DesktopEngine.kt`: added handler for `RealFlashTransferRepository.ACTION_CANCEL` in `incomingControl` flow, ensuring desktop properly tears down receive sessions and open handles when an inbound transfer is cancelled.
-3. **Verification**:
+4. **Defensive Sender Frame Dispatch & Throwable Handling**:
+   - Diagnosed `NoClassDefFoundError: MultiStreamResult$Completed` occurring when Gradle recompiled classes while `:desktop:run` was already running for >20 minutes. The ClassLoader failed to load the class on the completion frame, and the uncaught error killed the dispatcher coroutine without updating UI state, leaving desktop stuck at 100% / transferring.
+   - Wrapped `transfer.onInboundFrame(data)` in `try-catch (t: Throwable)` across `DesktopEngine.kt`, `DiscoveryEngineHolder.kt`, and `Flash.kt` to prevent sender feedback routing errors from crashing the binary reader loops.
+   - In `RealFlashTransferRepository.kt`, broadened `catch (e: Exception)` to `catch (t: Throwable)` (after `CancellationException`) around `dispatcher.send()`. If any runtime linkage or system error occurs during transfer, the transfer transitions to `Failed` with the error message rather than silently hanging the UI.
+5. **Verification**:
    - Added unit test `writeAt after close does not throw and safely discards data` to `DestinationPolicyTest.kt`.
    - Ran `:core:transfer:testAndroidHostTest` (all 18 test suites passed).
-   - Ran `:core:engine:jvmTest` (all passed).
+   - Ran `:core:engine:jvmTest` and `:desktop:jvmTest` (all passed).
    - Verified compilation on `:desktop:compileKotlinJvm` and `:app:compileDebugKotlin` (both BUILD SUCCESSFUL).
 
 ## 2026-09-17 — Transfer Pause/Resume State Fix & Bi-Directional Restart/Retry After Cancel

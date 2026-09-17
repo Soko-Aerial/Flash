@@ -381,12 +381,12 @@ public class RealFlashTransferRepository(
             // structured concurrency sees normal cancellation.
             progressJob.cancel()
             throw ce
-        } catch (e: Exception) {
+        } catch (t: Throwable) {
             progressJob.cancel()
             updateTransferState(transferId) {
                 it.copy(
                     state = FlashTransferState.Failed,
-                    errorMessage = e.message ?: "Transfer aborted unexpectedly",
+                    errorMessage = t.message ?: "Transfer aborted unexpectedly",
                     speedBytesPerSec = 0L,
                     etaSeconds = 0L,
                 )

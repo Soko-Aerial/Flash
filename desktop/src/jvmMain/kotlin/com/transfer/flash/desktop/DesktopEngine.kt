@@ -872,7 +872,13 @@ public class DesktopEngine(
      */
     private fun handleInboundBinary(peerDeviceId: String, data: ByteArray, reply: (ByteArray) -> Boolean) {
         val transfer = transferImpl ?: return
-        if (transfer.onInboundFrame(data)) return
+        val consumedBySender = try {
+            transfer.onInboundFrame(data)
+        } catch (t: Throwable) {
+            FlashLog.w(TAG_WS, "Failed to route inbound frame to sender: ${t.message}")
+            false
+        }
+        if (consumedBySender) return
         val receivePipeline = this.receivePipeline ?: return
         val events = try {
             receivePipeline.onFrame(data)
