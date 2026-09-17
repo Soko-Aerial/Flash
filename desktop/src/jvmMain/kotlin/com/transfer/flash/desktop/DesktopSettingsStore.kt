@@ -1,5 +1,6 @@
 package com.transfer.flash.desktop
 
+import com.transfer.flash.core.common.perf.FlashPerformanceMode
 import com.transfer.flash.ui.settings.FlashSettingsMath
 import com.transfer.flash.ui.settings.FlashThemeMode
 import java.io.File
@@ -8,34 +9,29 @@ import java.io.OutputStream
 import java.util.Properties
 
 /**
- * File-backed settings for the desktop shell — today, the Appearance selection.
+ * Data model for persisted desktop settings.
+ */
+public data class DesktopSettings(
+    val themeMode: FlashThemeMode = FlashThemeMode.System,
+    val saveLocation: String = runCatching {
+        File(System.getProperty("user.home", "."), "FlashReceived").canonicalPath
+    }.getOrDefault("FlashReceived"),
+    val autoDownloadVoice: Boolean = true,
+    val autoDownloadImage: Boolean = true,
+    val autoDownloadVideo: Boolean = false,
+    val autoDownloadFile: Boolean = false,
+    val prioritiseVoiceQuality: Boolean = true,
+    val dynamicAccent: Boolean = false,
+    val performanceMode: FlashPerformanceMode? = null,
+)
+
+/**
+ * File-backed settings for the desktop shell.
  *
  * Stands in for `androidMain`'s `FlashSettingsDataStore` (a Preferences DataStore), the same way
  * [DesktopIdentityStore] stands in for `AndroidPreferencesIdentityStore`: the contract that matters
  * is "the choice survives restart", and a `Properties` file under `~/.flash/` is a faithful
  * equivalent. State layout: `~/.flash/settings.properties`.
- *
- * ## Why this exists at all
- *
- * The Settings screen's Appearance control was wired to a literal no-op
- * (`onThemeModeSelected = { /* no persisted settings tier on desktop */ }`), and `DesktopMain`
- * called `FlashTheme { }` with no argument — so the desktop was pinned to whatever
- * `isSystemInDarkTheme()` reported and the three segments moved without repainting anything. The
- * repo's own Phase 32 file describes that screen as "a control panel connected to nothing… a screen
- * that reports success". This is the desktop half of the fix; the Android chain
- * (`FlashSettingsDataStore` → `SettingsKeys` → `resolveDarkTheme`) was already complete and is
- * deliberately untouched.
- *
- * ## Not `FlashSettingsDataStore`
- *
- * That store is `androidMain`-only (`:desktop` does not depend on `:core:persistence`), and it
- * carries a dozen unrelated preferences whose desktop behaviour is a separate question. Only the
- * key tokens are shared, and they are shared by VALUE — `"system"`/`"light"`/`"dark"`, matching
- * `FlashSettingsDataStore.THEME_MODE_*` — so the two files stay readable by eye even though nothing
- * links them at compile time.
- *
- * Persistence is best-effort: an unwritable home directory degrades to in-memory for the session
- * rather than failing the launch, because a theme preference is not worth refusing to start over.
  */
 internal class DesktopSettingsStore(private val stateDir: File) {
 
@@ -60,17 +56,50 @@ internal class DesktopSettingsStore(private val stateDir: File) {
         }
     }
 
+    /** Loads all persisted desktop settings with sensible defaults. */
+    fun loadSettings(): DesktopSettings = synchronized(lock) {
+        val props = load()
+        val defaultSaveLocation = runCatching {
+            File(System.getProperty("user.home", "."), "FlashReceived").canonicalPath
+        }.getOrDefault("FlashReceived")
+        DesktopSettings(
+            themeMode = themeModeFromKey(props.getProperty(KEY_THEME_MODE)),
+            saveLocation = props.getProperty(KEY_SAVE_LOCATION, defaultSaveLocation),
+            autoDownloadVoice = props.getProperty(KEY_AUTO_DOWNLOAD_VOICE, "true").toBoolean(),
+            autoDownloadImage = props.getProperty(KEY_AUTO_DOWNLOAD_IMAGE, "true").toBoolean(),
+            autoDownloadVideo = props.getProperty(KEY_AUTO_DOWNLOAD_VIDEO, "false").toBoolean(),
+            autoDownloadFile = props.getProperty(KEY_AUTO_DOWNLOAD_FILE, "false").toBoolean(),
+            prioritiseVoiceQuality = props.getProperty(KEY_PRIORITISE_VOICE_QUALITY, "true").toBoolean(),
+            dynamicAccent = props.getProperty(KEY_DYNAMIC_ACCENT, "false").toBoolean(),
+            performanceMode = performanceModeFromKey(props.getProperty(KEY_PERFORMANCE_MODE)),
+        )
+    }
+
+    /** Records all desktop settings to the properties file. */
+    fun saveSettings(settings: DesktopSettings) = synchronized(lock) {
+        val props = load()
+        props.setProperty(KEY_THEME_MODE, themeModeToKey(settings.themeMode))
+        props.setProperty(KEY_SAVE_LOCATION, settings.saveLocation)
+        props.setProperty(KEY_AUTO_DOWNLOAD_VOICE, settings.autoDownloadVoice.toString())
+        props.setProperty(KEY_AUTO_DOWNLOAD_IMAGE, settings.autoDownloadImage.toString())
+        props.setProperty(KEY_AUTO_DOWNLOAD_VIDEO, settings.autoDownloadVideo.toString())
+        props.setProperty(KEY_AUTO_DOWNLOAD_FILE, settings.autoDownloadFile.toString())
+        props.setProperty(KEY_PRIORITISE_VOICE_QUALITY, settings.prioritiseVoiceQuality.toString())
+        props.setProperty(KEY_DYNAMIC_ACCENT, settings.dynamicAccent.toString())
+        if (settings.performanceMode != null) {
+            props.setProperty(KEY_PERFORMANCE_MODE, settings.performanceMode.name)
+        } else {
+            props.remove(KEY_PERFORMANCE_MODE)
+        }
+        save(props)
+    }
+
     /** The stored Appearance selection, or [FlashThemeMode.System] if unset or unreadable. */
-    fun themeMode(): FlashThemeMode =
-        synchronized(lock) { themeModeFromKey(load().getProperty(KEY_THEME_MODE)) }
+    fun themeMode(): FlashThemeMode = loadSettings().themeMode
 
     /** Records the Appearance selection. A failure here is swallowed — see the class KDoc. */
     fun setThemeMode(mode: FlashThemeMode) {
-        synchronized(lock) {
-            val props = load()
-            props.setProperty(KEY_THEME_MODE, themeModeToKey(mode))
-            save(props)
-        }
+        saveSettings(loadSettings().copy(themeMode = mode))
     }
 
     /**
@@ -84,14 +113,15 @@ internal class DesktopSettingsStore(private val stateDir: File) {
         FlashSettingsMath.resolveDarkTheme(mode = mode, systemDark = systemDark)
 
     internal companion object {
-        /**
-         * Token for the stored preference.
-         *
-         * Deliberately NOT `FlashSettingsDataStore.Keys.themeMode` — that constant is
-         * `androidMain` and unreachable from here. The VALUES match, and
-         * [themeModeFromKey]/[themeModeToKey] pin the mapping in both directions.
-         */
         const val KEY_THEME_MODE: String = "theme_mode"
+        const val KEY_SAVE_LOCATION: String = "save_location"
+        const val KEY_AUTO_DOWNLOAD_VOICE: String = "auto_download_voice"
+        const val KEY_AUTO_DOWNLOAD_IMAGE: String = "auto_download_image"
+        const val KEY_AUTO_DOWNLOAD_VIDEO: String = "auto_download_video"
+        const val KEY_AUTO_DOWNLOAD_FILE: String = "auto_download_file"
+        const val KEY_PRIORITISE_VOICE_QUALITY: String = "prioritise_voice_quality"
+        const val KEY_DYNAMIC_ACCENT: String = "dynamic_accent"
+        const val KEY_PERFORMANCE_MODE: String = "performance_mode"
 
         /** Same three tokens `FlashSettingsDataStore.THEME_MODE_*` uses. */
         const val THEME_MODE_SYSTEM: String = "system"
@@ -100,11 +130,6 @@ internal class DesktopSettingsStore(private val stateDir: File) {
 
         /**
          * Key → mode. An absent, empty or unrecognised key reads as [FlashThemeMode.System].
-         *
-         * The fallback is System rather than Dark on purpose: a corrupt or hand-edited settings
-         * file should leave the app following the OS, which is also the state a fresh install is
-         * in, so the failure mode is indistinguishable from "not set yet" instead of looking like
-         * the user's choice was honoured when it was not.
          */
         fun themeModeFromKey(key: String?): FlashThemeMode = when (key) {
             THEME_MODE_LIGHT -> FlashThemeMode.Light
@@ -116,6 +141,13 @@ internal class DesktopSettingsStore(private val stateDir: File) {
             FlashThemeMode.Light -> THEME_MODE_LIGHT
             FlashThemeMode.Dark -> THEME_MODE_DARK
             FlashThemeMode.System -> THEME_MODE_SYSTEM
+        }
+
+        fun performanceModeFromKey(key: String?): FlashPerformanceMode? = when (key?.trim()?.uppercase()) {
+            "LOW" -> FlashPerformanceMode.LOW
+            "MEDIUM" -> FlashPerformanceMode.MEDIUM
+            "HIGH" -> FlashPerformanceMode.HIGH
+            else -> null
         }
     }
 }

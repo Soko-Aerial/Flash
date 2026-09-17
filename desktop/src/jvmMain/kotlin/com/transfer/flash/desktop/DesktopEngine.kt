@@ -110,8 +110,8 @@ import okio.Path.Companion.toPath
  * the same way, and G7 is already logged BLOCKED ON 09B-2.
  */
 public class DesktopEngine(
-    /** Root for received files. Default: `~/FlashReceived` (Android uses app external storage). */
-    receivedRoot: File = File(System.getProperty("user.home", "."), "FlashReceived"),
+    /** Root for received files. Default: null (resolves to settings store or ~/FlashReceived). */
+    receivedRoot: File? = null,
     /** Root for identity/trust/settings-free state. Default: `~/.flash`. */
     private val stateDir: File = File(System.getProperty("user.home", "."), ".flash"),
 ) {
@@ -126,6 +126,19 @@ public class DesktopEngine(
     // --- Identity (file-backed; see DesktopIdentityStores.kt) ---
     private val identityStore = DesktopIdentityStore(stateDir)
     private val settingsStore = DesktopSettingsStore(stateDir)
+    private val _settings = MutableStateFlow(settingsStore.loadSettings())
+    public val settings: StateFlow<DesktopSettings> = _settings.asStateFlow()
+
+    public fun updateSettings(transform: (DesktopSettings) -> DesktopSettings) {
+        val updated = transform(_settings.value)
+        _settings.value = updated
+        settingsStore.saveSettings(updated)
+        val newDir = File(updated.saveLocation).canonicalFile
+        if (newDir.path != _canonicalRoot.path) {
+            _canonicalRoot = newDir.apply { mkdirs() }
+        }
+    }
+
     private val trustStore = DesktopTrustStore(stateDir)
     public val identity: com.transfer.flash.core.security.identity.FlashIdentity
         get() = identityStore.getIdentity()
@@ -202,11 +215,11 @@ public class DesktopEngine(
     // the engine was not using.
 
     /** The persisted Appearance selection; [FlashThemeMode.System] when unset. */
-    public fun storedThemeMode(): FlashThemeMode = settingsStore.themeMode()
+    public fun storedThemeMode(): FlashThemeMode = _settings.value.themeMode
 
     /** Records the Appearance selection so it survives a restart. */
     public fun storeThemeMode(mode: FlashThemeMode) {
-        settingsStore.setThemeMode(mode)
+        updateSettings { it.copy(themeMode = mode) }
     }
 
     /**
@@ -300,7 +313,8 @@ public class DesktopEngine(
     public val protocolVersionLabel: String get() = "FLASH_XFER/${FlashProtocol.VERSION}"
 
     // --- Receive-side state, mirroring Flash.kt's Wiring ---
-    private val canonicalRoot: File = receivedRoot.canonicalFile.apply { mkdirs() }
+    private var _canonicalRoot: File = (receivedRoot ?: File(settingsStore.loadSettings().saveLocation)).canonicalFile.apply { mkdirs() }
+    public val canonicalRoot: File get() = _canonicalRoot
 
     /**
      * The canonical directory received files land in — the one the receive pipeline's containment
@@ -313,7 +327,7 @@ public class DesktopEngine(
      * the WRONG directory. Canonical, so it matches what the pipeline compares against rather than
      * a symlink-resolved twin of it.
      */
-    public val receivedDirectory: File get() = canonicalRoot
+    public val receivedDirectory: File get() = _canonicalRoot
 
     /**
      * Passphrase for the chat database. Random hex generated once and kept in
@@ -565,11 +579,10 @@ public class DesktopEngine(
             // Group Phase 0 trust closure, like the app host: only paired peers can place or
             // receive calls; an inbound invite from a stranger is auto-declined, never rung.
             isTrustedPeer = { peerId -> trustStore.isTrusted(FlashDeviceId(peerId)) },
-            // Honest desktop defaults (no settings DataStore tier until 09B-3): voice
-            // priority on, HIGH tier (the stack's pre-tiering behaviour). Read per call via
-            // lambdas so a future settings row takes effect without re-wiring.
-            prioritiseVoice = { true },
-            performanceMode = { FlashPerformanceMode.HIGH },
+            // Honest desktop settings: voice priority and performance mode read per call via
+            // lambdas so settings changes take immediate effect.
+            prioritiseVoice = { _settings.value.prioritiseVoiceQuality },
+            performanceMode = { _settings.value.performanceMode ?: FlashPerformanceMode.HIGH },
             peerNameResolver = { peerId ->
                 trustStore.getTrustedPeers()[FlashDeviceId(peerId)]
                     ?: discovery.discoveredEndpoints.value.firstOrNull { it.deviceId.value == peerId }?.friendlyName
@@ -925,13 +938,16 @@ public class DesktopEngine(
                         mimeType = offerMime,
                         sizeBytes = frame.totalBytes,
                     )
-                    // Auto-download parity with the app host (Bug 3): voice/image auto-accept, but
-                    // ONLY from trusted peers, and video/file still park for consent — so no paired
-                    // device can silently land an executable while the consent gate keeps its meaning
-                    // for everything risky. Desktop has no settings toggle yet; the defaults match
-                    // the app's (voice/image on). TODO: wire to DesktopSettingsStore when it gains rows.
+                    // Auto-download parity with the app host (Bug 3): voice/image/video/file auto-accept
+                    // driven by desktop settings, and ONLY from trusted peers.
                     val offerTrusted = trustStore.isTrusted(FlashDeviceId(peerDeviceId))
-                    val offerAuto = offerMime.startsWith("audio/") || offerMime.startsWith("image/")
+                    val currentSettings = _settings.value
+                    val offerAuto = when {
+                        offerMime.startsWith("audio/") -> currentSettings.autoDownloadVoice
+                        offerMime.startsWith("image/") -> currentSettings.autoDownloadImage
+                        offerMime.startsWith("video/") -> currentSettings.autoDownloadVideo
+                        else -> currentSettings.autoDownloadFile
+                    }
                     if (offerTrusted && offerAuto) {
                         FlashLog.i(
                             TAG_WS,

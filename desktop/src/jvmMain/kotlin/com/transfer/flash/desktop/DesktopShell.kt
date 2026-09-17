@@ -49,10 +49,14 @@ import com.transfer.flash.core.security.pairing.FlashTrustedPeer
 import com.transfer.flash.core.transfer.model.FlashTransfer
 import com.transfer.flash.core.transfer.model.FlashTransferDirection as DomainDirection
 import com.transfer.flash.core.transfer.model.FlashTransferState as DomainState
+import com.transfer.flash.core.common.result.getOrNull
 import com.transfer.flash.ui.adaptive.FlashAdaptiveMath
 import com.transfer.flash.ui.calling.FlashCallScreen
 import com.transfer.flash.ui.chat.FlashChatListScreen
 import com.transfer.flash.ui.chat.FlashConversationScreen
+import com.transfer.flash.core.common.perf.FlashPerformanceMode
+import com.transfer.flash.ui.chat.FlashCreateGroupSheet
+import com.transfer.flash.ui.chat.FlashCreateGroupPeerUi
 import com.transfer.flash.ui.chat.FlashPairingPhase
 import com.transfer.flash.ui.settings.FlashThemeMode
 import com.transfer.flash.ui.settings.FlashDisplayNameDialog
@@ -141,6 +145,23 @@ public fun DesktopShell(
     // empty stand-in, so the screen renders its empty state rather than nothing.
     val repositoryConversation by chatRepository.conversationState.collectAsState()
 
+    // ── Search state (Item 1) ──
+    var isSearching by remember { mutableStateOf(false) }
+    var searchQuery by remember { mutableStateOf("") }
+    var messageBodyMatches by remember { mutableStateOf<Set<String>>(emptySet()) }
+    LaunchedEffect(searchQuery, isSearching) {
+        val q = searchQuery.trim()
+        if (!isSearching || q.isEmpty()) {
+            messageBodyMatches = emptySet()
+            return@LaunchedEffect
+        }
+        delay(200)
+        messageBodyMatches = chatRepository.searchMessageBodies(q)
+    }
+
+    // ── Group creation (Item 3) ──
+    var showCreateGroup by remember { mutableStateOf(false) }
+
     // ── Calls, 33a: the shared coordinator behind the shared overlay ──
     // `calls` is null until assemble builds it; the empty flow keeps this collect
     // unconditional (same slot-table reasoning as the chats line above).
@@ -148,34 +169,9 @@ public fun DesktopShell(
     val activeCall by remember(calls) {
         calls?.activeCall ?: MutableStateFlow(null)
     }.collectAsState()
-
-    // 33a entry: voice call to a trusted peer. A false return (no session, no microphone,
-    // call already live) surfaces on the snackbar — the "Couldn't reach…" pattern pairing
-    // uses — rather than failing silently. Callers pass the name they already show, so this
-    // stays above the Nearby roster declarations it would otherwise need to read.
-    fun placeVoiceCall(peerId: String, peerName: String) {
-        scope.launch {
-            val ok = calls?.startCall(peerId, peerName, video = false) == true
-            if (!ok) {
-                snackbarHostState.showSnackbar(
-                    message = "Couldn't start the call. Make sure the peer is reachable, then try again.",
-                    duration = SnackbarDuration.Short,
-                )
-            }
-        }
-    }
-
-    fun placeVideoCall(peerId: String, peerName: String) {
-        scope.launch {
-            val ok = calls?.startCall(peerId, peerName, video = true) == true
-            if (!ok) {
-                snackbarHostState.showSnackbar(
-                    message = "Couldn't start the video call. Make sure the peer is reachable, then try again.",
-                    duration = SnackbarDuration.Short,
-                )
-            }
-        }
-    }
+    val ongoingGroupCalls by (calls?.ongoingGroupCalls
+        ?: remember { MutableStateFlow(emptyMap<String, com.transfer.flash.core.calling.model.OngoingGroupCallUi>()) }
+        ).collectAsState()
     val fallbackTransfers = remember { MutableStateFlow(emptyList<FlashTransfer>()) }
     val transfersSource = engine.transfers?.activeTransfers ?: fallbackTransfers
     val pacedTransfers = remember(transfersSource) {
@@ -293,6 +289,30 @@ public fun DesktopShell(
     // actions stay hidden.
     // Trust is a plain lookup against the list the Nearby rows use, so the two screens cannot
     // disagree about whether a peer is paired.
+    val trustedPeerRoster = remember(trustedPeersByCoordinator) {
+        trustedPeersByCoordinator.map { trusted ->
+            val initials = trusted.name.trim().split("\\s+".toRegex())
+                .filter { it.isNotEmpty() }
+                .take(2)
+                .map { it.first().uppercaseChar().toString() }
+                .joinToString("")
+                .ifBlank { "?" }
+            FlashCreateGroupPeerUi(
+                id = trusted.id,
+                name = trusted.name,
+                initials = initials,
+            )
+        }
+    }
+
+    // ── Conversation header: derived from what the desktop actually knows about the peer ──
+    // Declared HERE, after the Nearby section, because it reads the trust list and the discovery
+    // roster. The repository's own header cannot know the desktop's trust names, so opening
+    // a chat from Nearby would show a blank name and no online dot for a peer whose name the
+    // desktop is holding in its trust store the whole time. See `desktopConversationHeader` for exactly what is filled in and why the call
+    // actions stay hidden.
+    // Trust is a plain lookup against the list the Nearby rows use, so the two screens cannot
+    // disagree about whether a peer is paired.
     val conversationIdIsTrusted = trustedPeersByCoordinator.any { it.id == nav.current.conversationId }
 
     val conversationState = remember(
@@ -300,13 +320,84 @@ public fun DesktopShell(
         nav.current.conversationId,
         trustedPeersByCoordinator,
         discoveredEndpoints,
+        ongoingGroupCalls,
     ) {
-        val header = desktopConversationHeader(
-            conversationId = nav.current.conversationId,
-            trusted = trustedPeersByCoordinator,
-            discovered = discoveredEndpoints,
-        )
-        if (header != null) repositoryConversation.copy(header = header) else repositoryConversation
+        val header = if (repositoryConversation.header.isGroup) {
+            null
+        } else {
+            desktopConversationHeader(
+                conversationId = nav.current.conversationId,
+                trusted = trustedPeersByCoordinator,
+                discovered = discoveredEndpoints,
+            )
+        }
+        val withHeader = if (header != null) repositoryConversation.copy(header = header) else repositoryConversation
+        val convId = if (withHeader.header.isGroup) nav.current.conversationId else null
+        val ongoing = convId?.let { ongoingGroupCalls[it] }
+        if (ongoing != null) {
+            withHeader.copy(
+                ongoingCall = com.transfer.flash.core.messaging.model.FlashActiveGroupCallBarUi(
+                    callId = ongoing.callId,
+                    callerName = ongoing.initiatorId,
+                    video = ongoing.video,
+                    participantCount = ongoing.participantCount,
+                ),
+            )
+        } else {
+            withHeader
+        }
+    }
+
+    fun placeVoiceCall(peerId: String, peerName: String) {
+        scope.launch {
+            val ok = if (conversationState.header.isGroup) {
+                val memberIds = if (conversationState.members.isNotEmpty()) {
+                    conversationState.members.map { it.id }
+                } else {
+                    chatRepository.groupMembers(peerId).map { it.id }
+                }
+                calls?.startGroupCall(
+                    groupId = peerId,
+                    groupName = peerName,
+                    memberIds = memberIds,
+                    video = false,
+                ) == true
+            } else {
+                calls?.startCall(peerId, peerName, video = false) == true
+            }
+            if (!ok) {
+                snackbarHostState.showSnackbar(
+                    message = "Couldn't start the call. Make sure the peer is reachable, then try again.",
+                    duration = SnackbarDuration.Short,
+                )
+            }
+        }
+    }
+
+    fun placeVideoCall(peerId: String, peerName: String) {
+        scope.launch {
+            val ok = if (conversationState.header.isGroup) {
+                val memberIds = if (conversationState.members.isNotEmpty()) {
+                    conversationState.members.map { it.id }
+                } else {
+                    chatRepository.groupMembers(peerId).map { it.id }
+                }
+                calls?.startGroupCall(
+                    groupId = peerId,
+                    groupName = peerName,
+                    memberIds = memberIds,
+                    video = true,
+                ) == true
+            } else {
+                calls?.startCall(peerId, peerName, video = true) == true
+            }
+            if (!ok) {
+                snackbarHostState.showSnackbar(
+                    message = "Couldn't start the video call. Make sure the peer is reachable, then try again.",
+                    duration = SnackbarDuration.Short,
+                )
+            }
+        }
     }
 
     fun sendFileToPeer(
@@ -529,26 +620,29 @@ public fun DesktopShell(
     // (`FlashStorageMath.canClearReceivedFiles`), so leaving this null left that control
     // permanently disabled and the confirmation dialog unreachable on desktop. Null is still the
     // honest initial value (the scan has not run yet) and resolves to a real 0 on an empty folder.
+    val desktopSettings by engine.settings.collectAsState()
     var showRenameDialog by remember { mutableStateOf(false) }
     var receivedBytes by remember { mutableStateOf<Long?>(null) }
-    LaunchedEffect(engine, ready) {
+    LaunchedEffect(engine, ready, desktopSettings.saveLocation) {
         if (ready) receivedBytes = withContext(Dispatchers.IO) { DesktopHelpers.receivedFilesBytes(engine) }
     }
-    val settings = remember(engine, ready, receivedBytes, themeMode, trustedPeersByCoordinator) {
+    val settings = remember(engine, ready, receivedBytes, themeMode, trustedPeersByCoordinator, desktopSettings) {
         FlashSettingsModel(
             displayName = engine.localFriendlyName,
             deviceIdShort = engine.localDeviceId.take(8).ifBlank { "00000000" },
             appVersion = engine.appVersionName,
             protocolVersion = engine.protocolVersionLabel,
             receivedFilesBytes = receivedBytes,
-            // Was left at 0, so Settings → Trusted peers read "No verified devices yet" even
-            // immediately after a successful pairing — while the Nearby tab beside it was listing the
-            // same peer as paired. The list is already collected for that screen; this is the count.
             trustedPeerCount = trustedPeersByCoordinator.size,
-            // Was left at its `System` default, so the segmented control's selection was a constant
-            // and never reflected a real choice. `themeMode` is the same value `DesktopMain` resolves
-            // into `FlashTheme(darkTheme = …)`, so the control and the repaint cannot disagree.
             themeMode = themeMode,
+            dynamicAccent = desktopSettings.dynamicAccent,
+            autoDownloadVoice = desktopSettings.autoDownloadVoice,
+            autoDownloadImage = desktopSettings.autoDownloadImage,
+            autoDownloadVideo = desktopSettings.autoDownloadVideo,
+            autoDownloadFile = desktopSettings.autoDownloadFile,
+            prioritiseVoiceQuality = desktopSettings.prioritiseVoiceQuality,
+            performanceMode = desktopSettings.performanceMode,
+            saveLocationLabel = desktopSettings.saveLocation ?: engine.canonicalRoot.absolutePath,
         )
     }
 
@@ -570,10 +664,43 @@ public fun DesktopShell(
                         state = chatListState,
                         onConversationClick = { id ->
                             chatRepository.openConversation(id)
+                            chatRepository.clearListSelection()
                             nav.navigate(FlashDestination.Conversation, conversationId = id)
                         },
+                        onSearchClick = { isSearching = true },
                         onFindDevicesClick = { nav.selectTab(FlashDestination.NearbyDevices) },
                         onLanClick = { nav.selectTab(FlashDestination.NearbyDevices) },
+                        isSearching = isSearching,
+                        searchQuery = searchQuery,
+                        onSearchQueryChanged = { searchQuery = it },
+                        onCloseSearch = {
+                            isSearching = false
+                            searchQuery = ""
+                        },
+                        messageBodyMatches = messageBodyMatches,
+                        onConversationLongClick = chatRepository::enterListSelectionMode,
+                        onToggleSelection = chatRepository::toggleListSelection,
+                        onArchiveConversation = chatRepository::archiveConversation,
+                        onUnarchiveConversation = chatRepository::unarchiveConversation,
+                        onCloseSelection = chatRepository::clearListSelection,
+                        onPinSelected = {
+                            chatRepository.setConversationsPinned(chatListState.selectedIds, true)
+                        },
+                        onMuteSelected = {
+                            chatRepository.setConversationsMuted(chatListState.selectedIds, true)
+                        },
+                        onMarkSelectedRead = {
+                            chatRepository.markConversationsRead(chatListState.selectedIds)
+                        },
+                        onArchiveSelected = {
+                            chatRepository.archiveConversations(chatListState.selectedIds)
+                        },
+                        onUnarchiveSelected = {
+                            chatRepository.unarchiveConversations(chatListState.selectedIds)
+                        },
+                        onDeleteSelected = {
+                            chatRepository.deleteConversations(chatListState.selectedIds)
+                        },
                         isLoading = (!ready || !chatListState.hasLoaded) && startError == null,
                         errorMessage = startError?.let { error ->
                             error.message?.takeIf { it.isNotBlank() }
@@ -581,6 +708,7 @@ public fun DesktopShell(
                                 ?: "Unknown startup failure"
                         },
                         onRetryLoad = { engine.start() },
+                        onNewGroupClick = { showCreateGroup = true },
                         modifier = Modifier.fillMaxSize(),
                         listState = chatListScroll,
                         bottomInset = tabBottomInset,
@@ -650,28 +778,56 @@ public fun DesktopShell(
                         onRetryTransfer = { tid ->
                             engine.transfers?.let { repo ->
                                 scope.launch {
-                                    repo.resumeTransfer(com.transfer.flash.core.transfer.model.FlashTransferId(tid))
+                                    val recipientIds = chatRepository.getRecipientTransferIds(tid)
+                                    if (recipientIds.isNotEmpty()) {
+                                        recipientIds.forEach { subId ->
+                                            repo.resumeTransfer(com.transfer.flash.core.transfer.model.FlashTransferId(subId))
+                                        }
+                                    } else {
+                                        repo.resumeTransfer(com.transfer.flash.core.transfer.model.FlashTransferId(tid))
+                                    }
                                 }
                             }
                         },
                         onPauseTransfer = { tid ->
                             engine.transfers?.let { repo ->
                                 scope.launch {
-                                    repo.pauseTransfer(com.transfer.flash.core.transfer.model.FlashTransferId(tid))
+                                    val recipientIds = chatRepository.getRecipientTransferIds(tid)
+                                    if (recipientIds.isNotEmpty()) {
+                                        recipientIds.forEach { subId ->
+                                            repo.pauseTransfer(com.transfer.flash.core.transfer.model.FlashTransferId(subId))
+                                        }
+                                    } else {
+                                        repo.pauseTransfer(com.transfer.flash.core.transfer.model.FlashTransferId(tid))
+                                    }
                                 }
                             }
                         },
                         onResumeTransfer = { tid ->
                             engine.transfers?.let { repo ->
                                 scope.launch {
-                                    repo.resumeTransfer(com.transfer.flash.core.transfer.model.FlashTransferId(tid))
+                                    val recipientIds = chatRepository.getRecipientTransferIds(tid)
+                                    if (recipientIds.isNotEmpty()) {
+                                        recipientIds.forEach { subId ->
+                                            repo.resumeTransfer(com.transfer.flash.core.transfer.model.FlashTransferId(subId))
+                                        }
+                                    } else {
+                                        repo.resumeTransfer(com.transfer.flash.core.transfer.model.FlashTransferId(tid))
+                                    }
                                 }
                             }
                         },
                         onCancelTransfer = { tid ->
                             engine.transfers?.let { repo ->
                                 scope.launch {
-                                    repo.cancelTransfer(com.transfer.flash.core.transfer.model.FlashTransferId(tid))
+                                    val recipientIds = chatRepository.getRecipientTransferIds(tid)
+                                    if (recipientIds.isNotEmpty()) {
+                                        recipientIds.forEach { subId ->
+                                            repo.cancelTransfer(com.transfer.flash.core.transfer.model.FlashTransferId(subId))
+                                        }
+                                    } else {
+                                        repo.cancelTransfer(com.transfer.flash.core.transfer.model.FlashTransferId(tid))
+                                    }
                                 }
                             }
                         },
@@ -691,6 +847,7 @@ public fun DesktopShell(
                                     uri = uri,
                                     displayName = displayName,
                                     size = size,
+                                    mimeType = DesktopHelpers.guessMimeType(displayName),
                                 )
                             }
                         },
@@ -728,6 +885,53 @@ public fun DesktopShell(
                                     voiceDurationMs = durationMs,
                                     voiceAmplitudes = amplitudes,
                                 )
+                            }
+                        },
+                        conversationId = nav.current.conversationId,
+                        addablePeers = trustedPeerRoster.filter { candidate ->
+                            conversationState.members.none { it.id == candidate.id }
+                        },
+                        onAddGroupMembers = { groupId, memberIds ->
+                            scope.launch {
+                                chatRepository.addGroupMembers(groupId, memberIds)
+                            }
+                        },
+                        onLeaveGroup = { groupId ->
+                            scope.launch {
+                                val left = chatRepository.leaveGroup(groupId)
+                                if (left is com.transfer.flash.core.common.result.FlashResult.Success) {
+                                    chatRepository.closeConversation()
+                                    nav.back()
+                                } else {
+                                    snackbarHostState.showSnackbar(
+                                        message = "Couldn't leave the group — try again",
+                                        duration = SnackbarDuration.Short,
+                                    )
+                                }
+                            }
+                        },
+                        onClearConversation = { id ->
+                            chatRepository.deleteConversations(setOf(id))
+                            chatRepository.closeConversation()
+                            nav.back()
+                        },
+                        onMarkUnread = chatRepository::markConversationUnread,
+                        onJoinGroupCall = { callId, video ->
+                            val peerId = nav.current.conversationId
+                            if (peerId != null) {
+                                scope.launch(Dispatchers.IO) {
+                                    val memberIds = if (conversationState.members.isNotEmpty()) {
+                                        conversationState.members.map { it.id }
+                                    } else {
+                                        chatRepository.groupMembers(peerId).map { it.id }
+                                    }
+                                    calls?.joinGroupCall(
+                                        groupId = peerId,
+                                        callId = callId,
+                                        memberIds = memberIds,
+                                        video = video,
+                                    )
+                                }
                             }
                         },
                     )
@@ -847,6 +1051,23 @@ public fun DesktopShell(
                         onCallTrustedClick = { trusted ->
                             placeVoiceCall(trusted.id, trusted.name)
                         },
+                        onManualConnect = { host, port ->
+                            scope.launch {
+                                val net = engine.network
+                                if (net != null) {
+                                    val result = net.connectManual(host, port)
+                                    if (result is com.transfer.flash.core.common.result.FlashResult.Success) {
+                                        val peerDevice = result.value.peer
+                                        engine.pairing.beginPair(peerDevice.id.value, peerDevice.friendlyName)
+                                    } else {
+                                        snackbarHostState.showSnackbar(
+                                            message = "Couldn't connect to $host:$port",
+                                            duration = SnackbarDuration.Short,
+                                        )
+                                    }
+                                }
+                            }
+                        },
                         modifier = Modifier.fillMaxSize(),
                         listState = nearbyScroll,
                         bottomInset = tabBottomInset,
@@ -856,13 +1077,45 @@ public fun DesktopShell(
                         model = settings,
                         onEditDisplayName = { showRenameDialog = true },
                         onThemeModeSelected = onThemeModeSelected,
-                        // These three rows are SHOWN on desktop and deliberately not persisted yet;
-                        // the switch reflects the model, which stays at its default. Hiding them was
-                        // tried and rejected — see this session's log. Wiring them to
-                        // `DesktopSettingsStore` is the follow-up.
-                        onDynamicAccentChanged = { },
-                        onHapticsChanged = { },
-                        onBackgroundTransfersChanged = { },
+                        onDynamicAccentChanged = { next ->
+                            scope.launch { engine.updateSettings { it.copy(dynamicAccent = next) } }
+                        },
+                        onAutoDownloadVoiceChanged = { next ->
+                            scope.launch { engine.updateSettings { it.copy(autoDownloadVoice = next) } }
+                        },
+                        onAutoDownloadImageChanged = { next ->
+                            scope.launch { engine.updateSettings { it.copy(autoDownloadImage = next) } }
+                        },
+                        onAutoDownloadVideoChanged = { next ->
+                            scope.launch { engine.updateSettings { it.copy(autoDownloadVideo = next) } }
+                        },
+                        onAutoDownloadFileChanged = { next ->
+                            scope.launch { engine.updateSettings { it.copy(autoDownloadFile = next) } }
+                        },
+                        onPrioritiseVoiceQualityChanged = { next ->
+                            scope.launch { engine.updateSettings { it.copy(prioritiseVoiceQuality = next) } }
+                        },
+                        onPerformanceModeSelected = { next ->
+                            scope.launch { engine.updateSettings { it.copy(performanceMode = next) } }
+                        },
+                        onPickSaveLocation = {
+                            val chooser = javax.swing.JFileChooser().apply {
+                                fileSelectionMode = javax.swing.JFileChooser.DIRECTORIES_ONLY
+                                dialogTitle = "Select Received Files Folder"
+                                currentDirectory = engine.canonicalRoot
+                            }
+                            if (chooser.showOpenDialog(window) == javax.swing.JFileChooser.APPROVE_OPTION) {
+                                val selectedFile = chooser.selectedFile
+                                if (selectedFile != null && selectedFile.isDirectory) {
+                                    scope.launch {
+                                        engine.updateSettings { it.copy(saveLocation = selectedFile.absolutePath) }
+                                        receivedBytes = withContext(Dispatchers.IO) {
+                                            DesktopHelpers.receivedFilesBytes(engine)
+                                        }
+                                    }
+                                }
+                            }
+                        },
                         onRefreshStorageUsage = {
                             scope.launch {
                                 receivedBytes = withContext(Dispatchers.IO) {
@@ -964,6 +1217,28 @@ public fun DesktopShell(
                 onConfirm = { name ->
                     showRenameDialog = false
                     scope.launch { engine.renameLocalDevice(name) }
+                },
+            )
+        }
+        if (showCreateGroup) {
+            FlashCreateGroupSheet(
+                peers = trustedPeerRoster,
+                onDismiss = { showCreateGroup = false },
+                onCreate = { title, memberIds ->
+                    scope.launch {
+                        val result = chatRepository.createGroup(title, memberIds)
+                        val groupId = result.getOrNull()
+                        if (groupId != null) {
+                            showCreateGroup = false
+                            chatRepository.openConversation(groupId)
+                            nav.navigate(FlashDestination.Conversation, conversationId = groupId)
+                        } else {
+                            snackbarHostState.showSnackbar(
+                                message = "Couldn't create the group — check that every member is paired",
+                                duration = SnackbarDuration.Short,
+                            )
+                        }
+                    }
                 },
             )
         }

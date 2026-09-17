@@ -1,5 +1,50 @@
 # Current Handoff
 
+## 2026-09-17 — Desktop Shell Feature Parity with Android Complete
+
+### Current branch
+`dev`
+
+### Completed & Verified
+1. **Chat List Search & Global History Filtering**:
+   - `onSearchClick`, `isSearching`, `searchQuery`, `onSearchQueryChanged`, `onCloseSearch`, and `messageBodyMatches` wired into `FlashChatListScreen`.
+   - Debounced search queries execute against `chatRepository.searchMessageBodies(q)`.
+2. **Chat List Selection Mode & Contextual Action Bar**:
+   - `onConversationLongClick`, `onToggleSelection`, `onCloseSelection`, `onArchiveConversation`, `onUnarchiveConversation` wired.
+   - Contextual actions: `onPinSelected`, `onMuteSelected`, `onMarkSelectedRead`, `onArchiveSelected`, `onUnarchiveSelected`, and `onDeleteSelected`.
+   - Auto-clearing selection on conversation navigation.
+3. **Group Chat Creation & Membership Management**:
+   - `FlashCreateGroupSheet` rendered when `showCreateGroup == true`.
+   - `trustedPeerRoster` derived from `trustedPeersByCoordinator`.
+   - `FlashConversationScreen` wired with `conversationId`, `addablePeers`, `onAddGroupMembers`, `onLeaveGroup`, `onClearConversation`, and `onMarkUnread`.
+   - Group headers preserved in `conversationState`.
+4. **Group Calling (Mesh Audio & Video)**:
+   - `ongoingGroupCalls` connected and merged into `conversationState`.
+   - `placeVoiceCall` and `placeVideoCall` handle group calls via `calls?.startGroupCall`.
+   - `onJoinGroupCall` wired to `calls?.joinGroupCall`.
+5. **Desktop Settings Persistence Tier (`~/.flash/settings.properties`)**:
+   - `DesktopSettingsStore.kt` updated to persist `save_location`, `auto_download_*`, `prioritise_voice_quality`, `dynamic_accent`, `performance_mode`.
+   - Verified by `DesktopSettingsStoreTest.kt`.
+   - `DesktopEngine.kt` exposes `settings: StateFlow<DesktopSettings>`, `updateSettings()`, and dynamically updates `_canonicalRoot` and `receivedDirectory`.
+   - Auto-download filtering wired to inbound offer handling.
+6. **Settings Save Location Picker (Swing JFileChooser)**:
+   - Wired `onPickSaveLocation` to Swing `JFileChooser(DIRECTORIES_ONLY)`.
+   - All settings callbacks wired to `engine.updateSettings`.
+7. **Nearby Manual Connect by IP & Port**:
+   - Created `FlashManualConnectDialog.kt`.
+   - Added `onManualConnect` in `FlashNearbyScreen` (header icon button and empty state action button).
+   - Wired in both `DesktopShell.kt` and `MainActivity.kt`.
+8. **Multi-Recipient Transfer Resume & Cancel**:
+   - `FlashConversationScreen` fan-out to `getRecipientTransferIds(tid)` for group attachment transfers.
+
+### Verification
+- `:desktop:compileKotlinJvm` BUILD SUCCESSFUL.
+- `:desktop:jvmTest` BUILD SUCCESSFUL (all 51 tasks passed).
+- `:app:compileDebugKotlin` BUILD SUCCESSFUL (75 actionable tasks passed).
+
+### Recommended next task
+User can run the desktop application (`gradlew.bat :desktop:run`) and Android application to test the newly wired capabilities (search, selection, group creation/management, group calling, settings persistence, save directory picker, and manual connect).
+
 ## 2026-09-17 — Fix Cancellation Race in Receive Pipeline (Closed Sink Handle) & Defensive Binary Dispatch
 
 ### Current branch

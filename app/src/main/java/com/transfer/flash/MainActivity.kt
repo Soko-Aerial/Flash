@@ -1421,6 +1421,24 @@ private fun FlashShell(
                         },
                         onAcceptPairing = { engine.pairing?.acceptLocal() },
                         onDeclinePairing = { engine.pairing?.declineLocal() },
+                        onManualConnect = { host, port ->
+                            scope.launch {
+                                val net = engine.network
+                                if (net != null) {
+                                    val result = net.connectManual(host, port)
+                                    if (result is com.transfer.flash.core.common.result.FlashResult.Success) {
+                                        val peerDevice = result.value.peer
+                                        engine.pairing?.beginPair(peerDevice.id.value, peerDevice.friendlyName)
+                                    } else {
+                                        android.widget.Toast.makeText(
+                                            toastContext,
+                                            "Couldn't connect to $host:$port",
+                                            android.widget.Toast.LENGTH_SHORT,
+                                        ).show()
+                                    }
+                                }
+                            }
+                        },
                         modifier = Modifier.fillMaxSize(),
                         listState = nearbyScroll,
                         bottomInset = tabBottomInset,

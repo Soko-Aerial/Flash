@@ -29,8 +29,12 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.IconButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -181,7 +185,13 @@ fun FlashNearbyScreen(
      * unchanged.
      */
     onCallTrustedClick: ((NearbyTrustedPeerUi) -> Unit)? = null,
+    /**
+     * Manual connection by IP and Port. When supplied, allows entering host/port directly.
+     */
+    onManualConnect: ((host: String, port: Int) -> Unit)? = null,
 ) {
+    var showManualConnectDialog by remember { mutableStateOf(false) }
+    val onManualConnectClick = if (onManualConnect != null) { { showManualConnectDialog = true } } else null
     val statusSwap = FlashTheme.motion.statusCrossfade()
     Box(modifier.fillMaxSize()) {
         // Content clears the status bar; the pairing dialog stays a sibling so its scrim
@@ -198,7 +208,11 @@ fun FlashNearbyScreen(
                     NearbyPageState.RadiosOff -> RadiosOffPanel(Modifier.fillMaxSize())
                     NearbyPageState.Loading -> LoadingRows(Modifier.fillMaxSize())
                     NearbyPageState.Empty ->
-                        ScanningEmptyPanel(Modifier.fillMaxSize(), active = state.isScanning)
+                        ScanningEmptyPanel(
+                            modifier = Modifier.fillMaxSize(),
+                            active = state.isScanning,
+                            onManualConnectClick = onManualConnectClick,
+                        )
                     NearbyPageState.Populated -> PopulatedContent(
                         state = state,
                         onPairClick = onPairClick,
@@ -206,6 +220,7 @@ fun FlashNearbyScreen(
                         onRevokeClick = onRevokeClick,
                         onChatTrustedClick = onChatTrustedClick,
                         onCallTrustedClick = onCallTrustedClick,
+                        onManualConnectClick = onManualConnectClick,
                         listState = listState,
                         bottomInset = bottomInset,
                     )
@@ -221,6 +236,16 @@ fun FlashNearbyScreen(
                 onAccept = { onAcceptPairing(request) },
                 onDecline = { onDeclinePairing(request) },
                 onDismiss = { onDeclinePairing(request) },
+            )
+        }
+
+        if (showManualConnectDialog && onManualConnect != null) {
+            FlashManualConnectDialog(
+                onDismiss = { showManualConnectDialog = false },
+                onConnect = { host, port ->
+                    showManualConnectDialog = false
+                    onManualConnect(host, port)
+                },
             )
         }
     }
@@ -247,6 +272,7 @@ private fun PopulatedContent(
     onRevokeClick: (NearbyTrustedPeerUi) -> Unit,
     onChatTrustedClick: (NearbyTrustedPeerUi) -> Unit,
     onCallTrustedClick: ((NearbyTrustedPeerUi) -> Unit)?,
+    onManualConnectClick: (() -> Unit)?,
     listState: LazyListState,
     bottomInset: Dp,
 ) {
@@ -263,7 +289,7 @@ private fun PopulatedContent(
         ),
         verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
     ) {
-        item(key = "header") { HeaderBlock(state) }
+        item(key = "header") { HeaderBlock(state, onManualConnectClick) }
         item(key = "identity") { IdentityCard(state.identity) }
         if (state.peers.isNotEmpty()) {
             item(key = "label-discovered") { SectionLabel("DISCOVERED") }
@@ -316,28 +342,49 @@ private fun PopulatedContent(
 }
 
 @Composable
-private fun HeaderBlock(state: NearbyUiState) {
-    Column {
-        FlashText(
-            text = "Nearby",
-            style = FlashTheme.typography.headingMedium,
-            color = FlashTheme.colors.textPrimary,
-        )
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            ScanningDot(active = state.isScanning)
-            Spacer(Modifier.width(FlashSpacing.space8))
+private fun HeaderBlock(
+    state: NearbyUiState,
+    onManualConnectClick: (() -> Unit)? = null,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column {
             FlashText(
-                // Count trusted (paired) peers too: once a peer is paired it leaves the DISCOVERED
-                // list for the TRUSTED section, so counting only `peers` made the header snap back
-                // to "Scanning…" even though a device was clearly connected.
-                text = FlashNearbyMath.statusLine(
-                    state.isScanning,
-                    state.peers.size + state.trustedPeers.size,
-                    state.isLoading,
-                ),
-                style = FlashTheme.typography.metadataDefault,
-                color = FlashTheme.colors.textSecondary,
+                text = "Nearby",
+                style = FlashTheme.typography.headingMedium,
+                color = FlashTheme.colors.textPrimary,
             )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                ScanningDot(active = state.isScanning)
+                Spacer(Modifier.width(FlashSpacing.space8))
+                FlashText(
+                    // Count trusted (paired) peers too: once a peer is paired it leaves the DISCOVERED
+                    // list for the TRUSTED section, so counting only `peers` made the header snap back
+                    // to "Scanning…" even though a device was clearly connected.
+                    text = FlashNearbyMath.statusLine(
+                        state.isScanning,
+                        state.peers.size + state.trustedPeers.size,
+                        state.isLoading,
+                    ),
+                    style = FlashTheme.typography.metadataDefault,
+                    color = FlashTheme.colors.textSecondary,
+                )
+            }
+        }
+        if (onManualConnectClick != null) {
+            IconButton(
+                onClick = onManualConnectClick,
+                modifier = Modifier.size(FlashDimensions.minTouchTarget),
+            ) {
+                FlashIcon(
+                    icon = FlashIcons.Connection,
+                    tint = FlashTheme.colors.accentPrimary,
+                    contentDescription = "Connect by IP",
+                )
+            }
         }
     }
 }
@@ -668,7 +715,11 @@ private fun RadiosOffPanel(modifier: Modifier) {
 }
 
 @Composable
-private fun ScanningEmptyPanel(modifier: Modifier, active: Boolean) {
+private fun ScanningEmptyPanel(
+    modifier: Modifier,
+    active: Boolean,
+    onManualConnectClick: (() -> Unit)? = null,
+) {
     Column(
         modifier.fillMaxSize().padding(horizontal = FlashSpacing.space32),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -687,6 +738,24 @@ private fun ScanningEmptyPanel(modifier: Modifier, active: Boolean) {
             style = FlashTheme.typography.metadataDefault,
             color = FlashTheme.colors.textSecondary,
         )
+        if (onManualConnectClick != null) {
+            Spacer(Modifier.height(FlashSpacing.space16))
+            Box(
+                Modifier
+                    .height(FlashDimensions.minTouchTarget)
+                    .clip(FlashShapes.bubbleGrouped)
+                    .background(FlashTheme.colors.accentPrimary)
+                    .clickable(onClick = onManualConnectClick)
+                    .padding(horizontal = FlashSpacing.space16),
+                contentAlignment = Alignment.Center,
+            ) {
+                FlashText(
+                    text = "Connect by IP",
+                    style = FlashTheme.typography.captionEmphasis,
+                    color = FlashTheme.colors.textOnAccent,
+                )
+            }
+        }
     }
 }
 

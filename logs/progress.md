@@ -1,5 +1,55 @@
 # Progress Log
 
+## 2026-09-17 — Desktop Shell Feature Parity with Android (Search, Selection, Groups, Calls, Settings, Manual Connect)
+
+### Worked on
+Implemented full feature parity between Android (`MainActivity.kt`) and Desktop (`DesktopShell.kt`) across 7 key architectural areas:
+
+1. **Chat List Search & Global History Filtering**:
+   - Added debounced search query state (`isSearching`, `searchQuery`, `messageBodyMatches`) wired to `chatRepository.searchMessageBodies(q)`.
+   - Connected `onSearchClick`, `isSearching`, `searchQuery`, `onSearchQueryChanged`, `onCloseSearch`, and `messageBodyMatches` to `FlashChatListScreen`.
+   - Search button is now visible and active on desktop with full message body search across history.
+
+2. **Chat List Selection Mode & Contextual Action Bar**:
+   - Wired selection callbacks to `FlashChatListScreen`: `onConversationLongClick = chatRepository::enterListSelectionMode`, `onToggleSelection = chatRepository::toggleListSelection`, `onCloseSelection = chatRepository::clearListSelection`, `onArchiveConversation`, and `onUnarchiveConversation`.
+   - Connected bulk contextual actions: `onPinSelected`, `onMuteSelected`, `onMarkSelectedRead`, `onArchiveSelected`, `onUnarchiveSelected`, and `onDeleteSelected`.
+   - Added automatic selection clearance when opening a conversation.
+
+3. **Group Chat Creation & Membership Management**:
+   - Added `showCreateGroup` state and `onNewGroupClick = { showCreateGroup = true }` in `FlashChatListScreen`.
+   - Mapped `trustedPeerRoster = remember(trustedPeersByCoordinator) { ... }` into `FlashCreateGroupPeerUi`.
+   - Rendered `FlashCreateGroupSheet` when `showCreateGroup == true`, calling `chatRepository.createGroup(title, memberIds)` and navigating to the newly created group conversation on success.
+   - In `FlashConversationScreen`, wired `conversationId`, `addablePeers = trustedPeerRoster.filter { ... }`, `onAddGroupMembers`, `onLeaveGroup`, `onClearConversation`, and `onMarkUnread`.
+   - Preserved group headers in `conversationState` so group metadata and titles are not overwritten by 1:1 direct chat derivation.
+
+4. **Group Calling (Mesh Audio & Video)**:
+   - Connected `ongoingGroupCalls` from `calls?.ongoingGroupCalls` and merged them into `conversationState` to display the active group call banner.
+   - Updated `placeVoiceCall` and `placeVideoCall` to detect `conversationState.header.isGroup` and invoke `calls?.startGroupCall(groupId, groupName, memberIds, video)`.
+   - Wired `onJoinGroupCall` in `FlashConversationScreen` to invoke `calls?.joinGroupCall(...)`.
+
+5. **Desktop Settings Persistence Tier (`~/.flash/settings.properties`)**:
+   - Extended `DesktopSettingsStore.kt` with `DesktopSettings` data model persisting `save_location`, `auto_download_voice`, `auto_download_image`, `auto_download_video`, `auto_download_file`, `prioritise_voice_quality`, `dynamic_accent`, and `performance_mode`.
+   - Added unit test suite `DesktopSettingsStoreTest.kt` verifying property parsing, serialisation, round-trip persistence, and corrupted key fallbacks.
+   - In `DesktopEngine.kt`, wired `settings: StateFlow<DesktopSettings>` and `updateSettings(transform)`. Updated inbound offer handling to check auto-download flags for voice, image, video, and file. Updated call coordinator to dynamically read `prioritiseVoiceQuality` and `performanceMode`.
+   - Dynamic canonical root tracking: updating save location updates `_canonicalRoot` and `receivedDirectory` on the fly.
+
+6. **Settings Save Location Picker (Swing JFileChooser)**:
+   - Wired `onPickSaveLocation` in `FlashSettingsScreen` to open a `JFileChooser(DIRECTORIES_ONLY)` on desktop, updating `DesktopSettings.saveLocation` and refreshing storage usage scans.
+   - Connected all 7 settings callbacks (`onDynamicAccentChanged`, `onAutoDownloadVoiceChanged`, `onAutoDownloadImageChanged`, `onAutoDownloadVideoChanged`, `onAutoDownloadFileChanged`, `onPrioritiseVoiceQualityChanged`, `onPerformanceModeSelected`) to `engine.updateSettings`.
+
+7. **Nearby Manual Connect by IP & Port**:
+   - Created cross-platform `FlashManualConnectDialog.kt` using `FlashConfirmHost` (in-window modal on Desktop, AlertDialog on Android).
+   - In `FlashNearbyScreen.kt`, added optional `onManualConnect: ((host: String, port: Int) -> Unit)?`, adding a "Connect by IP" icon button in the header and action button in scanning empty state.
+   - Wired `onManualConnect` in both `DesktopShell.kt` and `MainActivity.kt` to `engine.network.connectManual(host, port)` followed by `beginPair(...)`.
+
+8. **Multi-Recipient Transfer Resume & Cancel**:
+   - In `FlashConversationScreen`, updated `onRetryTransfer`, `onPauseTransfer`, `onResumeTransfer`, and `onCancelTransfer` to query `chatRepository.getRecipientTransferIds(tid)` and resume/pause/cancel all sub-transfers for group attachments.
+
+### Verification
+- `:desktop:compileKotlinJvm` BUILD SUCCESSFUL.
+- `:desktop:jvmTest` BUILD SUCCESSFUL (all 51 actionable tasks and test suites passed, including `DesktopSettingsStoreTest`).
+- `:app:compileDebugKotlin` BUILD SUCCESSFUL (Android debug compilation fully intact).
+
 ## 2026-09-17 — Fix Cancellation Race in Receive Pipeline (Closed Sink Handle) & Defensive Inbound Binary Dispatch
 
 ### Worked on
