@@ -262,6 +262,17 @@ public class CallCoordinator(
     override suspend fun onInboundText(peerId: String, text: String): Boolean {
         val frame = CallFrameCodec.decode(text) ?: return false
 
+        // SENTINEL: Fail closed on claimed-author vs transport-peer mismatch for 1:1 call frames
+        if (frame is CallWireFrame.Invite ||
+            frame is CallWireFrame.Accept ||
+            frame is CallWireFrame.Decline ||
+            frame is CallWireFrame.Hangup ||
+            frame is CallWireFrame.Offer ||
+            frame is CallWireFrame.Answer ||
+            frame is CallWireFrame.IceCandidate) {
+            if (frame.from != peerId) return false
+        }
+
         if (frame is CallWireFrame.GroupPresence) {
             if (currentGroupSession?.callId == frame.callId) return true
             val currentMap = _ongoingGroupCalls.value.toMutableMap()
@@ -304,6 +315,7 @@ public class CallCoordinator(
         // 1. If currently in a 1:1 call
         if (p2pSession != null) {
             if (frame.callId == p2pSession.callId) {
+                if (peerId != p2pSession.peerId || frame.from != p2pSession.peerId) return false
                 if (frame is CallWireFrame.Invite) return true // duplicate invite
                 p2pSession.onInboundFrame(frame)
                 return true
