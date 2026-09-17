@@ -1,6 +1,28 @@
 # Progress Log
 
-## 2026-09-17 — Desktop Outbound Transfers & Rich Conversation Actions (PHASE-30 & PHASE-29)
+## 2026-09-17 — Android Large-File Transfer OOM Fix, Desktop DnD Enhancement, In-Bubble Transfer Controls & Message Options
+
+### Worked on
+1. **Android Large-File Transfer Crash Fix (ERROR-067)**:
+   - Diagnosed fatal `OutOfMemoryError: Failed to allocate a 700076176 byte allocation` on Android when receiving a 667MB video from Desktop.
+   - Identified root cause in `RandomAccessSinkHandle.kt`: `resize(expectedTotalBytes)` calls Okio `JvmFileHandle.protectedResize()`, which allocates a contiguous `ByteArray` of `size - this.size` in memory. On Android ART, allocating 700MB in RAM immediately crashes the app.
+   - Removed `resize()` pre-allocation. Random access writes directly position and write chunk bytes, letting the kernel filesystem expand the file dynamically without RAM overhead.
+2. **Desktop Drag-and-Drop Overhaul**:
+   - Replaced basic `DropTargetAdapter` in `DesktopShell.kt` with a full `DropTargetListener` implementing `dragEnter`, `dragOver`, `dropActionChanged`, and `drop`, explicitly calling `acceptDrag(DnDConstants.ACTION_COPY)` when `DataFlavor.javaFileListFlavor` is detected.
+   - Recursively attached `DropTarget` across `ComposeWindow`, `contentPane`, `layeredPane`, `glassPane`, and all child Swing/AWT containers so dragging files anywhere over the desktop window shows the valid drop cursor and sends files to the active conversation peer.
+3. **Sender-Side Chat Bubble Transfer Progress & In-Bubble Controls**:
+   - In `RealFlashChatRepository.kt`, fixed the `renderable` predicate for media attachments to require `path != null && status == FlashFileTransferStatus.Downloaded`. This prevents outgoing video/image attachments from prematurely turning into static image tiles before the transfer finishes.
+   - While transferring or paused/failed, outbound and inbound attachments render as `FlashFileMessageCard`, displaying circular progress indicator, percentage, speed, ETA, and interactive controls.
+   - Added `onPause`, `onResume`, and `onCancel` callbacks to `FlashFileMessageCard`, making the circular badge clickable (pauses/resumes transfer) and adding trailing action icon buttons.
+   - Threaded transfer control callbacks through `FlashMessageBubble`, `FlashMessageList`, and `FlashConversationScreen`, connecting them to `engine.transfers.pauseTransfer(...)`, `resumeTransfer(...)`, and `cancelTransfer(...)` on both Desktop (`DesktopShell.kt`) and Android (`MainActivity.kt`).
+4. **Desktop Right-Click & Three-Dots ("...") Message Options**:
+   - Added secondary pointer press (right-click) capture to `FlashMessageBubble` via `event.buttons.isSecondaryPressed`, instantly popping up the message actions overlay on Desktop without needing to long-press.
+   - Added a visible, clickable `FlashIcons.More` (`...`) button in `FlashMessageTimestampRow` adjacent to the message timestamp and delivery ticks for mouse and touch access.
+5. **Verification**:
+   - Tested and verified compilation with `:desktop:compileKotlinJvm` and `:app:compileDebugKotlin` (both BUILD SUCCESSFUL).
+   - Ran unit test suite: `:desktop:jvmTest`, `:core:messaging:jvmTest`, `:core:transfer:jvmTest`, and `:ui:chat:jvmTest` (59 tasks, all passed with 0 errors).
+
+
 
 ### Worked on
 1. **Desktop Outbound Transfers (PHASE-30)**:

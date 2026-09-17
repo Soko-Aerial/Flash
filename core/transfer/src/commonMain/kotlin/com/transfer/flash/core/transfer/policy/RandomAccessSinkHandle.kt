@@ -70,12 +70,7 @@ public class OkioRandomAccessSinkHandle(
     /** Captured up front: the check message must survive the handle being closed. */
     private val name: String = path.name
 
-    private val handle: FileHandle = fileSystem.openReadWrite(path).apply {
-        // Pre-allocate file length if needed to avoid fragmentation on sparse writes
-        if (size() < expectedTotalBytes) {
-            resize(expectedTotalBytes)
-        }
-    }
+    private val handle: FileHandle = fileSystem.openReadWrite(path)
 
     private val lock = PlatformLock()
 

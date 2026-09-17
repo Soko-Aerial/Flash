@@ -1,6 +1,28 @@
 # Current Handoff
 
-## 2026-09-17 — Desktop Outbound Transfers & Rich Conversation Actions (PHASE-30 & PHASE-29)
+## 2026-09-17 — Android Large-File Transfer OOM Fix, Desktop DnD Enhancement, In-Bubble Transfer Controls & Message Options
+
+### Current branch
+`dev`
+
+### Completed & Ready for Live Verification
+1. **Android Large-File Transfer Crash Fix (ERROR-067)**:
+   - Root cause: `OkioRandomAccessSinkHandle` ran `resize(expectedTotalBytes)`, which invokes Okio's `JvmFileHandle.protectedResize` -> allocates a 700MB `ByteArray` in ART heap memory for a 667MB transfer, causing instant `OutOfMemoryError`.
+   - Fix: Removed `resize()` pre-allocation in `RandomAccessSinkHandle.kt`. Chunk writes use seek/pwrite directly without heap allocation.
+2. **Desktop Drag-and-Drop (AWT/Swing DnD)**:
+   - Replaced basic adapter with full `DropTargetListener` in `DesktopShell.kt` implementing `dragEnter`, `dragOver`, `dropActionChanged`, and `drop`, actively accepting `ACTION_COPY`.
+   - Recursively registered `DropTarget` across all window panes (`ComposeWindow`, `contentPane`, `layeredPane`, `glassPane`, and children), preventing Windows Explorer forbidden/rejected cursor and transmitting files to the active conversation peer upon drop.
+3. **Sender-Side Chat Bubble Transfer Progress & In-Bubble Controls**:
+   - Outbound media attachments remain as interactive `FlashFileMessageCard` bubbles showing progress circle, percentage, transfer speed, and ETA while in transit instead of prematurely becoming static images before finishing.
+   - Added clickable badge and explicit `Pause`, `Resume`, and `Cancel` buttons directly inside chat bubbles on both Desktop and Android.
+4. **Desktop Right-Click & Three-Dots ("...") Options Trigger**:
+   - Secondary mouse click (right-click) on chat bubbles instantly triggers the message actions overlay without requiring a long-press.
+   - Added a `FlashIcons.More` (`...`) button adjacent to message timestamps and delivery ticks for mouse and touch access.
+
+### Recommended next task
+User verifies 667MB+ file transfer from Desktop to Android on physical hardware, tests desktop drag-and-drop onto the conversation window, and tests right-click message options and in-bubble pause/cancel controls.
+
+
 
 ### Current branch
 `dev`

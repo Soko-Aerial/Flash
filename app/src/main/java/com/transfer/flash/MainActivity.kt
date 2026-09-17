@@ -1184,6 +1184,48 @@ private fun FlashShell(
                                 }
                             }
                         },
+                        onPauseTransfer = { transferId ->
+                            engine.transfers?.let { repo ->
+                                scope.launch {
+                                    val recipientIds = chatRepository.getRecipientTransferIds(transferId)
+                                    if (recipientIds.isNotEmpty()) {
+                                        recipientIds.forEach { subId ->
+                                            repo.pauseTransfer(FlashTransferId(subId))
+                                        }
+                                    } else {
+                                        repo.pauseTransfer(FlashTransferId(transferId))
+                                    }
+                                }
+                            }
+                        },
+                        onResumeTransfer = { transferId ->
+                            engine.transfers?.let { repo ->
+                                scope.launch {
+                                    val recipientIds = chatRepository.getRecipientTransferIds(transferId)
+                                    if (recipientIds.isNotEmpty()) {
+                                        recipientIds.forEach { subId ->
+                                            repo.resumeTransfer(FlashTransferId(subId))
+                                        }
+                                    } else {
+                                        repo.resumeTransfer(FlashTransferId(transferId))
+                                    }
+                                }
+                            }
+                        },
+                        onCancelTransfer = { transferId ->
+                            engine.transfers?.let { repo ->
+                                scope.launch {
+                                    val recipientIds = chatRepository.getRecipientTransferIds(transferId)
+                                    if (recipientIds.isNotEmpty()) {
+                                        recipientIds.forEach { subId ->
+                                            repo.cancelTransfer(FlashTransferId(subId))
+                                        }
+                                    } else {
+                                        repo.cancelTransfer(FlashTransferId(transferId))
+                                    }
+                                }
+                            }
+                        },
                         onStartCall = {
                             val peerId = entry.conversationId
                             if (peerId != null) {

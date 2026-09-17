@@ -1,5 +1,56 @@
 # Error Log
 
+## ERROR-067 — Android large file transfer OutOfMemoryError in OkioRandomAccessSinkHandle (protectedResize heap allocation)
+
+### Date
+2026-09-17
+
+### Area
+Android File Transfer Sink / Heap Memory (`core:transfer`, `RandomAccessSinkHandle.kt`)
+
+### Symptoms
+When receiving a large file (e.g. a 667MB or multi-GB video file) on Android from Desktop, the Android app process immediately crashed with:
+```text
+FATAL EXCEPTION: DefaultDispatcher-worker-1
+Process: com.transfer.flash, PID: 29627
+java.lang.OutOfMemoryError: Failed to allocate a 700076176 byte allocation with 4194304 free bytes and 355MB until OOM, target footprint 360875416, growth limit 704643072
+	at okio.JvmFileHandle.protectedResize(JvmFileHandle.kt:70)
+	at okio.FileHandle.resize(FileHandle.kt:85)
+	at com.transfer.flash.core.transfer.policy.OkioRandomAccessSinkHandle.<init>(RandomAccessSinkHandle.kt:73)
+	at com.transfer.flash.core.transfer.policy.DefaultFileSinkFactory.createSink(DefaultFileSinkFactory.kt:39)
+	at com.transfer.flash.core.transfer.engine.SessionTransferWorker.runTransfer(SessionTransferWorker.kt:185)
+```
+
+### Root cause
+In `RandomAccessSinkHandle.kt:70-75`:
+```kotlin
+if (size() < expectedTotalBytes) {
+    resize(expectedTotalBytes)
+}
+```
+In Okio's `JvmFileHandle.protectedResize(newSize)` (the underlying multiplatform implementation used on Android):
+Enlarging a file handle is implemented by allocating a byte array:
+`ByteArray((size - this.size).toInt())`
+and writing it to the file.
+For large files (e.g., 667MB), this causes Okio to allocate a 700MB contiguous `ByteArray` on the Android ART heap, immediately exceeding the Android app heap limit (typically 256MB–512MB) and causing a fatal crash.
+
+### Failed attempts
+None; diagnosed directly from the ART OOM stack trace and Okio source code.
+
+### Working fix
+Removed the `if (size() < expectedTotalBytes) { resize(expectedTotalBytes) }` pre-allocation.
+On Android/Linux (via kernel `pwrite`/`lseek`) and JVM, random-access chunk sinks seek to the target chunk offset and write the incoming bytes directly. The OS filesystem automatically expands the file without requiring any RAM pre-allocation.
+
+### Verification
+- `:core:transfer:jvmTest` passed.
+- `:app:compileDebugKotlin` and `:desktop:compileKotlinJvm` passed.
+
+### Related files
+- `core/transfer/src/commonMain/kotlin/com/transfer/flash/core/transfer/policy/RandomAccessSinkHandle.kt`
+
+### Status
+RESOLVED
+
 ## ERROR-066 — Desktop video calling: NullVideoDecoder on incoming video & swapped red/blue color channels (blue hue)
 
 ### Date

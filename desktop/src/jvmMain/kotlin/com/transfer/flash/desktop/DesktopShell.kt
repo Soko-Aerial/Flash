@@ -35,7 +35,10 @@ import java.awt.datatransfer.DataFlavor
 import java.awt.dnd.DnDConstants
 import java.awt.dnd.DropTarget
 import java.awt.dnd.DropTargetAdapter
+import java.awt.dnd.DropTargetDragEvent
 import java.awt.dnd.DropTargetDropEvent
+import java.awt.dnd.DropTargetEvent
+import java.awt.dnd.DropTargetListener
 import java.io.File
 import com.transfer.flash.core.common.model.FlashPeerPresence
 import com.transfer.flash.core.common.logging.FlashLog
@@ -404,12 +407,38 @@ public fun DesktopShell(
     // Conversation; outside of a conversation it prompts the user to select or open a conversation.
     DisposableEffect(window, nav.current, conversationState.header) {
         val comp = window ?: return@DisposableEffect onDispose {}
-        val dropTarget = DropTarget(comp, object : DropTargetAdapter() {
+        val dropListener = object : DropTargetListener {
+            override fun dragEnter(dtde: DropTargetDragEvent) {
+                if (dtde.isDataFlavorSupported(DataFlavor.javaFileListFlavor)) {
+                    dtde.acceptDrag(DnDConstants.ACTION_COPY)
+                } else {
+                    dtde.rejectDrag()
+                }
+            }
+
+            override fun dragOver(dtde: DropTargetDragEvent) {
+                if (dtde.isDataFlavorSupported(DataFlavor.javaFileListFlavor)) {
+                    dtde.acceptDrag(DnDConstants.ACTION_COPY)
+                } else {
+                    dtde.rejectDrag()
+                }
+            }
+
+            override fun dropActionChanged(dtde: DropTargetDragEvent) {
+                if (dtde.isDataFlavorSupported(DataFlavor.javaFileListFlavor)) {
+                    dtde.acceptDrag(DnDConstants.ACTION_COPY)
+                } else {
+                    dtde.rejectDrag()
+                }
+            }
+
+            override fun dragExit(dte: DropTargetEvent) {}
+
             override fun drop(dtde: DropTargetDropEvent) {
                 try {
-                    dtde.acceptDrop(DnDConstants.ACTION_COPY)
-                    val transferable = dtde.transferable
-                    if (transferable.isDataFlavorSupported(DataFlavor.javaFileListFlavor)) {
+                    if (dtde.isDataFlavorSupported(DataFlavor.javaFileListFlavor)) {
+                        dtde.acceptDrop(DnDConstants.ACTION_COPY)
+                        val transferable = dtde.transferable
                         val files = transferable.getTransferData(DataFlavor.javaFileListFlavor) as? List<*>
                         val fileList = files?.filterIsInstance<File>() ?: emptyList()
                         if (fileList.isNotEmpty()) {
@@ -449,17 +478,46 @@ public fun DesktopShell(
                                 }
                             }
                         }
+                        dtde.dropComplete(true)
+                    } else {
+                        dtde.rejectDrop()
                     }
-                    dtde.dropComplete(false)
                 } catch (e: Exception) {
                     FlashLog.w("DND", "Drop error: ${e.message}")
                     dtde.dropComplete(false)
                 }
             }
-        })
-        comp.dropTarget = dropTarget
+        }
+
+        val attached = mutableListOf<java.awt.Component>()
+        fun attachRecursively(c: java.awt.Component) {
+            try {
+                c.dropTarget = DropTarget(c, DnDConstants.ACTION_COPY, dropListener, true)
+                attached.add(c)
+            } catch (e: Exception) {
+                FlashLog.w("DND", "Attach drop target failed for $c: ${e.message}")
+            }
+            if (c is java.awt.Container) {
+                for (child in c.components) {
+                    attachRecursively(child)
+                }
+            }
+        }
+
+        attachRecursively(comp)
+        if (comp is javax.swing.RootPaneContainer) {
+            comp.contentPane?.let { attachRecursively(it) }
+            comp.layeredPane?.let { attachRecursively(it) }
+            comp.glassPane?.let { attachRecursively(it) }
+        }
+
         onDispose {
-            comp.dropTarget = null
+            attached.forEach { c ->
+                try {
+                    c.dropTarget = null
+                } catch (_: Exception) {}
+            }
+            attached.clear()
         }
     }
 
@@ -593,6 +651,27 @@ public fun DesktopShell(
                             engine.transfers?.let { repo ->
                                 scope.launch {
                                     repo.resumeTransfer(com.transfer.flash.core.transfer.model.FlashTransferId(tid))
+                                }
+                            }
+                        },
+                        onPauseTransfer = { tid ->
+                            engine.transfers?.let { repo ->
+                                scope.launch {
+                                    repo.pauseTransfer(com.transfer.flash.core.transfer.model.FlashTransferId(tid))
+                                }
+                            }
+                        },
+                        onResumeTransfer = { tid ->
+                            engine.transfers?.let { repo ->
+                                scope.launch {
+                                    repo.resumeTransfer(com.transfer.flash.core.transfer.model.FlashTransferId(tid))
+                                }
+                            }
+                        },
+                        onCancelTransfer = { tid ->
+                            engine.transfers?.let { repo ->
+                                scope.launch {
+                                    repo.cancelTransfer(com.transfer.flash.core.transfer.model.FlashTransferId(tid))
                                 }
                             }
                         },

@@ -5,6 +5,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -16,6 +17,9 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -25,19 +29,28 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.isSecondaryPressed
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.layout
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.transfer.flash.core.messaging.model.FlashFileTransferStatus
 import com.transfer.flash.core.messaging.model.FlashMessageGroupPosition
 import com.transfer.flash.core.messaging.model.FlashMessageUi
 import com.transfer.flash.core.messaging.util.computeMessageGroupPositions
 import com.transfer.flash.core.messaging.util.sampleFlashConversationState
 import com.transfer.flash.ui.avatar.FlashAvatar
+import com.transfer.flash.ui.icons.FlashIcon
+import com.transfer.flash.ui.icons.FlashIcons
 import com.transfer.flash.ui.theme.FlashColors
 import com.transfer.flash.ui.theme.FlashDimensions
 import com.transfer.flash.ui.theme.FlashHaptic
@@ -99,6 +112,9 @@ fun FlashMessageBubble(
     onFileClick: (com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit = {},
     onAcceptOffer: (com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit = {},
     onDeclineOffer: (com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit = {},
+    onPauseTransfer: (com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit = {},
+    onResumeTransfer: (com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit = {},
+    onCancelTransfer: (com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit = {},
     isHighlighted: Boolean = false,
     /** UI-023: when non-blank, matching substrings inside the message body are highlighted. */
     searchQuery: String? = null,
@@ -136,6 +152,9 @@ fun FlashMessageBubble(
                 onFileClick = onFileClick,
                 onAcceptOffer = onAcceptOffer,
                 onDeclineOffer = onDeclineOffer,
+                onPauseTransfer = onPauseTransfer,
+                onResumeTransfer = onResumeTransfer,
+                onCancelTransfer = onCancelTransfer,
                 isHighlighted = isHighlighted,
                 deliveryStatus = deliveryStatus,
                 searchQuery = searchQuery,
@@ -166,6 +185,9 @@ private fun FlashBubbleSurface(
     onFileClick: (com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit,
     onAcceptOffer: (com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit,
     onDeclineOffer: (com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit,
+    onPauseTransfer: (com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit,
+    onResumeTransfer: (com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit,
+    onCancelTransfer: (com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit,
     isHighlighted: Boolean,
     deliveryStatus: (@Composable () -> Unit)?,
     searchQuery: String?,
@@ -228,6 +250,20 @@ private fun FlashBubbleSurface(
                     onOpenActions()
                 },
             )
+            .pointerInput(onOpenActions) {
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Main)
+                        if (event.type == PointerEventType.Press) {
+                            if (event.buttons.isSecondaryPressed) {
+                                event.changes.forEach { it.consume() }
+                                haptics(FlashHaptic.Confirm)
+                                onOpenActions()
+                            }
+                        }
+                    }
+                }
+            }
             .drawBehind {
                 if (isHighlighted) {
                     drawRect(color = colors.accentPrimary.copy(alpha = 0.24f))
@@ -279,13 +315,24 @@ private fun FlashBubbleSurface(
                         attachment = file,
                         isParentOutgoing = message.isMine,
                         onCardClick = { onFileClick(file) },
-                        onActionClick = { onFileClick(file) },
+                        onActionClick = {
+                            if (file.transferStatus == FlashFileTransferStatus.Transferring) {
+                                onPauseTransfer(file)
+                            } else if (file.transferStatus == FlashFileTransferStatus.Failed) {
+                                onResumeTransfer(file)
+                            } else {
+                                onFileClick(file)
+                            }
+                        },
                         onLongPress = {
                             haptics(FlashHaptic.Confirm)
                             onOpenActions()
                         },
                         onAccept = { onAcceptOffer(file) },
                         onDecline = { onDeclineOffer(file) },
+                        onPause = { onPauseTransfer(file) },
+                        onResume = { onResumeTransfer(file) },
+                        onCancel = { onCancelTransfer(file) },
                     )
                     Spacer(modifier = Modifier.height(FlashSpacing.space4))
                 }
@@ -337,6 +384,7 @@ private fun FlashBubbleSurface(
             FlashMessageTimestampRow(
                 message = message,
                 deliveryStatus = deliveryStatus,
+                onOpenActions = onOpenActions,
             )
         }
     }
@@ -375,9 +423,11 @@ private fun FlashMessageTimestampRow(
     message: FlashMessageUi,
     modifier: Modifier = Modifier,
     deliveryStatus: (@Composable () -> Unit)? = null,
+    onOpenActions: (() -> Unit)? = null,
 ) {
     val colors = FlashTheme.colors
     val typography = FlashTheme.typography
+    val haptics = rememberFlashHaptics()
 
     val timestampColor = if (message.isMine) {
         colors.chatTextTimestampOutgoing
@@ -417,6 +467,29 @@ private fun FlashMessageTimestampRow(
             } else {
                 val status = message.deliveryStatus ?: com.transfer.flash.core.messaging.model.FlashMessageStatus.Read
                 FlashDeliveryStatusIcon(status = status)
+            }
+        }
+        if (onOpenActions != null) {
+            Spacer(modifier = Modifier.width(FlashSpacing.space4))
+            Box(
+                modifier = Modifier
+                    .size(16.dp)
+                    .clip(CircleShape)
+                    .clickable(
+                        onClick = {
+                            haptics(FlashHaptic.Confirm)
+                            onOpenActions()
+                        },
+                        role = Role.Button,
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                FlashIcon(
+                    icon = FlashIcons.More,
+                    contentDescription = "Message options",
+                    size = 12.dp,
+                    tint = timestampColor.copy(alpha = 0.7f),
+                )
             }
         }
     }

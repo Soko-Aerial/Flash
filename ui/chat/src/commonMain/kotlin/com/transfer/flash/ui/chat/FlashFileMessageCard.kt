@@ -4,6 +4,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -19,6 +20,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -64,6 +66,9 @@ fun FlashFileMessageCard(
     onLongPress: () -> Unit = {},
     onAccept: () -> Unit = {},
     onDecline: () -> Unit = {},
+    onPause: () -> Unit = {},
+    onResume: () -> Unit = {},
+    onCancel: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val colors = FlashTheme.colors
@@ -106,21 +111,20 @@ fun FlashFileMessageCard(
         formatFileSize(attachment.sizeBytes)
     }
 
-    val statusSubtitle = remember(attachment.transferStatus, attachment.transferSpeedMbps, attachment.etaSeconds) {
+    val statusSubtitle = remember(attachment.transferStatus, attachment.transferSpeedMbps, attachment.etaSeconds, attachment.transferProgress) {
         when (attachment.transferStatus) {
             FlashFileTransferStatus.Transferring -> {
-                if (attachment.transferSpeedMbps > 0f) {
-                    "$formattedSize • ${"%.1f".format(attachment.transferSpeedMbps)} MB/s"
-                } else {
-                    "$formattedSize • Transferring..."
-                }
+                val pct = (attachment.transferProgress * 100).toInt().coerceIn(0, 100)
+                val speedStr = if (attachment.transferSpeedMbps > 0f) " • ${"%.1f".format(attachment.transferSpeedMbps)} MB/s" else ""
+                val etaStr = if (attachment.etaSeconds > 0) " • ${attachment.etaSeconds}s left" else ""
+                "$formattedSize • $pct%$speedStr$etaStr"
             }
             FlashFileTransferStatus.NotDownloaded -> "$formattedSize • Tap to download"
             FlashFileTransferStatus.AwaitingAcceptance -> "$formattedSize • Awaiting your acceptance"
             FlashFileTransferStatus.Downloaded -> {
                 if (extension.isNotEmpty()) "$formattedSize • ${extension.uppercase()}" else formattedSize
             }
-            FlashFileTransferStatus.Failed -> "$formattedSize • Failed (Tap to retry)"
+            FlashFileTransferStatus.Failed -> "$formattedSize • Paused / Failed (Tap to retry)"
         }
     }
 
@@ -181,7 +185,15 @@ fun FlashFileMessageCard(
             FlashFileIconBadge(
                 attachment = attachment,
                 extension = extension,
-                onActionClick = onActionClick,
+                onActionClick = {
+                    if (attachment.transferStatus == FlashFileTransferStatus.Transferring) {
+                        onPause()
+                    } else if (attachment.transferStatus == FlashFileTransferStatus.Failed) {
+                        onResume()
+                    } else {
+                        onActionClick()
+                    }
+                },
             )
 
             Spacer(modifier = Modifier.width(FlashSpacing.space12))
@@ -208,6 +220,69 @@ fun FlashFileMessageCard(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
+            }
+
+            // Trailing action controls for in-flight / failed / paused transfers
+            if (attachment.transferStatus == FlashFileTransferStatus.Transferring) {
+                Spacer(modifier = Modifier.width(FlashSpacing.space4))
+                IconButton(
+                    onClick = {
+                        haptics(FlashHaptic.Tick)
+                        onPause()
+                    },
+                    modifier = Modifier.size(28.dp),
+                ) {
+                    FlashIcon(
+                        icon = FlashIcons.Pause,
+                        contentDescription = "Pause transfer",
+                        size = 16.dp,
+                        tint = secondaryTextColor,
+                    )
+                }
+                IconButton(
+                    onClick = {
+                        haptics(FlashHaptic.Tick)
+                        onCancel()
+                    },
+                    modifier = Modifier.size(28.dp),
+                ) {
+                    FlashIcon(
+                        icon = FlashIcons.Close,
+                        contentDescription = "Cancel transfer",
+                        size = 16.dp,
+                        tint = colors.textError,
+                    )
+                }
+            } else if (attachment.transferStatus == FlashFileTransferStatus.Failed) {
+                Spacer(modifier = Modifier.width(FlashSpacing.space4))
+                IconButton(
+                    onClick = {
+                        haptics(FlashHaptic.Tick)
+                        onResume()
+                    },
+                    modifier = Modifier.size(28.dp),
+                ) {
+                    FlashIcon(
+                        icon = FlashIcons.Play,
+                        contentDescription = "Resume transfer",
+                        size = 16.dp,
+                        tint = colors.accentPrimary,
+                    )
+                }
+                IconButton(
+                    onClick = {
+                        haptics(FlashHaptic.Tick)
+                        onCancel()
+                    },
+                    modifier = Modifier.size(28.dp),
+                ) {
+                    FlashIcon(
+                        icon = FlashIcons.Close,
+                        contentDescription = "Cancel transfer",
+                        size = 16.dp,
+                        tint = colors.textError,
+                    )
+                }
             }
         }
 
@@ -319,7 +394,8 @@ fun FlashFileIconBadge(
             .size(48.dp)
             .clip(CircleShape)
             .background(categoryColor.copy(alpha = 0.9f))
-            .border(FlashDimensions.borderHairline, colors.borderSubtle.copy(alpha = 0.4f), CircleShape),
+            .border(FlashDimensions.borderHairline, colors.borderSubtle.copy(alpha = 0.4f), CircleShape)
+            .clickable(onClick = onActionClick, role = Role.Button),
         contentAlignment = Alignment.Center,
     ) {
         when (attachment.transferStatus) {

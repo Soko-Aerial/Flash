@@ -73,6 +73,9 @@ fun FlashMessageList(
     onFileClick: (message: FlashMessageUi, file: com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit = { _, _ -> },
     onAcceptOffer: (message: FlashMessageUi, file: com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit = { _, _ -> },
     onDeclineOffer: (message: FlashMessageUi, file: com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit = { _, _ -> },
+    onPauseTransfer: (message: FlashMessageUi, file: com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit = { _, _ -> },
+    onResumeTransfer: (message: FlashMessageUi, file: com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit = { _, _ -> },
+    onCancelTransfer: (message: FlashMessageUi, file: com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit = { _, _ -> },
     highlightedMessageId: String? = null,
     peerTypingName: String? = null,
     listState: LazyListState = rememberLazyListState(),
@@ -205,6 +208,9 @@ fun FlashMessageList(
                 val currentOnFileClick by rememberUpdatedState(onFileClick)
                 val currentOnAcceptOffer by rememberUpdatedState(onAcceptOffer)
                 val currentOnDeclineOffer by rememberUpdatedState(onDeclineOffer)
+                val currentOnPauseTransfer by rememberUpdatedState(onPauseTransfer)
+                val currentOnResumeTransfer by rememberUpdatedState(onResumeTransfer)
+                val currentOnCancelTransfer by rememberUpdatedState(onCancelTransfer)
 
                 val onOpenActions = remember { { currentOnOpenActions(currentMessage) } }
                 val onSelectToggleLambda = remember { { currentOnSelectToggle(currentMessage.id) } }
@@ -214,6 +220,9 @@ fun FlashMessageList(
                 val onFileClickLambda = remember { { file: com.transfer.flash.core.messaging.model.FlashFileAttachmentUi -> currentOnFileClick(currentMessage, file) } }
                 val onAcceptOfferLambda = remember { { file: com.transfer.flash.core.messaging.model.FlashFileAttachmentUi -> currentOnAcceptOffer(currentMessage, file) } }
                 val onDeclineOfferLambda = remember { { file: com.transfer.flash.core.messaging.model.FlashFileAttachmentUi -> currentOnDeclineOffer(currentMessage, file) } }
+                val onPauseTransferLambda = remember { { file: com.transfer.flash.core.messaging.model.FlashFileAttachmentUi -> currentOnPauseTransfer(currentMessage, file) } }
+                val onResumeTransferLambda = remember { { file: com.transfer.flash.core.messaging.model.FlashFileAttachmentUi -> currentOnResumeTransfer(currentMessage, file) } }
+                val onCancelTransferLambda = remember { { file: com.transfer.flash.core.messaging.model.FlashFileAttachmentUi -> currentOnCancelTransfer(currentMessage, file) } }
 
                 FlashMessageBubble(
                     message = message,
@@ -228,6 +237,9 @@ fun FlashMessageList(
                     onFileClick = onFileClickLambda,
                     onAcceptOffer = onAcceptOfferLambda,
                     onDeclineOffer = onDeclineOfferLambda,
+                    onPauseTransfer = onPauseTransferLambda,
+                    onResumeTransfer = onResumeTransferLambda,
+                    onCancelTransfer = onCancelTransferLambda,
                     isHighlighted = isHighlighted,
                     searchQuery = searchQuery,
                     suppressSenderHeader = !showSenderHeaders,

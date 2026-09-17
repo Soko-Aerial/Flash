@@ -2630,15 +2630,7 @@ public class RealFlashChatRepository(
         // file card — the only surface carrying Accept/Decline, progress and "Tap to retry". The
         // video branch already guarded this; the image branch did not, which is why a received photo
         // rendered as a dead gradient tile with no way to accept it and nothing to decode.
-        val renderable = path != null && when (status) {
-            FlashFileTransferStatus.Downloaded -> true
-            // Outbound rows point at the sender's own picked file, so it is on disk from the start.
-            FlashFileTransferStatus.Transferring -> base.isMine
-            FlashFileTransferStatus.NotDownloaded,
-            FlashFileTransferStatus.AwaitingAcceptance,
-            FlashFileTransferStatus.Failed,
-            -> false
-        }
+        val renderable = path != null && status == FlashFileTransferStatus.Downloaded
         return when {
             renderable && (mime.startsWith("image/") || mime.startsWith("video/")) -> base.copy(
                 images = listOf(

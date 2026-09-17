@@ -150,6 +150,12 @@ fun FlashConversationScreen(
      * send from whatever the receiver already has. Default no-op keeps previews inert.
      */
     onRetryTransfer: (transferId: String) -> Unit = {},
+    /** Pause an active attachment transfer. */
+    onPauseTransfer: (transferId: String) -> Unit = {},
+    /** Resume a paused attachment transfer. */
+    onResumeTransfer: (transferId: String) -> Unit = {},
+    /** Cancel an in-flight attachment transfer. */
+    onCancelTransfer: (transferId: String) -> Unit = {},
     /**
      * C7: start a voice call with the conversation's peer (1:1 only). The host (:app) routes this
      * to the engine's CallCoordinator + starts the call foreground service. Default no-op keeps
@@ -711,6 +717,15 @@ fun FlashConversationScreen(
                 },
                 onDeclineOffer = { _, file ->
                     onDeclineOffer(file.id)
+                },
+                onPauseTransfer = { _, file ->
+                    onPauseTransfer(file.id)
+                },
+                onResumeTransfer = { _, file ->
+                    onResumeTransfer(file.id)
+                },
+                onCancelTransfer = { _, file ->
+                    onCancelTransfer(file.id)
                 },
                 highlightedMessageId = highlightedMessageId,
                 peerTypingName = state.header.typingMemberNames.firstOrNull()
