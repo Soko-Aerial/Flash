@@ -7,6 +7,7 @@ pluginManagement {
                 includeGroupByRegex("androidx.*")
             }
         }
+        mavenCentral()
         maven { url = uri("https://maven-central.storage-download.googleapis.com/maven2/") }
         gradlePluginPortal()
     }
@@ -24,6 +25,7 @@ dependencyResolutionManagement {
         // local one, and Gradle checks mavenLocal first only for coordinates that exist there.
         mavenLocal()
         google()
+        mavenCentral()
         maven { url = uri("https://maven-central.storage-download.googleapis.com/maven2/") }
     }
 }
