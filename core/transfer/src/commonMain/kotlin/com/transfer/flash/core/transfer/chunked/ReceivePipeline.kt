@@ -268,7 +268,15 @@ public class ReceivePipeline(
         }
 
         if (!alreadyReceived) {
-            session.resolvedSink?.write(frame.index, frame.data)
+            val written = try {
+                session.resolvedSink?.write(frame.index, frame.data)
+                true
+            } catch (_: Throwable) {
+                false
+            }
+            if (!written) {
+                return emptyList()
+            }
         }
         val newlyMarked = session.vector.markReceived(frame.index)
         session.pending.add(frame.index)

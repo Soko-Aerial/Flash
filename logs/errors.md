@@ -1,5 +1,62 @@
 # Error Log
 
+## ERROR-068 — Fatal IllegalStateException when cancelling active file transfer: Sink handle already closed
+
+### Date
+2026-09-17
+
+### Area
+Android & Desktop File Transfer Receive Pipeline / Cancellation Race (`core:transfer`, `RandomAccessSinkHandle.kt`, `ReceivePipeline.kt`, `DiscoveryEngineHolder.kt`)
+
+### Symptoms
+When cancelling an active file transfer on Android, the app crashed fatally:
+```text
+09-17 10:29:43.242 I TRANSFER: XFER cancel → ... transferId=b3bfeaed-72b6-4746-8580-a4819056558c
+09-17 10:29:43.509 I TRANSFER: Incoming transfer CANCELLED transferId=b3bfeaed-72b6-4746-8580-a4819056558c
+09-17 10:29:43.512 E AndroidRuntime: java.lang.IllegalStateException: Sink handle for The.Blacklist... is already closed
+    at com.transfer.flash.core.transfer.policy.OkioRandomAccessSinkHandle.writeAt$lambda$1(RandomAccessSinkHandle.kt:84)
+    at com.transfer.flash.core.transfer.policy.OkioRandomAccessSinkHandle.writeAt(RandomAccessSinkHandle.kt:83)
+    at com.transfer.flash.core.transfer.policy.FileRandomAccessSinkHandle.writeAt(DestinationPolicy.kt:7)
+    at com.transfer.flash.core.transfer.policy.RandomAccessChunkSink.write(RandomAccessChunkSink.kt:28)
+    at com.transfer.flash.core.transfer.chunked.ReceivePipeline.handleChunk(ReceivePipeline.kt:271)
+    at com.transfer.flash.core.transfer.chunked.ReceivePipeline.onFrame(ReceivePipeline.kt:117)
+    at com.transfer.flash.debug.DiscoveryEngineHolder.handleInboundBinary(DiscoveryEngineHolder.kt:1750)
+```
+
+### Root cause
+1. When a transfer is cancelled or completed, `cleanupInbound` closes the open sink handle (`OkioRandomAccessSinkHandle.close()`), marking `_isOpen = false`.
+2. However, trailing in-flight chunks buffered in the network socket (WebSocket or DataChannel) continue to arrive and are dispatched to `ReceivePipeline.onFrame()`.
+3. `OkioRandomAccessSinkHandle.writeAt` previously performed a strict assertion: `check(_isOpen) { "Sink handle for $name is already closed" }`, throwing an uncaught `IllegalStateException`.
+4. Additionally, `cleanupInbound` closed the sink handle before cancelling the receive session in `ReceivePipeline`, exacerbating the window for in-flight chunks to hit a closed handle.
+5. Neither `DiscoveryEngineHolder.handleInboundBinary` nor `DesktopEngine.handleInboundBinary` wrapped `receivePipeline.onFrame(data)` in a try-catch, allowing any exception thrown during inbound frame processing to crash the process.
+
+### Failed attempts
+None.
+
+### Working fix
+1. Updated `OkioRandomAccessSinkHandle.writeAt`: changed from `check(_isOpen)` to `if (_isOpen) { handle.write(...) }`. If the handle is closed, writes are safely discarded without throwing.
+2. In `ReceivePipeline.handleChunk`: wrapped `session.resolvedSink?.write(frame.index, frame.data)` in a try-catch returning `emptyList()` if write fails, preventing unwritten chunks from being marked received or ACKed.
+3. In `DiscoveryEngineHolder.kt` and `Flash.kt`: reordered `cleanupInbound` so `receivePipeline.cancelSession(transferId)` executes first, closing off incoming chunk routing before tearing down the handle.
+4. Wrapped `receivePipeline.onFrame(data)` in try-catch in `DiscoveryEngineHolder.kt`, `Flash.kt`, and `DesktopEngine.kt`.
+5. Handled `RealFlashTransferRepository.ACTION_CANCEL` in `DesktopEngine.kt`'s `incomingControl` flow.
+6. Added a unit test in `DestinationPolicyTest.kt` ensuring `writeAt` after `close()` does not throw and safely discards data.
+
+### Verification
+- `:core:transfer:testAndroidHostTest` (all 18 suites including new `writeAt after close` test passed).
+- `:core:engine:jvmTest` passed.
+- `:desktop:compileKotlinJvm` and `:app:compileDebugKotlin` passed without errors.
+
+### Related files
+- `core/transfer/src/commonMain/kotlin/com/transfer/flash/core/transfer/policy/RandomAccessSinkHandle.kt`
+- `core/transfer/src/commonMain/kotlin/com/transfer/flash/core/transfer/chunked/ReceivePipeline.kt`
+- `core/transfer/src/androidHostTest/kotlin/com/transfer/flash/core/transfer/policy/DestinationPolicyTest.kt`
+- `app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt`
+- `core/engine/src/androidMain/kotlin/com/transfer/flash/core/engine/Flash.kt`
+- `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopEngine.kt`
+
+### Status
+RESOLVED
+
 ## ERROR-067 — Android large file transfer OutOfMemoryError in OkioRandomAccessSinkHandle (protectedResize heap allocation)
 
 ### Date

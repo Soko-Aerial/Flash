@@ -1,5 +1,28 @@
 # Current Handoff
 
+## 2026-09-17 — Fix Cancellation Race in Receive Pipeline (Closed Sink Handle) & Defensive Binary Dispatch
+
+### Current branch
+`dev`
+
+### Completed & Ready for Live Verification
+1. **Cancellation Race in Receive Pipeline (ERROR-068)**:
+   - Root cause: Cancelling a transfer closes the sink handle, but WebSocket/TCP buffers still contain in-flight chunk frames. When `ReceivePipeline.onFrame` ran `handle.writeAt`, `OkioRandomAccessSinkHandle` threw `check(_isOpen) { "Sink handle for $name is already closed" }`, crashing the Android process with an unhandled `IllegalStateException`.
+   - Fix in `OkioRandomAccessSinkHandle.kt`: changed `writeAt` from `check(_isOpen)` to `if (_isOpen) { handle.write(...) }`. Writes to closed handles are safely dropped without throwing.
+   - Fix in `ReceivePipeline.kt`: wrapped `session.resolvedSink?.write(...)` in a `try-catch`, returning `emptyList()` if write fails or handle is closed so unwritten chunks are never marked as received or queued for ACK.
+   - Fix in `DiscoveryEngineHolder.kt` & `Flash.kt`: reordered `cleanupInbound` to call `receivePipeline.cancelSession(transferId)` before `openHandles.remove(...)?.close()`, closing off inbound chunk routing before tearing down the handle.
+   - Guarded `receivePipeline.onFrame(data)` in `DiscoveryEngineHolder.kt`, `Flash.kt`, and `DesktopEngine.kt` with a `try-catch` to protect reader coroutines from unexpected frame decoding/dispatch errors.
+   - Handled `RealFlashTransferRepository.ACTION_CANCEL` in `DesktopEngine.kt`'s `incomingControl` to clean up receive sessions and open handles symmetrically with Android.
+   - Added unit test in `DestinationPolicyTest.kt`: verifies `writeAt` after `close()` does not throw and safely discards data.
+
+### Verification
+- `:core:transfer:testAndroidHostTest` passed (all 18 test suites passed).
+- `:core:engine:jvmTest` passed.
+- `:desktop:compileKotlinJvm` and `:app:compileDebugKotlin` passed without errors.
+
+### Recommended next task
+User verifies cancelling an active file transfer on physical Android device and Desktop to confirm there are no crashes and both sides cleanly transition to cancelled state, and tests resuming/restarting afterwards.
+
 ## 2026-09-17 — Transfer Pause/Resume State Fix & Bi-Directional Restart/Retry After Cancel
 
 ### Current branch

@@ -777,7 +777,13 @@ public class DesktopEngine(
                     RealFlashTransferRepository.ACTION_ACCEPT ->
                         acceptOffer(control.transferId, peerIdFor(control.transferId))
                     RealFlashTransferRepository.ACTION_DECLINE -> declineOffer(control.transferId)
-                    // Pause/resume/cancel are the sender asking us to stop or continue reading; the
+                    RealFlashTransferRepository.ACTION_CANCEL -> {
+                        receivePipeline?.cancelSession(control.transferId)
+                        incomingMeta.remove(control.transferId)
+                        receivedPaths.remove(control.transferId)
+                        openHandles.remove(control.transferId)?.let { runCatching { it.close() } }
+                    }
+                    // Pause/resume are the sender asking us to stop or continue reading; the
                     // pipeline already stops delivering when a session is gone, and the local row is
                     // driven by the repository's own state.
                     else -> Unit
@@ -868,7 +874,13 @@ public class DesktopEngine(
         val transfer = transferImpl ?: return
         if (transfer.onInboundFrame(data)) return
         val receivePipeline = this.receivePipeline ?: return
-        for (event in receivePipeline.onFrame(data)) {
+        val events = try {
+            receivePipeline.onFrame(data)
+        } catch (e: Throwable) {
+            FlashLog.w(TAG_WS, "Failed to process inbound binary frame: ${e.message}")
+            return
+        }
+        for (event in events) {
             when (event) {
                 is ReceiveEvent.SessionStarted -> {
                     val frame = event.frame

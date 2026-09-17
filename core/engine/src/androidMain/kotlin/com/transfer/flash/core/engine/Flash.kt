@@ -349,10 +349,10 @@ private class Wiring(
             },
         )
         val cleanupInbound: (String, String) -> Unit = { transferId, reason ->
+            receivePipeline.cancelSession(transferId)
             openHandles.remove(transferId)?.let { handle -> runCatching { handle.close() } }
             incomingMeta.remove(transferId)
             receivedPaths.remove(transferId)
-            receivePipeline.cancelSession(transferId)
             pausedIntakeIds.update { it - transferId }
             incomingByPeer.values.forEach { it.remove(transferId) }
             transferImpl.onIncomingFailed(transferId, reason)
@@ -646,7 +646,13 @@ private class Wiring(
         }
         // Sender-side ACK/COMPLETE first; if consumed, not a receiver frame.
         if (transferImpl.onInboundFrame(data)) return
-        for (event in receivePipeline.onFrame(data)) {
+        val events = try {
+            receivePipeline.onFrame(data)
+        } catch (e: Throwable) {
+            Log.w(TAG, "Failed to process inbound binary frame: ${e.message}")
+            return
+        }
+        for (event in events) {
             when (event) {
                 is ReceiveEvent.SessionStarted -> {
                     val frame = event.frame

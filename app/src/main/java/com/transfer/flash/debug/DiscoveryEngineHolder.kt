@@ -1016,10 +1016,10 @@ object DiscoveryEngineHolder {
         // its metadata, drop the pipeline session, un-gate intake, unregister it from its peer, and
         // mark the transfer row failed (#4). Safe to call for an unknown/already-cleaned id.
         val cleanupInbound: (String, String) -> Unit = { transferId, reason ->
+            receivePipeline.cancelSession(transferId)
             openHandles.remove(transferId)?.let { handle -> runCatching { handle.close() } }
             incomingMeta.remove(transferId)
             receivedPaths.remove(transferId)
-            receivePipeline.cancelSession(transferId)
             pausedIntakeIds.update { it - transferId }
             incomingByPeer.values.forEach { it.remove(transferId) }
             transferImpl.onIncomingFailed(transferId, reason)
@@ -1747,7 +1747,12 @@ object DiscoveryEngineHolder {
         }
 
         // 2. If not consumed by a sender, route to receiver pipeline
-        val events = receivePipeline.onFrame(data)
+        val events = try {
+            receivePipeline.onFrame(data)
+        } catch (e: Throwable) {
+            Log.w(TAG_TRANSFER, "Failed to process inbound binary frame: ${e.message}")
+            return
+        }
         for (event in events) {
             when (event) {
                 is ReceiveEvent.SessionStarted -> {

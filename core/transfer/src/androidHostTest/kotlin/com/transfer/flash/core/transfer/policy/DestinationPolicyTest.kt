@@ -81,4 +81,16 @@ class DestinationPolicyTest {
             escapedDest.path.startsWith(rootDir.path + File.separator),
         )
     }
+
+    @Test
+    fun `writeAt after close does not throw and safely discards data`() {
+        val targetFile = tempFolder.newFile("closed_handle_test.bin")
+        val handle = FileRandomAccessSinkHandle(targetFile, 100L)
+        handle.close()
+        assertFalse(handle.isOpen)
+        // Calling writeAt on closed handle must be a safe no-op (drops in-flight chunks after cancel)
+        handle.writeAt(0L, byteArrayOf(1, 2, 3))
+        handle.flush()
+        assertEquals(0L, targetFile.length())
+    }
 }

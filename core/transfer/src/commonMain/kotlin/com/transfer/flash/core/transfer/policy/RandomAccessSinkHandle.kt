@@ -67,9 +67,6 @@ public class OkioRandomAccessSinkHandle(
     fileSystem: FileSystem = FileSystem.SYSTEM,
 ) : RandomAccessSinkHandle {
 
-    /** Captured up front: the check message must survive the handle being closed. */
-    private val name: String = path.name
-
     private val handle: FileHandle = fileSystem.openReadWrite(path)
 
     private val lock = PlatformLock()
@@ -81,8 +78,9 @@ public class OkioRandomAccessSinkHandle(
         get() = _isOpen
 
     override fun writeAt(byteOffset: Long, data: ByteArray): Unit = lock.withLock {
-        check(_isOpen) { "Sink handle for $name is already closed" }
-        handle.write(byteOffset, data, 0, data.size)
+        if (_isOpen) {
+            handle.write(byteOffset, data, 0, data.size)
+        }
     }
 
     override fun flush(): Unit = lock.withLock {

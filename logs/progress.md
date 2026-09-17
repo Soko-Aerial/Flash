@@ -1,5 +1,24 @@
 # Progress Log
 
+## 2026-09-17 — Fix Cancellation Race in Receive Pipeline (Closed Sink Handle) & Defensive Inbound Binary Dispatch
+
+### Worked on
+1. **Closed Sink Handle Race on Cancellation (ERROR-068)**:
+   - Diagnosed fatal `IllegalStateException: Sink handle for <file> is already closed` in `OkioRandomAccessSinkHandle.writeAt` when cancelling an in-flight file transfer.
+   - Root cause: In asynchronous network transfers, cancelling a transfer triggers teardown (`cleanupInbound`) which closes the sink handle. However, in-flight chunks buffered in the TCP/WebSocket socket continue to arrive for a few milliseconds and are dispatched into `ReceivePipeline.onFrame()`.
+   - `OkioRandomAccessSinkHandle.writeAt` previously threw `check(_isOpen) { "Sink handle for $name is already closed" }`, crashing the app.
+   - Changed `OkioRandomAccessSinkHandle.writeAt`: now checks `if (_isOpen) { handle.write(...) }`, cleanly dropping trailing in-flight writes when the handle is closed rather than throwing an exception.
+2. **Defensive Pipeline and Intake Teardown**:
+   - In `ReceivePipeline.handleChunk`: wrapped `session.resolvedSink?.write(...)` in a `try-catch`. If a write fails or the sink is closed, it returns `emptyList()` and avoids marking the chunk as received or queuing an ACK.
+   - In `DiscoveryEngineHolder.kt` and `Flash.kt`: reordered `cleanupInbound` to invoke `receivePipeline.cancelSession(transferId)` *before* closing the sink handle in `openHandles`. This cancels future chunk routing in the pipeline before the handle is torn down.
+   - Wrapped `receivePipeline.onFrame(data)` in a `try-catch` inside `DiscoveryEngineHolder.kt`, `Flash.kt`, and `DesktopEngine.kt` to ensure unexpected binary frame decoding or processing issues cannot crash the background frame reader coroutine.
+   - In `DesktopEngine.kt`: added handler for `RealFlashTransferRepository.ACTION_CANCEL` in `incomingControl` flow, ensuring desktop properly tears down receive sessions and open handles when an inbound transfer is cancelled.
+3. **Verification**:
+   - Added unit test `writeAt after close does not throw and safely discards data` to `DestinationPolicyTest.kt`.
+   - Ran `:core:transfer:testAndroidHostTest` (all 18 test suites passed).
+   - Ran `:core:engine:jvmTest` (all passed).
+   - Verified compilation on `:desktop:compileKotlinJvm` and `:app:compileDebugKotlin` (both BUILD SUCCESSFUL).
+
 ## 2026-09-17 — Transfer Pause/Resume State Fix & Bi-Directional Restart/Retry After Cancel
 
 ### Worked on
