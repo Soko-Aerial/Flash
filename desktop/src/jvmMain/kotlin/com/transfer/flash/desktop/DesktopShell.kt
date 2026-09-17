@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
@@ -23,10 +24,19 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.transfer.flash.core.common.model.FlashDevice
+import com.transfer.flash.core.common.model.FlashDeviceId
 import com.transfer.flash.core.common.model.FlashDeviceKind
 import com.transfer.flash.core.common.model.FlashTransportType
 import com.transfer.flash.core.discovery.FlashDiscoveredEndpoint
 import com.transfer.flash.core.discovery.FlashDiscoveryState
+import com.transfer.flash.ui.shims.rememberFlashFilePickerLauncher
+import java.awt.datatransfer.DataFlavor
+import java.awt.dnd.DnDConstants
+import java.awt.dnd.DropTarget
+import java.awt.dnd.DropTargetAdapter
+import java.awt.dnd.DropTargetDropEvent
+import java.io.File
 import com.transfer.flash.core.common.model.FlashPeerPresence
 import com.transfer.flash.core.common.logging.FlashLog
 import com.transfer.flash.core.messaging.model.FlashChatHeaderUiState
@@ -100,6 +110,7 @@ public fun DesktopShell(
      */
     themeMode: FlashThemeMode,
     onThemeModeSelected: (FlashThemeMode) -> Unit,
+    window: java.awt.Window? = null,
 ) {
     val nav = rememberFlashNavigationState()
     val scope = rememberCoroutineScope()
@@ -295,6 +306,163 @@ public fun DesktopShell(
         if (header != null) repositoryConversation.copy(header = header) else repositoryConversation
     }
 
+    fun sendFileToPeer(
+        peerId: String,
+        peerName: String,
+        isGroup: Boolean,
+        uri: String,
+        displayName: String,
+        size: Long,
+        mimeType: String = DesktopHelpers.guessMimeType(displayName),
+        voiceDurationMs: Long = 0L,
+        voiceAmplitudes: List<Int> = emptyList(),
+    ) {
+        val transfers = engine.transfers ?: return
+        if (isGroup) {
+            val sharedMessageId = java.util.UUID.randomUUID().toString()
+            val sharedWireFileId = java.util.UUID.randomUUID().toString()
+            scope.launch(Dispatchers.IO) {
+                chatRepository.groupMembers(peerId)
+                    .filter { it.id != engine.localDeviceId }
+                    .forEach { member ->
+                        val recipientTransferId = java.util.UUID.randomUUID().toString()
+                        val announced = chatRepository.beginGroupAttachment(
+                            groupId = peerId,
+                            recipientDeviceId = member.id,
+                            messageId = sharedMessageId,
+                            transferId = recipientTransferId,
+                            wireFileId = sharedWireFileId,
+                            fileName = displayName,
+                            mimeType = mimeType,
+                            sizeBytes = size,
+                        )
+                        if (!announced) return@forEach
+                        val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == member.id }
+                        val targetDevice = FlashDevice(
+                            id = FlashDeviceId(member.id),
+                            friendlyName = member.name,
+                            transportType = endpoint?.transportType ?: FlashTransportType.LAN,
+                        )
+                        transfers.sendFile(
+                            targetDevice, uri, displayName, size,
+                            transferId = recipientTransferId,
+                            wireFileId = sharedWireFileId,
+                        )
+                    }
+                chatRepository.sendGroupAttachment(
+                    conversationId = peerId,
+                    messageId = sharedMessageId,
+                    transferId = sharedMessageId,
+                    fileName = displayName,
+                    mimeType = mimeType,
+                    sizeBytes = size,
+                    localPath = uri,
+                    voiceDurationMs = voiceDurationMs,
+                    voiceAmplitudes = voiceAmplitudes,
+                )
+            }
+        } else {
+            val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == peerId }
+            val targetDevice = FlashDevice(
+                id = FlashDeviceId(peerId),
+                friendlyName = peerName,
+                transportType = endpoint?.transportType ?: FlashTransportType.LAN,
+            )
+            scope.launch(Dispatchers.IO) {
+                val sendResult = transfers.sendFile(targetDevice, uri, displayName, size)
+                if (sendResult is com.transfer.flash.core.common.result.FlashResult.Success) {
+                    chatRepository.sendAttachment(
+                        conversationId = peerId,
+                        transferId = sendResult.value.value,
+                        fileName = displayName,
+                        mimeType = mimeType,
+                        sizeBytes = size,
+                        localPath = uri,
+                        voiceDurationMs = voiceDurationMs,
+                        voiceAmplitudes = voiceAmplitudes,
+                    )
+                }
+            }
+        }
+    }
+
+    val generalFilePicker = rememberFlashFilePickerLauncher { picked ->
+        val peerId = nav.current.conversationId
+        if (peerId != null) {
+            sendFileToPeer(
+                peerId = peerId,
+                peerName = conversationState.header.title,
+                isGroup = conversationState.header.isGroup,
+                uri = picked.uri,
+                displayName = picked.name,
+                size = picked.size,
+            )
+        }
+    }
+
+    // Drag-and-drop: dropping files or folders onto the window sends them to the active peer in
+    // Conversation; outside of a conversation it prompts the user to select or open a conversation.
+    DisposableEffect(window, nav.current, conversationState.header) {
+        val comp = window ?: return@DisposableEffect onDispose {}
+        val dropTarget = DropTarget(comp, object : DropTargetAdapter() {
+            override fun drop(dtde: DropTargetDropEvent) {
+                try {
+                    dtde.acceptDrop(DnDConstants.ACTION_COPY)
+                    val transferable = dtde.transferable
+                    if (transferable.isDataFlavorSupported(DataFlavor.javaFileListFlavor)) {
+                        val files = transferable.getTransferData(DataFlavor.javaFileListFlavor) as? List<*>
+                        val fileList = files?.filterIsInstance<File>() ?: emptyList()
+                        if (fileList.isNotEmpty()) {
+                            val activePeerId = nav.current.conversationId
+                            if (nav.current.destination == FlashDestination.Conversation && activePeerId != null) {
+                                val allFiles = fileList.flatMap { file ->
+                                    if (file.isDirectory) {
+                                        file.walkTopDown().filter { it.isFile }.toList()
+                                    } else {
+                                        listOf(file)
+                                    }
+                                }
+                                allFiles.forEach { file ->
+                                    sendFileToPeer(
+                                        peerId = activePeerId,
+                                        peerName = conversationState.header.title,
+                                        isGroup = conversationState.header.isGroup,
+                                        uri = file.toURI().toString(),
+                                        displayName = file.name,
+                                        size = file.length(),
+                                    )
+                                }
+                                scope.launch {
+                                    snackbarHostState.showSnackbar(
+                                        message = if (allFiles.size == 1) "Sending ${allFiles[0].name}" else "Sending ${allFiles.size} files",
+                                        duration = SnackbarDuration.Short,
+                                    )
+                                }
+                                dtde.dropComplete(true)
+                                return
+                            } else {
+                                scope.launch {
+                                    snackbarHostState.showSnackbar(
+                                        message = "Open a conversation to send files to a peer",
+                                        duration = SnackbarDuration.Short,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    dtde.dropComplete(false)
+                } catch (e: Exception) {
+                    FlashLog.w("DND", "Drop error: ${e.message}")
+                    dtde.dropComplete(false)
+                }
+            }
+        })
+        comp.dropTarget = dropTarget
+        onDispose {
+            comp.dropTarget = null
+        }
+    }
+
     // ── Settings: no persisted DataStore on desktop until 09B-3; honest defaults ──
     //
     // `receivedFilesBytes` IS live, unlike the settings tier: it is a filesystem fact, not a
@@ -361,15 +529,12 @@ public fun DesktopShell(
                     )
                     FlashDestination.Conversation -> FlashConversationScreen(
                         state = conversationState,
-                        onBack = { nav.back() },
+                        onBack = {
+                            chatRepository.closeConversation()
+                            nav.back()
+                        },
                         // Whether this peer is in the trust store, from the same list the Nearby
                         // screen's rows and this screen's header already read.
-                        //
-                        // Defaulted to `false` and never passed, this left EVERY desktop chat claiming
-                        // to be unpaired: the peer-details sheet read "Not paired" and the header's
-                        // encryption chip read "Unverified", for a device the user had just paired
-                        // with and was looking at on the Nearby tab. Nothing was wrong with the trust
-                        // data — it was simply not forwarded.
                         isPeerTrusted = conversationIdIsTrusted,
                         onRevokePeerTrust = if (conversationIdIsTrusted) {
                             {
@@ -385,6 +550,14 @@ public fun DesktopShell(
                             null
                         },
                         onSendText = { chatRepository.sendText(it) },
+                        onSendReply = { text, replyToId, replyToPreview ->
+                            chatRepository.sendReply(text, replyToId, replyToPreview)
+                        },
+                        onPersistDraft = chatRepository::saveDraft,
+                        onToggleReaction = { messageId, emoji ->
+                            chatRepository.toggleReaction(messageId, emoji)
+                        },
+                        onTypingChanged = chatRepository::setTyping,
                         // Voice & video calls from the conversation header (Phase 33a/33c).
                         onStartCall = {
                             nav.current.conversationId?.let { id ->
@@ -426,15 +599,58 @@ public fun DesktopShell(
                         onOpenAttachment = { path, mime, _ ->
                             DesktopHelpers.openAttachment(path, mime)
                         },
-                        // The desktop picker seam exists and is tested (`FlashFilePicker.jvm`), but
-                        // wiring it to a send is Phase 30's job; until then this is an honest no-op
-                        // rather than a stub that swallows a picked file.
-                        onAttachmentClick = { },
+                        onAttachmentClick = {
+                            generalFilePicker.launch(listOf("*/*"))
+                        },
+                        onSendFile = { uri, displayName, size ->
+                            val peerId = nav.current.conversationId
+                            if (peerId != null) {
+                                sendFileToPeer(
+                                    peerId = peerId,
+                                    peerName = conversationState.header.title,
+                                    isGroup = conversationState.header.isGroup,
+                                    uri = uri,
+                                    displayName = displayName,
+                                    size = size,
+                                )
+                            }
+                        },
+                        onDeleteMessage = { ids -> chatRepository.deleteMessages(ids) },
+                        onDeleteMessageForEveryone = chatRepository::deleteMessageForEveryone,
                         // Both helpers already existed and were never called, so the media viewer's
                         // Save and Share were silently inert. Save writes a copy next to the
                         // original under the received root; Share hands the file to the OS.
                         onSaveImage = { uri, mime -> DesktopHelpers.saveImageToGallery(uri, mime) },
                         onShareImage = { uri, mime -> DesktopHelpers.shareImageUri(uri, mime) },
+                        onVoiceRecordingStarting = {
+                            if (calls?.activeCall?.value != null) null else java.util.UUID.randomUUID().toString()
+                        },
+                        onVoiceRecordingStopped = { _ -> },
+                        onSendVoiceMessage = { localPath, durationMs, amplitudes ->
+                            val peerId = nav.current.conversationId
+                            if (peerId != null) {
+                                val fileName = "Voice message.wav"
+                                val size = runCatching {
+                                    val f = if (localPath.startsWith("file:", ignoreCase = true)) {
+                                        java.io.File(java.net.URI(localPath))
+                                    } else {
+                                        java.io.File(localPath)
+                                    }
+                                    f.length()
+                                }.getOrDefault(0L)
+                                sendFileToPeer(
+                                    peerId = peerId,
+                                    peerName = conversationState.header.title,
+                                    isGroup = conversationState.header.isGroup,
+                                    uri = localPath,
+                                    displayName = fileName,
+                                    size = size,
+                                    mimeType = "audio/wav",
+                                    voiceDurationMs = durationMs,
+                                    voiceAmplitudes = amplitudes,
+                                )
+                            }
+                        },
                     )
                     FlashDestination.Transfers -> FlashTransfersScreen(
                         state = transfersUi,
@@ -599,10 +815,40 @@ public fun DesktopShell(
     // no conversation pane in v1 — the empty repository cannot supply conversation state).
     val detailPaneContent: @Composable () -> Unit = {
         when {
-            selectedTransferItem != null -> TransferDetailPane(
-                item = selectedTransferItem!!,
-                onClose = { selectedTransferItem = null },
-            )
+            selectedTransferItem != null -> {
+                val item = selectedTransferItem!!
+                TransferDetailPane(
+                    item = item,
+                    onClose = { selectedTransferItem = null },
+                    onPauseResume = {
+                        engine.transfers?.let { repo ->
+                            val id = com.transfer.flash.core.transfer.model.FlashTransferId(item.id)
+                            scope.launch {
+                                if (item.state == FlashTransferState.Paused) repo.resumeTransfer(id)
+                                else if (item.state == FlashTransferState.Active) repo.pauseTransfer(id)
+                            }
+                        }
+                    },
+                    onCancel = {
+                        engine.transfers?.let { repo ->
+                            val id = com.transfer.flash.core.transfer.model.FlashTransferId(item.id)
+                            scope.launch { repo.cancelTransfer(id) }
+                        }
+                    },
+                    onRetry = {
+                        engine.transfers?.let { repo ->
+                            val id = com.transfer.flash.core.transfer.model.FlashTransferId(item.id)
+                            scope.launch { repo.resumeTransfer(id) }
+                        }
+                    },
+                    onOpen = {
+                        DesktopHelpers.openAttachment(item.localPath, DesktopHelpers.guessMimeType(item.fileName))
+                    },
+                    onReveal = {
+                        DesktopHelpers.shareTransferredFile(item)
+                    },
+                )
+            }
             selectedNearbyPeer != null -> NearbyDetailPane(
                 peer = selectedNearbyPeer!!,
                 onClose = { selectedNearbyPeer = null },

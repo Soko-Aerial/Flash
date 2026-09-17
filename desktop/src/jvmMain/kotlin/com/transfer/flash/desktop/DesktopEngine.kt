@@ -452,7 +452,18 @@ public class DesktopEngine(
 
         val transfer = RealFlashTransferRepository(
             streamChannelFactory = { channelId, peerDeviceId -> sessionChannel(channelId, peerDeviceId) },
-            fileSourceOpener = FileSourceOpener { uri -> FileSystem.SYSTEM.source(uri.toPath()) },
+            fileSourceOpener = FileSourceOpener { uriString ->
+                val file = runCatching {
+                    if (uriString.startsWith("file:", ignoreCase = true)) {
+                        java.io.File(java.net.URI(uriString))
+                    } else {
+                        java.io.File(uriString)
+                    }
+                }.getOrElse {
+                    java.io.File(uriString)
+                }
+                FileSystem.SYSTEM.source(file.absolutePath.toPath())
+            },
             store = null, // D5 = C pending (09B-2) — matches the Phase 16 harness.
             repositoryScope = scope,
             requireReceiverAcceptance = true,

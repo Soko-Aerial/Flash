@@ -17,6 +17,7 @@ import com.transfer.flash.ui.theme.FlashText
 import com.transfer.flash.ui.theme.FlashTheme
 import com.transfer.flash.ui.transfers.FlashTransfersMath
 import com.transfer.flash.ui.transfers.FlashTransferItemUi
+import com.transfer.flash.ui.transfers.FlashTransferState
 
 /**
  * Phase 22, sub-step 22-4 — minimal detail panes for the two-pane layout, per the phase file's
@@ -29,6 +30,11 @@ import com.transfer.flash.ui.transfers.FlashTransferItemUi
 internal fun TransferDetailPane(
     item: FlashTransferItemUi,
     onClose: () -> Unit,
+    onPauseResume: (() -> Unit)? = null,
+    onCancel: (() -> Unit)? = null,
+    onRetry: (() -> Unit)? = null,
+    onOpen: (() -> Unit)? = null,
+    onReveal: (() -> Unit)? = null,
 ) {
     Column(
         modifier = Modifier.fillMaxSize().padding(FlashSpacing.space16),
@@ -37,6 +43,7 @@ internal fun TransferDetailPane(
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
         ) {
             FlashText(text = "Transfer Details", style = FlashTheme.typography.headingMedium)
             FlashText(
@@ -52,6 +59,81 @@ internal fun TransferDetailPane(
         )
         FlashText(text = "Speed: ${FlashTransfersMath.formatSpeed(item.speedBytesPerSec)}")
         FlashText(text = "Status: ${FlashTransfersMath.statusLine(item)}")
+
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = FlashSpacing.space8),
+            horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
+        ) {
+            when (item.state) {
+                FlashTransferState.Active -> {
+                    if (onPauseResume != null) {
+                        FlashText(
+                            text = "Pause",
+                            modifier = Modifier.clickable(onClick = onPauseResume),
+                            color = FlashTheme.colors.accentPrimary,
+                            style = FlashTheme.typography.bodyDefault,
+                        )
+                    }
+                    if (onCancel != null) {
+                        FlashText(
+                            text = "Cancel",
+                            modifier = Modifier.clickable(onClick = onCancel),
+                            color = FlashTheme.colors.textError,
+                            style = FlashTheme.typography.bodyDefault,
+                        )
+                    }
+                }
+                FlashTransferState.Paused -> {
+                    if (onPauseResume != null) {
+                        FlashText(
+                            text = "Resume",
+                            modifier = Modifier.clickable(onClick = onPauseResume),
+                            color = FlashTheme.colors.accentPrimary,
+                            style = FlashTheme.typography.bodyDefault,
+                        )
+                    }
+                    if (onCancel != null) {
+                        FlashText(
+                            text = "Cancel",
+                            modifier = Modifier.clickable(onClick = onCancel),
+                            color = FlashTheme.colors.textError,
+                            style = FlashTheme.typography.bodyDefault,
+                        )
+                    }
+                }
+                FlashTransferState.Failed -> {
+                    if (item.retryable && onRetry != null) {
+                        FlashText(
+                            text = "Retry",
+                            modifier = Modifier.clickable(onClick = onRetry),
+                            color = FlashTheme.colors.accentPrimary,
+                            style = FlashTheme.typography.bodyDefault,
+                        )
+                    }
+                }
+                FlashTransferState.Completed -> {
+                    if (item.localPath != null) {
+                        if (onOpen != null) {
+                            FlashText(
+                                text = "Open",
+                                modifier = Modifier.clickable(onClick = onOpen),
+                                color = FlashTheme.colors.accentPrimary,
+                                style = FlashTheme.typography.bodyDefault,
+                            )
+                        }
+                        if (onReveal != null) {
+                            FlashText(
+                                text = "Reveal in folder",
+                                modifier = Modifier.clickable(onClick = onReveal),
+                                color = FlashTheme.colors.accentPrimary,
+                                style = FlashTheme.typography.bodyDefault,
+                            )
+                        }
+                    }
+                }
+                else -> Unit
+            }
+        }
     }
 }
 

@@ -1,5 +1,36 @@
 # Current Handoff
 
+## 2026-09-17 — Desktop Outbound Transfers & Rich Conversation Actions (PHASE-30 & PHASE-29)
+
+### Current branch
+`dev`
+
+### Completed & Ready for Live Verification
+1. **Desktop Outbound Transfers (PHASE-30)**:
+   - Wired `onSendFile` in `DesktopShell.kt` to call `engine.transfers.sendFile(...)` and record outbound inline chat attachment bubbles via `chatRepository.sendAttachment` / `chatRepository.sendGroupAttachment`.
+   - Wired `onAttachmentClick` in `DesktopShell.kt` to launch `generalFilePicker.launch(listOf("*/*"))`. Inside `FlashConversationScreen`, picking Gallery (`image/*, video/*`), Audio (`audio/*`), Files (`*/*`), or FlashTransfer (`*/*`) routes into the JVM `JFileChooser` and triggers the transfer pipeline.
+   - Fixed `FileSourceOpener` in `DesktopEngine.kt:455`: parses `file:` URIs into local paths before calling `FileSystem.SYSTEM.source(...)`, preventing `InvalidPathException` on Windows.
+   - Upgraded `DesktopHelpers.guessMimeType`: uses shared `FlashMimeTypes` table with fallback to `URLConnection.guessContentTypeFromName`.
+   - Enhanced `DesktopHelpers.resolveShareableUri`: supports case-insensitive `file:` URI schemes.
+2. **Window Drag-and-Drop File / Folder Transfers**:
+   - Passed `window: java.awt.Window?` to `DesktopShell` from `DesktopMain.kt`.
+   - Attached an AWT `DropTarget` to the desktop window. Dropping files or folders onto the window while viewing an active conversation transmits the files directly to the peer with real-time feedback in `SnackbarHost`. Dropping a folder walks all files top-down. Dropping files outside of a conversation displays a guiding prompt.
+3. **Rich Conversation Actions Parity (PHASE-29)**:
+   - In `DesktopShell.kt`, fully wired `FlashConversationScreen`:
+     - `onSendReply`: `chatRepository.sendReply(text, replyToId, replyToPreview)`
+     - `onPersistDraft`: `chatRepository.saveDraft(draft)`
+     - `onToggleReaction`: `chatRepository.toggleReaction(messageId, emoji)`
+     - `onTypingChanged`: `chatRepository.setTyping(isTyping)`
+     - `onDeleteMessage`: `chatRepository.deleteMessages(ids)`
+     - `onDeleteMessageForEveryone`: `chatRepository.deleteMessageForEveryone(id)`
+     - `onBack`: closes conversation (`chatRepository.closeConversation()`) and navigates back
+     - Voice recording & messaging: `onVoiceRecordingStarting`, `onVoiceRecordingStopped`, and `onSendVoiceMessage` with `JvmVoiceRecorder` WAV audio capture.
+4. **Detail-Pane Action Controls**:
+   - In `DesktopDetailPanes.kt` / `TransferDetailPane`: added interactive action controls for `Pause`, `Resume`, `Cancel`, `Retry`, `Open`, and `Reveal in folder`.
+5. **Verification**:
+   - Added unit test suite `DesktopOutboundTransferTest.kt` verifying MIME guessing, URI resolution, FileSourceOpener streaming from both URIs and raw paths, and TransferItemUi modeling.
+   - Built and verified with `:desktop:compileKotlinJvm` and full `:desktop:jvmTest` (all 51 tasks pass).
+
 ## 2026-09-16 — Desktop video calling: frame rotation handling (upright portrait video rendering)
 
 ### Current branch

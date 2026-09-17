@@ -89,6 +89,7 @@ public fun main() = application {
                         themeMode = mode
                         engine.storeThemeMode(mode)
                     },
+                    window = window,
                 )
             }
         }

@@ -29,20 +29,24 @@ internal object DesktopHelpers {
     }
 
     /**
-     * Desktop MIME guesser — replaces `android.webkit.MimeTypeMap`.
+     * Desktop MIME guesser — uses shared FlashMimeTypes table with URLConnection fallback.
      */
-    fun guessMimeType(fileName: String): String =
-        URLConnection.guessContentTypeFromName(fileName) ?: "*/*"
+    fun guessMimeType(fileName: String): String {
+        val ext = fileName.substringAfterLast('.', "")
+        return com.transfer.flash.core.messaging.util.FlashMimeTypes.fromExtension(ext)
+            ?: URLConnection.guessContentTypeFromName(fileName)
+            ?: "*/*"
+    }
 
     /**
      * Desktop URI resolver — replaces FileProvider-based URI resolution. Accepts an absolute
-     * path, or a `file://` URI, and returns a `file://` URI.
+     * path, or a `file:` URI, and returns a `java.net.URI`.
      */
     fun resolveShareableUri(ref: String?): URI? {
         if (ref.isNullOrBlank()) return null
         return runCatching {
             when {
-                ref.startsWith("file://") -> URI(ref)
+                ref.startsWith("file:", ignoreCase = true) -> URI(ref)
                 ref.startsWith("content://") -> null // Android-only scheme; no desktop equivalent
                 else -> File(ref).toURI()
             }
