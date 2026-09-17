@@ -11,3 +11,7 @@ Action: Always pass a shared `remember { MutableInteractionSource() }` to both `
 ## 2026-09-12 - Tactile Press Scale on CombinedClickable Chips (PR #15)
 Learning: In Flash Compose UI, interactive chips (like `FlashReactionChip`) using `combinedClickable` need a single shared `MutableInteractionSource` passed to both `.flashPressScale(interactionSource, pressedScale = 0.94f)` and `.combinedClickable(interactionSource = interactionSource, indication = null, ...)` to ensure smooth tactile scale feedback without recomposition or ripple conflicts. Always replace stock `material3.Text` with `FlashText` to comply with Flash design system guidelines.
 Action: Pass a shared `remember { MutableInteractionSource() }` to `.flashPressScale(interactionSource)` before `.combinedClickable` and use `FlashText`.
+
+## 2026-09-17 - Tactile Press Feedback on Archived Chats Row & FlashText Tokens
+Learning: `FlashArchivedChatsRow` in `FlashArchivedChats.kt` was using stock `material3.Text` composables and lacked spring press feedback. Adding `.flashPressScale(interactionSource)` before `.clickable(interactionSource = interactionSource, indication = null, ...)` provides immediate tactile feedback when tapping into archived conversations, while replacing `material3.Text` with `FlashText` preserves design system token compliance across themes.
+Action: Always attach `flashPressScale(interactionSource)` before `clickable(...)` on entry/list rows, and use `FlashText` for typography tokens.

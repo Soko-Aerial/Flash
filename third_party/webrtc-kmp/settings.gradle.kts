@@ -2,16 +2,16 @@
 dependencyResolutionManagement {
     repositories {
         mavenLocal()
-        mavenCentral()
+        maven { url = uri("https://maven-central.storage-download.googleapis.com/maven2/") }
         google()
     }
 }
 
 pluginManagement {
     repositories {
-        gradlePluginPortal()
+        maven { url = uri("https://maven-central.storage-download.googleapis.com/maven2/") }
         google()
-        mavenCentral()
+        gradlePluginPortal()
     }
 }
 

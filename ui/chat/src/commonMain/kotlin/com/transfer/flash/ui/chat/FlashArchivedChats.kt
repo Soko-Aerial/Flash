@@ -17,7 +17,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -34,7 +33,9 @@ import com.transfer.flash.ui.icons.FlashIcons
 import com.transfer.flash.ui.theme.FlashDimensions
 import com.transfer.flash.ui.theme.FlashShapes
 import com.transfer.flash.ui.theme.FlashSpacing
+import com.transfer.flash.ui.theme.FlashText
 import com.transfer.flash.ui.theme.FlashTheme
+import com.transfer.flash.ui.theme.flashPressScale
 import org.jetbrains.compose.ui.tooling.preview.Preview
 
 /**
@@ -57,6 +58,7 @@ fun FlashArchivedChatsRow(
         modifier = modifier
             .fillMaxWidth()
             .background(colors.backgroundSurface)
+            .flashPressScale(interactionSource)
             .clickable(
                 interactionSource = interactionSource,
                 indication = null,
@@ -96,12 +98,11 @@ fun FlashArchivedChatsRow(
 
             Spacer(modifier = Modifier.width(FlashSpacing.space16))
 
-            Text(
+            FlashText(
                 text = "Archived",
                 modifier = Modifier.weight(1f),
                 style = typography.bodyEmphasis,
                 color = colors.textPrimary,
-                fontWeight = FontWeight.SemiBold,
             )
 
             if (unreadCount > 0) {
@@ -113,17 +114,16 @@ fun FlashArchivedChatsRow(
                         .padding(horizontal = FlashSpacing.space8),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text(
+                    FlashText(
                         text = if (unreadCount > 99) "99+" else unreadCount.toString(),
                         style = typography.captionEmphasis,
                         color = colors.textOnAccent,
-                        fontWeight = FontWeight.Bold,
                     )
                 }
                 Spacer(modifier = Modifier.width(FlashSpacing.space8))
             }
 
-            Text(
+            FlashText(
                 text = archivedCount.toString(),
                 style = typography.metadataDefault,
                 color = colors.textTertiary,
@@ -171,7 +171,7 @@ fun FlashArchivedChatsTopBar(
             ) {
                 FlashIcon(icon = FlashIcons.Back, contentDescription = "Back to chats")
             }
-            Text(
+            FlashText(
                 text = "Archived Chats",
                 modifier = Modifier
                     .weight(1f)
