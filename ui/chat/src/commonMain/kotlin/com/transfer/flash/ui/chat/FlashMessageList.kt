@@ -213,17 +213,19 @@ fun FlashMessageList(
                     FlashDaySeparator(label = label)
                 }
 
-                val onOpenActions = remember(message) { { currentOnOpenMessageActions(message) } }
+                // BOLT: Key callback lambdas on message.id rather than message instance and capture currentMessage via rememberUpdatedState to prevent lambda allocations per visible item on every progress/status update
+                val currentMessage by rememberUpdatedState(message)
+                val onOpenActions = remember(message.id) { { currentOnOpenMessageActions(currentMessage) } }
                 val onSelectToggleLambda = remember(message.id) { { currentOnSelectToggle(message.id) } }
                 val onToggleReactionLambda = remember(message.id) { { emoji: String -> currentOnToggleReaction(message.id, emoji) } }
-                val onReplySwipeLambda = remember(message) { { currentOnReplySwipe(message) } }
-                val onImageClickLambda = remember(message) { { index: Int, _: Any -> currentOnImageClick(message, index) } }
-                val onFileClickLambda = remember(message) { { file: com.transfer.flash.core.messaging.model.FlashFileAttachmentUi -> currentOnFileClick(message, file) } }
-                val onAcceptOfferLambda = remember(message) { { file: com.transfer.flash.core.messaging.model.FlashFileAttachmentUi -> currentOnAcceptOffer(message, file) } }
-                val onDeclineOfferLambda = remember(message) { { file: com.transfer.flash.core.messaging.model.FlashFileAttachmentUi -> currentOnDeclineOffer(message, file) } }
-                val onPauseTransferLambda = remember(message) { { file: com.transfer.flash.core.messaging.model.FlashFileAttachmentUi -> currentOnPauseTransfer(message, file) } }
-                val onResumeTransferLambda = remember(message) { { file: com.transfer.flash.core.messaging.model.FlashFileAttachmentUi -> currentOnResumeTransfer(message, file) } }
-                val onCancelTransferLambda = remember(message) { { file: com.transfer.flash.core.messaging.model.FlashFileAttachmentUi -> currentOnCancelTransfer(message, file) } }
+                val onReplySwipeLambda = remember(message.id) { { currentOnReplySwipe(currentMessage) } }
+                val onImageClickLambda = remember(message.id) { { index: Int, _: Any -> currentOnImageClick(currentMessage, index) } }
+                val onFileClickLambda = remember(message.id) { { file: com.transfer.flash.core.messaging.model.FlashFileAttachmentUi -> currentOnFileClick(currentMessage, file) } }
+                val onAcceptOfferLambda = remember(message.id) { { file: com.transfer.flash.core.messaging.model.FlashFileAttachmentUi -> currentOnAcceptOffer(currentMessage, file) } }
+                val onDeclineOfferLambda = remember(message.id) { { file: com.transfer.flash.core.messaging.model.FlashFileAttachmentUi -> currentOnDeclineOffer(currentMessage, file) } }
+                val onPauseTransferLambda = remember(message.id) { { file: com.transfer.flash.core.messaging.model.FlashFileAttachmentUi -> currentOnPauseTransfer(currentMessage, file) } }
+                val onResumeTransferLambda = remember(message.id) { { file: com.transfer.flash.core.messaging.model.FlashFileAttachmentUi -> currentOnResumeTransfer(currentMessage, file) } }
+                val onCancelTransferLambda = remember(message.id) { { file: com.transfer.flash.core.messaging.model.FlashFileAttachmentUi -> currentOnCancelTransfer(currentMessage, file) } }
 
                 FlashMessageBubble(
                     message = message,

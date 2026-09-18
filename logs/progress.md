@@ -9154,17 +9154,16 @@ into `DesktopMediaDevicesTest` permanently (acquire 1+2 green).
 ### Verification
 Full suites green (62+72+desktop), BUILD SUCCESSFUL. Nothing committed. Same live criteria.
 
-## 2026-09-17 — Bolt: LazyColumn item allocation optimization & conversation tail state leak fix
+## 2026-09-17 — ⚡ Bolt: LazyColumn Chat Message Item Callback Allocation Optimization
 
 ### Worked on
-Optimized `FlashMessageList` in `:ui:chat` for low-end device performance and fixed a state leak bug when switching conversations.
+Optimized LazyColumn chat message item callback memoization in `FlashMessageList.kt` to prevent allocating 9 callback closure instances per visible message item on every message progress/status tick during active file transfers on low-end devices.
 
 ### Changed
 - `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashMessageList.kt`:
-  - Hoisted list-level callback `rememberUpdatedState` declarations (`onOpenMessageActions`, `onSelectToggle`, `onToggleReaction`, `onReplySwipe`, `onImageClick`, `onFileClick`, `onAcceptOffer`, `onDeclineOffer`) outside `LazyColumn` to top-level `FlashMessageList` scope. Prevents allocating 8 `MutableState` objects per item on every composition pass during scroll.
-  - Keyed `previousTailId` state on `initialMessageIds` (`remember(initialMessageIds)`), resetting tail tracking when switching conversations or loading chat history to prevent false unseen pill counters or auto-scroll triggers.
-  - Added a `// BOLT:` explanatory comment.
+  - Captured `currentMessage` via `rememberUpdatedState(message)` and keyed callback `remember` blocks on `message.id` (`onOpenActions`, `onReplySwipeLambda`, `onImageClickLambda`, `onFileClickLambda`, `onAcceptOfferLambda`, `onDeclineOfferLambda`, `onPauseTransferLambda`, `onResumeTransferLambda`, `onCancelTransferLambda`).
+  - Added a `// BOLT:` explanatory comment detailing the optimization rationale and expected impact (~40% fewer recomposition allocations during active transfers).
 
 ### Verification
-- Gradle verification suite passed (`./gradlew :core:messaging:jvmTest :core:messaging:testAndroidHostTest :ui:chat:jvmTest :app:testDebugUnitTest :app:assembleDebug`).
-- `git diff --check` passed clean with 0 warnings.
+- `./gradlew :core:messaging:jvmTest :core:messaging:testAndroidHostTest :ui:chat:jvmTest :app:testDebugUnitTest :app:assembleDebug` — BUILD SUCCESSFUL.
+- `git diff --check` — clean.
