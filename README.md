@@ -37,11 +37,11 @@ dependencyResolutionManagement {
 ```kotlin
 // app/build.gradle.kts
 dependencies {
-    implementation("com.github.Kali452345.Flash:core-engine:v1.1.0")
+    implementation("com.github.Kali452345.Flash:core-engine:v2.0.0-beta")
 }
 ```
 
-The install snippet targets the `v1.1.0` tag. See [Published modules](#published-modules) if
+The install snippet targets the `v2.0.0-beta` tag. See [Published modules](#published-modules) if
 you want only the lightweight transport pieces without the encrypted database.
 
 ## Quick start

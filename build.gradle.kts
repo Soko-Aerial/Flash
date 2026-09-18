@@ -5,7 +5,7 @@
 // A module's own `publishing { }` block must NOT set `version` or `groupId`: the three
 // ui/* modules did, so they silently published 1.0.0 for the whole 1.1.0 cycle while
 // every core module tracked this constant. Set artifactId there and nothing else.
-val flashLibraryVersion = "1.1.0"
+val flashLibraryVersion = "2.0.0-beta"
 
 allprojects {
     version = flashLibraryVersion
