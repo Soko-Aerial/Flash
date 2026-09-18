@@ -5,6 +5,9 @@
 ### Current branch
 `dev`
 
+### Last verified build
+`cb37d65`
+
 ### Completed & Verified
 1. **Android System Share Target (`ACTION_SEND` & `ACTION_SEND_MULTIPLE`)**:
    - `AndroidManifest.xml` intent-filters registered for single and multi-item shares.
