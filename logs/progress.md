@@ -4,6 +4,9 @@
 
 ### Worked on
 - Performed multi-module library abstraction audit across `core:*`, `ui:*`, `app`, `desktop`, and sample consumers (`:sample:consumer`, `:sample:consumer-granular`).
+- Bumped root `flashLibraryVersion` to `"2.0.0-beta"` in `build.gradle.kts`.
+- Published all 14 library modules to Maven Local under `2.0.0-beta` via `:publishToMavenLocal`.
+- Verified `:sample:consumer-desktop` compiles cleanly against `com.transfer.flash:core-engine:2.0.0-beta` and `com.transfer.flash:core-network:2.0.0-beta`.
 - Bumped Android `versionCode` to 2 and `versionName` to `"2.0.0-beta"` in `app/build.gradle.kts`.
 - Bumped Desktop `packageVersion` to `"2.0.0"` in `desktop/build.gradle.kts`.
 - Built optimized, minified Android release APKs (`app-release-unsigned.apk` and signed `app-release-signed-beta.apk`) via `:app:assembleRelease`.
@@ -11,6 +14,8 @@
 - Packaged native Windows standalone installers (`Flash-2.0.0.exe` and `Flash-2.0.0.msi`) bundling embedded private JRE via `:desktop:packageExe` and `:desktop:packageMsi` (WiX toolset).
 
 ### Verification
+- `:publishToMavenLocal`: ALL 14 MODULES PUBLISHED CLEANLY.
+- `:sample:consumer-desktop:compileKotlin`: SUCCESS.
 - `:app:assembleRelease`: SUCCESS (R8 shrinking, resource optimization, dexing, 53 MB APK).
 - `apksigner verify`: Validated `app-release-signed-beta.apk` using APK Signature Scheme v2 & v3.
 - `:desktop:packageUberJarForCurrentOS`: SUCCESS (84.2 MB standalone executable JAR).

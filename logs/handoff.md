@@ -6,13 +6,16 @@
 `dev`
 
 ### Last verified build
-`5e77253`
+`f53ca01`
 
 ### Completed & Verified
-1. **Library Audit Completed**:
+1. **Library Audit & Publishing Completed**:
    - Validated clean separation of concerns between core libraries (`core:*`, `ui:*`) and host targets (`app`, `desktop`).
-   - Verified downstream consumers (`:sample:consumer`, `:sample:consumer-granular`) compile and pass contract tests.
+   - Verified downstream consumers (`:sample:consumer`, `:sample:consumer-granular`, `:sample:consumer-desktop`) compile and pass contract tests.
+   - Published all 14 library modules to Maven Local under version `2.0.0-beta`.
 2. **Version Bump**:
+   - `build.gradle.kts`: `flashLibraryVersion = "2.0.0-beta"`.
+   - `README.md`: Install snippet updated to target `v2.0.0-beta`.
    - `app/build.gradle.kts`: `versionCode = 2`, `versionName = "2.0.0-beta"`.
    - `desktop/build.gradle.kts`: `packageVersion = "2.0.0"`.
 3. **Android Release Beta Artifacts**:
