@@ -5,12 +5,14 @@ import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.security.keystore.StrongBoxUnavailableException
+import android.util.Log
 import java.math.BigInteger
 import java.security.KeyPair
 import java.security.KeyPairGenerator
 import java.security.KeyStore
 import java.security.PrivateKey
 import java.security.ProviderException
+import java.security.Signature
 import java.security.cert.X509Certificate
 import java.security.spec.ECGenParameterSpec
 import java.util.Date
@@ -83,7 +85,23 @@ public class KeystoreFlashCrypto(private val context: Context) : FlashCrypto {
 
     private fun loadOrGenerateIdentityKey(): KeyPair {
         val keyStore = openKeyStore()
-        if (!keyStore.containsAlias(FlashCrypto.IDENTITY_KEY_ALIAS)) {
+        if (keyStore.containsAlias(FlashCrypto.IDENTITY_KEY_ALIAS)) {
+            // Verify that the existing key supports NONEwithECDSA required by Conscrypt TLS handshake
+            val canSignNone = runCatching {
+                val privateKey = keyStore.getKey(FlashCrypto.IDENTITY_KEY_ALIAS, null) as? PrivateKey
+                if (privateKey != null) {
+                    val signature = Signature.getInstance("NONEwithECDSA")
+                    signature.initSign(privateKey)
+                    true
+                } else false
+            }.getOrDefault(false)
+
+            if (!canSignNone) {
+                Log.w(TAG, "Existing identity key lacks DIGEST_NONE (required for TLS Conscrypt handshake); regenerating.")
+                keyStore.deleteEntry(FlashCrypto.IDENTITY_KEY_ALIAS)
+                generateIdentityKey()
+            }
+        } else {
             generateIdentityKey()
         }
         val certificate = keyStore.getCertificate(FlashCrypto.IDENTITY_KEY_ALIAS)
@@ -112,7 +130,12 @@ public class KeystoreFlashCrypto(private val context: Context) : FlashCrypto {
             KeyProperties.PURPOSE_SIGN or KeyProperties.PURPOSE_VERIFY,
         )
             .setAlgorithmParameterSpec(ECGenParameterSpec(FlashCrypto.EC_CURVE))
-            .setDigests(KeyProperties.DIGEST_SHA256)
+            .setDigests(
+                KeyProperties.DIGEST_NONE,
+                KeyProperties.DIGEST_SHA256,
+                KeyProperties.DIGEST_SHA384,
+                KeyProperties.DIGEST_SHA512,
+            )
             .setCertificateSubject(X500_PRINCIPAL)
             .setCertificateSerialNumber(BigInteger.valueOf(now))
             .setCertificateNotBefore(Date(now - CERT_BACKDATE_MS))
@@ -140,6 +163,7 @@ public class KeystoreFlashCrypto(private val context: Context) : FlashCrypto {
         error is StrongBoxUnavailableException || error is ProviderException
 
     private companion object {
+        const val TAG = "KeystoreFlashCrypto"
         const val ANDROID_KEYSTORE = "AndroidKeyStore"
         const val STRONGBOX_FEATURE = "android.software.keystore.strongbox"
         const val CERT_SUBJECT = "CN=Flash Identity"

@@ -1,5 +1,62 @@
 # Error Log
 
+## ERROR-070 — AndroidKeyStore Incompatible digest during Conscrypt TLS handshake (NONEwithECDSA)
+
+### Date
+2026-09-18
+
+### Area
+AndroidKeyStore / TLS / Conscrypt WebSocket Server Handshake (`core:security`, `KeystoreFlashCrypto.kt`)
+
+### Symptoms
+When an incoming WebSocket TLS connection is accepted by `WsTransferServer`, the handshake fails and crashes the TLS session:
+```text
+09-18 18:55:20.615  5831  5881 W CryptoUpcalls: Preferred provider doesn't support key:
+09-18 18:55:20.615  5831  5881 W System.err: java.security.InvalidKeyException: Keystore operation failed
+09-18 18:55:20.616  5831  5881 W System.err:    at android.security.keystore2.KeyStoreCryptoOperationUtils.getInvalidKeyException(KeyStoreCryptoOperationUtils.java:130)
+09-18 18:55:20.616  5831  5881 W System.err:    at android.security.keystore2.AndroidKeyStoreSignatureSpiBase.ensureKeystoreOperationInitialized(AndroidKeyStoreSignatureSpiBase.java:217)
+09-18 18:55:20.617  5831  5881 W System.err:    at android.security.keystore2.AndroidKeyStoreSignatureSpiBase.engineInitSign(AndroidKeyStoreSignatureSpiBase.java:123)
+...
+09-18 18:55:20.617  5831  5881 W System.err:    at com.android.org.conscrypt.CryptoUpcalls.signDigestWithPrivateKey(CryptoUpcalls.java:82)
+09-18 18:55:20.618  5831  5881 W System.err:    at com.android.org.conscrypt.CryptoUpcalls.ecSignDigestWithPrivateKey(CryptoUpcalls.java:70)
+...
+09-18 18:55:20.624  5831  5881 W System.err: Caused by: android.security.KeyStoreException: Incompatible digest
+    at android.security.KeyStore2.getKeyStoreException(KeyStore2.java:356)
+    at android.security.KeyStoreSecurityLevel.createOperation(KeyStoreSecurityLevel.java:120)
+    at android.security.keystore2.AndroidKeyStoreSignatureSpiBase.ensureKeystoreOperationInitialized(AndroidKeyStoreSignatureSpiBase.java:213)
+09-18 18:55:20.638  5831  5881 W CryptoUpcalls: Could not find provider for algorithm: NONEwithECDSA
+09-18 18:55:20.639  5831  5881 E NativeCrypto: Could not sign message in EcdsaMethodDoSign!
+09-18 18:55:20.643  5831  5881 I WS      : WS handshake rejected (Read error: ssl=...: I/O error during system call, Operation not supported on transport endpoint)
+```
+
+### Root cause
+Android's TLS provider engine (Conscrypt / BoringSSL) performs native digest computation over the TLS handshake transcript and invokes `CryptoUpcalls.signDigestWithPrivateKey` -> `Signature.getInstance("NONEwithECDSA")`.
+In `KeystoreFlashCrypto.kt`, the EC P-256 identity key was generated with:
+`builder.setDigests(KeyProperties.DIGEST_SHA256)`
+Because `KeyProperties.DIGEST_NONE` was not authorized in the KeyGenParameterSpec, `AndroidKeyStoreSignatureSpiBase` threw `KeyStoreException: Incompatible digest` when Conscrypt initialized the `NONEwithECDSA` signature operation. Furthermore, devices that had already generated the identity key retained the legacy key in KeyStore.
+
+### Failed attempts
+None.
+
+### Working fix
+1. In `KeystoreFlashCrypto.kt`: updated `generateKeyPair()` to authorize `KeyProperties.DIGEST_NONE`, `DIGEST_SHA256`, `DIGEST_SHA384`, `DIGEST_SHA512` in `setDigests(...)`.
+2. In `loadOrGenerateIdentityKey()`: added a self-healing check testing whether the existing key can initialize a `NONEwithECDSA` signature (`Signature.getInstance("NONEwithECDSA").initSign(privateKey)`). If initialization fails (e.g. existing legacy key from prior versions), the legacy key is deleted and automatically regenerated with `DIGEST_NONE` authorized.
+
+### Verification
+- `:core:security:compileAndroidMain`: PASSED.
+- `:app:compileDebugKotlin`: PASSED.
+- `:app:testDebugUnitTest`: ALL 11 TESTS PASSED.
+- `:desktop:jvmTest`: ALL 52 TASKS PASSED.
+- `:ui:chat:jvmTest`: ALL PASSED.
+
+### Related files
+- `core/security/src/androidMain/kotlin/com/transfer/flash/core/security/crypto/KeystoreFlashCrypto.kt`
+
+### Status
+RESOLVED
+
+---
+
 ## ERROR-069 — Chat list shows peer offline while conversation screen header shows online
 
 ### Date

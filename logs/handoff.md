@@ -1,5 +1,17 @@
 # Current Handoff
 
+## 2026-09-18 — Fix AndroidKeyStore Incompatible Digest for Conscrypt TLS Handshake (ERROR-070)
+
+### Current branch
+`dev`
+
+### Completed & Verified
+- Fixed `KeyStoreException: Incompatible digest` in `KeystoreFlashCrypto.kt` by authorizing `KeyProperties.DIGEST_NONE` alongside SHA digests.
+- Added self-healing regeneration for legacy device keys lacking `DIGEST_NONE`.
+- Verified on test suites (`:app:testDebugUnitTest`, `:desktop:jvmTest`, `:ui:chat:jvmTest`).
+
+---
+
 ## 2026-09-18 — Android System Integration (Share Target, QS Tile, Shortcuts, DataSync FGS), Adaptive Dual-Pane & Folder Transfers
 
 ### Current branch

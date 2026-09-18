@@ -1,5 +1,24 @@
 # Progress Log
 
+## 2026-09-18 — Fix AndroidKeyStore Incompatible Digest for Conscrypt TLS Handshake (ERROR-070)
+
+### Worked on
+Fixed fatal TLS handshake rejection (`KeyStoreException: Incompatible digest` in `CryptoUpcalls.ecSignDigestWithPrivateKey` -> `Signature.getInstance("NONEwithECDSA")`) when accepting WebSocket TLS connections on Android.
+
+### Changed
+- `core/security/src/androidMain/.../KeystoreFlashCrypto.kt`:
+  - Authorized `KeyProperties.DIGEST_NONE`, `KeyProperties.DIGEST_SHA256`, `KeyProperties.DIGEST_SHA384`, `KeyProperties.DIGEST_SHA512` in `KeyGenParameterSpec.Builder`.
+  - Added self-healing detection in `loadOrGenerateIdentityKey()`: checks if the existing `flash_identity` key can initialize a `NONEwithECDSA` signature. If it fails (due to legacy key missing `DIGEST_NONE`), the key is deleted and automatically regenerated with `DIGEST_NONE` authorized.
+
+### Verification
+- `:core:security:compileAndroidMain`: ALL PASSED.
+- `:app:compileDebugKotlin`: ALL PASSED.
+- `:app:testDebugUnitTest`: ALL 11 TESTS PASSED.
+- `:desktop:jvmTest`: ALL 52 TASKS PASSED.
+- `:ui:chat:jvmTest`: ALL PASSED.
+
+---
+
 ## 2026-09-18 — Android System Integration (Share Target, QS Tile, Shortcuts, DataSync FGS), Adaptive Dual-Pane & Folder Transfers
 
 ### Worked on
