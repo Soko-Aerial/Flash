@@ -1,5 +1,32 @@
 # Current Handoff
 
+## 2026-09-18 — Chat Tab Persistence, High-DPI Window Icon & Upgraded App Branding Medallion (Option B)
+
+### Current branch
+`dev`
+
+### Last verified build
+`d1c9c74`
+
+### Completed & Verified
+1. **Chat State Persistence Across Tab Switches**:
+   - `DesktopShell.kt`: Added `selectedChatConversationId` state keeping active chat selection intact during navigation across tabs.
+   - Updated `detailPaneContent` so switching back to `Chats` preserves the open conversation in the detail pane.
+   - Fixed `DesktopSideBar.kt` and keyboard shortcuts (`Escape`, `Ctrl+1`) to avoid clearing active conversation on tab change.
+2. **Option B — High-DPI Window Icon & Upgraded App Branding Medallion**:
+   - `DesktopMain.kt`: Window `icon` set to 64x64 rendered icon bitmap; `window.iconImages` supplied with multi-resolution set (16, 24, 32, 48, 64px) from `DesktopTaskbarBadgeManager.getBaseIcons()`.
+   - `FlashNavigationRail.kt`: Upgraded branding medallion from 38dp to 44dp layered squircle with gradient accent, 1dp border, inner glow, and click-to-home behavior.
+3. **Toolchain Status**:
+   - Toolchain upgrade paused per user direction. Repository remains stable at Kotlin 2.2.10, CMP 1.9.3, AGP 9.3.1.
+
+### Verification
+- `:ui:chat:jvmTest`: ALL PASSED.
+- `:desktop:compileKotlinJvm`: ALL PASSED.
+- `:desktop:jvmTest`: ALL 51 TASKS PASSED.
+- `:app:compileDebugKotlin` & `:app:testDebugUnitTest`: ALL PASSED.
+
+---
+
 ## 2026-09-18 — Video Thumbnail Extraction, Desktop UI Scaling & Wide-Screen Bubble Cap
 
 ### Current branch

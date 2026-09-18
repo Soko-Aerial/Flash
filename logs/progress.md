@@ -1,5 +1,30 @@
 # Progress Log
 
+## 2026-09-18 — Chat Tab Persistence, High-DPI Window Icon & Upgraded App Branding Medallion (Option B)
+
+### Worked on
+1. **Chat Selection Persistence Across Tab Switches**:
+   - Fixed desktop bug where switching between sidebar tabs (e.g. Chats -> Transfers -> Chats) closed the active conversation and reverted the detail pane to `PlaceholderDetailPane()`.
+   - In `DesktopShell.kt`, added `selectedChatConversationId` remembering the active chat across tab navigation.
+   - Updated `detailPaneContent` so when returning to or selecting Chats/Conversation, the active conversation is restored rather than cleared.
+   - In `DesktopSideBar.kt`, updated `onTabSelected` for `ChatList` to re-open `selectedChatConversationId` if previously active instead of calling `chatRepository.closeConversation()`.
+   - Updated `Escape` and `Ctrl+1` keyboard hotkeys to preserve active chat state.
+2. **Option B — High-DPI Window Icon & Upgraded App Branding Medallion**:
+   - Retained decorated native OS window frame (`undecorated = false`) to ensure native Windows 11 snap layouts, minimize/maximize animations, and resize borders remain functional.
+   - `DesktopMain.kt`: Swapped the 16x16 monochrome tray icon in `Window(icon = ...)` for a high-resolution 64x64 icon bitmap rendered via `DesktopTaskbarBadgeManager.renderIcon(64, badgeCount = 0).toComposeImageBitmap()`.
+   - `DesktopMain.kt`: In `DisposableEffect(window, density)`, immediately supplied `window.iconImages = DesktopTaskbarBadgeManager.getBaseIcons()` so Windows OS receives the complete multi-resolution icon pyramid (16, 24, 32, 48, 64px) for caption bar (`ICON_SMALL`) and Alt+Tab / Taskbar (`ICON_BIG`).
+   - `FlashNavigationRail.kt`: Upgraded the top App Branding Medallion from 38dp to 44dp with a layered Flash Pulse squircle, gradient backdrop (`0.22f` to `0.08f` accent alpha), crisp accent border (`1.dp`, `0.35f` alpha), inner glow circle, and high-contrast bolt with click-to-home interaction.
+3. **Toolchain Evaluation**:
+   - Analyzed toolchain upgrade ramifications (KSP2, Room, Compose Compiler Plugin, AGP 9.3.1, and WebRTC KMP coupling); paused toolchain upgrade per user direction, maintaining rock-solid stability at Kotlin 2.2.10.
+
+### Verification
+- `:ui:chat:jvmTest`: ALL PASSED.
+- `:desktop:compileKotlinJvm`: ALL PASSED.
+- `:desktop:jvmTest`: ALL 51 TASKS PASSED.
+- `:app:compileDebugKotlin` & `:app:testDebugUnitTest`: ALL PASSED.
+
+---
+
 ## 2026-09-18 — Video Thumbnail Extraction, Desktop UI Scaling & Wide-Screen Bubble Cap
 
 ### Worked on
