@@ -5,6 +5,9 @@
 ### Current branch
 `dev`
 
+### Last verified build
+`d72e966`
+
 ### Completed & Verified
 - Fixed `KeyStoreException: Incompatible digest` in `KeystoreFlashCrypto.kt` by authorizing `KeyProperties.DIGEST_NONE` alongside SHA digests.
 - Added self-healing regeneration for legacy device keys lacking `DIGEST_NONE`.
