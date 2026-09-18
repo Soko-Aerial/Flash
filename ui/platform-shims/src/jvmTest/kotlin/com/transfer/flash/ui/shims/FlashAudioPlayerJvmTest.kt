@@ -48,6 +48,15 @@ class FlashAudioPlayerJvmTest {
     }
 
     @Test
+    fun `a file uri with spaces resolves correctly`() {
+        val note = File(tempDir, "note with spaces.wav").apply { writeText("pretend audio") }
+        val viaUri = assertNotNull(resolveFile(note.toURI().toString()))
+        val viaRawFileScheme = assertNotNull(resolveFile("file://" + note.absolutePath))
+        assertEquals(note.canonicalPath, viaUri.canonicalPath)
+        assertEquals(note.canonicalPath, viaRawFileScheme.canonicalPath)
+    }
+
+    @Test
     fun `a missing, empty or non-file source resolves to nothing`() {
         val empty = File(tempDir, "empty.wav").apply { createNewFile() }
 

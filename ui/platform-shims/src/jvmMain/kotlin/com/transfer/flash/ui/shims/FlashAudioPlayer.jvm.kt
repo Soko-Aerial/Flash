@@ -160,7 +160,18 @@ internal class JvmAudioPlayer(private val uri: String) : FlashAudioPlayer {
 /** `content://` has no desktop meaning; `file:` URIs and bare paths both resolve. */
 internal fun resolveFile(uri: String): File? = when {
     uri.startsWith("content://") -> null
-    uri.startsWith("file:") -> runCatching { File(URI(uri)) }.getOrNull()
+    uri.startsWith("file:", ignoreCase = true) -> runCatching {
+        try {
+            File(URI(uri))
+        } catch (_: Exception) {
+            try {
+                File(URI(uri.replace(" ", "%20")))
+            } catch (_: Exception) {
+                val clean = uri.replaceFirst(Regex("^file:/{1,3}", RegexOption.IGNORE_CASE), "")
+                File(clean)
+            }
+        }
+    }.getOrNull()
     else -> File(uri)
 }?.takeIf { it.isFile && it.length() > 0L }
 
