@@ -145,13 +145,17 @@ compose.desktop {
         // (packaging tools may not be installed). This block exists only so the entry point is
         // declared where a future phase can extend it.
         nativeDistributions {
-            targetFormats(TargetFormat.Msi, TargetFormat.Deb)
+            targetFormats(TargetFormat.Msi, TargetFormat.Exe, TargetFormat.Deb)
             packageName = "Flash"
             packageVersion = "1.0.0"
             description = "Offline LAN peer-to-peer file transfer & messaging"
             vendor = "Flash"
-            // No iconFile lines: the resource files do not exist yet and the phase file's own
-            // note allows leaving them out.
+            windows {
+                menuGroup = "Flash"
+                upgradeUuid = "6d9b4b0e-3c58-45b7-8df1-e3e9d8f8e021"
+                perUserInstall = true
+                shortcut = true
+            }
         }
     }
 }
