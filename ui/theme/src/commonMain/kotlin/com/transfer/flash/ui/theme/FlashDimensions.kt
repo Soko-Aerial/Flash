@@ -20,8 +20,8 @@ object FlashDimensions {
     /** Max bubble width as fraction of parent — apply at call site. */
     const val bubbleMaxWidthFraction = 0.78f
 
-    /** Absolute cap for very wide screens / tablets. */
-    val bubbleMaxWidth = 320.dp
+    /** Absolute cap for wide screens / tablets / desktop (AD-5). */
+    val bubbleMaxWidth = 580.dp
 
     val composerMinHeight = 48.dp
     val composerMaxHeight = 160.dp

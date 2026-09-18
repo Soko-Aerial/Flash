@@ -253,6 +253,11 @@ public class DesktopEngine(
         updateSettings { it.copy(showNotifications = enabled) }
     }
 
+    /** Records the desktop UI-scale so it survives a restart (AD-D1). */
+    public fun storeUiScale(scale: Float) {
+        updateSettings { it.copy(uiScale = scale.coerceIn(0.75f, 1.5f)) }
+    }
+
     /** Inbound chat text notification hook (for DesktopNotificationManager). */
     public var onInboundMessageNotification: ((conversationId: String, senderName: String?, text: String, groupTitle: String?) -> Unit)? = null
 

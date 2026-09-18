@@ -136,7 +136,7 @@ fun FlashVideoPlayer(
                         size = FlashDimensions.iconLg,
                     )
                     FlashText(
-                        text = "Couldn't play video",
+                        text = errorMessage ?: "Couldn't play video",
                         style = FlashTheme.typography.metadataDefault,
                         color = Color.White.copy(alpha = 0.85f),
                     )

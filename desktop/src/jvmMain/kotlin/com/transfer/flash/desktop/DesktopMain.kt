@@ -221,42 +221,40 @@ public fun main() = application {
         val effectivePerformanceMode = desktopSettings.performanceMode ?: FlashPerformanceMode.HIGH
         val reduceMotionResolved = effectivePerformanceMode.reduceMotion
 
-        FlashMaterialTheme(
-            darkTheme = darkTheme,
-            dynamicColor = desktopSettings.dynamicAccent,
+        val baseDensity = androidx.compose.ui.platform.LocalDensity.current
+        val effectiveDensity = remember(baseDensity, desktopSettings.uiScale) {
+            androidx.compose.ui.unit.Density(
+                density = baseDensity.density * desktopSettings.uiScale.coerceIn(0.75f, 1.5f),
+                fontScale = baseDensity.fontScale,
+            )
+        }
+
+        CompositionLocalProvider(
+            androidx.compose.ui.platform.LocalDensity provides effectiveDensity,
         ) {
-            FlashTheme(
+            FlashMaterialTheme(
                 darkTheme = darkTheme,
-                dynamicAccent = desktopSettings.dynamicAccent,
-                hapticsEnabled = false,
-                minimalChrome = effectivePerformanceMode.minimalChrome,
-                motion = rememberFlashMotion(reduceMotionResolved),
+                dynamicColor = desktopSettings.dynamicAccent,
             ) {
-                // Baseline text colour for the whole desktop window.
-                //
-                // `FlashTypography` sets no colour, so an unstyled `FlashText` falls through to
-                // `BasicText`'s default of `LocalContentColor` — and **nothing in this repo provides
-                // that local**. On Android it is supplied by whatever Material3 surface the content sits
-                // in (`Scaffold`, `AlertDialog`, `ModalBottomSheet`); the desktop shell is a plain `Box`
-                // with a `.background(...)`, so there is no such surface and every unstyled string drew
-                // `Color.Black`.
-                //
-                // On the dark palette that is black-on-black: the whole Transfer Details and Peer Details
-                // panes (`DesktopDetailPanes.kt`) were unreadable, and the clear-received-files
-                // confirmation's title and body were invisible. Providing the token once here fixes all
-                // of them, and reaches the sheets and dialogs too — a `Dialog` layer inherits the
-                // ambient `CompositionLocalContext`, so `FlashOverlayLayer` sees this value even though
-                // it composes into its own scene layer.
-                CompositionLocalProvider(LocalContentColor provides FlashTheme.colors.textPrimary) {
-                    DesktopShell(
-                        engine = engine,
-                        themeMode = desktopSettings.themeMode,
-                        onThemeModeSelected = { mode ->
-                            engine.storeThemeMode(mode)
-                        },
-                        window = window,
-                        nav = nav,
-                    )
+                FlashTheme(
+                    darkTheme = darkTheme,
+                    dynamicAccent = desktopSettings.dynamicAccent,
+                    hapticsEnabled = false,
+                    minimalChrome = effectivePerformanceMode.minimalChrome,
+                    motion = rememberFlashMotion(reduceMotionResolved),
+                ) {
+                    // Baseline text colour for the whole desktop window.
+                    CompositionLocalProvider(LocalContentColor provides FlashTheme.colors.textPrimary) {
+                        DesktopShell(
+                            engine = engine,
+                            themeMode = desktopSettings.themeMode,
+                            onThemeModeSelected = { mode ->
+                                engine.storeThemeMode(mode)
+                            },
+                            window = window,
+                            nav = nav,
+                        )
+                    }
                 }
             }
         }

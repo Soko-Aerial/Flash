@@ -20,6 +20,6 @@ public actual fun FlashVideoSurface(
     // system player" fallback instead of a black surface. Real desktop playback needs a
     // player dependency (JavaFX/VLC/ffmpeg) — an R10 decision, asked separately.
     LaunchedEffect(uri) {
-        onError("In-app video playback is not available on desktop yet")
+        onError("Desktop video playback: open in default media player")
     }
 }

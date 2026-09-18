@@ -80,7 +80,7 @@ private fun Modifier.bubbleWidthCap(): Modifier = layout { measurable, constrain
     // bounds width comfortably to <= 320dp. On tablets, foldables, and desktop, allows reading
     // widths up to 580dp (matching WhatsApp and Telegram desktop) while preventing text from
     // stretching across ultrawide displays.
-    val maxCapPx = with(density) { 580.dp.roundToPx() }
+    val maxCapPx = with(density) { FlashDimensions.bubbleMaxWidth.roundToPx() }
     val ceiling = if (constraints.hasBoundedWidth) {
         minOf((constraints.maxWidth * FlashDimensions.bubbleMaxWidthFraction).toInt(), maxCapPx)
     } else {
