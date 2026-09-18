@@ -75,7 +75,7 @@ data class PairingUiModel(
  * to the instance it was launched for, so a stale instance can never keep ticking.
  */
 class PairingCoordinator(
-    private val localFingerprintHex: String,
+    val localFingerprintHex: String,
     private val localDeviceId: String,
     private val localName: String,
     private val localModel: String,
@@ -202,6 +202,9 @@ class PairingCoordinator(
         trustStore.revokeTrust(FlashDeviceId(peerId))
         _trustedPeers.value = loadTrusted()
     }
+
+    /** Retrieve the cached peer identity fingerprint (hex) if known. */
+    fun getFingerprint(peerId: String): String? = synchronized(fingerprints) { fingerprints[peerId] }
 
     /**
      * Waits for the peer's hello, **re-asking** as it goes.

@@ -36,13 +36,20 @@ fun FlashText(
     overflow: TextOverflow = TextOverflow.Clip,
     textAlign: TextAlign? = null,
 ) {
+    val resolvedColor = if (color.isSpecified) {
+        color
+    } else if (style.color.isSpecified) {
+        style.color
+    } else {
+        FlashTheme.colors.textPrimary
+    }
     BasicText(
         text = text,
         modifier = modifier,
         style = if (textAlign == null) style else style.copy(textAlign = textAlign),
         maxLines = maxLines,
         overflow = overflow,
-        color = rememberFlashTextColor(color),
+        color = rememberFlashTextColor(resolvedColor),
     )
 }
 
@@ -60,13 +67,20 @@ fun FlashText(
     overflow: TextOverflow = TextOverflow.Clip,
     textAlign: TextAlign? = null,
 ) {
+    val resolvedColor = if (color.isSpecified) {
+        color
+    } else if (style.color.isSpecified) {
+        style.color
+    } else {
+        FlashTheme.colors.textPrimary
+    }
     BasicText(
         text = text,
         modifier = modifier,
         style = if (textAlign == null) style else style.copy(textAlign = textAlign),
         maxLines = maxLines,
         overflow = overflow,
-        color = rememberFlashTextColor(color),
+        color = rememberFlashTextColor(resolvedColor),
     )
 }
 

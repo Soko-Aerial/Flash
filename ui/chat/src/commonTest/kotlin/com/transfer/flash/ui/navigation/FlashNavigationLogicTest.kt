@@ -376,4 +376,14 @@ class FlashNavigationLogicTest {
         assertEquals(1, restored?.stackSize)
         assertEquals(FlashDestination.ChatList, restored?.current?.destination)
     }
+
+    @Test
+    fun `shouldClearSelectionOnBack only returns true for conversation in two-pane mode`() {
+        assertFalse(FlashNavigationMath.shouldClearSelectionOnBack(FlashDestination.Conversation, isTwoPane = false))
+        assertTrue(FlashNavigationMath.shouldClearSelectionOnBack(FlashDestination.Conversation, isTwoPane = true))
+        assertFalse(FlashNavigationMath.shouldClearSelectionOnBack(FlashDestination.ChatList, isTwoPane = true))
+        assertFalse(FlashNavigationMath.shouldClearSelectionOnBack(FlashDestination.Transfers, isTwoPane = true))
+        assertFalse(FlashNavigationMath.shouldClearSelectionOnBack(FlashDestination.NearbyDevices, isTwoPane = true))
+        assertFalse(FlashNavigationMath.shouldClearSelectionOnBack(FlashDestination.Settings, isTwoPane = true))
+    }
 }

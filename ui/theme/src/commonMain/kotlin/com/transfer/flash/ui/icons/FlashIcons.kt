@@ -95,6 +95,7 @@ object FlashIcons {
     val ThumbUp = FlashIconSpec(Res.drawable.flash_ic_thumb_up, "Like")
     val Heart = FlashIconSpec(Res.drawable.flash_ic_heart, "Love")
     val Bolt = FlashIconSpec(Res.drawable.flash_ic_bolt, "Wow")
+    val Tray = FlashIconSpec(Res.drawable.flash_ic_tray, "Flash")
     val Sliders = FlashIconSpec(Res.drawable.flash_ic_sliders, "More reactions")
     val ThumbDown = FlashIconSpec(Res.drawable.flash_ic_thumb_down, "Dislike")
 

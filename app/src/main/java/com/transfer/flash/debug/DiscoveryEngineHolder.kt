@@ -34,10 +34,15 @@ import com.transfer.flash.core.network.FlashNetwork
 import com.transfer.flash.core.network.bridge.DiscoveryRouteBinder
 import com.transfer.flash.core.network.ws.WsFlashNetwork
 import com.transfer.flash.core.network.ws.WsSession
+import com.transfer.flash.core.network.tls.TlsOptions
+import com.transfer.flash.core.network.tls.TofuPinVerifier
 import com.transfer.flash.core.security.crypto.E2eFrameCodec
 import com.transfer.flash.core.security.crypto.FlashFingerprint
 import com.transfer.flash.core.security.crypto.KeystoreFlashCrypto
+import com.transfer.flash.core.security.crypto.SecureBinaryFrameCodec
 import com.transfer.flash.core.security.trust.AndroidPreferencesTrustStore
+import java.security.KeyStore
+import javax.net.ssl.KeyManagerFactory
 import com.transfer.flash.core.calling.CallCoordinator
 import com.transfer.flash.core.calling.FlashCalling
 import com.transfer.flash.core.calling.FlashWebRtcEngine
@@ -486,11 +491,31 @@ object DiscoveryEngineHolder {
         )
         val engine = CompositeDiscovery(transports = listOf(transport, multicastTransport))
 
+        // Trust store is shared by chat (peer-name resolution), pairing (persisted trust), and TLS TOFU pinning.
+        val trustStore = AndroidPreferencesTrustStore(appContext)
+        trustStoreRef = trustStore
+        val crypto = KeystoreFlashCrypto(appContext)
+        val tlsOptions = runCatching {
+            crypto.selfSignedCertificate()
+            val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+            val kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm())
+            kmf.init(ks, null)
+            val pinVerifier = TofuPinVerifier(
+                lookupPin = { peerId -> trustStore.getPin(FlashDeviceId(peerId)) },
+                recordPin = { peerId, pin -> trustStore.savePin(FlashDeviceId(peerId), pin) },
+            )
+            TlsOptions(
+                pinVerifier = pinVerifier,
+                keyManagers = kmf.keyManagers,
+            )
+        }.onFailure { Log.w(TAG_WS, "Failed to initialize Android TLS options, falling back to plain: ${it.message}") }.getOrNull()
+
         var boundServerPort = 0
         val networkImpl = WsFlashNetwork(
             context = appContext,
             localDeviceId = identity.deviceId.value,
             localFriendlyName = identity.friendlyName,
+            tlsOptions = tlsOptions,
             // ERROR-031 / D7: a Wi-Fi rejoin is one of the few moments a foreground-service
             // promotion that was refused while backgrounded can succeed, and core:network is
             // already watching for it (its own watcher is `internal`, so :app cannot observe the
@@ -655,6 +680,9 @@ object DiscoveryEngineHolder {
                     targeted
                 }) as? WsSession
 
+                val resolvedPeerId = peerDeviceId ?: wsSession?.peerDeviceId?.value
+                val sessionKey = resolvedPeerId?.let { trustStore.getSessionKey(FlashDeviceId(it)) }
+
                 fun wsFallback(): StreamChannel? {
                     if (wsSession == null) {
                         Log.w(TAG_TRANSFER, "StreamChannel[$channelId] no session for peer=$peerDeviceId")
@@ -662,8 +690,14 @@ object DiscoveryEngineHolder {
                     }
                     return object : StreamChannel {
                         override val id: Int = channelId
-                        override suspend fun sendFrame(frameBytes: ByteArray): Boolean =
-                            wsSession.connection.sendBinary(frameBytes)
+                        override suspend fun sendFrame(frameBytes: ByteArray): Boolean {
+                            val toSend = if (sessionKey != null) {
+                                SecureBinaryFrameCodec.encrypt(frameBytes, sessionKey)
+                            } else {
+                                frameBytes
+                            }
+                            return wsSession.connection.sendBinary(toSend)
+                        }
                     }
                 }
 
@@ -700,7 +734,15 @@ object DiscoveryEngineHolder {
                         channelId = channelId,
                         onFrame = { bytes ->
                             // Inbound on OUR outbound channel = receiver ACKs/COMPLETE.
-                            transferRef?.onInboundFrame(bytes)
+                            val key = trustStore.getSessionKey(FlashDeviceId(peerDeviceId))
+                            val decrypted = if (SecureBinaryFrameCodec.isSecureFrame(bytes)) {
+                                if (key != null) SecureBinaryFrameCodec.decryptOrNull(bytes, key) else null
+                            } else {
+                                bytes
+                            }
+                            if (decrypted != null) {
+                                transferRef?.onInboundFrame(decrypted)
+                            }
                         },
                         onClosed = { },
                         localDeviceId = identity.deviceId.value,
@@ -722,7 +764,14 @@ object DiscoveryEngineHolder {
                 channel?.let { dc ->
                     object : StreamChannel {
                         override val id: Int = channelId
-                        override suspend fun sendFrame(frameBytes: ByteArray): Boolean = dc.send(frameBytes)
+                        override suspend fun sendFrame(frameBytes: ByteArray): Boolean {
+                            val toSend = if (sessionKey != null) {
+                                SecureBinaryFrameCodec.encrypt(frameBytes, sessionKey)
+                            } else {
+                                frameBytes
+                            }
+                            return dc.send(toSend)
+                        }
                     }
                 } ?: run {
                     Log.w(TAG_TRANSFER, "StreamChannel[$channelId] data-channel connect failed; WS fallback")
@@ -738,12 +787,8 @@ object DiscoveryEngineHolder {
             // #5: park every outbound send after FILE_START until the receiver accepts (a RESUME).
             // A compliant sender streams nothing pre-accept, so no chunk is ever lost to the gate.
             requireReceiverAcceptance = true,
+            isPeerEncrypted = { peerId -> trustStore.getSessionKey(FlashDeviceId(peerId)) != null },
         )
-
-        // Trust store is shared by chat (peer-name resolution) and pairing (persisted trust). One
-        // instance, created before the chat repo so its name resolver can capture it.
-        val trustStore = AndroidPreferencesTrustStore(appContext)
-        trustStoreRef = trustStore
 
         val chatImpl = RealFlashChatRepository(
             localDeviceId = identity.deviceId.value,
@@ -892,7 +937,6 @@ object DiscoveryEngineHolder {
         // pure DefaultFlashPairingProtocol by PairingCoordinator. Frames ride the same WS text
         // framing as chat/receipts/transfer control, under the FLASH_PAIR prefix. Trust persists
         // to SharedPreferences (AndroidPreferencesTrustStore), so paired peers survive restarts.
-        val crypto = KeystoreFlashCrypto(appContext)
         val localFingerprintHex =
             FlashFingerprint.formatHexGroups(FlashFingerprint.fingerprint(crypto.identityPublicKeyEncoded))
         // (trustStore constructed above, shared with the chat repo.)
@@ -1773,9 +1817,35 @@ object DiscoveryEngineHolder {
             pttEngine?.onInboundBinary(peerDeviceId, data)
             return
         }
+
+        val sessionKey = peerDeviceId?.let { trustStoreRef?.getSessionKey(FlashDeviceId(it)) }
+        val frameData = if (SecureBinaryFrameCodec.isSecureFrame(data)) {
+            if (sessionKey == null) {
+                Log.w(TAG_TRANSFER, "Received encrypted binary frame from $peerDeviceId but no session key exists")
+                return
+            }
+            val decrypted = SecureBinaryFrameCodec.decryptOrNull(data, sessionKey)
+            if (decrypted == null) {
+                Log.w(TAG_TRANSFER, "Failed to decrypt binary frame from $peerDeviceId (tampered or wrong key)")
+                return
+            }
+            decrypted
+        } else {
+            data
+        }
+
+        val secureReply: (ByteArray) -> Boolean = { replyBytes ->
+            val toSend = if (sessionKey != null) {
+                SecureBinaryFrameCodec.encrypt(replyBytes, sessionKey)
+            } else {
+                replyBytes
+            }
+            reply(toSend)
+        }
+
         // 1. First route to active senders (ACKs or COMPLETE from receiver)
         val consumedBySender = try {
-            transferImpl.onInboundFrame(data)
+            transferImpl.onInboundFrame(frameData)
         } catch (t: Throwable) {
             Log.w(TAG_TRANSFER, "Failed to route inbound frame to sender: ${t.message}")
             false
@@ -1787,7 +1857,7 @@ object DiscoveryEngineHolder {
 
         // 2. If not consumed by a sender, route to receiver pipeline
         val events = try {
-            receivePipeline.onFrame(data)
+            receivePipeline.onFrame(frameData)
         } catch (e: Throwable) {
             Log.w(TAG_TRANSFER, "Failed to process inbound binary frame: ${e.message}")
             return
@@ -1816,7 +1886,7 @@ object DiscoveryEngineHolder {
 
                     if (alreadyCompleted) {
                         Log.i(TAG_TRANSFER, "Transfer '${frame.fileName}' transferId=${frame.transferId} already completed locally — replying COMPLETE")
-                        reply(ChunkFrame.serialize(ChunkFrame.Complete(frame.transferId, frame.fileId, verified = true)))
+                        secureReply(ChunkFrame.serialize(ChunkFrame.Complete(frame.transferId, frame.fileId, verified = true)))
                         peerDeviceId?.let { pid ->
                             sendXferControl?.invoke(pid, RealFlashTransferRepository.ACTION_RESUME, frame.transferId)
                         }
@@ -1875,7 +1945,7 @@ object DiscoveryEngineHolder {
                     // #20: persist the confirmed indexes so a post-restart resume skips them.
                     transferImpl.onIncomingChunkConfirmed(event.frame.transferId, event.frame.indexes)
                     updateIncomingProgress(transferImpl, receivePipeline, incomingMeta, event.frame.transferId)
-                    reply(ChunkFrame.serialize(event.frame))
+                    secureReply(ChunkFrame.serialize(event.frame))
                 }
                 is ReceiveEvent.Completed -> {
                     val transferId = event.frame.transferId
@@ -1896,7 +1966,7 @@ object DiscoveryEngineHolder {
                         localPath = path,
                     )
                     Log.i(TAG_TRANSFER, "Receiver completed transferId=$transferId chunkVerified=${event.frame.verified} wholeFileVerified=$wholeFileVerified")
-                    reply(ChunkFrame.serialize(event.frame))
+                    secureReply(ChunkFrame.serialize(event.frame))
                 }
                 is ReceiveEvent.Rejected -> {
                     // Late ACK/COMPLETE arriving after our own dispatcher resolved is benign

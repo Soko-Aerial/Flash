@@ -82,6 +82,12 @@ fun FlashConversationScreen(
     isPeerTrusted: Boolean = false,
     /** UI-032: drop the pairing for this peer, supplied by :app when [isPeerTrusted]. */
     onRevokePeerTrust: (() -> Unit)? = null,
+    /** UI-031/UI-032: trigger interactive security code verification with the peer. */
+    onVerifySecurityCodes: (() -> Unit)? = null,
+    /** UI-031/UI-032: local device identity fingerprint for fingerprint comparison. */
+    localFingerprint: String? = null,
+    /** UI-031/UI-032: peer device identity fingerprint for fingerprint comparison. */
+    peerFingerprint: String? = null,
     onSendText: (String) -> Unit,
     /**
      * Send a reply/quote (#8): body plus the quoted message's id and a short preview snapshot.
@@ -311,6 +317,7 @@ fun FlashConversationScreen(
     // engine via isPeerTrusted (verified) + header.isEncrypted (channel encrypted). Groups keep
     // the legacy static lock (per-member verification isn't modeled yet).
     var showEncryptionSheet by remember { mutableStateOf(false) }
+    var showFingerprintSheet by remember { mutableStateOf(false) }
 
     // Group Phase D: three-dot menu state. Items are derived per conversation type; a group with
     // only this device left (memberCount <= 1) cannot offer Leave.
@@ -728,8 +735,10 @@ fun FlashConversationScreen(
                     onCancelTransfer(file.id)
                 },
                 highlightedMessageId = highlightedMessageId,
-                peerTypingName = state.header.typingMemberNames.firstOrNull()
-                    ?: if (state.header.presence == FlashPeerPresence.Typing) state.header.title else null,
+                peerTypingName = if (state.header.presence != FlashPeerPresence.Offline) {
+                    state.header.typingMemberNames.firstOrNull()
+                        ?: if (state.header.presence == FlashPeerPresence.Typing) state.header.title else null
+                } else null,
                 listState = listState,
                 showSenderHeaders = state.header.isGroup,
                 searchQuery = if (isSearchActive) searchQuery else null,
@@ -870,6 +879,27 @@ fun FlashConversationScreen(
         FlashEncryptionSheet(
             state = encryptionState,
             onDismiss = { showEncryptionSheet = false },
+            onVerifySecurityCodes = onVerifySecurityCodes?.let { verify ->
+                {
+                    showEncryptionSheet = false
+                    verify()
+                }
+            },
+            onViewFingerprint = {
+                showEncryptionSheet = false
+                showFingerprintSheet = true
+            },
+        )
+    }
+
+    // UI-031 device fingerprint sheet
+    if (showFingerprintSheet) {
+        FlashFingerprintSheet(
+            peerTitle = state.header.title,
+            isVerified = isPeerTrusted,
+            localFingerprint = localFingerprint,
+            peerFingerprint = peerFingerprint,
+            onDismiss = { showFingerprintSheet = false },
         )
     }
 

@@ -88,6 +88,10 @@ kotlin {
             implementation(libs.androidx.core.ktx)
             implementation(libs.androidx.lifecycle.runtime.ktx)
         }
+        jvmMain.dependencies {
+            implementation(libs.bouncycastle.pkix)
+        }
+
 
         // Runs on BOTH the Android host-test JVM and the desktop jvm() target, so the shared
         // sendText contract is executed on each rather than merely compiled (CONVENTIONS.md R3.1).

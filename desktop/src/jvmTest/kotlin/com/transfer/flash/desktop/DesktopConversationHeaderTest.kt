@@ -154,6 +154,25 @@ class DesktopConversationHeaderTest {
         assertEquals("amara okafor", header.avatarSeed, "the seed must match the title so the colour is stable")
     }
 
+    @Test
+    fun explicitPresenceOverridesDiscoveredDefault() {
+        // ERROR-035: When an explicit presence (e.g. from RealFlashChatRepository live session tracking)
+        // is provided, it must win over the mDNS discovery default — an mDNS beacon with no active session
+        // is offline in chat.
+        val header = assertNotNull(
+            desktopConversationHeader(
+                conversationId = PEER_ID,
+                trusted = listOf(FlashTrustedPeer(PEER_ID, "Pixel 7a")),
+                discovered = listOf(endpoint(PEER_ID, "Pixel 7a")),
+                presence = FlashPeerPresence.Offline,
+                transport = FlashNetworkTransport.Unknown,
+            ),
+        )
+
+        assertEquals(FlashPeerPresence.Offline, header.presence)
+        assertEquals(FlashNetworkTransport.Unknown, header.transport)
+    }
+
     // ------------------------------------------------------------------ helpers
 
     private fun endpoint(id: String, name: String) = FlashDiscoveredEndpoint(

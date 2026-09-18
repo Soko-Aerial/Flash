@@ -154,8 +154,12 @@ actual fun FlashConfirmHost(
                 // the same places on both platforms.
                 verticalArrangement = Arrangement.spacedBy(FlashSpacing.space16),
             ) {
-                title()
-                text()
+                androidx.compose.runtime.CompositionLocalProvider(
+                    androidx.compose.material3.LocalContentColor provides colors.textPrimary,
+                ) {
+                    title()
+                    text()
+                }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8, Alignment.End),

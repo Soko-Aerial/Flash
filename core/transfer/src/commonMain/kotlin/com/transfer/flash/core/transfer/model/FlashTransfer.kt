@@ -48,4 +48,6 @@ public data class FlashTransfer(
      * or the source file for outbound ones. Openable/shareable via FileProvider. Null until known.
      */
     val localPath: String? = null,
+    /** Whether this transfer was transmitted with end-to-end encryption. */
+    val isEncrypted: Boolean = false,
 )

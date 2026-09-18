@@ -76,11 +76,15 @@ private const val BubblePressScale = 0.97f
  * scaling a `Dp` and scaling the pixel constraint directly.
  */
 private fun Modifier.bubbleWidthCap(): Modifier = layout { measurable, constraints ->
-    val absolute = FlashDimensions.bubbleMaxWidth.roundToPx()
+    // AD-5 / Wide-screen reading measure: on standard phones (<600dp), bubbleMaxWidthFraction (0.78f)
+    // bounds width comfortably to <= 320dp. On tablets, foldables, and desktop, allows reading
+    // widths up to 580dp (matching WhatsApp and Telegram desktop) while preventing text from
+    // stretching across ultrawide displays.
+    val maxCapPx = with(density) { 580.dp.roundToPx() }
     val ceiling = if (constraints.hasBoundedWidth) {
-        minOf((constraints.maxWidth * FlashDimensions.bubbleMaxWidthFraction).toInt(), absolute)
+        minOf((constraints.maxWidth * FlashDimensions.bubbleMaxWidthFraction).toInt(), maxCapPx)
     } else {
-        absolute
+        maxCapPx
     }
     val placeable = measurable.measure(
         constraints.copy(minWidth = 0, maxWidth = ceiling.coerceAtLeast(0)),

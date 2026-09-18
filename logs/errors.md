@@ -1,5 +1,47 @@
 # Error Log
 
+## ERROR-069 — Chat list shows peer offline while conversation screen header shows online
+
+### Date
+2026-09-18
+
+### Area
+Desktop / Messaging Presence State Synchronization (`DesktopShell.kt`, `DesktopEngine.kt`, `DesktopConversationHeaderTest.kt`)
+
+### Symptoms
+When a peer was actually offline (no active WebSocket session exists):
+- The chat list (`FlashChatListScreen`) displayed the peer as Offline (correct).
+- The conversation screen (`FlashConversationScreen`) displayed the peer as "Online" with a green status dot, and the network banner showed "Connected · LAN" (incorrect).
+
+### Root cause
+1. In `RealFlashChatRepository.kt`, peer presence is tracked through `onlinePeerIds`, which maps directly to live WebSocket sessions (`network.activeSessions`). When a peer disconnects or the app closes, `displayedPresence` evaluates to `FlashPeerPresence.Offline`. `chatListState` reads this honest state and reports `FlashPeerPresence.Offline`.
+2. On Desktop, `DesktopShell.kt` computed `conversationState` by overriding `repositoryConversation.header` with `desktopConversationHeader(conversationId, trusted, discovered, isEncrypted)`.
+3. `desktopConversationHeader` was implemented in Phase 21 (when desktop was running on `EmptyFlashChatRepository` before Phase 09B-2 moved `RealFlashChatRepository` to `commonMain`). It hardcoded:
+   `presence = if (endpoint != null) FlashPeerPresence.Online else FlashPeerPresence.Offline`
+   `transport = FlashNetworkTransport.Lan`
+4. Because mDNS/multicast discovery announcements (`discoveredEndpoints`) linger on the local network or represent raw LAN visibility rather than an active, authenticated chat session, `endpoint != null` evaluated to `true`. This trampled the repository's honest `Offline` state and `Unknown` transport, forcing the chat screen into `Online` / `Connected · LAN` while the chat list showed `Offline`.
+
+### Failed attempts
+None.
+
+### Working fix
+1. In `DesktopShell.kt`: updated `conversationState` to preserve `base.header.presence`, `base.header.transport`, and `base.header.typingMemberNames` directly from `repositoryConversation` (the single source of truth from `RealFlashChatRepository`). `desktopConversationHeader` only acts as a fallback for title and avatar resolution if not yet resolved by the repository.
+2. In `DesktopShell.kt`: updated `desktopConversationHeader` signature to accept optional `presence: FlashPeerPresence? = null` and `transport: FlashNetworkTransport? = null`.
+3. In `DesktopEngine.kt`: updated `peerNameResolver` to check `trustStore.getTrustedPeers()` and fall back to `discovery.discoveredEndpoints` (matching Android's `DiscoveryEngineHolder.kt`).
+4. In `DesktopConversationHeaderTest.kt`: added unit test `explicitPresenceOverridesDiscoveredDefault` verifying that explicit presence overrides the discovery default.
+
+### Verification
+- `:desktop:compileKotlinJvm` & `:desktop:jvmTest` (all 10 test suites passed including `explicitPresenceOverridesDiscoveredDefault`).
+- `:ui:chat:jvmTest` & `:app:testDebugUnitTest` (all 193 tasks passed).
+
+### Related files
+- `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopShell.kt`
+- `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopEngine.kt`
+- `desktop/src/jvmTest/kotlin/com/transfer/flash/desktop/DesktopConversationHeaderTest.kt`
+
+### Status
+RESOLVED
+
 ## ERROR-068 — Fatal IllegalStateException when cancelling active file transfer: Sink handle already closed
 
 ### Date

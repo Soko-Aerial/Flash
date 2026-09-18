@@ -220,7 +220,8 @@ private fun FlashChatHeaderStatusLine(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space4),
         ) {
-            val showTypingDots = state.presence == FlashPeerPresence.Typing || state.typingMemberNames.isNotEmpty()
+            val showTypingDots = state.presence != FlashPeerPresence.Offline &&
+                (state.presence == FlashPeerPresence.Typing || state.typingMemberNames.isNotEmpty())
             val typingLabel = if (showTypingDots) {
                 FlashGroupHeaderMath.typingStatusLabel(state.typingMemberNames)
                     ?: if (state.isGroup) "typing…" else null

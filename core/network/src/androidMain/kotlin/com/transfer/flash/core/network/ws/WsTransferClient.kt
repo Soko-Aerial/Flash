@@ -47,7 +47,11 @@ public class WsTransferClient(
     private val connectivityManager = context?.applicationContext
         ?.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
 
-    public suspend fun connect(host: String, port: Int): WsConnection = withContext(Dispatchers.IO) {
+    public suspend fun connect(
+        host: String,
+        port: Int,
+        peerDeviceId: String? = null,
+    ): WsConnection = withContext(Dispatchers.IO) {
         val route = chooseRoute(host)
         WsLog.i(
             TAG,
@@ -62,15 +66,17 @@ public class WsTransferClient(
                 // makes wrapClient fail closed with IllegalStateException.
                 val tracked = SecureSocketUpgrader.withPlainStreamTracking(socket)
                 socket = tracked
+                val targetDeviceId = peerDeviceId ?: options.expectedDeviceId
                 socket = SecureSocketUpgrader.wrapClient(
                     tracked,
-                    options.expectedDeviceId,
+                    targetDeviceId,
                     options.pinVerifier,
                     options.keyManagers,
                     options.handshakeTimeoutMs,
                 ).getOrElse { error -> throw error }
                 WsLog.i(TAG, "TLS established cipher=${(socket as javax.net.ssl.SSLSocket).session.cipherSuite}")
             }
+
             socket.soTimeout = HANDSHAKE_TIMEOUT_MS
             val key = WebSocketCodec.newClientKey()
             val request = buildString {

@@ -71,8 +71,14 @@ public class PersistedFlashCrypto(
         peerEphemeralPublicKey: ByteArray,
     ): ByteArray =
         EcP256Ops.sessionKeyFromSharedSecret(
-            EcP256Ops.agreedSecret(selfEphemeral.privateKey, peerEphemeralPublicKey)
+            EcP256Ops.agreedSecret(selfEphemeral.privateKey, peerEphemeralPublicKey),
         )
+
+    public fun javaKeyPair(): java.security.KeyPair {
+        val pub = java.security.KeyFactory.getInstance("EC")
+            .generatePublic(java.security.spec.X509EncodedKeySpec(identity.publicKeyEncoded))
+        return java.security.KeyPair(pub, identity.privateKey)
+    }
 
     // ------------------------------------------------------------------ persistence
 

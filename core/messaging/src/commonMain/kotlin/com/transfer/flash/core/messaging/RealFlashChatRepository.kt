@@ -260,6 +260,29 @@ public class RealFlashChatRepository(
     // Mirrored into [typingFlow] so the conversation UI can observe it (#11). Never persisted.
     private val typingStates = SyncMap<String, SyncMap<String, String>>()
     private val typingFlow = MutableStateFlow<Map<String, List<String>>>(emptyMap())
+    // Active typing expiry jobs per (conversationId|memberId). Ephemeral.
+    private val typingExpiryJobs = SyncMap<String, Job>()
+
+    private fun scheduleTypingExpiry(conversationId: String, memberId: String) {
+        val key = "$conversationId|$memberId"
+        typingExpiryJobs[key]?.cancel()
+        typingExpiryJobs[key] = scope.launch(ioDispatcher) {
+            delay(TYPING_EXPIRY_MS)
+            val conv = typingStates[conversationId]
+            if (conv != null && conv.remove(memberId) != null) {
+                if (conv.valuesSnapshot().isEmpty()) {
+                    typingStates.remove(conversationId)
+                }
+                publishTyping()
+            }
+            typingExpiryJobs.remove(key)
+        }
+    }
+
+    private fun cancelTypingExpiry(conversationId: String, memberId: String) {
+        val key = "$conversationId|$memberId"
+        typingExpiryJobs.remove(key)?.cancel()
+    }
 
     private fun publishTyping() {
         typingFlow.value = typingStates.toMap()
@@ -326,7 +349,8 @@ public class RealFlashChatRepository(
                 displayedPresence,
                 messageDao.observeUnreadCounts(localDeviceId),
                 messageDao.observeLatestPreviews(),
-            ) { entities, peers, unreadRows, previewRows ->
+                typingFlow,
+            ) { entities, peers, unreadRows, previewRows, typingByConversation ->
                 val unreadByConversation = unreadRows.associate { it.conversationId to it.unread }
                 val previewByConversation = previewRows.associate { it.conversationId to it.previewText }
                 suspend fun toUiItem(entity: ConversationEntity): FlashChatListItemUi {
@@ -353,6 +377,12 @@ public class RealFlashChatRepository(
                             else -> FlashPeerPresence.Offline
                         }
                     }
+                    val isDirectOnline = entity.id in peers.online
+                    val isTyping = if (entity.isGroup) {
+                        groupOnlineCount > 0 && typingByConversation[entity.id].orEmpty().isNotEmpty()
+                    } else {
+                        isDirectOnline && typingByConversation[entity.id].orEmpty().isNotEmpty()
+                    }
                     return FlashChatListItemUi(
                         id = entity.id,
                         title = displayTitle,
@@ -366,6 +396,7 @@ public class RealFlashChatRepository(
                         groupOnlineCount = groupOnlineCount,
                         isPinned = entity.pinned,
                         isMuted = entity.muted,
+                        isTyping = isTyping,
                         sortOrder = entity.sortOrder,
                         isArchived = entity.archived,
                     )
@@ -384,6 +415,37 @@ public class RealFlashChatRepository(
                         // first-run panel.
                         hasLoaded = true,
                     )
+                }
+            }
+        }
+
+        // Prune ephemeral typing indicators the instant a peer departs/disconnects.
+        scope.launch(ioDispatcher) {
+            onlinePeerIds.collect { onlineSet ->
+                var changed = false
+                typingStates.toMap().forEach { (convId, members) ->
+                    val isGroup = conversationDao.get(convId)?.isGroup == true
+                    if (!isGroup) {
+                        if (convId !in onlineSet) {
+                            if (members.valuesSnapshot().isNotEmpty()) {
+                                members.clear()
+                                changed = true
+                            }
+                            typingStates.remove(convId)
+                            cancelTypingExpiry(convId, convId)
+                        }
+                    } else {
+                        members.toMap().keys.forEach { memberId ->
+                            if (memberId !in onlineSet) {
+                                members.remove(memberId)
+                                cancelTypingExpiry(convId, memberId)
+                                changed = true
+                            }
+                        }
+                    }
+                }
+                if (changed) {
+                    publishTyping()
                 }
             }
         }
@@ -577,7 +639,14 @@ public class RealFlashChatRepository(
                     val members = groupMemberDao?.activeMembers(conversationId).orEmpty()
                     val memberIds = members.mapTo(HashSet()) { it.deviceId }
                     val onlineMembers = members.count { it.deviceId in peers.online }
-                    val typingNames = typingByConversation[conversationId].orEmpty()
+                    val onlineMemberIds = members.filter { it.deviceId in peers.online }.mapTo(HashSet()) { it.deviceId }
+                    val activeTypingNames = if (onlineMembers > 0) {
+                        typingByConversation[conversationId].orEmpty().filter { name ->
+                            members.any { it.displayName == name && it.deviceId in onlineMemberIds }
+                        }
+                    } else {
+                        emptyList()
+                    }
                     val title = conversationEntity.title.ifBlank { conversationId }
                     FlashConversationUiState(
                         header = FlashChatHeaderUiState(
@@ -590,7 +659,7 @@ public class RealFlashChatRepository(
                             memberInitials = members.take(4).map { computeInitials(it.displayName) },
                             memberCount = members.size,
                             onlineCount = onlineMembers,
-                            typingMemberNames = typingNames,
+                            typingMemberNames = activeTypingNames,
                             // Group voice & video calls supported via multi-leg full-mesh CallCoordinator
                             showCallActions = true,
                         ),
@@ -646,7 +715,12 @@ public class RealFlashChatRepository(
         val title = peerNameResolver(conversationId)?.ifBlank { null } ?: conversationId
         val isOnline = conversationId in peers.online
         val isConnecting = !isOnline && conversationId in peers.connecting
-        val typingNames = typingByConversation[conversationId].orEmpty()
+        // Only reachable peers can be typing; if offline, typing indicator is strictly empty.
+        val typingNames = if (isOnline || isConnecting) {
+            typingByConversation[conversationId].orEmpty()
+        } else {
+            emptyList()
+        }
         val presence = when {
             // A typing indicator sticks until the peer clears it, so a session that died
             // mid-compose would otherwise leave "typing…" on screen forever. It may only
@@ -2012,8 +2086,10 @@ public class RealFlashChatRepository(
                 val convTyping = typingStates.getOrPut(typingConversationId) { SyncMap() }
                 if (frame.isTyping) {
                     convTyping[frame.memberId] = frame.memberName
+                    scheduleTypingExpiry(typingConversationId, frame.memberId)
                 } else {
                     convTyping.remove(frame.memberId)
+                    cancelTypingExpiry(typingConversationId, frame.memberId)
                 }
                 publishTyping()
             }
@@ -2833,5 +2909,9 @@ public class RealFlashChatRepository(
         // the progress bar is animated independently, so this is a pure work reduction: it buys a
         // 10× cut in whole-thread re-derivations during a transfer with nothing given up on screen.
         const val ATTACHMENT_PROGRESS_THROTTLE_MS = 100L
+
+        // Ephemeral typing indicator TTL. If no heartbeat arrives within this window,
+        // typing automatically clears so an inactive or disconnected peer is not stuck typing.
+        const val TYPING_EXPIRY_MS = 6_000L
     }
 }

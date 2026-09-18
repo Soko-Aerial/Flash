@@ -25,12 +25,20 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.rememberLazyListState
+import com.transfer.flash.ui.adaptive.FlashAdaptiveMath
+import com.transfer.flash.ui.adaptive.FlashAdaptiveTwoPane
+import com.transfer.flash.ui.adaptive.FlashNavigationRail
+import com.transfer.flash.ui.adaptive.FlashNavigationRailTab
+import com.transfer.flash.ui.adaptive.FlashPlaceholderDetailPane
+import com.transfer.flash.ui.adaptive.rememberFlashAdaptiveWindowWidthDp
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -953,665 +961,801 @@ private fun FlashShell(
         chatRepository.clearListSelection()
     }
 
+    // UI-034 / AD-6: Adaptive layout for large displays (tablets, foldables unfolded, landscape, DeX).
+    // When width >= 840dp, transforms into a slim navigation rail on the left + two-pane layout
+    // (matching modern WhatsApp & Telegram desktop implementations).
+    val windowWidthDp = rememberFlashAdaptiveWindowWidthDp()
+    val sizeClass = FlashAdaptiveMath.windowSizeForWidth(windowWidthDp)
+    val twoPane = FlashAdaptiveMath.isTwoPaneAllowed(sizeClass)
+
+    val totalUnreadCount = remember(chatListState.items) {
+        chatListState.items.sumOf { it.unreadCount }
+    }
+
+    val liveBottomNavTabs = remember(totalUnreadCount) {
+        listOf(
+            FlashBottomNavItem(FlashDestination.ChatList, FlashIcons.Chat, "Chats", badgeCount = if (totalUnreadCount > 0) totalUnreadCount else null),
+            FlashBottomNavItem(FlashDestination.Transfers, FlashIcons.Transfer, "Transfers"),
+            FlashBottomNavItem(FlashDestination.NearbyDevices, FlashIcons.Nearby, "Nearby"),
+            FlashBottomNavItem(FlashDestination.Settings, FlashIcons.Settings, "Settings"),
+        )
+    }
+
+    val navigationRailTabs = remember(totalUnreadCount) {
+        listOf(
+            FlashNavigationRailTab(
+                destination = FlashDestination.ChatList,
+                icon = FlashIcons.Chat,
+                label = "Chats",
+                badgeCount = totalUnreadCount,
+            ),
+            FlashNavigationRailTab(
+                destination = FlashDestination.Transfers,
+                icon = FlashIcons.Transfer,
+                label = "Transfers",
+            ),
+            FlashNavigationRailTab(
+                destination = FlashDestination.NearbyDevices,
+                icon = FlashIcons.Nearby,
+                label = "Nearby",
+            ),
+            FlashNavigationRailTab(
+                destination = FlashDestination.Settings,
+                icon = FlashIcons.Settings,
+                label = "Settings",
+            ),
+        )
+    }
+
+    // In two-pane mode, back while in conversation clears selection without popping the tab or exiting
+    BackHandler(enabled = twoPane && nav.current.destination == FlashDestination.Conversation) {
+        chatRepository.closeConversation()
+        nav.navigate(FlashDestination.ChatList)
+    }
+
     // UI-046 v2: the shell bar HANGS over the page instead of docking under it. Tab roots
     // hand `contentInset + system nav inset` to the page, which folds it into its own
     // contentPadding so rows scroll UNDER the capsule; pushed screens (Conversation) drop the
-    // bar entirely and manage their own bottom insets.
-    val showBar = FlashNavigationMath.isTabRoot(nav.current.destination)
+    // bar entirely and manage their own bottom insets. In two-pane mode, there is no bottom nav.
+    val showBar = !twoPane && FlashNavigationMath.isTabRoot(nav.current.destination)
     val systemBottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-    val tabBottomInset = FlashBottomNavDefaults.contentInset + systemBottomInset
+    val tabBottomInset = if (twoPane) 0.dp else (FlashBottomNavDefaults.contentInset + systemBottomInset)
+
+    val conversationScreenContent: @Composable () -> Unit = {
+        val conversationId = nav.current.conversationId
+        FlashConversationScreen(
+            state = conversationState,
+            onBack = {
+                chatRepository.closeConversation()
+                if (twoPane) {
+                    nav.navigate(FlashDestination.ChatList)
+                } else {
+                    nav.back()
+                }
+            },
+            // UI-032: tapping the header avatar opens the in-screen peer-details sheet.
+            // Feed it the peer's live trust status + a revoke action keyed by the
+            // conversationId (== peer device id, the pairing/trust key).
+            isPeerTrusted = conversationId?.let { pid ->
+                trustedPeers.any { it.id == pid }
+            } ?: false,
+            onRevokePeerTrust = conversationId?.let { pid ->
+                { engine.pairing?.revoke(pid); Unit }
+            },
+            onVerifySecurityCodes = conversationId?.let { pid ->
+                { scope.launch { engine.pairing?.beginPair(pid, conversationState.header.title) }; Unit }
+            },
+            localFingerprint = engine.pairing?.localFingerprintHex,
+            peerFingerprint = conversationId?.let { pid -> engine.pairing?.getFingerprint(pid) },
+            onSendText = chatRepository::sendText,
+            onSendReply = { text, replyToId, replyToPreview ->
+                chatRepository.sendReply(text, replyToId, replyToPreview)
+            },
+            onPersistDraft = chatRepository::saveDraft,
+            onToggleReaction = { messageId, emoji ->
+                chatRepository.toggleReaction(messageId, emoji)
+            },
+            onTypingChanged = chatRepository::setTyping,
+            onAttachmentClick = chatRepository::openAttachmentPicker,
+            onSendFile = { uri, displayName, size ->
+                val peerId = conversationId
+                val transfers = engine.transfers
+                if (peerId != null && transfers != null) {
+                    val mime = guessMimeType(displayName, uri, toastContext)
+                    if (conversationState.header.isGroup) {
+                        // F4: one shared chat identity/file identity, plus a distinct
+                        // recipient transfer identity carried by both intro and FILE_START.
+                        val sharedMessageId = java.util.UUID.randomUUID().toString()
+                        val sharedWireFileId = java.util.UUID.randomUUID().toString()
+                        scope.launch(Dispatchers.IO) {
+                            chatRepository.groupMembers(peerId)
+                                .filter { it.id != engine.localDeviceId }
+                                .forEach { member ->
+                                    val recipientTransferId = java.util.UUID.randomUUID().toString()
+                                    val announced = chatRepository.beginGroupAttachment(
+                                        groupId = peerId,
+                                        recipientDeviceId = member.id,
+                                        messageId = sharedMessageId,
+                                        transferId = recipientTransferId,
+                                        wireFileId = sharedWireFileId,
+                                        fileName = displayName,
+                                        mimeType = mime,
+                                        sizeBytes = size,
+                                    )
+                                    if (!announced) return@forEach
+                                    val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == member.id }
+                                    val targetDevice = FlashDevice(
+                                        id = FlashDeviceId(member.id),
+                                        friendlyName = member.name,
+                                        transportType = endpoint?.transportType ?: FlashTransportType.LAN,
+                                    )
+                                    transfers.sendFile(
+                                        targetDevice, uri, displayName, size,
+                                        transferId = recipientTransferId,
+                                        wireFileId = sharedWireFileId,
+                                    )
+                                }
+                            // One sender bubble for the group, keyed by its shared message id.
+                            chatRepository.sendGroupAttachment(
+                                conversationId = peerId,
+                                messageId = sharedMessageId,
+                                transferId = sharedMessageId,
+                                fileName = displayName,
+                                mimeType = mime,
+                                sizeBytes = size,
+                                localPath = uri,
+                            )
+                        }
+                    } else {
+                        val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == peerId }
+                        val targetDevice = FlashDevice(
+                            id = FlashDeviceId(peerId),
+                            friendlyName = conversationState.header.title,
+                            transportType = endpoint?.transportType ?: FlashTransportType.LAN,
+                        )
+                        scope.launch(Dispatchers.IO) {
+                            // Start the P2P transfer, then (B4) drop a local chat row keyed by
+                            // the returned transferId so the attachment shows inline in the
+                            // conversation — image thumbnail / video play button / file card —
+                            // with progress joined from activeTransfers, alongside Transfers.
+                            val transferId = transfers.sendFile(targetDevice, uri, displayName, size).getOrNull()
+                            if (transferId != null) {
+                                chatRepository.sendAttachment(
+                                    conversationId = peerId,
+                                    transferId = transferId.value,
+                                    fileName = displayName,
+                                    mimeType = mime,
+                                    sizeBytes = size,
+                                    localPath = uri,
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            onDeleteMessage = { ids -> chatRepository.deleteMessages(ids) },
+            onDeleteMessageForEveryone = chatRepository::deleteMessageForEveryone,
+            onOpenAttachment = { path, mime, _ -> openAttachment(toastContext, path, mime) },
+            onSaveImage = { uri, mime -> saveMediaToGallery(toastContext, uri, mime) },
+            onShareImage = { uri, mime -> shareImageUri(toastContext, uri, mime) },
+            onVoiceRecordingStarting = DiscoveryEngineHolder::beginVoiceNote,
+            onVoiceRecordingStopped = DiscoveryEngineHolder::endVoiceNote,
+            onSendVoiceMessage = { localPath, durationMs, amplitudes ->
+                // B9: a captured voice note rides the same P2P transfer pipeline as any
+                // file, then lands as an inline playback card via sendAttachment (audio/*).
+                val peerId = conversationId
+                val transfers = engine.transfers
+                if (peerId != null && transfers != null) {
+                    val fileName = "Voice message.m4a"
+                    val size = runCatching {
+                        android.net.Uri.parse(localPath).path?.let { java.io.File(it).length() } ?: 0L
+                    }.getOrDefault(0L)
+                    if (conversationState.header.isGroup) {
+                        // F4: identical fan-out to onSendFile's group path, with voice meta.
+                        val sharedMessageId = java.util.UUID.randomUUID().toString()
+                        val sharedWireFileId = java.util.UUID.randomUUID().toString()
+                        scope.launch(Dispatchers.IO) {
+                            chatRepository.groupMembers(peerId)
+                                .filter { it.id != engine.localDeviceId }
+                                .forEach { member ->
+                                    val recipientTransferId = java.util.UUID.randomUUID().toString()
+                                    val announced = chatRepository.beginGroupAttachment(
+                                        groupId = peerId,
+                                        recipientDeviceId = member.id,
+                                        messageId = sharedMessageId,
+                                        transferId = recipientTransferId,
+                                        wireFileId = sharedWireFileId,
+                                        fileName = fileName,
+                                        mimeType = "audio/mp4",
+                                        sizeBytes = size,
+                                    )
+                                    if (!announced) return@forEach
+                                    val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == member.id }
+                                    val targetDevice = FlashDevice(
+                                        id = FlashDeviceId(member.id),
+                                        friendlyName = member.name,
+                                        transportType = endpoint?.transportType ?: FlashTransportType.LAN,
+                                    )
+                                    transfers.sendFile(
+                                        targetDevice, localPath, fileName, size,
+                                        transferId = recipientTransferId,
+                                        wireFileId = sharedWireFileId,
+                                    )
+                                }
+                            chatRepository.sendGroupAttachment(
+                                conversationId = peerId,
+                                messageId = sharedMessageId,
+                                transferId = sharedMessageId,
+                                fileName = fileName,
+                                mimeType = "audio/mp4",
+                                sizeBytes = size,
+                                localPath = localPath,
+                                voiceDurationMs = durationMs,
+                                voiceAmplitudes = amplitudes,
+                            )
+                        }
+                    } else {
+                        val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == peerId }
+                        val targetDevice = FlashDevice(
+                            id = FlashDeviceId(peerId),
+                            friendlyName = conversationState.header.title,
+                            transportType = endpoint?.transportType ?: FlashTransportType.LAN,
+                        )
+                        scope.launch(Dispatchers.IO) {
+                            val transferId = transfers.sendFile(targetDevice, localPath, fileName, size).getOrNull()
+                            if (transferId != null) {
+                                chatRepository.sendAttachment(
+                                    conversationId = peerId,
+                                    transferId = transferId.value,
+                                    fileName = fileName,
+                                    mimeType = "audio/mp4",
+                                    sizeBytes = size,
+                                    localPath = localPath,
+                                    voiceDurationMs = durationMs,
+                                    voiceAmplitudes = amplitudes,
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            // Bug 3: accept/decline a pending inbound video/file offer directly from the
+            // chat bubble. file.id == the wire transferId (set in applyAttachment).
+            onAcceptOffer = { transferId ->
+                engine.transfers?.let { repo ->
+                    scope.launch { repo.acceptIncoming(FlashTransferId(transferId)) }
+                }
+            },
+            onDeclineOffer = { transferId ->
+                engine.transfers?.let { repo ->
+                    scope.launch { repo.declineIncoming(FlashTransferId(transferId)) }
+                }
+            },
+            // Tapping a failed card retries it, matching its "Tap to retry" label and
+            // Retry badge. Same entry point as the Transfers tab's Retry button.
+            onRetryTransfer = { transferId ->
+                engine.transfers?.let { repo ->
+                    scope.launch {
+                        val recipientIds = chatRepository.getRecipientTransferIds(transferId)
+                        if (recipientIds.isNotEmpty()) {
+                            recipientIds.forEach { subId ->
+                                repo.resumeTransfer(FlashTransferId(subId))
+                            }
+                        } else {
+                            repo.resumeTransfer(FlashTransferId(transferId))
+                        }
+                    }
+                }
+            },
+            onPauseTransfer = { transferId ->
+                engine.transfers?.let { repo ->
+                    scope.launch {
+                        val recipientIds = chatRepository.getRecipientTransferIds(transferId)
+                        if (recipientIds.isNotEmpty()) {
+                            recipientIds.forEach { subId ->
+                                repo.pauseTransfer(FlashTransferId(subId))
+                            }
+                        } else {
+                            repo.pauseTransfer(FlashTransferId(transferId))
+                        }
+                    }
+                }
+            },
+            onResumeTransfer = { transferId ->
+                engine.transfers?.let { repo ->
+                    scope.launch {
+                        val recipientIds = chatRepository.getRecipientTransferIds(transferId)
+                        if (recipientIds.isNotEmpty()) {
+                            recipientIds.forEach { subId ->
+                                repo.resumeTransfer(FlashTransferId(subId))
+                            }
+                        } else {
+                            repo.resumeTransfer(FlashTransferId(transferId))
+                        }
+                    }
+                }
+            },
+            onCancelTransfer = { transferId ->
+                engine.transfers?.let { repo ->
+                    scope.launch {
+                        val recipientIds = chatRepository.getRecipientTransferIds(transferId)
+                        if (recipientIds.isNotEmpty()) {
+                            recipientIds.forEach { subId ->
+                                repo.cancelTransfer(FlashTransferId(subId))
+                            }
+                        } else {
+                            repo.cancelTransfer(FlashTransferId(transferId))
+                        }
+                    }
+                }
+            },
+            onStartCall = {
+                val peerId = conversationId
+                if (peerId != null) {
+                    val hasAudio = ContextCompat.checkSelfPermission(
+                        callCtx,
+                        Manifest.permission.RECORD_AUDIO,
+                    ) == PackageManager.PERMISSION_GRANTED
+                    if (hasAudio) {
+                        scope.launch(Dispatchers.IO) {
+                            if (conversationState.header.isGroup) {
+                                val memberIds = if (conversationState.members.isNotEmpty()) {
+                                    conversationState.members.map { it.id }
+                                } else {
+                                    chatRepository.groupMembers(peerId).map { it.id }
+                                }
+                                engine.calls?.startGroupCall(
+                                    groupId = peerId,
+                                    groupName = conversationState.header.title,
+                                    memberIds = memberIds,
+                                    video = false,
+                                )
+                            } else {
+                                engine.calls?.startCall(peerId, conversationState.header.title, video = false)
+                            }
+                        }
+                    } else {
+                        audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    }
+                }
+            },
+            onStartVideoCall = {
+                val peerId = conversationId
+                if (peerId != null) {
+                    val hasAudio = ContextCompat.checkSelfPermission(
+                        callCtx,
+                        Manifest.permission.RECORD_AUDIO,
+                    ) == PackageManager.PERMISSION_GRANTED
+                    val hasCamera = ContextCompat.checkSelfPermission(
+                        callCtx,
+                        Manifest.permission.CAMERA,
+                    ) == PackageManager.PERMISSION_GRANTED
+                    if (hasAudio && hasCamera) {
+                        scope.launch(Dispatchers.IO) {
+                            if (conversationState.header.isGroup) {
+                                val memberIds = if (conversationState.members.isNotEmpty()) {
+                                    conversationState.members.map { it.id }
+                                } else {
+                                    chatRepository.groupMembers(peerId).map { it.id }
+                                }
+                                engine.calls?.startGroupCall(
+                                    groupId = peerId,
+                                    groupName = conversationState.header.title,
+                                    memberIds = memberIds,
+                                    video = true,
+                                )
+                            } else {
+                                engine.calls?.startCall(peerId, conversationState.header.title, video = true)
+                            }
+                        }
+                    } else {
+                        // Request whichever is missing. The user taps the video button
+                        // again once permissions are granted.
+                        if (!hasAudio) audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                        else cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                    }
+                }
+            },
+            // Connection-banner Retry: re-arm discovery browsing and force an immediate
+            // auto-connect sweep. Returns false only before the engine has booted, which
+            // is the one case where the banner should say "try again in a moment".
+            onRetryConnection = { engine.reconnectNow() },
+            onShareText = { text -> shareText(toastContext, text) },
+            // Group Phase D: conversationId + menu actions.
+            conversationId = conversationId,
+            addablePeers = trustedPeerRoster.filter { candidate ->
+                conversationState.members.none { it.id == candidate.id }
+            },
+            onAddGroupMembers = { groupId, memberIds ->
+                scope.launch {
+                    chatRepository.addGroupMembers(groupId, memberIds)
+                }
+            },
+            onLeaveGroup = { groupId ->
+                scope.launch {
+                    val left = chatRepository.leaveGroup(groupId)
+                    if (left is com.transfer.flash.core.common.result.FlashResult.Success) {
+                        chatRepository.closeConversation()
+                        if (twoPane) {
+                            nav.navigate(FlashDestination.ChatList)
+                        } else {
+                            nav.back()
+                        }
+                    } else {
+                        Toast.makeText(
+                            toastContext,
+                            "Couldn't leave the group — try again",
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                    }
+                }
+            },
+            onClearConversation = { id ->
+                chatRepository.deleteConversations(setOf(id))
+                chatRepository.closeConversation()
+                if (twoPane) {
+                    nav.navigate(FlashDestination.ChatList)
+                } else {
+                    nav.back()
+                }
+            },
+            onMarkUnread = chatRepository::markConversationUnread,
+            onJoinGroupCall = { callId, video ->
+                val peerId = conversationId
+                if (peerId != null) {
+                    scope.launch(Dispatchers.IO) {
+                        val memberIds = if (conversationState.members.isNotEmpty()) {
+                            conversationState.members.map { it.id }
+                        } else {
+                            chatRepository.groupMembers(peerId).map { it.id }
+                        }
+                        val hasAudio = ContextCompat.checkSelfPermission(
+                            callCtx, Manifest.permission.RECORD_AUDIO,
+                        ) == PackageManager.PERMISSION_GRANTED
+                        if (hasAudio) {
+                            engine.calls?.joinGroupCall(
+                                groupId = peerId,
+                                callId = callId,
+                                memberIds = memberIds,
+                                video = video,
+                            )
+                        }
+                    }
+                }
+            },
+        )
+    }
+
+    val transfersScreenContent: @Composable () -> Unit = {
+        FlashTransfersScreen(
+            state = transfersUi,
+            onPauseResumeClick = { item ->
+                engine.transfers?.let { repo ->
+                    val id = FlashTransferId(item.id)
+                    scope.launch {
+                        if (item.state == FlashTransferState.Paused) repo.resumeTransfer(id)
+                        else repo.pauseTransfer(id)
+                    }
+                }
+            },
+            onCancelClick = { item ->
+                engine.transfers?.let { repo ->
+                    scope.launch { repo.cancelTransfer(FlashTransferId(item.id)) }
+                }
+            },
+            onRetryClick = { item ->
+                // Retry == resume the failed transfer from its last checkpoint.
+                engine.transfers?.let { repo ->
+                    scope.launch { repo.resumeTransfer(FlashTransferId(item.id)) }
+                }
+            },
+            onAcceptOffer = { item ->
+                // #5: user accepted an inbound offer — host resolves the sink and
+                // RESUMEs the parked sender (see DiscoveryEngineHolder.acceptOffer).
+                engine.transfers?.let { repo ->
+                    scope.launch { repo.acceptIncoming(FlashTransferId(item.id)) }
+                }
+            },
+            onDeclineOffer = { item ->
+                engine.transfers?.let { repo ->
+                    scope.launch { repo.declineIncoming(FlashTransferId(item.id)) }
+                }
+            },
+            onHistoryOpen = { item ->
+                openAttachment(toastContext, item.localPath, guessMimeType(item.fileName))
+            },
+            onHistoryShare = { item -> shareTransferredFile(toastContext, item) },
+            modifier = Modifier.fillMaxSize(),
+            listState = transfersScroll,
+            bottomInset = tabBottomInset,
+        )
+    }
+
+    val nearbyScreenContent: @Composable () -> Unit = {
+        FlashNearbyScreen(
+            state = nearby,
+            onPairClick = { peer ->
+                // Ensure a session exists (dial is idempotent/coalesced), then start the
+                // handshake. onSessionUp exchanges fingerprints so beginPair can derive
+                // the shared 6-digit code; the responder sees the Accept/Decline dialog.
+                val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == peer.id }
+                scope.launch {
+                    val net = engine.network
+                    if (endpoint != null && net != null) {
+                        net.connectManual(endpoint.hostAddress, endpoint.port)
+                    }
+                    engine.pairing?.beginPair(peer.id, peer.name)
+                }
+            },
+            onChatClick = { peer ->
+                chatRepository.openConversation(peer.id)
+                nav.navigate(FlashDestination.Conversation, conversationId = peer.id)
+            },
+            onRevokeClick = { trusted -> engine.pairing?.revoke(trusted.id) },
+            onChatTrustedClick = { trusted ->
+                chatRepository.openConversation(trusted.id)
+                nav.navigate(FlashDestination.Conversation, conversationId = trusted.id)
+            },
+            onAcceptPairing = { engine.pairing?.acceptLocal() },
+            onDeclinePairing = { engine.pairing?.declineLocal() },
+            onManualConnect = { host, port ->
+                scope.launch {
+                    val net = engine.network
+                    if (net != null) {
+                        val result = net.connectManual(host, port)
+                        if (result is com.transfer.flash.core.common.result.FlashResult.Success) {
+                            val peerDevice = result.value.peer
+                            engine.pairing?.beginPair(peerDevice.id.value, peerDevice.friendlyName)
+                        } else {
+                            android.widget.Toast.makeText(
+                                toastContext,
+                                "Couldn't connect to $host:$port",
+                                android.widget.Toast.LENGTH_SHORT,
+                            ).show()
+                        }
+                    }
+                }
+            },
+            modifier = Modifier.fillMaxSize(),
+            listState = nearbyScroll,
+            bottomInset = tabBottomInset,
+        )
+    }
+
+    val settingsScreenContent: @Composable () -> Unit = {
+        FlashSettingsScreen(
+            model = settings,
+            onThemeModeSelected = { mode ->
+                onSettingsChange(settings.copy(themeMode = mode))
+            },
+            onDynamicAccentChanged = {
+                onSettingsChange(settings.copy(dynamicAccent = it))
+            },
+            onHapticsChanged = {
+                onSettingsChange(settings.copy(hapticsEnabled = it))
+            },
+            onBackgroundTransfersChanged = {
+                // Bug 6: opting into background mesh = ask the system (AOSP Doze/
+                // App Standby) to leave Flash alone. User-initiated by design.
+                if (it) onEnableBackgroundTransfers()
+                onSettingsChange(settings.copy(backgroundTransfers = it))
+            },
+            onAutoDownloadVoiceChanged = {
+                onSettingsChange(settings.copy(autoDownloadVoice = it))
+            },
+            onAutoDownloadImageChanged = {
+                onSettingsChange(settings.copy(autoDownloadImage = it))
+            },
+            onAutoDownloadVideoChanged = {
+                onSettingsChange(settings.copy(autoDownloadVideo = it))
+            },
+            onAutoDownloadFileChanged = {
+                onSettingsChange(settings.copy(autoDownloadFile = it))
+            },
+            onPrioritiseVoiceQualityChanged = {
+                onSettingsChange(settings.copy(prioritiseVoiceQuality = it))
+            },
+            onPerformanceModeSelected = {
+                onSettingsChange(settings.copy(performanceMode = it))
+            },
+            onEditDisplayName = { showRenameDialog = true },
+            // ERROR-031 / D7: same system prompt the Background-transfers toggle fires,
+            // reachable on its own so a user who already flipped that toggle (or who
+            // revoked the exemption later) can still get to it.
+            onOpenBatterySettings = onEnableBackgroundTransfers,
+            onRefreshStorageUsage = onRefreshStorageUsage,
+            onClearReceivedFiles = onClearReceivedFiles,
+            modifier = Modifier.fillMaxSize(),
+            listState = settingsScroll,
+            bottomInset = tabBottomInset,
+        )
+    }
+
+    val chatListScreenContent: @Composable () -> Unit = {
+        FlashChatListScreen(
+            state = chatListState,
+            activeConversationId = if (twoPane && nav.current.destination == FlashDestination.Conversation) nav.current.conversationId else null,
+            onConversationClick = { id ->
+                chatRepository.openConversation(id)
+                chatRepository.clearListSelection()
+                nav.navigate(FlashDestination.Conversation, conversationId = id)
+            },
+            onSearchClick = { isSearching = true },
+            // #24: the first-run empty-state CTA and the top-bar LAN glyph both jump to the
+            // Nearby tab (the P2P next action) instead of being inert.
+            onFindDevicesClick = { nav.selectTab(FlashDestination.NearbyDevices) },
+            onLanClick = { nav.selectTab(FlashDestination.NearbyDevices) },
+            isSearching = isSearching,
+            searchQuery = searchQuery,
+            onSearchQueryChanged = { searchQuery = it },
+            onCloseSearch = {
+                isSearching = false
+                searchQuery = ""
+            },
+            messageBodyMatches = messageBodyMatches,
+            onConversationLongClick = chatRepository::enterListSelectionMode,
+            onToggleSelection = chatRepository::toggleListSelection,
+            onArchiveConversation = chatRepository::archiveConversation,
+            onUnarchiveConversation = chatRepository::unarchiveConversation,
+            onCloseSelection = chatRepository::clearListSelection,
+            onPinSelected = {
+                chatRepository.setConversationsPinned(chatListState.selectedIds, true)
+            },
+            onMuteSelected = {
+                chatRepository.setConversationsMuted(chatListState.selectedIds, true)
+            },
+            onMarkSelectedRead = {
+                chatRepository.markConversationsRead(chatListState.selectedIds)
+            },
+            onArchiveSelected = {
+                chatRepository.archiveConversations(chatListState.selectedIds)
+            },
+            onUnarchiveSelected = {
+                chatRepository.unarchiveConversations(chatListState.selectedIds)
+            },
+            onDeleteSelected = {
+                chatRepository.deleteConversations(chatListState.selectedIds)
+            },
+            // ERROR-034: the tab's real boot state, replacing the fabricated-content
+            // fallback. Skeleton while the transport stack comes up, error state (with a
+            // working retry — AppEngine.start() is idempotent and re-armable after a
+            // failure) if it never did. `isErrorEnvironmental` stays false: a boot
+            // failure is ours, not the network's.
+            //
+            // Both terms are needed. `ready` covers the pre-boot window, in which the
+            // repository is EmptyFlashChatRepository and has no rows to give. `hasLoaded`
+            // covers the window *after* it: `ready` flips when the stack finishes
+            // booting, which is earlier than the real repository's first Room emission,
+            // so gating on `ready` alone showed the first-run "No conversations yet"
+            // panel to a device that has conversations, then crossfaded to real rows.
+            isLoading = (!ready || !chatListState.hasLoaded) && chatStartError == null,
+            errorMessage = chatStartError?.let { error ->
+                error.message?.takeIf { it.isNotBlank() }
+                    ?: error::class.simpleName
+                    ?: "Unknown startup failure"
+            },
+            onRetryLoad = { engine.start() },
+            onNewGroupClick = { showCreateGroup = true },
+            modifier = Modifier.fillMaxSize(),
+            listState = chatListScroll,
+            bottomInset = tabBottomInset,
+        )
+    }
 
     Box(
         Modifier
             .fillMaxSize()
             .background(FlashTheme.colors.backgroundApp),
     ) {
-        Box(Modifier.fillMaxSize()) {
-            FlashAnimatedScreen(targetState = nav.current) { entry ->
-                when (entry.destination) {
-                    FlashDestination.Conversation -> FlashConversationScreen(
-                        state = conversationState,
-                        onBack = {
+        if (twoPane) {
+            Row(Modifier.fillMaxSize()) {
+                FlashNavigationRail(
+                    tabs = navigationRailTabs,
+                    selectedTab = if (nav.current.destination == FlashDestination.Conversation) FlashDestination.ChatList else nav.current.destination,
+                    onTabSelected = { destination ->
+                        if (nav.current.destination == FlashDestination.Conversation && destination == FlashDestination.ChatList) {
                             chatRepository.closeConversation()
-                            nav.back()
-                        },
-                        // UI-032: tapping the header avatar opens the in-screen peer-details sheet.
-                        // Feed it the peer's live trust status + a revoke action keyed by the
-                        // conversationId (== peer device id, the pairing/trust key).
-                        isPeerTrusted = entry.conversationId?.let { pid ->
-                            trustedPeers.any { it.id == pid }
-                        } ?: false,
-                        onRevokePeerTrust = entry.conversationId?.let { pid ->
-                            { engine.pairing?.revoke(pid); Unit }
-                        },
-                        onSendText = chatRepository::sendText,
-                        onSendReply = { text, replyToId, replyToPreview ->
-                            chatRepository.sendReply(text, replyToId, replyToPreview)
-                        },
-                        onPersistDraft = chatRepository::saveDraft,
-                        onToggleReaction = { messageId, emoji ->
-                            chatRepository.toggleReaction(messageId, emoji)
-                        },
-                        onTypingChanged = chatRepository::setTyping,
-                        onAttachmentClick = chatRepository::openAttachmentPicker,
-                        onSendFile = { uri, displayName, size ->
-                            val peerId = entry.conversationId
-                            val transfers = engine.transfers
-                            if (peerId != null && transfers != null) {
-                                val mime = guessMimeType(displayName, uri, toastContext)
-                                if (conversationState.header.isGroup) {
-                                    // F4: one shared chat identity/file identity, plus a distinct
-                                    // recipient transfer identity carried by both intro and FILE_START.
-                                    val sharedMessageId = java.util.UUID.randomUUID().toString()
-                                    val sharedWireFileId = java.util.UUID.randomUUID().toString()
-                                    scope.launch(Dispatchers.IO) {
-                                        chatRepository.groupMembers(peerId)
-                                            .filter { it.id != engine.localDeviceId }
-                                            .forEach { member ->
-                                                val recipientTransferId = java.util.UUID.randomUUID().toString()
-                                                val announced = chatRepository.beginGroupAttachment(
-                                                    groupId = peerId,
-                                                    recipientDeviceId = member.id,
-                                                    messageId = sharedMessageId,
-                                                    transferId = recipientTransferId,
-                                                    wireFileId = sharedWireFileId,
-                                                    fileName = displayName,
-                                                    mimeType = mime,
-                                                    sizeBytes = size,
-                                                )
-                                                if (!announced) return@forEach
-                                                val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == member.id }
-                                                val targetDevice = FlashDevice(
-                                                    id = FlashDeviceId(member.id),
-                                                    friendlyName = member.name,
-                                                    transportType = endpoint?.transportType ?: FlashTransportType.LAN,
-                                                )
-                                                transfers.sendFile(
-                                                    targetDevice, uri, displayName, size,
-                                                    transferId = recipientTransferId,
-                                                    wireFileId = sharedWireFileId,
-                                                )
-                                            }
-                                        // One sender bubble for the group, keyed by its shared message id.
-                                        chatRepository.sendGroupAttachment(
-                                            conversationId = peerId,
-                                            messageId = sharedMessageId,
-                                            transferId = sharedMessageId,
-                                            fileName = displayName,
-                                            mimeType = mime,
-                                            sizeBytes = size,
-                                            localPath = uri,
-                                        )
-                                    }
-                                } else {
-                                    val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == peerId }
-                                    val targetDevice = FlashDevice(
-                                        id = FlashDeviceId(peerId),
-                                        friendlyName = conversationState.header.title,
-                                        transportType = endpoint?.transportType ?: FlashTransportType.LAN,
-                                    )
-                                    scope.launch(Dispatchers.IO) {
-                                        // Start the P2P transfer, then (B4) drop a local chat row keyed by
-                                        // the returned transferId so the attachment shows inline in the
-                                        // conversation — image thumbnail / video play button / file card —
-                                        // with progress joined from activeTransfers, alongside Transfers.
-                                        val transferId = transfers.sendFile(targetDevice, uri, displayName, size).getOrNull()
-                                        if (transferId != null) {
-                                            chatRepository.sendAttachment(
-                                                conversationId = peerId,
-                                                transferId = transferId.value,
-                                                fileName = displayName,
-                                                mimeType = mime,
-                                                sizeBytes = size,
-                                                localPath = uri,
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        },
-                        onDeleteMessage = { ids -> chatRepository.deleteMessages(ids) },
-                        onDeleteMessageForEveryone = chatRepository::deleteMessageForEveryone,
-                        onOpenAttachment = { path, mime, _ -> openAttachment(toastContext, path, mime) },
-                        onSaveImage = { uri, mime -> saveMediaToGallery(toastContext, uri, mime) },
-                        onShareImage = { uri, mime -> shareImageUri(toastContext, uri, mime) },
-                        onVoiceRecordingStarting = DiscoveryEngineHolder::beginVoiceNote,
-                        onVoiceRecordingStopped = DiscoveryEngineHolder::endVoiceNote,
-                        onSendVoiceMessage = { localPath, durationMs, amplitudes ->
-                            // B9: a captured voice note rides the same P2P transfer pipeline as any
-                            // file, then lands as an inline playback card via sendAttachment (audio/*).
-                            val peerId = entry.conversationId
-                            val transfers = engine.transfers
-                            if (peerId != null && transfers != null) {
-                                val fileName = "Voice message.m4a"
-                                val size = runCatching {
-                                    android.net.Uri.parse(localPath).path?.let { java.io.File(it).length() } ?: 0L
-                                }.getOrDefault(0L)
-                                if (conversationState.header.isGroup) {
-                                    // F4: identical fan-out to onSendFile's group path, with voice meta.
-                                    val sharedMessageId = java.util.UUID.randomUUID().toString()
-                                    val sharedWireFileId = java.util.UUID.randomUUID().toString()
-                                    scope.launch(Dispatchers.IO) {
-                                        chatRepository.groupMembers(peerId)
-                                            .filter { it.id != engine.localDeviceId }
-                                            .forEach { member ->
-                                                val recipientTransferId = java.util.UUID.randomUUID().toString()
-                                                val announced = chatRepository.beginGroupAttachment(
-                                                    groupId = peerId,
-                                                    recipientDeviceId = member.id,
-                                                    messageId = sharedMessageId,
-                                                    transferId = recipientTransferId,
-                                                    wireFileId = sharedWireFileId,
-                                                    fileName = fileName,
-                                                    mimeType = "audio/mp4",
-                                                    sizeBytes = size,
-                                                )
-                                                if (!announced) return@forEach
-                                                val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == member.id }
-                                                val targetDevice = FlashDevice(
-                                                    id = FlashDeviceId(member.id),
-                                                    friendlyName = member.name,
-                                                    transportType = endpoint?.transportType ?: FlashTransportType.LAN,
-                                                )
-                                                transfers.sendFile(
-                                                    targetDevice, localPath, fileName, size,
-                                                    transferId = recipientTransferId,
-                                                    wireFileId = sharedWireFileId,
-                                                )
-                                            }
-                                        chatRepository.sendGroupAttachment(
-                                            conversationId = peerId,
-                                            messageId = sharedMessageId,
-                                            transferId = sharedMessageId,
-                                            fileName = fileName,
-                                            mimeType = "audio/mp4",
-                                            sizeBytes = size,
-                                            localPath = localPath,
-                                            voiceDurationMs = durationMs,
-                                            voiceAmplitudes = amplitudes,
-                                        )
-                                    }
-                                } else {
-                                    val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == peerId }
-                                    val targetDevice = FlashDevice(
-                                        id = FlashDeviceId(peerId),
-                                        friendlyName = conversationState.header.title,
-                                        transportType = endpoint?.transportType ?: FlashTransportType.LAN,
-                                    )
-                                    scope.launch(Dispatchers.IO) {
-                                        val transferId = transfers.sendFile(targetDevice, localPath, fileName, size).getOrNull()
-                                        if (transferId != null) {
-                                            chatRepository.sendAttachment(
-                                                conversationId = peerId,
-                                                transferId = transferId.value,
-                                                fileName = fileName,
-                                                mimeType = "audio/mp4",
-                                                sizeBytes = size,
-                                                localPath = localPath,
-                                                voiceDurationMs = durationMs,
-                                                voiceAmplitudes = amplitudes,
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        },
-                        // Bug 3: accept/decline a pending inbound video/file offer directly from the
-                        // chat bubble. file.id == the wire transferId (set in applyAttachment).
-                        onAcceptOffer = { transferId ->
-                            engine.transfers?.let { repo ->
-                                scope.launch { repo.acceptIncoming(FlashTransferId(transferId)) }
-                            }
-                        },
-                        onDeclineOffer = { transferId ->
-                            engine.transfers?.let { repo ->
-                                scope.launch { repo.declineIncoming(FlashTransferId(transferId)) }
-                            }
-                        },
-                        // Tapping a failed card retries it, matching its "Tap to retry" label and
-                        // Retry badge. Same entry point as the Transfers tab's Retry button.
-                        onRetryTransfer = { transferId ->
-                            engine.transfers?.let { repo ->
-                                scope.launch {
-                                    val recipientIds = chatRepository.getRecipientTransferIds(transferId)
-                                    if (recipientIds.isNotEmpty()) {
-                                        recipientIds.forEach { subId ->
-                                            repo.resumeTransfer(FlashTransferId(subId))
-                                        }
-                                    } else {
-                                        repo.resumeTransfer(FlashTransferId(transferId))
-                                    }
-                                }
-                            }
-                        },
-                        onPauseTransfer = { transferId ->
-                            engine.transfers?.let { repo ->
-                                scope.launch {
-                                    val recipientIds = chatRepository.getRecipientTransferIds(transferId)
-                                    if (recipientIds.isNotEmpty()) {
-                                        recipientIds.forEach { subId ->
-                                            repo.pauseTransfer(FlashTransferId(subId))
-                                        }
-                                    } else {
-                                        repo.pauseTransfer(FlashTransferId(transferId))
-                                    }
-                                }
-                            }
-                        },
-                        onResumeTransfer = { transferId ->
-                            engine.transfers?.let { repo ->
-                                scope.launch {
-                                    val recipientIds = chatRepository.getRecipientTransferIds(transferId)
-                                    if (recipientIds.isNotEmpty()) {
-                                        recipientIds.forEach { subId ->
-                                            repo.resumeTransfer(FlashTransferId(subId))
-                                        }
-                                    } else {
-                                        repo.resumeTransfer(FlashTransferId(transferId))
-                                    }
-                                }
-                            }
-                        },
-                        onCancelTransfer = { transferId ->
-                            engine.transfers?.let { repo ->
-                                scope.launch {
-                                    val recipientIds = chatRepository.getRecipientTransferIds(transferId)
-                                    if (recipientIds.isNotEmpty()) {
-                                        recipientIds.forEach { subId ->
-                                            repo.cancelTransfer(FlashTransferId(subId))
-                                        }
-                                    } else {
-                                        repo.cancelTransfer(FlashTransferId(transferId))
-                                    }
-                                }
-                            }
-                        },
-                        onStartCall = {
-                            val peerId = entry.conversationId
-                            if (peerId != null) {
-                                val hasAudio = ContextCompat.checkSelfPermission(
-                                    callCtx,
-                                    Manifest.permission.RECORD_AUDIO,
-                                ) == PackageManager.PERMISSION_GRANTED
-                                if (hasAudio) {
-                                    scope.launch(Dispatchers.IO) {
-                                        if (conversationState.header.isGroup) {
-                                            val memberIds = if (conversationState.members.isNotEmpty()) {
-                                                conversationState.members.map { it.id }
-                                            } else {
-                                                chatRepository.groupMembers(peerId).map { it.id }
-                                            }
-                                            engine.calls?.startGroupCall(
-                                                groupId = peerId,
-                                                groupName = conversationState.header.title,
-                                                memberIds = memberIds,
-                                                video = false,
-                                            )
-                                        } else {
-                                            engine.calls?.startCall(peerId, conversationState.header.title, video = false)
-                                        }
-                                    }
-                                } else {
-                                    audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                                }
-                            }
-                        },
-                        onStartVideoCall = {
-                            val peerId = entry.conversationId
-                            if (peerId != null) {
-                                val hasAudio = ContextCompat.checkSelfPermission(
-                                    callCtx,
-                                    Manifest.permission.RECORD_AUDIO,
-                                ) == PackageManager.PERMISSION_GRANTED
-                                val hasCamera = ContextCompat.checkSelfPermission(
-                                    callCtx,
-                                    Manifest.permission.CAMERA,
-                                ) == PackageManager.PERMISSION_GRANTED
-                                if (hasAudio && hasCamera) {
-                                    scope.launch(Dispatchers.IO) {
-                                        if (conversationState.header.isGroup) {
-                                            val memberIds = if (conversationState.members.isNotEmpty()) {
-                                                conversationState.members.map { it.id }
-                                            } else {
-                                                chatRepository.groupMembers(peerId).map { it.id }
-                                            }
-                                            engine.calls?.startGroupCall(
-                                                groupId = peerId,
-                                                groupName = conversationState.header.title,
-                                                memberIds = memberIds,
-                                                video = true,
-                                            )
-                                        } else {
-                                            engine.calls?.startCall(peerId, conversationState.header.title, video = true)
-                                        }
-                                    }
-                                } else {
-                                    // Request whichever is missing. The user taps the video button
-                                    // again once permissions are granted.
-                                    if (!hasAudio) audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                                    else cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
-                                }
-                            }
-                        },
-                        // Connection-banner Retry: re-arm discovery browsing and force an immediate
-                        // auto-connect sweep. Returns false only before the engine has booted, which
-                        // is the one case where the banner should say "try again in a moment".
-                        onRetryConnection = { engine.reconnectNow() },
-                        onShareText = { text -> shareText(toastContext, text) },
-                        // Group Phase D: conversationId + menu actions.
-                        conversationId = entry.conversationId,
-                        addablePeers = trustedPeerRoster.filter { candidate ->
-                            conversationState.members.none { it.id == candidate.id }
-                        },
-                        onAddGroupMembers = { groupId, memberIds ->
-                            scope.launch {
-                                chatRepository.addGroupMembers(groupId, memberIds)
-                            }
-                        },
-                        onLeaveGroup = { groupId ->
-                            scope.launch {
-                                val left = chatRepository.leaveGroup(groupId)
-                                if (left is com.transfer.flash.core.common.result.FlashResult.Success) {
-                                    chatRepository.closeConversation()
-                                    nav.back()
-                                } else {
-                                    Toast.makeText(
-                                        toastContext,
-                                        "Couldn't leave the group — try again",
-                                        Toast.LENGTH_SHORT,
-                                    ).show()
-                                }
-                            }
-                        },
-                        onClearConversation = { id ->
-                            chatRepository.deleteConversations(setOf(id))
-                            chatRepository.closeConversation()
-                            nav.back()
-                        },
-                        onMarkUnread = chatRepository::markConversationUnread,
-                        onJoinGroupCall = { callId, video ->
-                            val peerId = entry.conversationId
-                            if (peerId != null) {
-                                scope.launch(Dispatchers.IO) {
-                                    val memberIds = if (conversationState.members.isNotEmpty()) {
-                                        conversationState.members.map { it.id }
-                                    } else {
-                                        chatRepository.groupMembers(peerId).map { it.id }
-                                    }
-                                    val hasAudio = ContextCompat.checkSelfPermission(
-                                        callCtx, Manifest.permission.RECORD_AUDIO,
-                                    ) == PackageManager.PERMISSION_GRANTED
-                                    if (hasAudio) {
-                                        engine.calls?.joinGroupCall(
-                                            groupId = peerId,
-                                            callId = callId,
-                                            memberIds = memberIds,
-                                            video = video,
-                                        )
-                                    }
-                                }
-                            }
-                        },
-                    )
-                    FlashDestination.Transfers -> FlashTransfersScreen(
-                        state = transfersUi,
-                        onPauseResumeClick = { item ->
-                            engine.transfers?.let { repo ->
-                                val id = FlashTransferId(item.id)
-                                scope.launch {
-                                    if (item.state == FlashTransferState.Paused) repo.resumeTransfer(id)
-                                    else repo.pauseTransfer(id)
-                                }
-                            }
-                        },
-                        onCancelClick = { item ->
-                            engine.transfers?.let { repo ->
-                                scope.launch { repo.cancelTransfer(FlashTransferId(item.id)) }
-                            }
-                        },
-                        onRetryClick = { item ->
-                            // Retry == resume the failed transfer from its last checkpoint.
-                            engine.transfers?.let { repo ->
-                                scope.launch { repo.resumeTransfer(FlashTransferId(item.id)) }
-                            }
-                        },
-                        onAcceptOffer = { item ->
-                            // #5: user accepted an inbound offer — host resolves the sink and
-                            // RESUMEs the parked sender (see DiscoveryEngineHolder.acceptOffer).
-                            engine.transfers?.let { repo ->
-                                scope.launch { repo.acceptIncoming(FlashTransferId(item.id)) }
-                            }
-                        },
-                        onDeclineOffer = { item ->
-                            engine.transfers?.let { repo ->
-                                scope.launch { repo.declineIncoming(FlashTransferId(item.id)) }
-                            }
-                        },
-                        onHistoryOpen = { item ->
-                            openAttachment(toastContext, item.localPath, guessMimeType(item.fileName))
-                        },
-                        onHistoryShare = { item -> shareTransferredFile(toastContext, item) },
-                        modifier = Modifier.fillMaxSize(),
-                        listState = transfersScroll,
-                        bottomInset = tabBottomInset,
-                    )
-                    FlashDestination.NearbyDevices -> FlashNearbyScreen(
-                        state = nearby,
-                        onPairClick = { peer ->
-                            // Ensure a session exists (dial is idempotent/coalesced), then start the
-                            // handshake. onSessionUp exchanges fingerprints so beginPair can derive
-                            // the shared 6-digit code; the responder sees the Accept/Decline dialog.
-                            val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == peer.id }
-                            scope.launch {
-                                val net = engine.network
-                                if (endpoint != null && net != null) {
-                                    net.connectManual(endpoint.hostAddress, endpoint.port)
-                                }
-                                engine.pairing?.beginPair(peer.id, peer.name)
-                            }
-                        },
-                        onChatClick = { peer ->
-                            chatRepository.openConversation(peer.id)
-                            nav.navigate(FlashDestination.Conversation, conversationId = peer.id)
-                        },
-                        onRevokeClick = { trusted -> engine.pairing?.revoke(trusted.id) },
-                        onChatTrustedClick = { trusted ->
-                            chatRepository.openConversation(trusted.id)
-                            nav.navigate(FlashDestination.Conversation, conversationId = trusted.id)
-                        },
-                        onAcceptPairing = { engine.pairing?.acceptLocal() },
-                        onDeclinePairing = { engine.pairing?.declineLocal() },
-                        onManualConnect = { host, port ->
-                            scope.launch {
-                                val net = engine.network
-                                if (net != null) {
-                                    val result = net.connectManual(host, port)
-                                    if (result is com.transfer.flash.core.common.result.FlashResult.Success) {
-                                        val peerDevice = result.value.peer
-                                        engine.pairing?.beginPair(peerDevice.id.value, peerDevice.friendlyName)
-                                    } else {
-                                        android.widget.Toast.makeText(
-                                            toastContext,
-                                            "Couldn't connect to $host:$port",
-                                            android.widget.Toast.LENGTH_SHORT,
-                                        ).show()
-                                    }
-                                }
-                            }
-                        },
-                        modifier = Modifier.fillMaxSize(),
-                        listState = nearbyScroll,
-                        bottomInset = tabBottomInset,
-                    )
-                    FlashDestination.Settings -> FlashSettingsScreen(
-                        model = settings,
-                        onThemeModeSelected = { mode ->
-                            onSettingsChange(settings.copy(themeMode = mode))
-                        },
-                        onDynamicAccentChanged = {
-                            onSettingsChange(settings.copy(dynamicAccent = it))
-                        },
-                        onHapticsChanged = {
-                            onSettingsChange(settings.copy(hapticsEnabled = it))
-                        },
-                        onBackgroundTransfersChanged = {
-                            // Bug 6: opting into background mesh = ask the system (AOSP Doze/
-                            // App Standby) to leave Flash alone. User-initiated by design.
-                            if (it) onEnableBackgroundTransfers()
-                            onSettingsChange(settings.copy(backgroundTransfers = it))
-                        },
-                        onAutoDownloadVoiceChanged = {
-                            onSettingsChange(settings.copy(autoDownloadVoice = it))
-                        },
-                        onAutoDownloadImageChanged = {
-                            onSettingsChange(settings.copy(autoDownloadImage = it))
-                        },
-                        onAutoDownloadVideoChanged = {
-                            onSettingsChange(settings.copy(autoDownloadVideo = it))
-                        },
-                        onAutoDownloadFileChanged = {
-                            onSettingsChange(settings.copy(autoDownloadFile = it))
-                        },
-                        onPrioritiseVoiceQualityChanged = {
-                            onSettingsChange(settings.copy(prioritiseVoiceQuality = it))
-                        },
-                        onPerformanceModeSelected = {
-                            onSettingsChange(settings.copy(performanceMode = it))
-                        },
-                        onEditDisplayName = { showRenameDialog = true },
-                        // ERROR-031 / D7: same system prompt the Background-transfers toggle fires,
-                        // reachable on its own so a user who already flipped that toggle (or who
-                        // revoked the exemption later) can still get to it.
-                        onOpenBatterySettings = onEnableBackgroundTransfers,
-                        onRefreshStorageUsage = onRefreshStorageUsage,
-                        onClearReceivedFiles = onClearReceivedFiles,
-                        modifier = Modifier.fillMaxSize(),
-                        listState = settingsScroll,
-                        bottomInset = tabBottomInset,
-                    )
-                    FlashDestination.ChatList -> FlashChatListScreen(
-                        state = chatListState,
-                        onConversationClick = { id ->
-                            chatRepository.openConversation(id)
-                            chatRepository.clearListSelection()
-                            nav.navigate(FlashDestination.Conversation, conversationId = id)
-                        },
-                        onSearchClick = { isSearching = true },
-                        // #24: the first-run empty-state CTA and the top-bar LAN glyph both jump to the
-                        // Nearby tab (the P2P next action) instead of being inert.
-                        onFindDevicesClick = { nav.selectTab(FlashDestination.NearbyDevices) },
-                        onLanClick = { nav.selectTab(FlashDestination.NearbyDevices) },
-                        isSearching = isSearching,
-                        searchQuery = searchQuery,
-                        onSearchQueryChanged = { searchQuery = it },
-                        onCloseSearch = {
-                            isSearching = false
-                            searchQuery = ""
-                        },
-                        messageBodyMatches = messageBodyMatches,
-                        onConversationLongClick = chatRepository::enterListSelectionMode,
-                        onToggleSelection = chatRepository::toggleListSelection,
-                        onArchiveConversation = chatRepository::archiveConversation,
-                        onUnarchiveConversation = chatRepository::unarchiveConversation,
-                        onCloseSelection = chatRepository::clearListSelection,
-                        onPinSelected = {
-                            chatRepository.setConversationsPinned(chatListState.selectedIds, true)
-                        },
-                        onMuteSelected = {
-                            chatRepository.setConversationsMuted(chatListState.selectedIds, true)
-                        },
-                        onMarkSelectedRead = {
-                            chatRepository.markConversationsRead(chatListState.selectedIds)
-                        },
-                        onArchiveSelected = {
-                            chatRepository.archiveConversations(chatListState.selectedIds)
-                        },
-                        onUnarchiveSelected = {
-                            chatRepository.unarchiveConversations(chatListState.selectedIds)
-                        },
-                        onDeleteSelected = {
-                            chatRepository.deleteConversations(chatListState.selectedIds)
-                        },
-                        // ERROR-034: the tab's real boot state, replacing the fabricated-content
-                        // fallback. Skeleton while the transport stack comes up, error state (with a
-                        // working retry — AppEngine.start() is idempotent and re-armable after a
-                        // failure) if it never did. `isErrorEnvironmental` stays false: a boot
-                        // failure is ours, not the network's.
-                        //
-                        // Both terms are needed. `ready` covers the pre-boot window, in which the
-                        // repository is EmptyFlashChatRepository and has no rows to give. `hasLoaded`
-                        // covers the window *after* it: `ready` flips when the stack finishes
-                        // booting, which is earlier than the real repository's first Room emission,
-                        // so gating on `ready` alone showed the first-run "No conversations yet"
-                        // panel to a device that has conversations, then crossfaded to real rows.
-                        isLoading = (!ready || !chatListState.hasLoaded) && chatStartError == null,
-                        errorMessage = chatStartError?.let { error ->
-                            error.message?.takeIf { it.isNotBlank() }
-                                ?: error::class.simpleName
-                                ?: "Unknown startup failure"
-                        },
-                        onRetryLoad = { engine.start() },
-                        onNewGroupClick = { showCreateGroup = true },
-                        modifier = Modifier.fillMaxSize(),
-                        listState = chatListScroll,
-                        bottomInset = tabBottomInset,
-                    )
-                }
-            }
-
-            // Group Phase 1A: trusted-only creation. On success the new group opens like any
-            // other conversation; a failure is surfaced as a toast rather than silently dropped.
-            if (showCreateGroup) {
-                com.transfer.flash.ui.chat.FlashCreateGroupSheet(
-                    peers = trustedPeerRoster,
-                    onDismiss = { showCreateGroup = false },
-                    onCreate = { title, memberIds ->
-                        scope.launch {
-                            val result = chatRepository.createGroup(title, memberIds)
-                            val groupId = result.getOrNull()
-                            if (groupId != null) {
-                                showCreateGroup = false
-                                chatRepository.openConversation(groupId)
-                                nav.navigate(FlashDestination.Conversation, conversationId = groupId)
-                            } else {
-                                Toast.makeText(
-                                    toastContext,
-                                    "Couldn't create the group — check that every member is paired",
-                                    Toast.LENGTH_SHORT,
-                                ).show()
-                            }
+                            nav.navigate(FlashDestination.ChatList)
+                        } else {
+                            nav.selectTab(destination)
                         }
                     },
+                    localDisplayName = settings.displayName,
+                    onProfileClick = {
+                        nav.selectTab(FlashDestination.Settings)
+                    },
                 )
+                Box(Modifier.weight(1f).fillMaxHeight()) {
+                    when (nav.current.destination) {
+                        FlashDestination.ChatList, FlashDestination.Conversation -> {
+                            FlashAdaptiveTwoPane(
+                                listPane = chatListScreenContent,
+                                detailPane = {
+                                    if (nav.current.destination == FlashDestination.Conversation) {
+                                        conversationScreenContent()
+                                    } else {
+                                        FlashPlaceholderDetailPane(
+                                            onFindDevices = { nav.selectTab(FlashDestination.NearbyDevices) },
+                                        )
+                                    }
+                                },
+                                windowWidthDp = (windowWidthDp - 68f).coerceAtLeast(0f),
+                            )
+                        }
+                        FlashDestination.Transfers -> transfersScreenContent()
+                        FlashDestination.NearbyDevices -> nearbyScreenContent()
+                        FlashDestination.Settings -> settingsScreenContent()
+                    }
+                }
+            }
+        } else {
+            Box(Modifier.fillMaxSize()) {
+                FlashAnimatedScreen(targetState = nav.current) { entry ->
+                    when (entry.destination) {
+                        FlashDestination.Conversation -> conversationScreenContent()
+                        FlashDestination.Transfers -> transfersScreenContent()
+                        FlashDestination.NearbyDevices -> nearbyScreenContent()
+                        FlashDestination.Settings -> settingsScreenContent()
+                        FlashDestination.ChatList -> chatListScreenContent()
+                    }
+                }
             }
         }
 
-        Box(Modifier.align(Alignment.BottomCenter)) {
-            AnimatedVisibility(
-                visible = showBar,
-                enter = FlashTheme.motion.shellBarEnter(),
-                exit = FlashTheme.motion.shellBarExit(),
-            ) {
-                FlashBottomNav(
-                    items = bottomNavTabs,
-                    selectedTab = nav.current.destination,
-                    onTabSelected = nav::selectTab,
-                    // Telegram behaviour: tapping the tab you are already on returns it to the top.
-                    onTabReselected = { destination ->
-                        val listState = when (destination) {
-                            FlashDestination.ChatList -> chatListScroll
-                            FlashDestination.Transfers -> transfersScroll
-                            FlashDestination.NearbyDevices -> nearbyScroll
-                            FlashDestination.Settings -> settingsScroll
-                            else -> null
+        // Group Phase 1A: trusted-only creation. On success the new group opens like any
+        // other conversation; a failure is surfaced as a toast rather than silently dropped.
+        if (showCreateGroup) {
+            com.transfer.flash.ui.chat.FlashCreateGroupSheet(
+                peers = trustedPeerRoster,
+                onDismiss = { showCreateGroup = false },
+                onCreate = { title, memberIds ->
+                    scope.launch {
+                        val result = chatRepository.createGroup(title, memberIds)
+                        val groupId = result.getOrNull()
+                        if (groupId != null) {
+                            showCreateGroup = false
+                            chatRepository.openConversation(groupId)
+                            nav.navigate(FlashDestination.Conversation, conversationId = groupId)
+                        } else {
+                            Toast.makeText(
+                                toastContext,
+                                "Couldn't create the group — check that every member is paired",
+                                Toast.LENGTH_SHORT,
+                            ).show()
                         }
-                        listState?.let { state ->
-                            scope.launch {
-                                if (reduceMotion) state.scrollToItem(0) else state.animateScrollToItem(0)
+                    }
+                },
+            )
+        }
+
+        if (!twoPane) {
+            Box(Modifier.align(Alignment.BottomCenter)) {
+                AnimatedVisibility(
+                    visible = showBar,
+                    enter = FlashTheme.motion.shellBarEnter(),
+                    exit = FlashTheme.motion.shellBarExit(),
+                ) {
+                    FlashBottomNav(
+                        items = liveBottomNavTabs,
+                        selectedTab = nav.current.destination,
+                        onTabSelected = nav::selectTab,
+                        // Telegram behaviour: tapping the tab you are already on returns it to the top.
+                        onTabReselected = { destination ->
+                            val listState = when (destination) {
+                                FlashDestination.ChatList -> chatListScroll
+                                FlashDestination.Transfers -> transfersScroll
+                                FlashDestination.NearbyDevices -> nearbyScroll
+                                FlashDestination.Settings -> settingsScroll
+                                else -> null
                             }
-                        }
-                    },
-                )
+                            listState?.let { state ->
+                                scope.launch {
+                                    if (reduceMotion) state.scrollToItem(0) else state.animateScrollToItem(0)
+                                }
+                            }
+                        },
+                    )
+                }
             }
         }
 

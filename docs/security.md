@@ -49,3 +49,38 @@ TOFU policy (`TofuPolicy.evaluate`): no record ⇒ `FirstConnect` (consent promp
 - `PAIR_DECLINE` has no wire frame yet — declining resets locally; peer sees expiry instead (documented in KDoc, wire encoding lands C4/C6).
 - Backup-exclusion manifest flags belong to the app layer (C7 wiring).
 - No forward secrecy across device compromise of a long-lived session key yet (accepted for v1 direct-P2P scope).
+
+## 6. Binary Chunk End-to-End Encryption (`SecureBinaryFrameCodec` / `FSEC`)
+
+File transfer chunk frames and receiver acknowledgements support binary-level payload encryption:
+
+- **Envelope Header (22 bytes)**:
+  - Magic (4 bytes): `FSEC` (`0x46, 0x53, 0x45, 0x43`)
+  - Version (1 byte): `0x02` (Protocol Version 2)
+  - Envelope Type (1 byte): `0x01` (`AES-256-GCM`)
+  - Nonce (12 bytes): Cryptographically secure random nonce (`SecureRandom`)
+  - Length (4 bytes, Little-Endian): Length of following ciphertext + 16-byte GCM authentication tag
+- **Ciphertext**:
+  - Algorithm: AES-256-GCM (128-bit authentication tag)
+  - Key: 32-byte pairwise session key derived during pairing (HKDF-SHA256 over ECDH shared secret)
+  - AAD: `"flash-chunk-v2"` (binds ciphertext to the binary chunk transport protocol version)
+- **Opportunistic Execution**:
+  - Outbound transfers (`StreamChannel` via WebSocket fallback and dedicated Data Channels): If `sessionKey != null` for the target peer, the entire binary frame is encapsulated in an `FSEC` envelope. If unpaired, plain `FLSH` binary frames are transmitted.
+  - Inbound frames (`handleInboundBinary`): Frames starting with `FSEC` magic are checked for session key availability. Decryption fails closed if no key exists or if tag verification fails. Replies (ACK batches, Completion frames) are automatically encrypted with the same session key.
+  - State reflection: `FlashTransfer.isEncrypted` truthfully surfaces whether file chunks are encrypted.
+
+## 7. Wire-Level Transport Security (TLS 1.3 & TOFU Discovery Pinning)
+
+Mesh WebSocket transport provides wire-level encryption (`wss://`) with Trust-On-First-Use (TOFU) pinning:
+
+- **Certificate Generation**:
+  - **JVM / Desktop**: `FlashCertMaker` generates self-signed X.509 certificates with EC P-256 keys using BouncyCastle PKIX, exporting in-memory PKCS12 key stores for `KeyManagerFactory`.
+  - **Android**: `KeystoreFlashCrypto.selfSignedCertificate()` utilizes `AndroidKeyStore` with ECDSA P-256 to produce platform-native self-signed X.509 certificates.
+- **TOFU Pinning (`TofuPinVerifier`)**:
+  - During TLS handshake, peer certificates are extracted.
+  - The SHA-256 fingerprint of the peer's public key is computed via `FlashFingerprint.fingerprint()`.
+  - If no pin exists in `FlashTrustStore`, the fingerprint is recorded (TOFU).
+  - If a pin exists, the incoming certificate's fingerprint is verified in constant time (`MessageDigest.isEqual`). Any mismatch fails closed immediately with an `SSLException`, preventing MITM attacks.
+- **Engine Integration**:
+  - Handled via `TlsOptions` across `WsFlashNetwork`, `JvmWsFlashNetwork`, `WsTransferClient`, `DesktopEngine`, `Flash.kt`, and `DiscoveryEngineHolder`.
+

@@ -93,9 +93,10 @@ fun FlashChatListScreen(
      * This was `() -> Unit = {}` — non-null, so it could never be null, and it was forwarded to
      * `FlashChatListTopBar`'s nullable parameter where the `!= null` check therefore always passed.
      * A host that did not supply one got a rendered, tappable "New group" button that did nothing.
-     * That is the trap this signature removes: an unpassed action is now absent, not inert.
      */
     onNewGroupClick: (() -> Unit)? = null,
+    /** Active conversation id in two-pane mode to highlight the currently open chat. */
+    activeConversationId: String? = null,
 ) {
     val colors = FlashTheme.colors
     val motion = FlashTheme.motion
@@ -250,7 +251,7 @@ fun FlashChatListScreen(
                                 },
                                 onArchive = if (viewingArchived) onUnarchiveConversation else onArchiveConversation,
                                 swipeActionLabel = if (viewingArchived) "Unarchive" else "Archive",
-                                isSelected = item.id in state.selectedIds,
+                                isSelected = item.id in state.selectedIds || (!state.selectionMode && activeConversationId != null && item.id == activeConversationId),
                                 selectionMode = state.selectionMode,
                                 showDivider = showRecents || !isLastRow,
                                 modifier = flashAnimateItem(motion),

@@ -43,4 +43,19 @@ public interface FlashTrustStore {
 
     /** Convenience overload retrieving session key by raw string device ID. */
     public fun getSessionKey(deviceId: String): ByteArray? = getSessionKey(FlashDeviceId(deviceId))
+
+    /** Persists an identity public-key fingerprint (SHA-256 SPKI hex) for [deviceId] (TOFU pin). */
+    public fun savePin(deviceId: FlashDeviceId, fingerprintHex: String): FlashResult<Unit> =
+        FlashResult.Success(Unit)
+
+    /** Convenience overload saving pin by raw string device ID. */
+    public fun savePin(deviceId: String, fingerprintHex: String): FlashResult<Unit> =
+        savePin(FlashDeviceId(deviceId), fingerprintHex)
+
+    /** Retrieves the pinned identity public-key fingerprint for [deviceId], or null if none is stored. */
+    public fun getPin(deviceId: FlashDeviceId): String? = null
+
+    /** Convenience overload retrieving pin by raw string device ID. */
+    public fun getPin(deviceId: String): String? = getPin(FlashDeviceId(deviceId))
 }
+

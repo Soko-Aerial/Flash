@@ -206,10 +206,13 @@ public class JvmWsFlashNetwork(
     override suspend fun connect(device: FlashDevice): FlashResult<FlashSession> {
         val endpoint = knownEndpoints[device.id.value]
             ?: return FlashResult.Failure(FlashError.PeerUnavailable(device.id.value, "No remembered endpoint"))
-        return connectManual(endpoint.host, endpoint.port)
+        return connectManual(endpoint.host, endpoint.port, device.id.value)
     }
 
-    override suspend fun connectManual(host: String, port: Int): FlashResult<FlashSession> = withContext(Dispatchers.IO) {
+    override suspend fun connectManual(host: String, port: Int): FlashResult<FlashSession> =
+        connectManual(host, port, null)
+
+    public suspend fun connectManual(host: String, port: Int, peerDeviceId: String?): FlashResult<FlashSession> = withContext(Dispatchers.IO) {
         if (!running.get()) {
             return@withContext FlashResult.Failure(FlashError.NetworkUnavailable("Network not started"))
         }
@@ -218,9 +221,10 @@ public class JvmWsFlashNetwork(
         refreshHealthFromSessions()
         try {
             val actualPort = if (port > 0) port else WsTransferServer.PREFERRED_PORT
+            val resolvedPeerDeviceId = peerDeviceId ?: knownEndpoints.entries.firstOrNull { it.value.host == host && it.value.port == actualPort }?.key
 
             val connection = runCatching {
-                client.connect(host, actualPort)
+                client.connect(host, actualPort, resolvedPeerDeviceId)
             }.getOrElse { error ->
                 return@withContext FlashResult.Failure(FlashError.PeerUnavailable(host, error.message ?: "WS connect failed"))
             }
@@ -508,7 +512,7 @@ public class JvmWsFlashNetwork(
                 if (!running.get() || hasLiveSession(deviceId)) break
                 val target = redialTargetOf(deviceId, backup) ?: break
 
-                val result = runCatching { connectManual(target.host, target.port) }.getOrNull()
+                val result = runCatching { connectManual(target.host, target.port, deviceId) }.getOrNull()
                 if (result is FlashResult.Success) {
                     break
                 }

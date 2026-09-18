@@ -66,7 +66,7 @@ public data class FlashTrustedPeer(val id: String, val name: String)
  *   [pendingPair] plus a bounded fingerprint poll, exactly as the app twin does.
  */
 public class FlashPairingCoordinator(
-    private val localFingerprintHex: String,
+    public val localFingerprintHex: String,
     private val localDeviceId: String,
     private val localName: String,
     private val localModel: String,
@@ -197,6 +197,9 @@ public class FlashPairingCoordinator(
         trustStore.revokeTrust(FlashDeviceId(peerId))
         _trustedPeers.value = loadTrusted()
     }
+
+    /** Retrieve the cached peer identity fingerprint (hex) if known. */
+    public fun getPeerFingerprint(peerId: String): String? = fingerprints[peerId]
 
     private fun loadTrusted(): List<FlashTrustedPeer> =
         trustStore.getTrustedPeers()

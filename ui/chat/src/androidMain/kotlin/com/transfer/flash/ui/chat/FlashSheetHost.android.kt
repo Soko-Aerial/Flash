@@ -65,6 +65,7 @@ actual fun FlashConfirmHost(
     modifier: Modifier,
     dismissButton: (@Composable () -> Unit)?,
 ) {
+    val colors = com.transfer.flash.ui.theme.FlashTheme.colors
     AlertDialog(
         onDismissRequest = onDismiss,
         title = title,
@@ -72,6 +73,8 @@ actual fun FlashConfirmHost(
         confirmButton = confirmButton,
         dismissButton = dismissButton,
         containerColor = containerColor,
+        titleContentColor = colors.textPrimary,
+        textContentColor = colors.textSecondary,
         modifier = modifier,
     )
 }

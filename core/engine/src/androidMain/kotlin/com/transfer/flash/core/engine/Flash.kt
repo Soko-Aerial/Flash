@@ -34,9 +34,15 @@ import com.transfer.flash.core.persistence.db.FlashDatabaseOpener
 import com.transfer.flash.core.persistence.db.FlashMigrations
 import com.transfer.flash.core.persistence.settings.FlashSettingsDataStore
 import com.transfer.flash.core.ptt.PttSessionEngine
+import com.transfer.flash.core.network.tls.TlsOptions
+import com.transfer.flash.core.network.tls.TofuPinVerifier
+import com.transfer.flash.core.security.crypto.KeystoreFlashCrypto
+import com.transfer.flash.core.security.crypto.SecureBinaryFrameCodec
 import com.transfer.flash.core.security.identity.AndroidPreferencesIdentityStore
 import com.transfer.flash.core.security.trust.AndroidPreferencesTrustStore
 import com.transfer.flash.core.security.trust.FlashTrustStore
+import java.security.KeyStore
+import javax.net.ssl.KeyManagerFactory
 import com.transfer.flash.core.transfer.RealFlashTransferRepository
 import com.transfer.flash.core.transfer.chunked.ChunkFrame
 import com.transfer.flash.core.transfer.chunked.IncrementalSha256
@@ -216,12 +222,31 @@ private class Wiring(
                 ),
             ),
         )
+        val trustStore = AndroidPreferencesTrustStore(appContext)
+        this.trustStoreRef = trustStore
+        val crypto = KeystoreFlashCrypto(appContext)
+        val tlsOptions = runCatching {
+            crypto.selfSignedCertificate()
+            val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+            val kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm())
+            kmf.init(ks, null)
+            val pinVerifier = TofuPinVerifier(
+                lookupPin = { peerId -> trustStore.getPin(FlashDeviceId(peerId)) },
+                recordPin = { peerId, pin -> trustStore.savePin(FlashDeviceId(peerId), pin) },
+            )
+            TlsOptions(
+                pinVerifier = pinVerifier,
+                keyManagers = kmf.keyManagers,
+            )
+        }.onFailure { Log.w(TAG, "Failed to initialize Android TLS options, falling back to plain: ${it.message}") }.getOrNull()
+
         var boundServerPort = 0
         var networkRestartJob: Job? = null
         val networkImpl = WsFlashNetwork(
             context = appContext,
             localDeviceId = localId,
             localFriendlyName = identity.friendlyName,
+            tlsOptions = tlsOptions,
             onUsableNetwork = {
                 networkRestartJob?.cancel()
                 networkRestartJob = scope.launch {
@@ -238,8 +263,6 @@ private class Wiring(
             KeystorePassphraseProvider(appContext),
             *FlashMigrations.ALL,
         )
-        val trustStore = AndroidPreferencesTrustStore(appContext)
-        this.trustStoreRef = trustStore
         val settings = FlashSettingsDataStore(
             produceFile = { File(appContext.filesDir, "flash_settings.preferences_pb") },
             scope = scope,
@@ -295,6 +318,7 @@ private class Wiring(
             store = if (config.enableResume) RoomTransferStore(db.transferDao(), db.transferChunkDao()) else null,
             repositoryScope = scope,
             requireReceiverAcceptance = true,
+            isPeerEncrypted = { peerId -> trustStore.getSessionKey(FlashDeviceId(peerId)) != null },
         )
         transferRef = transferImpl
         val chatImpl = RealFlashChatRepository(
@@ -660,16 +684,41 @@ private class Wiring(
             facade?.ptt?.onInboundBinary(peerDeviceId, data)
             return
         }
+        val sessionKey = peerDeviceId?.let { trustStoreRef?.getSessionKey(FlashDeviceId(it)) }
+        val frameData = if (SecureBinaryFrameCodec.isSecureFrame(data)) {
+            if (sessionKey == null) {
+                Log.w(TAG, "Received encrypted binary frame from $peerDeviceId but no session key exists")
+                return
+            }
+            val decrypted = SecureBinaryFrameCodec.decryptOrNull(data, sessionKey)
+            if (decrypted == null) {
+                Log.w(TAG, "Failed to decrypt binary frame from $peerDeviceId (tampered or wrong key)")
+                return
+            }
+            decrypted
+        } else {
+            data
+        }
+
+        val secureReply: (ByteArray) -> Boolean = { replyBytes ->
+            val toSend = if (sessionKey != null) {
+                SecureBinaryFrameCodec.encrypt(replyBytes, sessionKey)
+            } else {
+                replyBytes
+            }
+            reply(toSend)
+        }
+
         // Sender-side ACK/COMPLETE first; if consumed, not a receiver frame.
         val consumedBySender = try {
-            transferImpl.onInboundFrame(data)
+            transferImpl.onInboundFrame(frameData)
         } catch (t: Throwable) {
             Log.w(TAG, "Failed to route inbound frame to sender: ${t.message}")
             false
         }
         if (consumedBySender) return
         val events = try {
-            receivePipeline.onFrame(data)
+            receivePipeline.onFrame(frameData)
         } catch (e: Throwable) {
             Log.w(TAG, "Failed to process inbound binary frame: ${e.message}")
             return
@@ -690,7 +739,7 @@ private class Wiring(
                         (existingPath != null && java.io.File(existingPath).exists() && java.io.File(existingPath).length() == frame.totalBytes)
 
                     if (alreadyCompleted) {
-                        reply(com.transfer.flash.core.transfer.chunked.ChunkFrame.serialize(com.transfer.flash.core.transfer.chunked.ChunkFrame.Complete(frame.transferId, frame.fileId, verified = true)))
+                        secureReply(com.transfer.flash.core.transfer.chunked.ChunkFrame.serialize(com.transfer.flash.core.transfer.chunked.ChunkFrame.Complete(frame.transferId, frame.fileId, verified = true)))
                         peerDeviceId?.let { pid ->
                             sendXfer?.invoke(pid, RealFlashTransferRepository.ACTION_RESUME, frame.transferId)
                         }
@@ -719,7 +768,7 @@ private class Wiring(
                 is ReceiveEvent.AckBatchReady -> {
                     transferImpl.onIncomingChunkConfirmed(event.frame.transferId, event.frame.indexes)
                     updateIncomingProgress(transferImpl, receivePipeline, event.frame.transferId)
-                    reply(ChunkFrame.serialize(event.frame))
+                    secureReply(ChunkFrame.serialize(event.frame))
                 }
                 is ReceiveEvent.Completed -> {
                     val transferId = event.frame.transferId
@@ -729,7 +778,7 @@ private class Wiring(
                     val expectedHex = incomingMeta.remove(transferId)?.fileSha256Hex
                     val verified = event.frame.verified && verifyWholeFile(path, expectedHex)
                     transferImpl.onIncomingCompleted(transferId, verified, path)
-                    reply(ChunkFrame.serialize(event.frame))
+                    secureReply(ChunkFrame.serialize(event.frame))
                 }
                 is ReceiveEvent.Rejected -> {
                     if (event.reason != RejectReason.UNEXPECTED_DIRECTION) {
@@ -751,13 +800,21 @@ private class Wiring(
             active[FlashDeviceId(peerDeviceId)]
         }) as? WsSession
 
+        val resolvedPeerId = peerDeviceId ?: wsSession?.peerDeviceId?.value
+        val sessionKey = resolvedPeerId?.let { trustStoreRef?.getSessionKey(FlashDeviceId(it)) }
+
         fun wsFallback(): StreamChannel? {
             if (wsSession == null) return null
             return object : StreamChannel {
                 override val id: Int = channelId
-                override suspend fun sendFrame(frameBytes: ByteArray): Boolean =
-                    // StreamChannel's contract hands over single-use ChunkFrame.serialize output.
-                    wsSession.connection.sendBinaryConsuming(frameBytes)
+                override suspend fun sendFrame(frameBytes: ByteArray): Boolean {
+                    val toSend = if (sessionKey != null) {
+                        SecureBinaryFrameCodec.encrypt(frameBytes, sessionKey)
+                    } else {
+                        frameBytes
+                    }
+                    return wsSession.connection.sendBinaryConsuming(toSend)
+                }
             }
         }
 
@@ -771,7 +828,17 @@ private class Wiring(
                 port = endpoint.second + offset,
                 targetDeviceId = peerDeviceId,
                 channelId = channelId,
-                onFrame = { bytes -> transferRef?.onInboundFrame(bytes) },
+                onFrame = { bytes ->
+                    val key = trustStoreRef?.getSessionKey(FlashDeviceId(peerDeviceId))
+                    val decrypted = if (SecureBinaryFrameCodec.isSecureFrame(bytes)) {
+                        if (key != null) SecureBinaryFrameCodec.decryptOrNull(bytes, key) else null
+                    } else {
+                        bytes
+                    }
+                    if (decrypted != null) {
+                        transferRef?.onInboundFrame(decrypted)
+                    }
+                },
                 onClosed = { },
                 localDeviceId = localId,
             )
@@ -779,7 +846,14 @@ private class Wiring(
                 dataPortCache[peerDeviceId] = offset
                 return object : StreamChannel {
                     override val id: Int = channelId
-                    override suspend fun sendFrame(frameBytes: ByteArray): Boolean = candidate.send(frameBytes)
+                    override suspend fun sendFrame(frameBytes: ByteArray): Boolean {
+                        val toSend = if (sessionKey != null) {
+                            SecureBinaryFrameCodec.encrypt(frameBytes, sessionKey)
+                        } else {
+                            frameBytes
+                        }
+                        return candidate.send(toSend)
+                    }
                 }
             }
         }

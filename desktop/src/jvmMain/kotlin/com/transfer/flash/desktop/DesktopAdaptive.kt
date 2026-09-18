@@ -1,5 +1,6 @@
 package com.transfer.flash.desktop
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -13,6 +14,7 @@ import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.unit.dp
 import com.transfer.flash.ui.adaptive.FlashAdaptiveMath
 import com.transfer.flash.ui.adaptive.FlashWindowSizeClass
+import com.transfer.flash.ui.theme.FlashTheme
 
 /**
  * Phase 22, sub-steps 22-1/22-2 — the desktop's width-class source and two-pane container,
@@ -32,23 +34,35 @@ import com.transfer.flash.ui.adaptive.FlashWindowSizeClass
 /**
  * The current window width class, read in composition (no `SubcomposeLayout`).
  *
- * `LocalWindowInfo.containerSize` is in pixels; [FlashAdaptiveMath.windowSizeForWidth] takes
- * dp. `remember` keyed on nothing is fine here: `containerSize.width` is read as state, so a
- * resize invalidates this function directly.
+ * Reads `LocalWindowInfo.current.containerSize` directly without `remember(windowInfo, density)`
+ * so that state changes to `containerSize` trigger recomposition, and frame 0 defaults to
+ * the desktop initial window width (1200dp / Expanded) instead of 0dp (Compact).
  */
 @Composable
-public fun rememberFlashDesktopWindowSize(): FlashWindowSizeClass {
+public fun rememberFlashDesktopWindowWidthDp(window: java.awt.Window? = null): Float {
     val windowInfo = LocalWindowInfo.current
     val density = LocalDensity.current
-    return remember(windowInfo, density) {
-        val widthDp = windowInfo.containerSize.width / density.density
-        FlashAdaptiveMath.windowSizeForWidth(widthDp)
+    val containerWidth = windowInfo.containerSize.width
+    val widthPx = if (containerWidth > 0) {
+        containerWidth.toFloat()
+    } else {
+        // Frame 0 safety net: LocalWindowInfo.containerSize is initialized to (0, 0) before the first
+        // layout pass. Fall back to the AWT window's actual width if available, or 1200dp default.
+        val awtWidth = window?.width?.toFloat()
+        if (awtWidth != null && awtWidth > 0f) awtWidth else (1200f * density.density)
     }
+    return widthPx / density.density
+}
+
+@Composable
+public fun rememberFlashDesktopWindowSize(window: java.awt.Window? = null): FlashWindowSizeClass {
+    val widthDp = rememberFlashDesktopWindowWidthDp(window)
+    return FlashAdaptiveMath.windowSizeForWidth(widthDp)
 }
 
 /**
  * List-detail two-pane for the desktop shell: on [FlashWindowSizeClass.Expanded] the panes sit
- * side by side at `FlashAdaptiveMath`'s tested weights with a hairline divider between them;
+ * side by side at `FlashAdaptiveMath`'s tested clamped widths with a hairline divider between them;
  * on Compact/Medium only [listPane] renders and [detailPane] is unused (the shell keeps its
  * bottom-nav single-pane layout there).
  */
@@ -56,35 +70,40 @@ public fun rememberFlashDesktopWindowSize(): FlashWindowSizeClass {
 public fun DesktopTwoPane(
     listPane: @Composable () -> Unit,
     detailPane: @Composable () -> Unit,
-    modifier: Modifier = Modifier,
-    sizeClass: FlashWindowSizeClass = rememberFlashDesktopWindowSize(),
+    modifier: Modifier = Modifier.fillMaxSize(),
+    window: java.awt.Window? = null,
+    sizeClass: FlashWindowSizeClass = rememberFlashDesktopWindowSize(window),
 ) {
     if (FlashAdaptiveMath.isTwoPaneAllowed(sizeClass)) {
-        Row(modifier = modifier.fillMaxSize()) {
+        val widthDp = rememberFlashDesktopWindowWidthDp(window)
+        val listWidthDp = remember(widthDp) {
+            FlashAdaptiveMath.listPaneWidthDp(widthDp).dp
+        }
+        Row(modifier = modifier) {
             Box(
                 Modifier
-                    .weight(FlashAdaptiveMath.listPaneWeight(sizeClass))
+                    .width(listWidthDp)
                     .fillMaxHeight(),
             ) {
                 listPane()
             }
-            // Hairline divider between the panes (the deleted FlashAdaptiveTwoPane's behaviour
-            // per the Phase 22 file; kept as a 1.dp divider using the theme's border token).
+            // Hairline divider between the panes using the theme's border token
             Box(
                 Modifier
                     .width(1.dp)
-                    .fillMaxHeight(),
+                    .fillMaxHeight()
+                    .background(FlashTheme.colors.borderSubtle),
             )
             Box(
                 Modifier
-                    .weight(FlashAdaptiveMath.detailPaneWeight(sizeClass))
+                    .weight(1f)
                     .fillMaxHeight(),
             ) {
                 detailPane()
             }
         }
     } else {
-        Box(modifier = modifier.fillMaxSize()) {
+        Box(modifier = modifier) {
             listPane()
         }
     }

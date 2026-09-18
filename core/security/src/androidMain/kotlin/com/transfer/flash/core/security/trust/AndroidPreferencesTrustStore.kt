@@ -30,6 +30,7 @@ public class AndroidPreferencesTrustStore(
         preferences.edit()
             .remove(keyFor(deviceId.value))
             .remove(sessionKeyFor(deviceId.value))
+            .remove(pinKeyFor(deviceId.value))
             .apply()
         return FlashResult.Success(Unit)
     }
@@ -43,6 +44,15 @@ public class AndroidPreferencesTrustStore(
     override fun getSessionKey(deviceId: FlashDeviceId): ByteArray? {
         val encoded = preferences.getString(sessionKeyFor(deviceId.value), null) ?: return null
         return runCatching { com.transfer.flash.core.common.protocol.Base64.decode(encoded) }.getOrNull()
+    }
+
+    override fun savePin(deviceId: FlashDeviceId, fingerprintHex: String): FlashResult<Unit> {
+        preferences.edit().putString(pinKeyFor(deviceId.value), fingerprintHex.uppercase()).apply()
+        return FlashResult.Success(Unit)
+    }
+
+    override fun getPin(deviceId: FlashDeviceId): String? {
+        return preferences.getString(pinKeyFor(deviceId.value), null)
     }
 
     override fun getTrustedPeers(): Map<FlashDeviceId, String> {
@@ -60,10 +70,13 @@ public class AndroidPreferencesTrustStore(
 
     private fun keyFor(deviceId: String): String = "$KEY_PREFIX$deviceId"
     private fun sessionKeyFor(deviceId: String): String = "$SESSION_KEY_PREFIX$deviceId"
+    private fun pinKeyFor(deviceId: String): String = "$PIN_PREFIX$deviceId"
 
     public companion object {
         public const val PREFERENCES_NAME: String = "flash_ws_pairing"
         public const val KEY_PREFIX: String = "paired_"
         public const val SESSION_KEY_PREFIX: String = "session_key_"
+        public const val PIN_PREFIX: String = "pin_"
     }
+
 }

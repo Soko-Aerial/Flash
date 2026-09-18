@@ -23,6 +23,8 @@ public data class DesktopSettings(
     val prioritiseVoiceQuality: Boolean = true,
     val dynamicAccent: Boolean = false,
     val performanceMode: FlashPerformanceMode? = null,
+    val closeToTray: Boolean = true,
+    val showNotifications: Boolean = true,
 )
 
 /**
@@ -72,6 +74,8 @@ internal class DesktopSettingsStore(private val stateDir: File) {
             prioritiseVoiceQuality = props.getProperty(KEY_PRIORITISE_VOICE_QUALITY, "true").toBoolean(),
             dynamicAccent = props.getProperty(KEY_DYNAMIC_ACCENT, "false").toBoolean(),
             performanceMode = performanceModeFromKey(props.getProperty(KEY_PERFORMANCE_MODE)),
+            closeToTray = props.getProperty(KEY_CLOSE_TO_TRAY, "true").toBoolean(),
+            showNotifications = props.getProperty(KEY_SHOW_NOTIFICATIONS, "true").toBoolean(),
         )
     }
 
@@ -86,6 +90,8 @@ internal class DesktopSettingsStore(private val stateDir: File) {
         props.setProperty(KEY_AUTO_DOWNLOAD_FILE, settings.autoDownloadFile.toString())
         props.setProperty(KEY_PRIORITISE_VOICE_QUALITY, settings.prioritiseVoiceQuality.toString())
         props.setProperty(KEY_DYNAMIC_ACCENT, settings.dynamicAccent.toString())
+        props.setProperty(KEY_CLOSE_TO_TRAY, settings.closeToTray.toString())
+        props.setProperty(KEY_SHOW_NOTIFICATIONS, settings.showNotifications.toString())
         if (settings.performanceMode != null) {
             props.setProperty(KEY_PERFORMANCE_MODE, settings.performanceMode.name)
         } else {
@@ -122,6 +128,8 @@ internal class DesktopSettingsStore(private val stateDir: File) {
         const val KEY_PRIORITISE_VOICE_QUALITY: String = "prioritise_voice_quality"
         const val KEY_DYNAMIC_ACCENT: String = "dynamic_accent"
         const val KEY_PERFORMANCE_MODE: String = "performance_mode"
+        const val KEY_CLOSE_TO_TRAY: String = "close_to_tray"
+        const val KEY_SHOW_NOTIFICATIONS: String = "show_notifications"
 
         /** Same three tokens `FlashSettingsDataStore.THEME_MODE_*` uses. */
         const val THEME_MODE_SYSTEM: String = "system"

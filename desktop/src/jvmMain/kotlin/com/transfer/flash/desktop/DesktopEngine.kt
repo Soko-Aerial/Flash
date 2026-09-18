@@ -53,6 +53,11 @@ import com.transfer.flash.core.discovery.FlashDiscoveredEndpoint
 import com.transfer.flash.core.network.FlashNetwork
 import com.transfer.flash.core.common.result.FlashResult
 import com.transfer.flash.core.common.protocol.FlashProtocol
+import com.transfer.flash.core.network.tls.FlashCertMaker
+import com.transfer.flash.core.network.tls.TlsOptions
+import com.transfer.flash.core.network.tls.TofuPinVerifier
+import com.transfer.flash.core.security.crypto.PersistedFlashCrypto
+import com.transfer.flash.core.security.crypto.SecureBinaryFrameCodec
 import com.transfer.flash.ui.settings.FlashThemeMode
 import java.io.File
 import java.util.UUID
@@ -210,6 +215,18 @@ public class DesktopEngine(
     private var chatDb: FlashDatabase? = null
     private var callsImpl: CallCoordinator? = null
 
+    private val networkWatcher = com.transfer.flash.core.network.resilience.JvmNetworkWatcher(
+        scope = scope,
+        onAvailable = {
+            FlashLog.i(TAG_DISCOVERY, "Network became available; triggering instant rediscovery and reconnect")
+            reconnectNow()
+        },
+        onLinkChanged = {
+            FlashLog.i(TAG_DISCOVERY, "Network link changed; triggering rediscovery and reconnect")
+            reconnectNow()
+        },
+    )
+
     // --- Persisted desktop preferences (today: the Appearance selection) ---
     //
     // Narrow accessors rather than exposing the store, matching how identity/trust are handled:
@@ -225,6 +242,22 @@ public class DesktopEngine(
     public fun storeThemeMode(mode: FlashThemeMode) {
         updateSettings { it.copy(themeMode = mode) }
     }
+
+    /** Records the Close-to-Tray preference so it survives a restart. */
+    public fun storeCloseToTray(enabled: Boolean) {
+        updateSettings { it.copy(closeToTray = enabled) }
+    }
+
+    /** Records whether desktop notifications are enabled so it survives a restart. */
+    public fun storeShowNotifications(enabled: Boolean) {
+        updateSettings { it.copy(showNotifications = enabled) }
+    }
+
+    /** Inbound chat text notification hook (for DesktopNotificationManager). */
+    public var onInboundMessageNotification: ((conversationId: String, senderName: String?, text: String, groupTitle: String?) -> Unit)? = null
+
+    /** Inbound attachment notification hook (for DesktopNotificationManager). */
+    public var onInboundAttachmentNotification: ((conversationId: String, senderName: String?, fileName: String, mimeType: String, groupTitle: String?) -> Unit)? = null
 
     /**
      * Chat history. The real repository once [assemble] has built it; the honest empty
@@ -405,6 +438,7 @@ public class DesktopEngine(
                 .onSuccess {
                     _startError.value = null
                     _ready.value = true
+                    networkWatcher.start()
                 }
                 .onFailure { failure ->
                     // Logged, not just parked in a StateFlow. The shell renders `startError` in the
@@ -430,6 +464,7 @@ public class DesktopEngine(
         // `application { }` body called this straight after composing the window. `ready` is the
         // tell — it is set true by a completed assembly and false here.
         FlashLog.i(TAG_WS, "engine stop() — cancelling scope (ready=${_ready.value})")
+        networkWatcher.stop()
         runCatching {
             runBlocking {
                 discoveryImpl?.stopAll()
@@ -462,9 +497,23 @@ public class DesktopEngine(
         }
         boot("assemble entered")
 
+        val tlsOptions = runCatching {
+            val keyPair = (crypto as? PersistedFlashCrypto)?.javaKeyPair() ?: FlashCertMaker.newEcKeyPair()
+            val km = FlashCertMaker.createKeyManagers(keyPair, cn = "CN=$localId")
+            val pinVerifier = TofuPinVerifier(
+                lookupPin = { peerId -> trustStore.getPin(FlashDeviceId(peerId)) },
+                recordPin = { peerId, pin -> trustStore.savePin(FlashDeviceId(peerId), pin) },
+            )
+            TlsOptions(
+                pinVerifier = pinVerifier,
+                keyManagers = km,
+            )
+        }.onFailure { FlashLog.w(TAG_WS, "Failed to initialize TLS options, falling back to plain: ${it.message}") }.getOrNull()
+
         val network = JvmWsFlashNetwork(
             localDeviceId = localId,
             localFriendlyName = friendlyName,
+            tlsOptions = tlsOptions,
             transportProfile = { (_settings.value.performanceMode ?: FlashPerformanceMode.HIGH).transport },
         )
         networkImpl = network
@@ -506,6 +555,7 @@ public class DesktopEngine(
             store = null, // D5 = C pending (09B-2) — matches the Phase 16 harness.
             repositoryScope = scope,
             requireReceiverAcceptance = true,
+            isPeerEncrypted = { peerId -> trustStore.getSessionKey(FlashDeviceId(peerId)) != null },
         )
         transferImpl = transfer
 
@@ -534,7 +584,10 @@ public class DesktopEngine(
                 onlinePeerIds = network.activeSessions.map { sessions ->
                     sessions.keys.mapTo(HashSet()) { it.value }
                 },
-                peerNameResolver = { id -> trustStore.getTrustedPeers()[FlashDeviceId(id)] },
+                peerNameResolver = { id ->
+                    trustStore.getTrustedPeers()[FlashDeviceId(id)]
+                        ?: discovery.discoveredEndpoints.value.firstOrNull { it.deviceId.value == id }?.friendlyName
+                },
                 attachmentProgress = transfer.activeTransfers.map { transfers ->
                     transfers.associate { t ->
                         t.id.value to FlashAttachmentProgress(
@@ -574,11 +627,21 @@ public class DesktopEngine(
                         true
                     }
                 },
-                // No desktop notification surface; the conversation Flow drives the UI and the
-                // log line carries the record (same reasoning as the pairing snackbar comment
-                // in DesktopShell).
                 onInboundTextMessage = { conversationId, senderName, text ->
                     FlashLog.i(TAG_WS, "Inbound chat in $conversationId from ${senderName ?: "?"}: ${text.take(120)}")
+                    onInboundMessageNotification?.invoke(conversationId, senderName, text, null)
+                },
+                onInboundTextMessageWithGroupTitle = { conversationId, senderName, text, groupTitle ->
+                    FlashLog.i(TAG_WS, "Inbound chat in $conversationId from ${senderName ?: "?"} (group $groupTitle): ${text.take(120)}")
+                    onInboundMessageNotification?.invoke(conversationId, senderName, text, groupTitle)
+                },
+                onInboundAttachment = { conversationId, senderName, fileName, mimeType ->
+                    FlashLog.i(TAG_WS, "Inbound attachment in $conversationId from ${senderName ?: "?"}: $fileName ($mimeType)")
+                    onInboundAttachmentNotification?.invoke(conversationId, senderName, fileName, mimeType, null)
+                },
+                onInboundAttachmentWithGroupTitle = { conversationId, senderName, fileName, mimeType, groupTitle ->
+                    FlashLog.i(TAG_WS, "Inbound attachment in $conversationId from ${senderName ?: "?"} (group $groupTitle): $fileName ($mimeType)")
+                    onInboundAttachmentNotification?.invoke(conversationId, senderName, fileName, mimeType, groupTitle)
                 },
                 scope = scope,
             )
@@ -882,14 +945,22 @@ public class DesktopEngine(
     /** One stream channel per channel id, riding the live session with the peer. */
     private suspend fun sessionChannel(channelId: Int, peerDeviceId: String?): StreamChannel? {
         val network = networkImpl ?: return null
-        val session = peerDeviceId
-            ?.let { network.activeSessions.value[FlashDeviceId(it)] }
-            ?: network.activeSessions.value.values.firstOrNull()
-            ?: return null
+        val peerId = peerDeviceId?.let { FlashDeviceId(it) }
+        val session = (peerId?.let { network.activeSessions.value[it] }
+            ?: network.activeSessions.value.values.firstOrNull()) ?: return null
+        val resolvedPeerId = peerDeviceId ?: session.peerDeviceId.value
+        val sessionKey = trustStore.getSessionKey(FlashDeviceId(resolvedPeerId))
+
         return object : StreamChannel {
             override val id: Int = channelId
-            override suspend fun sendFrame(frameBytes: ByteArray): Boolean =
-                runCatching { session.send(frameBytes) is FlashResult.Success }.getOrDefault(false)
+            override suspend fun sendFrame(frameBytes: ByteArray): Boolean {
+                val toSend = if (sessionKey != null) {
+                    SecureBinaryFrameCodec.encrypt(frameBytes, sessionKey)
+                } else {
+                    frameBytes
+                }
+                return runCatching { session.send(toSend) is FlashResult.Success }.getOrDefault(false)
+            }
         }
     }
 
@@ -911,8 +982,33 @@ public class DesktopEngine(
      */
     private fun handleInboundBinary(peerDeviceId: String, data: ByteArray, reply: (ByteArray) -> Boolean) {
         val transfer = transferImpl ?: return
+        val sessionKey = trustStore.getSessionKey(FlashDeviceId(peerDeviceId))
+        val frameData = if (SecureBinaryFrameCodec.isSecureFrame(data)) {
+            if (sessionKey == null) {
+                FlashLog.w(TAG_WS, "Received encrypted binary frame from $peerDeviceId but no session key exists")
+                return
+            }
+            val decrypted = SecureBinaryFrameCodec.decryptOrNull(data, sessionKey)
+            if (decrypted == null) {
+                FlashLog.w(TAG_WS, "Failed to decrypt binary frame from $peerDeviceId (tampered or wrong key)")
+                return
+            }
+            decrypted
+        } else {
+            data
+        }
+
+        val secureReply: (ByteArray) -> Boolean = { replyBytes ->
+            val toSend = if (sessionKey != null) {
+                SecureBinaryFrameCodec.encrypt(replyBytes, sessionKey)
+            } else {
+                replyBytes
+            }
+            reply(toSend)
+        }
+
         val consumedBySender = try {
-            transfer.onInboundFrame(data)
+            transfer.onInboundFrame(frameData)
         } catch (t: Throwable) {
             FlashLog.w(TAG_WS, "Failed to route inbound frame to sender: ${t.message}")
             false
@@ -920,7 +1016,7 @@ public class DesktopEngine(
         if (consumedBySender) return
         val receivePipeline = this.receivePipeline ?: return
         val events = try {
-            receivePipeline.onFrame(data)
+            receivePipeline.onFrame(frameData)
         } catch (e: Throwable) {
             FlashLog.w(TAG_WS, "Failed to process inbound binary frame: ${e.message}")
             return
@@ -935,7 +1031,7 @@ public class DesktopEngine(
                     FlashLog.i(
                         TAG_WS,
                         "Inbound file offer tid=${frame.transferId} name='${frame.fileName}' " +
-                            "bytes=${frame.totalBytes} from peer=$peerDeviceId",
+                            "bytes=${frame.totalBytes} from peer=$peerDeviceId (encrypted=${sessionKey != null})",
                     )
                     incomingMeta[frame.transferId] = frame
                     val existing = transfer.activeTransfers.value.firstOrNull { it.id.value == frame.transferId }
@@ -944,7 +1040,7 @@ public class DesktopEngine(
                         (existing != null && existing.state == FlashTransferState.Completed) ||
                             (existingPath != null && File(existingPath).let { it.isFile && it.length() == frame.totalBytes })
                     if (alreadyCompleted) {
-                        reply(ChunkFrame.serialize(ChunkFrame.Complete(frame.transferId, frame.fileId, verified = true)))
+                        secureReply(ChunkFrame.serialize(ChunkFrame.Complete(frame.transferId, frame.fileId, verified = true)))
                         sendXfer(peerDeviceId, RealFlashTransferRepository.ACTION_RESUME, frame.transferId)
                         continue
                     }
@@ -998,7 +1094,7 @@ public class DesktopEngine(
                 is ReceiveEvent.AckBatchReady -> {
                     transfer.onIncomingChunkConfirmed(event.frame.transferId, event.frame.indexes)
                     updateIncomingProgress(transfer, receivePipeline, incomingMeta, event.frame.transferId)
-                    reply(ChunkFrame.serialize(event.frame))
+                    secureReply(ChunkFrame.serialize(event.frame))
                 }
                 is ReceiveEvent.Completed -> {
                     val transferId = event.frame.transferId
@@ -1006,7 +1102,7 @@ public class DesktopEngine(
                     val path = receivedPaths.remove(transferId)
                     incomingMeta.remove(transferId)
                     transfer.onIncomingCompleted(transferId, event.frame.verified, path)
-                    reply(ChunkFrame.serialize(event.frame))
+                    secureReply(ChunkFrame.serialize(event.frame))
                 }
                 is ReceiveEvent.Rejected -> {
                     if (event.reason != RejectReason.AWAITING_ACCEPTANCE) {

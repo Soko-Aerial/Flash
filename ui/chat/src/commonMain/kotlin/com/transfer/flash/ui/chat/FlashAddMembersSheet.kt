@@ -135,11 +135,18 @@ public fun FlashLeaveGroupDialog(
     FlashConfirmHost(
         onDismiss = onDismiss,
         containerColor = colors.backgroundSurface,
-        title = { FlashText(text = "Leave group?", style = FlashTheme.typography.headingMedium) },
+        title = {
+            FlashText(
+                text = "Leave group?",
+                style = FlashTheme.typography.headingMedium,
+                color = colors.textPrimary,
+            )
+        },
         text = {
             FlashText(
                 text = "You will stop receiving messages from this group. Your chat history stays on this device.",
                 style = FlashTheme.typography.bodyDefault,
+                color = colors.textSecondary,
             )
         },
         confirmButton = {

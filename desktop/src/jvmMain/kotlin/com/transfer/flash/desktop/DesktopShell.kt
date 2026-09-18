@@ -5,6 +5,7 @@ package com.transfer.flash.desktop
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -23,6 +24,11 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.unit.dp
 import com.transfer.flash.core.common.model.FlashDevice
 import com.transfer.flash.core.common.model.FlashDeviceId
@@ -64,6 +70,7 @@ import com.transfer.flash.ui.chat.FlashPairingRequestUi
 import com.transfer.flash.ui.navigation.FlashAnimatedScreen
 import com.transfer.flash.ui.navigation.FlashDestination
 import com.transfer.flash.ui.navigation.FlashNavigationMath
+import com.transfer.flash.ui.navigation.FlashNavigationState
 import com.transfer.flash.ui.navigation.rememberFlashNavigationState
 import com.transfer.flash.ui.nearby.FlashNearbyMath
 import com.transfer.flash.ui.nearby.FlashNearbyScreen
@@ -118,8 +125,8 @@ public fun DesktopShell(
     themeMode: FlashThemeMode,
     onThemeModeSelected: (FlashThemeMode) -> Unit,
     window: java.awt.Window? = null,
+    nav: FlashNavigationState = rememberFlashNavigationState(),
 ) {
-    val nav = rememberFlashNavigationState()
     val scope = rememberCoroutineScope()
 
     val ready by engine.ready.collectAsState()
@@ -130,7 +137,7 @@ public fun DesktopShell(
     val snackbarHostState = remember { SnackbarHostState() }
 
     // ── Phase 22: window size + selection state for the two-pane layout ──
-    val sizeClass = rememberFlashDesktopWindowSize()
+    val sizeClass = rememberFlashDesktopWindowSize(window)
     val twoPane = FlashAdaptiveMath.isTwoPaneAllowed(sizeClass)
     var selectedTransferItem by remember { mutableStateOf<FlashTransferItemUi?>(null) }
     var selectedNearbyPeer by remember { mutableStateOf<NearbyPeerUi?>(null) }
@@ -141,6 +148,9 @@ public fun DesktopShell(
     // pin whichever one was current at first composition — the empty one — forever.
     val chatRepository = remember(engine, ready) { engine.chats }
     val chatListState by chatRepository.chatListState.collectAsState()
+    val totalUnreadCount = remember(chatListState.items) {
+        chatListState.items.sumOf { it.unreadCount }
+    }
     // The conversation screen's whole state. Before boot the repository is still the honest
     // empty stand-in, so the screen renders its empty state rather than nothing.
     val repositoryConversation by chatRepository.conversationState.collectAsState()
@@ -322,30 +332,61 @@ public fun DesktopShell(
         discoveredEndpoints,
         ongoingGroupCalls,
     ) {
-        val header = if (repositoryConversation.header.isGroup) {
-            null
+        val convId = nav.current.conversationId
+        val base = repositoryConversation
+        if (convId == null) {
+            base
+        } else if (base.header.isGroup) {
+            val ongoing = ongoingGroupCalls[convId]
+            if (ongoing != null) {
+                base.copy(
+                    ongoingCall = com.transfer.flash.core.messaging.model.FlashActiveGroupCallBarUi(
+                        callId = ongoing.callId,
+                        callerName = ongoing.initiatorId,
+                        video = ongoing.video,
+                        participantCount = ongoing.participantCount,
+                    ),
+                )
+            } else {
+                base
+            }
         } else {
-            desktopConversationHeader(
-                conversationId = nav.current.conversationId,
+            // ERROR-035: Direct chat presence & transport MUST come from the repository's live session
+            // tracking (RealFlashChatRepository.displayedPresence), NOT from whether an mDNS beacon exists
+            // in discovery. A peer with an mDNS endpoint but no active WebSocket session is offline in chat.
+            // desktopConversationHeader only provides fallback title/avatar derivation if the repository
+            // hasn't resolved them yet.
+            val isEncrypted = base.header.isEncrypted || (engine.trust.getSessionKey(convId) != null)
+            val fallback = desktopConversationHeader(
+                conversationId = convId,
                 trusted = trustedPeersByCoordinator,
                 discovered = discoveredEndpoints,
-                isEncrypted = nav.current.conversationId?.let { engine.trust.getSessionKey(it) != null } ?: false,
+                isEncrypted = isEncrypted,
+                presence = base.header.presence,
+                transport = base.header.transport,
             )
-        }
-        val withHeader = if (header != null) repositoryConversation.copy(header = header) else repositoryConversation
-        val convId = if (withHeader.header.isGroup) nav.current.conversationId else null
-        val ongoing = convId?.let { ongoingGroupCalls[it] }
-        if (ongoing != null) {
-            withHeader.copy(
-                ongoingCall = com.transfer.flash.core.messaging.model.FlashActiveGroupCallBarUi(
-                    callId = ongoing.callId,
-                    callerName = ongoing.initiatorId,
-                    video = ongoing.video,
-                    participantCount = ongoing.participantCount,
-                ),
+            val resolvedTitle = if (base.header.title.isNotBlank() && base.header.title != convId && base.header.title != "Select a conversation") {
+                base.header.title
+            } else {
+                fallback?.title ?: base.header.title
+            }
+            val resolvedInitials = if (base.header.avatarInitials.isNotBlank() && base.header.avatarInitials != "—") {
+                base.header.avatarInitials
+            } else {
+                fallback?.avatarInitials ?: base.header.avatarInitials
+            }
+            val header = base.header.copy(
+                title = resolvedTitle,
+                avatarInitials = resolvedInitials,
+                avatarSeed = resolvedTitle,
+                // Truthful presence & transport from RealFlashChatRepository — matches chat list exactly
+                presence = base.header.presence,
+                transport = base.header.transport,
+                typingMemberNames = base.header.typingMemberNames,
+                isEncrypted = isEncrypted,
+                showCallActions = true,
             )
-        } else {
-            withHeader
+            base.copy(header = header)
         }
     }
 
@@ -655,289 +696,325 @@ public fun DesktopShell(
 
     val tabBottomInset = if (twoPane) 0.dp else FLASH_BOTTOM_NAV_INSET
 
-    // The tab content, shared by both window layouts. In two-pane mode the transfers/nearby
-    // screens additionally drive the detail pane through the selection state.
-    val listPaneContent: @Composable () -> Unit = {
-        Box(Modifier.fillMaxSize()) {
-            FlashAnimatedScreen(targetState = nav.current) { entry ->
-                when (entry.destination) {
-                    FlashDestination.ChatList -> FlashChatListScreen(
-                        state = chatListState,
-                        onConversationClick = { id ->
-                            chatRepository.openConversation(id)
-                            chatRepository.clearListSelection()
-                            nav.navigate(FlashDestination.Conversation, conversationId = id)
-                        },
-                        onSearchClick = { isSearching = true },
-                        onFindDevicesClick = { nav.selectTab(FlashDestination.NearbyDevices) },
-                        onLanClick = { nav.selectTab(FlashDestination.NearbyDevices) },
-                        isSearching = isSearching,
-                        searchQuery = searchQuery,
-                        onSearchQueryChanged = { searchQuery = it },
-                        onCloseSearch = {
-                            isSearching = false
-                            searchQuery = ""
-                        },
-                        messageBodyMatches = messageBodyMatches,
-                        onConversationLongClick = chatRepository::enterListSelectionMode,
-                        onToggleSelection = chatRepository::toggleListSelection,
-                        onArchiveConversation = chatRepository::archiveConversation,
-                        onUnarchiveConversation = chatRepository::unarchiveConversation,
-                        onCloseSelection = chatRepository::clearListSelection,
-                        onPinSelected = {
-                            chatRepository.setConversationsPinned(chatListState.selectedIds, true)
-                        },
-                        onMuteSelected = {
-                            chatRepository.setConversationsMuted(chatListState.selectedIds, true)
-                        },
-                        onMarkSelectedRead = {
-                            chatRepository.markConversationsRead(chatListState.selectedIds)
-                        },
-                        onArchiveSelected = {
-                            chatRepository.archiveConversations(chatListState.selectedIds)
-                        },
-                        onUnarchiveSelected = {
-                            chatRepository.unarchiveConversations(chatListState.selectedIds)
-                        },
-                        onDeleteSelected = {
-                            chatRepository.deleteConversations(chatListState.selectedIds)
-                        },
-                        isLoading = (!ready || !chatListState.hasLoaded) && startError == null,
-                        errorMessage = startError?.let { error ->
-                            error.message?.takeIf { it.isNotBlank() }
-                                ?: error::class.simpleName
-                                ?: "Unknown startup failure"
-                        },
-                        onRetryLoad = { engine.start() },
-                        onNewGroupClick = { showCreateGroup = true },
-                        modifier = Modifier.fillMaxSize(),
-                        listState = chatListScroll,
-                        bottomInset = tabBottomInset,
-                    )
-                    FlashDestination.Conversation -> FlashConversationScreen(
-                        state = conversationState,
-                        onBack = {
-                            chatRepository.closeConversation()
-                            nav.back()
-                        },
-                        onRetryConnection = { engine.reconnectNow() },
-                        // Whether this peer is in the trust store, from the same list the Nearby
-                        // screen's rows and this screen's header already read.
-                        isPeerTrusted = conversationIdIsTrusted,
-                        onRevokePeerTrust = if (conversationIdIsTrusted) {
-                            {
-                                nav.current.conversationId?.let { id ->
-                                    scope.launch {
-                                        engine.trust.revokeTrust(
-                                            com.transfer.flash.core.common.model.FlashDeviceId(id),
-                                        )
-                                    }
-                                }
+    // Chat list content shared by listPaneContent in both single-pane and two-pane modes.
+    val chatListPaneContent: @Composable () -> Unit = {
+        FlashChatListScreen(
+            state = chatListState,
+            activeConversationId = if (twoPane) nav.current.conversationId else null,
+            onConversationClick = { id ->
+                chatRepository.openConversation(id)
+                chatRepository.clearListSelection()
+                nav.navigate(FlashDestination.Conversation, conversationId = id)
+            },
+            onSearchClick = { isSearching = true },
+            onFindDevicesClick = { nav.selectTab(FlashDestination.NearbyDevices) },
+            onLanClick = { nav.selectTab(FlashDestination.NearbyDevices) },
+            isSearching = isSearching,
+            searchQuery = searchQuery,
+            onSearchQueryChanged = { searchQuery = it },
+            onCloseSearch = {
+                isSearching = false
+                searchQuery = ""
+            },
+            messageBodyMatches = messageBodyMatches,
+            onConversationLongClick = chatRepository::enterListSelectionMode,
+            onToggleSelection = chatRepository::toggleListSelection,
+            onArchiveConversation = chatRepository::archiveConversation,
+            onUnarchiveConversation = chatRepository::unarchiveConversation,
+            onCloseSelection = chatRepository::clearListSelection,
+            onPinSelected = {
+                chatRepository.setConversationsPinned(chatListState.selectedIds, true)
+            },
+            onMuteSelected = {
+                chatRepository.setConversationsMuted(chatListState.selectedIds, true)
+            },
+            onMarkSelectedRead = {
+                chatRepository.markConversationsRead(chatListState.selectedIds)
+            },
+            onArchiveSelected = {
+                chatRepository.archiveConversations(chatListState.selectedIds)
+            },
+            onUnarchiveSelected = {
+                chatRepository.unarchiveConversations(chatListState.selectedIds)
+            },
+            onDeleteSelected = {
+                chatRepository.deleteConversations(chatListState.selectedIds)
+            },
+            isLoading = (!ready || !chatListState.hasLoaded) && startError == null,
+            errorMessage = startError?.let { error ->
+                error.message?.takeIf { it.isNotBlank() }
+                    ?: error::class.simpleName
+                    ?: "Unknown startup failure"
+            },
+            onRetryLoad = { engine.start() },
+            onNewGroupClick = { showCreateGroup = true },
+            modifier = Modifier.fillMaxSize(),
+            listState = chatListScroll,
+            bottomInset = tabBottomInset,
+        )
+    }
+
+    // Active conversation content. In two-pane mode, onBack/leave/clear returns to ChatList without popping the tab.
+    val conversationPaneContent: @Composable () -> Unit = {
+        FlashConversationScreen(
+            state = conversationState,
+            onBack = {
+                chatRepository.closeConversation()
+                if (twoPane) {
+                    nav.navigate(FlashDestination.ChatList)
+                } else {
+                    nav.back()
+                }
+            },
+            onRetryConnection = { engine.reconnectNow() },
+            // Whether this peer is in the trust store, from the same list the Nearby
+            // screen's rows and this screen's header already read.
+            isPeerTrusted = conversationIdIsTrusted,
+            onRevokePeerTrust = if (conversationIdIsTrusted) {
+                {
+                    nav.current.conversationId?.let { id ->
+                        scope.launch {
+                            engine.trust.revokeTrust(
+                                com.transfer.flash.core.common.model.FlashDeviceId(id),
+                            )
+                        }
+                    }
+                }
+            } else {
+                null
+            },
+            onVerifySecurityCodes = {
+                nav.current.conversationId?.let { id ->
+                    engine.pairing.beginPair(id, conversationState.header.title)
+                }
+            },
+            localFingerprint = engine.pairing.localFingerprintHex,
+            peerFingerprint = nav.current.conversationId?.let { id ->
+                engine.pairing.getPeerFingerprint(id)
+            },
+            onSendText = { chatRepository.sendText(it) },
+            onSendReply = { text, replyToId, replyToPreview ->
+                chatRepository.sendReply(text, replyToId, replyToPreview)
+            },
+            onPersistDraft = chatRepository::saveDraft,
+            onToggleReaction = { messageId, emoji ->
+                chatRepository.toggleReaction(messageId, emoji)
+            },
+            onTypingChanged = chatRepository::setTyping,
+            // Voice & video calls from the conversation header (Phase 33a/33c).
+            onStartCall = {
+                nav.current.conversationId?.let { id ->
+                    placeVoiceCall(id, conversationState.header.title)
+                }
+            },
+            onStartVideoCall = {
+                nav.current.conversationId?.let { id ->
+                    placeVideoCall(id, conversationState.header.title)
+                }
+            },
+            showVideoCallAction = true,
+            // Offer accept/decline/retry/open, parity with the Transfers tab (which
+            // calls the same repository methods): the chat bubble params default to
+            // no-ops, and leaving them unwired is exactly the "accept in chat does
+            // nothing" report (ERROR-062 follow-up). acceptIncoming emits ACTION_ACCEPT,
+            // which the engine collector turns into sink-then-RESUME like a tab accept.
+            onAcceptOffer = { tid ->
+                engine.transfers?.let { repo ->
+                    scope.launch {
+                        repo.acceptIncoming(com.transfer.flash.core.transfer.model.FlashTransferId(tid))
+                    }
+                }
+            },
+            onDeclineOffer = { tid ->
+                engine.transfers?.let { repo ->
+                    scope.launch {
+                        repo.declineIncoming(com.transfer.flash.core.transfer.model.FlashTransferId(tid))
+                    }
+                }
+            },
+            onRetryTransfer = { tid ->
+                engine.transfers?.let { repo ->
+                    scope.launch {
+                        val recipientIds = chatRepository.getRecipientTransferIds(tid)
+                        if (recipientIds.isNotEmpty()) {
+                            recipientIds.forEach { subId ->
+                                repo.resumeTransfer(com.transfer.flash.core.transfer.model.FlashTransferId(subId))
                             }
                         } else {
-                            null
-                        },
-                        onSendText = { chatRepository.sendText(it) },
-                        onSendReply = { text, replyToId, replyToPreview ->
-                            chatRepository.sendReply(text, replyToId, replyToPreview)
-                        },
-                        onPersistDraft = chatRepository::saveDraft,
-                        onToggleReaction = { messageId, emoji ->
-                            chatRepository.toggleReaction(messageId, emoji)
-                        },
-                        onTypingChanged = chatRepository::setTyping,
-                        // Voice & video calls from the conversation header (Phase 33a/33c).
-                        onStartCall = {
-                            nav.current.conversationId?.let { id ->
-                                placeVoiceCall(id, conversationState.header.title)
+                            repo.resumeTransfer(com.transfer.flash.core.transfer.model.FlashTransferId(tid))
+                        }
+                    }
+                }
+            },
+            onPauseTransfer = { tid ->
+                engine.transfers?.let { repo ->
+                    scope.launch {
+                        val recipientIds = chatRepository.getRecipientTransferIds(tid)
+                        if (recipientIds.isNotEmpty()) {
+                            recipientIds.forEach { subId ->
+                                repo.pauseTransfer(com.transfer.flash.core.transfer.model.FlashTransferId(subId))
                             }
-                        },
-                        onStartVideoCall = {
-                            nav.current.conversationId?.let { id ->
-                                placeVideoCall(id, conversationState.header.title)
+                        } else {
+                            repo.pauseTransfer(com.transfer.flash.core.transfer.model.FlashTransferId(tid))
+                        }
+                    }
+                }
+            },
+            onResumeTransfer = { tid ->
+                engine.transfers?.let { repo ->
+                    scope.launch {
+                        val recipientIds = chatRepository.getRecipientTransferIds(tid)
+                        if (recipientIds.isNotEmpty()) {
+                            recipientIds.forEach { subId ->
+                                repo.resumeTransfer(com.transfer.flash.core.transfer.model.FlashTransferId(subId))
                             }
-                        },
-                        showVideoCallAction = true,
-                        // Offer accept/decline/retry/open, parity with the Transfers tab (which
-                        // calls the same repository methods): the chat bubble params default to
-                        // no-ops, and leaving them unwired is exactly the "accept in chat does
-                        // nothing" report (ERROR-062 follow-up). acceptIncoming emits ACTION_ACCEPT,
-                        // which the engine collector turns into sink-then-RESUME like a tab accept.
-                        onAcceptOffer = { tid ->
-                            engine.transfers?.let { repo ->
-                                scope.launch {
-                                    repo.acceptIncoming(com.transfer.flash.core.transfer.model.FlashTransferId(tid))
-                                }
+                        } else {
+                            repo.resumeTransfer(com.transfer.flash.core.transfer.model.FlashTransferId(tid))
+                        }
+                    }
+                }
+            },
+            onCancelTransfer = { tid ->
+                engine.transfers?.let { repo ->
+                    scope.launch {
+                        val recipientIds = chatRepository.getRecipientTransferIds(tid)
+                        if (recipientIds.isNotEmpty()) {
+                            recipientIds.forEach { subId ->
+                                repo.cancelTransfer(com.transfer.flash.core.transfer.model.FlashTransferId(subId))
                             }
-                        },
-                        onDeclineOffer = { tid ->
-                            engine.transfers?.let { repo ->
-                                scope.launch {
-                                    repo.declineIncoming(com.transfer.flash.core.transfer.model.FlashTransferId(tid))
-                                }
-                            }
-                        },
-                        onRetryTransfer = { tid ->
-                            engine.transfers?.let { repo ->
-                                scope.launch {
-                                    val recipientIds = chatRepository.getRecipientTransferIds(tid)
-                                    if (recipientIds.isNotEmpty()) {
-                                        recipientIds.forEach { subId ->
-                                            repo.resumeTransfer(com.transfer.flash.core.transfer.model.FlashTransferId(subId))
-                                        }
-                                    } else {
-                                        repo.resumeTransfer(com.transfer.flash.core.transfer.model.FlashTransferId(tid))
-                                    }
-                                }
-                            }
-                        },
-                        onPauseTransfer = { tid ->
-                            engine.transfers?.let { repo ->
-                                scope.launch {
-                                    val recipientIds = chatRepository.getRecipientTransferIds(tid)
-                                    if (recipientIds.isNotEmpty()) {
-                                        recipientIds.forEach { subId ->
-                                            repo.pauseTransfer(com.transfer.flash.core.transfer.model.FlashTransferId(subId))
-                                        }
-                                    } else {
-                                        repo.pauseTransfer(com.transfer.flash.core.transfer.model.FlashTransferId(tid))
-                                    }
-                                }
-                            }
-                        },
-                        onResumeTransfer = { tid ->
-                            engine.transfers?.let { repo ->
-                                scope.launch {
-                                    val recipientIds = chatRepository.getRecipientTransferIds(tid)
-                                    if (recipientIds.isNotEmpty()) {
-                                        recipientIds.forEach { subId ->
-                                            repo.resumeTransfer(com.transfer.flash.core.transfer.model.FlashTransferId(subId))
-                                        }
-                                    } else {
-                                        repo.resumeTransfer(com.transfer.flash.core.transfer.model.FlashTransferId(tid))
-                                    }
-                                }
-                            }
-                        },
-                        onCancelTransfer = { tid ->
-                            engine.transfers?.let { repo ->
-                                scope.launch {
-                                    val recipientIds = chatRepository.getRecipientTransferIds(tid)
-                                    if (recipientIds.isNotEmpty()) {
-                                        recipientIds.forEach { subId ->
-                                            repo.cancelTransfer(com.transfer.flash.core.transfer.model.FlashTransferId(subId))
-                                        }
-                                    } else {
-                                        repo.cancelTransfer(com.transfer.flash.core.transfer.model.FlashTransferId(tid))
-                                    }
-                                }
-                            }
-                        },
-                        onOpenAttachment = { path, mime, _ ->
-                            DesktopHelpers.openAttachment(path, mime)
-                        },
-                        onAttachmentClick = {
-                            generalFilePicker.launch(listOf("*/*"))
-                        },
-                        onSendFile = { uri, displayName, size ->
-                            val peerId = nav.current.conversationId
-                            if (peerId != null) {
-                                sendFileToPeer(
-                                    peerId = peerId,
-                                    peerName = conversationState.header.title,
-                                    isGroup = conversationState.header.isGroup,
-                                    uri = uri,
-                                    displayName = displayName,
-                                    size = size,
-                                    mimeType = DesktopHelpers.guessMimeType(displayName),
-                                )
-                            }
-                        },
-                        onDeleteMessage = { ids -> chatRepository.deleteMessages(ids) },
-                        onDeleteMessageForEveryone = chatRepository::deleteMessageForEveryone,
-                        // Both helpers already existed and were never called, so the media viewer's
-                        // Save and Share were silently inert. Save writes a copy next to the
-                        // original under the received root; Share hands the file to the OS.
-                        onSaveImage = { uri, mime -> DesktopHelpers.saveImageToGallery(uri, mime) },
-                        onShareImage = { uri, mime -> DesktopHelpers.shareImageUri(uri, mime) },
-                        onVoiceRecordingStarting = {
-                            if (calls?.activeCall?.value != null) null else java.util.UUID.randomUUID().toString()
-                        },
-                        onVoiceRecordingStopped = { _ -> },
-                        onSendVoiceMessage = { localPath, durationMs, amplitudes ->
-                            val peerId = nav.current.conversationId
-                            if (peerId != null) {
-                                val fileName = "Voice message.wav"
-                                val size = runCatching {
-                                    val f = if (localPath.startsWith("file:", ignoreCase = true)) {
-                                        java.io.File(java.net.URI(localPath))
-                                    } else {
-                                        java.io.File(localPath)
-                                    }
-                                    f.length()
-                                }.getOrDefault(0L)
-                                sendFileToPeer(
-                                    peerId = peerId,
-                                    peerName = conversationState.header.title,
-                                    isGroup = conversationState.header.isGroup,
-                                    uri = localPath,
-                                    displayName = fileName,
-                                    size = size,
-                                    mimeType = "audio/wav",
-                                    voiceDurationMs = durationMs,
-                                    voiceAmplitudes = amplitudes,
-                                )
-                            }
-                        },
-                        conversationId = nav.current.conversationId,
-                        addablePeers = trustedPeerRoster.filter { candidate ->
-                            conversationState.members.none { it.id == candidate.id }
-                        },
-                        onAddGroupMembers = { groupId, memberIds ->
-                            scope.launch {
-                                chatRepository.addGroupMembers(groupId, memberIds)
-                            }
-                        },
-                        onLeaveGroup = { groupId ->
-                            scope.launch {
-                                val left = chatRepository.leaveGroup(groupId)
-                                if (left is com.transfer.flash.core.common.result.FlashResult.Success) {
-                                    chatRepository.closeConversation()
-                                    nav.back()
-                                } else {
-                                    snackbarHostState.showSnackbar(
-                                        message = "Couldn't leave the group — try again",
-                                        duration = SnackbarDuration.Short,
-                                    )
-                                }
-                            }
-                        },
-                        onClearConversation = { id ->
-                            chatRepository.deleteConversations(setOf(id))
-                            chatRepository.closeConversation()
-                            nav.back()
-                        },
-                        onMarkUnread = chatRepository::markConversationUnread,
-                        onJoinGroupCall = { callId, video ->
-                            val peerId = nav.current.conversationId
-                            if (peerId != null) {
-                                scope.launch(Dispatchers.IO) {
-                                    val memberIds = if (conversationState.members.isNotEmpty()) {
-                                        conversationState.members.map { it.id }
-                                    } else {
-                                        chatRepository.groupMembers(peerId).map { it.id }
-                                    }
-                                    calls?.joinGroupCall(
-                                        groupId = peerId,
-                                        callId = callId,
-                                        memberIds = memberIds,
-                                        video = video,
-                                    )
-                                }
-                            }
-                        },
+                        } else {
+                            repo.cancelTransfer(com.transfer.flash.core.transfer.model.FlashTransferId(tid))
+                        }
+                    }
+                }
+            },
+            onOpenAttachment = { path, mime, _ ->
+                DesktopHelpers.openAttachment(path, mime)
+            },
+            onAttachmentClick = {
+                generalFilePicker.launch(listOf("*/*"))
+            },
+            onSendFile = { uri, displayName, size ->
+                val peerId = nav.current.conversationId
+                if (peerId != null) {
+                    sendFileToPeer(
+                        peerId = peerId,
+                        peerName = conversationState.header.title,
+                        isGroup = conversationState.header.isGroup,
+                        uri = uri,
+                        displayName = displayName,
+                        size = size,
+                        mimeType = DesktopHelpers.guessMimeType(displayName),
                     )
-                    FlashDestination.Transfers -> FlashTransfersScreen(
+                }
+            },
+            onDeleteMessage = { ids -> chatRepository.deleteMessages(ids) },
+            onDeleteMessageForEveryone = chatRepository::deleteMessageForEveryone,
+            // Both helpers already existed and were never called, so the media viewer's
+            // Save and Share were silently inert. Save writes a copy next to the
+            // original under the received root; Share hands the file to the OS.
+            onSaveImage = { uri, mime -> DesktopHelpers.saveImageToGallery(uri, mime) },
+            onShareImage = { uri, mime -> DesktopHelpers.shareImageUri(uri, mime) },
+            onVoiceRecordingStarting = {
+                if (calls?.activeCall?.value != null) null else java.util.UUID.randomUUID().toString()
+            },
+            onVoiceRecordingStopped = { _ -> },
+            onSendVoiceMessage = { localPath, durationMs, amplitudes ->
+                val peerId = nav.current.conversationId
+                if (peerId != null) {
+                    val fileName = "Voice message.wav"
+                    val size = runCatching {
+                        val f = if (localPath.startsWith("file:", ignoreCase = true)) {
+                            java.io.File(java.net.URI(localPath))
+                        } else {
+                            java.io.File(localPath)
+                        }
+                        f.length()
+                    }.getOrDefault(0L)
+                    sendFileToPeer(
+                        peerId = peerId,
+                        peerName = conversationState.header.title,
+                        isGroup = conversationState.header.isGroup,
+                        uri = localPath,
+                        displayName = fileName,
+                        size = size,
+                        mimeType = "audio/wav",
+                        voiceDurationMs = durationMs,
+                        voiceAmplitudes = amplitudes,
+                    )
+                }
+            },
+            conversationId = nav.current.conversationId,
+            addablePeers = trustedPeerRoster.filter { candidate ->
+                conversationState.members.none { it.id == candidate.id }
+            },
+            onAddGroupMembers = { groupId, memberIds ->
+                scope.launch {
+                    chatRepository.addGroupMembers(groupId, memberIds)
+                }
+            },
+            onLeaveGroup = { groupId ->
+                scope.launch {
+                    val left = chatRepository.leaveGroup(groupId)
+                    if (left is com.transfer.flash.core.common.result.FlashResult.Success) {
+                        chatRepository.closeConversation()
+                        if (twoPane) {
+                            nav.navigate(FlashDestination.ChatList)
+                        } else {
+                            nav.back()
+                        }
+                    } else {
+                        snackbarHostState.showSnackbar(
+                            message = "Couldn't leave the group — try again",
+                            duration = SnackbarDuration.Short,
+                        )
+                    }
+                }
+            },
+            onClearConversation = { id ->
+                chatRepository.deleteConversations(setOf(id))
+                chatRepository.closeConversation()
+                if (twoPane) {
+                    nav.navigate(FlashDestination.ChatList)
+                } else {
+                    nav.back()
+                }
+            },
+            onMarkUnread = chatRepository::markConversationUnread,
+            onJoinGroupCall = { callId, video ->
+                val peerId = nav.current.conversationId
+                if (peerId != null) {
+                    scope.launch(Dispatchers.IO) {
+                        val memberIds = if (conversationState.members.isNotEmpty()) {
+                            conversationState.members.map { it.id }
+                        } else {
+                            chatRepository.groupMembers(peerId).map { it.id }
+                        }
+                        calls?.joinGroupCall(
+                            groupId = peerId,
+                            callId = callId,
+                            memberIds = memberIds,
+                            video = video,
+                        )
+                    }
+                }
+            },
+        )
+    }
+
+    // The tab content, shared by both window layouts. In two-pane mode the transfers/nearby
+    // screens additionally drive the detail pane through the selection state. When twoPane is
+    // active and the user is in a conversation, the list pane remains on ChatList.
+    val listPaneContent: @Composable () -> Unit = {
+        Box(Modifier.fillMaxSize()) {
+            if (twoPane && nav.current.destination == FlashDestination.Conversation) {
+                chatListPaneContent()
+            } else {
+                FlashAnimatedScreen(targetState = nav.current) { entry ->
+                    when (entry.destination) {
+                        FlashDestination.ChatList -> chatListPaneContent()
+                        FlashDestination.Conversation -> conversationPaneContent()
+                        FlashDestination.Transfers -> FlashTransfersScreen(
                         state = transfersUi,
                         onPauseResumeClick = { item ->
                             engine.transfers?.let { repo ->
@@ -1144,12 +1221,15 @@ public fun DesktopShell(
             }
         }
     }
+}
 
-    // The detail pane for two-pane mode: transfer info, peer info, or the placeholder (C3:
-    // no conversation pane in v1 — the empty repository cannot supply conversation state).
+    // The detail pane for two-pane mode: active conversation, transfer info, peer info, or placeholder.
     val detailPaneContent: @Composable () -> Unit = {
         when {
-            selectedTransferItem != null -> {
+            nav.current.destination == FlashDestination.Conversation && nav.current.conversationId != null -> {
+                conversationPaneContent()
+            }
+            nav.current.destination == FlashDestination.Transfers && selectedTransferItem != null -> {
                 val item = selectedTransferItem!!
                 TransferDetailPane(
                     item = item,
@@ -1183,18 +1263,53 @@ public fun DesktopShell(
                     },
                 )
             }
-            selectedNearbyPeer != null -> NearbyDetailPane(
-                peer = selectedNearbyPeer!!,
-                onClose = { selectedNearbyPeer = null },
+            nav.current.destination == FlashDestination.NearbyDevices && selectedNearbyPeer != null -> {
+                NearbyDetailPane(
+                    peer = selectedNearbyPeer!!,
+                    onClose = { selectedNearbyPeer = null },
+                )
+            }
+            else -> PlaceholderDetailPane(
+                onFindDevices = { nav.selectTab(FlashDestination.NearbyDevices) },
             )
-            else -> PlaceholderDetailPane()
         }
     }
 
     Box(
         Modifier
             .fillMaxSize()
-            .background(FlashTheme.colors.backgroundApp),
+            .background(FlashTheme.colors.backgroundApp)
+            .onPreviewKeyEvent { event ->
+                if (event.type == KeyEventType.KeyDown && event.key == Key.Escape) {
+                    when {
+                        isSearching -> {
+                            isSearching = false
+                            searchQuery = ""
+                            true
+                        }
+                        nav.current.destination == FlashDestination.Conversation -> {
+                            chatRepository.closeConversation()
+                            if (twoPane) {
+                                nav.navigate(FlashDestination.ChatList)
+                            } else {
+                                nav.back()
+                            }
+                            true
+                        }
+                        selectedTransferItem != null -> {
+                            selectedTransferItem = null
+                            true
+                        }
+                        selectedNearbyPeer != null -> {
+                            selectedNearbyPeer = null
+                            true
+                        }
+                        else -> false
+                    }
+                } else {
+                    false
+                }
+            },
     ) {
 
         // Last sibling, so a pairing message is never painted under the layout — the same reasoning
@@ -1249,13 +1364,27 @@ public fun DesktopShell(
             Row(Modifier.fillMaxSize()) {
                 DesktopSideBar(
                     tabs = DESKTOP_SIDE_TABS,
-                    selectedTab = nav.current.destination,
-                    onTabSelected = nav::selectTab,
+                    selectedTab = if (nav.current.destination == FlashDestination.Conversation) FlashDestination.ChatList else nav.current.destination,
+                    onTabSelected = { destination ->
+                        if (nav.current.destination == FlashDestination.Conversation && destination == FlashDestination.ChatList) {
+                            chatRepository.closeConversation()
+                            nav.navigate(FlashDestination.ChatList)
+                        } else {
+                            nav.selectTab(destination)
+                        }
+                    },
+                    unreadCount = totalUnreadCount,
+                    localDisplayName = engine.localFriendlyName,
+                    onProfileClick = {
+                        nav.selectTab(FlashDestination.Settings)
+                    },
                 )
                 DesktopTwoPane(
                     listPane = listPaneContent,
                     detailPane = detailPaneContent,
+                    modifier = Modifier.weight(1f).fillMaxHeight(),
                     sizeClass = sizeClass,
+                    window = window,
                 )
             }
         } else {
@@ -1436,11 +1565,15 @@ internal fun desktopConversationHeader(
     trusted: List<FlashTrustedPeer>,
     discovered: List<FlashDiscoveredEndpoint>,
     isEncrypted: Boolean = false,
+    presence: FlashPeerPresence? = null,
+    transport: FlashNetworkTransport? = null,
 ): FlashChatHeaderUiState? {
     if (conversationId == null) return null
     val trustedName = trusted.firstOrNull { it.id == conversationId }?.name
     val endpoint = discovered.firstOrNull { it.deviceId.value == conversationId }
     val name = trustedName ?: endpoint?.friendlyName ?: return null
+    val resolvedPresence = presence ?: if (endpoint != null) FlashPeerPresence.Online else FlashPeerPresence.Offline
+    val resolvedTransport = transport ?: if (resolvedPresence == FlashPeerPresence.Online) FlashNetworkTransport.Lan else FlashNetworkTransport.Unknown
     return FlashChatHeaderUiState(
         title = name,
         avatarInitials = name.trim().split(" ")
@@ -1449,8 +1582,8 @@ internal fun desktopConversationHeader(
             .joinToString("") { it.first().uppercase() }
             .ifBlank { "?" },
         avatarSeed = name,
-        presence = if (endpoint != null) FlashPeerPresence.Online else FlashPeerPresence.Offline,
-        transport = FlashNetworkTransport.Lan,
+        presence = resolvedPresence,
+        transport = resolvedTransport,
         isGroup = false,
         isEncrypted = isEncrypted,
         showCallActions = true,

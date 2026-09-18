@@ -25,6 +25,14 @@ import com.transfer.flash.ui.theme.FlashTheme
 import com.transfer.flash.ui.theme.rememberFlashMotion
 import com.shepeliev.webrtckmp.WebRtc
 import dev.onvoid.webrtc.logging.Logging
+import androidx.compose.ui.window.Tray
+import androidx.compose.ui.window.rememberTrayState
+import com.transfer.flash.ui.navigation.FlashDestination
+import com.transfer.flash.ui.navigation.FlashNavigationState
+import com.transfer.flash.ui.navigation.rememberFlashNavigationState
+import com.transfer.flash.ui.icons.FlashIcons
+import org.jetbrains.compose.resources.painterResource
+import java.awt.SystemTray
 import java.io.File
 import java.io.FileWriter
 import java.io.PrintWriter
@@ -51,11 +59,116 @@ public fun main() = application {
     val engine = remember { DesktopEngine() }
     engine.start()
 
-    Window(
-        onCloseRequest = ::exitApplication,
-        title = "Flash",
-        state = rememberWindowState(width = 1200.dp, height = 800.dp),
-    ) {
+    var isWindowVisible by remember { mutableStateOf(true) }
+    val windowState = rememberWindowState(width = 1200.dp, height = 800.dp)
+    val trayState = rememberTrayState()
+    val desktopSettings by engine.settings.collectAsState()
+    val nav = rememberFlashNavigationState()
+
+    // Desktop notification manager
+    val notificationManager = remember {
+        DesktopNotificationManager(
+            engine = engine,
+            scope = engine.scope,
+            sendNotification = { trayState.sendNotification(it) },
+            isWindowVisible = { isWindowVisible },
+            activeConversationId = { nav.current.conversationId },
+            isNotificationsEnabled = { engine.settings.value.showNotifications },
+        )
+    }
+
+    DisposableEffect(notificationManager) {
+        notificationManager.start()
+        onDispose { notificationManager.stop() }
+    }
+
+    // System Tray
+    if (SystemTray.isSupported()) {
+        val ready by engine.ready.collectAsState()
+        val trayTooltip = if (ready) "Flash - Online" else "Flash - Connecting..."
+
+        Tray(
+            icon = painterResource(FlashIcons.Tray.drawableRes),
+            state = trayState,
+            tooltip = trayTooltip,
+            onAction = {
+                isWindowVisible = true
+                windowState.isMinimized = false
+            },
+            menu = {
+                Item(
+                    text = if (isWindowVisible) "Hide Flash" else "Open Flash",
+                    onClick = {
+                        if (isWindowVisible) {
+                            isWindowVisible = false
+                        } else {
+                            isWindowVisible = true
+                            windowState.isMinimized = false
+                        }
+                    },
+                )
+                Separator()
+                Item(
+                    text = "Chats",
+                    onClick = {
+                        isWindowVisible = true
+                        windowState.isMinimized = false
+                        nav.selectTab(FlashDestination.ChatList)
+                    },
+                )
+                Item(
+                    text = "Transfers",
+                    onClick = {
+                        isWindowVisible = true
+                        windowState.isMinimized = false
+                        nav.selectTab(FlashDestination.Transfers)
+                    },
+                )
+                Item(
+                    text = "Nearby Devices",
+                    onClick = {
+                        isWindowVisible = true
+                        windowState.isMinimized = false
+                        nav.selectTab(FlashDestination.NearbyDevices)
+                    },
+                )
+                Item(
+                    text = "Settings",
+                    onClick = {
+                        isWindowVisible = true
+                        windowState.isMinimized = false
+                        nav.selectTab(FlashDestination.Settings)
+                    },
+                )
+                Separator()
+                Item(
+                    text = "Quit Flash",
+                    onClick = ::exitApplication,
+                )
+            },
+        )
+    }
+
+    if (isWindowVisible) {
+        Window(
+            onCloseRequest = {
+                if (desktopSettings.closeToTray && SystemTray.isSupported()) {
+                    isWindowVisible = false
+                } else {
+                    exitApplication()
+                }
+            },
+            title = "Flash",
+            state = windowState,
+        ) {
+        val density = androidx.compose.ui.platform.LocalDensity.current
+        DisposableEffect(window, density) {
+            val minWidthPx = (640 * density.density).toInt()
+            val minHeightPx = (480 * density.density).toInt()
+            window.minimumSize = java.awt.Dimension(minWidthPx, minHeightPx)
+            onDispose {}
+        }
+
         // Reactive settings: Theme Mode and Performance Mode are observed directly from the engine's
         // StateFlow so changes in Settings take effect immediately without requiring an app restart.
         val desktopSettings by engine.settings.collectAsState()
@@ -100,10 +213,12 @@ public fun main() = application {
                             engine.storeThemeMode(mode)
                         },
                         window = window,
+                        nav = nav,
                     )
                 }
             }
         }
+    }
     }
 
     // Teardown, in a `DisposableEffect` and NOT as a bare statement — this one line is why pairing

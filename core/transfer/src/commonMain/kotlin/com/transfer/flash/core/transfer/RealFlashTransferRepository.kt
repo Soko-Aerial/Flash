@@ -63,6 +63,8 @@ public class RealFlashTransferRepository(
      * un-ACKed chunks). Defaults off so unit tests keep their immediate-streaming contract.
      */
     private val requireReceiverAcceptance: Boolean = false,
+    /** Predicate indicating whether a given peer device has an established encrypted channel. */
+    private val isPeerEncrypted: (peerDeviceId: String) -> Boolean = { false },
 ) : FlashTransferRepository {
 
     private val _activeTransfers = MutableStateFlow<List<FlashTransfer>>(emptyList())
@@ -239,6 +241,7 @@ public class RealFlashTransferRepository(
         wireFileId = fileId,
         peerDeviceId = targetDevice.id.value,
         errorMessage = if (requireReceiverAcceptance) "waiting for receiver to accept" else null,
+        isEncrypted = isPeerEncrypted(targetDevice.id.value),
     )
 
     // #5 sender half: park before streaming until the receiver accepts (arrives as RESUME). We
@@ -854,6 +857,7 @@ public class RealFlashTransferRepository(
                     state = FlashTransferState.Offered,
                     wireFileId = fileId,
                     peerDeviceId = peerDeviceId,
+                    isEncrypted = peerDeviceId?.let { isPeerEncrypted(it) } ?: false,
                 )
             }
         }
@@ -953,6 +957,7 @@ public class RealFlashTransferRepository(
                     wireFileId = fileId,
                     peerDeviceId = peerDeviceId,
                     localPath = localPath,
+                    isEncrypted = peerDeviceId?.let { isPeerEncrypted(it) } ?: false,
                 )
             }
         }

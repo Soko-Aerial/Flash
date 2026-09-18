@@ -86,6 +86,7 @@ internal class DesktopTrustStore(private val stateDir: java.io.File) : FlashTrus
     private val lock = Any()
     private val cache = ConcurrentHashMap<FlashDeviceId, String>()
     private val sessionKeys = ConcurrentHashMap<FlashDeviceId, ByteArray>()
+    private val pins = ConcurrentHashMap<FlashDeviceId, String>()
 
     init {
         stateDir.mkdirs()
@@ -104,6 +105,14 @@ internal class DesktopTrustStore(private val stateDir: java.io.File) : FlashTrus
                         runCatching { com.transfer.flash.core.common.protocol.Base64.decode(encoded) }
                             .getOrNull()?.let { bytes -> sessionKeys[id] = bytes }
                     }
+                props.stringPropertyNames()
+                    .filter { it.startsWith("pin.") }
+                    .forEach { key ->
+                        val id = FlashDeviceId(key.removePrefix("pin."))
+                        props.getProperty(key)?.trim()?.takeIf { it.isNotEmpty() }?.let { pinHex ->
+                            pins[id] = pinHex.uppercase()
+                        }
+                    }
             }
         }
     }
@@ -114,6 +123,7 @@ internal class DesktopTrustStore(private val stateDir: java.io.File) : FlashTrus
         sessionKeys.forEach { (id, key) ->
             props.setProperty("session_key.${id.value}", com.transfer.flash.core.common.protocol.Base64.encode(key))
         }
+        pins.forEach { (id, pin) -> props.setProperty("pin.${id.value}", pin) }
         file.outputStream().use { output: java.io.OutputStream -> props.store(output, "Phase 16 harness trust") }
     }
 
@@ -137,10 +147,21 @@ internal class DesktopTrustStore(private val stateDir: java.io.File) : FlashTrus
 
     override fun getSessionKey(deviceId: FlashDeviceId): ByteArray? = sessionKeys[deviceId]
 
+    override fun savePin(deviceId: FlashDeviceId, fingerprintHex: String): FlashResult<Unit> {
+        synchronized(lock) {
+            pins[deviceId] = fingerprintHex.uppercase()
+            runCatching { persist() }
+        }
+        return FlashResult.Success(Unit)
+    }
+
+    override fun getPin(deviceId: FlashDeviceId): String? = pins[deviceId]
+
     override fun revokeTrust(deviceId: FlashDeviceId): FlashResult<Unit> {
         synchronized(lock) {
             cache.remove(deviceId)
             sessionKeys.remove(deviceId)
+            pins.remove(deviceId)
             runCatching { persist() }
         }
         return FlashResult.Success(Unit)

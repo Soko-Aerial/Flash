@@ -1,5 +1,239 @@
 # Progress Log
 
+## 2026-09-18 — "Encrypted & Verified" Security Surface, Tray Icon Contrast & Robust Typing Lifecycle
+
+### Worked on
+1. **"Encrypted & Verified" Security Surface**:
+   - Replaced placeholder "Soon" rows in `FlashEncryptionSheet` with actionable rows for "Verify security codes" and "View device fingerprint".
+   - Implemented `FlashFingerprintSheet` displaying formatted local and peer cryptographic fingerprints (`FlashFingerprint.formatHexGroups`) with copy affordances and verified trust status.
+   - Wired interactive security code verification (`engine.pairing.beginPair`) and fingerprint inspection into `FlashConversationScreen`, `DesktopShell`, and Android `MainActivity`.
+   - Exposed `getPeerFingerprint(peerId)` on `FlashPairingCoordinator` (JVM/desktop) and `getFingerprint(peerId)` on `PairingCoordinator` (Android).
+2. **System Tray Icon Visibility on Windows Dark Mode**:
+   - Created `flash_ic_tray.xml` with Flash Pulse Teal fill (`#FF2DD4BF`) and high-contrast white outline (`#FFFFFFFF`).
+   - Exposed `FlashIcons.Tray` in `FlashIcons.kt` and updated `DesktopMain.kt` so the tray icon is vibrant and clearly visible on both dark (Windows 11/10 dark mode) and light taskbars.
+3. **Typing Indicator Lifecycle & Disconnect Pruning**:
+   - Resolved issue where a user typing who disconnects or goes offline remained stuck as "online / typing" in conversation header, message bubble, and chat list / search.
+   - Implemented 6-second inactivity TTL (`scheduleTypingExpiry` / `cancelTypingExpiry`) in `RealFlashChatRepository` so abandoned typing automatically clears.
+   - Implemented immediate disconnect pruning in `RealFlashChatRepository` observing `onlinePeerIds`, instantly wiping typing state when a peer departs.
+   - Guarded `directHeaderState` and group header so `typingMemberNames` is strictly empty when the peer is offline.
+   - Integrated `typingFlow` into `_chatListState` so `FlashChatListItemUi.isTyping` accurately tracks active online typing and immediately reverts to message preview on disconnect.
+   - Enforced strict offline suppression on `showTypingDots` in `FlashChatHeader` and `peerTypingName` in `FlashConversationScreen`.
+
+### Verification
+- `:core:messaging:jvmTest`: ALL PASSED.
+- `:ui:chat:jvmTest`: ALL PASSED.
+- `:desktop:jvmTest`: ALL 51 TASKS PASSED (including loopback pairing, notification manager, and conversation header tests).
+- `:app:testDebugUnitTest`: ALL 199 TASKS PASSED.
+
+---
+
+## 2026-09-18 — Desktop Background Service, System Tray & Instant Network Watcher
+
+### Worked on
+Implemented full Desktop Background Service architecture:
+1. Active System Tray with context menu, live status indicator, and tab navigation shortcuts.
+2. "Close to Tray" window lifecycle management (app window hides to tray on 'X' click, remaining active in background).
+3. `JvmNetworkWatcher` for automatic network interface monitoring and instant reconnection on network changes (Wi-Fi/Ethernet/IP transitions).
+4. `DesktopNotificationManager` for native OS notifications with foreground-window suppression.
+5. Desktop settings persistence for `closeToTray` and `showNotifications`.
+
+### Changed
+1. `core/network/src/jvmMain/.../resilience/JvmNetworkWatcher.kt`:
+   - Added JVM equivalent of `AndroidNetworkWatcher`.
+   - Periodically samples active non-loopback network interfaces (`NetworkInterfaceSnapshot`).
+   - Detects link drops, associations, and IP changes, firing `onAvailable`, `onLost`, and `onLinkChanged`.
+2. `core/network/src/jvmTest/.../resilience/JvmNetworkWatcherTest.kt`:
+   - Unit test suite verifying baseline sampling, available transitions, lost transitions, IP roam transitions, and loopback filtering.
+3. `desktop/src/jvmMain/.../DesktopSettingsStore.kt` & `DesktopSettings`:
+   - Added `closeToTray` (default true) and `showNotifications` (default true) persisted to `~/.flash/settings.properties`.
+4. `desktop/src/jvmMain/.../DesktopEngine.kt`:
+   - Wired `JvmNetworkWatcher` into engine lifecycle (`start()` and `stop()`), automatically triggering `reconnectNow()` on network changes.
+   - Added notification callback hooks `onInboundMessageNotification` and `onInboundAttachmentNotification`.
+   - Added `storeCloseToTray` and `storeShowNotifications`.
+5. `desktop/src/jvmMain/.../DesktopNotificationManager.kt`:
+   - Implemented native notification manager observing chat messages, attachments, transfer completions/failures, incoming calls, and pairing requests.
+   - Enforces suppression: silences notifications when the window is visible and focused on the inbound message's conversation ID.
+6. `desktop/src/jvmTest/.../DesktopNotificationManagerTest.kt`:
+   - Comprehensive test suite for all notification types and suppression rules.
+7. `desktop/src/jvmMain/.../DesktopMain.kt`:
+   - Implemented `Tray` with `FlashIcons.Bolt.drawableRes` and context menu.
+   - Declarative `isWindowVisible` controlling window presentation.
+   - `Window(onCloseRequest = { if (desktopSettings.closeToTray && SystemTray.isSupported()) isWindowVisible = false else exitApplication() })`.
+   - Integrated `DesktopNotificationManager` and `DesktopShell(nav = nav)`.
+
+### Verification
+- `:core:network:jvmTest`: ALL PASSED (including all `JvmNetworkWatcherTest` cases).
+- `:desktop:jvmTest`: ALL 51 TASKS PASSED (including all `DesktopNotificationManagerTest` cases).
+- `:ui:chat:jvmTest`: ALL PASSED.
+- `:app:testDebugUnitTest`: ALL 199 TASKS PASSED.
+
+---
+
+## 2026-09-18 — Messaging Presence Synchronization Fix on Desktop (ERROR-069)
+
+### Worked on
+Investigated and resolved issue where a peer who is actually offline was shown as Offline in the chat list (`FlashChatListScreen`), but appeared as "Online" with a green dot and "Connected · LAN" banner in the conversation screen (`FlashConversationScreen`).
+
+### Changed
+1. `DesktopShell.kt`:
+   - Updated `conversationState` to take `base.header.presence`, `base.header.transport`, and `base.header.typingMemberNames` directly from `repositoryConversation` (the single source of truth from `RealFlashChatRepository`).
+   - Replaced legacy Phase 21 logic where `desktopConversationHeader` unconditionally stamped `presence = if (endpoint != null) Online else Offline` and `transport = Lan`.
+   - Updated `desktopConversationHeader` signature to accept optional `presence` and `transport` parameters.
+2. `DesktopEngine.kt`:
+   - Updated `peerNameResolver` in `RealFlashChatRepository` construction to look up `trustStore.getTrustedPeers()` and fall back to `discovery.discoveredEndpoints.value.firstOrNull { it.deviceId.value == id }?.friendlyName` (matching Android's `DiscoveryEngineHolder.kt`).
+3. `DesktopConversationHeaderTest.kt`:
+   - Added `explicitPresenceOverridesDiscoveredDefault` test confirming that an explicit `Offline` presence overrides the mDNS discovery default even when an endpoint is discovered.
+
+### Verification
+- `:desktop:compileKotlinJvm` & `:desktop:jvmTest`: ALL PASSED (10 test suites, including `explicitPresenceOverridesDiscoveredDefault`).
+- `:ui:chat:jvmTest` & `:app:testDebugUnitTest`: ALL PASSED (193 tasks).
+
+---
+
+## 2026-09-18 — WhatsApp & Telegram Desktop-Style Adaptive Layout & Navigation Rail (AD-2, AD-5, AD-6)
+
+### Worked on
+1. **Inspected Desktop References (`Screenshot 2026-09-18 053854.png` & `Screenshot 2026-09-18 053911.png`)**:
+   - Analyzed WhatsApp Desktop and Telegram Desktop implementations:
+     - Slim icon-first navigation rail on far left (~68dp wide) with brand logo, tab icons, unread badge counters, and active indicator bar/pill.
+     - List pane with search bar, chat rows with active item selection highlight (`backgroundSurfaceStrong`).
+     - Detail pane with comfortable reading measure (capped message bubble width ~560–600dp, instead of stretching across full monitor width), rich composer, or branded empty state placeholder.
+   - User requirement: make Flash adaptive like that on Desktop, and also on Android if screen becomes large (tablets, foldables unfolded, landscape mode, Samsung DeX) while preserving 100% pixel-perfect phone layout when compact.
+
+2. **Created Shared Multiplatform Components in `:ui:chat`**:
+   - `FlashNavigationRail.kt`:
+     - 68.dp slim navigation rail.
+     - Flash bolt logo container at top (38dp rounded container with brand icon).
+     - Navigation tabs: Chats, Transfers, Nearby, Settings with active left indicator bar (3dp wide accentPrimary pill), soft container highlight (`backgroundSurfaceStrong`), icon tinting, and unread badge counters (e.g. "3" or "99+").
+     - Bottom profile/device avatar shortcut (display name initials, clickable to open Settings).
+     - Hairline 1.dp right border (`borderSubtle`).
+   - `FlashPlaceholderDetailPane.kt`:
+     - Multiplatform empty state medallion with Flash icon, "Select a chat" header, explanatory metadata text, and "Find devices" action button.
+   - `FlashAdaptiveLayouts.kt`:
+     - Added `rememberFlashAdaptiveWindowWidthDp()` and `rememberFlashAdaptiveWindowSizeClass()`, safely reading window size via `LocalWindowInfo.current.containerSize` and `LocalDensity.current` without `BoxWithConstraints` (avoiding ERROR-033 deferred recomposition).
+     - Added `FlashAdaptiveTwoPane(listPane, detailPane, modifier, windowWidthDp)`.
+   - `FlashMessageBubble.kt` (AD-5: Reading Measure):
+     - Upgraded `bubbleWidthCap()` so message bubbles scale comfortably up to `580.dp` on wide screens/tablets/desktop while strictly preserving compact phone measure (`<= 320dp`).
+   - `FlashChatListScreen.kt`:
+     - Added `activeConversationId: String? = null` parameter.
+     - Wired `isSelected = item.id in state.selectedIds || (!state.selectionMode && activeConversationId != null && item.id == activeConversationId)` to highlight the currently open conversation row in the list pane with `colors.backgroundSurfaceStrong` (WhatsApp & Telegram desktop parity).
+
+3. **Desktop Shell Modernization (`DesktopShell.kt` & `DesktopSideBar.kt`)**:
+   - Replaced old 200.dp text sidebar with 68.dp `FlashNavigationRail`.
+   - Wired live `totalUnreadCount` badge derived from `chatListState.items.sumOf { it.unreadCount }`.
+   - Passed `activeConversationId` to `FlashChatListScreen` in two-pane mode.
+   - Replaced `PlaceholderDetailPane` in `DesktopDetailPanes.kt` to delegate to `FlashPlaceholderDetailPane`.
+
+4. **Android Large Screen Adaptive Transformation (`MainActivity.kt` / AD-6)**:
+   - Wired `rememberFlashAdaptiveWindowWidthDp()` and `FlashAdaptiveMath.isTwoPaneAllowed(sizeClass)`.
+   - When screen $\ge 840$ dp (tablets, foldables unfolded, landscape mode, Samsung DeX):
+     - Displays `FlashNavigationRail` (68dp) on left edge with live unread badge.
+     - Renders `FlashAdaptiveTwoPane`: list pane shows `FlashChatListScreen` with active row highlight, detail pane shows `FlashConversationScreen` (when open) or `FlashPlaceholderDetailPane` (when no chat is open).
+     - Hides floating bottom nav capsule (`showBar = !twoPane && ...`), removing bottom inset (`tabBottomInset = 0.dp`).
+     - Registered two-pane back handler: pressing back or clicking the back arrow in conversation deselects the chat and returns right pane to placeholder without popping tab stack or closing app.
+   - When screen < 840dp (standard portrait phones):
+     - Exactly 100% unchanged: floating bottom nav capsule, single-pane animated navigation, standard phone touch targets, zero regressions.
+
+5. **Bug Investigation & Fix: Desktop Frame-0 Window Size Observation**:
+   - **Symptom**: Launching Flash Desktop showed a single list pane and mobile bottom nav bar instead of the two-pane layout + navigation rail.
+   - **Root Cause**: `rememberFlashDesktopWindowSize()` in `DesktopAdaptive.kt` wrapped `windowInfo.containerSize.width / density.density` in `remember(windowInfo, density)`. In Compose Desktop, `LocalWindowInfo.current.containerSize` is initialized to `IntSize(0, 0)` on the very first composition frame before layout. `remember(windowInfo, density)` evaluated once on frame 0 with width = 0, returning `FlashWindowSizeClass.Compact`, and because `windowInfo` and `density` references never change across resizes, the initial `Compact` (phone) size class was cached permanently, causing `twoPane` to evaluate to `false` forever.
+   - **Fix**:
+     - `DesktopAdaptive.kt`: removed `remember(windowInfo, density)` so `windowInfo.containerSize` is read directly as state during composition, and added a frame-0 fallback to `window?.width` or `1200f * density` (the desktop initial window width).
+     - `DesktopShell.kt`: passed `window` to `rememberFlashDesktopWindowSize(window)` and gave `DesktopTwoPane` `modifier = Modifier.weight(1f).fillMaxHeight()`.
+     - `FlashAdaptiveLayouts.kt`: removed `remember(windowInfo, density)` from `rememberFlashAdaptiveWindowWidthDp()` so window width updates dynamically on Android and multiplatform without being locked into frame 0.
+
+### Verification
+- `:ui:chat:compileKotlinJvm` & `:ui:chat:compileAndroidMain`: SUCCESS.
+- `:desktop:compileKotlinJvm`: SUCCESS.
+- `:app:compileDebugKotlin`: SUCCESS.
+- `:ui:chat:jvmTest`: ALL PASSED.
+- `:desktop:jvmTest`: ALL PASSED.
+- `:app:testDebugUnitTest`: ALL PASSED.
+- 219 Gradle tasks executed/verified clean.
+
+---
+
+## 2026-09-18 — Dark Mode Dialog Fix & Desktop Adaptive Two-Pane Porting (AD-1, AD-2, AD-3)
+
+### Worked on
+1. **Dark Mode Black Text in Confirmation Dialogs**:
+   - Fixed issue where the "Clear received files" confirmation dialog (and general unstyled `FlashText` calls) displayed black text on dark surfaces in dark mode.
+   - Root cause: `FlashText` wrapped `BasicText` which defaulted `color` to `Color.Black` when `color` and `style.color` were unspecified.
+   - Updated `FlashText` in `:ui:theme` to default `resolvedColor` to `FlashTheme.colors.textPrimary` whenever neither `color` nor `style.color` specifies a color.
+   - Updated `FlashSheetHost.android.kt` and `FlashSheetHost.jvm.kt` to provide `titleContentColor = colors.textPrimary` and `textContentColor = colors.textSecondary`.
+   - Explicitly styled `ClearReceivedFilesDialog` in `FlashSettingsScreen.kt` and `FlashLeaveGroupDialog` in `FlashAddMembersSheet.kt` with `colors.textPrimary` and `colors.textSecondary`.
+
+2. **Desktop Porting & Adaptive Two-Pane Architecture (AD-1, AD-2, AD-3 / Defect A & B)**:
+   - **Defect A / AD-3 (List-Detail Arrangement)**:
+     - Fixed issue where opening a conversation on desktop was rendered inside the 38% list pane while the detail pane remained an empty placeholder.
+     - Extracted `chatListPaneContent` and `conversationPaneContent`.
+     - In two-pane mode (`Expanded` width >= 840dp), when navigating to `FlashDestination.Conversation`, `listPaneContent` stays on `chatListPaneContent` (left pane), while `detailPaneContent` renders `conversationPaneContent` (right pane).
+     - In single-pane mode, `Conversation` renders full-screen with normal stack navigation.
+     - Updated `DesktopSideBar` to keep `FlashDestination.ChatList` highlighted when in a conversation, and clicking `Chats` closes the conversation back to placeholder.
+     - Enhanced `conversationPaneContent` back navigation: in two-pane mode, `onBack`, leaving a group, or clearing a conversation closes the conversation via `chatRepository.closeConversation()` and returns to `ChatList` without popping the tab.
+     - Added pure function `FlashNavigationMath.shouldClearSelectionOnBack(currentDestination, isTwoPane)` with unit tests in `FlashNavigationLogicTest`.
+     - Added global Escape key shortcut on desktop: clears search query, closes active conversation, or clears transfer/peer detail selection.
+   - **Defect B / AD-1 & AD-2 (Window Geometry, Pane Width Bounds & Dividers)**:
+     - Set minimum desktop window constraint: `window.minimumSize = Dimension((640 * density.density).toInt(), (480 * density.density).toInt())` in `DesktopMain.kt`.
+     - Added `ListPaneMinWidthDp = 320f`, `ListPaneMaxWidthDp = 480f`, `DetailPaneMinWidthDp = 480f`, and `FlashAdaptiveMath.listPaneWidthDp(totalWidthDp, ratio)` in `FlashAdaptiveLayouts.kt`.
+     - Covered clamped pane math across matrix (500, 700, 840, 1100, 1440, 1920, 2560dp) and detail minimum invariants in `FlashAdaptiveLogicTest`.
+     - Updated `DesktopTwoPane` in `DesktopAdaptive.kt` to size the list pane using `FlashAdaptiveMath.listPaneWidthDp(widthDp).dp`, added visible 1.dp hairline divider using `FlashTheme.colors.borderSubtle`, and gave the detail pane `Modifier.weight(1f)`.
+   - **Branded Detail Empty State**:
+     - Upgraded `PlaceholderDetailPane` in `DesktopDetailPanes.kt` using Flash's empty state language: `FlashIcons.Chat` medallion with `accentPrimary` tint on 10% opacity circle, "Select a chat" headline, explanation copy, and a "Find devices" CTA button that switches to the Nearby tab.
+
+### Verification
+- `:ui:chat:jvmTest`: PASSED (all tests passed, including new `FlashAdaptiveLogicTest` and `FlashNavigationLogicTest`).
+- `:desktop:compileKotlinJvm`: BUILD SUCCESSFUL.
+- `:desktop:jvmTest`: PASSED (all desktop test suites passed).
+- `:ui:chat:compileAndroidMain`: BUILD SUCCESSFUL.
+- `:app:compileDebugKotlin`: BUILD SUCCESSFUL.
+
+---
+
+## 2026-09-17 — Milestone 2: Dual-Layer Encryption (Binary Chunk E2E AES-256-GCM + Wire-Level TOFU TLS 1.3)
+
+### Worked on
+Implemented full dual-layer encryption for file chunk transfers and transport-level WebSocket connections across Android and Desktop:
+
+1. **Binary Chunk End-to-End Encryption (`SecureBinaryFrameCodec` / `FSEC`)**:
+   - Implemented `SecureBinaryFrameCodec` in `:core:security` with binary envelope framing:
+     - 22-byte header: `FSEC` magic (`0x46, 0x53, 0x45, 0x43`), protocol version `0x02`, envelope type `0x01` (AES-256-GCM), 12-byte random nonce, and 4-byte LE ciphertext length.
+     - Authenticated Encryption: AES-256-GCM with 128-bit authentication tag and `"flash-chunk-v2"` AAD.
+     - Created comprehensive test suite `SecureBinaryFrameCodecTest` covering serialization, roundtrip integrity, tampering detection, wrong key rejection, truncation, and magic mismatch.
+   - Integrated opportunistic encryption:
+     - Outbound sends (`StreamChannel` via WebSocket fallback and dedicated Data Channels): If `sessionKey != null` for the peer, wraps frames in `FSEC`. If unpaired, sends raw `FLSH` frames.
+     - Inbound frames (`handleInboundBinary`): Detects `FSEC` frames, decrypts via stored session key (failing closed if unauthenticated), and encrypts outbound replies (ACKs, Complete) with the session key.
+
+2. **Wire-Level Transport Encryption (TLS 1.3 / WSS) with TOFU Discovery Pinning**:
+   - **`TofuPinVerifier`**: Common TLS pin verifier implementing Trust-On-First-Use. Extracts peer X.509 public key fingerprint, records on first connection, and enforces constant-time equality on subsequent connections (failing closed immediately on mismatch with an `SSLException`).
+   - **Certificate Generation**:
+     - Desktop/JVM: `FlashCertMaker` generates self-signed X.509 certificates and PKCS12 `KeyManager` instances using BouncyCastle PKIX.
+     - Android: `KeystoreFlashCrypto.selfSignedCertificate()` generates self-signed X.509 certs in `AndroidKeyStore`.
+   - **Trust Store Pin Storage**: Added `savePin(deviceId, pin)` and `getPin(deviceId)` to `FlashTrustStore`, implemented in `AndroidPreferencesTrustStore`, `DesktopTrustStore`, and test harnesses.
+   - **Transport Integration**:
+     - `JvmWsFlashNetwork` & `WsFlashNetwork`: accept `TlsOptions` (containing `KeyManager[]` and `TofuPinVerifier`).
+     - Pass peer target device ID during manual and auto-connect so `WsTransferClient` validates the certificate against the expected peer pin.
+
+3. **Truthful Transfer Encryption State**:
+   - Added `val isEncrypted: Boolean = false` to `FlashTransfer` model.
+   - Updated `RealFlashTransferRepository` to accept `isPeerEncrypted: (peerDeviceId: String) -> Boolean`. Outbound sends, incoming offers, and incoming started transfers truthfully set `isEncrypted = true` when paired with a session key.
+
+4. **Host Wiring & Engine Integration**:
+   - `DesktopEngine.kt`: initialized `tlsOptions` using `FlashCertMaker` and `TofuPinVerifier`; wired `SecureBinaryFrameCodec` encrypt/decrypt into streams and inbound binary handlers; wired `isPeerEncrypted` into `RealFlashTransferRepository`.
+   - `Flash.kt` (Android Core Engine): initialized Android KeyStore `tlsOptions` and wired `SecureBinaryFrameCodec` into multistream channels and inbound handlers.
+   - `DiscoveryEngineHolder.kt` (Android App): initialized `trustStore` and `tlsOptions` prior to `networkImpl`; wired `SecureBinaryFrameCodec` into WebSocket and `DataChannelClient` streams, and encrypted replies in `handleInboundBinary`.
+
+### Verification
+- `:core:security:jvmTest`: PASSED (all tests passed, including `SecureBinaryFrameCodecTest`).
+- `:core:network:jvmTest`: PASSED (all tests passed, including `FlashPinVerifierTest`).
+- `:core:transfer:jvmTest`: PASSED (all tests passed, including `RealFlashTransferRepositoryTest`).
+- `:desktop:compileKotlinJvm`: BUILD SUCCESSFUL.
+- `:desktop:jvmTest`: PASSED (all desktop suites passed).
+- `:core:engine:jvmTest`: PASSED (all engine suites passed).
+- `:app:compileDebugKotlin`: BUILD SUCCESSFUL.
+
+---
+
 ## 2026-09-17 — Milestone 1: Pairwise End-to-End Message Encryption (AES-256-GCM + ECDH P-256)
 
 ### Worked on

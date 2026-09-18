@@ -926,12 +926,19 @@ private fun ClearReceivedFilesDialog(
     FlashConfirmHost(
         onDismiss = onDismiss,
         containerColor = colors.backgroundSurface,
-        title = { FlashText(text = "Clear received files?", style = FlashTheme.typography.headingMedium) },
+        title = {
+            FlashText(
+                text = "Clear received files?",
+                style = FlashTheme.typography.headingMedium,
+                color = colors.textPrimary,
+            )
+        },
         text = {
             FlashText(
                 text = "Permanently delete $amount from Flash's received-files storage? " +
                     "This clears all received files and cannot be undone.",
                 style = FlashTheme.typography.bodyDefault,
+                color = colors.textSecondary,
             )
         },
         confirmButton = {

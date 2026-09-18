@@ -144,6 +144,16 @@ object FlashNavigationMath {
         tabIndex(to.destination) > tabIndex(from.destination) -> FlashScreenTransition.TabForward
         else -> FlashScreenTransition.TabBackward
     }
+
+    /**
+     * UI-034 / AD-3: In two-pane mode, system back / Escape clears the detail selection
+     * (the list stays, the detail returns to placeholder) rather than popping the whole navigation stack.
+     * In single-pane mode, back pops to the chat list.
+     */
+    fun shouldClearSelectionOnBack(
+        currentDestination: FlashDestination,
+        isTwoPane: Boolean,
+    ): Boolean = isTwoPane && currentDestination == FlashDestination.Conversation
 }
 
 /**

@@ -19,10 +19,16 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontFamily
+import com.transfer.flash.ui.shims.rememberFlashClipboard
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
@@ -204,6 +210,8 @@ fun FlashEncryptionBadge(
 fun FlashEncryptionSheet(
     state: FlashEncryptionBadgeState,
     onDismiss: () -> Unit,
+    onVerifySecurityCodes: (() -> Unit)? = null,
+    onViewFingerprint: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val colors = FlashTheme.colors
@@ -284,8 +292,98 @@ fun FlashEncryptionSheet(
 
             Column(verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8)) {
                 FlashEncryptionMath.verificationEntries.forEach { entry ->
-                    FlashVerificationPlaceholderRow(entry = entry)
+                    val action = when (entry.title) {
+                        "Verify security codes" -> onVerifySecurityCodes
+                        "View device fingerprint" -> onViewFingerprint
+                        else -> null
+                    }
+                    if (action != null) {
+                        FlashVerificationActionRow(
+                            entry = entry,
+                            state = state,
+                            onClick = action,
+                        )
+                    } else {
+                        FlashVerificationPlaceholderRow(entry = entry)
+                    }
                 }
+            }
+        }
+    }
+}
+
+/** Actionable verification entry point row inside [FlashEncryptionSheet]. */
+@Composable
+private fun FlashVerificationActionRow(
+    entry: FlashEncryptionMath.VerificationEntry,
+    state: FlashEncryptionBadgeState,
+    onClick: () -> Unit,
+) {
+    val colors = FlashTheme.colors
+    val typography = FlashTheme.typography
+    val isCodesEntry = entry.title == "Verify security codes"
+    val isVerified = state == FlashEncryptionBadgeState.EncryptedTrusted
+
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = FlashDimensions.minTouchTarget)
+            .clip(FlashShapes.chip)
+            .background(colors.backgroundSurfaceSubtle)
+            .clickable(onClick = onClick)
+            .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space8)
+            .semantics(mergeDescendants = true) {
+                role = Role.Button
+                contentDescription = "${entry.title}: ${entry.explanation}"
+            },
+    ) {
+        FlashIcon(
+            icon = if (isCodesEntry && isVerified) FlashIcons.Verified else entry.icon,
+            contentDescription = null,
+            tint = if (isCodesEntry && isVerified) colors.accentPrimary else colors.textPrimary,
+            size = FlashDimensions.iconMd,
+            modifier = Modifier.clearAndSetSemantics {},
+        )
+        Column(modifier = Modifier.weight(1f)) {
+            FlashText(
+                text = entry.title,
+                style = typography.metadataEmphasis,
+                color = colors.textPrimary,
+            )
+            Spacer(modifier = Modifier.height(2.dp))
+            FlashText(
+                text = entry.explanation,
+                style = typography.metadataDefault,
+                color = colors.textSecondary,
+            )
+        }
+        if (isCodesEntry && isVerified) {
+            Box(
+                modifier = Modifier
+                    .clip(FlashShapes.chip)
+                    .background(colors.accentPrimary.copy(alpha = 0.15f))
+                    .padding(horizontal = FlashSpacing.space8, vertical = 2.dp),
+            ) {
+                FlashText(
+                    text = "Verified",
+                    style = typography.captionDefault,
+                    color = colors.accentPrimary,
+                )
+            }
+        } else {
+            Box(
+                modifier = Modifier
+                    .clip(FlashShapes.chip)
+                    .background(colors.backgroundSurfaceStrong)
+                    .padding(horizontal = FlashSpacing.space8, vertical = 2.dp),
+            ) {
+                FlashText(
+                    text = if (isCodesEntry) "Verify" else "View",
+                    style = typography.captionDefault,
+                    color = colors.textPrimary,
+                )
             }
         }
     }
@@ -337,6 +435,212 @@ private fun FlashVerificationPlaceholderRow(entry: FlashEncryptionMath.Verificat
             style = typography.metadataDefault,
             color = colors.textTertiary,
             modifier = Modifier.clearAndSetSemantics {},
+        )
+    }
+}
+
+/**
+ * Bottom-sheet displaying local and peer cryptographic fingerprints on the local network.
+ */
+@Composable
+fun FlashFingerprintSheet(
+    peerTitle: String,
+    isVerified: Boolean,
+    localFingerprint: String?,
+    peerFingerprint: String?,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = FlashTheme.colors
+    val typography = FlashTheme.typography
+    val clipboard = rememberFlashClipboard()
+    var copiedMessage by remember { mutableStateOf<String?>(null) }
+
+    FlashSheetHost(
+        onDismiss = onDismiss,
+        containerColor = colors.backgroundSurface,
+        dragHandle = {
+            Box(
+                modifier = Modifier
+                    .padding(vertical = FlashSpacing.space12)
+                    .size(width = 36.dp, height = 4.dp)
+                    .clip(CircleShape)
+                    .background(colors.borderSubtle),
+            )
+        },
+        modifier = modifier,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(
+                    start = FlashSpacing.space20,
+                    end = FlashSpacing.space20,
+                    top = FlashSpacing.space8,
+                    bottom = FlashSpacing.space32,
+                ),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    FlashText(
+                        text = "Device Fingerprint",
+                        style = typography.headingSmall,
+                        color = colors.textPrimary,
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    FlashText(
+                        text = "Unique identity on the local network",
+                        style = typography.captionDefault,
+                        color = colors.textSecondary,
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .size(FlashDimensions.minTouchTarget)
+                        .clip(CircleShape)
+                        .clickable(onClick = onDismiss)
+                        .semantics {
+                            role = Role.Button
+                            contentDescription = "Close"
+                        },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    FlashIcon(
+                        icon = FlashIcons.Close,
+                        contentDescription = null,
+                        tint = colors.textSecondary,
+                        size = FlashDimensions.iconSm,
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(FlashSpacing.space16))
+
+            // Verified Status Chip
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+                modifier = Modifier
+                    .clip(FlashShapes.chip)
+                    .background(
+                        if (isVerified) colors.accentPrimary.copy(alpha = 0.12f)
+                        else colors.backgroundSurfaceSubtle
+                    )
+                    .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space4),
+            ) {
+                FlashIcon(
+                    icon = if (isVerified) FlashIcons.Verified else FlashIcons.Encryption,
+                    contentDescription = null,
+                    tint = if (isVerified) colors.accentPrimary else colors.textSecondary,
+                    size = FlashDimensions.iconSm,
+                )
+                FlashText(
+                    text = if (isVerified) "Security codes verified with $peerTitle" else "Not verified yet with $peerTitle",
+                    style = typography.metadataEmphasis,
+                    color = if (isVerified) colors.accentPrimary else colors.textSecondary,
+                )
+            }
+
+            Spacer(modifier = Modifier.height(FlashSpacing.space16))
+
+            // This Device Fingerprint Card
+            FlashFingerprintCard(
+                label = "This device",
+                fingerprint = localFingerprint ?: "Generating identity…",
+                onCopy = localFingerprint?.let { fp ->
+                    {
+                        clipboard.copy(fp)
+                        copiedMessage = "This device fingerprint copied"
+                    }
+                },
+            )
+
+            Spacer(modifier = Modifier.height(FlashSpacing.space12))
+
+            // Peer Device Fingerprint Card
+            FlashFingerprintCard(
+                label = peerTitle,
+                fingerprint = peerFingerprint ?: "Available once connected to $peerTitle",
+                onCopy = peerFingerprint?.let { fp ->
+                    {
+                        clipboard.copy(fp)
+                        copiedMessage = "$peerTitle fingerprint copied"
+                    }
+                },
+            )
+
+            if (copiedMessage != null) {
+                Spacer(modifier = Modifier.height(FlashSpacing.space8))
+                FlashText(
+                    text = copiedMessage ?: "",
+                    style = typography.captionDefault,
+                    color = colors.accentPrimary,
+                )
+            }
+
+            Spacer(modifier = Modifier.height(FlashSpacing.space16))
+
+            FlashText(
+                text = "Inspect this device's unique identity on the local network. Compare these fingerprints with the other device to confirm that no third party is intercepting your connection.",
+                style = typography.captionDefault,
+                color = colors.textTertiary,
+            )
+        }
+    }
+}
+
+@Composable
+private fun FlashFingerprintCard(
+    label: String,
+    fingerprint: String,
+    onCopy: (() -> Unit)?,
+) {
+    val colors = FlashTheme.colors
+    val typography = FlashTheme.typography
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(FlashShapes.attachment)
+            .background(colors.backgroundSurfaceSubtle)
+            .border(FlashDimensions.borderHairline, colors.borderSubtle, FlashShapes.attachment)
+            .padding(FlashSpacing.space12),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            FlashText(
+                text = label,
+                style = typography.metadataEmphasis,
+                color = colors.textPrimary,
+                modifier = Modifier.weight(1f),
+            )
+            if (onCopy != null) {
+                Box(
+                    modifier = Modifier
+                        .clip(FlashShapes.chip)
+                        .background(colors.backgroundSurfaceStrong)
+                        .clickable(onClick = onCopy)
+                        .padding(horizontal = FlashSpacing.space8, vertical = FlashSpacing.space4)
+                        .semantics {
+                            role = Role.Button
+                            contentDescription = "Copy $label fingerprint"
+                        },
+                ) {
+                    FlashText(
+                        text = "Copy",
+                        style = typography.captionDefault,
+                        color = colors.accentPrimary,
+                    )
+                }
+            }
+        }
+        Spacer(modifier = Modifier.height(FlashSpacing.space8))
+        FlashText(
+            text = fingerprint,
+            style = typography.numericDefault.copy(fontFamily = FontFamily.Monospace),
+            color = colors.textSecondary,
         )
     }
 }
