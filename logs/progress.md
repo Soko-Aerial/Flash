@@ -1,5 +1,22 @@
 # Progress Log
 
+## 2026-09-18 — Release Beta v2.0.0 Artifact Builds (Android APK & Desktop Runnable JAR)
+
+### Worked on
+- Performed multi-module library abstraction audit across `core:*`, `ui:*`, `app`, `desktop`, and sample consumers (`:sample:consumer`, `:sample:consumer-granular`).
+- Bumped Android `versionCode` to 2 and `versionName` to `"2.0.0-beta"` in `app/build.gradle.kts`.
+- Bumped Desktop `packageVersion` to `"2.0.0"` in `desktop/build.gradle.kts`.
+- Built optimized, minified Android release APKs (`app-release-unsigned.apk` and signed `app-release-signed-beta.apk`) via `:app:assembleRelease`.
+- Built standalone desktop runnable fat JAR (`Flash-windows-x64-2.0.0.jar`) via `:desktop:packageUberJarForCurrentOS`.
+
+### Verification
+- `:app:assembleRelease`: SUCCESS (R8 shrinking, resource optimization, dexing, 53 MB APK).
+- `apksigner verify`: Validated `app-release-signed-beta.apk` using APK Signature Scheme v2 & v3.
+- `:desktop:packageUberJarForCurrentOS`: SUCCESS (84.2 MB standalone executable JAR).
+- `:sample:consumer`: Contract tests passed clean.
+
+---
+
 ## 2026-09-18 — Fix AndroidKeyStore Incompatible Digest for Conscrypt TLS Handshake (ERROR-070)
 
 ### Worked on

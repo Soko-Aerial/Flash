@@ -1,5 +1,28 @@
 # Current Handoff
 
+## 2026-09-18 — Release Beta v2.0.0 Artifact Builds (Android APK & Desktop Runnable JAR)
+
+### Current branch
+`dev`
+
+### Last verified build
+`5e77253`
+
+### Completed & Verified
+1. **Library Audit Completed**:
+   - Validated clean separation of concerns between core libraries (`core:*`, `ui:*`) and host targets (`app`, `desktop`).
+   - Verified downstream consumers (`:sample:consumer`, `:sample:consumer-granular`) compile and pass contract tests.
+2. **Version Bump**:
+   - `app/build.gradle.kts`: `versionCode = 2`, `versionName = "2.0.0-beta"`.
+   - `desktop/build.gradle.kts`: `packageVersion = "2.0.0"`.
+3. **Android Release Beta Artifacts**:
+   - `app/build/outputs/apk/release/app-release-unsigned.apk` (53.0 MB, uncompressed/minified, for Play Store upload).
+   - `app/build/outputs/apk/release/app-release-signed-beta.apk` (53.0 MB, signed with v2+v3 signature scheme, for direct device installation & testing).
+4. **Desktop Release Beta Artifacts**:
+   - `desktop/build/compose/jars/Flash-windows-x64-2.0.0.jar` (84.2 MB, fat runnable JAR including WebRTC binaries, Skiko, and SQLite cipher drivers).
+
+---
+
 ## 2026-09-18 — Fix AndroidKeyStore Incompatible Digest for Conscrypt TLS Handshake (ERROR-070)
 
 ### Current branch
