@@ -55,11 +55,28 @@ import java.io.PrintWriter
  * on the same LAN and remains CLOSED until a human runs G1–G6. Runtime smoke-testing of the
  * desktop window is manual testing, not a gate scenario.
  */
-public fun main() = application {
+public fun main() {
     installDesktopLogSink()
+
+    // Skiko vsync and framerate tuning to prevent GPU spin on integrated graphics (e.g. Intel UHD 620)
+    if (System.getProperty("skiko.vsync.enabled") == null) {
+        System.setProperty("skiko.vsync.enabled", "true")
+    }
+    if (System.getProperty("skiko.fps") == null) {
+        System.setProperty("skiko.fps", "60")
+    }
+
+    // Enforce single-instance: if another instance is already running, activate it and exit immediately.
+    if (!SingleInstanceController.acquireOrActivate()) {
+        FlashLog.i("MAIN", "Flash is already running. Existing window activated. Exiting duplicate instance.")
+        return
+    }
+
     installNativeWebRtcLogging()
-    val engine = remember { DesktopEngine() }
-    engine.start()
+
+    application {
+        val engine = remember { DesktopEngine() }
+        engine.start()
 
     var isWindowVisible by remember { mutableStateOf(true) }
     var isWindowFocused by remember { mutableStateOf(true) }
@@ -293,7 +310,29 @@ public fun main() = application {
     // `exitApplication`), never on a recomposition. `onDispose` runs on the Compose thread, so
     // `stop()` stays a plain synchronous call.
     DisposableEffect(Unit) {
-        onDispose { engine.stop() }
+        SingleInstanceController.onActivate = {
+            isWindowVisible = true
+            windowState.isMinimized = false
+            currentComposeWindow?.let { win ->
+                win.isVisible = true
+                if (win is java.awt.Frame) {
+                    val state = win.extendedState
+                    if ((state and java.awt.Frame.ICONIFIED) != 0) {
+                        win.extendedState = state and java.awt.Frame.ICONIFIED.inv()
+                    }
+                }
+                win.toFront()
+                win.requestFocus()
+            }
+            backgroundUnreadCount = 0
+            DesktopTaskbarBadgeManager.clearBadge(currentComposeWindow)
+        }
+        onDispose {
+            SingleInstanceController.onActivate = null
+            SingleInstanceController.release()
+            engine.stop()
+        }
+    }
     }
 }
 

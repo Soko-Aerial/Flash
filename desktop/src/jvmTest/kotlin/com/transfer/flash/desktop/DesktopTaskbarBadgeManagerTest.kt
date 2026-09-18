@@ -10,9 +10,9 @@ class DesktopTaskbarBadgeManagerTest {
     @Test
     fun baseIconsGeneratedForAllTargetResolutions() {
         val baseIcons = DesktopTaskbarBadgeManager.getBaseIcons()
-        assertEquals(5, baseIcons.size)
+        val expectedSizes = listOf(16, 24, 32, 48, 64, 96, 128, 256)
+        assertEquals(expectedSizes.size, baseIcons.size)
 
-        val expectedSizes = listOf(16, 24, 32, 48, 64)
         baseIcons.forEachIndexed { index, image ->
             val expected = expectedSizes[index]
             assertEquals(expected, image.width)
@@ -25,11 +25,12 @@ class DesktopTaskbarBadgeManagerTest {
 
     @Test
     fun badgedIconsGeneratedWithNotificationCounters() {
+        val expectedSize = 8
         val singleBadged = DesktopTaskbarBadgeManager.getBadgedIcons(1)
-        assertEquals(5, singleBadged.size)
+        assertEquals(expectedSize, singleBadged.size)
 
         val multipleBadged = DesktopTaskbarBadgeManager.getBadgedIcons(15)
-        assertEquals(5, multipleBadged.size)
+        assertEquals(expectedSize, multipleBadged.size)
 
         // Count <= 0 returns base icons
         val zeroBadged = DesktopTaskbarBadgeManager.getBadgedIcons(0)

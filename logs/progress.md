@@ -1,6 +1,44 @@
 # Progress Log
 
-## 2026-09-18 — Release Beta v2.0.0 Artifact Builds (Android APK & Desktop Runnable JAR)
+## 2026-09-18 — Windows Single Instance Enforcement, App Icon, & Skiko GPU Optimization
+
+### Worked on
+- Implemented single-instance process enforcement for Windows desktop to prevent duplicate instances, duplicate system tray icons, and split window states.
+- Created multi-resolution Windows `.ico` and `.png` icons containing all standard resolution tiers (16x16, 24x24, 32x32, 48x48, 64x64, 96x96, 128x128, 256x256) and configured `nativeDistributions` to embed the Flash icon into the `.exe`, `.msi`, desktop shortcuts, and Start Menu.
+- Investigated and resolved Intel UHD Graphics 620 iGPU 35–40% utilization on desktop by adding Skiko vertical synchronization (`skiko.vsync.enabled=true`) and frame rate pacing (`skiko.fps=60`), preventing Direct3D 12 swapchain spin on integrated graphics.
+- Rebuilt native installers (`Flash-2.0.0.exe`, `Flash-2.0.0.msi`, `Flash-windows-x64-2.0.0.jar`) and updated GitHub release `v2.0.0-beta`.
+
+### Changed
+- `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/SingleInstanceController.kt`:
+  - Implemented OS-level file locking via `FileChannel.tryLock()` on `~/.flash/app.lock`.
+  - Primary instance runs loopback IPC listener on `127.0.0.1:<port>` saving the ephemeral port to `~/.flash/app.port`.
+  - Secondary instance detects existing lock, connects to the primary instance, sends an `ACTIVATE` command, and exits immediately.
+  - Primary instance's listener un-minimizes the window (`java.awt.Frame.ICONIFIED`), restores visibility (`isWindowVisible = true`), calls `toFront()` and `requestFocus()`, and clears unread badges.
+- `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopMain.kt`:
+  - Hooked `SingleInstanceController.acquireOrActivate()` before `application { ... }`.
+  - Configured default system properties `skiko.vsync.enabled=true` and `skiko.fps=60`.
+- `desktop/src/jvmMain/resources/icons/flash.ico` & `flash.png`:
+  - Generated multi-resolution icons from `art/flash-icon.png`.
+- `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopTaskbarBadgeManager.kt`:
+  - Expanded icon resolutions to include 96x96, 128x128, and 256x256 for crisp rendering on Windows 10/11 high-DPI displays.
+- `desktop/build.gradle.kts`:
+  - Configured `windows.iconFile.set(project.file("src/jvmMain/resources/icons/flash.ico"))` and `linux.iconFile.set(project.file("src/jvmMain/resources/icons/flash.png"))`.
+  - Added `-Dskiko.vsync.enabled=true` and `-Dskiko.fps=60` to application `jvmArgs`.
+- `desktop/src/jvmTest/kotlin/com/transfer/flash/desktop/SingleInstanceControllerTest.kt`:
+  - Added unit tests verifying lock acquisition and IPC activation callback triggering.
+- `desktop/src/jvmTest/kotlin/com/transfer/flash/desktop/DesktopTaskbarBadgeManagerTest.kt`:
+  - Updated assertions to validate all 8 resolution tiers.
+
+### Verification
+- `:desktop:compileKotlinJvm`: ALL PASSED.
+- `:desktop:jvmTest`: ALL 68 TESTS PASSED (including `SingleInstanceControllerTest` and `DesktopTaskbarBadgeManagerTest`).
+- `:desktop:packageExe` & `:desktop:packageMsi`: Successfully built `Flash-2.0.0.msi` (109.0 MB) and `Flash-2.0.0.exe` (109.6 MB) with embedded Flash icon and single-instance enforcement.
+- `:desktop:packageUberJarForCurrentOS`: Successfully built `Flash-windows-x64-2.0.0.jar`.
+- `gh release upload v2.0.0-beta ... --clobber`: Replaced assets on GitHub release `v2.0.0-beta`.
+
+---
+
+
 
 ### Worked on
 - Performed multi-module library abstraction audit across `core:*`, `ui:*`, `app`, `desktop`, and sample consumers (`:sample:consumer`, `:sample:consumer-granular`).

@@ -139,6 +139,11 @@ compose.desktop {
         // `jcmd <pid> GC.heap_info` will show it.
         jvmArgs += listOf("-Xmx1g", "-XX:+HeapDumpOnOutOfMemoryError")
 
+        // Skiko vsync and framerate tuning to prevent GPU spin on integrated graphics (e.g. Intel UHD 620)
+        jvmArgs += listOf(
+            "-Dskiko.vsync.enabled=true",
+            "-Dskiko.fps=60"
+        )
 
         // Native distribution packaging (MSI/DEB/DMG) is Phase 24 polish, deliberately NOT
         // wired into any verification gate here — the phase's own Do-NOT list forbids it
@@ -155,6 +160,10 @@ compose.desktop {
                 upgradeUuid = "6d9b4b0e-3c58-45b7-8df1-e3e9d8f8e021"
                 perUserInstall = true
                 shortcut = true
+                iconFile.set(project.file("src/jvmMain/resources/icons/flash.ico"))
+            }
+            linux {
+                iconFile.set(project.file("src/jvmMain/resources/icons/flash.png"))
             }
         }
     }

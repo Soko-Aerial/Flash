@@ -24,7 +24,7 @@ import java.util.concurrent.ConcurrentHashMap
 public object DesktopTaskbarBadgeManager {
 
     private val baseIconsCache: List<BufferedImage> by lazy {
-        listOf(16, 24, 32, 48, 64).map { size -> renderIcon(size, badgeCount = 0) }
+        listOf(16, 24, 32, 48, 64, 96, 128, 256).map { size -> renderIcon(size, badgeCount = 0) }
     }
 
     private val badgedIconsCache = ConcurrentHashMap<Int, List<BufferedImage>>()
@@ -35,7 +35,7 @@ public object DesktopTaskbarBadgeManager {
         if (count <= 0) return getBaseIcons()
         val clampedCount = if (count > 9) 10 else count
         return badgedIconsCache.computeIfAbsent(clampedCount) { c ->
-            listOf(16, 24, 32, 48, 64).map { size -> renderIcon(size, badgeCount = c) }
+            listOf(16, 24, 32, 48, 64, 96, 128, 256).map { size -> renderIcon(size, badgeCount = c) }
         }
     }
 

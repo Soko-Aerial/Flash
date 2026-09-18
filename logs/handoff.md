@@ -1,6 +1,31 @@
 # Current Handoff
 
-## 2026-09-18 — Release Beta v2.0.0 Artifact Builds (Android APK & Desktop Runnable JAR)
+## 2026-09-18 — Windows Single Instance Enforcement, App Icon, & Skiko GPU Optimization
+
+### Current branch
+`dev`
+
+### Completed & Verified
+1. **Windows Single-Instance Enforcement**:
+   - `SingleInstanceController.kt`: Implemented kernel-managed file lock (`~/.flash/app.lock`) and local loopback IPC socket (`127.0.0.1:<port>`) with ephemeral port in `~/.flash/app.port`.
+   - If user opens Flash a second time, secondary instance connects to loopback, sends `ACTIVATE`, and exits immediately.
+   - Primary instance un-minimizes the window (clears `ICONIFIED`), brings window to front, requests focus, and clears unread badges. No duplicate windows or duplicate system tray icons appear.
+2. **App Icon for Start Menu, Desktop Shortcut, Taskbar & Installers**:
+   - Generated multi-resolution `desktop/src/jvmMain/resources/icons/flash.ico` (16, 24, 32, 48, 64, 96, 128, 256px) and `flash.png`.
+   - Wired `windows.iconFile.set(...)` and `linux.iconFile.set(...)` into `desktop/build.gradle.kts`.
+   - Expanded `DesktopTaskbarBadgeManager` to support up to 256px resolutions for high-DPI scaling.
+3. **Intel UHD Graphics 620 GPU Utilization Optimization**:
+   - Configured Skiko vertical synchronization (`skiko.vsync.enabled=true`) and frame rate cap (`skiko.fps=60`) in `DesktopMain.kt` and `build.gradle.kts`.
+   - Prevents Direct3D 12 swapchain presentation spin and busy-waiting on low-clock integrated GPUs.
+4. **Rebuilt & Updated GitHub Release Assets**:
+   - `desktop/build/compose/binaries/main/exe/Flash-2.0.0.exe` (109.6 MB, native Windows installer with embedded Flash icon and single-instance protection).
+   - `desktop/build/compose/binaries/main/msi/Flash-2.0.0.msi` (109.0 MB, native MSI installer).
+   - `desktop/build/compose/jars/Flash-windows-x64-2.0.0.jar` (84.2 MB, fat runnable JAR).
+   - Uploaded and replaced on GitHub release `v2.0.0-beta`.
+
+---
+
+
 
 ### Current branch
 `dev`
