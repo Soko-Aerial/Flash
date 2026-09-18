@@ -6,7 +6,7 @@
 `dev`
 
 ### Last verified build
-`e2e4873`
+`c4d6336`
 
 ### Completed & Verified
 1. **"Encrypted & Verified" Security Surface**:
@@ -24,6 +24,12 @@
    - Guarded `directHeaderState` and group header so `typingMemberNames` is strictly empty when the peer is offline.
    - Integrated `typingFlow` into `_chatListState` so `FlashChatListItemUi.isTyping` accurately tracks active online typing and immediately reverts to message preview on disconnect.
    - Enforced strict offline suppression on `showTypingDots` in `FlashChatHeader` and `peerTypingName` in `FlashConversationScreen`.
+4. **Bolt: LazyColumn Chat Item Callback Memoization (`bolt-lazycolumn-callback-memoization-3170327896126104636`)**:
+   - Merged performance optimization in `FlashMessageList.kt`: keys 9 callback closures on `message.id` with `rememberUpdatedState(message)` rather than reallocating on every progress/byte tick during transfers.
+5. **Sentinel: Group Call Author Validation & Trust Check (`sentinel/group-call-author-mismatch-and-trust-fix-12770065482040564922`)**:
+   - Merged security fix in `CallCoordinator.kt`: enforces fail-closed checks (`frame.from == peerId`) for all non-relayed call frames and verifies `isTrustedPeer(peerId)` for `GroupPresence` and `GroupQuery`. Verified with 3 new unit tests in `CallCoordinatorSecurityTest.kt`.
+6. **Workspace Cleanup**:
+   - Removed old conversation transcript `2026-09-14-191801-local-command-caveatcaveat-the-messages-below.txt`.
 
 ### Verification
 - `:core:messaging:jvmTest`: ALL PASSED.
