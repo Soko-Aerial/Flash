@@ -393,6 +393,7 @@ this document listed them as public.
       public fun setTyping(isTyping: Boolean)
       public fun toggleReaction(messageId: String, emoji: String)
       public suspend fun searchMessageBodies(query: String): Set<String>
+      public suspend fun searchConversationMessages(conversationId: String, query: String, limit: Int = 100): List<String>
 
       public fun deleteMessage(localId: String)
       public fun deleteMessages(localIds: Set<String>)
