@@ -23,12 +23,14 @@ class CallCoordinatorSecurityTest {
     private val attackerC = "attacker-c"
     private val callId = "call-100"
 
-    private fun TestScope.newCoordinator(): CallCoordinator = CallCoordinator(
+    private fun TestScope.newCoordinator(
+        trustedPeers: Set<String> = setOf(peerB, attackerC),
+    ): CallCoordinator = CallCoordinator(
         localDeviceId = localDeviceId,
         localName = "Me",
         scope = backgroundScope,
         sendFrame = { _, _ -> true },
-        isTrustedPeer = { true },
+        isTrustedPeer = { it in trustedPeers },
     )
 
     @Test
@@ -84,5 +86,60 @@ class CallCoordinatorSecurityTest {
         assertTrue(coordinator.onInboundText(peerId = peerB, text = validDeclineText))
         runCurrent()
         assertEquals(FlashCallState.ENDED, coordinator.activeCall.value?.state)
+    }
+
+    @Test
+    fun `onInboundText rejects group call frames when claimed from does not match transport peerId`() = runTest {
+        val coordinator = newCoordinator()
+
+        val spoofedGroupInvite = CallFrameCodec.encode(
+            CallWireFrame.GroupInvite(callId = callId, from = peerB, groupId = "group-1", callerName = "Peer B", video = false),
+        )
+        val consumedInvite = coordinator.onInboundText(peerId = attackerC, text = spoofedGroupInvite)
+        assertFalse("Spoofed GroupInvite where frame.from != peerId must be rejected", consumedInvite)
+
+        val spoofedGroupPresence = CallFrameCodec.encode(
+            CallWireFrame.GroupPresence(callId = callId, from = peerB, groupId = "group-1", callerName = "Peer B", video = false, participantCount = 2),
+        )
+        val consumedPresence = coordinator.onInboundText(peerId = attackerC, text = spoofedGroupPresence)
+        assertFalse("Spoofed GroupPresence where frame.from != peerId must be rejected", consumedPresence)
+        assertTrue("Ongoing group calls map must remain empty on spoofed presence", coordinator.ongoingGroupCalls.value.isEmpty())
+
+        val spoofedGroupQuery = CallFrameCodec.encode(
+            CallWireFrame.GroupQuery(callId = callId, from = peerB, groupId = "group-1"),
+        )
+        val consumedQuery = coordinator.onInboundText(peerId = attackerC, text = spoofedGroupQuery)
+        assertFalse("Spoofed GroupQuery where frame.from != peerId must be rejected", consumedQuery)
+    }
+
+    @Test
+    fun `onInboundText rejects GroupPresence and GroupQuery from untrusted peers`() = runTest {
+        val coordinator = newCoordinator(trustedPeers = setOf(peerB)) // attackerC is untrusted
+
+        val untrustedPresence = CallFrameCodec.encode(
+            CallWireFrame.GroupPresence(callId = callId, from = attackerC, groupId = "group-1", callerName = "Attacker C", video = false, participantCount = 2),
+        )
+        val consumedPresence = coordinator.onInboundText(peerId = attackerC, text = untrustedPresence)
+        assertFalse("GroupPresence from untrusted peer must be rejected", consumedPresence)
+        assertTrue("Ongoing group calls map must remain empty on untrusted presence", coordinator.ongoingGroupCalls.value.isEmpty())
+
+        val untrustedQuery = CallFrameCodec.encode(
+            CallWireFrame.GroupQuery(callId = callId, from = attackerC, groupId = "group-1"),
+        )
+        val consumedQuery = coordinator.onInboundText(peerId = attackerC, text = untrustedQuery)
+        assertFalse("GroupQuery from untrusted peer must be rejected", consumedQuery)
+    }
+
+    @Test
+    fun `onInboundText accepts valid GroupPresence and GroupQuery from trusted matching transport peer`() = runTest {
+        val coordinator = newCoordinator(trustedPeers = setOf(peerB))
+
+        val validPresence = CallFrameCodec.encode(
+            CallWireFrame.GroupPresence(callId = callId, from = peerB, groupId = "group-1", callerName = "Peer B", video = false, participantCount = 2),
+        )
+        val consumedPresence = coordinator.onInboundText(peerId = peerB, text = validPresence)
+        assertTrue("Valid GroupPresence from trusted matching peer must be accepted", consumedPresence)
+        assertEquals("Ongoing group calls map should record the presence", 1, coordinator.ongoingGroupCalls.value.size)
+        assertEquals("group-1", coordinator.ongoingGroupCalls.value["group-1"]?.groupId)
     }
 }

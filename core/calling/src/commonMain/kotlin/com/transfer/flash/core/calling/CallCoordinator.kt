@@ -262,18 +262,12 @@ public class CallCoordinator(
     override suspend fun onInboundText(peerId: String, text: String): Boolean {
         val frame = CallFrameCodec.decode(text) ?: return false
 
-        // SENTINEL: Fail closed on claimed-author vs transport-peer mismatch for 1:1 call frames
-        if (frame is CallWireFrame.Invite ||
-            frame is CallWireFrame.Accept ||
-            frame is CallWireFrame.Decline ||
-            frame is CallWireFrame.Hangup ||
-            frame is CallWireFrame.Offer ||
-            frame is CallWireFrame.Answer ||
-            frame is CallWireFrame.IceCandidate) {
-            if (frame.from != peerId) return false
-        }
+        // SENTINEL: Fail closed on claimed-author vs transport-peer mismatch for all non-relayed call frames,
+        // and enforce trust check on group presence/query frames to prevent unauthenticated info leaks/UI spoofing.
+        if (frame !is CallWireFrame.GroupJoin && frame.from != peerId) return false
 
         if (frame is CallWireFrame.GroupPresence) {
+            if (!isTrustedPeer(peerId)) return false
             if (currentGroupSession?.callId == frame.callId) return true
             val currentMap = _ongoingGroupCalls.value.toMutableMap()
             currentMap[frame.groupId] = OngoingGroupCallUi(
@@ -290,6 +284,7 @@ public class CallCoordinator(
         }
 
         if (frame is CallWireFrame.GroupQuery) {
+            if (!isTrustedPeer(peerId)) return false
             val liveSession = currentGroupSession
             if (liveSession != null && liveSession.groupId == frame.groupId && !liveSession.isSessionEnded) {
                 val count = liveSession.countConnectedParticipants() + 1
