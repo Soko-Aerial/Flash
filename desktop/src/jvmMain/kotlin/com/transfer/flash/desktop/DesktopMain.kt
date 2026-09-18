@@ -60,6 +60,10 @@ public fun main() = application {
     engine.start()
 
     var isWindowVisible by remember { mutableStateOf(true) }
+    var isWindowFocused by remember { mutableStateOf(true) }
+    var backgroundUnreadCount by remember { mutableStateOf(0) }
+    var currentComposeWindow by remember { mutableStateOf<java.awt.Window?>(null) }
+
     val windowState = rememberWindowState(width = 1200.dp, height = 800.dp)
     val trayState = rememberTrayState()
     val desktopSettings by engine.settings.collectAsState()
@@ -74,7 +78,14 @@ public fun main() = application {
             isWindowVisible = { isWindowVisible },
             activeConversationId = { nav.current.conversationId },
             isNotificationsEnabled = { engine.settings.value.showNotifications },
-        )
+            isWindowMinimized = { windowState.isMinimized },
+            isWindowFocused = { isWindowFocused },
+        ).apply {
+            onBackgroundMessageReceived = {
+                backgroundUnreadCount++
+                DesktopTaskbarBadgeManager.updateBadge(currentComposeWindow, backgroundUnreadCount)
+            }
+        }
     }
 
     DisposableEffect(notificationManager) {
@@ -94,6 +105,8 @@ public fun main() = application {
             onAction = {
                 isWindowVisible = true
                 windowState.isMinimized = false
+                backgroundUnreadCount = 0
+                DesktopTaskbarBadgeManager.clearBadge(currentComposeWindow)
             },
             menu = {
                 Item(
@@ -104,6 +117,8 @@ public fun main() = application {
                         } else {
                             isWindowVisible = true
                             windowState.isMinimized = false
+                            backgroundUnreadCount = 0
+                            DesktopTaskbarBadgeManager.clearBadge(currentComposeWindow)
                         }
                     },
                 )
@@ -113,6 +128,8 @@ public fun main() = application {
                     onClick = {
                         isWindowVisible = true
                         windowState.isMinimized = false
+                        backgroundUnreadCount = 0
+                        DesktopTaskbarBadgeManager.clearBadge(currentComposeWindow)
                         nav.selectTab(FlashDestination.ChatList)
                     },
                 )
@@ -159,14 +176,39 @@ public fun main() = application {
                 }
             },
             title = "Flash",
+            icon = painterResource(FlashIcons.Tray.drawableRes),
             state = windowState,
         ) {
         val density = androidx.compose.ui.platform.LocalDensity.current
         DisposableEffect(window, density) {
+            currentComposeWindow = window
             val minWidthPx = (640 * density.density).toInt()
             val minHeightPx = (480 * density.density).toInt()
             window.minimumSize = java.awt.Dimension(minWidthPx, minHeightPx)
-            onDispose {}
+
+            // Ensure taskbar reflects current badge state
+            DesktopTaskbarBadgeManager.updateBadge(window, backgroundUnreadCount)
+
+            val focusListener = object : java.awt.event.WindowFocusListener {
+                override fun windowGainedFocus(e: java.awt.event.WindowEvent?) {
+                    isWindowFocused = true
+                    backgroundUnreadCount = 0
+                    DesktopTaskbarBadgeManager.clearBadge(window)
+                }
+
+                override fun windowLostFocus(e: java.awt.event.WindowEvent?) {
+                    isWindowFocused = false
+                }
+            }
+            window.addWindowFocusListener(focusListener)
+            isWindowFocused = window.isFocused
+
+            onDispose {
+                window.removeWindowFocusListener(focusListener)
+                if (currentComposeWindow == window) {
+                    currentComposeWindow = null
+                }
+            }
         }
 
         // Reactive settings: Theme Mode and Performance Mode are observed directly from the engine's

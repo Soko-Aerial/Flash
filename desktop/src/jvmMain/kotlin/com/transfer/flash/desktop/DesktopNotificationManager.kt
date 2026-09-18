@@ -32,7 +32,11 @@ public class DesktopNotificationManager(
     private val isWindowVisible: () -> Boolean,
     private val activeConversationId: () -> String?,
     private val isNotificationsEnabled: () -> Boolean = { engine.settings.value.showNotifications },
+    private val isWindowMinimized: () -> Boolean = { false },
+    private val isWindowFocused: () -> Boolean = { true },
 ) {
+    public var onBackgroundMessageReceived: ((conversationId: String) -> Unit)? = null
+
     private var started = false
     private var transferJob: Job? = null
     private var callsJob: Job? = null
@@ -107,23 +111,32 @@ public class DesktopNotificationManager(
         previousCallPhase = null
     }
 
+    public fun isWindowForegroundAndActive(): Boolean {
+        return isWindowVisible() && !isWindowMinimized() && isWindowFocused()
+    }
+
     public fun handleInboundMessage(
         conversationId: String,
         senderName: String?,
         text: String,
         groupTitle: String?,
     ) {
-        if (!isNotificationsEnabled()) return
-        if (isWindowVisible() && activeConversationId() == conversationId) return
+        val inForeground = isWindowForegroundAndActive()
+        val shouldSuppress = inForeground && activeConversationId() == conversationId
 
-        val title = groupTitle ?: (senderName?.ifBlank { null } ?: "Flash Message")
-        val body = if (groupTitle != null) {
-            "${senderName?.ifBlank { null } ?: "Member"}: $text"
-        } else {
-            text
+        if (!shouldSuppress && isNotificationsEnabled()) {
+            val title = groupTitle ?: (senderName?.ifBlank { null } ?: "Flash Message")
+            val body = if (groupTitle != null) {
+                "${senderName?.ifBlank { null } ?: "Member"}: $text"
+            } else {
+                text
+            }
+            dispatchNotification(title, body, Notification.Type.Info)
         }
 
-        dispatchNotification(title, body, Notification.Type.Info)
+        if (!inForeground) {
+            onBackgroundMessageReceived?.invoke(conversationId)
+        }
     }
 
     public fun handleInboundAttachment(
@@ -133,17 +146,22 @@ public class DesktopNotificationManager(
         mimeType: String,
         groupTitle: String?,
     ) {
-        if (!isNotificationsEnabled()) return
-        if (isWindowVisible() && activeConversationId() == conversationId) return
+        val inForeground = isWindowForegroundAndActive()
+        val shouldSuppress = inForeground && activeConversationId() == conversationId
 
-        val title = groupTitle ?: (senderName?.ifBlank { null } ?: "Flash Message")
-        val body = if (groupTitle != null) {
-            "${senderName?.ifBlank { null } ?: "Member"} sent $fileName"
-        } else {
-            "Sent $fileName"
+        if (!shouldSuppress && isNotificationsEnabled()) {
+            val title = groupTitle ?: (senderName?.ifBlank { null } ?: "Flash Message")
+            val body = if (groupTitle != null) {
+                "${senderName?.ifBlank { null } ?: "Member"} sent $fileName"
+            } else {
+                "Sent $fileName"
+            }
+            dispatchNotification(title, body, Notification.Type.Info)
         }
 
-        dispatchNotification(title, body, Notification.Type.Info)
+        if (!inForeground) {
+            onBackgroundMessageReceived?.invoke(conversationId)
+        }
     }
 
     public fun handleTransfersUpdate(transfers: List<com.transfer.flash.core.transfer.model.FlashTransfer>) {

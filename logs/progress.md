@@ -1,5 +1,35 @@
 # Progress Log
 
+## 2026-09-18 — Desktop Taskbar Application Icon Badging & Background/Minimized Notifications
+
+### Worked on
+Implemented dynamic taskbar application icon badging on Windows/desktop and fixed message notification suppression when the window is minimized or running in the background.
+
+### Changed
+1. `desktop/src/jvmMain/.../DesktopTaskbarBadgeManager.kt`:
+   - Added `DesktopTaskbarBadgeManager` to dynamically generate multi-resolution icons (16, 24, 32, 48, 64px) with Flash Pulse Teal bolt (`#2DD4BF`) on dark slate tile (`#0F172A`).
+   - Dynamically composites high-contrast coral-red notification counter badges (`#EF4444` with `#0F172A` outline and bold centered text) on the upper-right corner when unread messages arrive in the background.
+   - Updates `window.iconImages` (calling AWT's native `WM_SETICON`), immediately rendering the badge on the Windows taskbar application button.
+   - Invokes `Taskbar.requestWindowUserAttention(window)` / `requestUserAttention(true, false)` to flash the taskbar button on Windows 10/11 when in background.
+   - Automatically clears the badge and restores clean icons when the window gains focus.
+2. `desktop/src/jvmMain/.../DesktopNotificationManager.kt`:
+   - Added `isWindowMinimized: () -> Boolean = { false }` and `isWindowFocused: () -> Boolean = { true }`.
+   - Defined `isWindowForegroundAndActive() = isWindowVisible() && !isWindowMinimized() && isWindowFocused()`.
+   - Fixed bug where notifications for the currently open conversation were suppressed even when the window was minimized or in the background behind another app. Notifications are now only suppressed when the window is truly in the foreground, focused, and not minimized.
+   - Added `onBackgroundMessageReceived` callback to trigger taskbar icon badge updates.
+3. `desktop/src/jvmMain/.../DesktopMain.kt`:
+   - Set `Window(icon = painterResource(FlashIcons.Tray.drawableRes))`.
+   - Attached `WindowFocusListener` on `ComposeWindow`: tracks focus changes, updates taskbar badge on background messages, and automatically clears the badge on window focus.
+4. `desktop/src/jvmTest/.../DesktopTaskbarBadgeManagerTest.kt`:
+   - Unit tests covering all target resolutions (16, 24, 32, 48, 64px), badged counters (1, 15, 0), and safe null window fallbacks.
+5. `desktop/src/jvmTest/.../DesktopNotificationManagerTest.kt`:
+   - Added tests verifying notifications and background callbacks fire when window is minimized or not focused even when viewing the same conversation.
+
+### Verification
+- `:desktop:jvmTest`: ALL 51 TASKS PASSED (including 12 unit test suites).
+
+---
+
 ## 2026-09-18 — "Encrypted & Verified" Security Surface, Tray Icon Contrast & Robust Typing Lifecycle
 
 ### Worked on

@@ -1,5 +1,26 @@
 # Current Handoff
 
+## 2026-09-18 — Desktop Taskbar Application Icon Badging & Background/Minimized Notifications
+
+### Current branch
+`dev`
+
+### Completed & Verified
+1. **Desktop Taskbar Application Icon Badging (`DesktopTaskbarBadgeManager`)**:
+   - Created `DesktopTaskbarBadgeManager` generating multi-resolution application icons (16, 24, 32, 48, 64px) with Flash Pulse Teal bolt (`#2DD4BF`) on dark slate tile (`#0F172A`).
+   - Dynamically composites coral-red unread counter badges (`#EF4444` with `#0F172A` separation border and white bold count string) on the upper-right corner.
+   - Updates `window.iconImages` (AWT native `WM_SETICON`), immediately rendering the badge on the Windows taskbar application button.
+   - Requests user attention via `Taskbar.requestWindowUserAttention(window)` / `requestUserAttention(true, false)` so Windows flashes the taskbar button when in the background.
+   - Automatically clears the badge and restores clean icons when the window gains focus.
+2. **Background & Minimized Notification Dispatch (`DesktopNotificationManager`)**:
+   - Fixed notification suppression logic: notifications are now only suppressed when the window is truly in the foreground and active (`isWindowVisible() && !isWindowMinimized() && isWindowFocused() && activeConversationId() == conversationId`).
+   - When the window is minimized or behind another app (not focused), notifications for all conversations (including the open conversation) are reliably dispatched.
+   - Connected `onBackgroundMessageReceived` to increment background unread counter and update taskbar badge.
+3. **Verification**:
+   - `:desktop:jvmTest`: ALL 51 TASKS PASSED (including new `DesktopTaskbarBadgeManagerTest` and expanded `DesktopNotificationManagerTest`).
+
+---
+
 ## 2026-09-18 — "Encrypted & Verified" Security Surface, Tray Icon Contrast & Robust Typing Lifecycle
 
 ### Current branch

@@ -268,4 +268,104 @@ class DesktopNotificationManagerTest {
         assertEquals("Pairing Request", notifications[0].title)
         assertTrue(notifications[0].message.contains("Pixel 8"))
     }
+
+    @Test
+    fun messageNotificationSentWhenWindowIsVisibleAndSameConversationOpenButMinimized() {
+        val stateDir = tempFolder.newFolder("desktop_state")
+        val engine = DesktopEngine(stateDir = stateDir)
+        val notifications = mutableListOf<Notification>()
+        var backgroundMessageReceived = false
+
+        val manager = DesktopNotificationManager(
+            engine = engine,
+            scope = testScope,
+            sendNotification = { notifications.add(it) },
+            isWindowVisible = { true },
+            activeConversationId = { "conv-1" },
+            isNotificationsEnabled = { true },
+            isWindowMinimized = { true },
+            isWindowFocused = { false },
+        ).apply {
+            onBackgroundMessageReceived = { backgroundMessageReceived = true }
+        }
+
+        manager.handleInboundMessage(
+            conversationId = "conv-1",
+            senderName = "Alice",
+            text = "Wake up!",
+            groupTitle = null,
+        )
+
+        assertEquals(1, notifications.size)
+        assertEquals("Alice", notifications[0].title)
+        assertEquals("Wake up!", notifications[0].message)
+        assertTrue("Background message callback must be invoked when minimized", backgroundMessageReceived)
+    }
+
+    @Test
+    fun messageNotificationSentWhenWindowIsVisibleAndSameConversationOpenButNotFocused() {
+        val stateDir = tempFolder.newFolder("desktop_state")
+        val engine = DesktopEngine(stateDir = stateDir)
+        val notifications = mutableListOf<Notification>()
+        var backgroundConvId: String? = null
+
+        val manager = DesktopNotificationManager(
+            engine = engine,
+            scope = testScope,
+            sendNotification = { notifications.add(it) },
+            isWindowVisible = { true },
+            activeConversationId = { "conv-1" },
+            isNotificationsEnabled = { true },
+            isWindowMinimized = { false },
+            isWindowFocused = { false },
+        ).apply {
+            onBackgroundMessageReceived = { backgroundConvId = it }
+        }
+
+        manager.handleInboundMessage(
+            conversationId = "conv-1",
+            senderName = "Alice",
+            text = "Background ping",
+            groupTitle = null,
+        )
+
+        assertEquals(1, notifications.size)
+        assertEquals("Alice", notifications[0].title)
+        assertEquals("Background ping", notifications[0].message)
+        assertEquals("conv-1", backgroundConvId)
+    }
+
+    @Test
+    fun attachmentNotificationSentWhenWindowMinimized() {
+        val stateDir = tempFolder.newFolder("desktop_state")
+        val engine = DesktopEngine(stateDir = stateDir)
+        val notifications = mutableListOf<Notification>()
+        var backgroundAttachmentFired = false
+
+        val manager = DesktopNotificationManager(
+            engine = engine,
+            scope = testScope,
+            sendNotification = { notifications.add(it) },
+            isWindowVisible = { true },
+            activeConversationId = { "conv-1" },
+            isNotificationsEnabled = { true },
+            isWindowMinimized = { true },
+            isWindowFocused = { false },
+        ).apply {
+            onBackgroundMessageReceived = { backgroundAttachmentFired = true }
+        }
+
+        manager.handleInboundAttachment(
+            conversationId = "conv-1",
+            senderName = "Bob",
+            fileName = "notes.pdf",
+            mimeType = "application/pdf",
+            groupTitle = null,
+        )
+
+        assertEquals(1, notifications.size)
+        assertEquals("Bob", notifications[0].title)
+        assertTrue(notifications[0].message.contains("notes.pdf"))
+        assertTrue(backgroundAttachmentFired)
+    }
 }
