@@ -1,6 +1,34 @@
 # Progress Log
 
-## 2026-09-18 — Desktop Keyboard Shortcuts, Multi-File Selection, Native Explorer Reveal, Auto-Start & EXIF Rotation
+## 2026-09-18 — Video Thumbnail Extraction, Desktop UI Scaling & Wide-Screen Bubble Cap
+
+### Worked on
+Implemented video thumbnail extraction, desktop UI scaling (AD-1), wide-screen bubble capping (AD-5), and media playback fallback:
+1. **Video Thumbnail Frame Extraction (JCodec)**:
+   - Implemented `decodeVideo` in `FlashImageDecoder.jvm.kt` using `org.jcodec.api.FrameGrab`, `Picture`, and `Yuv420pToRgb`.
+   - Extracts frame 0 of video files, converts YUV420 to RGB BufferedImage, scales via `computeInSampleSize`, and returns an `ImageBitmap`.
+   - Attached to `decode` for `isVideo = true`, providing real first-frame thumbnails for video attachments instead of generic placeholder icons.
+   - Added test `video decoding degrades safely to null on non-video files without throwing` in `FlashImageDecoderJvmTest.kt`.
+2. **Desktop Sizing & UI Scale Multiplier (AD-1 & AD-D1 = B)**:
+   - Added `uiScale` (0.75f..1.5f, default 1.0f) to `DesktopSettings` and persisted in `DesktopSettingsStore.kt`.
+   - Wired `storeUiScale` in `DesktopEngine.kt`.
+   - In `DesktopMain.kt`, dynamically calculates `effectiveDensity = Density(density = baseDensity.density * desktopSettings.uiScale, fontScale = baseDensity.fontScale)` and wraps the desktop window in `CompositionLocalProvider(LocalDensity provides effectiveDensity)`.
+   - Preserves OS font accessibility scaling by never overriding `fontScale`.
+3. **Wide-Screen Reading Measure & Bubble Cap (AD-5)**:
+   - Updated `FlashDimensions.bubbleMaxWidth` from 320.dp to 580.dp.
+   - Updated `FlashMessageBubble.kt` to reference `FlashDimensions.bubbleMaxWidth.roundToPx()`.
+   - On standard phones (<600dp), `bubbleMaxWidthFraction` (0.78f) preserves comfortable mobile bubble widths <= 320dp; on wide desktop panes (600..1200dp), bubbles can comfortably expand up to 580dp for natural reading without clipping lines awkwardly.
+4. **Media Playback Fallback**:
+   - Evaluated `composemediaplayer` and verified toolchain constraints: `composemediaplayer` >= 0.9.0 requires `kotlin-stdlib` 2.3+ / 2.4+, which breaks compilation on this project's frozen Kotlin 2.2.10 compiler.
+   - Preserved defensive fallback to `DesktopHelpers.openAttachment` (native Windows default player) with informative error banner and direct launcher in `FlashVideoSurface.jvm.kt` and `FlashVideoPlayer.kt`.
+
+### Verification
+- `:ui:theme:jvmTest`: ALL PASSED.
+- `:ui:platform-shims:jvmTest`: ALL PASSED (including video decoder test).
+- `:ui:chat:jvmTest`: ALL PASSED.
+- `:desktop:jvmTest`: ALL 51 TASKS PASSED.
+- `:app:testDebugUnitTest`: ALL PASSED.
+
 
 ### Worked on
 Implemented core Windows Desktop features identified in the platform audit:

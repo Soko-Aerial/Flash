@@ -1,5 +1,35 @@
 # Current Handoff
 
+## 2026-09-18 — Video Thumbnail Extraction, Desktop UI Scaling & Wide-Screen Bubble Cap
+
+### Current branch
+`dev`
+
+### Last verified build
+`478f807`
+
+### Completed & Verified
+1. **Video Thumbnail Frame Extraction (JCodec)**:
+   - `FlashImageDecoder.jvm.kt`: Implemented `decodeVideo` extracting first video frame as RGB `BufferedImage` and converting to `ImageBitmap` using JCodec.
+   - Tested in `FlashImageDecoderJvmTest.kt`.
+2. **Desktop UI Scaling & Sizing Policy (AD-1 & AD-D1 = B)**:
+   - `DesktopSettingsStore.kt`: Persisted `uiScale` (0.75..1.5).
+   - `DesktopMain.kt`: Window root dynamically applies `effectiveDensity = Density(systemDensity.density * uiScale, systemDensity.fontScale)`, preserving OS font accessibility scaling while providing desktop UI scale control.
+3. **Wide-Screen Reading Measure & Bubble Cap (AD-5)**:
+   - `FlashDimensions.kt`: Updated `bubbleMaxWidth = 580.dp`.
+   - `FlashMessageBubble.kt`: Bound `bubbleWidthCap` constraint ceiling to `FlashDimensions.bubbleMaxWidth`.
+4. **Media Playback Fallback**:
+   - `FlashVideoSurface.jvm.kt` and `FlashVideoPlayer.kt`: Configured informative error reporting and direct open in default external player (`DesktopHelpers.openAttachment`), avoiding toolchain conflict with frozen Kotlin 2.2.10.
+
+### Verification
+- `:ui:theme:jvmTest`: ALL PASSED.
+- `:ui:platform-shims:jvmTest`: ALL PASSED.
+- `:ui:chat:jvmTest`: ALL PASSED.
+- `:desktop:jvmTest`: ALL 51 TASKS PASSED.
+- `:app:testDebugUnitTest`: ALL PASSED.
+
+---
+
 ## 2026-09-18 — Desktop Keyboard Shortcuts, Multi-File Selection, Native Explorer Reveal, Auto-Start & EXIF Rotation
 
 ### Current branch
