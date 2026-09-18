@@ -3,6 +3,7 @@ package com.transfer.flash.debug
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -11,22 +12,26 @@ import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.content.ContextCompat
+import com.transfer.flash.core.transfer.FlashTransferRepository
+import com.transfer.flash.core.transfer.model.FlashTransfer
+import com.transfer.flash.core.transfer.model.FlashTransferDirection
+import com.transfer.flash.core.transfer.model.FlashTransferId
+import com.transfer.flash.core.transfer.model.FlashTransferState
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
- * Background discovery host (P3.5/D-M4 skeleton).
+ * Background discovery host and active dataSync transfer foreground service.
  *
- * Type choice per current platform rules (research 2026-08-23, see
- * docs/android-platform-notes.md): `connectedDevice` — no dataSync-style
- * 6h/24h timeout applies, and the precondition is satisfied by our declared
- * CHANGE_WIFI_MULTICAST_STATE permission. The service hosts advertise+browse
- * while Flash is screened; actual background RECEIVING of messages/files is
- * deferred until C4 (always-on listener) + C5/C6 (receive pipeline) land.
+ * Foreground service types declared in manifest:
+ * - `connectedDevice`: discovery and mesh keepalive
+ * - `dataSync`: active background file transfer execution (Android 14+)
  *
  * Started from [com.transfer.flash.MainActivity.onStart] while the app is user-visible, which
  * satisfies Android 12+ foreground-service start restrictions. It deliberately remains running
@@ -38,29 +43,6 @@ class FlashBackgroundService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        // Order matters (ERROR-020): engine FIRST, foreground promotion LAST.
-        //
-        // When the system restarts this START_STICKY service after killing the process,
-        // the app is backgrounded and startForeground() throws
-        // ForegroundServiceStartNotAllowedException on Android 12+. The old code called
-        // startAsForeground() first with no catch, so every sticky restart was a FATAL
-        // crash that killed the whole mesh — the visible "goes offline after a few
-        // seconds" bug. Now the failure path is caught below: the engine is already up,
-        // the process stays alive, and we stop the service instance cleanly instead of
-        // crashing (which also stops the crash-restart loop).
-        //
-        // The CPU + Wi-Fi power locks deliberately do NOT live here (ERROR-026). This service
-        // instance can be destroyed while the engine keeps running — exactly what the refused path
-        // below does — and onDestroy releasing the locks disarmed the mesh in the one situation the
-        // locks exist for. DiscoveryEngineHolder now holds them for the engine's lifetime.
-        //
-        // The screen-on / user-present receiver is gone from here for the same reason (ERROR-031):
-        // it used to be registered in onCreate and unregistered in onDestroy, so the refused path
-        // below tore down the engine's only way to notice the screen coming back — leaving it with
-        // no foreground service AND no re-arm. DiscoveryEngineHolder registers it for the engine's
-        // lifetime instead.
-        // ensureStarted is NonCancellable inside the holder, so stopSelf() below cannot abort a
-        // half-built engine even though it cancels this scope.
         scope.launch {
             runCatching { DiscoveryEngineHolder.ensureStarted(applicationContext) }
                 .onFailure { Log.w(TAG, "engine start failed in background service", it) }
@@ -68,34 +50,66 @@ class FlashBackgroundService : Service() {
         if (startAsForeground()) {
             promotionRefused.set(false)
         } else {
-            // Remember the refusal so a later moment when the app is allowed to start a foreground
-            // service again ([retryPromotionIfRefused], driven by screen-on and Wi-Fi rejoin) can
-            // try once more instead of the process staying unprotected until the user next opens it.
             promotionRefused.set(true)
             Log.w(TAG, "Foreground promotion refused (background start restriction) — stopping service instance; engine keeps running in-process with its power locks held, promotion will be retried")
             stopSelf()
+            return
+        }
+
+        // Observe active transfers to update ongoing notification with progress, speed, ETA, and cancel action
+        scope.launch {
+            var transferRepo: FlashTransferRepository? = null
+            while (transferRepo == null && isActive) {
+                transferRepo = DiscoveryEngineHolder.currentTransfers()
+                if (transferRepo == null) delay(500)
+            }
+            transferRepo?.activeTransfers?.collect { transfers ->
+                updateTransferNotification(transfers)
+            }
         }
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int =
-        START_STICKY
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_CANCEL_TRANSFER) {
+            val transferId = intent.getStringExtra(EXTRA_TRANSFER_ID)
+            if (transferId != null) {
+                scope.launch {
+                    val transfers = DiscoveryEngineHolder.currentTransfers()
+                    transfers?.cancelTransfer(FlashTransferId(transferId))
+                }
+            }
+        }
+        return START_STICKY
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
         scope.cancel()
-        // Engine itself keeps running (with its power locks and its screen-on receiver) if the Dev
-        // Console or a refused foreground promotion wants it; stopping the service only releases
-        // foreground priority. Full stop is explicit: DiscoveryEngineHolder.stopAll().
         super.onDestroy()
     }
 
     /**
-     * Promotes this service to foreground. Returns false (never throws) when Android
-     * 12+ rejects the promotion because the app is backgrounded — typically a sticky
-     * restart after the system/OEM killed the process. See [onCreate] for why throwing
-     * here was the Bug 6 killer.
+     * Android 15+ (API 35) Foreground Service timeout handler for dataSync execution limits.
+     * Cleanly cancels any ongoing transfers to avoid crash/kill by the platform.
      */
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        Log.w(TAG, "Foreground service timeout reached: startId=$startId, fgsType=$fgsType")
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM &&
+            (fgsType and ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC) != 0
+        ) {
+            scope.launch {
+                val transfers = DiscoveryEngineHolder.currentTransfers()
+                transfers?.activeTransfers?.value?.forEach { transfer ->
+                    if (transfer.state == FlashTransferState.Transferring) {
+                        runCatching { transfers.cancelTransfer(transfer.id) }
+                    }
+                }
+            }
+        }
+        super.onTimeout(startId, fgsType)
+    }
+
     private fun startAsForeground(): Boolean {
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(
@@ -119,12 +133,104 @@ class FlashBackgroundService : Service() {
             }
             true
         } catch (error: Exception) {
-            // ForegroundServiceStartNotAllowedException (API 31+) is the expected one;
-            // catch broadly so no OEM variant (SecurityException, IllegalStateException,
-            // RuntimeException subclasses from Transsion's framework) can crash the app.
             Log.e(TAG, "startForeground refused", error)
             false
         }
+    }
+
+    private fun updateTransferNotification(transfers: List<FlashTransfer>) {
+        val active = transfers.filter { it.state == FlashTransferState.Transferring }
+        val manager = getSystemService(NotificationManager::class.java) ?: return
+        if (active.isEmpty()) {
+            val notification = Notification.Builder(this, CHANNEL_ID)
+                .setContentTitle("Flash is discoverable")
+                .setContentText("Nearby devices can find and reach this phone.")
+                .setSmallIcon(android.R.drawable.stat_notify_sync_noanim)
+                .setOngoing(true)
+                .build()
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+                } else {
+                    startForeground(NOTIFICATION_ID, notification)
+                }
+            } catch (t: Throwable) {
+                manager.notify(NOTIFICATION_ID, notification)
+            }
+        } else {
+            val primary = active.first()
+            val percent = if (primary.bytesTotal > 0) {
+                ((primary.bytesDone * 100) / primary.bytesTotal).toInt().coerceIn(0, 100)
+            } else 0
+            val verb = if (primary.direction == FlashTransferDirection.Sending) "Sending" else "Receiving"
+            val title = "$verb ${primary.fileName} — $percent%"
+            val speedText = formatTransferSpeed(primary.speedBytesPerSec)
+            val etaText = formatTransferEta(primary.etaSeconds)
+            val subtitle = listOfNotNull(
+                speedText.takeIf { it.isNotBlank() },
+                etaText.takeIf { it.isNotBlank() },
+                if (active.size > 1) "+${active.size - 1} more" else null,
+            ).joinToString(" • ").ifBlank { "$percent% completed" }
+
+            val cancelIntent = Intent(this, FlashBackgroundService::class.java).apply {
+                action = ACTION_CANCEL_TRANSFER
+                putExtra(EXTRA_TRANSFER_ID, primary.id.value)
+            }
+            val cancelPendingIntent = PendingIntent.getService(
+                this,
+                primary.id.value.hashCode(),
+                cancelIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+            val cancelAction = Notification.Action.Builder(
+                android.R.drawable.ic_menu_close_clear_cancel,
+                "Cancel",
+                cancelPendingIntent,
+            ).build()
+
+            val notification = Notification.Builder(this, CHANNEL_ID)
+                .setContentTitle(title)
+                .setContentText(subtitle)
+                .setSmallIcon(android.R.drawable.stat_sys_download)
+                .setProgress(100, percent, false)
+                .addAction(cancelAction)
+                .setOngoing(true)
+                .build()
+
+            try {
+                val fgsType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+                } else 0
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    startForeground(NOTIFICATION_ID, notification, fgsType)
+                } else {
+                    startForeground(NOTIFICATION_ID, notification)
+                }
+            } catch (t: Throwable) {
+                manager.notify(NOTIFICATION_ID, notification)
+            }
+        }
+    }
+
+    private fun formatTransferSpeed(bytesPerSec: Long): String {
+        if (bytesPerSec <= 0) return ""
+        val mb = bytesPerSec.toDouble() / (1024 * 1024)
+        return if (mb >= 1.0) {
+            String.format(java.util.Locale.US, "%.1f MB/s", mb)
+        } else {
+            val kb = bytesPerSec.toDouble() / 1024
+            String.format(java.util.Locale.US, "%.0f KB/s", kb)
+        }
+    }
+
+    private fun formatTransferEta(etaSeconds: Long): String {
+        if (etaSeconds <= 0) return ""
+        val mins = etaSeconds / 60
+        val secs = etaSeconds % 60
+        return if (mins > 0) "${mins}m ${secs}s left" else "${secs}s left"
     }
 
     companion object {
@@ -132,39 +238,20 @@ class FlashBackgroundService : Service() {
         private const val CHANNEL_ID = "flash_discovery_bg"
         private const val NOTIFICATION_ID = 41
 
-        /**
-         * True while the process is running the mesh **without** foreground-service protection
-         * because a promotion attempt was refused (ERROR-031 / D7).
-         *
-         * Set by [onCreate]'s failure path, cleared as soon as a promotion succeeds. Lives in the
-         * companion, not the instance, precisely because the refused instance destroys itself:
-         * the fact that protection is missing has to outlive it.
-         */
+        const val ACTION_CANCEL_TRANSFER = "com.transfer.flash.action.CANCEL_TRANSFER"
+        const val EXTRA_TRANSFER_ID = "extra_transfer_id"
+
         private val promotionRefused = AtomicBoolean(false)
 
         fun start(context: Context) {
             val intent = Intent(context.applicationContext, FlashBackgroundService::class.java)
             runCatching {
-                // ContextCompat falls back to startService below API 26 (the project supports API 24+).
                 ContextCompat.startForegroundService(context.applicationContext, intent)
             }.onFailure { error ->
                 Log.e(TAG, "Unable to start background mesh foreground service", error)
             }
         }
 
-        /**
-         * Best-effort second chance at foreground protection after a refused promotion.
-         *
-         * Called from [DiscoveryEngineHolder.onScreenOn] and from the Wi-Fi rejoin hook
-         * (`WsFlashNetwork(onUsableNetwork = …)`) — two moments where the app has plausibly become
-         * allowed to start a foreground service again. Starting the service creates a fresh
-         * instance, so `onCreate` re-runs `startAsForeground()`; if the platform refuses again the
-         * catch inside it turns that into `false` and the instance stops itself, so a failed retry
-         * costs nothing and the flag stays armed for the next attempt.
-         *
-         * No-op when protection is already held, so the hot paths that call this on every screen-on
-         * and every network change do not churn service instances.
-         */
         fun retryPromotionIfRefused(context: Context) {
             if (!promotionRefused.get()) return
             Log.i(TAG, "Retrying refused foreground promotion")

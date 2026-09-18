@@ -390,6 +390,9 @@ object DiscoveryEngineHolder {
 
     fun currentFriendlyName(): String? = localDeviceName
 
+    /** True if the background mesh network has booted and is currently running. */
+    fun isRunning(): Boolean = network != null
+
     fun updateFriendlyName(newName: String) {
         val trimmed = newName.trim()
         if (trimmed.isBlank()) return
@@ -607,12 +610,13 @@ object DiscoveryEngineHolder {
         val receivePipeline = ReceivePipeline(
             sink = { _, _ -> Log.w(TAG_TRANSFER, "Legacy shared sink invoked — expected per-transfer sinkFactory") },
             sinkFactory = { start ->
-                val safeName = sanitizePathComponent(start.fileName.ifBlank { "received.bin" })
+                val safeRelativePath = sanitizeRelativePath(start.fileName.ifBlank { "received.bin" })
                 val safeId = sanitizePathComponent(start.transferId)
                 val canonicalRoot = receivedDir.canonicalFile
-                val dest = File(File(canonicalRoot, safeId), safeName).canonicalFile
-                // SENTINEL: Path traversal guard — canonical containment under FlashReceived
-                require(dest.path.startsWith(canonicalRoot.path + File.separator)) {
+                val destDir = File(canonicalRoot, safeId).canonicalFile
+                val dest = File(destDir, safeRelativePath).canonicalFile
+                // SENTINEL: Path traversal guard — canonical containment under destDir
+                require(dest.path.startsWith(destDir.path + File.separator)) {
                     "Path traversal escape detected for transferId=${start.transferId}, fileName=${start.fileName}"
                 }
                 dest.parentFile?.mkdirs()
@@ -2071,6 +2075,26 @@ object DiscoveryEngineHolder {
     /** Strips anything that could escape the intended directory (path-traversal guard, AGENTS.md §19). */
     private fun sanitizePathComponent(raw: String): String =
         raw.replace(Regex("[^A-Za-z0-9._ ()-]"), "_").trim('.').ifBlank { "unnamed" }.take(120)
+
+    /**
+     * Sanitizes a relative file path (potentially with subdirectories from a folder transfer)
+     * while strictly guarding against path traversal (AGENTS.md §19).
+     * Replaces any forbidden characters per component and strips any '.' or '..' segments.
+     */
+    private fun sanitizeRelativePath(raw: String): String {
+        val normalized = raw.replace('\\', '/').trim().trimStart('/')
+        val segments = normalized.split('/').filter { it.isNotEmpty() }
+        if (segments.isEmpty()) return "unnamed"
+        val safeSegments = mutableListOf<String>()
+        for (seg in segments) {
+            if (seg == "." || seg == "..") continue
+            val sanitized = sanitizePathComponent(seg)
+            if (sanitized.isNotBlank() && sanitized != "." && sanitized != "..") {
+                safeSegments.add(sanitized)
+            }
+        }
+        return if (safeSegments.isEmpty()) "unnamed" else safeSegments.joinToString(File.separator)
+    }
 
     /**
      * Best-effort MIME from a file name extension, used to render an inbound attachment bubble as

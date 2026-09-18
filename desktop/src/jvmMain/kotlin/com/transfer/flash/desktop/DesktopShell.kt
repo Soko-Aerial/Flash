@@ -589,24 +589,27 @@ public fun DesktopShell(
                             if (nav.current.destination == FlashDestination.Conversation && activePeerId != null) {
                                 val allFiles = fileList.flatMap { file ->
                                     if (file.isDirectory) {
-                                        file.walkTopDown().filter { it.isFile }.toList()
+                                        file.walkTopDown().filter { it.isFile }.map { subFile ->
+                                            val relPath = "${file.name}/${subFile.relativeTo(file).path.replace('\\', '/')}"
+                                            Pair(subFile, relPath)
+                                        }.toList()
                                     } else {
-                                        listOf(file)
+                                        listOf(Pair(file, file.name))
                                     }
                                 }
-                                allFiles.forEach { file ->
+                                allFiles.forEach { (file, relPath) ->
                                     sendFileToPeer(
                                         peerId = activePeerId,
                                         peerName = conversationState.header.title,
                                         isGroup = conversationState.header.isGroup,
                                         uri = file.toURI().toString(),
-                                        displayName = file.name,
+                                        displayName = relPath,
                                         size = file.length(),
                                     )
                                 }
                                 scope.launch {
                                     snackbarHostState.showSnackbar(
-                                        message = if (allFiles.size == 1) "Sending ${allFiles[0].name}" else "Sending ${allFiles.size} files",
+                                        message = if (allFiles.size == 1) "Sending ${allFiles[0].first.name}" else "Sending ${allFiles.size} files",
                                         duration = SnackbarDuration.Short,
                                     )
                                 }

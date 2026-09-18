@@ -38,7 +38,11 @@ import com.transfer.flash.ui.adaptive.FlashAdaptiveTwoPane
 import com.transfer.flash.ui.adaptive.FlashNavigationRail
 import com.transfer.flash.ui.adaptive.FlashNavigationRailTab
 import com.transfer.flash.ui.adaptive.FlashPlaceholderDetailPane
+import com.transfer.flash.ui.adaptive.FlashTransferDetailPane
+import com.transfer.flash.ui.adaptive.FlashNearbyDetailPane
+import com.transfer.flash.ui.adaptive.FlashWindowSizeClass
 import com.transfer.flash.ui.adaptive.rememberFlashAdaptiveWindowWidthDp
+import com.transfer.flash.ui.transfers.FlashTransferItemUi
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -170,6 +174,9 @@ class MainActivity : ComponentActivity() {
      */
     private val ignoringBatteryOptimizations = MutableStateFlow(false)
 
+    private val pendingShare = MutableStateFlow<PendingSharePayload?>(null)
+    private val pendingShortcutTab = MutableStateFlow<FlashDestination?>(null)
+
     private val receivedStorageState = MutableStateFlow(FlashReceivedStorageState())
     private var receivedStorageJob: Job? = null
 
@@ -195,6 +202,7 @@ class MainActivity : ComponentActivity() {
         if (intent?.getBooleanExtra(PttSessionEngine.EXTRA_PTT_PRESS, false) == true) {
             pendingPttPress.value = true
         }
+        handleIncomingIntent(intent)
         // Boot the real WS mesh stack once, idempotently. The holder de-dupes against the Dev
         // Console / background service, so this never spins up a second server. Failures are
         // captured into appEngine.startError (permission gating lands in Phase 4).
@@ -205,6 +213,8 @@ class MainActivity : ComponentActivity() {
                 pendingNotificationConversation = pendingNotificationConversation,
                 pendingCallAnswer = pendingCallAnswer,
                 pendingPttPress = pendingPttPress,
+                pendingShare = pendingShare,
+                pendingShortcutTab = pendingShortcutTab,
                 onEnableBackgroundTransfers = ::requestIgnoreBatteryOptimizations,
                 ignoringBatteryOptimizations = ignoringBatteryOptimizations,
                 receivedStorageState = receivedStorageState,
@@ -250,7 +260,47 @@ class MainActivity : ComponentActivity() {
         if (intent.getBooleanExtra(PttSessionEngine.EXTRA_PTT_PRESS, false)) {
             pendingPttPress.value = true
         }
+        handleIncomingIntent(intent)
     }
+
+    private fun handleIncomingIntent(intent: Intent?) {
+        if (intent == null) return
+        when (intent.action) {
+            Intent.ACTION_SEND -> {
+                val text = intent.getStringExtra(Intent.EXTRA_TEXT)
+                val uri: Uri? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+                } else {
+                    @Suppress("DEPRECATION")
+                    intent.getParcelableExtra(Intent.EXTRA_STREAM)
+                }
+                if (uri != null || !text.isNullOrBlank()) {
+                    pendingShare.value = PendingSharePayload(
+                        uris = listOfNotNull(uri),
+                        text = text,
+                    )
+                }
+            }
+            Intent.ACTION_SEND_MULTIPLE -> {
+                val uris: ArrayList<Uri>? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java)
+                } else {
+                    @Suppress("DEPRECATION")
+                    intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM)
+                }
+                if (!uris.isNullOrEmpty()) {
+                    pendingShare.value = PendingSharePayload(uris = uris)
+                }
+            }
+            "com.transfer.flash.action.SHORTCUT_SEND", "com.transfer.flash.action.SHORTCUT_NEARBY" -> {
+                pendingShortcutTab.value = FlashDestination.NearbyDevices
+            }
+            "com.transfer.flash.action.SHORTCUT_CHATS" -> {
+                pendingShortcutTab.value = FlashDestination.ChatList
+            }
+        }
+    }
+
 
     private fun refreshReceivedStorageUsage() {
         receivedStorageJob?.cancel()
@@ -397,6 +447,11 @@ object SettingsKeys {
     }
 }
 
+data class PendingSharePayload(
+    val uris: List<Uri> = emptyList(),
+    val text: String? = null,
+)
+
 @Composable
 fun FlashApp(
     engine: AppEngine,
@@ -405,6 +460,10 @@ fun FlashApp(
     pendingCallAnswer: MutableStateFlow<Boolean> = MutableStateFlow(false),
     /** Deferred hardware PTT press (Phase 3): consumed by the session overlay once ready. */
     pendingPttPress: MutableStateFlow<Boolean> = MutableStateFlow(false),
+    /** Pending shared files/text from Android ACTION_SEND / ACTION_SEND_MULTIPLE. */
+    pendingShare: MutableStateFlow<PendingSharePayload?> = MutableStateFlow(null),
+    /** Pending static app shortcut navigation target. */
+    pendingShortcutTab: MutableStateFlow<FlashDestination?> = MutableStateFlow(null),
     /** Bug 6: fired when the user turns ON the Settings "Background transfers" toggle (host-owned). */
     onEnableBackgroundTransfers: () -> Unit = {},
     /** ERROR-031 / D7: activity-published battery-optimisation exemption, refreshed on resume. */
@@ -556,6 +615,8 @@ fun FlashApp(
                     onSettingsChange = onSettingsChange,
                     pendingNotificationConversation = pendingNotificationConversation,
                     pendingCallAnswer = pendingCallAnswer,
+                    pendingShare = pendingShare,
+                    pendingShortcutTab = pendingShortcutTab,
                     onEnableBackgroundTransfers = onEnableBackgroundTransfers,
                     onRefreshStorageUsage = onRefreshStorageUsage,
                     onClearReceivedFiles = onClearReceivedFiles,
@@ -596,6 +657,8 @@ private fun FlashShell(
     onSettingsChange: (FlashSettingsModel) -> Unit,
     pendingNotificationConversation: MutableStateFlow<String?>,
     pendingCallAnswer: MutableStateFlow<Boolean>,
+    pendingShare: MutableStateFlow<PendingSharePayload?>,
+    pendingShortcutTab: MutableStateFlow<FlashDestination?>,
     onEnableBackgroundTransfers: () -> Unit,
     onRefreshStorageUsage: () -> Unit,
     onClearReceivedFiles: () -> Unit,
@@ -681,6 +744,23 @@ private fun FlashShell(
             pendingNotificationConversation.value = null
         }
     }
+
+    val shortcutTab by pendingShortcutTab.collectAsState()
+    LaunchedEffect(shortcutTab) {
+        val tab = shortcutTab ?: return@LaunchedEffect
+        nav.selectTab(tab)
+        pendingShortcutTab.value = null
+    }
+
+    val activeShare by pendingShare.collectAsState()
+    LaunchedEffect(activeShare) {
+        if (activeShare != null) {
+            if (nav.current.destination == FlashDestination.Transfers || nav.current.destination == FlashDestination.Settings) {
+                nav.selectTab(FlashDestination.NearbyDevices)
+            }
+        }
+    }
+
 
     // #14: display-name edit sheet. The identity row's tap now opens a rename dialog whose result is
     // persisted through onSettingsChange (DataStore) instead of being a no-op.
@@ -889,6 +969,41 @@ private fun FlashShell(
             Toast.makeText(toastContext, message, Toast.LENGTH_SHORT).show()
         }
     }
+
+    val sendSharedPayloadToPeer: (targetDeviceId: String, targetDeviceName: String) -> Unit = { targetDeviceId, targetDeviceName ->
+        val share = pendingShare.value
+        val transfers = engine.transfers
+        if (share != null && transfers != null) {
+            val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == targetDeviceId }
+            val targetDevice = FlashDevice(
+                id = FlashDeviceId(targetDeviceId),
+                friendlyName = targetDeviceName,
+                transportType = endpoint?.transportType ?: FlashTransportType.LAN,
+            )
+            scope.launch(Dispatchers.IO) {
+                share.uris.forEach { uri ->
+                    val (name, size) = resolveContentUriNameAndSize(toastContext, uri)
+                    val mime = guessMimeType(name, uri.toString(), toastContext)
+                    val transferId = transfers.sendFile(targetDevice, uri.toString(), name, size).getOrNull()
+                    if (transferId != null) {
+                        chatRepository.sendAttachment(
+                            conversationId = targetDeviceId,
+                            transferId = transferId.value,
+                            fileName = name,
+                            mimeType = mime,
+                            sizeBytes = size,
+                            localPath = uri.toString(),
+                        )
+                    }
+                }
+                if (!share.text.isNullOrBlank()) {
+                    chatRepository.sendText(share.text)
+                }
+            }
+            pendingShare.value = null
+        }
+    }
+
     // `ready` is read for `isLoading` below; inside `derivedStateOf` it is read as State rather than
     // as a key, which is narrower, not looser (EXP-012). Same reasoning as `transfersUi` above: as a
     // 5-key `remember` this recorded five State reads at FlashShell scope, so any discovery tick,
@@ -962,11 +1077,18 @@ private fun FlashShell(
     }
 
     // UI-034 / AD-6: Adaptive layout for large displays (tablets, foldables unfolded, landscape, DeX).
-    // When width >= 840dp, transforms into a slim navigation rail on the left + two-pane layout
+    // UI-034 / AD-6: Adaptive layout for large displays (tablets, foldables unfolded, landscape, DeX).
+    // When width >= 600dp (Medium & Expanded), transforms into a slim navigation rail on the left
+    // (no stretched bottom navigation bar). When width >= 840dp, transforms into dual-pane layout
     // (matching modern WhatsApp & Telegram desktop implementations).
     val windowWidthDp = rememberFlashAdaptiveWindowWidthDp()
     val sizeClass = FlashAdaptiveMath.windowSizeForWidth(windowWidthDp)
+    val useNavRail = sizeClass != FlashWindowSizeClass.Compact
     val twoPane = FlashAdaptiveMath.isTwoPaneAllowed(sizeClass)
+
+    var selectedChatConversationId by remember { mutableStateOf<String?>(null) }
+    var selectedTransferItem by remember { mutableStateOf<FlashTransferItemUi?>(null) }
+    var selectedNearbyPeer by remember { mutableStateOf<NearbyPeerUi?>(null) }
 
     val totalUnreadCount = remember(chatListState.items) {
         chatListState.items.sumOf { it.unreadCount }
@@ -1007,19 +1129,26 @@ private fun FlashShell(
         )
     }
 
-    // In two-pane mode, back while in conversation clears selection without popping the tab or exiting
-    BackHandler(enabled = twoPane && nav.current.destination == FlashDestination.Conversation) {
-        chatRepository.closeConversation()
-        nav.navigate(FlashDestination.ChatList)
+    // In two-pane mode, back clears active detail selection without popping the tab or exiting the app
+    BackHandler(enabled = twoPane && (nav.current.destination == FlashDestination.Conversation || selectedTransferItem != null || selectedNearbyPeer != null)) {
+        if (selectedTransferItem != null) {
+            selectedTransferItem = null
+        } else if (selectedNearbyPeer != null) {
+            selectedNearbyPeer = null
+        } else if (nav.current.destination == FlashDestination.Conversation) {
+            chatRepository.closeConversation()
+            selectedChatConversationId = null
+            nav.navigate(FlashDestination.ChatList)
+        }
     }
 
     // UI-046 v2: the shell bar HANGS over the page instead of docking under it. Tab roots
     // hand `contentInset + system nav inset` to the page, which folds it into its own
     // contentPadding so rows scroll UNDER the capsule; pushed screens (Conversation) drop the
-    // bar entirely and manage their own bottom insets. In two-pane mode, there is no bottom nav.
-    val showBar = !twoPane && FlashNavigationMath.isTabRoot(nav.current.destination)
+    // bar entirely and manage their own bottom insets. In rail mode, there is no bottom nav.
+    val showBar = !useNavRail && FlashNavigationMath.isTabRoot(nav.current.destination)
     val systemBottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-    val tabBottomInset = if (twoPane) 0.dp else (FlashBottomNavDefaults.contentInset + systemBottomInset)
+    val tabBottomInset = if (useNavRail) 0.dp else (FlashBottomNavDefaults.contentInset + systemBottomInset)
 
     val conversationScreenContent: @Composable () -> Unit = {
         val conversationId = nav.current.conversationId
@@ -1462,7 +1591,10 @@ private fun FlashShell(
                 }
             },
             onHistoryOpen = { item ->
-                openAttachment(toastContext, item.localPath, guessMimeType(item.fileName))
+                selectedTransferItem = item
+                if (!twoPane) {
+                    openAttachment(toastContext, item.localPath, guessMimeType(item.fileName))
+                }
             },
             onHistoryShare = { item -> shareTransferredFile(toastContext, item) },
             modifier = Modifier.fillMaxSize(),
@@ -1475,6 +1607,9 @@ private fun FlashShell(
         FlashNearbyScreen(
             state = nearby,
             onPairClick = { peer ->
+                if (pendingShare.value != null) {
+                    sendSharedPayloadToPeer(peer.id, peer.name)
+                }
                 // Ensure a session exists (dial is idempotent/coalesced), then start the
                 // handshake. onSessionUp exchanges fingerprints so beginPair can derive
                 // the shared 6-digit code; the responder sees the Accept/Decline dialog.
@@ -1486,13 +1621,22 @@ private fun FlashShell(
                     }
                     engine.pairing?.beginPair(peer.id, peer.name)
                 }
+                if (twoPane) selectedNearbyPeer = peer
             },
             onChatClick = { peer ->
+                if (pendingShare.value != null) {
+                    sendSharedPayloadToPeer(peer.id, peer.name)
+                }
+                selectedChatConversationId = peer.id
                 chatRepository.openConversation(peer.id)
                 nav.navigate(FlashDestination.Conversation, conversationId = peer.id)
             },
             onRevokeClick = { trusted -> engine.pairing?.revoke(trusted.id) },
             onChatTrustedClick = { trusted ->
+                if (pendingShare.value != null) {
+                    sendSharedPayloadToPeer(trusted.id, trusted.name)
+                }
+                selectedChatConversationId = trusted.id
                 chatRepository.openConversation(trusted.id)
                 nav.navigate(FlashDestination.Conversation, conversationId = trusted.id)
             },
@@ -1574,8 +1718,9 @@ private fun FlashShell(
     val chatListScreenContent: @Composable () -> Unit = {
         FlashChatListScreen(
             state = chatListState,
-            activeConversationId = if (twoPane && nav.current.destination == FlashDestination.Conversation) nav.current.conversationId else null,
+            activeConversationId = if (twoPane) (nav.current.conversationId ?: selectedChatConversationId) else null,
             onConversationClick = { id ->
+                selectedChatConversationId = id
                 chatRepository.openConversation(id)
                 chatRepository.clearListSelection()
                 nav.navigate(FlashDestination.Conversation, conversationId = id)
@@ -1647,15 +1792,23 @@ private fun FlashShell(
             .fillMaxSize()
             .background(FlashTheme.colors.backgroundApp),
     ) {
-        if (twoPane) {
+        if (useNavRail) {
             Row(Modifier.fillMaxSize()) {
                 FlashNavigationRail(
                     tabs = navigationRailTabs,
                     selectedTab = if (nav.current.destination == FlashDestination.Conversation) FlashDestination.ChatList else nav.current.destination,
                     onTabSelected = { destination ->
-                        if (nav.current.destination == FlashDestination.Conversation && destination == FlashDestination.ChatList) {
-                            chatRepository.closeConversation()
-                            nav.navigate(FlashDestination.ChatList)
+                        if (destination == FlashDestination.ChatList) {
+                            if (selectedChatConversationId != null && twoPane) {
+                                chatRepository.openConversation(selectedChatConversationId!!)
+                                nav.navigate(FlashDestination.Conversation, conversationId = selectedChatConversationId)
+                            } else if (nav.current.destination == FlashDestination.Conversation) {
+                                chatRepository.closeConversation()
+                                selectedChatConversationId = null
+                                nav.navigate(FlashDestination.ChatList)
+                            } else {
+                                nav.selectTab(FlashDestination.ChatList)
+                            }
                         } else {
                             nav.selectTab(destination)
                         }
@@ -1666,29 +1819,133 @@ private fun FlashShell(
                     },
                 )
                 Box(Modifier.weight(1f).fillMaxHeight()) {
-                    when (nav.current.destination) {
-                        FlashDestination.ChatList, FlashDestination.Conversation -> {
-                            FlashAdaptiveTwoPane(
-                                listPane = chatListScreenContent,
-                                detailPane = {
-                                    if (nav.current.destination == FlashDestination.Conversation) {
-                                        conversationScreenContent()
-                                    } else {
+                    if (twoPane) {
+                        val availableWidthDp = (windowWidthDp - 68f).coerceAtLeast(0f)
+                        when (nav.current.destination) {
+                            FlashDestination.ChatList, FlashDestination.Conversation -> {
+                                FlashAdaptiveTwoPane(
+                                    listPane = chatListScreenContent,
+                                    detailPane = {
+                                        val activeConvId = nav.current.conversationId ?: selectedChatConversationId
+                                        if (activeConvId != null) {
+                                            conversationScreenContent()
+                                        } else {
+                                            FlashPlaceholderDetailPane(
+                                                onFindDevices = { nav.selectTab(FlashDestination.NearbyDevices) },
+                                            )
+                                        }
+                                    },
+                                    windowWidthDp = availableWidthDp,
+                                )
+                            }
+                            FlashDestination.Transfers -> {
+                                FlashAdaptiveTwoPane(
+                                    listPane = transfersScreenContent,
+                                    detailPane = {
+                                        val item = selectedTransferItem
+                                        if (item != null) {
+                                            FlashTransferDetailPane(
+                                                item = item,
+                                                onClose = { selectedTransferItem = null },
+                                                onPauseResume = {
+                                                    engine.transfers?.let { repo ->
+                                                        val id = FlashTransferId(item.id)
+                                                        scope.launch {
+                                                            if (item.state == FlashTransferState.Paused) repo.resumeTransfer(id)
+                                                            else repo.pauseTransfer(id)
+                                                        }
+                                                    }
+                                                },
+                                                onCancel = {
+                                                    engine.transfers?.let { repo ->
+                                                        scope.launch { repo.cancelTransfer(FlashTransferId(item.id)) }
+                                                    }
+                                                },
+                                                onRetry = {
+                                                    engine.transfers?.let { repo ->
+                                                        scope.launch { repo.resumeTransfer(FlashTransferId(item.id)) }
+                                                    }
+                                                },
+                                                onOpen = {
+                                                    openAttachment(toastContext, item.localPath, guessMimeType(item.fileName))
+                                                },
+                                                onReveal = {
+                                                    shareTransferredFile(toastContext, item)
+                                                },
+                                            )
+                                        } else {
+                                            FlashPlaceholderDetailPane(
+                                                onFindDevices = { nav.selectTab(FlashDestination.NearbyDevices) },
+                                            )
+                                        }
+                                    },
+                                    windowWidthDp = availableWidthDp,
+                                )
+                            }
+                            FlashDestination.NearbyDevices -> {
+                                FlashAdaptiveTwoPane(
+                                    listPane = nearbyScreenContent,
+                                    detailPane = {
+                                        val peer = selectedNearbyPeer
+                                        if (peer != null) {
+                                            FlashNearbyDetailPane(
+                                                peer = peer,
+                                                onClose = { selectedNearbyPeer = null },
+                                                onPair = {
+                                                    val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == peer.id }
+                                                    scope.launch {
+                                                        val net = engine.network
+                                                        if (endpoint != null && net != null) {
+                                                            net.connectManual(endpoint.hostAddress, endpoint.port)
+                                                        }
+                                                        engine.pairing?.beginPair(peer.id, peer.name)
+                                                    }
+                                                },
+                                                onChat = {
+                                                    selectedChatConversationId = peer.id
+                                                    chatRepository.openConversation(peer.id)
+                                                    nav.navigate(FlashDestination.Conversation, conversationId = peer.id)
+                                                },
+                                            )
+                                        } else {
+                                            FlashPlaceholderDetailPane(
+                                                onFindDevices = { nav.selectTab(FlashDestination.NearbyDevices) },
+                                            )
+                                        }
+                                    },
+                                    windowWidthDp = availableWidthDp,
+                                )
+                            }
+                            FlashDestination.Settings -> {
+                                FlashAdaptiveTwoPane(
+                                    listPane = settingsScreenContent,
+                                    detailPane = {
                                         FlashPlaceholderDetailPane(
                                             onFindDevices = { nav.selectTab(FlashDestination.NearbyDevices) },
                                         )
-                                    }
-                                },
-                                windowWidthDp = (windowWidthDp - 68f).coerceAtLeast(0f),
-                            )
+                                    },
+                                    windowWidthDp = availableWidthDp,
+                                )
+                            }
                         }
-                        FlashDestination.Transfers -> transfersScreenContent()
-                        FlashDestination.NearbyDevices -> nearbyScreenContent()
-                        FlashDestination.Settings -> settingsScreenContent()
+                    } else {
+                        // Medium (600..839dp) - rail on left, single pane in content area
+                        Box(Modifier.fillMaxSize()) {
+                            FlashAnimatedScreen(targetState = nav.current) { entry ->
+                                when (entry.destination) {
+                                    FlashDestination.Conversation -> conversationScreenContent()
+                                    FlashDestination.Transfers -> transfersScreenContent()
+                                    FlashDestination.NearbyDevices -> nearbyScreenContent()
+                                    FlashDestination.Settings -> settingsScreenContent()
+                                    FlashDestination.ChatList -> chatListScreenContent()
+                                }
+                            }
+                        }
                     }
                 }
             }
         } else {
+            // Compact (< 600dp) - standard phone single-pane layout
             Box(Modifier.fillMaxSize()) {
                 FlashAnimatedScreen(targetState = nav.current) { entry ->
                     when (entry.destination) {
@@ -2226,5 +2483,34 @@ private fun openAttachment(
                 Toast.makeText(context, "No app to open this file", Toast.LENGTH_SHORT).show()
             }
         }
+}
+
+/** Resolves the human-readable display name and size in bytes for a shared content URI. */
+private fun resolveContentUriNameAndSize(context: Context, uri: Uri): Pair<String, Long> {
+    var name = "shared_file"
+    var size = 0L
+    try {
+        context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val nameIndex = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                if (nameIndex >= 0) {
+                    val n = cursor.getString(nameIndex)
+                    if (!n.isNullOrBlank()) name = n
+                }
+                val sizeIndex = cursor.getColumnIndex(android.provider.OpenableColumns.SIZE)
+                if (sizeIndex >= 0) {
+                    size = cursor.getLong(sizeIndex)
+                }
+            }
+        }
+    } catch (_: Throwable) {}
+    if (size <= 0L) {
+        try {
+            context.contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
+                size = pfd.statSize
+            }
+        } catch (_: Throwable) {}
+    }
+    return Pair(name, size)
 }
 

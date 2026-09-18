@@ -1,5 +1,41 @@
 # Current Handoff
 
+## 2026-09-18 — Android System Integration (Share Target, QS Tile, Shortcuts, DataSync FGS), Adaptive Dual-Pane & Folder Transfers
+
+### Current branch
+`dev`
+
+### Completed & Verified
+1. **Android System Share Target (`ACTION_SEND` & `ACTION_SEND_MULTIPLE`)**:
+   - `AndroidManifest.xml` intent-filters registered for single and multi-item shares.
+   - `MainActivity.kt`: `PendingSharePayload`, incoming intent receiver, content URI resolver, and transfer routing.
+2. **Android 14+ DataSync Foreground Service & Progress**:
+   - `FOREGROUND_SERVICE_DATA_SYNC` permission and dual-type FGS (`connectedDevice|dataSync`).
+   - Transfer notification updates with speed, ETA, and cancellation intent (`ACTION_CANCEL_TRANSFER`).
+   - Android 15 `onTimeout` handler implemented in `FlashBackgroundService.kt`.
+3. **Android Quick Settings Tile & Shortcuts**:
+   - `FlashTileService.kt` for toggling discovery and direct jump to Nearby sharing screen.
+   - Static app shortcuts defined in `shortcuts.xml` and wired in `MainActivity.kt`.
+4. **Folder Transfer & Relative Path Preservation (AGENTS.md §19)**:
+   - `sanitizeRelativePath` implemented in `DiscoveryEngineHolder.kt` and `DesktopEngine.kt` with path-traversal guard.
+   - Tested in `DesktopEngineSanitizationTest.kt` (8 unit tests passing).
+5. **In-Conversation Content Search**:
+   - `searchConversationMessages` in `MessageDao`, `FlashChatRepository`, and `RealFlashChatRepository`.
+   - Search button added to `FlashChatHeader.kt`.
+6. **Cross-Platform Adaptive Two-Pane Layout (AD-6)**:
+   - Shared detail panes in `FlashDetailPanes.kt` (`ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/adaptive/`).
+   - Responsive Navigation Rail (>= 600dp) and Dual-Pane (>= 840dp) enabled in `MainActivity.kt`.
+
+### Verification
+- `:ui:chat:compileKotlinJvm`: ALL PASSED.
+- `:desktop:compileKotlinJvm`: ALL PASSED.
+- `:app:compileDebugKotlin`: ALL PASSED.
+- `:desktop:jvmTest`: ALL 52 TASKS PASSED.
+- `:ui:chat:jvmTest`: ALL PASSED.
+- `:app:testDebugUnitTest`: ALL PASSED.
+
+---
+
 ## 2026-09-18 — Chat Tab Persistence, High-DPI Window Icon & Upgraded App Branding Medallion (Option B)
 
 ### Current branch

@@ -337,6 +337,9 @@ private fun FlashChatHeaderActions(
                 }
             }
         }
+        FlashHeaderIconButton(onClick = onSearchClick, description = "Search messages") {
+            FlashIcon(icon = FlashIcons.Search)
+        }
         Box {
             FlashHeaderIconButton(onClick = onMenuClick, description = "Conversation menu") {
                 FlashIcon(icon = FlashIcons.More)

@@ -49,105 +49,15 @@ internal fun TransferDetailPane(
     onOpen: (() -> Unit)? = null,
     onReveal: (() -> Unit)? = null,
 ) {
-    Column(
-        modifier = Modifier.fillMaxSize().padding(FlashSpacing.space16),
-        verticalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            FlashText(text = "Transfer Details", style = FlashTheme.typography.headingMedium)
-            FlashText(
-                text = "×",
-                modifier = Modifier.clickable(onClick = onClose),
-                style = FlashTheme.typography.bodyDefault,
-            )
-        }
-        FlashText(text = "File: ${item.fileName}")
-        FlashText(text = "Peer: ${item.peerName}")
-        FlashText(
-            text = "Progress: " + (FlashTransfersMath.progressFraction(item.bytesDone, item.bytesTotal) * 100).toInt() + "%",
-        )
-        FlashText(text = "Speed: ${FlashTransfersMath.formatSpeed(item.speedBytesPerSec)}")
-        FlashText(text = "Status: ${FlashTransfersMath.statusLine(item)}")
-
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(top = FlashSpacing.space8),
-            horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
-        ) {
-            when (item.state) {
-                FlashTransferState.Active -> {
-                    if (onPauseResume != null) {
-                        FlashText(
-                            text = "Pause",
-                            modifier = Modifier.clickable(onClick = onPauseResume),
-                            color = FlashTheme.colors.accentPrimary,
-                            style = FlashTheme.typography.bodyDefault,
-                        )
-                    }
-                    if (onCancel != null) {
-                        FlashText(
-                            text = "Cancel",
-                            modifier = Modifier.clickable(onClick = onCancel),
-                            color = FlashTheme.colors.textError,
-                            style = FlashTheme.typography.bodyDefault,
-                        )
-                    }
-                }
-                FlashTransferState.Paused -> {
-                    if (onPauseResume != null) {
-                        FlashText(
-                            text = "Resume",
-                            modifier = Modifier.clickable(onClick = onPauseResume),
-                            color = FlashTheme.colors.accentPrimary,
-                            style = FlashTheme.typography.bodyDefault,
-                        )
-                    }
-                    if (onCancel != null) {
-                        FlashText(
-                            text = "Cancel",
-                            modifier = Modifier.clickable(onClick = onCancel),
-                            color = FlashTheme.colors.textError,
-                            style = FlashTheme.typography.bodyDefault,
-                        )
-                    }
-                }
-                FlashTransferState.Failed -> {
-                    if (item.retryable && onRetry != null) {
-                        FlashText(
-                            text = "Retry",
-                            modifier = Modifier.clickable(onClick = onRetry),
-                            color = FlashTheme.colors.accentPrimary,
-                            style = FlashTheme.typography.bodyDefault,
-                        )
-                    }
-                }
-                FlashTransferState.Completed -> {
-                    if (item.localPath != null) {
-                        if (onOpen != null) {
-                            FlashText(
-                                text = "Open",
-                                modifier = Modifier.clickable(onClick = onOpen),
-                                color = FlashTheme.colors.accentPrimary,
-                                style = FlashTheme.typography.bodyDefault,
-                            )
-                        }
-                        if (onReveal != null) {
-                            FlashText(
-                                text = "Reveal in folder",
-                                modifier = Modifier.clickable(onClick = onReveal),
-                                color = FlashTheme.colors.accentPrimary,
-                                style = FlashTheme.typography.bodyDefault,
-                            )
-                        }
-                    }
-                }
-                else -> Unit
-            }
-        }
-    }
+    com.transfer.flash.ui.adaptive.FlashTransferDetailPane(
+        item = item,
+        onClose = onClose,
+        onPauseResume = onPauseResume,
+        onCancel = onCancel,
+        onRetry = onRetry,
+        onOpen = onOpen,
+        onReveal = onReveal,
+    )
 }
 
 @Composable
@@ -155,25 +65,10 @@ internal fun NearbyDetailPane(
     peer: NearbyPeerUi,
     onClose: () -> Unit,
 ) {
-    Column(
-        modifier = Modifier.fillMaxSize().padding(FlashSpacing.space16),
-        verticalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            FlashText(text = "Peer Details", style = FlashTheme.typography.headingMedium)
-            FlashText(
-                text = "×",
-                modifier = Modifier.clickable(onClick = onClose),
-                style = FlashTheme.typography.bodyDefault,
-            )
-        }
-        FlashText(text = "Name: ${peer.name}")
-        FlashText(text = "Device: ${peer.id.take(8)}")
-        FlashText(text = "Transport: ${peer.transport}")
-    }
+    com.transfer.flash.ui.adaptive.FlashNearbyDetailPane(
+        peer = peer,
+        onClose = onClose,
+    )
 }
 
 @Composable

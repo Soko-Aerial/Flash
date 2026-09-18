@@ -13,9 +13,10 @@
          mesh survives Doze/App Standby while backgrounded. Fired only from the Settings
          "Background transfers" toggle — never on install/startup. -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
-    <!-- P3.5/D-M4: background discovery host (connectedDevice FGS type). -->
+    <!-- P3.5/D-M4: background discovery host (connectedDevice FGS type) + dataSync for active transfers. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- C7 (calling): full-screen intent for incoming ringing calls over lock screen / heads-up banner -->
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
@@ -63,12 +64,40 @@
 
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- Android System Share Target (Single Item) -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <!-- Android System Share Target (Multiple Items) -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <!-- Static App Shortcuts -->
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
         </activity>
 
         <service
             android:name=".debug.FlashBackgroundService"
             android:exported="false"
-            android:foregroundServiceType="connectedDevice" />
+            android:foregroundServiceType="connectedDevice|dataSync" />
+
+        <!-- Quick Settings Tile -->
+        <service
+            android:name=".quicksettings.FlashTileService"
+            android:icon="@drawable/ic_launcher_foreground"
+            android:label="@string/quick_settings_tile_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
 
         <!-- C7 (calling): in-call FGS with microphone (and camera for video calls).
              The service is started while the app is foreground (user taps call / answers

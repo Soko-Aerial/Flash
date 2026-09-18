@@ -1,5 +1,42 @@
 # Progress Log
 
+## 2026-09-18 — Android System Integration (Share Target, QS Tile, Shortcuts, DataSync FGS), Adaptive Dual-Pane & Folder Transfers
+
+### Worked on
+1. **Android System Share Target (`ACTION_SEND` & `ACTION_SEND_MULTIPLE`)**:
+   - Registered `ACTION_SEND` and `ACTION_SEND_MULTIPLE` with mimeType `*/*` under `MainActivity` in `AndroidManifest.xml`.
+   - Added `PendingSharePayload` and `handleIncomingIntent` handling single and multi-item content/stream extras in `MainActivity.kt`.
+   - Wired `sendSharedPayloadToPeer` to resolve display name/size from ContentResolver, guess MIME types, trigger transfers via `FlashTransferRepository.sendFile`, and post chat attachment records.
+2. **Android 14+ DataSync Foreground Service & Transfer Progress**:
+   - Added `FOREGROUND_SERVICE_DATA_SYNC` permission to `AndroidManifest.xml` and registered `FlashBackgroundService` with `foregroundServiceType="connectedDevice|dataSync"`.
+   - Implemented real-time transfer progress notifications with speed (KB/s, MB/s), ETA calculation, transfer count, and interactive cancel action (`ACTION_CANCEL_TRANSFER`).
+   - Added Android 15 `onTimeout` handler gracefully cancelling active transfers and resetting foreground service state before OS enforcement triggers.
+3. **Android Quick Settings Tile & Static Shortcuts**:
+   - Implemented `FlashTileService` allowing users to see discoverability state and tap to launch directly into the Nearby sharing screen.
+   - Declared static shortcuts in `shortcuts.xml` and `strings.xml` for "Send Files", "Nearby Devices", and "Chats".
+   - Wired shortcut action intents in `MainActivity.kt` to auto-switch tabs on launch.
+4. **Folder Transfer & Relative Path Preservation (AGENTS.md §19)**:
+   - Added `sanitizeRelativePath` in `DiscoveryEngineHolder.kt` and `DesktopEngine.kt` to preserve directory hierarchy on folder transfers while stripping `.`/`..` segments and forbidden characters.
+   - Updated `DesktopShell.kt` drag-and-drop handler to preserve relative paths for recursively selected folders.
+   - Created `DesktopEngineSanitizationTest.kt` with 8 unit tests covering path traversal defense, Windows backslash normalization, and edge cases.
+5. **In-Conversation Content Search**:
+   - Added `searchConversationMessages` query to `MessageDao.kt` (Room) matching non-tombstoned messages within a specific thread.
+   - Added interface and implementation in `FlashChatRepository` and `RealFlashChatRepository`.
+   - Wired search action button into `FlashChatHeader.kt`.
+6. **Cross-Platform Adaptive Two-Pane Layout (AD-6)**:
+   - Extracted shared detail panes into `FlashDetailPanes.kt` in `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/adaptive/` for `FlashTransferDetailPane`, `FlashNearbyDetailPane`, and `FlashPlaceholderDetailPane`.
+   - Enabled tablet/foldable dual-pane adaptive layout and navigation rail in `MainActivity.kt` using `FlashAdaptiveMath.isTwoPaneAllowed`.
+
+### Verification
+- `:ui:chat:compileKotlinJvm`: ALL PASSED.
+- `:desktop:compileKotlinJvm`: ALL PASSED.
+- `:app:compileDebugKotlin`: ALL PASSED.
+- `:desktop:jvmTest`: ALL 52 TASKS PASSED (including all `DesktopEngineSanitizationTest` cases).
+- `:ui:chat:jvmTest`: ALL PASSED.
+- `:app:testDebugUnitTest`: ALL PASSED.
+
+---
+
 ## 2026-09-18 — Chat Tab Persistence, High-DPI Window Icon & Upgraded App Branding Medallion (Option B)
 
 ### Worked on

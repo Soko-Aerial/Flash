@@ -2356,6 +2356,19 @@ public class RealFlashChatRepository(
         }
     }
 
+    override suspend fun searchConversationMessages(
+        conversationId: String,
+        query: String,
+        limit: Int,
+    ): List<String> {
+        val trimmed = query.trim()
+        if (trimmed.isEmpty()) return emptyList()
+        return kotlinx.coroutines.withContext(ioDispatcher) {
+            messageDao.searchConversationMessages(conversationId, trimmed, limit)
+                .map { it.localId }
+        }
+    }
+
     override fun toggleReaction(messageId: String, emoji: String) {
         val conversationId = activeConversationId ?: return
         scope.launch(ioDispatcher) {

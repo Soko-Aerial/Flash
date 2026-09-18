@@ -707,11 +707,12 @@ public class DesktopEngine(
         val pipeline = ReceivePipeline(
             sink = { _, _ -> error("legacy shared sink must not be invoked with sinkFactory set") },
             sinkFactory = { start ->
-                val safeName = sanitize(start.fileName.ifBlank { "received.bin" })
+                val safeRelativePath = sanitizeRelativePath(start.fileName.ifBlank { "received.bin" })
                 val safeId = sanitize(start.transferId)
-                val dest = File(File(canonicalRoot, safeId), safeName).canonicalFile
+                val destDir = File(canonicalRoot, safeId).canonicalFile
+                val dest = File(destDir, safeRelativePath).canonicalFile
                 // Same containment discipline as the production composition (Sentinel).
-                require(dest.path.startsWith(canonicalRoot.path + File.separator)) {
+                require(dest.path.startsWith(destDir.path + File.separator)) {
                     "path traversal escape: ${start.fileName}"
                 }
                 dest.parentFile?.mkdirs()
@@ -1304,10 +1305,30 @@ public class DesktopEngine(
         return session.connection.sendText(wirePayload)
     }
 
-    private fun sanitize(component: String): String =
-        component.replace(Regex("[^A-Za-z0-9._-]"), "_").take(120)
+    internal companion object {
+        /** Strips anything that could escape the intended directory (AGENTS.md §19). */
+        internal fun sanitize(component: String): String =
+            component.replace(Regex("[^A-Za-z0-9._-]"), "_").take(120)
 
-    private companion object {
+        /**
+         * Sanitizes a relative file path (potentially with subdirectories from a folder transfer)
+         * while strictly guarding against path traversal (AGENTS.md §19).
+         */
+        internal fun sanitizeRelativePath(raw: String): String {
+            val normalized = raw.replace('\\', '/').trim().trimStart('/')
+            val segments = normalized.split('/').filter { it.isNotEmpty() }
+            if (segments.isEmpty()) return "unnamed"
+            val safeSegments = mutableListOf<String>()
+            for (seg in segments) {
+                if (seg == "." || seg == "..") continue
+                val sanitized = sanitize(seg)
+                if (sanitized.isNotBlank() && sanitized != "." && sanitized != "..") {
+                    safeSegments.add(sanitized)
+                }
+            }
+            return if (safeSegments.isEmpty()) "unnamed" else safeSegments.joinToString(File.separator)
+        }
+
         /** Same cadence as Flash.kt's auto-connect sweep. */
         const val AUTO_CONNECT_SWEEP_MS = 5_000L
 

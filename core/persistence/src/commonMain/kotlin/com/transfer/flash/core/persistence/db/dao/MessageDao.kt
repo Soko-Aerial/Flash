@@ -191,4 +191,19 @@ public interface MessageDao {
             "ORDER BY sentAt DESC, localId DESC LIMIT :limit",
     )
     public suspend fun searchMessages(query: String, limit: Int): List<MessageEntity>
+
+    /**
+     * In-conversation content search: case-insensitive substring match over message
+     * `text` within a specific conversation, newest first. Tombstoned rows are excluded.
+     */
+    @Query(
+        "SELECT * FROM messages WHERE conversationId = :conversationId AND deletedAt IS NULL " +
+            "AND text LIKE '%' || :query || '%' ORDER BY sentAt DESC, localId DESC LIMIT :limit",
+    )
+    public suspend fun searchConversationMessages(
+        conversationId: String,
+        query: String,
+        limit: Int = 100,
+    ): List<MessageEntity>
 }
+

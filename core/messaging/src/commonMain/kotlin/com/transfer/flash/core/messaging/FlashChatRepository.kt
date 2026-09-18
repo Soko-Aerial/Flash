@@ -70,6 +70,16 @@ public interface FlashChatRepository {
     public suspend fun searchMessageBodies(query: String): Set<String> = emptySet()
 
     /**
+     * In-conversation content search: case-insensitive substring match over message
+     * bodies within [conversationId]. Returns matching message IDs.
+     */
+    public suspend fun searchConversationMessages(
+        conversationId: String,
+        query: String,
+        limit: Int = 100,
+    ): List<String> = emptyList()
+
+    /**
      * Send a reply/quote (#8). [replyToId] is the quoted message's local id and [replyToPreview] a
      * short snapshot of its text, both carried on the wire so the peer renders the quote. Default
      * no-op keeps lightweight/sample implementations compiling; the Room-backed repo overrides it.

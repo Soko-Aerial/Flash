@@ -1,3 +1,10 @@
 <resources>
     <string name="app_name">Flash</string>
+    <string name="shortcut_send_files">Send Files</string>
+    <string name="shortcut_send_files_long">Send files to nearby devices</string>
+    <string name="shortcut_nearby">Nearby Devices</string>
+    <string name="shortcut_nearby_long">Discover and share with nearby devices</string>
+    <string name="shortcut_chats">Chats</string>
+    <string name="shortcut_chats_long">Open recent conversations</string>
+    <string name="quick_settings_tile_label">Flash Share</string>
 </resources>

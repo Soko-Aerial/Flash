@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="shortcut_send"
+        android:enabled="true"
+        android:icon="@drawable/ic_launcher_foreground"
+        android:shortcutShortLabel="@string/shortcut_send_files"
+        android:shortcutLongLabel="@string/shortcut_send_files_long">
+        <intent
+            android:action="com.transfer.flash.action.SHORTCUT_SEND"
+            android:targetPackage="com.transfer.flash"
+            android:targetClass="com.transfer.flash.MainActivity" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="shortcut_nearby"
+        android:enabled="true"
+        android:icon="@drawable/ic_launcher_foreground"
+        android:shortcutShortLabel="@string/shortcut_nearby"
+        android:shortcutLongLabel="@string/shortcut_nearby_long">
+        <intent
+            android:action="com.transfer.flash.action.SHORTCUT_NEARBY"
+            android:targetPackage="com.transfer.flash"
+            android:targetClass="com.transfer.flash.MainActivity" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="shortcut_chats"
+        android:enabled="true"
+        android:icon="@drawable/ic_launcher_foreground"
+        android:shortcutShortLabel="@string/shortcut_chats"
+        android:shortcutLongLabel="@string/shortcut_chats_long">
+        <intent
+            android:action="com.transfer.flash.action.SHORTCUT_CHATS"
+            android:targetPackage="com.transfer.flash"
+            android:targetClass="com.transfer.flash.MainActivity" />
+    </shortcut>
+</shortcuts>
