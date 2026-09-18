@@ -54,15 +54,19 @@ internal object JvmImageDecoder : FlashImageDecoder {
         computeInSampleSize: (width: Int, height: Int, maxLongEdge: Int) -> Int,
     ): ImageBitmap? {
         if (source.isNullOrBlank()) return null
-        if (isVideo) return null
         val key = "$source|$maxLongEdge|$lowColorDepth"
         if (memoize) {
             // `LinkedHashMap` is not thread-safe and this runs on `Dispatchers.IO`, so both the
             // access-order reshuffle on read and the insert have to be guarded.
             synchronized(cache) { cache[key] }?.let { return it }
         }
-        val decoded = runCatching { decodeStill(source, maxLongEdge, computeInSampleSize) }
-            .getOrNull() ?: return null
+        val decoded = runCatching {
+            if (isVideo) {
+                decodeVideo(source, maxLongEdge, computeInSampleSize)
+            } else {
+                decodeStill(source, maxLongEdge, computeInSampleSize)
+            }
+        }.getOrNull() ?: return null
         if (memoize) synchronized(cache) { cache[key] = decoded }
         return decoded
     }
@@ -103,6 +107,49 @@ internal object JvmImageDecoder : FlashImageDecoder {
         val orientation = readExifOrientation(source)
         val rotated = if (orientation > 1) rotateImage(buffered, orientation) else buffered
         return rotated.toComposeImageBitmap()
+    }
+
+    /**
+     * Extracts the first video frame as a thumbnail using JCodec.
+     */
+    private fun decodeVideo(
+        source: String,
+        maxLongEdge: Int,
+        computeInSampleSize: (width: Int, height: Int, maxLongEdge: Int) -> Int,
+    ): ImageBitmap? {
+        val file = resolveFile(source) ?: return null
+        if (!file.isFile || file.length() <= 0L) return null
+        return runCatching {
+            org.jcodec.common.io.NIOUtils.readableChannel(file).use { channel ->
+                val grab = org.jcodec.api.FrameGrab.createFrameGrab(channel)
+                val pic = grab.seekToFramePrecise(0).nativeFrame ?: return@runCatching null
+                val width = pic.width
+                val height = pic.height
+                if (width <= 0 || height <= 0) return@runCatching null
+
+                val rgbPic = org.jcodec.common.model.Picture.create(width, height, org.jcodec.common.model.ColorSpace.RGB)
+                org.jcodec.scale.Yuv420pToRgb().transform(pic, rgbPic)
+                val data = rgbPic.data[0] ?: return@runCatching null
+
+                val sample = computeInSampleSize(width, height, maxLongEdge).coerceAtLeast(1)
+                val targetW = (width / sample).coerceAtLeast(1)
+                val targetH = (height / sample).coerceAtLeast(1)
+
+                val img = java.awt.image.BufferedImage(targetW, targetH, java.awt.image.BufferedImage.TYPE_INT_RGB)
+                for (y in 0 until targetH) {
+                    val srcY = y * sample
+                    for (x in 0 until targetW) {
+                        val srcX = x * sample
+                        val srcIdx = (srcY * width + srcX) * 3
+                        val r = (data[srcIdx].toInt() + 128).coerceIn(0, 255)
+                        val g = (data[srcIdx + 1].toInt() + 128).coerceIn(0, 255)
+                        val b = (data[srcIdx + 2].toInt() + 128).coerceIn(0, 255)
+                        img.setRGB(x, y, (r shl 16) or (g shl 8) or b)
+                    }
+                }
+                img.toComposeImageBitmap()
+            }
+        }.getOrNull()
     }
 
     /**
@@ -236,27 +283,27 @@ internal object JvmImageDecoder : FlashImageDecoder {
         return rotated
     }
 
+    private fun resolveFile(source: String): File? = when {
+        source.startsWith("content://") -> null
+        source.startsWith("file:", ignoreCase = true) -> runCatching {
+            try {
+                File(URI(source))
+            } catch (_: Exception) {
+                try {
+                    File(URI(source.replace(" ", "%20")))
+                } catch (_: Exception) {
+                    val clean = source.replaceFirst(Regex("^file:/{1,3}", RegexOption.IGNORE_CASE), "")
+                    File(clean)
+                }
+            }
+        }.getOrNull()
+        else -> File(source)
+    }
+
     /**
      * `content://` is an Android scheme with no desktop meaning, so it resolves to nothing rather
      * than being mistaken for a relative path.
      */
-    private fun openStream(source: String): InputStream? = when {
-        source.startsWith("content://") -> null
-        source.startsWith("file:", ignoreCase = true) -> {
-            val file = runCatching {
-                try {
-                    File(URI(source))
-                } catch (_: Exception) {
-                    try {
-                        File(URI(source.replace(" ", "%20")))
-                    } catch (_: Exception) {
-                        val clean = source.replaceFirst(Regex("^file:/{1,3}", RegexOption.IGNORE_CASE), "")
-                        File(clean)
-                    }
-                }
-            }.getOrNull()
-            file?.takeIf { it.isFile && it.length() > 0L }?.inputStream()
-        }
-        else -> File(source).takeIf { it.isFile && it.length() > 0L }?.inputStream()
-    }
+    private fun openStream(source: String): InputStream? =
+        resolveFile(source)?.takeIf { it.isFile && it.length() > 0L }?.inputStream()
 }

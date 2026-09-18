@@ -213,4 +213,10 @@ class FlashImageDecoderJvmTest {
         val exifJpeg = File(tempDir, "portrait.jpg").apply { writeBytes(jpegBytes) }
         assertEquals(6, JvmImageDecoder.readExifOrientation(exifJpeg.absolutePath))
     }
+
+    @Test
+    fun `video decoding degrades safely to null on non-video files without throwing`() {
+        val notVideo = File(tempDir, "fake.mp4").apply { writeText("not a real mp4") }
+        assertNull(decode(notVideo.absolutePath, isVideo = true, memoize = false))
+    }
 }
