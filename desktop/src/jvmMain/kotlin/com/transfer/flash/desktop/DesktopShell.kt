@@ -686,6 +686,7 @@ public fun DesktopShell(
             autoDownloadFile = desktopSettings.autoDownloadFile,
             prioritiseVoiceQuality = desktopSettings.prioritiseVoiceQuality,
             performanceMode = desktopSettings.performanceMode,
+            backgroundTransfers = desktopSettings.closeToTray,
             saveLocationLabel = desktopSettings.saveLocation ?: engine.canonicalRoot.absolutePath,
         )
     }
@@ -1178,6 +1179,9 @@ public fun DesktopShell(
                         },
                         onPerformanceModeSelected = { next ->
                             scope.launch { engine.updateSettings { it.copy(performanceMode = next) } }
+                        },
+                        onBackgroundTransfersChanged = { next ->
+                            scope.launch { engine.updateSettings { it.copy(closeToTray = next) } }
                         },
                         onPickSaveLocation = {
                             val chooser = javax.swing.JFileChooser().apply {

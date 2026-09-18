@@ -25,6 +25,7 @@ public data class DesktopSettings(
     val performanceMode: FlashPerformanceMode? = null,
     val closeToTray: Boolean = true,
     val showNotifications: Boolean = true,
+    val autoStartOnBoot: Boolean = false,
 )
 
 /**
@@ -76,6 +77,7 @@ internal class DesktopSettingsStore(private val stateDir: File) {
             performanceMode = performanceModeFromKey(props.getProperty(KEY_PERFORMANCE_MODE)),
             closeToTray = props.getProperty(KEY_CLOSE_TO_TRAY, "true").toBoolean(),
             showNotifications = props.getProperty(KEY_SHOW_NOTIFICATIONS, "true").toBoolean(),
+            autoStartOnBoot = props.getProperty(KEY_AUTO_START_ON_BOOT, "false").toBoolean(),
         )
     }
 
@@ -92,12 +94,16 @@ internal class DesktopSettingsStore(private val stateDir: File) {
         props.setProperty(KEY_DYNAMIC_ACCENT, settings.dynamicAccent.toString())
         props.setProperty(KEY_CLOSE_TO_TRAY, settings.closeToTray.toString())
         props.setProperty(KEY_SHOW_NOTIFICATIONS, settings.showNotifications.toString())
+        props.setProperty(KEY_AUTO_START_ON_BOOT, settings.autoStartOnBoot.toString())
         if (settings.performanceMode != null) {
             props.setProperty(KEY_PERFORMANCE_MODE, settings.performanceMode.name)
         } else {
             props.remove(KEY_PERFORMANCE_MODE)
         }
         save(props)
+        if (DesktopAutoStartManager.isSupported) {
+            DesktopAutoStartManager.setAutoStart(settings.autoStartOnBoot)
+        }
     }
 
     /** The stored Appearance selection, or [FlashThemeMode.System] if unset or unreadable. */
@@ -130,6 +136,7 @@ internal class DesktopSettingsStore(private val stateDir: File) {
         const val KEY_PERFORMANCE_MODE: String = "performance_mode"
         const val KEY_CLOSE_TO_TRAY: String = "close_to_tray"
         const val KEY_SHOW_NOTIFICATIONS: String = "show_notifications"
+        const val KEY_AUTO_START_ON_BOOT: String = "auto_start_on_boot"
 
         /** Same three tokens `FlashSettingsDataStore.THEME_MODE_*` uses. */
         const val THEME_MODE_SYSTEM: String = "system"
