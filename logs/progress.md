@@ -8,11 +8,13 @@
 - Bumped Desktop `packageVersion` to `"2.0.0"` in `desktop/build.gradle.kts`.
 - Built optimized, minified Android release APKs (`app-release-unsigned.apk` and signed `app-release-signed-beta.apk`) via `:app:assembleRelease`.
 - Built standalone desktop runnable fat JAR (`Flash-windows-x64-2.0.0.jar`) via `:desktop:packageUberJarForCurrentOS`.
+- Packaged native Windows standalone installers (`Flash-2.0.0.exe` and `Flash-2.0.0.msi`) bundling embedded private JRE via `:desktop:packageExe` and `:desktop:packageMsi` (WiX toolset).
 
 ### Verification
 - `:app:assembleRelease`: SUCCESS (R8 shrinking, resource optimization, dexing, 53 MB APK).
 - `apksigner verify`: Validated `app-release-signed-beta.apk` using APK Signature Scheme v2 & v3.
 - `:desktop:packageUberJarForCurrentOS`: SUCCESS (84.2 MB standalone executable JAR).
+- `:desktop:packageExe` & `:desktop:packageMsi`: SUCCESS (109.7 MB Setup EXE and 109.0 MB MSI installer).
 - `:sample:consumer`: Contract tests passed clean.
 
 ---

@@ -18,8 +18,10 @@
 3. **Android Release Beta Artifacts**:
    - `app/build/outputs/apk/release/app-release-unsigned.apk` (53.0 MB, uncompressed/minified, for Play Store upload).
    - `app/build/outputs/apk/release/app-release-signed-beta.apk` (53.0 MB, signed with v2+v3 signature scheme, for direct device installation & testing).
-4. **Desktop Release Beta Artifacts**:
-   - `desktop/build/compose/jars/Flash-windows-x64-2.0.0.jar` (84.2 MB, fat runnable JAR including WebRTC binaries, Skiko, and SQLite cipher drivers).
+4. **Desktop Release Beta Artifacts (No Java required)**:
+   - `desktop/build/compose/binaries/main/exe/Flash-2.0.0.exe` (104.6 MB, native Windows setup installer bundling embedded private JRE, desktop shortcut, and start menu entry).
+   - `desktop/build/compose/binaries/main/msi/Flash-2.0.0.msi` (103.9 MB, enterprise Windows Installer package bundling embedded private JRE).
+   - `desktop/build/compose/jars/Flash-windows-x64-2.0.0.jar` (84.2 MB, fat runnable JAR for JVM users).
 
 ---
 
