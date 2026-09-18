@@ -188,4 +188,29 @@ class FlashImageDecoderJvmTest {
         // evict every thumbnail in the conversation.
         assertNotSame(first, second)
     }
+
+    @Test
+    fun `exif orientation is read correctly from jpeg headers`() {
+        val nonJpeg = writePng("plain.png", 100, 100)
+        assertEquals(1, JvmImageDecoder.readExifOrientation(nonJpeg.absolutePath))
+
+        // Construct minimal JPEG with EXIF orientation = 6 (rotate 90 CW)
+        val jpegBytes = byteArrayOf(
+            0xFF.toByte(), 0xD8.toByte(), // SOI
+            0xFF.toByte(), 0xE1.toByte(), // APP1
+            0x00.toByte(), 0x22.toByte(), // segment length: 34 bytes (including 2 length bytes)
+            'E'.code.toByte(), 'x'.code.toByte(), 'i'.code.toByte(), 'f'.code.toByte(), 0x00.toByte(), 0x00.toByte(),
+            'I'.code.toByte(), 'I'.code.toByte(), 42.toByte(), 0x00.toByte(), // TIFF little-endian
+            0x08.toByte(), 0x00.toByte(), 0x00.toByte(), 0x00.toByte(), // IFD offset 8
+            0x01.toByte(), 0x00.toByte(), // 1 tag entry
+            0x12.toByte(), 0x01.toByte(), // Tag 0x0112 (Orientation)
+            0x03.toByte(), 0x00.toByte(), // Type SHORT
+            0x01.toByte(), 0x00.toByte(), 0x00.toByte(), 0x00.toByte(), // Count 1
+            0x06.toByte(), 0x00.toByte(), 0x00.toByte(), 0x00.toByte(), // Value 6 (90 CW)
+            0x00.toByte(), 0x00.toByte(), 0x00.toByte(), 0x00.toByte(), // Next IFD
+            0xFF.toByte(), 0xD9.toByte(), // EOI
+        )
+        val exifJpeg = File(tempDir, "portrait.jpg").apply { writeBytes(jpegBytes) }
+        assertEquals(6, JvmImageDecoder.readExifOrientation(exifJpeg.absolutePath))
+    }
 }
