@@ -26,6 +26,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
@@ -1280,31 +1282,64 @@ public fun DesktopShell(
             .fillMaxSize()
             .background(FlashTheme.colors.backgroundApp)
             .onPreviewKeyEvent { event ->
-                if (event.type == KeyEventType.KeyDown && event.key == Key.Escape) {
-                    when {
-                        isSearching -> {
-                            isSearching = false
-                            searchQuery = ""
-                            true
-                        }
-                        nav.current.destination == FlashDestination.Conversation -> {
-                            chatRepository.closeConversation()
-                            if (twoPane) {
-                                nav.navigate(FlashDestination.ChatList)
-                            } else {
-                                nav.back()
+                if (event.type == KeyEventType.KeyDown) {
+                    val isModifierPressed = event.isCtrlPressed || event.isMetaPressed
+                    if (event.key == Key.Escape) {
+                        when {
+                            isSearching -> {
+                                isSearching = false
+                                searchQuery = ""
+                                true
                             }
-                            true
+                            nav.current.destination == FlashDestination.Conversation -> {
+                                chatRepository.closeConversation()
+                                if (twoPane) {
+                                    nav.navigate(FlashDestination.ChatList)
+                                } else {
+                                    nav.back()
+                                }
+                                true
+                            }
+                            selectedTransferItem != null -> {
+                                selectedTransferItem = null
+                                true
+                            }
+                            selectedNearbyPeer != null -> {
+                                selectedNearbyPeer = null
+                                true
+                            }
+                            else -> false
                         }
-                        selectedTransferItem != null -> {
-                            selectedTransferItem = null
-                            true
+                    } else if (isModifierPressed) {
+                        when (event.key) {
+                            Key.F -> {
+                                isSearching = true
+                                true
+                            }
+                            Key.One, Key.NumPad1 -> {
+                                nav.selectTab(FlashDestination.ChatList)
+                                true
+                            }
+                            Key.Two, Key.NumPad2 -> {
+                                nav.selectTab(FlashDestination.Transfers)
+                                true
+                            }
+                            Key.Three, Key.NumPad3 -> {
+                                nav.selectTab(FlashDestination.NearbyDevices)
+                                true
+                            }
+                            Key.Four, Key.NumPad4 -> {
+                                nav.selectTab(FlashDestination.Settings)
+                                true
+                            }
+                            Key.Comma -> {
+                                nav.selectTab(FlashDestination.Settings)
+                                true
+                            }
+                            else -> false
                         }
-                        selectedNearbyPeer != null -> {
-                            selectedNearbyPeer = null
-                            true
-                        }
-                        else -> false
+                    } else {
+                        false
                     }
                 } else {
                     false

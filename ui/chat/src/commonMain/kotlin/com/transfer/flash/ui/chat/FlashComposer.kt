@@ -31,6 +31,13 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isShiftPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
@@ -248,7 +255,25 @@ fun FlashComposer(
                                     onValueChange = onDraftChanged,
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .heightIn(min = 20.dp, max = 120.dp),
+                                        .heightIn(min = 20.dp, max = 120.dp)
+                                        .onPreviewKeyEvent { event ->
+                                            if (event.type == KeyEventType.KeyDown &&
+                                                (event.key == Key.Enter || event.key == Key.NumPadEnter)
+                                            ) {
+                                                if (event.isShiftPressed || event.isCtrlPressed) {
+                                                    // Shift+Enter or Ctrl+Enter inserts newline
+                                                    false
+                                                } else {
+                                                    // Enter sends message
+                                                    if (canSend) {
+                                                        onSend()
+                                                    }
+                                                    true
+                                                }
+                                            } else {
+                                                false
+                                            }
+                                        },
                                     enabled = enabled,
                                     textStyle = typography.bodyDefault.copy(
                                         color = if (enabled) colors.textPrimary else colors.textTertiary,
