@@ -25,7 +25,7 @@ public actual fun rememberFlashFilePickerLauncher(
             // only thread Swing permits this on. `showOpenDialog` pumps its own event loop while
             // modal, so blocking here is how a Swing dialog is supposed to behave.
             val chooser = JFileChooser().apply {
-                isMultiSelectionEnabled = false
+                isMultiSelectionEnabled = true
                 fileSelectionMode = JFileChooser.FILES_ONLY
                 extensionFilterFor(mimeTypes)?.let {
                     addChoosableFileFilter(it)
@@ -37,17 +37,23 @@ public actual fun rememberFlashFilePickerLauncher(
                 }
             }
             if (chooser.showOpenDialog(null) != JFileChooser.APPROVE_OPTION) return
-            val file: File = chooser.selectedFile ?: return
-            if (!file.isFile) return
-            onPicked(
-                FlashPickedFile(
-                    // `File.toURI()` yields `file:/C:/…`, the same shape `FlashVoiceRecorder` produces
-                    // from `Uri.fromFile` on Android, so both sides of the seam speak URIs.
-                    uri = file.toURI().toString(),
-                    name = file.name,
-                    size = file.length(),
-                ),
-            )
+            val chosen = chooser.selectedFiles?.filter { it.isFile && it.exists() }
+            val files: List<File> = if (!chosen.isNullOrEmpty()) {
+                chosen
+            } else {
+                listOfNotNull(chooser.selectedFile?.takeIf { it.isFile && it.exists() })
+            }
+            for (file in files) {
+                onPicked(
+                    FlashPickedFile(
+                        // `File.toURI()` yields `file:/C:/…`, the same shape `FlashVoiceRecorder` produces
+                        // from `Uri.fromFile` on Android, so both sides of the seam speak URIs.
+                        uri = file.toURI().toString(),
+                        name = file.name,
+                        size = file.length(),
+                    ),
+                )
+            }
         }
     }
 }

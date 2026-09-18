@@ -18,14 +18,67 @@ import java.nio.file.StandardCopyOption
 internal object DesktopHelpers {
 
     /**
-     * Stub for MainActivity's `shareTransferredFile`: opens the file's directory in the system
-     * file manager. A real save-dialog is future polish.
+     * Resolves an absolute path or file: URI to a java.io.File, handling URL-encoding and platform schemes.
+     */
+    fun resolveFile(path: String?): File? {
+        if (path.isNullOrBlank()) return null
+        return runCatching {
+            when {
+                path.startsWith("file:", ignoreCase = true) -> {
+                    try {
+                        File(URI(path))
+                    } catch (_: Exception) {
+                        try {
+                            File(URI(path.replace(" ", "%20")))
+                        } catch (_: Exception) {
+                            val clean = path.replaceFirst(Regex("^file:/{1,3}", RegexOption.IGNORE_CASE), "")
+                            File(clean)
+                        }
+                    }
+                }
+                path.startsWith("content://") -> null // Android-only scheme
+                else -> File(path)
+            }
+        }.getOrNull()
+    }
+
+    /**
+     * Opens the system file manager with [file] selected and highlighted on Windows/macOS,
+     * or opens the containing directory on Linux.
+     */
+    fun revealInFileManager(file: File) {
+        if (!file.exists()) return
+        val os = System.getProperty("os.name", "").lowercase()
+        val success = runCatching {
+            when {
+                os.contains("win") -> {
+                    Runtime.getRuntime().exec(arrayOf("explorer.exe", "/select,", file.absolutePath))
+                    true
+                }
+                os.contains("mac") -> {
+                    Runtime.getRuntime().exec(arrayOf("open", "-R", file.absolutePath))
+                    true
+                }
+                else -> {
+                    if (Desktop.isDesktopSupported()) {
+                        Desktop.getDesktop().open(file.parentFile ?: file)
+                        true
+                    } else false
+                }
+            }
+        }.getOrDefault(false)
+
+        if (!success && Desktop.isDesktopSupported()) {
+            runCatching { Desktop.getDesktop().open(file.parentFile ?: file) }
+        }
+    }
+
+    /**
+     * Reveals the transferred file in the system file manager (e.g. Windows Explorer with /select).
      */
     fun shareTransferredFile(item: FlashTransferItemUi) {
-        val path = item.localPath ?: return
-        val file = File(path)
-        if (!file.exists() || !Desktop.isDesktopSupported()) return
-        runCatching { Desktop.getDesktop().open(file.parentFile) }
+        val file = resolveFile(item.localPath) ?: return
+        revealInFileManager(file)
     }
 
     /**
@@ -58,8 +111,7 @@ internal object DesktopHelpers {
      * `Intent.ACTION_SEND`).
      */
     fun shareImageUri(ref: String?, mimeType: @Suppress("UNUSED_PARAMETER") String) {
-        val uri = resolveShareableUri(ref) ?: return
-        val file = runCatching { File(uri) }.getOrNull() ?: return
+        val file = resolveFile(ref) ?: return
         if (!file.exists() || !Desktop.isDesktopSupported()) return
         runCatching { Desktop.getDesktop().open(file) }
     }
@@ -69,8 +121,7 @@ internal object DesktopHelpers {
      * equivalent to Android's MediaStore; the phase's Do-NOT explicitly blesses this).
      */
     fun saveImageToGallery(ref: String?, mimeType: String) {
-        val uri = resolveShareableUri(ref) ?: return
-        val source = runCatching { File(uri) }.getOrNull() ?: return
+        val source = resolveFile(ref) ?: return
         if (!source.exists()) return
 
         val downloadsDir = File(System.getProperty("user.home"), "Downloads/Flash")
@@ -93,8 +144,7 @@ internal object DesktopHelpers {
      * file with the system default application.
      */
     fun openAttachment(path: String?, mimeType: @Suppress("UNUSED_PARAMETER") String) {
-        if (path.isNullOrBlank()) return
-        val file = File(path)
+        val file = resolveFile(path) ?: return
         if (!file.exists() || !Desktop.isDesktopSupported()) return
         runCatching { Desktop.getDesktop().open(file) }
     }
