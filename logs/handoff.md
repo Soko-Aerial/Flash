@@ -1,5 +1,38 @@
 # Current Handoff
 
+## 2026-09-18 — Desktop Keyboard Shortcuts, Multi-File Selection, Native Explorer Reveal, Auto-Start & EXIF Rotation
+
+### Current branch
+`dev`
+
+### Last verified build
+`c7216ce`
+
+### Completed & Verified
+1. **Keyboard Shortcuts & Input Idioms (AD-4)**:
+   - `FlashComposer.kt`: Enter sends message; Shift+Enter and Ctrl+Enter insert a newline.
+   - `DesktopShell.kt`: Ctrl+F triggers chat search; Ctrl+1..4 switches tabs (Chats, Transfers, Nearby, Settings); Ctrl+, opens Settings; Escape dismisses search / closes conversation / clears selections.
+2. **Multi-File Selection & Native Explorer Reveal (AD-1, Features F & G)**:
+   - `FlashFilePicker.jvm.kt`: Enabled `isMultiSelectionEnabled = true`, yielding all selected files sequentially via `onPicked`.
+   - `DesktopHelpers.kt`: Added `resolveFile` supporting `file:` URIs with spaces and URL encoding. Added native Windows Explorer reveal (`explorer.exe /select,"<path>"`) on completed transfer items and attachments.
+3. **Windows Background Tray & Auto-Start on Boot (Feature H)**:
+   - `DesktopAutoStartManager.kt`: Windows registry `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` integration.
+   - `DesktopSettingsStore.kt`: Persisted `autoStartOnBoot` setting.
+   - `DesktopShell.kt`: Wired `backgroundTransfers = desktopSettings.closeToTray` and `onBackgroundTransfersChanged` to toggle close-to-tray in Settings.
+4. **EXIF Orientation & Upright Smartphone Photos on Desktop (Feature D)**:
+   - `FlashImageDecoder.jvm.kt`: Pure Kotlin JPEG EXIF parser (tag `0x0112`) and AWT `Graphics2D` rotation so photos from mobile phones render upright. Tested in `FlashImageDecoderJvmTest.kt`.
+5. **Audio Player File URI Resolution**:
+   - `FlashAudioPlayer.jvm.kt`: Space and raw `file://` scheme tolerance. Tested in `FlashAudioPlayerJvmTest.kt`.
+6. **Native Desktop Packaging**:
+   - `desktop/build.gradle.kts`: Configured Windows MSI and EXE packaging, per-user install, shortcuts, and persistent `upgradeUuid`.
+
+### Verification
+- `:ui:chat:jvmTest`: ALL PASSED.
+- `:ui:platform-shims:jvmTest`: ALL PASSED.
+- `:desktop:jvmTest`: ALL 51 TASKS PASSED.
+
+---
+
 ## 2026-09-18 — Desktop Taskbar Application Icon Badging & Background/Minimized Notifications
 
 ### Current branch

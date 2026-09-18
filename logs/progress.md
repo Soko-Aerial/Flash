@@ -1,5 +1,37 @@
 # Progress Log
 
+## 2026-09-18 — Desktop Keyboard Shortcuts, Multi-File Selection, Native Explorer Reveal, Auto-Start & EXIF Rotation
+
+### Worked on
+Implemented core Windows Desktop features identified in the platform audit:
+1. **Keyboard Shortcuts & Input Idioms (AD-4)**:
+   - Enter to send message in `FlashComposer.kt`, Shift+Enter or Ctrl+Enter to insert newlines.
+   - Global desktop navigation hotkeys in `DesktopShell.kt`: Ctrl+F (search), Ctrl+1 (Chats), Ctrl+2 (Transfers), Ctrl+3 (Nearby), Ctrl+4 (Settings), Ctrl+, (Settings), and Escape (clear search / close conversation / clear selections).
+2. **Multi-File Selection & Native Explorer Reveal (AD-1, Features F & G)**:
+   - Enabled `isMultiSelectionEnabled = true` in `FlashFilePicker.jvm.kt`, delivering each selected file through `onPicked` so users can select multiple files at once using Shift/Ctrl in the file chooser.
+   - Updated `DesktopHelpers.kt` with `resolveFile` for robust decoding of `file:` URIs with spaces and URL encoding.
+   - Implemented native Windows Explorer reveal (`explorer.exe /select,"<path>"`) on completed transfers and attachments, focusing and selecting the exact file in Windows Explorer (with fallback to folder open).
+3. **Windows Background Tray & Auto-Start on Boot (Feature H)**:
+   - Created `DesktopAutoStartManager.kt` to manage launching on Windows startup via the `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` registry key.
+   - Added `autoStartOnBoot` setting persisted to `~/.flash/settings.properties` in `DesktopSettingsStore.kt`.
+   - Wired `backgroundTransfers` in `DesktopShell.kt` to `desktopSettings.closeToTray` and connected `onBackgroundTransfersChanged`, allowing users to toggle background transfers / close-to-tray in Settings UI.
+4. **EXIF Orientation & Upright Mobile Photos on Desktop (Feature D)**:
+   - Added pure Kotlin JPEG EXIF parser in `FlashImageDecoder.jvm.kt` inspecting APP1 markers and tag `0x0112` (Orientation).
+   - Automatically rotates portrait smartphone photos (90°, 180°, 270°) using Java AWT `Graphics2D` before rendering, fixing sideways photos from phones.
+   - Added unit test in `FlashImageDecoderJvmTest.kt` verifying EXIF orientation parsing from JPEG headers.
+5. **Audio Player URI Resolution**:
+   - Updated `resolveFile` in `FlashAudioPlayer.jvm.kt` to tolerate URIs with spaces and raw `file://` schemes.
+   - Added unit test in `FlashAudioPlayerJvmTest.kt`.
+6. **Native Desktop Packaging**:
+   - Configured `desktop/build.gradle.kts` with `TargetFormat.Msi`, `TargetFormat.Exe`, `menuGroup = "Flash"`, `perUserInstall = true`, `shortcut = true`, and persistent `upgradeUuid`.
+
+### Verification
+- `:ui:chat:jvmTest`: ALL PASSED.
+- `:ui:platform-shims:jvmTest`: ALL PASSED (including new EXIF orientation and audio player tests).
+- `:desktop:jvmTest`: ALL 51 TASKS PASSED (including notification manager, media devices, and storage tests).
+
+---
+
 ## 2026-09-18 — Desktop Taskbar Application Icon Badging & Background/Minimized Notifications
 
 ### Worked on
