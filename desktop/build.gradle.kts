@@ -147,7 +147,7 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Msi, TargetFormat.Exe, TargetFormat.Deb)
             packageName = "Flash"
-            packageVersion = "1.0.0"
+            packageVersion = "2.0.0"
             description = "Offline LAN peer-to-peer file transfer & messaging"
             vendor = "Flash"
             windows {
