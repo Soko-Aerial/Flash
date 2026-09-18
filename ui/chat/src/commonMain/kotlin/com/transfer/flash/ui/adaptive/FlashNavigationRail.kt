@@ -2,7 +2,9 @@ package com.transfer.flash.ui.adaptive
 
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -86,20 +88,43 @@ fun FlashNavigationRail(
                 .padding(vertical = FlashSpacing.space12),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            // App Branding Medallion
+            // App Branding Medallion (Option B: Upgraded prominent Flash Pulse medallion)
             Box(
                 modifier = Modifier
-                    .size(38.dp)
+                    .size(44.dp)
                     .clip(RoundedCornerShape(FlashShapes.radius12))
-                    .background(colors.accentPrimary.copy(alpha = 0.12f)),
+                    .background(
+                        Brush.linearGradient(
+                            listOf(
+                                colors.accentPrimary.copy(alpha = 0.22f),
+                                colors.accentPrimary.copy(alpha = 0.08f),
+                            ),
+                        ),
+                    )
+                    .border(
+                        width = 1.dp,
+                        color = colors.accentPrimary.copy(alpha = 0.35f),
+                        shape = RoundedCornerShape(FlashShapes.radius12),
+                    )
+                    .clickable { onTabSelected(FlashDestination.ChatList) }
+                    .semantics { contentDescription = "Flash Home" },
                 contentAlignment = Alignment.Center,
             ) {
-                FlashIcon(
-                    icon = FlashIcons.Bolt,
-                    contentDescription = "Flash",
-                    tint = colors.accentPrimary,
-                    size = 22.dp,
-                )
+                // Layered soft inner glow / backdrop
+                Box(
+                    modifier = Modifier
+                        .size(28.dp)
+                        .clip(CircleShape)
+                        .background(colors.accentPrimary.copy(alpha = 0.12f)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    FlashIcon(
+                        icon = FlashIcons.Bolt,
+                        contentDescription = "Flash",
+                        tint = colors.accentPrimary,
+                        size = 22.dp,
+                    )
+                }
             }
 
             Spacer(Modifier.height(FlashSpacing.space16))

@@ -33,6 +33,8 @@ import com.transfer.flash.ui.navigation.rememberFlashNavigationState
 import com.transfer.flash.ui.icons.FlashIcons
 import org.jetbrains.compose.resources.painterResource
 import java.awt.SystemTray
+import androidx.compose.ui.graphics.painter.BitmapPainter
+import androidx.compose.ui.graphics.toComposeImageBitmap
 import java.io.File
 import java.io.FileWriter
 import java.io.PrintWriter
@@ -166,6 +168,10 @@ public fun main() = application {
         )
     }
 
+    val appIconPainter = remember {
+        BitmapPainter(DesktopTaskbarBadgeManager.renderIcon(64, badgeCount = 0).toComposeImageBitmap())
+    }
+
     if (isWindowVisible) {
         Window(
             onCloseRequest = {
@@ -176,7 +182,7 @@ public fun main() = application {
                 }
             },
             title = "Flash",
-            icon = painterResource(FlashIcons.Tray.drawableRes),
+            icon = appIconPainter,
             state = windowState,
         ) {
         val density = androidx.compose.ui.platform.LocalDensity.current
@@ -185,6 +191,9 @@ public fun main() = application {
             val minWidthPx = (640 * density.density).toInt()
             val minHeightPx = (480 * density.density).toInt()
             window.minimumSize = java.awt.Dimension(minWidthPx, minHeightPx)
+
+            // Supply multi-resolution high-DPI icons (16, 24, 32, 48, 64px) for OS title bar, Alt+Tab, and taskbar
+            window.iconImages = DesktopTaskbarBadgeManager.getBaseIcons()
 
             // Ensure taskbar reflects current badge state
             DesktopTaskbarBadgeManager.updateBadge(window, backgroundUnreadCount)
