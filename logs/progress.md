@@ -234,6 +234,34 @@ Implemented full dual-layer encryption for file chunk transfers and transport-le
 
 ---
 
+## 2026-09-17 — Sentinel: Claimed-Author vs Transport-Peer Mismatch & Group Call Trust Fix
+
+### Worked on
+Fixed transport-peer spoofing vulnerabilities and missing trust checks in group call signaling frames (`CallWireFrame`) within `CallCoordinator`:
+
+1. **Claimed-Author Validation (`CallCoordinator`)**:
+   - Enforced fail-closed check (`frame.from == peerId`) for all non-relayed call frames (`frame !is CallWireFrame.GroupJoin`) in `CallCoordinator.onInboundText`.
+   - Prevents an attacker or untrusted peer from spoofing `frame.from` in `GroupInvite`, `GroupAccept`, `GroupDecline`, `GroupHangup`, `GroupPresence`, or `GroupQuery` frames.
+
+2. **Group Presence & Query Trust Enforcement**:
+   - Added `isTrustedPeer(peerId)` validation to `CallWireFrame.GroupPresence` and `CallWireFrame.GroupQuery` handlers.
+   - Prevents untrusted/unpaired peers on the local network from injecting fake ongoing group call UI state or probing active group call session metadata (call ID, group name, video intent, participant count).
+
+3. **Sentinel Documentation & Security Coding Standards**:
+   - Added `// SENTINEL:` comment documenting threat and fail-closed validation.
+
+### Verification
+- Added 3 security unit tests in `CallCoordinatorSecurityTest.kt`:
+  - `onInboundText rejects group call frames when claimed from does not match transport peerId`
+  - `onInboundText rejects GroupPresence and GroupQuery from untrusted peers`
+  - `onInboundText accepts valid GroupPresence and GroupQuery from trusted matching transport peer`
+- Gradle test suite passed cleanly:
+  - `./gradlew :core:calling:testAndroidHostTest` (PASSED in 11s)
+  - `./gradlew :core:calling:jvmTest` (PASSED in 9s)
+- `git diff --check` clean.
+
+---
+
 ## 2026-09-17 — Milestone 1: Pairwise End-to-End Message Encryption (AES-256-GCM + ECDH P-256)
 
 ### Worked on
