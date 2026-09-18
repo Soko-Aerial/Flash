@@ -143,6 +143,14 @@ public fun DesktopShell(
     val twoPane = FlashAdaptiveMath.isTwoPaneAllowed(sizeClass)
     var selectedTransferItem by remember { mutableStateOf<FlashTransferItemUi?>(null) }
     var selectedNearbyPeer by remember { mutableStateOf<NearbyPeerUi?>(null) }
+    var selectedChatConversationId by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(nav.current.conversationId) {
+        val cid = nav.current.conversationId
+        if (cid != null) {
+            selectedChatConversationId = cid
+        }
+    }
 
     // ── Chats: the real repository once boot builds it, honest-empty before that ──
     // Keyed on `ready` (not just `engine`): `engine.chats` swaps from the empty stand-in
@@ -703,8 +711,9 @@ public fun DesktopShell(
     val chatListPaneContent: @Composable () -> Unit = {
         FlashChatListScreen(
             state = chatListState,
-            activeConversationId = if (twoPane) nav.current.conversationId else null,
+            activeConversationId = if (twoPane) (nav.current.conversationId ?: selectedChatConversationId) else null,
             onConversationClick = { id ->
+                selectedChatConversationId = id
                 chatRepository.openConversation(id)
                 chatRepository.clearListSelection()
                 nav.navigate(FlashDestination.Conversation, conversationId = id)
@@ -762,6 +771,7 @@ public fun DesktopShell(
         FlashConversationScreen(
             state = conversationState,
             onBack = {
+                selectedChatConversationId = null
                 chatRepository.closeConversation()
                 if (twoPane) {
                     nav.navigate(FlashDestination.ChatList)
@@ -1231,8 +1241,9 @@ public fun DesktopShell(
 
     // The detail pane for two-pane mode: active conversation, transfer info, peer info, or placeholder.
     val detailPaneContent: @Composable () -> Unit = {
+        val activeConvId = nav.current.conversationId ?: selectedChatConversationId
         when {
-            nav.current.destination == FlashDestination.Conversation && nav.current.conversationId != null -> {
+            (nav.current.destination == FlashDestination.Conversation || (twoPane && nav.current.destination == FlashDestination.ChatList && activeConvId != null)) && activeConvId != null -> {
                 conversationPaneContent()
             }
             nav.current.destination == FlashDestination.Transfers && selectedTransferItem != null -> {
@@ -1295,7 +1306,8 @@ public fun DesktopShell(
                                 searchQuery = ""
                                 true
                             }
-                            nav.current.destination == FlashDestination.Conversation -> {
+                            nav.current.destination == FlashDestination.Conversation || selectedChatConversationId != null -> {
+                                selectedChatConversationId = null
                                 chatRepository.closeConversation()
                                 if (twoPane) {
                                     nav.navigate(FlashDestination.ChatList)
@@ -1321,7 +1333,12 @@ public fun DesktopShell(
                                 true
                             }
                             Key.One, Key.NumPad1 -> {
-                                nav.selectTab(FlashDestination.ChatList)
+                                if (selectedChatConversationId != null) {
+                                    chatRepository.openConversation(selectedChatConversationId!!)
+                                    nav.navigate(FlashDestination.Conversation, conversationId = selectedChatConversationId)
+                                } else {
+                                    nav.selectTab(FlashDestination.ChatList)
+                                }
                                 true
                             }
                             Key.Two, Key.NumPad2 -> {
@@ -1405,9 +1422,13 @@ public fun DesktopShell(
                     tabs = DESKTOP_SIDE_TABS,
                     selectedTab = if (nav.current.destination == FlashDestination.Conversation) FlashDestination.ChatList else nav.current.destination,
                     onTabSelected = { destination ->
-                        if (nav.current.destination == FlashDestination.Conversation && destination == FlashDestination.ChatList) {
-                            chatRepository.closeConversation()
-                            nav.navigate(FlashDestination.ChatList)
+                        if (destination == FlashDestination.ChatList) {
+                            if (selectedChatConversationId != null) {
+                                chatRepository.openConversation(selectedChatConversationId!!)
+                                nav.navigate(FlashDestination.Conversation, conversationId = selectedChatConversationId)
+                            } else {
+                                nav.selectTab(FlashDestination.ChatList)
+                            }
                         } else {
                             nav.selectTab(destination)
                         }
