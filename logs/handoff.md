@@ -5,6 +5,9 @@
 ### Current branch
 `dev`
 
+### Last verified build
+`e2e4873`
+
 ### Completed & Verified
 1. **"Encrypted & Verified" Security Surface**:
    - Replaced placeholder "Soon" rows in `FlashEncryptionSheet` with actionable interactive rows for "Verify security codes" and "View device fingerprint".
