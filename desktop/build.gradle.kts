@@ -155,6 +155,15 @@ compose.desktop {
             packageVersion = "2.0.0"
             description = "Offline LAN peer-to-peer file transfer & messaging"
             vendor = "Flash"
+            modules(
+                "java.sql",
+                "java.naming",
+                "jdk.unsupported",
+                "java.management",
+                "java.instrument",
+                "jdk.crypto.cryptoki",
+                "jdk.crypto.mscapi",
+            )
             windows {
                 menuGroup = "Flash"
                 upgradeUuid = "6d9b4b0e-3c58-45b7-8df1-e3e9d8f8e021"

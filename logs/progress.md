@@ -1,5 +1,35 @@
 # Progress Log
 
+## 2026-09-19 — Bundle `java.sql` in Native Desktop JRE & Active Session Presence Fallback (ERROR-071)
+
+### Worked on
+- Investigated and resolved issue where clicking "Chat" after pairing on Windows showed "Offline" while the phone showed "Online", and sent chat messages failed to deliver.
+- Diagnosed root cause from `~/.flash/desktop.log`: `jlink` runtime image stripped `java.sql` (`NoClassDefFoundError: java/sql/Driver`), causing `DesktopEngine`'s encrypted SQLite chat database to fail opening, degrading `engine.chats` to dummy `EmptyFlashChatRepository`.
+- Added JDK modules (`java.sql`, `java.naming`, `jdk.unsupported`, `java.management`, `java.instrument`, `jdk.crypto.cryptoki`, `jdk.crypto.mscapi`) to `compose.desktop.application.nativeDistributions`.
+- Enhanced `DesktopShell.kt` and `desktopConversationHeader` to observe `network.activeSessions` so holding an active WebSocket session guarantees `Online` presence and `Lan` transport.
+- Updated `SingleInstanceController` to support configurable `baseDir` for hermetic test isolation.
+- Re-packaged native Windows release installers (`Flash-2.0.0.exe`, `Flash-2.0.0.msi`, `Flash-windows-x64-2.0.0.jar`) with the updated JRE.
+
+### Changed
+- `desktop/build.gradle.kts`:
+  - Added `modules("java.sql", "java.naming", "jdk.unsupported", "java.management", "java.instrument", "jdk.crypto.cryptoki", "jdk.crypto.mscapi")` to `nativeDistributions`.
+- `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopShell.kt`:
+  - Added collection of `engine.network?.activeSessions`.
+  - Added `hasActiveSession` support to `desktopConversationHeader` and `conversationState` resolution.
+- `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/SingleInstanceController.kt`:
+  - Added `baseDir: File` parameter with default `~/.flash`.
+- `desktop/src/jvmTest/kotlin/com/transfer/flash/desktop/SingleInstanceControllerTest.kt`:
+  - Isolated test instances using JUnit `TemporaryFolder`.
+- `desktop/src/jvmTest/kotlin/com/transfer/flash/desktop/DesktopConversationHeaderTest.kt`:
+  - Added `anUndiscoveredPeerWithAnActiveSession_readsOnlineAndLan` test.
+
+### Verification
+- `desktop/build/compose/tmp/main/runtime/release` verified to include `java.sql`.
+- `:desktop:jvmTest`: ALL 70 TESTS PASSED.
+- `:desktop:packageExe`, `:desktop:packageMsi`, `:desktop:packageUberJarForCurrentOS`: ALL BUILT CLEANLY.
+
+---
+
 ## 2026-09-18 — Windows Single Instance Enforcement, App Icon, & Skiko GPU Optimization
 
 ### Worked on

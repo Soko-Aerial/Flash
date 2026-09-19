@@ -51,10 +51,10 @@ public object SingleInstanceController {
      *         `false` if another instance is already running; in this case, an activation
      *         message has been sent to the existing instance and this process must exit.
      */
-    public fun acquireOrActivate(): Boolean {
-        val flashDir = File(System.getProperty("user.home", "."), ".flash").apply { mkdirs() }
-        lockFile = File(flashDir, "app.lock")
-        portFile = File(flashDir, "app.port")
+    public fun acquireOrActivate(baseDir: File = File(System.getProperty("user.home", "."), ".flash")): Boolean {
+        baseDir.mkdirs()
+        lockFile = File(baseDir, "app.lock")
+        portFile = File(baseDir, "app.port")
 
         val acquired = tryAcquireLock()
         if (acquired) {

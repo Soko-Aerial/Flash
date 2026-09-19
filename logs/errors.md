@@ -1,5 +1,60 @@
 # Error Log
 
+## ERROR-071 — Native packaged desktop app fails to load SQLite database (`NoClassDefFoundError: java/sql/Driver`) causing peer to show Offline and chat messages to be dropped
+
+### Date
+2026-09-19
+
+### Area
+Desktop Native Packaging / JLink / SQLite Database / Presence & Chat (`desktop/build.gradle.kts`, `DesktopShell.kt`, `DesktopEngine.kt`)
+
+### Symptoms
+In the installed native Windows release (`Flash-2.0.0.exe` / `Flash-2.0.0.msi`), after pairing with an Android device:
+1. Clicking "Chat" with the paired peer shows "Offline" in the conversation header on Windows (even though on Android it shows "Online").
+2. Sending a chat message from Windows does not work and does not reach the phone.
+3. `~/.flash/desktop.log` logs:
+   `W/WS: Chat database unavailable; chats will be empty this run: java/sql/Driver`
+
+### Root cause
+1. When packaging native installers via `jlink`, Compose Multiplatform only includes JDK modules required by modular descriptors or explicitly declared in `nativeDistributions { modules(...) }`.
+2. `sqlite-jdbc-crypt` (used by Room for desktop encrypted SQLite) dynamically references `java/sql/Driver` from the JDK module `java.sql`.
+3. Because `java.sql` (and `java.naming`, `java.management`, etc.) was omitted from `jlink` runtime image generation, `DesktopEngine` threw `NoClassDefFoundError: java/sql/Driver` when opening `~/.flash/chat/flash.db`.
+4. `DesktopEngine` caught the exception and set `chatImpl = null`, falling back to `EmptyFlashChatRepository`.
+5. `EmptyFlashChatRepository` dropped all outgoing messages (`sendText` is a no-op), dropped all incoming messages, and provided an empty conversation state with `presence = Offline`.
+6. Additionally, `DesktopShell.kt` did not observe `network.activeSessions` directly for presence fallback, relying solely on repository emission or discovery endpoints (which may expire when multicast leases expire).
+
+### Working fix
+1. In `desktop/build.gradle.kts`: added explicit JDK module declarations to `nativeDistributions`:
+   ```kotlin
+   modules(
+       "java.sql",
+       "java.naming",
+       "jdk.unsupported",
+       "java.management",
+       "java.instrument",
+       "jdk.crypto.cryptoki",
+       "jdk.crypto.mscapi",
+   )
+   ```
+2. In `DesktopShell.kt`:
+   - Added collection of `engine.network?.activeSessions`.
+   - Updated conversation header resolution so that holding an active WebSocket session with the peer guarantees `Online` presence and `Lan` transport.
+   - Updated `desktopConversationHeader` to accept `hasActiveSession` parameter.
+3. In `DesktopConversationHeaderTest.kt`:
+   - Added unit test `anUndiscoveredPeerWithAnActiveSession_readsOnlineAndLan`.
+4. In `SingleInstanceController.kt` and `SingleInstanceControllerTest.kt`:
+   - Allowed passing `baseDir` so tests run against isolated `TemporaryFolder` rather than interfering with any running app instance.
+
+### Verification
+- `desktop/build/compose/tmp/main/runtime/release` verified to contain `java.sql` in `MODULES`.
+- `:desktop:jvmTest`: ALL 70 TESTS PASSED.
+- `:desktop:packageExe`, `:desktop:packageMsi`, `:desktop:packageUberJarForCurrentOS`: Successfully built updated release installers.
+
+### Status
+RESOLVED
+
+---
+
 ## ERROR-070 — AndroidKeyStore Incompatible digest during Conscrypt TLS handshake (NONEwithECDSA)
 
 ### Date

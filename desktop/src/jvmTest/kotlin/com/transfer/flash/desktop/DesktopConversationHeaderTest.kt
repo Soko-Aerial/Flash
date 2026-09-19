@@ -173,6 +173,24 @@ class DesktopConversationHeaderTest {
         assertEquals(FlashNetworkTransport.Unknown, header.transport)
     }
 
+    @Test
+    fun anUndiscoveredPeerWithAnActiveSession_readsOnlineAndLan() {
+        // Even when mDNS lease expires or peer connects inbound without active beacon,
+        // holding a live WebSocket session means the peer is Online over Lan.
+        val header = assertNotNull(
+            desktopConversationHeader(
+                conversationId = PEER_ID,
+                trusted = listOf(FlashTrustedPeer(PEER_ID, "Pixel 7a")),
+                discovered = emptyList(),
+                hasActiveSession = true,
+            ),
+        )
+
+        assertEquals("Pixel 7a", header.title)
+        assertEquals(FlashPeerPresence.Online, header.presence)
+        assertEquals(FlashNetworkTransport.Lan, header.transport)
+    }
+
     // ------------------------------------------------------------------ helpers
 
     private fun endpoint(id: String, name: String) = FlashDiscoveredEndpoint(

@@ -4,13 +4,19 @@ import org.junit.After
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
+import java.io.File
 import java.net.InetAddress
 import java.net.Socket
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 class SingleInstanceControllerTest {
+
+    @get:Rule
+    val tempFolder = TemporaryFolder()
 
     @Before
     @After
@@ -20,7 +26,8 @@ class SingleInstanceControllerTest {
 
     @Test
     fun acquireOrActivateSucceedsForFirstInstance() {
-        val acquired = SingleInstanceController.acquireOrActivate()
+        val testDir = tempFolder.newFolder("single_inst_test_1")
+        val acquired = SingleInstanceController.acquireOrActivate(testDir)
         assertTrue("First instance should acquire lock", acquired)
 
         // Clean up
@@ -29,7 +36,8 @@ class SingleInstanceControllerTest {
 
     @Test
     fun activationMessageTriggersCallback() {
-        val acquired = SingleInstanceController.acquireOrActivate()
+        val testDir = tempFolder.newFolder("single_inst_test_2")
+        val acquired = SingleInstanceController.acquireOrActivate(testDir)
         assertTrue("Primary instance should acquire lock", acquired)
 
         val latch = CountDownLatch(1)
@@ -37,8 +45,8 @@ class SingleInstanceControllerTest {
             latch.countDown()
         }
 
-        // Simulate a secondary instance attempting to acquire
-        val secondaryAcquired = SingleInstanceController.acquireOrActivate()
+        // Simulate a secondary instance attempting to acquire on the same directory
+        val secondaryAcquired = SingleInstanceController.acquireOrActivate(testDir)
         assertFalse("Second instance should fail lock acquisition", secondaryAcquired)
 
         // Verify the onActivate callback was triggered

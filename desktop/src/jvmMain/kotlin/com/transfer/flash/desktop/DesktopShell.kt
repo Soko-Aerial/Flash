@@ -257,6 +257,8 @@ public fun DesktopShell(
     val fallbackDiscoveryState = remember { MutableStateFlow(FlashDiscoveryState()) }
     val discoveredEndpoints by (engine.discovery?.discoveredEndpoints ?: fallbackEndpoints).collectAsState()
     val discoveryState by (engine.discovery?.state ?: fallbackDiscoveryState).collectAsState()
+    val fallbackActiveSessions = remember { MutableStateFlow(emptyMap<com.transfer.flash.core.common.model.FlashDeviceId, com.transfer.flash.core.network.FlashSession>()) }
+    val activeSessions by (engine.network?.activeSessions ?: fallbackActiveSessions).collectAsState()
     // From the pairing coordinator's flow, NOT a `derivedStateOf` over the trust store: that store
     // is a plain ConcurrentHashMap with no snapshot state, so a derivation read none of it — it
     // computed once at first composition and never invalidated, leaving a just-paired peer showing
@@ -341,6 +343,7 @@ public fun DesktopShell(
         trustedPeersByCoordinator,
         discoveredEndpoints,
         ongoingGroupCalls,
+        activeSessions,
     ) {
         val convId = nav.current.conversationId
         val base = repositoryConversation
@@ -364,8 +367,8 @@ public fun DesktopShell(
             // ERROR-035: Direct chat presence & transport MUST come from the repository's live session
             // tracking (RealFlashChatRepository.displayedPresence), NOT from whether an mDNS beacon exists
             // in discovery. A peer with an mDNS endpoint but no active WebSocket session is offline in chat.
-            // desktopConversationHeader only provides fallback title/avatar derivation if the repository
-            // hasn't resolved them yet.
+            // When an active session is established with the peer, presence resolves to Online.
+            val isDirectPeerOnline = activeSessions.containsKey(com.transfer.flash.core.common.model.FlashDeviceId(convId))
             val isEncrypted = base.header.isEncrypted || (engine.trust.getSessionKey(convId) != null)
             val fallback = desktopConversationHeader(
                 conversationId = convId,
@@ -374,6 +377,7 @@ public fun DesktopShell(
                 isEncrypted = isEncrypted,
                 presence = base.header.presence,
                 transport = base.header.transport,
+                hasActiveSession = isDirectPeerOnline,
             )
             val resolvedTitle = if (base.header.title.isNotBlank() && base.header.title != convId && base.header.title != "Select a conversation") {
                 base.header.title
@@ -385,13 +389,27 @@ public fun DesktopShell(
             } else {
                 fallback?.avatarInitials ?: base.header.avatarInitials
             }
+            val resolvedPresence = when {
+                base.header.presence == FlashPeerPresence.Typing -> FlashPeerPresence.Typing
+                base.header.presence == FlashPeerPresence.Online -> FlashPeerPresence.Online
+                isDirectPeerOnline -> FlashPeerPresence.Online
+                base.header.presence == FlashPeerPresence.Connecting -> FlashPeerPresence.Connecting
+                else -> fallback?.presence ?: base.header.presence
+            }
+            val resolvedTransport = if (isDirectPeerOnline && base.header.transport == FlashNetworkTransport.Unknown) {
+                FlashNetworkTransport.Lan
+            } else if (base.header.transport != FlashNetworkTransport.Unknown) {
+                base.header.transport
+            } else {
+                fallback?.transport ?: base.header.transport
+            }
             val header = base.header.copy(
                 title = resolvedTitle,
                 avatarInitials = resolvedInitials,
                 avatarSeed = resolvedTitle,
-                // Truthful presence & transport from RealFlashChatRepository — matches chat list exactly
-                presence = base.header.presence,
-                transport = base.header.transport,
+                // Truthful presence & transport from RealFlashChatRepository joined with live active sessions
+                presence = resolvedPresence,
+                transport = resolvedTransport,
                 typingMemberNames = base.header.typingMemberNames,
                 isEncrypted = isEncrypted,
                 showCallActions = true,
@@ -1630,12 +1648,13 @@ internal fun desktopConversationHeader(
     isEncrypted: Boolean = false,
     presence: FlashPeerPresence? = null,
     transport: FlashNetworkTransport? = null,
+    hasActiveSession: Boolean = false,
 ): FlashChatHeaderUiState? {
     if (conversationId == null) return null
     val trustedName = trusted.firstOrNull { it.id == conversationId }?.name
     val endpoint = discovered.firstOrNull { it.deviceId.value == conversationId }
     val name = trustedName ?: endpoint?.friendlyName ?: return null
-    val resolvedPresence = presence ?: if (endpoint != null) FlashPeerPresence.Online else FlashPeerPresence.Offline
+    val resolvedPresence = presence ?: if (hasActiveSession || endpoint != null) FlashPeerPresence.Online else FlashPeerPresence.Offline
     val resolvedTransport = transport ?: if (resolvedPresence == FlashPeerPresence.Online) FlashNetworkTransport.Lan else FlashNetworkTransport.Unknown
     return FlashChatHeaderUiState(
         title = name,

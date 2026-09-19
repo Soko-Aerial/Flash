@@ -1,5 +1,31 @@
 # Current Handoff
 
+## 2026-09-19 — Bundle `java.sql` in Native Desktop JRE & Active Session Presence Fallback (ERROR-071)
+
+### Current branch
+`dev`
+
+### Completed & Verified
+1. **Root Cause Diagnosis**:
+   - Diagnosed user report: after pairing, clicking Chat shows Offline on Windows and sent messages fail.
+   - `~/.flash/desktop.log` reported: `W/WS: Chat database unavailable; chats will be empty this run: java/sql/Driver`.
+   - Native JRE packaged by `jlink` omitted the `java.sql` module, causing `sqlite-jdbc-crypt` to fail loading `java/sql/Driver`. `DesktopEngine` defaulted `chats` to `EmptyFlashChatRepository`, which dropped all messages and left conversation presence offline.
+2. **Bundled Required JDK Modules in Native JRE**:
+   - In `desktop/build.gradle.kts`: added `modules("java.sql", "java.naming", "jdk.unsupported", "java.management", "java.instrument", "jdk.crypto.cryptoki", "jdk.crypto.mscapi")` to `nativeDistributions`.
+   - Verified `MODULES` in `desktop/build/compose/tmp/main/runtime/release` now includes `java.sql`, enabling Room's encrypted database.
+3. **Enhanced Direct Chat Presence Resolution**:
+   - In `DesktopShell.kt`: collected `engine.network?.activeSessions`.
+   - Updated header resolution so holding an active WebSocket session with a direct peer immediately resolves presence to `Online` and transport to `Lan`.
+   - Added `hasActiveSession` support to `desktopConversationHeader` and added unit test in `DesktopConversationHeaderTest.kt`.
+4. **Isolated Test Execution**:
+   - Updated `SingleInstanceController.kt` with a `baseDir: File` parameter and updated `SingleInstanceControllerTest.kt` to use JUnit `TemporaryFolder`.
+5. **Re-built Release Installers**:
+   - `Flash-2.0.0.exe` (110.7 MB)
+   - `Flash-2.0.0.msi` (110.1 MB)
+   - `Flash-windows-x64-2.0.0.jar` (84.3 MB)
+
+---
+
 ## 2026-09-18 — Windows Single Instance Enforcement, App Icon, & Skiko GPU Optimization
 
 ### Current branch
