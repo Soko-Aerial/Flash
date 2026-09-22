@@ -1,5 +1,62 @@
 # Error Log
 
+## ERROR-072 — Windows Context Menu "Send with Flash" throws "This file does not have an app associated with it" on file click
+
+### Date
+2026-09-22
+
+### Area
+Windows Desktop / Windows Shell Context Menu / Process Execution (`WindowsContextMenuManager.kt`, `SingleInstanceController.kt`)
+
+### Symptoms
+When right-clicking a file (e.g. `The Big Bang Theory S08E18 ... .mkv`) in Windows 11 File Explorer, expanding "Show more options", and clicking "Send with Flash":
+Windows pops up an error dialog:
+```text
+C:\Users\KaliOxygen\Downloads\The Big Bang Theory S08E18 The Leftover Thermalization (108 ... X
+This file does not have an app associated with it for performing this action. Please install an
+app or, if one is already installed, create an association in the Default Apps Settings page.
+OK
+```
+
+### Root cause
+Two distinct root causes:
+1. **Reg.exe argument escaping failure:**
+   In `WindowsContextMenuManager.kt`, registration previously invoked `ProcessBuilder("reg.exe", "add", "$REG_KEY_FILE\\command", "/ve", "/t", "REG_SZ", "/d", launchCommand, "/f")`.
+   When `launchCommand` contained quotes (e.g. `"C:\path\to\app.exe" "%1"`), `reg.exe`'s command-line parser stripped outer quotes and received extra unexpected tokens, exiting with error `ERROR: Invalid syntax.`
+   Because `reg.exe` failed silently, the `\command` registry subkey was never created under `HKCU\Software\Classes\*\shell\Flash`. When a user clicked the verb in Explorer, Windows looked for `command`, found none, and presented the "This file does not have an app associated with it" error.
+2. **Windows Shell verb executable requirement:**
+   Windows File Explorer's `ShellExecuteEx` verb invocation explicitly requires an application executable (`.exe`). It does not execute bare `.cmd` or `.bat` scripts directly for context menu shell verbs; attempting to invoke a shell verb pointing to `.cmd` triggers `Win32Exception: Application not found`.
+
+### Failed attempts
+None. Verified directly by inspecting registry subkeys and replicating `ShellExecute` invocation.
+
+### Working fix
+1. **Atomic `.reg` file import via `reg.exe import`:**
+   Refactored `setContextMenuEnabled` to generate a temporary `.reg` file with full root key names `HKEY_CURRENT_USER\Software\Classes\...` and exact `\\` and `\"` escaping, then imported via `reg.exe import <file>`. This guarantees 100% reliable quotation escaping and atomic key creation across all Windows versions without shell escaping quirks.
+2. **Java `@argfile` Development Launcher for `./gradlew :desktop:run`:**
+   Removed outdated `candidateExes` fallback which was mistakenly picking up a stale pre-built `Flash.exe` from Sept 19. When running via Gradle/IDE (`java.exe`/`javaw.exe`), `WindowsContextMenuManager` generates `~/.flash/flash-args.txt` containing the full classpath and main class, and registers:
+   `"javaw.exe" "@<stateDir>\flash-args.txt" "%1"`
+   This bypasses Windows command-line length limits (8191 characters), avoids quotation mangling, runs silently without a console flash, and forwards the file to the active running `./gradlew :desktop:run` instance via the loopback IPC socket (`COMMAND_SEND`).
+3. **Window Un-minimize & Focus on Share:**
+   In `SingleInstanceController.kt`, when `COMMAND_SEND` is received by the activation server, it now invokes `onActivate?.invoke()` alongside `onShareFiles?.invoke(files)`, guaranteeing that minimized windows are restored to the foreground and focused when files are sent from File Explorer.
+4. **Registry query check:**
+   Updated `isContextMenuRegistered()` to query `$REG_KEY_FILE\command` directly and assert that `%1` is present.
+
+### Verification
+- Tested via unit test `WindowsContextMenuManagerTest.setContextMenuEnabledCreatesCommandSubkeySuccessfully`: successfully writes and verifies `*\\shell\\Flash\\command` and `Directory\\shell\\Flash\\command`.
+- Verified live invocation using `@flash-args.txt` on `The Big Bang Theory S08E18 The Leftover Thermalization (1080.mkv`: running Gradle process `15756` received the file (`Received share files request from duplicate instance: 1 items`), focused the window, and displayed `FlashShareTargetSheet`.
+- All tests in `:desktop:jvmTest` passed (BUILD SUCCESSFUL).
+
+### Related files
+- `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/WindowsContextMenuManager.kt`
+- `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/SingleInstanceController.kt`
+- `desktop/src/jvmTest/kotlin/com/transfer/flash/desktop/WindowsContextMenuManagerTest.kt`
+
+### Status
+RESOLVED
+
+---
+
 ## ERROR-071 — Native packaged desktop app fails to load SQLite database (`NoClassDefFoundError: java/sql/Driver`) causing peer to show Offline and chat messages to be dropped
 
 ### Date

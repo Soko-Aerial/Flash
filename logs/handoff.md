@@ -1,5 +1,187 @@
 # Current Handoff
 
+## 2026-09-22 — Desktop Dialog & Sheet Optimization (Centered Modal Layout & Max Width Bounds)
+
+### Current branch
+`dev`
+
+### Completed & Verified
+1. **Desktop Sheet Host Optimization (`FlashSheetHost.jvm.kt`)**:
+   - Replaced `Alignment.BottomCenter` + `.fillMaxWidth()` with centered desktop modal layout (`Alignment.Center`), constrained width (`widthIn(min = 380.dp, max = 540.dp).fillMaxWidth()`), and 4-corner rounded shape (`RoundedCornerShape(FlashShapes.radius24)`) with hairline border.
+   - All sheets on desktop (`FlashShareTargetSheet`, `FlashPeerDetailsSheet`, `FlashAttachmentSheet`, `FlashCreateGroupSheet`, `FlashGroupMembersSheet`, `FlashAddMembersSheet`, `FlashMessageActionsSheet`, `FlashEncryptionIndicators`) now render as sleek centered dialogs instead of spanning the entire 1200px window bottom.
+2. **Desktop Confirmation Host Optimization (`FlashConfirmHost` in `FlashSheetHost.jvm.kt`)**:
+   - Constrained width from `fillMaxWidth()` to `widthIn(min = 340.dp, max = 480.dp).fillMaxWidth()`, and added hairline border.
+   - Constrains `ClearReceivedFilesDialog`, `FlashDisplayNameDialog`, `FlashManualConnectDialog`, and `FlashLeaveGroupDialog`.
+3. **Desktop Pairing Dialog (`FlashPairingFlow.kt`)**:
+   - Constrained card width to `widthIn(min = 340.dp, max = 460.dp).fillMaxWidth()`, keeping the 6-digit verification code card neatly proportioned.
+4. **Peer Details Profile Sheet (`FlashPeerDetailsSheet.kt`)**:
+   - Added explicit close `IconButton` (`FlashIcons.Close`) at the top-right corner of the profile card.
+5. **Test Verification**:
+   - `:desktop:compileKotlinJvm`: BUILD SUCCESSFUL.
+   - `:ui:chat:jvmTest`: ALL 281 tests passed.
+   - `:desktop:jvmTest`: ALL 16 test suites passed.
+   - `:app:testDebugUnitTest`: ALL 169 tasks passed.
+
+---
+
+## 2026-09-22 — Windows File Explorer Context Menu ("Send with Flash") & Instant Share Sheet
+
+### Current branch
+`dev`
+
+### Completed & Verified
+1. **Windows File Explorer Context Menu Manager (`WindowsContextMenuManager.kt`)**:
+   - Registered shell verbs directly in `HKCU\Software\Classes\*\shell\Flash` (for all files) and `HKCU\Software\Classes\Directory\shell\Flash` (for folders) with the label `"Send with Flash"`. Operates strictly within user registry space without requiring UAC/administrator elevation.
+   - **Atomic Registry Import (ERROR-072):** Uses `reg.exe import` on temporary `.reg` files with full `HKEY_CURRENT_USER\Software\Classes\...` keys, ensuring flawless quote escaping and guaranteed creation of `\command` subkeys.
+    - **Executable Resolution (ERROR-072):** Removed outdated `candidateExes` fallback. In development mode (e.g. `./gradlew :desktop:run`), `WindowsContextMenuManager` generates `~/.flash/flash-args.txt` and registers `"javaw.exe" "@~/.flash/flash-args.txt" "%1"`. This passes file paths without line-length limits, avoids quoting corruption, runs silently, and connects directly to the running dev instance.
+    - Dynamic icon generation (`ensureIconFile`): Generates a high-contrast Vista+ PNG-encoded `.ico` file in `~/.flash/flash.ico` from `DesktopTaskbarBadgeManager` to display the Flash icon right next to the context menu entry in File Explorer.
+2. **Single-Instance IPC File Forwarding (`SingleInstanceController.kt`)**:
+   - Extended loopback socket IPC protocol with `COMMAND_SEND`:
+     - When Flash is running (in foreground, minimized, or hidden in system tray), right-clicking a file/folder and clicking "Send with Flash" launches a secondary process that connects to `127.0.0.1:<port>`, transmits `SEND\n<filePath>\nEND_SEND\n`, receives `OK`, and exits in under 15ms.
+     - The primary instance un-minimizes the window (clears `ICONIFIED`), restores visibility, brings the window to front, requests focus, and invokes `onShareFiles`.
+     - Added `consumeInitialShareFiles()` and `parseFilesFromArgs()`: if Flash was closed, launching via context menu buffers the files on cold boot and consumes them once Compose UI composition is ready.
+3. **Desktop Shell & Share Sheet Integration (`DesktopShell.kt`, `DesktopMain.kt`)**:
+   - In `DesktopShell`, `LaunchedEffect(externalShareFiles)` converts incoming files (and recursively walks directories) into `FlashShareItemUi` with computed sizes and MIME types, setting `pendingDesktopShare`.
+   - Opens `FlashShareTargetSheet` instantly:
+     - Content preview card (file count, total size, file names).
+     - Paired devices roster (with real-time online/offline presence indicators).
+     - Recent chats list.
+     - Nearby devices (live mDNS/multicast LAN scanning with radar animation).
+     - "Connect by IP" manual connect.
+   - Selecting a recipient streams the file(s) immediately (or pairs with PIN confirmation then transfers if unpaired).
+4. **Settings Store & UI Integration (`DesktopSettingsStore.kt`, `FlashSettingsScreen.kt`)**:
+   - Added `windowsContextMenu: Boolean = true` in `DesktopSettingsStore`, persisted to `~/.flash/settings.properties`.
+   - Added `SwitchRow` for "File Explorer context menu" under the DATA section in `FlashSettingsScreen` when on Windows (`showWindowsContextMenu = true`).
+   - Toggling the switch immediately registers or removes the context menu keys in the Windows registry.
+5. **Unit Tests & Verification**:
+   - `SingleInstanceControllerTest.kt`: `parseFilesFromArgsParsesExistingFiles`, `sendFilesMessageTriggersOnShareFilesCallback`, `initialFilesBufferedWhenAcquiredWithArgs`.
+   - `DesktopSettingsStoreTest.kt`: `windowsContextMenuRoundTripAndPersist`.
+   - `WindowsContextMenuManagerTest.kt`: `resolveLaunchCommandProducesValidCommand`, `ensureIconFileGeneratesValidIcoFile`, `setContextMenuEnabledCreatesCommandSubkeySuccessfully`.
+   - `:desktop:compileKotlinJvm` & `:desktop:jvmTest`: ALL 16 test suites passed (51 actionable tasks, BUILD SUCCESSFUL).
+   - Live tested shell verb `Flash` on `The Big Bang Theory S08E18 ... .mkv`: running `./gradlew desktop run` process `15756` received the file (`Received share files request from duplicate instance: 1 items`), brought the window to the front, and displayed `FlashShareTargetSheet`.
+
+---
+
+## 2026-09-22 — Windows Desktop System Tray Discoverability Toggle & Mode Persistence
+
+### Current branch
+`dev`
+
+### Completed & Verified
+1. **Windows System Tray Discoverability Toggle & Mode Cycling (`DesktopMain.kt`)**:
+   - Added native `CheckboxItem` for `"Discoverable"` in the Windows system tray menu, tracking active discovery mode (`!= GHOST`). Unchecking immediately sets the app to `GHOST` mode (stops mDNS/multicast announcements so PC is invisible to peers); checking restores `STANDARD`.
+   - Added `"Mode: <Label> (Switch)"` tray item to cycle between `STANDARD` -> `GHOST` -> `ECO` -> `BOOST` -> `STANDARD` directly from the taskbar tray.
+   - Dynamic tray tooltip: Displays `"Flash - Online (Discoverable)"`, `"Flash - Online (Hidden)"`, etc.
+2. **Desktop Settings Store & Engine Persistence (`DesktopSettingsStore.kt`, `DesktopEngine.kt`)**:
+   - Added `discoveryMode: FlashDiscoveryMode` to `DesktopSettings` and persisted to `~/.flash/settings.properties`.
+   - Added `val discoveryMode: StateFlow<FlashDiscoveryMode>` and `fun setDiscoveryMode(mode: FlashDiscoveryMode)` on `DesktopEngine`, launching coroutines to update `CompositeDiscovery.setMode()`.
+   - Persisted mode is restored at boot in `DesktopEngine.start()`.
+3. **Desktop Settings Screen Synchronization (`DesktopShell.kt`)**:
+   - Tied `FlashSettingsModel.discoveryMode` to `desktopSettings.discoveryMode.name`.
+   - Connected `onDiscoveryModeChanged` callback in `DesktopShell` to `engine.setDiscoveryMode()`, keeping the in-app Settings screen and system tray in 100% sync.
+4. **Verification**:
+   - Added unit tests `discoveryModeKeyMapping` and `discoveryModeRoundTripAndPersist` in `DesktopSettingsStoreTest.kt`.
+   - `:desktop:compileKotlinJvm` and `:desktop:jvmTest`: ALL 15 test suites passed.
+   - `:ui:chat:jvmTest`: ALL 281 tests passed.
+   - `:app:testDebugUnitTest`: ALL passed.
+
+---
+
+## 2026-09-22 — Android Quick Settings Tile Discoverability Toggle & Discovery Mode Integration
+
+### Current branch
+`dev`
+
+### Completed & Verified
+1. **Quick Settings Tile (`FlashTileService.kt`) Discoverability Toggle**:
+   - Replaced unconditional activity launch (`openNearbyScreen()`) on tile click with seamless in-place discovery mode cycling within the Quick Settings panel.
+   - Mode Cycle:
+     - `Off` -> `Discoverable` (`STANDARD`, Active, subtitle `"Discoverable"`).
+     - `Discoverable` -> `Hidden` (`GHOST`, Inactive, subtitle `"Hidden (Ghost)"`, suppresses announcements on mDNS/UDP).
+     - `Hidden` -> `Eco` (`ECO`, Active, subtitle `"Eco (Battery)"`, duty cycles browsing 20s scan / 100s idle).
+     - `Eco` -> `Off` (Stops background service and engine, subtitle `"Off (Tap to start)"`).
+   - Added `ACTION_QS_TILE_PREFERENCES` to `AndroidManifest.xml` and `MainActivity.handleIntent()`: long-pressing the Quick Settings tile opens Flash directly to the Nearby sharing screen (`FlashDestination.NearbyDevices`).
+2. **Discovery Mode Persistence & Notification Sync**:
+   - Added `userDiscoveryMode` and `setDiscoveryMode()` to `DiscoveryEngineHolder.kt` with SharedPreferences persistence (`flash_discovery_mode`).
+   - Fixed `setCallActive()` in `DiscoveryEngineHolder`: WebRTC calls restore `userDiscoveryMode` upon termination rather than hardcoding `STANDARD`.
+   - Updated `FlashBackgroundService` to observe `discoveryMode` and update its persistent notification in real time ("Flash is discoverable", "Flash is hidden", "Flash is in eco mode", "Flash is in boost mode", "Flash is in kiosk mode").
+3. **Settings UI Integration (`FlashSettingsScreen.kt`)**:
+   - Added `discoveryMode` to `FlashSettingsModel` and `DiscoveryModeSegmented` selector in `FlashSettingsScreen`.
+   - Added `discoveryModeShortLabel` and `discoveryModeSubtitle` with unit tests in `FlashSettingsLogicTest.kt`.
+   - Wired bidirectional live sync between `DiscoveryEngineHolder.discoveryMode` and `MainActivity.settings`.
+4. **Verification**:
+   - `:ui:chat:jvmTest`: ALL 281 tests passed.
+   - `:app:compileDebugKotlin` and `:app:testDebugUnitTest`: ALL passed.
+   - `:desktop:compileKotlinJvm` and `:desktop:jvmTest`: ALL passed.
+
+---
+
+## 2026-09-22 — Android System Share Target & Desktop Share Target UI
+
+### Current branch
+`dev`
+
+### Completed & Verified
+1. **Android System Share Target (`ACTION_SEND` / `ACTION_SEND_MULTIPLE`)**:
+   - `AndroidManifest.xml`: Registered `<intent-filter>` for both single and multiple item sends covering all MIME types (`text/plain`, `image/*`, `video/*`, `audio/*`, `application/*`, `*/*`).
+   - `MainActivity.kt`: Parses inbound share intents from `onCreate` and `onNewIntent`, resolving metadata (file name, byte size, MIME type) asynchronously without freezing the UI.
+2. **Unified Cross-Platform Share UI (`FlashShareTargetSheet.kt`)**:
+   - Built Compose Multiplatform sheet component under `ui/chat/src/commonMain/kotlin/.../FlashShareTargetSheet.kt`.
+   - Displays content preview card, paired devices roster (with online/offline presence), recent chats list, nearby discovered peers with radar scanning state, and manual connect dialog.
+   - Verified via unit tests in `FlashShareTargetMathTest.kt` (formatting, counts, initials).
+3. **Desktop Shell Integration (`DesktopShell.kt`)**:
+   - Extended AWT drag-and-drop: Dropping files outside an active conversation triggers `FlashShareTargetSheet`.
+   - Selecting a destination peer or chat initiates transfer, creates chat bubbles, navigates to the conversation, and provides user feedback via snackbars.
+4. **End-to-End Pairing Flow & Deferred Transfer Routing**:
+   - **Root Pairing Dialog Overlay:** Raised `FlashPairingDialog` to root Compose shells on both Android and Desktop so pairing PIN verification is active and visible across all screens.
+   - **Unpaired Nearby Peer Selection:** Automatically triggers `beginPair` on the network, displays the 6-digit PIN code dialog, and defers the payload in `pendingShareRecipient`. Upon confirmation by both devices, automatically opens the conversation and transfers the files.
+   - **Manual Connect ("Connect by IP"):** Connects to host:port. If already paired, immediately transfers files. If unpaired, initiates pairing with the PIN dialog and automatically completes file transfer once paired.
+5. **Verification**:
+   - `:ui:chat:jvmTest`: ALL 280 tests passed.
+   - `:app:compileDebugKotlin` and `:app:testDebugUnitTest`: ALL passed.
+   - `:desktop:compileKotlinJvm` and `:desktop:jvmTest`: ALL passed.
+
+---
+
+
+## 2026-09-20 — Extensive Developer Documentation Suite & Multi-Mode Performance Optimization (ADR-022)
+
+### Current branch
+`dev`
+
+### Completed & Verified
+1. **Extensive Developer Documentation Suite (`docs/developer-guide/`)**:
+   - Organized in dedicated directory hierarchy (`docs/developer-guide/` with `README.md`).
+   - Beginner setup guide (`getting-started/beginner-guide.md`) with prerequisites, Gradle/Maven instructions, and Hello World connection/transfer walkthrough.
+   - Architecture overview (`getting-started/architecture-overview.md`) detailing clean layers, contracts, and data flows.
+   - 14 in-depth per-module guides covering every `:core:*` (10 modules) and `:ui:*` (4 modules) with complete class signatures, lifecycle contracts, and code snippets.
+   - Practical integration examples (standalone module usage, full-stack app, and headless background daemon).
+   - 3 real-world scenarios:
+     - Scenario 1: Extreme resource-constrained devices (<512MB RAM, IoT, POS, wearables).
+     - Scenario 2: Custom architecture & extensions (BLE/LoRa transports, custom storage sinks, HSM crypto, UI whitelabeling).
+     - Scenario 3: Open wire protocol specification with runnable client samples in Python, Rust, and Go.
+2. **Multi-Mode Performance Optimization (ADR-022)**:
+   - Added `FlashTransferProfile` to `:core:common` and exposed `transfer` on `FlashPerformanceMode`.
+   - Wired dynamic performance transfer profile into `RealFlashTransferRepository` and `MultiStreamDispatcher`.
+   - Tuned low/ultra-low modes (single stream, 32KB chunks, bounded queues 2/4 frames, skipped heavy video thumbnailing).
+   - Tuned medium and high modes (2–4 streams, 64KB baseline chunks, deep queues 16/64 frames, 1MB adaptive ceiling).
+   - Connected `DesktopEngine.kt` and `DiscoveryEngineHolder.kt` to pass runtime performance mode to the transfer repository.
+   - Verified with unit tests in `FlashPerformanceClassifierTest.kt`.
+3. **Root `README.md` Modernization**:
+   - Added `## Developer Guide & Documentation` section indexing the beginner guide, architecture overview, 14 module guides, 3 scenarios, and practical examples.
+   - Added `## Performance Modes & Hardware Tiering (ADR-022)` matrix detailing stream, chunk, and memory profiles.
+   - Updated all dependency snippets to `v2.0.0-beta`.
+   - Updated desktop JVM section to document Compose Desktop shell, encrypted Room SQLite, and multiplatform WebRTC.
+
+### Verification
+- `:core:common:testAndroidHostTest`: ALL PASSED.
+- `:core:transfer:testAndroidHostTest`: ALL 154 TESTS PASSED.
+- `:desktop:jvmTest`: ALL 70 TESTS PASSED.
+- `:ui:chat:jvmTest`: ALL PASSED.
+- `:app:testDebugUnitTest`: ALL 199 TESTS PASSED.
+
+---
+
 ## 2026-09-19 — Bundle `java.sql` in Native Desktop JRE & Active Session Presence Fallback (ERROR-071)
 
 ### Current branch
