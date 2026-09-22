@@ -276,4 +276,30 @@ class FlashPerformanceClassifierTest {
                 FlashPerformanceMode.HIGH.transport.reconnectCapMs,
         )
     }
+
+    @Test
+    fun transfer_profile_bounds_scale_with_performance_tier() {
+        val low = FlashPerformanceMode.LOW.transfer
+        val med = FlashPerformanceMode.MEDIUM.transfer
+        val high = FlashPerformanceMode.HIGH.transfer
+
+        assertEquals(1, low.streamCount)
+        assertEquals(2, med.streamCount)
+        assertEquals(4, high.streamCount)
+
+        assertTrue(low.chunkSizeBytes <= med.chunkSizeBytes)
+        assertTrue(med.chunkSizeBytes <= high.chunkSizeBytes)
+
+        assertTrue(low.feedBufferFrames < med.feedBufferFrames)
+        assertTrue(med.feedBufferFrames < high.feedBufferFrames)
+
+        assertTrue(low.sharedBufferFrames < med.sharedBufferFrames)
+        assertTrue(med.sharedBufferFrames < high.sharedBufferFrames)
+
+        assertFalse("LOW mode disables video thumbnail extraction", low.allowVideoThumbnails)
+        assertTrue("HIGH mode enables video thumbnail extraction", high.allowVideoThumbnails)
+
+        assertTrue(low.sqliteCacheSizeKb < med.sqliteCacheSizeKb)
+        assertTrue(med.sqliteCacheSizeKb < high.sqliteCacheSizeKb)
+    }
 }
