@@ -18,6 +18,7 @@ import com.transfer.flash.core.transfer.model.FlashTransfer
 import com.transfer.flash.core.transfer.model.FlashTransferDirection
 import com.transfer.flash.core.transfer.model.FlashTransferId
 import com.transfer.flash.core.transfer.model.FlashTransferState
+import com.transfer.flash.core.common.perf.FlashPerformanceMode
 import com.transfer.flash.core.common.time.SystemTimeSource
 import com.transfer.flash.core.transfer.multistream.MultiStreamDispatcher
 import com.transfer.flash.core.transfer.multistream.MultiStreamResult
@@ -65,6 +66,7 @@ public class RealFlashTransferRepository(
     private val requireReceiverAcceptance: Boolean = false,
     /** Predicate indicating whether a given peer device has an established encrypted channel. */
     private val isPeerEncrypted: (peerDeviceId: String) -> Boolean = { false },
+    private val performanceMode: () -> FlashPerformanceMode = { FlashPerformanceMode.HIGH },
 ) : FlashTransferRepository {
 
     private val _activeTransfers = MutableStateFlow<List<FlashTransfer>>(emptyList())
@@ -295,12 +297,17 @@ public class RealFlashTransferRepository(
         val doneIndexes = store?.doneChunks(transferId) ?: emptyList()
         val source = ChunkSource { fileSourceOpener.open(fileUri) }
 
+        val transferProfile = performanceMode().transfer
+        val resolvedStreams = if (defaultStreams != 2) defaultStreams else transferProfile.streamCount
         val dispatcher = MultiStreamDispatcher(
             chunker = chunker,
             meta = meta,
             source = source,
             factory = streamChannelFactory,
-            streamCount = defaultStreams,
+            streamCount = resolvedStreams,
+            requestedChunkSize = transferProfile.chunkSizeBytes,
+            feedBufferFrames = transferProfile.feedBufferFrames,
+            sharedBufferFrames = transferProfile.sharedBufferFrames,
             doneIndexes = doneIndexes,
             workerDispatcher = workerDispatcher,
             peerDeviceId = peerDeviceId,

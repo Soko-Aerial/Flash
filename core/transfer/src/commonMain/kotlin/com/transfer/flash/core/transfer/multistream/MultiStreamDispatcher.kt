@@ -78,10 +78,14 @@ internal class MultiStreamDispatcher(
     private val completeGraceMs: Long = DEFAULT_COMPLETE_GRACE_MS,
     /** Intended recipient device id, forwarded to [StreamChannelFactory.open] for peer routing. */
     private val peerDeviceId: String? = null,
+    private val feedBufferFrames: Int = FEED_BUFFER_FRAMES,
+    private val sharedBufferFrames: Int = SHARED_BUFFER_FRAMES,
 ) {
     init {
         require(streamCount in 1..MAX_STREAMS) { "streamCount must be in 1..$MAX_STREAMS" }
         require(completeGraceMs >= 0) { "completeGraceMs must be >= 0" }
+        require(feedBufferFrames > 0) { "feedBufferFrames must be > 0" }
+        require(sharedBufferFrames > 0) { "sharedBufferFrames must be > 0" }
     }
 
     private val plan: ChunkPlan = chunker.plan(meta, requestedChunkSize)
@@ -213,8 +217,8 @@ internal class MultiStreamDispatcher(
             // BOUNDED (AGENTS §18): the materializer paces with the network instead of
             // serializing the whole file into RAM. UNLIMITED queues made every paused/stalled
             // attempt hold its entire remaining file on the heap → OOM by the third try.
-            val feeds = List(effectiveStreams) { Channel<PreparedFrame>(FEED_BUFFER_FRAMES) }
-            val shared = Channel<PreparedFrame>(SHARED_BUFFER_FRAMES)
+            val feeds = List(effectiveStreams) { Channel<PreparedFrame>(feedBufferFrames) }
+            val shared = Channel<PreparedFrame>(sharedBufferFrames)
             val ownFeedsOpen = AtomicInt(effectiveStreams)
 
             // Watcher: throttled progress publishing + non-inline resolutions

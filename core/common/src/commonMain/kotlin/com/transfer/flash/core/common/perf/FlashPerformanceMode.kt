@@ -95,6 +95,14 @@ public enum class FlashPerformanceMode {
             HIGH -> FlashTransportProfile.HIGH
         }
 
+    /** File-transfer chunking, concurrency, and buffer envelope for this tier. */
+    public val transfer: FlashTransferProfile
+        get() = when (this) {
+            LOW -> FlashTransferProfile.LOW
+            MEDIUM -> FlashTransferProfile.MEDIUM
+            HIGH -> FlashTransferProfile.HIGH
+        }
+
     /** Stable persistence token. Never derived from [name] — see [Keys]. */
     public val key: String
         get() = when (this) {
