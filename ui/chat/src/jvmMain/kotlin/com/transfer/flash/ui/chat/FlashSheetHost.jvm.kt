@@ -1,6 +1,7 @@
 package com.transfer.flash.ui.chat
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -11,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -23,9 +25,11 @@ import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.transfer.flash.ui.shims.FlashBackHandler
+import com.transfer.flash.ui.theme.FlashDimensions
 import com.transfer.flash.ui.theme.FlashShapes
 import com.transfer.flash.ui.theme.FlashSpacing
 import com.transfer.flash.ui.theme.FlashTheme
@@ -82,11 +86,13 @@ actual fun FlashSheetHost(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,
                     onClick = onDismiss,
-                ),
-            contentAlignment = Alignment.BottomCenter,
+                )
+                .padding(horizontal = FlashSpacing.space24, vertical = FlashSpacing.space32),
+            contentAlignment = Alignment.Center,
         ) {
             Column(
                 modifier = Modifier
+                    .widthIn(min = 380.dp, max = 540.dp)
                     .fillMaxWidth()
                     // NOT cosmetic. Several sheets put a `LazyColumn` in their content, and an
                     // unbounded Column measures it with an infinite maximum height — which is a crash,
@@ -98,10 +104,15 @@ actual fun FlashSheetHost(
                         indication = null,
                         onClick = { /* swallow taps inside the sheet */ },
                     )
-                    .clip(FlashShapes.sheet)
-                    .background(containerColor),
+                    .clip(RoundedCornerShape(FlashShapes.radius24))
+                    .background(containerColor)
+                    .border(
+                        FlashDimensions.borderHairline,
+                        colors.borderSubtle,
+                        RoundedCornerShape(FlashShapes.radius24),
+                    )
+                    .padding(top = FlashSpacing.space16),
             ) {
-                dragHandle?.invoke()
                 content()
             }
         }
@@ -130,11 +141,12 @@ actual fun FlashConfirmHost(
                     indication = null,
                     onClick = onDismiss,
                 )
-                .padding(FlashSpacing.space20),
+                .padding(horizontal = FlashSpacing.space24, vertical = FlashSpacing.space32),
             contentAlignment = Alignment.Center,
         ) {
             Column(
                 modifier = Modifier
+                    .widthIn(min = 340.dp, max = 480.dp)
                     .fillMaxWidth()
                     .heightIn(max = maxHeight * MAX_CARD_HEIGHT_FRACTION)
                     .clickable(
@@ -144,6 +156,11 @@ actual fun FlashConfirmHost(
                     )
                     .clip(RoundedCornerShape(FlashShapes.radius24))
                     .background(containerColor)
+                    .border(
+                        FlashDimensions.borderHairline,
+                        colors.borderSubtle,
+                        RoundedCornerShape(FlashShapes.radius24),
+                    )
                     // Scrolls, unlike the Material3 original which only scrolls long TEXT. These cards
                     // hold a title, one or two sentences and a button row; the bound above is what
                     // matters, and scrolling keeps an unexpectedly long string reachable rather than
@@ -227,8 +244,8 @@ private fun FlashOverlayLayer(
     }
 }
 
-/** Sheets are bottom-anchored and may be tall; leave the scrim visible above them. */
-private const val MAX_SHEET_HEIGHT_FRACTION = 0.92f
+/** Sheets are centered modal dialogs on desktop; leave the scrim visible around them. */
+private const val MAX_SHEET_HEIGHT_FRACTION = 0.85f
 
 /** A centred card must never reach the screen edges — it would stop reading as a card. */
 private const val MAX_CARD_HEIGHT_FRACTION = 0.85f

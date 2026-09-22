@@ -393,6 +393,40 @@ object DiscoveryEngineHolder {
     /** True if the background mesh network has booted and is currently running. */
     fun isRunning(): Boolean = network != null
 
+    private const val PREFS_DISCOVERY_MODE = "flash_discovery_mode"
+    private const val KEY_MODE = "mode"
+
+    private val _discoveryMode = MutableStateFlow(FlashDiscoveryMode.STANDARD)
+    val discoveryMode: kotlinx.coroutines.flow.StateFlow<FlashDiscoveryMode> = _discoveryMode
+
+    @Volatile
+    var userDiscoveryMode: FlashDiscoveryMode = FlashDiscoveryMode.STANDARD
+        private set
+
+    fun currentDiscoveryMode(): FlashDiscoveryMode = userDiscoveryMode
+
+    suspend fun setDiscoveryMode(mode: FlashDiscoveryMode, context: Context? = appContextRef) {
+        userDiscoveryMode = mode
+        _discoveryMode.value = mode
+        val ctx = context ?: appContextRef
+        ctx?.let { saveDiscoveryMode(it, mode) }
+        val engine = composite ?: return
+        if (!callActive) {
+            engine.setMode(mode)
+        }
+    }
+
+    private fun loadSavedDiscoveryMode(context: Context): FlashDiscoveryMode {
+        val prefs = context.getSharedPreferences(PREFS_DISCOVERY_MODE, Context.MODE_PRIVATE)
+        val name = prefs.getString(KEY_MODE, FlashDiscoveryMode.STANDARD.name) ?: FlashDiscoveryMode.STANDARD.name
+        return runCatching { FlashDiscoveryMode.valueOf(name) }.getOrDefault(FlashDiscoveryMode.STANDARD)
+    }
+
+    private fun saveDiscoveryMode(context: Context, mode: FlashDiscoveryMode) {
+        val prefs = context.getSharedPreferences(PREFS_DISCOVERY_MODE, Context.MODE_PRIVATE)
+        prefs.edit().putString(KEY_MODE, mode.name).apply()
+    }
+
     fun updateFriendlyName(newName: String) {
         val trimmed = newName.trim()
         if (trimmed.isBlank()) return
@@ -548,9 +582,10 @@ object DiscoveryEngineHolder {
         boundServerPort = serverPort
         check(serverPort > 0) { "Network server failed to start: ${(netStartResult as? FlashResult.Failure)?.error}" }
 
-        Log.i(TAG_WS, "WsFlashNetwork server listening on port=$serverPort")
-
-        engine.setMode(FlashDiscoveryMode.STANDARD)
+        val initialMode = loadSavedDiscoveryMode(appContext)
+        userDiscoveryMode = initialMode
+        _discoveryMode.value = initialMode
+        engine.setMode(initialMode)
         val result = engine.startAll(serverPort, identity)
         // A partial transport failure must NOT abort the bring-up — see the sibling comment in
         // DesktopEngine.assemble(). `startAll` aggregates advertising+browsing across EVERY
@@ -792,6 +827,7 @@ object DiscoveryEngineHolder {
             // A compliant sender streams nothing pre-accept, so no chunk is ever lost to the gate.
             requireReceiverAcceptance = true,
             isPeerEncrypted = { peerId -> trustStore.getSessionKey(FlashDeviceId(peerId)) != null },
+            performanceMode = { performanceMode },
         )
 
         val chatImpl = RealFlashChatRepository(
@@ -1567,9 +1603,9 @@ object DiscoveryEngineHolder {
         if (active) pttEngine?.onCallStarted()
         (transferRepo as? RealFlashTransferRepository)?.voiceCallActive = active
         runCatching {
-            engine.setMode(if (active) FlashDiscoveryMode.ECO else FlashDiscoveryMode.STANDARD)
+            engine.setMode(if (active) FlashDiscoveryMode.ECO else userDiscoveryMode)
         }.onFailure { t ->
-            Log.w(TAG_WS, "Call-quiet setMode(${if (active) "ECO" else "STANDARD"}) failed: ${t.message}")
+            Log.w(TAG_WS, "Call-quiet setMode(${if (active) "ECO" else userDiscoveryMode.name}) failed: ${t.message}")
         }
     }
 

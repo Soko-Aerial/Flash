@@ -67,6 +67,14 @@ class FlashBackgroundService : Service() {
                 updateTransferNotification(transfers)
             }
         }
+
+        // Observe discovery mode changes to update notification accordingly
+        scope.launch {
+            DiscoveryEngineHolder.discoveryMode.collect {
+                val transfers = DiscoveryEngineHolder.currentTransfers()?.activeTransfers?.value ?: emptyList()
+                updateTransferNotification(transfers)
+            }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -110,6 +118,28 @@ class FlashBackgroundService : Service() {
         super.onTimeout(startId, fgsType)
     }
 
+    private fun buildIdleNotification(): Notification {
+        val mode = DiscoveryEngineHolder.currentDiscoveryMode()
+        val (title, text) = when (mode) {
+            com.transfer.flash.core.discovery.core.FlashDiscoveryMode.STANDARD ->
+                "Flash is discoverable" to "Nearby devices can find and reach this phone."
+            com.transfer.flash.core.discovery.core.FlashDiscoveryMode.GHOST ->
+                "Flash is hidden" to "Browse only — nearby devices cannot see this phone."
+            com.transfer.flash.core.discovery.core.FlashDiscoveryMode.ECO ->
+                "Flash is in eco mode" to "Battery-saving discovery active."
+            com.transfer.flash.core.discovery.core.FlashDiscoveryMode.BOOST ->
+                "Flash is in boost mode" to "High-responsiveness discovery active."
+            com.transfer.flash.core.discovery.core.FlashDiscoveryMode.RECEIVE_KIOSK ->
+                "Flash is in kiosk mode" to "Advertising kiosk availability."
+        }
+        return Notification.Builder(this, CHANNEL_ID)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setSmallIcon(android.R.drawable.stat_notify_sync_noanim)
+            .setOngoing(true)
+            .build()
+    }
+
     private fun startAsForeground(): Boolean {
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(
@@ -119,12 +149,7 @@ class FlashBackgroundService : Service() {
                 NotificationManager.IMPORTANCE_LOW,
             ),
         )
-        val notification: Notification = Notification.Builder(this, CHANNEL_ID)
-            .setContentTitle("Flash is discoverable")
-            .setContentText("Nearby devices can find and reach this phone.")
-            .setSmallIcon(android.R.drawable.stat_notify_sync_noanim)
-            .setOngoing(true)
-            .build()
+        val notification: Notification = buildIdleNotification()
         return try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
@@ -142,12 +167,7 @@ class FlashBackgroundService : Service() {
         val active = transfers.filter { it.state == FlashTransferState.Transferring }
         val manager = getSystemService(NotificationManager::class.java) ?: return
         if (active.isEmpty()) {
-            val notification = Notification.Builder(this, CHANNEL_ID)
-                .setContentTitle("Flash is discoverable")
-                .setContentText("Nearby devices can find and reach this phone.")
-                .setSmallIcon(android.R.drawable.stat_notify_sync_noanim)
-                .setOngoing(true)
-                .build()
+            val notification = buildIdleNotification()
             try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
