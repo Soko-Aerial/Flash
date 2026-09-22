@@ -38,6 +38,7 @@ import com.transfer.flash.core.common.model.FlashDeviceKind
 import com.transfer.flash.core.common.model.FlashTransportType
 import com.transfer.flash.core.discovery.FlashDiscoveredEndpoint
 import com.transfer.flash.core.discovery.FlashDiscoveryState
+import com.transfer.flash.core.discovery.core.FlashDiscoveryMode
 import com.transfer.flash.ui.shims.rememberFlashFilePickerLauncher
 import java.awt.datatransfer.DataFlavor
 import java.awt.dnd.DnDConstants
@@ -66,6 +67,13 @@ import com.transfer.flash.core.common.perf.FlashPerformanceMode
 import com.transfer.flash.ui.chat.FlashCreateGroupSheet
 import com.transfer.flash.ui.chat.FlashCreateGroupPeerUi
 import com.transfer.flash.ui.chat.FlashPairingPhase
+import com.transfer.flash.ui.chat.FlashSharePayloadUi
+import com.transfer.flash.ui.chat.FlashShareItemUi
+import com.transfer.flash.ui.chat.FlashShareRecipientUi
+import com.transfer.flash.ui.chat.FlashShareTargetSheet
+import com.transfer.flash.ui.chat.FlashShareTargetMath
+import com.transfer.flash.ui.chat.FlashPairingDialog
+import com.transfer.flash.ui.nearby.FlashManualConnectDialog
 import com.transfer.flash.ui.settings.FlashThemeMode
 import com.transfer.flash.ui.settings.FlashDisplayNameDialog
 import com.transfer.flash.ui.chat.FlashPairingRequestUi
@@ -128,6 +136,8 @@ public fun DesktopShell(
     onThemeModeSelected: (FlashThemeMode) -> Unit,
     window: java.awt.Window? = null,
     nav: FlashNavigationState = rememberFlashNavigationState(),
+    externalShareFiles: List<java.io.File> = emptyList(),
+    onClearExternalShareFiles: () -> Unit = {},
 ) {
     val scope = rememberCoroutineScope()
 
@@ -323,6 +333,100 @@ public fun DesktopShell(
                 id = trusted.id,
                 name = trusted.name,
                 initials = initials,
+            )
+        }
+    }
+
+    var pendingDesktopShare by remember { mutableStateOf<FlashSharePayloadUi?>(null) }
+    var pendingDesktopShareRecipient by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var isPairingForDesktopShare by remember { mutableStateOf(false) }
+    var showDesktopShareManualConnect by remember { mutableStateOf(false) }
+
+    LaunchedEffect(externalShareFiles) {
+        if (externalShareFiles.isNotEmpty()) {
+            val shareItems = externalShareFiles.flatMap { file ->
+                if (file.isDirectory) {
+                    file.walkTopDown().filter { it.isFile }.map { f ->
+                        FlashShareItemUi(
+                            uri = f.toURI().toString(),
+                            name = file.name + "/" + f.relativeTo(file).path.replace('\\', '/'),
+                            sizeBytes = f.length(),
+                            mimeType = DesktopHelpers.guessMimeType(f.name),
+                        )
+                    }.toList()
+                } else {
+                    listOf(
+                        FlashShareItemUi(
+                            uri = file.toURI().toString(),
+                            name = file.name,
+                            sizeBytes = file.length(),
+                            mimeType = DesktopHelpers.guessMimeType(file.name),
+                        )
+                    )
+                }
+            }
+            if (shareItems.isNotEmpty()) {
+                val existing = pendingDesktopShare?.items ?: emptyList()
+                pendingDesktopShare = FlashSharePayloadUi(
+                    items = (existing + shareItems).distinctBy { it.uri },
+                    text = null,
+                )
+            }
+            onClearExternalShareFiles()
+        }
+    }
+
+    val desktopPairedRecipients = remember(trustedPeersByCoordinator, discoveredEndpoints, activeSessions) {
+        val discoveredMap = discoveredEndpoints.associateBy { it.deviceId.value }
+        val sessionPeerIds = activeSessions.keys.map { it.value }.toSet()
+        trustedPeersByCoordinator.map { trusted ->
+            val endpoint = discoveredMap[trusted.id]
+            val isOnline = endpoint != null || sessionPeerIds.contains(trusted.id)
+            FlashShareRecipientUi(
+                id = trusted.id,
+                name = trusted.name,
+                initials = FlashShareTargetMath.initialsFor(trusted.name),
+                isOnline = isOnline,
+                isGroup = false,
+                isPaired = true,
+                transport = endpoint?.transportType?.toDesktopTransport() ?: FlashNetworkTransport.Lan,
+                deviceKind = FlashDeviceKind.UNKNOWN,
+                subtitle = if (isOnline) null else "Offline",
+            )
+        }
+    }
+
+    val desktopNearbyRecipients = remember(discoveredEndpoints, trustedPeersByCoordinator) {
+        val trustedIds = trustedPeersByCoordinator.mapTo(HashSet()) { it.id }
+        discoveredEndpoints
+            .filterNot { ep -> trustedIds.contains(ep.deviceId.value) }
+            .map { ep ->
+                FlashShareRecipientUi(
+                    id = ep.deviceId.value,
+                    name = ep.friendlyName,
+                    initials = FlashShareTargetMath.initialsFor(ep.friendlyName),
+                    isOnline = true,
+                    isGroup = false,
+                    isPaired = false,
+                    transport = ep.transportType.toDesktopTransport(),
+                    deviceKind = ep.deviceKind,
+                    subtitle = "Available nearby",
+                )
+            }
+    }
+
+    val desktopRecentChatRecipients = remember(chatListState.items) {
+        chatListState.items.take(5).map { chat ->
+            FlashShareRecipientUi(
+                id = chat.id,
+                name = chat.title,
+                initials = chat.avatarInitials,
+                isOnline = chat.presence == FlashPeerPresence.Online,
+                isGroup = chat.isGroup,
+                isPaired = true,
+                transport = FlashNetworkTransport.Lan,
+                deviceKind = FlashDeviceKind.UNKNOWN,
+                subtitle = if (chat.isGroup) "Group chat" else null,
             )
         }
     }
@@ -550,6 +654,52 @@ public fun DesktopShell(
         }
     }
 
+    LaunchedEffect(nearby.pairingPhase, trustedPeersByCoordinator) {
+        val target = pendingDesktopShareRecipient ?: return@LaunchedEffect
+        val (targetDeviceId, targetDeviceName) = target
+        val isNowTrusted = trustedPeersByCoordinator.any { it.id == targetDeviceId }
+        val isPairedPhase = nearby.pairingPhase == FlashPairingPhase.Paired
+
+        if (isNowTrusted || isPairedPhase) {
+            pendingDesktopShareRecipient = null
+            isPairingForDesktopShare = false
+            val share = pendingDesktopShare
+            if (share != null) {
+                pendingDesktopShare = null
+                selectedChatConversationId = targetDeviceId
+                chatRepository.openConversation(targetDeviceId)
+                nav.navigate(FlashDestination.Conversation, conversationId = targetDeviceId)
+                share.items.forEach { item ->
+                    sendFileToPeer(
+                        peerId = targetDeviceId,
+                        peerName = targetDeviceName,
+                        isGroup = false,
+                        uri = item.uri,
+                        displayName = item.name,
+                        size = item.sizeBytes,
+                        mimeType = item.mimeType,
+                    )
+                }
+                scope.launch {
+                    snackbarHostState.showSnackbar(
+                        message = if (share.items.size == 1) "Paired! Sending ${share.items[0].name} to $targetDeviceName" else "Paired! Sending ${share.items.size} files to $targetDeviceName",
+                        duration = SnackbarDuration.Short,
+                    )
+                }
+            }
+        } else if (nearby.pairingPhase == FlashPairingPhase.Declined || nearby.pairingPhase == FlashPairingPhase.Expired) {
+            pendingDesktopShareRecipient = null
+            isPairingForDesktopShare = false
+            pendingDesktopShare = null
+            scope.launch {
+                snackbarHostState.showSnackbar(
+                    message = "Pairing was cancelled or timed out. Files not sent.",
+                    duration = SnackbarDuration.Short,
+                )
+            }
+        }
+    }
+
     val generalFilePicker = rememberFlashFilePickerLauncher { picked ->
         val peerId = nav.current.conversationId
         if (peerId != null) {
@@ -603,18 +753,18 @@ public fun DesktopShell(
                         val files = transferable.getTransferData(DataFlavor.javaFileListFlavor) as? List<*>
                         val fileList = files?.filterIsInstance<File>() ?: emptyList()
                         if (fileList.isNotEmpty()) {
-                            val activePeerId = nav.current.conversationId
-                            if (nav.current.destination == FlashDestination.Conversation && activePeerId != null) {
-                                val allFiles = fileList.flatMap { file ->
-                                    if (file.isDirectory) {
-                                        file.walkTopDown().filter { it.isFile }.map { subFile ->
-                                            val relPath = "${file.name}/${subFile.relativeTo(file).path.replace('\\', '/')}"
-                                            Pair(subFile, relPath)
-                                        }.toList()
-                                    } else {
-                                        listOf(Pair(file, file.name))
-                                    }
+                            val activePeerId = nav.current.conversationId ?: (if (twoPane) selectedChatConversationId else null)
+                            val allFiles = fileList.flatMap { file ->
+                                if (file.isDirectory) {
+                                    file.walkTopDown().filter { it.isFile }.map { subFile ->
+                                        val relPath = "${file.name}/${subFile.relativeTo(file).path.replace('\\', '/')}"
+                                        Pair(subFile, relPath)
+                                    }.toList()
+                                } else {
+                                    listOf(Pair(file, file.name))
                                 }
+                            }
+                            if ((nav.current.destination == FlashDestination.Conversation || twoPane) && activePeerId != null) {
                                 allFiles.forEach { (file, relPath) ->
                                     sendFileToPeer(
                                         peerId = activePeerId,
@@ -634,12 +784,20 @@ public fun DesktopShell(
                                 dtde.dropComplete(true)
                                 return
                             } else {
-                                scope.launch {
-                                    snackbarHostState.showSnackbar(
-                                        message = "Open a conversation to send files to a peer",
-                                        duration = SnackbarDuration.Short,
+                                val shareItems = allFiles.map { (file, relPath) ->
+                                    FlashShareItemUi(
+                                        uri = file.toURI().toString(),
+                                        name = relPath,
+                                        sizeBytes = file.length(),
+                                        mimeType = DesktopHelpers.guessMimeType(file.name),
                                     )
                                 }
+                                pendingDesktopShare = FlashSharePayloadUi(
+                                    items = shareItems,
+                                    text = null,
+                                )
+                                dtde.dropComplete(true)
+                                return
                             }
                         }
                         dtde.dropComplete(true)
@@ -708,6 +866,9 @@ public fun DesktopShell(
             receivedFilesBytes = receivedBytes,
             trustedPeerCount = trustedPeersByCoordinator.size,
             themeMode = themeMode,
+            discoveryMode = desktopSettings.discoveryMode.name,
+            windowsContextMenu = desktopSettings.windowsContextMenu,
+            showWindowsContextMenu = WindowsContextMenuManager.isSupported,
             dynamicAccent = desktopSettings.dynamicAccent,
             autoDownloadVoice = desktopSettings.autoDownloadVoice,
             autoDownloadImage = desktopSettings.autoDownloadImage,
@@ -1190,6 +1351,14 @@ public fun DesktopShell(
                         model = settings,
                         onEditDisplayName = { showRenameDialog = true },
                         onThemeModeSelected = onThemeModeSelected,
+                        onDiscoveryModeChanged = { modeStr ->
+                            val mode = runCatching { FlashDiscoveryMode.valueOf(modeStr) }
+                                .getOrDefault(FlashDiscoveryMode.STANDARD)
+                            engine.setDiscoveryMode(mode)
+                        },
+                        onWindowsContextMenuChanged = { next ->
+                            scope.launch { engine.updateSettings { it.copy(windowsContextMenu = next) } }
+                        },
                         onDynamicAccentChanged = { next ->
                             scope.launch { engine.updateSettings { it.copy(dynamicAccent = next) } }
                         },
@@ -1435,6 +1604,132 @@ public fun DesktopShell(
                     }
                 },
             )
+        }
+        val currentDesktopShare = pendingDesktopShare
+        if (currentDesktopShare != null && !isPairingForDesktopShare) {
+            FlashShareTargetSheet(
+                payload = currentDesktopShare,
+                pairedDevices = desktopPairedRecipients,
+                nearbyDevices = desktopNearbyRecipients,
+                recentChats = desktopRecentChatRecipients,
+                isScanning = nearby.isScanning,
+                onSelectRecipient = { recipient ->
+                    val isTrusted = trustedPeersByCoordinator.any { it.id == recipient.id }
+                    if (isTrusted) {
+                        pendingDesktopShare = null
+                        selectedChatConversationId = recipient.id
+                        chatRepository.openConversation(recipient.id)
+                        nav.navigate(FlashDestination.Conversation, conversationId = recipient.id)
+                        currentDesktopShare.items.forEach { item ->
+                            sendFileToPeer(
+                                peerId = recipient.id,
+                                peerName = recipient.name,
+                                isGroup = recipient.isGroup,
+                                uri = item.uri,
+                                displayName = item.name,
+                                size = item.sizeBytes,
+                                mimeType = item.mimeType,
+                            )
+                        }
+                        scope.launch {
+                            snackbarHostState.showSnackbar(
+                                message = if (currentDesktopShare.items.size == 1) "Sending ${currentDesktopShare.items[0].name} to ${recipient.name}" else "Sending ${currentDesktopShare.items.size} files to ${recipient.name}",
+                                duration = SnackbarDuration.Short,
+                            )
+                        }
+                    } else {
+                        isPairingForDesktopShare = true
+                        pendingDesktopShareRecipient = Pair(recipient.id, recipient.name)
+                        val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == recipient.id }
+                        val net = engine.network
+                        if (endpoint != null && net != null) {
+                            scope.launch {
+                                net.connectManual(endpoint.hostAddress, endpoint.port)
+                                engine.pairing.beginPair(recipient.id, recipient.name)
+                            }
+                        } else {
+                            engine.pairing.beginPair(recipient.id, recipient.name)
+                        }
+                        scope.launch {
+                            snackbarHostState.showSnackbar(
+                                message = "Initiating pairing with ${recipient.name}...",
+                                duration = SnackbarDuration.Short,
+                            )
+                        }
+                    }
+                },
+                onDismiss = {
+                    pendingDesktopShare = null
+                },
+                onManualConnect = {
+                    showDesktopShareManualConnect = true
+                },
+            )
+        }
+
+        if (showDesktopShareManualConnect) {
+            FlashManualConnectDialog(
+                onDismiss = { showDesktopShareManualConnect = false },
+                onConnect = { host, port ->
+                    showDesktopShareManualConnect = false
+                    scope.launch {
+                        val net = engine.network
+                        if (net != null) {
+                            val result = net.connectManual(host, port)
+                            if (result is com.transfer.flash.core.common.result.FlashResult.Success) {
+                                val peerDevice = result.value.peer
+                                val peerId = peerDevice.id.value
+                                val peerName = peerDevice.friendlyName
+                                val isTrusted = trustedPeersByCoordinator.any { it.id == peerId }
+                                if (isTrusted) {
+                                    val share = pendingDesktopShare
+                                    pendingDesktopShare = null
+                                    selectedChatConversationId = peerId
+                                    chatRepository.openConversation(peerId)
+                                    nav.navigate(FlashDestination.Conversation, conversationId = peerId)
+                                    share?.items?.forEach { item ->
+                                        sendFileToPeer(
+                                            peerId = peerId,
+                                            peerName = peerName,
+                                            isGroup = false,
+                                            uri = item.uri,
+                                            displayName = item.name,
+                                            size = item.sizeBytes,
+                                            mimeType = item.mimeType,
+                                        )
+                                    }
+                                } else {
+                                    isPairingForDesktopShare = true
+                                    pendingDesktopShareRecipient = Pair(peerId, peerName)
+                                    engine.pairing.beginPair(peerId, peerName)
+                                    snackbarHostState.showSnackbar(
+                                        message = "Connected to $host:$port. Initiating pairing with $peerName...",
+                                        duration = SnackbarDuration.Short,
+                                    )
+                                }
+                            } else {
+                                snackbarHostState.showSnackbar(
+                                    message = "Couldn't connect to $host:$port",
+                                    duration = SnackbarDuration.Short,
+                                )
+                            }
+                        }
+                    }
+                },
+            )
+        }
+
+        if (nav.current.destination != FlashDestination.NearbyDevices) {
+            nearby.pairingRequest?.let { request ->
+                FlashPairingDialog(
+                    request = request,
+                    phase = nearby.pairingPhase,
+                    secondsLeft = nearby.pairingSecondsLeft,
+                    onAccept = { engine.pairing.acceptLocal() },
+                    onDecline = { engine.pairing.declineLocal() },
+                    onDismiss = { engine.pairing.declineLocal() },
+                )
+            }
         }
         if (twoPane) {
             // Expanded: sidebar on the left edge, list+detail in the remainder.

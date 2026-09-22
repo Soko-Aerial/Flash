@@ -147,4 +147,17 @@ class FlashSettingsLogicTest {
             assertEquals(1, subtitles.toSet().size, "$pin must not vary with detection: $subtitles")
         }
     }
+
+    @Test
+    fun `discovery mode labels and subtitles match known modes`() {
+        assertEquals("Standard", FlashSettingsMath.discoveryModeShortLabel("STANDARD"))
+        assertEquals("Ghost", FlashSettingsMath.discoveryModeShortLabel("GHOST"))
+        assertEquals("Eco", FlashSettingsMath.discoveryModeShortLabel("ECO"))
+        assertEquals("Boost", FlashSettingsMath.discoveryModeShortLabel("BOOST"))
+
+        assertTrue(FlashSettingsMath.discoveryModeSubtitle("STANDARD").contains("Discoverable"))
+        assertTrue(FlashSettingsMath.discoveryModeSubtitle("GHOST").contains("Browse only"))
+        assertTrue(FlashSettingsMath.discoveryModeSubtitle("ECO").contains("Battery saver"))
+        assertTrue(FlashSettingsMath.discoveryModeSubtitle("BOOST").contains("responsiveness"))
+    }
 }

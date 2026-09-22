@@ -43,6 +43,13 @@ import com.transfer.flash.ui.adaptive.FlashNearbyDetailPane
 import com.transfer.flash.ui.adaptive.FlashWindowSizeClass
 import com.transfer.flash.ui.adaptive.rememberFlashAdaptiveWindowWidthDp
 import com.transfer.flash.ui.transfers.FlashTransferItemUi
+import com.transfer.flash.ui.chat.FlashSharePayloadUi
+import com.transfer.flash.ui.chat.FlashShareItemUi
+import com.transfer.flash.ui.chat.FlashShareRecipientUi
+import com.transfer.flash.ui.chat.FlashShareTargetSheet
+import com.transfer.flash.ui.chat.FlashShareTargetMath
+import com.transfer.flash.ui.chat.FlashPairingDialog
+import com.transfer.flash.ui.nearby.FlashManualConnectDialog
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -61,11 +68,14 @@ import com.transfer.flash.core.messaging.EmptyFlashChatRepository
 import com.transfer.flash.core.common.model.FlashDevice
 import com.transfer.flash.core.common.model.FlashDeviceId
 import com.transfer.flash.core.common.model.FlashTransportType
+import com.transfer.flash.core.common.model.FlashPeerPresence
+import com.transfer.flash.core.network.FlashSession
 import com.transfer.flash.core.common.perf.FlashMotionPolicy
 import com.transfer.flash.core.common.perf.FlashPerformanceMode
 import com.transfer.flash.core.common.result.getOrNull
 import com.transfer.flash.core.discovery.FlashDiscoveredEndpoint
 import com.transfer.flash.core.discovery.FlashDiscoveryState
+import com.transfer.flash.core.discovery.core.FlashDiscoveryMode
 import com.transfer.flash.di.AppEngine
 import com.transfer.flash.debug.DiscoveryEngineHolder
 import com.transfer.flash.debug.FlashBackgroundService
@@ -174,7 +184,7 @@ class MainActivity : ComponentActivity() {
      */
     private val ignoringBatteryOptimizations = MutableStateFlow(false)
 
-    private val pendingShare = MutableStateFlow<PendingSharePayload?>(null)
+    private val pendingShare = MutableStateFlow<FlashSharePayloadUi?>(null)
     private val pendingShortcutTab = MutableStateFlow<FlashDestination?>(null)
 
     private val receivedStorageState = MutableStateFlow(FlashReceivedStorageState())
@@ -263,36 +273,78 @@ class MainActivity : ComponentActivity() {
         handleIncomingIntent(intent)
     }
 
+    private fun extractUrisFromIntent(intent: Intent): List<Uri> {
+        val result = linkedSetOf<Uri>()
+        // 1. ClipData (preferred in modern Android)
+        intent.clipData?.let { clipData ->
+            for (i in 0 until clipData.itemCount) {
+                clipData.getItemAt(i).uri?.let { result.add(it) }
+            }
+        }
+        // 2. EXTRA_STREAM (single item)
+        if (intent.action == Intent.ACTION_SEND) {
+            val streamUri: Uri? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+            } else {
+                @Suppress("DEPRECATION")
+                intent.getParcelableExtra(Intent.EXTRA_STREAM)
+            }
+            streamUri?.let { result.add(it) }
+        }
+        // 3. EXTRA_STREAM (multiple items)
+        if (intent.action == Intent.ACTION_SEND_MULTIPLE) {
+            val streamUris: ArrayList<Uri>? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java)
+            } else {
+                @Suppress("DEPRECATION")
+                intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM)
+            }
+            streamUris?.let { result.addAll(it) }
+        }
+        // 4. Intent data fallback
+        intent.data?.let { result.add(it) }
+        return result.toList()
+    }
+
+    private fun resolvePendingShare(uris: List<Uri>, text: String?) {
+        lifecycleScope.launch(Dispatchers.IO) {
+            val items = uris.map { uri ->
+                val (name, size) = resolveContentUriNameAndSize(applicationContext, uri)
+                val mime = guessMimeType(name, uri.toString(), applicationContext)
+                FlashShareItemUi(
+                    uri = uri.toString(),
+                    name = name,
+                    sizeBytes = size,
+                    mimeType = mime,
+                )
+            }
+            pendingShare.value = FlashSharePayloadUi(
+                items = items,
+                text = text?.ifBlank { null },
+            )
+        }
+    }
+
     private fun handleIncomingIntent(intent: Intent?) {
         if (intent == null) return
         when (intent.action) {
             Intent.ACTION_SEND -> {
                 val text = intent.getStringExtra(Intent.EXTRA_TEXT)
-                val uri: Uri? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
-                } else {
-                    @Suppress("DEPRECATION")
-                    intent.getParcelableExtra(Intent.EXTRA_STREAM)
-                }
-                if (uri != null || !text.isNullOrBlank()) {
-                    pendingShare.value = PendingSharePayload(
-                        uris = listOfNotNull(uri),
-                        text = text,
-                    )
+                val uris = extractUrisFromIntent(intent)
+                if (uris.isNotEmpty() || !text.isNullOrBlank()) {
+                    resolvePendingShare(uris, text)
                 }
             }
             Intent.ACTION_SEND_MULTIPLE -> {
-                val uris: ArrayList<Uri>? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java)
-                } else {
-                    @Suppress("DEPRECATION")
-                    intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM)
-                }
-                if (!uris.isNullOrEmpty()) {
-                    pendingShare.value = PendingSharePayload(uris = uris)
+                val uris = extractUrisFromIntent(intent)
+                val text = intent.getStringExtra(Intent.EXTRA_TEXT)
+                if (uris.isNotEmpty() || !text.isNullOrBlank()) {
+                    resolvePendingShare(uris, text)
                 }
             }
-            "com.transfer.flash.action.SHORTCUT_SEND", "com.transfer.flash.action.SHORTCUT_NEARBY" -> {
+            "com.transfer.flash.action.SHORTCUT_SEND",
+            "com.transfer.flash.action.SHORTCUT_NEARBY",
+            "android.service.quicksettings.action.QS_TILE_PREFERENCES" -> {
                 pendingShortcutTab.value = FlashDestination.NearbyDevices
             }
             "com.transfer.flash.action.SHORTCUT_CHATS" -> {
@@ -447,10 +499,7 @@ object SettingsKeys {
     }
 }
 
-data class PendingSharePayload(
-    val uris: List<Uri> = emptyList(),
-    val text: String? = null,
-)
+typealias PendingSharePayload = FlashSharePayloadUi
 
 @Composable
 fun FlashApp(
@@ -508,6 +557,7 @@ fun FlashApp(
     val ready by engine.ready.collectAsState()
     val trustedFallback = remember { MutableStateFlow(emptyList<NearbyTrustedPeerUi>()) }
     val trustedPeers by (engine.pairing?.trustedPeers ?: trustedFallback).collectAsState()
+    val currentDiscoveryMode by DiscoveryEngineHolder.discoveryMode.collectAsState()
 
     val settings = FlashSettingsModel(
         // ERROR-034: no `if (ready)` gate. Identity comes from a self-healing prefs store that
@@ -520,6 +570,7 @@ fun FlashApp(
         dynamicAccent = dynamicAccent,
         hapticsEnabled = hapticsEnabled,
         backgroundTransfers = backgroundTransfers,
+        discoveryMode = currentDiscoveryMode.name,
         autoDownloadVoice = autoDownloadVoice,
         autoDownloadImage = autoDownloadImage,
         autoDownloadVideo = autoDownloadVideo,
@@ -550,6 +601,11 @@ fun FlashApp(
             if (updated.hapticsEnabled != settings.hapticsEnabled) store.setHapticsEnabled(updated.hapticsEnabled)
             if (updated.backgroundTransfers != settings.backgroundTransfers) {
                 store.setBackgroundTransfers(updated.backgroundTransfers)
+            }
+            if (updated.discoveryMode != settings.discoveryMode) {
+                runCatching { FlashDiscoveryMode.valueOf(updated.discoveryMode) }.getOrNull()?.let { newMode ->
+                    DiscoveryEngineHolder.setDiscoveryMode(newMode, settingsContext)
+                }
             }
             if (updated.autoDownloadVoice != settings.autoDownloadVoice) store.setAutoDownloadVoice(updated.autoDownloadVoice)
             if (updated.autoDownloadImage != settings.autoDownloadImage) store.setAutoDownloadImage(updated.autoDownloadImage)
@@ -717,6 +773,8 @@ private fun FlashShell(
     val chatListSelectionMode by remember(chatRepository) {
         derivedStateOf { chatListState.selectionMode }
     }
+
+    var selectedChatConversationId by remember { mutableStateOf<String?>(null) }
 
     // Bug 7: the shell mirrors the open conversation into the notification manager so it
     // can suppress notifications for the thread being read right now (and clear that
@@ -970,6 +1028,9 @@ private fun FlashShell(
         }
     }
 
+    var pendingShareRecipient by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var isPairingForShare by remember { mutableStateOf(false) }
+
     val sendSharedPayloadToPeer: (targetDeviceId: String, targetDeviceName: String) -> Unit = { targetDeviceId, targetDeviceName ->
         val share = pendingShare.value
         val transfers = engine.transfers
@@ -980,27 +1041,111 @@ private fun FlashShell(
                 friendlyName = targetDeviceName,
                 transportType = endpoint?.transportType ?: FlashTransportType.LAN,
             )
-            scope.launch(Dispatchers.IO) {
-                share.uris.forEach { uri ->
-                    val (name, size) = resolveContentUriNameAndSize(toastContext, uri)
-                    val mime = guessMimeType(name, uri.toString(), toastContext)
-                    val transferId = transfers.sendFile(targetDevice, uri.toString(), name, size).getOrNull()
-                    if (transferId != null) {
-                        chatRepository.sendAttachment(
-                            conversationId = targetDeviceId,
-                            transferId = transferId.value,
-                            fileName = name,
-                            mimeType = mime,
-                            sizeBytes = size,
-                            localPath = uri.toString(),
+            val isTrusted = trustedPeers.any { it.id == targetDeviceId }
+            if (isTrusted) {
+                pendingShare.value = null
+                chatRepository.openConversation(targetDeviceId)
+                selectedChatConversationId = targetDeviceId
+                nav.navigate(FlashDestination.Conversation, conversationId = targetDeviceId)
+
+                scope.launch(Dispatchers.IO) {
+                    share.items.forEach { item ->
+                        val transferResult = transfers.sendFile(
+                            targetDevice = targetDevice,
+                            fileUri = item.uri,
+                            displayName = item.name,
+                            fileSize = item.sizeBytes,
                         )
+                        val transferId = transferResult.getOrNull()
+                        if (transferId != null) {
+                            chatRepository.sendAttachment(
+                                conversationId = targetDeviceId,
+                                transferId = transferId.value,
+                                fileName = item.name,
+                                mimeType = item.mimeType,
+                                sizeBytes = item.sizeBytes,
+                                localPath = item.uri,
+                            )
+                        }
+                    }
+                    val text = share.text
+                    if (!text.isNullOrBlank()) {
+                        chatRepository.sendText(text)
                     }
                 }
-                if (!share.text.isNullOrBlank()) {
-                    chatRepository.sendText(share.text)
+                val summary = FlashShareTargetMath.formatItemSummary(share)
+                Toast.makeText(toastContext, "Sharing $summary with $targetDeviceName", Toast.LENGTH_SHORT).show()
+            } else {
+                isPairingForShare = true
+                pendingShareRecipient = Pair(targetDeviceId, targetDeviceName)
+                scope.launch {
+                    val net = engine.network
+                    if (endpoint != null && net != null) {
+                        net.connectManual(endpoint.hostAddress, endpoint.port)
+                    }
+                    engine.pairing?.beginPair(targetDeviceId, targetDeviceName)
                 }
+                Toast.makeText(toastContext, "Initiating pairing with $targetDeviceName...", Toast.LENGTH_SHORT).show()
             }
+        }
+    }
+
+    LaunchedEffect(pairingModel?.phase, trustedPeers) {
+        val target = pendingShareRecipient ?: return@LaunchedEffect
+        val (targetDeviceId, targetDeviceName) = target
+        val isNowTrusted = trustedPeers.any { it.id == targetDeviceId }
+        val isPairedPhase = pairingModel?.phase == FlashPairingPhase.Paired
+
+        if (isNowTrusted || isPairedPhase) {
+            pendingShareRecipient = null
+            isPairingForShare = false
+            val share = pendingShare.value
+            val transfers = engine.transfers
+            if (share != null && transfers != null) {
+                pendingShare.value = null
+                val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == targetDeviceId }
+                val targetDevice = FlashDevice(
+                    id = FlashDeviceId(targetDeviceId),
+                    friendlyName = targetDeviceName,
+                    transportType = endpoint?.transportType ?: FlashTransportType.LAN,
+                )
+                chatRepository.openConversation(targetDeviceId)
+                selectedChatConversationId = targetDeviceId
+                nav.navigate(FlashDestination.Conversation, conversationId = targetDeviceId)
+
+                scope.launch(Dispatchers.IO) {
+                    share.items.forEach { item ->
+                        val transferResult = transfers.sendFile(
+                            targetDevice = targetDevice,
+                            fileUri = item.uri,
+                            displayName = item.name,
+                            fileSize = item.sizeBytes,
+                        )
+                        val transferId = transferResult.getOrNull()
+                        if (transferId != null) {
+                            chatRepository.sendAttachment(
+                                conversationId = targetDeviceId,
+                                transferId = transferId.value,
+                                fileName = item.name,
+                                mimeType = item.mimeType,
+                                sizeBytes = item.sizeBytes,
+                                localPath = item.uri,
+                            )
+                        }
+                    }
+                    val text = share.text
+                    if (!text.isNullOrBlank()) {
+                        chatRepository.sendText(text)
+                    }
+                }
+                val summary = FlashShareTargetMath.formatItemSummary(share)
+                Toast.makeText(toastContext, "Paired! Sharing $summary with $targetDeviceName", Toast.LENGTH_SHORT).show()
+            }
+        } else if (pairingModel?.phase == FlashPairingPhase.Declined || pairingModel?.phase == FlashPairingPhase.Expired) {
+            pendingShareRecipient = null
+            isPairingForShare = false
             pendingShare.value = null
+            Toast.makeText(toastContext, "Pairing was cancelled or timed out. Files not sent.", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -1062,6 +1207,69 @@ private fun FlashShell(
         }
     }
 
+    val activeSessions by remember(engine.network) {
+        engine.network?.activeSessions ?: MutableStateFlow<Map<FlashDeviceId, FlashSession>>(emptyMap())
+    }.collectAsState()
+    val activeSessionPeerIds = remember(activeSessions) {
+        activeSessions.keys.map { it.value }.toSet()
+    }
+
+    val pairedRecipients = remember(trustedPeers, discoveredEndpoints, activeSessionPeerIds) {
+        val discoveredMap = discoveredEndpoints.associateBy { it.deviceId.value }
+        trustedPeers.map { trusted ->
+            val endpoint = discoveredMap[trusted.id]
+            val isOnline = endpoint != null || activeSessionPeerIds.contains(trusted.id)
+            FlashShareRecipientUi(
+                id = trusted.id,
+                name = trusted.name,
+                initials = FlashShareTargetMath.initialsFor(trusted.name),
+                isOnline = isOnline,
+                isGroup = false,
+                isPaired = true,
+                transport = endpoint?.transportType?.toUiTransport() ?: FlashNetworkTransport.Lan,
+                deviceKind = trusted.deviceKind,
+                subtitle = if (isOnline) null else "Offline",
+            )
+        }
+    }
+
+    val nearbyRecipients = remember(discoveredEndpoints, trustedPeers) {
+        val trustedIds = trustedPeers.mapTo(HashSet()) { it.id }
+        discoveredEndpoints
+            .filterNot { ep -> trustedIds.contains(ep.deviceId.value) }
+            .map { ep ->
+                FlashShareRecipientUi(
+                    id = ep.deviceId.value,
+                    name = ep.friendlyName,
+                    initials = FlashShareTargetMath.initialsFor(ep.friendlyName),
+                    isOnline = true,
+                    isGroup = false,
+                    isPaired = false,
+                    transport = ep.transportType.toUiTransport(),
+                    deviceKind = ep.deviceKind,
+                    subtitle = "Available nearby",
+                )
+            }
+    }
+
+    val recentChatRecipients = remember(chatListState.items) {
+        chatListState.items.take(5).map { chat ->
+            FlashShareRecipientUi(
+                id = chat.id,
+                name = chat.title,
+                initials = chat.avatarInitials,
+                isOnline = chat.presence == FlashPeerPresence.Online,
+                isGroup = chat.isGroup,
+                isPaired = true,
+                transport = FlashNetworkTransport.Lan,
+                deviceKind = com.transfer.flash.core.common.model.FlashDeviceKind.UNKNOWN,
+                subtitle = if (chat.isGroup) "Group chat" else null,
+            )
+        }
+    }
+
+    var showShareManualConnect by remember { mutableStateOf(false) }
+
     BackHandler(enabled = nav.canGoBack) { nav.back() }
     // UI-024: while chat-list search is open, Back closes search first (registered last so it
     // takes priority over the stack pop when both are eligible).
@@ -1086,7 +1294,6 @@ private fun FlashShell(
     val useNavRail = sizeClass != FlashWindowSizeClass.Compact
     val twoPane = FlashAdaptiveMath.isTwoPaneAllowed(sizeClass)
 
-    var selectedChatConversationId by remember { mutableStateOf<String?>(null) }
     var selectedTransferItem by remember { mutableStateOf<FlashTransferItemUi?>(null) }
     var selectedNearbyPeer by remember { mutableStateOf<NearbyPeerUi?>(null) }
 
@@ -1702,6 +1909,9 @@ private fun FlashShell(
             onPerformanceModeSelected = {
                 onSettingsChange(settings.copy(performanceMode = it))
             },
+            onDiscoveryModeChanged = { mode ->
+                onSettingsChange(settings.copy(discoveryMode = mode))
+            },
             onEditDisplayName = { showRenameDialog = true },
             // ERROR-031 / D7: same system prompt the Background-transfers toggle fires,
             // reachable on its own so a user who already flipped that toggle (or who
@@ -2025,6 +2235,69 @@ private fun FlashShell(
                     showRenameDialog = false
                 },
             )
+        }
+
+        if (activeShare != null && !isPairingForShare) {
+            FlashShareTargetSheet(
+                payload = activeShare!!,
+                pairedDevices = pairedRecipients,
+                nearbyDevices = nearbyRecipients,
+                recentChats = recentChatRecipients,
+                isScanning = nearby.isScanning,
+                onSelectRecipient = { recipient ->
+                    sendSharedPayloadToPeer(recipient.id, recipient.name)
+                },
+                onDismiss = {
+                    pendingShare.value = null
+                },
+                onManualConnect = {
+                    showShareManualConnect = true
+                },
+            )
+        }
+
+        if (showShareManualConnect) {
+            FlashManualConnectDialog(
+                onDismiss = { showShareManualConnect = false },
+                onConnect = { host, port ->
+                    showShareManualConnect = false
+                    scope.launch {
+                        val net = engine.network
+                        if (net != null) {
+                            val result = net.connectManual(host, port)
+                            if (result is com.transfer.flash.core.common.result.FlashResult.Success) {
+                                val peerDevice = result.value.peer
+                                val peerId = peerDevice.id.value
+                                val peerName = peerDevice.friendlyName
+                                val isTrusted = trustedPeers.any { it.id == peerId }
+                                if (isTrusted) {
+                                    sendSharedPayloadToPeer(peerId, peerName)
+                                } else {
+                                    isPairingForShare = true
+                                    pendingShareRecipient = Pair(peerId, peerName)
+                                    engine.pairing?.beginPair(peerId, peerName)
+                                    Toast.makeText(toastContext, "Connected to $host:$port. Initiating pairing with $peerName...", Toast.LENGTH_SHORT).show()
+                                }
+                            } else {
+                                Toast.makeText(toastContext, "Couldn't connect to $host:$port", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    }
+                },
+            )
+        }
+
+        if (nav.current.destination != FlashDestination.NearbyDevices) {
+            pairingModel?.request?.let { request ->
+                FlashPairingDialog(
+                    request = request,
+                    phase = pairingModel?.phase ?: FlashPairingPhase.Idle,
+                    secondsLeft = pairingModel?.secondsLeft ?: 0,
+                    onAccept = { engine.pairing?.acceptLocal() },
+                    onDecline = { engine.pairing?.declineLocal() },
+                    onDismiss = { engine.pairing?.declineLocal() },
+                )
+            }
         }
 
         // C7 (calling): full-screen call overlay. Topmost sibling so it renders above

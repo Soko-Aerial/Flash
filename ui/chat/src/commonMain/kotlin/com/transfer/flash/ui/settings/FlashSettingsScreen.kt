@@ -73,6 +73,11 @@ data class FlashSettingsModel(
     val dynamicAccent: Boolean = false,
     val hapticsEnabled: Boolean = true,
     val backgroundTransfers: Boolean = false,
+    /** Discovery presence mode: STANDARD (Discoverable), GHOST (Hidden), ECO, BOOST. */
+    val discoveryMode: String = "STANDARD",
+    /** Whether Windows Explorer context menu ("Send with Flash") is enabled. */
+    val windowsContextMenu: Boolean = true,
+    val showWindowsContextMenu: Boolean = false,
     // Bug 3: per-MIME auto-download of inbound offers. Defaults: voice + images auto-download
     // (true); videos + files ask before downloading (false).
     val autoDownloadVoice: Boolean = true,
@@ -208,6 +213,20 @@ object FlashSettingsMath {
         }
         return parts.joinToString(" · ")
     }
+
+    fun discoveryModeShortLabel(mode: String): String = when (mode.uppercase()) {
+        "GHOST" -> "Ghost"
+        "ECO" -> "Eco"
+        "BOOST" -> "Boost"
+        else -> "Standard"
+    }
+
+    fun discoveryModeSubtitle(mode: String): String = when (mode.uppercase()) {
+        "GHOST" -> "Browse only — other devices cannot see this phone"
+        "ECO" -> "Battery saver — duty-cycled presence and browsing"
+        "BOOST" -> "High responsiveness for crowded or flaky networks"
+        else -> "Discoverable — nearby devices can find and reach this phone"
+    }
 }
 
 @Composable
@@ -228,6 +247,10 @@ fun FlashSettingsScreen(
     onPrioritiseVoiceQualityChanged: (Boolean) -> Unit = {},
     /** Pins a performance tier, or null to hand the choice back to auto-detect (ERROR-033). */
     onPerformanceModeSelected: (FlashPerformanceMode?) -> Unit = {},
+    /** Sets the active discovery presence mode (STANDARD, GHOST, ECO, BOOST). */
+    onDiscoveryModeChanged: (String) -> Unit = {},
+    /** Toggles Windows Explorer context menu integration. */
+    onWindowsContextMenuChanged: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier,
     listState: LazyListState = rememberLazyListState(),
     /** Space the hanging shell bar occupies; content scrolls under it (UI-046). */
@@ -373,6 +396,18 @@ fun FlashSettingsScreen(
                 )
             }
         }
+        if (model.showWindowsContextMenu) {
+            item(key = "windows-context-menu") {
+                StaggerIn(14) {
+                    SwitchRow(
+                        title = "File Explorer context menu",
+                        subtitle = "Right-click any file or folder to send with Flash",
+                        checked = model.windowsContextMenu,
+                        onCheckedChange = onWindowsContextMenuChanged,
+                    )
+                }
+            }
+        }
         item(key = "battery-exemption") {
             StaggerIn(15) {
                 ValueRow(
@@ -384,7 +419,19 @@ fun FlashSettingsScreen(
                 )
             }
         }
-        item(key = "storage-label") { StaggerIn(16) { SectionLabel("STORAGE") } }
+        item(key = "discovery-mode-label") { StaggerIn(16) { SectionLabel("DISCOVERY MODE") } }
+        item(key = "discovery-mode") {
+            StaggerIn(16) {
+                SettingsCard {
+                    DiscoveryModeSegmented(
+                        selected = model.discoveryMode,
+                        onSelected = onDiscoveryModeChanged,
+                    )
+                }
+            }
+        }
+
+        item(key = "storage-label") { StaggerIn(17) { SectionLabel("STORAGE") } }
         item(key = "storage-usage") {
             StaggerIn(17) {
                 StorageUsageCard(
@@ -672,6 +719,65 @@ private fun PerformanceModeSegmented(
         Spacer(Modifier.height(FlashSpacing.space8))
         FlashText(
             text = FlashSettingsMath.performanceModeSubtitle(pinned = selected, detected = detected),
+            style = FlashTheme.typography.captionDefault,
+            color = colors.textSecondary,
+        )
+    }
+}
+
+@Composable
+private fun DiscoveryModeSegmented(
+    selected: String,
+    onSelected: (String) -> Unit,
+) {
+    val colors = FlashTheme.colors
+    val haptics = rememberFlashHaptics()
+    val options = listOf("STANDARD", "GHOST", "ECO", "BOOST")
+
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .height(SegmentTrackHeight)
+                .clip(FlashShapes.bubbleGrouped)
+                .background(colors.backgroundSurfaceSubtle)
+                .selectableGroup(),
+        ) {
+            options.forEach { option ->
+                val isSelected = option.equals(selected, ignoreCase = true)
+                val label = FlashSettingsMath.discoveryModeShortLabel(option)
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .fillMaxSize()
+                        .padding(FlashSpacing.space4)
+                        .clip(FlashShapes.bubbleGrouped)
+                        .background(if (isSelected) colors.accentPrimary else colors.backgroundSurfaceSubtle)
+                        .selectable(
+                            selected = isSelected,
+                            role = Role.RadioButton,
+                            onClick = {
+                                if (!isSelected) {
+                                    haptics(FlashHaptic.Tick)
+                                    onSelected(option)
+                                }
+                            },
+                        )
+                        .semantics { contentDescription = "$label discovery mode" },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    FlashText(
+                        text = label,
+                        style = FlashTheme.typography.captionEmphasis,
+                        color = if (isSelected) colors.textOnAccent else colors.textSecondary,
+                        maxLines = 1,
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(FlashSpacing.space8))
+        FlashText(
+            text = FlashSettingsMath.discoveryModeSubtitle(selected),
             style = FlashTheme.typography.captionDefault,
             color = colors.textSecondary,
         )

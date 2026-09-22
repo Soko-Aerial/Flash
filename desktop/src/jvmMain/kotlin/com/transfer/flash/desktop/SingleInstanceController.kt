@@ -33,6 +33,8 @@ public object SingleInstanceController {
 
     private const val TAG = "SINGLE_INSTANCE"
     private const val COMMAND_ACTIVATE = "ACTIVATE"
+    private const val COMMAND_SEND = "SEND"
+    private const val END_OF_TRANSMISSION = "END_SEND"
     private const val RESPONSE_OK = "OK"
 
     private var lockFileChannel: FileChannel? = null
@@ -41,8 +43,41 @@ public object SingleInstanceController {
     private var lockFile: File? = null
     private var portFile: File? = null
 
+    private val pendingInitialFiles = java.util.Collections.synchronizedList(mutableListOf<File>())
+
     @Volatile
     public var onActivate: (() -> Unit)? = null
+
+    @Volatile
+    public var onShareFiles: ((List<File>) -> Unit)? = null
+
+    /**
+     * Consumes and clears any initial share files received before UI wiring.
+     */
+    public fun consumeInitialShareFiles(): List<File> {
+        synchronized(pendingInitialFiles) {
+            val list = pendingInitialFiles.toList()
+            pendingInitialFiles.clear()
+            return list
+        }
+    }
+
+    /**
+     * Parses valid, existing files or directories from command line arguments.
+     */
+    public fun parseFilesFromArgs(args: Array<String>): List<File> {
+        val files = mutableListOf<File>()
+        for (arg in args) {
+            val clean = arg.trim().removeSurrounding("\"")
+            if (clean.equals("--send", ignoreCase = true)) continue
+            if (clean.startsWith("-")) continue
+            val file = File(clean)
+            if (file.exists()) {
+                files.add(file)
+            }
+        }
+        return files
+    }
 
     /**
      * Tries to acquire the single-instance lock.
@@ -51,19 +86,27 @@ public object SingleInstanceController {
      *         `false` if another instance is already running; in this case, an activation
      *         message has been sent to the existing instance and this process must exit.
      */
-    public fun acquireOrActivate(baseDir: File = File(System.getProperty("user.home", "."), ".flash")): Boolean {
+    public fun acquireOrActivate(
+        baseDir: File = File(System.getProperty("user.home", "."), ".flash"),
+        args: Array<String> = emptyArray(),
+    ): Boolean {
         baseDir.mkdirs()
         lockFile = File(baseDir, "app.lock")
         portFile = File(baseDir, "app.port")
 
+        val files = parseFilesFromArgs(args)
+
         val acquired = tryAcquireLock()
         if (acquired) {
+            if (files.isNotEmpty()) {
+                pendingInitialFiles.addAll(files)
+            }
             startActivationServer()
             return true
         }
 
-        // Another instance is already running; ping it to bring its window to front
-        notifyRunningInstance()
+        // Another instance is already running; ping it to bring its window to front or transfer files
+        notifyRunningInstance(files)
         return false
     }
 
@@ -106,14 +149,43 @@ public object SingleInstanceController {
                         client.soTimeout = 3000
                         val reader = client.getInputStream().bufferedReader()
                         val line = reader.readLine()
-                        if (line != null && line.trim().startsWith(COMMAND_ACTIVATE)) {
-                            FlashLog.i(TAG, "Received activation ping from duplicate instance; focusing window.")
-                            javax.swing.SwingUtilities.invokeLater {
-                                onActivate?.invoke()
-                            }
-                            client.getOutputStream().bufferedWriter().apply {
-                                write(RESPONSE_OK + "\n")
-                                flush()
+                        if (line != null) {
+                            val trimmed = line.trim()
+                            if (trimmed.startsWith(COMMAND_SEND)) {
+                                val paths = mutableListOf<String>()
+                                val rest = trimmed.substring(COMMAND_SEND.length).trim()
+                                if (rest.isNotEmpty()) paths.add(rest)
+                                while (true) {
+                                    val nextLine = reader.readLine() ?: break
+                                    val t = nextLine.trim()
+                                    if (t == END_OF_TRANSMISSION || t.isEmpty()) break
+                                    paths.add(t)
+                                }
+                                val validFiles = paths.map { File(it.removeSurrounding("\"")) }.filter { it.exists() }
+                                FlashLog.i(TAG, "Received share files request from duplicate instance: ${validFiles.size} items.")
+                                val callback = onShareFiles
+                                if (callback != null && validFiles.isNotEmpty()) {
+                                    javax.swing.SwingUtilities.invokeLater {
+                                        onActivate?.invoke()
+                                        callback(validFiles)
+                                    }
+                                } else {
+                                    if (validFiles.isNotEmpty()) pendingInitialFiles.addAll(validFiles)
+                                    javax.swing.SwingUtilities.invokeLater { onActivate?.invoke() }
+                                }
+                                client.getOutputStream().bufferedWriter().apply {
+                                    write(RESPONSE_OK + "\n")
+                                    flush()
+                                }
+                            } else if (trimmed.startsWith(COMMAND_ACTIVATE)) {
+                                FlashLog.i(TAG, "Received activation ping from duplicate instance; focusing window.")
+                                javax.swing.SwingUtilities.invokeLater {
+                                    onActivate?.invoke()
+                                }
+                                client.getOutputStream().bufferedWriter().apply {
+                                    write(RESPONSE_OK + "\n")
+                                    flush()
+                                }
                             }
                         }
                         client.close()
@@ -127,16 +199,24 @@ public object SingleInstanceController {
         }
     }
 
-    private fun notifyRunningInstance() {
+    private fun notifyRunningInstance(files: List<File> = emptyList()) {
         try {
             val portStr = portFile?.takeIf { it.exists() }?.readText()?.trim()
             val port = portStr?.toIntOrNull()
             if (port != null && port in 1..65535) {
-                FlashLog.i(TAG, "Connecting to primary instance on 127.0.0.1:$port to request window activation...")
+                FlashLog.i(TAG, "Connecting to primary instance on 127.0.0.1:$port to request activation or send files...")
                 Socket(InetAddress.getByName("127.0.0.1"), port).use { socket ->
-                    socket.soTimeout = 2000
+                    socket.soTimeout = 4000
                     socket.getOutputStream().bufferedWriter().apply {
-                        write(COMMAND_ACTIVATE + "\n")
+                        if (files.isNotEmpty()) {
+                            write(COMMAND_SEND + "\n")
+                            for (f in files) {
+                                write(f.absolutePath + "\n")
+                            }
+                            write(END_OF_TRANSMISSION + "\n")
+                        } else {
+                            write(COMMAND_ACTIVATE + "\n")
+                        }
                         flush()
                     }
                     val resp = socket.getInputStream().bufferedReader().readLine()
@@ -146,7 +226,7 @@ public object SingleInstanceController {
                 FlashLog.w(TAG, "Existing instance running but app.port is missing or invalid.")
             }
         } catch (t: Throwable) {
-            FlashLog.w(TAG, "Failed to send activation ping to running instance: ${t.message}")
+            FlashLog.w(TAG, "Failed to send activation/send ping to running instance: ${t.message}")
         }
     }
 

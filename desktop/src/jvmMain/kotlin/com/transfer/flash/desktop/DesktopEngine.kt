@@ -134,6 +134,8 @@ public class DesktopEngine(
     private val settingsStore = DesktopSettingsStore(stateDir)
     private val _settings = MutableStateFlow(settingsStore.loadSettings())
     public val settings: StateFlow<DesktopSettings> = _settings.asStateFlow()
+    private val _discoveryMode = MutableStateFlow(_settings.value.discoveryMode)
+    public val discoveryMode: StateFlow<FlashDiscoveryMode> = _discoveryMode.asStateFlow()
 
     public fun updateSettings(transform: (DesktopSettings) -> DesktopSettings) {
         val updated = transform(_settings.value)
@@ -256,6 +258,15 @@ public class DesktopEngine(
     /** Records the desktop UI-scale so it survives a restart (AD-D1). */
     public fun storeUiScale(scale: Float) {
         updateSettings { it.copy(uiScale = scale.coerceIn(0.75f, 1.5f)) }
+    }
+
+    /** Updates the discovery mode in memory, applies it to the active discovery transport, and persists it. */
+    public fun setDiscoveryMode(mode: FlashDiscoveryMode) {
+        _discoveryMode.value = mode
+        updateSettings { it.copy(discoveryMode = mode) }
+        scope.launch {
+            discoveryImpl?.setMode(mode)
+        }
     }
 
     /** Inbound chat text notification hook (for DesktopNotificationManager). */
@@ -561,6 +572,7 @@ public class DesktopEngine(
             repositoryScope = scope,
             requireReceiverAcceptance = true,
             isPeerEncrypted = { peerId -> trustStore.getSessionKey(FlashDeviceId(peerId)) != null },
+            performanceMode = { _settings.value.performanceMode ?: FlashPerformanceMode.HIGH },
         )
         transferImpl = transfer
 
@@ -736,7 +748,7 @@ public class DesktopEngine(
         DiscoveryRouteBinder.observe(scope, discovery.discoveredEndpoints, network)
         boot("ws server bound port=$serverPort; entering discovery startAll")
         val startedAll = runBlocking {
-            discovery.setMode(FlashDiscoveryMode.STANDARD)
+            discovery.setMode(_discoveryMode.value)
             discovery.startAll(serverPort, identityFrame)
         }
         boot("discovery startAll returned (${if (startedAll is FlashResult.Success) "ok" else "partial"})")

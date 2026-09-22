@@ -19,6 +19,7 @@ import com.transfer.flash.core.common.logging.FlashLog
 import com.transfer.flash.core.common.logging.FlashLogLevel
 import com.transfer.flash.core.common.logging.FlashLogSink
 import com.transfer.flash.core.common.perf.FlashPerformanceMode
+import com.transfer.flash.core.discovery.core.FlashDiscoveryMode
 import com.transfer.flash.ui.settings.FlashSettingsMath
 import com.transfer.flash.ui.theme.FlashMaterialTheme
 import com.transfer.flash.ui.theme.FlashTheme
@@ -55,7 +56,7 @@ import java.io.PrintWriter
  * on the same LAN and remains CLOSED until a human runs G1–G6. Runtime smoke-testing of the
  * desktop window is manual testing, not a gate scenario.
  */
-public fun main() {
+public fun main(args: Array<String> = emptyArray()) {
     installDesktopLogSink()
 
     // Skiko vsync and framerate tuning to prevent GPU spin on integrated graphics (e.g. Intel UHD 620)
@@ -66,9 +67,9 @@ public fun main() {
         System.setProperty("skiko.fps", "60")
     }
 
-    // Enforce single-instance: if another instance is already running, activate it and exit immediately.
-    if (!SingleInstanceController.acquireOrActivate()) {
-        FlashLog.i("MAIN", "Flash is already running. Existing window activated. Exiting duplicate instance.")
+    // Enforce single-instance: if another instance is already running, forward files or activate, then exit.
+    if (!SingleInstanceController.acquireOrActivate(args = args)) {
+        FlashLog.i("MAIN", "Flash is already running. Request forwarded to existing instance. Exiting duplicate instance.")
         return
     }
 
@@ -87,6 +88,17 @@ public fun main() {
     val trayState = rememberTrayState()
     val desktopSettings by engine.settings.collectAsState()
     val nav = rememberFlashNavigationState()
+
+    var pendingFilesToShare by remember {
+        mutableStateOf(SingleInstanceController.consumeInitialShareFiles())
+    }
+
+    DisposableEffect(desktopSettings.windowsContextMenu) {
+        if (WindowsContextMenuManager.isSupported && desktopSettings.windowsContextMenu) {
+            WindowsContextMenuManager.setContextMenuEnabled(true)
+        }
+        onDispose {}
+    }
 
     // Desktop notification manager
     val notificationManager = remember {
@@ -115,7 +127,9 @@ public fun main() {
     // System Tray
     if (SystemTray.isSupported()) {
         val ready by engine.ready.collectAsState()
-        val trayTooltip = if (ready) "Flash - Online" else "Flash - Connecting..."
+        val currentMode by engine.discoveryMode.collectAsState()
+        val modeLabel = FlashSettingsMath.discoveryModeShortLabel(currentMode.name)
+        val trayTooltip = if (ready) "Flash - Online ($modeLabel)" else "Flash - Connecting..."
 
         Tray(
             icon = painterResource(FlashIcons.Tray.drawableRes),
@@ -139,6 +153,28 @@ public fun main() {
                             backgroundUnreadCount = 0
                             DesktopTaskbarBadgeManager.clearBadge(currentComposeWindow)
                         }
+                    },
+                )
+                Separator()
+                CheckboxItem(
+                    text = "Discoverable",
+                    checked = currentMode != FlashDiscoveryMode.GHOST,
+                    onCheckedChange = { isDiscoverable ->
+                        engine.setDiscoveryMode(
+                            if (isDiscoverable) FlashDiscoveryMode.STANDARD else FlashDiscoveryMode.GHOST
+                        )
+                    },
+                )
+                Item(
+                    text = "Mode: $modeLabel (Switch)",
+                    onClick = {
+                        val next = when (currentMode) {
+                            FlashDiscoveryMode.STANDARD -> FlashDiscoveryMode.GHOST
+                            FlashDiscoveryMode.GHOST -> FlashDiscoveryMode.ECO
+                            FlashDiscoveryMode.ECO -> FlashDiscoveryMode.BOOST
+                            FlashDiscoveryMode.BOOST, FlashDiscoveryMode.RECEIVE_KIOSK -> FlashDiscoveryMode.STANDARD
+                        }
+                        engine.setDiscoveryMode(next)
                     },
                 )
                 Separator()
@@ -279,6 +315,8 @@ public fun main() {
                             },
                             window = window,
                             nav = nav,
+                            externalShareFiles = pendingFilesToShare,
+                            onClearExternalShareFiles = { pendingFilesToShare = emptyList() },
                         )
                     }
                 }
@@ -327,8 +365,27 @@ public fun main() {
             backgroundUnreadCount = 0
             DesktopTaskbarBadgeManager.clearBadge(currentComposeWindow)
         }
+        SingleInstanceController.onShareFiles = { files ->
+            isWindowVisible = true
+            windowState.isMinimized = false
+            currentComposeWindow?.let { win ->
+                win.isVisible = true
+                if (win is java.awt.Frame) {
+                    val state = win.extendedState
+                    if ((state and java.awt.Frame.ICONIFIED) != 0) {
+                        win.extendedState = state and java.awt.Frame.ICONIFIED.inv()
+                    }
+                }
+                win.toFront()
+                win.requestFocus()
+            }
+            backgroundUnreadCount = 0
+            DesktopTaskbarBadgeManager.clearBadge(currentComposeWindow)
+            pendingFilesToShare = (pendingFilesToShare + files).distinctBy { it.absolutePath }
+        }
         onDispose {
             SingleInstanceController.onActivate = null
+            SingleInstanceController.onShareFiles = null
             SingleInstanceController.release()
             engine.stop()
         }

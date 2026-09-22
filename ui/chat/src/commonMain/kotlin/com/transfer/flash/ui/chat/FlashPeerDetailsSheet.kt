@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.IconButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -116,6 +117,18 @@ fun FlashPeerDetailsSheet(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(FlashSpacing.space4),
         ) {
+            Box(modifier = Modifier.fillMaxWidth()) {
+                IconButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.align(Alignment.TopEnd),
+                ) {
+                    FlashIcon(
+                        icon = FlashIcons.Close,
+                        contentDescription = "Close",
+                        tint = colors.textSecondary,
+                    )
+                }
+            }
             Box(modifier = Modifier.size(FlashDimensions.avatarXl)) {
                 FlashAvatar(
                     initials = header.avatarInitials,

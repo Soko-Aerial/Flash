@@ -1,6 +1,7 @@
 package com.transfer.flash.desktop
 
 import com.transfer.flash.core.common.perf.FlashPerformanceMode
+import com.transfer.flash.core.discovery.core.FlashDiscoveryMode
 import com.transfer.flash.ui.settings.FlashSettingsMath
 import com.transfer.flash.ui.settings.FlashThemeMode
 import java.io.File
@@ -13,6 +14,7 @@ import java.util.Properties
  */
 public data class DesktopSettings(
     val themeMode: FlashThemeMode = FlashThemeMode.System,
+    val discoveryMode: FlashDiscoveryMode = FlashDiscoveryMode.STANDARD,
     val saveLocation: String = runCatching {
         File(System.getProperty("user.home", "."), "FlashReceived").canonicalPath
     }.getOrDefault("FlashReceived"),
@@ -26,6 +28,7 @@ public data class DesktopSettings(
     val closeToTray: Boolean = true,
     val showNotifications: Boolean = true,
     val autoStartOnBoot: Boolean = false,
+    val windowsContextMenu: Boolean = true,
     val uiScale: Float = 1.0f,
 )
 
@@ -68,6 +71,7 @@ internal class DesktopSettingsStore(private val stateDir: File) {
         }.getOrDefault("FlashReceived")
         DesktopSettings(
             themeMode = themeModeFromKey(props.getProperty(KEY_THEME_MODE)),
+            discoveryMode = discoveryModeFromKey(props.getProperty(KEY_DISCOVERY_MODE)),
             saveLocation = props.getProperty(KEY_SAVE_LOCATION, defaultSaveLocation),
             autoDownloadVoice = props.getProperty(KEY_AUTO_DOWNLOAD_VOICE, "true").toBoolean(),
             autoDownloadImage = props.getProperty(KEY_AUTO_DOWNLOAD_IMAGE, "true").toBoolean(),
@@ -79,6 +83,7 @@ internal class DesktopSettingsStore(private val stateDir: File) {
             closeToTray = props.getProperty(KEY_CLOSE_TO_TRAY, "true").toBoolean(),
             showNotifications = props.getProperty(KEY_SHOW_NOTIFICATIONS, "true").toBoolean(),
             autoStartOnBoot = props.getProperty(KEY_AUTO_START_ON_BOOT, "false").toBoolean(),
+            windowsContextMenu = props.getProperty(KEY_WINDOWS_CONTEXT_MENU, "true").toBoolean(),
             uiScale = props.getProperty(KEY_UI_SCALE)?.toFloatOrNull()?.coerceIn(0.75f, 1.5f) ?: 1.0f,
         )
     }
@@ -87,6 +92,7 @@ internal class DesktopSettingsStore(private val stateDir: File) {
     fun saveSettings(settings: DesktopSettings) = synchronized(lock) {
         val props = load()
         props.setProperty(KEY_THEME_MODE, themeModeToKey(settings.themeMode))
+        props.setProperty(KEY_DISCOVERY_MODE, settings.discoveryMode.name)
         props.setProperty(KEY_SAVE_LOCATION, settings.saveLocation)
         props.setProperty(KEY_AUTO_DOWNLOAD_VOICE, settings.autoDownloadVoice.toString())
         props.setProperty(KEY_AUTO_DOWNLOAD_IMAGE, settings.autoDownloadImage.toString())
@@ -97,6 +103,7 @@ internal class DesktopSettingsStore(private val stateDir: File) {
         props.setProperty(KEY_CLOSE_TO_TRAY, settings.closeToTray.toString())
         props.setProperty(KEY_SHOW_NOTIFICATIONS, settings.showNotifications.toString())
         props.setProperty(KEY_AUTO_START_ON_BOOT, settings.autoStartOnBoot.toString())
+        props.setProperty(KEY_WINDOWS_CONTEXT_MENU, settings.windowsContextMenu.toString())
         props.setProperty(KEY_UI_SCALE, settings.uiScale.coerceIn(0.75f, 1.5f).toString())
         if (settings.performanceMode != null) {
             props.setProperty(KEY_PERFORMANCE_MODE, settings.performanceMode.name)
@@ -106,6 +113,9 @@ internal class DesktopSettingsStore(private val stateDir: File) {
         save(props)
         if (DesktopAutoStartManager.isSupported) {
             DesktopAutoStartManager.setAutoStart(settings.autoStartOnBoot)
+        }
+        if (WindowsContextMenuManager.isSupported) {
+            WindowsContextMenuManager.setContextMenuEnabled(settings.windowsContextMenu, stateDir)
         }
     }
 
@@ -129,6 +139,7 @@ internal class DesktopSettingsStore(private val stateDir: File) {
 
     internal companion object {
         const val KEY_THEME_MODE: String = "theme_mode"
+        const val KEY_DISCOVERY_MODE: String = "discovery_mode"
         const val KEY_SAVE_LOCATION: String = "save_location"
         const val KEY_AUTO_DOWNLOAD_VOICE: String = "auto_download_voice"
         const val KEY_AUTO_DOWNLOAD_IMAGE: String = "auto_download_image"
@@ -140,6 +151,7 @@ internal class DesktopSettingsStore(private val stateDir: File) {
         const val KEY_CLOSE_TO_TRAY: String = "close_to_tray"
         const val KEY_SHOW_NOTIFICATIONS: String = "show_notifications"
         const val KEY_AUTO_START_ON_BOOT: String = "auto_start_on_boot"
+        const val KEY_WINDOWS_CONTEXT_MENU: String = "windows_context_menu"
         const val KEY_UI_SCALE: String = "ui_scale"
 
         /** Same three tokens `FlashSettingsDataStore.THEME_MODE_*` uses. */
@@ -168,5 +180,9 @@ internal class DesktopSettingsStore(private val stateDir: File) {
             "HIGH" -> FlashPerformanceMode.HIGH
             else -> null
         }
+
+        fun discoveryModeFromKey(key: String?): FlashDiscoveryMode = runCatching {
+            if (key != null) FlashDiscoveryMode.valueOf(key.trim().uppercase()) else FlashDiscoveryMode.STANDARD
+        }.getOrDefault(FlashDiscoveryMode.STANDARD)
     }
 }
