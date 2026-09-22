@@ -1,5 +1,24 @@
 # Decisions
 
+## ADR-022 - Transfer profile tiering: FlashTransferProfile in FlashPerformanceMode, bounded buffer queues, and single-stream low mode
+
+### Decision
+1. **Extend `FlashPerformanceMode` with `FlashTransferProfile`:** Governs file-transfer concurrency (`streamCount`), base chunk sizes (`chunkSizeBytes`), per-worker queue depths (`feedBufferFrames`), shared redistribution queue depths (`sharedBufferFrames`), adaptive ceiling (`maxAdaptiveChunkSizeBytes`), video thumbnail permission (`allowVideoThumbnails`), image preview dimension cap (`maxImagePreviewDimension`), and target SQLite memory cache (`sqliteCacheSizeKb`).
+2. **Low & Ultra-Low Mode Constraints:** On `LOW` hardware (RAM < 512MB, single/dual-core, 2.4 GHz radio, IoT/POS/wearables):
+   - `streamCount = 1`: Eliminates multi-socket overhead and context switching.
+   - `feedBufferFrames = 2`, `sharedBufferFrames = 4`: Caps in-flight queue memory to <250 KB heap.
+   - `chunkSizeBytes = 32 KB` (or 64 KB baseline).
+   - `allowVideoThumbnails = false`: Skips heavy JCodec video keyframe demuxing/decoding.
+   - `sqliteCacheSizeKb = 1024`: Constrains SQLite cache to 1MB.
+3. **High Mode Throughput:**
+   - `streamCount = 4`, `feedBufferFrames = 16`, `sharedBufferFrames = 64`, `maxAdaptiveChunkSizeBytes = 1 MB`, saturating multi-gigabit and 5GHz LAN connections.
+4. **Configurable Constructor Invariants:** `MultiStreamDispatcher` accepts `feedBufferFrames` and `sharedBufferFrames` as constructor parameters with fallback defaults, and `RealFlashTransferRepository` passes `performanceMode().transfer` into dispatcher construction.
+
+### Context
+User requested extensive documentation and multi-mode performance optimization, specifically addressing extreme resource-constrained devices below the baseline phone tiers.
+
+---
+
 ## ADR-021 - Pause lifecycle rules: intent outlives the dispatcher, paused transfers are never failed, resume always un-gates
 
 Amends ADR-018 §2 (cooperative dispatcher pause). ADR-018 stays valid; these are the invariants it was

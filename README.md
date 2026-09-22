@@ -99,6 +99,30 @@ with `engine.close()`** — from `Activity.onDestroy`, `ViewModel.onCleared`, or
 scope teardown. `close()` cancels the scope, stops discovery/network, and closes the
 encrypted database. It is idempotent, so calling it twice is safe.
 
+## Developer Guide & Documentation
+
+Flash includes a comprehensive, modular documentation suite located in [`docs/developer-guide/`](docs/developer-guide/README.md):
+
+| Guide / Section | Description |
+|---|---|
+| [**Beginner's Guide**](docs/developer-guide/getting-started/beginner-guide.md) | Step-by-step setup, prerequisites, Maven coordinates, and complete "Hello World" connection & file transfer tutorial. |
+| [**Architecture Overview**](docs/developer-guide/getting-started/architecture-overview.md) | Multi-module hierarchy, dependency boundaries, lifecycle management, and reactive state paradigms. |
+| [**14 Per-Module Guides**](docs/developer-guide/README.md#1-documentation-map) | Dedicated documentation for each of the 10 `:core:*` and 4 `:ui:*` modules with exact signatures, threading, and code examples. |
+| [**Ultra-Low Resource Devices (Scenario 1)**](docs/developer-guide/scenarios/scenario-1-ultra-low-resource.md) | Building for devices far more constrained than standard phones (<512MB RAM, IoT, POS, smartwatches, 2.4GHz radios) with memory caps and single-stream transfers. |
+| [**Custom Extensions & Architecture (Scenario 2)**](docs/developer-guide/scenarios/scenario-2-custom-extensions.md) | Custom transports (Bluetooth/BLE, LoRa, USB OTG), custom storage sinks, HSM hardware cryptography, and UI whitelabeling. |
+| [**Open Protocol Specification (Scenario 3)**](docs/developer-guide/scenarios/scenario-3-open-protocol-interop.md) | Complete wire protocol specification with runnable client samples in **Python**, **Rust**, and **Go**. |
+| [**Practical Integration Examples**](docs/developer-guide/examples/) | Standalone module usage, full-stack application integration, and running Flash as a headless background daemon. |
+
+## Performance Modes & Hardware Tiering (ADR-022)
+
+Flash avoids hardcoded flagship assumptions by grading CPU, memory, radio airtime, and UI complexity through `FlashPerformanceMode` and `FlashTransferProfile`:
+
+| Profile Tier | Target Hardware | Streams | Base Chunk | Queue Depths | Video Calls | Voice / PTT | Media Previews |
+|---|---|---|---|---|---|---|---|
+| **`LOW`** | <512MB RAM, IoT, POS, 2.4GHz radio | **1 stream** | 32 KB / 64 KB | 2 / 4 frames (<250 KB heap) | Disabled / Audio only | 60ms Opus DTX | File icons (skip heavy video thumbs) |
+| **`MEDIUM`** | Mid-tier phones, older laptops | **2 streams** | 64 KB | 8 / 16 frames | 540p @ 24fps | 20ms Opus | 512px downsampled |
+| **`HIGH`** | Flagships, desktop workstations | **4 streams** | 64 KB (adaptive to 1MB) | 16 / 64 frames (pipe saturation) | 1080p @ 30fps | 20ms Opus | Full 1024px + video keyframes |
+
 ## Voice & video calls
 
 Calling is reachable through `Flash.create`, but it is **opt-in and host-built**. The facade owns
@@ -110,8 +134,8 @@ service declared in your own manifest. So you depend on `core-calling` directly:
 
 ```kotlin
 dependencies {
-    implementation("com.github.Kali452345.Flash:core-calling:v1.1.0")
-    implementation("com.github.Kali452345.Flash:ui-callui:v1.1.0")   // optional in-call screen
+    implementation("com.github.Kali452345.Flash:core-calling:v2.0.0-beta")
+    implementation("com.github.Kali452345.Flash:ui-callui:v2.0.0-beta")   // optional in-call screen
 }
 ```
 
@@ -377,7 +401,7 @@ for a JVM build — so the dependency line is identical on both platforms:
 // Desktop app/build.gradle.kts  (plugins { kotlin("jvm") })
 dependencies {
     // Same umbrella coordinate as the Android snippet above:
-    implementation("com.github.Kali452345.Flash:core-engine:v1.1.0")
+    implementation("com.github.Kali452345.Flash:core-engine:v2.0.0-beta")
 }
 ```
 
@@ -386,19 +410,10 @@ coordinate's module metadata. This is proven in-repo by `sample/consumer-desktop
 `kotlin("jvm")` module with zero project dependencies whose compile gate is exactly this
 resolution against the published tree.
 
-Two desktop caveats, both honest limits of the current migration state:
-
-- **`core-engine`'s desktop target is engine-facade-less.** The `jvm()` artifact carries the
-  shared core (models, protocol, repositories' common halves, discovery/transport plumbing) but
-  **not** `Flash.create`/`DefaultFlashEngine` — those live in the Android target (they need Room
-  + Android Keystore). A desktop consumer today assembles the stack the way the `:desktop` app
-  shell does: `RealFlashTransferRepository` + `ReceivePipeline` + `JvmWsFlashNetwork` +
-  `JmdnsTransport`, with `store = null` (encrypted desktop persistence is pending) and chats
-  bound to `EmptyFlashChatRepository`.
-- **`core-calling`, `core-ptt` and `ui-callui` are Android-only** (no JVM variant exists — the
-  WebRTC dependency publishes no JVM target), and `ui-chat`'s conversation screen needs a
-  repository with state (desktop chat history is also pending). See the repo's
-  `docs/migration/` tree for the full state.
+On desktop, the `:desktop` module provides a complete Compose Desktop application shell bundling
+`DesktopEngine`, Room encrypted SQLite database (`sqlite-jdbc-crypt`), system tray, single-instance
+enforcement, and native Windows installers (`Flash-2.0.0.exe` and `Flash-2.0.0.msi`). Voice and video
+calling on JVM is enabled via vendored multiplatform WebRTC.
 
 ## License
 
