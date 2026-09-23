@@ -2,7 +2,10 @@
 
 package com.transfer.flash.core.transfer.multistream
 
+import com.transfer.flash.core.common.perf.FlashThermalStatus
+import com.transfer.flash.core.common.perf.ThermalGovernor
 import com.transfer.flash.core.common.time.SystemTimeSource
+import com.transfer.flash.core.transfer.chunked.ChunkBufferPool
 import com.transfer.flash.core.transfer.chunked.ChunkFrame
 import com.transfer.flash.core.transfer.chunked.ChunkPlan
 import com.transfer.flash.core.transfer.chunked.ChunkSource
@@ -210,7 +213,9 @@ internal class MultiStreamDispatcher(
                 return@coroutineScope deferred.await()
             }
 
-            val effectiveStreams = streamCount.coerceIn(1, pendingIndexes.size)
+            val thermal = ThermalGovernor.get().status
+            val thermalCappedStreams = if (thermal >= FlashThermalStatus.SEVERE) 1 else streamCount
+            val effectiveStreams = thermalCappedStreams.coerceIn(1, pendingIndexes.size)
             aliveWorkers.store(effectiveStreams)
             plannedStreams = effectiveStreams
 
@@ -243,17 +248,20 @@ internal class MultiStreamDispatcher(
                             // rest of the file into queues nobody will send.
                             if (deferred.isCompleted) break
                             awaitUnpause()
-                            val s = stream ?: chunker.openChunkStream(
+                            val s =stream ?: chunker.openChunkStream(
                                 source, meta, plan, resolvedDigest,
                             ).also { stream = it }
                             while (pos < index) {
-                                s.next() // defensive skip
+                                val skipped = s.next() // defensive skip
+                                ChunkBufferPool.release(skipped.data)
                                 pos++
                             }
                             val frame = s.next()
                             pos++
+                            val serialized = ChunkFrame.serialize(frame)
+                            ChunkBufferPool.release(frame.data)
                             feeds[index % effectiveStreams].send(
-                                PreparedFrame(index, ChunkFrame.serialize(frame)),
+                                PreparedFrame(index, serialized),
                             )
                         }
                     } finally {

@@ -60,7 +60,7 @@ class CallSdpTest {
 
     /** The fmtp parameter list [mode] writes for Opus, in the order [CallSdp] emits it. */
     private fun opusParamsOf(mode: FlashPerformanceMode): String =
-        "minptime=${mode.voice.ptimeMs};useinbandfec=1;usedtx=${if (mode.voice.useDtx) 1 else 0}"
+        "minptime=${mode.voice.ptimeMs};useinbandfec=1;usedtx=${if (mode.voice.useDtx) 1 else 0};maxaveragebitrate=${mode.voice.maxBitrateBps}"
 
     /** A trimmed but structurally faithful libwebrtc offer: bundled audio + video. */
     private val offer = sdp(
@@ -187,7 +187,25 @@ class CallSdpTest {
 
         val audio = section(CallSdp.tuneLocal(body, low), "audio")
 
-        assertEquals(audio.single { it.startsWith("a=fmtp:111 ") }, "a=fmtp:111 maxplaybackrate=16000;minptime=60;stereo=0;useinbandfec=1;cbr=1;usedtx=1")
+        assertEquals(
+            "a=fmtp:111 maxplaybackrate=16000;minptime=60;stereo=0;useinbandfec=1;cbr=1;usedtx=1;maxaveragebitrate=${low.voice.maxBitrateBps}",
+            audio.single { it.startsWith("a=fmtp:111 ") },
+        )
+    }
+
+    @Test
+    fun withPtime_clampsToMaxPtimeWhenPresent() {
+        val body = sdp(
+            "v=0",
+            "m=audio 9 UDP/TLS/RTP/SAVPF 111",
+            "a=rtpmap:111 opus/48000/2",
+            "a=ptime:20",
+            "a=maxptime:40",
+        )
+
+        val tuned = CallSdp.tuneLocal(body, low)
+        // LOW requests 60ms, but maxptime:40 clamps it to 40ms
+        assertEquals(ptime(tuned), "40")
     }
 
     /** `red` and PCMU are not Opus: their payload types must come out untouched. */
@@ -325,6 +343,7 @@ class CallSdpTest {
         assertEquals(ptime(highSees), "60")
         assertEquals(fmtpParams(highSees, "audio", "111")["usedtx"], "1")
         assertEquals(fmtpParams(highSees, "audio", "111")["minptime"], "60")
+        assertEquals(fmtpParams(highSees, "audio", "111")["maxaveragebitrate"], "20000")
         assertEquals(fmtpParams(highSees, "video", "96")["x-google-max-bitrate"], "350")
         assertEquals(fmtpParams(highSees, "video", "96")["x-google-min-bitrate"], "100")
         assertEquals(fmtpParams(highSees, "video", "96")["x-google-start-bitrate"], "200")

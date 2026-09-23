@@ -173,6 +173,8 @@ internal object CallSdp {
         // DTX collapses silence to roughly one packet per 400 ms. MAX, so a constrained peer turns
         // it on for both directions — the airtime it saves is on the link, which both ends share.
         Param("usedtx", if (voice.useDtx) "1" else "0", Envelope.MAX),
+        // Average receive bitrate ceiling in bps (RFC 7587). MIN ensures conservative envelope.
+        Param("maxaveragebitrate", voice.maxBitrateBps.toString(), Envelope.MIN),
     )
 
     private fun videoParams(video: FlashVideoProfile): List<Param> = listOf(
@@ -287,17 +289,21 @@ internal object CallSdp {
      * requires is preserved.
      *
      * A section carrying several `a=ptime:` lines is read at its largest value, so the result does
-     * not depend on their order. `a=maxptime:` is deliberately left alone and not used as a clamp:
-     * libwebrtc emits 120 at both ends, which is above every tier's frame size, and clamping
-     * against a value that can differ per endpoint would cost the "both ends compute the same
-     * parameters" invariant for a case that cannot arise.
+     * not depend on their order. If `a=maxptime:` is present, the negotiated `ptime` is clamped so
+     * it never exceeds the receiver's packet duration ceiling (RFC 4566 / RFC 7587).
      */
     private fun withPtime(lines: List<String>, ptimeMs: Int, force: Boolean): List<String> {
         val theirs = lines
             .filter { it.startsWith(PTIME_PREFIX) }
             .mapNotNull { it.removePrefix(PTIME_PREFIX).trim().toIntOrNull() }
             .maxOrNull()
-        val wanted = PTIME_PREFIX + combine(theirs, ptimeMs, Envelope.MAX, force)
+        val maxPtime = lines
+            .filter { it.startsWith(MAX_PTIME_PREFIX) }
+            .mapNotNull { it.removePrefix(MAX_PTIME_PREFIX).trim().toIntOrNull() }
+            .minOrNull()
+        val combined = combine(theirs, ptimeMs, Envelope.MAX, force)
+        val clamped = if (maxPtime != null && maxPtime > 0) combined.coerceAtMost(maxPtime) else combined
+        val wanted = PTIME_PREFIX + clamped
         val out = ArrayList<String>(lines.size + 1)
         var replaced = false
         for (line in lines) {
@@ -366,4 +372,5 @@ internal object CallSdp {
     private const val RTPMAP_PREFIX = "a=rtpmap:"
     private const val FMTP_PREFIX = "a=fmtp:"
     private const val PTIME_PREFIX = "a=ptime:"
+    private const val MAX_PTIME_PREFIX = "a=maxptime:"
 }
