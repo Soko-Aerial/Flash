@@ -70,8 +70,17 @@ first because inbound client authentication (S1) means nothing if TLS can silent
   history was lost (log only); the keystore side is device-only.
 
 ## Phase 3: Pairing protocol v2 (S2)
-- [ ] 3.1 Commit-then-reveal with fresh nonces; the code derives from both keys and both nonces.
-- [ ] 3.2 Protocol version bump; mark pairings made with v1 as unverified and prompt re-pairing.
+- [x] **3.1 Pairing v2 (ADR-042).** Commit-then-reveal nonces; the code covers both TLS-pinned identity keys,
+  both ephemeral keys (the session key) and both nonces; each side refuses a fingerprint that is not the key TLS
+  pinned; `PAIRED` must match what the code covered. **Wider than the audit's S2:** implementing it exposed that
+  v1's code covered neither the ephemeral keys nor the TLS identity, so a relay MITM needed no grinding at all.
+  One shared `PairingWireCodec` replaced the app's and the desktop's private codecs. Tests: `PairingV2Test`,
+  `PairingWireCodecTest`, `DefaultFlashPairingProtocolTest` (14), `PairingSessionStateMachineTest` (33),
+  `FlashPairingCoordinatorTest` (6), and `DesktopPairingLoopbackTest` over real TLS (the fixtures now run TLS).
+- [x] **3.2 Migration (owner decisions 2026-09-23).** v1 pairings are kept but `isVerified = false`: the Nearby row
+  shows "Not verified" with a **Verify** action (Android + desktop) that runs v2. Pairing with a v1 peer is refused
+  with "update Flash on the other device" (a hello without `v=2`, or a request with no commitment).
+  Not device-verified; the Verify affordance has had no UI review against docs/ui (§34).
 
 ## Phase 4: Stability and CI (B1, B2, B5, B3)
 - [ ] 4.1 B1/B2: no `runBlocking` on the main thread in the send and call-invite paths.
