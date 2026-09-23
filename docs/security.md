@@ -81,6 +81,16 @@ Mesh WebSocket transport provides wire-level encryption (`wss://`) with Trust-On
   - The SHA-256 fingerprint of the peer's public key is computed via `FlashFingerprint.fingerprint()`.
   - If no pin exists in `FlashTrustStore`, the fingerprint is recorded (TOFU).
   - If a pin exists, the incoming certificate's fingerprint is verified in constant time (`MessageDigest.isEqual`). Any mismatch fails closed immediately with an `SSLException`, preventing MITM attacks.
+- **Manual-IP dial — deferred binding (ADR-040)**:
+  - A dial that cannot name its peer ("Connect by IP" to a device discovery never saw) has no
+    `expectedDeviceId`, so the handshake accepts the leaf and records its fingerprint instead of
+    failing closed.
+  - `connectManual` then runs the **same** `isPinned(peerDeviceId, leaf)` check once
+    `FLASH_WS_HELLO` names the peer, and closes the connection before registration if it fails.
+  - Opt-in per dial (`deferPinWhenDeviceIdUnknown`, default `false`): discovery-driven dials,
+    redials and both server paths are unchanged.
+  - Accepted exposure: our own HELLO (device id + friendly name — the same fields mDNS broadcasts)
+    reaches the dialed address before binding. No message, file or key material does.
 - **Engine Integration**:
   - Handled via `TlsOptions` across `WsFlashNetwork`, `JvmWsFlashNetwork`, `WsTransferClient`, `DesktopEngine`, `Flash.kt`, and `DiscoveryEngineHolder`.
 
