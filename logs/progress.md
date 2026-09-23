@@ -1,5 +1,30 @@
 # Progress Log
 
+## 2026-09-23 — Audit fix Phase 2 (keys at rest)
+
+### Changed
+- `SecretSealer`/`KeystoreSecretSealer` (new, core:security androidMain); `AndroidPreferencesTrustStore` seals session
+  keys (`s1:` prefix), migrates legacy plaintext on read, refuses to store what it cannot seal, drops unopenable entries.
+- `DesktopTrustStore` seals session keys with `IdentityKeyVault.Dpapi`; legacy plaintext rewritten on load.
+- `data_extraction_rules.xml`/`backup_rules.xml`: shared prefs and databases excluded from cloud AND device transfer.
+- `EncryptedDatabaseRecovery` (new, core:engine) + `KeystorePassphraseProvider.mintedNewPassphrase`: an unopenable DB is
+  quarantined, not crash-looped. The duplicate `:app` passphrase provider was deleted.
+
+### Verification
+New tests: 4 in `FlashTrustStoreTest`, 3 in `DesktopTrustStoreTest`, `EncryptedDatabaseRecoveryTest` (3). Security,
+engine, desktop and app suites green; `:app:lintDebug` accepts the backup rules. No device testing: AndroidKeyStore and
+DPAPI behaviour on real hardware are unverified.
+
+### Problems
+- A staging mistake split the 2.3 commit: `ab57e1e` contains only the provider deletion and does not build on its
+  own; `98fa8d5` completes it. It was not amended, to avoid rewriting history without the owner's say.
+- Lint surfaced a real crash risk (API 26 calls unguarded, minSdk 24), queued as Phase 4.4.
+
+### Next AI
+Phase 3 (pairing protocol v2, audit S2) is a wire-protocol bump. Agree the re-pair UX with the owner before coding.
+
+---
+
 ## 2026-09-23 — Full audit + fix Phase 1 (transport trust)
 
 ### Worked on
