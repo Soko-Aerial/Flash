@@ -2,6 +2,7 @@
 
 package com.transfer.flash.core.network.ws
 
+import com.transfer.flash.core.common.result.runSuspendCatching
 import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.common.logging.FlashLog
 import com.transfer.flash.core.common.model.FlashDevice
@@ -246,7 +247,7 @@ public class JvmWsFlashNetwork(
             connection.sendText(helloMsg)
 
             val handshakeOutcome = withTimeoutOrNull(HANDSHAKE_TIMEOUT_MS) {
-                runCatching { handshakeWaiter.await() }
+                runSuspendCatching { handshakeWaiter.await() }
             }
 
             pendingHandshakes.remove(connection)
@@ -365,7 +366,7 @@ public class JvmWsFlashNetwork(
 
         scope.launch {
             val outcome = withTimeoutOrNull(HANDSHAKE_TIMEOUT_MS) {
-                runCatching { handshakeWaiter.await() }
+                runSuspendCatching { handshakeWaiter.await() }
             }
             pendingHandshakes.remove(connection)
 
@@ -606,7 +607,7 @@ public class JvmWsFlashNetwork(
                 if (!running.get() || hasLiveSession(deviceId)) break
                 val target = redialTargetOf(deviceId, backup) ?: break
 
-                val result = runCatching { connectManual(target.host, target.port, deviceId) }.getOrNull()
+                val result = runSuspendCatching { connectManual(target.host, target.port, deviceId) }.getOrNull()
                 if (result is FlashResult.Success) {
                     break
                 }

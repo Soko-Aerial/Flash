@@ -91,8 +91,19 @@ first because inbound client authentication (S1) means nothing if TLS can silent
   peer. The call-invite wait on Android and desktop is a plain suspend `withTimeoutOrNull` (both `sendFrame`s were
   already `suspend`). The remaining `runBlocking` calls are desktop engine start/stop and `Flash.kt` close, which run
   off the UI thread at lifecycle edges and were left as they are.
-- [ ] 4.2 B5: tag hardware-dependent tests and exclude them in CI; get CI green; protect `main`.
-- [ ] 4.3 B3: a `runCatchingCancellable` helper and a detekt rule; fix the suspend call sites.
+- [~] **4.2 B5: CI.** `DesktopMediaStackSmokeTest` self-skips only when `CI=true` (`FLASH_HW_TESTS=1` forces it; a
+  load-failure probe was rejected because it would hide a real native break locally). The registry test is
+  Windows-only. CI runs with `--continue` and gates `:app:lintDebug`. **Not yet proven green:** needs a real Actions run
+  on Linux (requires pushing `dev`); protecting `main` is the owner's GitHub setting.
+- [x] **4.3 B3, re-scoped after measuring.** A scan for the dangerous shape (a loop whose only suspension point sits
+  inside `runCatching`, which would spin forever after cancellation) found **none**. Only ~20 `runCatching` blocks wrap
+  suspend calls; most are deliberate cleanup (stop/close/timeout paths) or false positives (blocking I/O). Added
+  `runSuspendCatching` (core:common) and used it where swallowing mattered: the WS handshake waits and reconnect
+  loops (Android + JVM) and the three auto-connect sweeps (now `try/finally`, so the dial gate is always released
+  and a cancelled sweep stops). **Retracted claim:** I first said the handshake waits reported timeouts as
+  "rejected"; `SuspendCatchingTest` proved that `withTimeoutOrNull` discards the block's result after its own
+  timeout, so that bug never existed. The test now pins the real behaviour. No detekt rule: new tooling belongs in
+  Phase 7.
 - [x] **4.4 lint errors to zero.** Real fixes: `FlashBackgroundService` now uses `NotificationCompat` and gates
   `createNotificationChannel` on API 26 (it would have crashed on Android 7.x); the manifest declares
   `uses-feature camera required=false` (Play was hiding the app from camera-less devices). Suppressed with a

@@ -2,6 +2,7 @@
 
 package com.transfer.flash.desktop
 
+import com.transfer.flash.core.common.result.runSuspendCatching
 import com.transfer.flash.core.persistence.db.runInWriteTransaction
 import com.transfer.flash.core.common.logging.FlashLog
 import com.transfer.flash.core.common.model.FlashDeviceId
@@ -954,7 +955,8 @@ public class DesktopEngine(
         )
         scope.launch {
             try {
-                val result = runCatching {
+                // runSuspendCatching: a cancelled sweep stops here instead of logging a result (audit B3).
+                val result = runSuspendCatching {
                     network.connectManual(endpoint.hostAddress, endpoint.port)
                 }.getOrNull()
                 FlashLog.i(

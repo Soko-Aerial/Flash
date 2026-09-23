@@ -2,6 +2,7 @@
 
 package com.transfer.flash.debug
 
+import com.transfer.flash.core.common.result.runSuspendCatching
 import com.transfer.flash.core.persistence.db.runInWriteTransaction
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -1551,10 +1552,15 @@ object DiscoveryEngineHolder {
             if (!gate.tryBegin(id, hasSession, System.currentTimeMillis())) continue
             appScope.launch {
                 Log.i(TAG_WS, "Auto-connect dialing peer=${ep.friendlyName} id=$id at ${ep.hostAddress}:${ep.port}")
-                val result = runCatching { networkImpl.connectManual(ep.hostAddress, ep.port) }.getOrNull()
-                val ok = result is FlashResult.Success
-                Log.i(TAG_WS, "Auto-connect result peer=$id success=$ok")
-                gate.end(id)
+                // try/finally, not runCatching: the gate must always be released, and a cancelled
+                // sweep must actually stop (audit B3).
+                try {
+                    val result = runSuspendCatching { networkImpl.connectManual(ep.hostAddress, ep.port) }.getOrNull()
+                    val ok = result is FlashResult.Success
+                    Log.i(TAG_WS, "Auto-connect result peer=$id success=$ok")
+                } finally {
+                    gate.end(id)
+                }
             }
         }
 
