@@ -52,6 +52,19 @@ class FlashPairingCoordinatorTest {
         }
 
         override fun getTrustedPeers(): Map<FlashDeviceId, String> = trusted.toMap()
+
+        /** What TLS pinned per peer. v2 pairing refuses a fingerprint that is not this key (ADR-042). */
+        val pins = ConcurrentHashMap<FlashDeviceId, String>()
+        val verified: MutableSet<FlashDeviceId> = ConcurrentHashMap.newKeySet()
+
+        override fun getPin(deviceId: FlashDeviceId): String? = pins[deviceId]
+
+        override fun markVerified(deviceId: FlashDeviceId): FlashResult<Unit> {
+            verified += deviceId
+            return FlashResult.Success(Unit)
+        }
+
+        override fun isVerified(deviceId: FlashDeviceId): Boolean = deviceId in verified
     }
 
     /** Two coordinators, each one's `sendToPeer` delivering straight into the other's `onInbound`. */
@@ -70,6 +83,9 @@ class FlashPairingCoordinatorTest {
         lateinit var b: FlashPairingCoordinator
 
         init {
+            // Stand-in for the TLS handshake: each side pinned the other's real identity key.
+            trustA.pins[FlashDeviceId(ID_B)] = fpB
+            trustB.pins[FlashDeviceId(ID_A)] = fpA
             // Unconfined so the coordinators' own collectors subscribe DURING construction: a
             // MutableSharedFlow with no subscriber drops its first emission, and this test drives the
             // protocol synchronously — a dropped event would read as a protocol failure.
@@ -136,6 +152,40 @@ class FlashPairingCoordinatorTest {
         // row keeps showing "Pair" after a successful pairing (the bug the flow exists to fix).
         assertTrue(pair.a.trustedPeers.value.any { it.id == ID_B }, "A must publish the new trusted peer")
         assertTrue(pair.b.trustedPeers.value.any { it.id == ID_A }, "B must publish the new trusted peer")
+        // ADR-042: a v2 pairing is recorded as verified on both sides and published as such.
+        assertTrue(FlashDeviceId(ID_B) in pair.trustA.verified && FlashDeviceId(ID_A) in pair.trustB.verified)
+        assertTrue(pair.a.trustedPeers.value.single { it.id == ID_B }.verified)
+    }
+
+    @Test
+    fun aPeerAdvertisingOnlyV1_isRefusedWithAnUpdateMessage() = runBlocking {
+        // Owner decision 2026-09-23: no new pairing with a v1 peer, whose code could be forced.
+        val pair = Pair()
+        // A 2.0.0-beta hello: no `v` field.
+        pair.a.onInbound(ID_B, "FLASH_PAIR t=hello fp=$FP_B")
+
+        pair.a.beginPair(ID_B, "Old Phone")
+
+        waitUntil("A must tell the user to update the other device") {
+            pair.messagesA.any { it.contains("older Flash") }
+        }
+        assertTrue(pair.b.pairing.value == null, "no request may reach the v1 peer")
+    }
+
+    @Test
+    fun aClaimedFingerprintThatIsNotTheTlsPin_neverShowsACode() = runBlocking {
+        // B's TLS handshake pinned a DIFFERENT key for A than the one A's pairing frames claim, which is
+        // what a man-in-the-middle relaying the real fingerprints looks like.
+        val pair = Pair()
+        pair.trustB.pins[FlashDeviceId(ID_A)] = "ffff000011112222"
+        pair.a.onSessionUp(ID_B)
+        pair.b.onSessionUp(ID_A)
+
+        pair.a.beginPair(ID_B, "Harness B")
+        delay(FINGERPRINT_POLL_WINDOW_MS)
+
+        assertTrue(pair.b.pairing.value?.numericCode.isNullOrEmpty(), "no code for an unauthenticated claimant")
+        assertTrue(pair.trustB.trusted.isEmpty(), "and no trust")
     }
 
     @Test

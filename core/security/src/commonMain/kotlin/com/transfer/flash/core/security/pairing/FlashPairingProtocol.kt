@@ -114,6 +114,12 @@ public class DefaultFlashPairingProtocol(
     private val localModel: String,
     private val ephemeralPublicKeyProvider: () -> ByteArray,
     private val sendFrame: (FlashPairingFrame) -> Unit,
+    /**
+     * The fingerprint TLS pinned for a peer device (the trust store's pin), or null when none. v2 refuses
+     * any pairing whose claimed fingerprint is not this key (ADR-042): the code must cover the identity
+     * the transport actually authenticated.
+     */
+    private val peerIdentityPin: (peerDeviceId: String) -> String?,
     private val timeSource: FlashTimeSource,
     private val timeouts: PairingTimeouts = PairingTimeouts(),
 ) : FlashPairingProtocol {
@@ -141,19 +147,23 @@ public class DefaultFlashPairingProtocol(
         }
         val requestId = newRequestId()
         val now = timeSource.nowMs()
-        _session.update {
-            PairingSessionStateMachine.reduce(
-                it,
-                PairingSessionEvent.BeginRequested(
-                    requestId = requestId,
-                    peerDeviceId = peerDeviceId,
-                    peerName = peerName,
-                    peerFingerprintHex = peerFingerprintHex,
-                    startedAtMs = now,
-                ),
-                timeouts,
-                localFingerprintHex,
-            )
+        val localEpk = ephemeralPublicKeyProvider()
+        val nonce = PairingV2.newNonce()
+        reduceSession(
+            PairingSessionEvent.BeginRequested(
+                requestId = requestId,
+                peerDeviceId = peerDeviceId,
+                peerName = peerName,
+                peerFingerprintHex = peerFingerprintHex,
+                startedAtMs = now,
+                localEphemeralPublicKey = localEpk,
+                localNonce = nonce,
+            ),
+        )
+        if (_session.value.phase == PairingPhase.Failed) {
+            val reason = _session.value.failureReason ?: "request-failed"
+            emit(FlashPairingEvent.Failed(requestId, reason))
+            return FlashResult.Failure(FlashError.Unknown(reason, null))
         }
         return try {
             sendFrame(
@@ -163,8 +173,11 @@ public class DefaultFlashPairingProtocol(
                     senderName = localName,
                     senderModel = localModel,
                     senderFingerprintHex = localFingerprintHex,
-                    senderEphemeralPublicKey = ephemeralPublicKeyProvider(),
+                    senderEphemeralPublicKey = localEpk,
                     createdAt = now,
+                    protocolVersion = PairingV2.PROTOCOL_VERSION,
+                    // The nonce stays secret until PAIR_REVEAL; only the commitment goes out now.
+                    commitHex = PairingV2.commitHex(localFingerprintHex, localEpk, nonce),
                 ),
             )
             FlashResult.Success(Unit)
@@ -200,7 +213,9 @@ public class DefaultFlashPairingProtocol(
     override suspend fun onFrame(frame: FlashPairingFrame) {
         when (frame) {
             is FlashPairingFrame.PairRequest -> {
-                val receivedAt = timeSource.nowMs()
+                val before = _session.value
+                val localEpk = ephemeralPublicKeyProvider()
+                val nonce = PairingV2.newNonce()
                 reduceSession(
                     PairingSessionEvent.RequestReceived(
                         requestId = frame.requestId,
@@ -208,23 +223,68 @@ public class DefaultFlashPairingProtocol(
                         peerName = frame.senderName,
                         peerFingerprintHex = frame.senderFingerprintHex,
                         peerEphemeralPublicKey = frame.senderEphemeralPublicKey,
-                        receivedAtMs = receivedAt,
+                        receivedAtMs = timeSource.nowMs(),
+                        protocolVersion = frame.protocolVersion,
+                        peerCommitHex = frame.commitHex,
+                        pinnedPeerFingerprintHex = peerIdentityPin(frame.senderDeviceId),
+                        localEphemeralPublicKey = localEpk,
+                        localNonce = nonce,
                     ),
                 )
-                _session.value.let { s ->
-                    if (s.phase == PairingPhase.RequestReceived && s.requestId == frame.requestId) {
-                        emit(
-                            FlashPairingEvent.RequestReceived(
-                                requestId = s.requestId!!,
-                                peerDeviceId = s.peerDeviceId!!,
-                                peerName = s.peerName ?: frame.senderModel,
-                                code6 = s.code6!!,
-                                expiresAtMs = s.expiresAtMs!!,
+                val s = _session.value
+                when {
+                    before.phase != PairingPhase.Idle || s.requestId != frame.requestId ->
+                        emit(FlashPairingEvent.Failed(frame.requestId, "request-rejected"))
+                    s.phase == PairingPhase.AwaitingPeerReveal ->
+                        // R reveals its nonce first; the code only exists once I opens its commitment.
+                        sendOrFail(
+                            FlashPairingFrame.PairNonce(
+                                requestId = frame.requestId,
+                                responderFingerprintHex = localFingerprintHex,
+                                responderEphemeralPublicKey = localEpk,
+                                nonce = nonce,
                             ),
                         )
-                    } else {
-                        emit(FlashPairingEvent.Failed(frame.requestId, "request-rejected"))
-                    }
+                    s.phase == PairingPhase.Failed ->
+                        emit(FlashPairingEvent.Failed(frame.requestId, s.failureReason ?: "request-rejected"))
+                }
+            }
+
+            is FlashPairingFrame.PairNonce -> {
+                val before = _session.value
+                reduceSession(
+                    PairingSessionEvent.PeerNonce(
+                        requestId = frame.requestId,
+                        responderFingerprintHex = frame.responderFingerprintHex,
+                        responderEphemeralPublicKey = frame.responderEphemeralPublicKey,
+                        nonce = frame.nonce,
+                        pinnedPeerFingerprintHex = before.peerDeviceId?.let(peerIdentityPin),
+                    ),
+                )
+                val after = _session.value
+                if (after.phase == PairingPhase.AwaitingPeerConfirmation && before.phase == PairingPhase.AwaitingPeerNonce) {
+                    after.localNonce?.let { sendOrFail(FlashPairingFrame.PairReveal(frame.requestId, it)) }
+                } else {
+                    emitIfNewlyFailed(before, after)
+                }
+            }
+
+            is FlashPairingFrame.PairReveal -> {
+                val before = _session.value
+                reduceSession(PairingSessionEvent.PeerReveal(frame.requestId, frame.nonce))
+                val s = _session.value
+                if (s.phase == PairingPhase.RequestReceived && before.phase == PairingPhase.AwaitingPeerReveal) {
+                    emit(
+                        FlashPairingEvent.RequestReceived(
+                            requestId = s.requestId!!,
+                            peerDeviceId = s.peerDeviceId!!,
+                            peerName = s.peerName ?: s.peerDeviceId!!,
+                            code6 = s.code6!!,
+                            expiresAtMs = s.expiresAtMs!!,
+                        ),
+                    )
+                } else {
+                    emitIfNewlyFailed(before, s)
                 }
             }
 
@@ -271,6 +331,8 @@ public class DefaultFlashPairingProtocol(
                             ),
                         )
                     }
+                } else {
+                    emitIfNewlyFailed(before, after)
                 }
             }
         }
@@ -313,6 +375,20 @@ public class DefaultFlashPairingProtocol(
                 ephemeralPubKey = confirmed.peerEphemeralPublicKey ?: ByteArray(0),
             ),
         )
+    }
+
+    /** Sends [frame]; a send failure fails the session rather than leaving it waiting forever. */
+    private fun sendOrFail(frame: FlashPairingFrame) {
+        runCatching { sendFrame(frame) }.onFailure { reason ->
+            _session.value = _session.value.copy(phase = PairingPhase.Failed, failureReason = "send-failed")
+            emit(FlashPairingEvent.Failed(frame.requestId, reason.message ?: "send-failed"))
+        }
+    }
+
+    private fun emitIfNewlyFailed(before: PairingSessionState, after: PairingSessionState) {
+        if (after.phase == PairingPhase.Failed && before.phase != PairingPhase.Failed) {
+            emit(FlashPairingEvent.Failed(after.requestId, after.failureReason ?: "protocol-error"))
+        }
     }
 
     private fun resetToIdle() {

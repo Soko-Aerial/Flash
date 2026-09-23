@@ -1325,6 +1325,15 @@ public fun DesktopShell(
                         onCallTrustedClick = { trusted ->
                             placeVoiceCall(trusted.id, trusted.name)
                         },
+                        // ADR-042: re-run pairing (v2) with a peer paired under the forceable v1 code.
+                        onVerifyTrustedClick = { trusted ->
+                            val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == trusted.id }
+                            val net = engine.network
+                            scope.launch {
+                                if (endpoint != null && net != null) net.connectManual(endpoint.hostAddress, endpoint.port)
+                                engine.pairing.beginPair(trusted.id, trusted.name)
+                            }
+                        },
                         onManualConnect = { host, port ->
                             scope.launch {
                                 val net = engine.network
@@ -1910,6 +1919,11 @@ private fun pairingPhaseOf(
     phase: com.transfer.flash.core.security.pairing.PairingPhase?,
 ): FlashPairingPhase = when (phase) {
     null, com.transfer.flash.core.security.pairing.PairingPhase.Idle -> FlashPairingPhase.Idle
+    // v2 (ADR-042), same mapping as the app's PairingUiMapper: no code exists yet on the responder
+    // (milliseconds until the reveal), while the initiator is waiting for the other device.
+    com.transfer.flash.core.security.pairing.PairingPhase.AwaitingPeerReveal -> FlashPairingPhase.Idle
+    com.transfer.flash.core.security.pairing.PairingPhase.AwaitingPeerNonce ->
+        FlashPairingPhase.AwaitingPeerConfirmation
     com.transfer.flash.core.security.pairing.PairingPhase.RequestReceived,
     com.transfer.flash.core.security.pairing.PairingPhase.AwaitingLocalDecision ->
         FlashPairingPhase.RequestReceived
@@ -2012,7 +2026,7 @@ internal fun nearbyUiStateOf(
         isLoading = !ready,
         peers = discoveredRows.filter { it.id !in trustedIds },
         trustedPeers = FlashNearbyMath.withDeviceKinds(
-            trusted = trusted.map { NearbyTrustedPeerUi(id = it.id, name = it.name) },
+            trusted = trusted.map { NearbyTrustedPeerUi(id = it.id, name = it.name, verified = it.verified) },
             discovered = discoveredRows,
         ),
         pairingRequest = ui?.let { u ->

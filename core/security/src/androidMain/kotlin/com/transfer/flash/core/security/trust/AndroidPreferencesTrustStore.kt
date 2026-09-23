@@ -43,6 +43,7 @@ public class AndroidPreferencesTrustStore(
             .remove(keyFor(deviceId.value))
             .remove(sessionKeyFor(deviceId.value))
             .remove(pinKeyFor(deviceId.value))
+            .remove(verifiedKeyFor(deviceId.value))
             .apply()
         return FlashResult.Success(Unit)
     }
@@ -103,13 +104,25 @@ public class AndroidPreferencesTrustStore(
 
     private fun keyFor(deviceId: String): String = "$KEY_PREFIX$deviceId"
     private fun sessionKeyFor(deviceId: String): String = "$SESSION_KEY_PREFIX$deviceId"
+    override fun markVerified(deviceId: FlashDeviceId): FlashResult<Unit> {
+        preferences.edit().putBoolean(verifiedKeyFor(deviceId.value), true).apply()
+        return FlashResult.Success(Unit)
+    }
+
+    override fun isVerified(deviceId: FlashDeviceId): Boolean =
+        preferences.getBoolean(verifiedKeyFor(deviceId.value), false)
+
     private fun pinKeyFor(deviceId: String): String = "$PIN_PREFIX$deviceId"
+    private fun verifiedKeyFor(deviceId: String): String = "$VERIFIED_PREFIX$deviceId"
 
     public companion object {
         public const val PREFERENCES_NAME: String = "flash_ws_pairing"
         public const val KEY_PREFIX: String = "paired_"
         public const val SESSION_KEY_PREFIX: String = "session_key_"
         public const val PIN_PREFIX: String = "pin_"
+
+        /** Set once a pairing completes with protocol v2 (ADR-042); absent = legacy v1 pairing. */
+        public const val VERIFIED_PREFIX: String = "verified_v2_"
 
         /** Marks a sealed session-key value; anything without it is a legacy plaintext entry. */
         public const val SEALED_PREFIX: String = "s1:"

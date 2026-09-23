@@ -98,6 +98,12 @@ data class NearbyTrustedPeerUi(
      * its edge rather than persisting a kind that could go stale across a platform change.
      */
     val deviceKind: FlashDeviceKind = FlashDeviceKind.UNKNOWN,
+    /**
+     * False for a pairing made with protocol v1, whose 6-digit code a man-in-the-middle could force
+     * (ADR-042). Such a peer stays trusted but is shown as unverified with a "Verify again" action,
+     * which runs a v2 pairing. Defaults to true so hosts that cannot tell never show a false warning.
+     */
+    val verified: Boolean = true,
 )
 
 data class NearbyUiState(
@@ -189,6 +195,11 @@ fun FlashNearbyScreen(
      * Manual connection by IP and Port. When supplied, allows entering host/port directly.
      */
     onManualConnect: ((host: String, port: Int) -> Unit)? = null,
+    /**
+     * Re-runs pairing (protocol v2) with a trusted peer whose pairing was made with v1 (ADR-042).
+     * Nullable like [onCallTrustedClick]: without it an unverified row shows the label but no action.
+     */
+    onVerifyTrustedClick: ((NearbyTrustedPeerUi) -> Unit)? = null,
 ) {
     var showManualConnectDialog by remember { mutableStateOf(false) }
     val onManualConnectClick = if (onManualConnect != null) { { showManualConnectDialog = true } } else null
@@ -220,6 +231,7 @@ fun FlashNearbyScreen(
                         onRevokeClick = onRevokeClick,
                         onChatTrustedClick = onChatTrustedClick,
                         onCallTrustedClick = onCallTrustedClick,
+                        onVerifyTrustedClick = onVerifyTrustedClick,
                         onManualConnectClick = onManualConnectClick,
                         listState = listState,
                         bottomInset = bottomInset,
@@ -272,6 +284,7 @@ private fun PopulatedContent(
     onRevokeClick: (NearbyTrustedPeerUi) -> Unit,
     onChatTrustedClick: (NearbyTrustedPeerUi) -> Unit,
     onCallTrustedClick: ((NearbyTrustedPeerUi) -> Unit)?,
+    onVerifyTrustedClick: ((NearbyTrustedPeerUi) -> Unit)?,
     onManualConnectClick: (() -> Unit)?,
     listState: LazyListState,
     bottomInset: Dp,
@@ -334,6 +347,12 @@ private fun PopulatedContent(
                     onRevoke = {
                         haptics(FlashHaptic.Confirm)
                         onRevokeClick(trusted)
+                    },
+                    onVerify = onVerifyTrustedClick?.takeIf { !trusted.verified }?.let { handler ->
+                        {
+                            haptics(FlashHaptic.Tick)
+                            handler(trusted)
+                        }
                     },
                 )
             }
@@ -589,8 +608,11 @@ private fun TrustedRow(
     onChat: () -> Unit,
     onCall: (() -> Unit)?,
     onRevoke: () -> Unit,
+    /** Non-null only for an unverified (v1) pairing whose host can re-run pairing. */
+    onVerify: (() -> Unit)? = null,
 ) {
     val colors = FlashTheme.colors
+    val verifyInteraction = remember { MutableInteractionSource() }
     val chatInteraction = remember { MutableInteractionSource() }
     val callInteraction = remember { MutableInteractionSource() }
     val revokeInteraction = remember { MutableInteractionSource() }
@@ -602,19 +624,49 @@ private fun TrustedRow(
             .padding(start = FlashSpacing.space12, end = FlashSpacing.space4),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        // ADR-042: a v1 pairing's code could have been forced, so it is not presented as verified.
         FlashIcon(
-            icon = FlashIcons.Verified,
-            tint = colors.statusOnline,
+            icon = if (trusted.verified) FlashIcons.Verified else FlashIcons.Encryption,
+            tint = if (trusted.verified) colors.statusOnline else colors.textTertiary,
             size = FlashDimensions.iconSm,
-            contentDescription = null,
+            contentDescription = if (trusted.verified) null else "Not verified",
         )
         Spacer(Modifier.width(FlashSpacing.space8))
-        FlashText(
-            text = trusted.name,
-            style = FlashTheme.typography.captionDefault,
-            color = colors.textSecondary,
-            modifier = Modifier.weight(1f),
-        )
+        Column(Modifier.weight(1f)) {
+            FlashText(
+                text = trusted.name,
+                style = FlashTheme.typography.captionDefault,
+                color = colors.textSecondary,
+            )
+            if (!trusted.verified) {
+                FlashText(
+                    text = "Not verified",
+                    style = FlashTheme.typography.metadataDefault,
+                    color = colors.textTertiary,
+                )
+            }
+        }
+        if (onVerify != null) {
+            Box(
+                Modifier
+                    .height(FlashDimensions.minTouchTarget)
+                    .flashPressScale(verifyInteraction)
+                    .clickable(
+                        interactionSource = verifyInteraction,
+                        indication = null,
+                        onClickLabel = "Verify again",
+                        onClick = onVerify,
+                    )
+                    .padding(horizontal = FlashSpacing.space12),
+                contentAlignment = Alignment.Center,
+            ) {
+                FlashText(
+                    text = "Verify",
+                    style = FlashTheme.typography.captionEmphasis,
+                    color = colors.accentPrimary,
+                )
+            }
+        }
         FlashDeviceKindBadge(kind = trusted.deviceKind, modifier = Modifier.padding(end = FlashSpacing.space8))
         Box(
             Modifier

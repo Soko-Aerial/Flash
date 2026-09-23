@@ -1289,7 +1289,7 @@ object DiscoveryEngineHolder {
                 sessions.values.forEach { session ->
                     if (session is WsSession && !sessionJobs.containsKey(session)) {
                         // Announce our identity fingerprint so the peer can derive the shared
-                        // pairing code the moment it taps Pair (see PairingFraming.Hello).
+                        // pairing code the moment it taps Pair (see PairingWireCodec.Inbound.Hello).
                         Log.i(TAG_WS, "Session up peer=${session.peer.friendlyName} id=${session.peerDeviceId.value} — sending pairing hello")
                         pairingCoordinator.onSessionUp(session.peerDeviceId.value)
                         // Bug 5: a peer session is up (connect/reconnect) — flush the durable

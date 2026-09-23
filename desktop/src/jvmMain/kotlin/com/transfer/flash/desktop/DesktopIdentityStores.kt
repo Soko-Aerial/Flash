@@ -110,6 +110,9 @@ internal class DesktopTrustStore(
     private val sealedSessionKeys = ConcurrentHashMap<FlashDeviceId, String>()
     private val pins = ConcurrentHashMap<FlashDeviceId, String>()
 
+    /** Peers whose current pairing was made with protocol v2 (ADR-042). */
+    private val verified = ConcurrentHashMap.newKeySet<FlashDeviceId>()
+
     init {
         stateDir.mkdirs()
         if (file.isFile) {
@@ -152,6 +155,9 @@ internal class DesktopTrustStore(
                             pins[id] = pinHex.uppercase()
                         }
                     }
+                props.stringPropertyNames()
+                    .filter { it.startsWith("verified.") && props.getProperty(it) == "true" }
+                    .forEach { verified += FlashDeviceId(it.removePrefix("verified.")) }
                 // Rewrite once so legacy plaintext keys leave the disk immediately.
                 if (sawLegacy) runCatching { persist() }
             }
@@ -170,6 +176,7 @@ internal class DesktopTrustStore(
         cache.forEach { (id, name) -> props.setProperty("trusted.${id.value}", name) }
         sealedSessionKeys.forEach { (id, sealed) -> props.setProperty("session_key.${id.value}", sealed) }
         pins.forEach { (id, pin) -> props.setProperty("pin.${id.value}", pin) }
+        verified.forEach { id -> props.setProperty("verified.${id.value}", "true") }
         file.outputStream().use { output: OutputStream -> props.store(output, "Flash desktop trust") }
     }
 
@@ -206,11 +213,22 @@ internal class DesktopTrustStore(
 
     override fun getPin(deviceId: FlashDeviceId): String? = pins[deviceId]
 
+    override fun markVerified(deviceId: FlashDeviceId): FlashResult<Unit> {
+        synchronized(lock) {
+            verified += deviceId
+            runCatching { persist() }
+        }
+        return FlashResult.Success(Unit)
+    }
+
+    override fun isVerified(deviceId: FlashDeviceId): Boolean = deviceId in verified
+
     override fun revokeTrust(deviceId: FlashDeviceId): FlashResult<Unit> {
         synchronized(lock) {
             cache.remove(deviceId)
             sessionKeys.remove(deviceId)
             sealedSessionKeys.remove(deviceId)
+            verified.remove(deviceId)
             pins.remove(deviceId)
             runCatching { persist() }
         }
