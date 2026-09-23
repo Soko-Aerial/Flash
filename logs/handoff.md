@@ -1,5 +1,25 @@
 # Current Handoff
 
+## 2026-09-23 — Phases 1–3 DEVICE-VERIFIED by the owner; Phase 4 (stability & CI) code done
+
+### Owner verification
+Pairing, chat, calls, transfers and upgrading an install with v1 pairings were all tested on devices and worked.
+
+### Phase 4 done
+- `710d851` — the Android 7 crash (API 26 notification calls unguarded, minSdk 24) → `NotificationCompat`;
+  main-thread `runBlocking` socket write in the chat sink (ANR risk) → suspends onto IO; 2 s call-invite
+  `runBlocking` removed (Android + desktop); camera declared optional; app lint 0 errors.
+- `4542220` — CI: the hardware-only smoke test skips when `CI=true`, the registry test is Windows-only, `--continue`,
+  and an app lint gate.
+- `66fa685` — cancellation: `runSuspendCatching` at the handshake waits, reconnect loops and auto-connect sweeps
+  (`try/finally`). The audit's B3 was overstated (no spin loops exist; corrected in the audit). A claim of mine that
+  handshake timeouts were reported as "rejected" was wrong and is retracted; a test pins the real behaviour.
+
+### Open
+CI has not been proven green on Linux: that needs `dev` pushed (24+ commits ahead of origin).
+
+---
+
 ## 2026-09-23 — Audit fix Phase 3 (pairing v2, ADR-042) DONE; next = Phase 4 (stability & CI)
 
 ### Done (`63bc9fd`, docs `5f4735f`)
