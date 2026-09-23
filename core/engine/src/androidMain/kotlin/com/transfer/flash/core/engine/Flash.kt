@@ -20,6 +20,7 @@ import com.transfer.flash.core.engine.store.RoomTransferStore
 import com.transfer.flash.core.messaging.RealFlashChatRepository
 import com.transfer.flash.core.messaging.protocol.ChatTextFrameCodec
 import com.transfer.flash.core.security.crypto.E2eFrameCodec
+import com.transfer.flash.core.messaging.protocol.DirectChatFamily
 import com.transfer.flash.core.messaging.protocol.DirectMessageActionCodec
 import com.transfer.flash.core.messaging.protocol.GroupFrameCodec
 import com.transfer.flash.core.messaging.protocol.MessageWireFrame
@@ -649,6 +650,12 @@ private class Wiring(
                 return
             }
         } else {
+            // Audit S1b: the direct-chat family is ALWAYS encrypted by the sender once a session key
+            // exists, so a plaintext one from a keyed peer is a downgrade — drop it.
+            if (DirectChatFamily.matches(text) && trustStoreRef?.getSessionKey(FlashDeviceId(peerDeviceId)) != null) {
+                Log.w(TAG, "Dropped plaintext direct-chat frame from keyed peer $peerDeviceId (downgrade)")
+                return
+            }
             text
         }
 
