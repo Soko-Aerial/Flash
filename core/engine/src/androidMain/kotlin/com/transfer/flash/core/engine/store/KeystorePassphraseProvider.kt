@@ -27,14 +27,25 @@ public class KeystorePassphraseProvider(context: Context) : PassphraseProvider {
 
     private val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
+    /**
+     * True when the most recent [passphrase] call had to mint a NEW passphrase: first run, or the
+     * stored one could not be unwrapped (keystore key gone after a restore or a lock-screen change).
+     * An existing database can never be opened with a minted passphrase, so callers that open a DB
+     * must check this. `EncryptedDatabaseRecovery` does (audit B7).
+     */
+    @Volatile
+    public var mintedNewPassphrase: Boolean = false
+        private set
+
     override fun passphrase(): ByteArray {
         val stored = prefs.getString(KEY_WRAPPED, null)
         if (stored != null) {
-            runCatching { return unwrap(stored) }
-            // Corrupt/rotated wrapper: fall through and re-seed.
+            runCatching { return unwrap(stored).also { mintedNewPassphrase = false } }
+            // Corrupt/rotated wrapper: fall through and re-seed (the caller must quarantine the DB).
         }
         val fresh = ByteArray(PASSPHRASE_BYTES).also { java.security.SecureRandom().nextBytes(it) }
         prefs.edit().putString(KEY_WRAPPED, wrap(fresh)).apply()
+        mintedNewPassphrase = true
         return fresh
     }
 

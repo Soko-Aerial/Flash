@@ -15,7 +15,7 @@ import com.transfer.flash.core.discovery.core.FlashDiscoveryMode
 import com.transfer.flash.core.discovery.core.StandardEndpointDirectory
 import com.transfer.flash.core.discovery.nsd.BuildNsdApiLevel
 import com.transfer.flash.core.discovery.nsd.NsdTransport
-import com.transfer.flash.core.engine.store.KeystorePassphraseProvider
+import com.transfer.flash.core.engine.store.EncryptedDatabaseRecovery
 import com.transfer.flash.core.engine.store.RoomTransferStore
 import com.transfer.flash.core.messaging.RealFlashChatRepository
 import com.transfer.flash.core.messaging.protocol.ChatTextFrameCodec
@@ -32,8 +32,6 @@ import com.transfer.flash.core.network.datachannel.DataChannelClient
 import com.transfer.flash.core.network.datachannel.DataChannelServer
 import com.transfer.flash.core.network.ws.WsFlashNetwork
 import com.transfer.flash.core.network.ws.WsSession
-import com.transfer.flash.core.persistence.db.FlashDatabaseOpener
-import com.transfer.flash.core.persistence.db.FlashMigrations
 import com.transfer.flash.core.persistence.settings.FlashSettingsDataStore
 import com.transfer.flash.core.ptt.PttSessionEngine
 import com.transfer.flash.core.network.tls.TlsOptions
@@ -270,11 +268,8 @@ private class Wiring(
             },
         )
 
-        val db = FlashDatabaseOpener.openEncrypted(
-            appContext,
-            KeystorePassphraseProvider(appContext),
-            *FlashMigrations.ALL,
-        )
+        // Audit B7: a lost keystore key no longer crash-loops the app on an unopenable DB.
+        val db = EncryptedDatabaseRecovery.openRecoveringLostKey(appContext)
         val settings = FlashSettingsDataStore(
             produceFile = { File(appContext.filesDir, "flash_settings.preferences_pb") },
             scope = scope,
