@@ -1,5 +1,29 @@
 # Progress Log
 
+## 2026-09-23 — Audit fix Phase 3 (pairing protocol v2)
+
+### Changed
+- `PairingV2` (commit/code/nonce primitives), `PairingWireCodec` (shared codec), `FlashPairingFrames` (+PairNonce,
+  PairReveal, v/commit on PairRequest), `PairingSessionStateMachine` (+AwaitingPeerNonce/AwaitingPeerReveal, v2
+  checks), `DefaultFlashPairingProtocol` (v2 flow, `peerIdentityPin`), `FlashTrustStore.markVerified/isVerified`.
+- App and desktop coordinators on the shared codec, v1 refusal, verified flag, failure messages; the Nearby row shows
+  "Not verified" + Verify. Deleted the app's `PairingFraming` and its test.
+- Interop fixtures (`DesktopInteropHarness`, `HarnessTestSupport`) run real TLS.
+
+### Verification
+New or rewritten: `PairingV2Test` 7, `PairingWireCodecTest` 5 (host + JVM), `DefaultFlashPairingProtocolTest` 14,
+`PairingSessionStateMachineTest` 33, `FlashPairingCoordinatorTest` 6, and `DesktopPairingLoopbackTest` over real
+TLS. Full suite green. No device testing.
+
+### Problems
+The first loopback run failed with `identity-mismatch`, correctly: the fixture ran without TLS, so no pin existed.
+The fix was to give the fixture TLS, not to weaken the binding.
+
+### Next AI
+Do not add a "no TLS pin → skip binding" fallback; production cannot run without TLS (S3). Phase 4 next.
+
+---
+
 ## 2026-09-23 — Audit fix Phase 2 (keys at rest)
 
 ### Changed
