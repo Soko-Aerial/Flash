@@ -639,6 +639,15 @@ class GroupLateJoinDiagnosticTest {
 
         override suspend fun searchMessages(query: String, limit: Int): List<MessageEntity> =
             messages.values.filter { it.deletedAt == null && it.text.contains(query, ignoreCase = true) }.take(limit)
+
+        override suspend fun searchConversationMessages(
+            conversationId: String,
+            query: String,
+            limit: Int,
+        ): List<MessageEntity> =
+            messages.values.filter {
+                it.conversationId == conversationId && it.deletedAt == null && it.text.contains(query, ignoreCase = true)
+            }.take(limit)
     }
 
     private class DiagnosticConversationDao : ConversationDao {
