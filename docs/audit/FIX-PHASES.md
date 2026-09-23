@@ -47,7 +47,14 @@ first because inbound client authentication (S1) means nothing if TLS can silent
   then refuses a second key. **Verified to fail with the binding disabled** (2 of 3 red).
 
 ## Phase 2: Keys at rest (S4, B7)
-- [ ] 2.1 Session keys and pins wrapped with an AndroidKeyStore AES-GCM key (migrate existing plaintext entries).
+- [x] **2.1 Session keys sealed at rest (Android and desktop).** Android: `AndroidPreferencesTrustStore` seals with
+  `KeystoreSecretSealer` (AndroidKeyStore AES-256-GCM, lazy) and stores `s1:`-prefixed values. Legacy plaintext is
+  re-sealed on first read; a key that can't be sealed is **not stored** (the save fails); a sealed key that can no
+  longer be opened is removed (re-pair). Desktop: `DesktopTrustStore` seals with `IdentityKeyVault.Dpapi` (the ADR-035
+  vault), rewrites legacy plaintext on load, and when DPAPI is unavailable keeps the key for the current run but never
+  writes it. Pins stay plaintext on purpose: a fingerprint is public; keeping it on-device is the backup rules' job.
+  Tests: 4 new in `FlashTrustStoreTest` (with `SoftwareSecretSealer`), 3 new in `DesktopTrustStoreTest`.
+  Not device-verified against a real AndroidKeyStore.
 - [ ] 2.2 Backup rules: exclude `sharedpref` and `database` from cloud backup and device transfer (or `allowBackup=false`).
 - [ ] 2.3 Restore lock-out: handle "passphrase blob present, keystore key missing" explicitly.
 

@@ -1,9 +1,14 @@
+@file:OptIn(com.transfer.flash.core.common.annotation.FlashInternalApi::class)
+
 package com.transfer.flash.desktop
 
+import com.transfer.flash.core.common.logging.FlashLog
 import com.transfer.flash.core.common.model.FlashDeviceId
+import com.transfer.flash.core.common.protocol.Base64
 import com.transfer.flash.core.common.result.FlashResult
 import com.transfer.flash.core.security.identity.FlashIdentity
 import com.transfer.flash.core.security.identity.FlashIdentityStore
+import com.transfer.flash.core.security.identity.IdentityKeyVault
 import com.transfer.flash.core.security.trust.FlashTrustStore
 import java.io.File
 import java.io.InputStream
@@ -87,12 +92,22 @@ internal class DesktopIdentityStore(private val stateDir: File) : FlashIdentityS
  * `AndroidPreferencesTrustStore`: trust is a keyed set that can be revoked and re-listed,
  * persisted under `~/.flash/trust.properties` as `trusted.<deviceId> = friendlyName`.
  */
-internal class DesktopTrustStore(private val stateDir: File) : FlashTrustStore {
+internal class DesktopTrustStore(
+    private val stateDir: File,
+    /**
+     * Seals session keys at rest (audit S4): Windows DPAPI in production, the same vault that protects
+     * the desktop identity key (ADR-035). Keys used to sit in `trust.properties` as plain Base64.
+     */
+    private val vault: IdentityKeyVault = IdentityKeyVault.Dpapi,
+) : FlashTrustStore {
 
     private val file = File(stateDir, "trust.properties")
     private val lock = Any()
     private val cache = ConcurrentHashMap<FlashDeviceId, String>()
     private val sessionKeys = ConcurrentHashMap<FlashDeviceId, ByteArray>()
+
+    /** What [persist] writes for each session key: only ever a sealed value, never the raw key. */
+    private val sealedSessionKeys = ConcurrentHashMap<FlashDeviceId, String>()
     private val pins = ConcurrentHashMap<FlashDeviceId, String>()
 
     init {
@@ -107,15 +122,27 @@ internal class DesktopTrustStore(private val stateDir: File) : FlashTrustStore {
                         cache[FlashDeviceId(key.removePrefix("trusted."))] =
                             props.getProperty(key).orEmpty()
                     }
+                var sawLegacy = false
                 props.stringPropertyNames()
                     .filter { it.startsWith("session_key.") }
                     .forEach { key ->
                         val id = FlashDeviceId(key.removePrefix("session_key."))
-                        val encoded = props.getProperty(key).orEmpty()
-                        runCatching { com.transfer.flash.core.common.protocol.Base64.decode(encoded) }
-                            .getOrNull()?.let { bytes ->
+                        val stored = props.getProperty(key).orEmpty()
+                        if (stored.startsWith(SEALED_PREFIX)) {
+                            // Unopenable (another Windows user, a copied profile): dropped, re-pair.
+                            runCatching {
+                                vault.unprotect(Base64.decode(stored.removePrefix(SEALED_PREFIX)))
+                            }.getOrNull()?.let { bytes ->
                                 sessionKeys[id] = bytes
+                                sealedSessionKeys[id] = stored
                             }
+                        } else {
+                            runCatching { Base64.decode(stored) }.getOrNull()?.let { bytes ->
+                                sessionKeys[id] = bytes
+                                seal(bytes)?.let { sealedSessionKeys[id] = it }
+                                sawLegacy = true
+                            }
+                        }
                     }
                 props.stringPropertyNames()
                     .filter { it.startsWith("pin.") }
@@ -125,16 +152,23 @@ internal class DesktopTrustStore(private val stateDir: File) : FlashTrustStore {
                             pins[id] = pinHex.uppercase()
                         }
                     }
+                // Rewrite once so legacy plaintext keys leave the disk immediately.
+                if (sawLegacy) runCatching { persist() }
             }
         }
     }
 
+    /** Sealed file form of [key], or null when the vault cannot seal (then the key is not persisted). */
+    private fun seal(key: ByteArray): String? = runCatching {
+        SEALED_PREFIX + Base64.encode(vault.protect(key))
+    }.onFailure {
+        FlashLog.w("SECURITY", "Could not seal a session key; it will not be persisted: ${it.message}")
+    }.getOrNull()
+
     private fun persist() {
         val props = Properties()
         cache.forEach { (id, name) -> props.setProperty("trusted.${id.value}", name) }
-        sessionKeys.forEach { (id, key) ->
-            props.setProperty("session_key.${id.value}", com.transfer.flash.core.common.protocol.Base64.encode(key))
-        }
+        sealedSessionKeys.forEach { (id, sealed) -> props.setProperty("session_key.${id.value}", sealed) }
         pins.forEach { (id, pin) -> props.setProperty("pin.${id.value}", pin) }
         file.outputStream().use { output: OutputStream -> props.store(output, "Flash desktop trust") }
     }
@@ -151,7 +185,10 @@ internal class DesktopTrustStore(private val stateDir: File) : FlashTrustStore {
 
     override fun saveSessionKey(deviceId: FlashDeviceId, key: ByteArray): FlashResult<Unit> {
         synchronized(lock) {
+            // Usable for this run either way; persisted only in sealed form.
             sessionKeys[deviceId] = key
+            val sealed = seal(key)
+            if (sealed != null) sealedSessionKeys[deviceId] = sealed else sealedSessionKeys.remove(deviceId)
             runCatching { persist() }
         }
         return FlashResult.Success(Unit)
@@ -173,6 +210,7 @@ internal class DesktopTrustStore(private val stateDir: File) : FlashTrustStore {
         synchronized(lock) {
             cache.remove(deviceId)
             sessionKeys.remove(deviceId)
+            sealedSessionKeys.remove(deviceId)
             pins.remove(deviceId)
             runCatching { persist() }
         }
@@ -180,4 +218,9 @@ internal class DesktopTrustStore(private val stateDir: File) : FlashTrustStore {
     }
 
     override fun getTrustedPeers(): Map<FlashDeviceId, String> = cache.toMap()
+
+    private companion object {
+        /** Marks a DPAPI-sealed session key; anything without it is a legacy plaintext entry. */
+        const val SEALED_PREFIX = "s1:"
+    }
 }
