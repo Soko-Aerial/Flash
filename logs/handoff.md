@@ -1,5 +1,30 @@
 # Current Handoff
 
+## 2026-09-23 — Audit fix Phase 3 (pairing v2, ADR-042) DONE; next = Phase 4 (stability & CI)
+
+### Done (`63bc9fd`, docs `5f4735f`)
+- Pairing v2: commit-then-reveal nonces; the code covers both TLS-pinned identities, both ephemeral keys and both
+  nonces; each side refuses a fingerprint that is not its TLS pin; PAIRED must match. **Wider than audit S2:** v1's
+  code covered neither the session key's ephemeral keys nor the TLS identity (a relay MITM needed no grinding).
+- One shared `PairingWireCodec` (core:security) replaced the app's and the desktop's private codecs.
+- Owner decisions applied: v1 pairings kept but shown "Not verified" with a **Verify** action (Android + desktop);
+  pairing with a v1 (2.0.0-beta) peer is refused with "update Flash on the other device".
+- Interop fixtures now run real TLS; `DesktopPairingLoopbackTest` pairs over real sockets with S1 + S3 + v2.
+
+### Breaking changes
+- 2.0.0-beta devices cannot pair with this build (already-paired ones still chat, call and transfer).
+- `DefaultFlashPairingProtocol` requires `peerIdentityPin`; `PairingPhase` has two new values.
+
+### Device checks owed (Phases 1–3)
+Pair two phones and a phone + desktop from scratch (codes must match, then chat/call/transfer). Upgrade a phone
+that had v1 pairings: the contacts stay usable, show "Not verified", and Verify completes. Try pairing with a
+2.0.0-beta device: you should get the update message.
+
+### Recommended next task
+Phase 4: 4.4 first (the API-26 crash on Android 7), then B1/B2 main-thread blocking, then a green CI.
+
+---
+
 ## 2026-09-23 — Audit fix Phase 2 (keys at rest) DONE; next = Phase 3 (pairing protocol v2)
 
 ### Done (see `docs/audit/FIX-PHASES.md` for call sites and tests)
