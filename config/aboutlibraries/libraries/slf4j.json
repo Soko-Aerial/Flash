@@ -1,0 +1,6 @@
+{
+  "uniqueId": "^org\\.slf4j:slf4j\\-api$::regex",
+  "licenses": [
+    "slf4j-mit"
+  ]
+}

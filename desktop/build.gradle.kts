@@ -11,6 +11,7 @@ plugins {
     // The Compose COMPILER plugin, tracking the Kotlin version (2.2.10) exactly like the
     // kotlin-compose alias in ui/* — required for any @Composable code.
     alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.aboutlibraries)
 }
 
 kotlin {
@@ -190,3 +191,36 @@ tasks.named<Test>("jvmTest") {
     jvmArgs("-Djava.net.preferIPv4Stack=true")
     testLogging { showStandardStreams = true }
 }
+
+// Audit C1 (ADR-043): THIRD_PARTY_NOTICES.txt from the jvm runtime classpath. It is a classpath
+// resource (for Settings → About → Open-source licences) AND a file next to the installed app.
+aboutLibraries {
+    // offlineMode: see app/build.gradle.kts. The texts are checked in under config/aboutlibraries/.
+    offlineMode = true
+    collect {
+        configPath = rootProject.file("config/aboutlibraries")
+        // BOMs carry no code; listing them as "libraries" would only pad the notices.
+        includePlatform = false
+    }
+    export { prettyPrint = true }
+    exports {
+        create("jvm") { outputFile = layout.buildDirectory.file("generated/aboutLibraries/jvm/aboutlibraries.json") }
+    }
+}
+
+val thirdPartyNotices = tasks.register<ThirdPartyNoticesTask>("generateThirdPartyNotices") {
+    platformName.set("Windows desktop")
+    libraryDefinitions.set(layout.buildDirectory.file("generated/aboutLibraries/jvm/aboutlibraries.json"))
+    dependsOn("exportLibraryDefinitionsJvm")
+    outputDir.set(layout.buildDirectory.dir("generated/thirdPartyNotices"))
+}
+kotlin.sourceSets.named("jvmMain") { resources.srcDir(thirdPartyNotices) }
+
+// The installers also carry the file visibly: jpackage copies appResourcesRootDir/common/ into the
+// installed app's resources folder. (The bundled Java runtime ships its own notices in runtime/legal/.)
+val installerNotices = tasks.register<Sync>("syncInstallerThirdPartyNotices") {
+    from(thirdPartyNotices)
+    into(layout.buildDirectory.dir("generated/installerResources/common"))
+}
+compose.desktop.application.nativeDistributions.appResourcesRootDir.set(layout.buildDirectory.dir("generated/installerResources"))
+tasks.matching { it.name == "prepareAppResources" }.configureEach { dependsOn(installerNotices) }

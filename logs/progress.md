@@ -1,5 +1,23 @@
 # Progress Log
 
+## 2026-09-23 — Audit fix Phase 5 (licensing, C1–C3)
+
+### Changed
+- AboutLibraries 15.2.0 plugin on `:app` and `:desktop` (offline; texts in `config/aboutlibraries/`, refreshed by
+  `tools/licenses/fetch_license_texts.py`).
+- `buildSrc/ThirdPartyNoticesTask` writes `THIRD_PARTY_NOTICES.txt`. The build fails when a component has no text.
+- Wired in as an Android asset, a desktop resource and the installer's `appResourcesRootDir/common`.
+- `third_party/webrtc-kmp/MODIFICATIONS.md` plus headers on the modified files; root `NOTICE` rewritten.
+- ADR-043. Audit C2/C3 corrected (no upstream NOTICE exists; only one jar carries a NOTICE; Skia was missed).
+
+### Verification
+`:app:generateThirdPartyNotices`, `:desktop:generateThirdPartyNotices` and `:desktop:prepareAppResources` pass with
+the configuration cache on. 151 and 94 components; every one has a licence text. `:app:assembleDebug` and
+`:desktop:compileKotlinJvm` were run before the commit.
+
+### Remaining
+No in-app screen (owner decision). An MSI/EXE was not built, so the installer copy is staged but unverified.
+
 ## 2026-09-23 — CI run on dev: failed for a Linux-only reason, deferred by the owner
 
 ### Worked on

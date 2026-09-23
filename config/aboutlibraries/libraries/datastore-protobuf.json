@@ -1,0 +1,6 @@
+{
+  "uniqueId": "^androidx\\.datastore:datastore\\-preferences\\-external\\-protobuf$::regex",
+  "licenses": [
+    "protobuf-bsd"
+  ]
+}

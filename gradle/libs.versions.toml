@@ -183,4 +183,8 @@ kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "ko
 # Kotlin version) and `org.jetbrains.compose` (the `compose` dependency DSL and the
 # `composeResources/` -> `Res` accessor generation, versioned independently).
 jetbrains-compose = { id = "org.jetbrains.compose", version.ref = "jetbrainsCompose" }
+# Audit C1 (ADR-043). BUILD-TIME ONLY: collects every shipped dependency and its licence so
+# `THIRD_PARTY_NOTICES.txt` is generated, not hand-kept. No runtime library is added (the app
+# reads the generated text file). Apache-2.0, github.com/mikepenz/AboutLibraries.
+aboutlibraries = { id = "com.mikepenz.aboutlibraries.plugin", version = "15.2.0" }
 

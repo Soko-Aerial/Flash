@@ -1781,3 +1781,47 @@ the codes differ, tampered PAIRED); `PairingSessionStateMachineTest` (33); `Flas
 A QR/NFC out-of-band channel exists; then the SPKI can be authenticated directly and the human comparison
 becomes a fallback.
 
+## ADR-043 — Third-party notices are generated at build time, offline, with a missing-text gate
+
+### Decision
+`:app` and `:desktop` apply the AboutLibraries Gradle plugin 15.2.0 (Apache-2.0, **build-time only**, no
+runtime library). A `ThirdPartyNoticesTask` in `buildSrc` turns its output into
+`THIRD_PARTY_NOTICES.txt`, which ships as:
+- an Android asset (generated from the release runtime classpath for every variant);
+- a desktop classpath resource;
+- a file in the installer's app resources (`appResourcesRootDir/common`).
+
+The plugin runs with `offlineMode = true`. Every licence text is checked in under `config/aboutlibraries/`
+and refreshed by `tools/licenses/fetch_license_texts.py`. The build **fails** when a component has no
+licence text.
+
+### Context
+Audit C1–C3 (2026-09-23): the APK and the installers redistributed BSD/Apache code without any notice.
+
+### Why this shape
+- **Offline, checked-in texts.** Online, the plugin downloads texts during the build and silently drops
+  them on failure, so the notice would depend on the build machine's network.
+- **Native code.** libwebrtc (both platforms), Skia inside skiko (desktop), SQLCipher with SQLite and
+  LibTomCrypt (Android) and SQLite3MultipleCiphers (desktop) ship no licence metadata. Their texts are
+  attached, via regex overrides, to the artifact that carries them, so a desktop-only payload never
+  appears in the Android list. libwebrtc's per-component list comes from webrtc-sdk's generated
+  `WEBRTC.md` (m92) plus the six components M125 added. Listing extra components is harmless;
+  omitting one is not.
+- **The vendored `webrtc-kmp` fork** is invisible to the plugin (composite substitution), so it is added
+  as a config-only entry.
+- **NOTICE files (Apache §4(d)).** A scan of every shipped jar and aar found exactly one
+  (`jakarta.inject-api` 2.0.1); webrtc-java's NOTICE lives in its repository. Both are included. A
+  build-time jar scan was judged not worth its cost at 1 hit in about 200 artifacts. Re-scan when
+  dependencies change.
+- **`buildSrc`**: a task class declared in a `.kts` script compiles as an inner class, which Gradle
+  can't instantiate and the configuration cache (enabled) can't store.
+
+### Alternatives considered
+- Google `oss-licenses-plugin`: Android-only, and it produces no text for native code.
+- A hand-written notices file: goes stale on the first dependency bump, and nothing catches it.
+
+### Not done (owner decision, 2026-09-23)
+No in-app "Open-source licences" screen. The file ships inside the APK and the installers.
+
+### Revisit when
+A new native payload is added, or a POM changes its licence (the gate fails and names it).

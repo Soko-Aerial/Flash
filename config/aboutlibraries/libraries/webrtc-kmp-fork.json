@@ -1,0 +1,10 @@
+{
+  "uniqueId": "com.shepeliev:webrtc-kmp",
+  "licenses": [
+    "Apache-2.0"
+  ],
+  "name": "WebRTC KMP (modified fork)",
+  "artifactVersion": "0.125.11-flash-1",
+  "description": "Fork of shepeliev/webrtc-kmp via aschulz90/webrtc-kmp, modified by the Flash project. See third_party/webrtc-kmp/MODIFICATIONS.md.",
+  "website": "https://github.com/shepeliev/webrtc-kmp"
+}

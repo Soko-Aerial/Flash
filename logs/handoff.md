@@ -1,5 +1,15 @@
 # Current Handoff
 
+## 2026-09-23 — Audit fix Phase 5 (licensing) DONE; next = Phase 6 (low-end mode)
+- `THIRD_PARTY_NOTICES.txt` is generated at build time (ADR-043) and ships in the APK, the desktop jar and the
+  installer. There is deliberately **no** in-app licences screen (owner decision).
+- When a dependency changes and the build fails with "no licence text for …", run
+  `python tools/licenses/fetch_license_texts.py` after adding the text or override there.
+- The webrtc-kmp fork has `MODIFICATIONS.md`. Update it with every change to `third_party/webrtc-kmp`.
+- CI remains deferred (Linux runner vs Windows-only DPAPI, see FIX-PHASES 4.2).
+
+---
+
 ## 2026-09-23 — Phases 1–3 DEVICE-VERIFIED by the owner; Phase 4 (stability & CI) code done
 
 ### Owner verification

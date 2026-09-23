@@ -123,8 +123,13 @@ first because inbound client authentication (S1) means nothing if TLS can silent
   (`FlashNotificationManager`, `FlashCallService`, `PttSessionService`): posting without `POST_NOTIFICATIONS` on 13+.
 
 ## Phase 5: Licensing (C1, C2, C3)
-- [ ] 5.1 Generated third-party notices, shown in Settings → About and bundled in the installers.
-- [ ] 5.2 `MODIFICATIONS.md` and file headers for the vendored webrtc-kmp fork; carry the upstream NOTICE.
+- [x] 5.1 Generated `THIRD_PARTY_NOTICES.txt` (ADR-043): AboutLibraries 15.2.0 (build-time only, offline) plus a
+  `buildSrc` task. It ships as an Android asset, a desktop resource and a file in the installer. The build fails when
+  any component lacks a licence text. Native payloads are covered: libwebrtc, Skia, SQLCipher/SQLite/LibTomCrypt,
+  SQLite3MultipleCiphers. NOTICE files: jakarta.inject and webrtc-java. 151 components on Android, 94 on desktop.
+  ~~Shown in Settings → About~~: **no in-app screen, by owner decision.** Not verified: an actual MSI/EXE build.
+- [x] 5.2 `third_party/webrtc-kmp/MODIFICATIONS.md` plus header comments on the 7 modified Kotlin files; root
+  `NOTICE` updated. Upstream has no NOTICE to carry (audit corrected).
 
 ## Phase 6: Low-end mode (L4, L1, L2, then measure)
 - [ ] 6.1 L4: drop the whole-file pre-hash; send the digest in `FILE_END`.

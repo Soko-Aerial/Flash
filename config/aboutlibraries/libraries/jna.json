@@ -1,0 +1,7 @@
+{
+  "uniqueId": "^net\\.java\\.dev\\.jna:jna(-platform)?$::regex",
+  "licenses": [
+    "jna-election",
+    "Apache-2.0"
+  ]
+}
