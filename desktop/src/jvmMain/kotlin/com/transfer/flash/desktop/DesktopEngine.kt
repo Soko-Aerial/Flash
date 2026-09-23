@@ -2,6 +2,7 @@
 
 package com.transfer.flash.desktop
 
+import com.transfer.flash.core.persistence.db.runInWriteTransaction
 import com.transfer.flash.core.common.logging.FlashLog
 import com.transfer.flash.core.common.model.FlashDeviceId
 import com.transfer.flash.core.common.model.FlashDeviceKind
@@ -596,6 +597,7 @@ public class DesktopEngine(
                 reactionDao = db.reactionDao(),
                 groupMemberDao = db.groupMemberDao(),
                 groupDeliveryDao = db.groupDeliveryDao(),
+                runInTransaction = { block -> db.runInWriteTransaction(block) },
                 isTrustedPeer = { peerId -> trustStore.isTrusted(FlashDeviceId(peerId)) },
                 isChannelEncrypted = { peerId -> trustStore.getSessionKey(FlashDeviceId(peerId)) != null },
                 onlinePeerIds = network.activeSessions.map { sessions ->

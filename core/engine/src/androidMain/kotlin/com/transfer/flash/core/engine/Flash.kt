@@ -2,6 +2,7 @@
 
 package com.transfer.flash.core.engine
 
+import com.transfer.flash.core.persistence.db.runInWriteTransaction
 import android.content.Context
 import android.util.Log
 import com.transfer.flash.core.common.model.FlashDeviceId
@@ -333,6 +334,7 @@ private class Wiring(
             reactionDao = db.reactionDao(),
             groupMemberDao = db.groupMemberDao(),
             groupDeliveryDao = db.groupDeliveryDao(),
+            runInTransaction = { block -> db.runInWriteTransaction(block) },
             isTrustedPeer = { peerId -> trustStore.isTrusted(peerId) },
             isChannelEncrypted = { peerId -> trustStore.getSessionKey(FlashDeviceId(peerId)) != null },
             onlinePeerIds = networkImpl.activeSessions.map { sessions ->

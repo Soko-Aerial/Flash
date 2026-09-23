@@ -2,6 +2,7 @@
 
 package com.transfer.flash.debug
 
+import com.transfer.flash.core.persistence.db.runInWriteTransaction
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -842,6 +843,7 @@ object DiscoveryEngineHolder {
             reactionDao = db.reactionDao(),
             groupMemberDao = db.groupMemberDao(),
             groupDeliveryDao = db.groupDeliveryDao(),
+            runInTransaction = { block -> db.runInWriteTransaction(block) },
             isTrustedPeer = { peerId -> trustStore.isTrusted(peerId) },
             isChannelEncrypted = { peerId -> trustStore.getSessionKey(peerId) != null },
             // Online indicator: a peer is online iff it has a live session. activeSessions is keyed

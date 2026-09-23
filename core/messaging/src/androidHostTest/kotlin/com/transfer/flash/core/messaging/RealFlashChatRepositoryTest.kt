@@ -157,6 +157,16 @@ class RealFlashChatRepositoryTest {
                 .sortedByDescending { it.sentAt }
                 .take(limit)
 
+        override suspend fun searchConversationMessages(
+            conversationId: String,
+            query: String,
+            limit: Int,
+        ): List<MessageEntity> =
+            messages.values
+                .filter { it.conversationId == conversationId && it.deletedAt == null && it.text.contains(query, ignoreCase = true) }
+                .sortedByDescending { it.sentAt }
+                .take(limit)
+
         override suspend fun existsAttachment(transferId: String): Boolean =
             messages.values.any { it.attachmentTransferId == transferId }
 
@@ -2631,6 +2641,7 @@ class RealFlashChatRepositoryTest {
         groupMemberDao: GroupMemberDao? = null,
         groupDeliveryDao: GroupDeliveryDao? = null,
         trustedPeers: Set<String> = emptySet(),
+        onlinePeerIds: Flow<Set<String>> = MutableStateFlow(trustedPeers + setOf("peer-a", "peer-b", "peer-c", "dev-a", "dev-b", "dev-c")),
         groupSink: (suspend (String, GroupWireFrame) -> Boolean)? = null,
         messageSink: suspend (String, MessageWireFrame) -> Boolean = { _, _ -> true },
         onInboundTextMessage: (String, String?, String) -> Unit = { _, _, _ -> },
@@ -2655,6 +2666,7 @@ class RealFlashChatRepositoryTest {
         isTrustedPeer = { it in trustedPeers || it == localDeviceId },
         groupTransportSink = groupSink?.let { sink -> GroupTransportSink { target, frame -> sink(target, frame) } },
         transportSink = MessageTransportSink { target, frame -> messageSink(target, frame) },
+        onlinePeerIds = onlinePeerIds,
         ioDispatcher = testDispatcher,
         onInboundTextMessage = onInboundTextMessage,
         onInboundTextMessageWithGroupTitle = onInboundTextMessageWithGroupTitle,

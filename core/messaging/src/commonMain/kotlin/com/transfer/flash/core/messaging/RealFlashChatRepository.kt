@@ -85,6 +85,7 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
@@ -196,6 +197,12 @@ public class RealFlashChatRepository(
      * `System.currentTimeMillis()`.
      */
     private val timeSource: FlashTimeSource = SystemTimeSource,
+    /**
+     * Runs [block] as one database write transaction, so an outgoing message row and its outbox
+     * row commit together or not at all. Production passes `FlashDatabase::runInWriteTransaction`;
+     * the inline default suits the fake-DAO tests, which have no database to roll back.
+     */
+    private val runInTransaction: suspend (block: suspend () -> Unit) -> Unit = { it() },
 ) : FlashChatRepository {
 
     private val _chatListState = MutableStateFlow(FlashChatListUiState())
@@ -640,10 +647,11 @@ public class RealFlashChatRepository(
                     val memberIds = members.mapTo(HashSet()) { it.deviceId }
                     val onlineMembers = members.count { it.deviceId in peers.online }
                     val onlineMemberIds = members.filter { it.deviceId in peers.online }.mapTo(HashSet()) { it.deviceId }
+                    val activeTypingMembers = typingStates[conversationId]?.toMap().orEmpty()
                     val activeTypingNames = if (onlineMembers > 0) {
-                        typingByConversation[conversationId].orEmpty().filter { name ->
-                            members.any { it.displayName == name && it.deviceId in onlineMemberIds }
-                        }
+                        activeTypingMembers.filter { (memberId, _) ->
+                            memberId in onlineMemberIds
+                        }.values.toList()
                     } else {
                         emptyList()
                     }
@@ -988,45 +996,7 @@ public class RealFlashChatRepository(
                 sendGroupText(conversation, trimmed, now, localId, replyToId = null, replyToPreview = null)
                 return@launch
             }
-            // 1. Write message row
-            val messageEntity = MessageEntity(
-                localId = localId,
-                conversationId = conversationId,
-                senderId = localDeviceId,
-                senderName = localDisplayName,
-                text = trimmed,
-                sentAt = now,
-                status = "PENDING",
-            )
-            messageDao.insert(messageEntity)
-
-            // 2. Ensure conversation exists in DB. Title uses the friendly name when known —
-            // never the raw conversationId, which (via @Upsert full-row replace) would otherwise
-            // clobber a good inbound-set title with the peer's device UUID.
-            conversationDao.upsert(
-                ConversationEntity(
-                    id = conversationId,
-                    title = peerNameResolver(conversationId)?.ifBlank { null } ?: conversationId,
-                    isGroup = false,
-                    sortOrder = now,
-                ),
-            )
-
-            // 3. Clear draft
-            draftDao.clear(conversationId)
-
-            // 4. Enqueue into outbox
-            outboxDao.enqueue(
-                OutboxEntity(
-                    localId = localId,
-                    attempts = 0,
-                    nextAttemptAt = now,
-                    payloadJson = trimmed,
-                    createdAt = now,
-                ),
-            )
-
-            // 5. Trigger outbox drain immediately
+            enqueueDirectText(conversationId, trimmed, now, localId, replyToId = null, replyToPreview = null)
             drainOutboxOnce()
         }
     }
@@ -1044,21 +1014,41 @@ public class RealFlashChatRepository(
                 sendGroupText(conversation, trimmed, now, localId, replyToId, replyToPreview)
                 return@launch
             }
-            // Mirrors sendText but stamps the reply columns so the row (and its outbound frame,
-            // reconstructed from the row in the drain) carries the quote to the peer (#8).
+            enqueueDirectText(conversationId, trimmed, now, localId, replyToId, replyToPreview)
+            drainOutboxOnce()
+        }
+    }
+
+    /**
+     * Writes a direct (1:1) outgoing text: message row, conversation upsert, draft clear and outbox
+     * row in one transaction, so a process kill can never leave a PENDING row the drain cannot see.
+     * Reply columns are stamped when present so the drain-rebuilt frame carries the quote (#8).
+     */
+    private suspend fun enqueueDirectText(
+        conversationId: String,
+        text: String,
+        now: Long,
+        localId: String,
+        replyToId: String?,
+        replyToPreview: String?,
+    ) {
+        runInTransaction {
             messageDao.insert(
                 MessageEntity(
                     localId = localId,
                     conversationId = conversationId,
                     senderId = localDeviceId,
                     senderName = localDisplayName,
-                    text = trimmed,
+                    text = text,
                     sentAt = now,
                     status = "PENDING",
                     replyToId = replyToId,
                     replyToPreview = replyToPreview,
                 ),
             )
+            // Title uses the friendly name when known — never the raw conversationId, which (via
+            // @Upsert full-row replace) would otherwise clobber a good inbound-set title with the
+            // peer's device UUID.
             conversationDao.upsert(
                 ConversationEntity(
                     id = conversationId,
@@ -1073,11 +1063,10 @@ public class RealFlashChatRepository(
                     localId = localId,
                     attempts = 0,
                     nextAttemptAt = now,
-                    payloadJson = trimmed,
+                    payloadJson = text,
                     createdAt = now,
                 ),
             )
-            drainOutboxOnce()
         }
     }
 
@@ -2230,7 +2219,9 @@ public class RealFlashChatRepository(
                 outboxDao.delete(item.localId)
                 continue
             }
-            val success = transportSink?.send(wireFrame.conversationId, wireFrame) == true
+            val success = sendWithTimeout(wireFrame.localId, wireFrame.conversationId) {
+                transportSink?.send(wireFrame.conversationId, wireFrame) == true
+            }
             if (success) {
                 // Single tick, unchanged — the bytes are on the wire. The row itself survives
                 // until the peer's DeliveryReceipt deletes it (see the DeliveryReceipt branch of
@@ -2289,13 +2280,15 @@ public class RealFlashChatRepository(
         val results = coroutineScope {
             pending.map { delivery ->
                 async {
-                    val sent = sink.send(delivery.memberId, frame)
+                    val sent = sendWithTimeout(item.localId, delivery.memberId) {
+                        sink.send(delivery.memberId, frame)
+                    }
                     delivery.memberId to sent
                 }
             }.awaitAll()
         }
         var anySent = false
-        results.forEach { (memberId, sent) ->
+        for ((memberId, sent) in results) {
             if (sent) anySent = true
             deliveries.reschedule(
                 messageId = item.localId,
@@ -2306,6 +2299,48 @@ public class RealFlashChatRepository(
         }
         if (anySent) messageDao.updateStatusIfUnacknowledged(item.localId, "SENT")
         outboxDao.rescheduleAttempt(item.localId, now + backoffDelayMs(item.attempts + 1))
+    }
+
+    /**
+     * One outbox wire dispatch, bounded in time and never fatal to the batch.
+     *
+     * A peer whose TCP window is full blocks `WsConnection.sendText` in a kernel write until the
+     * keepalive watchdog eventually closes the socket (~45 s), and the drain holds [drainMutex]
+     * across the batch — so one stalled peer stalls delivery for every other peer. Treat a
+     * [SEND_TIMEOUT_MS] overrun as "not sent": the row stays in the outbox and re-enters backoff.
+     * Re-delivery is safe because ingestion is idempotent on `localId` (C6.2).
+     *
+     * NOT a substitute for real backpressure — `BoundedSendQueue` is still not wired into
+     * `WsConnection` (investigation §1.2 D); that needs an ADR because it changes the transport's
+     * write path for chat AND transfer frames.
+     */
+    private suspend fun sendWithTimeout(
+        localId: String,
+        target: String,
+        send: suspend () -> Boolean,
+    ): Boolean {
+        // The write MUST run in its own job: `WsConnection.send` blocks inside
+        // `synchronized(writeLock)` on the socket stream and never suspends, so a timeout wrapped
+        // directly around it could not fire — cancellation is only observed at a suspension point.
+        // `await()` is that suspension point; on timeout the orphan job stays blocked until the
+        // socket closes, but the drain moves on.
+        // Deliberately the scope's own context, not [ioDispatcher]: a stuck write must not occupy
+        // the dispatcher the rest of the repository's IO work is serialized on.
+        val dispatch = scope.async {
+            try {
+                send()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                FlashLog.w("CHAT", "Transport send failed: $localId -> $target: ${e.message}", e)
+                false
+            }
+        }
+        val result = withTimeoutOrNull(SEND_TIMEOUT_MS) { dispatch.await() }
+        if (result == null) {
+            FlashLog.w("CHAT", "Transport send timed out after ${SEND_TIMEOUT_MS}ms: $localId -> $target")
+        }
+        return result == true
     }
 
     /**
@@ -2909,6 +2944,11 @@ public class RealFlashChatRepository(
         // [drainOutboxLoop] uses to come straight back instead of waiting on a deadline that has
         // already passed.
         const val OUTBOX_BATCH_LIMIT = 16
+
+        // Per-item wire-dispatch bound (see sendWithTimeout). Well above a healthy LAN write and
+        // well below the keepalive watchdog's ~45 s socket close, so a zero-window peer costs the
+        // batch seconds, not the full watchdog window.
+        const val SEND_TIMEOUT_MS = 10_000L
 
         // Falling-edge hold for the presence dot (ERROR-026). Long enough to cover the WS layer's
         // own recovery — the dialing side redials from a ~1 s base and the accepting side's backup
