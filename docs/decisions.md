@@ -1730,3 +1730,54 @@ no live session to protect.
 Device evidence shows either that the wake-up never fires on the target handsets (then the OEM
 autostart prompt is the only lever left), or that the outbox is emptied by other means before it
 fires (then this is dead weight and should be removed).
+
+## ADR-042 — Pairing protocol v2: commit-then-reveal code bound to the TLS identities and ephemeral keys
+
+### Decision
+Replace the v1 numeric comparison with a Bluetooth-style commitment protocol (shape in
+`docs/security.md` §3.1, primitives in `core/security/.../pairing/PairingV2.kt`):
+- The initiator commits to a fresh 16-byte nonce in `PAIR_REQUEST`; the responder reveals its nonce in
+  a new `PAIR_NONCE` frame; the initiator opens its commitment in a new `PAIR_REVEAL` frame.
+- The 6-digit code is `H(fp_I ‖ fp_R ‖ epk_I ‖ epk_R ‖ N_I ‖ N_R) mod 10^6`: role-ordered,
+  length-prefixed, domain-separated.
+- Each side refuses a pairing fingerprint that is not the key TLS pinned for that peer (new required
+  `DefaultFlashPairingProtocol(peerIdentityPin = …)`).
+- `PAIRED` must repeat exactly the fingerprint and ephemeral key the code covered.
+- One shared `PairingWireCodec` replaces the app's and the desktop's private codecs.
+
+Owner decisions (2026-09-23): existing v1 pairings are **kept but marked unverified** with a
+"Verify" action; pairing with a v1 peer is **refused** with "update Flash on the other device".
+
+### Context
+Audit S2 found v1's code derived from the two static fingerprints only (grindable in seconds).
+Implementing the fix exposed two worse gaps: the code covered neither the ephemeral keys that become
+the E2E session key nor the key TLS authenticated, so a man-in-the-middle could relay the real
+fingerprints (codes match, users approve) while holding both TLS sessions and the session key.
+
+### Alternatives considered
+- **Longer code only** (8–10 digits). Raises the grinding cost but fixes neither the ephemeral-key
+  substitution nor the TLS-binding gap.
+- **QR code carrying the SPKI.** Stronger (no human comparison) and still the right future option,
+  but needs a camera flow on both platforms; not a drop-in fix.
+- **Keep v1 for mixed fleets with a warning.** Rejected by the owner: it keeps creating forceable pairings.
+
+### Consequences
+- **Wire-protocol break for pairing only:** v2 cannot pair with 2.0.0-beta devices; chat, calls and
+  transfers with already-paired v1 peers keep working (their pins are enforced by audit S1).
+- `DefaultFlashPairingProtocol` gained a required constructor parameter (public API change).
+- `PairingPhase` gained `AwaitingPeerNonce` and `AwaitingPeerReveal`; exhaustive `when`s in hosts updated.
+- `FlashTrustStore` gained `markVerified`/`isVerified` (default no-op/false; implemented in both stores).
+- The interop fixtures (`DesktopInteropHarness`, `HarnessTestSupport`) now run real TLS, the only way a
+  v2 pairing can succeed, which makes `DesktopPairingLoopbackTest` an end-to-end test of S1 + S3 + v2.
+
+### Verification
+`PairingV2Test` (7) and `PairingWireCodecTest` (5) on host + JVM; `DefaultFlashPairingProtocolTest` (14,
+including v1 refused, identity mismatch on both sides, forged reveal, substituted ephemeral key making
+the codes differ, tampered PAIRED); `PairingSessionStateMachineTest` (33); `FlashPairingCoordinatorTest`
+(6, including v1 peer refused and a non-TLS-pinned claimant never shown a code);
+`DesktopPairingLoopbackTest` over real TLS sockets. **Not device-verified.**
+
+### Revisit when
+A QR/NFC out-of-band channel exists; then the SPKI can be authenticated directly and the human comparison
+becomes a fallback.
+
