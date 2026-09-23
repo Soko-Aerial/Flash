@@ -23,6 +23,11 @@ class WindowsContextMenuManagerTest {
 
     @Test
     fun setContextMenuEnabledCreatesCommandSubkeySuccessfully() {
+        // Drives reg.exe against the real HKCU hive: Windows only (audit B5, Linux CI).
+        org.junit.Assume.assumeTrue(
+            "registry test runs on Windows only",
+            System.getProperty("os.name", "").lowercase().contains("win"),
+        )
         val testDir = tempFolder.newFolder("reg_test_dir")
         val success = WindowsContextMenuManager.setContextMenuEnabled(true, testDir)
         assertTrue("setContextMenuEnabled should return true", success)
