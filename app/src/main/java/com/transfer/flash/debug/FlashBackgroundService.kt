@@ -43,6 +43,7 @@ class FlashBackgroundService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        activeInstance = this
         scope.launch {
             runCatching { DiscoveryEngineHolder.ensureStarted(applicationContext) }
                 .onFailure { Log.w(TAG, "engine start failed in background service", it) }
@@ -51,9 +52,7 @@ class FlashBackgroundService : Service() {
             promotionRefused.set(false)
         } else {
             promotionRefused.set(true)
-            Log.w(TAG, "Foreground promotion refused (background start restriction) — stopping service instance; engine keeps running in-process with its power locks held, promotion will be retried")
-            stopSelf()
-            return
+            Log.w(TAG, "Foreground promotion refused (background start restriction) — retaining service instance in background; promotion will be retried upon screen-on / network availability")
         }
 
         // Observe active transfers to update ongoing notification with progress, speed, ETA, and cancel action
@@ -93,28 +92,31 @@ class FlashBackgroundService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        if (activeInstance == this) {
+            activeInstance = null
+        }
         scope.cancel()
         super.onDestroy()
     }
 
     /**
-     * Android 15+ (API 35) Foreground Service timeout handler for dataSync execution limits.
-     * Cleanly cancels any ongoing transfers to avoid crash/kill by the platform.
+     * Android 15+ (API 35) dataSync six-hour limit. The platform contract is `stopSelf()` within a
+     * few seconds, else `RemoteServiceException` ("did not stop within its timeout"); re-typing the
+     * service via `startForeground` is not a documented way out
+     * (developer.android.com/develop/background-work/services/fgs/timeout, checked 2026-09-22).
+     * The engine and its power locks live in [DiscoveryEngineHolder], not here, so stopping the
+     * service does not take the mesh down; promotion is retried on the next [start].
      */
     override fun onTimeout(startId: Int, fgsType: Int) {
         Log.w(TAG, "Foreground service timeout reached: startId=$startId, fgsType=$fgsType")
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM &&
-            (fgsType and ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC) != 0
-        ) {
-            scope.launch {
-                val transfers = DiscoveryEngineHolder.currentTransfers()
-                transfers?.activeTransfers?.value?.forEach { transfer ->
-                    if (transfer.state == FlashTransferState.Transferring) {
-                        runCatching { transfers.cancelTransfer(transfer.id) }
-                    }
-                }
+        val transfers = DiscoveryEngineHolder.currentTransfers()
+        transfers?.activeTransfers?.value?.forEach { transfer ->
+            if (transfer.state == FlashTransferState.Transferring) {
+                // Not [scope]: stopSelf() → onDestroy() cancels it before these could run.
+                timeoutCleanupScope.launch { runCatching { transfers.cancelTransfer(transfer.id) } }
             }
         }
+        stopSelf()
         super.onTimeout(startId, fgsType)
     }
 
@@ -262,6 +264,12 @@ class FlashBackgroundService : Service() {
         const val EXTRA_TRANSFER_ID = "extra_transfer_id"
 
         private val promotionRefused = AtomicBoolean(false)
+        private val timeoutCleanupScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        @Volatile
+        private var activeInstance: FlashBackgroundService? = null
+
+        /** True while a service instance exists — i.e. something else owns the engine's lifetime. */
+        fun isActive(): Boolean = activeInstance != null
 
         fun start(context: Context) {
             val intent = Intent(context.applicationContext, FlashBackgroundService::class.java)
@@ -275,7 +283,13 @@ class FlashBackgroundService : Service() {
         fun retryPromotionIfRefused(context: Context) {
             if (!promotionRefused.get()) return
             Log.i(TAG, "Retrying refused foreground promotion")
-            start(context)
+            val current = activeInstance
+            if (current != null && current.startAsForeground()) {
+                promotionRefused.set(false)
+                Log.i(TAG, "Foreground promotion succeeded on active instance")
+            } else {
+                start(context)
+            }
         }
 
         fun stop(context: Context) {
