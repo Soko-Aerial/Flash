@@ -1,5 +1,23 @@
 # Progress Log
 
+## 2026-09-23 — Audit fix Phase 4 (stability & CI)
+
+### Changed
+See the handoff entry of the same date (commits `710d851`, `4542220`, `66fa685`).
+
+### Verification
+App lint 0 errors; `SuspendCatchingTest` (4); the smoke test skips under `CI=true` (6/6 skipped) and runs locally
+(6/6 pass); network, engine, desktop and app suites green.
+
+### Problems
+My claim that `withTimeoutOrNull { runCatching { await() } }` reported timeouts as failures was disproved by the
+test written to pin it. Retracted in code comments, the checklist and the audit.
+
+### Next AI
+Push `dev` (owner's call), read the Actions result, fix whatever Linux-only failures appear, then Phase 5 (licensing).
+
+---
+
 ## 2026-09-23 — Audit fix Phase 3 (pairing protocol v2)
 
 ### Changed
