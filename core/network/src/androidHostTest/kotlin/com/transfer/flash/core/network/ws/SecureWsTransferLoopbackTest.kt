@@ -8,6 +8,7 @@ import java.util.concurrent.TimeUnit
 import java.security.MessageDigest
 import kotlinx.coroutines.runBlocking
 import org.junit.After
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
@@ -95,6 +96,71 @@ class SecureWsTransferLoopbackTest {
                 clientListener.received[connection]?.singleOrNull() == "pong-over-tls"
             }
         }
+    }
+
+    @Test(timeout = 15_000L)
+    fun `manual dial with no known device id completes TLS and surfaces the leaf for binding`() = runBlocking {
+        // ADR-040. Before this, a manual IP dial to a peer that was never discovered could not get
+        // past TLS: with no expectedDeviceId the trust manager threw "pin evaluation impossible".
+        val serverListener = RecordingListener()
+        server = WsTransferServer(
+            connectionListener = serverListener,
+            onConnection = { it.start() },
+            tls = TlsOptions(
+                pinVerifier = FlashPinVerifier { _, _ -> true },
+                keyManagers = serverIdentity.keyManagers,
+            ),
+        ).also { it.start() }
+
+        val clientListener = RecordingListener()
+        client = WsTransferClient(
+            null,
+            clientListener,
+            TlsOptions(
+                // Would reject everything if it were consulted during the handshake; the point of
+                // the deferral is that it is NOT consulted until HELLO names the peer.
+                pinVerifier = FlashPinVerifier { _, _ -> false },
+                keyManagers = clientIdentity.keyManagers,
+                expectedDeviceId = null,
+            ),
+        )
+
+        val connection = client!!.connect("127.0.0.1", server!!.listenPort, peerDeviceId = null)
+        connection.start()
+
+        assertEquals(
+            "the server's leaf must be surfaced so connectManual can run isPinned() after HELLO",
+            serverFpHex,
+            connection.deferredPeerLeafFingerprintHex,
+        )
+    }
+
+    @Test(timeout = 15_000L)
+    fun `a dial that names the peer still fails closed on a wrong pin`() = runBlocking {
+        // The deferral must not leak into ordinary dials: naming the peer keeps the pin mandatory.
+        val serverListener = RecordingListener()
+        server = WsTransferServer(
+            connectionListener = serverListener,
+            onConnection = { it.start() },
+            tls = TlsOptions(
+                pinVerifier = FlashPinVerifier { _, _ -> true },
+                keyManagers = serverIdentity.keyManagers,
+            ),
+        ).also { it.start() }
+
+        client = WsTransferClient(
+            null,
+            RecordingListener(),
+            TlsOptions(
+                pinVerifier = FlashPinVerifier { _, _ -> false },
+                keyManagers = clientIdentity.keyManagers,
+                expectedDeviceId = deviceA,
+            ),
+        )
+
+        val outcome = runCatching { client!!.connect("127.0.0.1", server!!.listenPort, peerDeviceId = deviceA) }
+
+        assertTrue("expected the handshake to fail closed", outcome.isFailure)
     }
 
     @Test(timeout = 15_000L)

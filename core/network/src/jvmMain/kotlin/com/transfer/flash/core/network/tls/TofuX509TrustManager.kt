@@ -53,6 +53,14 @@ internal class TofuX509TrustManager(
     private val pinVerifier: FlashPinVerifier,
     private val expectedDeviceId: String?,
     private val onKeyChanged: (presentedFingerprintHex: String) -> Unit = {},
+    /**
+     * Manual-dial only (ADR-040). With no [expectedDeviceId] there is nothing to evaluate a pin
+     * against, so instead of failing closed, report the leaf via [onLeafObserved] and let the
+     * caller run the SAME `isPinned` check once `FLASH_WS_HELLO` names the peer. Never set this
+     * for a dial that already knows which device it expects.
+     */
+    private val deferPinWhenDeviceIdUnknown: Boolean = false,
+    private val onLeafObserved: (leafFingerprintHex: String) -> Unit = {},
 ) : X509ExtendedTrustManager() {
 
     override fun checkClientTrusted(chain: Array<X509Certificate>, authType: String) =
@@ -82,8 +90,15 @@ internal class TofuX509TrustManager(
         }
         val leafFp = fingerprintHexOrNull(chain[0])
             ?: throw rejected(role, null, "leaf certificate exposes no usable SubjectPublicKeyInfo")
-        val deviceId = expectedDeviceId
-            ?: throw rejected(role, leafFp, "no expected device id — pin evaluation impossible")
+        val deviceId = expectedDeviceId ?: if (deferPinWhenDeviceIdUnknown) {
+            // Identity is not known YET (manual IP dial). The handshake may complete; the binding
+            // check is owed by the caller after HELLO, and the session must not carry traffic
+            // before it passes. See ADR-040.
+            onLeafObserved(leafFp)
+            return
+        } else {
+            throw rejected(role, leafFp, "no expected device id — pin evaluation impossible")
+        }
 
         val pinned = chain.any { cert ->
             val fp = fingerprintHexOrNull(cert)

@@ -62,6 +62,12 @@ public class WsConnection(
     private val readTimeoutMs: Int = DEFAULT_READ_TIMEOUT_MS,
     private val livenessTimeoutMs: Long = DEFAULT_LIVENESS_TIMEOUT_MS,
     private val nowMs: () -> Long = System::currentTimeMillis,
+    /**
+     * SPKI fingerprint of the peer's TLS leaf, recorded ONLY when the dial could not name the peer
+     * up front (manual IP) and pin evaluation was therefore deferred (ADR-040). Non-null means the
+     * caller still owes `FlashPinVerifier.isPinned` against the id from `FLASH_WS_HELLO`.
+     */
+    public val deferredPeerLeafFingerprintHex: String? = null,
 ) {
     public interface Listener {
         public fun onTextMessage(connection: WsConnection, text: String)

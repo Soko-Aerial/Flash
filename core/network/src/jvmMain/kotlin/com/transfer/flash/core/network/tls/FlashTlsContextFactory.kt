@@ -45,9 +45,18 @@ internal object FlashTlsContextFactory {
         expectedDeviceId: String?,
         keyManagers: Array<KeyManager>? = null,
         onKeyChanged: (presentedFingerprintHex: String) -> Unit = {},
+        /** Manual-dial deferral (ADR-040); see [TofuX509TrustManager]. */
+        deferPinWhenDeviceIdUnknown: Boolean = false,
+        onLeafObserved: (leafFingerprintHex: String) -> Unit = {},
     ): SSLContext = createContext(
         keyManagers,
-        TofuX509TrustManager(pinVerifier, expectedDeviceId, onKeyChanged),
+        TofuX509TrustManager(
+            pinVerifier,
+            expectedDeviceId,
+            onKeyChanged,
+            deferPinWhenDeviceIdUnknown,
+            onLeafObserved,
+        ),
     )
 
     /**

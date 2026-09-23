@@ -160,6 +160,13 @@ public class WsFlashNetwork(
      */
     private val earlyFrames = ConcurrentHashMap<WsConnection, ConcurrentLinkedQueue<Any>>()
 
+    /**
+     * Frames rescued from a connection that died before ANY session owned its peer (glare loser
+     * finishing first). Keyed by peer so the winner drains them at registration. Bounded: a peer
+     * that never registers must not grow this without limit.
+     */
+    private val pendingPeerFrames = ConcurrentHashMap<FlashDeviceId, ConcurrentLinkedQueue<Any>>()
+
     private data class Endpoint(val host: String, val port: Int)
 
     private val _networkState = MutableStateFlow(FlashNetworkState())
@@ -233,6 +240,7 @@ public class WsFlashNetwork(
         pendingHandshakes.keys.forEach { it.close("Network stopped") }
         pendingHandshakes.clear()
         earlyFrames.clear()
+        pendingPeerFrames.clear()
 
         sessionsById.values.forEach { it.disconnect("Network stopped") }
         sessionsById.clear()
@@ -340,6 +348,32 @@ public class WsFlashNetwork(
             }
             else -> handshakeOutcome.getOrThrow()
         }
+
+
+            // ADR-040: the dial could not name the peer, so the TLS handshake accepted its leaf
+            // without evaluating a pin. HELLO has now named it — run the SAME check here, before
+            // the session is registered or carries a single frame. TofuPinVerifier records the pin
+            // on genuine first contact and fails closed when a different key answers for a peer we
+            // already pinned.
+            val deferredLeaf = connection.deferredPeerLeafFingerprintHex
+            if (deferredLeaf != null) {
+                val verifier = tlsOptions?.pinVerifier
+                val bound = verifier != null && verifier.isPinned(peerDevice.id.value, deferredLeaf)
+                if (!bound) {
+                    FlashLog.w(
+                        TAG,
+                        "[tls] manual dial rejected: leaf does not match the pin for " +
+                            "peer=${shortId(peerDevice.id.value)}",
+                    )
+                    connection.close("TLS pin mismatch after HELLO")
+                    return@withContext FlashResult.Failure(
+                        FlashError.PeerUnavailable(
+                            host,
+                            "This device's security key does not match the one Flash trusted before.",
+                        ),
+                    )
+                }
+            }
 
             val session = WsSession(connection, peerDevice, isOutbound = true) { s, _ ->
                 onSessionDisconnected(s)
@@ -472,10 +506,11 @@ public class WsFlashNetwork(
         // line below is I/O (stderr + a file sink on desktop), and the registry lock is shared with
         // every other registration. A `null` here means the session was admitted.
         val rejected = synchronized(registryLock) {
-            if (!hardeningPolicy.canAcceptSession(sessionsById.size)) {
+            val existing = sessionsById[session.peerDeviceId]
+            val isReplacement = existing != null
+            if (!isReplacement && !hardeningPolicy.canAcceptSession(sessionsById.size)) {
                 return@synchronized "session cap reached (${sessionsById.size} live)"
             }
-            val existing = sessionsById[session.peerDeviceId]
             if (existing != null && existing !== session) {
                 val keepExisting = if (existing.transportType == session.transportType) {
                     // Same rank: a deterministic tiebreak is meaningful only for real glare, i.e.
@@ -502,8 +537,10 @@ public class WsFlashNetwork(
             // local-disconnect veto — a later unexpected drop is then eligible for the backup redial.
             localDisconnects.remove(session.peerDeviceId.value)
 
-            // Flush any frames that arrived between handshake completion and registration.
+            // Flush any frames that arrived between handshake completion and registration, then
+            // any parked by a connection that lost the glare before this one registered.
             drainEarlyFrames(session.connection, session)
+            drainPendingPeerFrames(session)
 
             _activeSessions.value = sessionsById.toMap()
             null
@@ -612,11 +649,41 @@ public class WsFlashNetwork(
      */
     private fun handOffEarlyFrames(connection: WsConnection, peerDeviceId: FlashDeviceId) {
         val survivor = sessionsById[peerDeviceId]
-        if (survivor == null || survivor.connection === connection) {
+        if (survivor != null && survivor.connection !== connection) {
+            drainEarlyFrames(connection, survivor)
+            return
+        }
+        if (survivor != null) {
+            // This connection IS the live session's own: its frames are delivered normally.
             earlyFrames.remove(connection)
             return
         }
-        drainEarlyFrames(connection, survivor)
+        // Nobody owns the peer yet — the loser of a glare can finish BEFORE the winner registers.
+        // Park the frames per-peer (not per-socket) so registerSession can still deliver them;
+        // dropping them here costs the sender its DeliveryReceipt forever (ERROR-031).
+        val queued = earlyFrames.remove(connection) ?: return
+        if (queued.isEmpty()) return
+        val mailbox = pendingPeerFrames.computeIfAbsent(peerDeviceId) { ConcurrentLinkedQueue() }
+        queued.forEach { frame ->
+            if (mailbox.size >= MAX_PENDING_PEER_FRAMES) {
+                mailbox.poll()
+            }
+            mailbox.add(frame)
+        }
+    }
+
+    /**
+     * Delivers frames parked by [handOffEarlyFrames] for this peer, once a session finally owns it.
+     */
+    private fun drainPendingPeerFrames(into: WsSession) {
+        val queued = pendingPeerFrames.remove(into.peerDeviceId) ?: return
+        while (true) {
+            val frame = queued.poll() ?: break
+            when (frame) {
+                is String -> into.onTextReceived(frame)
+                is ByteArray -> into.onBinaryReceived(frame)
+            }
+        }
     }
 
     /**
@@ -974,5 +1041,8 @@ public class WsFlashNetwork(
          * schedules again, whose session would otherwise sit in the registry forever (ERROR-031).
          */
         private const val STALE_SESSION_AFTER_MS = 45_000L
+
+        /** Per-peer cap on frames parked for a session that has not registered yet. */
+        private const val MAX_PENDING_PEER_FRAMES = 64
     }
 }

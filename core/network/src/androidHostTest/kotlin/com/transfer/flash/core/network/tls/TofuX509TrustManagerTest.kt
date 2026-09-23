@@ -36,6 +36,56 @@ class TofuX509TrustManagerTest {
     }
 
     @Test
+    fun deferralIsOffByDefaultSoAnUnknownDeviceIdStillFailsClosed() {
+        // Guards the ADR-040 opt-in: every dial that is NOT a manual IP must keep failing closed.
+        val observed = mutableListOf<String>()
+        val tm = TofuX509TrustManager({ _, _ -> true }, null, {}, onLeafObserved = observed::add)
+
+        val outcome = runCatching { tm.checkServerTrusted(arrayOf(cert), "ECDHE_ECDSA") }
+
+        assertTrue(outcome.exceptionOrNull() is CertificateException)
+        assertTrue("deferral must not report a leaf when disabled", observed.isEmpty())
+    }
+
+    @Test
+    fun deferredManualDialAcceptsAndReportsTheLeafForPostHelloBinding() {
+        // ADR-040: no device id is known yet (manual IP dial), so the handshake is allowed and the
+        // leaf is handed back; WsFlashNetwork runs isPinned() once HELLO names the peer.
+        val observed = mutableListOf<String>()
+        val keyChanged = mutableListOf<String>()
+        val tm = TofuX509TrustManager(
+            pinVerifier = { _, _ -> error("pin evaluation must not run without a device id") },
+            expectedDeviceId = null,
+            onKeyChanged = keyChanged::add,
+            deferPinWhenDeviceIdUnknown = true,
+            onLeafObserved = observed::add,
+        )
+
+        tm.checkServerTrusted(arrayOf(cert), "ECDHE_ECDSA")
+
+        assertEquals(listOf(fingerprintHex(cert)), observed)
+        assertTrue("deferral is not a key-change event", keyChanged.isEmpty())
+    }
+
+    @Test
+    fun deferralDoesNotApplyOnceADeviceIdIsKnown() {
+        // With an id present the normal pin check runs even when deferral is enabled.
+        val observed = mutableListOf<String>()
+        val tm = TofuX509TrustManager(
+            pinVerifier = { _, _ -> false },
+            expectedDeviceId = "device-a",
+            onKeyChanged = {},
+            deferPinWhenDeviceIdUnknown = true,
+            onLeafObserved = observed::add,
+        )
+
+        val outcome = runCatching { tm.checkServerTrusted(arrayOf(cert), "ECDHE_ECDSA") }
+
+        assertTrue(outcome.exceptionOrNull() is CertificateException)
+        assertTrue(observed.isEmpty())
+    }
+
+    @Test
     fun matchingPinAccepts() {
         val fp = fingerprintHex(cert)
         val events = mutableListOf<String>()

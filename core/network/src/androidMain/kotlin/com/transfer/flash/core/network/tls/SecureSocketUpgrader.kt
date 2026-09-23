@@ -117,14 +117,24 @@ internal object SecureSocketUpgrader {
         pinVerifier: FlashPinVerifier,
         keyManagers: Array<KeyManager>? = null,
         handshakeTimeoutMs: Long = DEFAULT_HANDSHAKE_TIMEOUT_MS,
+        /** Manual-dial deferral (ADR-040): accept an unknown peer's leaf and report it here. */
+        deferPinWhenDeviceIdUnknown: Boolean = false,
+        onLeafObserved: (leafFingerprintHex: String) -> Unit = {},
     ): Result<SSLSocket> = withContext(Dispatchers.IO) {
         val result = runCatching {
             refuseIfTouched(socket)
-            val context = FlashTlsContextFactory.clientContext(pinVerifier, peerDeviceId, keyManagers)
+            val context = FlashTlsContextFactory.clientContext(
+                pinVerifier,
+                peerDeviceId,
+                keyManagers,
+                deferPinWhenDeviceIdUnknown = deferPinWhenDeviceIdUnknown,
+                onLeafObserved = onLeafObserved,
+            )
+            val underlying = if (socket is TrackedSocket) socket.delegate else socket
             val ssl = context.socketFactory.createSocket(
-                socket,
-                socket.inetAddress?.hostAddress ?: "",
-                socket.port,
+                underlying,
+                underlying.inetAddress?.hostAddress ?: "",
+                underlying.port,
                 /* autoClose = */ true,
             ) as SSLSocket
             try {
@@ -185,10 +195,11 @@ internal object SecureSocketUpgrader {
     ): SSLSocket {
         refuseIfTouched(acceptedPlainSocket)
         val context = FlashTlsContextFactory.serverContext(pinVerifier, keyManagers, expectedClientDeviceId)
+        val underlying = if (acceptedPlainSocket is TrackedSocket) acceptedPlainSocket.delegate else acceptedPlainSocket
         val ssl = context.socketFactory.createSocket(
-            acceptedPlainSocket,
-            acceptedPlainSocket.inetAddress?.hostAddress ?: "",
-            acceptedPlainSocket.port,
+            underlying,
+            underlying.inetAddress?.hostAddress ?: "",
+            underlying.port,
             /* autoClose = */ true,
         ) as SSLSocket
         // Legal ONLY because the handshake has not started yet (lazy semantics, research (a)).
@@ -221,7 +232,7 @@ internal object SecureSocketUpgrader {
      * through [delegate].
      */
     private class TrackedSocket(
-        private val delegate: Socket,
+        internal val delegate: Socket,
     ) : Socket(), PlainStreamAccessAudited {
 
         @Volatile
