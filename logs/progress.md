@@ -1,5 +1,20 @@
 # Progress Log
 
+## 2026-09-23 — CI run on dev: failed for a Linux-only reason, deferred by the owner
+
+### Worked on
+Pushed `dev` (0b9bf8c) and read Actions run 35865335860.
+
+### Verification
+Android unit tests, the other KMP module tests and `assembleDebug` passed on `ubuntu-latest`. What failed:
+27 `:desktop:allTests` and 2 `:core:engine:jvmTest` (interop harness) tests. Every failure is an `UnsatisfiedLinkError` /
+`ExceptionInInitializerError` at JNA `NativeLibrary.java:325`, raised when `IdentityKeyVault.Dpapi` (Windows DPAPI)
+initialises on Linux. `:app:lintDebug` did not run, because the earlier step failed.
+
+### Remaining
+The owner said to leave CI out, since the cause is Linux-specific. When it is picked up again: run the jvm tests on
+`windows-latest`, or give the fixtures a non-DPAPI vault. See `docs/audit/FIX-PHASES.md` 4.2.
+
 ## 2026-09-23 — Audit fix Phase 4 (stability & CI)
 
 ### Changed
