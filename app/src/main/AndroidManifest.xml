@@ -24,6 +24,9 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- C7 (calling): camera for video calls (runtime-requested at call start). -->
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Calling works without a camera (audio-only). Without this, CAMERA implies a REQUIRED camera and
+         Play hides the app from camera-less devices (lint PermissionImpliesUnsupportedChromeOsHardware). -->
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
     <!-- C7 (calling): microphone/camera foreground-service types for the in-call FGS
          (Notification.CallStyle, Android 14+ setOngoing). -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />

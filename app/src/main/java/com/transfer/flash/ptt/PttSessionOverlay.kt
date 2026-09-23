@@ -1,5 +1,6 @@
 package com.transfer.flash.ptt
 
+import android.annotation.SuppressLint
 import android.os.SystemClock
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -191,6 +192,8 @@ internal fun formatPttElapsed(elapsedMs: Long): String {
 
 /** 1 Hz stats line; owns its sampled subscription so the card never tick-recomposes. */
 @Composable
+@SuppressLint("StateFlowValueCalledInComposition") // `.value` only seeds collectAsState's
+// initial; the flow itself is collected, so the UI does recompose on change.
 private fun PttStatsText(engine: FlashPtt, talking: Boolean) {
     val stats by remember(engine) {
         engine.stats.sample(1000L)
@@ -219,6 +222,8 @@ private fun PttStatsText(engine: FlashPtt, talking: Boolean) {
  * when the voice does. Static status text replaces it on LOW / reduce-motion.
  */
 @Composable
+@SuppressLint("StateFlowValueCalledInComposition") // `.value` only seeds collectAsState's
+// initial; the flow itself is collected, so the UI does recompose on change.
 private fun PttLevelMeter(engine: FlashPtt) {
     val stats by remember(engine) {
         engine.stats.sample(100L)

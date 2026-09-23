@@ -4,6 +4,9 @@ Source: [`2026-09-23-full-audit.md`](2026-09-23-full-audit.md). Finding IDs (S1,
 Rule for every item: **DONE means a production call site plus a test that fails without the fix.** Name both
 in the checklist line. Device verification is listed separately and is not implied by DONE.
 
+**Phases 1–3 device-verified by the owner on 2026-09-23** (pairing, chat, calls, transfers, and upgrading an
+install with v1 pairings).
+
 Status: `[ ]` not started · `[~]` in progress · `[x]` done (code + test) · `[D]` device-verified
 
 ---
@@ -83,10 +86,20 @@ first because inbound client authentication (S1) means nothing if TLS can silent
   Not device-verified; the Verify affordance has had no UI review against docs/ui (§34).
 
 ## Phase 4: Stability and CI (B1, B2, B5, B3)
-- [ ] 4.1 B1/B2: no `runBlocking` on the main thread in the send and call-invite paths.
+- [x] **4.1 B1/B2: no main-thread blocking.** The Android chat sink now suspends onto IO (`withContext`) for the
+  keystore unseal and the socket write, instead of `runBlocking` on the main looper, which caused an ANR with a stalled
+  peer. The call-invite wait on Android and desktop is a plain suspend `withTimeoutOrNull` (both `sendFrame`s were
+  already `suspend`). The remaining `runBlocking` calls are desktop engine start/stop and `Flash.kt` close, which run
+  off the UI thread at lifecycle edges and were left as they are.
 - [ ] 4.2 B5: tag hardware-dependent tests and exclude them in CI; get CI green; protect `main`.
 - [ ] 4.3 B3: a `runCatchingCancellable` helper and a detekt rule; fix the suspend call sites.
-- [ ] 4.4 **NEW (found by lint, 2026-09-23):** `FlashBackgroundService.kt:137,147,148,213` calls API 26
+- [x] **4.4 lint errors to zero.** Real fixes: `FlashBackgroundService` now uses `NotificationCompat` and gates
+  `createNotificationChannel` on API 26 (it would have crashed on Android 7.x); the manifest declares
+  `uses-feature camera required=false` (Play was hiding the app from camera-less devices). Suppressed with a
+  justification (verified false positives): 5 × `MissingPermission` (already inside `runCatching`; a pre-check would
+  be wrong below API 33) and 3 × `StateFlowValueCalledInComposition` (`.value` is only `collectAsState`'s initial
+  seed). `:app:lintDebug` 0 errors (89 warnings, mostly dependency versions → Phase 7).
+  Original finding: **(found by lint, 2026-09-23):** `FlashBackgroundService.kt:137,147,148,213` calls API 26
   `Notification.Builder(ctx, channel)` / `NotificationChannel` without a version guard while minSdk is 24, so the
   background service would crash on Android 7.x. Also five `MissingPermission` warnings on notification posting
   (`FlashNotificationManager`, `FlashCallService`, `PttSessionService`): posting without `POST_NOTIFICATIONS` on 13+.
