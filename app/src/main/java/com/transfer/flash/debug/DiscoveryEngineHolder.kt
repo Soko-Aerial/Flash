@@ -613,11 +613,9 @@ object DiscoveryEngineHolder {
         // Full-database encryption via SQLCipher with a keystore-wrapped passphrase; explicit
         // migrations, NO destructive fallback (C1.7 / D2) — a schema bump migrates data instead of
         // wiping it, and the on-disk DB is unreadable without this device's keystore.
-        val db = com.transfer.flash.core.persistence.db.FlashDatabaseOpener.openEncrypted(
-            appContext,
-            com.transfer.flash.persistence.KeystorePassphraseProvider(appContext),
-            *com.transfer.flash.core.persistence.db.FlashMigrations.ALL,
-        )
+        // Audit B7: shares the facade's recovery path (and its single passphrase provider), so a lost
+        // keystore key quarantines the unopenable DB instead of crash-looping every launch.
+        val db = com.transfer.flash.core.engine.store.EncryptedDatabaseRecovery.openRecoveringLostKey(appContext)
 
         // ---- receive-side infrastructure (must precede the send factory wiring) ----
         val receivedDir = receivedFilesRoot(appContext).apply { mkdirs() }

@@ -1,5 +1,23 @@
 # Current Handoff
 
+## 2026-09-23 — Audit fix Phase 2 (keys at rest) DONE; next = Phase 3 (pairing protocol v2)
+
+### Done (see `docs/audit/FIX-PHASES.md` for call sites and tests)
+- **2.1** Session keys sealed at rest: AndroidKeyStore AES-GCM on Android, DPAPI on desktop. Legacy plaintext
+  migrated on read; nothing is ever written in the clear (`c0626ad`).
+- **2.2** Backup rules exclude shared prefs and databases from cloud AND device transfer (`4b47c47`).
+- **2.3** Lost DB key: the unopenable DB is quarantined instead of crash-looping; single passphrase provider.
+
+### Found along the way (queued as 4.4)
+Lint: `FlashBackgroundService` uses API 26 notification APIs unguarded (minSdk 24 → crash on Android 7.x), plus five
+`MissingPermission` notification warnings.
+
+### Device checks owed (Phase 1 + 2)
+Two phones + desktop: pair, chat, call, transfer both ways. Upgrade an existing install and confirm chats and pairings
+survive (legacy session keys migrate, same DB passphrase).
+
+---
+
 ## 2026-09-23 — Audit fix Phase 1 (transport trust) DONE; next = Phase 2 (keys at rest)
 
 ### Current branch

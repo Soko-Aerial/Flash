@@ -61,7 +61,13 @@ first because inbound client authentication (S1) means nothing if TLS can silent
   device-to-device transfer on every OEM (developer.android.com/guide/topics/data/autobackup, checked 2026-09-23).
   `external` (received files) is out of cloud backup so large media cannot blow the 25 MB quota. Only the settings
   DataStore is still backed up. Verified: resources compile and `:app:lintDebug` raises no backup-rule issue.
-- [ ] 2.3 Restore lock-out: handle "passphrase blob present, keystore key missing" explicitly.
+- [x] **2.3 Restore lock-out (B7).** `KeystorePassphraseProvider.mintedNewPassphrase` reports when a new passphrase
+  had to be minted (the unwrap failed, or the blob was missing). `EncryptedDatabaseRecovery.openRecoveringLostKey` then
+  moves an existing `flash.db` and its `-wal/-shm/-journal` sidecars to `flash.db.unrecoverable-<ts>*` (renamed, never
+  deleted) before opening, and logs an error. It used to crash on every launch, since destructive migration is forbidden.
+  Both engines use it. The duplicate `:app` provider was deleted (audit B8); it used the same prefs file and alias,
+  so existing installs keep their DB. Test: `EncryptedDatabaseRecoveryTest` (3). Gaps: the user is not told their
+  history was lost (log only); the keystore side is device-only.
 
 ## Phase 3: Pairing protocol v2 (S2)
 - [ ] 3.1 Commit-then-reveal with fresh nonces; the code derives from both keys and both nonces.
