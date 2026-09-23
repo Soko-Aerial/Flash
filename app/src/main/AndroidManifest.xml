@@ -43,6 +43,23 @@
          and the user's "vibrate for calls" setting. Install-time (normal) permission. -->
     <uses-permission android:name="android.permission.VIBRATE" />
 
+    <!-- Package visibility (API 30+) for OemBatteryOptimizationHelper's OEM autostart/battery screens. -->
+    <queries>
+        <package android:name="com.miui.securitycenter" />
+        <package android:name="com.huawei.systemmanager" />
+        <package android:name="com.samsung.android.lool" />
+        <package android:name="com.samsung.android.sm" />
+        <package android:name="com.transsion.phonemaster" />
+        <package android:name="com.coloros.safecenter" />
+        <package android:name="com.oppo.safe" />
+        <package android:name="com.oneplus.security" />
+        <package android:name="com.iqoo.secure" />
+        <package android:name="com.vivo.permissionmanager" />
+        <intent>
+            <action android:name="miui.intent.action.OP_AUTO_START" />
+        </intent>
+    </queries>
+
     <application
         android:name=".di.FlashApplication"
         android:allowBackup="true"

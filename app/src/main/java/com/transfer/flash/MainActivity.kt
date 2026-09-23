@@ -79,6 +79,7 @@ import com.transfer.flash.core.discovery.core.FlashDiscoveryMode
 import com.transfer.flash.di.AppEngine
 import com.transfer.flash.debug.DiscoveryEngineHolder
 import com.transfer.flash.debug.FlashBackgroundService
+import com.transfer.flash.debug.OemBatteryOptimizationHelper
 import com.transfer.flash.ui.chat.FlashChatListScreen
 import com.transfer.flash.ui.chat.FlashConversationScreen
 import com.transfer.flash.ui.navigation.FlashAnimatedScreen
@@ -433,9 +434,9 @@ class MainActivity : ComponentActivity() {
      * Bug 6 (OEM kill layer): asks the system to exempt Flash from AOSP battery
      * optimization (Doze/App Standby). Triggered by the existing Settings "Background
      * transfers" toggle so the request is always user-initiated — the standard pattern
-     * for messengers/transfer apps. Note this covers AOSP only; Transsion/Infinix power
-     * managers ("Phone Master"/"Phoenix") apply their own auto-kill that may need a manual
-     * exemption (Settings → Battery → Flash → Allow background activity). See
+     * for messengers/transfer apps. Once the AOSP exemption is held, the same entry points open
+     * the OEM power manager (Xiaomi autostart, Transsion Phone Master, …) via
+     * [OemBatteryOptimizationHelper], when one resolves on this device. See
      * docs/android-platform-notes.md.
      */
     private fun requestIgnoreBatteryOptimizations() {
@@ -450,8 +451,11 @@ class MainActivity : ComponentActivity() {
                         ),
                     )
                 }
+                return
             }
         }
+        // AOSP exemption already held: the remaining kill layer is the OEM power manager.
+        OemBatteryOptimizationHelper.resolveOemIntent(this)?.let { runCatching { startActivity(it) } }
     }
 
     /**
