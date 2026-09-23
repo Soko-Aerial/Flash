@@ -1,5 +1,32 @@
 # Progress Log
 
+## 2026-09-23 — Full audit + fix Phase 1 (transport trust)
+
+### Worked on
+Full repo audit (`docs/audit/2026-09-23-full-audit.md`), a phased fix plan (`docs/audit/FIX-PHASES.md`), and
+Phase 1: S3, S5, S1, S1b.
+
+### Changed
+- `core/network/.../tls/TransportSecurity.kt` (new): fail-closed TLS construction used by all three engines.
+- `WebSocketCodec` ×2: parameterised message cap, header-first rejection, RFC 6455 control-frame limit.
+  `WsConnection` ×2: per-connection cap raised on HELLO. `WsFlashNetwork`/`JvmWsFlashNetwork`: frames before
+  HELLO close the connection; bounded early-frame queue.
+- `SecureSocketUpgrader`/`FlashTlsContextFactory`/`WsTransferServer` ×2: `needClientAuth` + client-leaf capture;
+  networks bind the leaf to the HELLO id before replying or registering.
+- `core/messaging/.../protocol/DirectChatFamily.kt` (new) + engine guards against plaintext chat from keyed peers.
+
+### Verification
+New tests: `TransportSecurityTest`, 5 in `WebSocketCodecTest`, `InboundIdentityBindingTest` (3),
+`JvmInboundIdentityBindingTest` (2), `DirectChatFamilyTest`. The impersonation test was run with the binding
+disabled and failed (2 of 3), then passed with it enabled. Network, messaging, engine, desktop, app and
+sample-consumer suites green. No device testing.
+
+### Next AI
+Phase 2 (keys at rest). Do not widen 1.4 to "all frames must be FLASH_SEC": calls, groups and transfers are not
+encrypted at the app layer and would break.
+
+---
+
 ## 2026-09-22 — Remaining investigation items
 
 ### Worked on
