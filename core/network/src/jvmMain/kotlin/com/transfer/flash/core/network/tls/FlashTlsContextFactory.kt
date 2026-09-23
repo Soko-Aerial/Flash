@@ -69,9 +69,21 @@ internal object FlashTlsContextFactory {
         keyManagers: Array<KeyManager>? = null,
         expectedDeviceId: String? = null,
         onKeyChanged: (presentedFingerprintHex: String) -> Unit = {},
+        /**
+         * Inbound deferral (audit S1): an accepting server cannot know the client's id until HELLO,
+         * so the client leaf is reported here and bound to the HELLO id by the network layer.
+         */
+        deferPinWhenDeviceIdUnknown: Boolean = false,
+        onLeafObserved: (leafFingerprintHex: String) -> Unit = {},
     ): SSLContext = createContext(
         keyManagers,
-        TofuX509TrustManager(pinVerifier, expectedDeviceId, onKeyChanged),
+        TofuX509TrustManager(
+            pinVerifier,
+            expectedDeviceId,
+            onKeyChanged,
+            deferPinWhenDeviceIdUnknown,
+            onLeafObserved,
+        ),
     )
 
     /** TLSv1.3 preferred, TLSv1.2 fallback, intersected with what the socket actually supports. */

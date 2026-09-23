@@ -192,9 +192,22 @@ internal object SecureSocketUpgrader {
         pinVerifier: FlashPinVerifier,
         keyManagers: Array<KeyManager>,
         expectedClientDeviceId: String? = null,
+        /**
+         * Audit S1: demand the client's certificate. Without this an inbound peer is encrypted but
+         * unauthenticated, and its identity is whatever it writes into HELLO. Every Flash client
+         * already presents its identity certificate when asked.
+         */
+        requireClientCertificate: Boolean = false,
+        onClientLeafObserved: (leafFingerprintHex: String) -> Unit = {},
     ): SSLSocket {
         refuseIfTouched(acceptedPlainSocket)
-        val context = FlashTlsContextFactory.serverContext(pinVerifier, keyManagers, expectedClientDeviceId)
+        val context = FlashTlsContextFactory.serverContext(
+            pinVerifier,
+            keyManagers,
+            expectedClientDeviceId,
+            deferPinWhenDeviceIdUnknown = requireClientCertificate && expectedClientDeviceId == null,
+            onLeafObserved = onClientLeafObserved,
+        )
         val underlying = if (acceptedPlainSocket is TrackedSocket) acceptedPlainSocket.delegate else acceptedPlainSocket
         val ssl = context.socketFactory.createSocket(
             underlying,
@@ -205,6 +218,7 @@ internal object SecureSocketUpgrader {
         // Legal ONLY because the handshake has not started yet (lazy semantics, research (a)).
         ssl.useClientMode = false
         FlashTlsContextFactory.configure(ssl)
+        if (requireClientCertificate) ssl.needClientAuth = true
         return ssl
     }
 

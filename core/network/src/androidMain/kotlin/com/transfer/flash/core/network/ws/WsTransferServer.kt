@@ -95,6 +95,9 @@ public class WsTransferServer(
             inFlightSockets.add(client)
             launch {
                 var activeSocket: Socket = client
+                // Audit S1: the client's TLS leaf, captured when the (lazy) server handshake runs inside
+                // handshake() below, then carried on the WsConnection for the post-HELLO binding.
+                var clientLeaf: String? = null
                 try {
                     runCatching {
                         // TLS mode: track stream access so any pre-wrap touch fails closed, then
@@ -108,13 +111,15 @@ public class WsTransferServer(
                                 options.pinVerifier,
                                 options.keyManagers,
                                 options.expectedDeviceId,
+                                requireClientCertificate = true,
+                                onClientLeafObserved = { fingerprint -> clientLeaf = fingerprint },
                             )
                         }
                         if (secure != null) {
                             activeSocket = secure
                             inFlightSockets.add(secure)
                         }
-                        handshake(activeSocket)
+                        handshake(activeSocket) { clientLeaf }
                     }.onFailure { error ->
                         WsLog.d(TAG, "WS handshake rejected (${error.message ?: error::class.java.simpleName})")
                         runCatching { activeSocket.close() }
@@ -127,7 +132,7 @@ public class WsTransferServer(
         }
     }
 
-    private fun handshake(socket: Socket) {
+    private fun handshake(socket: Socket, peerLeafFingerprint: () -> String? = { null }) {
         socket.soTimeout = HANDSHAKE_TIMEOUT_MS
         val input = socket.getInputStream()
         val (requestLine, headers) = WebSocketCodec.parseHeaders(WebSocketCodec.readHttpHeaderBlock(input))
@@ -156,6 +161,7 @@ public class WsTransferServer(
                 listener = connectionListener,
                 pingIntervalMs = timing.pingIntervalMs,
                 livenessTimeoutMs = timing.livenessTimeoutMs,
+                deferredPeerLeafFingerprintHex = peerLeafFingerprint(),
             ),
         )
     }
