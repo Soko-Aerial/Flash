@@ -31,8 +31,16 @@ first because inbound client authentication (S1) means nothing if TLS can silent
   after HELLO and **before** replying or registering; a mismatch closes the socket. Compatible with 2.0.0-beta
   clients, which already present their identity certificate when asked. Residual: TOFU still pins a never-seen id
   on first contact (id squatting), same as the outbound path; pairing (Phase 3) is the human check.
-- [ ] **1.4 S1b: mandatory E2E for keyed peers.** Once a peer has a session key, non-`FLASH_SEC` frames (other than
-  HELLO and pairing) are dropped in all three engines; group frames are covered too.
+- [x] **1.4 S1b: no plaintext downgrade for the direct-chat family (scope narrowed).** Once a peer has a session key,
+  a plaintext `FLASH_MSG/RCPT/READ/REACT/TYPING/DACT` frame is dropped in all three engines (`DirectChatFamily.matches`,
+  tokenised exactly like `FlashTextFraming.parseFields`). Safe because every engine's `MessageTransportSink`, including
+  2.0.0-beta's, always encrypts that family for a keyed peer.
+  **Why narrowed:** the original text ("drop every non-`FLASH_SEC` frame") would break calls, groups, transfer control
+  and PTT, which have never carried app-layer encryption. With 1.3 in place they ride a mutually authenticated TLS
+  session instead. Whether group chat should get app-layer E2E, or whether the app layer should go entirely (audit
+  L5), is an open decision.
+  Tests: `DirectChatFamilyTest` (host + JVM). **Gap:** the three-line engine wiring has no end-to-end test; the
+  engines' inbound dispatch has no harness yet.
 - [x] **1.5 Impersonation regression test.** `InboundIdentityBindingTest` (Android, 3 cases) and
   `JvmInboundIdentityBindingTest` (desktop, 2 cases): real TLS loopback. An attacker key claiming a pinned
   contact's id is refused and the pin is untouched; the genuine contact is admitted; TOFU pins a first contact and
