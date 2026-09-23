@@ -2,6 +2,7 @@
 
 package com.transfer.flash.core.network.ws
 
+import com.transfer.flash.core.common.result.runSuspendCatching
 import android.content.Context
 import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.common.logging.FlashLog
@@ -325,7 +326,7 @@ public class WsFlashNetwork(
 
         // Wait for peer HELLO response
         val handshakeOutcome = withTimeoutOrNull(HANDSHAKE_TIMEOUT_MS) {
-            runCatching { handshakeWaiter.await() }
+            runSuspendCatching { handshakeWaiter.await() }
         }
 
         pendingHandshakes.remove(connection)
@@ -456,7 +457,7 @@ public class WsFlashNetwork(
 
         scope.launch {
             val outcome = withTimeoutOrNull(HANDSHAKE_TIMEOUT_MS) {
-                runCatching { handshakeWaiter.await() }
+                runSuspendCatching { handshakeWaiter.await() }
             }
             pendingHandshakes.remove(connection)
 
@@ -823,7 +824,7 @@ public class WsFlashNetwork(
                 if (!running.get() || hasLiveSession(deviceId)) break
                 val target = redialTargetOf(deviceId, backup) ?: break
 
-                val result = runCatching { connectManual(target.host, target.port, deviceId) }.getOrNull()
+                val result = runSuspendCatching { connectManual(target.host, target.port, deviceId) }.getOrNull()
                 if (result is FlashResult.Success) {
                     // connectManual already reset the policy on success; nothing more to do.
                     break

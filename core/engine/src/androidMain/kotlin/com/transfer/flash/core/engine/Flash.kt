@@ -2,6 +2,7 @@
 
 package com.transfer.flash.core.engine
 
+import com.transfer.flash.core.common.result.runSuspendCatching
 import com.transfer.flash.core.persistence.db.runInWriteTransaction
 import android.content.Context
 import android.util.Log
@@ -963,8 +964,12 @@ private class Wiring(
             // Online-but-unreachable until the app was force-stopped.
             if (!gate.tryBegin(id, networkImpl.hasLiveSession(id), System.currentTimeMillis())) continue
             scope.launch {
-                runCatching { networkImpl.connectManual(ep.hostAddress, ep.port) }
-                gate.end(id)
+                // try/finally: the gate is always released and cancellation still propagates (audit B3).
+                try {
+                    runSuspendCatching { networkImpl.connectManual(ep.hostAddress, ep.port) }
+                } finally {
+                    gate.end(id)
+                }
             }
         }
     }
