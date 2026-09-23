@@ -1,5 +1,11 @@
+@file:OptIn(com.transfer.flash.core.common.annotation.FlashInternalApi::class)
+
 package com.transfer.flash.desktop
 
+import kotlin.test.assertFalse
+import kotlin.test.assertContentEquals
+import com.transfer.flash.core.security.identity.IdentityKeyVault
+import com.transfer.flash.core.common.protocol.Base64
 import com.transfer.flash.core.common.model.FlashDeviceId
 import java.io.File
 import java.nio.file.Files
@@ -63,5 +69,54 @@ class DesktopTrustStoreTest {
         val afterRestart = DesktopTrustStore(stateDir)
         assertTrue(!afterRestart.isTrusted(peer), "a revoked peer must not come back trusted")
         assertTrue(afterRestart.getTrustedPeers().isEmpty(), "and must not linger in the list")
+    }
+
+    // --- Audit S4: session keys sealed at rest ------------------------------------------------------
+
+    /** Reversible, clearly-not-identity test vault (DPAPI does not exist on Linux CI). */
+    private val testVault = IdentityKeyVault(
+        protectFn = { plain -> byteArrayOf(0x5A) + plain.map { (it.toInt() xor 0x5A).toByte() }.toByteArray() },
+        unprotectFn = { blob ->
+            require(blob.isNotEmpty() && blob[0] == 0x5A.toByte()) { "not sealed by this vault" }
+            blob.drop(1).map { (it.toInt() xor 0x5A).toByte() }.toByteArray()
+        },
+    )
+    private val failingVault = IdentityKeyVault(protectFn = { error("DPAPI unavailable") }, unprotectFn = { error("no") })
+    private val key = ByteArray(32) { (it * 5 + 1).toByte() }
+    private val keyedPeer = FlashDeviceId("peer-s4")
+
+    private fun fileText(stateDir: File) = File(stateDir, "trust.properties").readText()
+
+    @Test
+    fun `session key is sealed on disk and survives a restart`() {
+        val stateDir = dir()
+        DesktopTrustStore(stateDir, testVault).saveSessionKey(keyedPeer, key)
+
+        assertFalse(fileText(stateDir).contains(Base64.encode(key)), "the raw key must not be on disk")
+        // java.util.Properties escapes ':' as "\:" when storing.
+        assertTrue(fileText(stateDir).contains("session_key.peer-s4=s1\\:"), "stored in sealed form")
+        assertContentEquals(key, DesktopTrustStore(stateDir, testVault).getSessionKey(keyedPeer))
+    }
+
+    @Test
+    fun `legacy plaintext key is migrated off disk on load`() {
+        val stateDir = dir()
+        File(stateDir, "trust.properties").writeText("session_key.peer-s4=${Base64.encode(key)}\n")
+
+        val store = DesktopTrustStore(stateDir, testVault)
+
+        assertContentEquals(key, store.getSessionKey(keyedPeer))
+        assertFalse(fileText(stateDir).contains(Base64.encode(key)), "legacy plaintext must be rewritten sealed")
+    }
+
+    @Test
+    fun `when sealing fails the key works this run but never reaches disk`() {
+        val stateDir = dir()
+        val store = DesktopTrustStore(stateDir, failingVault)
+        store.saveSessionKey(keyedPeer, key)
+
+        assertContentEquals(key, store.getSessionKey(keyedPeer))
+        val onDisk = File(stateDir, "trust.properties").takeIf { it.isFile }?.readText().orEmpty()
+        assertFalse(onDisk.contains("session_key"), "no plaintext fallback")
     }
 }
