@@ -1843,6 +1843,15 @@ private fun FlashShell(
                 nav.navigate(FlashDestination.Conversation, conversationId = peer.id)
             },
             onRevokeClick = { trusted -> engine.pairing?.revoke(trusted.id) },
+            // ADR-042: re-run pairing (v2) with a peer paired under the forceable v1 code.
+            onVerifyTrustedClick = { trusted ->
+                val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == trusted.id }
+                scope.launch {
+                    val net = engine.network
+                    if (endpoint != null && net != null) net.connectManual(endpoint.hostAddress, endpoint.port)
+                    engine.pairing?.beginPair(trusted.id, trusted.name)
+                }
+            },
             onChatTrustedClick = { trusted ->
                 if (pendingShare.value != null) {
                     sendSharedPayloadToPeer(trusted.id, trusted.name)

@@ -3,14 +3,20 @@ package com.transfer.flash.core.security.pairing
 /**
  * Wire frames for the Flash pairing handshake (C2.6).
  *
- * Handshake shape (initiator = I, responder = R):
+ * Handshake shape, protocol v2 (ADR-042; initiator = I, responder = R):
  *
  * ```text
- * I -> R : PAIR_REQUEST (requestId, identity, fingerprint, ephemeral pubkey)
- * R -> I : PAIR_ACCEPT  (requestId)
- * I -> R : PAIR_CONFIRM (requestId, codeHashHex — proof I saw the same 6-digit code)
+ * I -> R : PAIR_REQUEST (requestId, identity, fingerprint, ephemeral pubkey, v=2, commit to N_I)
+ * R -> I : PAIR_NONCE   (requestId, R's fingerprint, R's ephemeral pubkey, N_R)
+ * I -> R : PAIR_REVEAL  (requestId, N_I)             — R verifies the commitment
+ *          both sides now derive and display the code (see [PairingV2])
+ * R -> I : PAIR_ACCEPT  (requestId)                  — R's user saw the codes match
+ * I -> R : PAIR_CONFIRM (requestId, codeHashHex — proof I derived the same code)
  * R -> I : PAIRED       (requestId, R's fingerprint, R's ephemeral pubkey)
  * ```
+ *
+ * v1 (no version, no commitment, code from the fingerprints alone) is refused: its code could be
+ * forced by a man-in-the-middle (audit 2026-09-23, S2).
  *
  * Both devices display the same 6-digit numeric comparison code (see
  * [NumericComparisonCode]) while the user confirms on each screen; the local
@@ -39,6 +45,10 @@ public sealed interface FlashPairingFrame {
         val senderFingerprintHex: String,
         val senderEphemeralPublicKey: ByteArray,
         val createdAt: Long,
+        /** Absent (1) on a v1 request, which a v2 responder refuses. */
+        val protocolVersion: Int = 1,
+        /** v2: `PairingV2.commitHex(senderFingerprint, senderEphemeralKey, N_I)`; null on v1. */
+        val commitHex: String? = null,
     ) : FlashPairingFrame {
         override fun equals(other: Any?): Boolean =
             other is PairRequest && other.requestId == requestId &&
@@ -47,11 +57,43 @@ public sealed interface FlashPairingFrame {
                 other.senderModel == senderModel &&
                 other.senderFingerprintHex == senderFingerprintHex &&
                 other.senderEphemeralPublicKey.contentEquals(senderEphemeralPublicKey) &&
-                other.createdAt == createdAt
+                other.createdAt == createdAt &&
+                other.protocolVersion == protocolVersion &&
+                other.commitHex == commitHex
 
         override fun hashCode(): Int = listOf(
             requestId, senderDeviceId, senderName, senderModel, senderFingerprintHex, createdAt,
+            protocolVersion, commitHex,
         ).hashCode() * 31 + senderEphemeralPublicKey.contentHashCode()
+    }
+
+    /** v2, responder → initiator: R's identity and ephemeral key, and R's nonce (R reveals first). */
+    public data class PairNonce(
+        override val requestId: String,
+        val responderFingerprintHex: String,
+        val responderEphemeralPublicKey: ByteArray,
+        val nonce: ByteArray,
+    ) : FlashPairingFrame {
+        override fun equals(other: Any?): Boolean =
+            other is PairNonce && other.requestId == requestId &&
+                other.responderFingerprintHex == responderFingerprintHex &&
+                other.responderEphemeralPublicKey.contentEquals(responderEphemeralPublicKey) &&
+                other.nonce.contentEquals(nonce)
+
+        override fun hashCode(): Int =
+            ((requestId.hashCode() * 31 + responderFingerprintHex.hashCode()) * 31 +
+                responderEphemeralPublicKey.contentHashCode()) * 31 + nonce.contentHashCode()
+    }
+
+    /** v2, initiator → responder: opens the commitment sent in [PairRequest]. */
+    public data class PairReveal(
+        override val requestId: String,
+        val nonce: ByteArray,
+    ) : FlashPairingFrame {
+        override fun equals(other: Any?): Boolean =
+            other is PairReveal && other.requestId == requestId && other.nonce.contentEquals(nonce)
+
+        override fun hashCode(): Int = requestId.hashCode() * 31 + nonce.contentHashCode()
     }
 
     /** Responder agrees to pair. */

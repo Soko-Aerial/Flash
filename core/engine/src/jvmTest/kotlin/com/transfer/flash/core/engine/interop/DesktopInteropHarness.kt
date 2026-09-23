@@ -13,6 +13,9 @@ import com.transfer.flash.core.discovery.jmdns.JmdnsTransport
 import com.transfer.flash.core.discovery.multicast.JvmMulticastSocketFactory
 import com.transfer.flash.core.discovery.multicast.MulticastTransport
 import com.transfer.flash.core.network.bridge.DiscoveryRouteBinder
+import com.transfer.flash.core.network.tls.FlashCertMaker
+import com.transfer.flash.core.network.tls.TlsOptions
+import com.transfer.flash.core.network.tls.TofuPinVerifier
 import com.transfer.flash.core.network.ws.JvmWsFlashNetwork
 import com.transfer.flash.core.network.ws.WsSession
 import com.transfer.flash.core.security.crypto.FlashCrypto
@@ -175,8 +178,29 @@ public object DesktopInteropHarness {
         val stateDir = File(System.getProperty("java.io.tmpdir"), "flash-interop-$name").apply { mkdirs() }
         val identity = DesktopIdentityStore(stateDir).getIdentity()
         private val trustStore = DesktopTrustStore(stateDir)
+
+        /** Declared before [network]: its TLS identity IS this key (property init runs top to bottom). */
+        private val crypto: FlashCrypto = PersistedFlashCrypto(stateDir)
+
+        /**
+         * The same TLS construction `DesktopEngine` uses (audit S3/S1, ADR-042): the harness used to run
+         * plaintext, which production can no longer do, and a gate that exercises a different transport
+         * from the product proves nothing about it. Pairing v2 binds to the pins recorded here.
+         */
+        private val tlsOptions = TlsOptions(
+            pinVerifier = TofuPinVerifier(
+                lookupPin = { peerId -> trustStore.getPin(FlashDeviceId(peerId)) },
+                recordPin = { peerId, pin -> trustStore.savePin(FlashDeviceId(peerId), pin) },
+            ),
+            keyManagers = FlashCertMaker.createKeyManagers(
+                (crypto as PersistedFlashCrypto).javaKeyPair(),
+                cn = "CN=${identity.deviceId.value}",
+            ),
+        )
+
         val network = JvmWsFlashNetwork(
             localDeviceId = identity.deviceId.value,
+            tlsOptions = tlsOptions,
             // "Harness $name", NOT identity.friendlyName — the same rule the discovery frame below
             // follows, for the same reason, and it was being broken here. The persisted desktop
             // identity's name is "Flash Desktop", so the WS hello announced the harness to the peer
@@ -219,9 +243,9 @@ public object DesktopInteropHarness {
          * because the harness is the gate for the hardware ladder, and a gate that exercises
          * different code from the product proves nothing about the product. Same durable crypto
          * ([PersistedFlashCrypto], keyed off this verb's state dir) so the fingerprint the phone
-         * displays survives a restart, which is what L6 checks.
+         * displays survives a restart, which is what L6 checks. (`crypto` is declared above, next to
+         * the TLS options that use the same key.)
          */
-        private val crypto: FlashCrypto = PersistedFlashCrypto(stateDir)
         val pairing: FlashPairingCoordinator = FlashPairingCoordinator(
             localFingerprintHex = FlashFingerprint.formatHexGroups(
                 FlashFingerprint.fingerprint(crypto.identityPublicKeyEncoded),

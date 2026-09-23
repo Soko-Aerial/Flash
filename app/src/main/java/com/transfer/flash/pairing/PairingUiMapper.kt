@@ -16,6 +16,10 @@ object PairingUiMapper {
 
     fun corePhaseToUi(phase: PairingPhase): FlashPairingPhase = when (phase) {
         PairingPhase.Idle -> FlashPairingPhase.Idle
+        // v2 (ADR-042): the responder has no code until the initiator opens its commitment, which is
+        // milliseconds away, so no dialog yet. The initiator is simply "waiting for the other device".
+        PairingPhase.AwaitingPeerReveal -> FlashPairingPhase.Idle
+        PairingPhase.AwaitingPeerNonce -> FlashPairingPhase.AwaitingPeerConfirmation
         // Responder sub-states before it accepts both show the actionable consent card.
         PairingPhase.RequestReceived,
         PairingPhase.AwaitingLocalDecision -> FlashPairingPhase.RequestReceived

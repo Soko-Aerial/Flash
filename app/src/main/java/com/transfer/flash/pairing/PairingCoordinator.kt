@@ -16,6 +16,7 @@ import com.transfer.flash.core.security.pairing.FlashPairingEvent
 import com.transfer.flash.core.security.pairing.FlashPairingFrame
 import com.transfer.flash.core.security.pairing.PairingPhase
 import com.transfer.flash.core.security.pairing.PairingSessionState
+import com.transfer.flash.core.security.pairing.PairingWireCodec
 import com.transfer.flash.core.security.trust.FlashTrustStore
 import com.transfer.flash.ui.chat.FlashPairingMath
 import com.transfer.flash.ui.chat.FlashPairingPhase
@@ -104,6 +105,9 @@ class PairingCoordinator(
     /** peerId -> identity fingerprint hex, learned from FLASH_PAIR hello frames (initiator needs it). */
     private val fingerprints = HashMap<String, String>()
 
+    /** peerId -> pairing protocol version from its hello (1 when it advertises none). Guarded by [fingerprints]. */
+    private val peerVersions = HashMap<String, Int>()
+
     /**
      * A pair the user tapped "Pair" on before the peer's fingerprint was known. The hello handler
      * completes it the instant the fingerprint arrives (removes the ≤3s race that made Pair look
@@ -118,14 +122,17 @@ class PairingCoordinator(
 
     /** A WebSocket session to [peerId] came up — announce our fingerprint so it can derive the code. */
     fun onSessionUp(peerId: String) {
-        sendToPeer(peerId, PairingFraming.encodeHello(localFingerprintHex))
+        sendToPeer(peerId, PairingWireCodec.encodeHello(localFingerprintHex))
     }
 
     /** Feed a decoded `FLASH_PAIR` line from [peerId]: hello updates the cache, frames drive the protocol. */
     fun onInbound(peerId: String, text: String) {
-        when (val inbound = PairingFraming.decode(text)) {
-            is PairingFraming.Inbound.Hello -> {
-                synchronized(fingerprints) { fingerprints[peerId] = inbound.fingerprintHex }
+        when (val inbound = PairingWireCodec.decode(text)) {
+            is PairingWireCodec.Inbound.Hello -> {
+                synchronized(fingerprints) {
+                    fingerprints[peerId] = inbound.fingerprintHex
+                    peerVersions[peerId] = inbound.protocolVersion
+                }
                 // Answer a REQUEST, and answer with a PLAIN hello: the flag is never echoed, so the
                 // exchange terminates by construction (a request draws at most one answer; an answer
                 // draws none). Before this existed the responder announced itself exactly once, on
@@ -133,17 +140,17 @@ class PairingCoordinator(
                 // came up in a different order than the announcement assumed — made pairing
                 // permanently impossible on that connection while every other signal looked healthy.
                 // The initiator re-asks inside its wait window; this is the half that answers.
-                if (inbound.request) sendToPeer(peerId, PairingFraming.encodeHello(localFingerprintHex))
+                if (inbound.request) sendToPeer(peerId, PairingWireCodec.encodeHello(localFingerprintHex))
                 // If the user already tapped Pair for this peer, the fingerprint just arrived — fire
                 // the request now instead of leaving them staring at a dead button.
                 val pending = synchronized(pendingLock) {
                     pendingPair?.takeIf { it.first == peerId }?.also { pendingPair = null }
                 }
                 if (pending != null) {
-                    scope.launch { protocol.beginRequest(pending.first, pending.second, inbound.fingerprintHex) }
+                    scope.launch { beginIfPeerSupportsV2(pending.first, pending.second, inbound.fingerprintHex) }
                 }
             }
-            is PairingFraming.Inbound.Frame ->
+            is PairingWireCodec.Inbound.Frame ->
                 scope.launch { protocol.onFrame(inbound.frame) }
             null -> Unit
         }
@@ -159,14 +166,14 @@ class PairingCoordinator(
                 "fingerprintKnown=${synchronized(fingerprints) { fingerprints.containsKey(peerId) }}",
         )
         synchronized(fingerprints) { fingerprints[peerId] }?.let { fingerprint ->
-            protocol.beginRequest(peerId, peerName, fingerprint)
+            beginIfPeerSupportsV2(peerId, peerName, fingerprint)
             return
         }
         // No fingerprint yet: the session/hello may still be in flight. Record the intent (the hello
         // handler completes it), re-announce our fingerprint to prompt theirs, and tell the user —
         // never fail silently. `sendToPeer` returning false means there is no live session at all.
         synchronized(pendingLock) { pendingPair = peerId to peerName }
-        val delivered = sendToPeer(peerId, PairingFraming.encodeHello(localFingerprintHex, request = true))
+        val delivered = sendToPeer(peerId, PairingWireCodec.encodeHello(localFingerprintHex, request = true))
         emitMessage(
             if (delivered) "Connecting to $peerName…"
             else "Couldn't reach $peerName. Make sure both devices are on the same network, then try again.",
@@ -178,10 +185,23 @@ class PairingCoordinator(
         }
         if (!claimed) return
         if (fingerprint != null) {
-            protocol.beginRequest(peerId, peerName, fingerprint)
+            beginIfPeerSupportsV2(peerId, peerName, fingerprint)
         } else {
             emitMessage("Still can't reach $peerName. Check that it's nearby and try Pair again.")
         }
+    }
+
+    /**
+     * Refuses to pair with a peer that only speaks v1 (ADR-042, owner decision 2026-09-23): its code
+     * could be forced by a man-in-the-middle, so no new pairing may be made with it.
+     */
+    private fun beginIfPeerSupportsV2(peerId: String, peerName: String, fingerprint: String) {
+        val version = synchronized(fingerprints) { peerVersions[peerId] } ?: 1
+        if (version < PairingWireCodec.PROTOCOL_VERSION) {
+            emitMessage("$peerName is running an older Flash. Update Flash on that device, then pair again.")
+            return
+        }
+        protocol.beginRequest(peerId, peerName, fingerprint)
     }
 
     /** Responder accepted the displayed code match. */
@@ -222,7 +242,7 @@ class PairingCoordinator(
             val now = timeSource.nowMs()
             if (now - lastAskMs >= HELLO_RESEND_MS) {
                 lastAskMs = now
-                sendToPeer(peerId, PairingFraming.encodeHello(localFingerprintHex, request = true))
+                sendToPeer(peerId, PairingWireCodec.encodeHello(localFingerprintHex, request = true))
             }
             delay(FINGERPRINT_POLL_MS)
         }
@@ -238,7 +258,7 @@ class PairingCoordinator(
                 val peerId = s.peerDeviceId
                 val hash = s.expectedCodeHashHex
                 if (peerId != null && hash != null) {
-                    sendToPeer(peerId, PairingFraming.encode(FlashPairingFrame.PairConfirm(event.requestId, hash)))
+                    sendToPeer(peerId, PairingWireCodec.encode(FlashPairingFrame.PairConfirm(event.requestId, hash)))
                 }
             }
             is FlashPairingEvent.Confirmed -> {
@@ -246,6 +266,8 @@ class PairingCoordinator(
                 s.peerDeviceId?.let { peerId ->
                     val name = s.peerName?.ifBlank { null } ?: peerId.take(SHORT_ID)
                     trustStore.trustPeer(FlashDeviceId(peerId), name)
+                    // v2 completion: the code covered the TLS-pinned identities and the ephemeral keys.
+                    trustStore.markVerified(FlashDeviceId(peerId))
                     val peerPubKey = event.ephemeralPubKey.takeIf { it.isNotEmpty() }
                         ?: s.peerEphemeralPublicKey
                     val c = crypto
@@ -263,9 +285,15 @@ class PairingCoordinator(
                     resetProtocol()
                 }
             }
+            is FlashPairingEvent.Failed -> {
+                failureMessage(event.reason)?.let(::emitMessage)
+                scope.launch {
+                    delay(TERMINAL_LINGER_MS)
+                    resetProtocol()
+                }
+            }
             is FlashPairingEvent.PeerDeclined,
-            is FlashPairingEvent.Expired,
-            is FlashPairingEvent.Failed ->
+            is FlashPairingEvent.Expired ->
                 scope.launch {
                     delay(TERMINAL_LINGER_MS) // let the terminal card show, then allow retry.
                     resetProtocol()
@@ -355,11 +383,13 @@ class PairingCoordinator(
         localName = localName,
         localModel = localModel,
         ephemeralPublicKeyProvider = { ephemeralPublicKey },
+        // ADR-042: the pairing must cover the key TLS pinned for this peer on this connection.
+        peerIdentityPin = { peerId -> trustStore.getPin(FlashDeviceId(peerId)) },
         // The session holds a single peer at a time; route by its current peerDeviceId (set before
         // any frame is sent, since the reducer runs before sendFrame in the protocol).
         sendFrame = { frame ->
             protocol.session.value.peerDeviceId?.let { peerId ->
-                sendToPeer(peerId, PairingFraming.encode(frame))
+                sendToPeer(peerId, PairingWireCodec.encode(frame))
             }
             Unit
         },
@@ -368,8 +398,17 @@ class PairingCoordinator(
 
     private fun loadTrusted(): List<NearbyTrustedPeerUi> =
         trustStore.getTrustedPeers()
-            .map { (id, name) -> NearbyTrustedPeerUi(id = id.value, name = name) }
+            .map { (id, name) -> NearbyTrustedPeerUi(id = id.value, name = name, verified = trustStore.isVerified(id)) }
             .sortedBy { it.name.lowercase() }
+
+    /** User-facing line for a failed pairing; null when the reason needs no explanation. */
+    private fun failureMessage(reason: String): String? = when (reason) {
+        "peer-update-required" -> "The other device is running an older Flash. Update it, then pair again."
+        "identity-mismatch", "commit-mismatch", "paired-material-mismatch", "code-hash-mismatch" ->
+            "Pairing stopped: the security check failed. If this keeps happening, something may be " +
+                "interfering with the connection."
+        else -> null
+    }
 
     private fun emitMessage(text: String) {
         // Also to logcat. These lines are the only narrative explaining why a pairing attempt did

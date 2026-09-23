@@ -57,5 +57,14 @@ public interface FlashTrustStore {
 
     /** Convenience overload retrieving pin by raw string device ID. */
     public fun getPin(deviceId: String): String? = getPin(FlashDeviceId(deviceId))
+
+    /**
+     * Records that [deviceId] was paired with protocol v2 (ADR-042), whose code a man-in-the-middle
+     * cannot force. Pairings made with v1 remain trusted but are reported unverified until re-verified.
+     */
+    public fun markVerified(deviceId: FlashDeviceId): FlashResult<Unit> = FlashResult.Success(Unit)
+
+    /** True when [deviceId]'s current pairing was made with protocol v2. Cleared by [revokeTrust]. */
+    public fun isVerified(deviceId: FlashDeviceId): Boolean = false
 }
 

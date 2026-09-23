@@ -1,7 +1,10 @@
+@file:OptIn(com.transfer.flash.core.common.annotation.FlashInternalApi::class)
+
 package com.transfer.flash.pairing
 
 import com.transfer.flash.core.common.model.FlashDeviceId
 import com.transfer.flash.core.common.result.FlashResult
+import com.transfer.flash.core.security.pairing.PairingWireCodec
 import com.transfer.flash.core.security.trust.FlashTrustStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -57,15 +60,15 @@ class PairingCoordinatorHelloTest {
     @Test
     fun onInbound_requestHello_answersWithAPlainHello() {
         val sent = mutableListOf<String>()
-        coordinator(sent).onInbound(PEER_ID, PairingFraming.encodeHello(PEER_FP, request = true))
+        coordinator(sent).onInbound(PEER_ID, PairingWireCodec.encodeHello(PEER_FP, request = true))
 
         val answer = synchronized(sent) { sent.singleOrNull() }
         assertTrue("a request must draw exactly one answer; got $sent", answer != null)
         // The answer carries OUR fingerprint — that is the entire point of the exchange: the
         // initiator cannot derive the numeric-comparison code without the responder's identity.
         assertEquals(
-            PairingFraming.Inbound.Hello(OUR_FP, request = false),
-            PairingFraming.decode(answer!!),
+            PairingWireCodec.Inbound.Hello(OUR_FP, request = false, protocolVersion = PairingWireCodec.PROTOCOL_VERSION),
+            PairingWireCodec.decode(answer!!),
         )
     }
 
@@ -74,7 +77,7 @@ class PairingCoordinatorHelloTest {
         // The termination half. A plain hello is an announcement or an answer; reacting to it would
         // make two peers answer each other forever.
         val sent = mutableListOf<String>()
-        coordinator(sent).onInbound(PEER_ID, PairingFraming.encodeHello(PEER_FP))
+        coordinator(sent).onInbound(PEER_ID, PairingWireCodec.encodeHello(PEER_FP))
 
         assertTrue("a plain hello must draw no reply; got $sent", synchronized(sent) { sent }.isEmpty())
     }

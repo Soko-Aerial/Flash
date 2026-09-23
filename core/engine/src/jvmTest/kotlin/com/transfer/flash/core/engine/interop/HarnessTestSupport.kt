@@ -17,6 +17,9 @@ import com.transfer.flash.core.network.ws.WsSession
 import com.transfer.flash.core.security.crypto.FlashCrypto
 import com.transfer.flash.core.security.crypto.FlashFingerprint
 import com.transfer.flash.core.security.crypto.PersistedFlashCrypto
+import com.transfer.flash.core.network.tls.TofuPinVerifier
+import com.transfer.flash.core.network.tls.TlsOptions
+import com.transfer.flash.core.network.tls.FlashCertMaker
 import com.transfer.flash.core.security.pairing.FlashPairingCoordinator
 import com.transfer.flash.core.transfer.FileSourceOpener
 import com.transfer.flash.core.transfer.RealFlashTransferRepository
@@ -67,11 +70,30 @@ internal class DesktopEndpointFixture(
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     val stateDir = File(System.getProperty("java.io.tmpdir"), "flash-interop-$name").apply { mkdirs() }
     val identity = DesktopIdentityStore(stateDir).getIdentity()
+    val trustStore = DesktopTrustStore(stateDir)
+    private val crypto: FlashCrypto = PersistedFlashCrypto(stateDir)
+
+    /**
+     * Real TLS, built exactly as `DesktopEngine` builds it (audit S3/S1, ADR-042). The fixture used to run
+     * plaintext, which production can no longer do; pairing v2 binds to the pins recorded here.
+     */
+    private val tlsOptions = TlsOptions(
+        pinVerifier = TofuPinVerifier(
+            lookupPin = { peerId -> trustStore.getPin(FlashDeviceId(peerId)) },
+            recordPin = { peerId, pin -> trustStore.savePin(FlashDeviceId(peerId), pin) },
+        ),
+        keyManagers = FlashCertMaker.createKeyManagers(
+            (crypto as PersistedFlashCrypto).javaKeyPair(),
+            cn = "CN=${identity.deviceId.value}",
+        ),
+    )
+
     val network = JvmWsFlashNetwork(
         localDeviceId = identity.deviceId.value,
         // "Harness $name" — see the sibling in DesktopInteropHarness.kt: the WS hello must not name
         // the harness as the product.
         localFriendlyName = "Harness $name",
+        tlsOptions = tlsOptions,
     )
     val discovery = CompositeDiscovery(
         transports = listOf(
@@ -103,8 +125,6 @@ internal class DesktopEndpointFixture(
      * to make it. `acceptLocal()` is called by the test, which is what makes the assertion "the two
      * sides agreed on a code" meaningful rather than "something auto-accepted".
      */
-    val trustStore = DesktopTrustStore(stateDir)
-    private val crypto: FlashCrypto = PersistedFlashCrypto(stateDir)
     val pairing: FlashPairingCoordinator = FlashPairingCoordinator(
         localFingerprintHex = FlashFingerprint.formatHexGroups(
             FlashFingerprint.fingerprint(crypto.identityPublicKeyEncoded),
