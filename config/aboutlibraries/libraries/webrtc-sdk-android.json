@@ -1,0 +1,6 @@
+{
+  "uniqueId": "^io\\.github\\.webrtc\\-sdk:android$::regex",
+  "licenses": [
+    "webrtc-native"
+  ]
+}

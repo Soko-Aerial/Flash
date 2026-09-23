@@ -3,6 +3,7 @@ plugins {
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.ksp)
     alias(libs.plugins.hilt)
+    alias(libs.plugins.aboutlibraries)
 }
 
 android {
@@ -83,4 +84,35 @@ dependencies {
     androidTestImplementation(libs.androidx.junit)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
     debugImplementation(libs.androidx.compose.ui.tooling)
+}
+
+// Audit C1 (ADR-043): THIRD_PARTY_NOTICES.txt, generated from what the release APK actually ships and
+// packaged as an asset for Settings → About → Open-source licences. Every variant shows the release
+// list, because release is what gets distributed.
+aboutLibraries {
+    // offlineMode: the plugin would otherwise download licence texts during the build and silently leave
+    // them out when offline. The texts are checked in under config/aboutlibraries/ instead.
+    offlineMode = true
+    collect {
+        configPath = rootProject.file("config/aboutlibraries")
+        // BOMs carry no code; listing them as "libraries" would only pad the notices.
+        includePlatform = false
+    }
+    export { prettyPrint = true }
+    exports {
+        create("release") { outputFile = layout.buildDirectory.file("generated/aboutLibraries/release/aboutlibraries.json") }
+    }
+}
+
+val thirdPartyNotices = tasks.register<ThirdPartyNoticesTask>("generateThirdPartyNotices") {
+    platformName.set("Android")
+    libraryDefinitions.set(layout.buildDirectory.file("generated/aboutLibraries/release/aboutlibraries.json"))
+    dependsOn("exportLibraryDefinitionsRelease")
+    outputDir.set(layout.buildDirectory.dir("generated/thirdPartyNotices"))
+}
+
+androidComponents {
+    onVariants { variant ->
+        variant.sources.assets?.addGeneratedSourceDirectory(thirdPartyNotices, ThirdPartyNoticesTask::outputDir)
+    }
 }

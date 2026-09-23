@@ -1,0 +1,6 @@
+{
+  "hash": "jna-election",
+  "name": "JNA licence election",
+  "url": "https://raw.githubusercontent.com/java-native-access/jna/master/LICENSE",
+  "content": "SPDX-License-Identifier: Apache-2.0 OR LGPL-2.1-or-later\n\nJava Native Access (JNA) is licensed under the LGPL, version 2.1\nor later, or (from version 4.0 onward) the Apache License,\nversion 2.0.\n\nYou can freely decide which license you want to apply to the project.\n\nYou may obtain a copy of the LGPL License at:\n\nhttp://www.gnu.org/licenses/licenses.html\n\nA copy is also included in the downloadable source code package\ncontaining JNA, in file \"LGPL2.1\", under the same directory\nas this file.\n\nYou may obtain a copy of the Apache License at:\n\nhttp://www.apache.org/licenses/\n\nA copy is also included in the downloadable source code package\ncontaining JNA, in file \"AL2.0\", under the same directory\nas this file.\n\nCommercial support may be available, please e-mail\ntwall[at]users[dot]sf[dot]net.\n\nFlash uses JNA under the Apache License 2.0 (the full text is listed under Apache License 2.0)."
+}

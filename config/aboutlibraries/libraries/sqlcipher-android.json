@@ -1,0 +1,7 @@
+{
+  "uniqueId": "^net\\.zetetic:sqlcipher\\-android$::regex",
+  "licenses": [
+    "sqlite-blessing",
+    "libtomcrypt"
+  ]
+}

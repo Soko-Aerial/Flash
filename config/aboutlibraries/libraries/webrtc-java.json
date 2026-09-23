@@ -1,0 +1,7 @@
+{
+  "uniqueId": "^dev\\.onvoid\\.webrtc:webrtc\\-java$::regex",
+  "licenses": [
+    "webrtc-native",
+    "webrtc-java-notice"
+  ]
+}

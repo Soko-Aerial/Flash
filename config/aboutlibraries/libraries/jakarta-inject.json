@@ -1,0 +1,6 @@
+{
+  "uniqueId": "^jakarta\\.inject:jakarta\\.inject\\-api$::regex",
+  "licenses": [
+    "jakarta-inject-notice"
+  ]
+}

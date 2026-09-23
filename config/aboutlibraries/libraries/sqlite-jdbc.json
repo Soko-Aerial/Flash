@@ -1,0 +1,8 @@
+{
+  "uniqueId": "^io\\.github\\.willena:sqlite\\-jdbc$::regex",
+  "licenses": [
+    "sqlite-jdbc-zentus",
+    "sqlite3mc-mit",
+    "sqlite-blessing"
+  ]
+}

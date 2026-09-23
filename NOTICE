@@ -1,2 +1,11 @@
-Flash Core
+Flash
 Copyright 2026 The Flash Project
+
+This repository includes third_party/webrtc-kmp, a modified copy of WebRTC KMP
+(https://github.com/shepeliev/webrtc-kmp, via https://github.com/aschulz90/webrtc-kmp),
+licensed under the Apache License 2.0. Its changes are listed in
+third_party/webrtc-kmp/MODIFICATIONS.md.
+
+Binary distributions (the Android app and the desktop installers) also bundle the
+third-party components listed in THIRD_PARTY_NOTICES.txt. That file is generated at build
+time from the shipped dependencies and holds their licence texts and NOTICE contents.

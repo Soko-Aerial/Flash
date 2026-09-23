@@ -1,0 +1,6 @@
+{
+  "uniqueId": "^org\\.jetbrains\\.skiko:skiko-awt-runtime-.*$::regex",
+  "licenses": [
+    "skia-native"
+  ]
+}
