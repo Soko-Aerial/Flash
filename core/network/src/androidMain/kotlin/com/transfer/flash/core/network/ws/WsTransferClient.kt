@@ -52,6 +52,9 @@ public class WsTransferClient(
         port: Int,
         peerDeviceId: String? = null,
     ): WsConnection = withContext(Dispatchers.IO) {
+        // Manual dial with no known peer id: the pin cannot be evaluated during the handshake, so
+        // capture the leaf here and let WsFlashNetwork bind it after HELLO (ADR-040).
+        var deferredLeafFingerprint: String? = null
         val route = chooseRoute(host)
         WsLog.i(
             TAG,
@@ -73,6 +76,8 @@ public class WsTransferClient(
                     options.pinVerifier,
                     options.keyManagers,
                     options.handshakeTimeoutMs,
+                    deferPinWhenDeviceIdUnknown = targetDeviceId == null,
+                    onLeafObserved = { fingerprint -> deferredLeafFingerprint = fingerprint },
                 ).getOrElse { error -> throw error }
                 WsLog.i(TAG, "TLS established cipher=${(socket as javax.net.ssl.SSLSocket).session.cipherSuite}")
             }
@@ -109,6 +114,7 @@ public class WsTransferClient(
                 listener = connectionListener,
                 pingIntervalMs = timing.pingIntervalMs,
                 livenessTimeoutMs = timing.livenessTimeoutMs,
+                deferredPeerLeafFingerprintHex = deferredLeafFingerprint,
             )
         } catch (error: Exception) {
             runCatching { socket.close() }

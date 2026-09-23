@@ -62,6 +62,7 @@ public class WsTransferServer(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var serverSocket: ServerSocket? = null
     private var acceptJob: Job? = null
+    private val inFlightSockets = java.util.concurrent.ConcurrentHashMap.newKeySet<Socket>()
 
     @Volatile
     public var listenPort: Int = 0
@@ -88,29 +89,43 @@ public class WsTransferServer(
         runCatching { serverSocket?.close() }
         serverSocket = null
         listenPort = 0
+        inFlightSockets.forEach { runCatching { it.close() } }
+        inFlightSockets.clear()
     }
 
     private suspend fun acceptLoop(socket: ServerSocket) = withContext(Dispatchers.IO) {
         while (isActive && !socket.isClosed) {
             val client = runCatching { socket.accept() }.getOrElse { break }
+            inFlightSockets.add(client)
             launch {
-                runCatching {
-                    // TLS mode: track stream access so any pre-wrap touch fails closed, then
-                    // wrap BEFORE the WS handshake reads a single byte. Lazy server handshake:
-                    // the first read inside handshake() drives it (SecureSocketUpgrader KDoc).
-                    val tracked = if (tls != null) SecureSocketUpgrader.withPlainStreamTracking(client) else client
-                    val secure = tls?.let { options ->
-                        SecureSocketUpgrader.wrapAccepted(
-                            tracked,
-                            options.pinVerifier,
-                            options.keyManagers,
-                            options.expectedDeviceId,
-                        )
+                var activeSocket: Socket = client
+                try {
+                    runCatching {
+                        // TLS mode: track stream access so any pre-wrap touch fails closed, then
+                        // wrap BEFORE the WS handshake reads a single byte. Lazy server handshake:
+                        // the first read inside handshake() drives it (SecureSocketUpgrader KDoc).
+                        val tracked = if (tls != null) SecureSocketUpgrader.withPlainStreamTracking(client) else client
+                        activeSocket = tracked
+                        val secure = tls?.let { options ->
+                            SecureSocketUpgrader.wrapAccepted(
+                                tracked,
+                                options.pinVerifier,
+                                options.keyManagers,
+                                options.expectedDeviceId,
+                            )
+                        }
+                        if (secure != null) {
+                            activeSocket = secure
+                            inFlightSockets.add(secure)
+                        }
+                        handshake(activeSocket)
+                    }.onFailure { error ->
+                        WsLog.d(TAG, "WS handshake rejected (${error.message ?: error::class.java.simpleName})")
+                        runCatching { activeSocket.close() }
                     }
-                    handshake(secure ?: tracked)
-                }.onFailure { error ->
-                    WsLog.d(TAG, "WS handshake rejected (${error.message ?: error::class.java.simpleName})")
-                    runCatching { client.close() }
+                } finally {
+                    inFlightSockets.remove(client)
+                    inFlightSockets.remove(activeSocket)
                 }
             }
         }
