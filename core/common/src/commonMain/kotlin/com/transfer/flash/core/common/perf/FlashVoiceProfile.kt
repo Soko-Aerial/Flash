@@ -79,7 +79,7 @@ public data class FlashVoiceProfile(
          */
         public val LOW: FlashVoiceProfile = FlashVoiceProfile(
             ptimeMs = 60,
-            maxBitrateBps = 16_000,
+            maxBitrateBps = 20_000,
             useDtx = true,
         )
 

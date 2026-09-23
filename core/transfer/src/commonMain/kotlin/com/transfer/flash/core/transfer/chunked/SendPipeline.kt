@@ -139,8 +139,10 @@ internal class SendPipeline(
                     // Linear-skip: chunk was already read+hashed by the stream; drop silently.
                     chunksSkipped++
                     bytesSkipped += frame.data.size
+                    ChunkBufferPool.release(frame.data)
                 } else {
                     val ok = send(ChunkFrame.serialize(frame))
+                    ChunkBufferPool.release(frame.data)
                     if (!ok) {
                         return SendResult.Aborted(
                             chunksSentBeforeFailure = chunksSent.toInt(),

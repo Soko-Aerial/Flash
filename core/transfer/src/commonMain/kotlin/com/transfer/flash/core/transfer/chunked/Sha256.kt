@@ -46,6 +46,13 @@ public object Sha256 {
         return accumulator.digestRaw()
     }
 
+    /** One-shot digest over a sub-range of a byte array without intermediate copying. */
+    public fun digest(bytes: ByteArray, offset: Int, length: Int): ByteArray {
+        val accumulator = IncrementalSha256()
+        accumulator.update(bytes, offset, length)
+        return accumulator.digestRaw()
+    }
+
     /** One-shot digest formatted as lowercase hex. */
     public fun digestHex(bytes: ByteArray): String = hex(digest(bytes))
 

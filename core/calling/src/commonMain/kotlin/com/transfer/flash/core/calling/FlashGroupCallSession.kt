@@ -768,6 +768,7 @@ public class FlashGroupCallSession(
         var totalLost = 0L
         var totalReceived = 0L
 
+        var uiNeedsRefresh = false
         for (leg in activeLegs) {
             val pc = leg.peerConnection ?: continue
             // Pinned: getStats() is native.
@@ -804,6 +805,22 @@ public class FlashGroupCallSession(
             totalBytesOut += outbound.sumOf { it.members.num("bytesSent")?.toLong() ?: 0L }
             totalLost += inbound.sumOf { it.members.num("packetsLost")?.toLong() ?: 0L }
             totalReceived += inbound.sumOf { it.members.num("packetsReceived")?.toLong() ?: 0L }
+
+            val audioLevel = inbound.firstOrNull { it.members.str("kind") == "audio" || it.members.num("audioLevel") != null }
+                ?.members?.num("audioLevel")
+                ?: all.firstOrNull { it.type == "track" && it.members.str("kind") == "audio" }
+                    ?.members?.num("audioLevel")
+            if (audioLevel != null) {
+                val speaking = audioLevel > 0.01
+                if (leg.isSpeaking != speaking) {
+                    leg.isSpeaking = speaking
+                    uiNeedsRefresh = true
+                }
+            }
+        }
+
+        if (uiNeedsRefresh) {
+            refreshUiState()
         }
 
         val nowMs = SystemTimeSource.nowMs()

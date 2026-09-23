@@ -167,9 +167,9 @@ public class Chunker {
      */
     public fun hashOnly(source: ChunkSource): String {
         val stream = source.open().buffer()
+        val buffer = ChunkBufferPool.acquire(DEFAULT_CHUNK_SIZE_BYTES)
         try {
             val digest = IncrementalSha256()
-            val buffer = ByteArray(DEFAULT_CHUNK_SIZE_BYTES)
             while (true) {
                 val n = stream.read(buffer)
                 if (n < 0) break
@@ -177,6 +177,7 @@ public class Chunker {
             }
             return digest.digestHex()
         } finally {
+            ChunkBufferPool.release(buffer)
             try {
                 stream.close()
             } catch (_: IOException) {
@@ -224,7 +225,6 @@ public class ChunkStream internal constructor(
     private val expectFileSha256Hex: String?,
 ) : Iterator<ChunkFrame.Chunk>, AutoCloseable {
 
-    private val buffer = ByteArray(plan.chunkSize)
     private val fileDigest = IncrementalSha256()
 
     private var nextIndex = 0
@@ -272,11 +272,11 @@ public class ChunkStream internal constructor(
             return
         }
         val expectedLength = expectedChunkLength(nextIndex)
-        readFully(expectedLength)
-        val data = buffer.copyOf(expectedLength)
+        val data = ChunkBufferPool.acquire(expectedLength)
+        readFully(data, expectedLength)
         bytesRead += expectedLength
-        fileDigest.update(data)
-        val chunkHash = Sha256.digest(data)
+        fileDigest.update(data, 0, expectedLength)
+        val chunkHash = Sha256.digest(data, 0, expectedLength)
         buffered = ChunkFrame.Chunk(
             transferId = meta.transferId,
             fileId = meta.fileId,
@@ -294,10 +294,10 @@ public class ChunkStream internal constructor(
         else (plan.totalBytes - index.toLong() * plan.chunkSize).toInt()
     }
 
-    private fun readFully(length: Int) {
+    private fun readFully(target: ByteArray, length: Int) {
         var filled = 0
         while (filled < length) {
-            val n = stream.read(buffer, filled, length - filled)
+            val n = stream.read(target, filled, length - filled)
             if (n < 0) {
                 throw IllegalStateException(
                     "source ended after $bytesRead bytes; expected ${plan.totalBytes} " +

@@ -1,8 +1,18 @@
+@file:OptIn(com.transfer.flash.core.common.annotation.FlashInternalApi::class)
+
 package com.transfer.flash.core.persistence.db
 
 import android.content.Context
 import androidx.room.Room
+import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
+import com.transfer.flash.core.common.logging.FlashLog
+import com.transfer.flash.core.common.perf.AndroidDeviceProfile
+import com.transfer.flash.core.common.perf.FlashPerformanceClassifier
+import com.transfer.flash.core.common.perf.MemoryGovernor
+import com.transfer.flash.core.common.perf.MemoryTrimLevel
+import com.transfer.flash.core.common.perf.MemoryTrimListener
 import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
 
 /**
@@ -39,6 +49,8 @@ public object FlashDatabaseOpener {
     ): FlashDatabase {
         System.loadLibrary("sqlcipher")
         val openHelperFactory = SupportOpenHelperFactory(passphraseProvider.passphrase())
+        val mode = FlashPerformanceClassifier.classify(AndroidDeviceProfile.read(context.applicationContext)).mode
+        val cacheSizeKb = mode.transfer.sqliteCacheSizeKb
         return Room.databaseBuilder(
             context.applicationContext,
             FlashDatabase::class.java,
@@ -46,6 +58,35 @@ public object FlashDatabaseOpener {
         )
             .openHelperFactory(openHelperFactory)
             .addMigrations(*migrations)
+            .addCallback(object : RoomDatabase.Callback() {
+                override fun onOpen(db: SupportSQLiteDatabase) {
+                    super.onOpen(db)
+                    try {
+                        db.execSQL("PRAGMA cache_size = -$cacheSizeKb;")
+                        FlashLog.i("DATABASE", "Configured SQLite cache_size = -$cacheSizeKb KiB for mode ${mode.key}")
+                    } catch (e: Throwable) {
+                        FlashLog.w("DATABASE", "Failed to set PRAGMA cache_size: ${e.message}")
+                    }
+
+                    MemoryGovernor.registerListener(object : MemoryTrimListener {
+                        override fun onTrimMemory(level: MemoryTrimLevel) {
+                            if (level == MemoryTrimLevel.RUNNING_LOW ||
+                                level == MemoryTrimLevel.RUNNING_CRITICAL ||
+                                level == MemoryTrimLevel.COMPLETE
+                            ) {
+                                try {
+                                    if (db.isOpen) {
+                                        db.execSQL("PRAGMA shrink_memory;")
+                                        FlashLog.i("DATABASE", "Executed PRAGMA shrink_memory on $level")
+                                    }
+                                } catch (e: Throwable) {
+                                    FlashLog.w("DATABASE", "Failed to execute PRAGMA shrink_memory: ${e.message}")
+                                }
+                            }
+                        }
+                    })
+                }
+            })
             .build()
     }
 
@@ -53,11 +94,36 @@ public object FlashDatabaseOpener {
      * In-memory path for JVM unit tests only (Robolectric): no SQLCipher factory because the
      * native sqlcipher .so cannot load on the JVM; the framework SQLite driver is used.
      */
-    public fun openInMemory(context: Context): FlashDatabase =
-        Room.inMemoryDatabaseBuilder(context.applicationContext, FlashDatabase::class.java)
+    public fun openInMemory(context: Context): FlashDatabase {
+        val mode = FlashPerformanceClassifier.classify(AndroidDeviceProfile.read(context.applicationContext)).mode
+        val cacheSizeKb = mode.transfer.sqliteCacheSizeKb
+        return Room.inMemoryDatabaseBuilder(context.applicationContext, FlashDatabase::class.java)
             // !!! TEST-ONLY: destructive fallback exists here ONLY so ad-hoc test schemas never
             // wedge the JVM suite. PRODUCTION FORBIDS destructive migration from v2 onward
             // (plan C1.7 / docs/decisions.md). Never copy this line into openEncrypted().
             .fallbackToDestructiveMigration(true)
+            .addCallback(object : RoomDatabase.Callback() {
+                override fun onOpen(db: SupportSQLiteDatabase) {
+                    super.onOpen(db)
+                    try {
+                        db.execSQL("PRAGMA cache_size = -$cacheSizeKb;")
+                    } catch (_: Throwable) {}
+                    MemoryGovernor.registerListener(object : MemoryTrimListener {
+                        override fun onTrimMemory(level: MemoryTrimLevel) {
+                            if (level == MemoryTrimLevel.RUNNING_LOW ||
+                                level == MemoryTrimLevel.RUNNING_CRITICAL ||
+                                level == MemoryTrimLevel.COMPLETE
+                            ) {
+                                try {
+                                    if (db.isOpen) {
+                                        db.execSQL("PRAGMA shrink_memory;")
+                                    }
+                                } catch (_: Throwable) {}
+                            }
+                        }
+                    })
+                }
+            })
             .build()
+    }
 }
