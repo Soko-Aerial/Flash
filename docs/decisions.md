@@ -1611,3 +1611,122 @@ Desktop video has no in-app surface at all (JVM stub). Both gaps reported togeth
 ### Revisit when
 Desktop video goes in-app (that decision re-opens the player question wholesale), or a live
 voice note decodes wrong (format/endianness/channel edge the fixture-less suite cannot pin).
+
+## ADR-040 — Manual-IP dial defers TOFU pin evaluation to the post-HELLO identity binding
+
+### Decision
+When a dial cannot name the peer it expects — "Connect by IP" to a device that was never
+discovered, so `peerDeviceId == null` — the TLS handshake no longer fails closed. The trust manager
+accepts the presented leaf, reports its SPKI fingerprint, and `connectManual` runs the **same**
+`FlashPinVerifier.isPinned(peerDeviceId, leafFingerprint)` check the handshake would have run, the
+moment `FLASH_WS_HELLO` names the peer. A failed binding closes the connection before the session is
+registered and before any frame is delivered.
+
+Opt-in per dial: `TofuX509TrustManager(deferPinWhenDeviceIdUnknown = …)` defaults to `false`, so
+every discovery-driven dial, every redial and both server paths keep failing closed exactly as
+before.
+
+### Context
+`TofuX509TrustManager.verify` required an `expectedDeviceId` to evaluate a pin against and threw
+"no expected device id — pin evaluation impossible" without one. `WsFlashNetwork.connectManual`
+resolves that id from `knownEndpoints`, which only holds peers discovery has already seen. A user
+typing an IP for a peer that was never discovered therefore could not connect at all: the failure
+happened in TLS, before the handshake that would have revealed the peer's identity. The desktop and
+Android share sheets both expose "Connect by IP", so the feature was unusable in exactly the case it
+exists for (mDNS blocked, AP isolation, a peer on another subnet).
+
+The existing `TofuPinVerifier` is already trust-on-first-use: it records the pin when a device has
+none and compares constant-time when it does. Nothing about that policy changes here — only *when*
+it runs.
+
+### Alternatives considered
+- **Keep failing closed, improve the error.** Honest but leaves the feature broken; the user has no
+  way to reach a peer that discovery cannot see.
+- **Accept any certificate on manual dial.** Rejected: a peer we have already pinned must still fail
+  closed when a different key answers for it, which is precisely the MITM case.
+- **Ask the user to confirm the fingerprint in the dialog.** The 6-digit pairing PIN already exists
+  for human verification; adding a second hex comparison in the connect dialog duplicates it.
+
+### Security consequences (accepted)
+1. The TLS handshake completes with an unverified peer, and our `FLASH_WS_HELLO` (device id +
+   friendly name) is sent before the binding check. An attacker on the typed IP therefore learns
+   those two fields. Accepted: the user deliberately dialed that address, the fields are the same
+   ones broadcast in mDNS on the LAN, and no message, file or key material crosses before binding.
+2. First contact over a manual dial pins whatever key answers, exactly as first contact over
+   discovery does. The 6-digit pairing PIN remains the human check before any trust is granted.
+3. A peer with an existing pin is *not* weakened: a different key answering its id is rejected after
+   HELLO, the connection is closed, and the user sees "security key does not match".
+
+### Verification
+- `TofuX509TrustManagerTest`: deferral off by default still fails closed; deferral on reports the
+  leaf and never consults the verifier; a known device id ignores the deferral and fails closed.
+- `SecureWsTransferLoopbackTest`: a real TLS loopback dial with `peerDeviceId = null` completes and
+  surfaces the server's leaf fingerprint; a dial that names the peer still fails closed on a bad pin.
+- NOT device-verified: the end-to-end "Connect by IP to an undiscovered phone" flow needs two
+  devices.
+
+### Revisit when
+Pairing moves to a channel that authenticates the peer before the WS handshake (e.g. QR-carried
+SPKI), which would let a manual dial name its expected key up front and remove the deferral.
+
+## ADR-041 — A 15-minute WorkManager wake-up flushes the outbox after the process is killed, then stops the engine again
+
+### Decision
+Add `androidx.work:work-runtime-ktx` and a periodic `FlashKeepaliveWorker` (unique work
+`flash-keepalive`, 15-minute period, constraints: network connected + battery not low), scheduled
+from `FlashApplication.onCreate` with `ExistingPeriodicWorkPolicy.KEEP`.
+
+The worker is a **flush-and-announce** job, not a residency mechanism:
+1. If the engine is already running (service alive, UI open) it returns immediately and touches
+   nothing.
+2. Otherwise it starts the engine, waits up to 45 s for a session to come up (the engine's own
+   `notifyPeerSessionUp` drains the outbox the moment one does), plus a 10 s drain grace.
+3. In a `finally`, it stops the engine again — **unless** `FlashBackgroundService.isActive()` or the
+   process is foreground by then, i.e. the user or the service adopted it while the worker ran.
+
+### Context
+`FlashBackgroundService` is `START_STICKY`, which covers a process the *system* killed. It does not
+cover the user swiping the app away, and on Xiaomi/HyperOS, Transsion and Huawei the OEM killer ends
+the process outright. Nothing then wakes Flash: messages already durable in the outbox sit there
+until their 30-minute give-up budget (`OUTBOX_GIVE_UP_AFTER_MS`) expires and they go FAILED, and the
+peer sees the device offline. JobScheduler, which WorkManager drives, is the one mechanism that
+still gets a slot in a Doze maintenance window.
+
+### Why stop the engine again
+`DiscoveryEngineHolder` acquires the partial wake lock and the Wi-Fi lock for the engine's lifetime
+(the ERROR-025/026 fix — see ADR history and `logs/errors.md`). A worker that started the engine and
+walked away would leave those locks held for good, every 15 minutes, on a device whose app the user
+has closed. That is precisely the "stuck partial wake lock" battery profile the hardening pass was
+worried about — and unlike the reverted §1.3 B change, stopping here costs nothing, because there is
+no live session to protect.
+
+### Alternatives considered
+- **Shorter interval / expedited work.** 15 minutes is WorkManager's floor for periodic work;
+  expedited quota is meant for user-visible work and would be spent immediately.
+- **Start the foreground service from the worker.** Refused by Android 12+ background FGS-start
+  restrictions in exactly the case that matters.
+- **AlarmManager exact alarms.** Needs `SCHEDULE_EXACT_ALARM`, which Play restricts to alarms/clocks
+  and which Doze defers anyway.
+- **Do nothing (the pre-existing state).** Rejected: silently losing already-composed messages after
+  a swipe-away is the worst failure mode a messenger has.
+
+### Honest limits (do not over-trust this)
+- Not a delivery-latency mechanism: worst case a message waits ~15 minutes for the wake-up.
+- On the OEMs that motivate it, jobs are *also* restricted until the user grants autostart — the
+  `OemBatteryOptimizationHelper` deep links added alongside are the other half of the fix. After a
+  user-initiated "force stop", nothing runs until the app is launched again, by design.
+- A short connect-and-flush is all it does; it is not a mesh resume.
+
+### Verification
+- `:app:compileDebugKotlin` + `:app:testDebugUnitTest` green; merged manifest carries
+  `androidx.startup.InitializationProvider` and WorkManager's `RescheduleReceiver`.
+- NOT unit-tested: `:app` has no Robolectric harness, and `TestListenableWorkerBuilder` needs an
+  Android context. Device verification owed:
+  `adb shell cmd jobscheduler run -f com.transfer.flash <jobId>` after swiping the app away with a
+  message queued, then confirming delivery and that the engine stopped afterwards
+  (`FlashKeepalive` log lines).
+
+### Revisit when
+Device evidence shows either that the wake-up never fires on the target handsets (then the OEM
+autostart prompt is the only lever left), or that the outbox is emptied by other means before it
+fires (then this is dead weight and should be removed).
