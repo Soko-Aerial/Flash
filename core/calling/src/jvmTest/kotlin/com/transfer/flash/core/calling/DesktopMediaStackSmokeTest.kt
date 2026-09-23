@@ -22,6 +22,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeFalse
+import org.junit.Before
 import org.junit.Test
 
 /**
@@ -38,6 +40,21 @@ import org.junit.Test
  * host-candidate-only LAN design depends on them being generated at all.
  */
 class DesktopMediaStackSmokeTest {
+
+    /**
+     * Hardware/native-dependent (audit B5): needs the native WebRTC build this project bundles (Windows) and real
+     * audio devices. GitHub's Linux runner has neither, so every case failed there and kept CI red, which gated
+     * nothing. Skipped ONLY on CI (`CI=true`, set by GitHub Actions); set `FLASH_HW_TESTS=1` to force it. A
+     * "skip if the native library fails to load" probe would be worse: it would also hide a real native break on
+     * a developer machine, which is exactly what this smoke test exists to catch.
+     */
+    @Before
+    fun requireHardwareMediaStack() {
+        assumeFalse(
+            "native WebRTC smoke test skipped on CI (set FLASH_HW_TESTS=1 to run)",
+            System.getenv("CI") == "true" && System.getenv("FLASH_HW_TESTS") != "1",
+        )
+    }
 
     @Test
     fun `jvm peer connection factory initialises and produces a real offer`() = runBlocking {
