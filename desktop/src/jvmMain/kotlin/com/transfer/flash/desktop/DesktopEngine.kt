@@ -57,6 +57,7 @@ import com.transfer.flash.core.common.protocol.FlashProtocol
 import com.transfer.flash.core.network.tls.FlashCertMaker
 import com.transfer.flash.core.network.tls.TlsOptions
 import com.transfer.flash.core.network.tls.TofuPinVerifier
+import com.transfer.flash.core.network.tls.requireTransportSecurity
 import com.transfer.flash.core.security.crypto.PersistedFlashCrypto
 import com.transfer.flash.core.security.crypto.SecureBinaryFrameCodec
 import com.transfer.flash.ui.settings.FlashThemeMode
@@ -514,7 +515,11 @@ public class DesktopEngine(
         }
         boot("assemble entered")
 
-        val tlsOptions = runCatching {
+        // Audit S3: TLS is mandatory. A failure lands in [startError] (the shell shows it with a
+        // retry); there is no plaintext fallback.
+        val tlsOptions = requireTransportSecurity(
+            onAttemptFailed = { attempt, error -> FlashLog.w(TAG_WS, "TLS setup attempt $attempt failed: ${error.message}") },
+        ) {
             val keyPair = (crypto as? PersistedFlashCrypto)?.javaKeyPair() ?: FlashCertMaker.newEcKeyPair()
             val km = FlashCertMaker.createKeyManagers(keyPair, cn = "CN=$localId")
             val pinVerifier = TofuPinVerifier(
@@ -525,7 +530,7 @@ public class DesktopEngine(
                 pinVerifier = pinVerifier,
                 keyManagers = km,
             )
-        }.onFailure { FlashLog.w(TAG_WS, "Failed to initialize TLS options, falling back to plain: ${it.message}") }.getOrNull()
+        }
 
         val network = JvmWsFlashNetwork(
             localDeviceId = localId,
