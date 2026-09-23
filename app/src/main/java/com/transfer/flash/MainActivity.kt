@@ -1,5 +1,6 @@
 package com.transfer.flash
 
+import android.annotation.SuppressLint
 import android.Manifest
 import android.content.Context
 import android.content.Intent
@@ -961,6 +962,7 @@ private fun FlashShell(
     // Seeded with the StateFlow's CURRENT value, not an empty list: the leading edge arrives on the
     // first dispatch, and seeding makes even that gap unobservable, so the tab never renders a frame
     // of "nothing" that it would have to take back (ERROR-034).
+    @SuppressLint("StateFlowValueCalledInComposition") // `.value` is only the initial seed (see above).
     val domainTransfers by pacedTransfers.collectAsState(initial = transfersSource.value)
     // ERROR-034: the tab's Loading/Error branches existed but nothing ever reached them, so an
     // un-booted Transfers tab claimed "No transfers yet" — a statement about this device's history

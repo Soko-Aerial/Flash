@@ -99,7 +99,6 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -933,20 +932,18 @@ object DiscoveryEngineHolder {
                     is MessageWireFrame.TypingFrame -> ChatTextFrameCodec.encode(wireFrame)
                         ?: return@RealFlashChatRepository false
                 }
-                val sessionKey = trustStore.getSessionKey(targetDeviceId)
+                // Audit B1: this sink is `suspend`, so the keystore unseal, the encryption and the
+                // blocking socket write SUSPEND onto IO instead of blocking the caller. It used to
+                // runBlocking on the main thread, which froze the UI into an ANR whenever a peer's
+                // TCP window was full.
+                val sessionKey = withContext(Dispatchers.IO) { trustStore.getSessionKey(targetDeviceId) }
                 val wirePayload = if (sessionKey != null) {
                     E2eFrameCodec.encryptToWireFrame(frameText, sessionKey)
                 } else {
                     frameText
                 }
-                val sent = if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
-                    runCatching {
-                        kotlinx.coroutines.runBlocking(kotlinx.coroutines.Dispatchers.IO) {
-                            session.connection.sendText(wirePayload)
-                        }
-                    }.getOrDefault(false)
-                } else {
-                    session.connection.sendText(wirePayload)
+                val sent = withContext(Dispatchers.IO) {
+                    runCatching { session.connection.sendText(wirePayload) }.getOrDefault(false)
                 }
                 Log.i(TAG_CHAT, "Dispatched chat frame to $targetDeviceId (encrypted=${sessionKey != null}, success=$sent)")
                 sent
@@ -1065,11 +1062,11 @@ object DiscoveryEngineHolder {
                 val encoded = CallFrameCodec.encode(frame)
                 var session = networkImpl.activeSessions.value[FlashDeviceId(peerId)] as? WsSession
                 if (session == null && (frame is CallWireFrame.Invite || frame is CallWireFrame.GroupInvite)) {
-                    runBlocking {
-                        withTimeoutOrNull(2000L) {
-                            networkImpl.activeSessions.first { sessions ->
-                                sessions.containsKey(FlashDeviceId(peerId))
-                            }
+                    // Audit B2: `sendFrame` is suspend; suspend for the session instead of blocking
+                    // the caller (a Call tap) for up to 2 s.
+                    withTimeoutOrNull(2000L) {
+                        networkImpl.activeSessions.first { sessions ->
+                            sessions.containsKey(FlashDeviceId(peerId))
                         }
                     }
                     session = networkImpl.activeSessions.value[FlashDeviceId(peerId)] as? WsSession

@@ -1,5 +1,6 @@
 package com.transfer.flash.calling
 
+import android.annotation.SuppressLint
 import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
@@ -120,6 +121,8 @@ class FlashCallService : Service() {
         super.onDestroy()
     }
 
+    @SuppressLint("MissingPermission") // notify() is inside runCatching: a revoked POST_NOTIFICATIONS
+    // is logged, never thrown. A pre-check would be wrong below API 33, where that permission does not exist.
     private fun postCallNotification(state: FlashCallUiState) {
         val title = state.peerName
         val body = when (state.state) {

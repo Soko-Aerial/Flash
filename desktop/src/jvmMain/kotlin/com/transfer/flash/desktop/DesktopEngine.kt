@@ -1284,11 +1284,10 @@ public class DesktopEngine(
         val encoded = CallFrameCodec.encode(frame)
         var session = network.activeSessions.value[FlashDeviceId(peerId)] as? WsSession
         if (session == null && (frame is CallWireFrame.Invite || frame is CallWireFrame.GroupInvite)) {
-            runBlocking {
-                withTimeoutOrNull(2000L) {
-                    network.activeSessions.first { sessions ->
-                        sessions.containsKey(FlashDeviceId(peerId))
-                    }
+            // Audit B2: already suspend — suspend for the session, never block the caller's thread.
+            withTimeoutOrNull(2000L) {
+                network.activeSessions.first { sessions ->
+                    sessions.containsKey(FlashDeviceId(peerId))
                 }
             }
             session = network.activeSessions.value[FlashDeviceId(peerId)] as? WsSession

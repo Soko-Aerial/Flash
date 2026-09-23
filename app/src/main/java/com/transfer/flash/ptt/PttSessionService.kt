@@ -1,5 +1,6 @@
 package com.transfer.flash.ptt
 
+import android.annotation.SuppressLint
 import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
@@ -93,6 +94,8 @@ public class PttSessionService : Service() {
         super.onDestroy()
     }
 
+    @SuppressLint("MissingPermission") // notify() is inside runCatching: a revoked POST_NOTIFICATIONS
+    // is logged, never thrown. A pre-check would be wrong below API 33, where that permission does not exist.
     private fun render(state: PttFloorState, stats: PttSessionStats?) {
         if (state is PttFloorState.Idle) {
             stopForeground(STOP_FOREGROUND_REMOVE)

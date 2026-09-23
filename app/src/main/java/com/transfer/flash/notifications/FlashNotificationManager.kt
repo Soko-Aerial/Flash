@@ -1,5 +1,6 @@
 package com.transfer.flash.notifications
 
+import android.annotation.SuppressLint
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -92,6 +93,8 @@ object FlashNotificationManager {
      * slot — repeat pings collapse into one notification. Tap opens the app with no
      * conversation target. Best-effort like [post]: never crashes the receive path.
      */
+    @SuppressLint("MissingPermission") // notify() is inside runCatching: a revoked POST_NOTIFICATIONS
+    // is logged, never thrown. A pre-check would be wrong below API 33, where that permission does not exist.
     fun showPttPing(context: Context, senderName: String?) {
         val name = senderName?.ifBlank { null } ?: "Paired device"
         val appContext = context.applicationContext
@@ -124,6 +127,8 @@ object FlashNotificationManager {
      * with [com.transfer.flash.core.ptt.PttSessionEngine.EXTRA_PTT_PRESS], and the shell
      * completes the press (permission prompt included). Best-effort like every post here.
      */
+    @SuppressLint("MissingPermission") // notify() is inside runCatching: a revoked POST_NOTIFICATIONS
+    // is logged, never thrown. A pre-check would be wrong below API 33, where that permission does not exist.
     fun showPttTapToTalk(context: Context) {
         val appContext = context.applicationContext
         createChannel(appContext)
@@ -157,6 +162,8 @@ object FlashNotificationManager {
         }
     }
 
+    @SuppressLint("MissingPermission") // notify() is inside runCatching: a revoked POST_NOTIFICATIONS
+    // is logged, never thrown. A pre-check would be wrong below API 33, where that permission does not exist.
     private fun post(context: Context, conversationId: String, title: String, body: String) {
         // Suppression rule (see class doc): reading that exact conversation right now.
         if (appForeground && openConversationId == conversationId) return

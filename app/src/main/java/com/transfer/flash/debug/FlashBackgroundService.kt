@@ -11,6 +11,7 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
+import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.transfer.flash.core.transfer.FlashTransferRepository
 import com.transfer.flash.core.transfer.model.FlashTransfer
@@ -134,7 +135,7 @@ class FlashBackgroundService : Service() {
             com.transfer.flash.core.discovery.core.FlashDiscoveryMode.RECEIVE_KIOSK ->
                 "Flash is in kiosk mode" to "Advertising kiosk availability."
         }
-        return Notification.Builder(this, CHANNEL_ID)
+        return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(title)
             .setContentText(text)
             .setSmallIcon(android.R.drawable.stat_notify_sync_noanim)
@@ -143,14 +144,17 @@ class FlashBackgroundService : Service() {
     }
 
     private fun startAsForeground(): Boolean {
-        val manager = getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(
-            NotificationChannel(
-                CHANNEL_ID,
-                "Flash nearby presence",
-                NotificationManager.IMPORTANCE_LOW,
-            ),
-        )
+        // Channels exist from API 26; minSdk is 24, where calling these threw NoSuchMethodError and
+        // took the background service down on Android 7.x (lint NewApi, audit Phase 4.4).
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            getSystemService(NotificationManager::class.java)?.createNotificationChannel(
+                NotificationChannel(
+                    CHANNEL_ID,
+                    "Flash nearby presence",
+                    NotificationManager.IMPORTANCE_LOW,
+                ),
+            )
+        }
         val notification: Notification = buildIdleNotification()
         return try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -204,13 +208,13 @@ class FlashBackgroundService : Service() {
                 cancelIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             )
-            val cancelAction = Notification.Action.Builder(
+            val cancelAction = NotificationCompat.Action.Builder(
                 android.R.drawable.ic_menu_close_clear_cancel,
                 "Cancel",
                 cancelPendingIntent,
             ).build()
 
-            val notification = Notification.Builder(this, CHANNEL_ID)
+            val notification = NotificationCompat.Builder(this, CHANNEL_ID)
                 .setContentTitle(title)
                 .setContentText(subtitle)
                 .setSmallIcon(android.R.drawable.stat_sys_download)
