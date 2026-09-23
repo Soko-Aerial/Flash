@@ -55,7 +55,12 @@ first because inbound client authentication (S1) means nothing if TLS can silent
   writes it. Pins stay plaintext on purpose: a fingerprint is public; keeping it on-device is the backup rules' job.
   Tests: 4 new in `FlashTrustStoreTest` (with `SoftwareSecretSealer`), 3 new in `DesktopTrustStoreTest`.
   Not device-verified against a real AndroidKeyStore.
-- [ ] 2.2 Backup rules: exclude `sharedpref` and `database` from cloud backup and device transfer (or `allowBackup=false`).
+- [x] **2.2 Backup rules.** `data_extraction_rules.xml` (Android 12+) and `backup_rules.xml` (≤11), which were
+  untouched templates, now exclude `sharedpref` and `database` (plus the `device_*` variants) from BOTH cloud backup and
+  device transfer. `allowBackup="false"` alone would not have been enough: on Android 12+ it does not stop
+  device-to-device transfer on every OEM (developer.android.com/guide/topics/data/autobackup, checked 2026-09-23).
+  `external` (received files) is out of cloud backup so large media cannot blow the 25 MB quota. Only the settings
+  DataStore is still backed up. Verified: resources compile and `:app:lintDebug` raises no backup-rule issue.
 - [ ] 2.3 Restore lock-out: handle "passphrase blob present, keystore key missing" explicitly.
 
 ## Phase 3: Pairing protocol v2 (S2)
@@ -66,6 +71,10 @@ first because inbound client authentication (S1) means nothing if TLS can silent
 - [ ] 4.1 B1/B2: no `runBlocking` on the main thread in the send and call-invite paths.
 - [ ] 4.2 B5: tag hardware-dependent tests and exclude them in CI; get CI green; protect `main`.
 - [ ] 4.3 B3: a `runCatchingCancellable` helper and a detekt rule; fix the suspend call sites.
+- [ ] 4.4 **NEW (found by lint, 2026-09-23):** `FlashBackgroundService.kt:137,147,148,213` calls API 26
+  `Notification.Builder(ctx, channel)` / `NotificationChannel` without a version guard while minSdk is 24, so the
+  background service would crash on Android 7.x. Also five `MissingPermission` warnings on notification posting
+  (`FlashNotificationManager`, `FlashCallService`, `PttSessionService`): posting without `POST_NOTIFICATIONS` on 13+.
 
 ## Phase 5: Licensing (C1, C2, C3)
 - [ ] 5.1 Generated third-party notices, shown in Settings → About and bundled in the installers.

@@ -1,19 +1,31 @@
-<?xml version="1.0" encoding="utf-8"?><!--
-   Sample data extraction rules file; uncomment and customize as necessary.
-   See https://developer.android.com/about/versions/12/backup-restore#xml-changes
-   for details.
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Android 12+ backup / device-transfer rules (audit 2026-09-23, S4).
+
+    Nothing tied to this device's identity or keystore may leave it:
+    - sharedpref: pairing trust (pins), sealed E2E session keys, the device identity, and the
+      keystore-wrapped SQLCipher passphrase. Restored elsewhere these are either secrets or
+      unopenable blobs that used to lock the app out of its own database.
+    - database: the SQLCipher chat DB. Unusable without this device's AndroidKeyStore.
+    Excluded from device-transfer too: on Android 12+ allowBackup="false" does not stop
+    device-to-device transfer on every OEM
+    (developer.android.com/guide/topics/data/autobackup, checked 2026-09-23).
+
+    external (received files) is also excluded from cloud backup: large media would exceed the
+    25 MB Auto Backup quota and stop backups entirely. What remains is the settings DataStore.
 -->
 <data-extraction-rules>
     <cloud-backup>
-        <!-- TODO: Use <include> and <exclude> to control what is backed up.
-        <include .../>
-        <exclude .../>
-        -->
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="database" path="." />
+        <exclude domain="device_sharedpref" path="." />
+        <exclude domain="device_database" path="." />
+        <exclude domain="external" path="." />
     </cloud-backup>
-    <!--
     <device-transfer>
-        <include .../>
-        <exclude .../>
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="database" path="." />
+        <exclude domain="device_sharedpref" path="." />
+        <exclude domain="device_database" path="." />
     </device-transfer>
-    -->
 </data-extraction-rules>
