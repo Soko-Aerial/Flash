@@ -36,7 +36,19 @@ public object WebSocketCodec {
 
     private const val WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
     private const val MAX_HEADER_BYTES = 16 * 1024
-    private const val MAX_MESSAGE_BYTES = 512L * 1024L * 1024L
+    /**
+     * Cap on one reassembled message once the peer's HELLO has been accepted (audit S5). The largest
+     * legitimate message is a chunk frame: `ChunkFrame.MAX_CHUNK_DATA_BYTES` (1 MiB) plus header and
+     * `FLASH_SEC` overhead. 4 MiB leaves room for long chat text. It used to be 512 MB, which let any
+     * LAN device make a 2 GB phone allocate past its heap before pairing.
+     */
+    public const val MAX_MESSAGE_BYTES: Long = 4L * 1024L * 1024L
+
+    /** Cap before the peer's HELLO: a HELLO is well under 1 KiB, so nothing larger is legitimate. */
+    public const val PRE_HANDSHAKE_MAX_MESSAGE_BYTES: Long = 64L * 1024L
+
+    /** RFC 6455 §5.5: control frames carry at most 125 payload bytes. */
+    private const val MAX_CONTROL_PAYLOAD_BYTES = 125L
 
     private val random = SecureRandom()
 
@@ -142,12 +154,12 @@ public object WebSocketCodec {
      * @throws IdleTimeout when the read timeout expires before the first byte of the message —
      *   retryable on the same stream (see [IdleTimeout]).
      */
-    public fun readMessage(input: InputStream): Message {
+    public fun readMessage(input: InputStream, maxMessageBytes: Long = MAX_MESSAGE_BYTES): Message {
         val messageBuffer = ByteArrayOutputStream()
         var messageOpcode = -1
         var atMessageStart = true
         while (true) {
-            val header = readFrameHeader(input, retryableIdle = atMessageStart)
+            val header = readFrameHeader(input, retryableIdle = atMessageStart, maxMessageBytes = maxMessageBytes)
             atMessageStart = false
             val payload = readFramePayload(input, header)
             when (header.opcode) {
@@ -187,10 +199,11 @@ public object WebSocketCodec {
                             Message.Binary(payload)
                         }
                     }
-                    messageBuffer.write(payload)
-                    if (messageBuffer.size() > MAX_MESSAGE_BYTES) {
-                        throw IOException("WebSocket message exceeds size guard")
+                    // Checked BEFORE the write, so a fragmented message cannot grow past the cap.
+                    if (messageBuffer.size().toLong() + payload.size > maxMessageBytes) {
+                        throw IOException("WebSocket message exceeds size guard ($maxMessageBytes bytes)")
                     }
+                    messageBuffer.write(payload)
                     if (header.fin) {
                         val data = messageBuffer.toByteArray()
                         return if (messageOpcode == OPCODE_TEXT) {
@@ -261,7 +274,11 @@ public object WebSocketCodec {
         return result.toString()
     }
 
-    private fun readFrameHeader(input: InputStream, retryableIdle: Boolean): FrameHeader {
+    private fun readFrameHeader(
+        input: InputStream,
+        retryableIdle: Boolean,
+        maxMessageBytes: Long = MAX_MESSAGE_BYTES,
+    ): FrameHeader {
         val first = if (retryableIdle) {
             try {
                 readByte(input)
@@ -285,8 +302,12 @@ public object WebSocketCodec {
             }
             else -> length7.toLong()
         }
-        if (length < 0 || length > MAX_MESSAGE_BYTES) {
-            throw IOException("Invalid WebSocket frame length $length")
+        // Rejected from the header alone, before any payload buffer is allocated.
+        if (length < 0 || length > maxMessageBytes) {
+            throw IOException("Invalid WebSocket frame length $length (cap $maxMessageBytes)")
+        }
+        if (opcode >= OPCODE_CLOSE && length > MAX_CONTROL_PAYLOAD_BYTES) {
+            throw IOException("Control frame payload $length exceeds $MAX_CONTROL_PAYLOAD_BYTES bytes")
         }
         return FrameHeader(fin = fin, opcode = opcode, masked = masked, length = length)
     }

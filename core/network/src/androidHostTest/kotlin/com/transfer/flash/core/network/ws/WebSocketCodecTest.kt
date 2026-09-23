@@ -33,6 +33,82 @@ class WebSocketCodecTest {
         assertEquals("Zm9vYmFy", WebSocketCodec.base64Encode("foobar".toByteArray()))
     }
 
+    // --- Audit S5: size caps -------------------------------------------------------------------
+
+    /** Header for an unmasked binary frame declaring [length] payload bytes via the 64-bit form. */
+    private fun oversizedHeader(opcode: Int, length: Long): ByteArray {
+        val out = ByteArrayOutputStream()
+        out.write(0x80 or opcode)
+        out.write(127)
+        for (shift in 56 downTo 0 step 8) out.write(((length shr shift) and 0xFF).toInt())
+        return out.toByteArray()
+    }
+
+    @Test
+    fun `frame declaring more than the cap is rejected from the header alone`() {
+        // No payload follows: if the codec tried to allocate/read it, it would fail with EOF instead.
+        val error = runCatching {
+            WebSocketCodec.readMessage(
+                ByteArrayInputStream(oversizedHeader(WebSocketCodec.OPCODE_BINARY, 5L * 1024 * 1024)),
+            )
+        }.exceptionOrNull()
+        assertTrue("expected a cap rejection, got $error", error?.message?.contains("cap") == true)
+    }
+
+    @Test
+    fun `pre-handshake cap rejects a frame the post-handshake cap would accept`() {
+        val output = ByteArrayOutputStream()
+        val payload = ByteArray(128 * 1024)
+        WebSocketCodec.writeFrame(output, WebSocketCodec.OPCODE_BINARY, payload, masked = true)
+        val bytes = output.toByteArray()
+
+        val pre = runCatching {
+            WebSocketCodec.readMessage(ByteArrayInputStream(bytes), WebSocketCodec.PRE_HANDSHAKE_MAX_MESSAGE_BYTES)
+        }.exceptionOrNull()
+        assertTrue("128 KiB must be refused before HELLO", pre is java.io.IOException)
+
+        val post = WebSocketCodec.readMessage(ByteArrayInputStream(bytes))
+        assertEquals(payload.size, (post as WebSocketCodec.Message.Binary).data.size)
+    }
+
+    @Test
+    fun `fragmented message cannot grow past the cap`() {
+        // Two fragments of 40 KiB each: each fits the 64 KiB pre-handshake cap, together they do not.
+        val output = ByteArrayOutputStream()
+        val piece = ByteArray(40 * 1024)
+        output.write(0x00 or WebSocketCodec.OPCODE_BINARY) // FIN=0, BINARY
+        output.write(126); output.write((piece.size shr 8) and 0xFF); output.write(piece.size and 0xFF)
+        output.write(piece)
+        output.write(0x80 or WebSocketCodec.OPCODE_CONTINUATION) // FIN=1, CONTINUATION
+        output.write(126); output.write((piece.size shr 8) and 0xFF); output.write(piece.size and 0xFF)
+        output.write(piece)
+
+        val error = runCatching {
+            WebSocketCodec.readMessage(
+                ByteArrayInputStream(output.toByteArray()),
+                WebSocketCodec.PRE_HANDSHAKE_MAX_MESSAGE_BYTES,
+            )
+        }.exceptionOrNull()
+        assertTrue("expected size guard, got $error", error?.message?.contains("size guard") == true)
+    }
+
+    @Test
+    fun `control frame over 125 bytes is rejected`() {
+        val output = ByteArrayOutputStream()
+        WebSocketCodec.writeFrame(output, WebSocketCodec.OPCODE_PING, ByteArray(200), masked = true)
+        val error = runCatching {
+            WebSocketCodec.readMessage(ByteArrayInputStream(output.toByteArray()))
+        }.exceptionOrNull()
+        assertTrue("expected control-frame rejection, got $error", error?.message?.contains("Control frame") == true)
+    }
+
+    @Test
+    fun `the post-handshake cap is sized for a full chunk frame`() {
+        // A maximum chunk (1 MiB data) plus header and FLASH_SEC overhead must still fit.
+        assertTrue(WebSocketCodec.MAX_MESSAGE_BYTES >= 1024L * 1024L + 64 * 1024)
+        assertTrue(WebSocketCodec.MAX_MESSAGE_BYTES <= 16L * 1024L * 1024L)
+    }
+
     @Test
     fun `masked text frame round trips`() {
         val output = ByteArrayOutputStream()

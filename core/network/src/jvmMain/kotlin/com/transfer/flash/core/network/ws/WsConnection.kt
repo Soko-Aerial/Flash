@@ -81,6 +81,24 @@ public class WsConnection(
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val closed = AtomicBoolean(false)
+
+    /**
+     * Audit S5: the read cap starts at the pre-handshake size and is raised only once the peer's
+     * HELLO has been accepted ([markPeerHelloAccepted]). An unauthenticated socket can therefore
+     * never make us allocate more than 64 KiB per message.
+     */
+    @Volatile
+    private var maxMessageBytes: Long = WebSocketCodec.PRE_HANDSHAKE_MAX_MESSAGE_BYTES
+
+    /** True once the owning network accepted this peer's `FLASH_WS_HELLO`. */
+    @Volatile
+    internal var peerHelloAccepted: Boolean = false
+        private set
+
+    internal fun markPeerHelloAccepted() {
+        peerHelloAccepted = true
+        maxMessageBytes = WebSocketCodec.MAX_MESSAGE_BYTES
+    }
     private val writeLock = Any()
     private val input: InputStream = socket.getInputStream()
     private val output: OutputStream = socket.getOutputStream()
@@ -218,7 +236,7 @@ public class WsConnection(
         try {
             while (!closed.get() && scope.isActive) {
                 val message = try {
-                    WebSocketCodec.readMessage(input)
+                    WebSocketCodec.readMessage(input, maxMessageBytes)
                 } catch (idle: WebSocketCodec.IdleTimeout) {
                     // The socket read timeout expired at a frame boundary: no frame arrived, but
                     // the socket is still valid and the stream is still aligned. Silence is the
