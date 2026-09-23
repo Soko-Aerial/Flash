@@ -428,6 +428,27 @@ public class WsFlashNetwork(
     // Inbound Handshake & Session Registration
     // ------------------------------------------------------------------
 
+    /**
+     * Why an inbound connection's certificate does not prove the id its HELLO claims, or null when it
+     * does (audit S1). Runs the same [com.transfer.flash.core.network.tls.FlashPinVerifier] check an
+     * outbound dial runs inside its handshake: trust-on-first-use records a first contact's key, and
+     * a different key answering for an already-pinned id is refused.
+     */
+    private fun inboundIdentityFailure(connection: WsConnection, claimedDeviceId: String): String? {
+        // Plaintext exists only in tests: production engines cannot start without TLS (audit S3).
+        val tls = tlsOptions ?: return null
+        val leaf = connection.deferredPeerLeafFingerprintHex
+        if (leaf == null) {
+            // Pin already evaluated during the handshake against a configured expected id; the
+            // claim must then name that same device.
+            val expected = tls.expectedDeviceId
+            return if (expected != null && expected == claimedDeviceId) null
+            else "no client certificate bound to the claimed id"
+        }
+        return if (tls.pinVerifier.isPinned(claimedDeviceId, leaf)) null
+        else "client certificate does not match the pin for the claimed id"
+    }
+
     private fun handleInboundConnection(connection: WsConnection) {
         val handshakeWaiter = CompletableDeferred<FlashDevice>()
         pendingHandshakes[connection] = handshakeWaiter
@@ -447,6 +468,20 @@ public class WsFlashNetwork(
                 return@launch
             }
 
+            // Audit S1: bind the client's TLS certificate to the id its HELLO claims BEFORE we reply
+            // or register. Without this, any LAN device could claim a paired contact's id (they are
+            // broadcast in mDNS) and replace that contact's session.
+            val claimedPeer = outcome.getOrThrow()
+            inboundIdentityFailure(connection, claimedPeer.id.value)?.let { reason ->
+                FlashLog.w(
+                    TAG,
+                    "[tls] inbound peer rejected: $reason peer=${shortId(claimedPeer.id.value)} " +
+                        "remote=${connection.remoteLabel}",
+                )
+                connection.close("Identity binding failed")
+                return@launch
+            }
+
             // Reply with local HELLO
             val helloReply = FlashTextFraming.encodeFields(
                 HELLO_PREFIX,
@@ -456,7 +491,7 @@ public class WsFlashNetwork(
             )
             connection.sendText(helloReply)
 
-            val session = WsSession(connection, outcome.getOrThrow()) { s, _ ->
+            val session = WsSession(connection, claimedPeer) { s, _ ->
                 onSessionDisconnected(s)
             }
             if (!registerSession(session)) {

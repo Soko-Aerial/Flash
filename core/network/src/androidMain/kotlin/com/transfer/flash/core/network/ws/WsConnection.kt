@@ -63,9 +63,10 @@ public class WsConnection(
     private val livenessTimeoutMs: Long = DEFAULT_LIVENESS_TIMEOUT_MS,
     private val nowMs: () -> Long = System::currentTimeMillis,
     /**
-     * SPKI fingerprint of the peer's TLS leaf, recorded ONLY when the dial could not name the peer
-     * up front (manual IP) and pin evaluation was therefore deferred (ADR-040). Non-null means the
-     * caller still owes `FlashPinVerifier.isPinned` against the id from `FLASH_WS_HELLO`.
+     * SPKI fingerprint of the peer's TLS leaf, recorded when pin evaluation had to be deferred
+     * because the peer's id was not known during the handshake: an outbound manual-IP dial
+     * (ADR-040) or ANY inbound connection (audit S1). Non-null means the network still owes
+     * `FlashPinVerifier.isPinned` against the id from `FLASH_WS_HELLO` before registering it.
      */
     public val deferredPeerLeafFingerprintHex: String? = null,
 ) {

@@ -24,13 +24,19 @@ first because inbound client authentication (S1) means nothing if TLS can silent
   without limit); after HELLO the early-frame queue is capped at 64 frames and 8 MiB (`bufferEarlyFrame`).
   Android + JVM. Tests: 5 new in `WebSocketCodecTest`; the existing loopback suites prove legitimate handshakes
   still work.
-- [ ] **1.3 S1a: inbound client authentication.** The server requests the client certificate; the client leaf is
-  bound to the HELLO `deviceId` via `TofuPinVerifier` (the ADR-040 binding, mirrored for inbound). A mismatch is
-  closed before `registerSession`.
+- [x] **1.3 S1a: inbound client authentication.** `SecureSocketUpgrader.wrapAccepted(requireClientCertificate = true)`
+  sets `needClientAuth`; the server trust manager defers the pin (no id is known yet) and reports the client leaf,
+  which `WsTransferServer` carries on the `WsConnection`. `WsFlashNetwork`/`JvmWsFlashNetwork.handleInboundConnection`
+  run `inboundIdentityFailure` (the same `TofuPinVerifier.isPinned` check an outbound dial runs in its handshake)
+  after HELLO and **before** replying or registering; a mismatch closes the socket. Compatible with 2.0.0-beta
+  clients, which already present their identity certificate when asked. Residual: TOFU still pins a never-seen id
+  on first contact (id squatting), same as the outbound path; pairing (Phase 3) is the human check.
 - [ ] **1.4 S1b: mandatory E2E for keyed peers.** Once a peer has a session key, non-`FLASH_SEC` frames (other than
   HELLO and pairing) are dropped in all three engines; group frames are covered too.
-- [ ] **1.5 Impersonation regression test.** A loopback test in which a second client claims an existing peer's id
-  must be refused (this is the test that proves 1.3).
+- [x] **1.5 Impersonation regression test.** `InboundIdentityBindingTest` (Android, 3 cases) and
+  `JvmInboundIdentityBindingTest` (desktop, 2 cases): real TLS loopback. An attacker key claiming a pinned
+  contact's id is refused and the pin is untouched; the genuine contact is admitted; TOFU pins a first contact and
+  then refuses a second key. **Verified to fail with the binding disabled** (2 of 3 red).
 
 ## Phase 2: Keys at rest (S4, B7)
 - [ ] 2.1 Session keys and pins wrapped with an AndroidKeyStore AES-GCM key (migrate existing plaintext entries).
