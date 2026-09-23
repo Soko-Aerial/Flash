@@ -1,5 +1,34 @@
 # Current Handoff
 
+## 2026-09-23 — Audit fix Phase 1 (transport trust) DONE; next = Phase 2 (keys at rest)
+
+### Current branch
+`dev` @ `14fff33`, clean. Plan and checklist: `docs/audit/FIX-PHASES.md`; findings:
+`docs/audit/2026-09-23-full-audit.md`.
+
+### Done this session (each with a test; see the checklist for call sites)
+- **S3 TLS fails closed** (`05ad4f2`): `requireTransportSecurity` retries once, then throws
+  `TransportSecurityUnavailableException`. There is no plaintext fallback in any engine.
+- **S5 WebSocket caps** (`63dc2fa`): 64 KiB before HELLO, 4 MiB after (was 512 MB); a frame before HELLO closes the
+  connection; the early-frame queue is bounded.
+- **S1 inbound authentication** (`dd8c934`): the server requires the client certificate and binds it to the HELLO id
+  with the same TOFU pin check outbound uses. Impersonation tests on Android and desktop, verified to fail without the fix.
+- **S1b downgrade guard** (`14fff33`): plaintext direct-chat frames from keyed peers are dropped. Scope was narrowed
+  on purpose (calls/groups/transfers have no app-layer E2E; they ride the now-authenticated TLS).
+
+### Behaviour changes to watch on devices
+- An engine whose TLS setup fails now shows the start error instead of running in plaintext.
+- A peer on an OLD build that presents no client certificate cannot connect inbound. 2.0.0-beta builds do present one.
+- A reinstalled peer (new identity key) is refused until re-paired: its key no longer matches the pin.
+
+### Not device-verified
+All of Phase 1. The two-phone check: pair → chat → call → transfer in both directions, then a desktop↔phone pair.
+
+### Recommended next task
+Phase 2 (S4): wrap session keys with an AndroidKeyStore key, fix the backup rules, handle restore lock-out.
+
+---
+
 ## 2026-09-22 — Remaining investigation items: what was implemented, what needs a decision
 
 ### Current branch
