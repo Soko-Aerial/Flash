@@ -991,10 +991,12 @@ public class WsFlashNetwork(
                 protocolVersion = peerVersion,
             )
 
+            // Raises the read cap from 64 KiB to the post-handshake limit (audit S5).
+            connection.markPeerHelloAccepted()
             pendingHandshakes[connection]?.complete(peerDevice)
         } else {
             // Not yet registered: buffer instead of dropping (early-frame race).
-            earlyFrameQueue(connection).add(text)
+            bufferEarlyFrame(connection, text)
         }
     }
 
@@ -1003,8 +1005,39 @@ public class WsFlashNetwork(
         if (session != null) {
             session.onBinaryReceived(data)
         } else {
-            earlyFrameQueue(connection).add(data)
+            bufferEarlyFrame(connection, data)
         }
+    }
+
+    /**
+     * Buffers a frame that arrived after the peer's HELLO but before its session registered (the
+     * early-frame race), refusing everything else (audit S5).
+     *
+     * A legitimate peer always sends `FLASH_WS_HELLO` first, so a frame before it is a protocol
+     * violation, and buffering it would let an unauthenticated socket grow this queue without limit.
+     * After HELLO the window lasts milliseconds, so it is bounded by count and by bytes.
+     */
+    private fun bufferEarlyFrame(connection: WsConnection, frame: Any) {
+        if (!connection.peerHelloAccepted) {
+            FlashLog.w(TAG, "[ws] frame before HELLO from ${connection.remoteLabel}; closing")
+            connection.close("Protocol violation: frame before HELLO")
+            return
+        }
+        val queue = earlyFrameQueue(connection)
+        val queuedBytes = queue.sumOf { earlyFrameBytes(it) }
+        if (queue.size >= MAX_EARLY_FRAMES || queuedBytes + earlyFrameBytes(frame) > MAX_EARLY_FRAME_BYTES) {
+            FlashLog.w(TAG, "[ws] early-frame budget exceeded from ${connection.remoteLabel}; closing")
+            earlyFrames.remove(connection)
+            connection.close("Too many frames before registration")
+            return
+        }
+        queue.add(frame)
+    }
+
+    private fun earlyFrameBytes(frame: Any): Long = when (frame) {
+        is String -> frame.length.toLong() * 2
+        is ByteArray -> frame.size.toLong()
+        else -> 0L
     }
 
     private fun earlyFrameQueue(connection: WsConnection): ConcurrentLinkedQueue<Any> =
@@ -1044,5 +1077,9 @@ public class WsFlashNetwork(
 
         /** Per-peer cap on frames parked for a session that has not registered yet. */
         private const val MAX_PENDING_PEER_FRAMES = 64
+
+        /** Early-frame budget per connection (see bufferEarlyFrame). */
+        private const val MAX_EARLY_FRAMES = 64
+        private const val MAX_EARLY_FRAME_BYTES = 8L * 1024L * 1024L
     }
 }

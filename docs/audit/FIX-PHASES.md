@@ -17,8 +17,13 @@ first because inbound client authentication (S1) means nothing if TLS can silent
   `DiscoveryEngineHolder.startEngineLocked` (hoisted before power locks and receivers, so nothing is half-started;
   shown by AppEngine's start-error + retry), `Flash.create` (documented `@throws`, before the DB opens) and
   `DesktopEngine` assemble (lands in `startError`). Test: `TransportSecurityTest` (host + JVM).
-- [ ] **1.2 S5: WebSocket message-size cap.** Replace the 512 MB `MAX_MESSAGE_BYTES` with a small cap before HELLO
-  and a chunk-sized cap after.
+- [x] **1.2 S5: WebSocket message-size cap.** `WebSocketCodec.readMessage(input, maxMessageBytes)`: 64 KiB until the
+  peer's HELLO is accepted (`WsConnection.markPeerHelloAccepted`), 4 MiB after (was 512 MB). The oversized length is
+  rejected from the header before any allocation, fragments are checked before they are appended, and control frames
+  are held to 125 bytes (RFC 6455 §5.5). A frame before HELLO now closes the connection (it used to be buffered
+  without limit); after HELLO the early-frame queue is capped at 64 frames and 8 MiB (`bufferEarlyFrame`).
+  Android + JVM. Tests: 5 new in `WebSocketCodecTest`; the existing loopback suites prove legitimate handshakes
+  still work.
 - [ ] **1.3 S1a: inbound client authentication.** The server requests the client certificate; the client leaf is
   bound to the HELLO `deviceId` via `TofuPinVerifier` (the ADR-040 binding, mirrored for inbound). A mismatch is
   closed before `registerSession`.
