@@ -93,8 +93,15 @@ first because inbound client authentication (S1) means nothing if TLS can silent
   off the UI thread at lifecycle edges and were left as they are.
 - [~] **4.2 B5: CI.** `DesktopMediaStackSmokeTest` self-skips only when `CI=true` (`FLASH_HW_TESTS=1` forces it; a
   load-failure probe was rejected because it would hide a real native break locally). The registry test is
-  Windows-only. CI runs with `--continue` and gates `:app:lintDebug`. **Not yet proven green:** needs a real Actions run
-  on Linux (requires pushing `dev`); protecting `main` is the owner's GitHub setting.
+  Windows-only. CI runs with `--continue` and gates `:app:lintDebug`. ~~Not yet proven green: needs a real Actions run
+  on Linux.~~ **DEFERRED by the owner (2026-09-23):** run 35865335860 on `dev` (0b9bf8c) failed with a Linux-only
+  cause. Android unit tests, the other KMP tests and `assembleDebug` passed. The only red was 27 desktop and 2
+  `:core:engine` jvm tests, and every one failed the same way: the desktop key vault's Windows DPAPI
+  (`IdentityKeyVault.Dpapi` → JNA `Crypt32Util`) throws `UnsatisfiedLinkError` / `ExceptionInInitializerError` at
+  `NativeLibrary.java:325` on `ubuntu-latest`. The desktop target is Windows-only, so this is not a product bug. Owner
+  instruction: "if its a linux problem lets leave ci out". Options when CI is picked up again: run the jvm tests on
+  `windows-latest`, or give the test fixtures a non-DPAPI vault. Lint never ran in that job because the earlier step
+  failed.
 - [x] **4.3 B3, re-scoped after measuring.** A scan for the dangerous shape (a loop whose only suspension point sits
   inside `runCatching`, which would spin forever after cancellation) found **none**. Only ~20 `runCatching` blocks wrap
   suspend calls; most are deliberate cleanup (stop/close/timeout paths) or false positives (blocking I/O). Added

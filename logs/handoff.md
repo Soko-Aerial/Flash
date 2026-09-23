@@ -16,7 +16,10 @@ Pairing, chat, calls, transfers and upgrading an install with v1 pairings were a
   handshake timeouts were reported as "rejected" was wrong and is retracted; a test pins the real behaviour.
 
 ### Open
-CI has not been proven green on Linux: that needs `dev` pushed (24+ commits ahead of origin).
+~~CI has not been proven green on Linux: that needs `dev` pushed.~~ **CI DEFERRED by the owner:** `dev` was pushed
+and run 35865335860 failed with a Linux-only cause. The desktop key vault's Windows DPAPI (JNA `Crypt32Util`) can't
+load on `ubuntu-latest`, which took down 27 `:desktop` tests and 2 `:core:engine` jvm tests. Everything else passed.
+Details and options are in `docs/audit/FIX-PHASES.md` 4.2. Next = Phase 5 (licensing).
 
 ---
 
