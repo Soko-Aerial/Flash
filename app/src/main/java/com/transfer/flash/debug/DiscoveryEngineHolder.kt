@@ -37,6 +37,7 @@ import com.transfer.flash.core.network.ws.WsFlashNetwork
 import com.transfer.flash.core.network.ws.WsSession
 import com.transfer.flash.core.network.tls.TlsOptions
 import com.transfer.flash.core.network.tls.TofuPinVerifier
+import com.transfer.flash.core.network.tls.requireTransportSecurity
 import com.transfer.flash.core.security.crypto.E2eFrameCodec
 import com.transfer.flash.core.security.crypto.FlashFingerprint
 import com.transfer.flash.core.security.crypto.KeystoreFlashCrypto
@@ -479,6 +480,27 @@ object DiscoveryEngineHolder {
         appContextRef = appContext
         // Power locks first: everything below (socket bind, NSD registration, first sessions) needs
         // an awake CPU and a fully-powered radio, and they now outlive any single service instance.
+        // Audit S3: TLS is mandatory and is built BEFORE any side effect (power locks, receivers,
+        // sockets), so a failure throws out of ensureStarted leaving nothing half-started; AppEngine
+        // renders it as the start error with a retry. There is no plaintext fallback.
+        val trustStore = AndroidPreferencesTrustStore(appContext)
+        val crypto = KeystoreFlashCrypto(appContext)
+        val tlsOptions = requireTransportSecurity(
+            onAttemptFailed = { attempt, error -> Log.w(TAG_WS, "TLS setup attempt $attempt failed: ${error.message}") },
+        ) {
+            crypto.selfSignedCertificate()
+            val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+            val kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm())
+            kmf.init(ks, null)
+            val pinVerifier = TofuPinVerifier(
+                lookupPin = { peerId -> trustStore.getPin(FlashDeviceId(peerId)) },
+                recordPin = { peerId, pin -> trustStore.savePin(FlashDeviceId(peerId), pin) },
+            )
+            TlsOptions(
+                pinVerifier = pinVerifier,
+                keyManagers = kmf.keyManagers,
+            )
+        }
         acquirePowerLocks(appContext)
         registerScreenReceiver(appContext)
         registerPttReceiver(appContext)
@@ -530,23 +552,7 @@ object DiscoveryEngineHolder {
         val engine = CompositeDiscovery(transports = listOf(transport, multicastTransport))
 
         // Trust store is shared by chat (peer-name resolution), pairing (persisted trust), and TLS TOFU pinning.
-        val trustStore = AndroidPreferencesTrustStore(appContext)
         trustStoreRef = trustStore
-        val crypto = KeystoreFlashCrypto(appContext)
-        val tlsOptions = runCatching {
-            crypto.selfSignedCertificate()
-            val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-            val kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm())
-            kmf.init(ks, null)
-            val pinVerifier = TofuPinVerifier(
-                lookupPin = { peerId -> trustStore.getPin(FlashDeviceId(peerId)) },
-                recordPin = { peerId, pin -> trustStore.savePin(FlashDeviceId(peerId), pin) },
-            )
-            TlsOptions(
-                pinVerifier = pinVerifier,
-                keyManagers = kmf.keyManagers,
-            )
-        }.onFailure { Log.w(TAG_WS, "Failed to initialize Android TLS options, falling back to plain: ${it.message}") }.getOrNull()
 
         var boundServerPort = 0
         val networkImpl = WsFlashNetwork(

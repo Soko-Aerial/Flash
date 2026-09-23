@@ -37,6 +37,8 @@ import com.transfer.flash.core.persistence.settings.FlashSettingsDataStore
 import com.transfer.flash.core.ptt.PttSessionEngine
 import com.transfer.flash.core.network.tls.TlsOptions
 import com.transfer.flash.core.network.tls.TofuPinVerifier
+import com.transfer.flash.core.network.tls.TransportSecurityUnavailableException
+import com.transfer.flash.core.network.tls.requireTransportSecurity
 import com.transfer.flash.core.security.crypto.KeystoreFlashCrypto
 import com.transfer.flash.core.security.crypto.SecureBinaryFrameCodec
 import com.transfer.flash.core.security.identity.AndroidPreferencesIdentityStore
@@ -127,7 +129,12 @@ public data class FlashConfig(
  */
 public object Flash {
 
-    /** Builds and starts a fully-wired engine. See [Flash] for the lifecycle contract. */
+    /**
+     * Builds and starts a fully-wired engine. See [Flash] for the lifecycle contract.
+     *
+     * @throws TransportSecurityUnavailableException when the TLS identity cannot be built after a
+     * retry. The engine never starts without TLS; there is no plaintext fallback (audit S3).
+     */
     public fun create(context: Context, config: FlashConfig = FlashConfig()): FlashEngine {
         val appContext = context.applicationContext
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -226,7 +233,10 @@ private class Wiring(
         val trustStore = AndroidPreferencesTrustStore(appContext)
         this.trustStoreRef = trustStore
         val crypto = KeystoreFlashCrypto(appContext)
-        val tlsOptions = runCatching {
+        // Audit S3: TLS is mandatory. No plaintext fallback — failure throws out of Flash.create.
+        val tlsOptions = requireTransportSecurity(
+            onAttemptFailed = { attempt, error -> Log.w(TAG, "TLS setup attempt $attempt failed: ${error.message}") },
+        ) {
             crypto.selfSignedCertificate()
             val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
             val kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm())
@@ -239,7 +249,7 @@ private class Wiring(
                 pinVerifier = pinVerifier,
                 keyManagers = kmf.keyManagers,
             )
-        }.onFailure { Log.w(TAG, "Failed to initialize Android TLS options, falling back to plain: ${it.message}") }.getOrNull()
+        }
 
         var boundServerPort = 0
         var networkRestartJob: Job? = null
