@@ -131,6 +131,57 @@ that stays out of scope until measurements demand it.
 
 Desktop gets only the CPU and software-decode signals; there is no thermal API.
 
+### 4.6 Compression and codecs (owner suggestion, assessed 2026-09-24)
+
+The owner asked whether adding compression to audio or video would help. Assessment: **a separate compression
+layer does not; a more efficient codec per connection might, and G0 will measure it (C1–C3).**
+
+**What is already compressed** (`FlashVoiceProfile`, `FlashVideoProfile`, `CallSdp`):
+
+| | Raw | Sent today | Ratio |
+|---|---|---|---|
+| Voice (Opus) | 768 kbps (48 kHz, 16-bit mono PCM) | 20 / 24 / 32 kbps (LOW / MEDIUM / HIGH), DTX on, in-band FEC | about 30–40× |
+| Video (VP8, 540p at 24 fps) | about 149 Mbps (960 × 540 × 1.5 bytes × 24 frames) | at most 900 kbps (MEDIUM profile) | about 165× |
+
+**Rejected: a general compressor (zip / zstd / deflate) on media.**
+- Opus ends in a range coder and VP8 in a boolean entropy coder. Their output is already close to random, so a
+  second compressor gains about 0% and can grow the data.
+- Media leaves the device SRTP-encrypted, and ciphertext does not compress. Compressing before encryption would
+  need a frame-transform hook we don't have, and would still gain nothing, for the first reason.
+- It adds CPU per packet, which is exactly what LOW devices lack.
+
+**Rejected: squeezing audio further.** In an 8-person call, voice is about 1.3 Mbps worst case across the whole
+group (56 streams × 24 kbps, and much less with DTX, since only talkers send). Video is about 40 Mbps (§4.2), so
+audio is about 3% of the traffic. Lower Opus bitrates would audibly hurt speech and save almost nothing. The
+voice profiles stay as they are.
+
+**Rejected for the mesh: simulcast and SVC.** One encode serving several quality levels only pays off when a
+server forwards the layers. In a mesh, every connection already has its own encoder, and request-based video
+(§4.1) is the bigger saving.
+
+**Candidate: a better codec, chosen per connection.** Video is forced to VP8 everywhere (`CallSdp.enforceVp8Only`)
+because the desktop's `webrtc-java` 0.17.0 is recorded as lacking the other codecs' native libraries. Each mesh leg
+is its own PeerConnection, so the codec can differ per leg:
+
+| Leg | Codec | Expected gain | Cost / risk |
+|---|---|---|---|
+| Phone ↔ phone, both with a hardware H.264 encoder | H.264 | **CPU, heat and battery**, not bandwidth (H.264 is about the size of VP8). If a hardware copy is cheap, LOW's send budget of 1 copy (§4.2) may rise. | Hardware encoder quality and bugs vary by chipset. Needs a fallback to VP8 when an encoder fails. |
+| Phone ↔ phone, both HIGH, both with a hardware VP9 encoder | VP9 | Commonly reported as about 30–40% fewer bits than VP8 for the same picture *(reported, not measured here)*. On 2.4 GHz that could lift HIGH's budget from 3 × 540p towards 4. | Software VP9 encoding is much heavier than VP8, so it's never used without hardware. |
+| Any leg with the desktop | VP8 | none (today's behaviour) | none |
+| Any leg | AV1 | best compression | Encoding is too heavy for phones apart from the newest flagships. **Not pursued.** |
+
+Doubt to settle first: the `CallSdp` comment groups VP9 with H.264 and AV1 as "not bundled" on the desktop. VP9
+comes from the same libvpx library as VP8, which does work there, so the claim may be wrong for VP9 (C1).
+
+Rules if it's built (phase G4b):
+- **Codec choice per leg from both ends' capabilities**, exchanged in `GroupJoin` / `GroupPresence` alongside the
+  band (G2): which hardware encoders and decoders each device has. Any leg that includes the desktop, or where either
+  side lacks the hardware, stays VP8. It is never *less* compatible than today.
+- **Fallback.** If a hardware encoder fails or its stats report a software implementation, that leg renegotiates to
+  VP8. A codec failure must never end the call.
+- **Budgets change only by measurement.** A hardware-codec leg gets a bigger §4.2 budget only if C3 shows the
+  saving on the BelFone.
+
 ## 5. Size caps (owner's numbers vs recommendation)
 
 | Cap | Owner | Recommendation | Reasoning |
@@ -147,11 +198,12 @@ identities must also admit call legs between members of the same group; otherwis
 
 | Phase | Work | Exit criteria |
 |---|---|---|
-| **G0 Measure** | Belfone, a mid-range phone and the desktop. **Video:** 3-way call; CPU, temperature and dropped frames; reported decoder instances (`getMaxSupportedInstances`); `decoderImplementation`. **Voice:** 4 / 8 / 12 connections. **Network:** 2.4 GHz vs 5 GHz throughput. Logged in `logs/experiments.md`. | Numbers replace every *(measure)* in this doc. The owner confirms the budget tables. |
+| **G0 Measure** | Belfone, a mid-range phone and the desktop. **Video:** 3-way call; CPU, temperature and dropped frames; reported decoder instances (`getMaxSupportedInstances`); `decoderImplementation`. **Voice:** 4 / 8 / 12 connections. **Network:** 2.4 GHz vs 5 GHz throughput. **Codecs (§4.6):** C1, does desktop `webrtc-java` 0.17.0 encode and decode VP9 in a desktop ↔ phone call (check `encoderImplementation` / `decoderImplementation` in stats); C2, the BelFone's and the mid-range phone's hardware encoders and decoders (VP8 / VP9 / H.264, from `MediaCodecList`); C3, two phones, 540p for 10 min, VP8 software vs H.264 hardware vs VP9 hardware (where present): CPU, temperature, battery drain, bitrate at matched quality. Logged in `logs/experiments.md`. | Numbers replace every *(measure)* in this doc. The owner confirms the budget tables. C1–C3 decide whether G4b is built. |
 | **G1 One video per participant** | Session keeps a video track per participant; the grid renders them. Sending behaviour unchanged. | 3 devices each see both other videos. |
 | **G2 Network band** | Detect Wi-Fi band and Ethernet on Android and desktop; exchange it in `GroupJoin`/`GroupPresence`. | The band shows in the debug stats on each platform, and a hotspot host reports "unknown". |
 | **G3 Request protocol** | The 4 frames; encodings start inactive; request, grant, deny and release; send cap; release on leave; sequence numbers. JVM 3-way loopback tests. | With nobody focused, no video is sent (check the stats). A tap delivers video in ≤ 1 s. The send cap is enforced. |
 | **G4 Budgets** | The tier × band tables; per-connection tuning replaces the full-bitrate-everywhere behaviour. | Measured bitrates match the table. |
+| **G4b Codec per connection (conditional)** | **Only if C3 shows a clear CPU, heat or bitrate win on the BelFone.** Exchange hardware-codec capabilities; choose H.264 or VP9 per phone ↔ phone leg (§4.6), VP8 for everything else; fall back to VP8 on encoder failure; raise the §4.2 budgets for hardware legs by the measured amount. If C3 shows no win, record the numbers and skip this phase. | A phone ↔ phone leg negotiates the hardware codec, and a desktop leg in the same call stays VP8. A forced encoder failure falls back without dropping the call. The C3 saving is reproduced in a real 3-way call. |
 | **G5 UI** | LOW main tile plus strip; MEDIUM/HIGH grid; "Video busy" and "Camera off" states. | Owner device check. |
 | **G6 Health warnings** | Banner, "Show fewer", automatic step-down at SEVERE. | The warning fires on a forced-hot Belfone and not in a normal call. |
 | **G7 Caps** | Video 8, voice 12 (15 later, only after measurement). Depends on ADR-044 for groups of unpaired members. | Enforced by the invite and join paths, with a clear message when full. |
@@ -171,4 +223,6 @@ identities must also admit call legs between members of the same group; otherwis
 | Q8 | Send limit on 2.4 GHz | **A split budget (§4.2):** LOW 1 × 540p, MEDIUM 2 × 540p, HIGH 3 × 540p, each spendable as twice as many 360p copies. Halving the counts was rejected because it leaves most viewers on "Video busy" when everyone follows the talker. |
 | Q9 | Chat-group size | **20, with vouched introductions (ADR-044); 32 after measurement.** Keeping mandatory pairwise pairing at 20 was rejected (190 pairings); staying at 6 was rejected. |
 
-No open questions remain. Next: G0 measurements, and ADR-044's threat review.
+| Q10 | Compression for audio/video (owner suggestion) | **No separate compressor and no further audio squeezing (§4.6: already codec-compressed, encrypted, audio ≈ 3% of traffic). Instead, the codec experiment C1–C3 goes into G0, and per-connection H.264 / VP9 (G4b) is built only if the BelFone numbers justify it.** |
+
+No open questions remain. Next: G0 measurements (now including C1–C3), and ADR-044's threat review.

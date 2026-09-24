@@ -24,7 +24,7 @@
 `docs/calling/GROUP-VIDEO-PLAN.md`: request-based video (no sender blasts to everyone), tier × band budgets,
 LOW layout (one video plus a participant strip), health warnings, and size caps (video 8, voice 12→15, chat 20→32).
 Key finding: group calls today encode and decode video on every connection but can show at most one video
-(single `_remoteVideoStreamTrack`; the grid shows initials only). Phases G0–G7. Owner answered all 7 questions on 2026-09-24 (§7), plus Q8 (a split send budget on 2.4 GHz) and Q9 (groups of 20 through vouched introductions, **ADR-044, accepted, not implemented, threat review V0 first**). Next = G0 measurements. Note: the 8/12 call caps are only reachable in practice once ADR-044 lands, because call legs are pairwise trust-gated.
+(single `_remoteVideoStreamTrack`; the grid shows initials only). Phases G0–G7. Owner answered all 7 questions on 2026-09-24 (§7), plus Q8 (a split send budget on 2.4 GHz) and Q9 (groups of 20 through vouched introductions, **ADR-044, accepted, not implemented, threat review V0 first**). Q10 (2026-09-24): no separate media compression; codec experiment C1–C3 added to G0, and per-connection H.264/VP9 (G4b) is built only if the BelFone numbers justify it (§4.6). Next = G0 measurements. Note: the 8/12 call caps are only reachable in practice once ADR-044 lands, because call legs are pairwise trust-gated.
 
 ## 2026-09-23 — Audit fix Phase 5 (licensing) DONE; next = Phase 6 (low-end mode)
 - `THIRD_PARTY_NOTICES.txt` is generated at build time (ADR-043) and ships in the APK, the desktop jar and the

@@ -1,5 +1,24 @@
 # Progress Log
 
+## 2026-09-24 — Group video plan: compression assessed (Q10, planning only)
+
+### Worked on
+The owner suggested adding compression to call audio or video. Assessed it against the code and recorded it in
+`docs/calling/GROUP-VIDEO-PLAN.md` §4.6.
+
+### Outcome
+- Rejected: a general compressor on media. Opus and VP8 output is already entropy-coded and is SRTP-encrypted,
+  so there's nothing left to compress. Also rejected: lower audio bitrates (audio is about 3% of an 8-person
+  call's traffic), and simulcast/SVC (no server in a mesh).
+- Candidate: a better codec per connection. H.264 hardware on phone ↔ phone legs (for CPU and heat), and VP9
+  hardware on HIGH legs (for bitrate). Desktop legs stay VP8. G0 gains C1–C3 (desktop VP9 check, the phones'
+  hardware codec list, a VP8 / H.264 / VP9 comparison). New phase **G4b** is built only if C3 shows a win.
+- Open doubt: the `CallSdp.enforceVp8Only` comment says the desktop lacks VP9, but VP9 comes from the same libvpx
+  as VP8, which works. C1 settles it.
+
+### Verification
+Docs only. The facts came from `FlashVoiceProfile`, `FlashVideoProfile`, `CallSdp` and the webrtc-kmp
+`DefaultVideoEncoderFactory` wiring. Nothing was built.
 ## 2026-09-24 — Release build script (`tools/build-release.ps1`)
 
 ### Worked on
