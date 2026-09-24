@@ -1902,3 +1902,42 @@ happen in practice, so the caps would exist only on paper.
 ### Revisit when
 Per-sender E2E keys arrive (`keyEpoch` > 0): these can then replace vouched transport trust. Also revisit if
 attachments in groups land, since N−1 uploads from the sender need a relay design at 20.
+
+## ADR-047 — Discovery resilience: extra sources are dial hints that feed the connection planner
+
+### Date
+2026-09-24
+
+### Status
+**PROPOSED, NOT IMPLEMENTED.** To be implemented after group calling (owner, 2026-09-24). Plan:
+`docs/network/DISCOVERY-RESILIENCE-PLAN.md` (DR0–DR7). ADR-045 and ADR-046 are reserved by the presence plan.
+
+### Context
+Discovery today depends on multicast: mDNS (NSD / JmDNS) and the `224.0.0.168:45823` beacon. The hotspot
+gateway probe and manual Connect by IP are the only fallbacks. Peer routes are held in memory only and deleted as
+soon as discovery stops advertising a peer, so a network that filters multicast makes even a just-connected peer
+unreachable after a restart.
+
+### Decision
+1. New discovery sources produce **candidate addresses only**. Identity stays with the TLS pin and HELLO binding
+   (S1, ADR-040, ADR-042). A wrong address costs one failed dial.
+2. Sources feed the PC2 connection planner. No new auto-connect sweep copy is added.
+3. Order: remembered endpoints for paired peers (DR1) → directed-broadcast beacon (DR2) → subnet sweep limited to
+   /24 or smaller (DR3) → QR first contact through pairing v2 (DR4) → hardening (DR5). BLE (DR6) only if the DR0
+   failure matrix justifies it. Wi-Fi Direct (DR7) gets its own plan.
+4. Persisted routes live in the encrypted DB, paired peers only (pending owner D1), and are deleted on a pin
+   mismatch.
+
+### Alternatives considered
+- **Wait for Wi-Fi Direct:** it solves "no shared network", not "shared network that blocks multicast", which is
+  the common case.
+- **BLE first:** Android only, new permissions, steady scan cost. Deferred to DR0's evidence.
+- **mDNS reflector requirement on routers:** not something users can be asked to configure.
+
+### Consequences
+- A new Room table and migration (DR1) behind a persistence port (ADR-024).
+- New dependencies for DR4 (CameraX, ZXing), to be recorded here before they are added.
+- `forgetEndpoint` semantics change: it removes the discovery route only.
+
+### Revisit when
+DR0 results are in; the PC2 planner's shape changes; or rotating discovery ids (audit S9) land.
