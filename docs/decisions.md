@@ -1825,3 +1825,80 @@ No in-app "Open-source licences" screen. The file ships inside the APK and the i
 
 ### Revisit when
 A new native payload is added, or a POM changes its licence (the gate fails and names it).
+
+## ADR-044 — Groups of up to 20 through vouched introductions (supersedes ADR-030's 6-member limit once implemented)
+
+### Date
+2026-09-24
+
+### Status
+**ACCEPTED by the owner, NOT IMPLEMENTED.** The threat review (phase V0 below) must finish before any code. Until
+V2 lands, `GroupPolicy.MAX_MEMBERS` stays 6 and ADR-030 applies unchanged.
+
+### Context
+The owner wants chat groups of 20 or more, video calls of 8 and voice calls of 12 (`docs/calling/GROUP-VIDEO-PLAN.md`
+§5). Bandwidth isn't the blocker; ADR-030's trust rule is. Verified in code on 2026-09-24:
+- Every inbound group frame requires the transport peer to be paired (`FlashTrustStore`) and an active member.
+- `RealFlashChatRepository` drops an inbound `GroupWireFrame.Add` if **any** added member isn't already trusted by
+  the receiver. So today a member can only be added if every existing member has paired with them.
+- Call legs are gated by `CallCoordinator.isTrustedPeer`, which has the same pairwise requirement.
+- Membership frames are **not signed**. They're authenticated only by the TLS session they arrive on. The only
+  role is `owner` (the creator); any active trusted member may send an `Add`.
+
+Pairwise pairing costs N(N−1)/2 code checks: 15 for 6 members, 190 for 20, 496 for 32. Above about 8 that doesn't
+happen in practice, so the caps would exist only on paper.
+
+### Decision
+1. **Vouching.** When a member adds someone, the `Add` carries the new member's identity: their TLS certificate
+   fingerprint, as pinned by the adder through their own pairing. Other members accept a connection from that
+   device **only if** its TLS certificate matches the vouched fingerprint. The channel stays encrypted and
+   authenticated; what changes is *who vouched for the key*, the adder instead of the receiver's own code check.
+2. **Signed membership operations.** A vouch must survive relay (catch-up, members who were offline), so `Add`,
+   `Leave` and `Remove` gain a signature by the author's identity key over (groupId, opId, version, members and
+   fingerprints). A receiver checks the signature against the author's *own* trusted or vouched key. An unsigned
+   or wrongly signed operation is dropped, fail-closed as before.
+3. **Who may vouch.** Initially, only the group `owner` (the creator) may add members. This keeps the chain of trust
+   one hop deep: a member trusts a vouched key because they paired with the owner, never through a chain. Whether
+   other members may add is left to V0.
+4. **Scope of vouched trust.** A vouched identity is trusted **only** for (a) group frames of the group that vouched
+   for it and (b) group-call legs of that group. It never grants direct 1:1 chat, file transfer or 1:1 calls.
+   Those still need real pairing. Leaving or being removed from the group revokes it.
+5. **The UI is honest.** Vouched members show "Added by [owner]" and a one-tap "Verify" that runs normal pairing
+   and upgrades them to paired. A key change on a vouched member is treated like a TOFU mismatch: blocked, and
+   the user is told.
+6. **Limits.** `MAX_MEMBERS` becomes 20 when V2 lands. 32 requires V3's reconnect-storm and keepalive-battery
+   measurements on the Belfone.
+
+### Alternatives considered
+- **Raise to 20 and keep pairwise pairing:** rejected by the owner. 190 pairings means large groups never form.
+- **Stay at 6 until per-sender E2E keys exist:** rejected by the owner. Too long a wait; it also leaves the 8/12
+  call caps unreachable.
+- **Transitive trust (anyone vouches, chains allowed):** rejected. One compromised or careless member could admit
+  anyone, and revocation becomes a graph problem.
+- **Group-wide shared secret / pre-shared key:** rejected. It authenticates "someone in the group", not a device,
+  so a removed member keeps access until the secret rotates.
+
+### Consequences
+- The wire format changes (signed membership operations with fingerprints). A codec version bump is needed; old
+  clients must reject, not misread, the new frames.
+- A trust predicate with scope (paired, or vouched-for-group-X) replaces the boolean `isTrustedPeer` at the group and
+  group-call gates only. The 1:1 paths keep the boolean.
+- The TLS layer must accept a vouched fingerprint as a pin for a peer the user never paired with, scoped to group
+  sessions. This touches `TofuX509TrustManager` and must be designed in V0, not patched in.
+- Weaker than pairing, by design: members trust the owner's judgment and the owner's own pairing. The owner's
+  device is a single point of trust for the group.
+
+### Phases
+- **V0 Threat review:** a malicious owner; a compromised member device; a replayed or forged `Add`; a key change; a
+  removed member reconnecting; downgrade to unsigned frames; the TLS pinning path for vouched keys. Output: this ADR
+  amended with the findings. **No code before V0.**
+- **V1 Signed membership:** identity-key signatures on membership operations; the codec version bump; tests for
+  forgery, replay and downgrade.
+- **V2 Vouched trust:** the scoped trust predicate, vouched TLS pins, call legs within the group, the UI labels and
+  "Verify", `MAX_MEMBERS = 20`. Owner device check with at least 4 devices, where 2 have never paired.
+- **V3 Scale measurement:** 20 sessions per device: keepalive battery over 1 hour, a reconnect storm after a Wi-Fi
+  blip, mDNS load. Logged in `logs/experiments.md`. Decides 32.
+
+### Revisit when
+Per-sender E2E keys arrive (`keyEpoch` > 0): these can then replace vouched transport trust. Also revisit if
+attachments in groups land, since N−1 uploads from the sender need a relay design at 20.
