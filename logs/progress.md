@@ -1,5 +1,47 @@
 # Progress Log
 
+## 2026-09-24 — Release build script (`tools/build-release.ps1`)
+
+### Worked on
+The owner asked for a way to build signed and unsigned APKs and the Windows installers without an AI in the
+loop. There was no script: earlier releases were built with hand-typed Gradle and apksigner commands.
+
+### Changed
+- `tools/build-release.ps1` (+ `tools/build-release.cmd` wrapper). `-Target all|android|desktop`,
+  `-Apk both|signed|unsigned`, `-UberJar`, `-Clean`, `-NoDaemon`, `-NewKeystore`. Outputs go to
+  `dist\<versionName>\` with `SHA256SUMS.txt`.
+- The signing is done outside Gradle: `assembleRelease` stays unsigned, and the script runs `zipalign -P 16` and
+  `apksigner` on a copy. So one build gives both APKs and the key never enters the Gradle build. The key comes
+  from `keystore.properties` (ignored by version control) or `FLASH_KEYSTORE*` environment variables. Passwords
+  go to apksigner through `env:`.
+- `.gitignore`: `dist/`, `keystore.properties`, `*.jks`, `*.keystore`.
+- `docs/release-build.md`: usage, signing, environment, and the debug-key finding below.
+
+### Finding: the v2.0.0-beta APK is signed with the DEBUG key
+`apksigner verify --print-certs app-release-signed-beta.apk` → `CN=Android Debug`, SHA-256 `a7a4e60d…d01a`,
+which is `%USERPROFILE%\.android\debug.keystore`. Beta installs can only be updated in place by an APK signed
+with that key. Moving to a real release key means testers uninstall once and lose their data. **Owner decision
+pending** (options in `docs/release-build.md`).
+
+### Verification
+- Full run (`-Target all -Apk both`, with a throwaway test key through environment variables) on a fresh
+  worktree. `BUILD SUCCESSFUL in 12m 6s`. It produced the unsigned APK (50.7 MB), the signed APK (50.8 MB), and
+  `Flash-2.0.0.msi` (105.3 MB) and `Flash-2.0.0.exe` (105.9 MB).
+  - `zipalign -c -P 16 4` passed.
+  - `apksigner verify -v`: v2 + v3 true (v1 false: `minSdk` 24).
+  - The test-key APK and the test key were deleted afterwards.
+- `-Target android -Apk signed` with no key configured fails early, with setup instructions (exit 1).
+- The default run with no key warns, then builds the unsigned APK only (exit 0).
+- **Not tested:** `-NewKeystore`, because keytool asks questions interactively and this shell has no stdin.
+  Also not tested: installing the signed APK on a phone, and running the new MSI/EXE.
+- Pitfall found: with output redirected, a Gradle daemon left running keeps the pipe open, and the caller waited
+  more than 25 minutes after the build finished. `-NoDaemon` fixes this (the caller returned about 4 minutes after
+  the build). It's documented.
+
+### Next AI
+When the owner has picked a signing key (release key or debug key), run `-NewKeystore` or write
+`keystore.properties`. Bump `versionCode` before the next Android release.
+
 ## 2026-09-24 — Presence & Connections plan (planning only)
 
 ### Worked on

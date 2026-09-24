@@ -1,5 +1,14 @@
 # Current Handoff
 
+## 2026-09-24 — Release build script added (`tools/build-release.ps1`, see `docs/release-build.md`)
+- `.\tools\build-release.ps1` builds the unsigned + signed APK and the MSI + EXE into `dist\<version>\`.
+  Signing is done by the script (apksigner), not Gradle. Configure it with `keystore.properties` or
+  `-NewKeystore`. Use `-NoDaemon` when the output is piped or redirected.
+- **Open owner decision:** the published v2.0.0-beta APK is signed with the Android **debug** key. Either keep
+  that key for the beta (in-place updates) or switch to a release key now (testers reinstall once).
+
+---
+
 ## 2026-09-24 — Presence & Connections plan written (NOT implemented); it comes BEFORE group calling
 - `docs/network/PRESENCE-CONNECTIONS-PLAN.md`, phases PC0–PC7, all owner decisions in §6. Discovery modes now own the
   connection policy: ECO = battery (3 neighbours, on-demand dials, ≤ ~1 min), STANDARD = today, BOOST = instant.

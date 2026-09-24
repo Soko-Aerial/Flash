@@ -20,3 +20,9 @@ logo-claude/
 .gradle-user-home/
 .gradle-user-home-verify/
 .kilo/
+
+# Release builds (tools/build-release.ps1): outputs and the signing key config never go in git.
+dist/
+keystore.properties
+*.jks
+*.keystore
