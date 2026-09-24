@@ -910,9 +910,9 @@ This section must be updated by the AI as implementation progresses.
 
 ## Current Phase
 
-**Adaptive UI — phone → tablet → desktop (planning done 2026-09-15, phases AD-1…AD-8 NOT STARTED; decision AD-D1 = (B) answered).** Premium chat UI component sequence is largely implemented (UI-001–UI-050); LAN MVP networking continues in parallel. Authoritative live status: `logs/handoff.md` + `docs/ui/ui-research-index.md`; authoritative plan for sizing/resize/pane/layout work: `docs/migration/ADAPTIVE-UI-PLAN.md` (AD-D1's desktop-scale decision is recorded in its §5.1: OS scale baseline + a desktop-only UI-scale, Android's look preserved or improved).
+**Adaptive UI — phone → tablet → desktop: AD-1…AD-6 implemented (fully or in part) on 2026-09-18; AD-7 partial; AD-8 not started; none device-verified** (status re-checked against the code 2026-09-24; per-phase detail in `docs/migration/ADAPTIVE-UI-PLAN.md` §2.3). Premium chat UI component sequence is largely implemented (UI-001–UI-050); LAN MVP networking continues in parallel. Authoritative live status: `logs/handoff.md` + `docs/ui/ui-research-index.md`; authoritative plan for sizing/resize/pane/layout work: `docs/migration/ADAPTIVE-UI-PLAN.md` (AD-D1's desktop-scale decision is recorded in its §5.1: OS scale baseline + a desktop-only UI-scale, Android's look preserved or improved).
 
-**Before any layout, sizing, density, resize or pane work, read `docs/migration/ADAPTIVE-UI-PLAN.md`.** It records three verified defects (the desktop conversation renders in the list pane; no desktop sizing policy exists, so everything looks phone-sized; Android has no adaptive layout) and sequences the fixes.
+**Before any layout, sizing, density, resize or pane work, read `docs/migration/ADAPTIVE-UI-PLAN.md`.** It recorded three defects on 2026-09-15 (the desktop conversation rendered in the list pane; no desktop sizing policy existed, so everything looked phone-sized; Android had no adaptive layout). All three have code fixes since 2026-09-18 (AD-3, AD-1, AD-6) that still await owner device checks.
 
 ## Stable Features
 
@@ -929,12 +929,12 @@ This section must be updated by the AI as implementation progresses.
 - Android Studio project implementation.
 - LAN discovery MVP and persistent `LanSession`.
 - Premium chat UI component sequence (`docs/ui/`) — UI-001–UI-050 largely implemented; device verification and the UI-045 quality gate remain.
-- **Adaptive UI upgrade** (`docs/migration/ADAPTIVE-UI-PLAN.md`) — phases AD-1…AD-8 planned 2026-09-15, none executed. AD-1 (desktop scale/metrics), AD-2 (window & pane geometry), AD-3 (conversation in the detail pane) are the owner-visible ones.
+- **Adaptive UI upgrade** (`docs/migration/ADAPTIVE-UI-PLAN.md`): code exists for AD-1 (UI-scale density multiplier, persisted), AD-2 (automatic list-pane width + a 640×480 dp minimum window; **no draggable splitter**, AD-D3 still open), AD-3 (conversation in the detail pane on both hosts), AD-4 (keyboard shortcuts only; pointer idioms and AD-D5 selection not done), AD-5 (580 dp bubble cap), AD-6 (Android navigation rail ≥ 600 dp and two-pane layout; width measured manually, no fold-posture support; AD-D4 not formally answered) and part of AD-7 (desktop keeps the open conversation across tab switches). None of it is device-verified.
 
 ## Not Yet Implemented
 
 - Custom composer, selection, context menu, reactions (UI-007–UI-013) per research-first plan.
-- **Adaptive layout execution** — desktop scale/metrics policy (AD-1), window & pane resize geometry (AD-2), conversation-in-detail-pane (AD-3), pointer/keyboard idioms (AD-4), wide-screen content measure (AD-5), Android tablet/foldable (AD-6), resize state continuity (AD-7), adaptive quality gate (AD-8). See `docs/migration/ADAPTIVE-UI-PLAN.md`.
+- **Adaptive layout remainder:** draggable splitter (AD-2 / AD-D3), pointer idioms and desktop selection (AD-4 / AD-D5), fold posture (AD-6 / AD-D4), state continuity when a resize crosses a breakpoint (AD-7), and the adaptive quality gate (AD-8). See `docs/migration/ADAPTIVE-UI-PLAN.md`.
 - Complete LAN transfer.
 - Wi‑Fi Direct transfer path.
 - Pairing.
