@@ -1,7 +1,10 @@
 # Group calls: request-based video, tier and band budgets, size caps
 
 **Status: PLAN, owner decisions recorded 2026-09-24. Nothing implemented.** Written 2026-09-23 from the owner's
-requirements and a code review of `core/calling` and `ui/callui`. Numbers marked *(measure)* are estimates until
+requirements and a code review of `core/calling` and `ui/callui`.
+
+**Order (owner, 2026-09-24):** `docs/network/PRESENCE-CONNECTIONS-PLAN.md` (PC0–PC7) comes **before** G1+. G0 may
+share PC0's measurement rig. Numbers marked *(measure)* are estimates until
 phase G0 replaces them.
 
 ## 1. What the owner asked for (restated)

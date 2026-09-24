@@ -1896,7 +1896,7 @@ happen in practice, so the caps would exist only on paper.
   forgery, replay and downgrade.
 - **V2 Vouched trust:** the scoped trust predicate, vouched TLS pins, call legs within the group, the UI labels and
   "Verify", `MAX_MEMBERS = 20`. Owner device check with at least 4 devices, where 2 have never paired.
-- **V3 Scale measurement:** 20 sessions per device: keepalive battery over 1 hour, a reconnect storm after a Wi-Fi
+- **V3 Scale measurement** (executed as PC6 of `docs/network/PRESENCE-CONNECTIONS-PLAN.md`, 2026-09-24): 20 sessions per device: keepalive battery over 1 hour, a reconnect storm after a Wi-Fi
   blip, mDNS load. Logged in `logs/experiments.md`. Decides 32.
 
 ### Revisit when
