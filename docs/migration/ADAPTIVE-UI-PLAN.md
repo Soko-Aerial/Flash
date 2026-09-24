@@ -220,14 +220,17 @@ Two consequences worth stating plainly:
 
 | Phase | Title | Depends on | Risk | Status |
 |---|---|---|---|---|
-| **AD-1** | Desktop scale & metrics policy | — (AD-D1 **answered = B**) | med | **READY — not started** |
-| **AD-2** | Window & pane resize geometry | — (AD-D3 recommendation in use) | med | **READY — not started** |
-| **AD-3** | Conversation as the detail pane (list left / chat right) | AD-2 | med | not started (needs AD-2's geometry) |
-| **AD-4** | Pointer & keyboard idiom layer | PHASE-28; AD-3 | med-high | not started (blocked on PHASE-28) |
-| **AD-5** | Wide-screen content design (reading measure) | AD-1, AD-3 | med | not started |
-| **AD-6** | Android tablet & foldable | AD-2, AD-3, AD-5; PHASE-27 (route b) | high | not started |
-| **AD-7** | State continuity across resize / breakpoint crossing | AD-3, AD-6 | med | not started |
+| **AD-1** | Desktop scale & metrics policy | — (AD-D1 **answered = B**) | med | **Code done 2026-09-18 (`478f807`), not device-verified.** `uiScale` 0.75–1.5 persisted in `DesktopSettingsStore`, applied as a density multiplier with `fontScale` kept (`DesktopMain.kt:287`). Whether the pointer metric set (AD-D2) changed was not checked |
+| **AD-2** | Window & pane resize geometry | — (AD-D3 recommendation in use) | med | **Partial.** List-pane width is computed from the window width (`FlashAdaptiveMath.listPaneWidthDp`, tested in `FlashAdaptiveLogicTest`); minimum window 640×480 dp through AWT `minimumSize`, converted with the density (`DesktopMain.kt:244`). **No draggable splitter** (AD-D3 open). The 125/150 % drag check was not done |
+| **AD-3** | Conversation as the detail pane (list left / chat right) | AD-2 | med | **Code done** (desktop `DesktopShell.detailPaneContent`; Android via `FlashAdaptiveTwoPane` in `cb37d65`), not device-verified |
+| **AD-4** | Pointer & keyboard idiom layer | PHASE-28; AD-3 | med-high | **Partial** (`bb82bc7`): Enter sends, Shift/Ctrl+Enter newline, Ctrl+F, Ctrl+1..4, Ctrl+, and Escape. Pointer idioms and desktop selection (AD-D5) not done |
+| **AD-5** | Wide-screen content design (reading measure) | AD-1, AD-3 | med | **Code done** (`478f807`): `FlashDimensions.bubbleMaxWidth = 580.dp` caps the 0.78 fraction. Not device-verified |
+| **AD-6** | Android tablet & foldable | AD-2, AD-3, AD-5; PHASE-27 (route b) | high | **Partial** (`cb37d65`): navigation rail from 600 dp, two-pane on Expanded, width from `rememberFlashAdaptiveWindowWidthDp` (manual, AD-D4 route (a) in practice, not formally answered). No fold-posture support. Not device-verified |
+| **AD-7** | State continuity across resize / breakpoint crossing | AD-3, AD-6 | med | **Partial**: desktop keeps the open conversation across tab switches (`cfd0a03`). Continuity when a resize crosses a breakpoint is untested |
 | **AD-8** | Adaptive verification & quality gate (→ UI-045) | all above | med | not started |
+
+*Status re-checked against the code on 2026-09-24. The 2026-09-18 work was recorded in `logs/handoff.md` but never
+entered in this table. Its verification was compile + unit tests only.*
 
 ### 2.4 Verification commands (real task names — not the phase files' projections)
 

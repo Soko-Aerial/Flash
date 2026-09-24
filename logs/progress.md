@@ -1,5 +1,24 @@
 # Progress Log
 
+## 2026-09-24 — Adaptive UI status corrected (docs only)
+
+### Worked on
+`AGENTS.md` §29 and the `ADAPTIVE-UI-PLAN.md` §2.3 status table both said AD-1…AD-8 were "not started". The
+2026-09-18 sessions implemented much of it but recorded it only in `logs/handoff.md`.
+
+### Changed
+- §2.3 table: per-phase status with file/commit evidence. Code done: AD-1, AD-3, AD-5. Partial: AD-2 (no
+  draggable splitter), AD-4 (keyboard only), AD-6 (no fold posture), AD-7 (tab switches only). Not started: AD-8.
+- `AGENTS.md` §29: Current Phase, In Progress and Not Yet Implemented rewritten to match.
+
+### Verification
+Each claim checked with grep against the code and `git show --stat` of `478f807`, `cb37d65`, `bb82bc7`, `cfd0a03`.
+Nothing was built. None of the adaptive work has been verified on a device.
+
+### Remaining
+Other §29 bullets are also stale (e.g. pairing, TLS, chunked transfer and resume are listed as not implemented).
+Not changed in this entry.
+
 ## 2026-09-24 — Group video plan: compression assessed (Q10, planning only)
 
 ### Worked on
