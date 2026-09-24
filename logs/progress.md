@@ -1,5 +1,24 @@
 # Progress Log
 
+## 2026-09-24 — Group video plan + ADR-044 (planning only, nothing implemented)
+
+### Worked on
+Turned the owner's group-video requirements into `docs/calling/GROUP-VIDEO-PLAN.md` (phases G0–G7) and recorded
+all nine owner decisions (§7).
+
+### Changed
+- New `docs/calling/GROUP-VIDEO-PLAN.md`: request-based video (no sending unasked), follows the talker, per-tier and
+  per-band receive limits, a split send budget on 2.4 GHz (Q8), health warnings, caps (video 8, voice 12).
+- ADR-044 (ACCEPTED, NOT IMPLEMENTED): groups of 20 through owner-vouched identities and signed membership
+  operations; 32 only after measurement. Threat review V0 comes before any code.
+
+### Verification
+Code facts checked on 2026-09-24: an inbound `Add` is dropped if any new member is unpaired with the receiver;
+membership frames are unsigned; call legs are pairwise trust-gated. No build needed (docs only).
+
+### Next AI
+G0 measurements (plan §6), or ADR-044 V0. Do not implement G1+ before G0 numbers exist.
+
 ## 2026-09-23 — Audit fix Phase 5 (licensing, C1–C3)
 
 ### Changed
