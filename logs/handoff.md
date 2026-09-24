@@ -1,5 +1,15 @@
 # Current Handoff
 
+## 2026-09-24 — Discovery resilience plan written (NOT implemented); it comes AFTER group calling
+- `docs/network/DISCOVERY-RESILIENCE-PLAN.md`, phases DR0–DR7, ADR-047 (PROPOSED). Order: presence PC0–PC7 →
+  group video G0–G7 → discovery DR0–DR7.
+- Biggest finding: peer routes are in memory only and deleted when discovery loses a peer. DR1 (remembered endpoints
+  for paired peers) fixes most multicast-blocking networks. Then broadcast beacon, subnet sweep, QR first contact.
+- Also: `AGENTS.md` §29 and `ADAPTIVE-UI-PLAN.md` §2.3 now show the real AD-1…AD-8 status (`6ef2335`).
+- Open owner decisions D1–D5 (plan §6).
+
+---
+
 ## 2026-09-24 — Release build script added (`tools/build-release.ps1`, see `docs/release-build.md`)
 - `.\tools\build-release.ps1` builds the unsigned + signed APK and the MSI + EXE into `dist\<version>\`.
   Signing is done by the script (apksigner), not Gradle. Configure it with `keystore.properties` or

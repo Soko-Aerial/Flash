@@ -1,5 +1,27 @@
 # Progress Log
 
+## 2026-09-24 — Discovery resilience plan (planning only)
+
+### Worked on
+The owner asked how to make discovery more resilient (context: bridged, mesh and multicast-filtering networks).
+Wrote `docs/network/DISCOVERY-RESILIENCE-PLAN.md` (DR0–DR7) and ADR-047 (PROPOSED).
+
+### Findings (verified in code)
+- Peer routes are in memory only (`WsFlashNetwork.knownEndpoints`) and deleted by `forgetEndpoint` when discovery
+  loses a peer, so broken multicast makes a just-connected peer unreachable after a restart.
+- No broadcast send, no subnet scan, no QR, no BLE, and no Wi-Fi Direct code exists (`WifiP2pManager` unused).
+- JmDNS runs one responder per IPv4 interface but does not filter virtual adapters (Hyper-V, VPN).
+- WebSocket port 45822 falls back to an ephemeral port; calls have no ICE servers (need direct reachability).
+
+### Order
+Owner: implement **after group calling** (presence PC0–PC7 → group video G0–G7 → DR0–DR7).
+
+### Verification
+Docs only; nothing built.
+
+### Next AI
+Do not start DR work before group calling unless the owner reorders. Open owner decisions D1–D5 are in plan §6.
+
 ## 2026-09-24 — Adaptive UI status corrected (docs only)
 
 ### Worked on
