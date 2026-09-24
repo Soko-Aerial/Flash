@@ -1,5 +1,20 @@
 # Progress Log
 
+## 2026-09-24 — Presence & Connections plan (planning only)
+
+### Worked on
+Turned the owner's "shared presence" idea plus the keepalive and reconnect recommendations into
+`docs/network/PRESENCE-CONNECTIONS-PLAN.md` (PC0–PC7), ordered before group calling.
+
+### Verification (code and docs read, nothing built)
+- `runAutoConnectSweep` dials every discovered peer, paired or not, in three copies (app, core/engine, desktop).
+- `WsKeepalive.onTick` pings on every on-time tick regardless of traffic; each `WsConnection` has its own timer.
+- Android `WifiManager` docs: `WIFI_MODE_FULL_LOW_LATENCY` is only active with the screen on, the app in the
+  foreground and a connection to an AP.
+
+### Next AI
+PC0. Don't start PC1 before the baseline numbers exist (§23: measure first).
+
 ## 2026-09-24 — Group video plan + ADR-044 (planning only, nothing implemented)
 
 ### Worked on

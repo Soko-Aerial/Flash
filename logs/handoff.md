@@ -1,5 +1,16 @@
 # Current Handoff
 
+## 2026-09-24 — Presence & Connections plan written (NOT implemented); it comes BEFORE group calling
+- `docs/network/PRESENCE-CONNECTIONS-PLAN.md`, phases PC0–PC7, all owner decisions in §6. Discovery modes now own the
+  connection policy: ECO = battery (3 neighbours, on-demand dials, ≤ ~1 min), STANDARD = today, BOOST = instant.
+  Three states: Connected / Online / Offline. Presence sharing between mutual contacts only; Ghost never shared.
+- **Next = PC0 baseline measurement** (peer farm of headless JVM instances plus phones). G0 of the group video plan
+  can share the rig. ADR-044 V3 = PC6.
+- Verified facts behind it: the auto-connector dials every discovered peer (three copies); every session pings on
+  its own timer from both ends even while messages flow; the low-latency Wi-Fi lock is inactive with the screen off.
+
+---
+
 ## 2026-09-23 — Group video plan written (NOT implemented)
 `docs/calling/GROUP-VIDEO-PLAN.md`: request-based video (no sender blasts to everyone), tier × band budgets,
 LOW layout (one video plus a participant strip), health warnings, and size caps (video 8, voice 12→15, chat 20→32).
