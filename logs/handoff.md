@@ -1,5 +1,12 @@
 # Current Handoff
 
+## 2026-09-28 — PC0 R0 invalid: Transsion freezes Flash at screen-off (ERROR-074)
+- Infinix R0 measured a frozen process (Hiber froze Flash for the whole hour; FGS and deviceidle whitelist
+  ignored). Data kept in `measurements/pc0/infinix-n0-frozen` / `-short11m` (git-ignored, local only).
+- Before any PC0 run: exempt Flash in the OEM's own settings and run the freezer check (runbook §4 step 4); make
+  sure the PC has only one network up (the farm bound to V760 USB tethering instead of Wi-Fi).
+- Next: session-survives-freeze test (ERROR-074 step 2), then redo R0 with label `infinix-n0`.
+
 ## 2026-09-28 — PC0 rig ready; the measurements themselves need the owner and phones
 - Runbook: `docs/network/PC0-RUNBOOK.md`. Farm: `./gradlew :core:engine:peerFarm --args="--count=N --minutes=M"`.
   Phone: `tools/pc0/phone-baseline.ps1 -Action start|collect|toggle-wifi`.

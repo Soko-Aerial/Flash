@@ -50,8 +50,21 @@ Gradle needs this repo's usual environment (JBR 21 and the `JAVA_TOOL_OPTIONS` A
    engine is really running (the notification is showing) before every run, R0 included.
 3. **Windows firewall:** allow Java (the JBR 21 `java.exe`) inbound on the Private profile, and the network
    profile must be Private.
+   **One network on the PC.** The farm binds mDNS and the multicast beacon to *one* interface it picks itself
+   (`mDNS responders=1 candidates=[…]` in its first lines). On 2026-09-28 it picked a phone's USB-tethering link
+   (`10.171.146.x`) over the PC's Wi-Fi, so it could never see the phone under test. Turn off USB tethering and
+   other adapters, then check that the `candidates` address is on the phone's subnet (`adb shell ip -4 addr show wlan0`).
+   **Stopping the farm:** killing the Gradle process can leave the farm JVM running (seen 2026-09-28). Check
+   for a `java.exe` with `preferIPv4Stack` in its command line and end it before the next run.
 4. **Phone:** Flash updated and opened once; discovery mode **STANDARD**; Bluetooth off; no other apps
-   syncing if possible. Record: battery-optimisation exemption on or off, and the battery level range. Keep
+   syncing if possible.
+   **OEM freezer check (ERROR-074).** Transsion phones (Infinix, Tecno, itel) freeze Flash ~10 s after screen-off,
+   even with a foreground service and "Battery: Unrestricted". A run on a frozen process measures nothing (the
+   first R0 on the Infinix, 2026-09-28, was frozen for the whole hour). Before every run, with the phone plugged
+   in: `adb logcat -c`, screen off, wait 60 s, then
+   `adb logcat -d | findstr "Hiber.*transfer.flash"`. Any `freeze uid` line: apply the OEM's own per-app
+   setting and check again. Record in the EXP entry whether the phone froze Flash or had been exempted.
+   Other OEMs have their own freezers; on a new phone, check that Flash still logs with the screen off. Record: battery-optimisation exemption on or off, and the battery level range. Keep
    each run in the same range (e.g. start between 60 % and 90 %) and let the phone cool between runs.
 5. **Start the farm, then check before unplugging:**
    - The phone's Nearby list shows all N farm peers. Several JmDNS responders in one JVM may not all be seen
