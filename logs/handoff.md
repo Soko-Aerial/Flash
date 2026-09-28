@@ -1,5 +1,12 @@
 # Current Handoff
 
+## 2026-09-28 — PC1 code done; ALL device testing deferred to the end (owner decision P8)
+- Order now: PC2 → PC3 → PC4 → PC5 → group calling (G1+) → then PC0/PC6 measurements and every device check.
+  Gate each phase on unit/loopback tests; keep STANDARD behaving as today; record device exit criteria as pending.
+- PC1: one keepalive clock per network (`WsKeepaliveTicker`), one pinger per pair from a new optional HELLO field
+  `ping=<ms>`, no ping when traffic flowed both ways. Details: plan §7, `docs/protocol.md` keepalive subsection.
+- Next: PC2 `ConnectionPlanner` (plan §3.6, §3.5), ADR-045.
+
 ## 2026-09-28 — PC0 R0 invalid: Transsion freezes Flash at screen-off (ERROR-074)
 - Infinix R0 measured a frozen process (Hiber froze Flash for the whole hour; FGS and deviceidle whitelist
   ignored). Data kept in `measurements/pc0/infinix-n0-frozen` / `-short11m` (git-ignored, local only).

@@ -1,5 +1,35 @@
 # Progress Log
 
+## 2026-09-28 — PC1 keepalive efficiency: code done; testing moved to the end (owner, P8)
+
+### Worked on
+Owner decision P8: implement PC1–PC5, then group calling, then run all device tests and measurements (PC0,
+PC6, per-phase device checks) at the end. Then PC1 (`PRESENCE-CONNECTIONS-PLAN.md` §3.3).
+
+### Changed
+- `core/network` commonMain: new `WsKeepaliveTicker` (one aligned keepalive clock per network, no timer with zero
+  sessions); `WsKeepalive` gains `PingRole`, `resolveRole`, `onOutbound`, `Verdict.Quiet`.
+- Both `WsConnection` copies (still byte-identical apart from the desktop note): shared-ticker mode, outbound
+  stamping, `applyPeerPingInterval`, the tick body factored into `keepaliveTick()`. No ticker → the old private loop.
+- Both clients/servers take an optional `ticker`; both networks create one and put `ping=<ms>` in HELLO.
+- `docs/protocol.md` keepalive subsection (and a staleness note on the WS section); plan §6 P8 and §7 log.
+
+### Why
+Fewer wake-ups and pings without touching the ERROR-025/031 watchdog rules. The pinger is the side with the
+shorter interval so its pings always fit the answerer's liveness window; an answerer that hears nothing for half
+its window probes on its own, so a role disagreement falls back to both pinging, never neither.
+
+### Verification
+`:core:network:jvmTest` (85) and `:core:network:testAndroidHostTest` (184) green, including the new
+`WsKeepalivePingRoleTest` (13), `WsKeepaliveTickerTest` (5) and a loopback role test; the 15 old `WsKeepaliveTest`
+cases unchanged and green. `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm`, `:core:engine:jvmTest` (12) green.
+**Not device-tested** (P8).
+
+### Next AI
+PC2: the pure `ConnectionPlanner` in commonMain that replaces the three auto-connect copies
+(`DiscoveryEngineHolder.runAutoConnectSweep`, `Flash.runAutoConnectSweep`, `DesktopEngine.dialIfNeeded`), plus
+the deterministic dialer and staggered reconnect storms; ADR-045. STANDARD must behave exactly as today.
+
 ## 2026-09-28 — PC0 R0 on the Infinix: both runs invalid; found an OEM freezer (ERROR-074)
 
 ### Worked on

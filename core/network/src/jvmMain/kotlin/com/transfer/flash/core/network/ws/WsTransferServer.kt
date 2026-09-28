@@ -58,6 +58,8 @@ public class WsTransferServer(
      * own radio, and each end's pings are what keep the *other* end's watchdog fed.
      */
     private val keepalive: () -> WsKeepaliveTiming = { WsKeepaliveTiming.DEFAULT },
+    /** The owning network's shared keepalive clock (PC1); null runs one loop per connection as before. */
+    private val ticker: WsKeepaliveTicker? = null,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var serverSocket: ServerSocket? = null
@@ -166,6 +168,7 @@ public class WsTransferServer(
                 pingIntervalMs = timing.pingIntervalMs,
                 livenessTimeoutMs = timing.livenessTimeoutMs,
                 deferredPeerLeafFingerprintHex = peerLeafFingerprint(),
+                ticker = ticker,
             ),
         )
     }

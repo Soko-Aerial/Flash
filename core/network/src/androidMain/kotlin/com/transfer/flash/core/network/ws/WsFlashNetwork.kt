@@ -103,7 +103,13 @@ public class WsFlashNetwork(
     private val running = AtomicBoolean(false)
     private var server: WsTransferServer? = null
     public val serverPort: Int get() = server?.listenPort ?: 0
-    private val client = WsTransferClient(context, this, tlsOptions, keepalive = ::keepaliveTiming)
+    /**
+     * One keepalive clock for all of this network's connections (PC1): every session is pinged on the
+     * same tick, so N idle sessions cost one wake-up per interval instead of N at unrelated moments.
+     */
+    private val keepaliveTicker = WsKeepaliveTicker(intervalMs = { transportProfile().pingIntervalMs })
+
+    private val client = WsTransferClient(context, this, tlsOptions, keepalive = ::keepaliveTiming, ticker = keepaliveTicker)
 
     /** The tier's keepalive pair, as [WsConnection] wants it. Read once per new connection. */
     private fun keepaliveTiming(): WsKeepaliveTiming {
@@ -207,6 +213,7 @@ public class WsFlashNetwork(
             },
             tls = tlsOptions,
             keepalive = ::keepaliveTiming,
+            ticker = keepaliveTicker,
         )
         server = serverImpl
         val port = runCatching { serverImpl.start() }.getOrElse {
@@ -321,6 +328,7 @@ public class WsFlashNetwork(
             "version" to PROTOCOL_VERSION.toString(),
             "deviceId" to localDeviceId,
             "name" to localFriendlyName,
+            "ping" to connection.keepalivePingIntervalMs.toString(),
         )
         connection.sendText(helloMsg)
 
@@ -489,6 +497,7 @@ public class WsFlashNetwork(
                 "version" to PROTOCOL_VERSION.toString(),
                 "deviceId" to localDeviceId,
                 "name" to localFriendlyName,
+                "ping" to connection.keepalivePingIntervalMs.toString(),
             )
             connection.sendText(helloReply)
 
@@ -1028,6 +1037,8 @@ public class WsFlashNetwork(
             )
 
             // Raises the read cap from 64 KiB to the post-handshake limit (audit S5).
+            // PC1: both ends run the same rule on both HELLOs, so they agree on who pings.
+            connection.applyPeerPingInterval(parsedFields["ping"]?.toLongOrNull(), localDeviceId, peerDeviceId)
             connection.markPeerHelloAccepted()
             pendingHandshakes[connection]?.complete(peerDevice)
         } else {

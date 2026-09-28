@@ -52,6 +52,13 @@ import kotlinx.coroutines.launch
  * a further late tick cannot rebase the window again, so a device that throttles this coroutine
  * indefinitely can no longer keep a dead session alive indefinitely. Such a verdict is re-checked
  * after a short awake delay before it closes anything.
+ *
+ * ## Shared clock and one pinger (PC1)
+ *
+ * With a [ticker], the connection is ticked by its network's single keepalive clock instead of its
+ * own loop, and [applyPeerPingInterval] (called once the peer's HELLO arrives) decides whether this
+ * side pings at all — see [WsKeepalive]. Without a ticker (tests, older callers) the connection runs
+ * its own loop exactly as before.
  */
 public class WsConnection(
     private val socket: Socket,
@@ -69,6 +76,8 @@ public class WsConnection(
      * `FlashPinVerifier.isPinned` against the id from `FLASH_WS_HELLO` before registering it.
      */
     public val deferredPeerLeafFingerprintHex: String? = null,
+    /** The network's shared keepalive clock (PC1), or null to run a private loop as before. */
+    private val ticker: WsKeepaliveTicker? = null,
 ) {
     public interface Listener {
         public fun onTextMessage(connection: WsConnection, text: String)
@@ -123,34 +132,78 @@ public class WsConnection(
     public val lastInboundAtMs: Long
         get() = keepalive.lastInboundAtMs
 
+    /** The ping interval this connection was created with; announced in our HELLO (PC1). */
+    internal val keepalivePingIntervalMs: Long
+        get() = pingIntervalMs
+
+    /** Who pings on this connection, for logs and tests. */
+    internal val pingRole: WsKeepalive.PingRole
+        get() = keepalive.role
+
+    /**
+     * Settles which side of the pair pings, from the interval the peer's HELLO announced (null for
+     * a peer too old to announce one). Both ends run the same rule on the same inputs, so they agree
+     * without another round trip ([WsKeepalive.resolveRole]).
+     */
+    internal fun applyPeerPingInterval(peerPingIntervalMs: Long?, localDeviceId: String, peerDeviceId: String) {
+        keepalive.role = WsKeepalive.resolveRole(pingIntervalMs, peerPingIntervalMs, localDeviceId, peerDeviceId)
+    }
+
+    /** Set while one tick's work is running, so a slow tick is skipped rather than overlapped. */
+    private val tickInFlight = AtomicBoolean(false)
+
+    private val tickTarget = WsKeepaliveTicker.Target {
+        if (closed.get() || !tickInFlight.compareAndSet(false, true)) return@Target
+        scope.launch {
+            try {
+                keepaliveTick()
+            } finally {
+                tickInFlight.set(false)
+            }
+        }
+    }
+
     public fun start() {
         runCatching { socket.soTimeout = readTimeoutMs }
         // TCP keepalive gives the kernel a second, independent path to notice a dead peer.
         runCatching { socket.keepAlive = true }
         keepalive.onInbound(nowMs())
         scope.launch { readLoop() }
+        if (ticker != null) {
+            ticker.register(tickTarget)
+            return
+        }
         scope.launch {
             while (scope.isActive) {
                 kotlinx.coroutines.delay(pingIntervalMs)
-                if (closed.get()) break
-                var verdict = keepalive.onTick(nowMs())
-                if (verdict is WsKeepalive.Verdict.Close && verdict.needsConfirmation) {
-                    // Rendered by a tick that had itself just resumed from a freeze. The read loop
-                    // resumes on its own dispatcher, so a PONG already in the socket buffer may not
-                    // be stamped yet — stay awake briefly and ask again before condemning the peer.
-                    kotlinx.coroutines.delay(STALL_CONFIRM_DELAY_MS)
-                    if (closed.get()) break
-                    verdict = keepalive.confirmClose(nowMs())
-                }
-                when (verdict) {
-                    is WsKeepalive.Verdict.Close -> {
-                        close("${verdict.reason} for ${verdict.silentForMs}ms")
-                        return@launch
-                    }
-                    WsKeepalive.Verdict.Ping -> send(WebSocketCodec.OPCODE_PING, ByteArray(0))
-                }
+                if (closed.get() || !keepaliveTick()) break
             }
         }
+    }
+
+    /**
+     * One keepalive decision: judge the peer, then ping, stay quiet or close. Returns false once the
+     * connection is closed. Only ever runs one at a time (private loop, or [tickInFlight]).
+     */
+    private suspend fun keepaliveTick(): Boolean {
+        var verdict = keepalive.onTick(nowMs())
+        if (verdict is WsKeepalive.Verdict.Close && verdict.needsConfirmation) {
+            // Rendered by a tick that had itself just resumed from a freeze. The read loop
+            // resumes on its own dispatcher, so a PONG already in the socket buffer may not
+            // be stamped yet — stay awake briefly and ask again before condemning the peer.
+            kotlinx.coroutines.delay(STALL_CONFIRM_DELAY_MS)
+            if (closed.get()) return false
+            verdict = keepalive.confirmClose(nowMs())
+        }
+        when (verdict) {
+            is WsKeepalive.Verdict.Close -> {
+                close("${verdict.reason} for ${verdict.silentForMs}ms")
+                return false
+            }
+            WsKeepalive.Verdict.Ping -> send(WebSocketCodec.OPCODE_PING, ByteArray(0))
+            WsKeepalive.Verdict.Quiet -> Unit
+        }
+        return true
     }
 
     public fun sendText(text: String): Boolean {
@@ -203,6 +256,7 @@ public class WsConnection(
      */
     public fun close(reason: String) {
         if (!closed.compareAndSet(false, true)) return
+        ticker?.unregister(tickTarget)
         scope.launch {
             runCatching {
                 synchronized(writeLock) {
@@ -221,6 +275,8 @@ public class WsConnection(
             synchronized(writeLock) {
                 WebSocketCodec.writeFrame(output, opcode, payload, maskOutboundFrames, maskPayloadInPlace = consumePayload)
             }
+            // Written frames feed the peer's watchdog, which is what lets a busy pair skip pings.
+            keepalive.onOutbound(nowMs())
         }.onFailure { error ->
             if (!closed.get()) {
                 FlashLog.w(TAG, "WS write failed remote=$remoteLabel", error)
