@@ -194,12 +194,12 @@ actions (unknown actions decode to null). `groupId` is the conversation, while `
 instance — one group can host a second call later under a new `callId`.
 
 ```text
-FLASH_CALL action=ginvite   callId=<uuid> groupId=<uuid> from=<id> name=<escaped> video=<true|false> members=<id,id,…> [band=<b>]
-FLASH_CALL action=gaccept   callId=<uuid> groupId=<uuid> from=<id> [band=<b>]
+FLASH_CALL action=ginvite   callId=<uuid> groupId=<uuid> from=<id> name=<escaped> video=<true|false> members=<id,id,…> [band=<b>] [vr=1]
+FLASH_CALL action=gaccept   callId=<uuid> groupId=<uuid> from=<id> [band=<b>] [vr=1]
 FLASH_CALL action=gdecline  callId=<uuid> groupId=<uuid> from=<id>
-FLASH_CALL action=gjoin     callId=<uuid> groupId=<uuid> from=<id> name=<escaped> [band=<b>]
+FLASH_CALL action=gjoin     callId=<uuid> groupId=<uuid> from=<id> name=<escaped> [band=<b>] [vr=1]
 FLASH_CALL action=ghangup   callId=<uuid> groupId=<uuid> from=<id>
-FLASH_CALL action=gpresence callId=<uuid> groupId=<uuid> from=<id> name=<escaped> video=<true|false> count=<n> [band=<b>]
+FLASH_CALL action=gpresence callId=<uuid> groupId=<uuid> from=<id> name=<escaped> video=<true|false> count=<n> [band=<b>] [vr=1] [vfree=<n>]
 FLASH_CALL action=gquery    callId=<uuid> groupId=<uuid> from=<id>
 ```
 
@@ -234,6 +234,39 @@ FLASH_CALL action=gquery    callId=<uuid> groupId=<uuid> from=<id>
   A receiver records it for that participant only when `from` is the authenticated peer, so a relayed `gjoin` cannot
   set another participant's band. The link's band is the slower of its two ends; an end that is `unk` or absent defers
   to the other end. Informational in G2 (shown in the call stats); G4 uses it for per-link video budgets.
+- **Video by request (G3, 2026-09-28, ADR-049).** In a group *video* call a device sends its video on a leg only
+  after that participant asks for it. Four frames, each sent only to the peer involved:
+
+  ```text
+  FLASH_CALL action=vreq   callId=<uuid> from=<id> seq=<n> q=<720|540|360> focus=<0|1>
+  FLASH_CALL action=vgrant callId=<uuid> from=<id> seq=<n> q=<height>
+  FLASH_CALL action=vdeny  callId=<uuid> from=<id> seq=<n> reason=<camera|busy|thermal>
+  FLASH_CALL action=vrel   callId=<uuid> from=<id> seq=<n>
+  ```
+
+  - **Capability.** `ginvite`, `gaccept`, `gjoin` and `gpresence` carry `vr=1` from a client that speaks this
+    protocol. The four frames are sent **only** to a peer whose own frame (never a relayed `gjoin`) said `vr=1`; an
+    older client would decode them as an unknown action. A peer whose own frame lacked `vr=1` is an old client: its
+    leg is sent video exactly as before G3. A peer that has not announced anything yet is sent no video until it does.
+  - `gpresence` also carries `vfree=<n>` in a video call: how many more watchers the sender would take now (0 while
+    its camera is off or it is at its send cap).
+  - `vreq`: the receiver asks for the sender's video at up to `q` (picture height). `focus=1` marks a request the
+    user pinned. Re-sent with a new `seq` when the pin or the height changes; a repeat is idempotent.
+  - `vgrant`: the sender switched that leg's encoding on. `q` is informational in G3 (G4 applies resolutions).
+  - `vdeny`: `camera` (camera off), `busy` (at the send cap), `thermal` (reserved for G6). Also sent, with the
+    watcher's granted `seq`, when a talking sender drops that watcher to make room (owner decision Q5). An unknown
+    reason decodes as `busy`. The receiver skips that sender until a `gpresence` from it says `vfree` > 0; a sender
+    that gains room sends that `gpresence` straight away to the peers it turned down.
+  - `vrel`: the receiver no longer wants the video; the sender switches that leg's encoding off.
+  - **Sequence numbers.** A receiver's `seq` grows with every `vreq`/`vrel` it sends to anyone and is at least the
+    wall clock in ms, so a rejoined session's numbers are higher than its previous session's. A sender ignores a
+    `vreq`/`vrel` whose `seq` is not greater than the last one it accepted from that peer. A receiver ignores a
+    `vgrant`/`vdeny` whose `seq` is not its current request's.
+  - **Lifetime.** Grants survive a leg's peer connection being rebuilt; they end on `vrel`, `vdeny`, `ghangup`/
+    `gdecline` or the 15 s signaling timeout. The switch is `RTCRtpEncodingParameters.active` on that leg's video
+    sender, with no renegotiation.
+  - All four are checked like every call frame: `from` must equal the transport peer, and the sender must be a
+    participant of this call.
 - `FLASH_CALL` frame handling is **fail-closed on the sender**: the frame's `from` must equal the
   authenticated transport peer. For group frames the participant is resolved from that `from` and
   never from the peer the frame arrived through, because a group frame can be relayed along a mesh

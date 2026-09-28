@@ -1,5 +1,40 @@
 # Progress Log
 
+## 2026-09-28 — G3 group video by request: code done (device check pending, P8)
+
+### Worked on
+G3 of `docs/calling/GROUP-VIDEO-PLAN.md` (ADR-049): a device sends its video on a leg only after that participant
+asks, within send and receive limits; old clients keep today's behaviour.
+
+### Changed
+- `core/calling`: frames `VideoRequest`/`VideoGrant`/`VideoDeny`/`VideoRelease` (+ `VideoDenyReason`), `vr=1` and
+  `vfree` on the group frames; `GroupVideoRouter` + `GroupVideoLimits` (new, pure); `FlashGroupCallSession` wiring
+  (`routeVideo`, `presenceFrame`, per-leg `active` tuning, speaker and local-level feeds); `FlashCalling.setVideoFocus`;
+  `FlashCallParticipantUi.video` (`FlashParticipantVideo`). The 1:1 session ignores the new frames.
+- `ui/callui`: the avatar covers a tile until the video is granted; "Video busy" / "Camera off" status words.
+- Docs: ADR-049, protocol, plan §8 G3, calling-ui.md amendment, public-api.md.
+
+### Why
+R1/R2/R4/R6 and Q1/Q5: nothing is sent unasked, a sender's copies are capped, and the talker keeps their audience.
+
+### Verification
+`GroupVideoRouterTest` (13, three- and four-device loopback through the real codec), codec and grid cases.
+`:core:calling` jvm 89 / host 101, `:ui:callui` 17, `:desktop:jvmTest` 86, `:app:compileDebugKotlin`: green.
+Not device-tested (P8).
+
+### Problems
+- The router's `onPeerLeft` first dropped its applied-state entry without emitting "sending off"; the loopback test
+  caught it (the harness still thought it was sending to the departed peer). Fixed: a leaving peer that was being
+  sent video gets an explicit off.
+- `setVideoFocus` first went on `FlashCallMedia`, which `public-api.md` defines as read-only; moved to `FlashCalling`.
+
+### Remaining
+Device checks (plan §8 G3). Owner call: receivers fill their receive limit before any tap (ADR-049 item 6).
+
+### Next AI
+G4 budgets (plan §4.2): the 2.4 GHz split budget (540p/360p), apply requested heights (`scaleResolutionDownBy`) and
+per-leg bitrates in `GroupVideoRouter`/`tuneVideoSender`.
+
 ## 2026-09-28 — G2 network band: code done (device check pending, P8)
 
 ### Worked on

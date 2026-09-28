@@ -29,6 +29,7 @@ import com.transfer.flash.core.calling.model.FlashCallParticipantUi
 import com.transfer.flash.core.calling.model.FlashCallState
 import com.transfer.flash.core.calling.model.FlashCallStats
 import com.transfer.flash.core.calling.model.FlashCallUiState
+import com.transfer.flash.core.calling.model.FlashParticipantVideo
 import com.transfer.flash.core.calling.protocol.CallWireFrame
 import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.common.concurrent.SyncMap
@@ -36,6 +37,7 @@ import com.transfer.flash.core.common.logging.FlashLog
 import com.transfer.flash.core.common.perf.FlashNetworkBand
 import com.transfer.flash.core.common.perf.FlashPerformanceMode
 import com.transfer.flash.core.common.time.SystemTimeSource
+import kotlin.concurrent.Volatile
 import kotlin.math.roundToInt
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -120,6 +122,32 @@ public class FlashGroupCallSession(
 
     private val legs = SyncMap<String, GroupLeg>()
     private val sessionMutex = Mutex()
+
+    /**
+     * Request-based video (G3). Every router call and the effects it returns run under
+     * [videoMutex] (see [routeVideo]), so the encodings are switched in the order the router
+     * decided. The two snapshots let non-suspending readers (the UI state, a new leg's sender
+     * tuning, the presence frame) see its state without the lock.
+     */
+    private val videoMutex = Mutex()
+    private val videoRouter = GroupVideoRouter(
+        callId = callId,
+        localId = localDeviceId,
+        limits = { GroupVideoLimits.of(performanceMode(), effectiveBand()) },
+        participants = {
+            legs.valuesSnapshot().filter { it.state in VIDEO_PRESENT }.map { it.peerId }.sorted()
+        },
+        clock = { SystemTimeSource.nowMs() },
+    )
+
+    @Volatile
+    private var videoStates: Map<String, FlashParticipantVideo> = emptyMap()
+
+    @Volatile
+    private var sendingTo: Set<String> = emptySet()
+
+    @Volatile
+    private var videoFreeNow: Int = 0
 
     /**
      * Serializes media acquisition against native teardown (same contract as the 1:1
@@ -212,6 +240,8 @@ public class FlashGroupCallSession(
             return false
         }
 
+        routeVideo { startReceiving() }
+
         // Fan out GroupInvite to all initial members
         initialMemberIds.filter { it != localDeviceId }.forEach { memberId ->
             sendFrame(
@@ -223,6 +253,7 @@ public class FlashGroupCallSession(
                     video = video,
                     members = initialMemberIds,
                     band = networkBand(),
+                    videoRequests = true,
                 ),
                 memberId,
             )
@@ -256,12 +287,19 @@ public class FlashGroupCallSession(
         }
 
         armPresenceAnnouncement()
+        routeVideo { startReceiving() }
 
         // Broadcast GroupAccept / GroupJoin to known participants
         val currentPeers = legs.keysSnapshot()
         currentPeers.forEach { peerId ->
             sendFrame(
-                CallWireFrame.GroupAccept(callId = callId, from = localDeviceId, groupId = groupId, band = networkBand()),
+                CallWireFrame.GroupAccept(
+                    callId = callId,
+                    from = localDeviceId,
+                    groupId = groupId,
+                    band = networkBand(),
+                    videoRequests = true,
+                ),
                 peerId,
             )
         }
@@ -300,6 +338,7 @@ public class FlashGroupCallSession(
         }
 
         armPresenceAnnouncement()
+        routeVideo { startReceiving() }
 
         // Announce join to all known members
         val currentPeers = legs.keysSnapshot()
@@ -311,6 +350,7 @@ public class FlashGroupCallSession(
                     groupId = groupId,
                     participantName = localName,
                     band = networkBand(),
+                    videoRequests = true,
                 ),
                 peerId,
             )
@@ -330,16 +370,7 @@ public class FlashGroupCallSession(
             while (!isEnded) {
                 val callState = _state.value.state
                 if (callState == FlashCallState.ACTIVE || callState == FlashCallState.CONNECTING || callState == FlashCallState.DIALING) {
-                    val count = countConnectedLegs() + 1
-                    val frame = CallWireFrame.GroupPresence(
-                        callId = callId,
-                        from = localDeviceId,
-                        groupId = groupId,
-                        callerName = groupName,
-                        video = video,
-                        participantCount = count,
-                        band = networkBand(),
-                    )
+                    val frame = presenceFrame()
                     legs.keysSnapshot().forEach { peerId ->
                         sendFrame(frame, peerId)
                     }
@@ -348,6 +379,19 @@ public class FlashGroupCallSession(
             }
         }
     }
+
+    /** This call's presence announcement: the group, the head count, the band and (G3) video room. */
+    internal fun presenceFrame(): CallWireFrame.GroupPresence = CallWireFrame.GroupPresence(
+        callId = callId,
+        from = localDeviceId,
+        groupId = groupId,
+        callerName = groupName,
+        video = video,
+        participantCount = countConnectedLegs() + 1,
+        band = networkBand(),
+        videoRequests = true,
+        videoFree = if (video) videoFreeNow else null,
+    )
 
     /** Declines an incoming ringing group call. */
     public suspend fun decline() {
@@ -397,6 +441,7 @@ public class FlashGroupCallSession(
                     }
                     refreshUiState()
                 }
+                if (frame.from == peerId) routeVideo { onAnnouncement(effectivePeerId, frame.videoRequests) }
             }
 
             is CallWireFrame.GroupAccept, is CallWireFrame.GroupJoin -> {
@@ -415,6 +460,11 @@ public class FlashGroupCallSession(
                         leg.state = FlashCallParticipantState.CONNECTING
                     }
                     refreshUiState()
+                }
+                // Only the peer's own frame says whether it speaks the video protocol (G3).
+                if (frame.from == peerId) {
+                    val requests = if (frame is CallWireFrame.GroupAccept) frame.videoRequests else (frame as CallWireFrame.GroupJoin).videoRequests
+                    routeVideo { onAnnouncement(effectivePeerId, requests) }
                 }
 
                 if (isMediaAcquired) {
@@ -449,9 +499,20 @@ public class FlashGroupCallSession(
             }
 
             is CallWireFrame.GroupPresence -> {
-                // The coordinator hands over this call's own announcements (G2): only the band is new.
-                if (frame.from == peerId) legs[effectivePeerId]?.recordBand(frame.band)
+                // The coordinator hands over this call's own announcements: the band (G2) and the
+                // video protocol and room (G3) are what is new.
+                if (frame.from == peerId && legs[effectivePeerId] != null) {
+                    legs[effectivePeerId]?.recordBand(frame.band)
+                    routeVideo { onAnnouncement(effectivePeerId, frame.videoRequests, frame.videoFree) }
+                }
             }
+
+            // G3 video requests: only between participants of this call (the coordinator has
+            // already checked that `from` is the transport peer).
+            is CallWireFrame.VideoRequest -> if (legs[effectivePeerId] != null) routeVideo { onRequest(effectivePeerId, frame) }
+            is CallWireFrame.VideoRelease -> if (legs[effectivePeerId] != null) routeVideo { onRelease(effectivePeerId, frame) }
+            is CallWireFrame.VideoGrant -> if (legs[effectivePeerId] != null) routeVideo { onGrant(effectivePeerId, frame) }
+            is CallWireFrame.VideoDeny -> if (legs[effectivePeerId] != null) routeVideo { onDeny(effectivePeerId, frame) }
 
             is CallWireFrame.GroupDecline -> {
                 handlePeerLeft(effectivePeerId, reason = "declined")
@@ -538,7 +599,8 @@ public class FlashGroupCallSession(
             if (videoTrack != null) {
                 val videoSender = pc.addTrack(videoTrack, stream)
                 leg.videoSender = videoSender
-                tuneVideoSender(videoSender)
+                // G3: the encoding starts off unless this peer asked (or is an old client).
+                tuneVideoSender(videoSender, active = leg.peerId in sendingTo)
             }
         }
 
@@ -587,6 +649,12 @@ public class FlashGroupCallSession(
                                 )
                             }
                             refreshUiState()
+                        }
+                        // G3: the encodings may not have existed when the sender was first
+                        // tuned, so set this leg's on/off again now that it is connected.
+                        routeVideo {
+                            leg.videoSender?.let { tuneVideoSender(it, active = isSending(leg.peerId)) }
+                            reconcile()
                         }
                     }
                     PeerConnectionState.Disconnected, PeerConnectionState.Failed -> {
@@ -711,6 +779,7 @@ public class FlashGroupCallSession(
             refreshUiState()
             checkSoloState()
         }
+        routeVideo { onPeerLeft(peerId) }
     }
 
     /** If only 1 member remains in an active call, enter a grace window rather than abruptly failing. */
@@ -766,6 +835,40 @@ public class FlashGroupCallSession(
         leg.remoteVideoTrack = null
         }
     }
+
+    /**
+     * Runs one [GroupVideoRouter] step and carries out its effects, all under [videoMutex], so
+     * two steps can never switch an encoding in the wrong order. Audio calls have no video to
+     * route. Effects are frames (sent on the signaling path) and encoding switches.
+     */
+    private suspend fun routeVideo(step: GroupVideoRouter.() -> List<GroupVideoRouter.Effect>) {
+        if (!video || isEnded) return
+        videoMutex.withLock {
+            val effects = videoRouter.step()
+            sendingTo = legs.keysSnapshot().filter { videoRouter.isSending(it) }.toSet()
+            videoFreeNow = videoRouter.freeSlots()
+            videoStates = legs.keysSnapshot().associateWith { videoRouter.receiveState(it) }
+            effects.forEach { effect ->
+                when (effect) {
+                    is GroupVideoRouter.Effect.Send -> sendFrame(effect.frame, effect.peerId)
+                    is GroupVideoRouter.Effect.Announce -> sendFrame(presenceFrame(), effect.peerId)
+                    is GroupVideoRouter.Effect.Sending -> {
+                        FlashLog.i("GROUP_CALL", "Leg ${effect.peerId} video send=${if (effect.on) "on" else "off"}")
+                        val sender = legs[effect.peerId]?.videoSender
+                        if (sender != null) onMediaThread { tuneVideoSender(sender, active = effect.on) }
+                    }
+                }
+            }
+        }
+        refreshUiState()
+    }
+
+    /**
+     * The band that sets this device's video limits (G3/G4): its own, or, when it cannot tell
+     * (a phone hosting the hotspot), the slowest band its peers report.
+     */
+    private fun effectiveBand(): FlashNetworkBand? =
+        networkBand().takeIf { it != FlashNetworkBand.UNKNOWN } ?: FlashNetworkBand.slowest(linkBands().values)
 
     /** Stores a band the peer announced (G2) and logs a change. A null (old client) keeps what is known. */
     private fun GroupLeg.recordBand(announced: FlashNetworkBand?) {
@@ -824,6 +927,7 @@ public class FlashGroupCallSession(
         var totalReceived = 0L
 
         var uiNeedsRefresh = false
+        var localAudioLevel: Double? = null
         for (leg in activeLegs) {
             val pc = leg.peerConnection ?: continue
             // Pinned: getStats() is native.
@@ -865,6 +969,12 @@ public class FlashGroupCallSession(
                 ?.members?.num("audioLevel")
                 ?: all.firstOrNull { it.type == "track" && it.members.str("kind") == "audio" }
                     ?.members?.num("audioLevel")
+            // This device's own microphone level (the send side's media-source), for G3's
+            // talker-first rule. Best effort: a backend that does not report it reads as silent.
+            all.firstOrNull { it.type == "media-source" && it.members.str("kind") == "audio" }
+                ?.members?.num("audioLevel")
+                ?.let { level -> localAudioLevel = maxOf(localAudioLevel ?: 0.0, level) }
+
             if (audioLevel != null) {
                 val speaking = audioLevel > 0.01
                 if (leg.isSpeaking != speaking) {
@@ -876,6 +986,11 @@ public class FlashGroupCallSession(
 
         if (uiNeedsRefresh) {
             refreshUiState()
+        }
+        val speakers = activeLegs.filter { it.isSpeaking }.map { it.peerId }.toSet()
+        routeVideo {
+            setLocalSpeaking((localAudioLevel ?: 0.0) > 0.01)
+            onSpeakers(speakers)
         }
 
         val nowMs = SystemTimeSource.nowMs()
@@ -943,18 +1058,7 @@ public class FlashGroupCallSession(
                 ensureLegConnected(peerId)
             }
             scope.launch {
-                sendFrame(
-                    CallWireFrame.GroupPresence(
-                        callId = callId,
-                        from = localDeviceId,
-                        groupId = groupId,
-                        callerName = groupName,
-                        video = video,
-                        participantCount = countConnectedLegs() + 1,
-                        band = networkBand(),
-                    ),
-                    peerId,
-                )
+                sendFrame(presenceFrame(), peerId)
             }
         }
     }
@@ -985,7 +1089,14 @@ public class FlashGroupCallSession(
                 tracks.forEach { runCatching { it.enabled = !next } }
             }
         }
+        // G3: a camera that is off turns new requests down; turning it on tells those peers.
+        scope.launch { routeVideo { setCameraOff(next) } }
         return next
+    }
+
+    /** See [FlashCalling.setVideoFocus]. */
+    public fun setVideoFocus(peerId: String?) {
+        scope.launch { routeVideo { setFocus(peerId) } }
     }
 
     public suspend fun switchCamera() {
@@ -1004,6 +1115,7 @@ public class FlashGroupCallSession(
                 isSpeaking = leg.isSpeaking,
                 isMuted = leg.isMuted,
                 state = leg.state,
+                video = videoStates[leg.peerId] ?: FlashParticipantVideo.OFF,
             )
         }
         _state.value = _state.value.copy(participants = participants)
@@ -1143,7 +1255,7 @@ public class FlashGroupCallSession(
         }
     }
 
-    private fun tuneVideoSender(sender: RtpSender) {
+    private fun tuneVideoSender(sender: RtpSender, active: Boolean) {
         val profile = performanceMode().video
         try {
             val applied = sender.applyVideoTuning(
@@ -1152,6 +1264,7 @@ public class FlashGroupCallSession(
                     minBitrateBps = profile.minBitrateKbps * BPS_PER_KBPS,
                     maxFramerate = profile.captureFps.toDouble(),
                     scaleResolutionDownBy = 1.0,
+                    active = active,
                     demoteForVoice = true,
                     maintainFramerate = true,
                 ),
@@ -1162,7 +1275,7 @@ public class FlashGroupCallSession(
             }
             FlashLog.i(
                 "GROUP_CALL",
-                "video sender tuned applied=$applied max=${profile.maxBitrateKbps}kbps " +
+                "video sender tuned applied=$applied active=$active max=${profile.maxBitrateKbps}kbps " +
                     "fps=${profile.captureFps} degradation=MAINTAIN_FRAMERATE",
             )
         } catch (t: Throwable) {
@@ -1174,5 +1287,12 @@ public class FlashGroupCallSession(
         // AUDIO_BITRATE_PRIORITY / VIDEO_BITRATE_PRIORITY moved to the sender-tuning seam
         // (RtpSenderTuning.kt) with the rest of the native-knob plumbing (S2e).
         const val BPS_PER_KBPS = 1000
+
+        /** Participants whose video can be asked for (G3): in the call, or briefly unreachable. */
+        val VIDEO_PRESENT = setOf(
+            FlashCallParticipantState.CONNECTING,
+            FlashCallParticipantState.CONNECTED,
+            FlashCallParticipantState.DISCONNECTED,
+        )
     }
 }

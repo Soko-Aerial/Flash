@@ -499,7 +499,11 @@ public class FlashCallSession(
             is CallWireFrame.GroupJoin,
             is CallWireFrame.GroupHangup,
             is CallWireFrame.GroupPresence,
-            is CallWireFrame.GroupQuery -> Unit // Group frames are managed by FlashGroupCallSession
+            is CallWireFrame.GroupQuery,
+            is CallWireFrame.VideoRequest,
+            is CallWireFrame.VideoGrant,
+            is CallWireFrame.VideoDeny,
+            is CallWireFrame.VideoRelease -> Unit // Group frames are managed by FlashGroupCallSession
         }
     }
 

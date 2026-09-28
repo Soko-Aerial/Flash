@@ -78,6 +78,8 @@ public sealed interface CallWireFrame {
         public val members: List<String> = emptyList(),
         /** The sender's network band (G2); null from a client that predates it. */
         public val band: FlashNetworkBand? = null,
+        /** The sender understands the G3 video request protocol (`vr=1`); false from a client that predates it. */
+        public val videoRequests: Boolean = false,
     ) : CallWireFrame
 
     /** Group call: peer accepted and joined the call. */
@@ -87,6 +89,8 @@ public sealed interface CallWireFrame {
         public val groupId: String,
         /** The sender's network band (G2); null from a client that predates it. */
         public val band: FlashNetworkBand? = null,
+        /** The sender understands the G3 video request protocol (`vr=1`); false from a client that predates it. */
+        public val videoRequests: Boolean = false,
     ) : CallWireFrame
 
     /** Group call: peer declined the invitation. */
@@ -104,6 +108,8 @@ public sealed interface CallWireFrame {
         public val participantName: String,
         /** The joiner's network band (G2); null when relayed or from a client that predates it. */
         public val band: FlashNetworkBand? = null,
+        /** The sender understands the G3 video request protocol (`vr=1`); false from a client that predates it. */
+        public val videoRequests: Boolean = false,
     ) : CallWireFrame
 
     /** Group call: peer hung up / left the call. */
@@ -123,6 +129,55 @@ public sealed interface CallWireFrame {
         public val participantCount: Int = 1,
         /** The sender's network band (G2), refreshed with every announcement; null from an old client. */
         public val band: FlashNetworkBand? = null,
+        /** The sender understands the G3 video request protocol (`vr=1`); false from a client that predates it. */
+        public val videoRequests: Boolean = false,
+        /**
+         * How many more watchers the sender would serve right now (G3, `vfree=`); 0 while its camera
+         * is off or it is at its send cap; null when not stated (old client, audio call).
+         */
+        public val videoFree: Int? = null,
+    ) : CallWireFrame
+
+    /**
+     * Group video (G3): the receiver asks one participant for its video, at up to [quality]
+     * (a picture height: 720, 540 or 360). Sent only to a peer that announced `vr=1`.
+     * [seq] grows with every request or release this receiver sends to anyone, and is
+     * wall-clock based, so a request from a rejoined session is never taken for a stale one.
+     * [focus] marks a request the user pinned (a tap), which a talking sender will not evict.
+     */
+    public data class VideoRequest(
+        override val callId: String,
+        override val from: String,
+        public val seq: Long,
+        public val quality: Int,
+        public val focus: Boolean = false,
+    ) : CallWireFrame
+
+    /** Group video (G3): the sender is sending to the requester, at up to [quality]. Echoes the request's [seq]. */
+    public data class VideoGrant(
+        override val callId: String,
+        override val from: String,
+        public val seq: Long,
+        public val quality: Int,
+    ) : CallWireFrame
+
+    /**
+     * Group video (G3): the sender refused the request with [seq], or stopped a grant it had
+     * given under that [seq] (a talking sender making room). The receiver retries when the
+     * sender announces free capacity (`GroupPresence.videoFree`).
+     */
+    public data class VideoDeny(
+        override val callId: String,
+        override val from: String,
+        public val seq: Long,
+        public val reason: VideoDenyReason,
+    ) : CallWireFrame
+
+    /** Group video (G3): the receiver no longer wants the sender's video. */
+    public data class VideoRelease(
+        override val callId: String,
+        override val from: String,
+        public val seq: Long,
     ) : CallWireFrame
 
     /** Group call: query whether an active call is ongoing in the group. */
@@ -133,3 +188,16 @@ public sealed interface CallWireFrame {
     ) : CallWireFrame
 }
 
+/** Why a group participant would not send its video (G3). */
+public enum class VideoDenyReason(public val wire: String) {
+    CAMERA_OFF("camera"),
+    SENDER_AT_CAPACITY("busy"),
+    /** Reserved for G6 (a hot sender); not sent yet. */
+    THERMAL("thermal"),
+    ;
+
+    public companion object {
+        /** An unknown reason reads as [SENDER_AT_CAPACITY]: the receiver retries on free capacity either way. */
+        public fun fromWire(value: String?): VideoDenyReason = entries.firstOrNull { it.wire == value } ?: SENDER_AT_CAPACITY
+    }
+}

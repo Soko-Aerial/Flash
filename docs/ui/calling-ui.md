@@ -364,6 +364,11 @@ most one of the two other people, and the grid never showed video at all. G1: ev
 - **Local camera:** the same fixed-width PiP as 1:1, top-end, above the grid. The PiP tap-to-swap of 1:1 is not
   offered in a group (swapping with which tile?); G5 adds tap-to-focus.
 - **Header:** group name + status line + stats badge top-start, as in 1:1.
+- **Video by request (G3, 2026-09-28):** a participant's track exists from negotiation, but its picture arrives only
+  after the participant grants this device's request. The avatar therefore covers the tile unless the participant's
+  `video` is RECEIVING (or UNMANAGED: an older client that always sends). Under the name, a connected participant's
+  status word is "Muted", else "Video busy" (BUSY) or "Camera off" (CAMERA_OFF). The words use the existing status
+  style and add no new visual. Tapping a tile to pin it is still G5.
 - **Stats badge band (G2, 2026-09-28):** the badge appends the call's slowest link band ("5 GHz", "2.4 GHz",
   "6 GHz", "Ethernet") when one is known. Nothing is shown for an unknown band. The text uses the badge's existing style, with no new visual.
 

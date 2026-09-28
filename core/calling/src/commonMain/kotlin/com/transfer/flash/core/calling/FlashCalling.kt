@@ -120,6 +120,13 @@ public interface FlashCalling {
     public fun setSpeaker(on: Boolean)
 
     /**
+     * Group video calls (G3): pins [peerId]'s video, so it is requested first and a talking
+     * sender does not drop it; null returns to following the active speaker. No-op for a 1:1
+     * call or when no call is live.
+     */
+    public fun setVideoFocus(peerId: String?): Unit = Unit
+
+    /**
      * Feeds one inbound text frame in. Returns true when the text was a `FLASH_CALL` frame that
      * was consumed, false when it is not a call frame at all — letting a host chain this ahead
      * of its other text handlers.

@@ -1,6 +1,6 @@
 # Group calls: request-based video, tier and band budgets, size caps
 
-**Status (2026-09-28): G1 and G2 code done (unit-tested, not device-tested). G0 measurements deferred to the final test
+**Status (2026-09-28): G1, G2 and G3 code done (unit-tested, not device-tested). G0 measurements deferred to the final test
 pass (owner decision P8 in the presence plan). Owner decisions recorded 2026-09-24.** Written 2026-09-23 from the owner's
 requirements and a code review of `core/calling` and `ui/callui`.
 
@@ -266,3 +266,38 @@ No open questions remain. Next: G0 measurements (now including C1–C3), and ADR
 - **Pending device check:** the band shows in the stats badge on Android and desktop (5 GHz, 2.4 GHz, Ethernet as
   applicable); a phone hosting the hotspot shows no band and its peers' links take the other end's band; confirm
   `WifiInfo.getFrequency()` is not redacted without location permission on the Infinix (API 34) and the V760.
+
+### G3 — code done 2026-09-28 (device check pending, P8; ADR-049)
+- Frames `vreq`/`vgrant`/`vdeny`/`vrel`, the capability flag `vr=1` and `vfree` in `gpresence`
+  (`docs/protocol.md`). Only peers that announced `vr=1` are sent them; an old client's leg keeps sending video as
+  before (ADR-049 item 2).
+- `GroupVideoRouter` (pure; both sides of one device) and `GroupVideoLimits` (the counts). `FlashGroupCallSession`
+  runs every router step under one lock and carries out its effects: frames, encoding switches
+  (`VideoSendTuning.active`) and immediate `gpresence` to peers it turned down once it has room. A new leg's video
+  sender starts with the router's answer, and it is set again when the leg connects (the encodings may not exist
+  before).
+- Receiver: pinned (`FlashCalling.setVideoFocus`), then the followed speaker (2 s hold, from the stats sampler's
+  speaking flags), then the others in device-id order, up to the receive limit; a participant that turned it down is
+  skipped until it announces room. A ringing device asks nobody.
+- Sender: send cap; `camera` deny while the camera is off; talker-first eviction of the oldest unpinned watcher when
+  the local microphone level (stats `media-source`) says this device is talking.
+- **Reading of §4.4 (decision, ADR-049 item 6):** before any tap a receiver fills its receive limit, so HIGH devices
+  keep the full grid from G1. "With nobody focused, no video is sent" holds for a receiver that wants nothing (a
+  receive limit of 0), and each device sends only to those who asked. The owner may prefer "speaker only until a
+  tap"; that is a one-line change in `GroupVideoRouter.reconcile`.
+- UI-050b amendment (`docs/ui/calling-ui.md`): the avatar covers a tile until the participant's video is granted
+  (the track exists earlier but carries nothing); "Video busy" and "Camera off" status words. No tap yet (G5).
+- `FlashCallParticipantUi.video` (`FlashParticipantVideo`: OFF, REQUESTED, RECEIVING, BUSY, CAMERA_OFF,
+  UNMANAGED) for G5.
+- Tests: `GroupVideoRouterTest` 13 (three- and four-device loopback through the codec: nothing sent unasked, one
+  round trip for a tap, send cap and the next-participant fallback, room announcement, talker-first, stale `seq`,
+  old client, unannounced peer, camera off, speaker hold, ringing device, limits), codec cases for the four frames and
+  the flag, `FlashGroupVideoGridTest` status/picture case. `:core:calling` jvm 89 / host 101, `:ui:callui` 17,
+  `:desktop:jvmTest` 86, `:app:compileDebugKotlin`: green.
+- **Pending device check:**
+  - 3 devices on MEDIUM or HIGH: each sees the others. The stats show outbound video only on requested legs.
+  - A LOW device receives one video, and it follows the speaker after about 2 s.
+  - `setVideoFocus` (no UI yet; G5) moves the video in ≤ 1 s. Check the keyframe delay.
+  - The desktop honours `active=false`. If it doesn't, use the `replaceTrack` fallback.
+  - An old build in the same call still sends and receives video.
+  - `media-source` `audioLevel` is present on Android and on the desktop.

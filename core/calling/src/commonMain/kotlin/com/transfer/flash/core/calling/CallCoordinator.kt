@@ -299,19 +299,7 @@ public class CallCoordinator(
             if (!isTrustedPeer(peerId)) return false
             val liveSession = currentGroupSession
             if (liveSession != null && liveSession.groupId == frame.groupId && !liveSession.isSessionEnded) {
-                val count = liveSession.countConnectedParticipants() + 1
-                sendFrame(
-                    CallWireFrame.GroupPresence(
-                        callId = liveSession.callId,
-                        from = localDeviceId,
-                        groupId = liveSession.groupId,
-                        callerName = liveSession.groupName,
-                        video = liveSession.video,
-                        participantCount = count,
-                        band = networkBand(),
-                    ),
-                    peerId,
-                )
+                sendFrame(liveSession.presenceFrame(), peerId)
                 return true
             }
             return false
@@ -424,6 +412,10 @@ public class CallCoordinator(
     override fun setSpeaker(on: Boolean) {
         currentGroupSession?.setSpeaker(on)
         currentSession?.setSpeaker(on)
+    }
+
+    override fun setVideoFocus(peerId: String?) {
+        currentGroupSession?.setVideoFocus(peerId)
     }
 
     /** Host calls this when the WS signaling session to the call peer died. */

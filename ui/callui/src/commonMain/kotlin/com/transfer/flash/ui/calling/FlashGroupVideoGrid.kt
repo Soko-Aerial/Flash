@@ -31,6 +31,7 @@ import com.transfer.flash.core.calling.FlashCallMedia
 import com.transfer.flash.core.calling.model.FlashCallParticipantState
 import com.transfer.flash.core.calling.model.FlashCallParticipantUi
 import com.transfer.flash.core.calling.model.FlashCallUiState
+import com.transfer.flash.core.calling.model.FlashParticipantVideo
 import com.transfer.flash.ui.avatar.FlashAvatar
 import com.transfer.flash.ui.theme.FlashDimensions
 import com.transfer.flash.ui.theme.FlashShapes
@@ -126,9 +127,11 @@ private fun FlashGroupVideoTile(
     val colors = FlashTheme.colors
     val shape = RoundedCornerShape(if (rounded) FlashShapes.radius12 else 0.dp)
     val status = participantStatusLabel(participant)
+    // G3: a negotiated track carries nothing until the participant grants this device's request.
+    val showsVideo = track != null && participant.video.hasPicture()
     val description = buildString {
         append(participant.name)
-        append(if (track != null) ", video" else ", no video")
+        append(if (showsVideo) ", video" else ", no video")
         if (status != null) append(", ").append(status)
     }
     Box(
@@ -140,7 +143,7 @@ private fun FlashGroupVideoTile(
             .semantics { contentDescription = description },
     ) {
         FlashCallVideoSurface(track = track, fit = CallVideoFit.Balanced, modifier = Modifier.fillMaxSize())
-        if (track == null) {
+        if (!showsVideo) {
             Box(
                 modifier = Modifier.fillMaxSize().background(EMPTY_TILE),
                 contentAlignment = Alignment.Center,
@@ -181,10 +184,19 @@ private fun FlashGroupVideoTile(
 internal fun participantStatusLabel(participant: FlashCallParticipantUi): String? = when (participant.state) {
     FlashCallParticipantState.INVITED -> "Invited"
     FlashCallParticipantState.CONNECTING -> "Connecting…"
-    FlashCallParticipantState.CONNECTED -> if (participant.isMuted) "Muted" else null
+    FlashCallParticipantState.CONNECTED -> when {
+        participant.isMuted -> "Muted"
+        participant.video == FlashParticipantVideo.BUSY -> "Video busy"
+        participant.video == FlashParticipantVideo.CAMERA_OFF -> "Camera off"
+        else -> null
+    }
     FlashCallParticipantState.DISCONNECTED -> "Reconnecting…"
     FlashCallParticipantState.LEFT -> "Left"
 }
+
+/** Whether this participant's video is arriving: granted (G3), or an older client that always sends. */
+internal fun FlashParticipantVideo.hasPicture(): Boolean =
+    this == FlashParticipantVideo.RECEIVING || this == FlashParticipantVideo.UNMANAGED
 
 @Composable
 private fun rememberRemoteVideoTracks(
