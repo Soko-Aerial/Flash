@@ -1,5 +1,13 @@
 # Current Handoff
 
+## 2026-09-28 — PC2 code done: one connection planner on all three hosts (ADR-045)
+- `core/network/.../planner/ConnectionPlanner` + `AutoConnector` replace the app, engine and desktop sweeps and both
+  `AutoConnectGate` copies. The lower device id dials first; the higher id waits 1.5 s. Reconnect storms (at least 4
+  drops within 3 s) are staggered over 2 s (`ReconnectStagger`, both networks).
+- The desktop gained the 15 s suppression window and the ERROR-031 freshness check. Log lines are unchanged for the PC0 script.
+- Tests green (network 115 JVM / 213 host, engine, app, desktop 82). Not device-tested (P8).
+- Next: PC3 (three presence states, local only): write the UI component doc first, then implement.
+
 ## 2026-09-28 — PC1 code done; ALL device testing deferred to the end (owner decision P8)
 - Order now: PC2 → PC3 → PC4 → PC5 → group calling (G1+) → then PC0/PC6 measurements and every device check.
   Gate each phase on unit/loopback tests; keep STANDARD behaving as today; record device exit criteria as pending.

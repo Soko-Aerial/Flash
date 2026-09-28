@@ -37,6 +37,8 @@ import com.transfer.flash.core.messaging.util.FlashMimeTypes
 import com.transfer.flash.core.persistence.db.FlashDatabase
 import com.transfer.flash.core.persistence.db.openEncryptedFlashDatabase
 import com.transfer.flash.core.network.bridge.DiscoveryRouteBinder
+import com.transfer.flash.core.network.planner.AutoConnector
+import com.transfer.flash.core.network.planner.ConnectionPlanner
 import com.transfer.flash.core.network.ws.JvmWsFlashNetwork
 import com.transfer.flash.core.network.ws.WsSession
 import com.transfer.flash.core.transfer.FileSourceOpener
@@ -52,7 +54,6 @@ import com.transfer.flash.core.transfer.policy.OkioRandomAccessSinkHandle
 import com.transfer.flash.core.transfer.policy.RandomAccessChunkSink
 import com.transfer.flash.core.transfer.policy.RandomAccessSinkHandle
 import com.transfer.flash.core.discovery.FlashDiscovery
-import com.transfer.flash.core.discovery.FlashDiscoveredEndpoint
 import com.transfer.flash.core.network.FlashNetwork
 import com.transfer.flash.core.common.result.FlashResult
 import com.transfer.flash.core.common.protocol.FlashProtocol
@@ -307,15 +308,13 @@ public class DesktopEngine(
      * @return false when the engine has not booted yet.
      */
     public fun reconnectNow(): Boolean {
-        val net = networkImpl ?: return false
+        networkImpl ?: return false
         val disc = discoveryImpl ?: return false
         scope.launch {
             FlashLog.i(TAG_DISCOVERY, "Manual retry: restarting discovery and triggering redials")
             runCatching { disc.restartDiscovery() }
                 .onFailure { FlashLog.w(TAG_DISCOVERY, "Discovery restart failed", it) }
-            disc.discoveredEndpoints.value.forEach { ep ->
-                dialIfNeeded(net, ep)
-            }
+            autoConnector?.sweepNow()
         }
         return true
     }
@@ -436,10 +435,13 @@ public class DesktopEngine(
     private var sessionJobs = ConcurrentHashMap<WsSession, Job>()
 
     /**
-     * Peer ids with a `connectManual` in flight — see [dialIfNeeded], which is reached from two
-     * triggers and must not dial the same peer twice.
+     * The shared auto-connector (PC2, ADR-045), non-null once [assemble] has armed it. It replaced
+     * `dialIfNeeded` and its `dialing` set, and with them two desktop-only gaps: no suppression
+     * window (an unreachable peer was redialed every 5 s) and a registry-presence session check
+     * where the phones had used the freshness check since ERROR-031.
      */
-    private val dialing: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+    @Volatile
+    private var autoConnector: AutoConnector? = null
     private var started = false
     private val startMutex = Any()
 
@@ -786,12 +788,12 @@ public class DesktopEngine(
         }
 
         // Auto-dial every discovered peer so inbound offers and chat frames have a session to
-        // ride. Two triggers, one function:
+        // ride. Two triggers, one AutoConnector (PC2, shared with both Android hosts):
         //
         //  1. **The discovery edge** — dial the moment a peer shows up. This is the fix for the
         //     measured user-visible failure, and it is worth stating exactly: Pair only works once a
         //     session exists, and with a POLL-only loop a peer that appears just after a tick had no
-        //     session for up to `AUTO_CONNECT_SWEEP_MS` (5 s) — while `beginPair` gives up waiting
+        //     session for up to one sweep interval (5 s) — while `beginPair` gives up waiting
         //     for the peer's hello after 3 s. So a user who taps Pair as soon as the row appears
         //     loses a race that starts before they can see it, and reads `Couldn't reach …`, which
         //     looks like a pairing bug. (2026-09-14: exactly this — the run showed the peer found,
@@ -803,18 +805,24 @@ public class DesktopEngine(
         // before, and that silence is why a live run could show "Couldn't reach …" with no way to
         // tell "we never dialed" from "we dialed and the peer refused": the dial's failure is
         // swallowed by `runCatching` and the endpoint is never reprinted.
-        scope.launch {
-            discovery.discoveredEndpoints.collect { endpoints ->
-                endpoints.forEach { dialIfNeeded(network, it) }
-            }
-        }
-        scope.launch {
-            while (isActive) {
-                discovery.discoveredEndpoints.value.forEach { dialIfNeeded(network, it) }
-                delay(AUTO_CONNECT_SWEEP_MS)
-            }
-        }
-        boot("dial triggers armed (discovery edge + ${AUTO_CONNECT_SWEEP_MS}ms sweep)")
+        val connector = AutoConnector(
+            scope = scope,
+            planner = ConnectionPlanner(localDeviceId = identity.deviceId.value),
+            links = object : ConnectionPlanner.Links {
+                override fun hasLiveSession(deviceId: String) = network.hasLiveSession(deviceId)
+                override fun isReconnectInFlight(deviceId: String) = network.isReconnectInFlight(deviceId)
+            },
+            sightings = {
+                discovery.discoveredEndpoints.value.map { ep ->
+                    ConnectionPlanner.Sighting(ep.deviceId.value, ep.hostAddress, ep.port, ep.friendlyName)
+                }
+            },
+            dial = { d -> network.connectManual(d.host, d.port) },
+            log = { FlashLog.i(TAG_WS, it) },
+        )
+        autoConnector = connector
+        connector.start(edges = discovery.discoveredEndpoints)
+        boot("dial triggers armed (discovery edge + ${AutoConnector.DEFAULT_SWEEP_INTERVAL_MS}ms sweep)")
 
         // The endpoint roster itself: which device id each discovered row carries, and at which
         // address. This is the other half of an id mismatch — a session registered under the peer's
@@ -927,47 +935,6 @@ public class DesktopEngine(
         }
 
         boot("session collectors armed — assemble complete")
-    }
-
-    /**
-     * Dials [endpoint] unless a session already exists or one is being established.
-     *
-     * Called from BOTH the discovery edge and the periodic sweep, so it must be cheap and
-     * idempotent — hence the [dialing] set. It is not a nicety: `isReconnectInFlight` covers the
-     * resilience layer's own redials, not `connectManual`, so without a local guard the reactive
-     * edge and a sweep tick one millisecond later would both dial the same peer, and two crossings
-     * between one pair of devices is exactly the connect-glare case (`registerSession`,
-     * ERROR-023) — where the loser hangs for the full 6 s handshake timeout.
-     *
-     * The dial itself is launched rather than awaited: the sweep used to await it inline, so one
-     * unreachable peer stalled the whole sweep for 6 s and every peer after it in the list waited
-     * its turn.
-     */
-    private fun dialIfNeeded(network: JvmWsFlashNetwork, endpoint: FlashDiscoveredEndpoint) {
-        val id = endpoint.device.id.value
-        if (network.activeSessions.value[endpoint.device.id] != null) return
-        if (network.isReconnectInFlight(id)) return
-        if (!dialing.add(id)) return
-        FlashLog.i(
-            TAG_WS,
-            "Auto-connect dialing peer='${endpoint.friendlyName}' id=$id " +
-                "at ${endpoint.hostAddress}:${endpoint.port}",
-        )
-        scope.launch {
-            try {
-                // runSuspendCatching: a cancelled sweep stops here instead of logging a result (audit B3).
-                val result = runSuspendCatching {
-                    network.connectManual(endpoint.hostAddress, endpoint.port)
-                }.getOrNull()
-                FlashLog.i(
-                    TAG_WS,
-                    "Auto-connect result peer=$id success=${result is FlashResult.Success} " +
-                        "detail=${result ?: "threw"}",
-                )
-            } finally {
-                dialing.remove(id)
-            }
-        }
     }
 
     /** One stream channel per channel id, riding the live session with the peer. */
@@ -1355,9 +1322,6 @@ public class DesktopEngine(
             }
             return if (safeSegments.isEmpty()) "unnamed" else safeSegments.joinToString(File.separator)
         }
-
-        /** Same cadence as Flash.kt's auto-connect sweep. */
-        const val AUTO_CONNECT_SWEEP_MS = 5_000L
 
         /** AGENTS.md §24 tag for the WS mesh; matches the app host's `TAG_WS`. */
         const val TAG_WS = "WS"

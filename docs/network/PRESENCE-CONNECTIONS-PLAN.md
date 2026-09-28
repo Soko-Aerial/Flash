@@ -1,6 +1,6 @@
 # Presence & Connections Plan (phases PC0–PC7)
 
-**Status (2026-09-28): PC1 code done (unit-tested, not device-tested). PC0 measurements deferred (P8).**
+**Status (2026-09-28): PC1 and PC2 code done (unit-tested, not device-tested). PC0 measurements deferred (P8).**
 Numbers marked *(measure)* are estimates until PC0/PC6 replace them.
 
 **Testing order changed (owner, 2026-09-28, decision P8):** implement PC1–PC5 and then group calling first, and
@@ -192,3 +192,23 @@ all call it. This follows the migration direction (one shared frame) and makes �
 - Expected effect (unmeasured): idle pings per pair halve (360 → 180/h per side on average), and wake-ups per
   interval drop from one per session to one per device.
 - **Pending device checks:** 1-hour screen-off with sessions, no flap (§5 risk); a mixed old/new-version pair.
+
+### PC2 — code done 2026-09-28 (device check pending, P8). ADR-045
+- `ConnectionPlanner` (commonMain, pure): the old gate rules (self, live-session clear, reconnect-in-flight, 15 s
+  suppression, one in flight), plus the **deterministic first dialer**: the lower id dials at once, and the higher id
+  waits 1.5 s per no-session episode. §3.5 said "the backup-loop floor"; that is shortened because pairing waits only
+  3 s for a HELLO and one-sided discovery can leave the higher id as the only dialer. Gateway probes are keyed
+  `gateway:<host>` and never deferred. State is lock-free (compare-and-set), since core:network has no expect/actual.
+- `AutoConnector` drives it on all three hosts: 5 s tick, discovery edges, `sweepNow()`, deferred rechecks,
+  call-quiet (app). The three sweep copies and both `AutoConnectGate`s are deleted.
+- **Staggered storms** (`ReconnectStagger`, both networks): after at least 4 unexpected drops within 3 s, each
+  reconnect loop's first attempt for the next 30 s, including the Wi-Fi-rejoin immediate redial, is delayed by
+  `hash(local|peer) mod 2 s`. A per-pair hash instead of §3.5's `hash(deviceId)`, so one phone's own loops spread too.
+- STANDARD behaviour otherwise unchanged. The desktop gained the suppression window and the ERROR-031 freshness
+  check. The §3.4 ECO/BOOST rules and the **session cap per mode** move to PC5 (ADR-045 item 6), so PC2's "tests
+  cover every §3.4 rule" exit criterion is met only for STANDARD.
+- Tests: `ConnectionPlannerTest` 18, `AutoConnectorTest` 6 (virtual time), `ReconnectStaggerTest` 5,
+  `ConnectionPlannerConcurrencyTest` (JVM threads). `DesktopEngineAutoDialTest` now shows a single dial between two
+  engines instead of crossing dials.
+- **Pending device checks:** pairing straight after discovery, the hotspot gateway probe, call-quiet, and a Wi-Fi
+  toggle with several peers (storm stagger visible in the `Auto-connect`/reconnect timestamps).
