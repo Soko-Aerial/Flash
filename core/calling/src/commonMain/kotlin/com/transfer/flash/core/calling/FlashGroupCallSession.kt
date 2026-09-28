@@ -33,6 +33,7 @@ import com.transfer.flash.core.calling.protocol.CallWireFrame
 import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.common.concurrent.SyncMap
 import com.transfer.flash.core.common.logging.FlashLog
+import com.transfer.flash.core.common.perf.FlashNetworkBand
 import com.transfer.flash.core.common.perf.FlashPerformanceMode
 import com.transfer.flash.core.common.time.SystemTimeSource
 import kotlin.math.roundToInt
@@ -79,6 +80,8 @@ public class FlashGroupCallSession(
     private val onEnded: (FlashGroupCallSession) -> Unit = {},
     private val performanceMode: () -> FlashPerformanceMode = { FlashPerformanceMode.HIGH },
     private val peerNameResolver: (String) -> String? = { null },
+    /** This device's network band (G2), read for every announcement; cheap and non-blocking. */
+    private val networkBand: () -> FlashNetworkBand = { FlashNetworkBand.UNKNOWN },
 ) : FlashCallMedia {
 
     private fun resolveName(peerId: String, fallback: String? = null): String =
@@ -167,6 +170,8 @@ public class FlashGroupCallSession(
         var videoSender: RtpSender? = null,
         /** The video this leg's connection delivered, so closing the leg removes exactly that. */
         var remoteVideoTrack: VideoStreamTrack? = null,
+        /** The band this peer last announced (G2); null until it does, or from an old client. */
+        var band: FlashNetworkBand? = null,
     )
 
     internal fun getLegStateForTesting(peerId: String): FlashCallParticipantState? = legs[peerId]?.state
@@ -217,6 +222,7 @@ public class FlashGroupCallSession(
                     callerName = localName,
                     video = video,
                     members = initialMemberIds,
+                    band = networkBand(),
                 ),
                 memberId,
             )
@@ -255,7 +261,7 @@ public class FlashGroupCallSession(
         val currentPeers = legs.keysSnapshot()
         currentPeers.forEach { peerId ->
             sendFrame(
-                CallWireFrame.GroupAccept(callId = callId, from = localDeviceId, groupId = groupId),
+                CallWireFrame.GroupAccept(callId = callId, from = localDeviceId, groupId = groupId, band = networkBand()),
                 peerId,
             )
         }
@@ -304,6 +310,7 @@ public class FlashGroupCallSession(
                     from = localDeviceId,
                     groupId = groupId,
                     participantName = localName,
+                    band = networkBand(),
                 ),
                 peerId,
             )
@@ -331,6 +338,7 @@ public class FlashGroupCallSession(
                         callerName = groupName,
                         video = video,
                         participantCount = count,
+                        band = networkBand(),
                     )
                     legs.keysSnapshot().forEach { peerId ->
                         sendFrame(frame, peerId)
@@ -381,7 +389,7 @@ public class FlashGroupCallSession(
                 sessionMutex.withLock {
                     legs.getOrPut(effectivePeerId) {
                         GroupLeg(peerId = effectivePeerId, peerName = resolveName(effectivePeerId, frame.callerName), state = FlashCallParticipantState.INVITED)
-                    }
+                    }.recordBand(frame.band)
                     frame.members.filter { it != localDeviceId }.forEach { memberId ->
                         legs.getOrPut(memberId) {
                             GroupLeg(peerId = memberId, peerName = resolveName(memberId), state = FlashCallParticipantState.INVITED)
@@ -398,6 +406,11 @@ public class FlashGroupCallSession(
                         GroupLeg(peerId = effectivePeerId, peerName = peerName)
                     }
                     leg.peerName = peerName
+                    // A relayed GroupJoin names the joiner but was sent by someone else; only a
+                    // frame from the peer itself says what its band is.
+                    if (frame.from == peerId) {
+                        leg.recordBand(if (frame is CallWireFrame.GroupAccept) frame.band else (frame as CallWireFrame.GroupJoin).band)
+                    }
                     if (leg.state != FlashCallParticipantState.CONNECTED) {
                         leg.state = FlashCallParticipantState.CONNECTING
                     }
@@ -433,6 +446,11 @@ public class FlashGroupCallSession(
                         }
                     }
                 }
+            }
+
+            is CallWireFrame.GroupPresence -> {
+                // The coordinator hands over this call's own announcements (G2): only the band is new.
+                if (frame.from == peerId) legs[effectivePeerId]?.recordBand(frame.band)
             }
 
             is CallWireFrame.GroupDecline -> {
@@ -749,6 +767,25 @@ public class FlashGroupCallSession(
         }
     }
 
+    /** Stores a band the peer announced (G2) and logs a change. A null (old client) keeps what is known. */
+    private fun GroupLeg.recordBand(announced: FlashNetworkBand?) {
+        if (announced == null || announced == band) return
+        band = announced
+        FlashLog.i(
+            "GROUP_CALL",
+            "Leg $peerId band=${announced.label} local=${networkBand().label} link=${FlashNetworkBand.link(networkBand(), announced).label}",
+        )
+    }
+
+    /**
+     * Each participant's link band (G2): the slower end of this device's band and the one that
+     * participant announced. Read by the stats sampler; G4 will size video budgets from it.
+     */
+    internal fun linkBands(): Map<String, FlashNetworkBand> {
+        val local = networkBand()
+        return legs.valuesSnapshot().associate { it.peerId to FlashNetworkBand.link(local, it.band) }
+    }
+
     /** Publishes [remoteVideo] after a change. Media thread only, like every [remoteVideo] access. */
     private fun publishRemoteVideo() {
         _remoteVideoTracks.value = remoteVideo.snapshot()
@@ -866,6 +903,7 @@ public class FlashGroupCallSession(
             inboundKbps = inKbps,
             outboundKbps = outKbps,
             packetLoss = lossFraction,
+            networkBand = FlashNetworkBand.slowest(linkBands().values),
         )
     }
 
@@ -913,6 +951,7 @@ public class FlashGroupCallSession(
                         callerName = groupName,
                         video = video,
                         participantCount = countConnectedLegs() + 1,
+                        band = networkBand(),
                     ),
                     peerId,
                 )

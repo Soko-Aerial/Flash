@@ -822,6 +822,8 @@ public class DesktopEngine(
                 trustStore.getTrustedPeers()[FlashDeviceId(peerId)]
                     ?: discovery.discoveredEndpoints.value.firstOrNull { it.deviceId.value == peerId }?.friendlyName
             },
+            // G2: Ethernet or the Wi-Fi band, cached (netsh is a process spawn) and never blocking.
+            networkBand = DesktopNetworkBand(scope).also { it.start() }::current,
             sendFrame = { frame, peerId -> sendCallFrame(network, peerId, frame) },
             // Every terminated call becomes a row in the peer's thread (UI-050), mirroring the
             // app host. Each side writes its own row — no wire frame involved. Fires on

@@ -3,6 +3,7 @@ package com.transfer.flash.core.calling.protocol
 import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.common.protocol.Base64
 import com.transfer.flash.core.common.protocol.FlashTextFraming
+import com.transfer.flash.core.common.perf.FlashNetworkBand
 
 /**
  * Encodes and decodes [CallWireFrame]s to/from `FLASH_CALL` text frames (C7, ADR-025).
@@ -87,12 +88,14 @@ public object CallFrameCodec {
                 if (frame.members.isNotEmpty()) {
                     add("members" to frame.members.joinToString(","))
                 }
+                frame.band?.let { add("band" to it.wire) }
             }
-            is CallWireFrame.GroupAccept -> listOf(
+            is CallWireFrame.GroupAccept -> listOfNotNull(
                 "action" to "gaccept",
                 "callId" to frame.callId,
                 "groupId" to frame.groupId,
                 "from" to frame.from,
+                frame.band?.let { "band" to it.wire },
             )
             is CallWireFrame.GroupDecline -> listOf(
                 "action" to "gdecline",
@@ -100,12 +103,13 @@ public object CallFrameCodec {
                 "groupId" to frame.groupId,
                 "from" to frame.from,
             )
-            is CallWireFrame.GroupJoin -> listOf(
+            is CallWireFrame.GroupJoin -> listOfNotNull(
                 "action" to "gjoin",
                 "callId" to frame.callId,
                 "groupId" to frame.groupId,
                 "from" to frame.from,
                 "name" to frame.participantName,
+                frame.band?.let { "band" to it.wire },
             )
             is CallWireFrame.GroupHangup -> listOf(
                 "action" to "ghangup",
@@ -113,7 +117,7 @@ public object CallFrameCodec {
                 "groupId" to frame.groupId,
                 "from" to frame.from,
             )
-            is CallWireFrame.GroupPresence -> listOf(
+            is CallWireFrame.GroupPresence -> listOfNotNull(
                 "action" to "gpresence",
                 "callId" to frame.callId,
                 "groupId" to frame.groupId,
@@ -121,6 +125,7 @@ public object CallFrameCodec {
                 "name" to frame.callerName,
                 "video" to frame.video.toString(),
                 "count" to frame.participantCount.toString(),
+                frame.band?.let { "band" to it.wire },
             )
             is CallWireFrame.GroupQuery -> listOf(
                 "action" to "gquery",
@@ -176,11 +181,13 @@ public object CallFrameCodec {
                 callerName = fields["name"] ?: "Group Member",
                 video = fields["video"]?.toBooleanStrictOrNull() ?: false,
                 members = fields["members"]?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList(),
+                band = FlashNetworkBand.fromWire(fields["band"]),
             )
             "gaccept" -> CallWireFrame.GroupAccept(
                 callId = callId,
                 from = from,
                 groupId = fields["groupId"] ?: return null,
+                band = FlashNetworkBand.fromWire(fields["band"]),
             )
             "gdecline" -> CallWireFrame.GroupDecline(
                 callId = callId,
@@ -192,6 +199,7 @@ public object CallFrameCodec {
                 from = from,
                 groupId = fields["groupId"] ?: return null,
                 participantName = fields["name"] ?: "Group Member",
+                band = FlashNetworkBand.fromWire(fields["band"]),
             )
             "ghangup" -> CallWireFrame.GroupHangup(
                 callId = callId,
@@ -205,6 +213,7 @@ public object CallFrameCodec {
                 callerName = fields["name"] ?: "Group Member",
                 video = fields["video"]?.toBooleanStrictOrNull() ?: false,
                 participantCount = fields["count"]?.toIntOrNull() ?: 1,
+                band = FlashNetworkBand.fromWire(fields["band"]),
             )
             "gquery" -> CallWireFrame.GroupQuery(
                 callId = callId,

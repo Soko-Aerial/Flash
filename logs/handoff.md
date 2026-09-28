@@ -1,5 +1,12 @@
 # Current Handoff
 
+## 2026-09-28 — G2 code done: network band exchanged in group calls
+- `FlashNetworkBand` + `AndroidNetworkBand` (core/common), `DesktopNetworkBand` (desktop); optional `band=` on
+  `ginvite`/`gaccept`/`gjoin`/`gpresence`; per-leg band, slowest link in `FlashCallStats.networkBand` and the stats badge.
+  No budget uses it yet (G4).
+- Tests green (calling jvm 74 / host 86, callui 16, desktop 86, app and core:common android compile). Not device-tested (P8).
+- Next: G3 request protocol (plan §4.1). Then G4 budgets, G5 UI (component doc first), G6, G7, then all device testing.
+
 ## 2026-09-28 — G1 code done: one video per participant in group calls
 - `FlashCallMedia.remoteVideoTracks` + `PeerTrackTable` in `FlashGroupCallSession`; UI-050b group video grid
   (`ui/callui/.../FlashGroupVideoGrid.kt`). 1:1 calls and audio group calls unchanged; sending unchanged (G3).

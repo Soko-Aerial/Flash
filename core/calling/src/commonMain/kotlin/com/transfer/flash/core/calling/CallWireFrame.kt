@@ -1,5 +1,7 @@
 package com.transfer.flash.core.calling.protocol
 
+import com.transfer.flash.core.common.perf.FlashNetworkBand
+
 /**
  * Calling signaling frames exchanged over Flash WS mesh text frames (C7, ADR-025).
  *
@@ -74,6 +76,8 @@ public sealed interface CallWireFrame {
         public val callerName: String,
         public val video: Boolean,
         public val members: List<String> = emptyList(),
+        /** The sender's network band (G2); null from a client that predates it. */
+        public val band: FlashNetworkBand? = null,
     ) : CallWireFrame
 
     /** Group call: peer accepted and joined the call. */
@@ -81,6 +85,8 @@ public sealed interface CallWireFrame {
         override val callId: String,
         override val from: String,
         public val groupId: String,
+        /** The sender's network band (G2); null from a client that predates it. */
+        public val band: FlashNetworkBand? = null,
     ) : CallWireFrame
 
     /** Group call: peer declined the invitation. */
@@ -96,6 +102,8 @@ public sealed interface CallWireFrame {
         override val from: String,
         public val groupId: String,
         public val participantName: String,
+        /** The joiner's network band (G2); null when relayed or from a client that predates it. */
+        public val band: FlashNetworkBand? = null,
     ) : CallWireFrame
 
     /** Group call: peer hung up / left the call. */
@@ -113,6 +121,8 @@ public sealed interface CallWireFrame {
         public val callerName: String,
         public val video: Boolean,
         public val participantCount: Int = 1,
+        /** The sender's network band (G2), refreshed with every announcement; null from an old client. */
+        public val band: FlashNetworkBand? = null,
     ) : CallWireFrame
 
     /** Group call: query whether an active call is ongoing in the group. */

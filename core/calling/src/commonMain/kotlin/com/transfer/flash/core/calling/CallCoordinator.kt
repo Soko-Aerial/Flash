@@ -9,6 +9,7 @@ import com.transfer.flash.core.calling.model.FlashCallUiState
 import com.transfer.flash.core.calling.model.OngoingGroupCallUi
 import com.transfer.flash.core.calling.protocol.CallFrameCodec
 import com.transfer.flash.core.calling.protocol.CallWireFrame
+import com.transfer.flash.core.common.perf.FlashNetworkBand
 import com.transfer.flash.core.common.perf.FlashPerformanceMode
 import com.transfer.flash.core.common.time.SystemTimeSource
 import kotlin.concurrent.Volatile
@@ -85,6 +86,12 @@ public class CallCoordinator(
      */
     private val performanceMode: () -> FlashPerformanceMode = { FlashPerformanceMode.HIGH },
     private val peerNameResolver: (peerId: String) -> String? = { null },
+    /**
+     * This device's network band (G2) for group calls. Must be cheap and must not block: it is read
+     * for every group announcement (every 4 s). The default keeps callers that do not detect it
+     * sending UNKNOWN, which the other end treats as "decide by my own band".
+     */
+    private val networkBand: () -> FlashNetworkBand = { FlashNetworkBand.UNKNOWN },
 ) : FlashCalling {
     private val _activeCall = MutableStateFlow<FlashCallUiState?>(null)
     override val activeCall: StateFlow<FlashCallUiState?> = _activeCall.asStateFlow()
@@ -182,6 +189,7 @@ public class CallCoordinator(
             },
             performanceMode = performanceMode,
             peerNameResolver = peerNameResolver,
+            networkBand = networkBand,
         )
         currentGroupSession = session
         observeGroupSession(session)
@@ -228,6 +236,7 @@ public class CallCoordinator(
             },
             performanceMode = performanceMode,
             peerNameResolver = peerNameResolver,
+            networkBand = networkBand,
         )
         currentGroupSession = session
         observeGroupSession(session)
@@ -268,7 +277,10 @@ public class CallCoordinator(
 
         if (frame is CallWireFrame.GroupPresence) {
             if (!isTrustedPeer(peerId)) return false
-            if (currentGroupSession?.callId == frame.callId) return true
+            currentGroupSession?.takeIf { it.callId == frame.callId }?.let { live ->
+                live.onInboundFrame(frame, peerId)
+                return true
+            }
             val currentMap = _ongoingGroupCalls.value.toMutableMap()
             currentMap[frame.groupId] = OngoingGroupCallUi(
                 callId = frame.callId,
@@ -296,6 +308,7 @@ public class CallCoordinator(
                         callerName = liveSession.groupName,
                         video = liveSession.video,
                         participantCount = count,
+                        band = networkBand(),
                     ),
                     peerId,
                 )
@@ -561,6 +574,7 @@ public class CallCoordinator(
             },
             performanceMode = performanceMode,
             peerNameResolver = peerNameResolver,
+            networkBand = networkBand,
         )
         currentGroupSession = session
         observeGroupSession(session)

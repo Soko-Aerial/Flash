@@ -1,5 +1,40 @@
 # Progress Log
 
+## 2026-09-28 — G2 network band: code done (device check pending, P8)
+
+### Worked on
+G2 of `docs/calling/GROUP-VIDEO-PLAN.md`: each device detects how it is attached (Ethernet or Wi-Fi band) and group
+calls exchange it, so G4 can size each connection's video budget by the slower end.
+
+### Changed
+- `core/common`: `FlashNetworkBand` (common; wire values and the link rule) and `AndroidNetworkBand` (androidMain).
+- `desktop`: `DesktopNetworkBand` (adapter scan + `netsh wlan show interfaces`, cached, async refresh).
+- `core/calling`: optional `band=` on `ginvite`/`gaccept`/`gjoin`/`gpresence`; `FlashGroupCallSession` records the
+  band per leg (authenticated sender only), logs it, and fills `FlashCallStats.networkBand` with the slowest link;
+  `CallCoordinator` takes a `networkBand` provider and forwards live-call `gpresence` to the session.
+- `ui/callui`: the stats badge shows the band (unknown hidden).
+- Hosts: `DiscoveryEngineHolder` (Android) and `DesktopEngine` pass their providers.
+
+### Why
+Plan R5/G2: budgets in G4 need each link's band. The hotspot host cannot read its own AP band, so the other end
+decides (UNKNOWN defers).
+
+### Verification
+`DesktopNetworkBandTest` 4 and a `CallFrameCodecTest` band case (round trip, absent → null, unknown value → UNKNOWN).
+`:core:calling` jvm 74 / host 86, `:ui:callui` jvm 16, `:desktop:jvmTest` 86, `:app:compileDebugKotlin`,
+`:core:common:compileAndroidMain`: green. Not device-tested (P8).
+
+### Problems
+- The first test draft used `val b = FlashNetworkBand`, which binds the companion object, not the entries, so it did
+  not compile. Fixed by naming the entries in full.
+- Desktop files that use `FlashLog` need `@file:OptIn(FlashInternalApi::class)`.
+
+### Remaining
+Device checks (plan §8 G2), including whether `WifiInfo.getFrequency()` is readable without location permission.
+
+### Next AI
+G3 request protocol (plan §4.1): frames and JVM three-party loopback tests first.
+
 ## 2026-09-28 — G1 one video per participant: code done (device check pending, P8)
 
 ### Worked on

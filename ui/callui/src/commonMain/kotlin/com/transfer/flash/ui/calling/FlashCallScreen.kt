@@ -69,6 +69,7 @@ import com.transfer.flash.ui.theme.flashPressScale
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import com.transfer.flash.core.common.perf.FlashNetworkBand
 
 /**
  * Full-screen in-call surface (UI-050, docs/ui/calling-ui.md).
@@ -784,6 +785,8 @@ internal fun FlashCallStatsBadge(
         rate?.let { add(formatBitrate(it)) }
         // Loss below a couple of percent is normal on Wi-Fi and not worth a readout.
         stats.packetLoss?.takeIf { it >= 0.02 }?.let { add("${(it * 100).toInt()}% loss") }
+        // G2: a group call's slowest link band (debug readout until G4 uses it for budgets).
+        stats.networkBand?.takeIf { it != FlashNetworkBand.UNKNOWN }?.let { add(it.label) }
         if (isEmpty() && state.state == FlashCallState.ACTIVE) {
             add("<1 ms")
         }
