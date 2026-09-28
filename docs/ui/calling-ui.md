@@ -289,7 +289,7 @@ every box below is open for the current tree:
 
 ## Known limitations
 
-- v1 is 1:1 only (no group calls).
+- v1 is 1:1 only (no group calls). *Superseded:* group calls exist (mesh); the group video grid is UI-050b below.
 - No minimize. Back on a live call calls `onDismiss`, which `:app` leaves empty, so the overlay
   stays; a call is left by ending it. The ongoing-call chip this document originally proposed was
   not built, and back is deliberately inert rather than hiding the only hang-up button.
@@ -320,3 +320,93 @@ the app rather than a generic green-call-button Material screen, and the call ri
 same trust/pairing story as file transfer: if the peer is verified, the call screen shows
 it. Nothing here clones WhatsApp's layout; it shares only the universal grammar
 (remote-large + local-PiP) that every calling app converges on because it is correct.
+
+---
+
+## UI-050b — Group video grid (G1)
+
+**Status:** DESIGNED → IMPLEMENTED (2026-09-28; not device-verified, P8). Plan: `docs/calling/GROUP-VIDEO-PLAN.md` G1. The final layouts (LOW main tile plus
+strip, tap to focus, "Video busy" / "Camera off") are G5; this section covers only what G1 needs.
+
+### Component
+The video layer of `FlashCallScreen` when the call is a **group video** call and active. Audio group calls keep
+`FlashGroupParticipantsGrid` (avatars) unchanged; 1:1 calls keep remote-full + local PiP unchanged.
+
+### Purpose
+Before G1 the group session kept one remote video track (the last to arrive won), so a 3-way video call showed at
+most one of the two other people, and the grid never showed video at all. G1: every participant's video is visible.
+
+### Research sources
+- Existing Flash 1:1 surfaces (`FlashCallVideoSurfaces`) and the renderer-lifetime rule (`FlashCallVideoSurface`
+  KDoc; a renderer is initialised once per composable instance and released only on disposal).
+- Common grid grammar of group video apps (Signal, Google Meet, Jitsi, FaceTime): equal tiles up to ~4–6 people,
+  the local camera as a corner thumbnail, name and mute on each tile, a highlight on whoever speaks. Studied for the
+  shared grammar only; no layout is copied.
+
+### Approaches considered
+1. **Equal grid of remote tiles + local PiP (chosen).** Simple, shows everyone, same PiP as 1:1.
+2. **Local camera as a grid tile.** Wastes a tile on the user's own face on a phone screen; Flash's 1:1 PiP already
+   sets the expectation that "me" is a thumbnail.
+3. **Speaker-focused main tile + strip now.** That is G5's LOW layout and depends on G3's request protocol; building
+   it now would be redone.
+
+### Chosen approach
+- **Tiles:** one per participant that is not LEFT, in the session's participant order (stable; a newcomer is added at
+  the end, nobody jumps). Each tile is wrapped in `key(peerId)`, so a tile's renderer stays with its person when others
+  join or leave (the renderer-lifetime rule: a moved tile must not become another composable instance).
+- **Layout** (`groupVideoGrid(count, wide)`): 1 → full screen; 2 → two rows (side by side when the box is wider than
+  tall); 3–4 → 2 × 2; 5 → 2 columns × 3 rows (3 × 2 when wide). The last row's tiles share its width evenly, so 3
+  people show as two on top and one wide tile below. The group cap is 6 members, so at most 5 remote tiles.
+- **Tile content:** the participant's video with `CallVideoFit.Balanced` (crop to fill, same as the 1:1 remote), or,
+  with no track yet (connecting, camera off, a peer on an audio-only device), the avatar on `backgroundSurface` dark.
+- **Tile overlay:** name bottom-start on a 40 % black scrim; "Muted" / "Connecting…" / "Reconnecting…" beneath it in
+  the existing status wording. The speaking participant gets a 2 dp `statusOnline` border.
+- **Local camera:** the same fixed-width PiP as 1:1, top-end, above the grid. The PiP tap-to-swap of 1:1 is not
+  offered in a group (swapping with which tile?); G5 adds tap-to-focus.
+- **Header:** group name + status line + stats badge top-start, as in 1:1.
+
+### Visual specification
+- Tiles: 4 dp gaps on black (`Color.Black`, as the 1:1 video background), `FlashShapes.radius12` corners when more
+  than one tile, none for a single full-screen tile.
+- Avatar in an empty tile: `FlashDimensions.avatarLg`, seeded by peer id (same as the audio grid).
+- Text: `metadataDefault` white; status in white 80 %.
+
+### Interaction specification
+None new in G1 (no tap on tiles). Controls row unchanged.
+
+### Animation specification
+None in G1. Tiles appear and disappear without animation, so a renderer is never kept alive in an exit transition.
+
+### Accessibility requirements
+Each tile has a content description "<name>, video" / "<name>, no video" plus the status word, so TalkBack reads who
+is shown. Text keeps the existing typography scale.
+
+### Responsive behavior
+`wide` = the video box is wider than tall (landscape phone, tablet, desktop window). Same rules on every host.
+
+### Dark-mode behavior
+The video layer is always dark (black background), as in 1:1.
+
+### Performance considerations
+- Up to 5 renderers at once. Android: one `SurfaceViewRenderer` per tile on the shared EGL context. Desktop: one Skia
+  sink per tile. G1 does not change how many videos are decoded (today every leg already decodes); G3/G4 reduce that.
+- `key(peerId)` prevents a renderer from being rebuilt on every join or leave.
+
+### Implementation notes
+- Core: `FlashCallMedia.remoteVideoTracks: StateFlow<Map<String, VideoStreamTrack>>` (default empty for 1:1),
+  filled from each leg's `onTrack` and cleared when the leg closes. `remoteVideoStreamTrack` stays for 1:1 callers and
+  becomes "the newest remaining participant's track" in a group instead of "the last track that ever arrived".
+- The layout math is a pure function with unit tests.
+
+### Testing checklist
+- [x] Unit: grid shape for 1–5 tiles, tall and wide; track table add/replace/remove.
+- [ ] Device (pending, P8): 3 devices in a video call, each sees both other videos; one leaves, the others keep their
+      tiles without a black flash; the leaver's tile disappears.
+- [ ] Device (pending): the local PiP draws above the grid tiles on Android. Every tile and the PiP is a
+      `SurfaceView` with the default z-order, as in the 1:1 screen; if the PiP hides behind a tile, give the PiP
+      `setZOrderMediaOverlay(true)`.
+
+### Known limitations
+- Every connection still sends and decodes video (G3 fixes this).
+- No focus, no strip, no "Video busy" (G5). A participant whose camera is off shows the avatar only after the track
+  ends; a muted-but-live camera track may show a frozen last frame until G5 adds the camera-off state.

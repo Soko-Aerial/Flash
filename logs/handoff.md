@@ -1,5 +1,11 @@
 # Current Handoff
 
+## 2026-09-28 — G1 code done: one video per participant in group calls
+- `FlashCallMedia.remoteVideoTracks` + `PeerTrackTable` in `FlashGroupCallSession`; UI-050b group video grid
+  (`ui/callui/.../FlashGroupVideoGrid.kt`). 1:1 calls and audio group calls unchanged; sending unchanged (G3).
+- Tests green (calling jvm 73 / host 85, callui 16, app and desktop compile). Not device-tested (P8).
+- Next: G2 network band, then G3 request protocol. Then all device testing (PC0, PC6, PC1–PC5, G1+).
+
 ## 2026-09-28 — PC5 code done: mode-driven connection policy (ADR-048, `FLASH_LINK`)
 - `core/network/.../mode/`: ECO / STANDARD / BOOST set keepalive, redial pacing and presence timing; STANDARD is
   unchanged. A mode switch re-times live sessions (no reconnect). ECO holds 3 ring neighbours + active/call peers +

@@ -180,6 +180,17 @@ public interface FlashCallMedia {
     /** The local camera track, or null on an audio-only call or while the camera is off. */
     public val localVideoStreamTrack: StateFlow<VideoStreamTrack?>
 
-    /** The remote camera track, or null until the peer publishes video. */
+    /**
+     * The remote camera track, or null until the peer publishes video. In a group call, the video of
+     * the participant whose video arrived last; [remoteVideoTracks] has everyone's.
+     */
     public val remoteVideoStreamTrack: StateFlow<VideoStreamTrack?>
+
+    /**
+     * Group calls (G1): each participant's camera track by device id, in participant order. Empty
+     * on a 1:1 call, whose one remote track is [remoteVideoStreamTrack].
+     */
+    public val remoteVideoTracks: StateFlow<Map<String, VideoStreamTrack>> get() = NO_REMOTE_VIDEO_TRACKS
 }
+
+private val NO_REMOTE_VIDEO_TRACKS: StateFlow<Map<String, VideoStreamTrack>> = MutableStateFlow(emptyMap())

@@ -1,6 +1,7 @@
 # Group calls: request-based video, tier and band budgets, size caps
 
-**Status: PLAN, owner decisions recorded 2026-09-24. Nothing implemented.** Written 2026-09-23 from the owner's
+**Status (2026-09-28): G1 code done (unit-tested, not device-tested). G0 measurements deferred to the final test
+pass (owner decision P8 in the presence plan). Owner decisions recorded 2026-09-24.** Written 2026-09-23 from the owner's
 requirements and a code review of `core/calling` and `ui/callui`.
 
 **Order (owner, 2026-09-24):** `docs/network/PRESENCE-CONNECTIONS-PLAN.md` (PC0–PC7) comes **before** G1+. G0 may
@@ -226,3 +227,21 @@ identities must also admit call legs between members of the same group; otherwis
 | Q10 | Compression for audio/video (owner suggestion) | **No separate compressor and no further audio squeezing (§4.6: already codec-compressed, encrypted, audio ≈ 3% of traffic). Instead, the codec experiment C1–C3 goes into G0, and per-connection H.264 / VP9 (G4b) is built only if the BelFone numbers justify it.** |
 
 No open questions remain. Next: G0 measurements (now including C1–C3), and ADR-044's threat review.
+
+## 8. Implementation log
+
+### G1 — code done 2026-09-28 (device check pending, P8)
+- `FlashCallMedia.remoteVideoTracks` (device id → track, participant order; empty by default, so the 1:1 session is
+  unchanged). `FlashGroupCallSession` fills it from each leg's `onTrack` and removes a leg's track when that leg
+  closes, through `PeerTrackTable` (a late close cannot remove the track a replacement connection already
+  published). `remoteVideoStreamTrack` is now the newest remaining participant's video, not the last track that
+  ever arrived, so a participant who left no longer stays on a one-video caller's screen.
+- UI-050b (`docs/ui/calling-ui.md`): `FlashGroupVideoSurfaces` shows one tile per participant (video, or the avatar
+  while there is none) with the name, status and a speaking border, plus the local PiP. The tiles are children of one
+  `Layout`, keyed by device id, so a renderer keeps its participant when others join or leave. Audio group calls and
+  1:1 calls are unchanged.
+- **Sending is unchanged** (G3 changes it): every connection still sends and decodes video.
+- Tests: `PeerTrackTableTest` 4, `FlashGroupVideoGridTest` 3. `:core:calling` jvm 73 / host 85, `:ui:callui` jvm 16,
+  `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm`: green.
+- **Pending device check:** 3 devices in a video call each see both other videos; a participant leaving removes only
+  their tile; on Android the local PiP draws above the tiles.
