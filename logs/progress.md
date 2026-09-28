@@ -1,5 +1,43 @@
 # Progress Log
 
+## 2026-09-28 — PC4 presence sharing: code done (device check pending, P8)
+
+### Worked on
+PC4 of `PRESENCE-CONNECTIONS-PLAN.md` §3.2: a device tells its mutual contacts who it can reach, so user 3 sees user 2
+as Online (ring) through user 1, and a reported endpoint can be dialed.
+
+### Changed
+- **Old clients checked first.** The app holder, `Flash.create` and the desktop routers match the first token exactly
+  and log-and-drop unknown frames; nothing matches frame prefixes with `startsWith`. `FLASH_PRES` collides with none.
+- New `core/network/.../presence/`: `PresenceCodec`, `PresenceState` (every rule), `PresenceExchange` (driver).
+- `RealFlashChatRepository.activeGroupRosters()` (existing DAO queries, no schema or DAO change).
+- Hosts: route `FLASH_PRES` right after calls; `reachablePeerIds` = discovery ids ∪ reported ids; planner sightings
+  include tips; tip dials name the subject (TLS pin checked in the handshake) and report success/failure;
+  screen-on / manual retry refresh presence; the AutoConnector also wakes on tip changes.
+- Docs: ADR-046, `docs/protocol.md` "Presence sharing", plan status line and §7 PC4.
+
+### Why
+Owner's idea and decisions (mutual contacts only, Ghost never shared, 2 hops). Two deliberate changes from §3.2:
+- Ghost travels in a presence hello with **default deny**, instead of a `FLASH_WS_HELLO` field.
+- Tips are dialed only for **pinned** subjects. A named dial to an unpinned id lets `TofuPinVerifier` pin whatever key
+  answers, so a forged tip could plant a key.
+
+### Verification
+`:core:network:jvmTest` 157 (+35: codec 10, state 20, exchange 5), `:core:network:testAndroidHostTest` 255,
+`:core:messaging:testAndroidHostTest` 193, `:core:engine:jvmTest` 4, `:core:engine:testAndroidHostTest` 9,
+`:core:engine:compileAndroidMain`, `:desktop:jvmTest` 82, `:app:compileDebugKotlin`, `:app:testDebugUnitTest` 39:
+all green. The state tests run a simulated mesh through the real encoder and decoder. **Not device-tested** (P8).
+
+### Remaining
+- Device check (pending): three phones, user 3 unable to discover user 2; Ghost removes the ring within about 1 s; a
+  send to a ringed peer delivers through the tip dial.
+- Group headers still count only live sessions. ECO/BOOST presence numbers come with PC5.
+
+### Next AI
+PC5: mode-driven policy (§3.4). ECO/STANDARD/BOOST knobs in the planner, keepalive and `PresenceConfig`; mixed-mode
+rules; session cap per mode (ADR-045 item 6); Boost in the Quick Settings tile and the desktop setting; OEM freezer
+guidance (ERROR-074).
+
 ## 2026-09-28 — PC3 three presence states + dial on demand: code done (device check pending, P8)
 
 ### Worked on

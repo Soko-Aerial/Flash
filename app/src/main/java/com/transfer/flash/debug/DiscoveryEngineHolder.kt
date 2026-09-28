@@ -37,6 +37,9 @@ import com.transfer.flash.core.network.FlashNetwork
 import com.transfer.flash.core.network.bridge.DiscoveryRouteBinder
 import com.transfer.flash.core.network.planner.AutoConnector
 import com.transfer.flash.core.network.planner.ConnectionPlanner
+import com.transfer.flash.core.network.presence.PresenceCodec
+import com.transfer.flash.core.network.presence.PresenceExchange
+import com.transfer.flash.core.network.presence.PresenceLocalView
 import com.transfer.flash.core.network.ws.WsFlashNetwork
 import com.transfer.flash.core.network.ws.WsSession
 import com.transfer.flash.core.network.tls.TlsOptions
@@ -48,6 +51,7 @@ import com.transfer.flash.core.security.crypto.KeystoreFlashCrypto
 import com.transfer.flash.core.security.crypto.SecureBinaryFrameCodec
 import com.transfer.flash.core.security.trust.AndroidPreferencesTrustStore
 import java.security.KeyStore
+import java.security.SecureRandom
 import javax.net.ssl.KeyManagerFactory
 import com.transfer.flash.core.calling.CallCoordinator
 import com.transfer.flash.core.calling.FlashCalling
@@ -97,7 +101,9 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -212,6 +218,11 @@ object DiscoveryEngineHolder {
      */
     @Volatile
     private var autoConnector: AutoConnector? = null
+
+    /** Presence sharing (PC4, ADR-046); consulted by the text router and the auto-connector. */
+    @Volatile
+    private var presenceExchange: PresenceExchange? = null
+    private var presenceJob: Job? = null
 
     /** Local device id, cached so [onScreenOn] can run a sweep without re-reading identity. */
     @Volatile
@@ -836,6 +847,40 @@ object DiscoveryEngineHolder {
             performanceMode = { performanceMode },
         )
 
+        // PC4 (ADR-046): presence sharing. Built before the chat repository, whose Online set it
+        // feeds; the repository is handed back for group rosters once it exists.
+        var presenceChat: RealFlashChatRepository? = null
+        val presence = PresenceExchange(
+            scope = appScope,
+            localDeviceId = identity.deviceId.value,
+            snapshot = {
+                PresenceLocalView.of(
+                    ghost = engine.discoveryMode.value == FlashDiscoveryMode.GHOST,
+                    sessions = networkImpl.activeSessions.value.entries.associate { (id, s) -> id.value to s },
+                    isLive = networkImpl::hasLiveSession,
+                    sightings = engine.discoveredEndpoints.value.map {
+                        PresenceLocalView.Sighting(it.deviceId.value, it.hostAddress, it.port)
+                    },
+                    trusted = trustStore.getTrustedPeers().keys.mapTo(HashSet()) { it.value },
+                    hasPin = { id -> trustStore.getPin(FlashDeviceId(id)) != null },
+                    rosters = presenceChat?.activeGroupRosters().orEmpty(),
+                )
+            },
+            send = { peerId, text ->
+                val session = networkImpl.activeSessions.value[FlashDeviceId(peerId)] as? WsSession
+                if (session == null) {
+                    false
+                } else {
+                    session.connection.sendTextAsync(text)
+                    true
+                }
+            },
+            sha256 = FlashFingerprint::fingerprint,
+            randomSalt = SecureRandom().let { random -> { ByteArray(PresenceCodec.SALT_BYTES).also(random::nextBytes) } },
+            log = { Log.i(TAG_WS, it) },
+        )
+        presenceExchange = presence
+
         val chatImpl = RealFlashChatRepository(
             localDeviceId = identity.deviceId.value,
             localDisplayName = identity.friendlyName,
@@ -858,8 +903,9 @@ object DiscoveryEngineHolder {
                 sessions.keys.mapTo(HashSet()) { it.value }
             },
             // PC3 (UI-030b): seen by discovery without a session → "Online" with a ring dot.
-            reachablePeerIds = engine.discoveredEndpoints.map { endpoints ->
-                endpoints.mapTo(HashSet()) { it.deviceId.value }
+            // PC4: or reported by a mutual peer.
+            reachablePeerIds = combine(engine.discoveredEndpoints, presence.reachablePeerIds) { endpoints, reported ->
+                endpoints.mapTo(HashSet()) { it.deviceId.value } + reported
             },
             // A conversationId is the peer's device UUID; resolve it to the paired friendly name so
             // the chat list / header show the real name instead of the raw id.
@@ -966,6 +1012,7 @@ object DiscoveryEngineHolder {
                 true
             },
         )
+        presenceChat = chatImpl
 
         // Sync peer friendly name across paired devices when peer connects with an updated name
         appScope.launch {
@@ -1490,9 +1537,20 @@ object DiscoveryEngineHolder {
             sightings = {
                 engine.discoveredEndpoints.value.map { ep ->
                     ConnectionPlanner.Sighting(ep.deviceId.value, ep.hostAddress, ep.port, ep.friendlyName)
+                } + presence.tipSightings()
+            },
+            // A presence tip (PC4) is dialed with its device named, so the TLS handshake checks
+            // that device's pin and a forged tip fails before any frame. Tips exist only for pinned
+            // peers, so trust-on-first-use is never reached from a tip.
+            dial = { d ->
+                val tip = presence.tipFor(d.peerDeviceId, d.host, d.port)
+                if (tip == null) {
+                    networkImpl.connectManual(d.host, d.port)
+                } else {
+                    networkImpl.connectManual(d.host, d.port, tip.deviceId)
+                        .also { presence.onTipResult(tip, it is FlashResult.Success) }
                 }
             },
-            dial = { d -> networkImpl.connectManual(d.host, d.port) },
             // Hotspot host auto-probe: tethered clients cannot discover the host via NSD because
             // Android SoftAP drops multicast mDNS packets. Probe default IPv4 gateways on active LAN
             // networks.
@@ -1505,7 +1563,10 @@ object DiscoveryEngineHolder {
             log = { Log.i(TAG_WS, it) },
         )
         autoConnector = connector
-        autoConnectJob = connector.start(edges = engine.discoveredEndpoints)
+        autoConnectJob = connector.start(edges = merge(engine.discoveredEndpoints, presence.tips))
+        presenceJob = presence.start(
+            edges = merge(networkImpl.activeSessions, engine.discoveredEndpoints, engine.discoveryMode),
+        )
 
         // C7 ringing: the engine — not the UI, not FlashCallService — drives the ringer and the
         // call notification, because an invite that arrives with the app closed still has to ring.
@@ -1613,6 +1674,7 @@ object DiscoveryEngineHolder {
             runCatching { engine.restartDiscovery() }
                 .onFailure { Log.w(TAG_DISCOVERY, "$reason discovery restart failed", it) }
             connector.sweepNow()
+            presenceExchange?.refresh()
         }
         return true
     }
@@ -1707,6 +1769,8 @@ object DiscoveryEngineHolder {
             }
             return
         }
+        // Presence sharing (PC4): consumes every FLASH_PRES frame, valid or not.
+        if (presenceExchange?.onInboundText(peerDeviceId, text) == true) return
         // PTT next (ADR-032): ping and session control share one entry point, and the module owns
         // decode, dedup, the fail-closed transport binding/trust check and the floor reduction. It
         // answers true for recognized-but-rejected frames too, so a PTT frame can never fall
@@ -2334,6 +2398,9 @@ object DiscoveryEngineHolder {
         binderJob = null
         autoConnectJob?.cancel()
         autoConnectJob = null
+        presenceJob?.cancel()
+        presenceJob = null
+        presenceExchange = null
         // Silence the ring before the scope dies: appScope.cancel() below kills the collector, so
         // nothing would ever deliver the stopping edge, and a MediaPlayer nobody holds keeps looping.
         callRingJob?.cancel()

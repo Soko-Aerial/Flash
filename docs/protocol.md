@@ -413,6 +413,55 @@ pcm        ..  LE int16 mono samples, even length, <= 4096 B
   an optimization iff benchmarks show WS framing/jitter cost dominating; do not build it
   on assumption.
 
+## Presence sharing (PC4, ADR-046, 2026-09-28)
+
+A device passes on who it can reach, so a contact it is connected to shows as **Online** (ring dot) on a
+mutual contact's screen even when that contact cannot see the device itself. Plaintext over the TLS WebSocket,
+like call and group frames. Code: `core/network/.../presence/` (`PresenceCodec`, `PresenceState`,
+`PresenceExchange`); plan `docs/network/PRESENCE-CONNECTIONS-PLAN.md` §3.2.
+
+```text
+FLASH_PRES v=1 t=hello share=<1|0> [salt=<32 hex>]
+FLASH_PRES v=1 t=want h=<16 hex>,<16 hex>,...
+FLASH_PRES v=1 t=digest e=<entry>;<entry>;...
+FLASH_PRES v=1 t=delta  e=<entry>;<entry>;...
+
+entry = <deviceId>|<ageMs>|<c|s|x>|<hops>|[<host>:<port>]
+```
+
+- **hello**: sent when a session opens, every 30 s (STANDARD), and when Ghost mode flips. `share=0` is a Ghost
+  device: nobody may report it, and it sends no salt because it reports nothing. `salt` is fresh random per session.
+- **want**: the asker's contacts (paired peers and fellow group members), each as
+  `H = SHA-256("flash-pres-v1|" || salt bytes || UTF-8 id)` truncated to 8 bytes, under the **reporter's** salt.
+  Replaces the previous want list. Sent again whenever the salt or the asker's contacts change. At most 512.
+- **digest** replaces everything the sender reported; **delta** upserts, and state `x` withdraws an entry
+  (deltas only). A digest goes out every 30 s and when a want arrives; deltas on change, at most one per
+  second per peer. An empty digest is not sent unless it withdraws something. At most 128 entries.
+- **entry**: `c` = the reporter has a live session with the device, `s` = the reporter's discovery sees it.
+  `ageMs` is how old the information is (never a clock time; phone clocks disagree), 0..600 000. `hops` is 1 for
+  the reporter's own observation and 2 for a relay; nothing with 2 hops is relayed again. The endpoint is a
+  literal unicast IP and a port; host names, loopback, unspecified, multicast and broadcast are rejected. An IPv6
+  scope id is escaped by the field framing (`%` becomes `%25`).
+- **Versioning**: a frame with `v` other than 1, an unknown `t` or a malformed field is consumed and ignored. A
+  malformed entry is dropped on its own. Old clients drop the whole prefix: all three inbound routers (app holder,
+  `Flash.create`, desktop) match the first token exactly and log-and-drop unknown frames (verified before PC4).
+
+**Who is told what.** Frames are sent only to, and accepted only from, a peer that is paired or a fellow member of
+one of the device's active groups. A peer R hears about device S only when:
+1. R and S share one of the reporter's groups, or R's want list contains `H(reporter salt for R, S)`;
+2. S said `share=1` in its own hello to the reporter (for a hop-1 entry; default deny, so a pre-PC4 client is never
+   reported), or S has not said `share=0` to the reporter (for a relay);
+3. S is not R, not the reporter, and was not learned from R.
+
+A Ghost device reports nothing. When it enters Ghost it sends an empty digest to withdraw what it reported.
+
+**What a receiver does with it.** An entry is kept only when its subject is one of the receiver's contacts, and it
+expires when `ageMs` plus the receiver's holding time passes 45 s (STANDARD). Frames are rate-limited per sender
+(burst 10, one more per second). A report never changes trust. It shows the subject as Online (ring). A report with
+an endpoint becomes a **dial tip** only when the subject has a pinned TLS key, has no session, and is not seen by the
+receiver's own discovery. The tip is dialed with the subject's id named, so the TLS handshake checks that pin and a
+forged tip fails before any frame. After 3 failed tips in a row, the sender is ignored until its session reopens.
+
 ## Intended Full Protocol
 
 

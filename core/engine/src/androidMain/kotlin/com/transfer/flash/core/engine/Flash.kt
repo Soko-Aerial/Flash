@@ -31,6 +31,10 @@ import com.transfer.flash.core.messaging.protocol.PttSessionCodec
 import com.transfer.flash.core.network.bridge.DiscoveryRouteBinder
 import com.transfer.flash.core.network.planner.AutoConnector
 import com.transfer.flash.core.network.planner.ConnectionPlanner
+import com.transfer.flash.core.network.presence.PresenceCodec
+import com.transfer.flash.core.network.presence.PresenceExchange
+import com.transfer.flash.core.network.presence.PresenceLocalView
+import com.transfer.flash.core.security.crypto.FlashFingerprint
 import com.transfer.flash.core.network.datachannel.DataChannelClient
 import com.transfer.flash.core.network.datachannel.DataChannelServer
 import com.transfer.flash.core.network.ws.WsFlashNetwork
@@ -47,6 +51,7 @@ import com.transfer.flash.core.security.identity.AndroidPreferencesIdentityStore
 import com.transfer.flash.core.security.trust.AndroidPreferencesTrustStore
 import com.transfer.flash.core.security.trust.FlashTrustStore
 import java.security.KeyStore
+import java.security.SecureRandom
 import javax.net.ssl.KeyManagerFactory
 import com.transfer.flash.core.transfer.RealFlashTransferRepository
 import com.transfer.flash.core.transfer.chunked.ChunkFrame
@@ -75,7 +80,9 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import okio.source
@@ -205,6 +212,9 @@ private class Wiring(
     @Volatile private var facade: FlashEngine? = null
     @Volatile private var trustStoreRef: FlashTrustStore? = null
 
+    /** Presence sharing (PC4, ADR-046); the text router hands it every FLASH_PRES frame. */
+    @Volatile private var presenceRef: PresenceExchange? = null
+
     fun build(): FlashEngine {
         val stored = AndroidPreferencesIdentityStore(appContext).getIdentity()
         val identity = FlashAdvertisedIdentity(
@@ -329,6 +339,39 @@ private class Wiring(
             isPeerEncrypted = { peerId -> trustStore.getSessionKey(FlashDeviceId(peerId)) != null },
         )
         transferRef = transferImpl
+        // PC4 (ADR-046): presence sharing, the same wiring as the app holder. Built before the
+        // repository, whose Online set it feeds; the repository is handed back for group rosters.
+        var presenceChat: RealFlashChatRepository? = null
+        val presence = PresenceExchange(
+            scope = scope,
+            localDeviceId = localId,
+            snapshot = {
+                PresenceLocalView.of(
+                    ghost = engine.discoveryMode.value == FlashDiscoveryMode.GHOST,
+                    sessions = networkImpl.activeSessions.value.entries.associate { (id, s) -> id.value to s },
+                    isLive = networkImpl::hasLiveSession,
+                    sightings = engine.discoveredEndpoints.value.map {
+                        PresenceLocalView.Sighting(it.deviceId.value, it.hostAddress, it.port)
+                    },
+                    trusted = trustStore.getTrustedPeers().keys.mapTo(HashSet()) { it.value },
+                    hasPin = { id -> trustStore.getPin(FlashDeviceId(id)) != null },
+                    rosters = presenceChat?.activeGroupRosters().orEmpty(),
+                )
+            },
+            send = { peerId, text ->
+                val session = networkImpl.activeSessions.value[FlashDeviceId(peerId)] as? WsSession
+                if (session == null) {
+                    false
+                } else {
+                    session.connection.sendTextAsync(text)
+                    true
+                }
+            },
+            sha256 = FlashFingerprint::fingerprint,
+            randomSalt = SecureRandom().let { random -> { ByteArray(PresenceCodec.SALT_BYTES).also(random::nextBytes) } },
+            log = { Log.i(TAG, it) },
+        )
+        presenceRef = presence
         // Built before the repository so its sink can dial on demand (PC3); started once the
         // server is up, below.
         val autoConnector = AutoConnector(
@@ -341,9 +384,18 @@ private class Wiring(
             sightings = {
                 engine.discoveredEndpoints.value.map { ep ->
                     ConnectionPlanner.Sighting(ep.deviceId.value, ep.hostAddress, ep.port, ep.friendlyName)
+                } + presence.tipSightings()
+            },
+            // A presence tip is dialed with its device named, so TLS checks that device's pin.
+            dial = { d ->
+                val tip = presence.tipFor(d.peerDeviceId, d.host, d.port)
+                if (tip == null) {
+                    networkImpl.connectManual(d.host, d.port)
+                } else {
+                    networkImpl.connectManual(d.host, d.port, tip.deviceId)
+                        .also { presence.onTipResult(tip, it is FlashResult.Success) }
                 }
             },
-            dial = { d -> networkImpl.connectManual(d.host, d.port) },
             log = { Log.i(TAG, it) },
         )
         val chatImpl = RealFlashChatRepository(
@@ -365,8 +417,9 @@ private class Wiring(
                 sessions.keys.mapTo(HashSet()) { it.value }
             },
             // PC3 (UI-030b): seen by discovery without a session → "Online" with a ring dot.
-            reachablePeerIds = engine.discoveredEndpoints.map { endpoints ->
-                endpoints.mapTo(HashSet()) { it.deviceId.value }
+            // PC4: or reported by a mutual peer.
+            reachablePeerIds = combine(engine.discoveredEndpoints, presence.reachablePeerIds) { endpoints, reported ->
+                endpoints.mapTo(HashSet()) { it.deviceId.value } + reported
             },
             peerNameResolver = { id -> trustStore.getTrustedPeers()[FlashDeviceId(id)] },
             attachmentProgress = transferImpl.activeTransfers.map { transfers ->
@@ -411,6 +464,7 @@ private class Wiring(
                 session.connection.sendText(GroupFrameCodec.encode(wireFrame))
             },
         )
+        presenceChat = chatImpl
         val cleanupInbound: (String, String) -> Unit = { transferId, reason ->
             receivePipeline.cancelSession(transferId)
             openHandles.remove(transferId)?.let { handle -> runCatching { handle.close() } }
@@ -556,7 +610,8 @@ private class Wiring(
             runCatching { transferImpl.preloadReceiverProgress() }
 
             // PC2 (ADR-045): the same planner and driver as the app holder and the desktop engine.
-            autoConnector.start(edges = engine.discoveredEndpoints)
+            autoConnector.start(edges = merge(engine.discoveredEndpoints, presence.tips))
+            presence.start(edges = merge(networkImpl.activeSessions, engine.discoveredEndpoints, engine.discoveryMode))
         }
 
         val facade = DefaultFlashEngine(
@@ -642,6 +697,8 @@ private class Wiring(
             }
             return
         }
+        // Presence sharing (PC4): consumes every FLASH_PRES frame, valid or not.
+        if (presenceRef?.onInboundText(peerDeviceId, text) == true) return
         // PTT next (ADR-032): ping + voice-session control share one entry point. When an engine
         // is attached it owns decode, dedup, the fail-closed trust/transport-binding check and the
         // floor reduction, and it answers true for recognized-but-rejected frames too. The

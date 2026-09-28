@@ -941,6 +941,18 @@ public class RealFlashChatRepository(
             groupMemberDao?.activeMembers(groupId)?.map { it.toMemberUi() }.orEmpty()
         }
 
+    /**
+     * PC4 (ADR-046): the active member ids of every group this device is an active member of.
+     * Presence sharing reads it to decide who counts as a fellow member.
+     */
+    public suspend fun activeGroupRosters(): List<Set<String>> =
+        withContext(ioDispatcher) {
+            val members = groupMemberDao ?: return@withContext emptyList()
+            members.activeGroupIdsFor(localDeviceId).map { groupId ->
+                members.activeMembers(groupId).mapTo(HashSet()) { it.deviceId }
+            }
+        }
+
     /** Phase B: one shared mapping so the sheet and the state carry identical rows. */
     private fun GroupMemberEntity.toMemberUi(isOnline: Boolean = false): FlashGroupMemberUi =
         FlashGroupMemberUi(

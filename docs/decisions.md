@@ -1964,6 +1964,59 @@ the losing dial hangs for the full 6 s handshake timeout. `DesktopEngineAutoDial
 ### Revisit when
 PC5 adds modes; PC6 measures reconnect storms; or discovery resilience (ADR-047) feeds new sources into the planner.
 
+## ADR-046 — Presence sharing: mutual contacts only, Ghost never shared, tips dialed only against a pin
+
+### Date
+2026-09-28
+
+### Status
+**IMPLEMENTED (PC4), device check pending** (P8: testing after PC5 and group calling). Plan:
+`docs/network/PRESENCE-CONNECTIONS-PLAN.md` §3.2. Wire format: `docs/protocol.md` "Presence sharing".
+
+### Context
+The owner's idea (plan §3.2): a phone passes on what it knows ("I'm connected to user 2, at 192.168.1.20"), so user 3
+sees user 2 as Online through user 1 even when user 3's own discovery misses user 2 (hotspots drop mDNS, OEM
+freezers stop advertising). The owner decided: mutual contacts only, Ghost devices never shared, at most 2 hops.
+
+### Decision
+1. **One implementation for all hosts.** `PresenceCodec` (wire), `PresenceState` (all rules; deterministic, with
+   injected time and view) and `PresenceExchange` (one coroutine; bounded input channel that drops the oldest;
+   publishes `reachablePeerIds` and `tips`) live in `core:network` commonMain. The app holder, `Flash.create` and
+   `DesktopEngine` only plumb frames, a `PresenceLocalView` snapshot and a send function.
+2. **Mutual contacts through salted hashes.** The reporter sends a random salt per session. The asker sends
+   `SHA-256(tag || salt || id)` truncated to 8 bytes for each of its contacts, and the reporter answers only for
+   matches it knows itself. Group fellows need no hash, because rosters are already shared. SHA-256 is injected
+   (`FlashFingerprint.fingerprint`), because `core:network`'s common code has no crypto dependency.
+3. **Ghost travels in a presence hello, not in `FLASH_WS_HELLO`.** No change to the session handshake or the
+   network classes. Safety comes from **default deny**: a directly observed device is reported only after its own
+   hello said `share=1`, so a Ghost device, a pre-PC4 client or a hello still in flight is never reported.
+4. **Tips are dialed only for pinned subjects, and with the subject named.** A named dial to an *unpinned* id makes
+   `TofuPinVerifier` record whatever key answers (trust on first use), so a forged tip could plant a pin. Restricting
+   tips to pinned subjects makes "a forged tip costs one failed dial" strictly true.
+5. **Only paired peers and group fellows** send or receive presence. Received entries about non-contacts are dropped.
+6. STANDARD numbers: refresh 30 s, max age 45 s, delta gap 1 s, rate burst 10 at 1/s, 3 failed tips before a sender
+   is ignored. PC5 adds the ECO and BOOST rows (`PresenceConfig`).
+
+### Alternatives considered
+- **`noshare` in `FLASH_WS_HELLO`:** also changes both network classes and the handshake parser, and a default-deny
+  rule is still needed for old clients, so it adds nothing.
+- **Share on every session:** rejected by the owner ("mutual contacts only").
+- **Unsalted hashes:** a third party could precompute hashes of known ids and link want lists across sessions.
+- **Tips for any contact:** allows pin planting through trust on first use (point 4).
+
+### Consequences
+- A reporter learns which of **its own** contacts are also the asker's contacts. This is inherent in the matching,
+  and within the owner's "mutual contacts" rule.
+- A device is reported only after it has exchanged hellos with the reporter in the current process, even when the
+  reporter's discovery sees it.
+- Group headers still count only live sessions. Presence sharing feeds direct chats (the ring) and dialing.
+- A device that switches to Ghost sends `share=0` on its open sessions at once, and each reporter withdraws it in its
+  next delta (at most about 1 s later). Its hops-2 copies at third devices are replaced by that withdrawal or expire
+  within the 45 s max age.
+
+### Revisit when
+PC5 (modes); PC6 measurements; or the 3-device check (user 3 sees user 2 through user 1) fails.
+
 ## ADR-047 — Discovery resilience: extra sources are dial hints that feed the connection planner
 
 ### Date
