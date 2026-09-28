@@ -89,6 +89,7 @@ public object CallFrameCodec {
                     add("members" to frame.members.joinToString(","))
                 }
                 frame.band?.let { add("band" to it.wire) }
+                if (frame.videoRequests) add("vr" to "1")
             }
             is CallWireFrame.GroupAccept -> listOfNotNull(
                 "action" to "gaccept",
@@ -96,6 +97,7 @@ public object CallFrameCodec {
                 "groupId" to frame.groupId,
                 "from" to frame.from,
                 frame.band?.let { "band" to it.wire },
+                vr(frame.videoRequests),
             )
             is CallWireFrame.GroupDecline -> listOf(
                 "action" to "gdecline",
@@ -110,6 +112,7 @@ public object CallFrameCodec {
                 "from" to frame.from,
                 "name" to frame.participantName,
                 frame.band?.let { "band" to it.wire },
+                vr(frame.videoRequests),
             )
             is CallWireFrame.GroupHangup -> listOf(
                 "action" to "ghangup",
@@ -126,6 +129,36 @@ public object CallFrameCodec {
                 "video" to frame.video.toString(),
                 "count" to frame.participantCount.toString(),
                 frame.band?.let { "band" to it.wire },
+                vr(frame.videoRequests),
+                frame.videoFree?.let { "vfree" to it.toString() },
+            )
+            is CallWireFrame.VideoRequest -> listOf(
+                "action" to "vreq",
+                "callId" to frame.callId,
+                "from" to frame.from,
+                "seq" to frame.seq.toString(),
+                "q" to frame.quality.toString(),
+                "focus" to if (frame.focus) "1" else "0",
+            )
+            is CallWireFrame.VideoGrant -> listOf(
+                "action" to "vgrant",
+                "callId" to frame.callId,
+                "from" to frame.from,
+                "seq" to frame.seq.toString(),
+                "q" to frame.quality.toString(),
+            )
+            is CallWireFrame.VideoDeny -> listOf(
+                "action" to "vdeny",
+                "callId" to frame.callId,
+                "from" to frame.from,
+                "seq" to frame.seq.toString(),
+                "reason" to frame.reason.wire,
+            )
+            is CallWireFrame.VideoRelease -> listOf(
+                "action" to "vrel",
+                "callId" to frame.callId,
+                "from" to frame.from,
+                "seq" to frame.seq.toString(),
             )
             is CallWireFrame.GroupQuery -> listOf(
                 "action" to "gquery",
@@ -182,12 +215,14 @@ public object CallFrameCodec {
                 video = fields["video"]?.toBooleanStrictOrNull() ?: false,
                 members = fields["members"]?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList(),
                 band = FlashNetworkBand.fromWire(fields["band"]),
+                videoRequests = fields["vr"] == "1",
             )
             "gaccept" -> CallWireFrame.GroupAccept(
                 callId = callId,
                 from = from,
                 groupId = fields["groupId"] ?: return null,
                 band = FlashNetworkBand.fromWire(fields["band"]),
+                videoRequests = fields["vr"] == "1",
             )
             "gdecline" -> CallWireFrame.GroupDecline(
                 callId = callId,
@@ -200,6 +235,7 @@ public object CallFrameCodec {
                 groupId = fields["groupId"] ?: return null,
                 participantName = fields["name"] ?: "Group Member",
                 band = FlashNetworkBand.fromWire(fields["band"]),
+                videoRequests = fields["vr"] == "1",
             )
             "ghangup" -> CallWireFrame.GroupHangup(
                 callId = callId,
@@ -214,6 +250,32 @@ public object CallFrameCodec {
                 video = fields["video"]?.toBooleanStrictOrNull() ?: false,
                 participantCount = fields["count"]?.toIntOrNull() ?: 1,
                 band = FlashNetworkBand.fromWire(fields["band"]),
+                videoRequests = fields["vr"] == "1",
+                videoFree = fields["vfree"]?.toIntOrNull()?.coerceAtLeast(0),
+            )
+            "vreq" -> CallWireFrame.VideoRequest(
+                callId = callId,
+                from = from,
+                seq = fields["seq"]?.toLongOrNull() ?: return null,
+                quality = fields["q"]?.toIntOrNull() ?: return null,
+                focus = fields["focus"] == "1",
+            )
+            "vgrant" -> CallWireFrame.VideoGrant(
+                callId = callId,
+                from = from,
+                seq = fields["seq"]?.toLongOrNull() ?: return null,
+                quality = fields["q"]?.toIntOrNull() ?: return null,
+            )
+            "vdeny" -> CallWireFrame.VideoDeny(
+                callId = callId,
+                from = from,
+                seq = fields["seq"]?.toLongOrNull() ?: return null,
+                reason = VideoDenyReason.fromWire(fields["reason"]),
+            )
+            "vrel" -> CallWireFrame.VideoRelease(
+                callId = callId,
+                from = from,
+                seq = fields["seq"]?.toLongOrNull() ?: return null,
             )
             "gquery" -> CallWireFrame.GroupQuery(
                 callId = callId,
@@ -223,6 +285,9 @@ public object CallFrameCodec {
             else -> null
         }
     }
+
+    /** The G3 capability flag: written only when set, so an old client's frame reads as false. */
+    private fun vr(on: Boolean): Pair<String, String>? = if (on) "vr" to "1" else null
 
     /**
      * Decodes a [raw] `sdp` field.

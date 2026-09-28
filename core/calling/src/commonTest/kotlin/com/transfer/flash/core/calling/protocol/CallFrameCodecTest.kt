@@ -215,6 +215,41 @@ class CallFrameCodecTest {
         }
 
         @Test
+        fun video_request_frames_round_trip() {
+            val frames = listOf(
+                CallWireFrame.VideoRequest(callId = callId, from = from, seq = 1_727_000_000_123L, quality = 720, focus = true),
+                CallWireFrame.VideoRequest(callId = callId, from = from, seq = 5L, quality = 540),
+                CallWireFrame.VideoGrant(callId = callId, from = from, seq = 5L, quality = 540),
+                CallWireFrame.VideoDeny(callId = callId, from = from, seq = 5L, reason = VideoDenyReason.CAMERA_OFF),
+                CallWireFrame.VideoDeny(callId = callId, from = from, seq = 6L, reason = VideoDenyReason.SENDER_AT_CAPACITY),
+                CallWireFrame.VideoRelease(callId = callId, from = from, seq = 7L),
+            )
+            frames.forEach { assertEquals(it, CallFrameCodec.decode(CallFrameCodec.encode(it))) }
+            // A reason this build does not know reads as "busy"; a frame without seq is dropped.
+            val future = CallFrameCodec.encode(frames[3]).replace("reason=camera", "reason=solar")
+            assertEquals(VideoDenyReason.SENDER_AT_CAPACITY, (CallFrameCodec.decode(future) as CallWireFrame.VideoDeny).reason)
+            assertNull(CallFrameCodec.decode("FLASH_CALL action=vreq callId=$callId from=$from q=540"))
+        }
+
+        @Test
+        fun group_frames_carry_the_video_request_capability() {
+            val presence = CallWireFrame.GroupPresence(
+                callId = callId, from = from, groupId = "group-123", callerName = "Alice", video = true,
+                videoRequests = true, videoFree = 2,
+            )
+            assertEquals(presence, CallFrameCodec.decode(CallFrameCodec.encode(presence)))
+            val join = CallWireFrame.GroupJoin(callId = callId, from = from, groupId = "group-123", participantName = "Bob", videoRequests = true)
+            assertEquals(join, CallFrameCodec.decode(CallFrameCodec.encode(join)))
+            // An old client's frames carry neither field.
+            val old = CallWireFrame.GroupAccept(callId = callId, from = from, groupId = "group-123")
+            val text = CallFrameCodec.encode(old)
+            assertTrue("vr=" !in text)
+            assertEquals(false, (CallFrameCodec.decode(text) as CallWireFrame.GroupAccept).videoRequests)
+            val oldPresence = CallFrameCodec.encode(presence.copy(videoRequests = false, videoFree = null))
+            assertTrue("vfree=" !in oldPresence && "vr=" !in oldPresence)
+        }
+
+        @Test
         fun group_query_round_trip() {
             val frame = CallWireFrame.GroupQuery(
                 callId = callId,

@@ -1,7 +1,11 @@
 package com.transfer.flash.ui.calling
 
+import com.transfer.flash.core.calling.model.FlashCallParticipantState
+import com.transfer.flash.core.calling.model.FlashCallParticipantUi
+import com.transfer.flash.core.calling.model.FlashParticipantVideo
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /** UI-050b (G1): where each participant's tile goes. */
@@ -45,5 +49,18 @@ class FlashGroupVideoGridTest {
         }
         val three = groupVideoTileRects(3, 1080, 2000, gap = 8)
         assertTrue(three[2].width > three[0].width, "the lone third tile spans the row")
+    }
+
+    @Test
+    fun `a tile shows video only while it arrives, and says why not`() {
+        assertTrue(FlashParticipantVideo.RECEIVING.hasPicture())
+        assertTrue(FlashParticipantVideo.UNMANAGED.hasPicture(), "an old client always sends")
+        listOf(FlashParticipantVideo.OFF, FlashParticipantVideo.REQUESTED, FlashParticipantVideo.BUSY, FlashParticipantVideo.CAMERA_OFF)
+            .forEach { assertFalse(it.hasPicture(), "$it") }
+        val p = FlashCallParticipantUi(peerId = "p", name = "P", state = FlashCallParticipantState.CONNECTED)
+        assertEquals("Video busy", participantStatusLabel(p.copy(video = FlashParticipantVideo.BUSY)))
+        assertEquals("Camera off", participantStatusLabel(p.copy(video = FlashParticipantVideo.CAMERA_OFF)))
+        assertEquals("Muted", participantStatusLabel(p.copy(isMuted = true, video = FlashParticipantVideo.BUSY)))
+        assertEquals(null, participantStatusLabel(p.copy(video = FlashParticipantVideo.RECEIVING)))
     }
 }

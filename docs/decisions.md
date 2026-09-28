@@ -2119,3 +2119,54 @@ safe for mixed pairs, and switching mode must not drop anyone.
 
 ### Revisit when
 PC6 measurements; if ECO's ~1 min delivery bound fails; or when groups grow past 20.
+
+## ADR-049 — Group video by request: per-leg encodings switched by request, old clients unchanged
+
+### Date
+2026-09-28
+
+### Status
+**IMPLEMENTED (G3), device check pending** (P8). Plan: `docs/calling/GROUP-VIDEO-PLAN.md` §4.1–§4.4, §8 G3. Wire
+format: `docs/protocol.md` "Group call frames", video by request.
+
+### Context
+Before G3 every leg of a group video call sent and decoded video, so a device encoded up to 5 copies of its camera
+and decoded up to 5 videos whatever it showed. The owner's R1 is that a device sends video to a peer only after
+that peer asks. The mesh has no server, so the rule has to be a protocol between each pair.
+
+### Decision
+1. **Four frames** (`vreq`, `vgrant`, `vdeny`, `vrel`) and a capability flag `vr=1` on the join and presence
+   frames. Each leg still negotiates a video track; the sender switches that leg's encoding on or off
+   (`RTCRtpEncodingParameters.active`), so a request never renegotiates.
+2. **Old clients keep today's behaviour.** A peer whose own frame lacks `vr=1` is sent video as before and is never
+   sent a new frame. Mixed calls work in both directions.
+3. **One pure state machine** (`GroupVideoRouter`) holds both sides for a device; the session only carries out its
+   effects, under one lock, in order. It is tested with three and four devices through the real codec.
+4. **Wall-clock-based sequence numbers** make stale requests harmless without per-session reset rules.
+5. **A rebuilt peer connection is not a release.** The two ends notice a reconnect at different times; releasing on
+   it would race the re-request. Grants end only on release, deny, hang-up or the signaling timeout.
+6. **Receivers fill up to their receive limit** (pinned, then the followed speaker, then everyone else in device-id
+   order). The plan's grid (§4.4) is read this way so that HIGH devices keep seeing everyone, as they did in G1; LOW
+   and MEDIUM devices now receive 1 and 2 videos.
+7. **Limits in G3 are counts:** receive LOW 1 / MEDIUM 2 / HIGH 5 (3 on 2.4 GHz); send LOW 1 / MEDIUM 2 / HIGH 5 on
+   5 GHz, 6 GHz or Ethernet, 3 on 2.4 GHz, 4 when unknown. G4 replaces the 2.4 GHz send count with the 540p/360p
+   budget and applies the requested heights.
+
+### Alternatives considered
+- **Renegotiate (add/remove the video transceiver) per request:** rejected; an offer/answer round per tap is slower
+  and a glare risk in a mesh.
+- **`replaceTrack(null)` instead of `active=false`:** kept as the fallback if the desktop's webrtc-java ignores
+  `active` (device check).
+- **Request only the pinned participant and the speaker:** rejected for now; a HIGH device would lose the full grid
+  it has had since G1. Revisit with the G5 layout.
+- **Release on reconnect:** rejected (item 5).
+
+### Consequences
+- A newly joined participant shows an avatar for a moment until its grant arrives (one signaling round trip).
+- A participant turned down is retried when the sender announces room, within 4 s (the presence period), or at once
+  when the sender gains room.
+- The talker-first rule depends on the local microphone level from the `media-source` stats entry, which is not yet
+  verified on either backend. Without it the sender simply denies at its cap.
+
+### Revisit when
+G0 measures the keyframe delay after `active` turns on, and the desktop check shows whether `active` is honoured.

@@ -105,7 +105,30 @@ public data class FlashCallParticipantUi(
     public val isSpeaking: Boolean = false,
     public val isMuted: Boolean = false,
     public val state: FlashCallParticipantState = FlashCallParticipantState.CONNECTED,
+    /** Whether this device is getting the participant's video in a group video call (G3). */
+    public val video: FlashParticipantVideo = FlashParticipantVideo.OFF,
 )
+
+/** This device's view of one participant's video in a group call (G3 request protocol). */
+public enum class FlashParticipantVideo {
+    /** Not asked for (outside the receive limit, or not a video call). */
+    OFF,
+
+    /** Asked for; no answer yet. */
+    REQUESTED,
+
+    /** The participant granted the request and is sending. */
+    RECEIVING,
+
+    /** The participant is at its send limit; retried when it announces room. */
+    BUSY,
+
+    /** The participant's camera is off; retried when it turns the camera on. */
+    CAMERA_OFF,
+
+    /** An older client that sends its video to everyone without being asked. */
+    UNMANAGED,
+}
 
 /**
  * Live transport metrics sampled from `PeerConnection.getStats()` once a second.

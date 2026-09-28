@@ -1,5 +1,13 @@
 # Current Handoff
 
+## 2026-09-28 — G3 code done: group video by request (ADR-049)
+- `GroupVideoRouter` (pure, both sides) drives per-leg `active` switches; frames `vreq/vgrant/vdeny/vrel`, `vr=1`,
+  `vfree`. Old clients keep sending and receiving video as before. `FlashCalling.setVideoFocus` exists (no UI tap until G5).
+- Receivers fill their receive limit (pinned, speaker after 2 s, then others). This is flagged for the owner in the
+  plan §8 G3 and ADR-049 item 6.
+- Tests green (calling jvm 89 / host 101, callui 17, desktop 86, app compile). Not device-tested (P8).
+- Next: G4 budgets. Then G5 UI (component doc first), G6, G7, then all device testing.
+
 ## 2026-09-28 — G2 code done: network band exchanged in group calls
 - `FlashNetworkBand` + `AndroidNetworkBand` (core/common), `DesktopNetworkBand` (desktop); optional `band=` on
   `ginvite`/`gaccept`/`gjoin`/`gpresence`; per-leg band, slowest link in `FlashCallStats.networkBand` and the stats badge.
