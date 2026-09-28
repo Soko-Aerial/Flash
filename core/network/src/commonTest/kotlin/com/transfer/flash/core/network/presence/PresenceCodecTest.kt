@@ -111,7 +111,19 @@ class PresenceCodecTest {
         assertNotEquals(h1, PresenceCodec.matchHash(TestHash::digest, salt, "peer-b"))
         assertNotEquals(h1, PresenceCodec.matchHash(TestHash::digest, "ffeeddccbbaa99887766554433221100", "peer-a"))
     }
+
+    @Test
+    fun helloCarriesTheRefreshIntervalAndDropsAnOutOfRangeOne() {
+        val salt = "00112233445566778899aabbccddeeff"
+        val frame = PresenceFrame.Hello(share = true, salt = salt, refreshMs = 60_000L)
+        assertEquals(frame, PresenceCodec.decode(PresenceCodec.encode(frame)))
+        // A PC4 hello has no r: still valid.
+        assertEquals(PresenceFrame.Hello(true, salt), PresenceCodec.decode("FLASH_PRES v=1 t=hello share=1 salt=$salt"))
+        assertEquals(PresenceFrame.Hello(true, salt), PresenceCodec.decode("FLASH_PRES v=1 t=hello share=1 salt=$salt r=3600000"))
+        assertEquals(PresenceFrame.Hello(true, salt), PresenceCodec.decode("FLASH_PRES v=1 t=hello share=1 salt=$salt r=abc"))
+    }
 }
+
 
 /** Deterministic stand-in for SHA-256: `core:network`'s common tests have no crypto provider. */
 internal object TestHash {

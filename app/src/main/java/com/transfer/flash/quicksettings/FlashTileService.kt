@@ -14,7 +14,7 @@ import kotlinx.coroutines.launch
 
 /**
  * Android Quick Settings Tile allowing users to toggle discoverability and cycle
- * discovery modes (Discoverable -> Hidden -> Eco -> Off) directly from the
+ * discovery modes (Discoverable -> Hidden -> Eco -> Boost -> Off) directly from the
  * Quick Settings notification shade without leaving their current task.
  *
  * Long-pressing the tile opens Flash directly to the Nearby sharing screen via
@@ -60,10 +60,16 @@ class FlashTileService : TileService() {
                     }
                     updateTileState(mode = FlashDiscoveryMode.ECO, running = true)
                 }
-                FlashDiscoveryMode.ECO,
+                FlashDiscoveryMode.ECO -> {
+                    // Eco -> Boost (fastest reconnects, PC5)
+                    serviceScope.launch {
+                        DiscoveryEngineHolder.setDiscoveryMode(FlashDiscoveryMode.BOOST, applicationContext)
+                    }
+                    updateTileState(mode = FlashDiscoveryMode.BOOST, running = true)
+                }
                 FlashDiscoveryMode.BOOST,
                 FlashDiscoveryMode.RECEIVE_KIOSK -> {
-                    // Eco/Boost/Kiosk -> Off
+                    // Boost/Kiosk -> Off
                     FlashBackgroundService.stop(applicationContext)
                     serviceScope.launch {
                         DiscoveryEngineHolder.stopAll()

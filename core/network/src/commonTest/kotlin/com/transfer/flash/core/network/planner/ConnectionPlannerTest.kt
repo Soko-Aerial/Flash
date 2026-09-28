@@ -234,4 +234,15 @@ class ConnectionPlannerTest {
         assertNull(planner().planUrgent(0, peer("c"), links))
         assertNull(planner().planUrgent(0, peer("b"), links), "never itself")
     }
+
+    @Test
+    fun `rule 8 - the mode filter limits sweeps but not gateway probes or dial on demand`() {
+        val p = planner()
+        val plan = p.plan(0, listOf(peer("c"), peer("d")), links, listOf("192.168.43.1"), allowed = setOf("d"))
+        assertEquals(listOf("d", "gateway:192.168.43.1"), plan.dials.map { it.key })
+        // A send to "c" still dials it.
+        assertEquals("c", p.planUrgent(0, peer("c"), links)?.key)
+        // Null means STANDARD: everyone.
+        assertEquals(listOf("e"), planner().keys(0, "e"))
+    }
 }

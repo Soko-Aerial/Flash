@@ -1,5 +1,13 @@
 # Current Handoff
 
+## 2026-09-28 — PC5 code done: mode-driven connection policy (ADR-048, `FLASH_LINK`)
+- `core/network/.../mode/`: ECO / STANDARD / BOOST set keepalive, redial pacing and presence timing; STANDARD is
+  unchanged. A mode switch re-times live sessions (no reconnect). ECO holds 3 ring neighbours + active/call peers +
+  unpaired while Nearby is open, and closes an idle session it dialed only after the peer agrees (`park`/`park-ok`).
+- Quick Settings tile gained Boost. PC7's platform note (OEM freezers, ERROR-074) written; PC7 tuning waits for PC6.
+- Tests green (network 190 JVM / 288 host, messaging 193, engine 4 + 9, desktop 82, app 39). Not device-tested (P8).
+- Next: group calling G1+ (`docs/calling/GROUP-VIDEO-PLAN.md`), then all device testing (PC0, PC6, PC1–PC5 checks).
+
 ## 2026-09-28 — PC4 code done: presence sharing (ADR-046, `FLASH_PRES`)
 - `core/network/.../presence/` (`PresenceCodec`, `PresenceState`, `PresenceExchange`), wired on all three hosts.
   Mutual contacts only (salted hashes, or a shared group); Ghost announced by a presence hello with default deny; at

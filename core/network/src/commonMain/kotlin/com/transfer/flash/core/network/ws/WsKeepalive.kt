@@ -55,14 +55,33 @@ import kotlin.concurrent.Volatile
  *   receives must keep pinging.
  * Stall probes (ERROR-025) and the close rules are unchanged by either.
  *
+ * ## Re-timing (PC5)
+ * A connection mode change (ECO / STANDARD / BOOST) re-times live connections through [retime]
+ * instead of reconnecting them. The peer keeps the interval our HELLO announced, so the two sides
+ * may then disagree about who pings. That is safe in every combination: whatever role a side ends
+ * up with, it probes on its own after half of **its own** liveness window ([answererProbeAfterMs]),
+ * so its watchdog is always fed by the answer to its own probe.
+ *
+ * ## User traffic (PC5)
+ * [lastUserTrafficAtMs] is the last data frame in either direction that a person caused, for the
+ * ECO idle close. Pings, pongs and the background text frames of [isBackgroundText] do not count.
+ *
  * Not thread-safe by itself; [WsConnection] confines [onTick]/[confirmClose] to one tick at a time
  * and marks the cross-thread fields volatile.
  */
 internal class WsKeepalive(
-    private val pingIntervalMs: Long,
-    private val livenessTimeoutMs: Long,
+    pingIntervalMs: Long,
+    livenessTimeoutMs: Long,
     startedAtMs: Long,
 ) {
+    @Volatile
+    internal var pingIntervalMs: Long = pingIntervalMs
+        private set
+
+    @Volatile
+    internal var livenessTimeoutMs: Long = livenessTimeoutMs
+        private set
+
     /** What the keepalive loop should do after a tick. */
     internal sealed interface Verdict {
         /** Peer is within its liveness window (or unjudgeable): probe and keep going. */
@@ -103,6 +122,14 @@ internal class WsKeepalive(
     @Volatile
     internal var role: PingRole = PingRole.BOTH
 
+    /**
+     * Wall clock of the last data frame, in either direction, that is not background traffic
+     * ([isBackgroundText]). Starts at the connection's start, so a new session counts as active.
+     */
+    @Volatile
+    internal var lastUserTrafficAtMs: Long = startedAtMs
+        private set
+
     /** Wall clock of the previous keepalive tick, used to detect a stalled scheduler. */
     private var lastTickAtMs: Long = startedAtMs
 
@@ -121,6 +148,29 @@ internal class WsKeepalive(
     /** A frame of any kind — data, ping or pong — was written to the peer. */
     fun onOutbound(nowMs: Long) {
         lastOutboundAtMs = nowMs
+    }
+
+    /** A text or binary frame a person caused went either way (see [isBackgroundText]). */
+    fun onUserTraffic(nowMs: Long) {
+        lastUserTrafficAtMs = nowMs
+    }
+
+    /**
+     * Applies new keepalive numbers to a live connection (PC5, a mode change). The tick clock is
+     * rebased too: the shared ticker's cadence changes with the mode, and the gap to the first tick
+     * at the new cadence says nothing about whether this process was frozen.
+     *
+     * A shorter window must not condemn a peer for silence the old cadence allowed: an ECO pair
+     * is normally quiet for up to 30 s, which is already past BOOST's 15 s window. So the silence
+     * is capped at half the new window. The next tick then pings (any role probes past half the
+     * window) and the peer has the other half to answer, which also bounds how long a dead peer
+     * survives the switch. The window is never moved backwards.
+     */
+    fun retime(pingIntervalMs: Long, livenessTimeoutMs: Long, nowMs: Long) {
+        this.pingIntervalMs = pingIntervalMs
+        this.livenessTimeoutMs = livenessTimeoutMs
+        lastTickAtMs = nowMs
+        lastInboundAtMs = maxOf(lastInboundAtMs, nowMs - livenessTimeoutMs / 2)
     }
 
     fun onTick(nowMs: Long): Verdict {
@@ -172,7 +222,7 @@ internal class WsKeepalive(
      * `liveness > 2 × ping` ([WsKeepaliveTiming]), so a healthy pinger is always heard well before
      * this, and a probe sent at this point still has half the window left to be answered.
      */
-    private val answererProbeAfterMs: Long = maxOf(pingIntervalMs, livenessTimeoutMs / 2)
+    private val answererProbeAfterMs: Long get() = maxOf(pingIntervalMs, livenessTimeoutMs / 2)
 
     /**
      * Second look at a [Verdict.Close] that carried [Verdict.Close.needsConfirmation], taken after
@@ -247,6 +297,23 @@ internal class WsKeepalive(
          * Moved verbatim in Phase 15-2, same rationale as [DEFAULT_PING_INTERVAL_MS].
          */
         internal const val DEFAULT_LIVENESS_TIMEOUT_MS: Long = 25_000L
+
+        /**
+         * Text frames that keep the mesh running rather than carry anything a person did: presence
+         * sharing (`FLASH_PRES`, PC4) and link control (`FLASH_LINK`, PC5). They must not keep an
+         * ECO session "active", or the ECO idle close could never fire.
+         */
+        internal fun isBackgroundText(text: String): Boolean =
+            BACKGROUND_PREFIXES.any { text.startsWith(it) }
+
+        /** [isBackgroundText] for an outbound UTF-8 payload, without decoding it. */
+        internal fun isBackgroundText(utf8: ByteArray): Boolean =
+            BACKGROUND_PREFIX_BYTES.any { prefix ->
+                utf8.size >= prefix.size && prefix.indices.all { utf8[it] == prefix[it] }
+            }
+
+        private val BACKGROUND_PREFIXES: List<String> = listOf("FLASH_PRES ", "FLASH_LINK ")
+        private val BACKGROUND_PREFIX_BYTES: List<ByteArray> = BACKGROUND_PREFIXES.map { it.encodeToByteArray() }
 
         /** No stall probe is outstanding. Not a valid clock reading. */
         private const val NO_PROBE: Long = Long.MIN_VALUE

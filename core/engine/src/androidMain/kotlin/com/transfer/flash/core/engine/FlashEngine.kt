@@ -1,6 +1,7 @@
 package com.transfer.flash.core.engine
 
 import com.transfer.flash.core.calling.FlashCalling
+import com.transfer.flash.core.calling.model.FlashCallState
 import com.transfer.flash.core.discovery.FlashDiscovery
 import com.transfer.flash.core.messaging.FlashChatRepository
 import com.transfer.flash.core.network.FlashNetwork
@@ -218,6 +219,16 @@ public class DefaultFlashEngine(
     @Volatile
     private var callingSignalingRestored: ((peerId: String) -> Unit)? = null
 
+    /** The peer of the call in progress, captured like the seams above (PC5: ECO keeps it). */
+    @Volatile
+    private var callingBusyPeer: (() -> String?)? = null
+
+    /**
+     * The peer of the attached engine's call in progress, or null. Safe on a consumer without
+     * `:core:calling` classes for the same reason as [onInboundCallText].
+     */
+    internal fun busyCallPeerId(): String? = callingBusyPeer?.invoke()
+
     override val calls: FlashCalling? get() = attachedCalling
 
     override fun attachPtt(
@@ -255,6 +266,9 @@ public class DefaultFlashEngine(
             callingInbound = { peerId, text -> engine.onInboundText(peerId, text) }
             callingSignalingLost = { peerId -> engine.onSignalingLost(peerId) }
             callingSignalingRestored = { peerId -> engine.onSignalingRestored(peerId) }
+            callingBusyPeer = {
+                engine.activeCall.value?.takeIf { it.state != FlashCallState.ENDED }?.peerId
+            }
         }
     }
 
@@ -264,6 +278,7 @@ public class DefaultFlashEngine(
             callingInbound = null
             callingSignalingLost = null
             callingSignalingRestored = null
+            callingBusyPeer = null
         }
         // No hangUp() here: the engine is the host's (media, foreground service, audio route), and
         // FlashCalling exposes no shutdown. See the interface KDoc — detaching is not hanging up.

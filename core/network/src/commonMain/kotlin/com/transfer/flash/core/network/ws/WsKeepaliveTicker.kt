@@ -4,12 +4,13 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * One keepalive clock for every connection of a network (PC1, `PRESENCE-CONNECTIONS-PLAN.md` §3.3).
@@ -24,7 +25,9 @@ import kotlinx.coroutines.launch
  * - **The interval is read per tick** ([intervalMs]), so a tier pinned in Settings reaches the
  *   clock without a restart. A connection keeps judging stalls against the interval it was created
  *   with; tiers differ by at most 1.5× (10–15 s), inside `WsKeepalive.STALL_FACTOR`, so a changed
- *   clock never looks like a frozen process. PC5 re-times live connections when modes change it.
+ *   clock never looks like a frozen process. A mode change (PC5) moves the interval by up to 6x
+ *   (5-30 s), so the network re-times its live connections and calls [reschedule], which ends the
+ *   wait at the old interval at once.
  * - **A tick never waits on a connection.** Targets hand the work to their own scope
  *   ([WsConnection] launches it and skips a tick that is still running), so one socket blocked on a
  *   full send buffer cannot delay the others.
@@ -43,6 +46,8 @@ public class WsKeepaliveTicker(
 
     private val targets = MutableStateFlow<Set<Target>>(emptySet())
 
+    private val kick = Channel<Unit>(Channel.CONFLATED)
+
     /** Ticks delivered so far, for tests. */
     internal var ticks: Long = 0L
         private set
@@ -51,7 +56,7 @@ public class WsKeepaliveTicker(
         while (isActive) {
             // Park, with no timer armed, until at least one connection is registered.
             targets.first { it.isNotEmpty() }
-            delay(intervalMs())
+            withTimeoutOrNull(intervalMs()) { kick.receive() }
             val current = targets.value
             if (current.isEmpty()) continue
             ticks++
@@ -59,6 +64,14 @@ public class WsKeepaliveTicker(
                 runCatching { target.onKeepaliveTick() }
             }
         }
+    }
+
+    /**
+     * The interval changed (PC5): stop waiting out the old one and tick now, then continue at the new
+     * interval. A tick at an odd moment is harmless; the connections judge on their own clocks.
+     */
+    public fun reschedule() {
+        kick.trySend(Unit)
     }
 
     public fun register(target: Target) {

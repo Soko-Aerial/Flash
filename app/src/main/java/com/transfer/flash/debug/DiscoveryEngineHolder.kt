@@ -35,6 +35,9 @@ import com.transfer.flash.core.messaging.protocol.PttAudioFrame
 import com.transfer.flash.core.messaging.protocol.PttSessionCodec
 import com.transfer.flash.core.network.FlashNetwork
 import com.transfer.flash.core.network.bridge.DiscoveryRouteBinder
+import com.transfer.flash.core.network.mode.ConnectionModeController
+import com.transfer.flash.core.network.mode.ConnectionModePolicy
+import com.transfer.flash.core.network.mode.LinkView
 import com.transfer.flash.core.network.planner.AutoConnector
 import com.transfer.flash.core.network.planner.ConnectionPlanner
 import com.transfer.flash.core.network.presence.PresenceCodec
@@ -224,6 +227,38 @@ object DiscoveryEngineHolder {
     private var presenceExchange: PresenceExchange? = null
     private var presenceJob: Job? = null
 
+    /** Connection mode (PC5, ADR-048): re-times sessions on a mode change and runs ECO's rules. */
+    @Volatile
+    private var modeController: ConnectionModeController? = null
+    private var modeJob: Job? = null
+
+    /** The peer of the call in progress, if any; ECO keeps that session (PC5). */
+    @Volatile
+    private var busyPeerId: String? = null
+
+    private val nearbyComposed = MutableStateFlow(false)
+    private val uiStarted = MutableStateFlow(false)
+    private val _nearbyVisible = MutableStateFlow(false)
+
+    /**
+     * The Nearby screen is (not) composed. ECO dials unpaired peers only while it is on screen, so
+     * they can be paired (PC5, plan §3.4). The UI calls this from the screen's composition.
+     */
+    fun setNearbyVisible(visible: Boolean) {
+        nearbyComposed.value = visible
+        _nearbyVisible.value = visible && uiStarted.value
+    }
+
+    /** The activity is started (on screen); a composed Nearby tab behind a stopped activity is not open. */
+    fun setUiStarted(started: Boolean) {
+        uiStarted.value = started
+        _nearbyVisible.value = nearbyComposed.value && started
+    }
+
+    /** The connection policy for the current mode and tier; read per use. */
+    private fun connectionPolicy(): ConnectionModePolicy =
+        ConnectionModePolicy.of(_discoveryMode.value, performanceMode)
+
     /** Local device id, cached so [onScreenOn] can run a sweep without re-reading identity. */
     @Volatile
     private var localDeviceId: String? = null
@@ -324,6 +359,11 @@ object DiscoveryEngineHolder {
      */
     @Volatile
     var performanceMode: FlashPerformanceMode = FlashPerformanceMode.HIGH
+        set(value) {
+            field = value
+            // PC5: the tier feeds the connection policy, whose change re-times live sessions.
+            modeController?.refresh()
+        }
 
     /**
      * Voice-call quiet flag: true while a call is ACTIVE, driven by the [CallCoordinator.activeCall]
@@ -588,10 +628,11 @@ object DiscoveryEngineHolder {
                     }
                 }
             },
-            // ERROR-033: keepalive cadence and the reconnect ceiling come from the device's tier.
-            // A lambda, not a value: pinning a tier from Settings must reach the next connection
-            // and the next redial without restarting the engine.
-            transportProfile = { performanceMode.transport },
+            // ERROR-033: keepalive cadence and the reconnect ceiling come from the device's tier,
+            // and since PC5 from the connection mode too (ECO / BOOST). A lambda, not a value:
+            // pinning a tier or switching the mode must reach the next connection and the next
+            // redial without restarting the engine; live sessions are re-timed by modeController.
+            transportProfile = { connectionPolicy().transport },
         )
         binderJob = DiscoveryRouteBinder.observe(appScope, engine.discoveredEndpoints, networkImpl)
 
@@ -877,9 +918,43 @@ object DiscoveryEngineHolder {
             },
             sha256 = FlashFingerprint::fingerprint,
             randomSalt = SecureRandom().let { random -> { ByteArray(PresenceCodec.SALT_BYTES).also(random::nextBytes) } },
+            config = { connectionPolicy().presence },
             log = { Log.i(TAG_WS, it) },
         )
         presenceExchange = presence
+
+        // PC5 (ADR-048): the connection mode. Re-times live sessions when the mode or tier changes,
+        // and in ECO limits who is dialed and parks idle sessions this side dialed.
+        val modes = ConnectionModeController(
+            scope = appScope,
+            localDeviceId = identity.deviceId.value,
+            policy = ::connectionPolicy,
+            snapshot = {
+                val sessions = networkImpl.activeSessions.value.keys.mapTo(HashSet()) { it.value }
+                LinkView(
+                    available = engine.discoveredEndpoints.value.mapTo(HashSet()) { it.deviceId.value } +
+                        presence.reachablePeerIds.value + sessions,
+                    contacts = trustStore.getTrustedPeers().keys.mapTo(HashSet()) { it.value } +
+                        presenceChat?.activeGroupRosters().orEmpty().flatten(),
+                    activity = networkImpl.linkActivity(),
+                    busy = setOfNotNull(busyPeerId),
+                    nearbyOpen = _nearbyVisible.value,
+                )
+            },
+            send = { peerId, text ->
+                val session = networkImpl.activeSessions.value[FlashDeviceId(peerId)] as? WsSession
+                session?.connection?.sendTextAsync(text)
+                session != null
+            },
+            release = networkImpl::releaseSession,
+            close = { peerId -> networkImpl.disconnect(FlashDeviceId(peerId)) },
+            onPolicyChanged = {
+                networkImpl.retimeConnections()
+                presence.refresh()
+            },
+            log = { Log.i(TAG_WS, it) },
+        )
+        modeController = modes
 
         val chatImpl = RealFlashChatRepository(
             localDeviceId = identity.deviceId.value,
@@ -1560,12 +1635,17 @@ object DiscoveryEngineHolder {
                 }.orEmpty()
             },
             quiet = { callActive },
+            // PC5: ECO dials only the peers it wants; null (STANDARD, BOOST) dials everyone.
+            allowed = { modes.dialFilter.value },
             log = { Log.i(TAG_WS, it) },
         )
         autoConnector = connector
-        autoConnectJob = connector.start(edges = merge(engine.discoveredEndpoints, presence.tips))
+        autoConnectJob = connector.start(edges = merge(engine.discoveredEndpoints, presence.tips, modes.dialFilter))
         presenceJob = presence.start(
-            edges = merge(networkImpl.activeSessions, engine.discoveredEndpoints, engine.discoveryMode),
+            edges = merge(networkImpl.activeSessions, engine.discoveredEndpoints, engine.discoveryMode, _discoveryMode),
+        )
+        modeJob = modes.start(
+            edges = merge(_discoveryMode, networkImpl.activeSessions, engine.discoveredEndpoints, _nearbyVisible),
         )
 
         // C7 ringing: the engine — not the UI, not FlashCallService — drives the ringer and the
@@ -1585,6 +1665,7 @@ object DiscoveryEngineHolder {
                     FlashCallService.start(appContext)
                 }
                 val callOwnsAudio = state != null && state.state != FlashCallState.ENDED
+                busyPeerId = state?.peerId?.takeIf { callOwnsAudio }
                 setCallActive(callOwnsAudio, engine)
             }
         }
@@ -1675,6 +1756,7 @@ object DiscoveryEngineHolder {
                 .onFailure { Log.w(TAG_DISCOVERY, "$reason discovery restart failed", it) }
             connector.sweepNow()
             presenceExchange?.refresh()
+            modeController?.refresh()
         }
         return true
     }
@@ -1771,6 +1853,8 @@ object DiscoveryEngineHolder {
         }
         // Presence sharing (PC4): consumes every FLASH_PRES frame, valid or not.
         if (presenceExchange?.onInboundText(peerDeviceId, text) == true) return
+        // Link control (PC5): consumes every FLASH_LINK frame, valid or not.
+        if (modeController?.onInboundText(peerDeviceId, text) == true) return
         // PTT next (ADR-032): ping and session control share one entry point, and the module owns
         // decode, dedup, the fail-closed transport binding/trust check and the floor reduction. It
         // answers true for recognized-but-rejected frames too, so a PTT frame can never fall
@@ -2401,6 +2485,10 @@ object DiscoveryEngineHolder {
         presenceJob?.cancel()
         presenceJob = null
         presenceExchange = null
+        modeJob?.cancel()
+        modeJob = null
+        modeController = null
+        busyPeerId = null
         // Silence the ring before the scope dies: appScope.cancel() below kills the collector, so
         // nothing would ever deliver the stopping edge, and a MediaPlayer nobody holds keeps looping.
         callRingJob?.cancel()

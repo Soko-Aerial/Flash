@@ -379,3 +379,33 @@ created. A runtime permission grant does not by itself make background microphon
   `mediaPlayback`; call semantics and `Notification.CallStyle` are not reused for PTT.
 - This platform rule is separate from Flash's call/PTT/voice-note ownership gate: both Android
   eligibility and exclusive in-app audio ownership must succeed before capture starts.
+
+## 2026-09-28 - OEM freezers ignore the foreground service and the battery whitelist (Transsion "Hiber")
+
+### Android version / API level
+Seen on Android 14 (API 34), Transsion XOS (Infinix X6882B). Not an AOSP behaviour: the freezer is Transsion's own
+`Hiber/sceneManager` in `system_server`. Other OEMs ship similar ones (see dontkillmyapp.com, a community source).
+
+### APIs / permissions involved
+- Foreground service (manifest types `connectedDevice|dataSync`), partial wake lock, Wi-Fi multicast lock
+- `dumpsys deviceidle whitelist` (what "Battery: Unrestricted" sets), appop `RUN_ANY_IN_BACKGROUND`
+
+### Evidence (measured, ERROR-074)
+- `Hiber/sceneManager: freeze uid: 10455 com.transfer.flash` about 10 s after every screen-off, `unfreeze ...
+  reason:appToTop` only when Flash came to the front. Flash logged nothing in between.
+- The foreground service, the deviceidle whitelist, `RUN_ANY_IN_BACKGROUND=allow` and standby bucket ACTIVE did not
+  prevent it. `dumpsys hiber` fails; there is no shell switch.
+
+### Official documentation sources
+None: the behaviour is outside the Android platform. Android's own rules (foreground services keep a process
+runnable; https://developer.android.com/develop/background-work/services/fgs) do not hold on this device.
+
+### Project implication
+- On Transsion phones with default settings Flash sends and receives nothing while the screen is off: no
+  keepalive, no messages, no calls. No connection mode (PC5) can change that.
+- The user must exempt Flash in the OEM's own settings. Reported, **not verified here**: Settings → Battery → power
+  saving → untick Flash under "screen-off sleep" and "screen-off push block"; Phone Master → Auto-start management
+  → allow. Verify on the device before the final test pass (plan P8) and then write the exact path into the app.
+- Before trusting any screen-off measurement, grep logcat for `Hiber` (PC0 runbook §4 step 4).
+- An in-app hint (detect `Build.MANUFACTURER` in {INFINIX, TECNO, ITEL} and link to the settings) is a candidate
+  UI task; it needs a component doc first (AGENTS.md §34) and a verified settings path.

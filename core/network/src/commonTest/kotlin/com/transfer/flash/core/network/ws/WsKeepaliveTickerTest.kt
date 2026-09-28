@@ -94,4 +94,22 @@ class WsKeepaliveTickerTest {
 
         assertEquals(3, counter.count)
     }
+
+    @Test
+    fun `reschedule ends the wait at the old interval at once (PC5 mode switch)`() = runTest {
+        var interval = 30_000L
+        val ticker = WsKeepaliveTicker(intervalMs = { interval }, scope = backgroundScope)
+        val counter = Counter()
+        ticker.register(counter)
+
+        advanceTimeBy(1_000L)
+        runCurrent()
+        interval = 5_000L // ECO -> BOOST
+        ticker.reschedule()
+        runCurrent()
+        assertEquals(1, counter.count, "ticks at once instead of 29 s later")
+        advanceTimeBy(5_001L)
+        runCurrent()
+        assertEquals(2, counter.count)
+    }
 }

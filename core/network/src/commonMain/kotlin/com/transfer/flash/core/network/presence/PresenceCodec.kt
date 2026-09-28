@@ -44,7 +44,7 @@ public sealed interface PresenceFrame {
      * device: nobody may report it. [salt] is this side's per-session salt for [Want] hashes; a
      * Ghost device sends none because it reports nothing.
      */
-    public data class Hello(val share: Boolean, val salt: String?) : PresenceFrame
+    public data class Hello(val share: Boolean, val salt: String?, val refreshMs: Long? = null) : PresenceFrame
 
     /** The asker's contacts, each as [PresenceCodec.matchHash] under the reporter's salt. */
     public data class Want(val hashes: Set<String>) : PresenceFrame
@@ -80,6 +80,13 @@ public object PresenceCodec {
     /** Truncated hash length in bytes (hex on the wire): 64 bits, ample for a few hundred ids. */
     public const val HASH_BYTES: Int = 8
 
+    /**
+     * Range of a hello's `r` (refresh interval, PC5). The top is the longest refresh any mode uses
+     * (ECO), which [PresenceConfig.RELAY_ALLOWANCE_MS] depends on.
+     */
+    public const val MIN_REFRESH_MS: Long = 5_000L
+    public const val MAX_REFRESH_MS: Long = 60_000L
+
     private const val MAX_ID_LENGTH = 80
     private val ID_CHARS = Regex("[A-Za-z0-9._:-]+")
     private val HEX = Regex("[0-9a-f]+")
@@ -98,6 +105,7 @@ public object PresenceCodec {
                 fields += "t" to "hello"
                 fields += "share" to if (frame.share) "1" else "0"
                 frame.salt?.let { fields += "salt" to it }
+                frame.refreshMs?.let { fields += "r" to it.toString() }
             }
             is PresenceFrame.Want -> {
                 fields += "t" to "want"
@@ -123,7 +131,10 @@ public object PresenceCodec {
                     else -> return null
                 }
                 val salt = fields["salt"]?.takeIf { it.length == SALT_BYTES * 2 && HEX.matches(it) }
-                PresenceFrame.Hello(share = share, salt = if (share) salt else null)
+                // PC5: the sender's refresh interval, so a receiver in another mode holds its
+                // reports long enough. Optional; out of range is treated as absent.
+                val refresh = fields["r"]?.toLongOrNull()?.takeIf { it in MIN_REFRESH_MS..MAX_REFRESH_MS }
+                PresenceFrame.Hello(share = share, salt = if (share) salt else null, refreshMs = refresh)
             }
             "want" -> {
                 val raw = fields["h"].orEmpty()
