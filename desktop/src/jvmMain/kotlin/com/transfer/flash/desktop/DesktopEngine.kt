@@ -39,6 +39,9 @@ import com.transfer.flash.core.persistence.db.openEncryptedFlashDatabase
 import com.transfer.flash.core.network.bridge.DiscoveryRouteBinder
 import com.transfer.flash.core.network.planner.AutoConnector
 import com.transfer.flash.core.network.planner.ConnectionPlanner
+import com.transfer.flash.core.network.presence.PresenceCodec
+import com.transfer.flash.core.network.presence.PresenceExchange
+import com.transfer.flash.core.network.presence.PresenceLocalView
 import com.transfer.flash.core.network.ws.JvmWsFlashNetwork
 import com.transfer.flash.core.network.ws.WsSession
 import com.transfer.flash.core.transfer.FileSourceOpener
@@ -61,10 +64,12 @@ import com.transfer.flash.core.network.tls.FlashCertMaker
 import com.transfer.flash.core.network.tls.TlsOptions
 import com.transfer.flash.core.network.tls.TofuPinVerifier
 import com.transfer.flash.core.network.tls.requireTransportSecurity
+import com.transfer.flash.core.security.crypto.FlashFingerprint
 import com.transfer.flash.core.security.crypto.PersistedFlashCrypto
 import com.transfer.flash.core.security.crypto.SecureBinaryFrameCodec
 import com.transfer.flash.ui.settings.FlashThemeMode
 import java.io.File
+import java.security.SecureRandom
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
@@ -77,7 +82,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.isActive
@@ -315,6 +322,7 @@ public class DesktopEngine(
             runCatching { disc.restartDiscovery() }
                 .onFailure { FlashLog.w(TAG_DISCOVERY, "Discovery restart failed", it) }
             autoConnector?.sweepNow()
+            presenceExchange?.refresh()
         }
         return true
     }
@@ -442,6 +450,10 @@ public class DesktopEngine(
      */
     @Volatile
     private var autoConnector: AutoConnector? = null
+
+    /** Presence sharing (PC4, ADR-046); the text router hands it every FLASH_PRES frame. */
+    @Volatile
+    private var presenceExchange: PresenceExchange? = null
     private var started = false
     private val startMutex = Any()
 
@@ -586,6 +598,40 @@ public class DesktopEngine(
         )
         transferImpl = transfer
 
+        // ---- presence sharing (PC4, ADR-046): the same wiring as both Android hosts ----
+        // Built before the chat repository, whose Online set it feeds. Group rosters come from
+        // that repository once it exists (none before, or if the database failed to open).
+        val presence = PresenceExchange(
+            scope = scope,
+            localDeviceId = localId,
+            snapshot = {
+                PresenceLocalView.of(
+                    ghost = discovery.discoveryMode.value == FlashDiscoveryMode.GHOST,
+                    sessions = network.activeSessions.value.entries.associate { (id, s) -> id.value to s },
+                    isLive = network::hasLiveSession,
+                    sightings = discovery.discoveredEndpoints.value.map {
+                        PresenceLocalView.Sighting(it.deviceId.value, it.hostAddress, it.port)
+                    },
+                    trusted = trustStore.getTrustedPeers().keys.mapTo(HashSet()) { it.value },
+                    hasPin = { id -> trustStore.getPin(FlashDeviceId(id)) != null },
+                    rosters = chatImpl?.activeGroupRosters().orEmpty(),
+                )
+            },
+            send = { peerId, text ->
+                val session = network.activeSessions.value[FlashDeviceId(peerId)] as? WsSession
+                if (session == null) {
+                    false
+                } else {
+                    session.connection.sendTextAsync(text)
+                    true
+                }
+            },
+            sha256 = FlashFingerprint::fingerprint,
+            randomSalt = SecureRandom().let { random -> { ByteArray(PresenceCodec.SALT_BYTES).also(random::nextBytes) } },
+            log = { FlashLog.i(TAG_WS, it) },
+        )
+        presenceExchange = presence
+
         // ---- durable chat (slice 4): the same repository the phone runs ----
         // Built after the transfer repository because the attachment-progress join reads
         // it, and before the WS server binds because inbound frames can arrive as soon as
@@ -613,8 +659,9 @@ public class DesktopEngine(
                     sessions.keys.mapTo(HashSet()) { it.value }
                 },
                 // PC3 (UI-030b): seen by discovery without a session → "Online" with a ring dot.
-                reachablePeerIds = discovery.discoveredEndpoints.map { endpoints ->
-                    endpoints.mapTo(HashSet()) { it.deviceId.value }
+                // PC4: or reported by a mutual peer.
+                reachablePeerIds = combine(discovery.discoveredEndpoints, presence.reachablePeerIds) { endpoints, reported ->
+                    endpoints.mapTo(HashSet()) { it.deviceId.value } + reported
                 },
                 peerNameResolver = { id ->
                     trustStore.getTrustedPeers()[FlashDeviceId(id)]
@@ -826,13 +873,23 @@ public class DesktopEngine(
             sightings = {
                 discovery.discoveredEndpoints.value.map { ep ->
                     ConnectionPlanner.Sighting(ep.deviceId.value, ep.hostAddress, ep.port, ep.friendlyName)
+                } + presence.tipSightings()
+            },
+            // A presence tip is dialed with its device named, so TLS checks that device's pin.
+            dial = { d ->
+                val tip = presence.tipFor(d.peerDeviceId, d.host, d.port)
+                if (tip == null) {
+                    network.connectManual(d.host, d.port)
+                } else {
+                    network.connectManual(d.host, d.port, tip.deviceId)
+                        .also { presence.onTipResult(tip, it is FlashResult.Success) }
                 }
             },
-            dial = { d -> network.connectManual(d.host, d.port) },
             log = { FlashLog.i(TAG_WS, it) },
         )
         autoConnector = connector
-        connector.start(edges = discovery.discoveredEndpoints)
+        connector.start(edges = merge(discovery.discoveredEndpoints, presence.tips))
+        presence.start(edges = merge(network.activeSessions, discovery.discoveredEndpoints, discovery.discoveryMode))
         boot("dial triggers armed (discovery edge + ${AutoConnector.DEFAULT_SWEEP_INTERVAL_MS}ms sweep)")
 
         // The endpoint roster itself: which device id each discovered row carries, and at which
@@ -1144,6 +1201,8 @@ public class DesktopEngine(
         // when the text is not a call frame at all, so chat/pairing/transfer never see call
         // traffic either way.
         if (callsImpl?.onInboundText(peerDeviceId, text) == true) return
+        // Presence sharing (PC4): consumes every FLASH_PRES frame, valid or not.
+        if (presenceExchange?.onInboundText(peerDeviceId, text) == true) return
         // Phase 26-3: pairing traffic shares the FLASH_XFER routing point but its own prefix —
         // check it FIRST so a pairing line is never handed to the transfer repository.
         if (FlashTextFraming.parseFields(text, "FLASH_PAIR") != null) {

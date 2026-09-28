@@ -1,5 +1,13 @@
 # Current Handoff
 
+## 2026-09-28 — PC4 code done: presence sharing (ADR-046, `FLASH_PRES`)
+- `core/network/.../presence/` (`PresenceCodec`, `PresenceState`, `PresenceExchange`), wired on all three hosts.
+  Mutual contacts only (salted hashes, or a shared group); Ghost announced by a presence hello with default deny; at
+  most 2 hops; 45 s max age; endpoint tips dialed only for pinned peers with the id named.
+- Old clients drop `FLASH_PRES` (checked in all three routers before shipping).
+- Tests green (network 157 JVM / 255 host, messaging, engine, desktop 82, app). Not device-tested (P8).
+- Next: PC5 mode-driven policy (§3.4), then PC7 docs, then group calling G1+, then all device testing.
+
 ## 2026-09-28 — PC3 code done: Connected / Online / Offline + dial on demand
 - `FlashPeerPresence.Reachable` = the plan's "Online" (ring dot); `Online` still means a live session (label "Connected").
   UI doc: `docs/ui/chat-screen.md` UI-030b. Shared `FlashPresenceDot`.

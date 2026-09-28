@@ -1,6 +1,6 @@
 # Presence & Connections Plan (phases PC0–PC7)
 
-**Status (2026-09-28): PC1, PC2 and PC3 code done (unit-tested, not device-tested). PC0 measurements deferred (P8).**
+**Status (2026-09-28): PC1–PC4 code done (unit-tested, not device-tested). PC0 measurements deferred (P8).**
 Numbers marked *(measure)* are estimates until PC0/PC6 replace them.
 
 **Testing order changed (owner, 2026-09-28, decision P8):** implement PC1–PC5 and then group calling first, and
@@ -234,3 +234,28 @@ all call it. This follows the migration direction (one shared frame) and makes �
   tests updated to the new meaning.
 - **Pending device checks:** a ring appears for a discovered peer before its session lands; a message sent to a ring
   peer delivers; TalkBack reads "Connected"/"Online".
+
+### PC4 — code done 2026-09-28 (device check pending, P8)
+- **Old clients checked first.** The three inbound routers (app holder, `Flash.create`, desktop) match the first token
+  exactly (`FlashTextFraming.parseFields`, no `startsWith` on frame prefixes anywhere) and log-and-drop an unknown
+  frame. `FLASH_PRES` collides with no existing prefix.
+- `core/network/.../presence/`: `PresenceCodec` (four frames, strict validation), `PresenceState` (every rule,
+  deterministic) and `PresenceExchange` (one coroutine per host). Wire format in `docs/protocol.md`
+  "Presence sharing"; decisions in **ADR-046**.
+- **Changes from §3.2 as written:** `noShare` travels in a presence `hello` (share=0), not in `FLASH_WS_HELLO`, with
+  **default deny** (a device is reported only after its own hello said share=1), so the session handshake is untouched
+  and old clients are never reported. Endpoint tips are dialed only for subjects with a **pinned** key, and with the
+  subject named, because a named dial to an unpinned id would let trust on first use record a forged endpoint's key.
+- Hosts: the router hands `FLASH_PRES` to the exchange right after calls; `reachablePeerIds` = discovery ids plus
+  reported ids; the planner's sightings include tips, and a tip's dial result is reported back; screen-on / manual
+  retry also refresh presence. `RealFlashChatRepository.activeGroupRosters()` supplies the rosters.
+- Tests: `PresenceCodecTest` 10, `PresenceStateTest` 20 (a simulated mesh: Ghost never leaked, non-mutual never
+  leaked, old client never reported, group fellows, stale expiry, refresh, delta withdrawal, 2-hop limit, split
+  horizon, forged tip only for pinned peers and silenced after 3 failures, rate limit, new-session salt),
+  `PresenceExchangeTest` 5 (three hosts on virtual time). Full suites: network 157 JVM / 255 host, messaging 193,
+  engine 4 + 9, desktop 82, app 39.
+- **Not covered:** group headers still count live sessions only; ECO/BOOST refresh and max age are PC5
+  (`PresenceConfig`).
+- **Pending device check:** user 3 sees user 2 as Online through user 1 (three phones, user 3 unable to discover
+  user 2, for example a hotspot client); Ghost on user 2 removes the ring on user 3 within about 1 s; a message to the
+  ringed peer delivers through the tip dial.
