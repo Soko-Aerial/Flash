@@ -1,0 +1,237 @@
+package com.transfer.flash.ui.calling
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.key
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.dp
+import com.shepeliev.webrtckmp.VideoStreamTrack
+import com.transfer.flash.core.calling.FlashCallMedia
+import com.transfer.flash.core.calling.model.FlashCallParticipantState
+import com.transfer.flash.core.calling.model.FlashCallParticipantUi
+import com.transfer.flash.core.calling.model.FlashCallUiState
+import com.transfer.flash.ui.avatar.FlashAvatar
+import com.transfer.flash.ui.theme.FlashDimensions
+import com.transfer.flash.ui.theme.FlashShapes
+import com.transfer.flash.ui.theme.FlashSpacing
+import com.transfer.flash.ui.theme.FlashTheme
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+
+/**
+ * Group video call surface (UI-050b, G1; `docs/ui/calling-ui.md`): one tile per participant plus the
+ * local camera as the same corner PiP as a 1:1 call.
+ *
+ * Every tile is a direct child of one [Layout], keyed by device id, so a participant's renderer stays
+ * the same composable instance when others join or leave and its tile moves to another row. Each
+ * tile always composes its [FlashCallVideoSurface] (the track may be null) and covers it with the
+ * avatar while there is no video, so a renegotiated track only re-binds the sink.
+ */
+@Composable
+internal fun FlashGroupVideoSurfaces(
+    state: FlashCallUiState,
+    session: FlashCallMedia?,
+    modifier: Modifier = Modifier,
+) {
+    val remoteTracks = rememberRemoteVideoTracks(session?.remoteVideoTracks)
+    val localTrack = rememberVideoStreamTrack(session?.localVideoStreamTrack)
+    val tiles = state.participants.filter { it.state != FlashCallParticipantState.LEFT }
+    val rounded = tiles.size > 1
+
+    Box(modifier = modifier) {
+        Layout(
+            modifier = Modifier.fillMaxSize(),
+            content = {
+                tiles.forEach { participant ->
+                    key(participant.peerId) {
+                        FlashGroupVideoTile(
+                            participant = participant,
+                            track = remoteTracks[participant.peerId],
+                            rounded = rounded,
+                        )
+                    }
+                }
+            },
+        ) { measurables, constraints ->
+            val width = constraints.maxWidth
+            val height = constraints.maxHeight
+            val gap = if (measurables.size > 1) TILE_GAP.roundToPx() else 0
+            val rects = groupVideoTileRects(measurables.size, width, height, gap)
+            val placeables = measurables.mapIndexed { i, m ->
+                val r = rects[i]
+                m.measure(Constraints.fixed(r.width.coerceAtLeast(0), r.height.coerceAtLeast(0)))
+            }
+            layout(width, height) {
+                placeables.forEachIndexed { i, p -> p.place(rects[i].x, rects[i].y) }
+            }
+        }
+
+        FlashCallVideoSurface(
+            track = localTrack,
+            fit = CallVideoFit.Fit,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .statusBarsPadding()
+                .padding(FlashSpacing.space16)
+                .width(PIP_WIDTH)
+                .aspectRatio(3f / 4f)
+                .clip(RoundedCornerShape(FlashShapes.radius12))
+                .border(1.dp, FlashTheme.colors.backgroundSurfaceSubtle, RoundedCornerShape(FlashShapes.radius12)),
+        )
+
+        Column(
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .statusBarsPadding()
+                .padding(FlashSpacing.space16),
+        ) {
+            Text(
+                text = state.peerName,
+                style = FlashTheme.typography.headingMedium,
+                color = Color.White,
+            )
+            FlashCallStatusLine(state = state, color = Color.White.copy(alpha = 0.8f))
+            FlashCallStatsBadge(session = session, state = state, onDark = true)
+        }
+    }
+}
+
+@Composable
+private fun FlashGroupVideoTile(
+    participant: FlashCallParticipantUi,
+    track: VideoStreamTrack?,
+    rounded: Boolean,
+) {
+    val colors = FlashTheme.colors
+    val shape = RoundedCornerShape(if (rounded) FlashShapes.radius12 else 0.dp)
+    val status = participantStatusLabel(participant)
+    val description = buildString {
+        append(participant.name)
+        append(if (track != null) ", video" else ", no video")
+        if (status != null) append(", ").append(status)
+    }
+    Box(
+        modifier = Modifier
+            .clip(shape)
+            .then(
+                if (participant.isSpeaking) Modifier.border(2.dp, colors.statusOnline, shape) else Modifier,
+            )
+            .semantics { contentDescription = description },
+    ) {
+        FlashCallVideoSurface(track = track, fit = CallVideoFit.Balanced, modifier = Modifier.fillMaxSize())
+        if (track == null) {
+            Box(
+                modifier = Modifier.fillMaxSize().background(EMPTY_TILE),
+                contentAlignment = Alignment.Center,
+            ) {
+                FlashAvatar(
+                    initials = participant.name.take(2),
+                    seed = participant.peerId,
+                    size = FlashDimensions.avatarLg,
+                )
+            }
+        }
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .fillMaxWidth()
+                .background(Color.Black.copy(alpha = 0.4f))
+                .padding(horizontal = FlashSpacing.space8, vertical = FlashSpacing.space4),
+        ) {
+            Text(
+                text = participant.name,
+                style = FlashTheme.typography.metadataDefault,
+                color = Color.White,
+                maxLines = 1,
+            )
+            if (status != null) {
+                Text(
+                    text = status,
+                    style = FlashTheme.typography.metadataDefault,
+                    color = Color.White.copy(alpha = 0.8f),
+                    maxLines = 1,
+                )
+            }
+        }
+    }
+}
+
+/** The status word under a participant's name, or null when there is nothing to say. */
+internal fun participantStatusLabel(participant: FlashCallParticipantUi): String? = when (participant.state) {
+    FlashCallParticipantState.INVITED -> "Invited"
+    FlashCallParticipantState.CONNECTING -> "Connecting…"
+    FlashCallParticipantState.CONNECTED -> if (participant.isMuted) "Muted" else null
+    FlashCallParticipantState.DISCONNECTED -> "Reconnecting…"
+    FlashCallParticipantState.LEFT -> "Left"
+}
+
+@Composable
+private fun rememberRemoteVideoTracks(
+    flow: StateFlow<Map<String, VideoStreamTrack>>?,
+): Map<String, VideoStreamTrack> {
+    val source = remember(flow) { flow ?: MutableStateFlow(emptyMap()) }
+    return source.collectAsState().value
+}
+
+/** One tile's position and size in pixels. */
+internal data class TileRect(val x: Int, val y: Int, val width: Int, val height: Int)
+
+/**
+ * Tiles per row for [count] tiles (UI-050b): 1 → one; 2 → stacked, or side by side when [wide];
+ * 3–4 → two per row; 5+ → two per row, or three when [wide]. The last row may be shorter.
+ */
+internal fun groupVideoRows(count: Int, wide: Boolean): List<Int> {
+    if (count <= 0) return emptyList()
+    val columns = when {
+        count == 1 -> 1
+        count == 2 -> if (wide) 2 else 1
+        count <= 4 -> 2
+        else -> if (wide) 3 else 2
+    }
+    return List((count + columns - 1) / columns) { row -> minOf(columns, count - row * columns) }
+}
+
+/**
+ * Lays out [count] tiles in a [width] × [height] box with [gap] pixels between and around them
+ * (no outer gap for a single tile). Rows share the height; a row's tiles share its width, so a
+ * short last row has wider tiles.
+ */
+internal fun groupVideoTileRects(count: Int, width: Int, height: Int, gap: Int): List<TileRect> {
+    val rows = groupVideoRows(count, wide = width > height)
+    if (rows.isEmpty()) return emptyList()
+    val outer = if (count > 1) gap else 0
+    val rowHeight = (height - 2 * outer - gap * (rows.size - 1)) / rows.size
+    val out = ArrayList<TileRect>(count)
+    rows.forEachIndexed { rowIndex, perRow ->
+        val y = outer + rowIndex * (rowHeight + gap)
+        val tileWidth = (width - 2 * outer - gap * (perRow - 1)) / perRow
+        repeat(perRow) { col ->
+            out += TileRect(outer + col * (tileWidth + gap), y, tileWidth, rowHeight)
+        }
+    }
+    return out
+}
+
+private val TILE_GAP = 4.dp
+private val EMPTY_TILE = Color(0xFF1C1C1E)

@@ -118,11 +118,20 @@ public fun FlashCallScreen(
             .background(if (isVideoActive) Color.Black else colors.backgroundApp),
     ) {
         if (isVideoActive) {
-            FlashCallVideoSurfaces(
-                state = state,
-                session = session,
-                modifier = Modifier.fillMaxSize(),
-            )
+            if (state.isGroup) {
+                // G1 (UI-050b): every participant's video, not only the last one to arrive.
+                FlashGroupVideoSurfaces(
+                    state = state,
+                    session = session,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            } else {
+                FlashCallVideoSurfaces(
+                    state = state,
+                    session = session,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
         }
 
         Column(
@@ -315,13 +324,7 @@ private fun FlashGroupParticipantsGrid(
                             color = colors.textPrimary,
                             maxLines = 1,
                         )
-                        val statusLabel = when (participant.state) {
-                            com.transfer.flash.core.calling.model.FlashCallParticipantState.INVITED -> "Invited"
-                            com.transfer.flash.core.calling.model.FlashCallParticipantState.CONNECTING -> "Connecting…"
-                            com.transfer.flash.core.calling.model.FlashCallParticipantState.CONNECTED -> if (participant.isMuted) "Muted" else null
-                            com.transfer.flash.core.calling.model.FlashCallParticipantState.DISCONNECTED -> "Reconnecting…"
-                            com.transfer.flash.core.calling.model.FlashCallParticipantState.LEFT -> "Left"
-                        }
+                        val statusLabel = participantStatusLabel(participant)
                         if (statusLabel != null) {
                             Text(
                                 text = statusLabel,
@@ -403,7 +406,7 @@ private fun FlashCallVideoSurfaces(
  * composable call (which would re-key the `remember` slots underneath it).
  */
 @Composable
-private fun rememberVideoStreamTrack(flow: StateFlow<VideoStreamTrack?>?): VideoStreamTrack? {
+internal fun rememberVideoStreamTrack(flow: StateFlow<VideoStreamTrack?>?): VideoStreamTrack? {
     val source = remember(flow) { flow ?: MutableStateFlow<VideoStreamTrack?>(null) }
     return source.collectAsState().value
 }
@@ -663,7 +666,7 @@ private fun FlashCallControlButton(
  * performance tier.
  */
 @Composable
-private fun FlashCallStatusLine(state: FlashCallUiState, color: Color) {
+internal fun FlashCallStatusLine(state: FlashCallUiState, color: Color) {
     Text(
         text = statusLine(state),
         style = FlashTheme.typography.bodyDefault,
@@ -753,7 +756,7 @@ internal fun formatCallDuration(elapsedMillis: Long): String {
  * distinguishable from the picture getting worse because the app is broken.
  */
 @Composable
-private fun FlashCallStatsBadge(
+internal fun FlashCallStatsBadge(
     session: FlashCallMedia?,
     state: FlashCallUiState,
     onDark: Boolean,
@@ -864,4 +867,4 @@ private fun formatBitrate(kbps: Int): String =
     if (kbps >= 1_000) "%.1f Mbps".format(kbps / 1000f) else "$kbps kbps"
 
 /** Local-preview tile width; the 3:4 ratio makes it a 120x160 dp PiP. */
-private val PIP_WIDTH = 120.dp
+internal val PIP_WIDTH = 120.dp

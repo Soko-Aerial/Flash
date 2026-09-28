@@ -110,6 +110,11 @@ public class FlashGroupCallSession(
     private val _remoteVideoStreamTrack = MutableStateFlow<VideoStreamTrack?>(null)
     override val remoteVideoStreamTrack: StateFlow<VideoStreamTrack?> = _remoteVideoStreamTrack.asStateFlow()
 
+    /** Every participant's video (G1). Touched only on the media thread; see [publishRemoteVideo]. */
+    private val remoteVideo = PeerTrackTable<VideoStreamTrack>()
+    private val _remoteVideoTracks = MutableStateFlow<Map<String, VideoStreamTrack>>(emptyMap())
+    override val remoteVideoTracks: StateFlow<Map<String, VideoStreamTrack>> = _remoteVideoTracks.asStateFlow()
+
     private val legs = SyncMap<String, GroupLeg>()
     private val sessionMutex = Mutex()
 
@@ -160,6 +165,8 @@ public class FlashGroupCallSession(
         var remoteDescriptionSet: Boolean = false,
         var audioSender: RtpSender? = null,
         var videoSender: RtpSender? = null,
+        /** The video this leg's connection delivered, so closing the leg removes exactly that. */
+        var remoteVideoTrack: VideoStreamTrack? = null,
     )
 
     internal fun getLegStateForTesting(peerId: String): FlashCallParticipantState? = legs[peerId]?.state
@@ -523,7 +530,8 @@ public class FlashGroupCallSession(
                 val track = trackEvent.track
                 FlashLog.i("GROUP_CALL", "Received track on leg ${leg.peerId}: ${track?.kind}")
                 if (track is VideoStreamTrack) {
-                    _remoteVideoStreamTrack.value = track
+                    leg.remoteVideoTrack = track
+                    if (remoteVideo.put(leg.peerId, track)) publishRemoteVideo()
                 }
             }
         }
@@ -734,7 +742,17 @@ public class FlashGroupCallSession(
         leg.peerConnection = null
         leg.audioSender = null
         leg.videoSender = null
+        leg.remoteVideoTrack?.let { track ->
+            if (remoteVideo.remove(leg.peerId, expected = track)) publishRemoteVideo()
         }
+        leg.remoteVideoTrack = null
+        }
+    }
+
+    /** Publishes [remoteVideo] after a change. Media thread only, like every [remoteVideo] access. */
+    private fun publishRemoteVideo() {
+        _remoteVideoTracks.value = remoteVideo.snapshot()
+        _remoteVideoStreamTrack.value = remoteVideo.newest
     }
 
     private fun armStatsPolling() {
@@ -1006,6 +1024,8 @@ public class FlashGroupCallSession(
             mediaLifecycleMutex.withLock {
         legs.valuesSnapshot().forEach { closeLegLocked(it) }
         legs.clear()
+        remoteVideo.clear()
+        publishRemoteVideo()
 
         try {
             localStream?.release()

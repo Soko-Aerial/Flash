@@ -1,5 +1,36 @@
 # Progress Log
 
+## 2026-09-28 — G1 one video per participant: code done (device check pending, P8)
+
+### Worked on
+G1 of `docs/calling/GROUP-VIDEO-PLAN.md`: a group video call shows every participant's video instead of only the last
+track to arrive (the plan's "at most one could ever be seen").
+
+### Changed
+- `core/calling`: `FlashCallMedia.remoteVideoTracks` (default empty), `PeerTrackTable`, and `FlashGroupCallSession`
+  keeping one track per leg (added on `onTrack`, removed on leg close, cleared at the end of the call).
+- `ui/callui`: UI-050b designed first (`docs/ui/calling-ui.md`, index row), then `FlashGroupVideoGrid.kt` (tile layout
+  math + tiles + local PiP); `FlashCallScreen` routes group video calls to it. The status wording is shared with the
+  audio grid (`participantStatusLabel`).
+- Plan status + §8 implementation log.
+
+### Why
+Owner order P8: PC first, then group calling, then all device testing. G1 is the base for G3's request protocol and
+G5's layouts.
+
+### Verification
+`:core:calling:jvmTest` 73, `:core:calling:testAndroidHostTest` 85, `:ui:callui:jvmTest` 16 (new: `PeerTrackTableTest`,
+`FlashGroupVideoGridTest`), `:ui:callui:compileAndroidMain`, `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm`:
+green. **Not device-tested** (P8).
+
+### Remaining
+- Device check: 3 devices each see both other videos; a leaver's tile goes; the Android PiP draws above the tiles.
+- Sending is unchanged: every connection still encodes and decodes video (G3).
+
+### Next AI
+G2 (network band: Wi-Fi band / Ethernet on Android and desktop, exchanged in `GroupJoin`/`GroupPresence`), then G3
+(request protocol, JVM 3-way loopback tests). G0's measurements stay deferred to the final test pass.
+
 ## 2026-09-28 — PC5 mode-driven connection policy: code done (device check pending, P8)
 
 ### Worked on
