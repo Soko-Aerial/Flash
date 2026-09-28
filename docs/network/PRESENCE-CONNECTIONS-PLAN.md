@@ -1,7 +1,14 @@
 # Presence & Connections Plan (phases PC0–PC7)
 
-**Status: PLAN, owner decisions recorded 2026-09-24. Nothing implemented.**
+**Status (2026-09-28): PC1 code done (unit-tested, not device-tested). PC0 measurements deferred (P8).**
 Numbers marked *(measure)* are estimates until PC0/PC6 replace them.
+
+**Testing order changed (owner, 2026-09-28, decision P8):** implement PC1–PC5 and then group calling first, and
+run all device measurements and tests (PC0, PC6, and each phase's device check) at the end. Until then every
+phase is gated by unit and loopback tests only, STANDARD must keep today's behaviour, and each phase's
+device exit criterion is recorded as **pending** rather than met. The PC0 rig and runbook stay ready; the first R0
+attempts on 2026-09-28 found ERROR-074 (Transsion freezes Flash at screen-off), which the final test pass must
+handle first.
 
 **Order:** this plan comes **before group calling** (`docs/calling/GROUP-VIDEO-PLAN.md` G1+). G0's measurements can
 share PC0's test rig. ADR-044's V3 scale measurement **is** PC6 here. ADR-044's V0 threat review can run in parallel.
@@ -168,3 +175,20 @@ all call it. This follows the migration direction (one shared frame) and makes �
 | P5 | Ghost devices in shared presence | **Never shared.** |
 | P6 | Whose presence is passed on | **Mutual contacts only** (salted-hash matching; group rosters within groups). |
 | P7 | Order | **Its own phase set, before group calling.** |
+| P8 | When to test (2026-09-28) | **Last:** implement PC1–PC5, then group calling, then run PC0/PC6 and every device check. |
+
+## 7. Implementation log
+
+### PC1 — code done 2026-09-28 (device check pending, P8)
+- `WsKeepaliveTicker` (commonMain): one aligned clock per network; parks with no timer when there are no sessions.
+- `WsKeepalive`: `PingRole` (BOTH / PINGER / ANSWERER) from both HELLOs (`resolveRole`: shorter interval pings,
+  tie → smaller id); `Verdict.Quiet` when frames went both ways in the last half interval; an answerer probes only
+  after half its liveness window of silence. Stall and close rules unchanged.
+- HELLO carries `ping=<ms>` (optional, backward compatible; `docs/protocol.md`). Both `WsConnection` copies, both
+  clients/servers and both networks (`WsFlashNetwork`, `JvmWsFlashNetwork`).
+- Tests: `WsKeepalivePingRoleTest` (13, incl. 1-hour pair simulations: healthy pair, mixed tiers, dead pinger,
+  disagreeing roles, older peer), `WsKeepaliveTickerTest` (5), loopback role test in
+  `JvmWsFlashNetworkLoopbackTest`. The 15 existing `WsKeepaliveTest` cases pass unchanged.
+- Expected effect (unmeasured): idle pings per pair halve (360 → 180/h per side on average), and wake-ups per
+  interval drop from one per session to one per device.
+- **Pending device checks:** 1-hour screen-off with sessions, no flap (§5 risk); a mixed old/new-version pair.

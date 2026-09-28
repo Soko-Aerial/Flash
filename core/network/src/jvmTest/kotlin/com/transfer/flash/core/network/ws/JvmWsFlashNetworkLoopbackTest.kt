@@ -1,5 +1,6 @@
 package com.transfer.flash.core.network.ws
 
+import com.transfer.flash.core.common.perf.FlashPerformanceMode
 import com.transfer.flash.core.common.result.FlashResult
 import java.util.concurrent.ConcurrentLinkedQueue
 import kotlinx.coroutines.CoroutineScope
@@ -108,6 +109,36 @@ class JvmWsFlashNetworkLoopbackTest {
         } finally {
             runBlocking { a.stop() }
             runBlocking { b.stop() }
+        }
+    }
+
+    @Test
+    fun `both HELLOs settle one pinger per pair (PC1)`() {
+        // Equal tiers: the smaller id pings. Then B on the LOW tier: A's shorter interval wins.
+        val cases = listOf(
+            Triple(FlashPerformanceMode.HIGH, FlashPerformanceMode.HIGH, "equal tiers"),
+            Triple(FlashPerformanceMode.HIGH, FlashPerformanceMode.LOW, "B slower"),
+        )
+        cases.forEach { (tierA, tierB, label) ->
+            val a = JvmWsFlashNetwork(localDeviceId = "device-A", localFriendlyName = "A", transportProfile = { tierA.transport })
+            val b = JvmWsFlashNetwork(localDeviceId = "device-B", localFriendlyName = "B", transportProfile = { tierB.transport })
+            try {
+                runBlocking { a.start(0) }
+                val portB = (runBlocking { b.start(0) } as FlashResult.Success).value
+                // B dials, so the dialer is not simply the pinger.
+                val dial = runBlocking { withTimeout(15_000) { b.connectManual("127.0.0.1", a.serverPort) } }
+                assertTrue("$label: dial must succeed: $dial", dial is FlashResult.Success)
+                assertTrue(portB > 0)
+                assertTrue("$label: A must register B", awaitTrue(10_000) { a.activeSessions.value.isNotEmpty() })
+
+                val roleA = (a.activeSessions.value.values.single() as WsSession).connection.pingRole
+                val roleB = (b.activeSessions.value.values.single() as WsSession).connection.pingRole
+                assertEquals("$label: A", WsKeepalive.PingRole.PINGER, roleA)
+                assertEquals("$label: B", WsKeepalive.PingRole.ANSWERER, roleB)
+            } finally {
+                runBlocking { a.stop() }
+                runBlocking { b.stop() }
+            }
         }
     }
 

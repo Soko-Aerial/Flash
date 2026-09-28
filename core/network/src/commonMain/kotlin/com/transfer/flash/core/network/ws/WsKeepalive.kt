@@ -43,8 +43,20 @@ import kotlin.concurrent.Volatile
  * sitting in the socket buffer may not have been stamped yet. [confirmClose] re-reads the
  * timestamp after a short *awake* delay and withdraws the verdict if the peer proved itself.
  *
- * Not thread-safe by itself; [WsConnection] confines mutation to one keepalive coroutine and marks
- * the cross-thread field volatile.
+ * ## Fewer pings (PC1, `docs/network/PRESENCE-CONNECTIONS-PLAN.md` §3.3)
+ *
+ * The verdict decides *whether* a ping is worth sending, not only whether the peer is dead:
+ * - **One pinger per pair.** Once both HELLOs are in, [role] says which side keeps the pair alive
+ *   ([resolveRole]). The [PingRole.ANSWERER] only answers, and pings on its own only when the
+ *   pinger has been quiet for longer than a pinger ever should be ([answererProbeAfterMs]), so a
+ *   disagreement about roles degrades to both sides pinging — never to neither.
+ * - **Traffic counts as proof.** No ping when frames went *both* ways within half an interval. One
+ *   direction is not enough: the peer's watchdog is fed by what *we* send, so a phone that only
+ *   receives must keep pinging.
+ * Stall probes (ERROR-025) and the close rules are unchanged by either.
+ *
+ * Not thread-safe by itself; [WsConnection] confines [onTick]/[confirmClose] to one tick at a time
+ * and marks the cross-thread fields volatile.
  */
 internal class WsKeepalive(
     private val pingIntervalMs: Long,
@@ -55,6 +67,9 @@ internal class WsKeepalive(
     internal sealed interface Verdict {
         /** Peer is within its liveness window (or unjudgeable): probe and keep going. */
         object Ping : Verdict
+
+        /** Peer is within its liveness window and a ping would add nothing (PC1): send nothing. */
+        object Quiet : Verdict
 
         /**
          * Peer has been silent for longer than the liveness window.
@@ -76,6 +91,18 @@ internal class WsKeepalive(
     internal var lastInboundAtMs: Long = startedAtMs
         private set
 
+    /** Wall clock of the last frame this side wrote, of any kind. Written by the send path. */
+    @Volatile
+    internal var lastOutboundAtMs: Long = startedAtMs
+        private set
+
+    /**
+     * Who pings on this connection. [PingRole.BOTH] until the peer's HELLO says otherwise, and
+     * for good with a peer too old to announce its interval — today's behaviour.
+     */
+    @Volatile
+    internal var role: PingRole = PingRole.BOTH
+
     /** Wall clock of the previous keepalive tick, used to detect a stalled scheduler. */
     private var lastTickAtMs: Long = startedAtMs
 
@@ -89,6 +116,11 @@ internal class WsKeepalive(
     /** Any inbound frame — text, binary, ping or pong — proves the peer is alive. */
     fun onInbound(nowMs: Long) {
         lastInboundAtMs = nowMs
+    }
+
+    /** A frame of any kind — data, ping or pong — was written to the peer. */
+    fun onOutbound(nowMs: Long) {
+        lastOutboundAtMs = nowMs
     }
 
     fun onTick(nowMs: Long): Verdict {
@@ -117,11 +149,30 @@ internal class WsKeepalive(
                 lastInboundAtMs = nowMs
                 Verdict.Ping
             }
-            silentForMs <= livenessTimeoutMs -> Verdict.Ping
+            silentForMs <= livenessTimeoutMs ->
+                if (stalled || shouldPing(nowMs, silentForMs)) Verdict.Ping else Verdict.Quiet
             stalled -> Verdict.Close(silentForMs, REASON_STALL_PROBE, needsConfirmation = true)
             else -> Verdict.Close(silentForMs, REASON_SILENT)
         }
     }
+
+    /** Whether an on-time tick, with the peer inside its window, should spend a ping (PC1). */
+    private fun shouldPing(nowMs: Long, silentForMs: Long): Boolean = when (role) {
+        PingRole.ANSWERER -> silentForMs >= answererProbeAfterMs
+        PingRole.PINGER, PingRole.BOTH -> {
+            val recentMs = pingIntervalMs / 2
+            val bothWaysRecently = silentForMs < recentMs && nowMs - lastOutboundAtMs < recentMs
+            !bothWaysRecently
+        }
+    }
+
+    /**
+     * How long an [PingRole.ANSWERER] waits for the pinger before probing itself. Half the liveness
+     * window: a pinger's interval is never longer than ours ([resolveRole]) and every tier keeps
+     * `liveness > 2 × ping` ([WsKeepaliveTiming]), so a healthy pinger is always heard well before
+     * this, and a probe sent at this point still has half the window left to be answered.
+     */
+    private val answererProbeAfterMs: Long = maxOf(pingIntervalMs, livenessTimeoutMs / 2)
 
     /**
      * Second look at a [Verdict.Close] that carried [Verdict.Close.needsConfirmation], taken after
@@ -137,7 +188,39 @@ internal class WsKeepalive(
         return Verdict.Ping
     }
 
+    /** Which side of a connection sends the idle keepalive pings (PC1). */
+    internal enum class PingRole {
+        /** Both sides ping: the peer did not announce its interval (an older client). */
+        BOTH,
+
+        /** This side pings; the peer only answers. */
+        PINGER,
+
+        /** The peer pings; this side answers, and probes only if the pinger goes quiet. */
+        ANSWERER,
+    }
+
     internal companion object {
+        /**
+         * Decides the pinger from what both HELLOs carried, so both ends reach the same answer
+         * without another round trip: the side with the **shorter** interval pings (its pings then
+         * fit inside the other side's liveness window), and on a tie the lexicographically smaller
+         * device id pings. A peer that sent no interval gets [PingRole.BOTH].
+         */
+        internal fun resolveRole(
+            localPingIntervalMs: Long,
+            peerPingIntervalMs: Long?,
+            localDeviceId: String,
+            peerDeviceId: String,
+        ): PingRole = when {
+            peerPingIntervalMs == null || peerPingIntervalMs <= 0L -> PingRole.BOTH
+            localPingIntervalMs < peerPingIntervalMs -> PingRole.PINGER
+            localPingIntervalMs > peerPingIntervalMs -> PingRole.ANSWERER
+            localDeviceId == peerDeviceId -> PingRole.BOTH
+            localDeviceId < peerDeviceId -> PingRole.PINGER
+            else -> PingRole.ANSWERER
+        }
+
         /**
          * How many ping intervals a tick may slip before the loop stops trusting its own clock
          * reading. Two intervals is comfortably above ordinary dispatcher jitter (milliseconds)

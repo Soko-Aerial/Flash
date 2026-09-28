@@ -43,6 +43,8 @@ public class WsTransferClient(
      * that does not tier is byte-for-byte unchanged.
      */
     private val keepalive: () -> WsKeepaliveTiming = { WsKeepaliveTiming.DEFAULT },
+    /** The owning network's shared keepalive clock (PC1); null runs one loop per connection as before. */
+    private val ticker: WsKeepaliveTicker? = null,
 ) {
     private val connectivityManager = context?.applicationContext
         ?.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
@@ -115,6 +117,7 @@ public class WsTransferClient(
                 pingIntervalMs = timing.pingIntervalMs,
                 livenessTimeoutMs = timing.livenessTimeoutMs,
                 deferredPeerLeafFingerprintHex = deferredLeafFingerprint,
+                ticker = ticker,
             )
         } catch (error: Exception) {
             runCatching { socket.close() }

@@ -77,6 +77,29 @@ Added 2026-08-20 at owner request (see ADR-007). Independent of the session abov
 FLASH_WS_HELLO version=1 deviceId=<escaped-device-id> name=<escaped-friendly-name>
 ```
 
+> **Stale section, partly superseded (noted 2026-09-28):** the live stack runs protocol `version=2` over TLS
+> (TOFU pin bound to the HELLO id, audit S1) with WebSocket PING/PONG keepalive (ADR-016, ERROR-025/031/033).
+> The keepalive subsection below is current; the rest of this section describes the 2026-08-20 original.
+
+#### Keepalive and the `ping` HELLO field (PC1, 2026-09-28)
+
+```text
+FLASH_WS_HELLO version=2 deviceId=<id> name=<name> ping=<ping-interval-ms>
+```
+
+- `ping` is the sender's idle keepalive interval in milliseconds (its hardware tier: 10000 / 12000 / 15000).
+  **Optional**: receivers that predate it ignore unknown fields, and a HELLO without it means "this peer pings on
+  its own schedule" — both sides then ping, which is the pre-PC1 behaviour. No version bump.
+- **One pinger per pair.** From both HELLOs each side computes the same answer: the side with the **shorter**
+  interval pings; on equal intervals the lexicographically smaller `deviceId` pings. The other side (the
+  answerer) replies with PONG and sends a PING of its own only when it has heard nothing for half its liveness
+  window, so two sides that disagree fall back to both pinging.
+- **Traffic counts as proof.** A side skips a scheduled PING when frames went both ways within the last half
+  interval. One direction is not enough: the peer's watchdog is fed by what this side sends.
+- The watchdog rules (liveness timeout, stall forgiveness, ERROR-025/031) are unchanged; any inbound frame still
+  proves the peer alive. Code: `WsKeepalive`, `WsKeepaliveTicker` (one aligned clock per network),
+  `WsConnection.applyPeerPingInterval`.
+
 - Peers are keyed by `deviceId`; if a pair holds one connection per direction, the outbound one is primary and the inbound one is fallback.
 - File transfer (one active transfer per connection; messages are ordered):
 
