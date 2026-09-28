@@ -1,5 +1,33 @@
 # Progress Log
 
+## 2026-09-28 — PC0 R0 on the Infinix: both runs invalid; found an OEM freezer (ERROR-074)
+
+### Worked on
+First PC0 battery run (R0, no farm) on the Infinix X6882B.
+
+### What happened
+- Run 1 (09:00): the phone was plugged back in after 11.6 min. Kept as `measurements/pc0/infinix-n0-short11m`.
+- Run 2 (09:12–10:18, 65 min on battery, 100 mAh / 5000 mAh ≈ 2 %/h at 50 mAh resolution): **Flash was frozen
+  by Transsion's `Hiber/sceneManager` for the whole hour** despite its foreground service. Flash CPU 1.4 s, no
+  wake-lock attribution, but a Wi-Fi multicast lock held for the full hour. Kept as `infinix-n0-frozen`; it is a
+  baseline of "Flash frozen", not of an idle engine.
+- `deviceidle whitelist +com.transfer.flash` (left applied on the Infinix) does not stop the freeze. ERROR-074.
+- The farm could not reach the Infinix at first: the phone was on `dlink-M960-5G` (192.168.1.x) while the PC's
+  only up link was the V760's USB tethering (10.171.146.x). After the owner moved things, the PC also has Wi-Fi on
+  192.168.1.x, but the farm still bound to the tethering link (it binds to one interface). Runbook updated.
+- The V760 (Flash installed, advertised) refused every dial: the ERROR-073 symptom on a second phone.
+
+### Changed
+- `logs/errors.md`: ERROR-074 (new, OPEN); ERROR-073 update.
+- `docs/network/PC0-RUNBOOK.md`: setup checks for the OEM freezer, a single PC network, and a leftover farm JVM.
+
+### Remaining / Next AI
+1. Owner: on the Infinix, exempt Flash in Transsion's own settings; on the PC, turn off V760 USB tethering and
+   make the Wi-Fi profile Private. Then verify no `Hiber … freeze uid: 10455` after screen-off.
+2. Before that exemption, a useful product test: one-peer farm session + screen off → does the session survive the
+   freeze? (ERROR-074 next step 2.)
+3. Redo R0 (label `infinix-n0`), then R1…R19.
+
 ## 2026-09-28 — PC0 tooling: peer farm, phone script, runbook (no measurements yet)
 
 ### Worked on

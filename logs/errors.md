@@ -1,5 +1,60 @@
 # Error Log
 
+## ERROR-074 — Transsion "Hiber" freezes Flash for as long as the screen is off, foreground service or not
+
+### Date
+2026-09-28
+
+### Area
+Android background execution / OEM power management (Transsion XOS)
+
+### Symptoms
+The first PC0 R0 run showed only 42 % CPU uptime and no wake-lock attribution for Flash, although the engine holds
+a partial wake lock for its whole lifetime (`DiscoveryEngineHolder.acquirePowerLocks`). Flash used 1.4 s of CPU
+in 65 min.
+
+### Environment
+- Device: Infinix X6882B ("Infinix HOT 50"), Android 14 (API 34), XOS; Flash 2.0.0-beta debug (uid 10455)
+- Flash's foreground service running the whole time (`isForeground=true types=0x10`, notification showing)
+
+### Evidence
+```text
+09:13:18.903 I Hiber/sceneManager: freeze uid: 10455 com.transfer.flash pids:[15690] costTime=2ms
+10:18:35.678 I Hiber/sceneManager: unfreeze uid: 10455 com.transfer.flash pids:[15690]  reason:appToTop
+```
+- The process was frozen ~10 s after every screen-off and unfrozen only when Flash came to the top (short run:
+  frozen 09:01:07 → 09:10:27; R0: 09:13:18 → 10:18:35, i.e. the whole hour). Flash logged nothing in between.
+- batterystats for the hour: `Foreground services: 1h 5m 35s`, **no Flash wake lock line at all**, but
+  `WiFi Multicast Wakelock time = 1h 5m 18s` — the multicast lock stays held (and multicast power save stays off)
+  while the process that wanted it cannot run.
+- **The standard exemption does not help.** `dumpsys deviceidle whitelist +com.transfer.flash` (what "Battery:
+  Unrestricted" does), appops `RUN_ANY_IN_BACKGROUND` = allow, standby bucket 10 (ACTIVE): Hiber still froze the
+  process 6 s after screen-off (10:20:34). `dumpsys hiber` fails (`FAILED_TRANSACTION`); there is no shell switch.
+
+### Root cause
+Transsion's freezer (`Hiber/sceneManager` in `system_server`) freezes apps at screen-off by its own policy, ignoring
+the foreground service and the deviceidle whitelist. Only its own per-app settings exempt an app (reported, not yet
+verified here: Settings → Battery → power saving → untick the app in "screen-off sleep" and "screen-off push
+block"; Phone Master → Auto-start management → allow).
+
+### Product consequence (not yet measured)
+On Transsion phones with default settings, Flash cannot do anything while the screen is off: no keepalive, no
+inbound messages or calls. Whether a peer's session survives the freeze (kernel TCP keeps the socket; the peer's
+25 s liveness timeout probably closes it) is the next test, with a farm peer on the same network.
+ERROR-025 (session liveness) handled *short* freezes; this one lasts as long as the screen is off.
+
+### Next step
+1. Owner applies the Transsion settings above; re-run the screen-off test and check for `Hiber … freeze uid: <uid>`.
+2. With a one-peer farm on the same network: does the session survive a freeze of 1, 5 and 30 minutes?
+3. Product: detect the OEM (like dontkillmyapp.com lists) and show the user where the switch is. Decide in PC5 (ECO).
+
+### Related files
+- `docs/network/PC0-RUNBOOK.md` (setup now checks for this freeze)
+- `app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt` (`acquirePowerLocks`)
+
+### Status
+OPEN
+
 ## ERROR-073 — Suspected: a Flash advertisement outlives the engine (peers dial a closed port every 5 s)
 
 ### Date
@@ -26,6 +81,15 @@ failed with `Connection refused`. A farm peer retried every 5 s for the whole ru
 The NSD registration, and possibly the multicast lock, is not released when the engine stops (or when the
 service dies without its normal stop path), so the phone keeps advertising a WebSocket server that is gone. Every
 peer then spends a dial every 5 s on it, and the phone keeps multicast power save disabled.
+
+### Update 2026-09-28 (later the same day)
+- **Not specific to the Infinix.** The V760 (`ZX89924000195`, advertised as "Flash V760", reached over its USB
+  tethering at `10.171.146.89:45822`) showed the same thing: advertised, every dial `Connection refused`.
+- **The Infinix's 6 h 40 min multicast lock and 62 ms wake lock fit ERROR-074** (Hiber freezes the process at
+  screen-off; the lock stays registered, the frozen process runs nothing). That explains the locks, not the refused
+  port: a frozen process's listening socket should still complete the TCP handshake in the kernel (not tested; an
+OEM freezer that also firewalls frozen uids would refuse). The refused port still needs
+  the reproduction below.
 
 ### Next step
 Reproduce: start Flash, then stop the engine the ways a user or the OS can (swipe away, Stop in the notification,
