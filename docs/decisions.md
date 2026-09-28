@@ -2055,3 +2055,67 @@ unreachable after a restart.
 
 ### Revisit when
 DR0 results are in; the PC2 planner's shape changes; or rotating discovery ids (audit S9) land.
+
+## ADR-048 — Connection modes: re-time live sessions, ECO parks only by agreement
+
+### Date
+2026-09-28
+
+### Status
+**IMPLEMENTED (PC5), device check pending** (P8: testing after group calling). Plan:
+`docs/network/PRESENCE-CONNECTIONS-PLAN.md` §3.4. Wire format: `docs/protocol.md` "Link control" and the presence
+hello's `r=`.
+
+### Context
+ADR-045 item 6 moved the per-mode connection policy to PC5. The discovery mode (ECO / STANDARD / BOOST, plus GHOST
+and RECEIVE_KIOSK) already existed but changed only discovery; keepalive, redial pacing, presence timing and which
+sessions to hold came from the hardware tier alone. Phones in different modes share one mesh, so every rule must be
+safe for mixed pairs, and switching mode must not drop anyone.
+
+### Decision
+1. **One policy object.** `ConnectionModePolicy.of(mode, tier)` (commonMain) returns the transport profile, the
+   presence config and whether sessions are limited. GHOST and RECEIVE_KIOSK use STANDARD. **STANDARD returns the tier's
+   profile unchanged**, so today's behaviour is kept exactly.
+
+   | Knob | ECO | STANDARD | BOOST |
+   |---|---|---|---|
+   | Ping | 30 s | tier | 5 s |
+   | Liveness | max(75 s, tier) | tier | 15 s (LOW keeps its floor) |
+   | Reconnect base / cap | 2 s / 30 s | 1 s / tier | 250 ms / min(5 s, tier) |
+   | Presence refresh / max age | 60 s / 90 s | 30 s / 45 s | 10 s / 20 s, delta gap 250 ms |
+
+   All values are estimates until PC6. `FlashTransportProfile.reconnectBaseMs` is new (default 1 s, the old constant).
+2. **A switch re-times live sessions instead of reconnecting.** `WsConnection.retime` sets the new cadence, re-resolves
+   which side pings (PC1: the shorter interval pings), rebases the tick clock, and credits the connection with
+   half the new liveness window (`lastInboundAtMs = max(last, now − liveness/2)`). Without that credit a switch from
+   ECO (30 s of legitimate silence) to BOOST (15 s window) closed healthy sessions at once; the simulation test found
+   this. A dead peer is still reaped within the new window. `WsKeepaliveTicker.reschedule()` wakes the shared ticker.
+3. **Mixed modes: the side that wants a session keeps it.** ECO keeps ≤ 3 ring neighbours among its contacts (sorted
+   ids; +1, −1, +2… so the group stays connected), active peers (user traffic within 10 min), the call peer, and
+   unpaired peers while Nearby is open. Its planner dials only those (`ConnectionPlanner.plan(allowed)`; dial on demand
+   and gateway probes are unaffected). It closes an unwanted idle session **it dialed** only after the peer agrees
+   (`FLASH_LINK park` / `park-ok`), and the peer stops redialing before agreeing. STANDARD, BOOST and old clients never
+   agree, so they never see churn.
+4. **Presence across modes.** The hello carries the sender's refresh (`r=`); receivers hold each reporter's entries for
+   max(own max age, 1.5 × its refresh), plus 90 s for relays. Per-sender rate refill is 250 ms (was 1 s) so BOOST fits.
+   This also removes a hop-2 flicker that existed in pure STANDARD (a relayed entry could expire before the relayer's
+   next digest).
+5. **Staleness is relative.** `hasLiveSession` treats a session as stale after max(45 s, liveness + 5 s), so an ECO
+   session (up to ~75 s quiet) is not redialed as dead. STANDARD stays at 45 s.
+6. **Session cap stays a uniform 8** until PC6 measures the cost per session.
+
+### Alternatives considered
+- **Reconnect on a mode change:** simple, but drops calls and transfers and causes a handshake storm.
+- **ECO closes unwanted sessions unilaterally:** a BOOST or STANDARD peer redials within seconds, and both churn.
+- **Refuse inbound sessions in ECO:** breaks delivery to an ECO phone, which must stay reachable (plan §3.4).
+- **Per-mode session caps now:** no data yet on what a session costs; PC6 decides.
+
+### Consequences
+- A drop that was not a park (Wi-Fi loss, peer crash) still redials through the network's reconnect loop even when
+  ECO does not want that peer; the next park cycle (10 min idle) closes it again by agreement. Accepted.
+- Hosts wire three extra things: `transportProfile`/presence `config` lambdas, a `ConnectionModeController`, and the
+  `FLASH_LINK` route. `Flash.create` has no tier setting and uses HIGH, as before.
+- The busy peer comes from calls only; an active transfer counts through its user traffic (active window).
+
+### Revisit when
+PC6 measurements; if ECO's ~1 min delivery bound fails; or when groups grow past 20.

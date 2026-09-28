@@ -132,9 +132,39 @@ public class WsConnection(
     public val lastInboundAtMs: Long
         get() = keepalive.lastInboundAtMs
 
-    /** The ping interval this connection was created with; announced in our HELLO (PC1). */
+    /**
+     * The ping interval in force: the one this connection was created with, announced in our HELLO
+     * (PC1), until a mode change re-times it ([retime], PC5).
+     */
     internal val keepalivePingIntervalMs: Long
-        get() = pingIntervalMs
+        get() = keepalive.pingIntervalMs
+
+    /**
+     * Wall clock ([nowMs]) of the last text or binary frame, either way, that was not background
+     * traffic (presence, link control). The ECO idle close judges on this (PC5).
+     */
+    public val lastUserTrafficAtMs: Long
+        get() = keepalive.lastUserTrafficAtMs
+
+    /** The liveness window in force (PC5 may re-time it); `hasLiveSession` scales with it. */
+    internal val keepaliveLivenessTimeoutMs: Long
+        get() = keepalive.livenessTimeoutMs
+
+    /** What [applyPeerPingInterval] was given, so [retime] can settle the role again. */
+    @Volatile
+    private var peerPing: Triple<Long?, String, String>? = null
+
+    /**
+     * Applies new keepalive numbers to this live connection (PC5: the connection mode changed) and
+     * settles the ping role again against the interval the peer announced. The peer is not told;
+     * see [WsKeepalive] "Re-timing" for why any resulting disagreement is safe.
+     */
+    public fun retime(timing: WsKeepaliveTiming) {
+        keepalive.retime(timing.pingIntervalMs, timing.livenessTimeoutMs, nowMs())
+        peerPing?.let { (peerInterval, localId, peerId) ->
+            keepalive.role = WsKeepalive.resolveRole(timing.pingIntervalMs, peerInterval, localId, peerId)
+        }
+    }
 
     /** Who pings on this connection, for logs and tests. */
     internal val pingRole: WsKeepalive.PingRole
@@ -146,7 +176,8 @@ public class WsConnection(
      * without another round trip ([WsKeepalive.resolveRole]).
      */
     internal fun applyPeerPingInterval(peerPingIntervalMs: Long?, localDeviceId: String, peerDeviceId: String) {
-        keepalive.role = WsKeepalive.resolveRole(pingIntervalMs, peerPingIntervalMs, localDeviceId, peerDeviceId)
+        peerPing = Triple(peerPingIntervalMs, localDeviceId, peerDeviceId)
+        keepalive.role = WsKeepalive.resolveRole(keepalive.pingIntervalMs, peerPingIntervalMs, localDeviceId, peerDeviceId)
     }
 
     /** Set while one tick's work is running, so a slow tick is skipped rather than overlapped. */
@@ -175,7 +206,7 @@ public class WsConnection(
         }
         scope.launch {
             while (scope.isActive) {
-                kotlinx.coroutines.delay(pingIntervalMs)
+                kotlinx.coroutines.delay(keepalive.pingIntervalMs)
                 if (closed.get() || !keepaliveTick()) break
             }
         }
@@ -271,18 +302,29 @@ public class WsConnection(
 
     private fun send(opcode: Int, payload: ByteArray, consumePayload: Boolean = false): Boolean {
         if (closed.get()) return false
+        // Classified before the write: a consumed payload is masked in place by it.
+        val userTraffic = isUserTraffic(opcode, payload)
         return runCatching {
             synchronized(writeLock) {
                 WebSocketCodec.writeFrame(output, opcode, payload, maskOutboundFrames, maskPayloadInPlace = consumePayload)
             }
             // Written frames feed the peer's watchdog, which is what lets a busy pair skip pings.
-            keepalive.onOutbound(nowMs())
+            val now = nowMs()
+            keepalive.onOutbound(now)
+            if (userTraffic) keepalive.onUserTraffic(now)
         }.onFailure { error ->
             if (!closed.get()) {
                 FlashLog.w(TAG, "WS write failed remote=$remoteLabel", error)
                 close("Write failed")
             }
         }.isSuccess
+    }
+
+    /** Whether an outbound frame counts as user traffic for the ECO idle close (PC5). */
+    private fun isUserTraffic(opcode: Int, payload: ByteArray): Boolean = when (opcode) {
+        WebSocketCodec.OPCODE_BINARY -> true
+        WebSocketCodec.OPCODE_TEXT -> !WsKeepalive.isBackgroundText(payload)
+        else -> false
     }
 
     private suspend fun readLoop() {
@@ -301,8 +343,14 @@ public class WsConnection(
                 // Any inbound frame proves the peer is alive — refresh the watchdog timestamp.
                 keepalive.onInbound(nowMs())
                 when (message) {
-                    is WebSocketCodec.Message.Text -> listener.onTextMessage(this, message.text)
-                    is WebSocketCodec.Message.Binary -> listener.onBinaryMessage(this, message.data)
+                    is WebSocketCodec.Message.Text -> {
+                        if (!WsKeepalive.isBackgroundText(message.text)) keepalive.onUserTraffic(nowMs())
+                        listener.onTextMessage(this, message.text)
+                    }
+                    is WebSocketCodec.Message.Binary -> {
+                        keepalive.onUserTraffic(nowMs())
+                        listener.onBinaryMessage(this, message.data)
+                    }
                     is WebSocketCodec.Message.Ping -> send(WebSocketCodec.OPCODE_PONG, message.payload, consumePayload = true)
                     is WebSocketCodec.Message.Pong -> Unit
                     is WebSocketCodec.Message.Close -> {

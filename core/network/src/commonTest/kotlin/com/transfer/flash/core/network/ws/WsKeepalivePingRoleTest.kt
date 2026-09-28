@@ -99,8 +99,15 @@ class WsKeepalivePingRoleTest {
      * Both ends tick on their own schedule; a PING is delivered after [rttMs] / 2 and answered with
      * a PONG at once, exactly like [WsConnection]'s read loop. A dead side neither ticks nor answers.
      */
-    private fun simulate(a: Side, b: Side, durationMs: Long, rttMs: Long = 40L) {
+    private fun simulate(
+        a: Side,
+        b: Side,
+        durationMs: Long,
+        rttMs: Long = 40L,
+        extra: List<Pair<Long, () -> Unit>> = emptyList(),
+    ) {
         val queue = mutableListOf<Event>()
+        extra.forEach { (at, run) -> queue += Event(at, run) }
         fun schedule(atMs: Long, run: () -> Unit) {
             queue += Event(atMs, run)
         }
@@ -126,7 +133,8 @@ class WsKeepalivePingRoleTest {
                     }
                     WsKeepalive.Verdict.Quiet -> Unit
                 }
-                if (side.alive(atMs)) scheduleTick(side, other, atMs + side.pingMs)
+                // The interval in force, so a re-timed side (PC5) ticks at its new cadence.
+                if (side.alive(atMs)) scheduleTick(side, other, atMs + side.keepalive.pingIntervalMs)
             }
         }
         scheduleTick(a, b, a.phaseMs + a.pingMs)
@@ -218,5 +226,98 @@ class WsKeepalivePingRoleTest {
         assertNull(ours.closedAtMs)
         // Our PONGs arrive within half an interval of each tick, so we rarely add pings of our own.
         assertTrue(ours.pings < old.pings, "ours=${ours.pings} old=${old.pings}")
+    }
+
+    // ---------------------------------------------------------------- PC5: re-timing
+
+    /** (ping, liveness) for ECO, the three STANDARD tiers and BOOST (plan §3.4). */
+    private val modes = listOf(
+        30_000L to 75_000L,
+        15_000L to 40_000L,
+        12_000L to 32_000L,
+        10_000L to 25_000L,
+        5_000L to 15_000L,
+    )
+
+    /** What `WsConnection.retime` does: new numbers, role settled against the peer's HELLO value. */
+    private fun retime(side: Side, peerAnnouncedPingMs: Long, peerId: String, pingMs: Long, livenessMs: Long, atMs: Long) {
+        side.keepalive.retime(pingMs, livenessMs, atMs)
+        side.keepalive.role = WsKeepalive.resolveRole(pingMs, peerAnnouncedPingMs, side.id, peerId)
+    }
+
+    @Test
+    fun `a mode switch on one side never closes a healthy pair, in any combination`() {
+        for ((startPing, startLive) in modes) {
+            for ((peerPing, peerLive) in modes) {
+                for ((newPing, newLive) in modes) {
+                    val a = Side("a", startPing, startLive, phaseMs = 0L)
+                    val b = Side("b", peerPing, peerLive, phaseMs = 1_300L)
+                    resolve(a, b)
+                    // The peer is never told: its role and its idea of our interval stay stale.
+                    simulate(a, b, hourMs, extra = listOf(1_200_000L to { retime(a, peerPing, "b", newPing, newLive, 1_200_000L) }))
+                    val label = "a $startPing->$newPing, b $peerPing"
+                    assertNull(a.closedAtMs, "a closed: $label")
+                    assertNull(b.closedAtMs, "b closed: $label")
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `after a mode switch a dead peer is still reaped within the new window`() {
+        for ((peerPing, peerLive) in modes) {
+            for ((newPing, newLive) in modes) {
+                val a = Side("a", 10_000L, 25_000L, phaseMs = 0L)
+                val b = Side("b", peerPing, peerLive, phaseMs = 2_100L)
+                resolve(a, b)
+                b.deadFromMs = 1_800_000L
+                simulate(a, b, hourMs, extra = listOf(1_200_000L to { retime(a, peerPing, "b", newPing, newLive, 1_200_000L) }))
+                val closedAt = assertNotNull(a.closedAtMs, "b $peerPing, a -> $newPing")
+                assertTrue(closedAt - b.deadFromMs <= newLive + 2 * newPing, "reaped ${closedAt - b.deadFromMs} ms after death")
+            }
+        }
+    }
+
+    @Test
+    fun `a re-time rebases the tick clock, so a slower cadence is not taken for a freeze`() {
+        val k = WsKeepalive(5_000L, 15_000L, startedAtMs = 0L).apply { role = PingRole.PINGER }
+        k.onInbound(4_000L)
+        k.onTick(5_000L)
+        k.retime(30_000L, 75_000L, nowMs = 6_000L)
+        k.onInbound(20_000L)
+        // 30 s after the re-time: an on-time tick at the new cadence, judged normally.
+        assertIs<WsKeepalive.Verdict.Ping>(k.onTick(36_000L))
+        k.onInbound(36_020L)
+        assertIs<WsKeepalive.Verdict.Ping>(k.onTick(66_000L))
+        assertIs<WsKeepalive.Verdict.Ping>(k.onTick(96_000L))
+        // 90 s of silence at on-time ticks: past the new 75 s window, judged without a stall probe.
+        val v = k.onTick(126_000L)
+        assertIs<WsKeepalive.Verdict.Close>(v)
+        assertEquals(WsKeepalive.REASON_SILENT, v.reason)
+    }
+
+    @Test
+    fun `a shorter window after a re-time does not condemn silence the old cadence allowed`() {
+        val k = WsKeepalive(30_000L, 75_000L, startedAtMs = 0L).apply { role = PingRole.ANSWERER }
+        k.onInbound(1_000L)
+        // 59 s of silence is normal for an ECO answerer; BOOST's window is 15 s.
+        k.retime(5_000L, 15_000L, nowMs = 60_000L)
+        assertIs<WsKeepalive.Verdict.Ping>(k.onTick(65_000L), "probes at once instead of closing")
+        // No answer: reaped one tick later, 10 s after the switch.
+        assertIs<WsKeepalive.Verdict.Close>(k.onTick(70_000L))
+    }
+
+    @Test
+    fun `presence and link control are background traffic, everything else is a person's`() {
+        assertTrue(WsKeepalive.isBackgroundText("FLASH_PRES v=1 t=hello share=1"))
+        assertTrue(WsKeepalive.isBackgroundText("FLASH_LINK v=1 t=park"))
+        assertTrue(WsKeepalive.isBackgroundText("FLASH_PRES v=1 t=want h=".encodeToByteArray()))
+        assertTrue(!WsKeepalive.isBackgroundText("FLASH_PRESENCE x"))
+        assertTrue(!WsKeepalive.isBackgroundText("FLASH_MSG id=1"))
+        assertTrue(!WsKeepalive.isBackgroundText("FLASH_SEC v=1".encodeToByteArray()))
+        val k = WsKeepalive(10_000L, 25_000L, startedAtMs = 100L)
+        assertEquals(100L, k.lastUserTrafficAtMs)
+        k.onUserTraffic(5_000L)
+        assertEquals(5_000L, k.lastUserTrafficAtMs)
     }
 }

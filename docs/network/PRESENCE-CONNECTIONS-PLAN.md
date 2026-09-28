@@ -1,6 +1,7 @@
 # Presence & Connections Plan (phases PC0–PC7)
 
-**Status (2026-09-28): PC1–PC4 code done (unit-tested, not device-tested). PC0 measurements deferred (P8).**
+**Status (2026-09-28): PC1–PC5 code done (unit-tested, not device-tested). PC7's platform note written; its tuning
+waits for PC6. PC0 and PC6 measurements deferred (P8).**
 Numbers marked *(measure)* are estimates until PC0/PC6 replace them.
 
 **Testing order changed (owner, 2026-09-28, decision P8):** implement PC1–PC5 and then group calling first, and
@@ -259,3 +260,34 @@ all call it. This follows the migration direction (one shared frame) and makes �
 - **Pending device check:** user 3 sees user 2 as Online through user 1 (three phones, user 3 unable to discover
   user 2, for example a hotspot client); Ghost on user 2 removes the ring on user 3 within about 1 s; a message to the
   ringed peer delivers through the tip dial.
+
+### PC5 — code done 2026-09-28 (device check pending, P8). ADR-048
+- `core/network/.../mode/`: `ConnectionModePolicy` (the §3.4 knob table from mode + tier; STANDARD returns the tier's
+  profile unchanged), `EcoLinkSelector` (ring neighbours, wanted set, park candidates), `LinkCodec` (`FLASH_LINK`)
+  and `ConnectionModeController` (one coroutine per host: dial filter, re-time on change, park handshake).
+- **Mode switches re-time live sessions** (`WsConnection.retime`, `WsFlashNetwork.retimeConnections`, both
+  networks) instead of reconnecting. The new window starts half used, never full: a simulation over 125 mode/tier
+  pairs showed that a switch from ECO to BOOST otherwise closed healthy sessions immediately.
+- **Mixed modes** as §3.4 says: ECO closes an idle session it dialed only after the peer answers `park-ok`, and the
+  peer stops redialing before answering; STANDARD, BOOST and old clients never agree. ECO's planner dials only its
+  wanted set (`ConnectionPlanner.plan(allowed)`); dial on demand is unaffected.
+- **Presence per mode:** `PresenceConfig.ECO/BOOST`, the hello's `r=` refresh, per-reporter hold and a relay
+  allowance (also fixes a hop-2 flicker in pure STANDARD), rate refill 250 ms.
+- `hasLiveSession` staleness is max(45 s, liveness + 5 s). User traffic (not keepalive/presence/link frames) is
+  tracked per connection for ECO's 10-minute rules (`linkActivity()`).
+- Hosts: the app holder (tier from Settings; Nearby visibility from `nearbyScreenContent`), `Flash.create` (HIGH
+  tier; busy peer through a calling-safe lambda on `DefaultFlashEngine`) and `DesktopEngine` (settings tier; Nearby
+  from the shell). **Boost added to the Quick Settings tile** (Standard → Ghost → Eco → Boost → Off). The desktop mode
+  menu already cycled through Boost.
+- Tests: `ConnectionModePolicyTest`, `EcoLinkSelectorTest` (group connectivity for 2–24 peers),
+  `ConnectionModeControllerTest` (two hosts on virtual time), `WsKeepalivePingRoleTest` (mode switches never close a
+  healthy pair; a dead one is still reaped), presence mixed-mode tests (27 mode mixes, no flicker). Full suites:
+  network 190 JVM / 288 host, messaging 193, engine 4 + 9, desktop 82, app 39.
+- **Not covered:** a drop that was not a park still redials an unwanted ECO peer until the next park cycle (ADR-048);
+  the session cap stays 8 for every mode until PC6.
+- **Pending device check:** each mode on two phones and the desktop; ECO holds ≤ 3 + active sessions after 10 min
+  idle; switching modes with a call or transfer running drops nothing; a 1-hour screen-off test per §5.
+
+### PC7 — platform note written 2026-09-28; tuning waits for PC6
+- `docs/android-platform-notes.md`: OEM freezers (ERROR-074) ignore the foreground service and the battery whitelist,
+  and what the user has to change. The final numbers and the default mode need PC6's measurements.

@@ -254,11 +254,13 @@ class MainActivity : ComponentActivity() {
         // Bug 7: notifications must be suppressed only while we're genuinely on screen — not
         // merely while the process lives (the service keeps the process alive across onStop).
         FlashNotificationManager.appForeground = true
+        DiscoveryEngineHolder.setUiStarted(true)
     }
 
     override fun onStop() {
         super.onStop()
         FlashNotificationManager.appForeground = false
+        DiscoveryEngineHolder.setUiStarted(false)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -1817,6 +1819,11 @@ private fun FlashShell(
     }
 
     val nearbyScreenContent: @Composable () -> Unit = {
+        // PC5: ECO dials unpaired peers only while Nearby is on screen, so they can be paired.
+        DisposableEffect(Unit) {
+            DiscoveryEngineHolder.setNearbyVisible(true)
+            onDispose { DiscoveryEngineHolder.setNearbyVisible(false) }
+        }
         FlashNearbyScreen(
             state = nearby,
             onPairClick = { peer ->

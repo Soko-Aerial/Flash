@@ -2,6 +2,7 @@
 
 package com.transfer.flash.core.network.ws
 
+import com.transfer.flash.core.network.mode.LinkActivity
 import com.transfer.flash.core.common.result.runSuspendCatching
 import android.content.Context
 import com.transfer.flash.core.common.annotation.FlashInternalApi
@@ -753,7 +754,48 @@ public class WsFlashNetwork(
         val session = sessionsById[FlashDeviceId(deviceId)] ?: return false
         if (!session.connection.isOpen) return false
         if (session.connectionState.value != FlashConnectionState.Connected) return false
-        return nowMs() - session.connection.lastInboundAtMs <= STALE_SESSION_AFTER_MS
+        // PC5: ECO's 75 s liveness window is longer than the fixed threshold, and its 30 s pings
+        // leave gaps a 45 s threshold would call stale. The tiers' windows (25-40 s) all fall
+        // under it, so STANDARD keeps exactly 45 s.
+        val staleAfterMs = maxOf(STALE_SESSION_AFTER_MS, session.connection.keepaliveLivenessTimeoutMs + STALE_MARGIN_MS)
+        return nowMs() - session.connection.lastInboundAtMs <= staleAfterMs
+    }
+
+    /**
+     * Applies the current [transportProfile] to every live connection (PC5: the connection mode
+     * changed). Keepalive numbers are otherwise read once per new connection, so without this a
+     * switch to ECO or BOOST would only reach sessions opened afterwards, while the shared ticker
+     * already ran at the new cadence. Reconnect backoffs restart from the new floor and cap.
+     */
+    public fun retimeConnections() {
+        val timing = keepaliveTiming()
+        sessionsById.values.forEach { runCatching { it.connection.retime(timing) } }
+        reconnectPolicies.clear()
+        keepaliveTicker.reschedule()
+    }
+
+    /**
+     * Every registered session as the ECO rules see it (PC5): who dialed it, and how long since a
+     * person caused traffic on it.
+     */
+    public fun linkActivity(): Map<String, LinkActivity> =
+        sessionsById.values.associate { session ->
+            session.peerDeviceId.value to LinkActivity(
+                outbound = session.isOutbound,
+                userIdleMs = (nowMs() - session.connection.lastUserTrafficAtMs).coerceAtLeast(0L),
+            )
+        }
+
+    /**
+     * Stops redialing [deviceId] when its session closes, without closing it (PC5: this side agreed
+     * that the peer may park the session). The veto lifts when a session with the peer registers
+     * again, exactly as after [disconnect].
+     */
+    public fun releaseSession(deviceId: String) {
+        localDisconnects.add(deviceId)
+        reconnectTargets.remove(deviceId)
+        reconnectPolicies.remove(deviceId)
+        reconnectJobs.remove(deviceId)?.cancel()
     }
 
     private fun onSessionDisconnected(session: WsSession) {
@@ -825,7 +867,8 @@ public class WsFlashNetwork(
             ) {
                 val policy = reconnectPolicies.getOrPut(deviceId) {
                     ReconnectPolicy(
-                        baseMs = if (backup) backupRedialBaseMs else ReconnectPolicy.DEFAULT_BASE_MS,
+                        // PC5: the connection mode sets the dialer's floor (ECO 2 s, BOOST 250 ms).
+                        baseMs = if (backup) backupRedialBaseMs else transportProfile().reconnectBaseMs,
                         // ERROR-033: the single most load-bearing number for "does this device come
                         // back". A device that needs seconds to reassociate on a mesh roam is
                         // exactly the device that must not then wait out a 30 s ceiling before its
@@ -1135,6 +1178,9 @@ public class WsFlashNetwork(
          * schedules again, whose session would otherwise sit in the registry forever (ERROR-031).
          */
         private const val STALE_SESSION_AFTER_MS = 45_000L
+
+        /** Slack over a connection's own liveness window before [hasLiveSession] calls it stale (PC5). */
+        private const val STALE_MARGIN_MS = 5_000L
 
         /** Per-peer cap on frames parked for a session that has not registered yet. */
         private const val MAX_PENDING_PEER_FRAMES = 64

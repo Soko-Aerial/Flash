@@ -8,6 +8,7 @@ import com.transfer.flash.core.common.logging.FlashLog
 import com.transfer.flash.core.common.model.FlashDeviceId
 import com.transfer.flash.core.common.model.FlashDeviceKind
 import com.transfer.flash.core.common.protocol.FlashTextFraming
+import com.transfer.flash.core.calling.model.FlashCallState
 import com.transfer.flash.core.common.perf.FlashPerformanceMode
 import com.transfer.flash.core.calling.CallCoordinator
 import com.transfer.flash.core.calling.FlashCalling
@@ -37,6 +38,9 @@ import com.transfer.flash.core.messaging.util.FlashMimeTypes
 import com.transfer.flash.core.persistence.db.FlashDatabase
 import com.transfer.flash.core.persistence.db.openEncryptedFlashDatabase
 import com.transfer.flash.core.network.bridge.DiscoveryRouteBinder
+import com.transfer.flash.core.network.mode.ConnectionModeController
+import com.transfer.flash.core.network.mode.ConnectionModePolicy
+import com.transfer.flash.core.network.mode.LinkView
 import com.transfer.flash.core.network.planner.AutoConnector
 import com.transfer.flash.core.network.planner.ConnectionPlanner
 import com.transfer.flash.core.network.presence.PresenceCodec
@@ -323,6 +327,7 @@ public class DesktopEngine(
                 .onFailure { FlashLog.w(TAG_DISCOVERY, "Discovery restart failed", it) }
             autoConnector?.sweepNow()
             presenceExchange?.refresh()
+            modeController?.refresh()
         }
         return true
     }
@@ -454,6 +459,25 @@ public class DesktopEngine(
     /** Presence sharing (PC4, ADR-046); the text router hands it every FLASH_PRES frame. */
     @Volatile
     private var presenceExchange: PresenceExchange? = null
+
+    /** Connection mode (PC5, ADR-048); the text router hands it every FLASH_LINK frame. */
+    @Volatile
+    private var modeController: ConnectionModeController? = null
+
+    private val _nearbyVisible = MutableStateFlow(false)
+
+    /**
+     * The Nearby screen is (not) on screen. ECO dials unpaired peers only while it is, so they can
+     * be paired (PC5, plan §3.4). The shell calls this from the screen's composition.
+     */
+    public fun setNearbyVisible(visible: Boolean) {
+        _nearbyVisible.value = visible
+    }
+
+    /** The connection policy for the current mode and performance tier; read per use. */
+    private fun connectionPolicy(): ConnectionModePolicy =
+        ConnectionModePolicy.of(_discoveryMode.value, _settings.value.performanceMode ?: FlashPerformanceMode.HIGH)
+
     private var started = false
     private val startMutex = Any()
 
@@ -552,7 +576,8 @@ public class DesktopEngine(
             localDeviceId = localId,
             localFriendlyName = friendlyName,
             tlsOptions = tlsOptions,
-            transportProfile = { (_settings.value.performanceMode ?: FlashPerformanceMode.HIGH).transport },
+            // PC5 (ADR-048): the tier's pacing, adjusted by the connection mode (ECO / BOOST).
+            transportProfile = { connectionPolicy().transport },
         )
         networkImpl = network
 
@@ -628,9 +653,44 @@ public class DesktopEngine(
             },
             sha256 = FlashFingerprint::fingerprint,
             randomSalt = SecureRandom().let { random -> { ByteArray(PresenceCodec.SALT_BYTES).also(random::nextBytes) } },
+            config = { connectionPolicy().presence },
             log = { FlashLog.i(TAG_WS, it) },
         )
         presenceExchange = presence
+
+        // ---- connection mode (PC5, ADR-048): the same wiring as both Android hosts ----
+        val modes = ConnectionModeController(
+            scope = scope,
+            localDeviceId = localId,
+            policy = ::connectionPolicy,
+            snapshot = {
+                val sessions = network.activeSessions.value.keys.mapTo(HashSet()) { it.value }
+                LinkView(
+                    available = discovery.discoveredEndpoints.value.mapTo(HashSet()) { it.deviceId.value } +
+                        presence.reachablePeerIds.value + sessions,
+                    contacts = trustStore.getTrustedPeers().keys.mapTo(HashSet()) { it.value } +
+                        chatImpl?.activeGroupRosters().orEmpty().flatten(),
+                    activity = network.linkActivity(),
+                    busy = setOfNotNull(
+                        callsImpl?.activeCall?.value?.takeIf { it.state != FlashCallState.ENDED }?.peerId,
+                    ),
+                    nearbyOpen = _nearbyVisible.value,
+                )
+            },
+            send = { peerId, text ->
+                val session = network.activeSessions.value[FlashDeviceId(peerId)] as? WsSession
+                session?.connection?.sendTextAsync(text)
+                session != null
+            },
+            release = network::releaseSession,
+            close = { peerId -> network.disconnect(FlashDeviceId(peerId)) },
+            onPolicyChanged = {
+                network.retimeConnections()
+                presence.refresh()
+            },
+            log = { FlashLog.i(TAG_WS, it) },
+        )
+        modeController = modes
 
         // ---- durable chat (slice 4): the same repository the phone runs ----
         // Built after the transfer repository because the attachment-progress join reads
@@ -885,11 +945,16 @@ public class DesktopEngine(
                         .also { presence.onTipResult(tip, it is FlashResult.Success) }
                 }
             },
+            // PC5: ECO dials only the peers it wants; null (STANDARD, BOOST) dials everyone.
+            allowed = { modes.dialFilter.value },
             log = { FlashLog.i(TAG_WS, it) },
         )
         autoConnector = connector
-        connector.start(edges = merge(discovery.discoveredEndpoints, presence.tips))
-        presence.start(edges = merge(network.activeSessions, discovery.discoveredEndpoints, discovery.discoveryMode))
+        connector.start(edges = merge(discovery.discoveredEndpoints, presence.tips, modes.dialFilter))
+        presence.start(edges = merge(network.activeSessions, discovery.discoveredEndpoints, discovery.discoveryMode, _discoveryMode))
+        // `_settings` wakes it on a performance-tier change too; the controller acts only when the
+        // resulting policy actually differs.
+        modes.start(edges = merge(_discoveryMode, _settings, network.activeSessions, discovery.discoveredEndpoints, _nearbyVisible))
         boot("dial triggers armed (discovery edge + ${AutoConnector.DEFAULT_SWEEP_INTERVAL_MS}ms sweep)")
 
         // The endpoint roster itself: which device id each discovered row carries, and at which
@@ -1203,6 +1268,8 @@ public class DesktopEngine(
         if (callsImpl?.onInboundText(peerDeviceId, text) == true) return
         // Presence sharing (PC4): consumes every FLASH_PRES frame, valid or not.
         if (presenceExchange?.onInboundText(peerDeviceId, text) == true) return
+        // Link control (PC5): consumes every FLASH_LINK frame, valid or not.
+        if (modeController?.onInboundText(peerDeviceId, text) == true) return
         // Phase 26-3: pairing traffic shares the FLASH_XFER routing point but its own prefix —
         // check it FIRST so a pairing line is never handed to the transfer repository.
         if (FlashTextFraming.parseFields(text, "FLASH_PAIR") != null) {

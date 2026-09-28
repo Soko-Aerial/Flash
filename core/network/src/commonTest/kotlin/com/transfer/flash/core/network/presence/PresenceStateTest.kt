@@ -367,4 +367,57 @@ class PresenceStateTest {
         val next = a.state.step(config.refreshMs / 2, a.view()).nextInMs
         assertTrue(next in 1..config.refreshMs, "next=$next")
     }
+
+    // ---------------------------------------------------------------- PC5: modes
+
+    @Test
+    fun anEcoReporterIsHeldUntilItsNextRefreshOnAStandardReceiver() {
+        val (a, b, c) = triangle()
+        a.state.config = PresenceConfig.ECO
+        settle(0, a, b, c)
+        // Past STANDARD's own 45 s, but A only refreshes every 60 s: B must still hold it.
+        assertEquals(setOf("C"), b.state.reachable(PresenceConfig.ECO.refreshMs - 1, b.view()))
+        a.modern = false
+        val gone = PresenceConfig.ECO.refreshMs * 3 / 2 + 1
+        b.state.step(gone, b.view())
+        assertTrue(b.state.reachable(gone, b.view()).isEmpty(), "still expires once A is silent")
+    }
+
+    @Test
+    fun aModeChangeAnnouncesTheNewRefreshAtOnce() {
+        val (a, b, c) = triangle()
+        settle(0, a, b, c)
+        wire.clear()
+        a.state.config = PresenceConfig.BOOST
+        settle(1_000, a, b, c)
+        val hellos = wire.filter { it.first == "A" }.mapNotNull { it.third as? PresenceFrame.Hello }
+        assertEquals(setOf(PresenceConfig.BOOST.refreshMs), hellos.map { it.refreshMs }.toSet())
+        assertEquals(2, hellos.size, "one to each peer")
+    }
+
+    @Test
+    fun relayedReportsDoNotFlickerBetweenRefreshesInAnyModeMix() {
+        val modes = listOf(PresenceConfig.ECO, PresenceConfig.STANDARD, PresenceConfig.BOOST)
+        for (origin in modes) for (relay in modes) for (receiver in modes) {
+            wire.clear()
+            tokens.clear()
+            // C - A - B - D: D hears about C only through B relaying A's report.
+            val a = Node("A").apply { state.config = origin }
+            val b = Node("B").apply { state.config = relay }
+            val c = Node("C")
+            val d = Node("D").apply { state.config = receiver }
+            connect(a, c)
+            connect(a, b)
+            connect(b, d)
+            listOf(a, b, c, d).forEach { n -> n.trusted = setOf("A", "B", "C", "D") - n.id }
+            var t = 0L
+            settle(t, a, b, c, d)
+            while (t < 300_000L) {
+                t += 500L
+                settle(t, a, b, c, d)
+                val label = "origin ${origin.refreshMs} relay ${relay.refreshMs} receiver ${receiver.refreshMs} t=$t"
+                assertTrue("C" in d.state.reachable(t, d.view()), label)
+            }
+        }
+    }
 }

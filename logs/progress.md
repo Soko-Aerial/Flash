@@ -1,5 +1,54 @@
 # Progress Log
 
+## 2026-09-28 — PC5 mode-driven connection policy: code done (device check pending, P8)
+
+### Worked on
+PC5 of `PRESENCE-CONNECTIONS-PLAN.md` §3.4: ECO / STANDARD / BOOST now set keepalive, redial pacing, presence timing
+and (in ECO) which sessions are held, safely for phones in different modes. Plus PC7's platform note (ERROR-074).
+
+### Changed
+- New `core/network/.../mode/`: `ConnectionModePolicy`, `EcoLinkSelector`, `LinkCodec` (`FLASH_LINK`),
+  `ConnectionModeController`.
+- `FlashTransportProfile.reconnectBaseMs` (default 1 s, the old constant); both networks use it.
+- `WsKeepalive` / `WsConnection` (both): `retime()` with a half-window credit, user-traffic tracking (keepalive,
+  `FLASH_PRES` and `FLASH_LINK` frames excluded); `WsKeepaliveTicker.reschedule()`.
+- Both networks: `retimeConnections()`, `linkActivity()`, `releaseSession()`, liveness-relative staleness in
+  `hasLiveSession` (STANDARD unchanged at 45 s).
+- Presence: `PresenceConfig.ECO/BOOST`, hello `r=`, per-reporter hold, relay allowance, rate refill 250 ms.
+- `ConnectionPlanner.plan(allowed)` / `AutoConnector(allowed)` (rule 8: ECO dials only its wanted set).
+- Hosts: `DiscoveryEngineHolder` + `MainActivity` (Nearby visible, UI started), `Flash.create` +
+  `DefaultFlashEngine.busyCallPeerId()` (calling-safe lambda), `DesktopEngine` + `DesktopShell` (Nearby visible).
+- Quick Settings tile: Standard → Ghost → Eco → **Boost** → Off.
+- Docs: ADR-048; `docs/protocol.md` "Link control" and presence `r=`/hold; plan status, §7 PC5 and PC7;
+  `docs/android-platform-notes.md` OEM freezer note.
+
+### Why
+ADR-045 item 6 and the owner's P8 order. Re-timing instead of reconnecting keeps calls and transfers alive across a
+mode switch; the park handshake stops ECO and non-ECO phones from churning each other's sessions.
+
+### Problems found by the tests (none reached a device)
+- Switching to a shorter liveness window closed healthy sessions at once (ECO's normal 30 s silence exceeds BOOST's
+  15 s window). Fixed: `retime` credits half the new window; a dead peer is still reaped within the new window.
+- Relayed presence entries could expire between the relayer's refreshes; fixed by the relay allowance (it also
+  affected pure STANDARD).
+- The controller re-asked a parked peer in the same instant forever (test hung). Fixed: a granted request stays on
+  record until the session is gone.
+
+### Verification
+`:core:network:jvmTest` 190 (+33), `:core:network:testAndroidHostTest` 288, `:core:messaging:testAndroidHostTest` 193,
+`:core:engine:jvmTest` 4, `:core:engine:testAndroidHostTest` 9, `:core:engine:compileAndroidMain`,
+`:desktop:compileKotlinJvm`, `:desktop:jvmTest` 82, `:app:compileDebugKotlin`, `:app:testDebugUnitTest` 39: all
+green. **Not device-tested** (P8).
+
+### Remaining
+- Device check (pending): each mode on two phones and the desktop; ECO holds ≤ 3 + active sessions after 10 min idle;
+  a mode switch during a call or transfer drops nothing; 1-hour screen-off per mode.
+- A non-park drop still redials an unwanted ECO peer until the next park cycle. Session cap stays 8 (PC6 decides).
+- PC7 tuning needs PC6's numbers. The OEM settings path in the platform note is reported, not verified.
+
+### Next AI
+Group calling G1+ (`docs/calling/GROUP-VIDEO-PLAN.md`). Then all device testing: PC0, PC6, and the PC1–PC5 checks.
+
 ## 2026-09-28 — PC4 presence sharing: code done (device check pending, P8)
 
 ### Worked on

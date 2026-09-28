@@ -36,6 +36,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
  *    rule 5's wait and rule 4's 15 s window. It still respects rules 2 and 3, one attempt in flight,
  *    and a [URGENT_FLOOR_MS] floor since the last attempt of any kind, so a burst of queued
  *    messages to an unreachable peer costs one dial, not one per message.
+ * 8. **Mode filter (PC5).** [plan]'s `allowed` set, when given, limits which sighted peers may be
+ *    dialed (ECO's `ConnectionModeController.dialFilter`). Peers outside it are treated as if
+ *    discovery did not list them. Gateway probes and [planUrgent] ignore it.
  *
  * Thread-safe without a lock. The state is immutable and replaced by compare-and-set, because
  * `core:network` deliberately declares no expect/actual classes (see its `build.gradle.kts`).
@@ -108,17 +111,20 @@ public class ConnectionPlanner(
      *
      * @param nowMs any monotonic millisecond clock, used consistently across calls.
      * @param gatewayHosts IPv4 gateways to probe (Android hotspot clients); empty elsewhere.
+     * @param allowed rule 8: the only device ids that may be dialed, or null for all.
      */
     public fun plan(
         nowMs: Long,
         sightings: List<Sighting>,
         links: Links,
         gatewayHosts: List<String> = emptyList(),
+        allowed: Set<String>? = null,
     ): Plan {
         val candidates = ArrayList<Candidate>(sightings.size + gatewayHosts.size)
         val seen = HashSet<String>()
         for (s in sightings) {
-            if (s.deviceId == localDeviceId || !seen.add(s.deviceId)) continue
+            if (s.deviceId == localDeviceId || (allowed != null && s.deviceId !in allowed)) continue
+            if (!seen.add(s.deviceId)) continue
             candidates += Candidate(
                 dial = Dial(key = s.deviceId, host = s.host, port = s.port, peerDeviceId = s.deviceId, name = s.name),
                 live = links.hasLiveSession(s.deviceId),

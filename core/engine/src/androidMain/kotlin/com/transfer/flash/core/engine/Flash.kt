@@ -8,6 +8,7 @@ import android.content.Context
 import android.util.Log
 import com.transfer.flash.core.common.model.FlashDeviceId
 import com.transfer.flash.core.common.model.FlashDeviceKind
+import com.transfer.flash.core.common.perf.FlashPerformanceMode
 import com.transfer.flash.core.common.protocol.FlashTextFraming
 import com.transfer.flash.core.common.result.FlashResult
 import com.transfer.flash.core.discovery.core.CompositeDiscovery
@@ -29,6 +30,9 @@ import com.transfer.flash.core.messaging.protocol.PttAudioFrame
 import com.transfer.flash.core.messaging.protocol.PttFrameCodec
 import com.transfer.flash.core.messaging.protocol.PttSessionCodec
 import com.transfer.flash.core.network.bridge.DiscoveryRouteBinder
+import com.transfer.flash.core.network.mode.ConnectionModeController
+import com.transfer.flash.core.network.mode.ConnectionModePolicy
+import com.transfer.flash.core.network.mode.LinkView
 import com.transfer.flash.core.network.planner.AutoConnector
 import com.transfer.flash.core.network.planner.ConnectionPlanner
 import com.transfer.flash.core.network.presence.PresenceCodec
@@ -215,6 +219,16 @@ private class Wiring(
     /** Presence sharing (PC4, ADR-046); the text router hands it every FLASH_PRES frame. */
     @Volatile private var presenceRef: PresenceExchange? = null
 
+    /** Connection mode (PC5, ADR-048); the text router hands it every FLASH_LINK frame. */
+    @Volatile private var modeRef: ConnectionModeController? = null
+
+    /**
+     * The connection policy for the discovery mode the consumer set on [FlashEngine.discovery].
+     * `Flash.create` has no hardware tier, so the tier is HIGH, as the network's default always was.
+     */
+    private fun connectionPolicy(engine: CompositeDiscovery): ConnectionModePolicy =
+        ConnectionModePolicy.of(engine.discoveryMode.value, FlashPerformanceMode.HIGH)
+
     fun build(): FlashEngine {
         val stored = AndroidPreferencesIdentityStore(appContext).getIdentity()
         val identity = FlashAdvertisedIdentity(
@@ -268,6 +282,8 @@ private class Wiring(
             localDeviceId = localId,
             localFriendlyName = identity.friendlyName,
             tlsOptions = tlsOptions,
+            // PC5 (ADR-048): keepalive and redial pacing follow the discovery mode (ECO / BOOST).
+            transportProfile = { connectionPolicy(engine).transport },
             onUsableNetwork = {
                 networkRestartJob?.cancel()
                 networkRestartJob = scope.launch {
@@ -369,9 +385,42 @@ private class Wiring(
             },
             sha256 = FlashFingerprint::fingerprint,
             randomSalt = SecureRandom().let { random -> { ByteArray(PresenceCodec.SALT_BYTES).also(random::nextBytes) } },
+            config = { connectionPolicy(engine).presence },
             log = { Log.i(TAG, it) },
         )
         presenceRef = presence
+        // PC5 (ADR-048): the connection mode, the same wiring as the app holder.
+        val modes = ConnectionModeController(
+            scope = scope,
+            localDeviceId = localId,
+            policy = { connectionPolicy(engine) },
+            snapshot = {
+                val sessions = networkImpl.activeSessions.value.keys.mapTo(HashSet()) { it.value }
+                LinkView(
+                    available = engine.discoveredEndpoints.value.mapTo(HashSet()) { it.deviceId.value } +
+                        presence.reachablePeerIds.value + sessions,
+                    contacts = trustStore.getTrustedPeers().keys.mapTo(HashSet()) { it.value } +
+                        presenceChat?.activeGroupRosters().orEmpty().flatten(),
+                    activity = networkImpl.linkActivity(),
+                    busy = setOfNotNull((facade as? DefaultFlashEngine)?.busyCallPeerId()),
+                    // No Nearby screen of its own: a consumer pairs through its own UI.
+                    nearbyOpen = false,
+                )
+            },
+            send = { peerId, text ->
+                val session = networkImpl.activeSessions.value[FlashDeviceId(peerId)] as? WsSession
+                session?.connection?.sendTextAsync(text)
+                session != null
+            },
+            release = networkImpl::releaseSession,
+            close = { peerId -> networkImpl.disconnect(FlashDeviceId(peerId)) },
+            onPolicyChanged = {
+                networkImpl.retimeConnections()
+                presence.refresh()
+            },
+            log = { Log.i(TAG, it) },
+        )
+        modeRef = modes
         // Built before the repository so its sink can dial on demand (PC3); started once the
         // server is up, below.
         val autoConnector = AutoConnector(
@@ -396,6 +445,7 @@ private class Wiring(
                         .also { presence.onTipResult(tip, it is FlashResult.Success) }
                 }
             },
+            allowed = { modes.dialFilter.value },
             log = { Log.i(TAG, it) },
         )
         val chatImpl = RealFlashChatRepository(
@@ -610,8 +660,9 @@ private class Wiring(
             runCatching { transferImpl.preloadReceiverProgress() }
 
             // PC2 (ADR-045): the same planner and driver as the app holder and the desktop engine.
-            autoConnector.start(edges = merge(engine.discoveredEndpoints, presence.tips))
+            autoConnector.start(edges = merge(engine.discoveredEndpoints, presence.tips, modes.dialFilter))
             presence.start(edges = merge(networkImpl.activeSessions, engine.discoveredEndpoints, engine.discoveryMode))
+            modes.start(edges = merge(engine.discoveryMode, networkImpl.activeSessions, engine.discoveredEndpoints))
         }
 
         val facade = DefaultFlashEngine(
@@ -699,6 +750,8 @@ private class Wiring(
         }
         // Presence sharing (PC4): consumes every FLASH_PRES frame, valid or not.
         if (presenceRef?.onInboundText(peerDeviceId, text) == true) return
+        // Link control (PC5): consumes every FLASH_LINK frame, valid or not.
+        if (modeRef?.onInboundText(peerDeviceId, text) == true) return
         // PTT next (ADR-032): ping + voice-session control share one entry point. When an engine
         // is attached it owns decode, dedup, the fail-closed trust/transport-binding check and the
         // floor reduction, and it answers true for recognized-but-rejected frames too. The

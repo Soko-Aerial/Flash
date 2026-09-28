@@ -45,6 +45,8 @@ public class AutoConnector(
     private val dial: suspend (ConnectionPlanner.Dial) -> FlashResult<*>,
     private val gatewayHosts: () -> List<String> = { emptyList() },
     private val quiet: () -> Boolean = { false },
+    /** The connection mode's dial filter (PC5, planner rule 8); null dials every sighting. */
+    private val allowed: () -> Set<String>? = { null },
     private val log: (String) -> Unit = {},
     private val sweepIntervalMs: Long = DEFAULT_SWEEP_INTERVAL_MS,
     /** Monotonic milliseconds for the planner; injectable so tests can run on virtual time. */
@@ -112,6 +114,7 @@ public class AutoConnector(
                 sightings = sightings(),
                 links = links,
                 gatewayHosts = runCatching { gatewayHosts() }.getOrDefault(emptyList()),
+                allowed = allowed(),
             )
         }.getOrElse { t ->
             log("Auto-connect sweep failed: ${t.message}")

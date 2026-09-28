@@ -1,8 +1,14 @@
 package com.transfer.flash.core.network.presence
 
 /**
- * Timings and limits for presence sharing. [STANDARD] is plan §3.4's STANDARD column; PC5 adds the
- * ECO and BOOST rows.
+ * Timings and limits for presence sharing, one per connection mode (plan §3.4; PC5 added [ECO] and
+ * [BOOST]).
+ *
+ * The receiver's rate limit is the same in every mode (burst 10, one more per 250 ms), because it
+ * guards against a sender in any mode, including a BOOST sender whose deltas may come every 250 ms.
+ * How long a report is held is decided by the receiver from its own [maxAgeMs] **and** the sender's
+ * announced refresh ([PresenceState.holdFor]), so an ECO reporter's 60 s refresh never makes its
+ * reports flicker out on a STANDARD or BOOST receiver.
  */
 public data class PresenceConfig(
     /** Digest and hello cadence per session. */
@@ -13,12 +19,25 @@ public data class PresenceConfig(
     val minFrameGapMs: Long = 1_000L,
     /** Per-sender token bucket: burst size, and one token back per [rateRefillMs]. */
     val rateCapacity: Int = 10,
-    val rateRefillMs: Long = 1_000L,
+    val rateRefillMs: Long = 250L,
     /** Consecutive failed endpoint tips after which a sender is ignored for the session. */
     val failedTipsToIgnore: Int = 3,
 ) {
     public companion object {
         public val STANDARD: PresenceConfig = PresenceConfig()
+
+        /** Battery first: half as many presence frames, reports held accordingly longer. */
+        public val ECO: PresenceConfig = PresenceConfig(refreshMs = 60_000L, maxAgeMs = 90_000L)
+
+        /** Status within about a second: fast refresh, near-instant deltas, short holding. */
+        public val BOOST: PresenceConfig = PresenceConfig(refreshMs = 10_000L, maxAgeMs = 20_000L, minFrameGapMs = 250L)
+
+        /**
+         * Extra holding for a relayed (2-hop) report on top of the relayer's hold. A relayed age can
+         * reach the origin reporter's refresh interval before the relayer's next report replaces
+         * it, and the longest refresh is [PresenceCodec.MAX_REFRESH_MS] (ECO), so 1.5x that.
+         */
+        public const val RELAY_ALLOWANCE_MS: Long = PresenceCodec.MAX_REFRESH_MS * 3 / 2
     }
 }
 
@@ -107,13 +126,15 @@ public data class PresenceTip(
  *
  * ## Safety of what is received
  * Reports never touch trust. An entry is kept only when its subject is one of this device's
- * contacts, and it expires at [PresenceConfig.maxAgeMs]. Frames are rate-limited per sender. A tip is
+ * contacts, and it expires at [holdFor] (a relayed one [PresenceConfig.RELAY_ALLOWANCE_MS] later).
+ * Frames are rate-limited per sender. A tip is
  * offered for dialing only for a pinned subject that discovery does not see, and a sender whose tips
  * fail [PresenceConfig.failedTipsToIgnore] times in a row is ignored until its session reopens.
  */
 internal class PresenceState(
     private val localDeviceId: String,
-    private val config: PresenceConfig,
+    /** Replaced by [PresenceExchange] when the connection mode changes (PC5). */
+    var config: PresenceConfig,
     private val sha256: (ByteArray) -> ByteArray,
     private val randomSalt: () -> ByteArray,
 ) {
@@ -121,12 +142,16 @@ internal class PresenceState(
 
     data class Step(val out: List<Outgoing>, val nextInMs: Long)
 
-    private class Stored(val entry: PresenceEntry, val receivedAtMs: Long)
+    /** @property limitMs the age after which this report is dropped, fixed when it was received. */
+    private class Stored(val entry: PresenceEntry, val receivedAtMs: Long, val limitMs: Long)
 
     private inner class Peer(var token: Any?, val createdAtMs: Long) {
         val salt: String = PresenceCodec.bytesToHex(randomSalt().copyOf(PresenceCodec.SALT_BYTES))
         var helloSentAtMs: Long? = null
         var helloShareSent: Boolean? = null
+        var helloRefreshSent: Long? = null
+        /** The refresh interval the peer's hello announced (PC5), or null for a PC4 peer. */
+        var theirRefreshMs: Long? = null
         var theirSalt: String? = null
         var theirWant: Set<String> = emptySet()
         var wantSent: Set<String>? = null
@@ -161,6 +186,7 @@ internal class PresenceState(
         when (frame) {
             is PresenceFrame.Hello -> {
                 shareFlags[from] = frame.share
+                peer.theirRefreshMs = frame.refreshMs
                 if (frame.salt != peer.theirSalt) {
                     peer.theirSalt = frame.salt
                     peer.wantSent = null
@@ -173,13 +199,15 @@ internal class PresenceState(
             is PresenceFrame.Report -> {
                 val contacts = contactsOf(view)
                 val board = if (frame.full) HashMap() else reports.getOrPut(from) { HashMap() }
+                val hold = holdFor(peer)
                 for (e in frame.entries) {
                     if (e.deviceId == localDeviceId || e.deviceId == from || e.deviceId !in contacts) continue
-                    if (e.ageMs > config.maxAgeMs) continue
+                    val limit = if (e.hops >= 2) hold + PresenceConfig.RELAY_ALLOWANCE_MS else hold
+                    if (e.ageMs > limit) continue
                     if (e.state == PresenceReportState.Gone) {
                         board.remove(e.deviceId)
                     } else {
-                        board[e.deviceId] = Stored(e, nowMs)
+                        board[e.deviceId] = Stored(e, nowMs, limit)
                     }
                 }
                 if (board.isEmpty()) reports.remove(from) else reports[from] = board
@@ -216,13 +244,17 @@ internal class PresenceState(
         for ((peerId, peer) in peers) {
             if (peer.token == null || !isEligible(peerId, view)) continue
 
-            // Hello: on session open, every refresh, and when Ghost mode flips.
+            // Hello: on session open, every refresh, when Ghost mode flips, and when the connection
+            // mode changes our refresh interval (PC5).
             val share = !view.ghost
             val helloAt = peer.helloSentAtMs
-            if (helloAt == null || nowMs - helloAt >= config.refreshMs || peer.helloShareSent != share) {
-                out += Outgoing(peerId, PresenceFrame.Hello(share, if (share) peer.salt else null))
+            if (helloAt == null || nowMs - helloAt >= config.refreshMs || peer.helloShareSent != share ||
+                peer.helloRefreshSent != config.refreshMs
+            ) {
+                out += Outgoing(peerId, PresenceFrame.Hello(share, if (share) peer.salt else null, config.refreshMs))
                 peer.helloSentAtMs = nowMs
                 peer.helloShareSent = share
+                peer.helloRefreshSent = config.refreshMs
             }
             next = minOf(next, (peer.helloSentAtMs ?: nowMs) + config.refreshMs - nowMs)
 
@@ -288,7 +320,7 @@ internal class PresenceState(
         for ((sender, board) in reports) {
             if (peers[sender]?.ignored == true) continue
             for ((subject, stored) in board) {
-                if (subject in contacts && effectiveAge(stored, nowMs) <= config.maxAgeMs) out += subject
+                if (subject in contacts && effectiveAge(stored, nowMs) <= stored.limitMs) out += subject
             }
         }
         return out
@@ -345,7 +377,7 @@ internal class PresenceState(
             for ((subject, stored) in board) {
                 if (stored.entry.hops != 1 || subject in known) continue
                 val age = effectiveAge(stored, nowMs)
-                if (age > config.maxAgeMs) continue
+                if (age > stored.limitMs) continue
                 if (!mayShare(receiver, peer, subject, direct = false, view)) continue
                 val current = relays[subject]
                 if (current == null || age < current.ageMs) {
@@ -408,16 +440,24 @@ internal class PresenceState(
         var next: Long? = null
         val emptySenders = ArrayList<String>()
         for ((sender, board) in reports) {
-            board.entries.removeAll { (_, stored) -> effectiveAge(stored, nowMs) > config.maxAgeMs }
+            board.entries.removeAll { (_, stored) -> effectiveAge(stored, nowMs) > stored.limitMs }
             if (board.isEmpty()) emptySenders += sender
             for (stored in board.values) {
-                val left = config.maxAgeMs - effectiveAge(stored, nowMs) + 1
+                val left = stored.limitMs - effectiveAge(stored, nowMs) + 1
                 next = minOf(next ?: left, left)
             }
         }
         emptySenders.forEach { reports.remove(it) }
         return next
     }
+
+    /**
+     * How long a first-hand report from [peer] is held (PC5): our own [PresenceConfig.maxAgeMs], or
+     * 1.5x the sender's announced refresh when that is longer, so a slower sender's reports survive
+     * until its next digest.
+     */
+    private fun holdFor(peer: Peer): Long =
+        maxOf(config.maxAgeMs, (peer.theirRefreshMs ?: 0L) * 3 / 2)
 
     private fun takeToken(peer: Peer, nowMs: Long): Boolean {
         val refilled = ((nowMs - peer.tokensAtMs) / config.rateRefillMs).toInt()

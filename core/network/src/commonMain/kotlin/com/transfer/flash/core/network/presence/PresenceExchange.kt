@@ -42,7 +42,8 @@ public class PresenceExchange(
     private val send: suspend (peerId: String, text: String) -> Boolean,
     sha256: (ByteArray) -> ByteArray,
     randomSalt: () -> ByteArray,
-    config: PresenceConfig = PresenceConfig.STANDARD,
+    /** Read at every step, so a connection mode change applies without a restart (PC5). */
+    private val config: () -> PresenceConfig = { PresenceConfig.STANDARD },
     private val log: (String) -> Unit = {},
     /** Monotonic milliseconds; injectable so tests can run on virtual time. */
     private val nowMs: () -> Long = TimeSource.Monotonic.markNow().let { origin -> { origin.elapsedNow().inWholeMilliseconds } },
@@ -53,7 +54,7 @@ public class PresenceExchange(
         class TipResult(val tip: PresenceTip, val success: Boolean) : Event
     }
 
-    private val state = PresenceState(localDeviceId, config, sha256, randomSalt)
+    private val state = PresenceState(localDeviceId, config(), sha256, randomSalt)
     private val events = Channel<Event>(capacity = EVENT_CAPACITY, onBufferOverflow = BufferOverflow.DROP_OLDEST)
 
     private val _reachable = MutableStateFlow<Set<String>>(emptySet())
@@ -116,6 +117,7 @@ public class PresenceExchange(
     private suspend fun runStep(batch: List<Event>): Long {
         val view = snapshot()
         val now = nowMs()
+        state.config = config()
         for (event in batch) {
             when (event) {
                 is Event.Inbound -> if (!state.onFrame(now, event.peerId, event.frame, view)) {

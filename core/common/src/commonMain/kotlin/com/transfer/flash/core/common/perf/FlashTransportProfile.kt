@@ -44,6 +44,9 @@ package com.transfer.flash.core.common.perf
  *   a slower sample makes the governor correspondingly slower to react.
  * @param iceRestartMinIntervalMs floor on the gap between two ICE restart attempts, so a link
  *   that flaps cannot turn into an offer/answer storm.
+ * @param reconnectBaseMs first delay of the dialer's reconnect backoff. The same 1 s at every tier;
+ *   the connection mode changes it (PC5: ECO 2 s, BOOST 250 ms). The accepting side's backup loop
+ *   keeps its own larger floor.
  */
 public data class FlashTransportProfile(
     public val pingIntervalMs: Long,
@@ -54,8 +57,12 @@ public data class FlashTransportProfile(
     public val callConnectTimeoutMs: Long,
     public val callStatsIntervalMs: Long,
     public val iceRestartMinIntervalMs: Long,
+    public val reconnectBaseMs: Long = DEFAULT_RECONNECT_BASE_MS,
 ) {
     public companion object {
+        /** `ReconnectPolicy.DEFAULT_BASE_MS`, the dialer's first redial delay before PC5. */
+        public const val DEFAULT_RECONNECT_BASE_MS: Long = 1_000L
+
         /**
          * Slow radio, slow scheduler, long roams.
          *

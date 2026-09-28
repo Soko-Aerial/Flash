@@ -421,7 +421,7 @@ like call and group frames. Code: `core/network/.../presence/` (`PresenceCodec`,
 `PresenceExchange`); plan `docs/network/PRESENCE-CONNECTIONS-PLAN.md` §3.2.
 
 ```text
-FLASH_PRES v=1 t=hello share=<1|0> [salt=<32 hex>]
+FLASH_PRES v=1 t=hello share=<1|0> [salt=<32 hex>] [r=<ms>]
 FLASH_PRES v=1 t=want h=<16 hex>,<16 hex>,...
 FLASH_PRES v=1 t=digest e=<entry>;<entry>;...
 FLASH_PRES v=1 t=delta  e=<entry>;<entry>;...
@@ -431,6 +431,8 @@ entry = <deviceId>|<ageMs>|<c|s|x>|<hops>|[<host>:<port>]
 
 - **hello**: sent when a session opens, every 30 s (STANDARD), and when Ghost mode flips. `share=0` is a Ghost
   device: nobody may report it, and it sends no salt because it reports nothing. `salt` is fresh random per session.
+  `r` (PC5) is the sender's refresh interval: 60 000 in ECO, 30 000 in STANDARD, 10 000 in BOOST. A hello is sent
+  again when it changes. A value outside 5 000..60 000 is treated as absent; a pre-PC5 client sends none.
 - **want**: the asker's contacts (paired peers and fellow group members), each as
   `H = SHA-256("flash-pres-v1|" || salt bytes || UTF-8 id)` truncated to 8 bytes, under the **reporter's** salt.
   Replaces the previous want list. Sent again whenever the salt or the asker's contacts change. At most 512.
@@ -456,11 +458,40 @@ one of the device's active groups. A peer R hears about device S only when:
 A Ghost device reports nothing. When it enters Ghost it sends an empty digest to withdraw what it reported.
 
 **What a receiver does with it.** An entry is kept only when its subject is one of the receiver's contacts, and it
-expires when `ageMs` plus the receiver's holding time passes 45 s (STANDARD). Frames are rate-limited per sender
-(burst 10, one more per second). A report never changes trust. It shows the subject as Online (ring). A report with
+expires when `ageMs` plus the receiver's holding time passes its limit. The limit is the larger of the receiver's
+own max age (ECO 90 s, STANDARD 45 s, BOOST 20 s) and 1.5 × the reporter's announced `r`, so a BOOST phone does not
+drop an ECO reporter's entries between that reporter's refreshes. A relayed (hops 2) entry gets another 90 s
+(1.5 × the longest refresh), because the relayer's copy can be up to one origin refresh old before it is replaced.
+Frames are rate-limited per sender (burst 10, one more every 250 ms since PC5, so a BOOST sender's 250 ms deltas
+fit). A report never changes trust. It shows the subject as Online (ring). A report with
 an endpoint becomes a **dial tip** only when the subject has a pinned TLS key, has no session, and is not seen by the
 receiver's own discovery. The tip is dialed with the subject's id named, so the TLS handshake checks that pin and a
 forged tip fails before any frame. After 3 failed tips in a row, the sender is ignored until its session reopens.
+
+## Link control (PC5, ADR-048, 2026-09-28)
+
+Lets an ECO device close a session it dialed without the peer redialing, and only when the peer does not want the
+session either. Plaintext over the TLS WebSocket. Code: `core/network/.../mode/` (`LinkCodec`,
+`ConnectionModeController`); plan `docs/network/PRESENCE-CONNECTIONS-PLAN.md` §3.4.
+
+```text
+FLASH_LINK v=1 t=park       # "I dialed this session and would like to close it"
+FLASH_LINK v=1 t=park-ok    # "I don't need it either; I have stopped redialing you"
+FLASH_LINK v=1 t=keep       # "I want it; don't ask for 10 minutes"
+```
+
+- **park** is sent only by a device in ECO, only on a session **it dialed**, after 10 minutes without user traffic
+  (anything except keepalive, `FLASH_PRES` and `FLASH_LINK` frames), and only when the peer is not one of its 3 ring
+  neighbours, an active or busy peer, or an unpaired peer while its Nearby screen is open. At most once per 10 minutes
+  per peer.
+- The receiver answers **park-ok** only when it is in ECO, did not dial the session, and does not want it by the same
+  rules. Before answering it drops the session from its redial targets (`releaseSession`), so the close that follows
+  can never start a redial. Otherwise it answers **keep**.
+- On **park-ok** the requester closes the session, but only if it asked and the session is still idle and unwanted
+  (traffic may have resumed while the answer was in flight). An unsolicited park-ok is ignored.
+- **Old clients** drop the unknown prefix and never answer, so the session stays. A device never closes a session the
+  other side dialed, and never refuses an incoming one.
+- **Versioning**: a frame with `v` other than 1 or an unknown `t` is consumed and ignored.
 
 ## Intended Full Protocol
 

@@ -1261,6 +1261,11 @@ public fun DesktopShell(
                         bottomInset = tabBottomInset,
                     )
                     FlashDestination.NearbyDevices -> {
+                    // PC5: ECO dials unpaired peers only while this screen is shown, so they can be paired.
+                    DisposableEffect(engine) {
+                        engine.setNearbyVisible(true)
+                        onDispose { engine.setNearbyVisible(false) }
+                    }
                     // The one boundary that is otherwise invisible: the engine's flow is proven to
                     // carry a pairing state (the collector above logs it), and the dialog renders iff
                     // `state.pairingRequest != null`. This logs what the SCREEN is actually handed, so
