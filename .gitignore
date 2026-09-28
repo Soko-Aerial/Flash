@@ -26,3 +26,5 @@ dist/
 keystore.properties
 *.jks
 *.keystore
+# PC0 and later device measurement dumps (tools/pc0); summaries go to logs/experiments.md
+measurements/

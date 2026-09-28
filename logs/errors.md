@@ -1,5 +1,45 @@
 # Error Log
 
+## ERROR-073 — Suspected: a Flash advertisement outlives the engine (peers dial a closed port every 5 s)
+
+### Date
+2026-09-28
+
+### Area
+Discovery / NSD lifecycle (Android)
+
+### Symptoms
+During the PC0 peer-farm smoke run, "Flash Infinix X6882B" was discovered at `192.168.1.100:45822`, and every dial
+failed with `Connection refused`. A farm peer retried every 5 s for the whole run.
+
+### Environment
+- Device: Infinix X6882B, Android 14 (API 34), Flash 2.0.0-beta (versionCode 2)
+- Observer: PC0 peer farm (`:core:engine:peerFarm`) on the same LAN
+
+### Evidence (read-only, 2026-09-28)
+- The Flash process was alive (`pidof` → 15690) with **no service running** (`dumpsys activity services`).
+- `dumpsys wifi` → multicast locks held by `NsdService uid=1000` (the system NSD daemon), none by Flash.
+- `dumpsys batterystats com.transfer.flash` (13 h on battery): engine wake lock `flash:ws-mesh` 62 ms in total, but
+  `WiFi Multicast Wakelock count = 4 time = 6h 40m` for Flash's uid.
+
+### Hypothesis (not verified)
+The NSD registration, and possibly the multicast lock, is not released when the engine stops (or when the
+service dies without its normal stop path), so the phone keeps advertising a WebSocket server that is gone. Every
+peer then spends a dial every 5 s on it, and the phone keeps multicast power save disabled.
+
+### Next step
+Reproduce: start Flash, then stop the engine the ways a user or the OS can (swipe away, Stop in the notification,
+OEM kill, service `onTimeout`). After each, check `dumpsys wifi` multicast locks and browse `_flash-transfer._tcp`
+from the farm. Find which path skips `unregisterService` / multicast lock release.
+
+### Related files
+- `core/discovery/src/androidMain/.../nsd/NsdFlashDiscovery.kt`, `NsdTransport.kt`
+- `core/discovery/src/androidMain/.../multicast/AndroidMulticastSocketFactory.kt`
+- `app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt`
+
+### Status
+OPEN (suspected; root cause not investigated)
+
 ## ERROR-072 — Windows Context Menu "Send with Flash" throws "This file does not have an app associated with it" on file click
 
 ### Date

@@ -1887,6 +1887,9 @@ happen in practice, so the caps would exist only on paper.
   sessions. This touches `TofuX509TrustManager` and must be designed in V0, not patched in.
 - Weaker than pairing, by design: members trust the owner's judgment and the owner's own pairing. The owner's
   device is a single point of trust for the group.
+- **Found 2026-09-28:** every host caps live sessions at 8 (`SessionHardeningPolicy`). A mesh group above 9
+  members cannot connect fully until that cap is raised; the per-mode cap is decided in presence phase PC2 and
+  must land before V2 sets `MAX_MEMBERS = 20`.
 
 ### Phases
 - **V0 Threat review:** a malicious owner; a compromised member device; a replayed or forged `Add`; a key change; a
