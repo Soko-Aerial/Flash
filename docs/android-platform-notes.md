@@ -409,3 +409,25 @@ runnable; https://developer.android.com/develop/background-work/services/fgs) do
 - Before trusting any screen-off measurement, grep logcat for `Hiber` (PC0 runbook §4 step 4).
 - An in-app hint (detect `Build.MANUFACTURER` in {INFINIX, TECNO, ITEL} and link to the settings) is a candidate
   UI task; it needs a component doc first (AGENTS.md §34) and a verified settings path.
+
+## 2026-09-28 - Reading the connected Wi-Fi band without location permission (G2)
+
+### Android version / API level
+All supported levels. API 31+ reads `WifiInfo` from `NetworkCapabilities.getTransportInfo()`; below that,
+`WifiManager.getConnectionInfo()` (deprecated in API 31).
+
+### APIs / permissions involved
+- `ConnectivityManager.getActiveNetwork` / `getNetworkCapabilities` (ACCESS_NETWORK_STATE)
+- `WifiInfo.getFrequency()` (ACCESS_WIFI_STATE); both are normal permissions the app already declares.
+
+### Official documentation sources
+- https://developer.android.com/reference/android/net/wifi/WifiInfo (checked 2026-09-28): the class documentation
+  names SSID and BSSID as the fields redacted without location permission. Frequency is not listed.
+  **Verified in part:** the page was read through a search summary (the direct fetch returned only navigation), and
+  no device has been checked yet.
+
+### Project implication
+- `AndroidNetworkBand` requests no location permission. A frequency of 0 or less (redacted, or unknown) reads as
+  UNKNOWN, so a redacting OEM degrades to "no band shown", never to a wrong band.
+- A phone hosting the hotspot reports UNKNOWN: its default network is cellular, and its own AP band needs a system API.
+- Device check pending (GROUP-VIDEO-PLAN §8 G2): confirm a real frequency on the Infinix (API 34) and the V760.

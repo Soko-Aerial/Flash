@@ -1,6 +1,7 @@
 package com.transfer.flash.core.calling.protocol
 
 import com.transfer.flash.core.common.annotation.FlashInternalApi
+import com.transfer.flash.core.common.perf.FlashNetworkBand
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -194,6 +195,23 @@ class CallFrameCodecTest {
                 participantCount = 3,
             )
             assertEquals(frame, CallFrameCodec.decode(CallFrameCodec.encode(frame)))
+        }
+
+        @Test
+        fun group_frames_carry_the_network_band() {
+            val presence = CallWireFrame.GroupPresence(
+                callId = callId, from = from, groupId = "group-123", callerName = "Alice", video = true,
+                band = FlashNetworkBand.WIFI_5GHZ,
+            )
+            assertEquals(presence, CallFrameCodec.decode(CallFrameCodec.encode(presence)))
+            val join = CallWireFrame.GroupJoin(callId = callId, from = from, groupId = "group-123", participantName = "Bob", band = FlashNetworkBand.ETHERNET)
+            assertEquals(join, CallFrameCodec.decode(CallFrameCodec.encode(join)))
+            // An old client sends no band (null); a newer band this build does not know reads as UNKNOWN.
+            val accept = CallWireFrame.GroupAccept(callId = callId, from = from, groupId = "group-123")
+            assertTrue("band=" !in CallFrameCodec.encode(accept))
+            assertNull((CallFrameCodec.decode(CallFrameCodec.encode(accept)) as CallWireFrame.GroupAccept).band)
+            val future = CallFrameCodec.encode(accept.copy(band = FlashNetworkBand.WIFI_2_4GHZ)).replace("band=2g", "band=60g")
+            assertEquals(FlashNetworkBand.UNKNOWN, (CallFrameCodec.decode(future) as CallWireFrame.GroupAccept).band)
         }
 
         @Test

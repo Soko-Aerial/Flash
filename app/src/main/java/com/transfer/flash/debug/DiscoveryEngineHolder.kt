@@ -115,6 +115,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import okio.source
+import com.transfer.flash.core.common.perf.AndroidNetworkBand
 
 /**
  * Process-wide engine holder for the debug Dev Console and background service.
@@ -1190,6 +1191,8 @@ object DiscoveryEngineHolder {
                 trustStore.getTrustedPeers()[FlashDeviceId(peerId)]
                     ?: engine.discoveredEndpoints.value.firstOrNull { it.deviceId.value == peerId }?.friendlyName
             },
+            // G2: Ethernet or the connected Wi-Fi band, exchanged in group call announcements.
+            networkBand = { AndroidNetworkBand.read(appContext) },
             sendFrame = { frame, peerId ->
                 val encoded = CallFrameCodec.encode(frame)
                 var session = networkImpl.activeSessions.value[FlashDeviceId(peerId)] as? WsSession

@@ -1,6 +1,6 @@
 # Group calls: request-based video, tier and band budgets, size caps
 
-**Status (2026-09-28): G1 code done (unit-tested, not device-tested). G0 measurements deferred to the final test
+**Status (2026-09-28): G1 and G2 code done (unit-tested, not device-tested). G0 measurements deferred to the final test
 pass (owner decision P8 in the presence plan). Owner decisions recorded 2026-09-24.** Written 2026-09-23 from the owner's
 requirements and a code review of `core/calling` and `ui/callui`.
 
@@ -245,3 +245,24 @@ No open questions remain. Next: G0 measurements (now including C1–C3), and ADR
   `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm`: green.
 - **Pending device check:** 3 devices in a video call each see both other videos; a participant leaving removes only
   their tile; on Android the local PiP draws above the tiles.
+
+### G2 — code done 2026-09-28 (device check pending, P8)
+- `FlashNetworkBand` (`core/common/.../perf/`): ETHERNET, WIFI_6GHZ, WIFI_5GHZ, WIFI_2_4GHZ, UNKNOWN, with the link
+  rule (the slower known end; UNKNOWN or absent defers to the other end) and the wire values `eth/6g/5g/2g/unk`.
+- Android (`AndroidNetworkBand`): the default network's transport, then the Wi-Fi frequency from `WifiInfo`
+  (`NetworkCapabilities.getTransportInfo` on API 31+, `WifiManager.getConnectionInfo` below). No location
+  permission. A phone hosting the hotspot has a cellular default network and reports UNKNOWN, as the plan expects.
+- Desktop (`DesktopNetworkBand`): Ethernet when a physical `ethN` adapter holds a private IPv4 address (virtual,
+  VPN, tethering and Bluetooth adapters excluded by display name), otherwise the "<n> GHz" value from
+  `netsh wlan show interfaces` (localised field names are ignored). Cached for 15 s, refreshed off the caller's thread.
+- Exchanged in `ginvite`, `gaccept`, `gjoin` and `gpresence` as an optional `band=` field (`docs/protocol.md`).
+  `FlashGroupCallSession` records it per leg (only from the authenticated sender; a relayed `gjoin` is ignored),
+  logs `Leg <id> band=… local=… link=…`, and reports the slowest link as `FlashCallStats.networkBand`. The call stats
+  badge shows it (UNKNOWN is hidden). `CallCoordinator` now forwards `gpresence` for the live call to the session.
+- **No budget uses it yet** (G4 does).
+- Tests: `DesktopNetworkBandTest` 4 (netsh parsing in two languages, adapter filter, link rule and wire values),
+  `CallFrameCodecTest` band case. `:core:calling` jvm 74 / host 86, `:ui:callui` jvm 16, `:desktop:jvmTest` 86,
+  `:app:compileDebugKotlin`, `:core:common:compileAndroidMain`: green.
+- **Pending device check:** the band shows in the stats badge on Android and desktop (5 GHz, 2.4 GHz, Ethernet as
+  applicable); a phone hosting the hotspot shows no band and its peers' links take the other end's band; confirm
+  `WifiInfo.getFrequency()` is not redacted without location permission on the Infinix (API 34) and the V760.

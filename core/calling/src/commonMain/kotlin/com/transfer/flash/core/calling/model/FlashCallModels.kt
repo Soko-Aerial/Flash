@@ -1,5 +1,7 @@
 package com.transfer.flash.core.calling.model
 
+import com.transfer.flash.core.common.perf.FlashNetworkBand
+
 /**
  * Lifecycle states of a Flash call (C7, ADR-025). One [FlashCallSession.state] machine
  * per call; transitions are driven by signaling frames and WebRTC connection events.
@@ -135,6 +137,11 @@ public data class FlashCallStats(
     public val sendHeight: Int? = null,
     /** Inbound packet loss over the whole call, as a fraction 0..1. */
     public val packetLoss: Double? = null,
+    /**
+     * Group calls (G2): the slowest participant link's band, the slower end of each connection.
+     * Null on a 1:1 call and before any participant has announced one.
+     */
+    public val networkBand: FlashNetworkBand? = null,
 ) {
     /** True once anything at all has been measured (used to gate the UI readout). */
     public val hasData: Boolean

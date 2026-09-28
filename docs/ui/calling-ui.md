@@ -364,6 +364,8 @@ most one of the two other people, and the grid never showed video at all. G1: ev
 - **Local camera:** the same fixed-width PiP as 1:1, top-end, above the grid. The PiP tap-to-swap of 1:1 is not
   offered in a group (swapping with which tile?); G5 adds tap-to-focus.
 - **Header:** group name + status line + stats badge top-start, as in 1:1.
+- **Stats badge band (G2, 2026-09-28):** the badge appends the call's slowest link band ("5 GHz", "2.4 GHz",
+  "6 GHz", "Ethernet") when one is known. Nothing is shown for an unknown band. The text uses the badge's existing style, with no new visual.
 
 ### Visual specification
 - Tiles: 4 dp gaps on black (`Color.Black`, as the 1:1 video background), `FlashShapes.radius12` corners when more

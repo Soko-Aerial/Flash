@@ -194,12 +194,12 @@ actions (unknown actions decode to null). `groupId` is the conversation, while `
 instance — one group can host a second call later under a new `callId`.
 
 ```text
-FLASH_CALL action=ginvite   callId=<uuid> groupId=<uuid> from=<id> name=<escaped> video=<true|false> members=<id,id,…>
-FLASH_CALL action=gaccept   callId=<uuid> groupId=<uuid> from=<id>
+FLASH_CALL action=ginvite   callId=<uuid> groupId=<uuid> from=<id> name=<escaped> video=<true|false> members=<id,id,…> [band=<b>]
+FLASH_CALL action=gaccept   callId=<uuid> groupId=<uuid> from=<id> [band=<b>]
 FLASH_CALL action=gdecline  callId=<uuid> groupId=<uuid> from=<id>
-FLASH_CALL action=gjoin     callId=<uuid> groupId=<uuid> from=<id> name=<escaped>
+FLASH_CALL action=gjoin     callId=<uuid> groupId=<uuid> from=<id> name=<escaped> [band=<b>]
 FLASH_CALL action=ghangup   callId=<uuid> groupId=<uuid> from=<id>
-FLASH_CALL action=gpresence callId=<uuid> groupId=<uuid> from=<id> name=<escaped> video=<true|false> count=<n>
+FLASH_CALL action=gpresence callId=<uuid> groupId=<uuid> from=<id> name=<escaped> video=<true|false> count=<n> [band=<b>]
 FLASH_CALL action=gquery    callId=<uuid> groupId=<uuid> from=<id>
 ```
 
@@ -228,6 +228,12 @@ FLASH_CALL action=gquery    callId=<uuid> groupId=<uuid> from=<id>
   deterministic election rather than by a fixed offerer — unlike the 1:1 case, where only the caller
   offers. A member that leaves closes only its own legs, and the last remaining participant gets a
   solo-grace window before the call ends.
+- `band` (G2, 2026-09-28, optional): how the **sender** is attached to the network: `eth` (Ethernet), `6g`, `5g`,
+  `2g` (Wi-Fi band) or `unk` (the sender cannot tell, e.g. a phone hosting the hotspot). Absent from an old client
+  (decoded as null); a value this build does not know decodes as `unk`, so a future band does not break decoding.
+  A receiver records it for that participant only when `from` is the authenticated peer, so a relayed `gjoin` cannot
+  set another participant's band. The link's band is the slower of its two ends; an end that is `unk` or absent defers
+  to the other end. Informational in G2 (shown in the call stats); G4 uses it for per-link video budgets.
 - `FLASH_CALL` frame handling is **fail-closed on the sender**: the frame's `from` must equal the
   authenticated transport peer. For group frames the participant is resolved from that `from` and
   never from the peer the frame arrived through, because a group frame can be relayed along a mesh
