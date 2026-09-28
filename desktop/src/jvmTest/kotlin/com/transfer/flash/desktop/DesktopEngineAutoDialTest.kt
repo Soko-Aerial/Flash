@@ -132,7 +132,7 @@ class DesktopEngineAutoDialTest {
         const val BOOT_TIMEOUT_MS = 30_000L
         const val DISCOVERY_TIMEOUT_MS = 30_000L
 
-        /** 3x the engine's 5s `AUTO_CONNECT_SWEEP_MS`, plus room for the WS handshake. */
+        /** 3x the 5 s `AutoConnector.DEFAULT_SWEEP_INTERVAL_MS`, plus room for the WS handshake. */
         const val DIAL_TIMEOUT_MS = 30_000L
         const val POLL_MS = 100L
     }

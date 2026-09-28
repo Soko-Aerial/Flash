@@ -35,6 +35,8 @@ import com.transfer.flash.core.messaging.protocol.PttAudioFrame
 import com.transfer.flash.core.messaging.protocol.PttSessionCodec
 import com.transfer.flash.core.network.FlashNetwork
 import com.transfer.flash.core.network.bridge.DiscoveryRouteBinder
+import com.transfer.flash.core.network.planner.AutoConnector
+import com.transfer.flash.core.network.planner.ConnectionPlanner
 import com.transfer.flash.core.network.ws.WsFlashNetwork
 import com.transfer.flash.core.network.ws.WsSession
 import com.transfer.flash.core.network.tls.TlsOptions
@@ -62,7 +64,6 @@ import com.transfer.flash.core.ptt.PttPressOutcome
 import com.transfer.flash.core.ptt.PttSessionEngine
 import com.transfer.flash.ptt.PttSessionService
 import com.transfer.flash.core.messaging.ptt.PttFloorState
-import com.transfer.flash.net.AutoConnectGate
 import com.transfer.flash.core.transfer.FlashTransferRepository
 import com.transfer.flash.core.transfer.RealFlashTransferRepository
 import com.transfer.flash.core.engine.store.RoomTransferStore
@@ -206,12 +207,11 @@ object DiscoveryEngineHolder {
     private var callRingJob: Job? = null
 
     /**
-     * Attempt-bounding gate for the auto-connect sweep, hoisted to a field so the screen-on
-     * re-arm ([onScreenOn]) shares the same gate state as the periodic loop instead of racing
-     * a second, independent gate.
+     * The shared auto-connector (PC2), hoisted to a field so the screen-on re-arm ([onScreenOn])
+     * wakes the same planner as the periodic loop instead of racing a second, independent one.
      */
     @Volatile
-    private var autoConnectGate: AutoConnectGate? = null
+    private var autoConnector: AutoConnector? = null
 
     /** Local device id, cached so [onScreenOn] can run a sweep without re-reading identity. */
     @Volatile
@@ -1451,51 +1451,52 @@ object DiscoveryEngineHolder {
         // Proactively hold a full-duplex session with every discovered peer, dialing from both ends so
         // whichever side's discovery resolves first gets the session up; all traffic then rides that
         // one session and the loser's dial costs nothing. Glare is resolved by
-        // WsFlashNetwork.registerSession; AutoConnectGate bounds attempts so an unreachable peer is
-        // retried, not hammered.
+        // WsFlashNetwork.registerSession. Which peers to dial, and when, is ConnectionPlanner's
+        // decision (PC2, ADR-045): the same planner the engine and the desktop use.
         //
         // This used to be justified by "the SoftAP/gateway device cannot open a TCP connection to a
         // client station". That is not an Android or Linux rule — the host is the gateway and has a
         // directly connected route. Host-to-client dials failed because WsTransferClient bound them to
         // the first Wi-Fi network CM listed, which a tethered client is never on-link for
         // (ERROR-035, fixed in Ipv4Routing). Dialing both ways is still correct; the reason changed.
-        autoConnectJob = appScope.launch {
-            val gate = AutoConnectGate()
-            autoConnectGate = gate
-            localDeviceId = identity.deviceId.value
-            while (isActive) {
-                // Voice-call quiet: while a call is ACTIVE the radio belongs to Opus/RTP, so no
-                // dial bursts. The tick itself keeps running so the sweep resumes on its normal
-                // cadence the moment the call ends.
-                if (!callActive) {
-                    runAutoConnectSweep(engine, networkImpl, identity.deviceId.value, gate)
-                }
-                delay(AUTO_CONNECT_SWEEP_MS)
-            }
-        }
-
-        // Dial the MOMENT a peer is discovered, not up to a tick later.
         //
-        // Pairing needs a live session, and `beginPair` waits only 3 s for the peer's hello
-        // (`FINGERPRINT_WAIT_MS`) while this sweep ticks every `AUTO_CONNECT_SWEEP_MS` (5 s). A user
-        // who taps Pair as soon as the row appears therefore loses a race that started before they
-        // could see it and gets `Couldn't reach …`, which reads as a pairing bug — measured exactly
-        // that way on the desktop on 2026-09-14 (peer found, `active sessions=[]`, no dial line at
-        // all). The same window exists here, and the phone is the other half of a two-sided failure:
-        // whichever device taps first is the one that loses it.
+        // Sweeps run on discovery edges as well as every 5 s. Pairing needs a live session, and
+        // `beginPair` waits only 3 s for the peer's hello (`FINGERPRINT_WAIT_MS`). A poll-only loop
+        // lost that race to a user who tapped Pair as soon as the row appeared (measured on the
+        // desktop on 2026-09-14; the phone is the other half of the same two-sided failure).
         //
-        // `runAutoConnectSweep` is reused rather than reimplemented, so this trigger inherits the
-        // `AutoConnectGate` attempt-bounding and the `isReconnectInFlight` / `hasLiveSession`
-        // guards: an emission for a peer we already have, or just tried, is a no-op. `discoveredEndpoints`
-        // is a StateFlow over a 5 s sweep, so this is at most a few sweeps per minute — it changes
-        // *when* the first dial happens, not how often retries do.
-        appScope.launch {
-            engine.discoveredEndpoints.collect {
-                if (!callActive) {
-                    runAutoConnectSweep(engine, networkImpl, identity.deviceId.value, autoConnectGate ?: return@collect)
+        // Voice-call quiet: while a call owns the audio the radio belongs to Opus/RTP, so no dial
+        // bursts. The loop keeps running, so dialing resumes on its normal cadence when the call ends.
+        localDeviceId = identity.deviceId.value
+        val connector = AutoConnector(
+            scope = appScope,
+            planner = ConnectionPlanner(localDeviceId = identity.deviceId.value),
+            links = object : ConnectionPlanner.Links {
+                override fun hasLiveSession(deviceId: String) = networkImpl.hasLiveSession(deviceId)
+                override fun isReconnectInFlight(deviceId: String) = networkImpl.isReconnectInFlight(deviceId)
+                override fun hasSessionAtHost(host: String) = networkImpl.activeSessions.value.values.any { session ->
+                    networkImpl.endpointOf(session.peerDeviceId.value)?.first == host
                 }
-            }
-        }
+            },
+            sightings = {
+                engine.discoveredEndpoints.value.map { ep ->
+                    ConnectionPlanner.Sighting(ep.deviceId.value, ep.hostAddress, ep.port, ep.friendlyName)
+                }
+            },
+            dial = { d -> networkImpl.connectManual(d.host, d.port) },
+            // Hotspot host auto-probe: tethered clients cannot discover the host via NSD because
+            // Android SoftAP drops multicast mDNS packets. Probe default IPv4 gateways on active LAN
+            // networks.
+            gatewayHosts = {
+                appContextRef?.let { context ->
+                    com.transfer.flash.core.network.util.LocalNetworkAddresses(context).ipv4Gateways()
+                }.orEmpty()
+            },
+            quiet = { callActive },
+            log = { Log.i(TAG_WS, it) },
+        )
+        autoConnector = connector
+        autoConnectJob = connector.start(edges = engine.discoveredEndpoints)
 
         // C7 ringing: the engine — not the UI, not FlashCallService — drives the ringer and the
         // call notification, because an invite that arrives with the app closed still has to ring.
@@ -1521,75 +1522,6 @@ object DiscoveryEngineHolder {
         // MainActivity.onStart owns foreground-service launch while the app is user-visible.
         // Starting it here after asynchronous engine setup can violate Android 12+ background-start rules.
         return composite!!
-    }
-
-    /**
-     * One pass of the proactive auto-connect sweep: dials every discovered peer that lacks a
-     * live session, bounded by [AutoConnectGate]. Extracted from the periodic loop so the
-     * screen-on re-arm ([onScreenOn]) can force an immediate sweep instead of waiting up to
-     * [AUTO_CONNECT_SWEEP_MS] for the next tick. Each dial is launched on [appScope] and ends
-     * its own gate entry, exactly as the original inline loop did.
-     */
-    private fun runAutoConnectSweep(
-        engine: CompositeDiscovery,
-        networkImpl: WsFlashNetwork,
-        localId: String,
-        gate: AutoConnectGate,
-    ) {
-        val endpoints = engine.discoveredEndpoints.value
-        for (ep in endpoints) {
-            val id = ep.deviceId.value
-            if (id == localId) continue
-            // ERROR-031: ask whether the peer's session is actually carrying traffic, not whether the
-            // registry happens to hold one. A session whose socket died without its watchdog noticing
-            // used to suppress this sweep indefinitely — the dot stayed Online, every send "succeeded"
-            // into the dead socket, and only a force-stop cleared it.
-            val hasSession = networkImpl.hasLiveSession(id)
-            // ERROR-023 dedup: if the #18 reconnect engine is already backoff-dialing this peer
-            // right now, don't fire a redundant dial from the sweep at the same moment — two
-            // simultaneous outbound dials to the same peer only widen the glare window.
-            if (networkImpl.isReconnectInFlight(id)) continue
-            if (!gate.tryBegin(id, hasSession, System.currentTimeMillis())) continue
-            appScope.launch {
-                Log.i(TAG_WS, "Auto-connect dialing peer=${ep.friendlyName} id=$id at ${ep.hostAddress}:${ep.port}")
-                // try/finally, not runCatching: the gate must always be released, and a cancelled
-                // sweep must actually stop (audit B3).
-                try {
-                    val result = runSuspendCatching { networkImpl.connectManual(ep.hostAddress, ep.port) }.getOrNull()
-                    val ok = result is FlashResult.Success
-                    Log.i(TAG_WS, "Auto-connect result peer=$id success=$ok")
-                } finally {
-                    gate.end(id)
-                }
-            }
-        }
-
-        // Hotspot host auto-probe: tethered clients cannot discover the host via NSD because Android
-        // SoftAP drops multicast mDNS packets. Probe default IPv4 gateways on active LAN networks.
-        val context = appContextRef
-        if (context != null) {
-            val gateways = runCatching {
-                com.transfer.flash.core.network.util.LocalNetworkAddresses(context).ipv4Gateways()
-            }.getOrDefault(emptyList())
-            for (gw in gateways) {
-                val gwGateId = "gateway:$gw"
-                val hasGwSession = networkImpl.activeSessions.value.values.any { session ->
-                    val ep = networkImpl.endpointOf(session.peerDeviceId.value)
-                    ep?.first == gw
-                }
-                if (!hasGwSession && !networkImpl.isReconnectInFlight(gwGateId) &&
-                    gate.tryBegin(gwGateId, false, System.currentTimeMillis())
-                ) {
-                    appScope.launch {
-                        Log.i(TAG_WS, "Auto-connect dialing gateway at $gw:0 (hotspot host probe)")
-                        val result = runCatching { networkImpl.connectManual(gw, 0) }.getOrNull()
-                        val ok = result is FlashResult.Success
-                        Log.i(TAG_WS, "Auto-connect result gateway $gw success=$ok")
-                        gate.end(gwGateId)
-                    }
-                }
-            }
-        }
     }
 
     /**
@@ -1666,14 +1598,12 @@ object DiscoveryEngineHolder {
      */
     private fun reArm(reason: String): Boolean {
         val engine = composite ?: return false
-        val networkImpl = network ?: return false
-        val gate = autoConnectGate ?: return false
-        val localId = localDeviceId ?: return false
+        val connector = autoConnector ?: return false
         appScope.launch {
             Log.i(TAG_DISCOVERY, "$reason: restarting discovery browsing and forcing auto-connect sweep")
             runCatching { engine.restartDiscovery() }
                 .onFailure { Log.w(TAG_DISCOVERY, "$reason discovery restart failed", it) }
-            runAutoConnectSweep(engine, networkImpl, localId, gate)
+            connector.sweepNow()
         }
         return true
     }
@@ -2401,7 +2331,7 @@ object DiscoveryEngineHolder {
         callRingJob = null
         callRinger?.stop()
         callRinger = null
-        autoConnectGate = null
+        autoConnector = null
         localDeviceId = null
         localDeviceName = null
         sendXferControl = null
@@ -2426,8 +2356,6 @@ object DiscoveryEngineHolder {
 
     const val TOTAL_TEST_BYTES: Long = 10L * 1024 * 1024
 
-    /** Cadence of the background auto-connect sweep; per-peer attempts are gated by [AutoConnectGate]. */
-    private const val AUTO_CONNECT_SWEEP_MS = 5_000L
 
     private const val WAKE_LOCK_TAG = "flash:ws-mesh"
     private const val WIFI_LOCK_TAG = "flash:ws-mesh-wifi"

@@ -25,6 +25,7 @@ import com.transfer.flash.core.network.resilience.AndroidNetworkWatcher
 import com.transfer.flash.core.network.resilience.ConnectionHealthAggregator
 import com.transfer.flash.core.network.resilience.DuplicateSessionDecision
 import com.transfer.flash.core.network.resilience.ReconnectPolicy
+import com.transfer.flash.core.network.resilience.ReconnectStagger
 import com.transfer.flash.core.network.resilience.SessionHardeningPolicy
 import com.transfer.flash.core.network.tls.TlsOptions
 import java.util.concurrent.ConcurrentHashMap
@@ -197,6 +198,12 @@ public class WsFlashNetwork(
      * admission gate. The maps stay [ConcurrentHashMap] for lock-free reads on the frame paths.
      */
     private val registryLock = Any()
+
+    /**
+     * PC2 staggered storms: after a mass drop, spreads each reconnect loop's first attempt over 2 s
+     * so a whole mesh does not handshake in the same second. Guarded by [registryLock].
+     */
+    private val reconnectStagger = ReconnectStagger(localDeviceId)
 
     // ------------------------------------------------------------------
     // Lifecycle
@@ -776,10 +783,13 @@ public class WsFlashNetwork(
         // replaced it.
         val peerId = session.peerDeviceId.value
         if (!running.get() || hasLiveSession(peerId)) return
-        when {
-            reconnectTargets.containsKey(peerId) -> scheduleReconnect(peerId, immediate = false)
-            peerId !in localDisconnects -> scheduleReconnect(peerId, immediate = false, backup = true)
+        val backup = when {
+            reconnectTargets.containsKey(peerId) -> false
+            peerId !in localDisconnects -> true
+            else -> return
         }
+        synchronized(registryLock) { reconnectStagger.onUnexpectedDrop(nowMs()) }
+        scheduleReconnect(peerId, immediate = false, backup = backup)
     }
 
     // ------------------------------------------------------------------
@@ -800,6 +810,8 @@ public class WsFlashNetwork(
      */
     private fun scheduleReconnect(deviceId: String, immediate: Boolean, backup: Boolean = false) {
         reconnectJobs.remove(deviceId)?.cancel()
+        // Read when the loop is scheduled: a storm that has ended must not delay a later loop.
+        val staggerMs = synchronized(registryLock) { reconnectStagger.firstAttemptDelayMs(deviceId, nowMs()) }
         val job = scope.launch {
             var first = true
             // ERROR-031: the exit condition is a LIVE session, not a session-shaped map entry. A
@@ -825,7 +837,9 @@ public class WsFlashNetwork(
                     )
                 }
                 if (!(first && immediate)) {
-                    delay(policy.nextDelay())
+                    delay(policy.nextDelay() + if (first) staggerMs else 0L)
+                } else if (staggerMs > 0L) {
+                    delay(staggerMs)
                 }
                 first = false
 

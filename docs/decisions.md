@@ -1906,6 +1906,64 @@ happen in practice, so the caps would exist only on paper.
 Per-sender E2E keys arrive (`keyEpoch` > 0): these can then replace vouched transport trust. Also revisit if
 attachments in groups land, since N−1 uploads from the sender need a relay design at 20.
 
+## ADR-045 — One connection planner decides who dials; modes will own the connection policy
+
+### Date
+2026-09-28
+
+### Status
+**IMPLEMENTED (PC2), device check pending** (P8: testing after PC1–PC5 and group calling). Plan:
+`docs/network/PRESENCE-CONNECTIONS-PLAN.md` §3.5–3.6. The ECO/BOOST rules of §3.4 are PC5 and extend this ADR.
+
+### Context
+The auto-connect decision existed three times, and the copies had drifted:
+- the app holder's sweep with `app/.../net/AutoConnectGate`, plus the hotspot gateway probe and call-quiet;
+- `core:engine`'s `Flash.create` sweep with a ported gate (`core/engine/.../internal/AutoConnectGate`, `PlatformLock`),
+  without the `isReconnectInFlight` check;
+- the desktop's `dialIfNeeded`, with no suppression window (an unreachable peer was redialed every 5 s) and a
+  registry-presence session check where the phones had used the freshness check since ERROR-031.
+
+Both sides of every pair also dialed at the same moment on first sighting. That is the ERROR-023 glare case, where
+the losing dial hangs for the full 6 s handshake timeout. `DesktopEngineAutoDialTest` had recorded such a run.
+
+### Decision
+1. **`ConnectionPlanner`** (`core/network/.../planner/`, commonMain, no platform types) is the only copy of the
+   rules. It keeps the old gate unchanged: skip yourself, a live session clears the peer, never dial while the
+   reconnect engine is redialing, one attempt per 15 s, never two at once.
+2. **`AutoConnector`** is the shared driver. It sweeps every 5 s, on each discovery edge, on `sweepNow()` (screen-on,
+   manual retry) and when a deferred dial falls due. The app holder, `Flash.create` and `DesktopEngine` all use it,
+   and the three hand-written loops and both `AutoConnectGate` copies are deleted.
+3. **Deterministic first dialer:** in a new no-session episode the lower device id dials at once, and the higher id
+   waits 1.5 s and dials only if no session has landed. The plan said "the backup-loop floor" (4 s). The wait is
+   shorter because pairing gives up after 3 s without the peer's HELLO, and when discovery is one-sided (a hotspot
+   drops mDNS) the higher id is the only side that can dial.
+4. **Staggered storms:** after at least 4 unexpected drops within 3 s, the first attempt of every reconnect loop for
+   the next 30 s is delayed by `hash(local|peer) mod 2 s`. This includes the Wi-Fi-rejoin "immediate" redial. It is
+   in both `WsFlashNetwork` and `JvmWsFlashNetwork` (`ReconnectStagger`). A single drop is never delayed.
+5. **Lock-free state:** the planner's state is immutable and replaced by compare-and-set on a `MutableStateFlow`.
+   `core:network` deliberately declares no expect/actual classes, so it gets no `PlatformLock` copy.
+6. **Modes own the connection policy (PC5).** The planner takes the mode later. Today it implements STANDARD for
+   every mode. The **session cap per mode** (`SessionHardeningPolicy`, 8 today) is decided in PC5, not here.
+
+### Alternatives considered
+- **Move the gate to core:network and keep three loops:** leaves the drift that produced the desktop gaps.
+- **A `PlatformLock` copy in core:network:** needs `-Xexpect-actual-classes`, which the module deliberately avoids.
+  Compare-and-set is enough for a state this small.
+- **Per-device stagger (`hash(deviceId)`), as the plan wrote it:** it spreads phones but not one phone's own loops.
+  A per-pair hash does both and is still deterministic.
+
+### Consequences
+- The desktop now has a 15 s suppression window and the ERROR-031 freshness check. `Flash.create` now skips peers the
+  reconnect engine is redialing, and logs its dials.
+- The higher-id side's first dial comes up to 1.5 s later. If the lower id cannot reach it (ERROR-073's refused
+  port), first contact is 1.5 s slower.
+- `core:engine`'s `PlatformLock` has no users left. It is kept for now.
+- Log text is unchanged (`Auto-connect dialing peer=`, `Auto-connect result peer=… success=`,
+  `Auto-connect dialing gateway`), so `tools/pc0/phone-baseline.ps1` still counts dials.
+
+### Revisit when
+PC5 adds modes; PC6 measures reconnect storms; or discovery resilience (ADR-047) feeds new sources into the planner.
+
 ## ADR-047 — Discovery resilience: extra sources are dial hints that feed the connection planner
 
 ### Date

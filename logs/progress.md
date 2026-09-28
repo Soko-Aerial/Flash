@@ -1,5 +1,44 @@
 # Progress Log
 
+## 2026-09-28 — PC2 connection planner: code done (device check pending, P8)
+
+### Worked on
+PC2 of `PRESENCE-CONNECTIONS-PLAN.md`: one connection planner instead of three auto-connect copies, the
+deterministic first dialer and staggered reconnect storms (§3.5–3.6). ADR-045.
+
+### Changed
+- `core/network` commonMain `planner/`: `ConnectionPlanner` (pure rules, lock-free compare-and-set state) and
+  `AutoConnector` (the shared sweep driver: 5 s tick, discovery edges, `sweepNow()`, deferred-dial rechecks, call-quiet).
+- `resilience/ReconnectStagger` (internal) in both `WsFlashNetwork` and `JvmWsFlashNetwork`: after at least 4
+  unexpected drops within 3 s, the first attempt of each reconnect loop for the next 30 s is delayed by
+  `hash(local|peer) mod 2 s`.
+- The app holder, `Flash.create` and `DesktopEngine` use `AutoConnector`. Removed `runAutoConnectSweep` (twice),
+  `dialIfNeeded`, and both `AutoConnectGate` copies with their tests; the planner tests cover the same cases.
+- `docs/decisions.md` ADR-045; plan status line and §7.
+
+### Why
+The copies had drifted: the desktop redialed unreachable peers every 5 s and trusted stale sessions (ERROR-031),
+and the engine ignored in-flight reconnects. Both sides of a pair dialed at once on first sighting, which is the
+ERROR-023 glare case. Rule 5 now lets the lower id dial first; the higher id waits 1.5 s (not the plan's 4 s,
+because pairing waits only 3 s for a HELLO and one-sided discovery leaves the higher id as the only dialer).
+
+### Verification
+- `:core:network:jvmTest` 115 (30 new: `ConnectionPlannerTest` 18, `AutoConnectorTest` 6, `ReconnectStaggerTest` 5,
+  `ConnectionPlannerConcurrencyTest` 1 with 8 real threads) and `:core:network:testAndroidHostTest` 213: green.
+- `:core:engine:jvmTest` (4, after removing the gate's 8), `:core:engine:compileAndroidMain`, `:app:compileDebugKotlin`,
+  `:app:testDebugUnitTest` (39), `:desktop:jvmTest` (82): green.
+- `DesktopEngineAutoDialTest` (two real engines on one host) logged **one** dial, which succeeded. Its KDoc records an
+  earlier glare run where the two sides did not converge.
+- **Not device-tested** (P8).
+
+### Remaining
+Device check (nothing regresses: pairing right after discovery, hotspot gateway probe, call-quiet, Wi-Fi toggle
+storm). `core:engine`'s `PlatformLock` has no users left; it is kept for now.
+
+### Next AI
+PC3: Connected / Online / Offline, local only (plan §3.1, §4). Write the P2P-status UI component doc first
+(AGENTS §34), then the states and dial-on-demand for sends to an Online peer.
+
 ## 2026-09-28 — PC1 keepalive efficiency: code done; testing moved to the end (owner, P8)
 
 ### Worked on

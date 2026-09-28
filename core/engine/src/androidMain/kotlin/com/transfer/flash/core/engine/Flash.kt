@@ -29,6 +29,8 @@ import com.transfer.flash.core.messaging.protocol.PttAudioFrame
 import com.transfer.flash.core.messaging.protocol.PttFrameCodec
 import com.transfer.flash.core.messaging.protocol.PttSessionCodec
 import com.transfer.flash.core.network.bridge.DiscoveryRouteBinder
+import com.transfer.flash.core.network.planner.AutoConnector
+import com.transfer.flash.core.network.planner.ConnectionPlanner
 import com.transfer.flash.core.network.datachannel.DataChannelClient
 import com.transfer.flash.core.network.datachannel.DataChannelServer
 import com.transfer.flash.core.network.ws.WsFlashNetwork
@@ -75,7 +77,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import okio.source
 
@@ -145,7 +146,6 @@ public object Flash {
 private const val TAG = "FlashEngine"
 private const val CALL_PREFIX = "FLASH_CALL"
 private const val XFER_PREFIX = "FLASH_XFER"
-private const val AUTO_CONNECT_SWEEP_MS = 5_000L
 
 /**
  * Delay between a session coming up and auto-resume re-offering on it: long enough for two-way-dial
@@ -530,11 +530,22 @@ private class Wiring(
             }
             runCatching { transferImpl.preloadReceiverProgress() }
 
-            val gate = com.transfer.flash.core.engine.internal.AutoConnectGate()
-            while (isActive) {
-                runAutoConnectSweep(engine, networkImpl, localId, gate)
-                delay(AUTO_CONNECT_SWEEP_MS)
-            }
+            // PC2 (ADR-045): the same planner and driver as the app holder and the desktop engine.
+            AutoConnector(
+                scope = scope,
+                planner = ConnectionPlanner(localDeviceId = localId),
+                links = object : ConnectionPlanner.Links {
+                    override fun hasLiveSession(deviceId: String) = networkImpl.hasLiveSession(deviceId)
+                    override fun isReconnectInFlight(deviceId: String) = networkImpl.isReconnectInFlight(deviceId)
+                },
+                sightings = {
+                    engine.discoveredEndpoints.value.map { ep ->
+                        ConnectionPlanner.Sighting(ep.deviceId.value, ep.hostAddress, ep.port, ep.friendlyName)
+                    }
+                },
+                dial = { d -> networkImpl.connectManual(d.host, d.port) },
+                log = { Log.i(TAG, it) },
+            ).start(edges = engine.discoveredEndpoints)
         }
 
         val facade = DefaultFlashEngine(
@@ -951,26 +962,6 @@ private class Wiring(
         toResume.forEach { transferId ->
             runCatching { transfers.resumeTransfer(transferId) }
                 .onFailure { error -> Log.w(TAG, "Auto-resume threw for ${transferId.value}", error) }
-        }
-    }
-
-    private fun runAutoConnectSweep(engine: CompositeDiscovery, networkImpl: WsFlashNetwork, localId: String, gate: com.transfer.flash.core.engine.internal.AutoConnectGate) {
-        for (ep in engine.discoveredEndpoints.value) {
-            val id = ep.deviceId.value
-            if (id == localId) continue
-            // ERROR-031: "has a session" must mean a session that is demonstrably carrying traffic.
-            // Gating on map presence alone let a session whose socket had died — without its watchdog
-            // noticing — suppress the very sweep that would have replaced it, so the peer stayed
-            // Online-but-unreachable until the app was force-stopped.
-            if (!gate.tryBegin(id, networkImpl.hasLiveSession(id), System.currentTimeMillis())) continue
-            scope.launch {
-                // try/finally: the gate is always released and cancellation still propagates (audit B3).
-                try {
-                    runSuspendCatching { networkImpl.connectManual(ep.hostAddress, ep.port) }
-                } finally {
-                    gate.end(id)
-                }
-            }
         }
     }
 
