@@ -231,6 +231,20 @@ val interopHarness by tasks.registering(JavaExec::class) {
     workingDir = rootProject.projectDir
 }
 
+// PC0 peer farm (docs/network/PRESENCE-CONNECTIONS-PLAN.md): N headless peers in one JVM for a phone
+// to hold idle sessions with. Same classpath and JVM flags as the harness, for the same reasons.
+//   peerFarm --args="--count=4 --minutes=60"      (--help lists every option)
+val peerFarm by tasks.registering(JavaExec::class) {
+    group = "interop"
+    description = "Runs the PC0 peer farm (jvmTest classpath; never published)."
+    mainClass.set("com.transfer.flash.core.engine.interop.farm.PeerFarmKt")
+    jvmArgs("-Djava.net.preferIPv4Stack=true")
+    jvmArgs("-Dstdout.encoding=UTF-8", "-Dsun.stdout.encoding=UTF-8", "-Dfile.encoding=UTF-8")
+    classpath = tasks.named<Test>("jvmTest").get().classpath
+    standardInput = System.`in`
+    workingDir = rootProject.projectDir
+}
+
 publishing {
     publications {
         // KMP generates the publications itself (root `kotlinMultiplatform`, plus one per

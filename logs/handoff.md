@@ -1,5 +1,15 @@
 # Current Handoff
 
+## 2026-09-28 — PC0 rig ready; the measurements themselves need the owner and phones
+- Runbook: `docs/network/PC0-RUNBOOK.md`. Farm: `./gradlew :core:engine:peerFarm --args="--count=N --minutes=M"`.
+  Phone: `tools/pc0/phone-baseline.ps1 -Action start|collect|toggle-wifi`.
+- **Every host caps sessions at 8** (`SessionHardeningPolicy`): PC0 measures 0/1/4/8 sessions plus 19 peers
+  (cap + churn). Groups above 9 can't fully mesh until PC2 raises the cap (noted on ADR-044).
+- ERROR-073 OPEN (suspected): Infinix kept advertising after its engine stopped; NSD registration lifetime.
+- Next: run R0 (Flash running, no farm) on the first phone.
+
+---
+
 ## 2026-09-24 — Discovery resilience plan written (NOT implemented); it comes AFTER group calling
 - `docs/network/DISCOVERY-RESILIENCE-PLAN.md`, phases DR0–DR7, ADR-047 (PROPOSED). Order: presence PC0–PC7 →
   group video G0–G7 → discovery DR0–DR7.

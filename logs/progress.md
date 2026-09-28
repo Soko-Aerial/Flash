@@ -1,5 +1,40 @@
 # Progress Log
 
+## 2026-09-28 — PC0 tooling: peer farm, phone script, runbook (no measurements yet)
+
+### Worked on
+Started PC0 of `docs/network/PRESENCE-CONNECTIONS-PLAN.md`: the rig to measure what idle sessions and reconnects
+cost a phone.
+
+### Changed
+- `core/engine/src/jvmTest/.../interop/farm/PeerFarm.kt` + Gradle task `:core:engine:peerFarm`: N headless
+  Flash peers in one JVM (persisted identities under `~/.flash-peer-farm`, product TLS/keepalive/discovery). Farm
+  peers never dial each other; each dials non-farm devices every 5 s. Status lines, `[degrade]`/`[recover]`
+  lines, and a CSV of every session up/down. `PeerFarmSelfTest` (2 tests, real TLS on loopback).
+- `tools/pc0/phone-baseline.ps1`: `start` (reset batterystats, logcat buffer), `collect` (raw dumps to
+  `measurements/pc0/`, summary of drain, Flash CPU/Wi-Fi lines, phone dial / cap-refusal counts), `toggle-wifi`.
+- `docs/network/PC0-RUNBOOK.md`: setup, run matrix, EXP template. `measurements/` git-ignored.
+
+### Findings
+- **Every host caps live sessions at 8** (`SessionHardeningPolicy`). PC0's 12/19-session rows were impossible;
+  the matrix is now 0/1/4/8 sessions plus 19 peers (cap + churn). Recorded in the presence plan §2 and ADR-044
+  (groups above 9 can't fully mesh until PC2 raises the cap).
+- The engine's partial wake lock keeps the CPU awake, so "wake-ups" were dropped as a metric; CPU time, Wi-Fi
+  traffic and drain against a 0-peer run replace them.
+- ERROR-073 (OPEN, suspected): the Infinix kept advertising while its port refused connections.
+
+### Verification
+- `PeerFarmSelfTest`: 2/2 pass (run twice, before and after the dial-logging change).
+- Live smoke run, 3 farm peers, 1 min, real mDNS: all three started (ports 45822, 65488, 65489), no farm↔farm
+  sessions, dials to the Infinix logged with the refusal reason. Uneven discovery *among* farm peers seen; the
+  runbook requires confirming the phone sees all N.
+- Phone script: parses; device check and uid lookup (`appId=` on Android 14) tested on the Infinix; the
+  summary extraction replayed against a real Infinix batterystats dump. `start`/`collect` not run end to end
+  (`start` resets the phone's battery stats; it belongs to a real run).
+
+### Next AI
+Run the runbook with the owner (R0–R19 per phone, then the reconnect runs), fill the EXP template.
+
 ## 2026-09-24 — Discovery resilience plan (planning only)
 
 ### Worked on
