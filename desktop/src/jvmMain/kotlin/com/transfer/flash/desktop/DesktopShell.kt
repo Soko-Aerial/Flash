@@ -1942,8 +1942,9 @@ private fun pairingPhaseOf(
  * header from that real data instead of inventing any:
  *
  *  - **title** is the peer's trusted name, falling back to the name discovery is currently reporting;
- *  - **presence** is `Online` exactly when discovery can see the peer right now, which is the same
- *    fact the Nearby dot is drawn from — not a guess and not a heartbeat;
+ *  - **presence** is `Online` (Connected) when a live session exists, and `Reachable` (Online, ring
+ *    dot; UI-030b) when discovery can see the peer right now without one. Discovery is the same fact
+ *    the Nearby dot is drawn from, not a guess and not a heartbeat;
  *  - **showCallActions is true since 33a.** The voice and video buttons start calls via
  *    the shared coordinator (video live since 33c).
  *
@@ -1963,7 +1964,11 @@ internal fun desktopConversationHeader(
     val trustedName = trusted.firstOrNull { it.id == conversationId }?.name
     val endpoint = discovered.firstOrNull { it.deviceId.value == conversationId }
     val name = trustedName ?: endpoint?.friendlyName ?: return null
-    val resolvedPresence = presence ?: if (hasActiveSession || endpoint != null) FlashPeerPresence.Online else FlashPeerPresence.Offline
+    val resolvedPresence = presence ?: when {
+        hasActiveSession -> FlashPeerPresence.Online
+        endpoint != null -> FlashPeerPresence.Reachable
+        else -> FlashPeerPresence.Offline
+    }
     val resolvedTransport = transport ?: if (resolvedPresence == FlashPeerPresence.Online) FlashNetworkTransport.Lan else FlashNetworkTransport.Unknown
     return FlashChatHeaderUiState(
         title = name,

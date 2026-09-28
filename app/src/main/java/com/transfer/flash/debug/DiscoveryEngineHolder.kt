@@ -857,6 +857,10 @@ object DiscoveryEngineHolder {
             onlinePeerIds = networkImpl.activeSessions.map { sessions ->
                 sessions.keys.mapTo(HashSet()) { it.value }
             },
+            // PC3 (UI-030b): seen by discovery without a session → "Online" with a ring dot.
+            reachablePeerIds = engine.discoveredEndpoints.map { endpoints ->
+                endpoints.mapTo(HashSet()) { it.deviceId.value }
+            },
             // A conversationId is the peer's device UUID; resolve it to the paired friendly name so
             // the chat list / header show the real name instead of the raw id.
             peerNameResolver = { id -> trustStore.getTrustedPeers()[FlashDeviceId(id)] },
@@ -916,6 +920,11 @@ object DiscoveryEngineHolder {
                 )
             },
             transportSink = { targetDeviceId, wireFrame ->
+                // PC3 dial on demand: a message to a peer that is seen but not connected dials first
+                // (≤ 1 s) instead of waiting for the next sweep. Receipts and typing never wait.
+                if (wireFrame is MessageWireFrame.TextMessage) {
+                    autoConnector?.ensureSession(targetDeviceId)
+                }
                 val session = networkImpl.activeSessions.value[FlashDeviceId(targetDeviceId)] as? WsSession
                 if (session == null) {
                     Log.w(TAG_CHAT, "Failed to dispatch chat wireFrame: no active session for $targetDeviceId")

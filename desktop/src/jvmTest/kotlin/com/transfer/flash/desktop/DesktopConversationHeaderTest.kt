@@ -25,7 +25,7 @@ import kotlin.test.assertNull
 class DesktopConversationHeaderTest {
 
     @Test
-    fun aTrustedAndCurrentlyDiscoveredPeer_showsItsName_andReadsOnline() {
+    fun aTrustedAndCurrentlyDiscoveredPeer_showsItsName_andReadsOnlineWithoutASession() {
         val header = assertNotNull(
             desktopConversationHeader(
                 conversationId = PEER_ID,
@@ -37,9 +37,9 @@ class DesktopConversationHeaderTest {
 
         assertEquals("Pixel 7a", header.title)
         assertEquals(
-            FlashPeerPresence.Online,
+            FlashPeerPresence.Reachable,
             header.presence,
-            "presence must come from the live discovery roster, the same fact the Nearby dot shows",
+            "discovery alone is Online (ring, UI-030b), not Connected: no session is held yet",
         )
     }
 
@@ -89,7 +89,7 @@ class DesktopConversationHeaderTest {
         )
 
         assertEquals("Flash V760", header.title)
-        assertEquals(FlashPeerPresence.Online, header.presence)
+        assertEquals(FlashPeerPresence.Reachable, header.presence)
     }
 
     @Test
@@ -124,7 +124,8 @@ class DesktopConversationHeaderTest {
         assertEquals(true, header.showCallActions)
         assertEquals(false, header.isGroup, "a Nearby peer is a direct chat")
         assertEquals(false, header.isEncrypted, "Wire TLS is not active yet; matches mobile's truthful isEncrypted=false")
-        assertEquals(FlashNetworkTransport.Lan, header.transport)
+        // UI-030b: discovery alone names no link; Lan needs a live session (see the session test below).
+        assertEquals(FlashNetworkTransport.Unknown, header.transport)
     }
 
     @Test

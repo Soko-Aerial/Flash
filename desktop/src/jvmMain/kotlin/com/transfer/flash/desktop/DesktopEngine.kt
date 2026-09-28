@@ -612,6 +612,10 @@ public class DesktopEngine(
                 onlinePeerIds = network.activeSessions.map { sessions ->
                     sessions.keys.mapTo(HashSet()) { it.value }
                 },
+                // PC3 (UI-030b): seen by discovery without a session → "Online" with a ring dot.
+                reachablePeerIds = discovery.discoveredEndpoints.map { endpoints ->
+                    endpoints.mapTo(HashSet()) { it.deviceId.value }
+                },
                 peerNameResolver = { id ->
                     trustStore.getTrustedPeers()[FlashDeviceId(id)]
                         ?: discovery.discoveredEndpoints.value.firstOrNull { it.deviceId.value == id }?.friendlyName
@@ -644,7 +648,14 @@ public class DesktopEngine(
                         )
                     }
                 },
-                transportSink = { targetDeviceId, wireFrame -> sendChatFrame(network, targetDeviceId, wireFrame) },
+                transportSink = { targetDeviceId, wireFrame ->
+                    // PC3 dial on demand: a message to a peer that is seen but not connected dials
+                    // first (≤ 1 s). Receipts and typing never wait.
+                    if (wireFrame is MessageWireFrame.TextMessage) {
+                        autoConnector?.ensureSession(targetDeviceId)
+                    }
+                    sendChatFrame(network, targetDeviceId, wireFrame)
+                },
                 groupTransportSink = { targetDeviceId, wireFrame ->
                     val session = network.activeSessions.value[FlashDeviceId(targetDeviceId)] as? WsSession
                     if (session == null) {

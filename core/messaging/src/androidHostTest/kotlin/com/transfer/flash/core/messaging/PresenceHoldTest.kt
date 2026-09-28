@@ -40,6 +40,31 @@ class PresenceHoldTest {
     }
 
     @Test
+    fun `a seen peer without a session is reachable, and a session or the grace outranks it`() = runBlocking {
+        // PC3 (UI-030b): discovery alone is "Online" (ring); it never claims a link.
+        val sessions = MutableStateFlow(emptySet<String>())
+        val discovered = MutableStateFlow(setOf("peer", "other"))
+        val seen = Collections.synchronizedList(mutableListOf<PresenceSnapshot>())
+        val collector = launch {
+            sessions.withReconnectGrace(HOLD_MS).withReachable(discovered).collect { seen.add(it) }
+        }
+        awaitUntil(seen) { it.reachable == setOf("peer", "other") && it.online.isEmpty() }
+
+        sessions.value = setOf("peer")
+        awaitUntil(seen) { it.online == setOf("peer") && it.reachable == setOf("other") }
+
+        // Session drops while discovery still sees the peer: the grace wins (Connecting), not Reachable.
+        sessions.value = emptySet()
+        awaitUntil(seen) { it.connecting == setOf("peer") && it.reachable == setOf("other") }
+        // After the grace it falls back to Reachable, because discovery still sees it.
+        awaitUntil(seen) { it.connecting.isEmpty() && it.reachable == setOf("peer", "other") }
+
+        discovered.value = emptySet()
+        awaitUntil(seen) { it.reachable.isEmpty() && it.online.isEmpty() && it.connecting.isEmpty() }
+        collector.cancel()
+    }
+
+    @Test
     fun `an absent peer is never reported Online no matter how often it reappears`() = runBlocking {
         val sessions = MutableStateFlow(setOf("peer"))
         val seen = Collections.synchronizedList(mutableListOf<PresenceSnapshot>())

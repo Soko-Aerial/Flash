@@ -4,6 +4,7 @@ import com.transfer.flash.core.common.time.SystemTimeSource
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -15,12 +16,23 @@ import kotlinx.coroutines.sync.withLock
  * [online] is the live session set exactly as the transport reports it. [connecting] is the peers
  * whose session has just gone but whose reconnect grace has not expired yet — recovery is plausibly
  * under way, so the UI says "Connecting…" instead of either lying about a usable link or flashing
- * Offline through a sub-second session swap. The two sets are disjoint.
+ * Offline through a sub-second session swap. The sets are disjoint.
  */
 internal data class PresenceSnapshot(
     val online: Set<String>,
     val connecting: Set<String>,
+    /**
+     * PC3: peers discovery sees right now that are in neither set above. No link is claimed; a send
+     * dials on demand. Disjoint from [online] and [connecting].
+     */
+    val reachable: Set<String> = emptySet(),
 )
+
+/** PC3: joins the discovery sightings onto the session snapshot as [PresenceSnapshot.reachable]. */
+internal fun Flow<PresenceSnapshot>.withReachable(reachablePeerIds: Flow<Set<String>>): Flow<PresenceSnapshot> =
+    combine(this, reachablePeerIds.distinctUntilChanged()) { snapshot, seen ->
+        snapshot.copy(reachable = seen - snapshot.online - snapshot.connecting)
+    }.distinctUntilChanged()
 
 /**
  * Splits a live-session set into [PresenceSnapshot.online] / [PresenceSnapshot.connecting] with a

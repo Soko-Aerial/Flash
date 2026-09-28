@@ -1,6 +1,6 @@
 # Presence & Connections Plan (phases PC0–PC7)
 
-**Status (2026-09-28): PC1 and PC2 code done (unit-tested, not device-tested). PC0 measurements deferred (P8).**
+**Status (2026-09-28): PC1, PC2 and PC3 code done (unit-tested, not device-tested). PC0 measurements deferred (P8).**
 Numbers marked *(measure)* are estimates until PC0/PC6 replace them.
 
 **Testing order changed (owner, 2026-09-28, decision P8):** implement PC1–PC5 and then group calling first, and
@@ -212,3 +212,25 @@ all call it. This follows the migration direction (one shared frame) and makes �
   engines instead of crossing dials.
 - **Pending device checks:** pairing straight after discovery, the hotspot gateway probe, call-quiet, and a Wi-Fi
   toggle with several peers (storm stagger visible in the `Auto-connect`/reconnect timestamps).
+
+### PC3 — code done 2026-09-28 (device check pending, P8)
+- UI doc first: `docs/ui/chat-screen.md` **UI-030b** (DESIGNED → IMPLEMENTED). Solid dot = Connected, ring = Online,
+  none = Offline, and the labels follow the owner's names. `FlashPeerPresence` gains `Reachable` (= the plan's
+  "Online"); `Online` keeps meaning a live session, because the enum is published API and a meaning swap would
+  compile silently at missed call sites.
+- `RealFlashChatRepository(reachablePeerIds = …)`: discovery's current ids. `PresenceSnapshot.reachable` =
+  seen − live − Connecting grace. It is used by the chat list and the direct header; groups are unchanged until PC4.
+- `FlashPresenceDot` is shared by the list, header and peer-details sheet. `FlashConnectionHealth.Reachable` shows a
+  calm banner, "Online · connects when you send". The desktop header resolver no longer calls a discovered-only
+  peer Online/Lan.
+- **Dial on demand:** `ConnectionPlanner.planUrgent` (rule 7: skips the first-contact wait and the 15 s window; keeps
+  in-flight, reconnect-engine and a 5 s floor) and `AutoConnector.ensureSession(peer, 1 s)`. It is called by all
+  three hosts' direct-message sinks for `TextMessage` frames only. Callers share one wait deadline per peer, so an
+  advertised-but-unreachable peer (ERROR-073) costs an outbox pass at most 1 s.
+- **Not covered yet:** group sends, transfers and calls still need an existing session. Presence is local only
+  (sharing is PC4).
+- Tests: `PresenceHoldTest` (reachable join), `FlashPresenceDotLogicTest`, `FlashNetworkStatusLogicTest` and
+  `FlashNetworkSimLogicTest` (new state), `ConnectionPlannerTest` +4, `AutoConnectorTest` +3, and the desktop header
+  tests updated to the new meaning.
+- **Pending device checks:** a ring appears for a discovered peer before its session lands; a message sent to a ring
+  peer delivers; TalkBack reads "Connected"/"Online".

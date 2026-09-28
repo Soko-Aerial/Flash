@@ -67,6 +67,7 @@ Per-component docs use [`component-doc-template.md`](component-doc-template.md).
 | UI-028 | Group chat header | [group-ui.md](group-ui.md) | IMPLEMENTED | UI-004 |
 | UI-029 | Group member presentation | [group-ui.md](group-ui.md) | IMPLEMENTED | UI-028 |
 | UI-030 | Device / network status UI | [chat-screen.md](chat-screen.md) | IMPLEMENTED | UI-001 |
+| UI-030b | Presence states Connected / Online / Offline (PC3) | [chat-screen.md](chat-screen.md) | IMPLEMENTED (not device-verified) | UI-030, UI-003, UI-004 |
 | UI-031 | Encryption indicators | [chat-screen.md](chat-screen.md) | IMPLEMENTED (see L63) | UI-030 |
 | UI-032 | Device pairing flow UI | [profile-ui.md](profile-ui.md) | IMPLEMENTED | UI-001, UI-037 |
 | UI-033 | Navigation | [navigation.md](navigation.md) | IMPLEMENTED (snapshot-state stack + saver + direction-aware transitions, 2026-08-25; device verification pending) | UI-001 |

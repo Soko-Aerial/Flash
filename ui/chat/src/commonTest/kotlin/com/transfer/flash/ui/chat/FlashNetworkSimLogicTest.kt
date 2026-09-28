@@ -14,7 +14,8 @@ class FlashNetworkSimLogicTest {
             FlashConnectionHealth.Connected to FlashConnectionHealth.Connecting,
             FlashConnectionHealth.Connecting to FlashConnectionHealth.Degraded,
             FlashConnectionHealth.Degraded to FlashConnectionHealth.Offline,
-            FlashConnectionHealth.Offline to FlashConnectionHealth.Connected,
+            FlashConnectionHealth.Offline to FlashConnectionHealth.Reachable,
+            FlashConnectionHealth.Reachable to FlashConnectionHealth.Connected,
         )
         expectedCycle.forEach { (current, next) ->
             assertEquals(next, FlashNetworkSimMath.nextHealth(current))

@@ -1,5 +1,12 @@
 # Current Handoff
 
+## 2026-09-28 — PC3 code done: Connected / Online / Offline + dial on demand
+- `FlashPeerPresence.Reachable` = the plan's "Online" (ring dot); `Online` still means a live session (label "Connected").
+  UI doc: `docs/ui/chat-screen.md` UI-030b. Shared `FlashPresenceDot`.
+- Sends of `TextMessage` call `AutoConnector.ensureSession(peer, 1 s)` on all three hosts (planner rule 7, `planUrgent`).
+- Tests green across network/messaging/ui:chat/engine/app/desktop. Not device-tested (P8).
+- Next: PC4 presence sharing (ADR-046, `FLASH_PRES`); check first that old clients ignore unknown frame prefixes.
+
 ## 2026-09-28 — PC2 code done: one connection planner on all three hosts (ADR-045)
 - `core/network/.../planner/ConnectionPlanner` + `AutoConnector` replace the app, engine and desktop sweeps and both
   `AutoConnectGate` copies. The lower device id dials first; the higher id waits 1.5 s. Reconnect storms (at least 4

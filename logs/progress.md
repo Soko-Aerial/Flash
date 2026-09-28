@@ -1,5 +1,39 @@
 # Progress Log
 
+## 2026-09-28 — PC3 three presence states + dial on demand: code done (device check pending, P8)
+
+### Worked on
+PC3 of `PRESENCE-CONNECTIONS-PLAN.md`: Connected / Online / Offline from local facts only, and sends to an Online
+peer dialing on demand (§3.1, §3.5).
+
+### Changed
+- UI doc `docs/ui/chat-screen.md` UI-030b (written first, per AGENTS §34) and its row in the index.
+- `core:common` `FlashPeerPresence.Reachable`. `core:messaging`: `reachablePeerIds` input,
+  `PresenceSnapshot.reachable`, `withReachable`. List and header map it.
+- `ui:chat`: new `FlashPresenceDot` (solid/ring), labels "Connected"/"Online", `FlashConnectionHealth.Reachable`,
+  and a sim-sheet label.
+- `core:network`: `ConnectionPlanner.planUrgent`, `AutoConnector.ensureSession`.
+- Hosts (app holder, `Flash.create`, `DesktopEngine`): pass discovery ids as `reachablePeerIds`, and call
+  `ensureSession` before sending a `TextMessage`. `Flash.create` now builds its `AutoConnector` before the repository.
+- `DesktopShell.desktopConversationHeader`: discovered without a session → `Reachable` with no transport.
+
+### Why
+Owner decision P3. Before this, a peer that discovery could see showed Offline until its session landed, and a send
+waited for the next sweep, or up to 15 s after a failed dial.
+
+### Verification
+`:core:network:jvmTest` 122, `:core:network:testAndroidHostTest` 220, `:core:messaging:testAndroidHostTest` 193,
+`:ui:chat:jvmTest` 284, `:core:engine:jvmTest`, `:core:engine:compileAndroidMain`, `:app:compileDebugKotlin`,
+`:app:testDebugUnitTest`, `:desktop:jvmTest` 82: all green. Two desktop header tests and two UI logic tests were
+updated to the new meaning: discovery alone is now Reachable with no transport. **Not device-tested** (P8).
+
+### Remaining
+Group sends, transfers and calls do not dial on demand yet. Device checks are listed in plan §7.
+
+### Next AI
+PC4 presence sharing (`FLASH_PRES`, salted-hash mutual contacts, Ghost `noShare`, age/TTL/hops, endpoint tips that
+feed the planner). First verify that old clients ignore an unknown text-frame prefix. ADR-046, `docs/protocol.md`.
+
 ## 2026-09-28 — PC2 connection planner: code done (device check pending, P8)
 
 ### Worked on

@@ -139,6 +139,12 @@ public class RealFlashChatRepository(
      */
     private val onlinePeerIds: Flow<Set<String>> = MutableStateFlow(emptySet()),
     /**
+     * PC3: peer device ids discovery sees right now (hosts pass `discoveredEndpoints`). A peer in
+     * this set without a live session is shown as [FlashPeerPresence.Reachable] ("Online", ring
+     * dot). Presentation only, like [onlinePeerIds]'s grace: sends still gate on a real session.
+     */
+    private val reachablePeerIds: Flow<Set<String>> = MutableStateFlow(emptySet()),
+    /**
      * Resolves a peer device id to its friendly name (prod: the trust store). A conversationId is a
      * peer device id, so this turns the raw UUID we key threads by into the human name to display.
      * Returns null when unknown; callers fall back to any stored title, then the id itself.
@@ -315,7 +321,7 @@ public class RealFlashChatRepository(
      * into a socket that no longer exists: the send simply fails and the message waits in the outbox.
      */
     private val displayedPresence: Flow<PresenceSnapshot> =
-        onlinePeerIds.withReconnectGrace(OFFLINE_HOLD_MS)
+        onlinePeerIds.withReconnectGrace(OFFLINE_HOLD_MS).withReachable(reachablePeerIds)
 
     /**
      * [attachmentProgress] at a cadence a screen can use. MUST be declared above the init block
@@ -381,6 +387,7 @@ public class RealFlashChatRepository(
                         presence = when {
                             entity.id in peers.online -> FlashPeerPresence.Online
                             entity.id in peers.connecting -> FlashPeerPresence.Connecting
+                            entity.id in peers.reachable -> FlashPeerPresence.Reachable
                             else -> FlashPeerPresence.Offline
                         }
                     }
@@ -739,6 +746,9 @@ public class RealFlashChatRepository(
             // "Connecting…" and the banner agrees, because resolveHealth tests Connecting
             // ahead of the (necessarily) Unknown transport below.
             isConnecting -> FlashPeerPresence.Connecting
+            // PC3: seen by discovery, no session. The header says "Online" with a ring and
+            // claims no transport, so the banner explains that a send will connect.
+            conversationId in peers.reachable -> FlashPeerPresence.Reachable
             else -> FlashPeerPresence.Offline
         }
         return FlashConversationUiState(
