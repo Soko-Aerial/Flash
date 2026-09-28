@@ -47,7 +47,8 @@ import org.jetbrains.compose.ui.tooling.preview.Preview
  */
 object FlashPeerDetailsMath {
     fun presenceLabel(presence: FlashPeerPresence): String = when (presence) {
-        FlashPeerPresence.Online -> "Online"
+        FlashPeerPresence.Online -> "Connected"
+        FlashPeerPresence.Reachable -> "Online"
         FlashPeerPresence.Typing -> "Typing…"
         FlashPeerPresence.Connecting -> "Connecting…"
         FlashPeerPresence.Offline -> "Offline"
@@ -135,16 +136,13 @@ fun FlashPeerDetailsSheet(
                     seed = header.avatarSeed,
                     size = FlashDimensions.avatarXl,
                 )
-                if (reachable) {
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.BottomEnd)
-                            .size(16.dp)
-                            .clip(CircleShape)
-                            .background(colors.statusOnline)
-                            .border(3.dp, colors.backgroundSurface, CircleShape),
-                    )
-                }
+                // UI-030b: solid = Connected, ring = Online (seen, no session).
+                FlashPresenceDot(
+                    presence = header.presence,
+                    size = 16.dp,
+                    halo = 3.dp,
+                    modifier = Modifier.align(Alignment.BottomEnd),
+                )
             }
 
             FlashText(

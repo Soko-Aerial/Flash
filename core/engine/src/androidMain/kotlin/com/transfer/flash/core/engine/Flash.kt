@@ -329,6 +329,23 @@ private class Wiring(
             isPeerEncrypted = { peerId -> trustStore.getSessionKey(FlashDeviceId(peerId)) != null },
         )
         transferRef = transferImpl
+        // Built before the repository so its sink can dial on demand (PC3); started once the
+        // server is up, below.
+        val autoConnector = AutoConnector(
+            scope = scope,
+            planner = ConnectionPlanner(localDeviceId = localId),
+            links = object : ConnectionPlanner.Links {
+                override fun hasLiveSession(deviceId: String) = networkImpl.hasLiveSession(deviceId)
+                override fun isReconnectInFlight(deviceId: String) = networkImpl.isReconnectInFlight(deviceId)
+            },
+            sightings = {
+                engine.discoveredEndpoints.value.map { ep ->
+                    ConnectionPlanner.Sighting(ep.deviceId.value, ep.hostAddress, ep.port, ep.friendlyName)
+                }
+            },
+            dial = { d -> networkImpl.connectManual(d.host, d.port) },
+            log = { Log.i(TAG, it) },
+        )
         val chatImpl = RealFlashChatRepository(
             localDeviceId = localId,
             localDisplayName = identity.friendlyName,
@@ -346,6 +363,10 @@ private class Wiring(
             isChannelEncrypted = { peerId -> trustStore.getSessionKey(FlashDeviceId(peerId)) != null },
             onlinePeerIds = networkImpl.activeSessions.map { sessions ->
                 sessions.keys.mapTo(HashSet()) { it.value }
+            },
+            // PC3 (UI-030b): seen by discovery without a session → "Online" with a ring dot.
+            reachablePeerIds = engine.discoveredEndpoints.map { endpoints ->
+                endpoints.mapTo(HashSet()) { it.deviceId.value }
             },
             peerNameResolver = { id -> trustStore.getTrustedPeers()[FlashDeviceId(id)] },
             attachmentProgress = transferImpl.activeTransfers.map { transfers ->
@@ -376,7 +397,11 @@ private class Wiring(
                     )
                 }
             },
-            transportSink = { targetDeviceId, wireFrame -> sendChatFrame(networkImpl, targetDeviceId, wireFrame) },
+            transportSink = { targetDeviceId, wireFrame ->
+                // PC3 dial on demand; receipts and typing never wait.
+                if (wireFrame is MessageWireFrame.TextMessage) autoConnector.ensureSession(targetDeviceId)
+                sendChatFrame(networkImpl, targetDeviceId, wireFrame)
+            },
             groupTransportSink = { targetDeviceId, wireFrame ->
                 val session = networkImpl.activeSessions.value[FlashDeviceId(targetDeviceId)] as? WsSession
                 if (session == null) {
@@ -531,21 +556,7 @@ private class Wiring(
             runCatching { transferImpl.preloadReceiverProgress() }
 
             // PC2 (ADR-045): the same planner and driver as the app holder and the desktop engine.
-            AutoConnector(
-                scope = scope,
-                planner = ConnectionPlanner(localDeviceId = localId),
-                links = object : ConnectionPlanner.Links {
-                    override fun hasLiveSession(deviceId: String) = networkImpl.hasLiveSession(deviceId)
-                    override fun isReconnectInFlight(deviceId: String) = networkImpl.isReconnectInFlight(deviceId)
-                },
-                sightings = {
-                    engine.discoveredEndpoints.value.map { ep ->
-                        ConnectionPlanner.Sighting(ep.deviceId.value, ep.hostAddress, ep.port, ep.friendlyName)
-                    }
-                },
-                dial = { d -> networkImpl.connectManual(d.host, d.port) },
-                log = { Log.i(TAG, it) },
-            ).start(edges = engine.discoveredEndpoints)
+            autoConnector.start(edges = engine.discoveredEndpoints)
         }
 
         val facade = DefaultFlashEngine(

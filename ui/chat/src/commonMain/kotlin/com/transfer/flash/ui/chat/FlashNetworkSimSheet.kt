@@ -71,6 +71,7 @@ object FlashNetworkSimMath {
         FlashConnectionHealth.Connecting -> "Force Connecting"
         FlashConnectionHealth.Degraded -> "Force Degraded"
         FlashConnectionHealth.Offline -> "Force Offline"
+        FlashConnectionHealth.Reachable -> "Force Online (no session)"
     }
 }
 

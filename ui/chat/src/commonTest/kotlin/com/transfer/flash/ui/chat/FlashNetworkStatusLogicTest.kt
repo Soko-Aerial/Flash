@@ -26,6 +26,8 @@ class FlashNetworkStatusLogicTest {
             Triple(FlashNetworkTransport.Lan, FlashPeerPresence.Offline, 1),
             Triple(FlashNetworkTransport.Relay, FlashPeerPresence.Offline, 1),
             Triple(FlashNetworkTransport.Lan, FlashPeerPresence.Online, 0),
+            // UI-030b: seen, no session, no transport — not "searching", a send will connect.
+            Triple(FlashNetworkTransport.Unknown, FlashPeerPresence.Reachable, 1),
         )
         val expected = listOf(
             FlashConnectionHealth.Offline,
@@ -37,6 +39,7 @@ class FlashNetworkStatusLogicTest {
             FlashConnectionHealth.Offline,
             FlashConnectionHealth.Offline,
             FlashConnectionHealth.Offline,
+            FlashConnectionHealth.Reachable,
         )
         assertEquals(expected.size, cases.size)
         cases.zip(expected) { (transport, presence, peerCount), health ->

@@ -324,19 +324,13 @@ private fun FlashChatListAvatar(
             seed = seed,
             size = FlashDimensions.avatarLg,
         )
-        if (presence == FlashPeerPresence.Online) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .size(12.dp)
-                    .clip(CircleShape)
-                    .background(colors.backgroundSurface)
-                    .padding(2.dp)
-                    .clip(CircleShape)
-                    .background(colors.statusOnline)
-                    .semantics { contentDescription = "Online" },
-            )
-        }
+        // UI-030b: solid = Connected, ring = Online (seen, no session), nothing otherwise.
+        FlashPresenceDot(
+            presence = presence,
+            size = 12.dp,
+            halo = 2.dp,
+            modifier = Modifier.align(Alignment.BottomEnd),
+        )
     }
 }
 

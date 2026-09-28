@@ -16,7 +16,8 @@ class FlashPeerDetailsLogicTest {
 
     @Test
     fun `presenceLabel covers every presence`() {
-        assertEquals("Online", FlashPeerDetailsMath.presenceLabel(FlashPeerPresence.Online))
+        assertEquals("Connected", FlashPeerDetailsMath.presenceLabel(FlashPeerPresence.Online))
+        assertEquals("Online", FlashPeerDetailsMath.presenceLabel(FlashPeerPresence.Reachable))
         assertEquals("Typing…", FlashPeerDetailsMath.presenceLabel(FlashPeerPresence.Typing))
         assertEquals("Connecting…", FlashPeerDetailsMath.presenceLabel(FlashPeerPresence.Connecting))
         assertEquals("Offline", FlashPeerDetailsMath.presenceLabel(FlashPeerPresence.Offline))

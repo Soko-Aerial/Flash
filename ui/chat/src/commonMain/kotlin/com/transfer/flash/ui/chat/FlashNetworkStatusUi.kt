@@ -45,6 +45,9 @@ enum class FlashConnectionHealth {
     Connecting,
     Degraded,
     Offline,
+
+    /** UI-030b: the peer is seen but no session is held; a send dials on demand. */
+    Reachable,
 }
 
 /**
@@ -77,6 +80,9 @@ object FlashNetworkStatusMath {
         // testing Unknown first made the banner say "Searching for devices…" underneath a header
         // already showing "Connecting…".
         peerPresence == FlashPeerPresence.Connecting -> FlashConnectionHealth.Connecting
+        // UI-030b: seen by discovery with no session. There is no transport to name, and it is not
+        // "searching" either: a send will connect.
+        peerPresence == FlashPeerPresence.Reachable -> FlashConnectionHealth.Reachable
         transport == FlashNetworkTransport.Unknown -> FlashConnectionHealth.Offline
         (transport == FlashNetworkTransport.Lan || transport == FlashNetworkTransport.WifiDirect) &&
             peerPresence == FlashPeerPresence.Online -> FlashConnectionHealth.Connected
@@ -109,6 +115,7 @@ object FlashNetworkStatusMath {
         }
         FlashConnectionHealth.Degraded -> if (transport == FlashNetworkTransport.Relay) "Relayed" else "Degraded connection"
         FlashConnectionHealth.Connecting -> "Connecting…"
+        FlashConnectionHealth.Reachable -> "Online · connects when you send"
         FlashConnectionHealth.Offline -> "Searching for devices…"
     }
 
@@ -117,7 +124,8 @@ object FlashNetworkStatusMath {
 
     /** Calm for environmental conditions, Attention only when the user truly cannot send. */
     fun bannerSeverity(health: FlashConnectionHealth): FlashNetworkBannerSeverity = when (health) {
-        FlashConnectionHealth.Degraded, FlashConnectionHealth.Connecting -> FlashNetworkBannerSeverity.Calm
+        FlashConnectionHealth.Degraded, FlashConnectionHealth.Connecting,
+        FlashConnectionHealth.Reachable -> FlashNetworkBannerSeverity.Calm
         FlashConnectionHealth.Offline -> FlashNetworkBannerSeverity.Attention
         FlashConnectionHealth.Connected -> FlashNetworkBannerSeverity.Calm
     }

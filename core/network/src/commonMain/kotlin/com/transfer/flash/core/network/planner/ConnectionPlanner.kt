@@ -32,6 +32,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
  * 6. **Gateway probes** (the Android hotspot-host probe) have no device id. They are keyed
  *    `gateway:<host>`, skipped while any session reaches that host, gated by rule 4, and never
  *    deferred.
+ * 7. **Dial on demand (PC3, [planUrgent]).** A send to a peer that is seen but has no session skips
+ *    rule 5's wait and rule 4's 15 s window. It still respects rules 2 and 3, one attempt in flight,
+ *    and a [URGENT_FLOOR_MS] floor since the last attempt of any kind, so a burst of queued
+ *    messages to an unreachable peer costs one dial, not one per message.
  *
  * Thread-safe without a lock. The state is immutable and replaced by compare-and-set, because
  * `core:network` deliberately declares no expect/actual classes (see its `build.gradle.kts`).
@@ -140,6 +144,42 @@ public class ConnectionPlanner(
         }
     }
 
+    /**
+     * Rule 7: a dial for [sighting] right now because something is waiting to be sent, or null when
+     * none should start (a live session, a dial already in flight, or the floor not yet passed).
+     */
+    public fun planUrgent(nowMs: Long, sighting: Sighting, links: Links, floorMs: Long = URGENT_FLOOR_MS): Dial? {
+        if (sighting.deviceId == localDeviceId) return null
+        val key = sighting.deviceId
+        val live = links.hasLiveSession(key)
+        val reconnecting = links.isReconnectInFlight(key)
+        while (true) {
+            val current = state.value
+            val next: State
+            val dial: Dial?
+            when {
+                live -> {
+                    next = current.copy(
+                        lastAttemptMs = current.lastAttemptMs - key,
+                        inFlight = current.inFlight - key,
+                        dialableSinceMs = current.dialableSinceMs - key,
+                    )
+                    dial = null
+                }
+                reconnecting || key in current.inFlight -> return null
+                current.lastAttemptMs[key]?.let { nowMs - it < floorMs } == true -> return null
+                else -> {
+                    next = current.copy(
+                        lastAttemptMs = current.lastAttemptMs + (key to nowMs),
+                        inFlight = current.inFlight + key,
+                    )
+                    dial = Dial(key = key, host = sighting.host, port = sighting.port, peerDeviceId = key, name = sighting.name)
+                }
+            }
+            if (state.compareAndSet(current, next)) return dial
+        }
+    }
+
     /** Ends the in-flight attempt for [key]; the [suppressMs] window still applies. */
     public fun dialFinished(key: String) {
         while (true) {
@@ -197,5 +237,8 @@ public class ConnectionPlanner(
         public const val DEFAULT_FIRST_CONTACT_DEFER_MS: Long = 1_500L
 
         public const val GATEWAY_KEY_PREFIX: String = "gateway:"
+
+        /** Rule 7's floor between attempts to one peer when a send is waiting. */
+        public const val URGENT_FLOOR_MS: Long = 5_000L
     }
 }

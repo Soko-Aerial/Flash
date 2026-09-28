@@ -362,7 +362,8 @@ fun FlashConversationScreen(
         transport = state.header.transport,
         peerPresence = state.header.presence,
         peerCount = when (state.header.presence) {
-            FlashPeerPresence.Online, FlashPeerPresence.Typing, FlashPeerPresence.Connecting -> 1
+            FlashPeerPresence.Online, FlashPeerPresence.Typing, FlashPeerPresence.Connecting,
+            FlashPeerPresence.Reachable -> 1
             else -> 0
         },
     )

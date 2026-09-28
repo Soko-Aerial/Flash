@@ -195,4 +195,43 @@ class ConnectionPlannerTest {
         assertEquals(all.toSet().size, all.size)
         assertEquals(20, all.size)
     }
+
+    // --- rule 7: dial on demand (PC3) ---
+
+    @Test
+    fun `urgent dial skips the first-contact wait and the suppression window`() {
+        val q = planner(suppress = 60_000L, defer = 500L)
+        q.keys(0, "c"); q.dialFinished("c")
+        assertEquals("c", q.planUrgent(200, peer("c"), links, floorMs = 100L)?.key)
+        assertEquals("a", planner(defer = 500L).planUrgent(0, peer("a"), links)?.key, "no first-contact wait")
+    }
+
+    @Test
+    fun `urgent dial respects in-flight, the reconnect engine and its floor`() {
+        val p = planner()
+        assertEquals("c", p.planUrgent(0, peer("c"), links, floorMs = 1_000L)?.key)
+        assertNull(p.planUrgent(10, peer("c"), links, floorMs = 1_000L), "one in flight")
+        p.dialFinished("c")
+        assertNull(p.planUrgent(999, peer("c"), links, floorMs = 1_000L), "floor")
+        assertEquals("c", p.planUrgent(1_000, peer("c"), links, floorMs = 1_000L)?.key)
+        p.dialFinished("c")
+        links.reconnecting += "c"
+        assertNull(p.planUrgent(5_000, peer("c"), links, floorMs = 1_000L), "reconnect engine first")
+    }
+
+    @Test
+    fun `urgent dial is also counted by the sweep`() {
+        val p = planner(suppress = 1_000L)
+        p.planUrgent(0, peer("c"), links)
+        assertEquals(emptyList(), p.keys(10, "c"), "in flight")
+        p.dialFinished("c")
+        assertEquals(emptyList(), p.keys(500, "c"), "suppressed by the urgent attempt")
+    }
+
+    @Test
+    fun `urgent dial with a live session clears and returns nothing`() {
+        links.live += "c"
+        assertNull(planner().planUrgent(0, peer("c"), links))
+        assertNull(planner().planUrgent(0, peer("b"), links), "never itself")
+    }
 }

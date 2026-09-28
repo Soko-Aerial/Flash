@@ -320,6 +320,107 @@ AnimatedVisibility(visible = health != FlashConnectionHealth.Connected) {
 }
 ```
 
+## UI-030b — Presence states: Connected / Online / Offline (PC3)
+
+**Status:** DESIGNED → IMPLEMENTED (2026-09-28; not device-verified, P8). Plan: `docs/network/PRESENCE-CONNECTIONS-PLAN.md` §3.1, owner decision P3.
+
+### Component
+`FlashPresenceDot` (`ui/chat/.../FlashPresenceDot.kt`), used by the chat-list avatar, the chat header status row and
+the peer-details sheet. It is driven by `FlashPeerPresence`, which gains `Reachable`.
+
+### Purpose
+Before PC3 the UI had one positive state: "Online" meant *I hold a live session with this peer*. A peer that
+discovery could see but that had no session yet showed as Offline, even though a send would reach it within a
+second. The owner chose three states (P3):
+
+| State | Meaning | `FlashPeerPresence` | Dot | Header / sheet label |
+|---|---|---|---|---|
+| **Connected** | I hold a live session myself | `Online` (unchanged name, see below) | Solid `statusOnline` | "Connected" |
+| **Online** | No session, but discovery sees the peer now | `Reachable` (new) | Ring: 1.5 dp `statusOnline` stroke on the surface colour | "Online" |
+| **Offline** | Neither | `Offline` | None | "Offline" |
+
+`Connecting` (the ERROR-031 reconnect grace) and `Typing` are unchanged and outrank `Reachable`.
+
+### Research sources
+- Slack presence: a solid green dot for active and a hollow circle for away, both driven by client heartbeats
+  (idlepilot.com "The Complete Guide to Slack Presence", *reported*, checked 2026-09-28). This is the widest-known
+  "filled = live, ring = there but not live" convention.
+- Existing Flash tokens: `statusOnline`, and the avatar surface ring already used by the list dot (UI-003 / UI-004).
+- UI-030 (above): environmental states are calm, never red.
+
+### Existing approaches studied
+1. **Colour split** (green = connected, amber = online). Rejected: amber reads as a warning and colour alone fails
+   WCAG 1.4.1 (use of colour).
+2. **Label only, same dot.** Rejected: the list has no status text, so the difference would be invisible there.
+3. **Solid vs ring, same colour (chosen).** The shape carries the meaning, so it survives colour-blindness and
+   greyscale. It matches the Slack convention users already know.
+
+### Chosen approach & why
+Solid vs ring. One composable draws both, so the list, header and sheet cannot drift. The enum keeps `Online` as the
+connected state instead of renaming it: `FlashPeerPresence` is published API (`core:common`), and renaming it would
+break consumers. A silent swap of meanings would be worse still, because every missed call site would compile
+unchanged. The **labels** follow the owner's names.
+
+### Visual specification
+- List avatar: 12 dp badge, 2 dp surface ring (unchanged geometry). Connected = filled centre; Online = the centre is
+  the surface colour with a 1.5 dp `statusOnline` stroke.
+- Header: 8 dp dot before the status label. The same fill/ring rule applies, with a 1.5 dp stroke.
+- Peer details sheet: its existing dot, same rule.
+- Groups: unchanged (member counts are Connected members); presence sharing arrives in PC4.
+
+### Interaction specification
+No new interaction. Sending to an Online (ring) peer dials on demand: the host's transport sink asks
+`AutoConnector.ensureSession` for up to 1 s, then sends. If that fails, the message waits in the outbox as today.
+
+### Animation specification
+None. The dot swaps instantly. The header status text keeps its existing crossfade (UI-004).
+
+### Gesture specification
+None.
+
+### Accessibility requirements
+- Semantics: "Connected" (solid), "Online" (ring); no node for Offline. Groups keep their counts.
+- Shape, not colour, distinguishes the states (WCAG 1.4.1). The 1.5 dp stroke at 8 dp stays visible at 200 % font
+  scale because the dot does not scale with text.
+
+### Responsive behavior
+Unchanged; the dot has a fixed size in every layout.
+
+### Dark-mode behavior
+The ring is drawn on `backgroundSurface`, so it inverts with the theme. `statusOnline` already has light and dark
+values (`success500` / `success400`).
+
+### Performance considerations
+The dot is a single `Box` with a `border`, with no extra layers or animation. `Reachable` comes from
+`discoveredEndpoints`, which is already collected. It joins the existing presence combine, so it adds no new
+collector per row.
+
+### Implementation notes
+- `RealFlashChatRepository` takes `reachablePeerIds: Flow<Set<String>>` (hosts pass discovery's current device ids).
+  `PresenceSnapshot.reachable` = discovered − live − connecting.
+- `FlashNetworkStatusMath.resolveHealth`: `Reachable` → new `FlashConnectionHealth.Reachable`, labelled
+  "Online · connects when you send". Calm and non-blocking.
+- The desktop shell's own resolver (`DesktopShell` `directChatHeader…`) maps a discovered peer without a session to
+  `Reachable`, instead of the `Online` it claimed before.
+
+### Testing checklist
+- [x] Repository: discovered-without-session → `Reachable`; session wins; the Connecting grace wins over Reachable.
+- [x] `resolveHealth` / labels for `Reachable`.
+- [x] Dial on demand: `AutoConnectorTest` (urgent dial within budget; one shared wait per peer; Offline returns at once).
+- [ ] Device: ring appears for a discovered peer before its session lands; send to it delivers (P8).
+
+### Known limitations
+- In STANDARD the ring is short-lived, because the auto-connector dials every discovered peer. It matters more in
+  ECO (PC5) and with shared presence (PC4).
+- Transfers and calls still require a session; they do not dial on demand yet.
+
+### Future improvements
+PC4: rings for peers reported by mutual contacts ("Online via Alex"), with hop and age in the details sheet.
+
+### What makes this Flash?
+It is honest about the P2P link. "Connected" promises a live socket, "Online" promises that a send will try to reach
+the peer now, and nothing is shown that the transport cannot back up.
+
 ## UI-031 — Encryption indicators
 
 **Status:** DESIGNED → IMPLEMENTED (2026-08-22)

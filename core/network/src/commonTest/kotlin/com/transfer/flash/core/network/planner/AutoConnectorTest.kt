@@ -4,7 +4,9 @@ import com.transfer.flash.core.common.result.FlashError
 import com.transfer.flash.core.common.result.FlashResult
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlinx.coroutines.async
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.TestScope
@@ -121,5 +123,45 @@ class AutoConnectorTest {
         advanceTimeBy(5_000); runCurrent()
         assertEquals(listOf("c", "c"), rig.dials)
         assertTrue(rig.logs.any { it.contains("success=false detail=threw boom") }, "${rig.logs}")
+    }
+
+    // --- dial on demand (PC3) ---
+
+    @Test
+    fun `ensureSession dials at once and returns when the session lands`() = runTest {
+        val rig = Rig(this)
+        rig.see("a")                                   // higher-id side: the sweep would wait 1.5 s
+        rig.connector.start()
+        runCurrent()
+        assertEquals(emptyList(), rig.dials)
+        val job = async { rig.connector.ensureSession("a") }
+        runCurrent()
+        assertEquals(listOf("a"), rig.dials)
+        advanceTimeBy(200); rig.live += "a"; advanceTimeBy(50)
+        assertTrue(job.await())
+        assertTrue(testScheduler.currentTime < 1_000)
+    }
+
+    @Test
+    fun `ensureSession for a peer discovery does not see returns false at once`() = runTest {
+        val rig = Rig(this)
+        rig.connector.start()
+        val start = testScheduler.currentTime
+        assertFalse(rig.connector.ensureSession("zz"))
+        assertEquals(start, testScheduler.currentTime)
+        assertEquals(emptyList(), rig.dials)
+    }
+
+    @Test
+    fun `queued messages to an unreachable peer share one dial and one budget`() = runTest {
+        val rig = Rig(this)
+        rig.result = FlashResult.Failure(FlashError.Unknown("refused"))
+        rig.see("c")
+        rig.quiet = true                                  // keep the sweep out of this test
+        rig.connector.start()
+        val start = testScheduler.currentTime
+        repeat(16) { assertFalse(rig.connector.ensureSession("c")) }
+        assertEquals(listOf("c"), rig.dials)
+        assertTrue(testScheduler.currentTime - start <= 1_000, "one shared budget, not 16")
     }
 }

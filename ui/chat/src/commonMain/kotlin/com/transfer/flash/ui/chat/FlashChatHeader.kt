@@ -249,14 +249,9 @@ private fun FlashChatHeaderStatusLine(
                 }
 
                 else -> {
-                    if (!state.isGroup && state.presence == FlashPeerPresence.Online) {
-                        Box(
-                            modifier = Modifier
-                                .size(8.dp)
-                                .clip(CircleShape)
-                                .background(colors.statusOnline)
-                                .semantics { contentDescription = "Online" },
-                        )
+                    if (!state.isGroup) {
+                        // UI-030b: solid = Connected, ring = Online (seen, no session).
+                        FlashPresenceDot(presence = state.presence, size = 8.dp)
                     }
                     val label = headerStatusLabel(state)
                         ?: FlashGroupHeaderMath.groupSubtitle(state.memberSummary, state.memberCount, state.onlineCount)
@@ -296,7 +291,9 @@ private fun headerStatusLabel(state: FlashChatHeaderUiState): String? {
         return null // groups use the computed/explicit group subtitle path
     }
     return when (state.presence) {
-        FlashPeerPresence.Online -> "Online"
+        // UI-030b / owner decision P3: a live session reads "Connected"; seen without one, "Online".
+        FlashPeerPresence.Online -> "Connected"
+        FlashPeerPresence.Reachable -> "Online"
         FlashPeerPresence.Offline -> "Offline"
         FlashPeerPresence.Connecting -> "Connecting…"
         FlashPeerPresence.Typing -> "typing…"
