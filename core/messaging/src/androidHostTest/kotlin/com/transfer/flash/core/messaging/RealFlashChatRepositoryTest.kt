@@ -1442,6 +1442,8 @@ class RealFlashChatRepositoryTest {
             MutableStateFlow(members.values.filter { it.groupId == groupId }.sortedBy { it.joinedAt })
         override suspend fun activeMembers(groupId: String): List<GroupMemberEntity> =
             members.values.filter { it.groupId == groupId && it.isActive }.sortedBy { it.joinedAt }
+        override suspend fun allMembers(groupId: String): List<GroupMemberEntity> =
+            members.values.filter { it.groupId == groupId }.sortedBy { it.joinedAt }
         override suspend fun member(groupId: String, deviceId: String): GroupMemberEntity? =
             members[groupId to deviceId]
         override suspend fun activeCount(groupId: String): Int =
@@ -1949,8 +1951,10 @@ class RealFlashChatRepositoryTest {
 
     @Test
     fun `SyncPush stores message and acks the frame sender`() = runBlocking {
+        // ADR-044 V1a (F-4): a push is only ingested against a request THIS device sent, so the
+        // test asks first and answers with the syncId the request carried.
         val memberDao = FakeGroupMemberDao()
-        val sent = mutableListOf<Pair<String, GroupWireFrame>>()
+        val sent = java.util.Collections.synchronizedList(mutableListOf<Pair<String, GroupWireFrame>>())
         val messageDao = FakeMessageDao()
         val repository = newRepository(
             messageDao = messageDao,
@@ -1959,13 +1963,15 @@ class RealFlashChatRepositoryTest {
             groupSink = { target, frame -> sent += target to frame; true },
         )
         val groupId = (repository.createGroup("Team", setOf("peer-a")) as FlashResult.Success).value
+        repository.sendGroupSyncRequests("peer-a")
+        val request = awaitSent<GroupWireFrame.SyncRequest>(sent, "peer-a") { it.groupId == groupId }
         sent.clear()
 
         repository.onInboundGroupWireFrame(
             "peer-a",
             GroupWireFrame.SyncPush(
                 groupId = groupId,
-                syncId = "sync-1",
+                syncId = request.syncId,
                 from = "peer-a",
                 message = GroupWireFrame.Message(
                     groupId, "message-1", "peer-a", "Peer A", 123L, "catch up",
@@ -1977,9 +1983,331 @@ class RealFlashChatRepositoryTest {
         val (target, ackFrame) = sent.single()
         assertEquals("peer-a", target)
         val ack = ackFrame as GroupWireFrame.SyncAck
-        assertEquals("sync-1", ack.syncId)
+        assertEquals(request.syncId, ack.syncId)
         assertEquals(listOf("message-1"), ack.messageIds)
         assertEquals("my-device-id", ack.from)
+
+        // One round delivers a batch: a second push under the same syncId is accepted too.
+        repository.onInboundGroupWireFrame(
+            "peer-a",
+            GroupWireFrame.SyncPush(
+                groupId, request.syncId, "peer-a",
+                GroupWireFrame.Message(groupId, "message-2", "peer-a", "Peer A", 124L, "second"),
+            ),
+        )
+        assertNotNull(messageDao.messages["message-2"])
+    }
+
+    // ---------------------------------------------------------------- ADR-044 V1a: legacy-group hardening
+    // Each attack below was read in the code by the V0 threat review
+    // (docs/group/v0-threat-review.md, findings F-1, F-2, F-4, F-5). "Attacker" is a device this
+    // one has paired with and that knows a group id, which every member and ex-member does.
+
+    private class HardeningRig(
+        val repository: RealFlashChatRepository,
+        val memberDao: FakeGroupMemberDao,
+        val conversationDao: FakeConversationDao,
+        val messageDao: FakeMessageDao,
+        val sent: MutableList<Pair<String, GroupWireFrame>>,
+    )
+
+    /** This device owns "Team" with peer-a and peer-b; peer-c is paired but was never a member. */
+    private fun hardeningRig(): HardeningRig {
+        val memberDao = FakeGroupMemberDao()
+        val conversationDao = FakeConversationDao()
+        val messageDao = FakeMessageDao()
+        val sent = java.util.Collections.synchronizedList(mutableListOf<Pair<String, GroupWireFrame>>())
+        val repository = newRepository(
+            messageDao = messageDao,
+            conversationDao = conversationDao,
+            groupMemberDao = memberDao,
+            trustedPeers = setOf("peer-a", "peer-b", "peer-c", "peer-d", "peer-e", "peer-f"),
+            groupSink = { target, frame -> sent += target to frame; true },
+        )
+        return HardeningRig(repository, memberDao, conversationDao, messageDao, sent)
+    }
+
+    private suspend fun HardeningRig.teamGroup(peers: Set<String> = setOf("peer-a", "peer-b")): String {
+        val id = (repository.createGroup("Team", peers) as FlashResult.Success).value
+        sent.clear()
+        return id
+    }
+
+    private fun rosterEntry(
+        id: String,
+        active: Boolean = true,
+        version: Long = System.currentTimeMillis(),
+        role: String = "member",
+    ) = GroupWireFrame.RosterEntry(
+        deviceId = id, displayName = id, role = role, joinedAt = 1L,
+        membershipVersion = version, operationId = "op-$id-$version", isActive = active,
+    )
+
+    private fun stateFrame(
+        groupId: String,
+        from: String,
+        vararg roster: GroupWireFrame.RosterEntry,
+        name: String = "Team",
+        creatorId: String = "my-device-id",
+    ) = GroupWireFrame.State(
+        groupId = groupId, from = from, operationId = "op-state", membershipVersion = System.currentTimeMillis(),
+        name = name, creatorId = creatorId, members = roster.toList(),
+    )
+
+    private suspend inline fun <reified F : GroupWireFrame> awaitSent(
+        sent: MutableList<Pair<String, GroupWireFrame>>,
+        target: String,
+        crossinline matches: (F) -> Boolean = { true },
+    ): F {
+        var found: F? = null
+        kotlinx.coroutines.withTimeoutOrNull(3_000L) {
+            while (found == null) {
+                found = synchronized(sent) {
+                    sent.firstOrNull { it.first == target && it.second is F && matches(it.second as F) }?.second as F?
+                }
+                if (found == null) kotlinx.coroutines.delay(20)
+            }
+        }
+        return found ?: error("no ${F::class.simpleName} was sent to $target")
+    }
+
+    @Test
+    fun `inbound Create for an unknown group id creates the group`() = runBlocking {
+        val rig = hardeningRig()
+        rig.repository.onInboundGroupWireFrame(
+            "peer-a",
+            GroupWireFrame.Create("g-created", "peer-a", "op-create", 1_000L, "Fresh", listOf("my-device-id", "peer-a")),
+        )
+        val row = rig.conversationDao.get("g-created")!!
+        assertEquals("Fresh", row.title)
+        assertEquals("peer-a", row.groupCreatedBy)
+        assertEquals("owner", rig.memberDao.member("g-created", "peer-a")!!.role)
+        assertEquals("member", rig.memberDao.member("g-created", "my-device-id")!!.role)
+    }
+
+    @Test
+    fun `F-1 Create for a known group id cannot overwrite the group`() = runBlocking {
+        val rig = hardeningRig()
+        val groupId = rig.teamGroup()
+        val before = rig.memberDao.member(groupId, "peer-a")!!
+
+        // peer-b is an honest-looking member who knows the id; the largest possible version would
+        // win every per-row comparison if the Create were applied at all.
+        rig.repository.onInboundGroupWireFrame(
+            "peer-b",
+            GroupWireFrame.Create(
+                groupId, "peer-b", "op-hijack", Long.MAX_VALUE, "Hijacked",
+                listOf("peer-b", "my-device-id", "peer-a"),
+            ),
+        )
+
+        val row = rig.conversationDao.get(groupId)!!
+        assertEquals("Team", row.title)
+        assertEquals("my-device-id", row.groupCreatedBy)
+        assertEquals("owner", rig.memberDao.member(groupId, "my-device-id")!!.role)
+        assertEquals("member", rig.memberDao.member(groupId, "peer-b")!!.role)
+        assertEquals(before, rig.memberDao.member(groupId, "peer-a"))
+    }
+
+    @Test
+    fun `F-2 State from a paired peer that is not a member cannot rewrite a known group`() = runBlocking {
+        val rig = hardeningRig()
+        val groupId = rig.teamGroup()
+
+        // peer-c never joined. Its self-consistent roster evicts both members and renames the group.
+        rig.repository.onInboundGroupWireFrame(
+            "peer-c",
+            stateFrame(
+                groupId, "peer-c",
+                rosterEntry("my-device-id", role = "owner"),
+                rosterEntry("peer-c"),
+                rosterEntry("peer-a", active = false, version = Long.MAX_VALUE),
+                rosterEntry("peer-b", active = false, version = Long.MAX_VALUE),
+                name = "Hijack",
+                creatorId = "peer-c",
+            ),
+        )
+
+        assertEquals("Team", rig.conversationDao.get(groupId)!!.title)
+        assertEquals(true, rig.memberDao.member(groupId, "peer-a")!!.isActive)
+        assertEquals(true, rig.memberDao.member(groupId, "peer-b")!!.isActive)
+        assertNull(rig.memberDao.member(groupId, "peer-c"))
+    }
+
+    @Test
+    fun `F-2 State from an active member cannot make someone else the owner`() = runBlocking {
+        val rig = hardeningRig()
+        val groupId = rig.teamGroup()
+        val newer = System.currentTimeMillis() + 60_000L
+
+        rig.repository.onInboundGroupWireFrame(
+            "peer-a",
+            stateFrame(
+                groupId, "peer-a",
+                rosterEntry("my-device-id", role = "owner", version = 1L),
+                rosterEntry("peer-a", role = "owner", version = newer),
+                rosterEntry("peer-b", version = 1L),
+                creatorId = "peer-a",
+            ),
+        )
+
+        assertEquals("my-device-id", rig.conversationDao.get(groupId)!!.groupCreatedBy)
+        assertEquals("member", rig.memberDao.member(groupId, "peer-a")!!.role)
+        assertEquals("owner", rig.memberDao.member(groupId, "my-device-id")!!.role)
+    }
+
+    @Test
+    fun `F-2 State with a repeated roster id is dropped`() = runBlocking {
+        val rig = hardeningRig()
+        val groupId = rig.teamGroup()
+
+        // The second peer-b entry would tombstone peer-b with a version nothing can beat.
+        rig.repository.onInboundGroupWireFrame(
+            "peer-a",
+            stateFrame(
+                groupId, "peer-a",
+                rosterEntry("my-device-id", role = "owner", version = 1L),
+                rosterEntry("peer-a", version = 1L),
+                rosterEntry("peer-b", version = 1L),
+                rosterEntry("peer-b", active = false, version = Long.MAX_VALUE),
+            ),
+        )
+
+        assertEquals(true, rig.memberDao.member(groupId, "peer-b")!!.isActive)
+    }
+
+    @Test
+    fun `State from an active member still teaches this device a member it did not know`() = runBlocking {
+        val rig = hardeningRig()
+        val groupId = rig.teamGroup()
+
+        rig.repository.onInboundGroupWireFrame(
+            "peer-a",
+            stateFrame(
+                groupId, "peer-a",
+                rosterEntry("my-device-id", role = "owner", version = 1L),
+                rosterEntry("peer-a", version = 1L),
+                rosterEntry("peer-b", version = 1L),
+                rosterEntry("peer-c", version = System.currentTimeMillis() + 1L),
+            ),
+        )
+
+        assertEquals(true, rig.memberDao.member(groupId, "peer-c")!!.isActive)
+    }
+
+    @Test
+    fun `State tombstone from an active member deactivates that member here`() = runBlocking {
+        val rig = hardeningRig()
+        val groupId = rig.teamGroup()
+
+        rig.repository.onInboundGroupWireFrame(
+            "peer-a",
+            stateFrame(
+                groupId, "peer-a",
+                rosterEntry("my-device-id", role = "owner", version = 1L),
+                rosterEntry("peer-a", version = 1L),
+                rosterEntry("peer-b", active = false, version = System.currentTimeMillis() + 1_000_000L),
+            ),
+        )
+
+        assertEquals(false, rig.memberDao.member(groupId, "peer-b")!!.isActive)
+    }
+
+    @Test
+    fun `F-5 reconciled State carries leave tombstones`() = runBlocking {
+        val rig = hardeningRig()
+        val groupId = rig.teamGroup()
+        val leaveVersion = System.currentTimeMillis() + 1_000_000L
+        rig.repository.onInboundGroupWireFrame(
+            "peer-b",
+            GroupWireFrame.Leave(groupId, "peer-b", "leave-op", leaveVersion, "peer-b"),
+        )
+        rig.sent.clear()
+
+        rig.repository.reconcileGroupMembership("peer-a")
+        val state = awaitSent<GroupWireFrame.State>(rig.sent, "peer-a")
+
+        val tombstone = state.members.single { it.deviceId == "peer-b" }
+        assertEquals(false, tombstone.isActive)
+        assertEquals(leaveVersion, tombstone.membershipVersion)
+        assertEquals(setOf("my-device-id", "peer-a"), state.members.filter { it.isActive }.map { it.deviceId }.toSet())
+    }
+
+    @Test
+    fun `reconciled State never exceeds the roster size the wire codec accepts`() = runBlocking {
+        val rig = hardeningRig()
+        val groupId = rig.teamGroup(setOf("peer-a", "peer-b", "peer-c", "peer-d", "peer-e"))
+        rig.repository.onInboundGroupWireFrame(
+            "peer-e",
+            GroupWireFrame.Leave(groupId, "peer-e", "leave-op", System.currentTimeMillis() + 1_000_000L, "peer-e"),
+        )
+        rig.repository.addGroupMembers(groupId, setOf("peer-f"))
+        assertEquals(7, rig.memberDao.allMembers(groupId).size) // six active plus one tombstone
+        rig.sent.clear()
+
+        rig.repository.reconcileGroupMembership("peer-a")
+        val state = awaitSent<GroupWireFrame.State>(rig.sent, "peer-a")
+
+        assertEquals(com.transfer.flash.core.messaging.protocol.GroupPolicy.MAX_MEMBERS, state.members.size)
+        assertTrue(state.members.all { it.isActive })
+    }
+
+    @Test
+    fun `F-4 SyncPush for a syncId this device never requested is dropped`() = runBlocking {
+        val rig = hardeningRig()
+        val groupId = rig.teamGroup()
+
+        rig.repository.onInboundGroupWireFrame(
+            "peer-a",
+            GroupWireFrame.SyncPush(
+                groupId, "never-asked", "peer-a",
+                GroupWireFrame.Message(groupId, "planted", "peer-a", "Someone Else", 1L, "planted history"),
+            ),
+        )
+
+        assertNull(rig.messageDao.messages["planted"])
+        assertTrue(rig.sent.none { it.second is GroupWireFrame.SyncAck })
+    }
+
+    @Test
+    fun `F-4 SyncPush from a peer other than the one asked is dropped`() = runBlocking {
+        val rig = hardeningRig()
+        val groupId = rig.teamGroup()
+        rig.repository.sendGroupSyncRequests("peer-a")
+        val request = awaitSent<GroupWireFrame.SyncRequest>(rig.sent, "peer-a") { it.groupId == groupId }
+        rig.sent.clear()
+
+        // peer-b is an active member but was never asked; it cannot use peer-a's round.
+        rig.repository.onInboundGroupWireFrame(
+            "peer-b",
+            GroupWireFrame.SyncPush(
+                groupId, request.syncId, "peer-b",
+                GroupWireFrame.Message(groupId, "planted", "peer-b", "Peer B", 1L, "planted history"),
+            ),
+        )
+
+        assertNull(rig.messageDao.messages["planted"])
+        assertTrue(rig.sent.none { it.second is GroupWireFrame.SyncAck })
+    }
+
+    @Test
+    fun `F-4 SyncPush cannot carry a round into a different group`() = runBlocking {
+        val rig = hardeningRig()
+        val first = rig.teamGroup()
+        val second = (rig.repository.createGroup("Other", setOf("peer-a")) as FlashResult.Success).value
+        rig.repository.sendGroupSyncRequests("peer-a")
+        val request = awaitSent<GroupWireFrame.SyncRequest>(rig.sent, "peer-a") { it.groupId == first }
+        rig.sent.clear()
+
+        rig.repository.onInboundGroupWireFrame(
+            "peer-a",
+            GroupWireFrame.SyncPush(
+                second, request.syncId, "peer-a",
+                GroupWireFrame.Message(second, "planted", "peer-a", "Peer A", 1L, "wrong group"),
+            ),
+        )
+
+        assertNull(rig.messageDao.messages["planted"])
     }
 
     @Test

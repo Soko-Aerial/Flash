@@ -749,6 +749,10 @@ class GroupLateJoinDiagnosticTest {
             members.values.filter { it.groupId == groupId && it.isActive }
                 .sortedWith(compareBy({ it.joinedAt }, { it.deviceId }))
 
+        override suspend fun allMembers(groupId: String): List<GroupMemberEntity> =
+            members.values.filter { it.groupId == groupId }
+                .sortedWith(compareBy({ it.joinedAt }, { it.deviceId }))
+
         override suspend fun member(groupId: String, deviceId: String): GroupMemberEntity? =
             members[groupId to deviceId]
 
