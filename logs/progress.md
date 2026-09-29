@@ -1,5 +1,56 @@
 # Progress Log
 
+## 2026-09-29 — DR3: unicast subnet sweep and "Scan network" (ADR-047)
+
+### Worked on
+Owner: continue DR2, DR3, DR5, then the group trust model and session cap. DR3 is the third discovery source: a TCP probe of
+the local subnet for the peer port, for networks that hide devices from multicast, broadcast and mDNS (hotspot clients,
+client isolation, snooping routers).
+
+### Changed
+- **`core:network` commonMain `sweep/`:** `LocalSubnet`, `SubnetSweepPlan` (RFC 1918, /24 or smaller, own/network/broadcast
+  excluded, nearest first, max 4 subnets), `HostProbe` (port), `SubnetSweeper` (32 in flight, 300 ms), `SweepPolicy` (when
+  automatic and manual sweeps may start), `SweepController` (state, one-shot hits with a 60 s TTL, `scanNow`, `start`).
+- **Planner:** rule 9 in `ConnectionPlanner` (`sweep:<host>` sightings, skipped when a session exists at the host, never
+  deferred, ignores the ECO dial filter); `AutoConnector` takes `sweepHosts` / `sweepHitDialed`.
+- **Platforms:** Android `TcpHostProbe` (same route as the dial), `LanRouteChooser` (moved unchanged out of
+  `WsTransferClient`), `LocalNetworkAddresses.ipv4Subnets()`; JVM `TcpHostProbe`, `JvmLocalSubnets`; `VirtualAdapters` in
+  `core:discovery` jvmMain (reused by DR5).
+- **`hasSessionAtHost`:** new on `WsFlashNetwork` and `JvmWsFlashNetwork`, wired into the app holder, the desktop engine and
+  `Flash.create` (the last two had the default `false`, so even the existing gateway probe was not deduplicated there).
+- **UI:** Nearby "Scan network" (header text action, empty-panel pill, caption line; `NearbyNetworkScan`,
+  `FlashNearbyMath.scanCaption`), designed in the `docs/ui/nearby-page.md` addendum first. The Android holder/`MainActivity`
+  and the desktop engine/shell each build the controller and map `SweepState` to the page state (twin mappers).
+- **Docs:** ADR-047 "DR3 implementation notes" (11 items, including where the build departs from the plan), plan status,
+  §3.3 C, §4 and D2, TEST-BACKLOG **DR-03**, nearby-page addendum status and checklist.
+
+### Verification
+- `:core:network:jvmTest` sweep 35 (plan 11, sweeper 6, controller 13, policy 5), `TcpHostProbeTest` 5 on real loopback
+  sockets, planner 27 + connector 11 + concurrency 1; `:core:network:testAndroidHostTest` 357/357;
+  `:core:discovery:jvmTest` `VirtualAdaptersTest` 4; `:ui:chat` `FlashNearbyLogicTest` 8; `:desktop:jvmTest`
+  `DesktopNearbyStateTest` 8 (+2 for the `SweepState` mapping).
+- `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm`, `:core:engine:compileAndroidMain`,
+  `:core:network:compileAndroidMain` green.
+- **Not verified:** any real network, on either platform. Owed: TEST-BACKLOG **DR-03**. Because `LanRouteChooser` was moved
+  out of the Android dial path, an ordinary home-Wi-Fi and hotspot connect on a phone is also part of DR-03.
+
+### Problems
+- A KDoc line containing `**/24` closed its own comment (`*/`), the same trap as in DR2; reworded.
+- Three test expectations were my miscounts, not code bugs: a /26 has 61 usable hosts once the device's own address is
+  excluded; a /16 narrowed to this device's /24 keeps `.0` and `.255` (they are real hosts of the wider subnet), so 255;
+  `advanceTimeBy` does not run an event scheduled at its exact end time, so the auto-sweep test advances past the 10 s check
+  interval (21 s for the first sweep, 310 s for the second).
+
+### Remaining
+DR5 (hardening: filter virtual adapters for JmDNS and the beacon with an "include" setting; a "no devices found" hint that
+offers Scan network and Connect by IP; per-source debug lines), then the group trust model (ADR-044 V0 threat review first)
+and the per-mode session cap. Owed device tests: DR-01, DR-02, DR-03, MIG-01, MIG-02, MEAS-07.
+
+### Next AI
+Do DR5 next. Reuse `core.discovery.net.VirtualAdapters`; the "no devices found" hint is a UI change, so write its component
+doc first (AGENTS.md section 34). `Flash.create` deliberately has no sweep (ADR-047 DR3 note 9). D1 and D2 are built on the
+plan's recommendation and still unconfirmed by the owner. Do not start DR4/DR6/DR7 (FUTURE-OPTIMIZATION.md).
+
 ## 2026-09-29 — Scope decision (ADR-056) and DR2: directed-broadcast beacon (ADR-047)
 
 ### Worked on

@@ -1,5 +1,22 @@
 # Current Handoff
 
+## 2026-09-29 — DR2 broadcast beacon and DR3 subnet sweep built (ADR-047, ADR-056); DR5 next
+- **Scope (ADR-056, owner):** DR4 QR, DR6 BLE, DR7 Wi-Fi Direct, group-attachment fan-out / send-path revamp and MEAS-02 (PC6)
+  are parked in `docs/FUTURE-OPTIMIZATION.md`. Active order: DR5, then the group trust model (ADR-044 V0 to V2, cap 20) and the
+  per-mode session cap.
+- **DR2:** the multicast beacon is also sent to each interface's directed-broadcast address. Code `d3819d6`. Owed: **DR-02**.
+- **DR3:** `core/network/.../sweep/` probes the local /24 for port 45822; hits reach the planner as rule 9 and are dialed unnamed
+  (TLS + HELLO decide identity). Nearby has a "Scan network" action; an automatic fallback runs when paired peers exist, no
+  session is live and nothing has been discovered for 60 s (STANDARD/BOOST, outside a call, once per network per 10 min).
+  Code `09c549d`. Owed: **DR-03** (also proves the Android route logic moved to `LanRouteChooser` did not change dialing).
+- `Links.hasSessionAtHost` now exists on both network classes and all three hosts use it. `Flash.create` has no sweep by design.
+- Owner still to confirm: D1 (remember routes for paired peers only) and D2 (the automatic sweep); both are built as the plan
+  recommended, and the automatic sweep is one switch (`SweepController(autoEnabled)`).
+- Recommended next task: **DR5** (virtual-adapter filtering for JmDNS and the beacon reusing `VirtualAdapters`, the "no devices
+  found" hint, per-source debug lines), UI doc first.
+- Files: `docs/network/DISCOVERY-RESILIENCE-PLAN.md`, ADR-047 notes in `docs/decisions.md`, `core/discovery/.../net/VirtualAdapters.kt`,
+  `core/network/.../sweep/`, `docs/ui/nearby-page.md`.
+
 ## 2026-09-29 — Discovery resilience DR1 built (remembered endpoints, ADR-047); DR0/DR-01 owed
 - Paired peers' last authenticated addresses are kept in the encrypted DB (schema v5) and fed to the PC2 planner as dial
   hints, after discovery and tips. A peer reachable over TCP but invisible to mDNS/beacon now reconnects after a restart.

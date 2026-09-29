@@ -333,6 +333,45 @@ by later testing without anyone recording it: confirm, then mark PASS here **and
   (broadcast cases), and the real-socket `JvmDirectedBroadcastSocketTest` (Windows JVM only).
 - **Status:** TODO
 
+### DR-03 — "Scan network" finds a peer that discovery cannot see (DR3, ADR-047)
+- **Setup:** the desktop plus one phone on the same network, both on the DR3 build, both already paired. Best case: the
+  desktop and a phone as **clients of a third phone's Wi-Fi hotspot** (hotspot clients cannot see each other's multicast).
+  Otherwise the home Wi-Fi with multicast blocked on the desktop (admin PowerShell, this also stops JmDNS and the beacon):
+  `New-NetFirewallRule -DisplayName flash-dr3-out -Direction Outbound -Protocol UDP -RemoteAddress 224.0.0.0/4 -Action Block`
+  `New-NetFirewallRule -DisplayName flash-dr3-bcast -Direction Outbound -Protocol UDP -RemoteAddress 255.255.255.255,192.168.0.255,192.168.1.255 -Action Block`
+  (adjust the broadcast address to the real subnet). Phone log: `adb logcat -v time -s WS:I`; desktop log
+  `%USERPROFILE%\.flash\desktop.log` (copy before relaunch).
+- **Steps:**
+  1. Start both apps, wait 30 s. Nearby should show no device (the paired peer is Offline).
+  2. On the phone open Nearby and tap **Scan network** (header text, or the pill in the empty panel). Watch the caption.
+  3. Repeat on the desktop.
+  4. Tap **Scan network** twice within 5 s: the second must do nothing visible ("Scanned a moment ago" or ignored).
+  5. Leave both apps alone on the blocked network, **no live session**, for about 2 minutes without tapping anything.
+  6. Optional: tap **Scan network** on a large network (a /16 such as `10.0.0.0/16`, if you have one) and read the caption.
+  7. Remove the rules: `Remove-NetFirewallRule -DisplayName flash-dr3-out,flash-dr3-bcast`.
+- **Pass:**
+  - Step 2: the caption reads "Scanning this network… n%" then "Found 1 device to connect to."; the log has
+    `Sweep started hosts=… manual=true` and `Sweep finished probed=… answered=1 hosts=<ip>`, then
+    `Auto-connect dialing sweep hit at <ip>:45822 (subnet sweep)` and `Auto-connect result sweep hit <ip> success=true`;
+    the peer becomes Connected without a Wi-Fi toggle. The log has **no** `Discovered endpoints:` line naming that peer before the hit.
+  - Step 3: the same from the desktop.
+  - Step 4: only one `Sweep started` line for the two taps.
+  - Step 5: an automatic sweep runs once (`Sweep started … manual=false`, no caption result shown on screen) and
+    **not again** for 10 minutes.
+  - Step 6 (if run): the caption ends with "Only this device's part of a large network was checked."
+- **Also note (does not fail the test):** how long a /24 scan takes (log timestamps), and whether the phone's screen-off
+  state stops the automatic sweep from completing.
+- **A FAIL means:** no `Sweep started` (the action is not wired, or `SweepPolicy` refused: read the caption reason);
+  `Sweep finished` with 0 answered although the peer is reachable by TCP (the probe left by the wrong route: Android
+  `LanRouteChooser`, ERROR-035; or the peer's server is on an ephemeral port, which DR1 covers); a hit that is dialed but
+  never connects (planner rule 9 or `hasSessionAtHost`). Each is a new `ERROR-NNN`.
+- **Also confirms (regression):** an ordinary connect on home Wi-Fi and on the hotspot still works, because
+  `WsTransferClient`'s route logic moved to `LanRouteChooser` in the same change.
+- **Source:** ADR-047 "DR3 implementation notes", plan §3.3 C and §4 DR3, `docs/ui/nearby-page.md` addendum. Unit coverage:
+  `SubnetSweepPlanTest`, `SubnetSweeperTest`, `SweepPolicyTest`, `SweepControllerTest`, `TcpHostProbeTest`,
+  `ConnectionPlannerTest` / `AutoConnectorTest` (rule 9), `FlashNearbyLogicTest`, `DesktopNearbyStateTest`.
+- **Status:** TODO
+
 ## 5. Measurements — do these last
 
 They replace every *(measure)* estimate in the plans and decide tuning. Record each in `logs/experiments.md`.

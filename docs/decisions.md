@@ -2027,8 +2027,8 @@ PC5 (modes); PC6 measurements; or the 3-device check (user 3 sees user 2 through
 2026-09-24
 
 ### Status
-**PROPOSED. DR1 IMPLEMENTED 2026-09-29 (device check DR-01 pending); DR0 and DR2–DR7 not started.** Owner order: after
-group calling (2026-09-24). Plan: `docs/network/DISCOVERY-RESILIENCE-PLAN.md` (DR0–DR7). ADR-045 and ADR-046 are
+**PROPOSED. DR1, DR2 and DR3 IMPLEMENTED 2026-09-29 (device checks DR-01, DR-02, DR-03 pending); DR5 next; DR4, DR6, DR7
+postponed (ADR-056); DR0 is a measure-last task.** Owner order: after group calling (2026-09-24). Plan: `docs/network/DISCOVERY-RESILIENCE-PLAN.md` (DR0–DR7). ADR-045 and ADR-046 are
 reserved by the presence plan.
 
 ### Context
@@ -2121,6 +2121,47 @@ What was built, and where it departs from the plan's wording:
    environment the product runs in.
 8. **Risk accepted:** a router that forwards directed broadcasts would carry the announcement off the subnet. Modern
    routers do not (it is off by default), the payload is the same one already multicast, and it carries no secret.
+
+### DR3 implementation notes (2026-09-29)
+1. **A hit is a dial hint, never an identity.** `SweepController.hostsToDial()` lists the hosts whose port 45822 accepted a
+   TCP connection. The planner (new rule 9) dials each one unnamed (`connectManual(host, 0)`, port 0 meaning
+   `PREFERRED_PORT`), exactly like a gateway probe (rule 6): TLS and the HELLO binding decide who answered (ADR-040), and the
+   pin is bound after HELLO. The key is `sweep:<host>`, the hit is skipped when `Links.hasSessionAtHost(host)`, is never
+   deferred, and ignores the ECO dial filter (a hit exists only because the user asked, or because nothing else was
+   reachable and the mode allowed a sweep).
+2. **Limits (`SubnetSweepPlan`).** RFC 1918 addresses only; a /24 or smaller; own address, network and broadcast addresses
+   excluded (kept when they are real hosts of a wider subnet); /31 and /32 refused; nearest hosts first; at most 4 subnets;
+   32 probes in flight, 300 ms timeout; one sweep at a time.
+3. **Wider than a /24: the two triggers differ.** A manual scan of a /16 or /8 sweeps only this device's own /24 block and
+   says so ("Only this device's part of a large network was checked"); the automatic trigger refuses it. 254 probes are a
+   scan the user asked for; 65 534 are not.
+4. **Automatic trigger (D2), stricter than the plan's wording.** The plan said "paired peers and nothing discovered for
+   60 s". Built: paired peers > 0, **no live session at all**, nothing discovered for 60 s, mode not ECO, no call in
+   progress, at most once per network per 10 min (a refused network counts as tried). The extra conditions keep a healthy
+   phone from probing its home network and keep a call's radio quiet. Manual: 5 s cooldown between scans.
+5. **Hits are one-shot.** A host is offered for 60 s and forgotten after one dial (`hitDialed`, reported by the connector's
+   finally block), so a host that opens 45822 but is not Flash costs one TLS attempt per sweep, not one per planner pass.
+6. **The probe leaves by the same route as the dial (Android).** ERROR-035 (hotspot `ap0`, on-link `Network` binding) means
+   an unbound probe could report a host reachable that the dial then cannot reach, or the reverse. `LanRouteChooser` is
+   the route logic that lived in `WsTransferClient`, moved out unchanged; both the client and `TcpHostProbe` call it.
+   **The move is untested on a device** (the client's behaviour must not change; DR-03 and any ordinary LAN/hotspot
+   connect exercise it). Desktop: `JvmLocalSubnets` lists non-loopback IPv4 interfaces that are up and not virtual.
+7. **`Links.hasSessionAtHost`** is now implemented by `WsFlashNetwork.hasSessionAtHost` and
+   `JvmWsFlashNetwork.hasSessionAtHost` (matches a session's remote address, or the endpoint discovery bound to its peer),
+   and used by the app holder, the desktop engine and `Flash.create`. Before this, the desktop and `Flash.create` planners
+   used the default `false`, so a gateway probe there was not deduplicated against an existing session either.
+8. **`VirtualAdapters`** (Hyper-V, VPN, VirtualBox/VMware host-only, WSL, Docker name/description heuristics, 4 unit tests)
+   lives in `core:discovery` jvmMain, not in `core:network`, because DR5 uses it for JmDNS and the beacon as well;
+   `core:network` already depends on `core:discovery`.
+9. **`Flash.create` (library facade) has no sweep.** It has no Nearby screen, so a manual scan has no home, and building
+   the automatic fallback there would add public API for a host that does not exist yet. It gained only
+   `hasSessionAtHost`. Revisit if a third host needs discovery-blind networks.
+10. **Copy/display rule lives twice on purpose.** `ui:chat` depends on `core:common` and `core:messaging` only, so it cannot
+    see `SweepState`; each host maps `SweepState` to `NearbyNetworkScan` (`MainActivity` and `DesktopShell`, `toNearbyScan`,
+    identical). An automatic sweep shows while it runs and never shows a result. The desktop mapper is unit-tested.
+11. **Known limits.** Misses a peer whose server fell back to an ephemeral port (DR1 covers that peer after one contact). A
+    sweep is 254 SYNs on the local link: fine at home, may trip an IDS on a managed network, which is why the automatic
+    trigger is conditional and the manual one is a button. Not verified on any device: DR-03.
 
 ## ADR-048 — Connection modes: re-time live sessions, ECO parks only by agreement
 
