@@ -71,5 +71,8 @@ public fun openFlashDatabase(name: String, driver: SQLiteDriver): FlashDatabase 
         factory = FlashDatabaseConstructor::initialize,
     )
         .setDriver(driver)
+        // Every schema bump ships a step (C1.7); without this an older file cannot be opened and
+        // no fallback exists. See FlashSchemaSteps for how to add one.
+        .addMigrations(*FlashJvmMigrations.ALL)
         .setQueryCoroutineContext(Dispatchers.IO)
         .build()
