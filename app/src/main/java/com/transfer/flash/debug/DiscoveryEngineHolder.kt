@@ -541,13 +541,16 @@ object DiscoveryEngineHolder {
         val tlsOptions = requireTransportSecurity(
             onAttemptFailed = { attempt, error -> Log.w(TAG_WS, "TLS setup attempt $attempt failed: ${error.message}") },
         ) {
-            crypto.selfSignedCertificate()
+            val ownCertificate = crypto.selfSignedCertificate()
             val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
             val kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm())
             kmf.init(ks, null)
             val pinVerifier = TofuPinVerifier(
                 lookupPin = { peerId -> trustStore.getPin(FlashDeviceId(peerId)) },
                 recordPin = { peerId, pin -> trustStore.savePin(FlashDeviceId(peerId), pin) },
+                // ERROR-077: never accept or pin this phone's own key under a peer's id.
+                ownFingerprintHex = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(ownCertificate.publicKey.encoded).joinToString("") { "%02X".format(it) },
             )
             TlsOptions(
                 pinVerifier = pinVerifier,

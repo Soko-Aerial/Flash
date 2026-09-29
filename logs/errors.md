@@ -1,5 +1,76 @@
 # Error Log
 
+## ERROR-077 — Two desktops could never pair: one had pinned its OWN key under the other's id
+
+### Date
+2026-09-29
+
+### Area
+Discovery (JmDNS) / TLS TOFU pinning / default device names
+
+### Symptoms
+Owner: "two Flash desktops are not pairing — is it because they have the same name?" Both PCs showed each other
+as "Flash Desktop". Every dial and every inbound connection between them failed, and Pair said "Couldn't reach
+Flash Desktop". The phones connected to both PCs normally.
+
+### Evidence (`~/.flash` on this PC, id `8adbb08e`)
+```text
+W/WS: [tls] inbound peer rejected: client certificate does not match the pin for the claimed id peer=2e3f3160
+I/WS: Auto-connect result peer=2e3f3160-… success=false detail=… (certificate_unknown)
+      TOFU(server): no chain certificate matches the pin for device '2e3f3160-…'
+I/JmdnsTransport: Peer capabilities caps=desktop name=Flash Flash Desktop (2)     <- mDNS name conflict
+```
+`trust.properties`: `pin.2e3f3160…=4B99560C…` and `pin.8adbb08e…=4B99560C…`, the SAME value. Decrypting this PC's
+`identity/id-key.bin` (DPAPI) gives SPKI SHA-256 `4B99560C…`: **the pin for the other PC was this PC's own key.**
+`2e3f3160` was not in the trusted list, so no pairing had ever recorded it; it was a first-use pin.
+
+### Root cause
+1. Both PCs used the default name "Flash Desktop", so both advertised the mDNS instance "Flash Flash Desktop".
+   mDNS keys records by instance name, so until one side renamed itself "(2)" JmDNS could combine the other
+   PC's TXT record (its device id) with this PC's own SRV/address. This PC then dialled **itself** as
+   `2e3f3160`. That handshake had no pin yet, so TOFU recorded the key that answered (its own) under
+   `2e3f3160`. Over the same connection the server side pinned `8adbb08e` (its own id) to its own key.
+2. From then on every handshake with the real `2e3f3160` failed pin comparison, in both directions (the other
+   PC's rejection of this one is most likely the mirror image of the same self-dial; its files weren't
+   inspected).
+3. Nothing in TOFU refused this device's own key, so the self-dial left the bad pin behind.
+
+So the shared name did not fail the check directly (pins are per device id), but it led to the stale pin.
+
+### Fix (code; device check pending)
+- `TofuPinVerifier(ownFingerprintHex = …)`: a peer that presents this device's own identity key is refused and
+  never recorded; a **stored** pin equal to the own key counts as no pin, so the next real handshake re-pins
+  (heals existing installs, including these two PCs, without deleting files). Wired on desktop
+  (`DesktopEngine`, identity key) and Android (`Flash.kt`, `DiscoveryEngineHolder`, keystore certificate).
+- Default names are "Flash " + an animal or fruit picked from the device id (`FlashDeviceNames`, 90 words, FNV-1a
+  so every platform agrees). Desktops still named "Flash Desktop" and phones still named "Flash <model>" (the
+  old defaults) are renamed once (`nameVersion` / `friendly_name_version`); names the owner chose are kept. The
+  owner's PCs: `8adbb08e` → Flash Camel, `2e3f3160` → Flash Alpaca.
+- Two devices can still draw the same word (a label, not an identity): the own-key rule is what makes a self-dial
+  harmless; the names make a collision rare and give each device a distinct label.
+
+### Not changed
+The mDNS instance name still has no id suffix (would stop the TXT/address mix-up at its source); left out because
+the Android NSD side would need the same change and interop checked. Revisit if the self-dial warning
+(`TLS: Refused device … own key`) keeps appearing.
+
+### Verification
+network jvm 194 / host 292, security host 138, desktop jvm 91, app compile: green. New tests:
+`TofuPinVerifierOwnKeyTest`, `DesktopIdentityNameTest`, `FlashIdentityStoreTest` (3 new). **Device check
+pending:** install the new build on both PCs; each should show its new name, the first handshake should log
+`Pin for … was this device's own key; replacing it`, and pairing should complete.
+
+### Related files
+- `core/network/src/commonMain/kotlin/com/transfer/flash/core/network/tls/TofuPinVerifier.kt`
+- `core/common/src/commonMain/kotlin/com/transfer/flash/core/common/model/FlashDeviceNames.kt`
+- `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopIdentityStores.kt`, `DesktopEngine.kt`
+- `core/security/src/androidMain/kotlin/com/transfer/flash/core/security/identity/AndroidPreferencesIdentityStore.kt`
+- `core/engine/src/androidMain/kotlin/com/transfer/flash/core/engine/Flash.kt`,
+  `app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt`
+
+### Status
+OPEN (fix in code; device check pending)
+
 ## ERROR-076 — Group call leg to a late joiner failed DTLS (CERTIFICATE_UNKNOWN) after a second offer
 
 ### Date

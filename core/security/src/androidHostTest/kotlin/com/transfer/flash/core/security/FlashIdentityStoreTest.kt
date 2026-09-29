@@ -74,4 +74,47 @@ class FlashIdentityStoreTest {
         val error = (result as FlashResult.Failure).error
         assertTrue(error is FlashError.StorageError)
     }
+
+    // ERROR-077: "Flash <model>" gave every phone of one model the same name.
+
+    @Test
+    fun getIdentity_newInstallGetsNameFromDeviceId() {
+        val prefs = FakeSharedPreferences()
+        val store = AndroidPreferencesIdentityStore(preferences = prefs, legacyDefaultName = { "Flash V760" })
+        val identity = store.getIdentity()
+        assertEquals(
+            com.transfer.flash.core.common.model.FlashDeviceNames.forDeviceId(identity.deviceId.value),
+            identity.friendlyName,
+        )
+    }
+
+    @Test
+    fun getIdentity_replacesTheOldModelDefaultOnce() {
+        val prefs = FakeSharedPreferences()
+        prefs.edit()
+            .putString(AndroidPreferencesIdentityStore.KEY_DEVICE_ID, "d6760927-f86b-4eeb-b149-561b8ebfc9ed")
+            .putString(AndroidPreferencesIdentityStore.KEY_FRIENDLY_NAME, "Flash V760")
+            .apply()
+        val store = AndroidPreferencesIdentityStore(
+            preferences = prefs,
+            defaultNameProvider = { id -> "Flash Otter-$id" },
+            legacyDefaultName = { "Flash V760" },
+        )
+        assertEquals("Flash Otter-d6760927-f86b-4eeb-b149-561b8ebfc9ed", store.getIdentity().friendlyName)
+
+        // The owner may pick the model name afterwards; it is not replaced again.
+        store.updateFriendlyName("Flash V760")
+        assertEquals("Flash V760", store.getIdentity().friendlyName)
+    }
+
+    @Test
+    fun getIdentity_keepsAChosenNameThatStartsWithFlash() {
+        val prefs = FakeSharedPreferences()
+        prefs.edit()
+            .putString(AndroidPreferencesIdentityStore.KEY_DEVICE_ID, "id-1")
+            .putString(AndroidPreferencesIdentityStore.KEY_FRIENDLY_NAME, "Flash Kitchen")
+            .apply()
+        val store = AndroidPreferencesIdentityStore(preferences = prefs, legacyDefaultName = { "Flash V760" })
+        assertEquals("Flash Kitchen", store.getIdentity().friendlyName)
+    }
 }

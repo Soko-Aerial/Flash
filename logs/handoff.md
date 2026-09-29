@@ -1,5 +1,12 @@
 # Current Handoff
 
+## 2026-09-29 — Desktop pairing fix (ERROR-077) and animal/fruit device names
+- A PC had pinned its own key under the other PC's id (shared mDNS name → self-dial). TOFU now refuses the own
+  key and replaces such pins on the next handshake.
+- Default names are "Flash <animal|fruit>" from the device id; old "Flash Desktop" / "Flash <model>" defaults
+  are renamed once (owner's PCs: Flash Camel, Flash Alpaca).
+- Tests green; **next:** owner installs the new build on both PCs and pairs them.
+
 ## 2026-09-29 — Desktop call RAM/CPU fix (ERROR-075), leg rebuild fix (ERROR-076), call test logging
 - Desktop renderer no longer leaks native memory or converts full-size frames; group calls ask for ≤ 720p camera.
 - Repeated accept/join keeps a connection being set up (was: new offer → DTLS CERTIFICATE_UNKNOWN).
