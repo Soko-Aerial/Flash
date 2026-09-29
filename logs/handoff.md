@@ -1,5 +1,24 @@
 # Current Handoff
 
+## 2026-09-29 — Group trust model: ADR-044 V0 threat review complete; V1a next
+- **V0 done, no code changed.** Detail in `docs/group/v0-threat-review.md`, summary in ADR-044 ("V0 findings").
+- **Today's groups have real holes** (a paired peer that knows a group id can use them): F-1 `Create` overwrites an existing
+  group; F-2 `State` accepted from any paired peer (and duplicate roster ids are not rejected); F-4 `SyncPush` trusts
+  `from`/`syncId`; F-5 `State` omits tombstones so leaves never converge; F-3 wall-clock versions let one value poison a row.
+- **Design decided:** owner = trust root; owner-signed `GroupCharter` + per-subject `MemberCert` (with SPKI) + `seq` counters +
+  signed group messages; vouch = a pin in the trust store with a source (`PAIRED > VOUCHED > TOFU`), **so
+  `TofuX509TrustManager` does not change**; `isGroupTrusted(groupId, peer)` only at group gates; old clients via new action names
+  + HELLO `gv`, `PROTOCOL_VERSION` never bumped; legacy groups stay legacy (≤ 6).
+- **Recommended next task: V1a** (section 8 of the review): red-then-green tests for F-1, F-2, F-4, F-5, then fixes in
+  `RealFlashChatRepository` (`onInboundGroupWireFrame`, `handleSyncPush`, `buildStateFrame`). No wire change. Then per-mode session
+  cap, then V1, then V2.
+- **Owner decisions wanted before V1** (defaults recommended, V1a does not need them): sign group messages (yes); legacy groups
+  not upgraded in place (yes).
+- **Not traced by V0:** `ConnectionPlanner`/`AutoConnector` handling of an unpaired discovered peer who is a group member.
+  Read it at the start of V2.
+- Owed device tests unchanged: DR-01, DR-02, DR-03, DR-04, MIG-01, MIG-02, MEAS-07, MEAS-01, older items.
+
+
 ## 2026-09-29 — DR5 discovery hardening built and committed (ADR-047); group trust model next
 - **DR5 (code `6b340e6`):** one adapter rule (`VirtualAdapters.selectInterfaces`) for JmDNS, the beacon and the sweep (never
   empty, Windows hotspot adapter counts as real, `include_virtual_adapters=true` in `~/.flash/settings.properties` turns it off);

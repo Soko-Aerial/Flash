@@ -41,6 +41,7 @@ total, trusted peers only, leave-wins tombstone membership.
 | `phase-1-group-chat-text.md` | Membership, fan-out + quorum, GSYNC catch-up, UI | 3-device test incl. 5-min offline rejoin, LOW ≤ 5 msgs/sec from logs |
 | `phase-2-group-voice.md` | 3–6 mesh calls, session map, quiet-hook extension | 4-device LOW-tier call vs 1:1 latency baseline |
 | `phase-3-hardening-and-scale.md` | E2E fan-out, admin roles, attachments, 12-member tuning, forwarder spike | Per-item ADRs |
+| `v0-threat-review.md` | ADR-044 phase V0 (2026-09-29): findings F-1 to F-8 in today's group code, signed-membership design (V1), scoped trust and pin sources (V2), phases V1a/V1/V2 | Review complete; V1a next |
 
 ## Cross-phase invariants (do not violate)
 
