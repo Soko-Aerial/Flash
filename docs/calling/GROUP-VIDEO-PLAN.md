@@ -1,6 +1,6 @@
 # Group calls: request-based video, tier and band budgets, size caps
 
-**Status (2026-09-29): G1–G6 code done (unit-tested, not device-tested); G4b not built (its gate is the
+**Status (2026-09-29): G1–G7 code done (unit-tested, not device-tested); G4b not built (its gate is the
 G0 C3 measurement). G0 measurements deferred to the final test
 pass (owner decision P8 in the presence plan). Owner decisions recorded 2026-09-24.** Written 2026-09-23 from the owner's
 requirements and a code review of `core/calling` and `ui/callui`.
@@ -365,6 +365,22 @@ No open questions remain. Next: G0 measurements (now including C1–C3), and ADR
 - **Pending device check:** the UI-050d checklist (`adb shell cmd thermalservice override-status 2` / `3` on the
   BelFone; a normal call shows nothing; a hot sender turns a new watcher down with `thermal`). Check that
   `decoderImplementation` is reported by both backends, and log the CPU percentage of a normal 3-way call for G0.
+
+### G7 — code done 2026-09-29 (device check pending, P8; ADR-050)
+- `FlashGroupCallLimits`: video 8, voice 12 people, this device included (owner decision Q6).
+- The initiator rings the whole group; the cap applies on arrival. Every participant that is in the call checks
+  each `gaccept`/`gjoin` from a device it doesn't already count: at the cap it opens no leg and sends `gfull
+  max=<n>` to the newcomer, which hangs up and ends with `FlashCallEndReason.FULL` ("Call is full"). A known
+  participant (reconnect) is never turned away; a ringing device never judges. Simultaneous arrivals at cap − 1 may
+  both be turned away (ADR-050 consequences).
+- Not done: a "Full" label on the chat's ongoing-call banner (its `participantCount` is announced, but `:ui:chat`
+  doesn't know the caps; a small follow-up if the owner wants it). 15-person voice waits for G0.
+- **The caps are unreachable today**: chat groups are capped at 6 (ADR-030) until ADR-044 (GV).
+- Tests: `FlashGroupCallSessionTest` +4 (voice full at 12, video full at 8, a ringing device never turns anyone
+  away, `gfull` ends the call with FULL after `ghangup`), codec round trip. calling jvm 104 / host 120, callui 20,
+  desktop 86, engine host 9, app compile: green.
+- **Pending device check:** only possible after GV; lower the constants in a debug build to 3 to see the "Call is
+  full" end on a third device.
 
 ### G4b — not built (2026-09-29)
 Its gate is measurement C3 (G0: VP8 software vs H.264 / VP9 hardware on the BelFone). Owner decision P8 put every

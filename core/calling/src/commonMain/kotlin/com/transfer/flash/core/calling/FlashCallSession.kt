@@ -496,6 +496,7 @@ public class FlashCallSession(
             is CallWireFrame.GroupInvite,
             is CallWireFrame.GroupAccept,
             is CallWireFrame.GroupDecline,
+            is CallWireFrame.GroupFull,
             is CallWireFrame.GroupJoin,
             is CallWireFrame.GroupHangup,
             is CallWireFrame.GroupPresence,

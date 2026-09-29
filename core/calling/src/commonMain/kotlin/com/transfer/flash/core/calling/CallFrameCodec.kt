@@ -105,6 +105,13 @@ public object CallFrameCodec {
                 "groupId" to frame.groupId,
                 "from" to frame.from,
             )
+            is CallWireFrame.GroupFull -> listOf(
+                "action" to "gfull",
+                "callId" to frame.callId,
+                "groupId" to frame.groupId,
+                "from" to frame.from,
+                "max" to frame.max.toString(),
+            )
             is CallWireFrame.GroupJoin -> listOfNotNull(
                 "action" to "gjoin",
                 "callId" to frame.callId,
@@ -228,6 +235,12 @@ public object CallFrameCodec {
                 callId = callId,
                 from = from,
                 groupId = fields["groupId"] ?: return null,
+            )
+            "gfull" -> CallWireFrame.GroupFull(
+                callId = callId,
+                from = from,
+                groupId = fields["groupId"] ?: return null,
+                max = fields["max"]?.toIntOrNull()?.coerceAtLeast(0) ?: return null,
             )
             "gjoin" -> CallWireFrame.GroupJoin(
                 callId = callId,

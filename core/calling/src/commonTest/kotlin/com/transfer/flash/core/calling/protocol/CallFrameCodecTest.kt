@@ -258,6 +258,12 @@ class CallFrameCodecTest {
             )
             assertEquals(frame, CallFrameCodec.decode(CallFrameCodec.encode(frame)))
         }
+    
+    @Test
+    fun group_full_round_trips_and_needs_its_max() {
+        val frame = CallWireFrame.GroupFull(callId = "c1", from = "a", groupId = "g", max = 8)
+        val text = CallFrameCodec.encode(frame)
+        assertEquals(frame, CallFrameCodec.decode(text))
+        assertEquals(null, CallFrameCodec.decode(text.replace(Regex(".max=8"), "")))
     }
-
-
+}

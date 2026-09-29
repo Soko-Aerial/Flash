@@ -549,6 +549,8 @@ seams below. Permission list: README → Permissions.
       public fun setVideoFocus(peerId: String?): Unit = Unit   // G3: pin a group participant's video
       // FlashCallUiState (G5): compactVideo, videoFocusPeerId, videoMainPeerId — all defaulted, additive
       public fun setShowFewerVideos(on: Boolean): Unit = Unit  // G6: cap receiving at one video
+      // FlashCallEndReason.FULL and FlashGroupCallLimits (MAX_VIDEO_PARTICIPANTS 8, MAX_VOICE_PARTICIPANTS 12;
+      //   G7, ADR-050). Adding FULL is source-breaking for an exhaustive `when` over FlashCallEndReason.
       // FlashCallUiState (G6): healthWarning: FlashCallHealthWarning? (WARM, HOT, CPU, SOFTWARE_DECODE),
       //   showingFewerVideos — defaulted, additive
 

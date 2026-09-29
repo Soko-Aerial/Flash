@@ -48,6 +48,12 @@ public enum class FlashCallEndReason {
 
     /** Local error (permissions, device media, WebRTC failure). */
     ERROR,
+
+    /**
+     * Group calls (G7): the call already had [FlashGroupCallLimits.maxParticipants] people when this
+     * device tried to join or accept, so a participant turned it away.
+     */
+    FULL,
 }
 
 /**
@@ -101,6 +107,19 @@ public data class FlashCallUiState(
     /** Group video (G6): receiving is capped at one video, by "Show fewer" or automatically when hot. */
     public val showingFewerVideos: Boolean = false,
 )
+
+/**
+ * How many people a group call holds, this device included (G7, `docs/calling/GROUP-VIDEO-PLAN.md` §5;
+ * owner decision Q6). Every device runs one connection per other participant (a mesh), so the caps
+ * follow what a LOW phone can carry: 8 in a video call, 12 in a voice call (15 only after a measured
+ * 12-person test).
+ */
+public object FlashGroupCallLimits {
+    public const val MAX_VIDEO_PARTICIPANTS: Int = 8
+    public const val MAX_VOICE_PARTICIPANTS: Int = 12
+
+    public fun maxParticipants(video: Boolean): Int = if (video) MAX_VIDEO_PARTICIPANTS else MAX_VOICE_PARTICIPANTS
+}
 
 /** A group video call's health warning (G6, `docs/calling/GROUP-VIDEO-PLAN.md` §4.5). */
 public enum class FlashCallHealthWarning {
