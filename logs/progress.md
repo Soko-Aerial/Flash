@@ -1,5 +1,26 @@
 # Progress Log
 
+## 2026-09-29 — Desktops that couldn't pair (ERROR-077); unique animal/fruit device names
+
+### Worked on
+Owner: two desktops would not pair ("is it because they have the same name?"), and asked for unique names:
+animals and fruits instead of "Flash Desktop" or the phone model.
+
+### Changed
+- `TofuPinVerifier` refuses this device's own key and treats a stored own-key pin as no pin (self-healing).
+- `FlashDeviceNames`: "Flash <animal|fruit>" from the device id; desktop and Android identity stores use it for
+  new installs and replace the old defaults once.
+- ERROR-077 written up (evidence: this PC's pin for the other PC equalled its own key).
+
+### Verification
+network jvm 194 / host 292, security host 138, desktop jvm 91, app compile green. Not device-tested.
+
+### Remaining
+New build on both PCs (and phones for the rename): check the names, the "replacing it" log line, and pairing.
+
+### Next AI
+If the self-dial warning keeps appearing, add an id suffix to the mDNS instance name on both platforms.
+
 ## 2026-09-29 — Desktop video call RAM/CPU fix, whole-picture fit, call test logging
 
 ### Worked on

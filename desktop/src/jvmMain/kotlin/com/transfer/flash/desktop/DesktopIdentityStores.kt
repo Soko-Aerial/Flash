@@ -4,6 +4,7 @@ package com.transfer.flash.desktop
 
 import com.transfer.flash.core.common.logging.FlashLog
 import com.transfer.flash.core.common.model.FlashDeviceId
+import com.transfer.flash.core.common.model.FlashDeviceNames
 import com.transfer.flash.core.common.protocol.Base64
 import com.transfer.flash.core.common.result.FlashResult
 import com.transfer.flash.core.security.identity.FlashIdentity
@@ -27,7 +28,7 @@ import java.util.concurrent.ConcurrentHashMap
  * device id + editable friendly name — is a property of the *contract*, not the backing, so a
  * `Properties` file under `~/.flash/` is a faithful equivalent: identity survives restart.
  *
- * State layout: `~/.flash/identity.properties` — `deviceId`, `friendlyName`.
+ * State layout: `~/.flash/identity.properties` — `deviceId`, `friendlyName`, `nameVersion` (ERROR-077).
  */
 internal class DesktopIdentityStore(private val stateDir: File) : FlashIdentityStore {
 
@@ -53,14 +54,26 @@ internal class DesktopIdentityStore(private val stateDir: File) : FlashIdentityS
     override fun getIdentity(): FlashIdentity {
         synchronized(lock) {
             val props = load()
+            var changed = false
             var id = props.getProperty("deviceId")
             if (id == null) {
                 id = UUID.randomUUID().toString()
                 props.setProperty("deviceId", id)
-                props.setProperty("friendlyName", "Flash Desktop")
-                save(props)
+                changed = true
             }
-            val name = props.getProperty("friendlyName")?.takeIf { it.isNotBlank() } ?: "Flash Desktop"
+            // Every PC used to be "Flash Desktop" (ERROR-077). A name still at that old default, or missing, gets
+            // this id's animal/fruit name once; a name the owner chose is kept, even if it is "Flash Desktop".
+            if (props.getProperty(KEY_NAME_VERSION) != NAME_VERSION) {
+                val stored = props.getProperty("friendlyName")
+                if (stored.isNullOrBlank() || stored == LEGACY_DEFAULT_NAME) {
+                    props.setProperty("friendlyName", FlashDeviceNames.forDeviceId(id))
+                }
+                props.setProperty(KEY_NAME_VERSION, NAME_VERSION)
+                changed = true
+            }
+            if (changed) save(props)
+            val name = props.getProperty("friendlyName")?.takeIf { it.isNotBlank() }
+                ?: FlashDeviceNames.forDeviceId(id)
             return FlashIdentity(deviceId = FlashDeviceId(id), friendlyName = name)
         }
     }
@@ -70,6 +83,7 @@ internal class DesktopIdentityStore(private val stateDir: File) : FlashIdentityS
             synchronized(lock) {
                 val props = load()
                 props.setProperty("friendlyName", name)
+                props.setProperty(KEY_NAME_VERSION, NAME_VERSION)
                 save(props)
             }
         }
@@ -83,6 +97,13 @@ internal class DesktopIdentityStore(private val stateDir: File) : FlashIdentityS
                 ),
             )
         }
+    }
+
+    private companion object {
+        /** Set once the default-name migration has run, so it runs once per install. */
+        const val KEY_NAME_VERSION = "nameVersion"
+        const val NAME_VERSION = "2"
+        const val LEGACY_DEFAULT_NAME = "Flash Desktop"
     }
 }
 

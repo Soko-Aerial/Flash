@@ -565,6 +565,9 @@ public class DesktopEngine(
             val pinVerifier = TofuPinVerifier(
                 lookupPin = { peerId -> trustStore.getPin(FlashDeviceId(peerId)) },
                 recordPin = { peerId, pin -> trustStore.savePin(FlashDeviceId(peerId), pin) },
+                // ERROR-077: never accept or pin this PC's own key under a peer's id.
+                ownFingerprintHex = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(keyPair.public.encoded).joinToString("") { "%02X".format(it) },
             )
             TlsOptions(
                 pinVerifier = pinVerifier,
