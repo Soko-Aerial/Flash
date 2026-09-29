@@ -1832,8 +1832,8 @@ A new native payload is added, or a POM changes its licence (the gate fails and 
 2026-09-24
 
 ### Status
-**ACCEPTED by the owner, NOT IMPLEMENTED. V0 (threat review) COMPLETE 2026-09-29; V1a (hardening of today's groups) is
-next.** Until V2 lands, `GroupPolicy.MAX_MEMBERS` stays 6 and ADR-030 applies unchanged. The V0 findings and the V1/V2
+**ACCEPTED by the owner, NOT IMPLEMENTED. V0 (threat review) COMPLETE 2026-09-29; V1a (hardening of today's groups) BUILT
+2026-09-29 (`3f33c61`, device check GT-01 owed); V1 (signed membership) is next.** Until V2 lands, `GroupPolicy.MAX_MEMBERS` stays 6 and ADR-030 applies unchanged. The V0 findings and the V1/V2
 design are in `docs/group/v0-threat-review.md`; see "V0 findings (2026-09-29)" at the end of this ADR.
 
 **Update 2026-09-29 (ADR-056):** the target is **20**. V3 (= PC6 / MEAS-02) is postponed to `docs/FUTURE-OPTIMIZATION.md`
@@ -1920,7 +1920,12 @@ would grow from 6 to 20 members if vouching were built on top of them, so they a
 - **F-1** `Create` overwrites an existing group (no known-id check, `@Upsert`).
 - **F-2** `State` is accepted from any paired peer, not only members; the "ids unique" check compares a list with itself.
 - **F-3** membership versions are sender-chosen wall-clock ms compared with `>`: one huge value poisons a row for good.
-- **F-4** `handleSyncPush` trusts the pushed message's `from` and the `syncId`: any member can forge history.
+- **F-4** `handleSyncPush` ingests any push (this device recorded no request): an active member can plant history under
+  its own id with a chosen display name. *Corrected the same day: the first wording said a member could forge another
+  member's authorship; the wire cannot carry that, see F-9.*
+- **F-9** (found while fixing F-4) a relayed message loses its author on the wire: the codec drops the pushed message's
+  `from` and decodes it as the pusher, so synced history is stored as sent by the relayer and delete-for-everyone authority
+  follows the relayer. ERROR-082, OPEN, fixed in V1 by a signed `author` field.
 - **F-5** `State` carries only active members, so leave/removal tombstones never converge by reconcile.
 - **F-6** names come from the sender; **F-7** any active member may Add; **F-8** unpaired connected peers already reach 1:1
   paths (adjacent debt, unchanged by this ADR).
@@ -1960,7 +1965,10 @@ what they received.
 
 **Revised phases (replace the V1/V2 sketch above; V3 unchanged and parked, FO-05):**
 - **V1a** hardening of today's groups, no wire change, no signatures: F-1, F-2 (+ duplicate-id rejection), F-4, F-5, each with a
-  test that fails on the old code.
+  test that fails on the old code. **BUILT 2026-09-29** (ERROR-081, `docs/protocol.md` "Receiver rules"). Notes: F-4 is
+  "solicited pushes only" (`OutgoingSyncRequest`: syncId + asked peer + group, 10 minutes, 256 entries); `State` carries
+  tombstones only up to 6 rows in total because every shipped codec rejects a longer roster; a member this device has not
+  yet learned about cannot teach it the roster until the owner's next `State`. F-3, F-6, F-9 remain for V1.
 - **V1** signed membership and messages for v2 groups, HELLO `gv`, `docs/protocol.md`, golden vectors, persistence migration.
 - **V2** vouched trust, pin sources in both trust stores, planner dialing of vouched members (read `ConnectionPlanner` first;
   V0 did not trace it), `MAX_MEMBERS = 20`. **Prerequisite: the per-mode session cap** (`SessionHardeningPolicy` allows 8).

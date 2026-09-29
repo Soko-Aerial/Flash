@@ -1,5 +1,21 @@
 # Current Handoff
 
+## 2026-09-29 — Group trust V1a built (`3f33c61`); per-mode session cap next
+- **V1a done:** F-1 (Create for a known id ignored), F-2 (State only from a known active member, no repeated ids, owner kept),
+  F-4 (SyncPush only for a request this device sent), F-5 (State carries tombstones up to 6 rows). No wire change. Details:
+  ERROR-081, `docs/protocol.md` "Receiver rules", ADR-044.
+- **New defect found, OPEN:** ERROR-082 (F-9): relayed group history is stored as sent by the relayer because the SyncPush
+  codec carries no author. Fixed in V1 with a signed `author` field.
+- **Verified:** messaging jvm 133, messaging Android host 211, persistence jvm 38, engine jvm, both host compiles green; the 8
+  attack tests were red on the old code. **Not verified on a device:** owed **GT-01**.
+- **Recommended next task:** the **per-mode session cap** (`SessionHardeningPolicy` caps live sessions at 8; groups of 20 need
+  up to 19). It is the prerequisite for V2 and is independent of the signature work. Read PC2/PC5 in
+  `docs/network/PRESENCE-CONNECTIONS-PLAN.md` and ADR-045/048 first. Then V1 (signed membership and messages, HELLO `gv`).
+- **Owner decisions still open (defaults recommended in `docs/group/v0-threat-review.md` §9):** sign group messages (yes);
+  legacy groups not upgraded in place (yes).
+- Owed device tests: GT-01, DR-01, DR-02, DR-03, DR-04, MIG-01, MIG-02, MEAS-07, MEAS-01, older items.
+
+
 ## 2026-09-29 — Group trust model: ADR-044 V0 threat review complete; V1a next
 - **V0 done, no code changed.** Detail in `docs/group/v0-threat-review.md`, summary in ADR-044 ("V0 findings").
 - **Today's groups have real holes** (a paired peer that knows a group id can use them): F-1 `Create` overwrites an existing

@@ -414,6 +414,40 @@ by later testing without anyone recording it: confirm, then mark PASS here **and
   `DesktopNearbyStateTest`.
 - **Status:** TODO
 
+## 4c. Group trust model (`docs/group/v0-threat-review.md`, ADR-044)
+
+### GT-01 — Honest group flows still work after the V1a hardening (F-1, F-2, F-4, F-5)
+- **Setup:** three devices A (creates the group), B and C, all paired with each other, on the V1a build; a fourth device D
+  paired with A, B and C for step 6. At least one should be a phone, one the desktop. Phone log
+  `adb logcat -v time -s CHAT:I` (V1a rejections are logged at warning level); desktop log
+  `%USERPROFILE%\.flash\desktop.log`.
+- **Steps:**
+  1. A creates "Team" with B and C. Check all three show the group with three members and A as the only owner.
+  2. B sends two messages; A and C receive them.
+  3. Turn C's Wi-Fi off. A sends three messages and B sends two. Then B leaves the group.
+  4. Turn C's Wi-Fi back on. Wait 30 s.
+  5. On C, open the group. Then do the same on the desktop if it is a member.
+  6. A adds D. Check D gets the group and its history.
+  7. C sends a message to the group.
+- **Pass:**
+  - Step 4/5: C shows the five messages sent while it was away (history sync works: a push is accepted only for a request C
+    itself sent), and C's member list shows B as no longer a member (the leave reached C through the reconciled `State`,
+    which now carries tombstones).
+  - Step 6: D shows the group name, the owner as A, and the earlier history (the bootstrap `State` plus one catch-up
+    request to each member).
+  - Step 7: A and D receive it; B does not (B left).
+  - In none of the steps do the logs contain `Group SyncPush dropped`, `Group State ignored` or `Group Create ignored`, except
+    at most one `Group Create ignored` when a `State` beat the `Create` in step 1 (harmless: the `State` created the group).
+- **A FAIL means:** history missing on C or D after the wait (a legitimate push was dropped: check the `SyncPush dropped`
+  line's `from=` against the peer the request went to, and whether the request/answer crossed a peer reconnect), a member
+  that never appears (a `State` from a member this device did not yet know about was ignored; that is the documented
+  limit, so note whether the owner was reachable), or the owner shown wrongly. Each is a new `ERROR-NNN`.
+- **Also note:** how long C took to show the missed messages after Wi-Fi came back.
+- **Source:** `docs/group/v0-threat-review.md` §8 V1a, ADR-044 "V0 findings". The attacks themselves (a paired non-member
+  rewriting a group, a repeated roster id, an unsolicited push, an owner swap) cannot be staged from the UI and are covered by
+  unit tests only: `RealFlashChatRepositoryTest` (`F-1`, `F-2`, `F-4`, `F-5` cases), `OutgoingSyncRequestTest`.
+- **Status:** TODO
+
 ## 5. Measurements — do these last
 
 They replace every *(measure)* estimate in the plans and decide tuning. Record each in `logs/experiments.md`.
