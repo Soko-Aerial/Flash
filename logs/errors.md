@@ -1,5 +1,110 @@
 # Error Log
 
+## ERROR-082 — A relayed group message loses its author: every synced message is stored as sent by the relaying peer (F-9)
+
+### Date
+2026-09-29
+
+### Area
+Group chat / wire codec (`FLASH_GSYNC` push)
+
+### Symptoms
+Not reproduced on a device. Found while verifying finding F-4 of the ADR-044 V0 threat review
+(`docs/group/v0-threat-review.md`), which had assumed a pushed message keeps its author.
+
+### Root cause
+`GroupFrameCodec` encodes a `SyncPush` with the message's `name`, `sentAt`, `text` and reply fields but **not its `from`**,
+and decodes the nested message with `from = the push frame's from`, i.e. the pusher. A holder answers a catch-up request
+with every message in the group after the requester's cursor (`MessageDao.historyAfter` has no sender filter), so it relays
+other members' messages, and the requester's own, not only its own. `handleSyncPush` stores `senderId = message.from`.
+Result on the receiving device: every relayed message has `senderId = the pusher`, `senderName = the original author's name`.
+
+### Effects (from reading the code)
+- `isMine` is `senderId == localDeviceId`, so a device's own old messages returned by a relay after a reinstall show as the
+  relayer's.
+- `DeleteForEveryone` accepts a delete only when `message.senderId == frame.from`. A relayed message is owned by the pusher
+  as far as the receiver knows, so the relayer can delete it and its real author cannot.
+- Direct (non-relayed) group messages are correct: `FLASH_GMSG` carries `from`.
+
+### Failed attempts
+None. Not fixed in ADR-044 V1a because it needs a wire addition.
+
+### Working fix
+Not done. Planned in ADR-044 V1: an additive, signed `author` field on the pushed message (old decoders ignore unknown
+fields; a new decoder falls back to the pusher when it is absent, which is today's behaviour), so a v2 group keeps the author
+and delete authority follows the author. Until then the behaviour above stands for legacy groups.
+
+### Related files
+- `core/messaging/src/commonMain/.../protocol/GroupFrameCodec.kt` (`SyncPush` encode and decode)
+- `core/messaging/src/commonMain/.../RealFlashChatRepository.kt` (`handleSyncRequest`, `armBackupPush`, `handleSyncPush`, `DeleteForEveryone`)
+- `core/persistence/.../dao/MessageDao.kt` (`historyAfter`)
+
+### Status
+OPEN (found 2026-09-29; scheduled with ADR-044 V1).
+
+## ERROR-081 — Group membership and history could be rewritten by any paired peer that knows a group id (F-1, F-2, F-4, F-5)
+
+### Date
+2026-09-29
+
+### Area
+Group chat / trust (`RealFlashChatRepository.onInboundGroupWireFrame`, `handleSyncPush`, `buildStateFrame`)
+
+### Symptoms
+None observed. Found by the ADR-044 V0 threat review (read-only, `docs/group/v0-threat-review.md`). Exploitable today by a
+device this one has paired with; not by an unpaired device.
+
+### Root cause
+Membership is a set of unsigned rows accepted on the strength of the TLS peer being paired:
+- **F-1** the `Create` branch never checked that the group id was unknown, and `ConversationDao.upsert` is `@Upsert`, so a
+  `Create` for an existing id renamed and re-owned the group and could inject member rows.
+- **F-2** a `State` was accepted from any paired peer (the only checks were self-claimed: sender in its own roster, this
+  device in the roster). The "ids unique" check compared `roster.map { }.size` with `roster.size` (always equal), so a repeated
+  id was accepted and the later entry applied. The receiver also trusted the frame's `creatorId` and each entry's free-form
+  `role`, so a `State` could make anyone "owner".
+- **F-4** `handleSyncPush` ingested any push: it never recorded the catch-up requests it had sent.
+- **F-5** `buildStateFrame` sent active members only, so a leave tombstone never travelled by reconcile.
+- (F-3, wall-clock membership versions compared with `>`, is what made F-1 and F-2 permanent. It needs signatures and stays
+  open until V1.)
+
+### Failed attempts
+- First V1a design for F-4 also required `SyncPush.message.from` to be an active member. Dropped: the wire carries no author
+  (ERROR-082), so it could never fail.
+- Sending every tombstone in `State` was rejected: `GroupFrameCodec` rejects a roster above `MAX_MEMBERS` (6) in every
+  shipped client, so a longer `State` would be dropped whole by an un-updated peer.
+
+### Working fix
+ADR-044 phase V1a, no wire change:
+- `Create` for a group id this device holds any record of is ignored (`isKnownGroup`).
+- With a local record, `State` is accepted only from a member this device knows as active; without one it bootstraps as
+  before. A roster must contain this device as active and must not repeat an id. The owner is the locally recorded creator,
+  and only the owner gets role "owner".
+- `SyncPush` is ingested only for a `syncId` this device sent (`OutgoingSyncRequest`, recorded before the send, 10 minutes,
+  256 entries), from the peer asked, for the group asked about.
+- `State` carries the newest leave tombstones that fit under `MAX_MEMBERS` total rows (`GroupMemberDao.allMembers`).
+
+### Known limits kept on purpose
+A member this device has not learned about yet cannot teach it the roster (the owner's next session-up `State` does). A
+full group of six carries no tombstones. F-3, F-6 (sender-supplied names) and ERROR-082 remain until V1.
+
+### Verification
+- Red first: the 8 new attack tests failed against the unchanged code (F-1, three F-2, F-5, three F-4); 52 others in that
+  class passed.
+- After the fix: `:core:messaging:jvmTest` 133, `:core:messaging:testAndroidHostTest` 211 (includes the multi-device
+  late-join `DIAG` tests and the honest-flow guards), `:core:persistence:jvmTest` 38, `FlashDatabaseInvariantTest`
+  (extended for `allMembers`), `:core:engine:jvmTest`, `:desktop:compileKotlinJvm` and `:app:compileDebugKotlin` all green.
+- Not done: a device check that honest groups still sync (TEST-BACKLOG **GT-01**).
+
+### Related files
+- `core/messaging/src/commonMain/.../RealFlashChatRepository.kt`, `.../protocol/OutgoingSyncRequest.kt` (new),
+  `.../protocol/GroupPolicy.kt`
+- `core/persistence/src/commonMain/.../dao/GroupMemberDao.kt` (`allMembers`)
+- Tests: `RealFlashChatRepositoryTest` (`F-1`, `F-2`, `F-4`, `F-5` and guard cases), `OutgoingSyncRequestTest`
+- `docs/group/v0-threat-review.md`, ADR-044 in `docs/decisions.md`
+
+### Status
+RESOLVED in code and unit tests for F-1, F-2, F-4, F-5 (2026-09-29). Device check GT-01: TODO. F-3 and F-6: OPEN until V1.
+
 ## ERROR-080 — Desktop JVM registered no Room migrations: the next schema bump would break desktop chat (latent)
 
 ### Date

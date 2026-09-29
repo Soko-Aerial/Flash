@@ -1,5 +1,47 @@
 # Progress Log
 
+## 2026-09-29 — Group trust model, ADR-044 phase V1a: legacy-group hardening (code `3f33c61`)
+
+### Worked on
+V1a of the group trust model: fix the four V0 findings that a paired peer can exploit today, with no wire change and no
+signatures, before any vouching is built on top of them.
+
+### Changed
+- **F-1** `Create` for a group id the device holds any record of is ignored (`isKnownGroup`).
+- **F-2** With a local record, `State` is accepted only from a known active member; a roster must list this device and the
+  sender as active and must not repeat an id (the old check compared a list's size with itself); the locally recorded owner is
+  kept and only the owner gets role `owner`.
+- **F-4** `SyncPush` is ingested only for a `syncId` this device sent, from the peer asked, for that group, within 10 minutes
+  (`OutgoingSyncRequest`, recorded before the send, 256 entries; `sendGroupSyncRequests` now reuses `sendSyncRequestFor`).
+- **F-5** `State` carries the newest leave tombstones that fit under `MAX_MEMBERS` total rows (new `GroupMemberDao.allMembers`).
+- Tests: 8 attack tests in `RealFlashChatRepositoryTest` plus honest-flow guards, `OutgoingSyncRequestTest` (6), and an
+  `allMembers` assertion in `FlashDatabaseInvariantTest`. Two DAO fakes gained `allMembers`.
+- Docs: `docs/protocol.md` "Receiver rules" (and the previously undocumented `state` frame), ADR-044, V0 review status,
+  ERROR-081 (RESOLVED in code) and ERROR-082 (OPEN), TEST-BACKLOG **GT-01**.
+
+### Verification
+- **Red first:** the 8 new attack tests failed on the unchanged code; 52 others in the class passed.
+- **After:** `:core:messaging:jvmTest` 133/133, `:core:messaging:testAndroidHostTest` 211/211 (includes the multi-device
+  late-join tests), `:core:persistence:jvmTest` 38/38, `FlashDatabaseInvariantTest` green, `:core:engine:jvmTest`,
+  `:desktop:compileKotlinJvm` and `:app:compileDebugKotlin` green.
+- **Not verified on a device:** owed GT-01.
+
+### Problems
+- **A V0 claim was wrong.** F-4 said a member could forge another member's messages. Writing the fix showed the codec drops the
+  pushed message's `from` and decodes it as the pusher, so that is impossible; the real defect is the reverse (F-9,
+  ERROR-082: relayed history is attributed to the relayer). The review, ADR-044 and the error log were corrected, and the
+  planned `message.from` check was dropped as dead code.
+- The first shell attempt to edit the repository failed on a heredoc; edits were redone through a script file.
+
+### Known limits (deliberate)
+A member this device has not learned about yet cannot teach it the roster until the owner's next `State`; a full group of six
+carries no tombstones; F-3 (wall-clock versions), F-6 (sender-supplied names) and F-9 stay until V1.
+
+### Next AI
+Two owner confirmations are wanted before V1 (defaults recommended in `docs/group/v0-threat-review.md` §9): sign group
+messages, legacy groups not upgraded in place. Meanwhile the next item the owner named is the **per-mode session cap**
+(`SessionHardeningPolicy` allows 8): read `docs/network/PRESENCE-CONNECTIONS-PLAN.md` PC2/PC5 and ADR-048 first.
+
 ## 2026-09-29 — Group trust model, ADR-044 phase V0: threat review (no code)
 
 ### Worked on

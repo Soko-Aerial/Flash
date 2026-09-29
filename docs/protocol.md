@@ -327,6 +327,24 @@ FLASH_GROUP action=leave  groupId=<uuid> from=<id> opId=<uuid> version=<ms> memb
   writes `owner` locally; everyone else `member` (Phase 3 activates admin).
 - `add`: any active member → all known members. Same versioned merge rule.
 - `leave`: a member → all active members. History is kept; the sender stops sending.
+- `state` (reconcile and bootstrap): `FLASH_GROUP action=state groupId from opId version name creator memberCount=<n>`
+  then, per entry `i`, `m<i>` device id, `n<i>` display name, `r<i>` role, `j<i>` joinedAt, `v<i>` membership version,
+  `o<i>` opId, `a<i>` active flag. Sent to a newly added member and to every member on each session-up. `memberCount` is
+  1..6 (a longer roster is dropped by the decoder).
+
+**Receiver rules (ADR-044 V1a, 2026-09-29; no wire change).** These close forgery by a paired peer that knows a group id;
+see `docs/group/v0-threat-review.md`, findings F-1, F-2, F-4, F-5.
+
+- `create` for a group id the receiver already holds any record of is ignored. A group id is created once.
+- `state` for a group the receiver holds a record of is accepted only from a member the receiver already has as active. With
+  no record it bootstraps the group, as before. In every case the roster must list the receiver as **active**, list the
+  sender as active, and name each device once. The receiver keeps its own recorded owner, and only that owner is stored with
+  role `owner`; the frame's `creator` and per-entry `r<i>` do not re-own a group.
+- A sender puts every active member in `state` plus the newest inactive rows (leave tombstones) that still fit under 6 rows
+  in total. A full group carries no tombstones. Receivers apply an inactive entry by the usual `(version, opId)` merge.
+- `FLASH_GSYNC op=push` is ingested only when its `syncId` is one the receiver sent in an `op=request` to that same peer for
+  that same group within the last 10 minutes. Anything else is dropped without an ack. Note that the push carries no author
+  (`from` is the pusher), so relayed messages are attributed to the pusher until a later version adds one (ERROR-082).
 
 ### Chat and receipt frames
 
