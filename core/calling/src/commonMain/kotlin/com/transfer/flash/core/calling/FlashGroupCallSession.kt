@@ -29,6 +29,7 @@ import com.transfer.flash.core.calling.model.FlashCallParticipantUi
 import com.transfer.flash.core.calling.model.FlashCallState
 import com.transfer.flash.core.calling.model.FlashCallStats
 import com.transfer.flash.core.calling.model.FlashCallUiState
+import com.transfer.flash.core.calling.model.FlashGroupCallLimits
 import com.transfer.flash.core.calling.model.FlashParticipantVideo
 import com.transfer.flash.core.calling.protocol.CallWireFrame
 import com.transfer.flash.core.common.annotation.FlashInternalApi
@@ -229,6 +230,13 @@ public class FlashGroupCallSession(
         refreshUiState()
     }
 
+    /** Test hook: add a leg in [state] and treat this device as in the call (media acquired). */
+    internal fun addJoinedLegForTesting(peerId: String, state: FlashCallParticipantState) {
+        legs[peerId] = GroupLeg(peerId = peerId, peerName = peerId, state = state)
+        isMediaAcquired = true
+        refreshUiState()
+    }
+
     /** Sets up an incoming ringing group call leg from the inviting caller. */
     public fun startIncomingRinging(peerId: String, callerName: String) {
         val resolvedName = resolveName(peerId, callerName)
@@ -426,6 +434,11 @@ public class FlashGroupCallSession(
 
     /** Hangs up / leaves the group call. */
     public suspend fun hangUp() {
+        leave(FlashCallEndReason.NORMAL)
+    }
+
+    /** Tells every participant this device left, then ends the session with [reason]. */
+    private suspend fun leave(reason: FlashCallEndReason) {
         sessionMutex.withLock {
             if (isEnded) return
             legs.keysSnapshot().forEach { peerId ->
@@ -436,8 +449,28 @@ public class FlashGroupCallSession(
                     )
                 }
             }
-            endSession(FlashCallEndReason.NORMAL)
+            endSession(reason)
         }
+    }
+
+    /**
+     * G7: a device this call doesn't count yet ([peerId]) accepted or joined. When the call
+     * already holds [FlashGroupCallLimits.maxParticipants] people (this device included), it is
+     * told so (`gfull`) and no leg is built; it leaves on its own. Only a device that is in the
+     * call decides; a ringing one has not joined anything yet.
+     */
+    private suspend fun turnAwayIfFull(peerId: String): Boolean {
+        if (!isMediaAcquired) return false
+        val max = FlashGroupCallLimits.maxParticipants(video)
+        val full = sessionMutex.withLock {
+            val known = legs[peerId]?.state in VIDEO_PRESENT
+            val present = 1 + legs.valuesSnapshot().count { it.peerId != peerId && it.state in VIDEO_PRESENT }
+            !known && present >= max
+        }
+        if (!full) return false
+        FlashLog.i("GROUP_CALL", "Call $callId is full ($max); turning $peerId away")
+        sendFrame(CallWireFrame.GroupFull(callId = callId, from = localDeviceId, groupId = groupId, max = max), peerId)
+        return true
     }
 
     /** Handles inbound call frames addressed to this group call. */
@@ -466,6 +499,7 @@ public class FlashGroupCallSession(
 
             is CallWireFrame.GroupAccept, is CallWireFrame.GroupJoin -> {
                 val peerName = resolveName(effectivePeerId, if (frame is CallWireFrame.GroupJoin) frame.participantName else null)
+                if (turnAwayIfFull(effectivePeerId)) return
                 sessionMutex.withLock {
                     val leg = legs.getOrPut(effectivePeerId) {
                         GroupLeg(peerId = effectivePeerId, peerName = peerName)
@@ -536,6 +570,12 @@ public class FlashGroupCallSession(
 
             is CallWireFrame.GroupDecline -> {
                 handlePeerLeft(effectivePeerId, reason = "declined")
+            }
+
+            // G7: a participant says the call was already full when this device joined.
+            is CallWireFrame.GroupFull -> if (frame.from == peerId && legs[effectivePeerId] != null) {
+                FlashLog.i("GROUP_CALL", "Call $callId is full (max ${frame.max}) per $effectivePeerId; leaving")
+                leave(FlashCallEndReason.FULL)
             }
 
             is CallWireFrame.GroupHangup -> {

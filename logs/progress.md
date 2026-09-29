@@ -1,5 +1,31 @@
 # Progress Log
 
+## 2026-09-29 — G7 code done: group call size caps (ADR-050); group calling G1–G7 code complete
+
+### Worked on
+G7 of `docs/calling/GROUP-VIDEO-PLAN.md`: video 8 / voice 12 enforced in the accept and join paths with a clear
+end message. This finishes the owner's goal for the session ("finish the rest… skip the checks and implement"):
+G4, G5, G6 and G7 code are done, G4b recorded as not built (its gate is a measurement).
+
+### Changed
+- `FlashGroupCallLimits`, `FlashCallEndReason.FULL`, frame `GroupFull` (`gfull max=<n>`), codec.
+- `FlashGroupCallSession.turnAwayIfFull` (participant side) and the `gfull` handler (`leave(FULL)`, which also
+  backs `hangUp`); test hook `addJoinedLegForTesting`.
+- Call screen: "Call is full".
+- Docs: ADR-050, protocol `gfull`, plan §8 G7, calling-ui status text, public-api.
+
+### Verification
+calling jvm 104 / host 120, callui 20, desktop 86, engine host 9, app compile: green. No device test (P8).
+
+### Remaining
+- Every device check from PC0, PC6, PC1–PC5 and G1–G7 (plan §8 lists each one); G0 measurements (they also decide
+  G4b and the provisional numbers in G4/G6).
+- Owner decisions flagged: ADR-049 item 6 (fill the receive limit before any tap), plan §8 G6 (software-decode signal
+  skipped on HIGH/desktop).
+
+### Next AI
+See `logs/handoff.md`: the next phase is the deferred device testing.
+
 ## 2026-09-29 — G6 code done: group video health warnings (UI-050d; device check pending, P8)
 
 ### Worked on

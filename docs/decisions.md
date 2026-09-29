@@ -2170,3 +2170,38 @@ that peer asks. The mesh has no server, so the rule has to be a protocol between
 
 ### Revisit when
 G0 measures the keyframe delay after `active` turns on, and the desktop check shows whether `active` is honoured.
+
+## ADR-050 — Group call size caps are enforced by the participants, not the initiator
+
+### Date
+2026-09-29
+
+### Status
+**IMPLEMENTED (G7), device check pending** (P8). Plan: `docs/calling/GROUP-VIDEO-PLAN.md` §5, §8 G7. Wire:
+`docs/protocol.md` `gfull`.
+
+### Context
+Owner decision Q6: a video call holds 8 people, a voice call 12 (15 only after measurement). Group calls are a
+full mesh with no server, so there's no single place that knows the head count. The initiator rings everyone in
+the group; people accept at different moments; others join later from the ongoing-call banner.
+
+### Decision
+1. **Everyone rings; the first to arrive get in.** The initiator does not trim the invite list. Refusing to start a
+   call for a 20-member group (or picking who gets rung) would be worse than letting the first 7 or 11 in.
+2. **Each participant that is in the call checks each newcomer.** When a `gaccept`/`gjoin` arrives from a device it
+   doesn't already count, and the call already holds the cap (itself included), it opens no leg and answers `gfull`.
+   The newcomer leaves with reason FULL ("Call is full"). One `gfull` from any participant is enough.
+3. **A known participant is never turned away**, so a reconnect or a relayed duplicate of its own join is safe.
+4. **Caps live in `FlashGroupCallLimits`** (core-calling model), so hosts can show them.
+
+### Consequences
+- Two newcomers arriving at the same moment at cap − 1 can each be counted first by different participants, and
+  then both are turned away. That's the conservative outcome; a retry gets one of them in. A server-less exact count
+  would need a consensus round per join, which isn't worth it at these sizes.
+- An old client ignores `gfull` and waits in CONNECTING toward the participants that refused it (they never open a
+  leg); the call works for everyone else.
+- Today the chat-group cap is 6 (ADR-030), so neither call cap can be reached until vouched groups (ADR-044) land.
+
+### Revisit when
+G0 measures 12-person voice on the BelFone (then 15), or a relay peer changes the mesh assumption.
+

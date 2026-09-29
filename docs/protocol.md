@@ -197,6 +197,7 @@ instance — one group can host a second call later under a new `callId`.
 FLASH_CALL action=ginvite   callId=<uuid> groupId=<uuid> from=<id> name=<escaped> video=<true|false> members=<id,id,…> [band=<b>] [vr=1]
 FLASH_CALL action=gaccept   callId=<uuid> groupId=<uuid> from=<id> [band=<b>] [vr=1]
 FLASH_CALL action=gdecline  callId=<uuid> groupId=<uuid> from=<id>
+FLASH_CALL action=gfull     callId=<uuid> groupId=<uuid> from=<id> max=<n>
 FLASH_CALL action=gjoin     callId=<uuid> groupId=<uuid> from=<id> name=<escaped> [band=<b>] [vr=1]
 FLASH_CALL action=ghangup   callId=<uuid> groupId=<uuid> from=<id>
 FLASH_CALL action=gpresence callId=<uuid> groupId=<uuid> from=<id> name=<escaped> video=<true|false> count=<n> [band=<b>] [vr=1] [vfree=<n>]
@@ -208,6 +209,12 @@ FLASH_CALL action=gquery    callId=<uuid> groupId=<uuid> from=<id>
   is what lets a third device mesh with the others without having witnessed the original invite.
 - `gaccept`: an invited member -> the initiator. The initiator then opens one leg to that member.
 - `gdecline`: an invited member -> the initiator. No leg is opened.
+- `gfull` (G7, 2026-09-29, ADR-050): a participant -> a device that just sent `gaccept`/`gjoin` (or was named in a
+  relayed `gjoin`) while the call already held `max` people, this participant included (8 in a video call, 12 in a
+  voice call). The participant opens no leg to it. The receiver, if the sender is one of its call's participants,
+  sends `ghangup` to everyone and ends with reason FULL ("Call is full"). Only a device that is in the call (media
+  up) sends it; a ringing device never does. A participant it already counts (a reconnect) is never turned away. An
+  old client drops the unknown action and stays in CONNECTING toward the members that turned it away.
 - `gjoin`: **broadcast** — a participating member announces that it joined an active call, so every
   other participant can open a leg to it. This is what makes the mesh converge without a central
   mixer. The name is the joiner's display name (defaulted to "Group Member" when absent).

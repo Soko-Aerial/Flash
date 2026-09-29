@@ -139,7 +139,8 @@ All tokens from `FlashTheme` (`FlashColors`, `FlashTypography`, `FlashShapes`,
   `colors.textSecondary`. On a video call the same identity block shrinks to a top-start overlay
   in white, and the full avatar block comes back once the call is ENDED.
 - **Status text:** "Calling…" (dialing) → "Ringing" (ringing) → "Connecting…" (connecting) →
-  live `mm:ss` duration (active) → "Call ended" / failure reason (ended/failed).
+  live `mm:ss` duration (active) → "Call ended" / failure reason (ended/failed). G7 (2026-09-29) adds the end
+  reason FULL → "Call is full" (a group call already at its cap turned this device away); text only.
 - **Quality badge:** directly under the status line — a colored dot plus
   `RTT · resolution·fps · inbound bitrate`, and `n% loss` once loss passes 2%. Dot is green
   under 60 ms RTT, amber under 150, red past that; `metadataDefault` type, and on video it sits

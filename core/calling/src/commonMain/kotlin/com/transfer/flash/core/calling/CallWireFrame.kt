@@ -100,6 +100,17 @@ public sealed interface CallWireFrame {
         public val groupId: String,
     ) : CallWireFrame
 
+    /**
+     * Group call (G7): the call already holds [max] people, so the sender turned [from]'s join or
+     * accept away. Sent only to the device that tried to join; it leaves the call.
+     */
+    public data class GroupFull(
+        override val callId: String,
+        override val from: String,
+        public val groupId: String,
+        public val max: Int,
+    ) : CallWireFrame
+
     /** Group call: peer announces joining an active call. */
     public data class GroupJoin(
         override val callId: String,

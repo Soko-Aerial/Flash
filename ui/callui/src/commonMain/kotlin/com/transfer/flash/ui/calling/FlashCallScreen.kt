@@ -712,6 +712,7 @@ private fun statusLine(state: FlashCallUiState): String {
             FlashCallEndReason.NO_ANSWER -> "No answer"
             FlashCallEndReason.DISCONNECTED -> "Connection lost"
             FlashCallEndReason.ERROR -> "Call failed"
+            FlashCallEndReason.FULL -> "Call is full"
             null -> "Call ended"
         }
     }

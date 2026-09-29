@@ -1,5 +1,18 @@
 # Current Handoff
 
+## 2026-09-29 — Group calling G1–G7 code complete; next is ALL device testing (P8)
+- G7: `FlashGroupCallLimits` (video 8, voice 12); participants turn a newcomer away with `gfull` at the cap, and the
+  newcomer ends with FULL "Call is full" (ADR-050). Unreachable until GV/ADR-044 (groups capped at 6).
+- G4b not built (gate: G0 C3). Provisional numbers waiting on G0: per-height bitrates (G4), CPU 40 %/30 s (G6).
+- Owner decisions to confirm: ADR-049 item 6 (fill receive limit before a tap); G6 software-decode signal skipped
+  on HIGH/desktop (plan §8 G6).
+- Tests green (calling jvm 104 / host 120, callui 20, desktop 86, engine host 9, app compile).
+- **Next:** the deferred test pass (owner decision P8): PC0/PC6 measurements, then the PC1–PC5 checks, then the
+  G0 measurements and the G1–G7 device checks, as listed in `docs/network/PRESENCE-CONNECTIONS-PLAN.md` and
+  `docs/calling/GROUP-VIDEO-PLAN.md` §8.
+- Files most relevant: `core/calling/.../FlashGroupCallSession.kt`, `GroupVideoRouter.kt`, `CallHealthMonitor.kt`,
+  `ui/callui/.../FlashGroupVideoGrid.kt`, `FlashGroupVideoStrip.kt`, `FlashCallHealthBanner.kt`.
+
 ## 2026-09-29 — G6 code done: group video health warnings (UI-050d)
 - `CallHealthMonitor`: MODERATE → WARM banner + struggling; SEVERE+ → HOT, receive 1, `thermal` denies; CPU ≥ 40 %
   of all cores for 30 s (provisional) → CPU banner; software decode with ≥ 2 videos → banner (not on HIGH/desktop;
