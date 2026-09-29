@@ -256,7 +256,8 @@ FLASH_CALL action=gquery    callId=<uuid> groupId=<uuid> from=<id>
     `q` and the sender's own level (G4, 2026-09-29). On 2.4 GHz a sender steps every copy down to 360 when its
     watchers no longer fit at 540 and back up after 5 s of fitting; it does not send a new `vgrant` for that change
     (the receiver sees it in the picture). A G3 build ignores `q` and is unaffected.
-  - `vdeny`: `camera` (camera off), `busy` (at the send cap), `thermal` (reserved for G6). Also sent, with the
+  - `vdeny`: `camera` (camera off), `busy` (at the send cap), `thermal` (the sender is hot, thermal SEVERE or
+    worse; G6, 2026-09-29: it keeps its current watchers and turns new ones down, announcing `vfree=0`). Also sent, with the
     watcher's granted `seq`, when a talking sender drops that watcher to make room (owner decision Q5). An unknown
     reason decodes as `busy`. The receiver skips that sender until a `gpresence` from it says `vfree` > 0; a sender
     that gains room sends that `gpresence` straight away to the peers it turned down.

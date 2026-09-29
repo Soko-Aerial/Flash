@@ -517,3 +517,89 @@ unchanged from UI-050b.
 ### Known limitations
 - Compact mode shows no live picture for anyone but the main person (by design, G4's LOW budget).
 - A pin is local; other participants don't see it (no "spotlight for everyone").
+
+---
+
+## UI-050d — Group video health banner and "Show fewer" (G6)
+
+**Status:** DESIGNED → IMPLEMENTED (2026-09-29; not device-verified, P8). Code: `FlashCallHealthBanner.kt`,
+`FlashCallScreen(onShowFewerVideos)`. Plan: `docs/calling/GROUP-VIDEO-PLAN.md` §4.5 and G6.
+
+### Component
+A one-line banner in a group video call, directly above the participant strip (compact) or the call controls
+(grid), plus a small "Showing one video · Show all" pill while receiving is capped.
+
+### Purpose
+§4.5 (R7): when the phone warms up, the processor is loaded for a long time, or videos are decoded in software, tell
+the user in plain words and offer one action, **Show fewer** (receive one video). When the phone is hot, Flash already
+drops to one video by itself and must say so.
+
+### Research sources
+- Plan §4.5 wording (the owner's): "Your phone is warming up. Showing fewer videos saves battery."
+- Android's own thermal UX (a notification-style heads-up, no numbers) and call apps' "poor connection" banners:
+  short, non-modal, dismissible, one action. Studied only for that grammar.
+- Flash's existing on-video text style (UI-050b: white `metadataDefault` on a 40 % black scrim).
+
+### Approaches considered
+1. **Inline banner above the controls (chosen).** Visible without covering faces; the controls are where the thumb is.
+2. **Snackbar / toast.** Disappears on its own; the hot state needs to stay visible while it lasts.
+3. **Dialog.** Blocks the call for advice the user may ignore; wrong weight.
+
+### Chosen approach
+- One banner at a time, chosen by the core (`FlashCallUiState.healthWarning`: WARM > CPU > SOFTWARE_DECODE; HOT
+  overrides all).
+- Text:
+  - WARM: "Your phone is warming up. Showing fewer videos saves battery."
+  - CPU: "This call is keeping the processor busy. Showing fewer videos helps."
+  - SOFTWARE_DECODE: "Videos are being decoded without hardware help. Showing fewer videos saves battery."
+  - HOT: "Your phone is hot. Showing one video until it cools down."
+- Action: **Show fewer** (WARM, CPU, SOFTWARE_DECODE) → `FlashCalling.setShowFewerVideos(true)`. HOT has no action.
+- Dismiss: a close icon (`FlashIcons.Close`). A dismissed kind does not come back for the rest of the call (the
+  "once per call" rule for software decoding applies to all of them, so a flapping signal can't nag).
+- While `showingFewerVideos` is true and there is no banner: the pill "Showing one video · Show all" →
+  `setShowFewerVideos(false)`. Not shown while HOT (the cap is automatic there).
+- Since the receive limit becomes 1, the layout switches to UI-050c's compact shape automatically.
+
+### Visual specification
+- Banner: `RoundedCornerShape(FlashShapes.radius12)`, `Color.Black` 60 %, padding `space12` × `space8`, side margin
+  `space16`. Text `metadataDefault` white, up to 3 lines. Action: `metadataDefault` in `accentPrimary`, 48 dp touch
+  target. Close: `FlashIcons.Close` at `iconSm`, white 80 %, 48 dp touch target.
+- Pill: same surface, one line, `metadataDefault` white with "Show all" in `accentPrimary`.
+
+### Interaction specification
+Tap "Show fewer", tap close, tap the pill. No swipe. Press feel: `flashPressScale`, no ripple.
+
+### Animation specification
+None (appears and disappears), matching UI-050b's no-animation rule on the video layer.
+
+### Gesture specification
+Taps only.
+
+### Accessibility requirements
+The banner text is a polite live region so TalkBack announces a new warning once. The action and close are role
+Button with labels "Show fewer videos" / "Dismiss warning"; the pill's label is "Show all videos".
+
+### Responsive behavior
+Full width minus margins on phones; on wide windows capped at 480 dp and centred.
+
+### Dark-mode behavior
+The video layer is always dark.
+
+### Performance considerations
+Recomposes only when the warning or the cap changes (at most once per stats sample).
+
+### Implementation notes
+- Core: `FlashCallHealthWarning`, `FlashCallUiState.healthWarning` / `showingFewerVideos`,
+  `FlashCalling.setShowFewerVideos`; `CallHealthMonitor` decides.
+- UI: `FlashCallHealthBanner.kt`; `FlashCallScreen(onShowFewerVideos: (Boolean) -> Unit = {})`; hosts wired.
+  Pure helpers `healthWarningText` / `healthWarningOffersShowFewer` are unit tested.
+
+### Testing checklist
+- [x] Unit: text and action per warning.
+- [ ] Device (pending, P8): force MODERATE (`adb shell cmd thermalservice override-status 2`) → WARM banner; Show
+      fewer → compact layout and the pill; Show all → back. Force SEVERE (`override-status 3`) → HOT banner, one video,
+      another device's request is turned down with `thermal`. A normal call shows nothing.
+
+### Known limitations
+- The CPU threshold (40 % of all cores for 30 s) is provisional until G0 measures a real call.
+- Desktop has no thermal signal; only CPU (and software decoding on a non-HIGH tier) can warn there.

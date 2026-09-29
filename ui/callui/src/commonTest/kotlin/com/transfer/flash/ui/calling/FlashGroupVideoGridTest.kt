@@ -3,6 +3,7 @@ package com.transfer.flash.ui.calling
 import com.transfer.flash.core.calling.model.FlashCallParticipantState
 import com.transfer.flash.core.calling.model.FlashCallParticipantUi
 import com.transfer.flash.core.calling.model.FlashCallDirection
+import com.transfer.flash.core.calling.model.FlashCallHealthWarning
 import com.transfer.flash.core.calling.model.FlashCallState
 import com.transfer.flash.core.calling.model.FlashCallUiState
 import com.transfer.flash.core.calling.model.FlashParticipantVideo
@@ -88,6 +89,19 @@ class FlashGroupVideoGridTest {
         assertEquals("b", nextVideoFocus(state.copy(videoFocusPeerId = "a"), "b"))
         assertEquals("Pin Ann's video", videoFocusClickLabel("Ann", pinned = false))
         assertEquals("Unpin Ann's video", videoFocusClickLabel("Ann", pinned = true))
+    }
+
+    @Test
+    fun `each health warning has its words, and only the hot one offers no action`() {
+        FlashCallHealthWarning.entries.forEach { assertTrue(healthWarningText(it).isNotBlank()) }
+        assertEquals(
+            "Your phone is warming up. Showing fewer videos saves battery.",
+            healthWarningText(FlashCallHealthWarning.WARM),
+        )
+        assertFalse(healthWarningOffersShowFewer(FlashCallHealthWarning.HOT))
+        assertTrue(healthWarningOffersShowFewer(FlashCallHealthWarning.WARM))
+        assertTrue(healthWarningOffersShowFewer(FlashCallHealthWarning.CPU))
+        assertTrue(healthWarningOffersShowFewer(FlashCallHealthWarning.SOFTWARE_DECODE))
     }
 
     private fun call(participants: List<FlashCallParticipantUi>) = FlashCallUiState(

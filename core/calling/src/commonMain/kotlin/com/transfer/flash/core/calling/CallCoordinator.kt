@@ -418,6 +418,10 @@ public class CallCoordinator(
         currentGroupSession?.setVideoFocus(peerId)
     }
 
+    override fun setShowFewerVideos(on: Boolean) {
+        currentGroupSession?.setShowFewerVideos(on)
+    }
+
     /** Host calls this when the WS signaling session to the call peer died. */
     override fun onSignalingLost(peerId: String) {
         if (currentSession?.peerId == peerId) {

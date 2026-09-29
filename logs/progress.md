@@ -1,5 +1,26 @@
 # Progress Log
 
+## 2026-09-29 — G6 code done: group video health warnings (UI-050d; device check pending, P8)
+
+### Worked on
+G6 of `docs/calling/GROUP-VIDEO-PLAN.md` §4.5: heat, CPU and software-decode warnings, "Show fewer", automatic
+one-video mode when hot.
+
+### Changed
+- New `CallHealthMonitor.kt` (+ `processCpuTimeNanos`/`availableCores` expect/actuals `ProcessCpu.android.kt`,
+  `ProcessCpu.jvm.kt`); `FlashCallHealthWarning`; `FlashCallUiState.healthWarning`/`showingFewerVideos`;
+  `FlashCalling.setShowFewerVideos` (+ `CallCoordinator` delegate); `FlashGroupCallSession` samples thermal, CPU and
+  decoder per stats tick and feeds the verdict into `GroupVideoLimits`.
+- `docs/ui/calling-ui.md` UI-050d written first; `FlashCallHealthBanner.kt`; `FlashCallScreen(onShowFewerVideos)`;
+  hosts wired.
+- The software-decode signal is skipped on HIGH (desktop always decodes in software); flagged for the owner in plan §8 G6.
+
+### Verification
+calling jvm 103 / host 115, callui 20, desktop 86, app compile: green. No device test (P8).
+
+### Next AI
+G7 caps.
+
 ## 2026-09-29 — G5 code done: group video focus UI (UI-050c; device check pending, P8)
 
 ### Worked on

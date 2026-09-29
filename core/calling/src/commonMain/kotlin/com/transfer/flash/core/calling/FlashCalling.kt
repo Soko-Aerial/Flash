@@ -127,6 +127,12 @@ public interface FlashCalling {
     public fun setVideoFocus(peerId: String?): Unit = Unit
 
     /**
+     * Group video calls (G6): "Show fewer" caps this device at one received video until turned
+     * off, to save heat and battery. No-op for a 1:1 call or when no call is live.
+     */
+    public fun setShowFewerVideos(on: Boolean): Unit = Unit
+
+    /**
      * Feeds one inbound text frame in. Returns true when the text was a `FLASH_CALL` frame that
      * was consumed, false when it is not a call frame at all — letting a host chain this ahead
      * of its other text handlers.
