@@ -2023,8 +2023,9 @@ PC5 (modes); PC6 measurements; or the 3-device check (user 3 sees user 2 through
 2026-09-24
 
 ### Status
-**PROPOSED, NOT IMPLEMENTED.** To be implemented after group calling (owner, 2026-09-24). Plan:
-`docs/network/DISCOVERY-RESILIENCE-PLAN.md` (DR0–DR7). ADR-045 and ADR-046 are reserved by the presence plan.
+**PROPOSED. DR1 IMPLEMENTED 2026-09-29 (device check DR-01 pending); DR0 and DR2–DR7 not started.** Owner order: after
+group calling (2026-09-24). Plan: `docs/network/DISCOVERY-RESILIENCE-PLAN.md` (DR0–DR7). ADR-045 and ADR-046 are
+reserved by the presence plan.
 
 ### Context
 Discovery today depends on multicast: mDNS (NSD / JmDNS) and the `224.0.0.168:45823` beacon. The hotspot
@@ -2055,6 +2056,41 @@ unreachable after a restart.
 
 ### Revisit when
 DR0 results are in; the PC2 planner's shape changes; or rotating discovery ids (audit S9) land.
+
+### DR1 implementation notes (2026-09-29)
+What was built, and where it departs from the plan's wording:
+1. **Separate policy class, not a transport.** `RememberedRoutes` (`core:network` commonMain) keeps the routes and
+   feeds the PC2 planner as sightings, appended after discovery's and PC4's tips. The plan's `REMEMBERED`
+   `FlashRadioTransport` was **not** built: transports emit into `discoveredEndpoints`, which drives PC3's Online ring,
+   so it would have shown every paired peer as Online. A remembered peer with no session stays Offline in the UI until
+   a dial succeeds.
+2. **`forgetEndpoint` is unchanged.** The consequence "forgetEndpoint semantics change" is met by keeping routes in a
+   separate store: `knownEndpoints` is still the discovery route table and still shrinks when discovery drops a peer.
+3. **Written only by the dial path.** `WsFlashNetwork` / `JvmWsFlashNetwork` call `RouteObserver.onAuthenticated`
+   after TLS and HELLO proved the pinned key (and only when TLS is on, and HELLO agrees with the id the dial named);
+   they call `onIdentityMismatch` when a named dial's TLS check rejects the answering key or the post-HELLO pin check
+   fails. **An inbound session records nothing**: its socket has the peer's ephemeral source port and HELLO carries no
+   listen port. The side that dialed (the lower device id first, PC2) therefore holds the route. Adding the listen port
+   to HELLO would let both sides record; it is a wire change and needs its own ADR.
+4. **Paired only** (owner decision D1, the plan's recommendation, **assumed and awaiting confirmation**): `isPaired` is
+   asked on every write and read; rows of a peer that is no longer paired are deleted at load.
+5. **Rules.** At most 4 routes per peer (newest first); a pin mismatch deletes that one route; a route expires only
+   after 5 failed dials **and** 7 days since its first failure (the first failure time is persisted, the count is
+   not); failed routes back off 30 s doubling to 10 min and the next route is offered meanwhile; `resetBackoff` runs on
+   the app's re-arm and the desktop's manual retry. A dial that only lost a glare race (the peer already has a live
+   session) is not a failure.
+6. **Storage.** Room table `remembered_endpoints` (schema v5, `FlashSchemaSteps.STEP_4_5`, ADR-055), a
+   `RememberedEndpointStore` port owned by `core:network`, and two small Room adapters because `core:engine` has no
+   persistence dependency on the JVM target: `RoomRememberedEndpointStore` (engine, androidMain) and
+   `DesktopRememberedEndpointStore` (desktop). A storage failure costs persistence only, never a dial.
+7. **Behaviour changes to know about.** (a) Dial on demand (PC3) can now dial a remembered peer that discovery does
+   not list, so a send to it costs one urgent dial (1 s budget, 5 s floor, skipped while it backs off) instead of
+   waiting in the outbox. (b) `FlashNetwork.connect(device)` still resolves through the discovery table only.
+   (c) ECO has no extra "remembered routes only on a network change" rule yet: it follows the planner's normal cadence
+   and the backoff above.
+8. **Tests.** `RememberedRoutesTest` (19, including the plan's exit criteria through the real planner),
+   `JvmRouteObserverTest` (6) and its Android twin `RouteObserverTest` (5) over real TLS,
+   `FlashJvmMigrationsTest` (v4→v5 validated by Room). Device check: `TEST-BACKLOG.md` DR-01.
 
 ## ADR-048 — Connection modes: re-time live sessions, ECO parks only by agreement
 

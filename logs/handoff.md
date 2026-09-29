@@ -1,5 +1,14 @@
 # Current Handoff
 
+## 2026-09-29 — Discovery resilience DR1 built (remembered endpoints, ADR-047); DR0/DR-01 owed
+- Paired peers' last authenticated addresses are kept in the encrypted DB (schema v5) and fed to the PC2 planner as dial
+  hints, after discovery and tips. A peer reachable over TCP but invisible to mDNS/beacon now reconnects after a restart.
+- Only the side that dialed records a route (HELLO has no listen port). A remembered peer is still Offline in the UI until a
+  dial succeeds: routes never touch `discoveredEndpoints`.
+- Code: `core/network/.../remembered/`, both `*WsFlashNetwork.routeObserver`, wiring in `DiscoveryEngineHolder`,
+  `Flash.create`, `DesktopEngine`. Tests green (see progress). Owed: TEST-BACKLOG **DR-01**, **MIG-01**, **MEAS-07** (DR0).
+- Owner: confirm D1 (paired only) and choose whether DR2 (broadcast beacon) is next or waits for MEAS-07.
+
 ## 2026-09-29 — Desktop Room migrations fixed (ERROR-080 / ADR-055); 2026-09-28 audit verified
 - Schema-migration SQL now lives once in `core/persistence` commonMain (`FlashSchemaSteps`); Android and desktop wrap it,
   and the desktop opener registers it. A missed step on a future bump fails the build. The gap was latent (no older
