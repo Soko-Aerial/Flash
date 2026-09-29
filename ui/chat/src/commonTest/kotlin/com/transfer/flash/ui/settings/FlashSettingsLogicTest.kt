@@ -77,6 +77,15 @@ class FlashSettingsLogicTest {
         assertTrue(off.contains("video", ignoreCase = true), "off copy must name video: $off")
     }
 
+    /** ADR-053: off by default, and the copy says what shrinks. */
+    @Test
+    fun `the smaller-video row is off by default and names the heights`() {
+        assertFalse(FlashSettingsModel().smallerVideoForMany)
+        val on = FlashSettingsMath.smallerVideoForManySubtitle(enabled = true)
+        assertTrue(on.contains("540p") && on.contains("360p"), on)
+        assertNotEquals(on, FlashSettingsMath.smallerVideoForManySubtitle(enabled = false))
+    }
+
     /** ERROR-033. Auto is the absence of a pin, so it needs a label of its own alongside the tiers. */
     @Test
     fun `the performance picker labels auto separately from the three tiers`() {

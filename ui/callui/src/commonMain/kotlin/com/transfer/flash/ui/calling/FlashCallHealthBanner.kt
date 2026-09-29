@@ -4,8 +4,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
@@ -40,30 +42,44 @@ import com.transfer.flash.ui.theme.flashPressScale
  * Group video health banner (UI-050d, G6; `docs/ui/calling-ui.md`): the core's warning in plain
  * words with one action, **Show fewer**, or, while receiving is capped by the user, a pill to
  * undo it. A dismissed kind stays dismissed for the rest of the call.
+ *
+ * The CPU warning also offers **Send smaller** (ADR-053) until the user's "Send smaller video in
+ * groups" setting is on: [onSendSmallerVideo] turns that setting on (the host saves it, so it is
+ * in Settings from then on). With two actions the banner takes two lines, words above actions.
  */
 @Composable
 internal fun FlashCallHealthBanner(
     state: FlashCallUiState,
     onShowFewerVideos: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
+    onSendSmallerVideo: () -> Unit = {},
 ) {
     var dismissed by remember(state.callId) { mutableStateOf(emptySet<FlashCallHealthWarning>()) }
+    // Hides the action at once; the setting reaches the state on the core's next tick.
+    var smallerTapped by remember(state.callId) { mutableStateOf(false) }
     val warning = state.healthWarning?.takeIf { it !in dismissed }
     when {
+        warning != null && healthWarningOffersSmallerVideo(warning, state.smallerVideoForMany || smallerTapped) ->
+            Column(modifier = modifier.bannerSurface()) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    WarningText(healthWarningText(warning, offersSmallerVideo = true), Modifier.weight(1f))
+                    BannerClose { dismissed = dismissed + warning }
+                }
+                Row(modifier = Modifier.align(Alignment.End)) {
+                    if (healthWarningOffersShowFewer(warning)) {
+                        BannerAction(text = "Show fewer", label = "Show fewer videos") { onShowFewerVideos(true) }
+                    }
+                    BannerAction(text = "Send smaller", label = "Send my video smaller in group calls") {
+                        smallerTapped = true
+                        onSendSmallerVideo()
+                    }
+                }
+            }
         warning != null -> Row(
             modifier = modifier.bannerSurface(),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
-                text = healthWarningText(warning),
-                style = FlashTheme.typography.metadataDefault,
-                color = Color.White,
-                maxLines = 3,
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(vertical = FlashSpacing.space8)
-                    .semantics { liveRegion = LiveRegionMode.Polite },
-            )
+            WarningText(healthWarningText(warning), Modifier.weight(1f))
             if (healthWarningOffersShowFewer(warning)) {
                 BannerAction(text = "Show fewer", label = "Show fewer videos") { onShowFewerVideos(true) }
             }
@@ -85,6 +101,19 @@ internal fun FlashCallHealthBanner(
     }
 }
 
+@Composable
+private fun WarningText(text: String, modifier: Modifier) {
+    Text(
+        text = text,
+        style = FlashTheme.typography.metadataDefault,
+        color = Color.White,
+        maxLines = 3,
+        modifier = modifier
+            .padding(vertical = FlashSpacing.space8)
+            .semantics { liveRegion = LiveRegionMode.Polite },
+    )
+}
+
 private fun Modifier.bannerSurface(): Modifier = this
     .widthIn(max = BANNER_MAX_WIDTH)
     .fillMaxWidth()
@@ -98,7 +127,8 @@ private fun BannerAction(text: String, label: String, onClick: () -> Unit) {
     val interaction = remember { MutableInteractionSource() }
     Box(
         modifier = Modifier
-            .size(height = FlashDimensions.minTouchTarget, width = ACTION_WIDTH)
+            .heightIn(min = FlashDimensions.minTouchTarget)
+            .widthIn(min = ACTION_WIDTH)
             .flashPressScale(interaction)
             .clickable(
                 interactionSource = interaction,
@@ -114,6 +144,7 @@ private fun BannerAction(text: String, label: String, onClick: () -> Unit) {
             style = FlashTheme.typography.metadataDefault,
             color = FlashTheme.colors.accentPrimary,
             maxLines = 1,
+            modifier = Modifier.padding(horizontal = FlashSpacing.space8),
         )
     }
 }
@@ -143,11 +174,18 @@ private fun BannerClose(onClick: () -> Unit) {
     }
 }
 
-/** The banner's words for [warning] (UI-050d). */
-internal fun healthWarningText(warning: FlashCallHealthWarning): String = when (warning) {
+/**
+ * The banner's words for [warning] (UI-050d); [offersSmallerVideo] when the banner also offers
+ * **Send smaller** (ADR-053).
+ */
+internal fun healthWarningText(warning: FlashCallHealthWarning, offersSmallerVideo: Boolean = false): String = when (warning) {
     FlashCallHealthWarning.WARM -> "Your phone is warming up. Showing fewer videos saves battery."
     FlashCallHealthWarning.HOT -> "Your phone is hot. Showing one video until it cools down."
-    FlashCallHealthWarning.CPU -> "This call is keeping the processor busy. Showing fewer videos helps."
+    FlashCallHealthWarning.CPU -> if (offersSmallerVideo) {
+        "This call is keeping the processor busy. Showing fewer videos, or sending yours smaller, helps."
+    } else {
+        "This call is keeping the processor busy. Showing fewer videos helps."
+    }
     FlashCallHealthWarning.SOFTWARE_DECODE ->
         "Videos are being decoded without hardware help. Showing fewer videos saves battery."
 }
@@ -155,6 +193,13 @@ internal fun healthWarningText(warning: FlashCallHealthWarning): String = when (
 /** Whether the banner offers **Show fewer**: not when hot, where Flash already shows one video. */
 internal fun healthWarningOffersShowFewer(warning: FlashCallHealthWarning): Boolean =
     warning != FlashCallHealthWarning.HOT
+
+/**
+ * Whether the banner offers **Send smaller** (ADR-053): only for the CPU warning, whose main cost
+ * is encoding this device's video once per watcher, and only while the setting is still off.
+ */
+internal fun healthWarningOffersSmallerVideo(warning: FlashCallHealthWarning, alreadyOn: Boolean): Boolean =
+    warning == FlashCallHealthWarning.CPU && !alreadyOn
 
 private val BANNER_MAX_WIDTH = 480.dp
 private val ACTION_WIDTH = 96.dp

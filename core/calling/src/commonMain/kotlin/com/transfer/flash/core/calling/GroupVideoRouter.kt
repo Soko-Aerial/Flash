@@ -17,6 +17,8 @@ import com.transfer.flash.core.common.perf.FlashPerformanceMode
  * - [quality]: the height this device asks senders for.
  * - [maxSendHeight]: the tallest copy it sends (the camera profile may cap it lower).
  * - [acceptNew]: false while the device is too hot (G6); new requests are turned down.
+ * - [smallerForMany]: the user's opt-in "Send smaller video in groups" (ADR-053, off by default):
+ *   the more copies this device sends, the smaller each one ([heightForCopies]).
  *
  * "Fast" is 5 GHz, 6 GHz or Ethernet. An unknown band keeps today's behaviour for receiving
  * (everything) and the table's default for sending.
@@ -28,6 +30,7 @@ internal data class GroupVideoLimits(
     val splitBudget: Boolean = false,
     val maxSendHeight: Int = HEIGHT_720,
     val acceptNew: Boolean = true,
+    val smallerForMany: Boolean = false,
 ) {
     /** Most watchers this device serves at once (twice [send] at 360p under the split budget). */
     val capacity: Int get() = if (splitBudget) send * 2 else send
@@ -42,6 +45,7 @@ internal data class GroupVideoLimits(
          *   360p instead of 540p (owner decision Q4).
          * @param receiveCap an upper bound on [receive] (G6: "Show fewer", or a severe thermal state).
          * @param acceptNew see [GroupVideoLimits.acceptNew].
+         * @param smallerForMany see [GroupVideoLimits.smallerForMany].
          */
         fun of(
             tier: FlashPerformanceMode,
@@ -49,6 +53,7 @@ internal data class GroupVideoLimits(
             struggling: Boolean = false,
             receiveCap: Int? = null,
             acceptNew: Boolean = true,
+            smallerForMany: Boolean = false,
         ): GroupVideoLimits {
             val slow = band == FlashNetworkBand.WIFI_2_4GHZ
             val fast = band == FlashNetworkBand.ETHERNET || band == FlashNetworkBand.WIFI_5GHZ ||
@@ -77,7 +82,20 @@ internal data class GroupVideoLimits(
                 receive = receiveCap?.let { minOf(it, base.receive) } ?: base.receive,
                 splitBudget = slow,
                 acceptNew = acceptNew,
+                smallerForMany = smallerForMany,
             )
+        }
+
+        /**
+         * The tallest copy under [smallerForMany] when this device sends [copies] copies of its
+         * video (ADR-053): one keeps the full height, two go at 540p, three or more at 360p. The
+         * mesh runs one encoder per copy, so this cuts the encode work (the largest share of a
+         * desktop call's CPU, ERROR-078) roughly in proportion to the pixels.
+         */
+        fun heightForCopies(copies: Int): Int = when {
+            copies >= 3 -> HEIGHT_360
+            copies == 2 -> HEIGHT_540
+            else -> HEIGHT_720
         }
 
         /**
@@ -190,10 +208,15 @@ internal class GroupVideoRouter(
         else -> watchers[peerId]?.let { minOf(it.quality, level()) } ?: 0
     }
 
-    /** The one height all of this device's copies are sent at now (before each watcher's own ask). */
+    /**
+     * The one height all of this device's copies are sent at now (before each watcher's own ask).
+     * With [GroupVideoLimits.smallerForMany] on it also follows how many watchers there are; the
+     * step is immediate both ways, since it changes only with a watcher arriving or leaving.
+     */
     fun level(): Int {
         val limit = limits()
-        return if (limit.splitBudget) minOf(splitLevel, limit.maxSendHeight) else limit.maxSendHeight
+        val level = if (limit.splitBudget) minOf(splitLevel, limit.maxSendHeight) else limit.maxSendHeight
+        return if (limit.smallerForMany) minOf(level, GroupVideoLimits.heightForCopies(watchers.size)) else level
     }
 
     /** The participant the view follows while nothing is pinned (for the LOW layout, G5). */

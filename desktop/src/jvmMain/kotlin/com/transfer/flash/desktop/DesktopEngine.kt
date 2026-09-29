@@ -820,6 +820,7 @@ public class DesktopEngine(
             // Honest desktop settings: voice priority and performance mode read per call via
             // lambdas so settings changes take immediate effect.
             prioritiseVoice = { _settings.value.prioritiseVoiceQuality },
+            smallerVideoForMany = { _settings.value.smallerVideoForMany },
             performanceMode = { _settings.value.performanceMode ?: FlashPerformanceMode.HIGH },
             peerNameResolver = { peerId ->
                 trustStore.getTrustedPeers()[FlashDeviceId(peerId)]

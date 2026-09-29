@@ -106,6 +106,11 @@ public data class FlashCallUiState(
     public val healthWarning: FlashCallHealthWarning? = null,
     /** Group video (G6): receiving is capped at one video, by "Show fewer" or automatically when hot. */
     public val showingFewerVideos: Boolean = false,
+    /**
+     * Group video (ADR-053): the user's "Send smaller video in groups" setting is on, so the CPU
+     * banner no longer offers it.
+     */
+    public val smallerVideoForMany: Boolean = false,
 )
 
 /**

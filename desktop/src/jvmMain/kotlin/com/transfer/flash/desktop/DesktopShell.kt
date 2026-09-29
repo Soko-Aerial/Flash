@@ -875,6 +875,7 @@ public fun DesktopShell(
             autoDownloadVideo = desktopSettings.autoDownloadVideo,
             autoDownloadFile = desktopSettings.autoDownloadFile,
             prioritiseVoiceQuality = desktopSettings.prioritiseVoiceQuality,
+            smallerVideoForMany = desktopSettings.smallerVideoForMany,
             performanceMode = desktopSettings.performanceMode,
             backgroundTransfers = desktopSettings.closeToTray,
             saveLocationLabel = desktopSettings.saveLocation ?: engine.canonicalRoot.absolutePath,
@@ -1391,6 +1392,9 @@ public fun DesktopShell(
                         onPrioritiseVoiceQualityChanged = { next ->
                             scope.launch { engine.updateSettings { it.copy(prioritiseVoiceQuality = next) } }
                         },
+                        onSmallerVideoForManyChanged = { next ->
+                            scope.launch { engine.updateSettings { it.copy(smallerVideoForMany = next) } }
+                        },
                         onPerformanceModeSelected = { next ->
                             scope.launch { engine.updateSettings { it.copy(performanceMode = next) } }
                         },
@@ -1828,6 +1832,9 @@ public fun DesktopShell(
                 onDismiss = { },
                 onVideoFocus = { peerId -> calls?.setVideoFocus(peerId) },
                 onShowFewerVideos = { on -> calls?.setShowFewerVideos(on) },
+                onSendSmallerVideo = {
+                    scope.launch { engine.updateSettings { it.copy(smallerVideoForMany = true) } }
+                },
             )
         }
     }

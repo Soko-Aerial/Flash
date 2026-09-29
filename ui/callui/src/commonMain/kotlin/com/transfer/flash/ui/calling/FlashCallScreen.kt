@@ -101,6 +101,8 @@ public fun FlashCallScreen(
     onDismiss: () -> Unit,
     onVideoFocus: (String?) -> Unit = {},
     onShowFewerVideos: (Boolean) -> Unit = {},
+    /** The CPU banner's **Send smaller** (ADR-053): the host turns the setting on and saves it. */
+    onSendSmallerVideo: () -> Unit = {},
 ) {
     val colors = FlashTheme.colors
     val ended = state.state == FlashCallState.ENDED
@@ -155,7 +157,11 @@ public fun FlashCallScreen(
 
             if (isVideoActive && !ended && state.isGroup) {
                 // G6 (UI-050d): heat / CPU / software-decode warning, or the "Show all" pill.
-                FlashCallHealthBanner(state = state, onShowFewerVideos = onShowFewerVideos)
+                FlashCallHealthBanner(
+                    state = state,
+                    onShowFewerVideos = onShowFewerVideos,
+                    onSendSmallerVideo = onSendSmallerVideo,
+                )
                 Spacer(Modifier.height(FlashSpacing.space8))
             }
 

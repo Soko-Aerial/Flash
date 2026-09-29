@@ -380,6 +380,44 @@ class GroupVideoRouterTest {
     }
 
     @Test
+    fun `send smaller video in groups is off by default, then shrinks copies with the watcher count`() {
+        val a = Node("a", GroupVideoLimits.of(FlashPerformanceMode.HIGH, FlashNetworkBand.WIFI_5GHZ).copy(receive = 0))
+        assertFalse(a.limits.smallerForMany)
+        val watchers = (1..3).map { Node("w$it", GroupVideoLimits(receive = 1, send = 5, quality = 720)) }
+        watchers.forEach { it.router.setFocus("a") }
+        val mesh = Mesh(a, *watchers.toTypedArray()).apply { join() }
+        assertEquals(3, a.sendingTo.size)
+        assertTrue(a.heights.values.all { it == 720 }, "${a.heights}")
+        // Turned on mid-call: the next tick re-sends all three at 360p.
+        a.limits = a.limits.copy(smallerForMany = true)
+        mesh.step(a) { tick(now) }
+        assertTrue(a.heights.values.all { it == 360 }, "${a.heights}")
+        // Two watchers: 540p, at once.
+        mesh.step(a) { onPeerLeft("w3") }
+        assertEquals(mapOf<String, Int?>("w1" to 540, "w2" to 540), a.heights)
+        // One watcher: full height again.
+        mesh.step(a) { onPeerLeft("w2") }
+        assertEquals(mapOf<String, Int?>("w1" to 720), a.heights)
+    }
+
+    @Test
+    fun `send smaller video never raises a copy above the watcher's ask or the band's cap`() {
+        assertEquals(720, GroupVideoLimits.heightForCopies(0))
+        assertEquals(720, GroupVideoLimits.heightForCopies(1))
+        assertEquals(540, GroupVideoLimits.heightForCopies(2))
+        assertEquals(360, GroupVideoLimits.heightForCopies(3))
+        assertEquals(360, GroupVideoLimits.heightForCopies(7))
+        assertTrue(GroupVideoLimits.of(FlashPerformanceMode.HIGH, null, smallerForMany = true).smallerForMany)
+        val a = Node("a", GroupVideoLimits(receive = 0, send = 5, quality = 540, maxSendHeight = 540, smallerForMany = true))
+        val b = Node("b", GroupVideoLimits(receive = 1, send = 5, quality = 360))
+        val mesh = Mesh(a, b).apply { join() }
+        assertEquals(mapOf<String, Int?>("b" to 360), a.heights)
+        b.limits = b.limits.copy(quality = 720)
+        mesh.step(b) { tick(now) }
+        assertEquals(mapOf<String, Int?>("b" to 540), a.heights)
+    }
+
+    @Test
     fun `a lower receive limit releases the extra videos on the next tick`() {
         val a = Node("a", GroupVideoLimits(receive = 2, send = 5, quality = 540))
         val b = node("b", receive = 0, send = 5)
