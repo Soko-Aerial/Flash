@@ -2379,3 +2379,52 @@ extension API.
 A libwebrtc upgrade on Android adds tethering support to `NetworkMonitorAutoDetect`, or Flash needs two local-only
 links at once (then give each a real `Network` via `ConnectivityManager` where the platform allows).
 
+---
+
+## ADR-055 — Schema migration SQL is written once in commonMain; each platform only wraps it
+
+### Date
+2026-09-29
+
+### Status
+**ACCEPTED** — implemented and unit-tested (desktop upgrade tests run a real encrypted file; no device check applies
+to desktop, see ERROR-080).
+
+### Context
+`FlashMigrations` (v1→v2→v3→v4) lived only in `androidMain` as `SupportSQLiteDatabase` migrations. The desktop JVM
+opener (`openFlashDatabase`) registered none, and there was no destructive fallback (C1.7), so any desktop file older
+than the current schema would throw `A migration from X to Y was required but not found` — and `DesktopEngine`
+swallows a database failure and degrades to an empty chat repository. No such desktop file exists today (desktop first
+opened its database on 2026-09-16, at v4 already), so the gap was latent: the **next** schema bump would have hit it,
+and nothing forced anyone to remember it. Neither platform had a test that executed a migration.
+
+### Decision
+1. The SQL of every step lives once, in `commonMain` (`FlashSchemaSteps`, an internal list of `FlashSchemaStep`).
+2. Android's public `FlashMigrations` (same names, same types, same `ALL`) is built from that list with
+   `SupportSQLiteDatabase.execSQL`. Its behaviour is unchanged.
+3. The JVM has an internal `FlashJvmMigrations` built from the same list with `SQLiteConnection.execSQL`, registered by
+   `openFlashDatabase`, so every JVM open path upgrades an old file.
+4. Tests make a forgotten step a build failure: a chain check on both platforms (`FlashSchemaStepsTest`,
+   `FlashMigrationsChainTest`) and a JVM suite (`FlashJvmMigrationsTest`) that uses Room's KMP `MigrationTestHelper` to
+   build v1 and v3 files from the exported `schemas/<n>.json`, upgrade them with the encrypted production driver, and let
+   Room validate the result against the current schema. One test goes through `openEncryptedFlashDatabase`, which is
+   what `:desktop` calls; removing the `addMigrations` line makes it fail with Room's original error (checked).
+
+### Alternatives considered
+- **One `Migration` written against `SQLiteConnection` in commonMain, deleting the Android file.** Room 2.8.4 supports
+  it and it would remove the wrappers, but it changes the SQLCipher production path on Android, which has no automated
+  migration test and could not be device-checked in this session. Revisit once an Android migration test exists.
+- **Copy the SQL into `jvmMain`.** The exact drift this ADR removes.
+- **Room `@AutoMigration`.** Would need the exported schemas to be complete (there is no `2.json`) and changes the
+  established explicit-migration policy.
+
+### Consequences
+- Adding a schema version = bump `DATABASE_VERSION`, append one `FlashSchemaStep`; both platforms pick it up.
+- `room-testing` is a new **jvmTest-only** dependency (already in the catalog for Android host tests; Apache-2.0).
+- The Android SQL is now proven correct at the schema level only through the shared list; the wrapper itself is
+  covered by a chain check and by earlier on-device upgrades. Test MIG-01 in `docs/testing/TEST-BACKLOG.md` covers it.
+
+### Revisit when
+An Android migration test exists (then collapse to a single commonMain `Migration`), or Room drops
+`SupportSQLiteDatabase` migrations.
+

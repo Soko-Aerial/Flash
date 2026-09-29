@@ -1,5 +1,15 @@
 # Current Handoff
 
+## 2026-09-29 — Desktop Room migrations fixed (ERROR-080 / ADR-055); 2026-09-28 audit verified
+- Schema-migration SQL now lives once in `core/persistence` commonMain (`FlashSchemaSteps`); Android and desktop wrap it,
+  and the desktop opener registers it. A missed step on a future bump fails the build. The gap was latent (no older
+  desktop file exists), not a live crash.
+- The audit doc has a verification table at its end: some claims are refuted (desktop compile, single video track,
+  `AutoConnector` stall, service teardown), several are real and still open (group send atomicity/sort, `close()` under
+  the write lock, activation IPC token). Do not act on the audit's task list without reading that table.
+- Tests: persistence jvm 37, Android host 33/45 (12 = known Windows DataStore), desktop 91, engine + desktop compile green.
+  Owed: `docs/testing/TEST-BACKLOG.md` MIG-01 (Android upgrade), MIG-02 (desktop regression). Code commit `1c3a14e`.
+
 ## 2026-09-29 — Test backlog: `docs/testing/TEST-BACKLOG.md` (AGENTS.md §35)
 - Every device test still owed is listed there, including the presence/connections plan and group calling;
   measurements come last.

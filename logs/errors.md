@@ -1,5 +1,67 @@
 # Error Log
 
+## ERROR-080 — Desktop JVM registered no Room migrations: the next schema bump would break desktop chat (latent)
+
+### Date
+2026-09-29
+
+### Area
+Persistence / desktop JVM / Room schema migrations
+
+### Symptoms
+None observed. Found by the 2026-09-28 audit (`docs/audit/2026-09-28-architectural-audit-and-tasks.md` §1.2) and
+verified against the code on 2026-09-29. The audit said "any desktop user with a v1/v2/v3 database crashes on
+startup"; that overstates it (see "Exposure").
+
+### Root cause
+`FlashMigrations` (v1→v4) existed only in `core/persistence/src/androidMain`, as `SupportSQLiteDatabase`
+migrations. `openFlashDatabase` in `jvmMain` built the database without `addMigrations`, and destructive fallback is
+forbidden (C1.7). Room therefore throws
+`IllegalStateException: A migration from X to Y was required but not found` when the file is older than
+`DATABASE_VERSION`. `DesktopEngine` wraps the open in `runCatching` and falls back to an empty chat repository, so the
+visible symptom would be "chat silently stops persisting" (compare ERROR-071), not a crash. No test on either platform
+executed a migration.
+
+### Exposure (why it was latent)
+Desktop first opened its chat database on 2026-09-16 (`e5298b5`), when `DATABASE_VERSION` was already 4 (bumped
+2026-09-08, `e81279c`). Every desktop file created so far is v4, so no existing desktop install needs an upgrade. It
+would have failed on the first version bump after that: v5, which the chat-sync plan
+(`docs/audit/2026-09-28-chat-group-sync-audit-and-plan.md`) needs.
+
+### Failed attempts
+None. One test-authoring mistake: the first seam test inserted a v1-shaped `messages` row into a v3 database, where
+`attachmentSize` is `NOT NULL` without a default; the insert, not the migration, failed. The helper now supplies the
+column for v2+.
+
+### Working fix
+ADR-055. SQL moved to `commonMain` `FlashSchemaSteps`; Android's `FlashMigrations` and the new JVM `FlashJvmMigrations`
+wrap it; `openFlashDatabase` registers the JVM ones. Static check first: the exported `1.json`/`3.json`/`4.json` differ
+exactly by the columns, tables and indices the three steps create.
+
+### Verification
+- `:core:persistence:jvmTest`: 37 tests, 0 failed (new: `FlashJvmMigrationsTest` 6, `FlashSchemaStepsTest` 3). The JVM
+  suite upgrades real encrypted v1 and v3 files and Room validates them against the v4 schema.
+- **Mutation check:** removing `.addMigrations(...)` from the opener fails exactly
+  `the public desktop opener upgrades an older file instead of failing` with Room's original message. Restored.
+- `:core:persistence:testAndroidHostTest`: 45 tests, 33 pass. The 12 failures are the known Windows DataStore rename
+  problem (`Unable to rename ...preferences_pb.tmp`, 11 tests; 1 corrupted-file test), all in
+  `FlashSettingsDataStoreTest`/`DiscoveryModeSettingTest`, unchanged by this work. `FlashDatabaseInvariantTest` 12/12 and
+  the new `FlashMigrationsChainTest` 2/2 pass.
+- `:core:engine:compileAndroidMain` and a forced `:desktop:compileKotlinJvm` succeed; `:desktop:jvmTest` 91/91.
+- Not done: an Android install upgraded across versions on a device (TEST-BACKLOG MIG-01).
+
+### Related files
+- `core/persistence/src/commonMain/.../db/FlashSchemaSteps.kt` (new), `.../commonTest/.../FlashSchemaStepsTest.kt` (new)
+- `core/persistence/src/jvmMain/.../db/FlashJvmMigrations.kt` (new), `JvmFlashDatabaseOpener.kt`
+- `core/persistence/src/androidMain/.../db/FlashMigrations.kt`, `.../androidHostTest/.../FlashMigrationsChainTest.kt` (new)
+- `core/persistence/src/jvmTest/.../db/FlashJvmMigrationsTest.kt` (new), `core/persistence/build.gradle.kts`
+
+### Status
+RESOLVED (code and unit tests; no desktop device check applies because no older desktop file exists). Android wrapper
+device check: MIG-01, TODO.
+
+---
+
 ## ERROR-079 — Group call leg to the phone hosting the Wi-Fi hotspot never connected (ICE stuck in Checking)
 
 ### Date

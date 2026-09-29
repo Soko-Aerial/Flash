@@ -254,6 +254,26 @@ by later testing without anyone recording it: confirm, then mark PASS here **and
 | OLD-13 | ERROR-002, 003, 004 (OPEN, old LAN probe) | Still reproducible on current builds? If not, mark OBSOLETE | TODO |
 | OLD-14 | `docs/migration/ADAPTIVE-UI-PLAN.md` AD-1–AD-7 | Desktop UI scale, list-pane width, conversation in the detail pane, keyboard shortcuts, 580 dp bubble cap, Android rail + two panes at ≥ 600 dp, desktop keeps the open conversation across tabs | TODO |
 
+### MIG-01 — Android install upgraded across an older release keeps its chats (ERROR-080, ADR-055)
+- **Setup:** one phone, the oldest build you can still install (git tag `v1.0.0` or `v1.1.0`), same signing key as the
+  current build so it installs over it.
+- **Steps:**
+  1. On the old build, pair with another device and exchange a few messages (a reply and an attachment if the build
+     supports them).
+  2. Install the current build **over** it (do not uninstall). Open Flash and open the same chat.
+  3. Create a small group and send a group message (uses the v4 tables).
+- **Pass:** old messages are all still there; no crash; `adb logcat` has no `A migration from` and no Room
+  `IllegalStateException`; the group message sends. `FlashMigrations` now builds its statements from the shared list, so
+  this is the one place the Android wrapper is exercised on a real database.
+- **Status:** TODO
+
+### MIG-02 — Desktop still opens its existing chat database (ERROR-080, ADR-055)
+- **Setup:** a PC that already has chats, i.e. `%USERPROFILE%\.flash\chat\flash.db` exists.
+- **Steps:** start the new desktop build over the existing state directory and open an old conversation.
+- **Pass:** history is present and `%USERPROFILE%\.flash\desktop.log` has no Room/migration error and no fallback to an
+  empty chat. (There is no older desktop file to upgrade, so this is a regression check, not an upgrade check.)
+- **Status:** TODO
+
 ## 5. Measurements — do these last
 
 They replace every *(measure)* estimate in the plans and decide tuning. Record each in `logs/experiments.md`.
