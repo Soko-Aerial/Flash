@@ -17,9 +17,14 @@ public enum class DuplicateSessionDecision {
 /**
  * Pure session-manager hardening rules (plan C4.5 / upgrades 5–6).
  *
- * - [maxConcurrentSessions] = 8: bounds socket/fd/thread pressure on a phone
- *   while covering realistic group sizes for v1 (direct P2P only, D5 mesh is
- *   post-v1).
+ * - [maxConcurrentSessions] = [DEFAULT_MAX_CONCURRENT_SESSIONS] (24): the admission ceiling, the same
+ *   in every connection mode and hardware tier (ADR-057). It bounds socket and thread pressure on a
+ *   phone (each live session pins one `Dispatchers.IO` read thread) while leaving room for a
+ *   20-member group's 19 sessions plus a call or transfer peer outside the group, a pairing peer and
+ *   a duplicate that is replacing a session. It was 8 until ADR-057; 8 could not hold a group above 9.
+ *   The number is a reasoned estimate, not a measurement (FO-05). A mode does not get its own
+ *   ceiling: ECO never refuses an incoming session (ADR-048), so what a mode changes is how many
+ *   sessions it asks for (`DialBudget`, `EcoLinkSelector`), not how many it admits.
  * - Transport ranks mirror the discovery priority order (C3.9 "prefers LAN"):
  *   a LOWER rank number = richer path. LAN(0) > Wi-Fi Direct(1) >
  *   WebSocket(2) > relay-class paths(3). BLE presence transport (C3.8,
@@ -73,7 +78,13 @@ public class SessionHardeningPolicy(
         resolveDuplicate(transportRank(existingTransport), transportRank(newTransport))
 
     public companion object {
-        public const val DEFAULT_MAX_CONCURRENT_SESSIONS: Int = 8
+        /**
+         * Admission ceiling for live sessions (ADR-057): 19 group peers of a 20-member group, one call or
+         * transfer peer outside it, one pairing peer, and slack for a duplicate being replaced and a
+         * reconnect in flight. `ConnectionModePolicy.DIAL_HEADROOM` of these are never spent on dials the
+         * device chooses to make, so an incoming contact still fits.
+         */
+        public const val DEFAULT_MAX_CONCURRENT_SESSIONS: Int = 24
 
         public const val TRANSPORT_RANK_LAN: Int = 0
         public const val TRANSPORT_RANK_WIFI_DIRECT: Int = 1

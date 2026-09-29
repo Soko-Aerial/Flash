@@ -4,6 +4,7 @@ package com.transfer.flash.core.network.mode
 
 import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.common.result.runSuspendCatching
+import com.transfer.flash.core.network.resilience.SessionHardeningPolicy
 import kotlin.time.TimeSource
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -25,8 +26,10 @@ import kotlinx.coroutines.withTimeoutOrNull
  *
  * 1. **Mode changes.** When [policy] returns something new, [onPolicyChanged] runs once; the hosts
  *    re-time their live connections there, so a switch applies without reconnecting anyone.
- * 2. **Who ECO dials.** [dialFilter] is the set the connection planner may dial, or null for
- *    everyone (STANDARD, BOOST). Dial on demand (a send) ignores it.
+ * 2. **Who is dialed.** [dialFilter] is the set the connection planner may dial, or null for
+ *    everyone. ECO gets its [EcoLinkSelector] set. STANDARD and BOOST get null until more devices are
+ *    around than [ConnectionModePolicy.DIAL_BUDGET] allows, then the [DialBudget] set (ADR-057), which
+ *    keeps a big group meshed in a crowd. Dial on demand (a send) ignores it.
  * 3. **Parking (ECO only).** A session this device dialed, idle for 10 minutes, with a peer ECO does
  *    not want, is offered for closing with `FLASH_LINK t=park`. The peer answers `park-ok` only
  *    when it is in ECO and does not want the session either; it then [release]s the session (it
@@ -123,13 +126,33 @@ public class ConnectionModeController(
         }
         val view = snapshot()
         val now = nowMs()
+        // `wanted` is ECO's set and drives parking. STANDARD and BOOST have none; they only ever
+        // narrow who is dialed, and only in a crowd.
         val wanted = if (p.limitsSessions) EcoLinkSelector.wanted(localDeviceId, view) else null
 
         for (event in batch) {
             if (event is Event.Inbound) onFrame(event.peerId, event.frame, wanted, view, now)
         }
 
-        _dialFilter.value = wanted
+        val filter = wanted ?: DialBudget.allowed(
+            localDeviceId,
+            view,
+            // While the Nearby screen is open the user is looking for strangers to pair with, so they
+            // may use the headroom too; the ceiling still bounds it.
+            limit = if (view.nearbyOpen) {
+                SessionHardeningPolicy.DEFAULT_MAX_CONCURRENT_SESSIONS
+            } else {
+                ConnectionModePolicy.DIAL_BUDGET
+            },
+        )
+        // Only a change is logged (device checks SC-01/SC-02 read these lines).
+        if (filter != _dialFilter.value) {
+            log(
+                "Dial filter ${_dialFilter.value?.size ?: "all"} -> ${filter?.size ?: "all"} " +
+                    "(${p.strategy}, ${view.available.size} around, ${view.activity.size} held)",
+            )
+        }
+        _dialFilter.value = filter
         if (wanted == null) {
             asked.clear()
             keepUntil.clear()

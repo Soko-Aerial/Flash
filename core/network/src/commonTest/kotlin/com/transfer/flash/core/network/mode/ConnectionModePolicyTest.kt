@@ -5,6 +5,7 @@ import com.transfer.flash.core.common.perf.FlashTransportProfile
 import com.transfer.flash.core.discovery.core.FlashDiscoveryMode
 import com.transfer.flash.core.network.presence.PresenceCodec
 import com.transfer.flash.core.network.presence.PresenceConfig
+import com.transfer.flash.core.network.resilience.SessionHardeningPolicy
 import com.transfer.flash.core.network.ws.WsKeepaliveTiming
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -61,6 +62,17 @@ class ConnectionModePolicyTest {
         val low = ConnectionModePolicy.of(FlashDiscoveryMode.BOOST, FlashPerformanceMode.LOW)
         assertEquals(5_000L, low.transport.pingIntervalMs)
         assertEquals(FlashTransportProfile.LOW.livenessTimeoutMs, low.transport.livenessTimeoutMs)
+    }
+
+    @Test
+    fun `dial budget is the ceiling less the headroom, and no mode has its own ceiling`() {
+        assertEquals(
+            SessionHardeningPolicy.DEFAULT_MAX_CONCURRENT_SESSIONS - ConnectionModePolicy.DIAL_HEADROOM,
+            ConnectionModePolicy.DIAL_BUDGET,
+        )
+        // ECO never refuses an incoming session (ADR-048), so the ceiling is one number for every mode.
+        assertEquals(24, SessionHardeningPolicy.DEFAULT_MAX_CONCURRENT_SESSIONS)
+        assertEquals(20, ConnectionModePolicy.DIAL_BUDGET)
     }
 
     @Test

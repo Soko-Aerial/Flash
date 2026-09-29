@@ -49,8 +49,8 @@ import kotlinx.coroutines.runBlocking
  * (the session channels are bounded and `trySendBlocking`, so an undrained session stalls its reader).
  *
  * **Farm peers never dial each other.** Every host caps live sessions at
- * `SessionHardeningPolicy.DEFAULT_MAX_CONCURRENT_SESSIONS` (8), so a farm that meshed with itself would
- * fill its own slots and refuse the phone. With `--dial=external` (default) each peer dials every
+ * `SessionHardeningPolicy.DEFAULT_MAX_CONCURRENT_SESSIONS` (24 since ADR-057; it was 8), so a farm that
+ * meshed with itself would fill its own slots and refuse the phone. With `--dial=external` (default) each peer dials every
  * discovered non-farm device every 5 s, as the product's auto-connect sweep does; with `--dial=none`
  * it only accepts.
  *

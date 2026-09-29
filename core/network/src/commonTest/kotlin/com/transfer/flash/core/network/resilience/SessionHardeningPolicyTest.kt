@@ -100,7 +100,17 @@ class SessionHardeningPolicyTest {
     }
 
     @Test
-    fun `default concurrency limit is documented value 8`() {
-        assertEquals(8, SessionHardeningPolicy().maxConcurrentSessions)
+    fun `default concurrency limit is the documented value 24 (ADR-057)`() {
+        assertEquals(24, SessionHardeningPolicy().maxConcurrentSessions)
+    }
+
+    @Test
+    fun `the default ceiling holds a 20 member group and its extras`() {
+        val default = SessionHardeningPolicy()
+        val groupPeers = 19
+        // + a call or transfer peer outside the group, a pairing peer, and a duplicate being replaced
+        val everythingAtOnce = groupPeers + 1 + 1 + 1
+        assertTrue(default.canAcceptSession(everythingAtOnce - 1))
+        assertFalse(default.canAcceptSession(default.maxConcurrentSessions))
     }
 }
