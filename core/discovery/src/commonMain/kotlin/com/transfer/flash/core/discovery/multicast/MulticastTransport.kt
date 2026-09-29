@@ -84,6 +84,14 @@ public class MulticastTransport(
     private val peerLeaseMs: Long = DEFAULT_PEER_LEASE_MS,
     private val sweepIntervalMs: Long = DEFAULT_SWEEP_INTERVAL_MS,
     /**
+     * Also send each announcement to every interface's directed-broadcast address (DR2, ADR-047).
+     *
+     * On by default: same payload, same port, no protocol change, and a network that filters multicast but passes
+     * broadcast is exactly the case this exists for. The cost is one more small group-addressed frame per interface
+     * per announcement. Off only for tests and for a build that wants to prove the multicast path on its own.
+     */
+    private val broadcastEnabled: Boolean = true,
+    /**
      * Pause after a receive that returned nothing.
      *
      * A real socket blocks for [RECEIVE_TIMEOUT_MS] before returning null, so this adds a few
@@ -345,6 +353,9 @@ public class MulticastTransport(
             if (!binding.send(outbound.second)) {
                 logWarn("Announce failed on ${binding.label}", null)
             }
+            // After the multicast send, never instead of it, and never fatal: an interface with no
+            // broadcast address returns false, which is normal and therefore not logged here.
+            if (broadcastEnabled) binding.sendBroadcast(outbound.second)
         }
     }
 
@@ -534,6 +545,15 @@ public class MulticastTransport(
                 }
                 bindings = bound
                 logInfo("Multicast bound on ${bound.joinToString { it.label }} ($group:$port)")
+                if (broadcastEnabled) {
+                    // Which addresses the DR2 beacon goes to, per interface: a field report has to say whether
+                    // an interface had none. Logged once per bind, not per announcement.
+                    logInfo(
+                        "Broadcast beacon to " + bound.joinToString { binding ->
+                            "${binding.label}=${binding.broadcastTargets.ifEmpty { listOf("none") }.joinToString("+")}"
+                        } + " (port $port)",
+                    )
+                }
                 FlashResult.Success(Unit)
             }
         }

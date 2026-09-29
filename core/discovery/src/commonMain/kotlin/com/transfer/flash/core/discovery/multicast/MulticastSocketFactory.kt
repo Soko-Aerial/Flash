@@ -61,6 +61,25 @@ public interface MulticastSocketBinding {
     public fun send(payload: ByteArray): Boolean
 
     /**
+     * IPv4 directed-broadcast addresses this binding can also send to (DR2), as dotted strings, for logs and tests.
+     * Empty when the interface has none (a VPN or point-to-point link, /31 and /32, or an unknown prefix length).
+     * Default empty: a binding that cannot broadcast is a normal binding.
+     */
+    public val broadcastTargets: List<String> get() = emptyList()
+
+    /**
+     * Sends the same datagram to each of [broadcastTargets], on the announce port (DR2).
+     *
+     * The receiving side needs nothing new: the sockets are bound to the wildcard address, so they already accept
+     * broadcast datagrams on the announce port as well as the group's.
+     *
+     * @return true when at least one target was sent to. **False is normal**, not a fault: the interface may have no
+     *   broadcast address. The caller therefore does not warn on false; an implementation logs a genuine send
+     *   error itself. A failure here must never stop the multicast send that precedes it.
+     */
+    public fun sendBroadcast(payload: ByteArray): Boolean = false
+
+    /**
      * Blocks until a datagram arrives or [timeoutMs] elapses.
      *
      * @return the datagram and the address it came FROM, or null on timeout, close, or a transient

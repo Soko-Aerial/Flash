@@ -2096,6 +2096,32 @@ What was built, and where it departs from the plan's wording:
    `JvmRouteObserverTest` (6) and its Android twin `RouteObserverTest` (5) over real TLS,
    `FlashJvmMigrationsTest` (v4→v5 validated by Room). Device check: `TEST-BACKLOG.md` DR-01.
 
+### DR2 implementation notes (2026-09-29)
+1. **Same packet, second destination.** `MulticastTransport.announceNow` sends the announcement to the group and then,
+   per interface, to that interface's directed-broadcast address on the announce port (45823). Same bytes, no protocol
+   change, so old clients already receive and parse it. It covers the start-up burst and the reply to a new peer too.
+2. **Address from the interface, not from `255.255.255.255`.** `DirectedBroadcast.forIpv4` (pure, `commonMain`) derives it
+   from each IPv4 address and prefix length and refuses /31, /32, a prefix wider than /8, point-to-point interfaces and
+   unset, loopback, multicast or class E addresses. The platform's own `InterfaceAddress.broadcast` is used only when the
+   reported prefix length is impossible (a documented bad-Android-release case); **that fallback is untested on a device**.
+3. **Receiving needed nothing.** Both factories bind the wildcard address with `SO_REUSEADDR`, so their sockets already
+   accept broadcast on the announce port. Checked in code and by a real-socket test on the Windows desktop
+   (`JvmDirectedBroadcastSocketTest`). Android is unverified until DR-02.
+4. **Send failures are quiet and never fatal.** `sendBroadcast` returns false for "no address" (normal, not logged), and a
+   real send error is logged once per binding. The multicast send always comes first. GHOST sends neither.
+5. **`broadcastEnabled` (default true) is a constructor parameter, not a user setting.** It doubles the group-addressed
+   frames per announcement (one multicast, one broadcast per interface, every ~20 s); at that size it is not worth a
+   setting. Revisit if DR0 shows a network where broadcast harms (some APs rate-limit it).
+6. **Not distinguishable on receipt.** A `DatagramPacket` does not say whether it arrived by group or broadcast, so the
+   transport cannot log which one delivered. DR-02 therefore proves it by elimination (desktop multicast blocked by a
+   firewall rule, the phone still finds it) and the bind line names each interface's target.
+7. **A test-JVM finding worth keeping:** on Windows a JVM without `-Djava.net.preferIPv4Stack=true` cannot bind a
+   multicast socket to an adapter that has no IPv6 address (`SocketException: Invalid argument: setsockopt` in
+   `setNetworkInterface`). The app already sets the flag; `:core:discovery:jvmTest` now does too, so a test measures the
+   environment the product runs in.
+8. **Risk accepted:** a router that forwards directed broadcasts would carry the announcement off the subnet. Modern
+   routers do not (it is off by default), the payload is the same one already multicast, and it carries no secret.
+
 ## ADR-048 — Connection modes: re-time live sessions, ECO parks only by agreement
 
 ### Date
