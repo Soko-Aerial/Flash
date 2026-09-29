@@ -5,10 +5,14 @@ import com.transfer.flash.core.common.model.FlashDeviceId
 import com.transfer.flash.core.common.model.FlashTransportType
 import com.transfer.flash.core.discovery.FlashDiscoveredEndpoint
 import com.transfer.flash.core.discovery.FlashDiscoveryState
+import com.transfer.flash.core.network.sweep.SweepRefusal
+import com.transfer.flash.core.network.sweep.SweepState
 import com.transfer.flash.core.security.pairing.FlashPairingCoordinator
 import com.transfer.flash.core.security.pairing.FlashTrustedPeer
 import com.transfer.flash.core.security.pairing.PairingPhase
 import com.transfer.flash.ui.chat.FlashPairingPhase
+import com.transfer.flash.ui.nearby.NearbyNetworkScan
+import com.transfer.flash.ui.nearby.NearbyScanBlock
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -150,6 +154,48 @@ class DesktopNearbyStateTest {
         localFriendlyName = "Flash Desktop",
         localDeviceId = LOCAL_ID,
     )
+
+    /**
+     * DR3: how a sweep is shown. The manual scan is shown through to its outcome; an automatic sweep is shown
+     * only while it runs (so "Scan network" cannot start a second one), never as a result nobody asked for.
+     */
+    @Test
+    fun `sweep state maps onto the scan the page shows`() {
+        assertEquals(NearbyNetworkScan.Idle, SweepState.Idle.toNearbyScan())
+        assertEquals(NearbyNetworkScan.Running(25), SweepState.Scanning(scanned = 64, total = 254, automatic = false).toNearbyScan())
+        assertEquals(NearbyNetworkScan.Running(0), SweepState.Scanning(scanned = 0, total = 0, automatic = true).toNearbyScan())
+        assertEquals(
+            NearbyNetworkScan.Done(answered = 2, narrowed = true),
+            SweepState.Finished(probed = 254, answered = 2, narrowed = true, automatic = false).toNearbyScan(),
+        )
+        assertEquals(
+            NearbyNetworkScan.Idle,
+            SweepState.Finished(probed = 254, answered = 2, narrowed = false, automatic = true).toNearbyScan(),
+        )
+        assertEquals(
+            NearbyNetworkScan.Unavailable(NearbyScanBlock.NO_NETWORK),
+            SweepState.Refused(SweepRefusal.NO_LAN).toNearbyScan(),
+        )
+        assertEquals(
+            NearbyNetworkScan.Unavailable(NearbyScanBlock.TOO_SOON),
+            SweepState.Refused(SweepRefusal.RATE_LIMITED).toNearbyScan(),
+        )
+    }
+
+    @Test
+    fun `the scan reaches the page state`() {
+        val state = nearbyUiStateOf(
+            trusted = emptyList(),
+            discovered = emptyList(),
+            discoveryState = FlashDiscoveryState(isDiscovering = true, advertisedPort = 45822),
+            ui = null,
+            ready = true,
+            localFriendlyName = "Flash Desktop",
+            localDeviceId = LOCAL_ID,
+            scan = NearbyNetworkScan.Running(10),
+        )
+        assertEquals(NearbyNetworkScan.Running(10), state.scan)
+    }
 
     private fun endpoint(id: String, name: String) = FlashDiscoveredEndpoint(
         device = FlashDevice(

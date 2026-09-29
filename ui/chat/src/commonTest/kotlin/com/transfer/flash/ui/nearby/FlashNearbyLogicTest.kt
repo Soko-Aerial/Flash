@@ -4,6 +4,7 @@ import com.transfer.flash.core.common.model.FlashDeviceKind
 import com.transfer.flash.core.messaging.model.FlashNetworkTransport
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 
 /** JVM tests for UI-048 nearby-page pure helpers. */
 class FlashNearbyLogicTest {
@@ -92,6 +93,38 @@ class FlashNearbyLogicTest {
             ),
         )
         assertEquals(FlashDeviceKind.PHONE, rows.single().deviceKind)
+    }
+
+    /** DR3: the "Scan network" caption says what happened without naming hosts, ports or subnets. */
+    @Test
+    fun `scan caption covers every state`() {
+        assertNull(FlashNearbyMath.scanCaption(NearbyNetworkScan.Idle))
+        assertEquals("Scanning this network… 42%", FlashNearbyMath.scanCaption(NearbyNetworkScan.Running(42)))
+        assertEquals("Scanning this network… 100%", FlashNearbyMath.scanCaption(NearbyNetworkScan.Running(140)))
+        assertEquals("Scanning this network… 0%", FlashNearbyMath.scanCaption(NearbyNetworkScan.Running(-3)))
+        assertEquals("Found 1 device to connect to.", FlashNearbyMath.scanCaption(NearbyNetworkScan.Done(1, false)))
+        assertEquals("Found 2 devices to connect to.", FlashNearbyMath.scanCaption(NearbyNetworkScan.Done(2, false)))
+        assertEquals("Scan finished. No devices answered.", FlashNearbyMath.scanCaption(NearbyNetworkScan.Done(0, false)))
+        assertEquals(
+            "Scan finished. No devices answered. Only this device's part of a large network was checked.",
+            FlashNearbyMath.scanCaption(NearbyNetworkScan.Done(0, true)),
+        )
+        assertEquals(
+            "Not connected to a local network.",
+            FlashNearbyMath.scanCaption(NearbyNetworkScan.Unavailable(NearbyScanBlock.NO_NETWORK)),
+        )
+        assertEquals(
+            "This isn't a home or office network, so Flash won't scan it.",
+            FlashNearbyMath.scanCaption(NearbyNetworkScan.Unavailable(NearbyScanBlock.NOT_LOCAL)),
+        )
+        assertEquals(
+            "There is nobody else on this link.",
+            FlashNearbyMath.scanCaption(NearbyNetworkScan.Unavailable(NearbyScanBlock.TOO_SMALL)),
+        )
+        assertEquals(
+            "Scanned a moment ago. Try again shortly.",
+            FlashNearbyMath.scanCaption(NearbyNetworkScan.Unavailable(NearbyScanBlock.TOO_SOON)),
+        )
     }
 
     private fun transport() = FlashNetworkTransport.Lan

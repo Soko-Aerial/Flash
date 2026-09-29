@@ -44,6 +44,10 @@ public class AutoConnector(
     private val sightings: () -> List<ConnectionPlanner.Sighting>,
     private val dial: suspend (ConnectionPlanner.Dial) -> FlashResult<*>,
     private val gatewayHosts: () -> List<String> = { emptyList() },
+    /** Hosts the subnet sweep found listening (DR3, planner rule 9); none where no sweep runs. */
+    private val sweepHosts: () -> List<String> = { emptyList() },
+    /** Called with the host after a sweep-hit dial ends, however it ends, so a hit is dialed once. */
+    private val sweepHitDialed: (String) -> Unit = {},
     private val quiet: () -> Boolean = { false },
     /** The connection mode's dial filter (PC5, planner rule 8); null dials every sighting. */
     private val allowed: () -> Set<String>? = { null },
@@ -115,6 +119,7 @@ public class AutoConnector(
                 links = links,
                 gatewayHosts = runCatching { gatewayHosts() }.getOrDefault(emptyList()),
                 allowed = allowed(),
+                sweepHosts = runCatching { sweepHosts() }.getOrDefault(emptyList()),
             )
         }.getOrElse { t ->
             log("Auto-connect sweep failed: ${t.message}")
@@ -126,8 +131,11 @@ public class AutoConnector(
 
     private suspend fun runDial(d: ConnectionPlanner.Dial) {
         log(
-            if (d.isGatewayProbe) "Auto-connect dialing gateway at ${d.host}:${d.port} (hotspot host probe)"
-            else "Auto-connect dialing peer=${d.name} id=${d.key} at ${d.host}:${d.port}",
+            when {
+                d.isGatewayProbe -> "Auto-connect dialing gateway at ${d.host}:${d.port} (hotspot host probe)"
+                d.isSweepHit -> "Auto-connect dialing sweep hit at ${d.host}:${d.port} (subnet sweep)"
+                else -> "Auto-connect dialing peer=${d.name} id=${d.key} at ${d.host}:${d.port}"
+            },
         )
         // try/finally, not runCatching alone: the planner entry must always be released, and a
         // cancelled sweep must actually stop (audit B3).
@@ -141,11 +149,15 @@ public class AutoConnector(
                 else -> " detail=threw ${result.exceptionOrNull()?.message}"
             }
             log(
-                if (d.isGatewayProbe) "Auto-connect result gateway ${d.host} success=$ok$detail"
-                else "Auto-connect result peer=${d.key} success=$ok$detail",
+                when {
+                    d.isGatewayProbe -> "Auto-connect result gateway ${d.host} success=$ok$detail"
+                    d.isSweepHit -> "Auto-connect result sweep hit ${d.host} success=$ok$detail"
+                    else -> "Auto-connect result peer=${d.key} success=$ok$detail"
+                },
             )
         } finally {
             planner.dialFinished(d.key)
+            if (d.isSweepHit) runCatching { sweepHitDialed(d.host) }
         }
     }
 

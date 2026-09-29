@@ -445,6 +445,7 @@ private class Wiring(
             links = object : ConnectionPlanner.Links {
                 override fun hasLiveSession(deviceId: String) = networkImpl.hasLiveSession(deviceId)
                 override fun isReconnectInFlight(deviceId: String) = networkImpl.isReconnectInFlight(deviceId)
+                override fun hasSessionAtHost(host: String) = networkImpl.hasSessionAtHost(host)
             },
             sightings = {
                 engine.discoveredEndpoints.value.map { ep ->

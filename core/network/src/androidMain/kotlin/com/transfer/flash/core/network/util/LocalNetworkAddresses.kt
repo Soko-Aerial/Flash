@@ -3,6 +3,7 @@ package com.transfer.flash.core.network.util
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import com.transfer.flash.core.network.sweep.LocalSubnet
 import java.net.Inet4Address
 import java.net.NetworkInterface
 
@@ -57,6 +58,50 @@ public class LocalNetworkAddresses(context: Context) {
             .distinct()
             .sorted()
     }.getOrDefault(emptyList())
+
+    /**
+     * The subnets behind [ipv4Addresses], with prefix lengths, for the subnet sweep (DR3).
+     *
+     * Same two sources merged for the same reason: ConnectivityManager for Wi-Fi/Ethernet, interface
+     * enumeration for this device's own hotspot or tether, which the platform models as no network. The
+     * non-LAN interface exclusion applies to both, so a cellular address never appears; the sweep's own
+     * RFC 1918 check is a second guard.
+     */
+    public fun ipv4Subnets(): List<LocalSubnet> =
+        (subnetsFromNetworks() + subnetsFromInterfaces())
+            .filter { Ipv4Routing.isUsableLocalAddress(it.address) }
+            .distinctBy { it.address } // ConnectivityManager is listed first, so its prefix length wins over enumeration's
+
+    private fun subnetsFromNetworks(): List<LocalSubnet> = runCatching {
+        @Suppress("DEPRECATION")
+        connectivityManager.allNetworks
+            .filter { network -> isLanCapable(connectivityManager.getNetworkCapabilities(network)) }
+            .flatMap { network ->
+                val properties = connectivityManager.getLinkProperties(network)
+                properties?.linkAddresses.orEmpty().mapNotNull { linkAddress ->
+                    val host = (linkAddress.address as? Inet4Address)?.hostAddress ?: return@mapNotNull null
+                    LocalSubnet(properties?.interfaceName.orEmpty(), host, linkAddress.prefixLength)
+                }
+            }
+    }.getOrDefault(emptyList())
+
+    private fun subnetsFromInterfaces(): List<LocalSubnet> {
+        val excluded = nonLanInterfaceNames()
+        return runCatching {
+            NetworkInterface.getNetworkInterfaces()?.asSequence().orEmpty()
+                .filter { nic ->
+                    runCatching { nic.isUp && !nic.isLoopback }.getOrDefault(false) &&
+                        nic.name !in excluded
+                }
+                .flatMap { nic ->
+                    nic.interfaceAddresses.asSequence().mapNotNull { entry ->
+                        val host = (entry.address as? Inet4Address)?.hostAddress ?: return@mapNotNull null
+                        LocalSubnet(nic.name, host, entry.networkPrefixLength.toInt())
+                    }
+                }
+                .toList()
+        }.getOrDefault(emptyList())
+    }
 
     private fun isLanCapable(capabilities: NetworkCapabilities?): Boolean =
         capabilities != null &&

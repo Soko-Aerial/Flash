@@ -3,6 +3,7 @@ package com.transfer.flash.core.network.planner
 import com.transfer.flash.core.network.planner.ConnectionPlanner.Sighting
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -244,5 +245,50 @@ class ConnectionPlannerTest {
         assertEquals("c", p.planUrgent(0, peer("c"), links)?.key)
         // Null means STANDARD: everyone.
         assertEquals(listOf("e"), planner().keys(0, "e"))
+    }
+
+    // --- rule 9: sweep hits (DR3) ---
+
+    @Test
+    fun `rule 9 - a sweep hit is keyed by host, has no device, is never deferred and is not a gateway probe`() {
+        val plan = planner().plan(0, emptyList(), links, sweepHosts = listOf("192.168.1.30"))
+        val dial = plan.dials.single()
+        assertEquals("sweep:192.168.1.30", dial.key)
+        assertEquals("192.168.1.30", dial.host)
+        assertEquals(0, dial.port)
+        assertNull(dial.peerDeviceId)
+        assertTrue(dial.isSweepHit)
+        assertFalse(dial.isGatewayProbe)
+        assertNull(plan.recheckInMs)
+    }
+
+    @Test
+    fun `rule 9 - a sweep hit is skipped while a session reaches that host and is suppressed like a peer`() {
+        links.hostsWithSession += "192.168.1.30"
+        assertEquals(emptyList(), planner().plan(0, emptyList(), links, sweepHosts = listOf("192.168.1.30")).dials)
+
+        links.hostsWithSession.clear()
+        val p = planner(suppress = 1_000L)
+        assertEquals(1, p.plan(0, emptyList(), links, sweepHosts = listOf("192.168.1.30")).dials.size)
+        assertEquals(emptyList(), p.plan(10, emptyList(), links, sweepHosts = listOf("192.168.1.30")).dials, "in flight")
+        p.dialFinished("sweep:192.168.1.30")
+        assertEquals(emptyList(), p.plan(500, emptyList(), links, sweepHosts = listOf("192.168.1.30")).dials, "suppressed")
+        assertEquals(1, p.plan(1_000, emptyList(), links, sweepHosts = listOf("192.168.1.30")).dials.size)
+    }
+
+    @Test
+    fun `rule 9 - the mode filter does not apply to a sweep hit`() {
+        val plan = planner().plan(0, listOf(peer("c")), links, sweepHosts = listOf("192.168.1.30"), allowed = emptySet())
+        assertEquals(listOf("sweep:192.168.1.30"), plan.dials.map { it.key })
+    }
+
+    @Test
+    fun `rule 9 - a duplicate host is dialed once and sweep hits and gateways do not collide`() {
+        val plan = planner().plan(
+            0, emptyList(), links,
+            gatewayHosts = listOf("192.168.43.1"),
+            sweepHosts = listOf("192.168.43.1", "192.168.43.1"),
+        )
+        assertEquals(listOf("gateway:192.168.43.1", "sweep:192.168.43.1"), plan.dials.map { it.key })
     }
 }

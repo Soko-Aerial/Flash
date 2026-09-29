@@ -164,4 +164,51 @@ class AutoConnectorTest {
         assertEquals(listOf("c"), rig.dials)
         assertTrue(testScheduler.currentTime - start <= 1_000, "one shared budget, not 16")
     }
+
+    // --- sweep hits (DR3) ---
+
+    @Test
+    fun `a sweep hit is dialed once, logged as a sweep hit and reported dialed`() = runTest {
+        val rig = Rig(this)
+        val hits = MutableStateFlow(listOf("192.168.1.30"))
+        val dialed = ArrayList<String>()
+        val connector = AutoConnector(
+            scope = backgroundScope,
+            planner = ConnectionPlanner(localDeviceId = "b", suppressMs = 15_000L),
+            links = rig.links,
+            sightings = { emptyList() },
+            dial = { d -> rig.dials += d.key; FlashResult.Success(Unit) },
+            sweepHosts = { hits.value },
+            sweepHitDialed = { host -> dialed += host; hits.value = hits.value - host },
+            log = { rig.logs += it },
+            nowMs = { testScheduler.currentTime },
+        )
+        connector.start(hits)
+        runCurrent()
+        advanceTimeBy(60_000); runCurrent()
+        assertEquals(listOf("sweep:192.168.1.30"), rig.dials)
+        assertEquals(listOf("192.168.1.30"), dialed)
+        assertTrue(rig.logs.any { it == "Auto-connect dialing sweep hit at 192.168.1.30:0 (subnet sweep)" }, "${rig.logs}")
+        assertTrue(rig.logs.any { it == "Auto-connect result sweep hit 192.168.1.30 success=true" }, "${rig.logs}")
+        assertTrue(rig.logs.none { it.contains("gateway") }, "a sweep hit must not be logged as a gateway probe")
+    }
+
+    @Test
+    fun `a sweep hit is reported dialed even when its dial fails`() = runTest {
+        val rig = Rig(this)
+        val dialed = ArrayList<String>()
+        val connector = AutoConnector(
+            scope = backgroundScope,
+            planner = ConnectionPlanner(localDeviceId = "b"),
+            links = rig.links,
+            sightings = { emptyList() },
+            dial = { error("refused") },
+            sweepHosts = { listOf("192.168.1.30") },
+            sweepHitDialed = { dialed += it },
+            nowMs = { testScheduler.currentTime },
+        )
+        connector.start()
+        runCurrent()
+        assertEquals(listOf("192.168.1.30"), dialed)
+    }
 }

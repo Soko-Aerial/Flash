@@ -37,6 +37,7 @@ import com.transfer.flash.core.network.FlashNetwork
 import com.transfer.flash.core.network.bridge.DiscoveryRouteBinder
 import com.transfer.flash.core.network.mode.ConnectionModeController
 import com.transfer.flash.core.network.mode.ConnectionModePolicy
+import com.transfer.flash.core.network.mode.ConnectionStrategy
 import com.transfer.flash.core.network.mode.LinkView
 import com.transfer.flash.core.network.planner.AutoConnector
 import com.transfer.flash.core.network.planner.ConnectionPlanner
@@ -44,6 +45,10 @@ import com.transfer.flash.core.network.presence.PresenceCodec
 import com.transfer.flash.core.network.presence.PresenceExchange
 import com.transfer.flash.core.network.presence.PresenceLocalView
 import com.transfer.flash.core.network.remembered.RememberedRoutes
+import com.transfer.flash.core.network.sweep.SweepController
+import com.transfer.flash.core.network.sweep.SweepSituation
+import com.transfer.flash.core.network.sweep.SweepState
+import com.transfer.flash.core.network.sweep.TcpHostProbe
 import com.transfer.flash.core.network.ws.WsFlashNetwork
 import com.transfer.flash.core.network.ws.WsSession
 import com.transfer.flash.core.network.tls.TlsOptions
@@ -237,6 +242,25 @@ object DiscoveryEngineHolder {
     @Volatile
     private var rememberedRoutes: RememberedRoutes? = null
     private var rememberedJob: Job? = null
+
+    /**
+     * DR3 (ADR-047): the subnet sweep behind Nearby's "Scan network" and the automatic fallback for
+     * a network that hides its devices from discovery.
+     */
+    @Volatile
+    private var sweepController: SweepController? = null
+    private var sweepJob: Job? = null
+    private var sweepStateJob: Job? = null
+    private val _sweepState = MutableStateFlow<SweepState>(SweepState.Idle)
+
+    /** The sweep's progress and outcome, for the Nearby screen. Idle until the stack has booted. */
+    val sweepState: kotlinx.coroutines.flow.StateFlow<SweepState> = _sweepState
+
+    /**
+     * The user's "Scan network". False when nothing started: a scan is already running, the previous
+     * one ended a moment ago, or the engine is not up. [sweepState] says which.
+     */
+    fun scanNetwork(): Boolean = sweepController?.scanNow() ?: false
 
     /** Connection mode (PC5, ADR-048): re-times sessions on a mode change and runs ECO's rules. */
     @Volatile
@@ -1635,15 +1659,36 @@ object DiscoveryEngineHolder {
         networkImpl.routeObserver = remembered
         rememberedJob = remembered.start()
 
+        // DR3 (ADR-047): when discovery finds nothing on a network with paired peers, probe the local
+        // /24 for the peer port and hand the answers to the planner as dial hints, exactly like a
+        // gateway probe. Manual from Nearby, automatic only in STANDARD/BOOST outside a call.
+        val sweep = SweepController(
+            scope = appScope,
+            subnets = {
+                appContextRef?.let { context ->
+                    com.transfer.flash.core.network.util.LocalNetworkAddresses(context).ipv4Subnets()
+                }.orEmpty()
+            },
+            probe = TcpHostProbe(appContext),
+            port = com.transfer.flash.core.network.ws.WsTransferServer.PREFERRED_PORT,
+            situation = {
+                SweepSituation(
+                    pairedPeers = trustStore.getTrustedPeers().size,
+                    liveSessions = networkImpl.activeSessions.value.size,
+                    discoveredPeers = engine.discoveredEndpoints.value.size,
+                    connectionAllowsAuto = connectionPolicy().strategy != ConnectionStrategy.ECO && !callActive,
+                )
+            },
+            log = { Log.i(TAG_WS, it) },
+        )
+
         val connector = AutoConnector(
             scope = appScope,
             planner = ConnectionPlanner(localDeviceId = identity.deviceId.value),
             links = object : ConnectionPlanner.Links {
                 override fun hasLiveSession(deviceId: String) = networkImpl.hasLiveSession(deviceId)
                 override fun isReconnectInFlight(deviceId: String) = networkImpl.isReconnectInFlight(deviceId)
-                override fun hasSessionAtHost(host: String) = networkImpl.activeSessions.value.values.any { session ->
-                    networkImpl.endpointOf(session.peerDeviceId.value)?.first == host
-                }
+                override fun hasSessionAtHost(host: String) = networkImpl.hasSessionAtHost(host)
             },
             sightings = {
                 engine.discoveredEndpoints.value.map { ep ->
@@ -1673,13 +1718,22 @@ object DiscoveryEngineHolder {
                     com.transfer.flash.core.network.util.LocalNetworkAddresses(context).ipv4Gateways()
                 }.orEmpty()
             },
+            // DR3: hosts that answered the subnet sweep; each is dialed once (no device named, like a
+            // gateway probe, so the pin is bound after HELLO) and then forgotten.
+            sweepHosts = sweep::hostsToDial,
+            sweepHitDialed = sweep::hitDialed,
             quiet = { callActive },
             // PC5: ECO dials only the peers it wants; null (STANDARD, BOOST) dials everyone.
             allowed = { modes.dialFilter.value },
             log = { Log.i(TAG_WS, it) },
         )
         autoConnector = connector
-        autoConnectJob = connector.start(edges = merge(engine.discoveredEndpoints, presence.tips, modes.dialFilter, remembered.changes))
+        autoConnectJob = connector.start(
+            edges = merge(engine.discoveredEndpoints, presence.tips, modes.dialFilter, remembered.changes, sweep.hitsChanged),
+        )
+        sweepController = sweep
+        sweepJob = sweep.start()
+        sweepStateJob = appScope.launch { sweep.state.collect { _sweepState.value = it } }
         presenceJob = presence.start(
             edges = merge(networkImpl.activeSessions, engine.discoveredEndpoints, engine.discoveryMode, _discoveryMode),
         )
@@ -2528,6 +2582,12 @@ object DiscoveryEngineHolder {
         rememberedJob?.cancel()
         rememberedJob = null
         rememberedRoutes = null
+        sweepJob?.cancel()
+        sweepJob = null
+        sweepStateJob?.cancel()
+        sweepStateJob = null
+        sweepController = null
+        _sweepState.value = SweepState.Idle
         modeJob?.cancel()
         modeJob = null
         modeController = null

@@ -71,6 +71,8 @@ import com.transfer.flash.core.common.model.FlashDeviceId
 import com.transfer.flash.core.common.model.FlashTransportType
 import com.transfer.flash.core.common.model.FlashPeerPresence
 import com.transfer.flash.core.network.FlashSession
+import com.transfer.flash.core.network.sweep.SweepRefusal
+import com.transfer.flash.core.network.sweep.SweepState
 import com.transfer.flash.core.common.perf.FlashMotionPolicy
 import com.transfer.flash.core.common.perf.FlashPerformanceMode
 import com.transfer.flash.core.common.result.getOrNull
@@ -90,6 +92,8 @@ import com.transfer.flash.ui.navigation.rememberFlashNavigationState
 import com.transfer.flash.ui.nearby.FlashNearbyMath
 import com.transfer.flash.ui.nearby.FlashNearbyScreen
 import com.transfer.flash.ui.nearby.NearbyIdentityUi
+import com.transfer.flash.ui.nearby.NearbyNetworkScan
+import com.transfer.flash.ui.nearby.NearbyScanBlock
 import com.transfer.flash.ui.nearby.NearbyPeerUi
 import com.transfer.flash.ui.nearby.NearbyTrustedPeerUi
 import com.transfer.flash.ui.nearby.NearbyUiState
@@ -1007,6 +1011,8 @@ private fun FlashShell(
     val fallbackDiscoveryState = remember { MutableStateFlow(FlashDiscoveryState()) }
     val discoveredEndpoints by (engine.discovery?.discoveredEndpoints ?: fallbackEndpoints).collectAsState()
     val discoveryState by (engine.discovery?.state ?: fallbackDiscoveryState).collectAsState()
+    // DR3: the manual "Scan network" outcome. Read by the `nearby` derivation below.
+    val sweepState by DiscoveryEngineHolder.sweepState.collectAsState()
     // C2/C4: pairing dialog + trusted peers come from the PairingCoordinator once booted. Fallbacks
     // are remembered UNCONDITIONALLY and swap to the coordinator flows once ready (never remember
     // inside a `?:` — conditional remember desyncs the slot table).
@@ -1216,6 +1222,7 @@ private fun FlashShell(
                 pairingRequest = pairingModel?.request,
                 pairingPhase = pairingModel?.phase ?: FlashPairingPhase.Idle,
                 pairingSecondsLeft = pairingModel?.secondsLeft ?: 0,
+                scan = sweepState.toNearbyScan(),
             )
         }
     }
@@ -1894,6 +1901,7 @@ private fun FlashShell(
                     }
                 }
             },
+            onScanNetwork = { DiscoveryEngineHolder.scanNetwork() },
             modifier = Modifier.fillMaxSize(),
             listState = nearbyScroll,
             bottomInset = tabBottomInset,
@@ -2820,3 +2828,24 @@ private fun resolveContentUriNameAndSize(context: Context, uri: Uri): Pair<Strin
     return Pair(name, size)
 }
 
+/**
+ * The sweep's state as the Nearby page shows it (DR3). Twin of `SweepState.toNearbyScan` in the desktop shell,
+ * kept identical on purpose: `ui:chat` cannot see `core:network`, and a display rule that differed per host
+ * would be a bug. An automatic sweep is shown while it runs (the action must not start a second one) but
+ * its outcome is not, because the user did not ask for it.
+ */
+private fun SweepState.toNearbyScan(): NearbyNetworkScan = when (this) {
+    SweepState.Idle -> NearbyNetworkScan.Idle
+    is SweepState.Scanning -> NearbyNetworkScan.Running(if (total == 0) 0 else scanned * 100 / total)
+    is SweepState.Finished ->
+        if (automatic) NearbyNetworkScan.Idle else NearbyNetworkScan.Done(answered, narrowed)
+    is SweepState.Refused -> NearbyNetworkScan.Unavailable(
+        when (refusal) {
+            SweepRefusal.NO_LAN -> NearbyScanBlock.NO_NETWORK
+            // TOO_LARGE is only ever an automatic refusal, which is never shown; a manual sweep narrows instead.
+            SweepRefusal.NOT_PRIVATE, SweepRefusal.TOO_LARGE -> NearbyScanBlock.NOT_LOCAL
+            SweepRefusal.TOO_SMALL -> NearbyScanBlock.TOO_SMALL
+            SweepRefusal.RATE_LIMITED -> NearbyScanBlock.TOO_SOON
+        },
+    )
+}

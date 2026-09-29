@@ -230,6 +230,20 @@ public class JvmWsFlashNetwork(
     public fun endpointOf(deviceId: String?): Pair<String, Int>? =
         deviceId?.let { id -> knownEndpoints[id]?.let { it.host to it.port } }
 
+    /**
+     * Whether some session, in either direction, is with a peer whose address is [host].
+     *
+     * For the planner's host-keyed dials, the gateway probe (rule 6) and the subnet-sweep hit (rule 9), which have
+     * no device id to ask about. Matches the session's own remote address (`host:port` of our dial, or the peer's
+     * source address for an inbound connection) as well as the endpoint discovery bound to the peer, so a peer that
+     * connected to us and was never discovered still counts.
+     */
+    public fun hasSessionAtHost(host: String): Boolean =
+        activeSessions.value.values.any { session ->
+            (session as? WsSession)?.connection?.remoteLabel?.substringBeforeLast(':') == host ||
+                endpointOf(session.peerDeviceId.value)?.first == host
+        }
+
     // ------------------------------------------------------------------
     // Connect / Disconnect
     // ------------------------------------------------------------------
