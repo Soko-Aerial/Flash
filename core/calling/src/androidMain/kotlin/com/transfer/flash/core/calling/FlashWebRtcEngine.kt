@@ -101,6 +101,9 @@ public object FlashWebRtcEngine {
             val voicePath = source == MediaRecorder.AudioSource.VOICE_COMMUNICATION
             val hwAec = voicePath && JavaAudioDeviceModule.isBuiltInAcousticEchoCancelerSupported()
             val hwNs = voicePath && JavaAudioDeviceModule.isBuiltInNoiseSuppressorSupported()
+            // Before the factory exists: lets calls use this phone's own hotspot (ERROR-079).
+            // Independent of the ADM below; a failure only logs.
+            val localNet = FlashLocalNetworkDetector.install()
             return try {
                 val adm = JavaAudioDeviceModule.builder(appContext)
                     // The point of this whole object on capable hardware:
@@ -130,7 +133,7 @@ public object FlashWebRtcEngine {
                 FlashLog.i(
                     "CALL",
                     "WebRTC engine configured: lowLatencyPlayout=$lowLatencyPlayout ADM, " +
-                        "source=${sourceName(source)} hwAec=$hwAec hwNs=$hwNs",
+                        "source=${sourceName(source)} hwAec=$hwAec hwNs=$hwNs localNet=$localNet",
                 )
                 true
             } catch (t: Throwable) {

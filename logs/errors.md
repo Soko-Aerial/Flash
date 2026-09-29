@@ -21,7 +21,7 @@ CALL_DIAG leg=5e8e2183-… pc#1 … ice=Checking          (the whole call; no ca
 ```
 The phone's own logcat (its ICE candidates) was not captured.
 
-### Root cause (hypothesis — not verified)
+### Root cause — first hypothesis (SUPERSEDED: right direction, wrong mechanism; see "Confirmed cause" below)
 Signaling rides Flash's own WebSocket, which is a plain socket and reaches the hotspot host fine. WebRTC is
 different: on Android it gathers candidates per **network** reported by its network monitor (ConnectivityManager).
 A SoftAP interface is not a `Network` on the host phone, so the host likely offers no host candidate on the hotspot
@@ -36,12 +36,59 @@ WebRTC side (network monitor / network-ignore options, or binding by interface n
 current libwebrtc before choosing. Workaround until then: a phone that hosts the hotspot can chat and transfer but
 may not connect calls; another device can host the hotspot.
 
+### Evidence from the hotspot host (owner's logcat, 11:39–11:42, pid 18505, same day)
+```text
+11:40:25.245 org.webrtc.Logging: NetworkMonitor: Start monitoring with native observer … fieldTrialsString:
+11:40:25.438 GROUP_CALL: Leg d2b2daa2-… pc#1 ice=Checking
+11:40:25.468 GROUP_CALL: Leg 15590fd6-… pc#1 ice=Checking
+11:40:25.478 GROUP_CALL: Leg c76d6103-… pc#1 ice=Checking
+11:40:25.521 GROUP_CALL: Leg a6400328-… pc#1 ice=Checking      (all four legs; none ever connected)
+11:41:33.273 MulticastTransport: Found Flash Ocelot at 10.167.108.248:45822 via ap0
+```
+The host's hotspot interface is **`ap0`**, and from the host **every** leg failed, not just one: the desktop's
+single stuck leg was the desktop's view of the same thing.
+
+### Confirmed cause (from libwebrtc m125 source, `webrtc-sdk/webrtc` branch `m125_release`)
+1. `sdk/android/src/jni/android_network_monitor.cc` `GetInterfaceInfo(if_name)`: an interface the Java detector
+   never reported gets `available = false` (unless the field trial
+   `WebRTC-AndroidNetworkMonitor-IsAdapterAvailable` is Disabled).
+2. `rtc_base/network.cc`: an unavailable interface is `set_ignored(true)`, so no candidate is gathered on it.
+3. The Java detector (`NetworkMonitorAutoDetect`) reports only `ConnectivityManager` networks. A SoftAP is not one
+   (the platform routes it via its `local_network` table), and the detector has no tethering support at all.
+4. Even with the field trial, `BindSocketToNetwork` returns `ADDRESS_NOT_FOUND` for an address it does not know,
+   and `PhysicalSocket::Bind` (`rtc_base/physical_socket_server.cc`) fails the bind on anything but SUCCESS /
+   NOT_IMPLEMENTED. So the trial alone would not have worked.
+5. `BindSocketToNetwork` answers NOT_IMPLEMENTED (→ plain `bind()`) for network handle **0**. libwebrtc's own
+   Wi-Fi Direct support (`WifiDirectManagerDelegate`, off by default) reports the P2P group interface exactly that
+   way, which is the precedent the fix copies.
+6. Side finding: with `WebRTC-BindUsingInterfaceName` (on by default) an unknown name is matched by *substring*
+   (`swlan0` contains `wlan0`), so on Samsung the hotspot could be bound to the Wi-Fi client network instead —
+   also wrong, also fixed by reporting the interface explicitly.
+
+### Working fix (code; device check pending)
+`FlashLocalNetworkDetector` (core:calling androidMain), installed by `FlashWebRtcEngine.configureOnce` through
+`NetworkMonitor.setNetworkChangeDetectorFactory` before the factory exists. It wraps the stock
+`NetworkMonitorAutoDetect` unchanged and additionally reports **one** local-only interface — up, private IPv4,
+not already a `ConnectivityManager` network, not cellular/VPN/clat — as a Wi-Fi network with handle 0. Chosen by
+`LocalInterfacePicker` (hotspot preferred over a Wi-Fi Direct group; one at a time because handle 0 is one slot in
+the native maps). Polled every 2 s while WebRTC monitors (only during a call). The engine log line now ends
+`localNet=true`; the detector logs `WebRTC local network reported: ap0 [10.167.108.67] handle=0`. See ADR-054.
+
+Rejected: `PeerConnectionFactory.Options.disableNetworkMonitor` (would also work for the hotspot, but every socket
+would then be unbound, so a phone whose default network is cellular — e.g. a router without internet — could send
+Wi-Fi-sourced packets out of the cellular table: a regression risk for every call to fix one case).
+
+### Verification
+`LocalInterfacePickerTest` (6, host). **Device check:** the hotspot-hosting phone in a call; logcat
+`grep -E "local network|ice="` should show `ap0` reported and legs reaching `Connected`.
+
 ### Related files
-- `core/calling/src/commonMain/kotlin/com/transfer/flash/core/calling/FlashGroupCallSession.kt`
-- `third_party/webrtc-kmp` (Android factory setup)
+- `core/calling/src/androidMain/kotlin/com/transfer/flash/core/calling/FlashLocalNetworkDetector.kt`
+- `core/calling/src/androidMain/kotlin/com/transfer/flash/core/calling/FlashWebRtcEngine.kt`
+- `core/calling/src/androidHostTest/kotlin/com/transfer/flash/core/calling/LocalInterfacePickerTest.kt`
 
 ### Status
-OPEN
+OPEN (fix in code; device check pending)
 
 ## ERROR-078 — Desktop video calls leaked every video frame (~50 MB/s); desktop call stats were always empty
 

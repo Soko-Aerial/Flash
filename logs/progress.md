@@ -1,5 +1,31 @@
 # Progress Log
 
+## 2026-09-29 — Hotspot-host calls (ERROR-079 fix, ADR-054); webrtc-java 0.19.0; desktop idle heap
+
+### Worked on
+Owner pasted the hotspot-hosting phone's logcat, asked for webrtc-java 0.19.0, and asked whether 600–700 MB for
+Flash desktop after a call is okay.
+
+### Changed
+- `FlashLocalNetworkDetector` + `LocalInterfacePicker` (core:calling androidMain), installed from
+  `FlashWebRtcEngine.configureOnce`: reports the hotspot / Wi-Fi Direct interface to libwebrtc with handle 0.
+- webrtc-java 0.17.0 → 0.19.0 (three version sites). jvm webrtc-kmp: RTP sender/receiver/transceiver instances
+  disposed on `close()`; local audio source disposed on stop.
+- Desktop JVM: `-Xms64m -XX:G1PeriodicGCInterval=30000` so idle heap goes back to the OS.
+- ERROR-079 root cause confirmed (from source + the phone log), ADR-054, EXP-017 (CPU split and memory figures),
+  MODIFICATIONS.md row.
+
+### Verification
+calling jvm 106 (incl. DesktopMediaStackSmokeTest on the 0.19.0 natives) / host 128 (+6 LocalInterfacePickerTest), callui 23, desktop 91, app compile: green. Not device-tested.
+
+### Remaining
+- Device: hotspot host in a call (logcat `WebRTC local network reported: ap0`, legs `Connected`).
+- Desktop: re-test calls on the 0.19.0 portable build (native library changed); check private bytes after a call.
+
+### Next AI
+If the hotspot host still fails, capture `adb logcat | grep -iE "local network|NetworkMonitor|BindSocket|ice="`
+before changing anything: the detector logs what it reported.
+
 ## 2026-09-29 — Optional "Send smaller video in groups" (ADR-053); hotspot-host call failure logged (ERROR-079)
 
 ### Worked on

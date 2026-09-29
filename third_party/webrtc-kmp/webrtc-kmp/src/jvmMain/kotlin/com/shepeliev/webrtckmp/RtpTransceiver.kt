@@ -7,6 +7,9 @@ actual class RtpTransceiver(
     val native: RTCRtpTransceiver,
     private val senderTrack: MediaStreamTrack?,
     private val receiverTrack: MediaStreamTrack?,
+    // Flash: the connection that disposes the sender/receiver instances made below
+    // (webrtc-java 0.18+; see PeerConnection.own). Null only for a caller-built wrapper.
+    private val owner: PeerConnection? = null,
 ) {
 
     actual var direction: RtpTransceiverDirection
@@ -22,10 +25,10 @@ actual class RtpTransceiver(
         get() = native.mid
 
     actual val sender: RtpSender
-        get() = RtpSender(native.sender, senderTrack)
+        get() = RtpSender(native.sender.let { owner?.own(it) ?: it }, senderTrack)
 
     actual val receiver: RtpReceiver
-        get() = RtpReceiver(native.receiver, receiverTrack)
+        get() = RtpReceiver(native.receiver.let { owner?.own(it) ?: it }, receiverTrack)
 
     actual val stopped: Boolean
         get() = native.stopped()

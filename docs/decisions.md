@@ -2326,3 +2326,56 @@ its profile size; only the encoded copies shrink (WebRTC scales before encoding)
 The next `CALL_DIAG vout … enc=` numbers show whether the cap is enough, or whether it should default on for LOW/MEDIUM
 devices.
 
+## ADR-054 — WebRTC on Android sees local-only links (hotspot, Wi-Fi Direct); webrtc-java 0.19.0
+
+### Date
+2026-09-29
+
+### Status
+**ACCEPTED** — implemented (code; device check pending).
+
+### Context
+ERROR-079: the phone hosting the Wi-Fi hotspot could chat with everyone but connect no call leg. libwebrtc's
+Android network monitor only knows `ConnectivityManager` networks; a SoftAP interface is not one, so libwebrtc
+ignores it and cannot bind to it (source walk-through in ERROR-079). Hosting the hotspot is a normal way to use
+Flash with no router. The same applies to a Wi-Fi Direct group (the planned transport), which libwebrtc only covers
+with a delegate that is off by default.
+
+Separately, the owner asked for webrtc-java 0.19.0 (desktop). 0.18.0 fixed a native PeerConnection leak on
+every `close()` and JNI memory-safety bugs (#283), and made RTP senders/receivers/transceivers hold their own
+native references (disposable); 0.19.0 added `AudioTrackSource.dispose()` (#287), encoded transforms and a native
+extension API.
+
+### Decision
+1. **Report the local-only interface ourselves.** A `NetworkChangeDetector` that delegates to the stock
+   `NetworkMonitorAutoDetect` and adds one local-only interface with network handle 0 (the value libwebrtc treats as
+   "bind without a network", the way its Wi-Fi Direct delegate does). Installed once through the public
+   `NetworkMonitor.setNetworkChangeDetectorFactory`, in Flash code, not in the vendored library.
+2. **webrtc-java 0.17.0 → 0.19.0**, all three version sites (`third_party/webrtc-kmp/gradle/libs.versions.toml`
+   and the per-OS native artifacts in `core/calling` and `desktop`). The jvm webrtc-kmp layer now disposes every
+   sender/receiver/transceiver instance a connection obtained when it closes (`PeerConnection.own`), and the local
+   audio track disposes its source on stop. `DesktopVideoSink` keeps `frame.release()` (0.19.0 still hands Java a
+   reference per frame).
+
+### Alternatives considered
+- `Options.disableNetworkMonitor = true`: simpler, and fixes the hotspot, but every socket becomes unbound. When
+  Android's default network is cellular (Wi-Fi without internet), Wi-Fi-sourced packets can be routed via the
+  cellular table. Changes behaviour for every call to fix one case.
+- Field trial `WebRTC-AndroidNetworkMonitor-IsAdapterAvailable/Disabled/`: makes the interface "available" but the
+  bind still fails (`ADDRESS_NOT_FOUND`).
+- Disabling the monitor only while hosting: the factory is built once per process, before a hotspot may be turned
+  on, so this would need a process restart.
+- Staying on 0.17.0: keeps the per-close native leak and the JNI bugs 0.18.0 fixed.
+
+### Consequences
+- Only one local-only interface can be reported at a time (native maps are keyed by handle); a hotspot wins over a
+  Wi-Fi Direct group.
+- A 2 s interface poll runs while WebRTC is monitoring (during calls), on a daemon thread.
+- Phones that are not hosting anything are unaffected: the stock detector's output is passed through unchanged.
+- Desktop RTP wrappers used after their connection closed throw `NullPointerException` instead of touching a
+  freed object; Flash's tuning calls already catch.
+
+### Revisit when
+A libwebrtc upgrade on Android adds tethering support to `NetworkMonitorAutoDetect`, or Flash needs two local-only
+links at once (then give each a real `Network` via `ConnectivityManager` where the platform allows).
+
