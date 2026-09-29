@@ -35,7 +35,8 @@ import com.transfer.flash.core.persistence.db.entity.TrustedPeerEntity
  *
  * Schema evolution rules (C1.7): `exportSchema = true`; schemas are versioned in-repo under
  * `core/persistence/schemas/`. From version 2 onward destructive migration is forbidden in the
- * production open path; every bump ships an explicit [androidx.room.migration.Migration].
+ * production open path; every bump ships an explicit [androidx.room.migration.Migration]. The SQL
+ * is written once in `FlashSchemaSteps` and reaches both Android and the desktop JVM from there.
  *
  * Phase 09B-1 moved this file to `commonMain` and added exactly one line, `@ConstructedBy`. That is
  * a narrow, sanctioned R8 exception (PHASE-09B Obstacle B): Room's reflective builder is

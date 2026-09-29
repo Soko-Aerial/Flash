@@ -141,6 +141,10 @@ kotlin {
         }
         jvmTest.dependencies {
             implementation(libs.junit)
+            // MigrationTestHelper (KMP): builds a real database at an old version from the exported
+            // schemas/<n>.json, runs the migrations, and validates the result against the new
+            // schema. FlashJvmMigrationsTest is the only user.
+            implementation(libs.androidx.room.testing)
             // TEST-ONLY. BundledSQLiteDriver is UNENCRYPTED, so D5 = C's charter confines it to
             // in-memory (":memory:") use inside this source set. Declared here and NOWHERE else so
             // no product code can reach it; PHASE-09B verification gate 5 greps for exactly that.
