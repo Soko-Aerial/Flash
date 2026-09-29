@@ -1,10 +1,16 @@
 # Discovery Resilience Plan (phases DR0–DR7)
 
-**Status: PLAN, written 2026-09-24. DR1 (remembered endpoints) IMPLEMENTED 2026-09-29, device check DR-01 pending. DR0 and DR2–DR7 not started. ADR-047 is PROPOSED; its DR1 part is built (see the DR1 notes in ADR-047).**
+**Status: PLAN, written 2026-09-24. DR1 (remembered endpoints) IMPLEMENTED 2026-09-29, device check DR-01 pending. ADR-047 is PROPOSED; its DR1 part is built (see the DR1 notes in ADR-047).**
 
-**Order (owner, 2026-09-24):** implement **after group calling**. The order is
-`PRESENCE-CONNECTIONS-PLAN.md` (PC0–PC7) → `docs/calling/GROUP-VIDEO-PLAN.md` (G0–G7) → this plan.
-Nothing here should be started earlier unless the owner reorders it.
+**Scope decision (owner, 2026-09-29, ADR-056):** **DR4 (QR), DR6 (BLE) and DR7 (Wi-Fi Direct) are POSTPONED** and live in
+[`docs/FUTURE-OPTIMIZATION.md`](../FUTURE-OPTIMIZATION.md) (FO-01, FO-02, FO-03). The active phases are **DR2 (broadcast
+beacon), DR3 (subnet sweep) and DR5 (hardening)**, in that order. DR0 (the failure matrix, MEAS-07) stays a measure-last
+device task (P8); DR2 and DR3 are built without waiting for it, so its role shrinks to *confirming which network each one
+fixes*. Postponed phases keep their text below unchanged; their table rows are marked.
+
+**Order (owner, 2026-09-24), superseded 2026-09-29:** this plan was to start after group calling
+(`PRESENCE-CONNECTIONS-PLAN.md` → `docs/calling/GROUP-VIDEO-PLAN.md` → this plan). The owner reordered it on 2026-09-28/29
+(DR1 started, then DR2/DR3/DR5 next, then the group trust model and session cap).
 
 ## 1. Goal
 
@@ -120,10 +126,10 @@ acceptable there. Rotating ids tie in with audit S9.
 | **DR1 Remembered endpoints** (**IMPLEMENTED 2026-09-29**; device check DR-01 in `docs/testing/TEST-BACKLOG.md` TODO) | §3.3 A. Persistence port + Room table + migration, the `REMEMBERED` transport, the `forgetEndpoint` change, planner wiring on all hosts. | Tests: a route is written only after an authenticated session; a pin mismatch deletes the route; a live sighting outranks it; restart then reconnect with mDNS disabled. Device check: block multicast (or disable NSD in a debug build), restart both apps, they reconnect. |
 | **DR2 Broadcast beacon** | §3.3 B on the Android and JVM socket factories. | Test: a packet to the broadcast address is parsed like a multicast one. Device check on a DR0 network where multicast failed but broadcast passed. |
 | **DR3 Subnet sweep** | §3.3 C: `SubnetSweeper` in `commonMain` with platform socket actuals; "Scan network" in Nearby; automatic fallback per D2. | Tests: /24 limit, no run on cellular, rate limits, cancellation. Device check: two hotspot clients find each other; a snooping router with multicast and broadcast both blocked. |
-| **DR4 QR first contact** | §3.3 D. ADR-047 amendment for the dependencies; UI component doc; pairing v2 integration. | Desktop shows a QR, phone scans, pairing completes without typing a code, and a tampered fingerprint is refused. Notices regenerated. |
-| **DR5 Hardening** | §3.3 E. | Desktop with Hyper-V + VPN adapters advertises only reachable addresses; hint appears and its three actions work. |
-| **DR6 BLE** (conditional) | §3.3 G, only if DR0 justifies it. Its own ADR. | Owner decision after DR0. |
-| **DR7 Wi-Fi Direct** | Separate plan. | — |
+| **DR4 QR first contact** (**POSTPONED 2026-09-29**, FO-01) | §3.3 D. ADR-047 amendment for the dependencies; UI component doc; pairing v2 integration. | Desktop shows a QR, phone scans, pairing completes without typing a code, and a tampered fingerprint is refused. Notices regenerated. |
+| **DR5 Hardening** | §3.3 E. **Without *Show QR* while DR4 is postponed:** the hint offers *Scan network* and *Connect by IP* only. | Desktop with Hyper-V + VPN adapters advertises only reachable addresses; hint appears and its two actions work. |
+| **DR6 BLE** (conditional; **POSTPONED 2026-09-29**, FO-02) | §3.3 G, only if DR0 justifies it. Its own ADR. | Owner decision after DR0. |
+| **DR7 Wi-Fi Direct** (**POSTPONED 2026-09-29**, FO-03) | Separate plan. | — |
 
 ## 5. Risks
 
@@ -143,6 +149,10 @@ acceptable there. Rotating ids tie in with audit S9.
 |---|---|---|
 | D1 | Remember endpoints for paired peers only, or also for unpaired peers? | **Paired only.** Unpaired peers don't need a route after the session ends. |
 | D2 | Subnet sweep: manual only, or also an automatic fallback? | **Both**, with the automatic one limited as in §3.3 C. |
-| D3 | QR library: ZXing + CameraX, or ML Kit? | **ZXing + CameraX** (no Play services dependency, Apache-2.0). |
-| D4 | Is BLE (DR6) in scope at all? | **Decide after DR0.** |
-| D5 | Does Wi-Fi Direct (DR7) come right after this plan? | Owner's call. It is in the original project goals. |
+| D3 | QR library: ZXing + CameraX, or ML Kit? | **ZXing + CameraX** (no Play services dependency, Apache-2.0). **Moot for now: DR4 is postponed (FO-01); the recommendation stands for when it returns.** |
+| D4 | Is BLE (DR6) in scope at all? | **Decide after DR0.** **Answered 2026-09-29: postponed (FO-02).** |
+| D5 | Does Wi-Fi Direct (DR7) come right after this plan? | Owner's call. It is in the original project goals. **Answered 2026-09-29: no, postponed (FO-03).** |
+
+D1 (paired only) is **still unconfirmed**: DR1 was built on the recommendation and the owner has not objected, which is not
+an answer. D2 (automatic sweep fallback) is also unanswered; DR3 follows the recommendation (manual action plus the limited
+automatic fallback) and the fallback is one switch, so the owner can turn it off without a redesign.

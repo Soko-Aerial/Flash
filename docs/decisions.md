@@ -1835,6 +1835,10 @@ A new native payload is added, or a POM changes its licence (the gate fails and 
 **ACCEPTED by the owner, NOT IMPLEMENTED.** The threat review (phase V0 below) must finish before any code. Until
 V2 lands, `GroupPolicy.MAX_MEMBERS` stays 6 and ADR-030 applies unchanged.
 
+**Update 2026-09-29 (ADR-056):** the target is **20**. V3 (= PC6 / MEAS-02) is postponed to `docs/FUTURE-OPTIMIZATION.md`
+FO-05, so **32 is parked** until it is measured. The trust model (V0 to V2) and the per-mode session cap are the next
+work after DR2/DR3/DR5. Group attachment fan-out (N-1 uploads) is parked as FO-04.
+
 ### Context
 The owner wants chat groups of 20 or more, video calls of 8 and voice calls of 12 (`docs/calling/GROUP-VIDEO-PLAN.md`
 §5). Bandwidth isn't the blocker; ADR-030's trust rule is. Verified in code on 2026-09-24:
@@ -2139,6 +2143,8 @@ safe for mixed pairs, and switching mode must not drop anyone.
 5. **Staleness is relative.** `hasLiveSession` treats a session as stale after max(45 s, liveness + 5 s), so an ECO
    session (up to ~75 s quiet) is not redialed as dead. STANDARD stays at 45 s.
 6. **Session cap stays a uniform 8** until PC6 measures the cost per session.
+   *(Update 2026-09-29, ADR-056: PC6 is postponed, FO-05. The per-mode cap will be set by reasoning, from group size and
+   mode, with its numbers labelled estimates. It is no longer waiting for a measurement.)*
 
 ### Alternatives considered
 - **Reconnect on a mode change:** simple, but drops calls and transfers and causes a handshake storm.
@@ -2464,3 +2470,41 @@ and nothing forced anyone to remember it. Neither platform had a test that execu
 An Android migration test exists (then collapse to a single commonMain `Migration`), or Room drops
 `SupportSQLiteDatabase` migrations.
 
+## ADR-056 — Postpone QR, BLE, Wi-Fi Direct, group-attachment fan-out and the scale measurement to FUTURE-OPTIMIZATION.md
+
+### Date
+2026-09-29
+
+### Status
+**ACCEPTED by the owner** (chat, 2026-09-29). A scope and ordering decision; no architecture changes by itself.
+
+### Context
+The discovery resilience plan (ADR-047) had eight phases and the presence plan's PC6 measurement (ADR-044 V3) gated
+PC7's tuning, the per-mode session cap and any group size above 20. The owner wants immediate development, not
+a queue behind device measurements (see decision P8, "measure last").
+
+### Decision
+1. **Postponed** to [`docs/FUTURE-OPTIMIZATION.md`](FUTURE-OPTIMIZATION.md): DR4 QR first contact (FO-01), DR6 BLE
+   discovery (FO-02), DR7 Wi-Fi Direct (FO-03), group file sending fan-out **and a later revamp of file sending** (FO-04),
+   and PC6 / MEAS-02 (FO-05).
+2. **Continue** with DR2 (broadcast beacon), DR3 (subnet sweep) and DR5 (hardening), in that order. DR0 / MEAS-07 stays a
+   measure-last device task; DR2 and DR3 do not wait for it.
+3. **Then** the group trust model (ADR-044 V0 to V2) and the per-mode session cap, aiming at groups of **20**.
+4. Postponed items are marked, never deleted: plan rows say POSTPONED, TEST-BACKLOG MEAS-02 says POSTPONED, and
+   `FUTURE-OPTIMIZATION.md` says what the rest of the project assumes in their absence and what brings each back.
+
+### Consequences (derived from the decision; flagged so they are not mistaken for extra owner choices)
+- **32 members stays parked.** ADR-044 makes it depend on V3, which is FO-05. `MAX_MEMBERS` targets 20.
+- Every PC number tagged *(measure)* stays an estimate; the per-mode session cap is designed by reasoning and labelled as
+  such. PC7 is no longer blocked.
+- While DR4 is postponed, DR5's "No devices found" hint offers *Scan network* and *Connect by IP*, not *Show QR*.
+- Group attachments keep the per-recipient model (N-1 uploads). Acceptable at 6, expensive at 20; ADR-044's "revisit if
+  attachments in groups land" is now FO-04.
+- DR7 has no plan file yet (`docs/network/WIFI-DIRECT-PLAN.md` is unwritten).
+
+### Alternatives considered
+- **Keep the phases in the plans as TODO.** Rejected: they would read as next work and a future AI would start them.
+- **Delete them.** Rejected (AGENTS.md §27) and contrary to the owner's wish that nothing be forgotten.
+
+### Revisit when
+The owner reprioritises; each item's own "Bring it back when" in `FUTURE-OPTIMIZATION.md`.

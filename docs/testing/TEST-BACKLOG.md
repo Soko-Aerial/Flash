@@ -310,12 +310,12 @@ They replace every *(measure)* estimate in the plans and decide tuning. Record e
 | ID | What | Procedure | Decides | Status |
 |---|---|---|---|---|
 | MEAS-01 | **PC0** baseline: screen-off battery/hour with 0/1/4/8 idle sessions and 19 peers; reconnect after a Wi-Fi toggle | [`docs/network/PC0-RUNBOOK.md`](../network/PC0-RUNBOOK.md) (peer farm + `tools/pc0/phone-baseline.ps1`) | How aggressive ECO must be | TODO |
-| MEAS-02 | **PC6** scale: 20 peers per mode (battery, reconnect storm, delivery latency to a screen-off ECO phone) | Same rig as PC0 | ECO's ~1 min bound; whether groups go to 32; then **PC7** tuning and the default mode | TODO |
+| MEAS-02 | **PC6** scale: 20 peers per mode (battery, reconnect storm, delivery latency to a screen-off ECO phone) | Same rig as PC0 | ECO's ~1 min bound; whether groups go to 32; then **PC7** tuning and the default mode | **POSTPONED** (owner 2026-09-29, ADR-056, [FO-05](../FUTURE-OPTIMIZATION.md)). Not deleted, not blocking. Group size stays capped at 20 until it is done. |
 | MEAS-03 | **G0** calls: 3-way video CPU, temperature and dropped frames; decoder instances; voice with 4/8/12 connections; 2.4 vs 5 GHz throughput | GROUP-VIDEO-PLAN §6 G0 | The §4.2 budget tables | TODO |
 | MEAS-04 | **G0 codecs** C1 (desktop VP9 on webrtc-java 0.19.0), C2 (`MediaCodecList` on the BelFone and a mid-range phone), C3 (VP8 software vs H.264/VP9 hardware, 540p, 10 min) | GROUP-VIDEO-PLAN §4.6 | Whether **G4b** is built | TODO |
 | MEAS-05 | CPU warning threshold (40 % of all cores for 30 s) against real calls | `CALL_DIAG proc cpu=` from GRP-08 and CALL-03 | The G6 threshold | TODO |
 | MEAS-06 | Desktop render cost: capture + BGRA conversion + Skia upload was ~1.5 of ~2.5 cores (EXP-017) | Profile a 4-person desktop call | Whether hardware video (ADR-052) or render work comes first | TODO |
-| MEAS-07 | **DR0** discovery failure matrix: for each of home router, mesh in bridge mode, router with IGMP snooping, client isolation, Android hotspot with 2+ clients, desktop with Hyper-V/VPN adapters: does mDNS work, does the `224.0.0.168` beacon work, does a directed broadcast arrive, is TCP 45822 reachable; screen on and off | Plan §4 DR0 (a small broadcast test sender is enough); log in `logs/experiments.md` | Whether DR2 (broadcast), DR3 (subnet sweep) and DR6 (BLE) are worth building | TODO |
+| MEAS-07 | **DR0** discovery failure matrix: for each of home router, mesh in bridge mode, router with IGMP snooping, client isolation, Android hotspot with 2+ clients, desktop with Hyper-V/VPN adapters: does mDNS work, does the `224.0.0.168` beacon work, does a directed broadcast arrive, is TCP 45822 reachable; screen on and off | Plan §4 DR0 (a small broadcast test sender is enough); log in `logs/experiments.md` | Which network each of DR2 (broadcast) and DR3 (subnet sweep) fixes. DR2/DR3 are built without waiting for it (owner 2026-09-29); DR6 (BLE) is postponed, FO-02 | TODO |
 
 ---
 

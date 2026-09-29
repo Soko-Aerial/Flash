@@ -1,8 +1,10 @@
 # Presence & Connections Plan (phases PC0–PC7)
 
-**Status (2026-09-28): PC1–PC5 code done (unit-tested, not device-tested). PC7's platform note written; its tuning
-waits for PC6. PC0 and PC6 measurements deferred (P8).**
-Numbers marked *(measure)* are estimates until PC0/PC6 replace them.
+**Status (2026-09-29): PC1–PC5 code done (unit-tested, not device-tested). PC7's platform note written. PC6 is
+POSTPONED to `docs/FUTURE-OPTIMIZATION.md` FO-05 (owner decision P9), so **PC7 no longer waits for it** and no phase of this
+plan is blocked. PC0 stays a measure-last task (P8).**
+Numbers marked *(measure)* are estimates until PC0 (and, one day, PC6) replace them. **They remain estimates and must be
+described as such; nothing may cite them as data.**
 
 **Testing order changed (owner, 2026-09-28, decision P8):** implement PC1–PC5 and then group calling first, and
 run all device measurements and tests (PC0, PC6, and each phase's device check) at the end. Until then every
@@ -152,7 +154,7 @@ all call it. This follows the migration direction (one shared frame) and makes �
 | **PC3 Three states, local only** | Connected / Online / Offline, where Online comes from discovery sightings without a session (no sharing yet). UI component doc first, then the dot visuals. | The states render on Android and desktop. Sends to an Online peer dial on demand and deliver. |
 | **PC4 Presence sharing** | §3.2: `FLASH_PRES`, the salted-hash mutual-contact rule, group rosters, Ghost `noShare`, age/TTL/hops, endpoint tips that trigger dials. Documented in `docs/protocol.md`. ADR-046. First verify that old clients ignore an unknown frame prefix. | Tests: a Ghost device is never leaked; a non-mutual contact is never leaked; stale reports expire; a forged tip only causes a failed dial. 3-device check: user 3 sees user 2 as Online through user 1. |
 | **PC5 Mode-driven policy** | §3.4 for ECO / STANDARD / BOOST, the mixed-mode rules, **Boost added to the Quick Settings tile**, the desktop setting. | Owner device check in each mode. ECO holds ≤ 3 + active sessions. |
-| **PC6 Scale and battery measurement** (= ADR-044 V3) | 20 peers (farm plus phones) in each mode: battery per hour, reconnect storm, delivery latency to an ECO phone with the screen off. | Numbers replace every *(measure)*. ECO's ~1 min bound is met. Decides whether groups can go to 32. |
+| **PC6 Scale and battery measurement** (= ADR-044 V3) (**POSTPONED 2026-09-29, P9, FO-05**) | 20 peers (farm plus phones) in each mode: battery per hour, reconnect storm, delivery latency to an ECO phone with the screen off. | Numbers replace every *(measure)*. ECO's ~1 min bound is met. Decides whether groups can go to 32. |
 | **PC7 Tune and document** | Final numbers in `DiscoveryModePolicy`/`FlashTransportProfile`, the default mode, platform notes, and the handoff. | Owner sign-off. |
 
 ## 5. Risks
@@ -177,6 +179,7 @@ all call it. This follows the migration direction (one shared frame) and makes �
 | P6 | Whose presence is passed on | **Mutual contacts only** (salted-hash matching; group rosters within groups). |
 | P7 | Order | **Its own phase set, before group calling.** |
 | P8 | When to test (2026-09-28) | **Last:** implement PC1–PC5, then group calling, then run PC0/PC6 and every device check. |
+| P9 | PC6 / MEAS-02 (2026-09-29) | **Postponed to future optimization** (FO-05). It no longer gates PC7 or anything else. Consequences: the group size target is 20 (ADR-044 V2), **32 stays parked** because ADR-044 makes it depend on this measurement; the session cap and ECO's ~1 min bound are designed by reasoning and labelled estimates. ADR-056. |
 
 ## 7. Implementation log
 
@@ -288,6 +291,7 @@ all call it. This follows the migration direction (one shared frame) and makes �
 - **Pending device check:** each mode on two phones and the desktop; ECO holds ≤ 3 + active sessions after 10 min
   idle; switching modes with a call or transfer running drops nothing; a 1-hour screen-off test per §5.
 
-### PC7 — platform note written 2026-09-28; tuning waits for PC6
+### PC7 — platform note written 2026-09-28; tuning no longer waits for PC6 (P9, 2026-09-29)
 - `docs/android-platform-notes.md`: OEM freezers (ERROR-074) ignore the foreground service and the battery whitelist,
-  and what the user has to change. The final numbers and the default mode need PC6's measurements.
+  and what the user has to change. The final numbers and the default mode need PC6's measurements, which are postponed (FO-05): until then they stay
+  labelled estimates.
