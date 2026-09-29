@@ -303,6 +303,36 @@ by later testing without anyone recording it: confirm, then mark PASS here **and
   `RouteObserverTest`, `FlashJvmMigrationsTest`.
 - **Status:** TODO
 
+### DR-02 — A phone finds the desktop through the broadcast beacon when multicast is blocked (DR2, ADR-047)
+- **Setup:** the desktop plus one phone on the same Wi-Fi (a /24, e.g. `192.168.1.x`), both on the DR2 build. Admin
+  PowerShell on the desktop. Phone log: `adb logcat -v time -s MulticastTransport:I DISCOVERY:I`; desktop log
+  `%USERPROFILE%\.flash\desktop.log` (copy before relaunch).
+- **Steps:**
+  1. Start both apps with no rules. In each log find the bind line
+     `Broadcast beacon to <iface>=<a.b.c.255> ... (port 45823)`. The phone's Wi-Fi interface (`wlan0`) must show its
+     subnet's `.255` address, **not** `none`.
+  2. Block only **multicast sends** on the desktop (broadcast is not covered by this range). This also stops JmDNS, so
+     the phone cannot learn the desktop by mDNS:
+     `New-NetFirewallRule -DisplayName flash-dr2-out -Direction Outbound -Protocol UDP -RemoteAddress 224.0.0.0/4 -Action Block`
+  3. Force-stop Flash on the phone and quit it on the desktop, then start both again. Wait 30 s.
+  4. Optional: repeat step 3 with the phone's screen off for 2 minutes (some devices filter broadcast with the screen
+     off: reported, unverified). Note the result; it does not fail the test.
+  5. Remove the rule: `Remove-NetFirewallRule -DisplayName flash-dr2-out`.
+- **Pass:**
+  - Step 1: both logs have the bind line, and the phone's Wi-Fi interface has a real `.255` address.
+  - After step 3 the phone's log has `MulticastTransport: Found <desktop name> at <desktop ip>:45822 via <iface>`
+    (the desktop's multicast is blocked, so only the broadcast can have carried it), and **no** `DISCOVERY` line
+    `Peer capabilities ... name=<desktop name>` (NSD resolving it) in that window: the control that the rule really
+    silenced mDNS.
+- **Also note:** whether the desktop found the phone (it should: the phone's multicast still reaches it), and whether
+  the desktop's bind line lists adapters that are not the LAN (Hyper-V, VPN). DR5 filters those.
+- **A FAIL means:** the bind line says `none` (address detection on Android: look at `getInterfaceAddresses()` prefix
+  length, see the fallback in the factory), or the bind line is right and nothing arrives (the network or the phone
+  drops broadcast: an OEM filter, or client isolation). Either is a new `ERROR-NNN`, and the second is a DR0 datum.
+- **Source:** ADR-047, plan §3.3 B and §4 DR2. Unit coverage: `DirectedBroadcastTest`, `MulticastTransportTest`
+  (broadcast cases), and the real-socket `JvmDirectedBroadcastSocketTest` (Windows JVM only).
+- **Status:** TODO
+
 ## 5. Measurements — do these last
 
 They replace every *(measure)* estimate in the plans and decide tuning. Record each in `logs/experiments.md`.

@@ -40,14 +40,29 @@ class MulticastTransportTest {
 
     // -- Fixtures --------------------------------------------------------------
 
-    private class FakeBinding(override val label: String) : MulticastSocketBinding {
+    private class FakeBinding(
+        override val label: String,
+        override val broadcastTargets: List<String> = emptyList(),
+        private val broadcastResult: Boolean = true,
+    ) : MulticastSocketBinding {
         val sent = mutableListOf<ByteArray>()
+        val broadcastSent = mutableListOf<ByteArray>()
+
+        /** Every send in the order it happened, "multicast" or "broadcast", to pin that broadcast follows. */
+        val order = mutableListOf<String>()
         var closed = false
         var nextDatagram: MulticastDatagram? = null
 
         override fun send(payload: ByteArray): Boolean {
             sent += payload
+            order += "multicast"
             return true
+        }
+
+        override fun sendBroadcast(payload: ByteArray): Boolean {
+            broadcastSent += payload
+            order += "broadcast"
+            return broadcastResult
         }
 
         override fun receive(timeoutMs: Int): MulticastDatagram? = nextDatagram.also { nextDatagram = null }
@@ -65,11 +80,17 @@ class MulticastTransportTest {
         /** Interfaces that appear only from the NEXT bind onward (Wi-Fi coming up). */
         var nextBindingCount: Int? = null
 
+        /** What binding number `i` reports as its broadcast targets, and whether its broadcast send succeeds. */
+        var broadcastTargetsFor: (Int) -> List<String> = { emptyList() }
+        var broadcastResultFor: (Int) -> Boolean = { true }
+
         override fun bind(group: String, port: Int): List<MulticastSocketBinding> {
             bindCalls += 1
             bindings.clear()
             nextBindingCount?.let { bindingCount = it; nextBindingCount = null }
-            repeat(bindingCount) { bindings += FakeBinding("test$it") }
+            repeat(bindingCount) {
+                bindings += FakeBinding("test$it", broadcastTargetsFor(it), broadcastResultFor(it))
+            }
             return bindings.toList()
         }
 
@@ -113,6 +134,9 @@ class MulticastTransportTest {
         factory: FakeFactory = FakeFactory(),
         nowMs: () -> Long = { 1_000L },
         mode: FlashDiscoveryMode = FlashDiscoveryMode.STANDARD,
+        broadcastEnabled: Boolean = true,
+        info: MutableList<String> = mutableListOf(),
+        warnings: MutableList<String> = mutableListOf(),
         block: suspend (MulticastTransport, FakeFactory, MutableList<FlashTransportEvent>) -> Unit,
     ) = runTest {
         val transport = MulticastTransport(
@@ -123,8 +147,9 @@ class MulticastTransportTest {
             announceIntervalMs = 20_000L,
             peerLeaseMs = 60_000L,
             sweepIntervalMs = 5_000L,
-            logInfo = { },
-            logWarn = { _, _ -> },
+            broadcastEnabled = broadcastEnabled,
+            logInfo = { info += it },
+            logWarn = { message, _ -> warnings += message },
         )
         val seen = mutableListOf<FlashTransportEvent>()
         val collector = launch(Dispatchers.Unconfined) { transport.events.collect { seen += it } }
@@ -272,6 +297,81 @@ class MulticastTransportTest {
             )
             assertEquals(selfId, decoded.identity.deviceId)
             assertEquals(45822, decoded.port)
+        }
+    }
+
+    // -- DR2: the directed-broadcast beacon ---------------------------------------
+
+    @Test
+    fun announceNow_alsoBroadcastsTheSamePayload_afterTheMulticastSend() {
+        val factory = FakeFactory(bindingCount = 2).apply {
+            broadcastTargetsFor = { listOf("192.168.1.255") }
+        }
+        withTransport(factory = factory) { transport, _, _ ->
+            transport.startAdvertising(45822, selfIdentity)
+            transport.announceNow()
+
+            factory.bindings.forEach { binding ->
+                // One announcement, two destinations. The same bytes: DR2 changes no protocol.
+                assertEquals(1, binding.sent.size)
+                assertEquals(1, binding.broadcastSent.size, "no broadcast went out on ${binding.label}")
+                assertTrue(binding.sent.single().contentEquals(binding.broadcastSent.single()))
+                // Multicast first: a broadcast problem must never be able to delay or replace it.
+                assertEquals(listOf("multicast", "broadcast"), binding.order)
+            }
+        }
+    }
+
+    @Test
+    fun aFailedBroadcast_neverStopsOrSilencesTheMulticastAnnounce_andIsNotAWarning() {
+        val factory = FakeFactory(bindingCount = 2).apply {
+            // Interface 0 has no broadcast address, which is normal (a VPN, a /32): sendBroadcast is false.
+            broadcastResultFor = { it != 0 }
+        }
+        val warnings = mutableListOf<String>()
+        withTransport(factory = factory, warnings = warnings) { transport, _, _ ->
+            transport.startAdvertising(45822, selfIdentity)
+            transport.announceNow()
+
+            factory.bindings.forEach { assertEquals(1, it.sent.size, "multicast missing on ${it.label}") }
+            assertTrue(warnings.isEmpty(), "a false broadcast is normal, not a warning: $warnings")
+        }
+    }
+
+    @Test
+    fun ghostMode_doesNotBroadcastEither() =
+        withTransport(mode = FlashDiscoveryMode.GHOST) { transport, factory, _ ->
+            transport.startAdvertising(45822, selfIdentity)
+            transport.announceNow()
+
+            assertTrue(
+                factory.bindings.all { it.broadcastSent.isEmpty() && it.sent.isEmpty() },
+                "GHOST must be radio-silent on the broadcast path too",
+            )
+        }
+
+    @Test
+    fun broadcastEnabledFalse_sendsMulticastOnly_andSaysNothingAboutBroadcast() {
+        val info = mutableListOf<String>()
+        withTransport(broadcastEnabled = false, info = info) { transport, factory, _ ->
+            transport.startAdvertising(45822, selfIdentity)
+            transport.announceNow()
+
+            assertTrue(factory.bindings.all { it.broadcastSent.isEmpty() })
+            assertTrue(factory.bindings.all { it.sent.size == 1 })
+            assertTrue(info.none { "Broadcast beacon" in it }, "nothing to report when the beacon is off: $info")
+        }
+    }
+
+    @Test
+    fun binding_logsWhereTheBeaconGoes_perInterface_andSaysNoneWhenThereIsNoAddress() {
+        val factory = FakeFactory(bindingCount = 2).apply {
+            broadcastTargetsFor = { if (it == 0) listOf("192.168.1.255", "10.0.0.255") else emptyList() }
+        }
+        val info = mutableListOf<String>()
+        withTransport(factory = factory, info = info) { _, _, _ ->
+            val line = info.single { "Broadcast beacon" in it }
+            assertEquals("Broadcast beacon to test0=192.168.1.255+10.0.0.255, test1=none (port 45823)", line)
         }
     }
 

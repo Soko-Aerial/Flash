@@ -103,11 +103,21 @@ private class AndroidMulticastBinding(
 
     override val label: String = networkInterface.name
 
+    /** Where the DR2 beacon also goes: this interface's directed-broadcast address(es), on the announce port. */
+    private val broadcastDestinations: List<InetSocketAddress> = directedBroadcastTargets(networkInterface, port)
+
+    override val broadcastTargets: List<String> = broadcastDestinations.map { it.address.hostAddress.orEmpty() }
+
+    @Volatile private var broadcastFailureLogged = false
+
     private val socket: MulticastSocket = MulticastSocket(null).apply {
         reuseAddress = true
         bind(InetSocketAddress(port))
         networkInterface = this@AndroidMulticastBinding.networkInterface
         timeToLive = MULTICAST_TTL
+        // DR2 sends to the subnet broadcast address from this same socket. Java's default is already true; it is
+        // written out because a broadcast send on a socket without SO_BROADCAST fails with "Permission denied".
+        broadcast = true
         // Loopback is deliberately NOT touched — see JvmMulticastBinding for the reasoning: the
         // flag is deprecated for removal and its boolean is inverted, while the transport's
         // identity filter already covers us receiving (or not receiving) our own announcement.
@@ -120,6 +130,23 @@ private class AndroidMulticastBinding(
     }.getOrElse { error ->
         Log.w(TAG, "multicast send failed on ${networkInterface.name}", error)
         false
+    }
+
+    override fun sendBroadcast(payload: ByteArray): Boolean {
+        var sent = false
+        for (destination in broadcastDestinations) {
+            runCatching {
+                socket.send(DatagramPacket(payload, payload.size, destination))
+                sent = true
+            }.onFailure { error ->
+                // Once per binding: a network that forbids broadcast would otherwise log every announcement.
+                if (!broadcastFailureLogged) {
+                    broadcastFailureLogged = true
+                    Log.w(TAG, "broadcast send failed on ${networkInterface.name} to ${destination.address.hostAddress}", error)
+                }
+            }
+        }
+        return sent
     }
 
     override fun receive(timeoutMs: Int): MulticastDatagram? = runCatching {
@@ -180,5 +207,30 @@ private fun multicastCapableInterfaces(): List<NetworkInterface> =
                     !candidate.isLoopback &&
                     candidate.inetAddresses.toList().any { it is Inet4Address }
             }.getOrDefault(false)
+        }
+    }.getOrDefault(emptyList())
+
+/**
+ * The directed-broadcast destinations of [networkInterface] on [port] (DR2).
+ *
+ * Computed from each IPv4 address and its prefix length by [DirectedBroadcast.forIpv4], which refuses /31, /32 and
+ * odd ranges. Only when the reported prefix length is impossible (outside 0..32) does it use the address the platform
+ * reports as the broadcast address instead; some Android releases have returned bad prefix lengths from
+ * `getInterfaceAddresses()`. A sane prefix that the arithmetic refuses stays refused. Point-to-point interfaces
+ * (VPN tunnels) have no broadcast domain and yield nothing.
+ */
+private fun directedBroadcastTargets(networkInterface: NetworkInterface, port: Int): List<InetSocketAddress> =
+    runCatching {
+        if (networkInterface.isPointToPoint) {
+            emptyList()
+        } else {
+            networkInterface.interfaceAddresses
+                .mapNotNull { entry ->
+                    val ip = entry.address as? Inet4Address ?: return@mapNotNull null
+                    DirectedBroadcast.forIpv4(ip.address, entry.networkPrefixLength.toInt())
+                        ?: entry.broadcast?.hostAddress?.takeIf { entry.networkPrefixLength.toInt() !in 0..32 }
+                }
+                .distinct()
+                .map { InetSocketAddress(InetAddress.getByName(it), port) }
         }
     }.getOrDefault(emptyList())

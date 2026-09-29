@@ -115,6 +115,14 @@ kotlin {
     }
 }
 
+// The flag the desktop app runs with (`desktop/build.gradle.kts`): a test JVM does not inherit the application
+// block's jvmArgs. Without it the real-socket DR2 test measures an environment the product never runs in: the JDK's
+// dual-stack socket fails `setNetworkInterface` on a Windows adapter with no IPv6 address ("Invalid argument:
+// setsockopt", see the same note in `core/engine/build.gradle.kts`), so no interface would bind.
+tasks.named<Test>("jvmTest") {
+    jvmArgs("-Djava.net.preferIPv4Stack=true")
+}
+
 publishing {
     publications {
         // KMP generates the publications itself (root `kotlinMultiplatform`, plus one per

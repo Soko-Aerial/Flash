@@ -1,5 +1,42 @@
 # Progress Log
 
+## 2026-09-29 — Scope decision (ADR-056) and DR2: directed-broadcast beacon (ADR-047)
+
+### Worked on
+Owner: postpone DR4 (QR), DR6 (BLE), DR7 (Wi-Fi Direct), MEAS-02 / PC6, and the group-attachment fan-out plus a later
+send-path revamp; continue DR2, DR3, DR5, then the group trust model (ADR-044 V0 to V2) and the per-mode session cap.
+Created `docs/FUTURE-OPTIMIZATION.md` (FO-01 to FO-05) so nothing parked is forgotten. Then built DR2.
+
+### Changed
+- **Docs:** `docs/FUTURE-OPTIMIZATION.md` (new), ADR-056, "Update 2026-09-29" notes on ADR-044 and ADR-048, DR plan
+  status/table/decisions (D3, D4, D5 answered), PC plan decision P9 and status, TEST-BACKLOG MEAS-02 marked POSTPONED
+  (not deleted). Commit `6506eb4`.
+- **Code (`core:discovery`):** `DirectedBroadcast` (pure address arithmetic), `MulticastSocketBinding.sendBroadcast` and
+  `broadcastTargets` (defaults keep other implementers compiling), `MulticastTransport(broadcastEnabled = true)`: every
+  announcement also goes to each interface's directed broadcast, after the multicast send, never fatal, GHOST silent,
+  one log line per bind naming the targets. Android and JVM bindings implement it. No host code changed.
+- **Build:** `:core:discovery:jvmTest` now runs with `-Djava.net.preferIPv4Stack=true`, as the desktop does.
+
+### Verification
+- `:core:discovery` jvmTest 88/88 (was 72), Android host tests 146/146; `:app:compileDebugKotlin`,
+  `:desktop:compileKotlinJvm`, `:core:engine:compileAndroidMain` green.
+- New `JvmDirectedBroadcastSocketTest` sends to `192.168.1.255` on the Windows desktop's Wi-Fi adapter and the factory's
+  own sockets receive it (3 repeat runs green): the wildcard-bound receive side needs no change on the JVM.
+- **Not verified:** Android on a device, or any real network that blocks multicast. Owed: TEST-BACKLOG **DR-02**.
+
+### Problems
+- The real-socket test first found no interface: `MulticastSocket.setNetworkInterface` fails with
+  `SocketException: Invalid argument: setsockopt` on a Windows adapter without IPv6 when the JVM is dual-stack. The app
+  sets `preferIPv4Stack`; the test JVM did not. Fixed in the build (ADR-047 DR2 note 7). Not an app bug.
+- A KDoc line containing `**/31` closed its own comment (`*/`); reworded.
+
+### Remaining
+DR3 (subnet sweep), DR5 (hardening), then ADR-044 V0 and the session cap. DR0/MEAS-07, DR-01, DR-02, MIG-01, MIG-02 owed.
+
+### Next AI
+Continue with DR3 per `docs/network/DISCOVERY-RESILIENCE-PLAN.md` §3.3 C; the sweep feeds the PC2 planner as sightings the
+way `RememberedRoutes.sightings()` does. Do not start DR4/DR6/DR7 (parked, FUTURE-OPTIMIZATION.md).
+
 ## 2026-09-29 — Discovery resilience DR1: remembered endpoints for paired peers (ADR-047)
 
 ### Worked on

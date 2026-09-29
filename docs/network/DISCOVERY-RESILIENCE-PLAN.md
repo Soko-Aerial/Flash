@@ -1,6 +1,6 @@
 # Discovery Resilience Plan (phases DR0–DR7)
 
-**Status: PLAN, written 2026-09-24. DR1 (remembered endpoints) IMPLEMENTED 2026-09-29, device check DR-01 pending. ADR-047 is PROPOSED; its DR1 part is built (see the DR1 notes in ADR-047).**
+**Status: PLAN, written 2026-09-24. DR1 (remembered endpoints) and DR2 (broadcast beacon) IMPLEMENTED 2026-09-29, device checks DR-01 and DR-02 pending. ADR-047 is PROPOSED; its DR1 and DR2 parts are built (see the implementation notes in ADR-047).**
 
 **Scope decision (owner, 2026-09-29, ADR-056):** **DR4 (QR), DR6 (BLE) and DR7 (Wi-Fi Direct) are POSTPONED** and live in
 [`docs/FUTURE-OPTIMIZATION.md`](../FUTURE-OPTIMIZATION.md) (FO-01, FO-02, FO-03). The active phases are **DR2 (broadcast
@@ -74,7 +74,18 @@ sources feed **candidates** into it; the planner decides, by discovery mode, whe
   as well as to `224.0.0.168`. Same payload, same port 45823, no protocol version change.
 - Receiver: the socket must accept broadcast datagrams on 45823, not only the group. Verify the Android and JVM
   socket factories' bind address first; this is a code check, not an assumption.
+  **Checked 2026-09-29:** both factories bind `InetSocketAddress(port)`, the wildcard address with `SO_REUSEADDR`, so the
+  receiving side needed no change. A real-socket test on the Windows desktop confirms it
+  (`JvmDirectedBroadcastSocketTest`: a datagram sent to `192.168.1.255` arrives on a socket the factory bound). Android
+  is **not yet verified on a device** (DR-02).
 - Rationale: IGMP snooping and many "multicast" filters do not touch broadcast. To be measured in DR0.
+- **Built 2026-09-29 (DR2):** `MulticastSocketBinding.sendBroadcast` / `broadcastTargets`; the transport sends the same
+  bytes to the group and then to each interface's directed broadcast, on every announcement including the reply and the
+  start-up burst. The address comes from the interface's address and prefix length (`DirectedBroadcast`, pure and
+  tested), never from the limited broadcast `255.255.255.255`, which would leave by whichever interface the routing table
+  picks. No address is sent to for /31, /32, a prefix wider than /8, a point-to-point interface (VPN) or an unset,
+  loopback, multicast or class E address. The transport logs once per bind which addresses each interface uses.
+  GHOST stays silent on this path too.
 
 **C. Unicast subnet sweep (DR3).**
 - A TCP connect probe to 45822 on every host of the local subnet, **/24 or smaller only**. Wi-Fi and Ethernet
@@ -124,7 +135,7 @@ acceptable there. Rotating ids tie in with audit S9.
 |---|---|---|
 | **DR0 Failure matrix** | Test today's build on real networks: home router, a mesh (bridge mode), a router with IGMP snooping on, a network with client isolation, an Android hotspot with 2+ clients, a desktop with Hyper-V/VPN adapters. For each: does mDNS work, does the `224.0.0.168` beacon work, does a directed broadcast arrive (a small test sender is enough), is TCP 45822 reachable. Screen on and off (some Android devices filter multicast/broadcast with the screen off. **Reported, verify**). Logged in `logs/experiments.md`. | A table saying which source would have fixed which network. It decides whether DR2, DR3 and DR6 are worth building. |
 | **DR1 Remembered endpoints** (**IMPLEMENTED 2026-09-29**; device check DR-01 in `docs/testing/TEST-BACKLOG.md` TODO) | §3.3 A. Persistence port + Room table + migration, the `REMEMBERED` transport, the `forgetEndpoint` change, planner wiring on all hosts. | Tests: a route is written only after an authenticated session; a pin mismatch deletes the route; a live sighting outranks it; restart then reconnect with mDNS disabled. Device check: block multicast (or disable NSD in a debug build), restart both apps, they reconnect. |
-| **DR2 Broadcast beacon** | §3.3 B on the Android and JVM socket factories. | Test: a packet to the broadcast address is parsed like a multicast one. Device check on a DR0 network where multicast failed but broadcast passed. |
+| **DR2 Broadcast beacon** (**IMPLEMENTED 2026-09-29**; device check DR-02 in `docs/testing/TEST-BACKLOG.md` TODO) | §3.3 B on the Android and JVM socket factories. | Test: a packet to the broadcast address is parsed like a multicast one. Device check on a DR0 network where multicast failed but broadcast passed. |
 | **DR3 Subnet sweep** | §3.3 C: `SubnetSweeper` in `commonMain` with platform socket actuals; "Scan network" in Nearby; automatic fallback per D2. | Tests: /24 limit, no run on cellular, rate limits, cancellation. Device check: two hotspot clients find each other; a snooping router with multicast and broadcast both blocked. |
 | **DR4 QR first contact** (**POSTPONED 2026-09-29**, FO-01) | §3.3 D. ADR-047 amendment for the dependencies; UI component doc; pairing v2 integration. | Desktop shows a QR, phone scans, pairing completes without typing a code, and a tampered fingerprint is refused. Notices regenerated. |
 | **DR5 Hardening** | §3.3 E. **Without *Show QR* while DR4 is postponed:** the hint offers *Scan network* and *Connect by IP* only. | Desktop with Hyper-V + VPN adapters advertises only reachable addresses; hint appears and its two actions work. |
