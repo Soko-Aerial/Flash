@@ -1,5 +1,20 @@
 # Current Handoff
 
+## 2026-09-29 — Session ceiling 24 + dial budget built (`e9d1563`, ADR-057); V1 next, needs owner confirmations
+- **Done:** ceiling 8 → 24 for every mode (no per-mode admission ceiling, by ADR-048's "ECO never refuses"), `DialBudget`
+  limits STANDARD/BOOST dials only in a crowd (more than 20 devices around), `Dial filter` log lines. ADR-057 has the reasoning,
+  the rejected alternatives and the known gap (strangers dialing in are admitted first-come; no priority admission).
+- **Verified:** `core:network` 281 JVM / 373 host tests, desktop compile. **Owed device tests:** SC-01, SC-02 (peer farm with 20
+  and 30 peers), plus GT-01, DR-01…DR-04, MIG-01, MIG-02, MEAS-07, MEAS-01 (note: its 19-peer run now holds 19 sessions).
+- **Recommended next task:** ADR-044 **V1** (signed membership and messages for v2 groups; HELLO `gv`; `docs/protocol.md` and golden
+  vectors in the same commit; persistence migration; signed `author`, which also fixes ERROR-082). **Ask the owner first** for the
+  two defaults in `docs/group/v0-threat-review.md` §9: sign group messages (yes), legacy groups not upgraded in place (yes).
+  V2 follows and needs a 4+ device check with 2 never paired; read ECO's "unpaired only while Nearby is open" rule against group
+  members (the planner itself already dials unpaired devices in STANDARD/BOOST).
+- Files most relevant: `docs/group/v0-threat-review.md`, `docs/decisions.md` (ADR-044, ADR-057), `RealFlashChatRepository.kt`,
+  `GroupFrameCodec.kt`, `core/network/.../mode/DialBudget.kt`.
+
+
 ## 2026-09-29 — Group trust V1a built (`3f33c61`); per-mode session cap next
 - **V1a done:** F-1 (Create for a known id ignored), F-2 (State only from a known active member, no repeated ids, owner kept),
   F-4 (SyncPush only for a request this device sent), F-5 (State carries tombstones up to 6 rows). No wire change. Details:

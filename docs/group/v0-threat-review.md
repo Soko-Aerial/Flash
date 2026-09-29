@@ -169,8 +169,11 @@ The mode layer and presence already count "fellow members of this device's group
 `PresenceState` eligibility), so once a vouched member has a pin and a verified roster row they are shown and dialed through
 the same paths. V0 did **not** trace `ConnectionPlanner`'s candidate rule for a discovered peer that is unpaired but a group
 member; V2 starts by reading `ConnectionPlanner`/`AutoConnector` against exactly that case and the ECO "unpaired peers only while
-Nearby is open" rule, because a mesh of 20 depends on it. Raising `SessionHardeningPolicy.maxConcurrentSessions` (8 today) and the
-per-mode session cap is the separate prerequisite in section 8.
+Nearby is open" rule, because a mesh of 20 depends on it. Raising `SessionHardeningPolicy.maxConcurrentSessions` (8 then) and the
+per-mode session cap was the separate prerequisite in section 8; **done 2026-09-29, ADR-057** (ceiling 24, dial budget 20).
+Note for that trace: the planner dials every discovered device in STANDARD and BOOST, paired or not (`ConnectionPlanner.plan`
+has no pairing rule; only ECO's `allowed` set and, in a crowd, `DialBudget` narrow it), so an unpaired group member that
+discovery sees is already a dial candidate.
 
 ## 6. Walk-through of the ADR-044 V0 list
 
@@ -202,7 +205,7 @@ per-mode session cap is the separate prerequisite in section 8.
 |---|---|---|
 | **V1a Hardening of today's groups** (no wire change, no signatures). **BUILT 2026-09-29** | F-1: ignore `Create` for a known group id. F-2: with a local record, accept `State` only from an active member (no record = bootstrap, as now), reject a roster that repeats an id, keep the locally recorded owner and only ever mark the owner "owner". F-4: `SyncPush` only for a `syncId` this device requested, from the peer asked, for the group asked about, within 10 minutes (`OutgoingSyncRequest`); the earlier idea of also checking `message.from` was dropped because the wire carries no author (F-9). F-5: `State` also carries the newest leave tombstones, but only as many as fit under `MAX_MEMBERS` total rows, because the codec of every shipped client rejects a longer roster. | 8 attack tests failed against the old code and pass against the fix; the honest-flow tests and the multi-device late-join tests stay green. **Limits kept on purpose:** a member this device has not learned about yet cannot teach it the roster (the owner's next session-up `State` does); a full group of six carries no tombstones; F-3, F-6 and F-9 stay until V1. |
 | **V1 Signed membership and messages** (v2 groups) | Charter, `MemberCert`, bundle, message `sig`, `seq` merge, tombstones, downgrade rules, HELLO `gv`, `GroupPolicy` limits per protocol level, `docs/protocol.md` in the same commit, golden vectors for the canonical bytes. Persistence migration (cert columns). An explicit, signed `author` on a pushed message (F-9), so relayed history keeps its author and delete-for-everyone authority follows the author. | Forgery, replay, downgrade, poisoning and old-client tests; `docs/protocol.md` updated; StrongBox sign latency measurement logged as owed. |
-| **V2 Vouched trust** | `isGroupTrusted`, pin sources and precedence in both trust stores, planner dialing of vouched members, call-frame gates, UI labels and Verify, attachment and tip exclusions, `MAX_MEMBERS = 20` for v2. **Requires the per-mode session cap first** (`SessionHardeningPolicy` allows 8; 20 members need up to 19). | Owner device check with at least 4 devices, 2 of which have never paired (backlog entry added with V2). |
+| **V2 Vouched trust** | `isGroupTrusted`, pin sources and precedence in both trust stores, planner dialing of vouched members, call-frame gates, UI labels and Verify, attachment and tip exclusions, `MAX_MEMBERS = 20` for v2. **Required the session ceiling first: done 2026-09-29, ADR-057.** (was: `SessionHardeningPolicy` allows 8; 20 members need up to 19). | Owner device check with at least 4 devices, 2 of which have never paired (backlog entry added with V2). |
 | **V3 Scale measurement** | Parked (ADR-056, FO-05). | — |
 
 ## 9. Owner decisions needed

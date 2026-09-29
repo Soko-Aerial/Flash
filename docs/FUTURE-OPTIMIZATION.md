@@ -130,7 +130,7 @@ connections plan is unblocked for immediate implementation.
 - Every number tagged *(measure)* in the plans stays an **estimate** and is documented as one. Nobody may cite it as data.
 - The group size target for the trust-model work is **20** (ADR-044 V2). **32 stays parked**: ADR-044 makes it depend on V3,
   which is this measurement. Nothing implements or advertises 32 until FO-05 is done.
-- The session cap (`SessionHardeningPolicy`, 8) is designed from the group size and the mode by reasoning, with the cost per
+- The session cap (`SessionHardeningPolicy`, 24 since ADR-057; it was 8) is designed from the group size and the mode by reasoning, with the cost per
   session unmeasured; the values chosen are labelled estimates and revisited here.
 - ECO's "about 1 minute" delivery bound is a design target, not a verified result.
 - MEAS-01 (PC0, the baseline) is **not** parked by this decision. It stays in the measure-last list (owner decision P8).

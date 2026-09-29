@@ -1894,7 +1894,7 @@ happen in practice, so the caps would exist only on paper.
   device is a single point of trust for the group.
 - **Found 2026-09-28:** every host caps live sessions at 8 (`SessionHardeningPolicy`). A mesh group above 9
   members cannot connect fully until that cap is raised; the per-mode cap is decided in presence phase PC2 and
-  must land before V2 sets `MAX_MEMBERS = 20`.
+  must land before V2 sets `MAX_MEMBERS = 20`. **Done 2026-09-29: ADR-057 (ceiling 24, dial budget 20).**
 
 ### Phases
 - **V0 Threat review:** a malicious owner; a compromised member device; a replayed or forged `Add`; a key change; a
@@ -1971,7 +1971,8 @@ what they received.
   yet learned about cannot teach it the roster until the owner's next `State`. F-3, F-6, F-9 remain for V1.
 - **V1** signed membership and messages for v2 groups, HELLO `gv`, `docs/protocol.md`, golden vectors, persistence migration.
 - **V2** vouched trust, pin sources in both trust stores, planner dialing of vouched members (read `ConnectionPlanner` first;
-  V0 did not trace it), `MAX_MEMBERS = 20`. **Prerequisite: the per-mode session cap** (`SessionHardeningPolicy` allows 8).
+  V0 did not trace it), `MAX_MEMBERS = 20`. **Prerequisite done 2026-09-29 (ADR-057):** the session ceiling is 24 and the dial budget 20; V2 adds a test that
+  `MAX_MEMBERS - 1` fits the budget, because `core:network` cannot see `GroupPolicy`.
 
 **Owner decisions pending (recommended defaults given; V1a does not need them):** (1) sign group messages, recommended yes;
 (2) legacy groups are not upgraded in place, recommended yes.
@@ -2319,6 +2320,7 @@ safe for mixed pairs, and switching mode must not drop anyone.
 6. **Session cap stays a uniform 8** until PC6 measures the cost per session.
    *(Update 2026-09-29, ADR-056: PC6 is postponed, FO-05. The per-mode cap will be set by reasoning, from group size and
    mode, with its numbers labelled estimates. It is no longer waiting for a measurement.)*
+   *(Update 2026-09-29, ADR-057: done. The ceiling is 24 for every mode; the modes differ in what they dial.)*
 
 ### Alternatives considered
 - **Reconnect on a mode change:** simple, but drops calls and transfers and causes a handshake storm.
@@ -2682,3 +2684,68 @@ a queue behind device measurements (see decision P8, "measure last").
 
 ### Revisit when
 The owner reprioritises; each item's own "Bring it back when" in `FUTURE-OPTIMIZATION.md`.
+
+
+## ADR-057 — Session ceiling 24 for every mode; STANDARD and BOOST limit their own dials in a crowd
+
+### Date
+2026-09-29
+
+### Status
+**IMPLEMENTED, device check pending (SC-01, SC-02).** Every number here is a reasoned estimate, not a measurement (FO-05,
+ADR-056). It completes the "per-mode session cap" item the owner ordered after the group trust model's V1a (ADR-056 item 3).
+
+### Context
+`SessionHardeningPolicy` allowed 8 live sessions on every host. A 9th peer was refused ("session cap reached") and both sides
+retried every 5 s, so a group above 9 members could not form a full mesh. ADR-044 V2 raises groups to 20 members, which needs
+19 sessions per phone. The plan (PC2, ADR-045 item 6, ADR-048 item 6) had left "the cap per mode" open, waiting for PC6, which
+ADR-056 postponed.
+
+Facts from the code that shape the answer:
+- Admission is enforced in one place per host (`WsFlashNetwork.registerSession`, `JvmWsFlashNetwork`), first-come, and a
+  replacement of an existing peer's session bypasses the cap.
+- **ECO never refuses an incoming session** and only parks sessions it dialed (ADR-048, controller doc item 4). So an ECO
+  phone in a group of STANDARD phones holds every inbound session; a lower ECO ceiling would break that invariant.
+- What differs between modes is how many sessions a device *asks for*: ECO dials ring neighbours plus active and call peers
+  (`EcoLinkSelector`); STANDARD and BOOST dial every discovered device (`ConnectionPlanner`, which has no pairing rule).
+- Each live session pins one `Dispatchers.IO` read thread (blocking socket read with a timeout). The pool is max(64, cores)
+  and shared with the whole app.
+
+### Decision
+1. **One admission ceiling, 24, for every mode and hardware tier.** 19 group peers, plus one call or transfer peer outside
+   the group, one pairing peer, and slack for a duplicate being replaced and a reconnect in flight (19 + 1 + 1 + 3 = 24).
+   24 pinned read threads leave 40 of 64 for everything else.
+2. **`DIAL_HEADROOM = 4`, `DIAL_BUDGET = 20`.** STANDARD and BOOST dial everyone while the devices around fit the budget, so
+   a normal room behaves exactly as before. Above it, `DialBudget` returns the set the planner may dial: sessions already
+   held, busy (in-call) peers, then contacts (paired peers and group members), then strangers, ranked by device id inside each
+   class so the answer is stable. While the Nearby screen is open the limit is the full ceiling (the user is looking for
+   someone to pair with). ECO is unchanged. Nothing is closed: the budget only stops new dials, and dial on demand, gateway
+   probes and sweep hits ignore it (as they do for ECO).
+3. **No per-mode or per-tier admission ceiling.** A mode changes what a device asks for, not what it admits.
+
+### Alternatives considered
+- **A different ceiling per mode (for example ECO 8, STANDARD 24).** Rejected: an ECO phone would refuse inbound sessions,
+  the STANDARD peers would redial every 5 s, and a group of 20 would never settle. It contradicts ADR-048.
+- **A lower ceiling on LOW-tier phones.** Rejected: it would sit below the group's need and produce the same refuse-and-retry
+  churn, which costs more radio than holding the sessions. The LOW tier already gets longer keepalive floors.
+- **Raise the ceiling and stop there.** Rejected: STANDARD dials strangers too, so in a crowd a phone would fill 24 slots
+  with them and refuse the peers that matter. The dial budget is the small rule that prevents it.
+- **A much higher ceiling (32 or more).** Rejected until measured: it is the same estimate with less headroom against the
+  thread pool, and groups above 20 are parked (FO-05).
+
+### Consequences
+- A 20-member group can form a full mesh on every host (device check SC-01).
+- **Known gap, kept on purpose:** strangers that dial *in* are admitted first-come up to the ceiling. With 24 or more
+  strangers dialing one phone the ceiling can still fill, and a paired peer that arrives afterwards is refused. The headroom
+  only protects against this device's own dials. Closing it means priority admission (contacts displace strangers), which
+  needs the network layer to know contacts (a lambda from each host) and a rule for which session to evict. Not built;
+  revisit if a crowded-room device check shows it.
+- ECO with the Nearby screen open can still want every stranger (its own rule); admission bounds it.
+- Handshake cost: a Wi-Fi rejoin now re-handshakes up to 19 peers per phone instead of 7. `ReconnectStagger` (ADR-045)
+  spreads a storm; PC0/PC6 would measure it (FO-05).
+- V2 must assert `GroupPolicy.MAX_MEMBERS - 1 <= ConnectionModePolicy.DIAL_BUDGET` where both are visible.
+- PC0 numbers taken before this change were measured at a ceiling of 8 (runbook note).
+
+### Revisit when
+A device check shows refusals with contacts present (build priority admission), FO-05 measures the cost of a session (tune
+24, 4 and 20), or groups are raised above 20.

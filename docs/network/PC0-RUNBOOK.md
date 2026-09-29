@@ -18,6 +18,9 @@ These numbers decide how aggressive ECO must be (PC5) and are the baseline PC1 i
   sessions today. The 19-peer run therefore measures **today's behaviour with 19 devices around**: 8 held
   sessions plus 11 peers refused over and over ("session cap reached"). Both sides retry every 5 s, so this
   run measures the cost of that churn.
+  **Superseded 2026-09-29 (ADR-057):** the ceiling is now **24** in every mode, so a 19-peer run holds 19 sessions and
+  no longer produces refusals; it measures the cost of a 20-member group. Refusals now start above 24 peers. Any PC0
+  number recorded before that date was taken against the old ceiling of 8.
 - **The engine holds a partial wake lock for its whole lifetime** (`DiscoveryEngineHolder.acquirePowerLocks`),
   so the CPU never suspends while Flash runs. Counting "wake-ups" says nothing. Measure CPU time, Wi-Fi traffic
   and battery drain, always against the **0-peer run** of the same phone.

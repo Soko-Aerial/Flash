@@ -448,13 +448,34 @@ by later testing without anyone recording it: confirm, then mark PASS here **and
   unit tests only: `RealFlashChatRepositoryTest` (`F-1`, `F-2`, `F-4`, `F-5` cases), `OutgoingSyncRequestTest`.
 - **Status:** TODO
 
+## 4d. Session ceiling and dial budget (ADR-057, `docs/network/PRESENCE-CONNECTIONS-PLAN.md` "Session ceiling")
+
+### SC-01 — A phone holds a 20-member group's sessions (ceiling 24)
+- **Setup:** PC with `./gradlew :core:engine:peerFarm --args="--count=20 --minutes=10"` (see `PC0-RUNBOOK.md` for the Gradle
+  environment and the one-network rule), one phone on this build in STANDARD, screen on, same Wi-Fi. Phone log via
+  `tools/pc0/phone-baseline.ps1`.
+- **Steps:** start the farm, wait 2 minutes, count live sessions on the phone (the Nearby/status screen or `activeSessions`
+  lines in the log). Then switch the phone to BOOST and to ECO for 1 minute each.
+- **Pass:** 20 sessions up in STANDARD and BOOST; **zero** `session cap reached` lines; in ECO the phone still holds the
+  inbound sessions (it never refuses one) and dials only its neighbours.
+- **Source:** ADR-057. **Status:** TODO
+
+### SC-02 — Above the ceiling: refuses only the excess, and a crowd does not starve contacts the phone dials itself
+- **Setup:** as SC-01 with `--count=30`, plus a second real phone paired with the first (both on this build).
+- **Steps:** start the farm, wait 3 minutes, note the sessions on phone 1. Open Nearby on phone 1, then close it.
+- **Pass:** phone 1 holds at most 24 sessions; `session cap reached` appears only for peers above that; with Nearby closed the
+  dial filter log shows the budget in use (`Dial filter` lines, added with this change). **Expected gap, not a failure:**
+  farm peers dial *in* first-come, so the paired phone may be refused if the farm fills all 24 first; record what happened.
+  If it does, that is the trigger for priority admission (ADR-057, Revisit when).
+- **Source:** ADR-057. **Status:** TODO
+
 ## 5. Measurements — do these last
 
 They replace every *(measure)* estimate in the plans and decide tuning. Record each in `logs/experiments.md`.
 
 | ID | What | Procedure | Decides | Status |
 |---|---|---|---|---|
-| MEAS-01 | **PC0** baseline: screen-off battery/hour with 0/1/4/8 idle sessions and 19 peers; reconnect after a Wi-Fi toggle | [`docs/network/PC0-RUNBOOK.md`](../network/PC0-RUNBOOK.md) (peer farm + `tools/pc0/phone-baseline.ps1`) | How aggressive ECO must be | TODO |
+| MEAS-01 | **PC0** baseline: screen-off battery/hour with 0/1/4/8 idle sessions and 19 peers (held since ADR-057 raised the ceiling to 24; before it: 8 held + 11 refused); reconnect after a Wi-Fi toggle | [`docs/network/PC0-RUNBOOK.md`](../network/PC0-RUNBOOK.md) (peer farm + `tools/pc0/phone-baseline.ps1`) | How aggressive ECO must be | TODO |
 | MEAS-02 | **PC6** scale: 20 peers per mode (battery, reconnect storm, delivery latency to a screen-off ECO phone) | Same rig as PC0 | ECO's ~1 min bound; whether groups go to 32; then **PC7** tuning and the default mode | **POSTPONED** (owner 2026-09-29, ADR-056, [FO-05](../FUTURE-OPTIMIZATION.md)). Not deleted, not blocking. Group size stays capped at 20 until it is done. |
 | MEAS-03 | **G0** calls: 3-way video CPU, temperature and dropped frames; decoder instances; voice with 4/8/12 connections; 2.4 vs 5 GHz throughput | GROUP-VIDEO-PLAN §6 G0 | The §4.2 budget tables | TODO |
 | MEAS-04 | **G0 codecs** C1 (desktop VP9 on webrtc-java 0.19.0), C2 (`MediaCodecList` on the BelFone and a mid-range phone), C3 (VP8 software vs H.264/VP9 hardware, 540p, 10 min) | GROUP-VIDEO-PLAN §4.6 | Whether **G4b** is built | TODO |
