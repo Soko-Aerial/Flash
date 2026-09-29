@@ -158,11 +158,14 @@ public class JmdnsTransport(
     private val dispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val logInfo: (String) -> Unit = { FlashLog.i(TAG, it) },
     private val logWarn: (String) -> Unit = { FlashLog.w(TAG, it) },
+    /** DR5: keep virtual and tunnel adapters among the bound addresses; see [RealJmdnsBridge]. */
+    includeVirtual: () -> Boolean = { false },
     /** Test seam. Production leaves it null and gets [RealJmdnsBridge]. */
     bridgeOverride: JmdnsBridge? = null,
 ) : FlashRadioTransport {
 
     private val bridge: JmdnsBridge = bridgeOverride ?: RealJmdnsBridge(
+        includeVirtual = includeVirtual,
         logWarn = { message, error -> logWarn("$message: ${error?.message ?: "?"}") },
     )
 

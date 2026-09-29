@@ -145,6 +145,7 @@ class DesktopNearbyStateTest {
         discovered: List<FlashDiscoveredEndpoint>,
         ui: FlashPairingCoordinator.PairingUi? = null,
         ready: Boolean = true,
+        liveSessions: Int = 0,
     ) = nearbyUiStateOf(
         trusted = trusted,
         discovered = discovered,
@@ -153,6 +154,7 @@ class DesktopNearbyStateTest {
         ready = ready,
         localFriendlyName = "Flash Desktop",
         localDeviceId = LOCAL_ID,
+        liveSessions = liveSessions,
     )
 
     /**
@@ -192,9 +194,24 @@ class DesktopNearbyStateTest {
             ready = true,
             localFriendlyName = "Flash Desktop",
             localDeviceId = LOCAL_ID,
+            liveSessions = 0,
             scan = NearbyNetworkScan.Running(10),
         )
         assertEquals(NearbyNetworkScan.Running(10), state.scan)
+    }
+
+    /**
+     * DR5: the quiet-network flag is derived from the same inputs as the rows, so it cannot disagree with them: a paired
+     * peer that is neither discovered nor connected makes it true; a live session (a peer discovery cannot see) or a
+     * discovered device makes it false.
+     */
+    @Test
+    fun `quiet network is flagged only when a paired peer is unreachable by every route`() {
+        val paired = listOf(FlashTrustedPeer(id = PEER_ID, name = "Flash Alpaca"))
+        assertTrue(stateOf(trusted = paired, discovered = emptyList()).discoveryQuiet)
+        assertTrue(!stateOf(trusted = paired, discovered = emptyList(), liveSessions = 1).discoveryQuiet)
+        assertTrue(!stateOf(trusted = paired, discovered = listOf(endpoint(PEER_ID, "Flash Alpaca"))).discoveryQuiet)
+        assertTrue(!stateOf(trusted = emptyList(), discovered = emptyList()).discoveryQuiet)
     }
 
     private fun endpoint(id: String, name: String) = FlashDiscoveredEndpoint(

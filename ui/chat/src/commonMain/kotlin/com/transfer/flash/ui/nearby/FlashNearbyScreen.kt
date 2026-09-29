@@ -137,6 +137,12 @@ data class NearbyUiState(
     val pairingSecondsLeft: Int = 0,
     val isLoading: Boolean = false,
     val scan: NearbyNetworkScan = NearbyNetworkScan.Idle,
+    /**
+     * The network looks like it is hiding devices: paired peers exist and none is reachable (DR5). The page shows
+     * its hint only after this has held for [FlashNearbyMath.QUIET_HINT_DELAY_MS]. Hosts compute it with
+     * [FlashNearbyMath.discoveryQuiet].
+     */
+    val discoveryQuiet: Boolean = false,
 )
 
 /** Pure helpers backing the nearby page (JVM-testable). */
@@ -155,6 +161,20 @@ object FlashNearbyMath {
         isScanning -> "Scanning…"
         else -> "Scan paused"
     }
+
+    /** How long [NearbyUiState.discoveryQuiet] must hold, on screen, before the quiet-network hint appears (DR5). */
+    const val QUIET_HINT_DELAY_MS: Long = 30_000L
+
+    const val QUIET_HINT_TITLE: String = "Can't find your devices"
+    const val QUIET_HINT_BODY: String = "This network may be hiding devices from Flash."
+
+    /**
+     * Whether the network looks like it is hiding devices (DR5): discovery is running, there are paired peers, and
+     * no peer is discovered **and** no session is live. A live session with a peer discovery cannot see (a
+     * remembered route, an inbound dial) means the peer is reachable, so the hint would be false.
+     */
+    fun discoveryQuiet(pairedPeers: Int, discoveredPeers: Int, liveSessions: Int, isDiscovering: Boolean): Boolean =
+        isDiscovering && pairedPeers > 0 && discoveredPeers == 0 && liveSessions == 0
 
     /** The line under the status for a "Scan network" run, or null when there is nothing to say. */
     fun scanCaption(scan: NearbyNetworkScan): String? = when (scan) {
@@ -341,6 +361,15 @@ private fun PopulatedContent(
 ) {
     val haptics = rememberFlashHaptics()
     val motion = FlashTheme.motion
+    // DR5: the hint waits for 30 s of continuous quiet while this page is on screen; the flag going false resets it.
+    var quietLongEnough by remember { mutableStateOf(false) }
+    LaunchedEffect(state.discoveryQuiet) {
+        quietLongEnough = false
+        if (state.discoveryQuiet) {
+            delay(FlashNearbyMath.QUIET_HINT_DELAY_MS)
+            quietLongEnough = true
+        }
+    }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         state = listState,
@@ -354,6 +383,16 @@ private fun PopulatedContent(
     ) {
         item(key = "header") { HeaderBlock(state, onManualConnectClick, onScanNetworkClick) }
         item(key = "identity") { IdentityCard(state.identity) }
+        if (state.discoveryQuiet && quietLongEnough) {
+            item(key = "quiet-hint") {
+                QuietNetworkHint(
+                    scan = state.scan,
+                    onScanNetworkClick = onScanNetworkClick,
+                    onManualConnectClick = onManualConnectClick,
+                    modifier = flashAnimateItem(motion),
+                )
+            }
+        }
         if (state.peers.isNotEmpty()) {
             item(key = "label-discovered") { SectionLabel("DISCOVERED") }
             items(FlashNearbyMath.sortedPeers(state.peers), key = { "peer-${it.id}" }) { peer ->
@@ -887,6 +926,76 @@ private fun ScanningEmptyPanel(
             }
         }
         ScanCaption(scan, Modifier.padding(top = FlashSpacing.space12))
+    }
+}
+
+/**
+ * DR5: the card that says the network may be hiding devices, with the two actions that can still work
+ * (`docs/ui/nearby-page.md` addendum). An action the host did not supply is not shown.
+ */
+@Composable
+private fun QuietNetworkHint(
+    scan: NearbyNetworkScan,
+    onScanNetworkClick: (() -> Unit)?,
+    onManualConnectClick: (() -> Unit)?,
+    modifier: Modifier = Modifier,
+) {
+    val colors = FlashTheme.colors
+    val scanning = scan is NearbyNetworkScan.Running
+    Column(
+        modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(FlashShapes.radius12))
+            .background(colors.backgroundSurface)
+            .padding(FlashSpacing.space12),
+    ) {
+        Column(
+            Modifier.semantics(mergeDescendants = true) {
+                contentDescription = "${FlashNearbyMath.QUIET_HINT_TITLE}. ${FlashNearbyMath.QUIET_HINT_BODY}"
+            },
+        ) {
+            FlashText(
+                text = FlashNearbyMath.QUIET_HINT_TITLE,
+                style = FlashTheme.typography.bodyEmphasis,
+                color = colors.textPrimary,
+            )
+            FlashText(
+                text = FlashNearbyMath.QUIET_HINT_BODY,
+                style = FlashTheme.typography.metadataDefault,
+                color = colors.textSecondary,
+            )
+        }
+        if (onScanNetworkClick != null || onManualConnectClick != null) {
+            Row {
+                if (onScanNetworkClick != null) {
+                    HintAction(
+                        label = if (scanning) "Scanning…" else "Scan network",
+                        enabled = !scanning,
+                        onClick = onScanNetworkClick,
+                    )
+                }
+                if (onManualConnectClick != null) {
+                    HintAction(label = "Connect by IP", enabled = true, onClick = onManualConnectClick)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HintAction(label: String, enabled: Boolean, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .height(FlashDimensions.minTouchTarget)
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(end = FlashSpacing.space16),
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        FlashText(
+            text = label,
+            style = FlashTheme.typography.captionEmphasis,
+            color = if (enabled) FlashTheme.colors.accentPrimary else FlashTheme.colors.textTertiary,
+        )
     }
 }
 

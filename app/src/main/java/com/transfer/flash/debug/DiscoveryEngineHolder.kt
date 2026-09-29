@@ -643,7 +643,11 @@ object DiscoveryEngineHolder {
                 com.transfer.flash.core.discovery.multicast.AndroidMulticastSocketFactory(appContext),
             directory = com.transfer.flash.core.discovery.core.StandardEndpointDirectory(),
         )
-        val engine = CompositeDiscovery(transports = listOf(transport, multicastTransport))
+        // DR5: one line saying which source sees which peer, so a field report names the path that failed.
+        val engine = CompositeDiscovery(
+            transports = listOf(transport, multicastTransport),
+            sourceLog = { Log.i(TAG_WS, it) },
+        )
 
         // Trust store is shared by chat (peer-name resolution), pairing (persisted trust), and TLS TOFU pinning.
         trustStoreRef = trustStore

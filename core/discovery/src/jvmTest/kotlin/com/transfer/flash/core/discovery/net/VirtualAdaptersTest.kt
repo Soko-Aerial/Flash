@@ -1,6 +1,7 @@
 package com.transfer.flash.core.discovery.net
 
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -17,7 +18,6 @@ class VirtualAdaptersTest {
         assertTrue(virtual("eth6", "VirtualBox Host-Only Ethernet Adapter"))
         assertTrue(virtual("eth7", "TAP-Windows Adapter V9"))
         assertTrue(virtual("eth8", "Wintun Userspace Tunnel"))
-        assertTrue(virtual("wlan5", "Microsoft Wi-Fi Direct Virtual Adapter"))
         assertTrue(virtual("eth9", "Tailscale Tunnel"))
         assertTrue(virtual("eth10", "Cisco AnyConnect Secure Mobility Client Virtual Miniport Adapter"))
         assertTrue(virtual("eth11", "Bluetooth Device (Personal Area Network)"))
@@ -43,8 +43,51 @@ class VirtualAdaptersTest {
         assertFalse(virtual("eth0", "Realtek PCIe GbE Family Controller"))
         assertFalse(virtual("eth1", "Intel(R) Ethernet Connection (7) I219-V"))
         assertFalse(virtual("eth2", "Remote NDIS based Internet Sharing Device"))
+        // The Windows Mobile Hotspot adapter: phones that join the hotspot are peers on it.
+        assertFalse(virtual("wlan5", "Microsoft Wi-Fi Direct Virtual Adapter"))
+        assertFalse(virtual("wlan6", "Microsoft Wi-Fi Direct Virtual Adapter #2"))
         assertFalse(virtual("en0", "en0"))
         assertFalse(virtual("wlp3s0", "wlp3s0"))
         assertFalse(virtual("enp5s0", "enp5s0"))
+    }
+
+    private fun select(vararg adapters: Pair<String, String>, includeVirtual: Boolean = false) =
+        VirtualAdapters.select(adapters.toList(), includeVirtual) { (name, display) -> virtual(name, display) }
+
+    @Test
+    fun `selection keeps the real adapters and reports the virtual ones it skipped`() {
+        val wifi = "wlan0" to "Intel(R) Wi-Fi 6 AX201 160MHz"
+        val hyperV = "eth3" to "Hyper-V Virtual Ethernet Adapter"
+        val vpn = "eth9" to "Tailscale Tunnel"
+        val selection = select(wifi, hyperV, vpn)
+        assertEquals(listOf(wifi), selection.kept)
+        assertEquals(listOf(hyperV, vpn), selection.skipped)
+        assertFalse(selection.fellBack)
+    }
+
+    @Test
+    fun `including virtual adapters skips nothing`() {
+        val wifi = "wlan0" to "Intel(R) Wi-Fi 6 AX201 160MHz"
+        val hyperV = "eth3" to "Hyper-V Virtual Ethernet Adapter"
+        val selection = select(wifi, hyperV, includeVirtual = true)
+        assertEquals(listOf(wifi, hyperV), selection.kept)
+        assertTrue(selection.skipped.isEmpty())
+    }
+
+    /** A Hyper-V guest's only adapter looks virtual; a filter that emptied the list would leave it with no network. */
+    @Test
+    fun `selection never leaves the host with nothing`() {
+        val only = "eth0" to "Microsoft Hyper-V Network Adapter"
+        val selection = select(only)
+        assertEquals(listOf(only), selection.kept)
+        assertTrue(selection.skipped.isEmpty())
+        assertTrue(selection.fellBack)
+    }
+
+    @Test
+    fun `an empty host stays empty and is not reported as a fallback`() {
+        val selection = select()
+        assertTrue(selection.kept.isEmpty())
+        assertFalse(selection.fellBack)
     }
 }

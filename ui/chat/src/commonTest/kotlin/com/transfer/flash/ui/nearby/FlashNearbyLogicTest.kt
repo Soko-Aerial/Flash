@@ -4,7 +4,9 @@ import com.transfer.flash.core.common.model.FlashDeviceKind
 import com.transfer.flash.core.messaging.model.FlashNetworkTransport
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /** JVM tests for UI-048 nearby-page pure helpers. */
 class FlashNearbyLogicTest {
@@ -125,6 +127,29 @@ class FlashNearbyLogicTest {
             "Scanned a moment ago. Try again shortly.",
             FlashNearbyMath.scanCaption(NearbyNetworkScan.Unavailable(NearbyScanBlock.TOO_SOON)),
         )
+    }
+
+    /** DR5: the quiet-network flag needs paired peers, a running scan, and neither a discovered peer nor a live session. */
+    @Test
+    fun `quiet network needs paired peers and nothing reachable`() {
+        assertTrue(FlashNearbyMath.discoveryQuiet(pairedPeers = 2, discoveredPeers = 0, liveSessions = 0, isDiscovering = true))
+        // Nobody to look for: an empty network is normal, not suspicious.
+        assertFalse(FlashNearbyMath.discoveryQuiet(pairedPeers = 0, discoveredPeers = 0, liveSessions = 0, isDiscovering = true))
+        // Something is discovered: discovery works.
+        assertFalse(FlashNearbyMath.discoveryQuiet(pairedPeers = 2, discoveredPeers = 1, liveSessions = 0, isDiscovering = true))
+        // A live session with a peer discovery cannot see: reachable, so the hint would be false.
+        assertFalse(FlashNearbyMath.discoveryQuiet(pairedPeers = 2, discoveredPeers = 0, liveSessions = 1, isDiscovering = true))
+        // Discovery is not running (radios off, stack booting): that is a different message.
+        assertFalse(FlashNearbyMath.discoveryQuiet(pairedPeers = 2, discoveredPeers = 0, liveSessions = 0, isDiscovering = false))
+    }
+
+    @Test
+    fun `quiet hint waits thirty seconds and names no protocol`() {
+        assertEquals(30_000L, FlashNearbyMath.QUIET_HINT_DELAY_MS)
+        val copy = (FlashNearbyMath.QUIET_HINT_TITLE + " " + FlashNearbyMath.QUIET_HINT_BODY).lowercase()
+        for (jargon in listOf("multicast", "mdns", "port", "tcp", "subnet", "broadcast", "45822")) {
+            assertFalse(jargon in copy, jargon)
+        }
     }
 
     private fun transport() = FlashNetworkTransport.Lan

@@ -1013,6 +1013,11 @@ private fun FlashShell(
     val discoveryState by (engine.discovery?.state ?: fallbackDiscoveryState).collectAsState()
     // DR3: the manual "Scan network" outcome. Read by the `nearby` derivation below.
     val sweepState by DiscoveryEngineHolder.sweepState.collectAsState()
+    // DR5: the quiet-network hint needs the live session count, so this is collected before the `nearby`
+    // derivation that reads it (and again by the rows below).
+    val activeSessions by remember(engine.network) {
+        engine.network?.activeSessions ?: MutableStateFlow<Map<FlashDeviceId, FlashSession>>(emptyMap())
+    }.collectAsState()
     // C2/C4: pairing dialog + trusted peers come from the PairingCoordinator once booted. Fallbacks
     // are remembered UNCONDITIONALLY and swap to the coordinator flows once ready (never remember
     // inside a `?:` — conditional remember desyncs the slot table).
@@ -1223,13 +1228,16 @@ private fun FlashShell(
                 pairingPhase = pairingModel?.phase ?: FlashPairingPhase.Idle,
                 pairingSecondsLeft = pairingModel?.secondsLeft ?: 0,
                 scan = sweepState.toNearbyScan(),
+                discoveryQuiet = FlashNearbyMath.discoveryQuiet(
+                    pairedPeers = trustedPeers.size,
+                    discoveredPeers = discoveredEndpoints.size,
+                    liveSessions = activeSessions.size,
+                    isDiscovering = discoveryState.isDiscovering,
+                ),
             )
         }
     }
 
-    val activeSessions by remember(engine.network) {
-        engine.network?.activeSessions ?: MutableStateFlow<Map<FlashDeviceId, FlashSession>>(emptyMap())
-    }.collectAsState()
     val activeSessionPeerIds = remember(activeSessions) {
         activeSessions.keys.map { it.value }.toSet()
     }

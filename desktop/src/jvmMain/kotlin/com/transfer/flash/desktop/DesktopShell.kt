@@ -315,6 +315,7 @@ public fun DesktopShell(
                 ready = ready,
                 localFriendlyName = engine.localFriendlyName,
                 localDeviceId = engine.localDeviceId,
+                liveSessions = activeSessions.size,
                 scan = sweepState.toNearbyScan(),
             )
         }
@@ -2030,6 +2031,7 @@ internal fun nearbyUiStateOf(
     ready: Boolean,
     localFriendlyName: String,
     localDeviceId: String,
+    liveSessions: Int,
     scan: NearbyNetworkScan = NearbyNetworkScan.Idle,
 ): NearbyUiState {
     val trustedIds = trusted.mapTo(HashSet()) { it.id }
@@ -2073,6 +2075,12 @@ internal fun nearbyUiStateOf(
         pairingPhase = pairingPhaseOf(ui?.phase),
         pairingSecondsLeft = ui?.secondsLeft ?: 0,
         scan = scan,
+        discoveryQuiet = FlashNearbyMath.discoveryQuiet(
+            pairedPeers = trusted.size,
+            discoveredPeers = discovered.size,
+            liveSessions = liveSessions,
+            isDiscovering = discoveryState.isDiscovering,
+        ),
     )
 }
 

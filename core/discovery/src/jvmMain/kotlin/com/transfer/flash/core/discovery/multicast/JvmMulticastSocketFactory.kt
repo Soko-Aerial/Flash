@@ -5,6 +5,7 @@
 package com.transfer.flash.core.discovery.multicast
 
 import com.transfer.flash.core.common.logging.FlashLog
+import com.transfer.flash.core.discovery.net.VirtualAdapters
 import java.net.DatagramPacket
 import java.net.Inet4Address
 import java.net.Inet6Address
@@ -30,7 +31,12 @@ import java.net.SocketTimeoutException
  * OS-neutral by the project's rule for `jvmMain`: no path literals, no Windows-only assumptions.
  */
 public class JvmMulticastSocketFactory(
-    private val interfaces: () -> List<NetworkInterface> = ::multicastCapableInterfaces,
+    /**
+     * DR5: keep virtual and tunnel adapters (Hyper-V, VPN, VM host-only) in the announce set. Read on every bind so a
+     * changed setting applies at the next rebind. Ignored when [interfaces] is supplied.
+     */
+    private val includeVirtual: () -> Boolean = { false },
+    private val interfaces: () -> List<NetworkInterface> = { multicastCapableInterfaces(includeVirtual()) },
 ) : MulticastSocketFactory {
 
     override fun bind(group: String, port: Int): List<MulticastSocketBinding> {
@@ -157,9 +163,9 @@ private class JvmMulticastBinding(
  * skipped because the group is IPv4 and a link-local IPv6 source cannot be dialed without its scope
  * id. Also see the Android factory, which omits the multicast-capable check on purpose.
  */
-private fun multicastCapableInterfaces(): List<NetworkInterface> =
+private fun multicastCapableInterfaces(includeVirtual: Boolean): List<NetworkInterface> =
     runCatching {
-        NetworkInterface.getNetworkInterfaces()?.toList().orEmpty().filter { candidate ->
+        val usable = NetworkInterface.getNetworkInterfaces()?.toList().orEmpty().filter { candidate ->
             runCatching {
                 candidate.isUp &&
                     candidate.supportsMulticast() &&
@@ -167,6 +173,9 @@ private fun multicastCapableInterfaces(): List<NetworkInterface> =
                     candidate.inetAddresses.toList().any { it is Inet4Address }
             }.getOrDefault(false)
         }
+        // DR5: a Hyper-V or VPN adapter supports multicast, so it passed the filter above, but a beacon announced on
+        // it hands peers an address they cannot reach.
+        VirtualAdapters.selectInterfaces(usable, includeVirtual, "MulticastTransport")
     }.getOrDefault(emptyList())
 
 /**
