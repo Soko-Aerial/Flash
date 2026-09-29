@@ -1,5 +1,12 @@
 # Current Handoff
 
+## 2026-09-29 — G6 code done: group video health warnings (UI-050d)
+- `CallHealthMonitor`: MODERATE → WARM banner + struggling; SEVERE+ → HOT, receive 1, `thermal` denies; CPU ≥ 40 %
+  of all cores for 30 s (provisional) → CPU banner; software decode with ≥ 2 videos → banner (not on HIGH/desktop;
+  owner to confirm, plan §8 G6). "Show fewer" = `FlashCalling.setShowFewerVideos`.
+- Tests green (calling jvm 103 / host 115, callui 20, desktop 86, app compile). Not device-tested (P8).
+- Next: G7 caps (video 8, voice 12).
+
 ## 2026-09-29 — G5 code done: group video focus UI (UI-050c)
 - Compact layout (receive limit 1) = main tile + avatar strip; grid tiles tappable; tap pins, tap again unpins
   (`FlashCallScreen(onVideoFocus)` → `FlashCalling.setVideoFocus`). State: `compactVideo`, `videoFocusPeerId`,

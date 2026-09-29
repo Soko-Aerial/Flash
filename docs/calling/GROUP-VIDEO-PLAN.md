@@ -1,6 +1,6 @@
 # Group calls: request-based video, tier and band budgets, size caps
 
-**Status (2026-09-29): G1–G5 code done (unit-tested, not device-tested); G4b not built (its gate is the
+**Status (2026-09-29): G1–G6 code done (unit-tested, not device-tested); G4b not built (its gate is the
 G0 C3 measurement). G0 measurements deferred to the final test
 pass (owner decision P8 in the presence plan). Owner decisions recorded 2026-09-24.** Written 2026-09-23 from the owner's
 requirements and a code review of `core/calling` and `ui/callui`.
@@ -340,6 +340,31 @@ No open questions remain. Next: G0 measurements (now including C1–C3), and ADR
 - Tests: `FlashGroupVideoGridTest` +2 (main-tile fallback, tap pin/unpin and labels). `:ui:callui` 19.
 - **Pending device check:** see UI-050c's testing checklist (LOW follows the speaker, a chip tap moves the video in
   about 1 s, a grid tap pins, TalkBack labels).
+
+### G6 — code done 2026-09-29 (device check pending, P8; UI-050d)
+- `CallHealthMonitor` (pure, commonMain) turns each stats sample into a verdict: thermal MODERATE → WARM warning and
+  "struggling"; SEVERE or worse → HOT: receive 1, `acceptNew = false` (new requests get `vdeny reason=thermal`), and
+  the banner says so; own-process CPU ≥ 40 % of all cores for 30 s → CPU warning and "struggling" *(threshold
+  provisional, G0)*; software decoding while receiving ≥ 2 videos → SOFTWARE_DECODE warning, latched for the call.
+  "Show fewer" (`FlashCalling.setShowFewerVideos`) caps receiving at 1 until turned off. The verdict feeds
+  `GroupVideoLimits.of(…, struggling, receiveCap, acceptNew)` (G4), so a LOW device asks for 360p while struggling
+  (Q4) and a capped device switches to the compact layout (G5).
+- Sources: `ThermalGovernor.get().status` (Android `AndroidThermalGovernor`; the desktop's default is always NONE);
+  `processCpuTimeNanos()` (Android `Process.getElapsedCpuTime`, desktop `OperatingSystemMXBean.processCpuTime`) over
+  `availableCores()`; the inbound video `decoderImplementation` of legs whose picture arrives
+  (`CallHealthMonitor.isSoftwareDecoder`: libvpx, FFmpeg, libaom, dav1d, `c2.android.*`, `OMX.google.*`).
+- **Decision to confirm with the owner:** the software-decode signal is ignored on the HIGH tier (which includes
+  the desktop). The desktop always decodes VP8 in software, so the §4.5 rule as written would warn in every desktop
+  call with two videos. HIGH devices are covered by the CPU signal, which measures the actual cost. One line in
+  `FlashGroupCallSession.sampleMeshStats` changes it.
+- Not done (needs G0): the frame-drop trigger for LOW's 360p step; a measured CPU threshold.
+- UI (UI-050d, doc first): one banner above the strip/controls with **Show fewer** (none when HOT), a close button
+  (a dismissed kind stays dismissed for the call), and a "Showing one video · Show all" pill while the user's cap is on.
+- Tests: `CallHealthMonitorTest` 8; `FlashGroupVideoGridTest` +1 (banner words/actions). calling jvm 103 / host 115,
+  callui 20, desktop 86, app compile: green.
+- **Pending device check:** the UI-050d checklist (`adb shell cmd thermalservice override-status 2` / `3` on the
+  BelFone; a normal call shows nothing; a hot sender turns a new watcher down with `thermal`). Check that
+  `decoderImplementation` is reported by both backends, and log the CPU percentage of a normal 3-way call for G0.
 
 ### G4b — not built (2026-09-29)
 Its gate is measurement C3 (G0: VP8 software vs H.264 / VP9 hardware on the BelFone). Owner decision P8 put every

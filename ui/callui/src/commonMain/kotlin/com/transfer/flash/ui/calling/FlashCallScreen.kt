@@ -100,6 +100,7 @@ public fun FlashCallScreen(
     onSwitchCamera: () -> Unit,
     onDismiss: () -> Unit,
     onVideoFocus: (String?) -> Unit = {},
+    onShowFewerVideos: (Boolean) -> Unit = {},
 ) {
     val colors = FlashTheme.colors
     val ended = state.state == FlashCallState.ENDED
@@ -151,6 +152,12 @@ public fun FlashCallScreen(
             }
 
             Spacer(Modifier.weight(1.3f))
+
+            if (isVideoActive && !ended && state.isGroup) {
+                // G6 (UI-050d): heat / CPU / software-decode warning, or the "Show all" pill.
+                FlashCallHealthBanner(state = state, onShowFewerVideos = onShowFewerVideos)
+                Spacer(Modifier.height(FlashSpacing.space8))
+            }
 
             if (isVideoActive && !ended && state.isGroup && state.compactVideo) {
                 // G5 (UI-050c): everyone as a chip; a tap picks whose video the main tile shows.

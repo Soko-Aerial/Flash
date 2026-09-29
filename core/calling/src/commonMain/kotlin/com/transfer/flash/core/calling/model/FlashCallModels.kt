@@ -96,7 +96,26 @@ public data class FlashCallUiState(
     public val videoFocusPeerId: String? = null,
     /** Group video (G5): whom the main tile shows: the pinned participant, else the followed speaker. */
     public val videoMainPeerId: String? = null,
+    /** Group video (G6, UI-050d): why the device is struggling, or null when it is fine. */
+    public val healthWarning: FlashCallHealthWarning? = null,
+    /** Group video (G6): receiving is capped at one video, by "Show fewer" or automatically when hot. */
+    public val showingFewerVideos: Boolean = false,
 )
+
+/** A group video call's health warning (G6, `docs/calling/GROUP-VIDEO-PLAN.md` §4.5). */
+public enum class FlashCallHealthWarning {
+    /** The phone is warming up (thermal MODERATE). "Show fewer" is offered. */
+    WARM,
+
+    /** The phone is hot (thermal SEVERE or worse): it already receives only one video. */
+    HOT,
+
+    /** The call has kept the processor busy for a while. "Show fewer" is offered. */
+    CPU,
+
+    /** Videos are decoded in software while two or more arrive. "Show fewer" is offered. */
+    SOFTWARE_DECODE,
+}
 
 /** Connection and presence status of a participant in a group call. */
 public enum class FlashCallParticipantState {

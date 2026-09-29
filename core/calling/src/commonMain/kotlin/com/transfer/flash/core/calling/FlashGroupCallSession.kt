@@ -36,6 +36,7 @@ import com.transfer.flash.core.common.concurrent.SyncMap
 import com.transfer.flash.core.common.logging.FlashLog
 import com.transfer.flash.core.common.perf.FlashNetworkBand
 import com.transfer.flash.core.common.perf.FlashPerformanceMode
+import com.transfer.flash.core.common.perf.ThermalGovernor
 import com.transfer.flash.core.common.time.SystemTimeSource
 import kotlin.concurrent.Volatile
 import kotlin.math.roundToInt
@@ -159,6 +160,14 @@ public class FlashGroupCallSession(
 
     @Volatile
     private var videoCompactNow: Boolean = false
+
+    /** G6: heat, CPU and decoder health; used only under [videoMutex]. */
+    private val health = CallHealthMonitor()
+
+    @Volatile
+    private var healthNow: CallHealthMonitor.Verdict = CallHealthMonitor.Verdict()
+    private var lastCpuNanos: Long? = null
+    private var lastCpuAtMs: Long = 0L
 
     /**
      * Serializes media acquisition against native teardown (same contract as the 1:1
@@ -863,6 +872,7 @@ public class FlashGroupCallSession(
             videoFreeNow = videoRouter.freeSlots()
             videoFocusNow = videoRouter.pinnedPeer
             videoMainNow = videoRouter.pinnedPeer ?: videoRouter.followedPeer
+            healthNow = health.verdict()
             videoCompactNow = videoLimits().receive <= 1
             videoStates = legs.keysSnapshot().associateWith { videoRouter.receiveState(it) }
             effects.forEach { effect ->
@@ -883,8 +893,32 @@ public class FlashGroupCallSession(
         refreshUiState()
     }
 
-    /** This device's video limits now (G4; G6 adds the health inputs). */
-    private fun videoLimits(): GroupVideoLimits = GroupVideoLimits.of(performanceMode(), effectiveBand())
+    /** This device's video limits now: tier and band (G4), then heat, CPU and "Show fewer" (G6). */
+    private fun videoLimits(): GroupVideoLimits {
+        val verdict = health.verdict()
+        return GroupVideoLimits.of(
+            performanceMode(),
+            effectiveBand(),
+            struggling = verdict.struggling,
+            receiveCap = verdict.receiveCap,
+            acceptNew = verdict.acceptNew,
+        )
+    }
+
+    /**
+     * This process's share of all cores since the previous sample, in percent (G6), or null on
+     * the first sample or when the platform can't tell.
+     */
+    private fun sampleCpuPercent(nowMs: Long): Double? {
+        val cpu = processCpuTimeNanos() ?: return null
+        val previous = lastCpuNanos
+        val elapsedMs = nowMs - lastCpuAtMs
+        lastCpuNanos = cpu
+        lastCpuAtMs = nowMs
+        if (previous == null || elapsedMs <= 0L) return null
+        val cpuMs = (cpu - previous).coerceAtLeast(0L) / 1_000_000.0
+        return cpuMs * 100.0 / (elapsedMs * availableCores())
+    }
 
     /**
      * The band that sets this device's video limits (G3/G4): its own, or, when it cannot tell
@@ -951,6 +985,8 @@ public class FlashGroupCallSession(
 
         var uiNeedsRefresh = false
         var localAudioLevel: Double? = null
+        // G6: legs whose arriving video is decoded in software.
+        var softwareDecodedLegs = 0
         for (leg in activeLegs) {
             val pc = leg.peerConnection ?: continue
             // Pinned: getStats() is native.
@@ -988,6 +1024,11 @@ public class FlashGroupCallSession(
             totalLost += inbound.sumOf { it.members.num("packetsLost")?.toLong() ?: 0L }
             totalReceived += inbound.sumOf { it.members.num("packetsReceived")?.toLong() ?: 0L }
 
+            val decoder = inbound.firstOrNull { it.members.str("kind") == "video" }?.members?.str("decoderImplementation")
+            if (videoStates[leg.peerId]?.hasPicture() == true && CallHealthMonitor.isSoftwareDecoder(decoder)) {
+                softwareDecodedLegs++
+            }
+
             val audioLevel = inbound.firstOrNull { it.members.str("kind") == "audio" || it.members.num("audioLevel") != null }
                 ?.members?.num("audioLevel")
                 ?: all.firstOrNull { it.type == "track" && it.members.str("kind") == "audio" }
@@ -1011,7 +1052,23 @@ public class FlashGroupCallSession(
             refreshUiState()
         }
         val speakers = activeLegs.filter { it.isSpeaking }.map { it.peerId }.toSet()
+        val sampledAt = SystemTimeSource.nowMs()
+        val cpuPercent = sampleCpuPercent(sampledAt)
+        val thermal = ThermalGovernor.get().status
+        val receiving = videoStates.values.count { it.hasPicture() }
+        // A HIGH device (and the desktop) decodes several VP8 streams in software as a matter of
+        // course; its load shows in the CPU signal instead (plan §8 G6).
+        val softwareDecode = performanceMode() != FlashPerformanceMode.HIGH && receiving >= 2 && softwareDecodedLegs > 0
         routeVideo {
+            val before = healthNow
+            val after = health.update(sampledAt, thermal, cpuPercent, softwareDecode)
+            if (after.warning != before.warning) {
+                FlashLog.i(
+                    "GROUP_CALL",
+                    "health warning=${after.warning} thermal=$thermal cpu=${cpuPercent?.roundToInt()}% " +
+                        "softwareDecode=$softwareDecode",
+                )
+            }
             setLocalSpeaking((localAudioLevel ?: 0.0) > 0.01)
             // G4: tick lets a split budget step back up and picks up changed limits.
             onSpeakers(speakers) + tick()
@@ -1123,6 +1180,17 @@ public class FlashGroupCallSession(
         scope.launch { routeVideo { setFocus(peerId) } }
     }
 
+    /** G6 "Show fewer": cap receiving at one video until turned off. */
+    public fun setShowFewerVideos(on: Boolean) {
+        scope.launch {
+            routeVideo {
+                health.showFewer = on
+                FlashLog.i("GROUP_CALL", "show fewer videos=$on")
+                tick()
+            }
+        }
+    }
+
     public suspend fun switchCamera() {
         onMediaThread { _localVideoStreamTrack.value?.switchCamera() }
     }
@@ -1147,6 +1215,8 @@ public class FlashGroupCallSession(
             compactVideo = video && videoCompactNow,
             videoFocusPeerId = videoFocusNow,
             videoMainPeerId = videoMainNow,
+            healthWarning = if (video) healthNow.warning else null,
+            showingFewerVideos = video && healthNow.showingFewer,
         )
     }
 
@@ -1338,3 +1408,7 @@ public class FlashGroupCallSession(
         )
     }
 }
+
+/** Whether this participant's video is arriving (granted, or an older client that always sends). */
+private fun FlashParticipantVideo.hasPicture(): Boolean =
+    this == FlashParticipantVideo.RECEIVING || this == FlashParticipantVideo.UNMANAGED
