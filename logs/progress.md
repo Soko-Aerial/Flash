@@ -1,5 +1,45 @@
 # Progress Log
 
+## 2026-09-29 — Desktop Room migrations (ERROR-080, ADR-055) and verification of the 2026-09-28 audit
+
+### Worked on
+Owner: verify the remaining claims of `docs/audit/2026-09-28-architectural-audit-and-tasks.md` and fix the desktop
+migration gap. (Not the KMP migration, which is finished: this is Room schema v1→v4 upgrade steps.)
+
+### Changed
+- `FlashSchemaSteps` (commonMain, internal): the SQL of every schema step, once.
+- Android `FlashMigrations` (same public names/types) and new internal JVM `FlashJvmMigrations` wrap that list;
+  `openFlashDatabase` now calls `addMigrations(*FlashJvmMigrations.ALL)`.
+- Tests: `FlashSchemaStepsTest` (common), `FlashMigrationsChainTest` (Android host), `FlashJvmMigrationsTest` (JVM; real
+  encrypted v1/v3 files via Room's KMP `MigrationTestHelper`, Room validates the result). `room-testing` added to
+  jvmTest only.
+- Audit verdicts appended to the audit doc (table at its end); ERROR-080, ADR-055, TEST-BACKLOG MIG-01/02.
+
+### Findings that change the picture
+- **The gap was latent.** Desktop first opened its DB on 2026-09-16 at v4 already, so no older desktop file exists; the
+  audit's "crash for any v1/v2/v3 desktop user" cannot occur today. It would have hit at the next bump (v5).
+- **No migration test existed on either platform** before this. The static diff of `1/3/4.json` matches the SQL exactly.
+- Audit claims refuted at HEAD: desktop compile errors (forced compile OK, 91 tests), single video track (G1),
+  `AutoConnector` "stale deadline stall", `FlashBackgroundService.onDestroy` teardown (would take the mesh down,
+  by design), call-surface thread confinement (not confirmed). Real and unfixed: see the audit table.
+
+### Verification
+- `:core:persistence:jvmTest` 37/37 (was 28). Mutation check: without `addMigrations` the seam test fails with Room's
+  `A migration from 3 to 4 was required but not found`.
+- `:core:persistence:testAndroidHostTest` 33/45; the 12 failures are the known Windows DataStore rename problem, same
+  tests as before. `:core:engine:compileAndroidMain`, forced `:desktop:compileKotlinJvm`, `:desktop:jvmTest` 91/91.
+- Not device-tested: MIG-01 (Android upgrade), MIG-02 (desktop regression).
+
+### Remaining
+Real audit findings not fixed (owner to prioritise): group text send is not transactional and does not re-sort the
+list (3.6); `WsConnection.close()` writes its CLOSE frame under the write lock before `socket.close()` (3.2); loopback
+activation IPC has no token (S6, low-medium); dead placebo profile knobs (3.11); `NsdTransport.advertise` overwrites
+its listener without unregistering (3.7, hardening).
+
+### Next AI
+Do not act on audit tasks TASK-DSK-1, TASK-APP-1 or TASK-CORE-CALL-1: they are refuted or done (see the table). For a
+schema bump append one `FlashSchemaStep`; the tests will tell you if you forget.
+
 ## 2026-09-29 — Test backlog doc and the AGENTS.md rule to keep it
 
 ### Worked on
