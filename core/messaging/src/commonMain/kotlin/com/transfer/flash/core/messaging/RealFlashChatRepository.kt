@@ -36,6 +36,7 @@ import com.transfer.flash.core.messaging.protocol.GroupSyncRoundState
 import com.transfer.flash.core.messaging.protocol.GroupSyncTier
 import com.transfer.flash.core.messaging.protocol.GroupWireFrame
 import com.transfer.flash.core.messaging.protocol.MessageWireFrame
+import com.transfer.flash.core.messaging.protocol.OutgoingSyncRequest
 import com.transfer.flash.core.messaging.protocol.membershipUpdateWins
 import com.transfer.flash.core.messaging.util.assignDaySeparators
 import com.transfer.flash.core.messaging.util.computeMessageGroupPositions
@@ -1371,6 +1372,12 @@ public class RealFlashChatRepository(
         val members = groupMemberDao ?: return
         when (frame) {
             is GroupWireFrame.Create -> {
+                // ADR-044 V1a (F-1): a group id is created once. A Create for an id this device
+                // already knows would otherwise rename or re-own someone else's group.
+                if (isKnownGroup(members, frame.groupId)) {
+                    FlashLog.w("CHAT", "Group Create ignored: group ${frame.groupId} is already known (from ${frame.from})")
+                    return
+                }
                 if (localDeviceId !in frame.memberIds ||
                     !GroupPolicy.validMemberIds(frame.memberIds, frame.from) ||
                     frame.memberIds.any { it != localDeviceId && !isTrustedPeer(it) }
@@ -1433,26 +1440,45 @@ public class RealFlashChatRepository(
                 // trusted (checked at the top), (b) the sender appears in the roster it
                 // claims, and (c) THIS device is in the roster. Anything else is a fabricated
                 // group and is dropped.
+                // A roster carries this device as an ACTIVE member (a `State` may now also carry
+                // leave tombstones for others) and names each device once. The old uniqueness
+                // check compared the list's size with itself, so a repeated id was accepted and
+                // the later entry applied.
                 val roster = frame.members
-                if (localDeviceId !in roster.map { it.deviceId } ||
+                val rosterIds = roster.map { it.deviceId }
+                if (roster.none { it.deviceId == localDeviceId && it.isActive } ||
                     roster.none { it.deviceId == frame.from && it.isActive } ||
-                    roster.map { it.deviceId }.size != roster.size
+                    rosterIds.toSet().size != rosterIds.size
                 ) return
                 if (roster.size > GroupPolicy.MAX_MEMBERS) return
                 val name = GroupPolicy.normalizedName(frame.name) ?: return
-                groupTitleCache[frame.groupId] = name
                 // F7: keep an existing row's provenance and list position. A `State` is no longer
                 // a one-shot bootstrap - [reconcileGroupMembership] re-sends it on every
                 // session-up - so re-stamping sortOrder/groupCreatedAt here would shuffle the chat
                 // list and rewrite the group's creation time on every reconnect.
                 val existingGroupConversation = conversationDao.get(frame.groupId)
+                // ADR-044 V1a (F-2): once this device has a record of the group, only a member it
+                // already knows as active may reconcile it. No record = the bootstrap above.
+                // Accepted cost: a member this device has not yet learned about cannot teach it
+                // the roster; the owner's next session-up `State` does, and V1 signatures remove
+                // the limit.
+                if ((existingGroupConversation != null || members.member(frame.groupId, localDeviceId) != null) &&
+                    !isActiveTrustedMember(members, frame.groupId, frame.from)
+                ) {
+                    FlashLog.w("CHAT", "Group State ignored: ${frame.from} is not an active member of ${frame.groupId}")
+                    return
+                }
+                // The owner is whoever this device recorded at creation; a later `State` cannot
+                // re-own the group, and only the owner is "owner" (the wire carries a free-form role).
+                val creatorId = existingGroupConversation?.groupCreatedBy ?: frame.creatorId
+                groupTitleCache[frame.groupId] = name
                 conversationDao.upsert(
                     ConversationEntity(
                         id = frame.groupId,
                         title = name,
                         isGroup = true,
                         sortOrder = existingGroupConversation?.sortOrder ?: frame.membershipVersion,
-                        groupCreatedBy = existingGroupConversation?.groupCreatedBy ?: frame.creatorId,
+                        groupCreatedBy = creatorId,
                         groupCreatedAt = existingGroupConversation?.groupCreatedAt ?: frame.membershipVersion,
                     ),
                 )
@@ -1463,7 +1489,7 @@ public class RealFlashChatRepository(
                             groupId = frame.groupId,
                             deviceId = entry.deviceId,
                             displayName = if (entry.deviceId == localDeviceId) localDisplayName else entry.displayName,
-                            role = if (entry.deviceId == frame.creatorId) "owner" else entry.role,
+                            role = if (entry.deviceId == creatorId) "owner" else "member",
                             joinedAt = entry.joinedAt,
                             membershipVersion = entry.membershipVersion,
                             operationId = entry.operationId,
@@ -1720,8 +1746,17 @@ public class RealFlashChatRepository(
     private suspend fun buildStateFrame(groupId: String): GroupWireFrame.State? {
         val members = groupMemberDao ?: return null
         val conversation = conversationDao.get(groupId) ?: return null
-        val roster = members.activeMembers(groupId)
-        if (roster.isEmpty()) return null
+        val rows = members.allMembers(groupId)
+        val active = rows.filter { it.isActive }
+        if (active.isEmpty()) return null
+        // ADR-044 V1a (F-5): leave tombstones travel too, newest first, so a member that was
+        // offline when someone left stops treating them as a member. The wire codec (and every
+        // shipped client) rejects a roster above MAX_MEMBERS, so tombstones only fill what the
+        // active members leave free; a full group carries none.
+        val tombstones = rows.filter { !it.isActive }
+            .sortedByDescending { it.membershipVersion }
+            .take((GroupPolicy.MAX_MEMBERS - active.size).coerceAtLeast(0))
+        val roster = active + tombstones
         return GroupWireFrame.State(
             groupId = groupId,
             from = localDeviceId,
@@ -1748,11 +1783,14 @@ public class RealFlashChatRepository(
         val newest = messageDao.historyBefore(groupId, Long.MAX_VALUE, "\uFFFF", limit = 1).firstOrNull()
         val tier = syncTier()
         val (maxPerSecond, maxTotal) = GroupPolicy.syncLimits(tier)
+        val syncId = UuidIdGenerator.newId()
+        // Recorded BEFORE the send so a fast answer cannot beat the ledger entry (F-4).
+        recordOutgoingSync(syncId, groupId, peerDeviceId)
         groupTransportSink?.send(
             peerDeviceId,
             GroupWireFrame.SyncRequest(
                 groupId = groupId,
-                syncId = UuidIdGenerator.newId(),
+                syncId = syncId,
                 from = localDeviceId,
                 sinceSentAt = newest?.sentAt ?: 0L,
                 sinceMessageId = newest?.localId ?: "",
@@ -1793,24 +1831,7 @@ public class RealFlashChatRepository(
     public fun sendGroupSyncRequests(peerDeviceId: String) {
         scope.launch(ioDispatcher) {
             val groupIds = groupMemberDao?.activeGroupIdsFor(localDeviceId).orEmpty()
-            for (groupId in groupIds) {
-                val newest = messageDao.historyBefore(groupId, Long.MAX_VALUE, "￿", limit = 1).firstOrNull()
-                val tier = syncTier()
-                val (maxPerSecond, maxTotal) = GroupPolicy.syncLimits(tier)
-                groupTransportSink?.send(
-                    peerDeviceId,
-                    GroupWireFrame.SyncRequest(
-                        groupId = groupId,
-                        syncId = UuidIdGenerator.newId(),
-                        from = localDeviceId,
-                        sinceSentAt = newest?.sentAt ?: 0L,
-                        sinceMessageId = newest?.localId ?: "",
-                        tier = tier,
-                        maxPerSecond = maxPerSecond,
-                        maxTotal = maxTotal,
-                    ),
-                )
-            }
+            for (groupId in groupIds) sendSyncRequestFor(peerDeviceId, groupId)
         }
     }
 
@@ -1927,6 +1948,14 @@ public class RealFlashChatRepository(
 
     /** Requester side: an elected holder pushed a message — ingest idempotently by msgId. */
     private suspend fun handleSyncPush(frame: GroupWireFrame.SyncPush) {
+        // ADR-044 V1a (F-4): only an answer to a request this device sent, from the peer it asked,
+        // for that group. The nested message's `from` is not checked because the wire carries none
+        // (see F-9): the codec sets it to the pusher.
+        val request = outgoingSyncRequests[frame.syncId]
+        if (request == null || !request.acceptsPush(frame.groupId, frame.from, timeSource.nowMs())) {
+            FlashLog.w("CHAT", "Group SyncPush dropped: no matching request (syncId=${frame.syncId} from=${frame.from})")
+            return
+        }
         val message = frame.message
         val inserted = messageDao.insert(
             MessageEntity(
@@ -1972,6 +2001,19 @@ public class RealFlashChatRepository(
             syncRequesters.remove(frame.syncId)
         }
     }
+
+    /** Catch-up requests this device sent, keyed by `syncId` (ADR-044 V1a, finding F-4). */
+    private val outgoingSyncRequests = SyncMap<String, OutgoingSyncRequest>()
+
+    private fun recordOutgoingSync(syncId: String, groupId: String, askedPeerId: String) {
+        val now = timeSource.nowMs()
+        outgoingSyncRequests[syncId] = OutgoingSyncRequest(groupId, askedPeerId, now)
+        OutgoingSyncRequest.keysToDrop(outgoingSyncRequests.toMap(), now).forEach { outgoingSyncRequests.remove(it) }
+    }
+
+    /** True when this device already holds any record of [groupId], active or not. */
+    private suspend fun isKnownGroup(members: GroupMemberDao, groupId: String): Boolean =
+        conversationDao.get(groupId) != null || members.member(groupId, localDeviceId) != null
 
     private suspend fun isActiveTrustedMember(
         members: GroupMemberDao,

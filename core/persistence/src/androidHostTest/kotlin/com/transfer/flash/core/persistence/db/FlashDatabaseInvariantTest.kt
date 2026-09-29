@@ -378,6 +378,9 @@ class FlashDatabaseInvariantTest {
         assertEquals(1, dao.activeCount("g1"))
         assertEquals(false, dao.member("g1", "peer-a")!!.isActive)
         assertEquals(2, dao.observeMembers("g1").first().size)
+        // `allMembers` is the one-shot read that keeps tombstones (ADR-044 V1a: `State` carries them).
+        assertEquals(listOf("creator", "peer-a"), dao.allMembers("g1").map { it.deviceId })
+        assertEquals(listOf("creator"), dao.activeMembers("g1").map { it.deviceId })
     }
 
     @Test

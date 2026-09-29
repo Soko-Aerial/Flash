@@ -18,6 +18,14 @@ public object GroupPolicy {
     public const val SYNC_TTL_MS: Long = 24L * 60L * 60L * 1000L
     public const val MAX_PENDING_SYNC_MESSAGES: Int = 100
 
+    /**
+     * How long a catch-up request this device sent stays answerable. A round finishes in seconds
+     * (backup delay 2 s, at most 500 messages at 20 per second); ten minutes tolerates a slow link
+     * without leaving a `syncId` open for hours.
+     */
+    public const val SYNC_REQUEST_TTL_MS: Long = 10L * 60L * 1000L
+    public const val MAX_OUTGOING_SYNC_REQUESTS: Int = 256
+
     public fun normalizedName(name: String): String? = name.trim()
         .takeIf { it.isNotEmpty() && it.length <= MAX_GROUP_NAME_LENGTH }
 
