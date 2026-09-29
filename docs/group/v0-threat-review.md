@@ -210,7 +210,11 @@ discovery sees is already a dial candidate.
 
 ## 9. Owner decisions needed
 
-None to proceed with V1a (bug fixes with tests). Two are worth confirming before V1 is built, both with a recommended default:
+**Both answered by the owner on 2026-09-29 (chat): the recommended default for each. V1 may be built.**
+- Decision 1 (sign group messages, not only membership): **YES.**
+- Decision 2 (legacy groups are not upgraded in place): **YES, they stay legacy.**
+
+None was needed for V1a (bug fixes with tests). The two below were confirmed before V1, each with the recommended default:
 
 1. **Sign group messages, not only membership** (section 4.1). Recommended: yes. Without it F-4 stays exploitable by any member at
    20 members, including members the reader never paired with. If declined, v2 groups must stop relaying history through

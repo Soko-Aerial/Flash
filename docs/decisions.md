@@ -1974,8 +1974,8 @@ what they received.
   V0 did not trace it), `MAX_MEMBERS = 20`. **Prerequisite done 2026-09-29 (ADR-057):** the session ceiling is 24 and the dial budget 20; V2 adds a test that
   `MAX_MEMBERS - 1` fits the budget, because `core:network` cannot see `GroupPolicy`.
 
-**Owner decisions pending (recommended defaults given; V1a does not need them):** (1) sign group messages, recommended yes;
-(2) legacy groups are not upgraded in place, recommended yes.
+**Owner decisions (answered 2026-09-29, chat; both the recommended default):** (1) **sign group messages, not only membership:
+YES**; (2) **legacy groups are not upgraded in place: YES**, they stay legacy (up to 6, V1a rules). V1 is unblocked.
 
 ## ADR-045 — One connection planner decides who dials; modes will own the connection policy
 
