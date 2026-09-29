@@ -2205,3 +2205,28 @@ the group; people accept at different moments; others join later from the ongoin
 ### Revisit when
 G0 measures 12-person voice on the BelFone (then 15), or a relay peer changes the mesh assumption.
 
+## ADR-051 — No vlcj/libVLC for call video; desktop video cost is fixed in Flash's renderer
+
+### Date
+2026-09-29
+
+### Status
+**DECIDED** (owner asked "can we add vlcj so the desktop can decode"; answered no, with the reason below).
+
+### Context
+A desktop group video call used all RAM and maxed the CPU until hang-up (ERROR-075). The owner suggested vlcj.
+
+### Decision
+Don't add vlcj. Fix the renderer and camera capture instead (ERROR-075).
+
+### Why
+- vlcj wraps libVLC, a media player. Call video reaches Flash only as decoded frames from libwebrtc (the RTP/SRTP
+  stream is encrypted with keys from the DTLS handshake inside WebRTC); there is no stream VLC could open.
+- Decoding was not the measured cost: the renderer's two uncollected native copies per frame and full-size
+  conversions were, plus a camera opened at its largest mode.
+- It would add ~100 MB of native libraries per desktop platform and a second media stack to maintain.
+
+### Revisit when
+A desktop hardware *decoder* is wanted: that belongs inside libwebrtc (a webrtc-java build with a hardware decoder
+factory), not in a player library. Decide from `CALL_DIAG … dec=` and decode-time numbers first.
+

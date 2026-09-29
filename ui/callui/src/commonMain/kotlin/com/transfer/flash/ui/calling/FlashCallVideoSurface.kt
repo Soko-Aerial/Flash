@@ -26,7 +26,13 @@ internal expect fun FlashCallVideoSurface(
 
 /** How the frame fills its box. Names are neutral; each actual maps to its own scaling enum. */
 internal enum class CallVideoFit {
-    /** Fill the box, cropping the excess — the full-screen remote surface. */
+    /**
+     * Fill the box, cropping the excess, when the picture and the box have the same orientation;
+     * show the whole picture (bars on the sides or top and bottom) when they don't — the
+     * full-screen remote surface and group tiles. Owner request 2026-09-29: a portrait phone
+     * picture on a landscape desktop, or a landscape desktop picture on a portrait phone, is
+     * shown complete rather than zoomed into its middle.
+     */
     Balanced,
 
     /** Letterbox inside the box — the corner PiP, where cropping would hide the face. */

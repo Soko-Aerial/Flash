@@ -11,6 +11,7 @@ internal class LocalVideoStreamTrack(
     private val videoSource: VideoDeviceSource,
     private var currentDevice: VideoDevice? = null,
     override val settings: MediaTrackSettings,
+    private val captureConstraints: MediaTrackConstraints = MediaTrackConstraints(),
 ) : RenderedVideoStreamTrack(native), VideoStreamTrack {
 
     init {
@@ -36,9 +37,13 @@ internal class LocalVideoStreamTrack(
         if (targetDevice != null && targetDevice.descriptor != currentDevice?.descriptor) {
             val capabilities = MediaDevices.getVideoCaptureCapabilities(targetDevice)
             if (capabilities.isNotEmpty()) {
+                // Flash: the same choice as the first camera (the call's size), not the new
+                // camera's first-listed mode.
+                val capability = MediaDevicesImpl.getMatchingCapabilities(targetDevice, captureConstraints).firstOrNull()
+                    ?: capabilities.first()
                 videoSource.stop()
                 videoSource.setVideoCaptureDevice(targetDevice)
-                videoSource.setVideoCaptureCapability(capabilities.first())
+                videoSource.setVideoCaptureCapability(capability)
                 videoSource.start()
                 currentDevice = targetDevice
             }

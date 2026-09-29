@@ -1,5 +1,13 @@
 # Current Handoff
 
+## 2026-09-29 — Desktop call RAM/CPU fix (ERROR-075), leg rebuild fix (ERROR-076), call test logging
+- Desktop renderer no longer leaks native memory or converts full-size frames; group calls ask for ≤ 720p camera.
+- Repeated accept/join keeps a connection being set up (was: new offer → DTLS CERTIFICATE_UNKNOWN).
+- Balanced video fit shows a picture turned the other way whole (owner request).
+- Logging for device tests: `docs/calling/CALL-TEST-LOGGING.md` (`GROUP_CALL`, `CALL_DIAG`, `CALL_RENDER`).
+- vlcj rejected (ADR-051).
+- Tests green; **next:** owner's re-test with logs from both PCs and the phones.
+
 ## 2026-09-29 — Group calling G1–G7 code complete; next is ALL device testing (P8)
 - G7: `FlashGroupCallLimits` (video 8, voice 12); participants turn a newcomer away with `gfull` at the cap, and the
   newcomer ends with FULL "Call is full" (ADR-050). Unreachable until GV/ADR-044 (groups capped at 6).

@@ -1,5 +1,34 @@
 # Progress Log
 
+## 2026-09-29 — Desktop video call RAM/CPU fix, whole-picture fit, call test logging
+
+### Worked on
+The owner's first desktop group video test: all RAM and full CPU until hang-up, a leg to the second PC that never
+connected, a request for vlcj, a request to show phone and desktop pictures whole, and logging for every call test.
+
+### Changed
+- ERROR-075: desktop renderer rewritten (scaled conversion, frame dropping, closed Skia images, draw-phase read,
+  `CALL_RENDER` stats); group calls ask for the tier camera capped at 720p; jvm webrtc-kmp picks the best camera
+  mode within the request and reports it (MODIFICATIONS.md row).
+- ERROR-076: a connection still being set up is kept through repeated accepts/joins (the pending offer is
+  re-sent); stale answers are dropped.
+- `CallVideoFit.Balanced` fills only when picture and box share orientation; otherwise the whole picture shows
+  (Android `setScalingType(BALANCED, FIT)`; desktop canvas).
+- `CallDiagnostics` (`CALL_DIAG` every 5 s, 1:1 and group), inbound frame / `pc#n` / ICE / route logging;
+  `processMemorySummary` expect/actuals; `desktop.log` lines timestamped.
+- Docs: `docs/calling/CALL-TEST-LOGGING.md` (what to collect, what each line means), ADR-051 (vlcj rejected),
+  ERROR-075/076.
+
+### Verification
+calling jvm 104 / host 120, callui 20, desktop 86, app compile: green. No device test yet.
+
+### Remaining
+Owner re-runs the desktop group video test with the new build on both PCs and sends both `desktop.log` files and
+the phones' logcat (guide: `docs/calling/CALL-TEST-LOGGING.md`).
+
+### Next AI
+Read the owner's logs against CALL-TEST-LOGGING.md §3; close or reopen ERROR-075/076.
+
 ## 2026-09-29 — G7 code done: group call size caps (ADR-050); group calling G1–G7 code complete
 
 ### Worked on

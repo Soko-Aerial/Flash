@@ -23,9 +23,13 @@ internal actual fun FlashCallVideoSurface(
     fit: CallVideoFit,
     modifier: Modifier,
 ) {
+    // (same orientation, different orientation): Balanced fits a picture turned the other way
+    // whole instead of zooming into it (see CallVideoFit.Balanced).
     val scaling = when (fit) {
-        CallVideoFit.Balanced -> RendererCommon.ScalingType.SCALE_ASPECT_BALANCED
-        CallVideoFit.Fit -> RendererCommon.ScalingType.SCALE_ASPECT_FIT
+        CallVideoFit.Balanced ->
+            RendererCommon.ScalingType.SCALE_ASPECT_BALANCED to RendererCommon.ScalingType.SCALE_ASPECT_FIT
+        CallVideoFit.Fit ->
+            RendererCommon.ScalingType.SCALE_ASPECT_FIT to RendererCommon.ScalingType.SCALE_ASPECT_FIT
     }
     val holder = remember { FlashVideoSink() }
 
@@ -52,12 +56,15 @@ private class FlashVideoSink {
     private var view: SurfaceViewRenderer? = null
     private var bound: VideoStreamTrack? = null
 
-    fun attach(renderer: SurfaceViewRenderer, scalingType: RendererCommon.ScalingType) {
+    fun attach(
+        renderer: SurfaceViewRenderer,
+        scalingType: Pair<RendererCommon.ScalingType, RendererCommon.ScalingType>,
+    ) {
         view = renderer
         bound = null
         runCatching {
             renderer.init(WebRtc.rootEglBase.eglBaseContext, null)
-            renderer.setScalingType(scalingType)
+            renderer.setScalingType(scalingType.first, scalingType.second)
             renderer.setEnableHardwareScaler(true)
         }.onFailure { FlashLog.w(TAG, "renderer init failed: ${it.message}") }
     }

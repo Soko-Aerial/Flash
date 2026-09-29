@@ -98,9 +98,19 @@ internal object MediaDevicesImpl : MediaDevices, DeviceChangeListener {
             }
 
             if (matchingDevice != null) {
+                // Flash: the best mode within the request, not whatever the camera lists first
+                // (which can be its largest; see getMatchingCapabilities).
+                val capability = matchingDevice.second.firstOrNull()
+                    ?: NativeMediaDevices.getVideoCaptureCapabilities(matchingDevice.first).first()
+                println(
+                    "[webrtc-jvm] camera '${matchingDevice.first.name}' opened at " +
+                        "${capability.width}x${capability.height}@${capability.frameRate} " +
+                        "(asked ${constraints.width?.value ?: "-"}x${constraints.height?.value ?: "-"}" +
+                        "@${constraints.frameRate?.value ?: "-"})",
+                )
                 val videoSource = VideoDeviceSource().apply {
                     setVideoCaptureDevice(matchingDevice.first)
-                    setVideoCaptureCapability(matchingDevice.second.first())
+                    setVideoCaptureCapability(capability)
                 }
                 val nativeTrack = WebRtc.peerConnectionFactory.createVideoTrack(
                     UUID.randomUUID().toString(),
@@ -110,7 +120,13 @@ internal object MediaDevicesImpl : MediaDevices, DeviceChangeListener {
                     native = nativeTrack,
                     videoSource = videoSource,
                     currentDevice = matchingDevice.first,
-                    settings = MediaTrackSettings(),
+                    settings = MediaTrackSettings(
+                        deviceId = matchingDevice.first.descriptor,
+                        width = capability.width,
+                        height = capability.height,
+                        frameRate = capability.frameRate.toDouble(),
+                    ),
+                    captureConstraints = constraints,
                 )
             }
         }
@@ -131,7 +147,11 @@ internal object MediaDevicesImpl : MediaDevices, DeviceChangeListener {
             listOf(it)
         }
 
-        return exact ?: capabilities.filter { capability ->
+        // Flash (2026-09-29): best first. A camera lists its modes in no useful order, and the
+        // first one was used as-is, so a group call (which asked for nothing) could open a webcam
+        // at 1080p or 4K. Within the request: the largest picture, then the highest frame rate.
+        // Nothing within the request (a camera whose smallest mode is bigger): the smallest mode.
+        val within = capabilities.filter { capability ->
             val satisfyHeight = constraints.height?.value?.let {
                 it >= capability.height
             } ?: true
@@ -145,6 +165,13 @@ internal object MediaDevicesImpl : MediaDevices, DeviceChangeListener {
             } ?: true
 
             satisfyHeight && satisfyWidth && satisfyFrameRate
+        }
+        return exact ?: within.sortedWith(
+            compareByDescending<VideoCaptureCapability> { it.width * it.height }.thenByDescending { it.frameRate },
+        ).ifEmpty {
+            capabilities.sortedWith(
+                compareBy<VideoCaptureCapability> { it.width * it.height }.thenByDescending { it.frameRate },
+            ).take(1)
         }
     }
 

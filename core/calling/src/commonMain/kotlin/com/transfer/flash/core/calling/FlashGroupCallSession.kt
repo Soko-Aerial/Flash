@@ -16,10 +16,12 @@ import com.shepeliev.webrtckmp.RtcpMuxPolicy
 import com.shepeliev.webrtckmp.RtpSender
 import com.shepeliev.webrtckmp.SessionDescription
 import com.shepeliev.webrtckmp.SessionDescriptionType
+import com.shepeliev.webrtckmp.SignalingState
 import com.shepeliev.webrtckmp.VideoStreamTrack
 import com.shepeliev.webrtckmp.audioTracks
 import com.shepeliev.webrtckmp.onConnectionStateChange
 import com.shepeliev.webrtckmp.onIceCandidate
+import com.shepeliev.webrtckmp.onIceConnectionStateChange
 import com.shepeliev.webrtckmp.onTrack
 import com.shepeliev.webrtckmp.videoTracks
 import com.transfer.flash.core.calling.model.FlashCallDirection
@@ -37,6 +39,7 @@ import com.transfer.flash.core.common.concurrent.SyncMap
 import com.transfer.flash.core.common.logging.FlashLog
 import com.transfer.flash.core.common.perf.FlashNetworkBand
 import com.transfer.flash.core.common.perf.FlashPerformanceMode
+import com.transfer.flash.core.common.perf.FlashVideoProfile
 import com.transfer.flash.core.common.perf.ThermalGovernor
 import com.transfer.flash.core.common.time.SystemTimeSource
 import kotlin.concurrent.Volatile
@@ -170,6 +173,16 @@ public class FlashGroupCallSession(
     private var lastCpuNanos: Long? = null
     private var lastCpuAtMs: Long = 0L
 
+    /** Device-test logging (`CALL_DIAG`), fed by the stats loop. */
+    private val diagnostics = CallDiagnostics()
+
+    /** The last `video route` line, so a change is logged once. */
+    private var lastRouteLine: String? = null
+
+    /** The camera size this call asked for ([groupCaptureProfile] at acquire time). */
+    @Volatile
+    private var captureProfile: FlashVideoProfile? = null
+
     /**
      * Serializes media acquisition against native teardown (same contract as the 1:1
      * session's lock): [acquireMedia] and [endSession]'s native section never interleave, so a
@@ -221,6 +234,10 @@ public class FlashGroupCallSession(
         var remoteVideoTrack: VideoStreamTrack? = null,
         /** The band this peer last announced (G2); null until it does, or from an old client. */
         var band: FlashNetworkBand? = null,
+        /** How many connections this leg has built (logs name them `pc#n`). */
+        var pcGeneration: Int = 0,
+        /** When the current connection was built, for the setup grace (ERROR-076). */
+        var pcCreatedAtMs: Long = 0L,
     )
 
     internal fun getLegStateForTesting(peerId: String): FlashCallParticipantState? = legs[peerId]?.state
@@ -479,6 +496,7 @@ public class FlashGroupCallSession(
 
         val effectivePeerId = if (frame.from.isNotBlank()) frame.from else peerId
         if (effectivePeerId == localDeviceId) return
+        logInbound(frame, effectivePeerId, peerId)
 
         when (frame) {
             is CallWireFrame.GroupInvite -> {
@@ -522,12 +540,19 @@ public class FlashGroupCallSession(
                 }
 
                 if (isMediaAcquired) {
+                    val cause = "${if (frame is CallWireFrame.GroupAccept) "gaccept" else "gjoin"} via $peerId"
                     scope.launch {
                         val existingLeg = legs[effectivePeerId]
                         if (existingLeg != null && existingLeg.state != FlashCallParticipantState.CONNECTED) {
-                            existingLeg.legMutex.withLock {
-                                closeLeg(existingLeg)
+                            val kept = existingLeg.legMutex.withLock {
+                                if (keepSettingUpLeg(existingLeg, cause)) {
+                                    true
+                                } else {
+                                    closeLeg(existingLeg)
+                                    false
+                                }
                             }
+                            if (kept) return@launch
                         }
                         ensureLegConnected(effectivePeerId)
                     }
@@ -626,7 +651,7 @@ public class FlashGroupCallSession(
                         CallWireFrame.Offer(callId = callId, from = localDeviceId, sdp = applied.sdp),
                         peerId,
                     )
-                    FlashLog.i("GROUP_CALL", "Sent offer to peer $peerId for group call $callId")
+                    FlashLog.i("GROUP_CALL", "Sent offer to peer $peerId pc#${leg.pcGeneration} for group call $callId")
                 } catch (t: Throwable) {
                     FlashLog.e("GROUP_CALL", "Failed to create offer for leg $peerId", t)
                 }
@@ -645,6 +670,12 @@ public class FlashGroupCallSession(
                 rtcpMuxPolicy = RtcpMuxPolicy.Require,
                 iceCandidatePoolSize = 1,
             ),
+        )
+        leg.pcGeneration++
+        leg.pcCreatedAtMs = SystemTimeSource.nowMs()
+        FlashLog.i(
+            "GROUP_CALL",
+            "Leg ${leg.peerId} pc#${leg.pcGeneration} created role=${if (localDeviceId > leg.peerId) "offerer" else "answerer"}",
         )
 
         // Add shared local tracks to this leg
@@ -668,7 +699,7 @@ public class FlashGroupCallSession(
         leg.trackJob = scope.launch(callMediaDispatcher) {
             pc.onTrack.collect { trackEvent ->
                 val track = trackEvent.track
-                FlashLog.i("GROUP_CALL", "Received track on leg ${leg.peerId}: ${track?.kind}")
+                FlashLog.i("GROUP_CALL", "Received track on leg ${leg.peerId} pc#${leg.pcGeneration}: ${track?.kind} id=${track?.id?.take(8)}")
                 if (track is VideoStreamTrack) {
                     leg.remoteVideoTrack = track
                     if (remoteVideo.put(leg.peerId, track)) publishRemoteVideo()
@@ -694,8 +725,15 @@ public class FlashGroupCallSession(
 
         // Monitor connection state
         leg.connJob = scope.launch(callMediaDispatcher) {
+            val generation = leg.pcGeneration
+            // Log only: ICE is the half of the connection that finds a network path; DTLS the other.
+            launch {
+                pc.onIceConnectionStateChange.collect { ice ->
+                    FlashLog.i("GROUP_CALL", "Leg ${leg.peerId} pc#$generation ice=$ice")
+                }
+            }
             pc.onConnectionStateChange.collect { connState ->
-                FlashLog.i("GROUP_CALL", "Leg ${leg.peerId} state changed to $connState")
+                FlashLog.i("GROUP_CALL", "Leg ${leg.peerId} pc#$generation state changed to $connState")
                 when (connState) {
                     PeerConnectionState.Connected -> {
                         leg.state = FlashCallParticipantState.CONNECTED
@@ -747,7 +785,15 @@ public class FlashGroupCallSession(
             // Pinned: PC create + setRemote/createAnswer/setLocal are native.
             onMediaThread {
             val stream = localStream ?: return@onMediaThread
-            val pc = leg.peerConnection ?: createPeerConnectionForLeg(leg, stream).also { leg.peerConnection = it }
+            val existing = leg.peerConnection
+            if (existing != null) {
+                FlashLog.i(
+                    "GROUP_CALL",
+                    "Offer from $peerId on existing pc#${leg.pcGeneration} signaling=${existing.signalingState} " +
+                        "connection=${existing.connectionState} remoteSet=${leg.remoteDescriptionSet}",
+                )
+            }
+            val pc = existing ?: createPeerConnectionForLeg(leg, stream).also { leg.peerConnection = it }
 
             try {
                 setRemoteDescriptionTuned(pc, SessionDescriptionType.Offer, sdp)
@@ -759,7 +805,7 @@ public class FlashGroupCallSession(
                     CallWireFrame.Answer(callId = callId, from = localDeviceId, sdp = applied.sdp),
                     peerId,
                 )
-                FlashLog.i("GROUP_CALL", "Answered offer from peer $peerId for group call $callId")
+                FlashLog.i("GROUP_CALL", "Answered offer from peer $peerId pc#${leg.pcGeneration} for group call $callId")
             } catch (t: Throwable) {
                 FlashLog.e("GROUP_CALL", "Failed to answer offer from $peerId", t)
             }
@@ -772,12 +818,22 @@ public class FlashGroupCallSession(
         leg.legMutex.withLock {
             // Pinned: setRemoteDescription is native.
             onMediaThread {
-            val pc = leg.peerConnection ?: return@onMediaThread
+            val pc = leg.peerConnection ?: run {
+                FlashLog.w("GROUP_CALL", "Answer from $peerId dropped: no connection")
+                return@onMediaThread
+            }
+            // ERROR-076: an answer means something only to a connection waiting for one. A
+            // second answer in `stable` is rejected by WebRTC anyway; skip it without the retry.
+            val signaling = pc.signalingState
+            if (signaling != SignalingState.HaveLocalOffer) {
+                FlashLog.w("GROUP_CALL", "Stale answer from $peerId ignored: pc#${leg.pcGeneration} signaling=$signaling")
+                return@onMediaThread
+            }
             try {
                 setRemoteDescriptionTuned(pc, SessionDescriptionType.Answer, sdp)
                 leg.remoteDescriptionSet = true
                 flushPendingIce(leg, pc)
-                FlashLog.i("GROUP_CALL", "Applied answer from peer $peerId for group call $callId")
+                FlashLog.i("GROUP_CALL", "Applied answer from peer $peerId pc#${leg.pcGeneration} for group call $callId")
             } catch (t: Throwable) {
                 FlashLog.e("GROUP_CALL", "Failed to apply answer from $peerId", t)
             }
@@ -879,6 +935,9 @@ public class FlashGroupCallSession(
         // Pinned: peerConnection.close() is native. Callers run pinned already; the wrap keeps
         // the guarantee local.
         onMediaThread {
+        if (leg.peerConnection != null) {
+            FlashLog.i("GROUP_CALL", "Leg ${leg.peerId} pc#${leg.pcGeneration} closed (state=${leg.state})")
+        }
         leg.iceJob?.cancel()
         leg.trackJob?.cancel()
         leg.connJob?.cancel()
@@ -915,6 +974,7 @@ public class FlashGroupCallSession(
             healthNow = health.verdict()
             videoCompactNow = videoLimits().receive <= 1
             videoStates = legs.keysSnapshot().associateWith { videoRouter.receiveState(it) }
+            logRoute()
             effects.forEach { effect ->
                 when (effect) {
                     is GroupVideoRouter.Effect.Send -> sendFrame(effect.frame, effect.peerId)
@@ -1011,8 +1071,11 @@ public class FlashGroupCallSession(
     }
 
     private suspend fun sampleMeshStats() {
+        val diagNow = SystemTimeSource.nowMs()
+        val diagDue = diagnostics.due(diagNow)
         val activeLegs = legs.valuesSnapshot().filter { it.state == FlashCallParticipantState.CONNECTED && it.peerConnection != null }
         if (activeLegs.isEmpty()) {
+            if (diagDue) FlashLog.i(CallDiagnostics.TAG, diagnostics.processLine(diagNow, diagExtra(null)))
             _stats.value = null
             return
         }
@@ -1035,6 +1098,12 @@ public class FlashGroupCallSession(
             } catch (_: Throwable) {
                 null
             } ?: continue
+            if (diagDue) {
+                FlashLog.i(
+                    CallDiagnostics.TAG,
+                    diagnostics.legLine("${leg.peerId} pc#${leg.pcGeneration}", leg.state.name, report, diagNow),
+                )
+            }
 
             val all = report.stats.values
             val selectedId = all.firstOrNull { it.type == "transport" }
@@ -1094,6 +1163,7 @@ public class FlashGroupCallSession(
         val speakers = activeLegs.filter { it.isSpeaking }.map { it.peerId }.toSet()
         val sampledAt = SystemTimeSource.nowMs()
         val cpuPercent = sampleCpuPercent(sampledAt)
+        if (diagDue) FlashLog.i(CallDiagnostics.TAG, diagnostics.processLine(diagNow, diagExtra(cpuPercent)))
         val thermal = ThermalGovernor.get().status
         val receiving = videoStates.values.count { it.hasPicture() }
         // A HIGH device (and the desktop) decodes several VP8 streams in software as a matter of
@@ -1269,13 +1339,31 @@ public class FlashGroupCallSession(
         try {
             // Same explicit voice processing as 1:1 startMedia: bare audio(true) leaves
             // AEC/NS/AGC null, which the JVM backend maps to off (desktop howls).
+            // ERROR-075: a bare video() let the camera open at whatever mode it listed first
+            // (a webcam's 1080p or 4K) while a group call never sends more than 720p.
+            val capture = groupCaptureProfile()
+            captureProfile = capture
+            FlashLog.i(
+                "GROUP_CALL",
+                "acquire media video=$video tier=${performanceMode().key}" +
+                    (if (video) " camera asked ${capture.captureWidth}x${capture.captureHeight}@${capture.captureFps}" else ""),
+            )
             val stream = MediaDevices.getUserMedia {
                 audio {
                     echoCancellation(true)
                     noiseSuppression(true)
                     autoGainControl(true)
                 }
-                if (video) video()
+                if (video) {
+                    video {
+                        width(capture.captureWidth)
+                        height(capture.captureHeight)
+                        frameRate(capture.captureFps.toDouble())
+                    }
+                }
+            }
+            stream.videoTracks.firstOrNull()?.settings?.let { s ->
+                FlashLog.i("GROUP_CALL", "camera opened ${s.width ?: "?"}x${s.height ?: "?"}@${s.frameRate ?: "?"}")
             }
             localStream = stream
             _localVideoStreamTrack.value = stream.videoTracks.firstOrNull()
@@ -1376,6 +1464,87 @@ public class FlashGroupCallSession(
         pc.setRemoteDescription(SessionDescription(type, fallbackSdp))
     }
 
+    /**
+     * The camera size for this call: the tier's profile, but never taller than the tallest copy
+     * a group call sends (720p, G4), with the width scaled to match.
+     */
+    private fun groupCaptureProfile(): FlashVideoProfile {
+        val tier = performanceMode().video
+        if (tier.captureHeight <= GroupVideoLimits.HEIGHT_720) return tier
+        return tier.copy(
+            captureWidth = tier.captureWidth * GroupVideoLimits.HEIGHT_720 / tier.captureHeight,
+            captureHeight = GroupVideoLimits.HEIGHT_720,
+        )
+    }
+
+    /**
+     * ERROR-076: whether a repeated accept/join ([cause]) should leave [leg]'s connection alone.
+     * A connection still being set up (under [LEG_SETUP_GRACE_MS] old, not failed) is kept:
+     * rebuilding it made a second offer while the peer was answering the first, and that late
+     * answer then failed DTLS (CERTIFICATE_UNKNOWN) on the new connection. When this device is
+     * the offerer and its offer is still unanswered, the same offer is sent again, in case the
+     * peer lost it. An older or failed connection is rebuilt as before (the peer may have
+     * restarted). Caller holds the leg mutex.
+     */
+    private suspend fun keepSettingUpLeg(leg: GroupLeg, cause: String): Boolean = onMediaThread {
+        val pc = leg.peerConnection ?: return@onMediaThread false
+        val ageMs = SystemTimeSource.nowMs() - leg.pcCreatedAtMs
+        val connection = pc.connectionState
+        val signaling = pc.signalingState
+        val settingUp = connection != PeerConnectionState.Failed &&
+            connection != PeerConnectionState.Closed &&
+            connection != PeerConnectionState.Disconnected
+        if (!settingUp || ageMs >= LEG_SETUP_GRACE_MS) {
+            FlashLog.i(
+                "GROUP_CALL",
+                "Leg ${leg.peerId} pc#${leg.pcGeneration} rebuilt on $cause (connection=$connection signaling=$signaling age=${ageMs}ms)",
+            )
+            return@onMediaThread false
+        }
+        FlashLog.i(
+            "GROUP_CALL",
+            "Leg ${leg.peerId} pc#${leg.pcGeneration} kept on $cause (connection=$connection signaling=$signaling age=${ageMs}ms)",
+        )
+        val offer = pc.localDescription
+        if (localDeviceId > leg.peerId && signaling == SignalingState.HaveLocalOffer && offer != null) {
+            sendFrame(CallWireFrame.Offer(callId = callId, from = localDeviceId, sdp = offer.sdp), leg.peerId)
+            FlashLog.i("GROUP_CALL", "Re-sent pending offer to ${leg.peerId} pc#${leg.pcGeneration}")
+        }
+        true
+    }
+
+    /** One line per inbound call frame (device-test logging); ICE candidates are too many to log. */
+    private fun logInbound(frame: CallWireFrame, from: String, via: String) {
+        if (frame is CallWireFrame.IceCandidate) return
+        val leg = legs[from]
+        val text = when (frame) {
+            is CallWireFrame.Offer -> "Offer sdp=${frame.sdp.length}"
+            is CallWireFrame.Answer -> "Answer sdp=${frame.sdp.length}"
+            else -> frame.toString().replace("callId=$callId, ", "")
+        }
+        val route = if (via != from) " via=$via" else ""
+        val legText = leg?.let { "${it.state} pc#${it.pcGeneration}" } ?: "none"
+        FlashLog.i("GROUP_CALL", "rx from=$from$route leg=$legText $text")
+    }
+
+    /** Logs the video routing state when it changed (G3–G6 device checks). Under [videoMutex]. */
+    private fun logRoute() {
+        val line = "video route limits=${videoLimits()} sending=$sendingTo free=$videoFreeNow " +
+            "receive=${videoStates.filterValues { it != FlashParticipantVideo.OFF }} focus=$videoFocusNow " +
+            "main=$videoMainNow compact=$videoCompactNow health=${healthNow.warning}"
+        if (line == lastRouteLine) return
+        lastRouteLine = line
+        FlashLog.i("GROUP_CALL", line)
+    }
+
+    /** The session's fields on the `CALL_DIAG` process line. */
+    private fun diagExtra(cpuPercent: Double?): String {
+        val legStates = legs.valuesSnapshot().joinToString(",") { "${it.peerId.take(8)}:${it.state}#${it.pcGeneration}" }
+        return "call=${callId.take(8)} video=$video tier=${performanceMode().key} band=${effectiveBand()?.label} " +
+            "thermal=${ThermalGovernor.get().status} g6cpu=${cpuPercent?.roundToInt()}% " +
+            "camera=${captureProfile?.label} legs=[$legStates]"
+    }
+
     private fun tuneAudioSender(sender: RtpSender) {
         val maxBitrateBps = performanceMode().voice.maxBitrateBps
         try {
@@ -1400,7 +1569,7 @@ public class FlashGroupCallSession(
      * full camera profile (an old client, or a leg not yet decided).
      */
     private fun tuneVideoSender(sender: RtpSender, active: Boolean, height: Int? = null) {
-        val profile = performanceMode().video
+        val profile = captureProfile ?: groupCaptureProfile()
         val sent = height?.coerceIn(1, profile.captureHeight) ?: profile.captureHeight
         val scaleDown = profile.captureHeight.toDouble() / sent
         val maxKbps = if (height == null) {
@@ -1439,6 +1608,9 @@ public class FlashGroupCallSession(
         // AUDIO_BITRATE_PRIORITY / VIDEO_BITRATE_PRIORITY moved to the sender-tuning seam
         // (RtpSenderTuning.kt) with the rest of the native-knob plumbing (S2e).
         const val BPS_PER_KBPS = 1000
+
+        /** How long a connection being set up is kept through repeated accepts/joins (ERROR-076). */
+        const val LEG_SETUP_GRACE_MS = 10_000L
 
         /** Participants whose video can be asked for (G3): in the call, or briefly unreachable. */
         val VIDEO_PRESENT = setOf(
