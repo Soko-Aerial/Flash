@@ -92,6 +92,11 @@ public class CallCoordinator(
      * sending UNKNOWN, which the other end treats as "decide by my own band".
      */
     private val networkBand: () -> FlashNetworkBand = { FlashNetworkBand.UNKNOWN },
+    /**
+     * Reads the user's "Send smaller video in groups" setting (ADR-053, default off) for every
+     * group call: a lambda for the same reasons as [prioritiseVoice].
+     */
+    private val smallerVideoForMany: () -> Boolean = { false },
 ) : FlashCalling {
     private val _activeCall = MutableStateFlow<FlashCallUiState?>(null)
     override val activeCall: StateFlow<FlashCallUiState?> = _activeCall.asStateFlow()
@@ -190,6 +195,7 @@ public class CallCoordinator(
             performanceMode = performanceMode,
             peerNameResolver = peerNameResolver,
             networkBand = networkBand,
+            smallerVideoForMany = smallerVideoForMany,
         )
         currentGroupSession = session
         observeGroupSession(session)
@@ -237,6 +243,7 @@ public class CallCoordinator(
             performanceMode = performanceMode,
             peerNameResolver = peerNameResolver,
             networkBand = networkBand,
+            smallerVideoForMany = smallerVideoForMany,
         )
         currentGroupSession = session
         observeGroupSession(session)
@@ -571,6 +578,7 @@ public class CallCoordinator(
             performanceMode = performanceMode,
             peerNameResolver = peerNameResolver,
             networkBand = networkBand,
+            smallerVideoForMany = smallerVideoForMany,
         )
         currentGroupSession = session
         observeGroupSession(session)

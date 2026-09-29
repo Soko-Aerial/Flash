@@ -555,6 +555,11 @@ drops to one video by itself and must say so.
   - SOFTWARE_DECODE: "Videos are being decoded without hardware help. Showing fewer videos saves battery."
   - HOT: "Your phone is hot. Showing one video until it cools down."
 - Action: **Show fewer** (WARM, CPU, SOFTWARE_DECODE) → `FlashCalling.setShowFewerVideos(true)`. HOT has no action.
+- CPU only, while the "Send smaller video in groups" setting is off (ADR-053, 2026-09-29): a second action,
+  **Send smaller** (label "Send my video smaller in group calls"), which turns the setting on and saves it. The text
+  then reads "This call is keeping the processor busy. Showing fewer videos, or sending yours smaller, helps." With
+  two actions the banner has two lines: the words and close on top, the actions right-aligned below. Actions size to
+  their text (min 96 dp wide, 48 dp tall).
 - Dismiss: a close icon (`FlashIcons.Close`). A dismissed kind does not come back for the rest of the call (the
   "once per call" rule for software decoding applies to all of them, so a flapping signal can't nag).
 - While `showingFewerVideos` is true and there is no banner: the pill "Showing one video · Show all" →

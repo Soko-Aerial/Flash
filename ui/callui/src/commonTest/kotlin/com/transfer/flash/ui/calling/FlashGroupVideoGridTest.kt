@@ -104,6 +104,18 @@ class FlashGroupVideoGridTest {
         assertTrue(healthWarningOffersShowFewer(FlashCallHealthWarning.SOFTWARE_DECODE))
     }
 
+    @Test
+    fun `only the CPU warning offers send smaller, and only while the setting is off`() {
+        assertTrue(healthWarningOffersSmallerVideo(FlashCallHealthWarning.CPU, alreadyOn = false))
+        assertFalse(healthWarningOffersSmallerVideo(FlashCallHealthWarning.CPU, alreadyOn = true))
+        FlashCallHealthWarning.entries.filter { it != FlashCallHealthWarning.CPU }.forEach {
+            assertFalse(healthWarningOffersSmallerVideo(it, alreadyOn = false), "$it")
+        }
+        val offered = healthWarningText(FlashCallHealthWarning.CPU, offersSmallerVideo = true)
+        assertTrue(offered.contains("smaller"), offered)
+        assertFalse(healthWarningText(FlashCallHealthWarning.CPU).contains("smaller"))
+    }
+
     private fun call(participants: List<FlashCallParticipantUi>) = FlashCallUiState(
         callId = "c", peerId = "g", peerName = "Group", direction = FlashCallDirection.OUTGOING,
         video = true, state = FlashCallState.ACTIVE, isGroup = true, participants = participants, compactVideo = true,

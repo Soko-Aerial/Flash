@@ -552,6 +552,7 @@ fun FlashApp(
     val autoDownloadVideo by store.autoDownloadVideo.collectAsState(initial = false)
     val autoDownloadFile by store.autoDownloadFile.collectAsState(initial = false)
     val prioritiseVoiceQuality by store.prioritiseVoiceQuality.collectAsState(initial = true)
+    val smallerVideoForMany by store.smallerVideoForMany.collectAsState(initial = false)
     // ERROR-033: the tier pin (null = Auto) and the tier actually in force. The pin drives the
     // picker; the resolved value drives the theme, so a device on Auto still gets the tier's
     // reduce-motion floor without the user having chosen anything.
@@ -584,6 +585,7 @@ fun FlashApp(
         autoDownloadFile = autoDownloadFile,
         ignoringBatteryOptimizations = batteryExempt,
         prioritiseVoiceQuality = prioritiseVoiceQuality,
+        smallerVideoForMany = smallerVideoForMany,
         performanceMode = pinnedPerformanceMode,
         detectedPerformanceMode = engine.detectedPerformance.mode,
         trustedPeerCount = trustedPeers.size,
@@ -620,6 +622,9 @@ fun FlashApp(
             if (updated.autoDownloadFile != settings.autoDownloadFile) store.setAutoDownloadFile(updated.autoDownloadFile)
             if (updated.prioritiseVoiceQuality != settings.prioritiseVoiceQuality) {
                 store.setPrioritiseVoiceQuality(updated.prioritiseVoiceQuality)
+            }
+            if (updated.smallerVideoForMany != settings.smallerVideoForMany) {
+                store.setSmallerVideoForMany(updated.smallerVideoForMany)
             }
             if (updated.performanceMode != settings.performanceMode) {
                 store.setPerformanceMode(updated.performanceMode)
@@ -1928,6 +1933,9 @@ private fun FlashShell(
             onPrioritiseVoiceQualityChanged = {
                 onSettingsChange(settings.copy(prioritiseVoiceQuality = it))
             },
+            onSmallerVideoForManyChanged = {
+                onSettingsChange(settings.copy(smallerVideoForMany = it))
+            },
             onPerformanceModeSelected = {
                 onSettingsChange(settings.copy(performanceMode = it))
             },
@@ -2397,6 +2405,7 @@ private fun FlashShell(
                 onDismiss = { /* v1: no minimize — call always ends before dismiss. */ },
                 onVideoFocus = { peerId -> engine.calls?.setVideoFocus(peerId) },
                 onShowFewerVideos = { on -> engine.calls?.setShowFewerVideos(on) },
+                onSendSmallerVideo = { scope.launch { engine.settingsStore.setSmallerVideoForMany(true) } },
             )
         }
     }

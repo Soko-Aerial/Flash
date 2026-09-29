@@ -1,5 +1,13 @@
 # Current Handoff
 
+## 2026-09-29 — "Send smaller video in groups" setting (ADR-053); ERROR-079 hotspot-host call leg
+- New opt-in setting (default off; Settings → Calls, and a **Send smaller** action on the CPU warning): in group
+  video calls, send 540p to 2 watchers and 360p to 3 or more.
+- A phone hosting the Wi-Fi hotspot connected chat but not its call leg (ICE stuck in Checking): ERROR-079, OPEN,
+  needs that phone's logcat.
+- webrtc-java 0.19.0 checked: frame ownership unchanged (no double release), still no hardware codecs on Windows;
+  issue #185 (H.265) is not the path to hardware decoding.
+
 ## 2026-09-29 — Desktop frame leak fixed (ERROR-078); desktop call stats fixed; hardware video assessed (ADR-052)
 - Every video frame from webrtc-java is now released (was ~50 MB/s leaked; 9.8 GB after a 3-minute call).
 - Desktop group-call stats were always empty (enum type names); fixed in jvm `RtcStats`.

@@ -344,6 +344,10 @@ object DiscoveryEngineHolder {
     @Volatile
     var prioritiseVoiceQuality: Boolean = true
 
+    /** "Send smaller video in groups" (ADR-053), mirrored like [prioritiseVoiceQuality]. */
+    @Volatile
+    var smallerVideoForMany: Boolean = false
+
     /**
      * ERROR-033: the device's performance tier, mirrored from `FlashSettingsDataStore` by
      * `AppEngine` (which resolves an unset/"auto" preference by classifying the hardware).
@@ -1187,6 +1191,7 @@ object DiscoveryEngineHolder {
             // Read per sample, not captured once: flipping the switch mid-call has to take effect
             // on that call, not the next one.
             prioritiseVoice = { prioritiseVoiceQuality },
+            smallerVideoForMany = { smallerVideoForMany },
             // ERROR-033: capture size, Opus packetization and the call-recovery windows all come
             // from the device's tier. Read per call for the same reason as above.
             performanceMode = { performanceMode },

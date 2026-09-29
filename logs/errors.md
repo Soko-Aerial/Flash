@@ -1,5 +1,48 @@
 # Error Log
 
+## ERROR-079 — Group call leg to the phone hosting the Wi-Fi hotspot never connected (ICE stuck in Checking)
+
+### Date
+2026-09-29
+
+### Area
+Calling (WebRTC ICE on Android) / Wi-Fi hotspot (SoftAP) host
+
+### Symptoms
+Four-person group video call, 10:35–10:38 (the ERROR-078 test). The leg between this desktop and **Flash Meerkat**
+(W999, `5e8e2183`) completed offer/answer but stayed `ice=Checking` for the whole call; every other leg connected.
+Chat, discovery and call signaling with that phone all worked. The owner then identified the difference: **Meerkat
+was the phone hosting the hotspot** the others were joined to.
+
+### Evidence (`~/.flash/desktop.log`)
+```text
+10:31:04 I/WS: Discovered endpoints: 'Flash Meerkat' id=5e8e2183-… at 10.167.108.67:45822, …
+CALL_DIAG leg=5e8e2183-… pc#1 … ice=Checking          (the whole call; no candidate pair ever succeeded)
+```
+The phone's own logcat (its ICE candidates) was not captured.
+
+### Root cause (hypothesis — not verified)
+Signaling rides Flash's own WebSocket, which is a plain socket and reaches the hotspot host fine. WebRTC is
+different: on Android it gathers candidates per **network** reported by its network monitor (ConnectivityManager).
+A SoftAP interface is not a `Network` on the host phone, so the host likely offers no host candidate on the hotspot
+subnet (only cellular / other interfaces), and its checks are bound to networks the clients cannot reach. The same
+"the hotspot host is not a normal Wi-Fi client" property caused the NSD asymmetry fixed on 2026-08-25 (memory
+`nsd-hotspot-discovery`; the host could not dial clients either).
+
+### Next step
+Repeat with the hotspot host's logcat (`adb logcat | grep -iE "CALL_DIAG|GROUP_CALL|candidate|NetworkMonitor"`):
+does the host gather a `host` candidate with its hotspot address (`10.167.108.x`)? If not, the fix is on the Android
+WebRTC side (network monitor / network-ignore options, or binding by interface name), and needs checking against
+current libwebrtc before choosing. Workaround until then: a phone that hosts the hotspot can chat and transfer but
+may not connect calls; another device can host the hotspot.
+
+### Related files
+- `core/calling/src/commonMain/kotlin/com/transfer/flash/core/calling/FlashGroupCallSession.kt`
+- `third_party/webrtc-kmp` (Android factory setup)
+
+### Status
+OPEN
+
 ## ERROR-078 — Desktop video calls leaked every video frame (~50 MB/s); desktop call stats were always empty
 
 ### Date

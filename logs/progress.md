@@ -1,5 +1,32 @@
 # Progress Log
 
+## 2026-09-29 — Optional "Send smaller video in groups" (ADR-053); hotspot-host call failure logged (ERROR-079)
+
+### Worked on
+Owner: do ADR-052's recommendation as an option, offered from the CPU warning and in Settings; the W999 leg failed
+because that phone hosted the hotspot; would upgrading webrtc-java cause problems (latest is 0.19.0), and is issue
+#185 what we want for hardware decoding.
+
+### Changed
+- `GroupVideoLimits.smallerForMany` / `heightForCopies`; `GroupVideoRouter.level()` caps by watcher count when on.
+- Setting plumbed: `CallCoordinator`/`FlashGroupCallSession(smallerVideoForMany)`, `FlashCallUiState.smallerVideoForMany`,
+  shared Settings row, Android DataStore + `DiscoveryEngineHolder` mirror, desktop `DesktopSettings`.
+- CPU banner: **Send smaller** action (two-line layout), host saves the setting.
+- ERROR-079 (OPEN), ADR-053, ADR-052 update (0.19.0 facts, #185), UI-050d doc.
+
+### Verification
+calling jvm 106 / host 122, callui 23, chat 285, desktop 91, app compile: green (new router, banner and settings
+tests). Not device-tested.
+
+### Remaining
+Device check: turn the setting on in a 3–4 person call and read `sending={…=360…}` and `vout … enc=` in CALL_DIAG.
+ERROR-079 needs the hotspot host's logcat. webrtc-java 0.19.0 upgrade not done.
+
+### Next AI
+For the webrtc-java upgrade: pass over webrtc-kmp's jvm layer for the disposable `RTCRtpSender`/`Receiver`/
+`Transceiver` (0.18.0), keep `DesktopVideoSink`'s `frame.release()` (0.19.0 still hands a reference to Java), and
+re-test the portable build (native libraries change).
+
 ## 2026-09-29 — Desktop call: the real native leak (ERROR-078), empty desktop stats, hardware-video assessment
 
 ### Worked on

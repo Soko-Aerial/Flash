@@ -68,6 +68,8 @@ public class FlashSettingsDataStore(
         public val autoDownloadFile: Preferences.Key<Boolean> = booleanPreferencesKey("auto_download_file")
         public val prioritiseVoiceQuality: Preferences.Key<Boolean> =
             booleanPreferencesKey("prioritise_voice_quality")
+        public val smallerVideoForMany: Preferences.Key<Boolean> =
+            booleanPreferencesKey("smaller_video_for_many")
         public val performanceMode: Preferences.Key<String> = stringPreferencesKey("performance_mode")
         public val saveLocationUri: Preferences.Key<String> = stringPreferencesKey("save_location_uri")
         public val retentionDays: Preferences.Key<Int> = intPreferencesKey("retention_days")
@@ -167,6 +169,13 @@ public class FlashSettingsDataStore(
         preferences.map { it[Keys.prioritiseVoiceQuality] ?: true }
 
     /**
+     * "Send smaller video in groups" (ADR-053): in a group video call, send this device's video at
+     * 540p to two people and 360p to three or more. Default off; the CPU warning offers it.
+     */
+    public val smallerVideoForMany: Flow<Boolean> =
+        preferences.map { it[Keys.smallerVideoForMany] ?: false }
+
+    /**
      * The pinned [FlashPerformanceMode], or **null meaning "detect from the hardware"**.
      *
      * Null is the shipped default and it is what makes the tiers detect themselves on first run
@@ -235,6 +244,10 @@ public class FlashSettingsDataStore(
 
     public suspend fun setPrioritiseVoiceQuality(value: Boolean) {
         dataStore.edit { it[Keys.prioritiseVoiceQuality] = value }
+    }
+
+    public suspend fun setSmallerVideoForMany(value: Boolean) {
+        dataStore.edit { it[Keys.smallerVideoForMany] = value }
     }
 
     /** Pins a tier, or restores hardware detection when [value] is null. */

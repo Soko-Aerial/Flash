@@ -209,6 +209,11 @@ class AppEngine @Inject constructor(
                                 DiscoveryEngineHolder.prioritiseVoiceQuality = it
                             }
                         }
+                        scope.launch {
+                            settingsStore.smallerVideoForMany.collect {
+                                DiscoveryEngineHolder.smallerVideoForMany = it
+                            }
+                        }
                         // ERROR-033: same mirroring for the performance tier, read by
                         // CallCoordinator and WsFlashNetwork through lambdas.
                         scope.launch {

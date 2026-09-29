@@ -23,6 +23,8 @@ public data class DesktopSettings(
     val autoDownloadVideo: Boolean = false,
     val autoDownloadFile: Boolean = false,
     val prioritiseVoiceQuality: Boolean = true,
+    /** "Send smaller video in groups" (ADR-053), default off. */
+    val smallerVideoForMany: Boolean = false,
     val dynamicAccent: Boolean = false,
     val performanceMode: FlashPerformanceMode? = null,
     val closeToTray: Boolean = true,
@@ -78,6 +80,7 @@ internal class DesktopSettingsStore(private val stateDir: File) {
             autoDownloadVideo = props.getProperty(KEY_AUTO_DOWNLOAD_VIDEO, "false").toBoolean(),
             autoDownloadFile = props.getProperty(KEY_AUTO_DOWNLOAD_FILE, "false").toBoolean(),
             prioritiseVoiceQuality = props.getProperty(KEY_PRIORITISE_VOICE_QUALITY, "true").toBoolean(),
+            smallerVideoForMany = props.getProperty(KEY_SMALLER_VIDEO_FOR_MANY, "false").toBoolean(),
             dynamicAccent = props.getProperty(KEY_DYNAMIC_ACCENT, "false").toBoolean(),
             performanceMode = performanceModeFromKey(props.getProperty(KEY_PERFORMANCE_MODE)),
             closeToTray = props.getProperty(KEY_CLOSE_TO_TRAY, "true").toBoolean(),
@@ -99,6 +102,7 @@ internal class DesktopSettingsStore(private val stateDir: File) {
         props.setProperty(KEY_AUTO_DOWNLOAD_VIDEO, settings.autoDownloadVideo.toString())
         props.setProperty(KEY_AUTO_DOWNLOAD_FILE, settings.autoDownloadFile.toString())
         props.setProperty(KEY_PRIORITISE_VOICE_QUALITY, settings.prioritiseVoiceQuality.toString())
+        props.setProperty(KEY_SMALLER_VIDEO_FOR_MANY, settings.smallerVideoForMany.toString())
         props.setProperty(KEY_DYNAMIC_ACCENT, settings.dynamicAccent.toString())
         props.setProperty(KEY_CLOSE_TO_TRAY, settings.closeToTray.toString())
         props.setProperty(KEY_SHOW_NOTIFICATIONS, settings.showNotifications.toString())
@@ -146,6 +150,7 @@ internal class DesktopSettingsStore(private val stateDir: File) {
         const val KEY_AUTO_DOWNLOAD_VIDEO: String = "auto_download_video"
         const val KEY_AUTO_DOWNLOAD_FILE: String = "auto_download_file"
         const val KEY_PRIORITISE_VOICE_QUALITY: String = "prioritise_voice_quality"
+        const val KEY_SMALLER_VIDEO_FOR_MANY: String = "smaller_video_for_many"
         const val KEY_DYNAMIC_ACCENT: String = "dynamic_accent"
         const val KEY_PERFORMANCE_MODE: String = "performance_mode"
         const val KEY_CLOSE_TO_TRAY: String = "close_to_tray"

@@ -89,6 +89,11 @@ public class FlashGroupCallSession(
     private val peerNameResolver: (String) -> String? = { null },
     /** This device's network band (G2), read for every announcement; cheap and non-blocking. */
     private val networkBand: () -> FlashNetworkBand = { FlashNetworkBand.UNKNOWN },
+    /**
+     * The user's "Send smaller video in groups" setting (ADR-053, default off), read on every
+     * stats tick so turning it on mid-call takes effect within a second or two.
+     */
+    private val smallerVideoForMany: () -> Boolean = { false },
 ) : FlashCallMedia {
 
     private fun resolveName(peerId: String, fallback: String? = null): String =
@@ -1002,6 +1007,7 @@ public class FlashGroupCallSession(
             struggling = verdict.struggling,
             receiveCap = verdict.receiveCap,
             acceptNew = verdict.acceptNew,
+            smallerForMany = smallerVideoForMany(),
         )
     }
 
@@ -1327,6 +1333,7 @@ public class FlashGroupCallSession(
             videoMainPeerId = videoMainNow,
             healthWarning = if (video) healthNow.warning else null,
             showingFewerVideos = video && healthNow.showingFewer,
+            smallerVideoForMany = video && smallerVideoForMany(),
         )
     }
 

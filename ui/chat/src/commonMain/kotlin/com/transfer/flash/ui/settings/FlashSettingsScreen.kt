@@ -102,6 +102,11 @@ data class FlashSettingsModel(
      */
     val prioritiseVoiceQuality: Boolean = true,
     /**
+     * "Send smaller video in groups" (ADR-053), default off: in a group video call this device
+     * sends its video at 540p to two people and 360p to three or more, to save processor time.
+     */
+    val smallerVideoForMany: Boolean = false,
+    /**
      * The tier the user pinned, or null for "Auto" — follow [detectedPerformanceMode] (ERROR-033).
      *
      * Null is the default and the normal state: the pin exists for the case auto-detect cannot see,
@@ -184,6 +189,14 @@ object FlashSettingsMath {
             "Voice and video share bandwidth equally"
         }
 
+    /** Explains the "Send smaller video in groups" row (ADR-053): what shrinks, and when. */
+    fun smallerVideoForManySubtitle(enabled: Boolean): String =
+        if (enabled) {
+            "Your video goes at 540p to 2 people and 360p to 3 or more. Uses less processor"
+        } else {
+            "Your video goes at full size to everyone in a group call"
+        }
+
     /** Segment labels for the performance picker. Null is the Auto segment (ERROR-033). */
     fun performanceModeLabel(mode: FlashPerformanceMode?): String = when (mode) {
         null -> "Auto"
@@ -245,6 +258,7 @@ fun FlashSettingsScreen(
     onAutoDownloadVideoChanged: (Boolean) -> Unit = {},
     onAutoDownloadFileChanged: (Boolean) -> Unit = {},
     onPrioritiseVoiceQualityChanged: (Boolean) -> Unit = {},
+    onSmallerVideoForManyChanged: (Boolean) -> Unit = {},
     /** Pins a performance tier, or null to hand the choice back to auto-detect (ERROR-033). */
     onPerformanceModeSelected: (FlashPerformanceMode?) -> Unit = {},
     /** Sets the active discovery presence mode (STANDARD, GHOST, ECO, BOOST). */
@@ -490,6 +504,16 @@ fun FlashSettingsScreen(
                     subtitle = FlashSettingsMath.prioritiseVoiceSubtitle(model.prioritiseVoiceQuality),
                     checked = model.prioritiseVoiceQuality,
                     onCheckedChange = onPrioritiseVoiceQualityChanged,
+                )
+            }
+        }
+        item(key = "smaller-video-for-many") {
+            StaggerIn(23) {
+                SwitchRow(
+                    title = "Send smaller video in groups",
+                    subtitle = FlashSettingsMath.smallerVideoForManySubtitle(model.smallerVideoForMany),
+                    checked = model.smallerVideoForMany,
+                    onCheckedChange = onSmallerVideoForManyChanged,
                 )
             }
         }

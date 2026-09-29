@@ -2270,3 +2270,59 @@ three times at 720p30 (one encoder per mesh connection), not decoding three 640x
 Do 3 first and measure with the now-working `CALL_DIAG` encode/decode times (ERROR-078). Take on 1 or 2 only if
 the numbers still show codec CPU as the limit.
 
+### Update 2026-09-29 (webrtc-java 0.19.0 source, issue #185)
+- The send-height half of option 3 is **ADR-053** (opt-in).
+- 0.19.0 (latest, 2026-09-27) still builds its Windows/Linux video factories from a fixed template: libvpx VP8/VP9,
+  **OpenH264 (software)**, libaom AV1 encode / dav1d decode. No hardware codec and no hook to add one. On **macOS** it
+  uses the platform's default factories (VideoToolbox), so a Mac already has hardware H.264 — once Flash stops
+  forcing VP8.
+- 0.19.0's `VideoTrackSink::OnFrame` still copies each frame and takes a reference for Java, so ERROR-078's
+  `frame.release()` stays correct after an upgrade (no double release). 0.18.0 removed the double
+  `DeleteLocalRef` there.
+- Issue #185 ("H265 support", open) is **not** the hardware-decoding path Flash needs: it asks for H.265 to talk to
+  MediaMTX. The maintainer's answer (2026-09-13, m152) is that open-source WebRTC has no H.265 encoder or decoder and
+  it would mean writing one against Media Foundation / VideoToolbox / VA-API — i.e. option 1's work, for a codec
+  most Android phones cannot use in WebRTC. It is useful as a signal that the maintainer sees hardware codecs as
+  platform work, which makes option 2 (a codec-factory hook) the thing to ask upstream for.
+
+## ADR-053 — Optional "Send smaller video in groups" (send-height cap by watcher count)
+
+### Date
+2026-09-29
+
+### Status
+**ACCEPTED** — implemented (code; device check pending).
+
+### Context
+ERROR-078's call showed a desktop spending most of its CPU encoding its camera at 720p once per watcher (a mesh has
+one encoder per connection). ADR-052 option 3 proposed capping the send height when sending to several people. The
+owner asked for it **as an option**, offered where the CPU warning appears and kept in Settings.
+
+### Decision
+- A user setting, **"Send smaller video in groups"**, default **off**, on Android (DataStore
+  `smaller_video_for_many`) and desktop (`~/.flash/settings.properties` `smaller_video_for_many`).
+- When on, `GroupVideoRouter.level()` also caps every copy by how many watchers there are
+  (`GroupVideoLimits.heightForCopies`): 1 → unchanged (720p), 2 → 540p, 3 or more → 360p. It combines with the
+  existing caps (band, split budget, each watcher's own ask) by taking the lowest; the bitrate follows the height
+  (`maxBitrateKbps`). The step is immediate both ways: it changes only when a watcher arrives or leaves.
+- The CPU health banner (UI-050d) offers **Send smaller** while the setting is off; tapping it turns the setting on
+  and saves it (so it shows in Settings), rather than a per-call switch. With two actions the banner takes two lines.
+- Plumbing follows "Prioritise voice quality": the host owns the preference and passes a reader lambda
+  (`CallCoordinator(smallerVideoForMany = { … })` → `FlashGroupCallSession`), read on every stats tick, so a mid-call
+  change applies within 1–2 s and `core:calling` stays persistence-free (ADR-024).
+
+### Alternatives considered
+- Always on: rejected by the owner's "make it optional"; also changes the picture everyone else sees.
+- A per-call toggle only (like "Show fewer"): would need finding again every call; the owner wanted it in Settings.
+- Offering it on the WARM warning too: it would help heat as well, but the owner asked for the CPU warning; revisit
+  after measuring.
+- Hardware codecs: ADR-052 (large native work).
+
+### Consequences
+Watchers of a device with the setting on see its video at 540p/360p in larger calls. The camera still captures at
+its profile size; only the encoded copies shrink (WebRTC scales before encoding).
+
+### Revisit when
+The next `CALL_DIAG vout … enc=` numbers show whether the cap is enough, or whether it should default on for LOW/MEDIUM
+devices.
+
