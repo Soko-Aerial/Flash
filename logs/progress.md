@@ -1,5 +1,30 @@
 # Progress Log
 
+## 2026-09-29 — G4 code done: group video budgets (device check pending, P8)
+
+### Worked on
+G4 of `docs/calling/GROUP-VIDEO-PLAN.md`: the tier × band tables become real per-copy resolutions and bitrates.
+Owner goal for this session: "finish the rest and lets skip the checks and implement" (G4–G7, device checks recorded
+as pending).
+
+### Changed
+- `GroupVideoRouter.kt`: `GroupVideoLimits` gains `splitBudget`, `maxSendHeight`, `acceptNew`, `capacity`,
+  `maxBitrateKbps(height)` and `of(…, struggling, receiveCap, acceptNew)`. The router keeps one send level (360/540
+  under the 2.4 GHz split budget, 5 s step-up via `tick`), grants with the real height, denies `thermal` when
+  `acceptNew` is false, and emits `Sending(peer, on, height)` whenever a copy's height changes.
+- `FlashGroupCallSession.kt`: `tuneVideoSender(sender, active, height)` scales the encoding and caps the bitrate per
+  height; the stats loop calls `tick()`.
+- Tests: `GroupVideoRouterTest` +6.
+
+### Verification
+`:core:calling:jvmTest` 95/95, plus the host, callui, desktop and app runs listed in the handoff. No device test (P8).
+
+### Remaining
+G4b is recorded as not built (gated on G0 C3). Next: G5 UI (component doc first), G6 health warnings, G7 caps.
+
+### Next AI
+See `logs/handoff.md`.
+
 ## 2026-09-28 — G3 group video by request: code done (device check pending, P8)
 
 ### Worked on

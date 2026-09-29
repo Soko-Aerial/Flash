@@ -143,8 +143,9 @@ public class FlashGroupCallSession(
     @Volatile
     private var videoStates: Map<String, FlashParticipantVideo> = emptyMap()
 
+    /** Legs carrying this device's video, with the copy's height (null: full profile, an old client). */
     @Volatile
-    private var sendingTo: Set<String> = emptySet()
+    private var sendingTo: Map<String, Int?> = emptyMap()
 
     @Volatile
     private var videoFreeNow: Int = 0
@@ -600,7 +601,7 @@ public class FlashGroupCallSession(
                 val videoSender = pc.addTrack(videoTrack, stream)
                 leg.videoSender = videoSender
                 // G3: the encoding starts off unless this peer asked (or is an old client).
-                tuneVideoSender(videoSender, active = leg.peerId in sendingTo)
+                tuneVideoSender(videoSender, active = leg.peerId in sendingTo, height = sendingTo[leg.peerId])
             }
         }
 
@@ -653,7 +654,9 @@ public class FlashGroupCallSession(
                         // G3: the encodings may not have existed when the sender was first
                         // tuned, so set this leg's on/off again now that it is connected.
                         routeVideo {
-                            leg.videoSender?.let { tuneVideoSender(it, active = isSending(leg.peerId)) }
+                            leg.videoSender?.let {
+                                tuneVideoSender(it, active = isSending(leg.peerId), height = sendHeight(leg.peerId)?.takeIf { h -> h > 0 })
+                            }
                             reconcile()
                         }
                     }
@@ -845,7 +848,8 @@ public class FlashGroupCallSession(
         if (!video || isEnded) return
         videoMutex.withLock {
             val effects = videoRouter.step()
-            sendingTo = legs.keysSnapshot().filter { videoRouter.isSending(it) }.toSet()
+            sendingTo = legs.keysSnapshot().filter { videoRouter.isSending(it) }
+                .associateWith { peer -> videoRouter.sendHeight(peer)?.takeIf { it > 0 } }
             videoFreeNow = videoRouter.freeSlots()
             videoStates = legs.keysSnapshot().associateWith { videoRouter.receiveState(it) }
             effects.forEach { effect ->
@@ -853,9 +857,12 @@ public class FlashGroupCallSession(
                     is GroupVideoRouter.Effect.Send -> sendFrame(effect.frame, effect.peerId)
                     is GroupVideoRouter.Effect.Announce -> sendFrame(presenceFrame(), effect.peerId)
                     is GroupVideoRouter.Effect.Sending -> {
-                        FlashLog.i("GROUP_CALL", "Leg ${effect.peerId} video send=${if (effect.on) "on" else "off"}")
+                        FlashLog.i(
+                            "GROUP_CALL",
+                            "Leg ${effect.peerId} video send=${if (effect.on) "on" else "off"} height=${effect.height ?: "full"}",
+                        )
                         val sender = legs[effect.peerId]?.videoSender
-                        if (sender != null) onMediaThread { tuneVideoSender(sender, active = effect.on) }
+                        if (sender != null) onMediaThread { tuneVideoSender(sender, active = effect.on, height = effect.height) }
                     }
                 }
             }
@@ -990,7 +997,8 @@ public class FlashGroupCallSession(
         val speakers = activeLegs.filter { it.isSpeaking }.map { it.peerId }.toSet()
         routeVideo {
             setLocalSpeaking((localAudioLevel ?: 0.0) > 0.01)
-            onSpeakers(speakers)
+            // G4: tick lets a split budget step back up and picks up changed limits.
+            onSpeakers(speakers) + tick()
         }
 
         val nowMs = SystemTimeSource.nowMs()
@@ -1255,15 +1263,28 @@ public class FlashGroupCallSession(
         }
     }
 
-    private fun tuneVideoSender(sender: RtpSender, active: Boolean) {
+    /**
+     * Tunes the video encoding of one leg. [height] is the copy's height from the G4 budget: the
+     * encoder scales the camera down to it and caps the bitrate for that height. Null keeps the
+     * full camera profile (an old client, or a leg not yet decided).
+     */
+    private fun tuneVideoSender(sender: RtpSender, active: Boolean, height: Int? = null) {
         val profile = performanceMode().video
+        val sent = height?.coerceIn(1, profile.captureHeight) ?: profile.captureHeight
+        val scaleDown = profile.captureHeight.toDouble() / sent
+        val maxKbps = if (height == null) {
+            profile.maxBitrateKbps
+        } else {
+            minOf(profile.maxBitrateKbps, GroupVideoLimits.maxBitrateKbps(sent))
+        }
+        val minKbps = minOf(profile.minBitrateKbps, maxKbps)
         try {
             val applied = sender.applyVideoTuning(
                 VideoSendTuning(
-                    maxBitrateBps = profile.maxBitrateKbps * BPS_PER_KBPS,
-                    minBitrateBps = profile.minBitrateKbps * BPS_PER_KBPS,
+                    maxBitrateBps = maxKbps * BPS_PER_KBPS,
+                    minBitrateBps = minKbps * BPS_PER_KBPS,
                     maxFramerate = profile.captureFps.toDouble(),
-                    scaleResolutionDownBy = 1.0,
+                    scaleResolutionDownBy = scaleDown,
                     active = active,
                     demoteForVoice = true,
                     maintainFramerate = true,
@@ -1275,7 +1296,7 @@ public class FlashGroupCallSession(
             }
             FlashLog.i(
                 "GROUP_CALL",
-                "video sender tuned applied=$applied active=$active max=${profile.maxBitrateKbps}kbps " +
+                "video sender tuned applied=$applied active=$active height=${sent}p max=${maxKbps}kbps " +
                     "fps=${profile.captureFps} degradation=MAINTAIN_FRAMERATE",
             )
         } catch (t: Throwable) {

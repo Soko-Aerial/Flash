@@ -1,5 +1,14 @@
 # Current Handoff
 
+## 2026-09-29 — G4 code done: group video budgets
+- `GroupVideoLimits` holds the §4.2 table incl. the 2.4 GHz split budget; the router keeps one send level
+  (360 ↔ 540, 5 s step-up on `tick`) and each copy goes at min(asked, level) with a per-height bitrate ceiling
+  (`tuneVideoSender(…, height)`). `vgrant q` is now the real height. `acceptNew`/`receiveCap`/`struggling` are
+  inputs G6 fills.
+- G4b not built: gated on the G0 C3 measurement (plan §8).
+- Tests green (calling jvm 95 / host 107, callui 17, desktop 86, app compile). Not device-tested (P8).
+- Next: G5 UI (write UI-050c in `docs/ui/calling-ui.md` first), then G6, G7.
+
 ## 2026-09-28 — G3 code done: group video by request (ADR-049)
 - `GroupVideoRouter` (pure, both sides) drives per-leg `active` switches; frames `vreq/vgrant/vdeny/vrel`, `vr=1`,
   `vfree`. Old clients keep sending and receiving video as before. `FlashCalling.setVideoFocus` exists (no UI tap until G5).

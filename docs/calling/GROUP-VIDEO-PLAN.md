@@ -1,6 +1,7 @@
 # Group calls: request-based video, tier and band budgets, size caps
 
-**Status (2026-09-28): G1, G2 and G3 code done (unit-tested, not device-tested). G0 measurements deferred to the final test
+**Status (2026-09-29): G1, G2, G3 and G4 code done (unit-tested, not device-tested); G4b not built (its gate is the
+G0 C3 measurement). G0 measurements deferred to the final test
 pass (owner decision P8 in the presence plan). Owner decisions recorded 2026-09-24.** Written 2026-09-23 from the owner's
 requirements and a code review of `core/calling` and `ui/callui`.
 
@@ -301,3 +302,33 @@ No open questions remain. Next: G0 measurements (now including C1–C3), and ADR
   - The desktop honours `active=false`. If it doesn't, use the `replaceTrack` fallback.
   - An old build in the same call still sends and receives video.
   - `media-source` `audioLevel` is present on Android and on the desktop.
+
+### G4 — code done 2026-09-29 (device check pending, P8)
+- `GroupVideoLimits` now carries the whole §4.2 table: `receive`, `send`, `quality` (the height a device asks for),
+  `maxSendHeight` (720, or 540 on 2.4 GHz and on LOW), `splitBudget` (2.4 GHz) and, for G6, `acceptNew` plus the
+  `of(…, struggling, receiveCap, acceptNew)` inputs. LOW asks for 360p when `struggling` (owner decision Q4).
+- **Split budget (owner decision Q8).** On 2.4 GHz `send` counts 540p copies and the sender serves up to twice as many
+  watchers (`capacity`). One height for every copy (the router's `level`): it drops to 360p the moment the watchers no
+  longer fit at 540p and climbs back only after 5 s of fitting (`tick`, called on every stats sample). On a fast or
+  unknown band the counts are plain and copies go at `maxSendHeight`.
+- **Per-copy height.** Each copy is sent at the lower of the watcher's `q` and the sender's level; the `vgrant` `q` is
+  that height (it was informational in G3). The session tunes the leg's encoding with
+  `scaleResolutionDownBy = captureHeight / height` and a bitrate ceiling per height (720p 1.8 Mbps, 540p 0.9 Mbps, 360p
+  0.45 Mbps; `GroupVideoLimits.maxBitrateKbps`, estimates until G0), never above the tier profile's own ceiling. An
+  old client's leg keeps the full profile.
+- `tick` also re-reads the limits each sample, so a band change (or, from G6, heat and "Show fewer") releases or asks
+  for videos without waiting for another event. Existing watchers are never dropped when a sender's own limits shrink;
+  only new requests are affected.
+- Not done (needs G0): the "second encoder instance falls back to software" rule (LOW's budget would become 1 copy at
+  any height), and the frame-drop trigger for LOW's 360p step.
+- Tests: `GroupVideoRouterTest` +6 (limits table incl. split budget, struggling and caps; per-copy height; the 2.4 GHz
+  split and the 5 s step-up; no split on a fast band; a hot sender's `thermal` deny; a lower receive limit releasing
+  on `tick`). `:core:calling` jvm 95.
+- **Pending device check:** a 3-way call on 2.4 GHz with 3+ watchers of one HIGH sender: outbound
+  `frameHeight` 360 on every leg, back to 540 about 5 s after one leaves. On 5 GHz, per-leg `frameHeight` follows the
+  requested height. Measured bitrates within the table (the G4 exit criterion).
+
+### G4b — not built (2026-09-29)
+Its gate is measurement C3 (G0: VP8 software vs H.264 / VP9 hardware on the BelFone). Owner decision P8 put every
+measurement at the end, so there is nothing yet to justify it. When C3 runs: if it shows a clear CPU, heat or bitrate
+win, build G4b as specified in §6; otherwise record the numbers here and close it.
