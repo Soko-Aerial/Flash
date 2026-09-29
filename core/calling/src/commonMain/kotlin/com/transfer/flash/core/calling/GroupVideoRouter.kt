@@ -7,22 +7,61 @@ import com.transfer.flash.core.common.perf.FlashNetworkBand
 import com.transfer.flash.core.common.perf.FlashPerformanceMode
 
 /**
- * How many videos a group participant receives and sends, and at what height it asks
- * (`docs/calling/GROUP-VIDEO-PLAN.md` §4.2, owner decisions Q3/Q8). G3 uses plain counts; G4
- * turns the 2.4 GHz send column into the 540p/360p budget and applies the resolutions.
+ * How many videos a group participant receives and sends, and at what height
+ * (`docs/calling/GROUP-VIDEO-PLAN.md` §4.2, owner decisions Q3/Q4/Q8).
+ *
+ * - [receive]: videos this device asks for at once.
+ * - [send]: on a fast band, copies of its own video it sends at once. On 2.4 GHz ([splitBudget])
+ *   it is a budget counted in 540p copies: a 360p copy costs half, so the sender serves up to
+ *   twice as many watchers by stepping every copy down to 360p (G4).
+ * - [quality]: the height this device asks senders for.
+ * - [maxSendHeight]: the tallest copy it sends (the camera profile may cap it lower).
+ * - [acceptNew]: false while the device is too hot (G6); new requests are turned down.
  *
  * "Fast" is 5 GHz, 6 GHz or Ethernet. An unknown band keeps today's behaviour for receiving
  * (everything) and the table's default for sending.
  */
-internal data class GroupVideoLimits(val receive: Int, val send: Int, val quality: Int) {
+internal data class GroupVideoLimits(
+    val receive: Int,
+    val send: Int,
+    val quality: Int,
+    val splitBudget: Boolean = false,
+    val maxSendHeight: Int = HEIGHT_720,
+    val acceptNew: Boolean = true,
+) {
+    /** Most watchers this device serves at once (twice [send] at 360p under the split budget). */
+    val capacity: Int get() = if (splitBudget) send * 2 else send
+
     companion object {
-        fun of(tier: FlashPerformanceMode, band: FlashNetworkBand?): GroupVideoLimits {
+        const val HEIGHT_720 = 720
+        const val HEIGHT_540 = 540
+        const val HEIGHT_360 = 360
+
+        /**
+         * @param struggling the device is hot or overloaded (G6): a LOW device then asks for
+         *   360p instead of 540p (owner decision Q4).
+         * @param receiveCap an upper bound on [receive] (G6: "Show fewer", or a severe thermal state).
+         * @param acceptNew see [GroupVideoLimits.acceptNew].
+         */
+        fun of(
+            tier: FlashPerformanceMode,
+            band: FlashNetworkBand?,
+            struggling: Boolean = false,
+            receiveCap: Int? = null,
+            acceptNew: Boolean = true,
+        ): GroupVideoLimits {
             val slow = band == FlashNetworkBand.WIFI_2_4GHZ
             val fast = band == FlashNetworkBand.ETHERNET || band == FlashNetworkBand.WIFI_5GHZ ||
                 band == FlashNetworkBand.WIFI_6GHZ
-            return when (tier) {
-                FlashPerformanceMode.LOW -> GroupVideoLimits(receive = 1, send = 1, quality = 540)
-                FlashPerformanceMode.MEDIUM -> GroupVideoLimits(receive = 2, send = 2, quality = if (slow) 540 else 720)
+            val tall = if (slow) HEIGHT_540 else HEIGHT_720
+            val base = when (tier) {
+                FlashPerformanceMode.LOW -> GroupVideoLimits(
+                    receive = 1,
+                    send = 1,
+                    quality = if (struggling) HEIGHT_360 else HEIGHT_540,
+                    maxSendHeight = HEIGHT_540,
+                )
+                FlashPerformanceMode.MEDIUM -> GroupVideoLimits(receive = 2, send = 2, quality = tall, maxSendHeight = tall)
                 FlashPerformanceMode.HIGH -> GroupVideoLimits(
                     receive = if (slow) 3 else 5,
                     send = when {
@@ -30,9 +69,25 @@ internal data class GroupVideoLimits(val receive: Int, val send: Int, val qualit
                         fast -> 5
                         else -> 4
                     },
-                    quality = if (slow) 540 else 720,
+                    quality = tall,
+                    maxSendHeight = tall,
                 )
             }
+            return base.copy(
+                receive = receiveCap?.let { minOf(it, base.receive) } ?: base.receive,
+                splitBudget = slow,
+                acceptNew = acceptNew,
+            )
+        }
+
+        /**
+         * The bitrate ceiling for one copy of [height] (VP8, plan §4.2 estimates; G0 replaces
+         * them): 720p 1.8 Mbps, 540p 0.9 Mbps, 360p 0.45 Mbps.
+         */
+        fun maxBitrateKbps(height: Int): Int = when {
+            height >= HEIGHT_720 -> 1_800
+            height >= HEIGHT_540 -> 900
+            else -> 450
         }
     }
 }
@@ -47,9 +102,12 @@ internal data class GroupVideoLimits(val receive: Int, val send: Int, val qualit
  * then everyone else in call order, up to the receive limit. It skips a participant that turned
  * it down until that participant announces free capacity, so the slot goes to the next one.
  *
- * **Sender.** It sends to a peer only after that peer asks (R1), up to the send cap. A new
- * request at the cap is denied, unless this device is talking: then its least recently
- * requested unpinned watcher makes room (owner decision Q5). A peer that did not announce the
+ * **Sender.** It sends to a peer only after that peer asks (R1), up to its capacity. A new
+ * request at capacity is denied, unless this device is talking: then its least recently
+ * requested unpinned watcher makes room (owner decision Q5). Every copy is sent at one height
+ * (G4): the lower of what the watcher asked for and the sender's level. Under the 2.4 GHz split
+ * budget the level drops to 360p as soon as the watchers no longer fit at 540p, and climbs back
+ * only after they have fit for [stepUpMs], so it does not flap. A peer that did not announce the
  * protocol (`vr=1`) is an old client and is sent video exactly as before G3; a peer that has
  * not announced anything yet is sent nothing until it does.
  *
@@ -71,12 +129,16 @@ internal class GroupVideoRouter(
     private val participants: () -> List<String>,
     private val clock: () -> Long,
     private val speakerHoldMs: Long = 2_000L,
+    private val stepUpMs: Long = 5_000L,
 ) {
     sealed interface Effect {
         data class Send(val frame: CallWireFrame, val peerId: String) : Effect
 
-        /** Switch the encoding of the connection to [peerId] on or off. */
-        data class Sending(val peerId: String, val on: Boolean) : Effect
+        /**
+         * Switch the encoding of the connection to [peerId] on or off. [height] is the copy's
+         * height when on; null means "as before G3" (an old client: the full camera profile).
+         */
+        data class Sending(val peerId: String, val on: Boolean, val height: Int? = null) : Effect
 
         /** Tell [peerId] (it was turned down) that there is room now: a presence with `vfree`. */
         data class Announce(val peerId: String) : Effect
@@ -94,9 +156,12 @@ internal class GroupVideoRouter(
     private val watchers = LinkedHashMap<String, Watcher>()
     private val lastSeqFrom = HashMap<String, Long>()
     private val turnedDown = LinkedHashSet<String>()
-    private val applied = HashMap<String, Boolean>()
+    /** What each leg's encoding was last switched to: [OFF], [FULL] or a height. */
+    private val applied = HashMap<String, Int>()
     private var localSpeaking = false
     private var cameraOff = false
+    private var splitLevel = GroupVideoLimits.HEIGHT_540
+    private var stepUpAt: Long? = null
 
     // Receiver side.
     private var receiving = false
@@ -113,7 +178,26 @@ internal class GroupVideoRouter(
         capability[peerId] == Capability.LEGACY || peerId in watchers
 
     /** How many more watchers this device would take now; the `vfree` it announces. */
-    fun freeSlots(): Int = if (cameraOff) 0 else (limits().send - watchers.size).coerceAtLeast(0)
+    fun freeSlots(): Int {
+        val limit = limits()
+        if (cameraOff || !limit.acceptNew) return 0
+        return (limit.capacity - watchers.size).coerceAtLeast(0)
+    }
+
+    /** The height of the copy sent to [peerId]: null for an old client (full profile), 0 when off. */
+    fun sendHeight(peerId: String): Int? = when {
+        capability[peerId] == Capability.LEGACY -> null
+        else -> watchers[peerId]?.let { minOf(it.quality, level()) } ?: 0
+    }
+
+    /** The one height all of this device's copies are sent at now (before each watcher's own ask). */
+    fun level(): Int {
+        val limit = limits()
+        return if (limit.splitBudget) minOf(splitLevel, limit.maxSendHeight) else limit.maxSendHeight
+    }
+
+    /** The participant the view follows while nothing is pinned (for the LOW layout, G5). */
+    val followedPeer: String? get() = followed
 
     /** What this device's view of [peerId]'s video is, for the participant list. */
     fun receiveState(peerId: String): FlashParticipantVideo {
@@ -164,7 +248,12 @@ internal class GroupVideoRouter(
                 out += deny(peerId, frame.seq, VideoDenyReason.CAMERA_OFF)
                 return out + sendingChanges()
             }
-            watchers.size < limits().send -> watchers[peerId] = Watcher(frame.seq, frame.quality, frame.focus, now)
+            !limits().acceptNew -> {
+                turnedDown += peerId
+                out += deny(peerId, frame.seq, VideoDenyReason.THERMAL)
+                return out + sendingChanges()
+            }
+            watchers.size < limits().capacity -> watchers[peerId] = Watcher(frame.seq, frame.quality, frame.focus, now)
             else -> {
                 val evict = if (localSpeaking) {
                     watchers.entries.filter { !it.value.focus }.minByOrNull { it.value.requestedAt }?.key
@@ -183,13 +272,15 @@ internal class GroupVideoRouter(
             }
         }
         turnedDown -= peerId
-        out += Effect.Send(CallWireFrame.VideoGrant(callId, localId, frame.seq, frame.quality), peerId)
+        adjustLevel(now)
+        out += Effect.Send(CallWireFrame.VideoGrant(callId, localId, frame.seq, minOf(frame.quality, level())), peerId)
         return out + sendingChanges()
     }
 
     fun onRelease(peerId: String, frame: CallWireFrame.VideoRelease): List<Effect> {
         if (!isNewer(peerId, frame.seq)) return emptyList()
         if (watchers.remove(peerId) == null) return emptyList()
+        adjustLevel(clock())
         return sendingChanges() + roomAnnouncements()
     }
 
@@ -210,11 +301,11 @@ internal class GroupVideoRouter(
 
     /** The peer hung up or timed out: everything between us ends. */
     fun onPeerLeft(peerId: String): List<Effect> {
-        watchers.remove(peerId)
+        if (watchers.remove(peerId) != null) adjustLevel(clock())
         turnedDown.remove(peerId)
         asked.remove(peerId)
         blocked.remove(peerId)
-        val stop = if (applied.remove(peerId) == true) listOf(Effect.Sending(peerId, on = false)) else emptyList()
+        val stop = if ((applied.remove(peerId) ?: OFF) != OFF) listOf(Effect.Sending(peerId, on = false)) else emptyList()
         if (pinned == peerId) pinned = null
         if (followed == peerId) followed = null
         if (candidate == peerId) candidate = null
@@ -265,6 +356,23 @@ internal class GroupVideoRouter(
     }
 
     /**
+     * The periodic step (every stats sample): climbs back to 540p once the split budget has fit
+     * for [stepUpMs], and re-checks the requests, since the limits can change with the band,
+     * the heat (G6) or the user's "Show fewer".
+     */
+    fun tick(now: Long = clock()): List<Effect> {
+        // The band may have changed since the watchers last did.
+        adjustLevel(now)
+        val limit = limits()
+        val at = stepUpAt
+        if (limit.splitBudget && at != null && now >= at && watchers.size <= limit.send) {
+            splitLevel = GroupVideoLimits.HEIGHT_540
+            stepUpAt = null
+        }
+        return reconcile()
+    }
+
+    /**
      * Brings the requests in line with what this device wants now: releases what it no longer
      * wants, asks for what it newly wants, and re-asks when the pin or the height changed.
      */
@@ -292,6 +400,25 @@ internal class GroupVideoRouter(
         return out + sendingChanges()
     }
 
+    /**
+     * Keeps the split-budget level honest after the watchers changed: down to 360p at once when
+     * they no longer fit at 540p, and a step-up timer when they fit again.
+     */
+    private fun adjustLevel(now: Long) {
+        val limit = limits()
+        if (!limit.splitBudget) {
+            splitLevel = GroupVideoLimits.HEIGHT_540
+            stepUpAt = null
+            return
+        }
+        if (watchers.size > limit.send) {
+            splitLevel = GroupVideoLimits.HEIGHT_360
+            stepUpAt = null
+        } else if (splitLevel < GroupVideoLimits.HEIGHT_540 && stepUpAt == null) {
+            stepUpAt = now + stepUpMs
+        }
+    }
+
     private fun isNewer(peerId: String, seq: Long): Boolean {
         val last = lastSeqFrom[peerId]
         if (last != null && seq <= last) return false
@@ -314,7 +441,7 @@ internal class GroupVideoRouter(
         return out
     }
 
-    /** The encodings whose on/off state has to change, in a stable order. */
+    /** The encodings whose on/off state or height has to change, in a stable order. */
     private fun sendingChanges(): List<Effect> {
         val peers = LinkedHashSet<String>().apply {
             addAll(applied.keys)
@@ -322,10 +449,16 @@ internal class GroupVideoRouter(
             capability.filterValues { it == Capability.LEGACY }.keys.forEach { add(it) }
         }
         return peers.mapNotNull { peerId ->
-            val want = isSending(peerId)
-            if ((applied[peerId] ?: false) == want) return@mapNotNull null
+            val height = sendHeight(peerId)
+            val want = height?.takeIf { it > 0 } ?: if (height == null) FULL else OFF
+            if ((applied[peerId] ?: OFF) == want) return@mapNotNull null
             applied[peerId] = want
-            Effect.Sending(peerId, want)
+            Effect.Sending(peerId, on = want != OFF, height = height?.takeIf { it > 0 })
         }
+    }
+
+    private companion object {
+        const val OFF = 0
+        const val FULL = -1
     }
 }

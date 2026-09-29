@@ -23,6 +23,7 @@ class GroupVideoRouterTest {
     private inner class Node(val id: String, var limits: GroupVideoLimits, val legacy: Boolean = false) {
         val peers = mutableListOf<String>()
         val sendingTo = mutableSetOf<String>()
+        val heights = mutableMapOf<String, Int?>()
         val router = GroupVideoRouter(
             callId = CALL,
             localId = id,
@@ -46,7 +47,13 @@ class GroupVideoRouterTest {
                 when (effect) {
                     is GroupVideoRouter.Effect.Send -> queue += Triple(node.id, effect.peerId, CallFrameCodec.encode(effect.frame))
                     is GroupVideoRouter.Effect.Announce -> queue += Triple(node.id, effect.peerId, CallFrameCodec.encode(presence(node)))
-                    is GroupVideoRouter.Effect.Sending -> if (effect.on) node.sendingTo += effect.peerId else node.sendingTo -= effect.peerId
+                    is GroupVideoRouter.Effect.Sending -> if (effect.on) {
+                        node.sendingTo += effect.peerId
+                        node.heights[effect.peerId] = effect.height
+                    } else {
+                        node.sendingTo -= effect.peerId
+                        node.heights -= effect.peerId
+                    }
                 }
             }
         }
@@ -273,12 +280,115 @@ class GroupVideoRouterTest {
     @Test
     fun `limits follow the tier and the band`() {
         val high24 = GroupVideoLimits.of(FlashPerformanceMode.HIGH, FlashNetworkBand.WIFI_2_4GHZ)
-        assertEquals(GroupVideoLimits(receive = 3, send = 3, quality = 540), high24)
+        assertEquals(
+            GroupVideoLimits(receive = 3, send = 3, quality = 540, splitBudget = true, maxSendHeight = 540),
+            high24,
+        )
+        assertEquals(6, high24.capacity)
         assertEquals(GroupVideoLimits(5, 5, 720), GroupVideoLimits.of(FlashPerformanceMode.HIGH, FlashNetworkBand.ETHERNET))
         assertEquals(GroupVideoLimits(5, 4, 720), GroupVideoLimits.of(FlashPerformanceMode.HIGH, null))
         assertEquals(GroupVideoLimits(2, 2, 720), GroupVideoLimits.of(FlashPerformanceMode.MEDIUM, FlashNetworkBand.WIFI_5GHZ))
-        assertEquals(GroupVideoLimits(2, 2, 540), GroupVideoLimits.of(FlashPerformanceMode.MEDIUM, FlashNetworkBand.WIFI_2_4GHZ))
-        assertEquals(GroupVideoLimits(1, 1, 540), GroupVideoLimits.of(FlashPerformanceMode.LOW, FlashNetworkBand.WIFI_6GHZ))
+        assertEquals(
+            GroupVideoLimits(2, 2, 540, splitBudget = true, maxSendHeight = 540),
+            GroupVideoLimits.of(FlashPerformanceMode.MEDIUM, FlashNetworkBand.WIFI_2_4GHZ),
+        )
+        assertEquals(
+            GroupVideoLimits(1, 1, 540, maxSendHeight = 540),
+            GroupVideoLimits.of(FlashPerformanceMode.LOW, FlashNetworkBand.WIFI_6GHZ),
+        )
+    }
+
+    @Test
+    fun `a struggling low-tier device asks for 360p, and the health caps apply`() {
+        assertEquals(360, GroupVideoLimits.of(FlashPerformanceMode.LOW, null, struggling = true).quality)
+        val capped = GroupVideoLimits.of(FlashPerformanceMode.HIGH, FlashNetworkBand.ETHERNET, receiveCap = 1, acceptNew = false)
+        assertEquals(1, capped.receive)
+        assertFalse(capped.acceptNew)
+        // A cap above the tier's limit does not raise it.
+        assertEquals(2, GroupVideoLimits.of(FlashPerformanceMode.MEDIUM, null, receiveCap = 4).receive)
+        assertEquals(1_800, GroupVideoLimits.maxBitrateKbps(720))
+        assertEquals(900, GroupVideoLimits.maxBitrateKbps(540))
+        assertEquals(450, GroupVideoLimits.maxBitrateKbps(360))
+    }
+
+    @Test
+    fun `copies go at the lower of the asked height and the sender's own`() {
+        val a = Node("a", GroupVideoLimits(receive = 0, send = 5, quality = 720, maxSendHeight = 720))
+        val b = Node("b", GroupVideoLimits(receive = 1, send = 5, quality = 540))
+        val c = Node("c", GroupVideoLimits(receive = 1, send = 5, quality = 720))
+        val mesh = Mesh(a, b, c).apply { join() }
+        assertEquals(540, a.heights["b"])
+        assertEquals(720, a.heights["c"])
+        val grants = mesh.wire.filterIsInstance<CallWireFrame.VideoGrant>().filter { it.from == "a" }
+        assertEquals(listOf(540, 720), grants.map { it.quality }.sorted())
+    }
+
+    @Test
+    fun `a 2_4 GHz sender splits its budget into 360p copies and steps back up after five seconds`() {
+        val slow = GroupVideoLimits(receive = 0, send = 2, quality = 540, splitBudget = true, maxSendHeight = 540)
+        val a = Node("a", slow)
+        val watchers = (1..4).map { Node("w$it", GroupVideoLimits(receive = 1, send = 2, quality = 540)) }
+        watchers.forEach { it.router.setFocus("a") }
+        val late = Node("w9", GroupVideoLimits(receive = 0, send = 2, quality = 540))
+        val mesh = Mesh(a, *watchers.toTypedArray(), late).apply { join() }
+        // Four watchers do not fit two 540p copies, so all four go at 360p.
+        assertEquals(4, a.sendingTo.size)
+        assertTrue(a.heights.values.all { it == 360 }, "${a.heights}")
+        assertEquals(0, a.router.freeSlots())
+        // Two leave: they fit at 540p again, but only after five seconds.
+        mesh.step(a) { onPeerLeft("w3") }
+        mesh.step(a) { onPeerLeft("w4") }
+        assertTrue(a.heights.values.all { it == 360 }, "${a.heights}")
+        now += 4_000
+        mesh.step(a) { tick(now) }
+        assertTrue(a.heights.values.all { it == 360 }, "${a.heights}")
+        now += 1_000
+        mesh.step(a) { tick(now) }
+        assertTrue(a.heights.values.all { it == 540 }, "${a.heights}")
+        // A fifth watcher arrives: back down at once.
+        late.limits = late.limits.copy(receive = 1)
+        mesh.step(late) { setFocus("a") }
+        assertTrue("w9" in a.sendingTo)
+        assertTrue(a.heights.values.all { it == 360 }, "${a.heights}")
+    }
+
+    @Test
+    fun `a fast-band sender does not split its budget`() {
+        val a = Node("a", GroupVideoLimits(receive = 0, send = 2, quality = 720, maxSendHeight = 720))
+        val watchers = (1..3).map { Node("w$it", GroupVideoLimits(receive = 1, send = 2, quality = 720)) }
+        watchers.forEach { it.router.setFocus("a") }
+        Mesh(a, *watchers.toTypedArray()).join()
+        assertEquals(2, a.sendingTo.size)
+        assertTrue(a.heights.values.all { it == 720 })
+    }
+
+    @Test
+    fun `a hot sender turns new watchers down, keeps the ones it has, and announces no room`() {
+        val a = Node("a", GroupVideoLimits(receive = 0, send = 5, quality = 540))
+        val b = node("b", receive = 1, send = 5)
+        val c = node("c", receive = 1, send = 5)
+        c.router.setFocus("b")
+        val mesh = Mesh(a, b, c).apply { join() }
+        assertEquals(setOf("b"), a.sendingTo)
+        a.limits = a.limits.copy(acceptNew = false)
+        assertEquals(0, a.router.freeSlots())
+        mesh.step(c) { setFocus("a") }
+        assertEquals(setOf("b"), a.sendingTo)
+        val deny = mesh.wire.filterIsInstance<CallWireFrame.VideoDeny>().last()
+        assertEquals(VideoDenyReason.THERMAL, deny.reason)
+        assertEquals(FlashParticipantVideo.BUSY, c.router.receiveState("a"))
+    }
+
+    @Test
+    fun `a lower receive limit releases the extra videos on the next tick`() {
+        val a = Node("a", GroupVideoLimits(receive = 2, send = 5, quality = 540))
+        val b = node("b", receive = 0, send = 5)
+        val c = node("c", receive = 0, send = 5)
+        val mesh = Mesh(a, b, c).apply { join() }
+        assertTrue("a" in b.sendingTo && "a" in c.sendingTo)
+        a.limits = a.limits.copy(receive = 1)
+        mesh.step(a) { tick(now) }
+        assertEquals(1, listOf(b, c).count { "a" in it.sendingTo })
     }
 
     private companion object {

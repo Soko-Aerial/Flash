@@ -252,7 +252,10 @@ FLASH_CALL action=gquery    callId=<uuid> groupId=<uuid> from=<id>
     its camera is off or it is at its send cap).
   - `vreq`: the receiver asks for the sender's video at up to `q` (picture height). `focus=1` marks a request the
     user pinned. Re-sent with a new `seq` when the pin or the height changes; a repeat is idempotent.
-  - `vgrant`: the sender switched that leg's encoding on. `q` is informational in G3 (G4 applies resolutions).
+  - `vgrant`: the sender switched that leg's encoding on. `q` is the height it sends: the lower of the requested
+    `q` and the sender's own level (G4, 2026-09-29). On 2.4 GHz a sender steps every copy down to 360 when its
+    watchers no longer fit at 540 and back up after 5 s of fitting; it does not send a new `vgrant` for that change
+    (the receiver sees it in the picture). A G3 build ignores `q` and is unaffected.
   - `vdeny`: `camera` (camera off), `busy` (at the send cap), `thermal` (reserved for G6). Also sent, with the
     watcher's granted `seq`, when a talking sender drops that watcher to make room (owner decision Q5). An unknown
     reason decodes as `busy`. The receiver skips that sender until a `gpresence` from it says `vfree` > 0; a sender
