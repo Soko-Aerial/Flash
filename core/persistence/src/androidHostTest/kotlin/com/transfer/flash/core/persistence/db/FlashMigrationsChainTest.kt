@@ -29,8 +29,12 @@ class FlashMigrationsChainTest {
     @Test
     fun `the named migrations are the shared steps in order`() {
         assertEquals(
-            listOf(FlashMigrations.MIGRATION_1_2, FlashMigrations.MIGRATION_2_3, FlashMigrations.MIGRATION_3_4)
-                .map { it.startVersion to it.endVersion },
+            listOf(
+                FlashMigrations.MIGRATION_1_2,
+                FlashMigrations.MIGRATION_2_3,
+                FlashMigrations.MIGRATION_3_4,
+                FlashMigrations.MIGRATION_4_5,
+            ).map { it.startVersion to it.endVersion },
             FlashSchemaSteps.ALL.map { it.from to it.to },
         )
     }

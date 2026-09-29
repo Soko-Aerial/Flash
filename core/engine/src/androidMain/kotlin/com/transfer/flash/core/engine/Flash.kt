@@ -18,6 +18,7 @@ import com.transfer.flash.core.discovery.core.StandardEndpointDirectory
 import com.transfer.flash.core.discovery.nsd.BuildNsdApiLevel
 import com.transfer.flash.core.discovery.nsd.NsdTransport
 import com.transfer.flash.core.engine.store.EncryptedDatabaseRecovery
+import com.transfer.flash.core.engine.store.RoomRememberedEndpointStore
 import com.transfer.flash.core.engine.store.RoomTransferStore
 import com.transfer.flash.core.messaging.RealFlashChatRepository
 import com.transfer.flash.core.messaging.protocol.ChatTextFrameCodec
@@ -38,6 +39,7 @@ import com.transfer.flash.core.network.planner.ConnectionPlanner
 import com.transfer.flash.core.network.presence.PresenceCodec
 import com.transfer.flash.core.network.presence.PresenceExchange
 import com.transfer.flash.core.network.presence.PresenceLocalView
+import com.transfer.flash.core.network.remembered.RememberedRoutes
 import com.transfer.flash.core.security.crypto.FlashFingerprint
 import com.transfer.flash.core.network.datachannel.DataChannelClient
 import com.transfer.flash.core.network.datachannel.DataChannelServer
@@ -424,6 +426,17 @@ private class Wiring(
             log = { Log.i(TAG, it) },
         )
         modeRef = modes
+        // DR1 (ADR-047): the addresses paired peers were last authenticated at, kept in the
+        // encrypted DB. A hint source for the planner only; it never changes Online/Offline.
+        val remembered = RememberedRoutes(
+            scope = scope,
+            store = RoomRememberedEndpointStore(db.rememberedEndpointDao()),
+            isPaired = { id -> trustStore.isTrusted(id) },
+            wallClockMs = System::currentTimeMillis,
+            hasLiveSession = networkImpl::hasLiveSession,
+            log = { Log.i(TAG, it) },
+        )
+        networkImpl.routeObserver = remembered
         // Built before the repository so its sink can dial on demand (PC3); started once the
         // server is up, below.
         val autoConnector = AutoConnector(
@@ -436,16 +449,19 @@ private class Wiring(
             sightings = {
                 engine.discoveredEndpoints.value.map { ep ->
                     ConnectionPlanner.Sighting(ep.deviceId.value, ep.hostAddress, ep.port, ep.friendlyName)
-                } + presence.tipSightings()
+                } + presence.tipSightings() + remembered.sightings()
             },
-            // A presence tip is dialed with its device named, so TLS checks that device's pin.
+            // A presence tip or a remembered route is dialed with its device named, so TLS checks
+            // that device's pin. A tip outranks a route: it is fresher.
             dial = { d ->
                 val tip = presence.tipFor(d.peerDeviceId, d.host, d.port)
-                if (tip == null) {
-                    networkImpl.connectManual(d.host, d.port)
-                } else {
-                    networkImpl.connectManual(d.host, d.port, tip.deviceId)
+                val route = if (tip == null) remembered.routeFor(d.peerDeviceId, d.host, d.port) else null
+                when {
+                    tip != null -> networkImpl.connectManual(d.host, d.port, tip.deviceId)
                         .also { presence.onTipResult(tip, it is FlashResult.Success) }
+                    route != null -> networkImpl.connectManual(d.host, d.port, route.deviceId)
+                        .also { if (it !is FlashResult.Success) remembered.onDialFailed(route) }
+                    else -> networkImpl.connectManual(d.host, d.port)
                 }
             },
             allowed = { modes.dialFilter.value },
@@ -663,7 +679,8 @@ private class Wiring(
             runCatching { transferImpl.preloadReceiverProgress() }
 
             // PC2 (ADR-045): the same planner and driver as the app holder and the desktop engine.
-            autoConnector.start(edges = merge(engine.discoveredEndpoints, presence.tips, modes.dialFilter))
+            remembered.start()
+            autoConnector.start(edges = merge(engine.discoveredEndpoints, presence.tips, modes.dialFilter, remembered.changes))
             presence.start(edges = merge(networkImpl.activeSessions, engine.discoveredEndpoints, engine.discoveryMode))
             modes.start(edges = merge(engine.discoveryMode, networkImpl.activeSessions, engine.discoveredEndpoints))
         }

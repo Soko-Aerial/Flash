@@ -10,6 +10,7 @@ import com.transfer.flash.core.persistence.db.dao.GroupMemberDao
 import com.transfer.flash.core.persistence.db.dao.MessageDao
 import com.transfer.flash.core.persistence.db.dao.OutboxDao
 import com.transfer.flash.core.persistence.db.dao.ReadCursorDao
+import com.transfer.flash.core.persistence.db.dao.RememberedEndpointDao
 import com.transfer.flash.core.persistence.db.dao.ReceiptDao
 import com.transfer.flash.core.persistence.db.dao.RecentSearchDao
 import com.transfer.flash.core.persistence.db.dao.ReactionDao
@@ -23,6 +24,7 @@ import com.transfer.flash.core.persistence.db.entity.GroupMemberEntity
 import com.transfer.flash.core.persistence.db.entity.MessageEntity
 import com.transfer.flash.core.persistence.db.entity.OutboxEntity
 import com.transfer.flash.core.persistence.db.entity.ReadCursorEntity
+import com.transfer.flash.core.persistence.db.entity.RememberedEndpointEntity
 import com.transfer.flash.core.persistence.db.entity.ReceiptEntity
 import com.transfer.flash.core.persistence.db.entity.RecentSearchEntity
 import com.transfer.flash.core.persistence.db.entity.ReactionEntity
@@ -61,6 +63,7 @@ import com.transfer.flash.core.persistence.db.entity.TrustedPeerEntity
         ReadCursorEntity::class,
         GroupMemberEntity::class,
         GroupDeliveryEntity::class,
+        RememberedEndpointEntity::class,
     ],
     version = FlashDatabase.DATABASE_VERSION,
     exportSchema = true,
@@ -94,11 +97,14 @@ public abstract class FlashDatabase : RoomDatabase() {
 
     public abstract fun groupDeliveryDao(): GroupDeliveryDao
 
+    public abstract fun rememberedEndpointDao(): RememberedEndpointDao
+
     public companion object {
         public const val DATABASE_NAME: String = "flash.db"
         // v2: MessageEntity gained attachment columns (attachmentTransferId/Name/Mime/Size/Path).
         // v3: MessageEntity gained reply columns (replyToId/replyToPreview).
         // v4: group membership/delivery tables and conversation group provenance.
-        public const val DATABASE_VERSION: Int = 4
+        // v5: remembered_endpoints, the DR1 dial hints for paired peers (ADR-047).
+        public const val DATABASE_VERSION: Int = 5
     }
 }

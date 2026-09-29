@@ -46,6 +46,7 @@ import com.transfer.flash.core.network.planner.ConnectionPlanner
 import com.transfer.flash.core.network.presence.PresenceCodec
 import com.transfer.flash.core.network.presence.PresenceExchange
 import com.transfer.flash.core.network.presence.PresenceLocalView
+import com.transfer.flash.core.network.remembered.RememberedRoutes
 import com.transfer.flash.core.network.ws.JvmWsFlashNetwork
 import com.transfer.flash.core.network.ws.WsSession
 import com.transfer.flash.core.transfer.FileSourceOpener
@@ -325,6 +326,7 @@ public class DesktopEngine(
             FlashLog.i(TAG_DISCOVERY, "Manual retry: restarting discovery and triggering redials")
             runCatching { disc.restartDiscovery() }
                 .onFailure { FlashLog.w(TAG_DISCOVERY, "Discovery restart failed", it) }
+            rememberedRoutes?.resetBackoff()
             autoConnector?.sweepNow()
             presenceExchange?.refresh()
             modeController?.refresh()
@@ -459,6 +461,9 @@ public class DesktopEngine(
     /** Presence sharing (PC4, ADR-046); the text router hands it every FLASH_PRES frame. */
     @Volatile
     private var presenceExchange: PresenceExchange? = null
+
+    /** DR1 (ADR-047): the addresses paired peers were last authenticated at; null before boot. */
+    private var rememberedRoutes: RememberedRoutes? = null
 
     /** Connection mode (PC5, ADR-048); the text router hands it every FLASH_LINK frame. */
     @Volatile
@@ -929,6 +934,22 @@ public class DesktopEngine(
         // before, and that silence is why a live run could show "Couldn't reach …" with no way to
         // tell "we never dialed" from "we dialed and the peer refused": the dial's failure is
         // swallowed by `runCatching` and the endpoint is never reprinted.
+        // DR1 (ADR-047): the addresses paired peers were last authenticated at, kept in the
+        // encrypted DB so a network that filters multicast does not strand a peer after a restart.
+        // A hint source for the planner only, like a presence tip; it never changes Online/Offline.
+        // With no database this run they live in memory only.
+        val remembered = RememberedRoutes(
+            scope = scope,
+            store = chatDb?.let { DesktopRememberedEndpointStore(it.rememberedEndpointDao()) },
+            isPaired = { id -> trustStore.isTrusted(FlashDeviceId(id)) },
+            wallClockMs = System::currentTimeMillis,
+            hasLiveSession = network::hasLiveSession,
+            log = { FlashLog.i(TAG_WS, it) },
+        )
+        rememberedRoutes = remembered
+        network.routeObserver = remembered
+        remembered.start()
+
         val connector = AutoConnector(
             scope = scope,
             planner = ConnectionPlanner(localDeviceId = identity.deviceId.value),
@@ -939,16 +960,19 @@ public class DesktopEngine(
             sightings = {
                 discovery.discoveredEndpoints.value.map { ep ->
                     ConnectionPlanner.Sighting(ep.deviceId.value, ep.hostAddress, ep.port, ep.friendlyName)
-                } + presence.tipSightings()
+                } + presence.tipSightings() + remembered.sightings()
             },
-            // A presence tip is dialed with its device named, so TLS checks that device's pin.
+            // A presence tip or a remembered route is dialed with its device named, so TLS checks
+            // that device's pin during the handshake. A tip outranks a route: it is fresher.
             dial = { d ->
                 val tip = presence.tipFor(d.peerDeviceId, d.host, d.port)
-                if (tip == null) {
-                    network.connectManual(d.host, d.port)
-                } else {
-                    network.connectManual(d.host, d.port, tip.deviceId)
+                val route = if (tip == null) remembered.routeFor(d.peerDeviceId, d.host, d.port) else null
+                when {
+                    tip != null -> network.connectManual(d.host, d.port, tip.deviceId)
                         .also { presence.onTipResult(tip, it is FlashResult.Success) }
+                    route != null -> network.connectManual(d.host, d.port, route.deviceId)
+                        .also { if (it !is FlashResult.Success) remembered.onDialFailed(route) }
+                    else -> network.connectManual(d.host, d.port)
                 }
             },
             // PC5: ECO dials only the peers it wants; null (STANDARD, BOOST) dials everyone.
@@ -956,7 +980,7 @@ public class DesktopEngine(
             log = { FlashLog.i(TAG_WS, it) },
         )
         autoConnector = connector
-        connector.start(edges = merge(discovery.discoveredEndpoints, presence.tips, modes.dialFilter))
+        connector.start(edges = merge(discovery.discoveredEndpoints, presence.tips, modes.dialFilter, remembered.changes))
         presence.start(edges = merge(network.activeSessions, discovery.discoveredEndpoints, discovery.discoveryMode, _discoveryMode))
         // `_settings` wakes it on a performance-tier change too; the controller acts only when the
         // resulting policy actually differs.

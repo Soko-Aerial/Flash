@@ -43,6 +43,7 @@ import com.transfer.flash.core.network.planner.ConnectionPlanner
 import com.transfer.flash.core.network.presence.PresenceCodec
 import com.transfer.flash.core.network.presence.PresenceExchange
 import com.transfer.flash.core.network.presence.PresenceLocalView
+import com.transfer.flash.core.network.remembered.RememberedRoutes
 import com.transfer.flash.core.network.ws.WsFlashNetwork
 import com.transfer.flash.core.network.ws.WsSession
 import com.transfer.flash.core.network.tls.TlsOptions
@@ -73,6 +74,7 @@ import com.transfer.flash.ptt.PttSessionService
 import com.transfer.flash.core.messaging.ptt.PttFloorState
 import com.transfer.flash.core.transfer.FlashTransferRepository
 import com.transfer.flash.core.transfer.RealFlashTransferRepository
+import com.transfer.flash.core.engine.store.RoomRememberedEndpointStore
 import com.transfer.flash.core.engine.store.RoomTransferStore
 import com.transfer.flash.core.transfer.chunked.ChunkFrame
 import com.transfer.flash.core.transfer.chunked.IncrementalSha256
@@ -227,6 +229,14 @@ object DiscoveryEngineHolder {
     @Volatile
     private var presenceExchange: PresenceExchange? = null
     private var presenceJob: Job? = null
+
+    /**
+     * DR1 (ADR-047): the addresses paired peers were last authenticated at. The re-arm resets its
+     * backoff, because a rejoined network is exactly when an old route may work again.
+     */
+    @Volatile
+    private var rememberedRoutes: RememberedRoutes? = null
+    private var rememberedJob: Job? = null
 
     /** Connection mode (PC5, ADR-048): re-times sessions on a mode change and runs ECO's rules. */
     @Volatile
@@ -1610,6 +1620,21 @@ object DiscoveryEngineHolder {
         // Voice-call quiet: while a call owns the audio the radio belongs to Opus/RTP, so no dial
         // bursts. The loop keeps running, so dialing resumes on its normal cadence when the call ends.
         localDeviceId = identity.deviceId.value
+        // DR1 (ADR-047): the addresses paired peers were last authenticated at, kept in the
+        // encrypted DB so a network that filters multicast does not strand a peer after a restart.
+        // A hint source for the planner only, like a presence tip; it never changes Online/Offline.
+        val remembered = RememberedRoutes(
+            scope = appScope,
+            store = RoomRememberedEndpointStore(db.rememberedEndpointDao()),
+            isPaired = { id -> trustStore.isTrusted(FlashDeviceId(id)) },
+            wallClockMs = System::currentTimeMillis,
+            hasLiveSession = networkImpl::hasLiveSession,
+            log = { Log.i(TAG_WS, it) },
+        )
+        rememberedRoutes = remembered
+        networkImpl.routeObserver = remembered
+        rememberedJob = remembered.start()
+
         val connector = AutoConnector(
             scope = appScope,
             planner = ConnectionPlanner(localDeviceId = identity.deviceId.value),
@@ -1623,18 +1648,21 @@ object DiscoveryEngineHolder {
             sightings = {
                 engine.discoveredEndpoints.value.map { ep ->
                     ConnectionPlanner.Sighting(ep.deviceId.value, ep.hostAddress, ep.port, ep.friendlyName)
-                } + presence.tipSightings()
+                } + presence.tipSightings() + remembered.sightings()
             },
-            // A presence tip (PC4) is dialed with its device named, so the TLS handshake checks
-            // that device's pin and a forged tip fails before any frame. Tips exist only for pinned
-            // peers, so trust-on-first-use is never reached from a tip.
+            // A presence tip (PC4) or a remembered route (DR1) is dialed with its device named, so
+            // the TLS handshake checks that device's pin and a forged or stale address fails before
+            // any frame. Both exist only for pinned peers, so trust-on-first-use is never reached
+            // from them. A tip outranks a route: it is fresher.
             dial = { d ->
                 val tip = presence.tipFor(d.peerDeviceId, d.host, d.port)
-                if (tip == null) {
-                    networkImpl.connectManual(d.host, d.port)
-                } else {
-                    networkImpl.connectManual(d.host, d.port, tip.deviceId)
+                val route = if (tip == null) remembered.routeFor(d.peerDeviceId, d.host, d.port) else null
+                when {
+                    tip != null -> networkImpl.connectManual(d.host, d.port, tip.deviceId)
                         .also { presence.onTipResult(tip, it is FlashResult.Success) }
+                    route != null -> networkImpl.connectManual(d.host, d.port, route.deviceId)
+                        .also { if (it !is FlashResult.Success) remembered.onDialFailed(route) }
+                    else -> networkImpl.connectManual(d.host, d.port)
                 }
             },
             // Hotspot host auto-probe: tethered clients cannot discover the host via NSD because
@@ -1651,7 +1679,7 @@ object DiscoveryEngineHolder {
             log = { Log.i(TAG_WS, it) },
         )
         autoConnector = connector
-        autoConnectJob = connector.start(edges = merge(engine.discoveredEndpoints, presence.tips, modes.dialFilter))
+        autoConnectJob = connector.start(edges = merge(engine.discoveredEndpoints, presence.tips, modes.dialFilter, remembered.changes))
         presenceJob = presence.start(
             edges = merge(networkImpl.activeSessions, engine.discoveredEndpoints, engine.discoveryMode, _discoveryMode),
         )
@@ -1765,6 +1793,7 @@ object DiscoveryEngineHolder {
             Log.i(TAG_DISCOVERY, "$reason: restarting discovery browsing and forcing auto-connect sweep")
             runCatching { engine.restartDiscovery() }
                 .onFailure { Log.w(TAG_DISCOVERY, "$reason discovery restart failed", it) }
+            rememberedRoutes?.resetBackoff()
             connector.sweepNow()
             presenceExchange?.refresh()
             modeController?.refresh()
@@ -2496,6 +2525,9 @@ object DiscoveryEngineHolder {
         presenceJob?.cancel()
         presenceJob = null
         presenceExchange = null
+        rememberedJob?.cancel()
+        rememberedJob = null
+        rememberedRoutes = null
         modeJob?.cancel()
         modeJob = null
         modeController = null

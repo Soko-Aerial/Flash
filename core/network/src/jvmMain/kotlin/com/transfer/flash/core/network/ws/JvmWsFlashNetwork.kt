@@ -21,11 +21,13 @@ import com.transfer.flash.core.network.FlashNetwork
 import com.transfer.flash.core.network.FlashNetworkState
 import com.transfer.flash.core.network.FlashSession
 import com.transfer.flash.core.network.bridge.EndpointMemory
+import com.transfer.flash.core.network.remembered.RouteObserver
 import com.transfer.flash.core.network.resilience.ConnectionHealthAggregator
 import com.transfer.flash.core.network.resilience.ReconnectPolicy
 import com.transfer.flash.core.network.resilience.ReconnectStagger
 import com.transfer.flash.core.network.resilience.SessionHardeningPolicy
 import com.transfer.flash.core.network.tls.TlsOptions
+import java.security.cert.CertificateException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.ThreadLocalRandom
@@ -88,6 +90,15 @@ public class JvmWsFlashNetwork(
 
     @Volatile
     public var localFriendlyName: String = localFriendlyName
+
+    /**
+     * DR1 (ADR-047): told what each outbound dial proved about an address, so a host can remember
+     * the routes of paired peers. Null (the default) remembers nothing. Reports are made from the
+     * dial path only; an inbound session carries the peer's ephemeral source port, not the port it
+     * listens on, so it proves no dialable route.
+     */
+    @Volatile
+    public var routeObserver: RouteObserver? = null
 
     private val running = AtomicBoolean(false)
     private var server: WsTransferServer? = null
@@ -246,6 +257,11 @@ public class JvmWsFlashNetwork(
             val connection = runCatching {
                 client.connect(host, actualPort, resolvedPeerDeviceId)
             }.getOrElse { error ->
+                // The dial named a peer and our own TLS check refused the key that answered: the
+                // address no longer belongs to that peer (DR1 drops a remembered route on this).
+                if (resolvedPeerDeviceId != null && error.isCertificateRejection()) {
+                    routeObserver?.onIdentityMismatch(resolvedPeerDeviceId, host, actualPort)
+                }
                 return@withContext FlashResult.Failure(FlashError.PeerUnavailable(host, error.message ?: "WS connect failed"))
             }
 
@@ -301,6 +317,7 @@ public class JvmWsFlashNetwork(
                         "[tls] manual dial rejected: leaf does not match the pin for " +
                             "peer=${shortId(peerDevice.id.value)}",
                     )
+                    routeObserver?.onIdentityMismatch(peerDevice.id.value, host, actualPort)
                     connection.close("TLS pin mismatch after HELLO")
                     return@withContext FlashResult.Failure(
                         FlashError.PeerUnavailable(
@@ -309,6 +326,16 @@ public class JvmWsFlashNetwork(
                         ),
                     )
                 }
+            }
+
+            // DR1 (ADR-047): TLS and HELLO have now proven that the key at host:port is the pinned
+            // key of `peerDevice`. Reported before registerSession so a dial that only lost a glare
+            // race still shows the address works. Skipped when TLS is off (nothing was proven) and
+            // when HELLO named a different device than the dial did.
+            if (tlsOptions?.pinVerifier != null &&
+                (resolvedPeerDeviceId == null || resolvedPeerDeviceId == peerDevice.id.value)
+            ) {
+                routeObserver?.onAuthenticated(peerDevice.id.value, host, actualPort)
             }
 
             val session = WsSession(connection, peerDevice, isOutbound = true) { s, _ ->
@@ -825,3 +852,13 @@ public class JvmWsFlashNetwork(
         private const val MAX_EARLY_FRAME_BYTES = 8L * 1024L * 1024L
     }
 }
+
+/**
+ * True when a certificate check on our side refused the peer's key somewhere in the cause chain
+ * (JSSE wraps the trust manager's `CertificateException` in an `SSLHandshakeException`). A remote
+ * TLS alert, where the peer refused *our* certificate, has no such cause and is not a route problem.
+ */
+private fun Throwable.isCertificateRejection(): Boolean =
+    generateSequence(this) { it.cause }.take(MAX_CAUSE_DEPTH).any { it is CertificateException }
+
+private const val MAX_CAUSE_DEPTH = 16
