@@ -255,6 +255,7 @@ private class Wiring(
                     sweep = { _ -> emptyList() },
                 ),
             ),
+            sourceLog = { Log.i(TAG, it) },
         )
         val trustStore = AndroidPreferencesTrustStore(appContext)
         this.trustStoreRef = trustStore

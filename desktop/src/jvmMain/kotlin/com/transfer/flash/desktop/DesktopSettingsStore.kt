@@ -32,6 +32,13 @@ public data class DesktopSettings(
     val autoStartOnBoot: Boolean = false,
     val windowsContextMenu: Boolean = true,
     val uiScale: Float = 1.0f,
+    /**
+     * Announce and sweep on virtual and tunnel adapters too (Hyper-V, VPN, VM host-only), which discovery skips by
+     * default (DR5, ADR-047). For a desktop whose real network lives on an adapter that looks virtual. Read at each
+     * rebind; edit `~/.flash/settings.properties` (`include_virtual_adapters=true`) and restart Flash. No settings
+     * row: it is a workaround, not a preference.
+     */
+    val includeVirtualAdapters: Boolean = false,
 )
 
 /**
@@ -88,6 +95,7 @@ internal class DesktopSettingsStore(private val stateDir: File) {
             autoStartOnBoot = props.getProperty(KEY_AUTO_START_ON_BOOT, "false").toBoolean(),
             windowsContextMenu = props.getProperty(KEY_WINDOWS_CONTEXT_MENU, "true").toBoolean(),
             uiScale = props.getProperty(KEY_UI_SCALE)?.toFloatOrNull()?.coerceIn(0.75f, 1.5f) ?: 1.0f,
+            includeVirtualAdapters = props.getProperty(KEY_INCLUDE_VIRTUAL_ADAPTERS, "false").toBoolean(),
         )
     }
 
@@ -109,6 +117,7 @@ internal class DesktopSettingsStore(private val stateDir: File) {
         props.setProperty(KEY_AUTO_START_ON_BOOT, settings.autoStartOnBoot.toString())
         props.setProperty(KEY_WINDOWS_CONTEXT_MENU, settings.windowsContextMenu.toString())
         props.setProperty(KEY_UI_SCALE, settings.uiScale.coerceIn(0.75f, 1.5f).toString())
+        props.setProperty(KEY_INCLUDE_VIRTUAL_ADAPTERS, settings.includeVirtualAdapters.toString())
         if (settings.performanceMode != null) {
             props.setProperty(KEY_PERFORMANCE_MODE, settings.performanceMode.name)
         } else {
@@ -158,6 +167,7 @@ internal class DesktopSettingsStore(private val stateDir: File) {
         const val KEY_AUTO_START_ON_BOOT: String = "auto_start_on_boot"
         const val KEY_WINDOWS_CONTEXT_MENU: String = "windows_context_menu"
         const val KEY_UI_SCALE: String = "ui_scale"
+        const val KEY_INCLUDE_VIRTUAL_ADAPTERS: String = "include_virtual_adapters"
 
         /** Same three tokens `FlashSettingsDataStore.THEME_MODE_*` uses. */
         const val THEME_MODE_SYSTEM: String = "system"

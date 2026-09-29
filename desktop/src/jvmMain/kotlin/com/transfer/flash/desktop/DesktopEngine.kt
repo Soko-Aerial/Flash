@@ -616,6 +616,8 @@ public class DesktopEngine(
                 JmdnsTransport(
                     directory = StandardEndpointDirectory(),
                     sweep = { _ -> emptyList() },
+                    // DR5: a Hyper-V, VPN or VM adapter would advertise an address peers cannot reach.
+                    includeVirtual = { _settings.value.includeVirtualAdapters },
                 ),
                 // ADDITIVE second LAN transport (UDP multicast with self-announcement); JmDNS is
                 // kept, not replaced. It is the transport that fixes the desktop's side of the
@@ -624,10 +626,12 @@ public class DesktopEngine(
                 // dialed — and it is the one that expires a peer which was killed without a goodbye
                 // instead of leaving it visible for up to a resolver-cache TTL.
                 MulticastTransport(
-                    socketFactory = JvmMulticastSocketFactory(),
+                    socketFactory = JvmMulticastSocketFactory(includeVirtual = { _settings.value.includeVirtualAdapters }),
                     directory = StandardEndpointDirectory(),
                 ),
             ),
+            // DR5: one line saying which source sees which peer, so a field report names the path that failed.
+            sourceLog = { FlashLog.i(TAG_WS, it) },
         )
         discoveryImpl = discovery
 
@@ -977,7 +981,7 @@ public class DesktopEngine(
         // gateway probe. Manual from Nearby, automatic only in STANDARD/BOOST outside a call.
         val sweep = SweepController(
             scope = scope,
-            subnets = { JvmLocalSubnets.lanSubnets() },
+            subnets = { JvmLocalSubnets.lanSubnets(includeVirtual = _settings.value.includeVirtualAdapters) },
             probe = TcpHostProbe(),
             port = WsTransferServer.PREFERRED_PORT,
             situation = {

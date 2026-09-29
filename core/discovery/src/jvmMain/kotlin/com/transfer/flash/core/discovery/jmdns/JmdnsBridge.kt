@@ -1,5 +1,6 @@
 package com.transfer.flash.core.discovery.jmdns
 
+import com.transfer.flash.core.discovery.net.VirtualAdapters
 import java.io.IOException
 import java.net.Inet4Address
 import java.net.InetAddress
@@ -113,7 +114,12 @@ public interface JmdnsBrowseEvents {
  * broken DNS suffix cannot stall `open()`.
  */
 public class RealJmdnsBridge(
-    private val addresses: () -> List<InetAddress> = ::multicastCapableAddresses,
+    /**
+     * DR5: keep virtual and tunnel adapters (Hyper-V, VPN, VM host-only) among the bound addresses. Read on every
+     * `open()`. Ignored when [addresses] is supplied.
+     */
+    private val includeVirtual: () -> Boolean = { false },
+    private val addresses: () -> List<InetAddress> = { multicastCapableAddresses(includeVirtual()) },
     private val logWarn: (String, Throwable?) -> Unit = { _, _ -> },
 ) : JmdnsBridge {
 
@@ -295,12 +301,17 @@ internal fun ServiceInfo.toNeutral(): JmdnsResolvedService {
  * `isUp`/`supportsMulticast` throw `SocketException` on adapters that disappear mid-enumeration
  * (common with VPN and virtual switches).
  */
-internal fun multicastCapableAddresses(): List<InetAddress> =
-    NetworkInterface.getNetworkInterfaces().asSequence()
-        .filter { nic ->
-            runCatching { nic.isUp && !nic.isLoopback && nic.supportsMulticast() }
-                .getOrDefault(false)
-        }
+internal fun multicastCapableAddresses(includeVirtual: Boolean = false): List<InetAddress> =
+    VirtualAdapters.selectInterfaces(
+        NetworkInterface.getNetworkInterfaces().asSequence()
+            .filter { nic ->
+                runCatching { nic.isUp && !nic.isLoopback && nic.supportsMulticast() }
+                    .getOrDefault(false)
+            }
+            .toList(),
+        includeVirtual,
+        "JmDNS",
+    ).asSequence()
         .flatMap { it.inetAddresses.asSequence() }
         .filterIsInstance<Inet4Address>()
         .filterNot { it.isLinkLocalAddress || it.isAnyLocalAddress }

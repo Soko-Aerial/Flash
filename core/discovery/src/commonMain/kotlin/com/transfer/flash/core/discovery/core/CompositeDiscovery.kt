@@ -107,6 +107,12 @@ public class CompositeDiscovery(
      * repeated attempts to one per window.
      */
     private val browseWatchdogMs: Long = DEFAULT_BROWSE_WATCHDOG_MS,
+    /**
+     * DR5: where the one-line per-source report goes ([sourceReport]). Null (the default) reports nothing.
+     * It is written when the set of peers any source sees changes, and again every [sourceLogHeartbeatMs].
+     */
+    private val sourceLog: ((String) -> Unit)? = null,
+    private val sourceLogHeartbeatMs: Long = DEFAULT_SOURCE_LOG_HEARTBEAT_MS,
     private val delayFn: suspend (Long) -> Unit = { ms -> kotlinx.coroutines.delay(ms) },
     /** Determinism hook for JVM tests (same pattern as NsdTransport.maxDutyCycles). */
     private val maxSweepLoops: Int = Int.MAX_VALUE,
@@ -132,6 +138,9 @@ public class CompositeDiscovery(
          * that gave up is back within ~15 s instead of never.
          */
         public const val DEFAULT_BROWSE_WATCHDOG_MS: Long = 10_000L
+
+        /** How often an unchanged [sourceReport] is written again, so a log always has a recent one. */
+        public const val DEFAULT_SOURCE_LOG_HEARTBEAT_MS: Long = 300_000L
 
         /** Highest priority first; unknown names rank after these. */
         public val PRIORITY_ORDER: List<String> = listOf("LAN", "WIFI_DIRECT", "WIFI_AWARE", "BLE")
@@ -404,6 +413,51 @@ public class CompositeDiscovery(
     private data class AgedOut(val deviceId: FlashDeviceId, val serviceName: String?)
 
     /**
+     * One line saying which source sees which peer, and how long ago it last did (DR5, plan section 3.3 E item 4):
+     * `Discovery sources: jmdns=['Flash Camel' at 192.168.1.20 4s], multicast=none`. A field report that a device
+     * "was not found" says nothing about which path failed; this does. Every source is listed, silent ones as `none`.
+     */
+    public fun sourceReport(nowMs: Long = clock()): String = lock.withLock { sourceReportLocked(nowMs) }
+
+    private fun sourceReportLocked(nowMs: Long): String =
+        transports.joinToString(separator = ", ", prefix = "Discovery sources: ") { transport ->
+            val entries = directoryFor(transport.transportName).snapshot()
+                .sortedWith(compareBy({ it.endpoint.friendlyName }, { it.endpoint.deviceId.value }))
+            val peers = if (entries.isEmpty()) {
+                "none"
+            } else {
+                entries.joinToString(prefix = "[", postfix = "]") { entry ->
+                    val ageSeconds = (nowMs - entry.lastSeenAtMs).coerceAtLeast(0) / 1_000
+                    "'${entry.endpoint.friendlyName}' at ${entry.endpoint.hostAddress} ${ageSeconds}s"
+                }
+            }
+            "${transport.transportName}=$peers"
+        }
+
+    /** Which peer each source holds, without the ages, so only a real change rewrites the report. */
+    private fun sourceSignatureLocked(): String =
+        transports.joinToString(separator = "|") { transport ->
+            val held = directoryFor(transport.transportName).snapshot()
+                .map { "${it.endpoint.deviceId.value}@${it.endpoint.hostAddress}" }
+                .sorted()
+            "${transport.transportName}:${held.joinToString(",")}"
+        }
+
+    private var lastSourceSignature: String? = null
+    private var lastSourceLogAtMs: Long = 0L
+
+    /** Called from the sweeper tick only, so the two fields above need no lock of their own. */
+    private fun logSourcesIfDue(nowMs: Long) {
+        val log = sourceLog ?: return
+        val (signature, report) = lock.withLock { sourceSignatureLocked() to sourceReportLocked(nowMs) }
+        val changed = signature != lastSourceSignature
+        if (!changed && nowMs - lastSourceLogAtMs < sourceLogHeartbeatMs) return
+        lastSourceSignature = signature
+        lastSourceLogAtMs = nowMs
+        runCatching { log(report) }
+    }
+
+    /**
      * Ages out endpoints not re-seen within [graceWindowMs] (boundary: an age
      * of EXACTLY the window counts as expired). Emits Lost once per aged-out
      * peer — or Updated when another transport still reports it alive
@@ -525,6 +579,7 @@ public class CompositeDiscovery(
                 delayFn(sweepIntervalMs)
                 sweep(nowMs = clock())
                 watchdogBrowsing(nowMs = clock())
+                logSourcesIfDue(nowMs = clock())
                 loops += 1
             }
         }

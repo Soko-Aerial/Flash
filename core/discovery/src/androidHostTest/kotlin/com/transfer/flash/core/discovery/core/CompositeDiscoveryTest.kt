@@ -584,6 +584,77 @@ class CompositeDiscoveryTest {
         }
     }
 
+    // ------------------------------------------------------------------
+    // Per-source report (DR5)
+    // ------------------------------------------------------------------
+
+    @Test
+    fun sourceReport_namesEverySource_silentOnesAsNone_andTheAgeOfEachSighting() = runBlocking {
+        harness = Harness("jmdns", "multicast")
+        harness.composite.startAll(40_000, identity)
+        harness.advance(1_000)
+        harness.transports.first { it.transportName == "multicast" }
+            .found(endpointOf("d1", host = "192.168.1.20", friendlyName = "Flash Camel"))
+        harness.advance(4_500)
+
+        assertEquals(
+            "Discovery sources: jmdns=none, multicast=['Flash Camel' at 192.168.1.20 4s]",
+            harness.composite.sourceReport(),
+        )
+    }
+
+    @Test
+    fun sourceReport_isWrittenOnAChangeAndOnTheHeartbeat_notOnEveryTick() = runBlocking {
+        val multicast = FakeTransport("multicast")
+        var now = 0L
+        val gate = TickGate()
+        val lines = mutableListOf<String>()
+        val scope = CoroutineScope(SupervisorJob() + DirectDispatcher)
+        val composite = CompositeDiscovery(
+            transports = listOf(multicast),
+            scopeFactory = { scope },
+            clock = { now },
+            delayFn = gate.delayFn,
+            sweepIntervalMs = 5_000,
+            sourceLog = { lines += it },
+            sourceLogHeartbeatMs = 60_000,
+            maxSweepLoops = 20,
+        )
+        try {
+            composite.startDiscovery()
+            // First tick: nothing is known yet, and the report still says which sources exist.
+            now = 5_000
+            gate.tick()
+            assertEquals(listOf("Discovery sources: multicast=none"), lines)
+
+            // Quiet ticks write nothing.
+            now = 10_000
+            gate.tick()
+            now = 15_000
+            gate.tick()
+            assertEquals(1, lines.size)
+
+            // A peer appears: written at the next tick, with its age at that moment.
+            multicast.found(endpointOf("d1", host = "192.168.1.20", friendlyName = "Flash Camel"))
+            now = 20_000
+            gate.tick()
+            assertEquals(2, lines.size)
+            assertTrue(lines.last().startsWith("Discovery sources: multicast=['Flash Camel' at 192.168.1.20 "))
+
+            // Unchanged until the heartbeat (60 s after the last write), then written once more.
+            multicast.presence(endpointOf("d1", host = "192.168.1.20", friendlyName = "Flash Camel"))
+            now = 25_000
+            gate.tick()
+            assertEquals(2, lines.size)
+            now = 80_000
+            multicast.presence(endpointOf("d1", host = "192.168.1.20", friendlyName = "Flash Camel"))
+            gate.tick()
+            assertEquals(3, lines.size)
+        } finally {
+            scope.cancel()
+        }
+    }
+
     @Test
     fun restartDiscovery_forcesFreshBrowseOnEveryTransport() = runBlocking {
         harness = Harness("LAN", "WIFI_DIRECT")
