@@ -90,6 +90,18 @@ internal object FlashSchemaSteps {
         ),
     )
 
+    /** v4 → v5: DR1's remembered routes for paired peers (ADR-047). */
+    val STEP_4_5: FlashSchemaStep = FlashSchemaStep(
+        from = 4,
+        to = 5,
+        statements = listOf(
+            "CREATE TABLE IF NOT EXISTS remembered_endpoints (" +
+                "deviceId TEXT NOT NULL, host TEXT NOT NULL, port INTEGER NOT NULL, " +
+                "lastConnectedAt INTEGER NOT NULL, firstFailureAt INTEGER, " +
+                "PRIMARY KEY(deviceId, host, port))",
+        ),
+    )
+
     /** Every step, in order, from version 1 to `FlashDatabase.DATABASE_VERSION`. */
-    val ALL: List<FlashSchemaStep> = listOf(STEP_1_2, STEP_2_3, STEP_3_4)
+    val ALL: List<FlashSchemaStep> = listOf(STEP_1_2, STEP_2_3, STEP_3_4, STEP_4_5)
 }

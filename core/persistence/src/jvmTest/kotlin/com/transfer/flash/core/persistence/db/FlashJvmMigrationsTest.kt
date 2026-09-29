@@ -49,7 +49,7 @@ class FlashJvmMigrationsTest {
     @Test
     fun `the exported schemas the tests depend on are present`() {
         // A missing schema would make the helper fail with a message about JSON, not about this.
-        listOf(1, FlashDatabase.DATABASE_VERSION).forEach { version ->
+        listOf(1, 3, 4, FlashDatabase.DATABASE_VERSION).forEach { version ->
             assertTrue(
                 Files.exists(SCHEMA_DIR.resolve("com.transfer.flash.core.persistence.db.FlashDatabase/$version.json")),
                 "schemas/…/$version.json is missing; the tests run from the module directory",
@@ -75,6 +75,23 @@ class FlashJvmMigrationsTest {
     fun `a v3 database upgrades to the current schema and Room validates it`() {
         helper.createDatabase(3).close()
         helper.runMigrationsAndValidate(FlashDatabase.DATABASE_VERSION, FlashJvmMigrations.ALL.toList()).close()
+    }
+
+    @Test
+    fun `a v4 database gains the remembered_endpoints table and Room validates it`() {
+        // The DR1 step (ADR-047): the only change between v4 and v5.
+        helper.createDatabase(4).close()
+        helper.runMigrationsAndValidate(FlashDatabase.DATABASE_VERSION, FlashJvmMigrations.ALL.toList()).use { upgraded ->
+            upgraded.execSQL(
+                "INSERT INTO remembered_endpoints (deviceId, host, port, lastConnectedAt) " +
+                    "VALUES ('peer', '192.168.1.5', 45822, 1)",
+            )
+            upgraded.prepare("SELECT port, firstFailureAt FROM remembered_endpoints").use { row ->
+                assertTrue(row.step())
+                assertEquals(45822L, row.getLong(0))
+                assertTrue(row.isNull(1), "firstFailureAt must be nullable and default to NULL")
+            }
+        }
     }
 
     @Test
@@ -108,6 +125,8 @@ class FlashJvmMigrationsTest {
             )
             // The v4 tables exist and are usable: this is what group chat needs.
             assertTrue(db.groupMemberDao().activeMembers("g1").isEmpty())
+            // And the v5 table (DR1) is reachable through the DAO Room generated for it.
+            assertTrue(db.rememberedEndpointDao().all().isEmpty())
         } finally {
             db.close()
         }

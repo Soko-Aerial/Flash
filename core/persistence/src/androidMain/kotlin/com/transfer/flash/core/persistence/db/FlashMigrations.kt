@@ -25,6 +25,9 @@ public object FlashMigrations {
     /** v3 → v4: group membership/delivery state plus immutable group provenance. */
     public val MIGRATION_3_4: Migration = SupportSqlMigration(FlashSchemaSteps.STEP_3_4)
 
+    /** v4 -> v5: DR1's `remembered_endpoints` table (ADR-047). */
+    public val MIGRATION_4_5: Migration = SupportSqlMigration(FlashSchemaSteps.STEP_4_5)
+
     /** Every migration, in order, for the open path. */
     public val ALL: Array<Migration> = FlashSchemaSteps.ALL.map { SupportSqlMigration(it) }.toTypedArray()
 }
