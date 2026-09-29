@@ -1,5 +1,36 @@
 # Experiments Log
 
+## EXP-017 — Desktop group video call: where the CPU goes, and memory after the frame-leak fix
+
+### Date
+2026-09-29
+
+### Setup
+This PC (Windows 11, 8 logical cores, 20 GB), `:desktop:run` on JDK 25, webrtc-java 0.17.0, commit `2a7a006`
+(ERROR-078 fix in). Four-person mesh group video call: this desktop, another desktop, two Android phones, over a
+phone's Wi-Fi hotspot. VP8 only (`CallSdp.enforceVp8Only`), software libvpx.
+
+### Measured (`~/.flash/desktop.log` `CALL_DIAG`, and the live process afterwards)
+| What | Value |
+|---|---|
+| Process CPU during the call | 29–33 % of 8 cores (≈ 2.5 cores); was 44–63 % before ERROR-078 |
+| Encode, per outgoing leg | 640x360 ~28 fps, `enc=libvpx` 8–9 ms/frame → ≈ 0.25 core per leg, ≈ 0.75 core for three |
+| Decode, per incoming leg | 1.1–4.3 ms/frame → ≈ 0.25 core for all three |
+| Everything else (capture, BGRA conversion + Skia upload, Compose, JVM) | ≈ 1.5 cores |
+| Committed memory during the call | flat at 620–631 MB for minutes (was +52 MB/s before ERROR-078) |
+| JVM heap during the call | 78–149 MB used of 1 GB max; 63–64 threads |
+| After hang-up | 527 MB private / 495 MB working set; G1 heap 196 MB committed, 94 MB used |
+
+### Conclusions
+- ERROR-078's fix holds on the device: memory is flat during a call.
+- Codecs are ≈ 1 core of ≈ 2.5. Hardware *decoding* (ADR-052) would save about 0.25 core here; encoding and the
+  render path matter more. Measure the render path before any hardware-video work.
+- The ~500–630 MB footprint is mostly native and JVM overhead (Skia, libwebrtc, JIT code, thread stacks) plus a
+  heap the JVM does not give back: the default initial heap is 1/64 of RAM (320 MB on this host) and G1 does not
+  uncommit below it. `-Xms64m -XX:G1PeriodicGCInterval=30000` added to the desktop JVM (not yet measured).
+- Anomaly, not investigated: the router granted 720p (`limit=none`) but `vout` ran at 640x360.
+- One device and one call; not a general figure.
+
 ## EXP-016 — A 1 Hz pairing ticker ran for the life of the process to service a state that is idle except during the few seconds a user spends pairing (static finding; fixed)
 
 ### Date

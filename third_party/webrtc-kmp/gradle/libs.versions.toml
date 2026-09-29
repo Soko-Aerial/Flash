@@ -16,7 +16,7 @@ bouncy-castle = "1.77"
 kotlin-wrappers = "1.0.0-pre.732"
 webrtc-android-sdk = "125.6422.05"
 webrtc-ios-sdk = "125.6422.05"
-webrtc-java-sdk = "0.17.0"
+webrtc-java-sdk = "0.19.0"
 
 #Android
 minSdk = "21"

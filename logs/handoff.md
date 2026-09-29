@@ -1,5 +1,12 @@
 # Current Handoff
 
+## 2026-09-29 — Hotspot-host calls fixed in code (ERROR-079 / ADR-054); webrtc-java 0.19.0
+- A phone hosting the Wi-Fi hotspot connected no call legs: libwebrtc ignored its `ap0` interface. Fixed by
+  reporting that interface to WebRTC ourselves (`FlashLocalNetworkDetector`). Needs a device check.
+- Desktop now on webrtc-java 0.19.0; RTP objects and the audio source are disposed. Needs a call re-test.
+- Desktop JVM returns idle heap (`-Xms64m`, periodic G1 GC). Measurements in EXP-017.
+- Tests: calling jvm 106 (incl. DesktopMediaStackSmokeTest on the 0.19.0 natives) / host 128 (+6 LocalInterfacePickerTest), callui 23, desktop 91, app compile: green.
+
 ## 2026-09-29 — "Send smaller video in groups" setting (ADR-053); ERROR-079 hotspot-host call leg
 - New opt-in setting (default off; Settings → Calls, and a **Send smaller** action on the CPU warning): in group
   video calls, send 540p to 2 watchers and 360p to 3 or more.

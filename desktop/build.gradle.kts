@@ -90,7 +90,7 @@ kotlin {
                     "amd64" -> "x86_64"
                     else -> arch
                 }
-                runtimeOnly("dev.onvoid.webrtc:webrtc-java:0.17.0:$hostOS-$hostArch")
+                runtimeOnly("dev.onvoid.webrtc:webrtc-java:0.19.0:$hostOS-$hostArch")
             }
         }
 
@@ -139,6 +139,14 @@ compose.desktop {
         // not the fix. If the heap pins at this value again, something is leaking and
         // `jcmd <pid> GC.heap_info` will show it.
         jvmArgs += listOf("-Xmx1g", "-XX:+HeapDumpOnOutOfMemoryError")
+
+        // Give idle heap back to the OS (2026-09-29, owner: "600-700 MB even after the call").
+        // Measured then: 527 MB private after a call with the G1 heap at 196 MB committed /
+        // 94 MB used — the JVM's default initial heap is 1/64 of RAM (320 MB on a 20 GB host)
+        // and G1 never uncommits below it, nor at all without a GC. A small -Xms lets it shrink;
+        // the periodic GC (only when the app is idle, JDK 12+) is what actually returns the
+        // pages. The rest of the footprint is native (Skia, libwebrtc, JIT code), not heap.
+        jvmArgs += listOf("-Xms64m", "-XX:G1PeriodicGCInterval=30000")
 
         // Skiko vsync and framerate tuning to prevent GPU spin on integrated graphics (e.g. Intel UHD 620)
         jvmArgs += listOf(

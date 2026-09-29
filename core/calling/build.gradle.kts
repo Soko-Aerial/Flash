@@ -104,7 +104,7 @@ kotlin {
                 "amd64" -> "x86_64"
                 else -> arch
             }
-            implementation("dev.onvoid.webrtc:webrtc-java:0.17.0:$hostOS-$hostArch")
+            implementation("dev.onvoid.webrtc:webrtc-java:0.19.0:$hostOS-$hostArch")
         }
     }
 }

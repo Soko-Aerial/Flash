@@ -26,6 +26,7 @@ import dev.onvoid.webrtc.RTCPeerConnectionState
 import dev.onvoid.webrtc.RTCRtpReceiver
 import dev.onvoid.webrtc.RTCRtpTransceiver
 import dev.onvoid.webrtc.RTCSignalingState
+import dev.onvoid.webrtc.internal.DisposableNativeObject
 import dev.onvoid.webrtc.media.audio.AudioTrack
 import dev.onvoid.webrtc.media.video.VideoTrack
 import kotlinx.coroutines.flow.Flow
@@ -131,19 +132,40 @@ actual class PeerConnection actual constructor(rtcConfiguration: RtcConfiguratio
         return false
     }
 
+    // Flash (webrtc-java 0.18+): every RTCRtpSender / RTCRtpReceiver / RTCRtpTransceiver that
+    // webrtc-java hands out holds its own native reference, released only by dispose() — no
+    // finalizer. Each getter below, and each `transceiver.sender` / `.receiver`, is a NEW such
+    // instance. Everything this connection obtains is recorded here and disposed after
+    // close(), so a finished call does not pin its senders, receivers and (through them) its
+    // tracks. A late call on a disposed instance throws NullPointerException in Java; it
+    // cannot crash natively.
+    private val owned = mutableListOf<DisposableNativeObject>()
+    private var closed = false
+
+    internal fun <T : DisposableNativeObject> own(obj: T): T {
+        val disposeNow = synchronized(owned) {
+            if (!closed) owned += obj
+            closed
+        }
+        // A callback racing close(): nothing will dispose it later, so do it now.
+        if (disposeNow) obj.dispose()
+        return obj
+    }
+
     actual fun getSenders(): List<RtpSender> = native.senders.map {
-        RtpSender(it, localTracks[it.track?.id])
+        RtpSender(own(it), localTracks[it.track?.id])
     }
 
     actual fun getReceivers(): List<RtpReceiver> = native.receivers.map {
-        RtpReceiver(it, remoteTracks[it.track?.id])
+        RtpReceiver(own(it), remoteTracks[it.track?.id])
     }
 
     actual fun getTransceivers(): List<RtpTransceiver> =
         native.transceivers.map {
-            val senderTrack = localTracks[it.sender.track?.id]
-            val receiverTrack = remoteTracks[it.receiver.track?.id]
-            RtpTransceiver(it, senderTrack, receiverTrack)
+            own(it)
+            val senderTrack = localTracks[own(it.sender).track?.id]
+            val receiverTrack = remoteTracks[own(it.receiver).track?.id]
+            RtpTransceiver(it, senderTrack, receiverTrack, this)
         }
 
     actual fun addTrack(track: MediaStreamTrack, vararg streams: MediaStream): RtpSender {
@@ -151,7 +173,7 @@ actual class PeerConnection actual constructor(rtcConfiguration: RtcConfiguratio
 
         val streamIds = streams.map { it.id }
         localTracks[track.id] = track
-        return RtpSender(native.addTrack(track.native, streamIds), track)
+        return RtpSender(own(native.addTrack(track.native, streamIds)), track)
     }
 
     actual fun removeTrack(sender: RtpSender): Boolean {
@@ -170,6 +192,11 @@ actual class PeerConnection actual constructor(rtcConfiguration: RtcConfiguratio
         remoteTracks.values.forEach(MediaStreamTrack::stop)
         remoteTracks.clear()
         native.close()
+        val toDispose = synchronized(owned) {
+            closed = true
+            owned.toList().also { owned.clear() }
+        }
+        toDispose.forEach { runCatching { it.dispose() } }
     }
 
     internal inner class NativePeerConnectionObserver : PeerConnectionObserver {
@@ -228,8 +255,10 @@ actual class PeerConnection actual constructor(rtcConfiguration: RtcConfiguratio
             receiver: RTCRtpReceiver,
             mediaStreams: Array<out NativeMediaStream>
         ) {
+            own(receiver)
             val transceiver =
-                native.transceivers.find { it.receiver.track.id == receiver.track.id } ?: return
+                native.transceivers.map(::own)
+                    .find { own(it.receiver).track.id == receiver.track.id } ?: return
             if (mediaStreams.isEmpty()) return
 
             val audioTracks = mediaStreams
@@ -253,27 +282,29 @@ actual class PeerConnection actual constructor(rtcConfiguration: RtcConfiguratio
                 }
             }
 
-            val senderTrack = localTracks[transceiver.sender.track?.id]
+            val senderTrack = localTracks[own(transceiver.sender).track?.id]
             val receiverTrack = remoteTracks[receiver.track?.id]
 
             val trackEvent = TrackEvent(
                 receiver = RtpReceiver(receiver, receiverTrack),
                 streams = streams,
                 track = receiverTrack,
-                transceiver = RtpTransceiver(transceiver, senderTrack, receiverTrack)
+                transceiver = RtpTransceiver(transceiver, senderTrack, receiverTrack, this@PeerConnection)
             )
 
             _peerConnectionEvent.tryEmit(Track(trackEvent))
         }
 
         override fun onRemoveTrack(receiver: RTCRtpReceiver) {
+            own(receiver)
             val track = remoteTracks.remove(receiver.track?.id)
             _peerConnectionEvent.tryEmit(RemoveTrack(RtpReceiver(receiver, track)))
             track?.stop()
         }
 
         override fun onTrack(transceiver: RTCRtpTransceiver) {
-            transceiver.receiver?.let { receiver ->
+            own(transceiver)
+            transceiver.receiver?.let(::own)?.let { receiver ->
                 receiver.track?.let { mediaTrack ->
                     val track = when (mediaTrack.kind) {
                         "audio" -> remoteTracks.getOrPut(mediaTrack.id) {
@@ -291,7 +322,7 @@ actual class PeerConnection actual constructor(rtcConfiguration: RtcConfiguratio
                         else -> error("Unknown media stream track kind: $this")
                     }
 
-                    val senderTrack = localTracks[transceiver.sender.track?.id]
+                    val senderTrack = localTracks[own(transceiver.sender).track?.id]
                     remoteTracks[track.id] = track
 
                     val trackEvent = TrackEvent(
@@ -302,7 +333,7 @@ actual class PeerConnection actual constructor(rtcConfiguration: RtcConfiguratio
                             }
                         ),
                         track = track,
-                        transceiver = RtpTransceiver(transceiver, senderTrack, track)
+                        transceiver = RtpTransceiver(transceiver, senderTrack, track, this@PeerConnection)
                     )
 
                     _peerConnectionEvent.tryEmit(Track(trackEvent))
