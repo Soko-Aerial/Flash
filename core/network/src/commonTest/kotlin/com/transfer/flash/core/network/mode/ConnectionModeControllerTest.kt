@@ -27,6 +27,7 @@ class ConnectionModeControllerTest {
         val closed = ArrayList<String>()
         val policyChanges = ArrayList<ConnectionStrategy>()
         val sent = ArrayList<String>()
+        val logs = ArrayList<String>()
         lateinit var controller: ConnectionModeController
 
         fun view() = LinkView(available, contacts, activity, busy, nearbyOpen)
@@ -51,6 +52,7 @@ class ConnectionModeControllerTest {
                 release = { h.released += it },
                 close = { h.closed += it; h.activity -= it },
                 onPolicyChanged = { h.policyChanges += it.strategy },
+                log = { h.logs += it },
                 nowMs = { testScheduler.currentTime },
             )
         }
@@ -97,6 +99,79 @@ class ConnectionModeControllerTest {
         runCurrent()
         assertNull(h.controller.dialFilter.value)
         assertEquals(listOf(ConnectionStrategy.ECO, ConnectionStrategy.BOOST), h.policyChanges, "once per change, not at start")
+    }
+
+    @Test
+    fun `in a crowd STANDARD and BOOST dial the group first, and Nearby may use the headroom`() = runTest {
+        val group = (1..19).map { "g" + it.toString().padStart(2, '0') }.toSet()
+        val strangers = (1..40).map { "s" + it.toString().padStart(2, '0') }.toSet()
+        val h = Host("me", ConnectionStrategy.STANDARD).apply {
+            contacts = group
+            available = group + strangers
+        }
+        wire(h)
+        runCurrent()
+        val budget = ConnectionModePolicy.DIAL_BUDGET
+        val filter = h.controller.dialFilter.value
+        assertEquals(budget, filter!!.size)
+        assertTrue(filter.containsAll(group), "a 20 member group still meshes")
+
+        h.strategy = ConnectionStrategy.BOOST
+        h.controller.refresh()
+        runCurrent()
+        assertEquals(filter, h.controller.dialFilter.value, "BOOST spends the budget the same way")
+
+        h.nearbyOpen = true
+        h.controller.refresh()
+        runCurrent()
+        assertEquals(
+            com.transfer.flash.core.network.resilience.SessionHardeningPolicy.DEFAULT_MAX_CONCURRENT_SESSIONS,
+            h.controller.dialFilter.value!!.size,
+            "with Nearby open the headroom may be used to find someone to pair with",
+        )
+
+        h.nearbyOpen = false
+        h.available = group
+        h.controller.refresh()
+        runCurrent()
+        assertNull(h.controller.dialFilter.value, "the crowd left: everyone is dialed again")
+    }
+
+    @Test
+    fun `a change of the dial filter is logged once, and no change logs nothing`() = runTest {
+        val group = (1..19).map { "g" + it.toString().padStart(2, '0') }.toSet()
+        val h = Host("me", ConnectionStrategy.STANDARD).apply {
+            contacts = group
+            available = group
+        }
+        wire(h)
+        runCurrent()
+        assertTrue(h.logs.none { it.startsWith("Dial filter") }, "everyone fits: null stays null")
+        h.available = group + (1..40).map { "s$it" }
+        h.controller.refresh()
+        runCurrent()
+        h.controller.refresh()
+        runCurrent()
+        val lines = h.logs.filter { it.startsWith("Dial filter") }
+        assertEquals(1, lines.size)
+        assertTrue(lines.single().startsWith("Dial filter all -> 20 (STANDARD, 59 around, 0 held)"), lines.single())
+    }
+
+    @Test
+    fun `a crowd does not change ECO's own rules or start parking on STANDARD`() = runTest {
+        val group = (1..19).map { "g" + it.toString().padStart(2, '0') }.toSet()
+        val h = Host("me", ConnectionStrategy.STANDARD).apply {
+            contacts = group
+            available = group + (1..40).map { "s$it" }
+            activity = group.associateWith { LinkActivity(outbound = true, userIdleMs = idleMs) }
+        }
+        wire(h)
+        runCurrent()
+        assertTrue(h.sent.none { it.contains("t=park") }, "the budget only limits dials; STANDARD never parks")
+        h.strategy = ConnectionStrategy.ECO
+        h.controller.refresh()
+        runCurrent()
+        assertEquals(3, h.controller.dialFilter.value!!.size, "ECO keeps its ring neighbours, not the budget")
     }
 
     @Test

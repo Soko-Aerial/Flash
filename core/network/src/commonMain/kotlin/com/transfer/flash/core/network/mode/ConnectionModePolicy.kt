@@ -4,6 +4,7 @@ import com.transfer.flash.core.common.perf.FlashPerformanceMode
 import com.transfer.flash.core.common.perf.FlashTransportProfile
 import com.transfer.flash.core.discovery.core.FlashDiscoveryMode
 import com.transfer.flash.core.network.presence.PresenceConfig
+import com.transfer.flash.core.network.resilience.SessionHardeningPolicy
 
 /**
  * How a device treats its connections (PC5, `docs/network/PRESENCE-CONNECTIONS-PLAN.md` §3.4,
@@ -105,5 +106,17 @@ public data class ConnectionModePolicy(
 
         /** ECO asks to park a session it dialed after this long without user traffic. */
         public const val ECO_IDLE_PARK_MS: Long = 10 * 60_000L
+
+        /**
+         * Session slots STANDARD and BOOST never spend on dials they choose to make (ADR-057): they stay
+         * free for peers that dial in, dial on demand and a session being replaced. An estimate (FO-05).
+         */
+        public const val DIAL_HEADROOM: Int = 4
+
+        /**
+         * The most sessions STANDARD and BOOST want (held plus newly dialed) once more devices are around
+         * than fit: the admission ceiling less [DIAL_HEADROOM]. Below it nothing is filtered ([DialBudget]).
+         */
+        public const val DIAL_BUDGET: Int = SessionHardeningPolicy.DEFAULT_MAX_CONCURRENT_SESSIONS - DIAL_HEADROOM
     }
 }
