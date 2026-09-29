@@ -40,6 +40,7 @@ import com.transfer.flash.core.persistence.db.openEncryptedFlashDatabase
 import com.transfer.flash.core.network.bridge.DiscoveryRouteBinder
 import com.transfer.flash.core.network.mode.ConnectionModeController
 import com.transfer.flash.core.network.mode.ConnectionModePolicy
+import com.transfer.flash.core.network.mode.ConnectionStrategy
 import com.transfer.flash.core.network.mode.LinkView
 import com.transfer.flash.core.network.planner.AutoConnector
 import com.transfer.flash.core.network.planner.ConnectionPlanner
@@ -47,8 +48,14 @@ import com.transfer.flash.core.network.presence.PresenceCodec
 import com.transfer.flash.core.network.presence.PresenceExchange
 import com.transfer.flash.core.network.presence.PresenceLocalView
 import com.transfer.flash.core.network.remembered.RememberedRoutes
+import com.transfer.flash.core.network.sweep.JvmLocalSubnets
+import com.transfer.flash.core.network.sweep.SweepController
+import com.transfer.flash.core.network.sweep.SweepSituation
+import com.transfer.flash.core.network.sweep.SweepState
+import com.transfer.flash.core.network.sweep.TcpHostProbe
 import com.transfer.flash.core.network.ws.JvmWsFlashNetwork
 import com.transfer.flash.core.network.ws.WsSession
+import com.transfer.flash.core.network.ws.WsTransferServer
 import com.transfer.flash.core.transfer.FileSourceOpener
 import com.transfer.flash.core.transfer.RealFlashTransferRepository
 import com.transfer.flash.core.transfer.FlashTransferRepository
@@ -468,6 +475,21 @@ public class DesktopEngine(
     /** Connection mode (PC5, ADR-048); the text router hands it every FLASH_LINK frame. */
     @Volatile
     private var modeController: ConnectionModeController? = null
+
+    /** DR3 (ADR-047): the subnet sweep behind Nearby's "Scan network" and the automatic fallback. */
+    @Volatile
+    private var sweepController: SweepController? = null
+
+    private val _sweepState = MutableStateFlow<SweepState>(SweepState.Idle)
+
+    /** The sweep's progress and outcome, for the Nearby screen. Idle until the stack has booted. */
+    public val sweepState: StateFlow<SweepState> = _sweepState.asStateFlow()
+
+    /**
+     * The user's "Scan network". False when nothing started: a scan is already running, the previous
+     * one ended a moment ago, or the engine is not up. [sweepState] says which.
+     */
+    public fun scanNetwork(): Boolean = sweepController?.scanNow() ?: false
 
     private val _nearbyVisible = MutableStateFlow(false)
 
@@ -950,12 +972,33 @@ public class DesktopEngine(
         network.routeObserver = remembered
         remembered.start()
 
+        // DR3 (ADR-047): when discovery finds nothing on a network with paired peers, probe the local
+        // /24 for the peer port and hand the answers to the planner as dial hints, exactly like a
+        // gateway probe. Manual from Nearby, automatic only in STANDARD/BOOST outside a call.
+        val sweep = SweepController(
+            scope = scope,
+            subnets = { JvmLocalSubnets.lanSubnets() },
+            probe = TcpHostProbe(),
+            port = WsTransferServer.PREFERRED_PORT,
+            situation = {
+                SweepSituation(
+                    pairedPeers = trustStore.getTrustedPeers().size,
+                    liveSessions = network.activeSessions.value.size,
+                    discoveredPeers = discovery.discoveredEndpoints.value.size,
+                    connectionAllowsAuto = connectionPolicy().strategy != ConnectionStrategy.ECO &&
+                        callsImpl?.activeCall?.value?.let { it.state != FlashCallState.ENDED } != true,
+                )
+            },
+            log = { FlashLog.i(TAG_WS, it) },
+        )
+
         val connector = AutoConnector(
             scope = scope,
             planner = ConnectionPlanner(localDeviceId = identity.deviceId.value),
             links = object : ConnectionPlanner.Links {
                 override fun hasLiveSession(deviceId: String) = network.hasLiveSession(deviceId)
                 override fun isReconnectInFlight(deviceId: String) = network.isReconnectInFlight(deviceId)
+                override fun hasSessionAtHost(host: String) = network.hasSessionAtHost(host)
             },
             sightings = {
                 discovery.discoveredEndpoints.value.map { ep ->
@@ -975,12 +1018,21 @@ public class DesktopEngine(
                     else -> network.connectManual(d.host, d.port)
                 }
             },
+            // DR3: hosts that answered the subnet sweep; each is dialed once (no device named, like a
+            // gateway probe, so the pin is bound after HELLO) and then forgotten.
+            sweepHosts = sweep::hostsToDial,
+            sweepHitDialed = sweep::hitDialed,
             // PC5: ECO dials only the peers it wants; null (STANDARD, BOOST) dials everyone.
             allowed = { modes.dialFilter.value },
             log = { FlashLog.i(TAG_WS, it) },
         )
         autoConnector = connector
-        connector.start(edges = merge(discovery.discoveredEndpoints, presence.tips, modes.dialFilter, remembered.changes))
+        connector.start(
+            edges = merge(discovery.discoveredEndpoints, presence.tips, modes.dialFilter, remembered.changes, sweep.hitsChanged),
+        )
+        sweepController = sweep
+        sweep.start()
+        scope.launch { sweep.state.collect { _sweepState.value = it } }
         presence.start(edges = merge(network.activeSessions, discovery.discoveredEndpoints, discovery.discoveryMode, _discoveryMode))
         // `_settings` wakes it on a performance-tier change too; the controller acts only when the
         // resulting policy actually differs.

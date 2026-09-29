@@ -31,6 +31,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.IconButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -61,6 +62,7 @@ import com.transfer.flash.ui.theme.FlashTheme
 import com.transfer.flash.ui.theme.flashAnimateItem
 import com.transfer.flash.ui.theme.flashPressScale
 import com.transfer.flash.ui.theme.rememberFlashHaptics
+import kotlinx.coroutines.delay
 
 /**
  * P4 Nearby tab (UI-048, docs/ui/nearby-page.md): identity card + discovered peers +
@@ -106,6 +108,24 @@ data class NearbyTrustedPeerUi(
     val verified: Boolean = true,
 )
 
+/** Why "Scan network" did nothing. The host maps the network layer's refusal onto these (DR3). */
+enum class NearbyScanBlock { NO_NETWORK, NOT_LOCAL, TOO_SMALL, TOO_SOON }
+
+/**
+ * The manual "Scan network" action's state (DR3, `docs/ui/nearby-page.md` addendum). The page never sees hosts,
+ * ports or subnets, only how far the scan is and what it came to.
+ */
+sealed interface NearbyNetworkScan {
+    data object Idle : NearbyNetworkScan
+
+    data class Running(val percent: Int) : NearbyNetworkScan
+
+    /** @property narrowed the network was large and only this device's part of it was checked. */
+    data class Done(val answered: Int, val narrowed: Boolean) : NearbyNetworkScan
+
+    data class Unavailable(val reason: NearbyScanBlock) : NearbyNetworkScan
+}
+
 data class NearbyUiState(
     val identity: NearbyIdentityUi = NearbyIdentityUi("Flash device", "00000000", 0),
     val isScanning: Boolean = true,
@@ -116,6 +136,7 @@ data class NearbyUiState(
     val pairingPhase: FlashPairingPhase = FlashPairingPhase.Idle,
     val pairingSecondsLeft: Int = 0,
     val isLoading: Boolean = false,
+    val scan: NearbyNetworkScan = NearbyNetworkScan.Idle,
 )
 
 /** Pure helpers backing the nearby page (JVM-testable). */
@@ -133,6 +154,26 @@ object FlashNearbyMath {
         isLoading -> "Starting…"
         isScanning -> "Scanning…"
         else -> "Scan paused"
+    }
+
+    /** The line under the status for a "Scan network" run, or null when there is nothing to say. */
+    fun scanCaption(scan: NearbyNetworkScan): String? = when (scan) {
+        NearbyNetworkScan.Idle -> null
+        is NearbyNetworkScan.Running -> "Scanning this network… ${scan.percent.coerceIn(0, 100)}%"
+        is NearbyNetworkScan.Done -> {
+            val result = if (scan.answered > 0) {
+                "Found ${scan.answered} device${if (scan.answered == 1) "" else "s"} to connect to."
+            } else {
+                "Scan finished. No devices answered."
+            }
+            if (scan.narrowed) "$result Only this device's part of a large network was checked." else result
+        }
+        is NearbyNetworkScan.Unavailable -> when (scan.reason) {
+            NearbyScanBlock.NO_NETWORK -> "Not connected to a local network."
+            NearbyScanBlock.NOT_LOCAL -> "This isn't a home or office network, so Flash won't scan it."
+            NearbyScanBlock.TOO_SMALL -> "There is nobody else on this link."
+            NearbyScanBlock.TOO_SOON -> "Scanned a moment ago. Try again shortly."
+        }
     }
 
     /** Stable display order: alphabetical by name, id as deterministic tiebreak. */
@@ -196,6 +237,11 @@ fun FlashNearbyScreen(
      */
     onManualConnect: ((host: String, port: Int) -> Unit)? = null,
     /**
+     * Probes the local network for devices discovery cannot see (DR3). Null hides the action, like
+     * [onManualConnect]. The outcome arrives through [NearbyUiState.scan].
+     */
+    onScanNetwork: (() -> Unit)? = null,
+    /**
      * Re-runs pairing (protocol v2) with a trusted peer whose pairing was made with v1 (ADR-042).
      * Nullable like [onCallTrustedClick]: without it an unverified row shows the label but no action.
      */
@@ -222,7 +268,9 @@ fun FlashNearbyScreen(
                         ScanningEmptyPanel(
                             modifier = Modifier.fillMaxSize(),
                             active = state.isScanning,
+                            scan = state.scan,
                             onManualConnectClick = onManualConnectClick,
+                            onScanNetworkClick = onScanNetwork,
                         )
                     NearbyPageState.Populated -> PopulatedContent(
                         state = state,
@@ -233,6 +281,7 @@ fun FlashNearbyScreen(
                         onCallTrustedClick = onCallTrustedClick,
                         onVerifyTrustedClick = onVerifyTrustedClick,
                         onManualConnectClick = onManualConnectClick,
+                        onScanNetworkClick = onScanNetwork,
                         listState = listState,
                         bottomInset = bottomInset,
                     )
@@ -286,6 +335,7 @@ private fun PopulatedContent(
     onCallTrustedClick: ((NearbyTrustedPeerUi) -> Unit)?,
     onVerifyTrustedClick: ((NearbyTrustedPeerUi) -> Unit)?,
     onManualConnectClick: (() -> Unit)?,
+    onScanNetworkClick: (() -> Unit)?,
     listState: LazyListState,
     bottomInset: Dp,
 ) {
@@ -302,7 +352,7 @@ private fun PopulatedContent(
         ),
         verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
     ) {
-        item(key = "header") { HeaderBlock(state, onManualConnectClick) }
+        item(key = "header") { HeaderBlock(state, onManualConnectClick, onScanNetworkClick) }
         item(key = "identity") { IdentityCard(state.identity) }
         if (state.peers.isNotEmpty()) {
             item(key = "label-discovered") { SectionLabel("DISCOVERED") }
@@ -364,6 +414,7 @@ private fun PopulatedContent(
 private fun HeaderBlock(
     state: NearbyUiState,
     onManualConnectClick: (() -> Unit)? = null,
+    onScanNetworkClick: (() -> Unit)? = null,
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -392,17 +443,23 @@ private fun HeaderBlock(
                     color = FlashTheme.colors.textSecondary,
                 )
             }
+            ScanCaption(state.scan, Modifier.padding(top = FlashSpacing.space4))
         }
-        if (onManualConnectClick != null) {
-            IconButton(
-                onClick = onManualConnectClick,
-                modifier = Modifier.size(FlashDimensions.minTouchTarget),
-            ) {
-                FlashIcon(
-                    icon = FlashIcons.Connection,
-                    tint = FlashTheme.colors.accentPrimary,
-                    contentDescription = "Connect by IP",
-                )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (onScanNetworkClick != null) {
+                ScanNetworkTextAction(running = state.scan is NearbyNetworkScan.Running, onClick = onScanNetworkClick)
+            }
+            if (onManualConnectClick != null) {
+                IconButton(
+                    onClick = onManualConnectClick,
+                    modifier = Modifier.size(FlashDimensions.minTouchTarget),
+                ) {
+                    FlashIcon(
+                        icon = FlashIcons.Connection,
+                        tint = FlashTheme.colors.accentPrimary,
+                        contentDescription = "Connect by IP",
+                    )
+                }
             }
         }
     }
@@ -770,7 +827,9 @@ private fun RadiosOffPanel(modifier: Modifier) {
 private fun ScanningEmptyPanel(
     modifier: Modifier,
     active: Boolean,
+    scan: NearbyNetworkScan = NearbyNetworkScan.Idle,
     onManualConnectClick: (() -> Unit)? = null,
+    onScanNetworkClick: (() -> Unit)? = null,
 ) {
     Column(
         modifier.fillMaxSize().padding(horizontal = FlashSpacing.space32),
@@ -808,8 +867,72 @@ private fun ScanningEmptyPanel(
                 )
             }
         }
+        if (onScanNetworkClick != null) {
+            val running = scan is NearbyNetworkScan.Running
+            Spacer(Modifier.height(FlashSpacing.space8))
+            Box(
+                Modifier
+                    .height(FlashDimensions.minTouchTarget)
+                    .clip(FlashShapes.bubbleGrouped)
+                    .background(FlashTheme.colors.backgroundSurfaceStrong)
+                    .clickable(enabled = !running, onClick = onScanNetworkClick)
+                    .padding(horizontal = FlashSpacing.space16),
+                contentAlignment = Alignment.Center,
+            ) {
+                FlashText(
+                    text = if (running) "Scanning…" else "Scan network",
+                    style = FlashTheme.typography.captionEmphasis,
+                    color = if (running) FlashTheme.colors.textTertiary else FlashTheme.colors.accentPrimary,
+                )
+            }
+        }
+        ScanCaption(scan, Modifier.padding(top = FlashSpacing.space12))
     }
 }
+
+/** The header's "Scan network" text action; it is inert while a scan runs. */
+@Composable
+private fun ScanNetworkTextAction(running: Boolean, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .height(FlashDimensions.minTouchTarget)
+            .clickable(enabled = !running, onClick = onClick)
+            .padding(horizontal = FlashSpacing.space8),
+        contentAlignment = Alignment.Center,
+    ) {
+        FlashText(
+            text = if (running) "Scanning…" else "Scan network",
+            style = FlashTheme.typography.captionEmphasis,
+            color = if (running) FlashTheme.colors.textTertiary else FlashTheme.colors.accentPrimary,
+        )
+    }
+}
+
+/**
+ * The scan's result line. A running scan's caption stays; a finished or refused one disappears after
+ * [SCAN_CAPTION_SECONDS], keyed by the state so a new result shows again.
+ */
+@Composable
+private fun ScanCaption(scan: NearbyNetworkScan, modifier: Modifier = Modifier) {
+    var expired by remember(scan) { mutableStateOf(false) }
+    if (scan is NearbyNetworkScan.Done || scan is NearbyNetworkScan.Unavailable) {
+        LaunchedEffect(scan) {
+            delay(SCAN_CAPTION_SECONDS * 1_000L)
+            expired = true
+        }
+    }
+    val caption = FlashNearbyMath.scanCaption(scan)?.takeUnless { expired }
+    if (caption != null) {
+        FlashText(
+            text = caption,
+            modifier = modifier,
+            style = FlashTheme.typography.metadataDefault,
+            color = FlashTheme.colors.textSecondary,
+        )
+    }
+}
+
+private const val SCAN_CAPTION_SECONDS = 6
 
 @Composable
 private fun LoadingRows(modifier: Modifier) {

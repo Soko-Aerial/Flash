@@ -39,6 +39,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
  * 8. **Mode filter (PC5).** [plan]'s `allowed` set, when given, limits which sighted peers may be
  *    dialed (ECO's `ConnectionModeController.dialFilter`). Peers outside it are treated as if
  *    discovery did not list them. Gateway probes and [planUrgent] ignore it.
+ * 9. **Sweep hits (DR3, [plan]'s `sweepHosts`).** A host that answered the subnet sweep has no device id
+ *    until its HELLO arrives, so it is handled like a gateway probe: keyed `sweep:<host>`, skipped while
+ *    any session reaches that host, gated by rule 4, never deferred, and outside rule 8's filter (a sweep
+ *    is either the user's own action or the automatic fallback, which STANDARD and BOOST allow).
  *
  * Thread-safe without a lock. The state is immutable and replaced by compare-and-set, because
  * `core:network` deliberately declares no expect/actual classes (see its `build.gradle.kts`).
@@ -77,11 +81,14 @@ public class ConnectionPlanner(
         val key: String,
         val host: String,
         val port: Int,
-        /** Null for a gateway probe, whose device is unknown until its HELLO arrives. */
+        /** Null for a gateway probe or sweep hit, whose device is unknown until its HELLO arrives. */
         val peerDeviceId: String?,
         val name: String,
     ) {
-        public val isGatewayProbe: Boolean get() = peerDeviceId == null
+        public val isGatewayProbe: Boolean get() = key.startsWith(GATEWAY_KEY_PREFIX)
+
+        /** A host the subnet sweep found open (DR3); its device is unknown until HELLO, like a gateway's. */
+        public val isSweepHit: Boolean get() = key.startsWith(SWEEP_KEY_PREFIX)
     }
 
     /**
@@ -111,6 +118,7 @@ public class ConnectionPlanner(
      *
      * @param nowMs any monotonic millisecond clock, used consistently across calls.
      * @param gatewayHosts IPv4 gateways to probe (Android hotspot clients); empty elsewhere.
+     * @param sweepHosts hosts the subnet sweep found listening (DR3); rule 9.
      * @param allowed rule 8: the only device ids that may be dialed, or null for all.
      */
     public fun plan(
@@ -119,8 +127,9 @@ public class ConnectionPlanner(
         links: Links,
         gatewayHosts: List<String> = emptyList(),
         allowed: Set<String>? = null,
+        sweepHosts: List<String> = emptyList(),
     ): Plan {
-        val candidates = ArrayList<Candidate>(sightings.size + gatewayHosts.size)
+        val candidates = ArrayList<Candidate>(sightings.size + gatewayHosts.size + sweepHosts.size)
         val seen = HashSet<String>()
         for (s in sightings) {
             if (s.deviceId == localDeviceId || (allowed != null && s.deviceId !in allowed)) continue
@@ -137,6 +146,16 @@ public class ConnectionPlanner(
             if (!seen.add(key)) continue
             candidates += Candidate(
                 dial = Dial(key = key, host = host, port = 0, peerDeviceId = null, name = "gateway"),
+                live = links.hasSessionAtHost(host),
+                reconnecting = links.isReconnectInFlight(key),
+                deferred = false,
+            )
+        }
+        for (host in sweepHosts) {
+            val key = SWEEP_KEY_PREFIX + host
+            if (!seen.add(key)) continue
+            candidates += Candidate(
+                dial = Dial(key = key, host = host, port = 0, peerDeviceId = null, name = "sweep"),
                 live = links.hasSessionAtHost(host),
                 reconnecting = links.isReconnectInFlight(key),
                 deferred = false,
@@ -243,6 +262,8 @@ public class ConnectionPlanner(
         public const val DEFAULT_FIRST_CONTACT_DEFER_MS: Long = 1_500L
 
         public const val GATEWAY_KEY_PREFIX: String = "gateway:"
+
+        public const val SWEEP_KEY_PREFIX: String = "sweep:"
 
         /** Rule 7's floor between attempts to one peer when a send is waiting. */
         public const val URGENT_FLOOR_MS: Long = 5_000L

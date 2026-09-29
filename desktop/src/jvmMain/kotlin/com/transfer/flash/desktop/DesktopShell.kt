@@ -85,9 +85,13 @@ import com.transfer.flash.ui.navigation.rememberFlashNavigationState
 import com.transfer.flash.ui.nearby.FlashNearbyMath
 import com.transfer.flash.ui.nearby.FlashNearbyScreen
 import com.transfer.flash.ui.nearby.NearbyIdentityUi
+import com.transfer.flash.ui.nearby.NearbyNetworkScan
+import com.transfer.flash.ui.nearby.NearbyScanBlock
 import com.transfer.flash.ui.nearby.NearbyPeerUi
 import com.transfer.flash.ui.nearby.NearbyTrustedPeerUi
 import com.transfer.flash.ui.nearby.NearbyUiState
+import com.transfer.flash.core.network.sweep.SweepRefusal
+import com.transfer.flash.core.network.sweep.SweepState
 import com.transfer.flash.ui.settings.FlashSettingsModel
 import com.transfer.flash.ui.settings.FlashSettingsScreen
 import com.transfer.flash.ui.shell.FlashBottomNav
@@ -269,6 +273,8 @@ public fun DesktopShell(
     val discoveryState by (engine.discovery?.state ?: fallbackDiscoveryState).collectAsState()
     val fallbackActiveSessions = remember { MutableStateFlow(emptyMap<com.transfer.flash.core.common.model.FlashDeviceId, com.transfer.flash.core.network.FlashSession>()) }
     val activeSessions by (engine.network?.activeSessions ?: fallbackActiveSessions).collectAsState()
+    // DR3: the manual "Scan network" outcome, read by the `nearby` derivation below.
+    val sweepState by engine.sweepState.collectAsState()
     // From the pairing coordinator's flow, NOT a `derivedStateOf` over the trust store: that store
     // is a plain ConcurrentHashMap with no snapshot state, so a derivation read none of it — it
     // computed once at first composition and never invalidated, leaving a just-paired peer showing
@@ -309,6 +315,7 @@ public fun DesktopShell(
                 ready = ready,
                 localFriendlyName = engine.localFriendlyName,
                 localDeviceId = engine.localDeviceId,
+                scan = sweepState.toNearbyScan(),
             )
         }
     }
@@ -1357,6 +1364,7 @@ public fun DesktopShell(
                                 }
                             }
                         },
+                        onScanNetwork = { engine.scanNetwork() },
                         modifier = Modifier.fillMaxSize(),
                         listState = nearbyScroll,
                         bottomInset = tabBottomInset,
@@ -2022,6 +2030,7 @@ internal fun nearbyUiStateOf(
     ready: Boolean,
     localFriendlyName: String,
     localDeviceId: String,
+    scan: NearbyNetworkScan = NearbyNetworkScan.Idle,
 ): NearbyUiState {
     val trustedIds = trusted.mapTo(HashSet()) { it.id }
     // Every discovered peer as a row, BEFORE the trusted filter — the join in `withDeviceKinds`
@@ -2063,5 +2072,28 @@ internal fun nearbyUiStateOf(
         },
         pairingPhase = pairingPhaseOf(ui?.phase),
         pairingSecondsLeft = ui?.secondsLeft ?: 0,
+        scan = scan,
+    )
+}
+
+/**
+ * The sweep's state as the Nearby page shows it (DR3). Twin of `SweepState.toNearbyScan` in the Android host
+ * (`MainActivity`), kept identical on purpose: `ui:chat` cannot see `core:network`, and a display rule that
+ * differed per host would be a bug. An automatic sweep is shown while it runs (the action must not start a
+ * second one) but its outcome is not, because the user did not ask for it.
+ */
+internal fun SweepState.toNearbyScan(): NearbyNetworkScan = when (this) {
+    SweepState.Idle -> NearbyNetworkScan.Idle
+    is SweepState.Scanning -> NearbyNetworkScan.Running(if (total == 0) 0 else scanned * 100 / total)
+    is SweepState.Finished ->
+        if (automatic) NearbyNetworkScan.Idle else NearbyNetworkScan.Done(answered, narrowed)
+    is SweepState.Refused -> NearbyNetworkScan.Unavailable(
+        when (refusal) {
+            SweepRefusal.NO_LAN -> NearbyScanBlock.NO_NETWORK
+            // TOO_LARGE is only ever an automatic refusal, which is never shown; a manual sweep narrows instead.
+            SweepRefusal.NOT_PRIVATE, SweepRefusal.TOO_LARGE -> NearbyScanBlock.NOT_LOCAL
+            SweepRefusal.TOO_SMALL -> NearbyScanBlock.TOO_SMALL
+            SweepRefusal.RATE_LIMITED -> NearbyScanBlock.TOO_SOON
+        },
     )
 }
