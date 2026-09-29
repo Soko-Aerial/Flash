@@ -210,11 +210,58 @@ Specification:
 Testing (JVM): `scanCaption` copy for every state; percent rounding. Device: **DR-03** in
 `../testing/TEST-BACKLOG.md`.
 
+## Addendum — quiet-network hint (DR5, DESIGNED 2026-09-29)
+
+Why: a phone on a network that hides devices from discovery shows its paired devices as Offline forever and says
+nothing. The user cannot tell "the other device is off" from "this network blocks Flash". DR5 item 2
+(`../network/DISCOVERY-RESILIENCE-PLAN.md` §3.3 E, ADR-047) adds a hint that appears after 30 s of nothing, and points to
+the two actions that can still work: **Scan network** (DR3) and **Connect by IP**. "Show QR" is left out while DR4 is
+postponed (ADR-056).
+
+Approaches compared:
+
+1. **A card in the list, under the identity card** — chosen. It is a state, not an event: it stays until something is
+   reachable, sits where the eye already is (the trusted rows it explains are directly below), and carries its own
+   two actions so the user does not have to find the header icons.
+2. **A snackbar or toast** — rejected: it disappears in a few seconds, before a user who looked away can act on it, and
+   the desktop's snackbar host is per-window chrome for events (a failed connect), not for a standing condition.
+3. **Replace the "Looking for devices…" line** — rejected: that line only shows when there are no trusted peers, and the
+   hint is for the opposite case (paired peers exist and none is reachable).
+4. **A modal dialog** — rejected: it interrupts a screen the user only opened to look, and the answer ("it might be
+   the network") is not urgent.
+5. **A banner above the tab bar** — rejected: global chrome for a Nearby-only condition.
+
+Specification:
+
+- Field `NearbyUiState.discoveryQuiet` (default false), computed by the host with the shared
+  `FlashNearbyMath.discoveryQuiet(pairedPeers, discoveredPeers, liveSessions, isDiscovering)`: paired peers exist,
+  discovery is running, **no** peer is discovered and **no** session is live. A live session with a peer discovery cannot
+  see (a remembered route, an inbound dial) therefore hides the hint: the peer is reachable, and the hint would be false.
+- The page shows the card only after `discoveryQuiet` has held for `FlashNearbyMath.QUIET_HINT_DELAY_MS` (30 s), counted
+  while the Nearby page is on screen. Leaving the tab and coming back restarts the count; the flag going false at any
+  moment resets it and hides the card.
+- Card (`PopulatedContent`, item key `quiet-hint`, between the identity card and the first section): `backgroundSurface`
+  fill like the identity card, `radius12`, 12 dp padding. Title "Can't find your devices" (`bodyEmphasis`,
+  `textPrimary`); body "This network may be hiding devices from Flash." (`metadataDefault`, `textSecondary`); under it a
+  row of two text actions in `captionEmphasis` / `accentPrimary`, 48 dp targets: **Scan network** (reads "Scanning…" in
+  `textTertiary` and is inert while a scan runs) and **Connect by IP**. An action whose callback the host did not supply
+  is not shown; with neither, the card is text only.
+- The result of a scan still appears in the header caption (DR3). The card does not repeat it. When a scan finds a peer the
+  connection makes `discoveryQuiet` false and the card leaves on its own.
+- Motion: the card enters and leaves with `flashAnimateItem` like every other row; reduce-motion follows that helper.
+- Accessibility: plain text, labelled actions; the card is one merged semantics node reading title and body.
+- No copy names a port, address, multicast or a protocol (§22).
+
+Testing (JVM): `discoveryQuiet` for every combination of its four inputs; the desktop's `nearbyUiStateOf` carries it into
+the state. Device: **DR-04** in `../testing/TEST-BACKLOG.md`.
+
 ## Testing checklist
 
 - [x] JVM: sorting/dedup/count labels/state derivation
 - [x] JVM: "Scan network" caption copy for every state, and the desktop `SweepState` → scan mapping (DR3)
 - [ ] Physical device: "Scan network" header action, empty-panel pill and caption (DR-03)
+- [x] JVM: `discoveryQuiet` derivation, and the desktop state carries it (DR5)
+- [ ] Physical device: the quiet-network card appears after 30 s, both actions work, it leaves when a peer connects (DR-04)
 - [ ] Compose preview light/dark × empty/scanning/populated/dialog
 - [ ] Physical device: live NSD feed post-wiring; pairing round-trip
 - [ ] Physical device: discovery churn — rows glide in/out, no full-page crossfade per tick

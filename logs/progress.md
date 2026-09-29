@@ -1,5 +1,49 @@
 # Progress Log
 
+## 2026-09-29 — DR5: discovery hardening (adapter filter, per-source log, quiet-network hint) (ADR-047)
+
+### Worked on
+Owner: continue DR2, DR3, DR5, then the group trust model and session cap. DR5 makes the existing discovery sources honest
+about which network they use and tells the user when the network is hiding paired devices.
+
+### Changed
+- **Adapter filtering (plan §3.3 E item 1):** `VirtualAdapters.selectInterfaces` (`core:discovery` jvmMain) is now the one rule
+  for JmDNS (`RealJmdnsBridge`/`JmdnsTransport`), the multicast beacon (`JvmMulticastSocketFactory`) and the sweep's
+  `JvmLocalSubnets`. Never returns an empty set (falls back to all candidates), and "Wi-Fi Direct" adapters count as real so a
+  PC's own Windows hotspot stays discoverable. Include setting: `include_virtual_adapters=true` in
+  `~/.flash/settings.properties` (`DesktopSettings.includeVirtualAdapters`), no UI row. Each bind logs
+  `Network adapters: using …; skipped virtual/tunnel …`.
+- **Per-source report (item 4):** `CompositeDiscovery.sourceReport()` and `sourceLog`, written on a change and every 5 min from
+  the sweeper tick; wired in `DiscoveryEngineHolder`, `Flash.create` and `DesktopEngine`.
+- **Quiet-network hint (item 2):** `NearbyUiState.discoveryQuiet`, `FlashNearbyMath.discoveryQuiet(...)` and
+  `QUIET_HINT_DELAY_MS` (30 s), the `QuietNetworkHint` card (*Scan network*, *Connect by IP*) in `FlashNearbyScreen`; host
+  wiring in `MainActivity` (the `activeSessions` collection moved above the `nearby` derivation) and
+  `DesktopShell.nearbyUiStateOf` (new required `liveSessions`). UI design first: `docs/ui/nearby-page.md` addendum.
+- **Item 3 (IPv6 link-local mDNS) deliberately not built:** it was conditional on DR0 evidence that does not exist yet.
+- **Docs:** ADR-047 "DR5 implementation notes" (9 items), plan status/§3.3 E/§4, TEST-BACKLOG **DR-04**, nearby-page addendum,
+  memory note `discovery-hardening-dr5`.
+
+### Verification
+- `:core:discovery:jvmTest` 244/244 (includes `VirtualAdaptersTest` 8), `:core:discovery:testAndroidHostTest` green
+  (includes the two source-report tests), `:ui:chat:jvmTest` nearby tests 17/17 (`FlashNearbyLogicTest` with the new
+  `discoveryQuiet` and copy tests), `:desktop:jvmTest` 95/95 (`DesktopNearbyStateTest` quiet-flag test,
+  `DesktopSettingsStoreTest`), `:core:engine:jvmTest` 13/13 (the interop harnesses that construct `JvmMulticastSocketFactory()`
+  and `JmdnsTransport` still build and pass with the new constructor parameters).
+- `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm`, `:core:engine:compileAndroidMain` green.
+- **Not verified on any device**, and the card's 30 s timer and animation were never seen on screen. Owed: TEST-BACKLOG **DR-04**.
+
+### Problems
+- Design bug caught before commit: the first adapter list had "Microsoft Wi-Fi Direct Virtual Adapter" as virtual, which would
+  have hidden a PC's own Mobile Hotspot network. It is now a real-adapter marker with a unit test.
+- The hint must not fire while a session is live: a peer reachable through a remembered route or an inbound dial is not
+  "hidden", so `discoveryQuiet` requires `liveSessions == 0`.
+
+### Remaining
+- Group trust model (ADR-044 V0 threat review first) and the per-mode session cap.
+
+### Next AI
+Start the group trust model with the V0 threat review. No code before V0 (ADR-044).
+
 ## 2026-09-29 — DR3: unicast subnet sweep and "Scan network" (ADR-047)
 
 ### Worked on

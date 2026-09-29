@@ -372,6 +372,48 @@ by later testing without anyone recording it: confirm, then mark PASS here **and
   `ConnectionPlannerTest` / `AutoConnectorTest` (rule 9), `FlashNearbyLogicTest`, `DesktopNearbyStateTest`.
 - **Status:** TODO
 
+### DR-04 — Desktop advertises only reachable adapters, and the quiet-network hint (DR5, ADR-047)
+- **Setup:** a Windows desktop with at least one virtual adapter besides the real Wi-Fi/Ethernet (Hyper-V `vEthernet`,
+  WSL, a VPN tunnel, VirtualBox/VMware host-only: `Get-NetAdapter` lists them). One paired phone on the same Wi-Fi. Both on
+  the DR5 build. Desktop log `%USERPROFILE%\.flash\desktop.log` (copy before relaunch); phone log
+  `adb logcat -v time -s WS:I MulticastTransport:I`.
+- **Steps:**
+  1. Start the desktop. Read the two bind lines in its log.
+  2. Start the phone, wait 30 s. Confirm the phone finds the desktop and the desktop finds the phone.
+  3. Hide the desktop from the phone's discovery: in admin PowerShell
+     `New-NetFirewallRule -DisplayName flash-dr4-out -Direction Outbound -Protocol UDP -RemoteAddress 224.0.0.0/4,255.255.255.255 -Action Block`
+     (adjust the subnet broadcast as in DR-03), then restart **both** apps so no session exists. Do not tap Scan network.
+  4. Open Nearby on the **phone** and leave it on screen for 40 s. Then do the same on the desktop.
+  5. Tap **Scan network** in the card; then, on a second try after the peer is Offline again, tap **Connect by IP**.
+  6. While the card is showing, get the peer connected (step 5 does it) and watch the card.
+  7. Remove the rule: `Remove-NetFirewallRule -DisplayName flash-dr4-out`.
+  8. Optional: turn on Windows Mobile Hotspot on the desktop, join it from the phone, and check the phone still discovers the
+     desktop (the hotspot adapter must count as real).
+  9. Optional: put `include_virtual_adapters=true` in `%USERPROFILE%\.flash\settings.properties`, restart, and read the
+     bind lines again.
+- **Pass:**
+  - Step 1: `Network adapters: using <the real adapter(s)>; skipped virtual/tunnel <the virtual ones>` appears for both
+    `JmDNS` and `MulticastTransport`, and the phone's `Found <desktop> at <ip>` names the **real** LAN address, not a
+    `172.x`/`10.x` Hyper-V or VPN address.
+  - Step 2: also a `Discovery sources: jmdns=[…], multicast=[…]` line naming the peer under at least one source, and no
+    further such line until something changes or 5 min pass.
+  - Step 4: the card "Can't find your devices / This network may be hiding devices from Flash." is **absent** for the first
+    ~30 s and present after it, on both hosts; before it appears the log shows `Discovery sources: jmdns=none, multicast=none`.
+  - Step 5: *Scan network* reads "Scanning…" and the peer connects (as DR-03); *Connect by IP* opens the dialog.
+  - Step 6: the card leaves by itself once a session is live, even though discovery still lists nothing.
+  - Step 8 (if run): the desktop is still discovered over the hotspot.
+  - Step 9 (if run): the bind line now lists the virtual adapters as used.
+- **A FAIL means:** a virtual address still advertised (heuristic missed the adapter: record its name and description, and
+  extend `VirtualAdapters`), the real adapter skipped (worse: record it the same way), the card showing while a session is
+  live (the live-session term or the flag wiring), the card never showing (the 30 s timer or the flag), or the hotspot
+  desktop not discovered (the hotspot exception). Each is a new `ERROR-NNN`.
+- **Also note:** what the adapter names and descriptions actually were, so the heuristic list can be checked against a
+  real machine.
+- **Source:** ADR-047 "DR5 implementation notes", plan §3.3 E and §4 DR5, `docs/ui/nearby-page.md` addendum. Unit coverage:
+  `VirtualAdaptersTest`, `CompositeDiscoveryTest` (source report), `DesktopSettingsStoreTest`, `FlashNearbyLogicTest`,
+  `DesktopNearbyStateTest`.
+- **Status:** TODO
+
 ## 5. Measurements — do these last
 
 They replace every *(measure)* estimate in the plans and decide tuning. Record each in `logs/experiments.md`.

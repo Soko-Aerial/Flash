@@ -1,6 +1,6 @@
 # Discovery Resilience Plan (phases DR0–DR7)
 
-**Status: PLAN, written 2026-09-24. DR1 (remembered endpoints), DR2 (broadcast beacon) and DR3 (subnet sweep) IMPLEMENTED 2026-09-29, device checks DR-01, DR-02 and DR-03 pending. ADR-047 is PROPOSED; its DR1 to DR3 parts are built (see the implementation notes in ADR-047). DR5 (hardening) is next.**
+**Status: PLAN, written 2026-09-24. DR1 (remembered endpoints), DR2 (broadcast beacon), DR3 (subnet sweep) and DR5 (hardening) IMPLEMENTED 2026-09-29, device checks DR-01 to DR-04 pending. ADR-047 is PROPOSED; its DR1 to DR3 and DR5 parts are built (see the implementation notes in ADR-047). The remaining active work after this plan is the group trust model and the per-mode session cap.**
 
 **Scope decision (owner, 2026-09-29, ADR-056):** **DR4 (QR), DR6 (BLE) and DR7 (Wi-Fi Direct) are POSTPONED** and live in
 [`docs/FUTURE-OPTIMIZATION.md`](../FUTURE-OPTIMIZATION.md) (FO-01, FO-02, FO-03). The active phases are **DR2 (broadcast
@@ -113,7 +113,8 @@ sources feed **candidates** into it; the planner decides, by discovery mode, whe
 - Pairing interaction: must go through pairing v2 (ADR-042), not around it. The QR provides the pin; the commit
   and reveal still run.
 
-**E. Hardening of the existing sources (DR5).**
+**E. Hardening of the existing sources (DR5, IMPLEMENTED 2026-09-29; items 1, 2 and 4 built, item 3 deliberately not built;
+device check DR-04; details in ADR-047 "DR5 implementation notes").**
 1. Desktop: rank or filter virtual adapters (Hyper-V `vEthernet`, VPN, VirtualBox/VMware host-only, WSL) so
    neither JmDNS nor the beacon advertises an address peers cannot reach. Keep a setting to include them.
 2. A "No devices found" hint after ~30 s on Wi-Fi with paired peers: *"This network may block device discovery.
@@ -143,7 +144,7 @@ acceptable there. Rotating ids tie in with audit S9.
 | **DR2 Broadcast beacon** (**IMPLEMENTED 2026-09-29**; device check DR-02 in `docs/testing/TEST-BACKLOG.md` TODO) | §3.3 B on the Android and JVM socket factories. | Test: a packet to the broadcast address is parsed like a multicast one. Device check on a DR0 network where multicast failed but broadcast passed. |
 | **DR3 Subnet sweep** (**IMPLEMENTED 2026-09-29**; device check DR-03 in `docs/testing/TEST-BACKLOG.md` TODO) | §3.3 C: `SubnetSweeper` in `commonMain` with platform socket actuals; "Scan network" in Nearby; automatic fallback per D2. | Tests: /24 limit, no run on cellular, rate limits, cancellation. Device check: two hotspot clients find each other; a snooping router with multicast and broadcast both blocked. |
 | **DR4 QR first contact** (**POSTPONED 2026-09-29**, FO-01) | §3.3 D. ADR-047 amendment for the dependencies; UI component doc; pairing v2 integration. | Desktop shows a QR, phone scans, pairing completes without typing a code, and a tampered fingerprint is refused. Notices regenerated. |
-| **DR5 Hardening** | §3.3 E. **Without *Show QR* while DR4 is postponed:** the hint offers *Scan network* and *Connect by IP* only. | Desktop with Hyper-V + VPN adapters advertises only reachable addresses; hint appears and its two actions work. |
+| **DR5 Hardening** (**IMPLEMENTED 2026-09-29**; device check DR-04 in `docs/testing/TEST-BACKLOG.md` TODO) | §3.3 E. **Without *Show QR* while DR4 is postponed:** the hint offers *Scan network* and *Connect by IP* only. IPv6 (item 3) is not built: no DR0 evidence asks for it. | Desktop with Hyper-V + VPN adapters advertises only reachable addresses; hint appears and its two actions work. |
 | **DR6 BLE** (conditional; **POSTPONED 2026-09-29**, FO-02) | §3.3 G, only if DR0 justifies it. Its own ADR. | Owner decision after DR0. |
 | **DR7 Wi-Fi Direct** (**POSTPONED 2026-09-29**, FO-03) | Separate plan. | — |
 
