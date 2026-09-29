@@ -88,6 +88,7 @@ Per-component docs use [`component-doc-template.md`](component-doc-template.md).
 | UI-049 | Settings page (P5 tab) | [settings-page.md](settings-page.md) | IMPLEMENTED (demo state; C1.4 wiring pending) | UI-046, UI-035/036, UI-039 |
 | UI-050 | Calling UI (voice/video call screen) | [calling-ui.md](calling-ui.md) | IMPLEMENTED as `:ui:callui` (`FlashCallScreen` over `:core:calling`, ADR-025; device QA pending) | UI-001, UI-002, UI-033, UI-037, UI-038 |
 | UI-050b | Group video grid (G1) | [calling-ui.md](calling-ui.md) | IMPLEMENTED (not device-verified) | UI-050 |
+| UI-050c | Group video focus: compact main tile + strip, tap to pin (G5) | [calling-ui.md](calling-ui.md) | IMPLEMENTED (2026-09-29; not device-verified) | UI-050b |
 
 > UI-046–UI-049 were added under Phase 8 App-Shell authority (`docs/ui-page-plan.md`, owner-approved plan).
 > All four research docs reached DESIGNED before their implementation per the research-first rule.

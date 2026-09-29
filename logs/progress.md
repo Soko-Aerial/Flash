@@ -1,5 +1,23 @@
 # Progress Log
 
+## 2026-09-29 — G5 code done: group video focus UI (UI-050c; device check pending, P8)
+
+### Worked on
+G5 of `docs/calling/GROUP-VIDEO-PLAN.md`: LOW main tile + participant strip, tap to pin everywhere.
+
+### Changed
+- `docs/ui/calling-ui.md` UI-050c written first (DESIGNED), index row added; then implemented.
+- `FlashCallUiState`: `compactVideo`, `videoFocusPeerId`, `videoMainPeerId` (additive, defaulted).
+- `FlashGroupCallSession`: snapshots of pin/main/compact from the router.
+- `:ui:callui`: `FlashGroupVideoGrid.kt` (compact main tile, tappable tiles, pin marker, click labels),
+  new `FlashGroupVideoStrip.kt`, `FlashCallScreen(onVideoFocus)`; hosts wired (`MainActivity`, `DesktopShell`).
+
+### Verification
+calling jvm 95, callui 19, desktop 86, app compile: green. No device test (P8).
+
+### Next AI
+G6 health warnings (UI doc first), then G7 caps.
+
 ## 2026-09-29 — G4 code done: group video budgets (device check pending, P8)
 
 ### Worked on

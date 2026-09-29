@@ -547,6 +547,7 @@ seams below. Permission list: README → Permissions.
       public suspend fun switchCamera()
       public fun setSpeaker(on: Boolean)
       public fun setVideoFocus(peerId: String?): Unit = Unit   // G3: pin a group participant's video
+      // FlashCallUiState (G5): compactVideo, videoFocusPeerId, videoMainPeerId — all defaulted, additive
 
       // Group calls
       public suspend fun startGroupCall(

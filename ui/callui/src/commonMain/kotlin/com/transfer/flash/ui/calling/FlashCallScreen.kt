@@ -99,6 +99,7 @@ public fun FlashCallScreen(
     onToggleCamera: () -> Unit,
     onSwitchCamera: () -> Unit,
     onDismiss: () -> Unit,
+    onVideoFocus: (String?) -> Unit = {},
 ) {
     val colors = FlashTheme.colors
     val ended = state.state == FlashCallState.ENDED
@@ -124,6 +125,7 @@ public fun FlashCallScreen(
                 FlashGroupVideoSurfaces(
                     state = state,
                     session = session,
+                    onVideoFocus = onVideoFocus,
                     modifier = Modifier.fillMaxSize(),
                 )
             } else {
@@ -149,6 +151,12 @@ public fun FlashCallScreen(
             }
 
             Spacer(Modifier.weight(1.3f))
+
+            if (isVideoActive && !ended && state.isGroup && state.compactVideo) {
+                // G5 (UI-050c): everyone as a chip; a tap picks whose video the main tile shows.
+                FlashGroupVideoStrip(state = state, onVideoFocus = onVideoFocus)
+                Spacer(Modifier.height(FlashSpacing.space16))
+            }
 
             FlashCallControls(
                 state = state,

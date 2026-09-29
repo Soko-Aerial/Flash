@@ -133,7 +133,7 @@ public class FlashGroupCallSession(
     private val videoRouter = GroupVideoRouter(
         callId = callId,
         localId = localDeviceId,
-        limits = { GroupVideoLimits.of(performanceMode(), effectiveBand()) },
+        limits = { videoLimits() },
         participants = {
             legs.valuesSnapshot().filter { it.state in VIDEO_PRESENT }.map { it.peerId }.sorted()
         },
@@ -149,6 +149,16 @@ public class FlashGroupCallSession(
 
     @Volatile
     private var videoFreeNow: Int = 0
+
+    /** G5 snapshots for the UI state: the pin, the main tile's participant, and the compact layout. */
+    @Volatile
+    private var videoFocusNow: String? = null
+
+    @Volatile
+    private var videoMainNow: String? = null
+
+    @Volatile
+    private var videoCompactNow: Boolean = false
 
     /**
      * Serializes media acquisition against native teardown (same contract as the 1:1
@@ -851,6 +861,9 @@ public class FlashGroupCallSession(
             sendingTo = legs.keysSnapshot().filter { videoRouter.isSending(it) }
                 .associateWith { peer -> videoRouter.sendHeight(peer)?.takeIf { it > 0 } }
             videoFreeNow = videoRouter.freeSlots()
+            videoFocusNow = videoRouter.pinnedPeer
+            videoMainNow = videoRouter.pinnedPeer ?: videoRouter.followedPeer
+            videoCompactNow = videoLimits().receive <= 1
             videoStates = legs.keysSnapshot().associateWith { videoRouter.receiveState(it) }
             effects.forEach { effect ->
                 when (effect) {
@@ -869,6 +882,9 @@ public class FlashGroupCallSession(
         }
         refreshUiState()
     }
+
+    /** This device's video limits now (G4; G6 adds the health inputs). */
+    private fun videoLimits(): GroupVideoLimits = GroupVideoLimits.of(performanceMode(), effectiveBand())
 
     /**
      * The band that sets this device's video limits (G3/G4): its own, or, when it cannot tell
@@ -1126,7 +1142,12 @@ public class FlashGroupCallSession(
                 video = videoStates[leg.peerId] ?: FlashParticipantVideo.OFF,
             )
         }
-        _state.value = _state.value.copy(participants = participants)
+        _state.value = _state.value.copy(
+            participants = participants,
+            compactVideo = video && videoCompactNow,
+            videoFocusPeerId = videoFocusNow,
+            videoMainPeerId = videoMainNow,
+        )
     }
 
     private suspend fun acquireMedia(): Boolean {

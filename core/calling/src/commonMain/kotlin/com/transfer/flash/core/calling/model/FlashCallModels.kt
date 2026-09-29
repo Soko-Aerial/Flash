@@ -87,6 +87,15 @@ public data class FlashCallUiState(
     public val groupId: String? = null,
     /** Current roster of participants in the call with their connection and speaking status. */
     public val participants: List<FlashCallParticipantUi> = emptyList(),
+    /**
+     * Group video (G5, UI-050c): this device receives one video at a time (LOW tier, or a health
+     * cap), so the screen shows one main tile and a strip instead of a grid.
+     */
+    public val compactVideo: Boolean = false,
+    /** Group video (G5): the participant the user pinned, or null while following the speaker. */
+    public val videoFocusPeerId: String? = null,
+    /** Group video (G5): whom the main tile shows: the pinned participant, else the followed speaker. */
+    public val videoMainPeerId: String? = null,
 )
 
 /** Connection and presence status of a participant in a group call. */

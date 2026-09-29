@@ -1826,6 +1826,7 @@ public fun DesktopShell(
                 onToggleCamera = { calls?.toggleCamera() },
                 onSwitchCamera = { scope.launch { calls?.switchCamera() } },
                 onDismiss = { },
+                onVideoFocus = { peerId -> calls?.setVideoFocus(peerId) },
             )
         }
     }

@@ -2,6 +2,9 @@ package com.transfer.flash.ui.calling
 
 import com.transfer.flash.core.calling.model.FlashCallParticipantState
 import com.transfer.flash.core.calling.model.FlashCallParticipantUi
+import com.transfer.flash.core.calling.model.FlashCallDirection
+import com.transfer.flash.core.calling.model.FlashCallState
+import com.transfer.flash.core.calling.model.FlashCallUiState
 import com.transfer.flash.core.calling.model.FlashParticipantVideo
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -63,4 +66,32 @@ class FlashGroupVideoGridTest {
         assertEquals("Muted", participantStatusLabel(p.copy(isMuted = true, video = FlashParticipantVideo.BUSY)))
         assertEquals(null, participantStatusLabel(p.copy(video = FlashParticipantVideo.RECEIVING)))
     }
+
+    @Test
+    fun `the compact main tile falls back from the core's choice to a live video to the first person`() {
+        val a = FlashCallParticipantUi(peerId = "a", name = "A")
+        val b = FlashCallParticipantUi(peerId = "b", name = "B", video = FlashParticipantVideo.RECEIVING)
+        val gone = FlashCallParticipantUi(peerId = "g", name = "G", state = FlashCallParticipantState.LEFT)
+        val state = call(listOf(gone, a, b))
+        assertEquals("b", groupVideoMainPeer(state))
+        assertEquals("a", groupVideoMainPeer(state.copy(videoMainPeerId = "a")))
+        assertEquals("b", groupVideoMainPeer(state.copy(videoMainPeerId = "g")), "a participant who left is not shown")
+        assertEquals("a", groupVideoMainPeer(call(listOf(a))))
+        assertEquals(null, groupVideoMainPeer(call(listOf(gone))))
+    }
+
+    @Test
+    fun `a tap pins, and a tap on the pinned person unpins`() {
+        val state = call(emptyList())
+        assertEquals("a", nextVideoFocus(state, "a"))
+        assertEquals(null, nextVideoFocus(state.copy(videoFocusPeerId = "a"), "a"))
+        assertEquals("b", nextVideoFocus(state.copy(videoFocusPeerId = "a"), "b"))
+        assertEquals("Pin Ann's video", videoFocusClickLabel("Ann", pinned = false))
+        assertEquals("Unpin Ann's video", videoFocusClickLabel("Ann", pinned = true))
+    }
+
+    private fun call(participants: List<FlashCallParticipantUi>) = FlashCallUiState(
+        callId = "c", peerId = "g", peerName = "Group", direction = FlashCallDirection.OUTGOING,
+        video = true, state = FlashCallState.ACTIVE, isGroup = true, participants = participants, compactVideo = true,
+    )
 }
