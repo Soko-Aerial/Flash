@@ -8,6 +8,7 @@
 - Code: `core/network/.../remembered/`, both `*WsFlashNetwork.routeObserver`, wiring in `DiscoveryEngineHolder`,
   `Flash.create`, `DesktopEngine`. Tests green (see progress). Owed: TEST-BACKLOG **DR-01**, **MIG-01**, **MEAS-07** (DR0).
 - Owner: confirm D1 (paired only) and choose whether DR2 (broadcast beacon) is next or waits for MEAS-07.
+- Code commit `a91c383`.
 
 ## 2026-09-29 — Desktop Room migrations fixed (ERROR-080 / ADR-055); 2026-09-28 audit verified
 - Schema-migration SQL now lives once in `core/persistence` commonMain (`FlashSchemaSteps`); Android and desktop wrap it,
