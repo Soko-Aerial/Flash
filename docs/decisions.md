@@ -2027,7 +2027,7 @@ PC5 (modes); PC6 measurements; or the 3-device check (user 3 sees user 2 through
 2026-09-24
 
 ### Status
-**PROPOSED. DR1, DR2 and DR3 IMPLEMENTED 2026-09-29 (device checks DR-01, DR-02, DR-03 pending); DR5 next; DR4, DR6, DR7
+**PROPOSED. DR1, DR2, DR3 and DR5 IMPLEMENTED 2026-09-29 (device checks DR-01 to DR-04 pending); DR4, DR6, DR7
 postponed (ADR-056); DR0 is a measure-last task.** Owner order: after group calling (2026-09-24). Plan: `docs/network/DISCOVERY-RESILIENCE-PLAN.md` (DR0–DR7). ADR-045 and ADR-046 are
 reserved by the presence plan.
 
@@ -2162,6 +2162,47 @@ What was built, and where it departs from the plan's wording:
 11. **Known limits.** Misses a peer whose server fell back to an ephemeral port (DR1 covers that peer after one contact). A
     sweep is 254 SYNs on the local link: fine at home, may trip an IDS on a managed network, which is why the automatic
     trigger is conditional and the manual one is a button. Not verified on any device: DR-03.
+
+### DR5 implementation notes (2026-09-29)
+1. **Adapter filtering is one rule for three consumers.** `VirtualAdapters.selectInterfaces(candidates, includeVirtual, tag)`
+   (`core:discovery` jvmMain) decides which interfaces JmDNS binds, the multicast beacon joins and sends on, and the sweep
+   probes (`JvmLocalSubnets`). Before this, JmDNS and the beacon used every up, multicast-capable interface, so a Hyper-V
+   `vEthernet`, a VPN tunnel or a VM host-only adapter advertised an address a peer on the real LAN cannot route to.
+   Detection is by adapter name and description (Hyper-V, VPN and TAP/TUN, VirtualBox/VMware host-only, WSL, Docker). It is a
+   heuristic, so the next two rules exist.
+2. **Never empty.** If every candidate looks virtual (a Hyper-V guest whose only NIC is a virtual adapter is a real case),
+   the selection falls back to all candidates and logs that it did. Skipping everything would leave the desktop silent, which
+   is worse than advertising one unreachable address among the reachable ones.
+3. **The Windows hotspot adapter is real.** "Microsoft Wi-Fi Direct Virtual Adapter" is what Mobile Hotspot exposes; a PC
+   sharing its connection is a LAN for its clients. It is listed under `REAL_MARKERS`, checked before the virtual markers.
+   A first version of the list had it as virtual, which would have hidden the PC's own hotspot network; caught in review,
+   pinned by a unit test.
+4. **Include setting, no UI row.** `include_virtual_adapters=true` in `~/.flash/settings.properties`
+   (`DesktopSettings.includeVirtualAdapters`, default false) turns the filter off. It is read at every bind and rebind, so it
+   applies to the next network change; the desktop needs a restart to be sure. There is no settings row on purpose: it is a
+   workaround for a misclassified adapter, not a preference, and a row would invite users to switch it on "to fix
+   discovery". Android is not affected: it has no adapter list of this kind.
+5. **The selection is logged.** Each bind writes one line: `Network adapters: using <names>; skipped virtual/tunnel <names>`
+   (tag `MulticastTransport` or `JmDNS`), plus a fell-back note when rule 2 applied. A field report about an unreachable
+   desktop therefore names which adapters were used.
+6. **Per-source report (plan §3.3 E item 4).** `CompositeDiscovery.sourceReport()` renders one line:
+   `Discovery sources: jmdns=['Flash Camel' at 192.168.1.20 4s], multicast=none`, every source listed, silent ones as `none`,
+   each sighting with its age in seconds. It is written to the log (tag `WS` in the app and the desktop, the facade's own tag in `Flash.create`) when the set of
+   `deviceId@host` any source holds changes, and every 5 min (`DEFAULT_SOURCE_LOG_HEARTBEAT_MS`) otherwise, from the
+   existing sweeper tick. No new timer, no per-tick logging. It is a log line, not a debug screen: the plan asked for a
+   debug-screen line, and this project has no debug screen for it; a logcat / desktop log line answers the same field question.
+7. **Quiet-network hint.** `NearbyUiState.discoveryQuiet` is computed by the hosts with the shared
+   `FlashNearbyMath.discoveryQuiet(pairedPeers, discoveredPeers, liveSessions, isDiscovering)`: true only when discovery is
+   running, paired peers exist, **nothing is discovered and no session is live**. The live-session term matters: a peer
+   connected through a remembered route (DR1) or an inbound dial is reachable even if discovery cannot see it, and telling
+   that user "this network may be hiding devices" would be false. The page shows the card after the flag has held for 30 s
+   on screen (`QUIET_HINT_DELAY_MS`); leaving the tab restarts the count. Actions: *Scan network* (DR3) and *Connect by IP*.
+   No *Show QR* while DR4 is postponed (ADR-056). UI design: `docs/ui/nearby-page.md` addendum.
+8. **IPv6 link-local mDNS (plan item 3) is not built.** The plan made it conditional on DR0 finding a network that passes
+   IPv6 multicast but not IPv4; DR0 is measure-last (P8) and has not run, so there is no evidence to build against.
+   Revisit when MEAS-07 says so.
+9. **Known limits.** The name heuristics will misjudge an unusual adapter name in either direction; rule 2 and the include
+   setting are the escape hatches. Not verified on any device: DR-04.
 
 ## ADR-048 — Connection modes: re-time live sessions, ECO parks only by agreement
 

@@ -1,5 +1,20 @@
 # Current Handoff
 
+## 2026-09-29 — DR5 discovery hardening built and committed (ADR-047); group trust model next
+- **DR5 (code `6b340e6`):** one adapter rule (`VirtualAdapters.selectInterfaces`) for JmDNS, the beacon and the sweep (never
+  empty, Windows hotspot adapter counts as real, `include_virtual_adapters=true` in `~/.flash/settings.properties` turns it off);
+  `Discovery sources: …` log line (`CompositeDiscovery.sourceReport`); Nearby quiet-network card after 30 s when paired peers
+  exist, nothing is discovered and no session is live (Scan network, Connect by IP). IPv6 mDNS deliberately not built.
+- **Verified:** discovery jvm 244, Nearby UI 17, desktop 95, engine jvm 13, `:app`/`:desktop`/`:core:engine` compile, all green.
+  **Not verified on any device:** owed **DR-04**.
+- Owed device tests: DR-01, DR-02, DR-03, DR-04, MIG-01, MIG-02, MEAS-07, MEAS-01, older items (`docs/testing/TEST-BACKLOG.md`).
+- Recommended next task: the group trust model. **ADR-044 phase V0 (threat review) comes first, no code before it**: malicious
+  owner, compromised member, replayed or forged `Add`, key change, removed member reconnecting, downgrade to unsigned frames, the
+  TLS pinning path for vouched keys. Then V1 signed membership and V2 vouched trust (`MAX_MEMBERS` 20), and the per-mode session
+  cap (`SessionHardeningPolicy` caps live sessions at 8 today; it must be raised before V2). Postponed by the owner (do not
+  start): DR4 QR, DR6 BLE, DR7 Wi-Fi Direct, group-attachment fan-out revamp, MEAS-02.
+- Gradle: JBR 21 as `JAVA_HOME`, `JAVA_TOOL_OPTIONS=-Djdk.net.unixdomain.tmpdir=C:\Users\KaliOxygen\.gradle\afunix`, no `--offline`.
+
 ## 2026-09-29 — DR2 broadcast beacon and DR3 subnet sweep built (ADR-047, ADR-056); DR5 next
 - **Scope (ADR-056, owner):** DR4 QR, DR6 BLE, DR7 Wi-Fi Direct, group-attachment fan-out / send-path revamp and MEAS-02 (PC6)
   are parked in `docs/FUTURE-OPTIMIZATION.md`. Active order: DR5, then the group trust model (ADR-044 V0 to V2, cap 20) and the
