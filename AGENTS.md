@@ -109,6 +109,8 @@ docs/
 ├── known-issues.md
 ├── decisions.md
 ├── troubleshooting.md
+├── testing/
+│   └── TEST-BACKLOG.md          # Every device test still owed (see §35)
 └── ui/                          # Premium chat UI — research-first (see §34)
     ├── flash-premium-chat-ui-implementation.md
     ├── ui-research-index.md
@@ -897,8 +899,9 @@ At the end of a meaningful coding session, the AI should:
 5. Update `docs/decisions.md` for architectural decisions.
 6. Update `logs/experiments.md` for benchmarks/experiments.
 7. Update `logs/handoff.md` with the exact stopping point.
-8. Commit the work when appropriate.
-9. Record the commit hash in the handoff if available.
+8. Add every test this work still owes to `docs/testing/TEST-BACKLOG.md` (§35).
+9. Commit the work when appropriate.
+10. Record the commit hash in the handoff if available.
 
 The next AI should be able to continue immediately.
 
@@ -1007,7 +1010,7 @@ When a new AI begins work, the first response/action sequence should effectively
 7. State the current project state internally
 8. Make the requested change
 9. Test it
-10. Log the result
+10. Log the result — and add any test not done yet to docs/testing/TEST-BACKLOG.md (§35)
 11. Update handoff.md
 ```
 
@@ -1109,3 +1112,30 @@ Chat UI is complete only when every major component has research + design docs, 
 ### Long-term quality target
 
 Telegram-level fluidity + Signal-level clarity + familiar messaging patterns + **Flash-specific identity** + native performance + **P2P-aware UX** — without becoming a visual clone.
+
+---
+
+# 35. Test Backlog — REQUIRED (owner, 2026-09-29)
+
+The owner develops **feature-first** and runs device tests, measurements and optimisation later, one by one, in
+spare time. Untested work must therefore never be forgotten when the conversation moves on.
+
+**File:** [`docs/testing/TEST-BACKLOG.md`](docs/testing/TEST-BACKLOG.md), the single list of every test owed.
+
+### Rules
+
+1. **Log before moving on.** Whenever work ends without its device/manual test (the usual case: the owner brings
+   in another topic), add a test case to the backlog **in the same session**, before starting the new topic. Do
+   not wait to be asked. The owner switching topics is exactly when this rule applies.
+2. **Each test case has:** an ID in its section's series (`CALL-`, `GRP-`, `PC-`, `OLD-`, `MEAS-`, or a new prefix
+   for a new area), setup, steps, a concrete **Pass** condition (log lines or numbers to look for), the source
+   (ERROR/ADR/plan section), and `Status: TODO`.
+3. **Recording results.** When the owner reports a test result, update the test's Status (`PASS` / `FAIL` /
+   `BLOCKED` / `OBSOLETE`, with date, commit and devices), add an entry to the backlog's **Results log**, and update
+   the source (ERROR entry status, plan's implementation log, component doc checklist). A FAIL gets a new
+   `ERROR-NNN` in `logs/errors.md`.
+4. **Never delete a test** (§27). Mark it instead.
+5. **Measurements go last** (backlog §5, owner decision P8). Don't block feature work on them, and don't treat an
+   estimate marked *(measure)* as measured.
+6. Keep an existing plan's own "pending device check" lines too. The backlog collects them in one place; it doesn't
+   replace them.

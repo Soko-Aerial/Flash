@@ -1,5 +1,29 @@
 # Progress Log
 
+## 2026-09-29 — Test backlog doc and the AGENTS.md rule to keep it
+
+### Worked on
+Owner: develop features first, test later in spare time; list every test not yet done (presence/connections plan
+and group calling first), and make new chats log untested work there.
+
+### Changed
+- `docs/testing/TEST-BACKLOG.md`, collected from the plans and logs:
+  - recent call fixes: CALL-01–07;
+  - group calling G1–G7: GRP-01–09;
+  - PC1–PC5: PC-01–05;
+  - older device checks owed by `logs/errors.md` and the adaptive UI plan: OLD-01–14;
+  - measurements to run last (PC0, PC6, G0, codecs, CPU threshold, desktop render cost): MEAS-01–06;
+  - a Results log.
+- `AGENTS.md` §35 (new): log owed tests before moving to a new topic, record results, never delete. §5 tree, §28
+  step 8 and §32 step 10 point to it.
+
+### Verification
+Documentation only. Every test was taken from an existing "pending device check", OPEN error or deferred
+measurement.
+
+### Next AI
+Follow §35: before switching topics, add the tests your work still owes.
+
 ## 2026-09-29 — Hotspot-host calls (ERROR-079 fix, ADR-054); webrtc-java 0.19.0; desktop idle heap
 
 ### Worked on
