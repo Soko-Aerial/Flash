@@ -1,5 +1,12 @@
 # Current Handoff
 
+## 2026-09-29 — G5 code done: group video focus UI (UI-050c)
+- Compact layout (receive limit 1) = main tile + avatar strip; grid tiles tappable; tap pins, tap again unpins
+  (`FlashCallScreen(onVideoFocus)` → `FlashCalling.setVideoFocus`). State: `compactVideo`, `videoFocusPeerId`,
+  `videoMainPeerId`.
+- Tests green (calling jvm 95, callui 19, desktop 86, app compile). Not device-tested (P8).
+- Next: G6 health warnings (write UI-050d first), then G7 caps.
+
 ## 2026-09-29 — G4 code done: group video budgets
 - `GroupVideoLimits` holds the §4.2 table incl. the 2.4 GHz split budget; the router keeps one send level
   (360 ↔ 540, 5 s step-up on `tick`) and each copy goes at min(asked, level) with a per-height bitrate ceiling

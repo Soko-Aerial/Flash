@@ -2395,6 +2395,7 @@ private fun FlashShell(
                 onToggleCamera = { engine.calls?.toggleCamera() },
                 onSwitchCamera = { scope.launch { engine.calls?.switchCamera() } },
                 onDismiss = { /* v1: no minimize — call always ends before dismiss. */ },
+                onVideoFocus = { peerId -> engine.calls?.setVideoFocus(peerId) },
             )
         }
     }

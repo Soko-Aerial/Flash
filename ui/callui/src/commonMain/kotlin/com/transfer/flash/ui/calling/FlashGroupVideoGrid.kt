@@ -2,13 +2,17 @@ package com.transfer.flash.ui.calling
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -22,6 +26,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Constraints
@@ -33,16 +38,21 @@ import com.transfer.flash.core.calling.model.FlashCallParticipantUi
 import com.transfer.flash.core.calling.model.FlashCallUiState
 import com.transfer.flash.core.calling.model.FlashParticipantVideo
 import com.transfer.flash.ui.avatar.FlashAvatar
+import com.transfer.flash.ui.icons.FlashIcon
+import com.transfer.flash.ui.icons.FlashIcons
 import com.transfer.flash.ui.theme.FlashDimensions
 import com.transfer.flash.ui.theme.FlashShapes
 import com.transfer.flash.ui.theme.FlashSpacing
 import com.transfer.flash.ui.theme.FlashTheme
+import com.transfer.flash.ui.theme.flashPressScale
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
 /**
  * Group video call surface (UI-050b, G1; `docs/ui/calling-ui.md`): one tile per participant plus the
- * local camera as the same corner PiP as a 1:1 call.
+ * local camera as the same corner PiP as a 1:1 call. In the compact shape (UI-050c, G5: this device
+ * receives one video) it is a single main tile; the participant strip sits above the controls
+ * ([FlashGroupVideoStrip]). A tap pins a participant's video, and a tap on the pinned one unpins it.
  *
  * Every tile is a direct child of one [Layout], keyed by device id, so a participant's renderer stays
  * the same composable instance when others join or leave and its tile moves to another row. Each
@@ -53,24 +63,43 @@ import kotlinx.coroutines.flow.StateFlow
 internal fun FlashGroupVideoSurfaces(
     state: FlashCallUiState,
     session: FlashCallMedia?,
+    onVideoFocus: (String?) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val remoteTracks = rememberRemoteVideoTracks(session?.remoteVideoTracks)
     val localTrack = rememberVideoStreamTrack(session?.localVideoStreamTrack)
-    val tiles = state.participants.filter { it.state != FlashCallParticipantState.LEFT }
+    val present = state.participants.filter { it.state != FlashCallParticipantState.LEFT }
+    // Compact (G5): one main tile. It is one composable instance, so a new main person only re-binds its renderer.
+    val main = if (state.compactVideo) groupVideoMainPeer(state) else null
+    val tiles = if (main != null) present.filter { it.peerId == main } else present
     val rounded = tiles.size > 1
 
     Box(modifier = modifier) {
         Layout(
             modifier = Modifier.fillMaxSize(),
             content = {
-                tiles.forEach { participant ->
-                    key(participant.peerId) {
-                        FlashGroupVideoTile(
-                            participant = participant,
-                            track = remoteTracks[participant.peerId],
-                            rounded = rounded,
-                        )
+                if (main != null) {
+                    val participant = tiles.single()
+                    val pinned = participant.peerId == state.videoFocusPeerId
+                    FlashGroupVideoTile(
+                        participant = participant,
+                        track = remoteTracks[participant.peerId],
+                        rounded = false,
+                        pinned = pinned,
+                        // Only unpins: a stray tap must not pin the current speaker by surprise.
+                        onClick = if (pinned) ({ onVideoFocus(null) }) else null,
+                    )
+                } else {
+                    tiles.forEach { participant ->
+                        key(participant.peerId) {
+                            FlashGroupVideoTile(
+                                participant = participant,
+                                track = remoteTracks[participant.peerId],
+                                rounded = rounded,
+                                pinned = participant.peerId == state.videoFocusPeerId,
+                                onClick = { onVideoFocus(nextVideoFocus(state, participant.peerId)) },
+                            )
+                        }
                     }
                 }
             },
@@ -123,6 +152,8 @@ private fun FlashGroupVideoTile(
     participant: FlashCallParticipantUi,
     track: VideoStreamTrack?,
     rounded: Boolean,
+    pinned: Boolean,
+    onClick: (() -> Unit)?,
 ) {
     val colors = FlashTheme.colors
     val shape = RoundedCornerShape(if (rounded) FlashShapes.radius12 else 0.dp)
@@ -133,12 +164,29 @@ private fun FlashGroupVideoTile(
         append(participant.name)
         append(if (showsVideo) ", video" else ", no video")
         if (status != null) append(", ").append(status)
+        if (pinned) append(", pinned")
     }
+    val interaction = remember { MutableInteractionSource() }
     Box(
         modifier = Modifier
             .clip(shape)
             .then(
                 if (participant.isSpeaking) Modifier.border(2.dp, colors.statusOnline, shape) else Modifier,
+            )
+            .then(
+                if (onClick != null) {
+                    Modifier
+                        .flashPressScale(interaction)
+                        .clickable(
+                            interactionSource = interaction,
+                            indication = null,
+                            onClickLabel = videoFocusClickLabel(participant.name, pinned),
+                            role = Role.Button,
+                            onClick = onClick,
+                        )
+                } else {
+                    Modifier
+                },
             )
             .semantics { contentDescription = description },
     ) {
@@ -162,12 +210,23 @@ private fun FlashGroupVideoTile(
                 .background(Color.Black.copy(alpha = 0.4f))
                 .padding(horizontal = FlashSpacing.space8, vertical = FlashSpacing.space4),
         ) {
-            Text(
-                text = participant.name,
-                style = FlashTheme.typography.metadataDefault,
-                color = Color.White,
-                maxLines = 1,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (pinned) {
+                    FlashIcon(
+                        icon = FlashIcons.Pin,
+                        contentDescription = null,
+                        tint = Color.White,
+                        size = FlashDimensions.iconSm,
+                    )
+                    Box(Modifier.size(FlashSpacing.space4))
+                }
+                Text(
+                    text = participant.name,
+                    style = FlashTheme.typography.metadataDefault,
+                    color = Color.White,
+                    maxLines = 1,
+                )
+            }
             if (status != null) {
                 Text(
                     text = status,
@@ -193,6 +252,24 @@ internal fun participantStatusLabel(participant: FlashCallParticipantUi): String
     FlashCallParticipantState.DISCONNECTED -> "Reconnecting…"
     FlashCallParticipantState.LEFT -> "Left"
 }
+
+/**
+ * Whom the compact main tile shows (UI-050c): the core's choice (pinned, else the followed speaker),
+ * else the first participant whose video arrives, else the first participant. Null with nobody left.
+ */
+internal fun groupVideoMainPeer(state: FlashCallUiState): String? {
+    val present = state.participants.filter { it.state != FlashCallParticipantState.LEFT }
+    state.videoMainPeerId?.let { id -> if (present.any { it.peerId == id }) return id }
+    return (present.firstOrNull { it.video.hasPicture() } ?: present.firstOrNull())?.peerId
+}
+
+/** What a tap on [tapped] pins (UI-050c): the tapped participant, or null (follow the speaker) if it was pinned. */
+internal fun nextVideoFocus(state: FlashCallUiState, tapped: String): String? =
+    if (state.videoFocusPeerId == tapped) null else tapped
+
+/** The TalkBack action label for a tap on a participant's tile or chip. */
+internal fun videoFocusClickLabel(name: String, pinned: Boolean): String =
+    if (pinned) "Unpin $name's video" else "Pin $name's video"
 
 /** Whether this participant's video is arriving: granted (G3), or an older client that always sends. */
 internal fun FlashParticipantVideo.hasPicture(): Boolean =

@@ -1,6 +1,6 @@
 # Group calls: request-based video, tier and band budgets, size caps
 
-**Status (2026-09-29): G1, G2, G3 and G4 code done (unit-tested, not device-tested); G4b not built (its gate is the
+**Status (2026-09-29): G1–G5 code done (unit-tested, not device-tested); G4b not built (its gate is the
 G0 C3 measurement). G0 measurements deferred to the final test
 pass (owner decision P8 in the presence plan). Owner decisions recorded 2026-09-24.** Written 2026-09-23 from the owner's
 requirements and a code review of `core/calling` and `ui/callui`.
@@ -327,6 +327,19 @@ No open questions remain. Next: G0 measurements (now including C1–C3), and ADR
 - **Pending device check:** a 3-way call on 2.4 GHz with 3+ watchers of one HIGH sender: outbound
   `frameHeight` 360 on every leg, back to 540 about 5 s after one leaves. On 5 GHz, per-leg `frameHeight` follows the
   requested height. Measured bitrates within the table (the G4 exit criterion).
+
+### G5 — code done 2026-09-29 (device check pending, P8; UI-050c)
+- Component doc first: `docs/ui/calling-ui.md` UI-050c (DESIGNED, then implemented).
+- Core: `FlashCallUiState.compactVideo` (the receive limit is 1: LOW, or a G6 cap), `videoFocusPeerId` (pinned) and
+  `videoMainPeerId` (pinned, else the followed speaker), filled from the router under the video lock.
+- UI: compact = one main tile (one renderer, re-bound when the person changes) plus a strip of avatar chips above the
+  controls (speaking ring, mute badge, pin marker; the shown person on a pill). Grid tiles are tappable. A tap pins
+  (`setVideoFocus(peer)`), a tap on the pinned person unpins (`setVideoFocus(null)`). In compact mode the main tile
+  only unpins, so a stray tap doesn't pin the speaker by surprise.
+- Hosts: `FlashCallScreen(onVideoFocus = …)` wired in `MainActivity` and `DesktopShell`.
+- Tests: `FlashGroupVideoGridTest` +2 (main-tile fallback, tap pin/unpin and labels). `:ui:callui` 19.
+- **Pending device check:** see UI-050c's testing checklist (LOW follows the speaker, a chip tap moves the video in
+  about 1 s, a grid tap pins, TalkBack labels).
 
 ### G4b — not built (2026-09-29)
 Its gate is measurement C3 (G0: VP8 software vs H.264 / VP9 hardware on the BelFone). Owner decision P8 put every

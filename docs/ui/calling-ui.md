@@ -417,3 +417,103 @@ The video layer is always dark (black background), as in 1:1.
 - Every connection still sends and decodes video (G3 fixes this).
 - No focus, no strip, no "Video busy" (G5). A participant whose camera is off shows the avatar only after the track
   ends; a muted-but-live camera track may show a frozen last frame until G5 adds the camera-off state.
+
+---
+
+## UI-050c — Group video focus: compact main tile + strip, tap to pin (G5)
+
+**Status:** DESIGNED → IMPLEMENTED (2026-09-29; not device-verified, P8). Code: `FlashGroupVideoGrid.kt` (main tile,
+tappable tiles), `FlashGroupVideoStrip.kt` (strip), `FlashCallScreen(onVideoFocus)`. Plan:
+`docs/calling/GROUP-VIDEO-PLAN.md` §4.4 and G5. Builds on UI-050b (grid) and G3/G4 (request protocol, budgets).
+
+### Component
+The group-video layer of `FlashCallScreen`, in two shapes:
+1. **Compact** (the device receives one video at a time: LOW tier, or a G6 cap): one main tile plus a horizontal
+   strip of every participant.
+2. **Grid** (MEDIUM/HIGH): the UI-050b grid, now tappable.
+
+### Purpose
+G3 made video arrive only by request, and G4 set LOW to one video. Without G5 a LOW user sees one tile with no way to
+choose whom it shows, and a grid user can't keep a person on screen when the speaker changes. §4.4 asks for: follow the
+speaker by default (2 s hold, Q1), a tap pins, tapping the pinned person again returns to following the speaker.
+
+### Research sources
+- Plan §4.4 and owner decisions Q1/Q5.
+- Shared grammar of group call apps (Google Meet's "pin", Signal's speaker view with a participant strip, FaceTime's
+  tile tap). Studied only for the common idea "tap to pin, tap again to unpin; a row of people under a main view".
+  Nothing is copied: no floating pin badges, no multi-level menus.
+- Flash constraints: one renderer per tile (renderer-lifetime rule), `FlashIcons` only (no stock icons), no Material
+  ripple (`flashPressScale`), TalkBack labels on every tappable tile.
+
+### Approaches considered
+1. **Main tile + avatar strip for compact, tap-to-pin grid (chosen).** One renderer on LOW (the device decodes one video
+   anyway), everyone visible as an avatar, a tap is the only gesture.
+2. **Strip of live thumbnails.** Needs a decoder per thumbnail, which is exactly what LOW can't afford (G4).
+3. **Long-press menu with "Pin".** Hidden, slower, and adds a menu component for one action.
+
+### Chosen approach
+- **Compact is decided by the core**, not by the screen: `FlashCallUiState.compactVideo` is true when the device's
+  receive limit is 1 (LOW, or G6's "Show fewer"/severe heat). The screen never guesses the tier.
+- **Main tile (compact):** the participant in `FlashCallUiState.videoMainPeerId` (pinned, else the followed speaker),
+  falling back to the first participant whose video arrives, then the first participant. It fills the video area and
+  uses the UI-050b tile (video or avatar, name, status). One composable instance: when the person changes, the same
+  renderer re-binds to the new track (no new surface, no black flash from a released renderer).
+- **Strip (compact):** a horizontally scrolling row directly above the call controls, one chip per participant that is
+  not LEFT, in participant order. A chip: `avatarMd` avatar, a 2 dp `statusOnline` ring while speaking, a small
+  `FlashIcons.Mute` badge (`iconSm`, bottom-end) while muted, the first name under it (one line, 64 dp wide). The chip
+  of the person in the main tile sits on a `Color.White` 16 % pill so it's clear who's shown.
+- **Tap (both shapes):** tapping a person calls `FlashCalling.setVideoFocus(peerId)`; tapping the pinned person calls
+  `setVideoFocus(null)` (back to following the speaker).
+- **Pinned marker:** the pinned tile or chip shows `FlashIcons.Pin` (`iconSm`, white) before the name. No other change.
+- **Grid (MEDIUM/HIGH):** unchanged layout; every tile tappable as above. Because the router asks for the pinned
+  person first, pinning someone outside the receive limit swaps them in and releases the lowest-ordered video.
+
+### Visual specification
+- Strip: height = 48 dp chip + 4 dp + one metadata line; `FlashSpacing.space8` between chips; `space16` side padding.
+- Main-chip pill: `RoundedCornerShape(FlashShapes.radius12)`, `Color.White.copy(alpha = 0.16f)`.
+- Mute badge: `FlashIcons.Mute` at `iconSm` tinted white on a 20 dp black 60 % circle.
+- Text: `metadataDefault` white; no new colours, no new typography.
+
+### Interaction specification
+- Single tap on a grid tile, the main tile (compact: only unpins if pinned) or a strip chip. No long-press, no swipe.
+- Press feedback: `flashPressScale` (the house press feel), no ripple.
+- The main tile in compact is tappable only while something is pinned (tap = unpin), so a stray tap does not pin the
+  current speaker by surprise.
+
+### Animation specification
+None beyond the press scale. The strip does not animate reordering (participant order is stable).
+
+### Gesture specification
+Tap only. The strip scrolls horizontally with the platform's standard scroll.
+
+### Accessibility requirements
+- Tile/chip content description: "<name>, video|no video[, status][, pinned]".
+- Click label: "Pin <name>'s video" / "Unpin <name>'s video"; role Button. Touch target ≥ 48 dp (chips are 64 dp wide).
+
+### Responsive behavior
+Same on every host. On a wide window the compact shape is unchanged (the strip scrolls if needed).
+
+### Dark-mode behavior
+The video layer is always dark, as in UI-050b.
+
+### Performance considerations
+Compact mode composes exactly one video renderer (plus the local PiP). The strip is avatars only. The grid is
+unchanged from UI-050b.
+
+### Implementation notes
+- Core: `FlashCallUiState.compactVideo`, `videoFocusPeerId` (pinned), `videoMainPeerId` (pinned or followed),
+  filled by `FlashGroupCallSession.refreshUiState` from the router.
+- UI: `FlashCallScreen(onVideoFocus: (String?) -> Unit = {})`; the app and desktop hosts pass
+  `calling::setVideoFocus`. Pure helpers `groupVideoMainPeer(state)` and `nextVideoFocus(state, tapped)` are unit
+  tested.
+
+### Testing checklist
+- [x] Unit: main-peer fallback order; tap on the pinned person unpins, tap on another pins.
+- [ ] Device (pending, P8): LOW phone in a 3-way video call: main tile follows the speaker after ~2 s; tapping a chip
+      moves the video within ~1 s; tapping it again returns to the speaker.
+- [ ] Device (pending): MEDIUM/HIGH grid tap pins; pinning someone outside the receive limit swaps them in.
+- [ ] TalkBack reads the pin/unpin labels.
+
+### Known limitations
+- Compact mode shows no live picture for anyone but the main person (by design, G4's LOW budget).
+- A pin is local; other participants don't see it (no "spotlight for everyone").
