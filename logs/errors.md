@@ -1,5 +1,115 @@
 # Error Log
 
+## ERROR-076 — Group call leg to a late joiner failed DTLS (CERTIFICATE_UNKNOWN) after a second offer
+
+### Date
+2026-09-29
+
+### Area
+Group calling / WebRTC signalling (`FlashGroupCallSession`)
+
+### Symptoms
+In the owner's first desktop-to-desktop group video test (this PC started the call; a V760 phone joined fine; the
+second PC `beede0b3`, running the portable build, joined later), the leg to the second PC never connected.
+
+### Evidence (`~/.flash/desktop.log` of the initiating PC)
+```text
+I/GROUP_CALL: Leg beede0b3-… band=2.4 GHz …            <- its gaccept arrives
+I/GROUP_CALL: local Offer (tuned) sdp len=3098          <- offer 1 (connection A)
+... two presence rounds (seconds) ...
+I/GROUP_CALL: local Offer (tuned) sdp len=3100          <- offer 2: connection A thrown away, connection B
+I/GROUP_CALL: Applied answer from peer beede0b3-…       <- the answer to offer 1, applied to B
+I/GROUP_CALL: Leg beede0b3-… state changed to Connecting
+OpenSSL error … SSLV3_ALERT_CERTIFICATE_UNKNOWN
+I/GROUP_CALL: Leg beede0b3-… state changed to Failed
+(sdp_offer_answer.cc) Failed to set remote answer sdp: Called in wrong state: stable   <- answer to offer 2
+(p2p_transport_channel.cc) A remote candidate arrives with an unknown ufrag
+```
+
+### Root cause
+Every `gaccept`/`gjoin` for a participant whose leg wasn't CONNECTED closed the leg and built a new connection,
+which (on the offering side) sent a new offer. A repeated accept/join arrived while the first offer was still
+being answered; the peer's answer to offer 1 then landed on connection B, whose DTLS certificate and ICE
+credentials differ, so the peer rejected the handshake (`CERTIFICATE_UNKNOWN`, `unknown ufrag`). The log did not
+record which frame caused the rebuild (inbound call frames were not logged), so the exact source of the repeat is
+still unknown. The desktop's slow first camera/media start on the joining PC widens the window.
+
+### Fix (code, not device-verified)
+- A repeated accept/join no longer rebuilds a connection that is still being set up (not failed, under 10 s old):
+  it is kept, and when this device is the offerer and its offer is unanswered, the same offer is re-sent.
+  Older or failed connections are rebuilt as before (a restarted peer). `keepSettingUpLeg`,
+  `LEG_SETUP_GRACE_MS`.
+- An answer arriving when the connection isn't waiting for one (`signalingState != HaveLocalOffer`) is logged
+  and dropped instead of applied twice.
+- Logging: every inbound call frame (`rx from=… via=…`), connection generations (`pc#n`), kept/rebuilt decisions,
+  ICE state, closes (`docs/calling/CALL-TEST-LOGGING.md`).
+
+### Verification
+calling jvm 104 / host 120 green. Not reproduced on devices yet: the next desktop+desktop group video test should
+show `kept on gaccept…` or `rebuilt on …` lines and a single `pc#1` per participant.
+
+### Related files
+- `core/calling/src/commonMain/kotlin/com/transfer/flash/core/calling/FlashGroupCallSession.kt`
+
+### Status
+OPEN (fix in code; device check pending)
+
+## ERROR-075 — Desktop video call used all RAM and maxed the CPU until hang-up
+
+### Date
+2026-09-29
+
+### Area
+Desktop video rendering (`FlashCallVideoSurface.jvm.kt`) / desktop camera capture (webrtc-kmp jvm)
+
+### Symptoms
+Owner: during a group video call on the desktop "it was using all my RAM and pushing my CPU to max, but if I leave
+the call it stops".
+
+### Root cause
+1. **Native memory growth.** For every frame of every video tile the renderer called `Image.makeRaster` (one
+   native copy of the full frame) and then `toComposeImageBitmap()` (a second native copy, via
+   `Bitmap.makeFromImage`), and closed neither. The Java objects are tiny, so the JVM heap never filled and the
+   garbage collector had no reason to run and free the native pixels: at 30 fps and 1080p that's ~500 MB/s of
+   native allocations per tile, freed only whenever a GC happened to run.
+2. **CPU.** Every frame was converted and uploaded at the sender's full resolution, even into a small strip tile,
+   and even when the screen hadn't drawn the previous frame; the frame was a Compose state read during
+   composition, so each frame recomposed the tile too.
+3. **Camera.** Group calls called `video()` with no size, and the jvm webrtc-kmp picked the first mode the camera
+   lists, which can be its largest (1080p or 4K MJPEG at 30 fps) — decoded and scaled by the CPU before the encoder
+   sends at most 720p (G4). (1:1 calls already asked for the tier size.)
+
+### Rejected: vlcj (owner asked, 2026-09-29)
+vlcj binds libVLC, a media *player*: it plays files and ordinary streams. Call video arrives inside WebRTC as
+SRTP packets behind DTLS and is decoded by libwebrtc before any frame reaches Flash, so there is no stream to hand
+to VLC; adding it would ship ~100 MB of native VLC libraries without changing decode or render cost. The cost was
+Flash's own conversion and memory handling (above). Recorded in ADR-051.
+
+### Working fix (code, not device-verified)
+- Renderer: frames are scaled to the tile's pixel size with libyuv (`VideoFrameBuffer.cropAndScale`) before
+  conversion; a frame arriving before the previous one was drawn is dropped before any work; at most two Skia
+  images per tile, each closed when replaced; drawn with the Skia canvas directly (`SamplingMode.LINEAR`), read in
+  the draw phase so a frame invalidates the draw only. `CALL_RENDER` stats every 5 s.
+- Camera: group calls ask for the tier profile capped at 720p (HIGH/desktop 1280x720@30); the jvm capability pick
+  now takes the largest mode within the request (then the highest frame rate), or the smallest mode when none fits;
+  camera switching uses the same pick; the track's settings report the opened mode.
+- `CALL_DIAG` lines every 5 s: per connection (decode/encode sizes, fps, decoder/encoder, quality limitation) and
+  per process (CPU, heap, **committed = native memory on Windows**).
+
+### Verification
+Compiles; calling jvm 104 / host 120, callui 20, desktop 86 green; app compile green. **Device check pending:** a
+desktop group video call for several minutes with `CALL_DIAG proc … committed=` flat and CPU well below before.
+
+### Related files
+- `ui/callui/src/jvmMain/kotlin/com/transfer/flash/ui/calling/FlashCallVideoSurface.jvm.kt`
+- `third_party/webrtc-kmp/webrtc-kmp/src/jvmMain/kotlin/com/shepeliev/webrtckmp/MediaDevices.kt`,
+  `LocalVideoStreamTrack.kt`
+- `core/calling/src/commonMain/kotlin/com/transfer/flash/core/calling/FlashGroupCallSession.kt`,
+  `CallDiagnostics.kt`
+
+### Status
+OPEN (fix in code; device check pending)
+
 ## ERROR-074 — Transsion "Hiber" freezes Flash for as long as the screen is off, foreground service or not
 
 ### Date

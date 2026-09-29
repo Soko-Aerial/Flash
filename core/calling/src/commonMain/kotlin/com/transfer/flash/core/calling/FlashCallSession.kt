@@ -306,6 +306,9 @@ public class FlashCallSession(
      * any bytes are moving in either direction.
      */
     private var loggedReportShape: Boolean = false
+
+    /** Device-test logging (`CALL_DIAG`), fed by the stats sampler. */
+    private val diagnostics = CallDiagnostics()
     private var loggedVideoCodecs: String? = null
 
     /**
@@ -1323,6 +1326,14 @@ public class FlashCallSession(
     private suspend fun sampleStats(pc: PeerConnection): FlashCallStats? {
         // Pinned: getStats() walks native reports.
         val report = onMediaThread { pc.getStats() } ?: return null
+        val diagNow = SystemTimeSource.nowMs()
+        if (diagnostics.due(diagNow)) {
+            FlashLog.i(CallDiagnostics.TAG, diagnostics.legLine(peerId, "1:1", report, diagNow))
+            FlashLog.i(
+                CallDiagnostics.TAG,
+                diagnostics.processLine(diagNow, "call=${callId.take(8)} video=$video tier=${performanceMode().key}"),
+            )
+        }
         val all = report.stats.values
 
         // RTT lives on the SELECTED candidate pair. The transport stat names it outright;

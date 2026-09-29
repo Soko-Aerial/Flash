@@ -426,6 +426,8 @@ private fun installNativeWebRtcLogging() {
  * Deliberately not routed through the engine: `DesktopEngine` is also constructed by tests, which
  * must not write to a user's home directory.
  */
+private val LOG_TIME: java.time.format.DateTimeFormatter = java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss.SSS")
+
 private fun installDesktopLogSink() {
     val file = try {
         File(System.getProperty("user.home", "."), ".flash").apply { mkdirs() }
@@ -445,7 +447,9 @@ private fun installDesktopLogSink() {
             try {
                 System.err.println("${level.name.first()}/$tag: $message")
                 throwable?.printStackTrace(System.err)
-                writer.println("${level.name.first()}/$tag: $message")
+                // The file carries wall-clock time (ms) so a call's lines can be lined up with
+                // the phones' logcat; the console keeps the old format.
+                writer.println("${LOG_TIME.format(java.time.LocalTime.now())} ${level.name.first()}/$tag: $message")
                 throwable?.printStackTrace(writer)
             } catch (_: Throwable) {
                 // ignore
