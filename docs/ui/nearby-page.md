@@ -162,9 +162,59 @@ graphicsLayer (no recomposition per frame).
   re-select-to-top. `bottomInset` is added to the `LazyColumn` `contentPadding` bottom so rows scroll
   under the hanging capsule.
 
+## Addendum — "Scan network" action (DR3, DESIGNED and IMPLEMENTED 2026-09-29; device check DR-03 pending)
+
+Why: some networks hide devices from discovery (multicast filtered, hotspot clients, client isolation off but
+mDNS dropped). DR3 (`../network/DISCOVERY-RESILIENCE-PLAN.md` §3.3 C, ADR-047) probes the local subnet for the
+Flash port and hands hits to the connection planner. This is the manual trigger and its result line. The
+automatic fallback needs no UI.
+
+Approaches compared:
+
+1. **Icon button in the header beside "Connect by IP"** — one tap, no words. Rejected: no fitting Flash icon
+   exists (a radar or search glyph would need the UI-002 icon process), stock Material icons are prohibited
+   (§34), and two unlabeled icons side by side hide which one does what.
+2. **Text action in the header + a second pill in the empty panel, with a caption line for the result** —
+   chosen. Words say what it does, the empty panel is where a user who found nothing is looking, and no icon
+   work is needed. The caption is the only place the outcome can be told honestly (a scan can find nothing).
+3. **Pull-to-refresh on the list** — familiar on a phone, but it competes with scrolling, does not exist with a
+   mouse on the desktop, and a sweep is not a refresh of a list (it can take seconds and may refuse).
+   Rejected.
+4. **Automatic only, no control** — rejected: the owner wants a manual action, and the automatic fallback waits
+   60 s of silence and runs once per 10 minutes at most, which is too slow to be the answer to "why can't I see
+   my laptop".
+
+Specification:
+
+- Model `NearbyNetworkScan` in `NearbyUiState.scan`: `Idle`, `Running(percent)`, `Done(answered, narrowed)`,
+  `Unavailable(reason)` with `NearbyScanBlock { NO_NETWORK, NOT_LOCAL, TOO_SMALL, TOO_SOON }`. The UI never sees
+  hosts, ports or subnets (§22: no protocol details in the normal UI).
+- Callback `onScanNetwork: (() -> Unit)?`. Null hides the action, like the other optional actions on this screen.
+- Header: a text action "Scan network" (`captionEmphasis`, `accentPrimary`, 48 dp target) left of the
+  Connect-by-IP icon. While `Running` it reads "Scanning…" in `textTertiary` and does nothing.
+- Empty panel: a secondary pill "Scan network" under "Connect by IP" (`backgroundSurfaceStrong` fill, accent label),
+  so the primary action stays the manual IP.
+- Caption line under the status line (header) and under the buttons (empty panel), `metadataDefault` in
+  `textSecondary`, from `FlashNearbyMath.scanCaption`:
+  Running "Scanning this network… 42%"; Done with hits "Found 2 devices to connect to."; Done with none
+  "Scan finished. No devices answered."; a narrowed scan adds "Only this device's part of a large network was
+  checked."; Unavailable: "Not connected to a local network." / "This isn't a home or office network, so Flash
+  won't scan it." / "There is nobody else on this link." / "Scanned a moment ago. Try again shortly."
+- The caption of a finished or refused scan disappears after 6 s (UI-local timer keyed by the state). A running
+  scan's caption stays until it ends.
+- Motion: none of its own. The caption was specified to crossfade with `statusCrossfade`; **implemented without it**
+  (the line appears and disappears), which needs no reduce-motion branch. Revisit at polish if it reads as abrupt.
+- Accessibility: the action has a text label, so no `contentDescription` is needed; the caption is plain text
+  that a screen reader reads when it changes.
+
+Testing (JVM): `scanCaption` copy for every state; percent rounding. Device: **DR-03** in
+`../testing/TEST-BACKLOG.md`.
+
 ## Testing checklist
 
 - [x] JVM: sorting/dedup/count labels/state derivation
+- [x] JVM: "Scan network" caption copy for every state, and the desktop `SweepState` → scan mapping (DR3)
+- [ ] Physical device: "Scan network" header action, empty-panel pill and caption (DR-03)
 - [ ] Compose preview light/dark × empty/scanning/populated/dialog
 - [ ] Physical device: live NSD feed post-wiring; pairing round-trip
 - [ ] Physical device: discovery churn — rows glide in/out, no full-page crossfade per tick

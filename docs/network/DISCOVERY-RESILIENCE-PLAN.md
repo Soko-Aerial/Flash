@@ -1,6 +1,6 @@
 # Discovery Resilience Plan (phases DR0–DR7)
 
-**Status: PLAN, written 2026-09-24. DR1 (remembered endpoints) and DR2 (broadcast beacon) IMPLEMENTED 2026-09-29, device checks DR-01 and DR-02 pending. ADR-047 is PROPOSED; its DR1 and DR2 parts are built (see the implementation notes in ADR-047).**
+**Status: PLAN, written 2026-09-24. DR1 (remembered endpoints), DR2 (broadcast beacon) and DR3 (subnet sweep) IMPLEMENTED 2026-09-29, device checks DR-01, DR-02 and DR-03 pending. ADR-047 is PROPOSED; its DR1 to DR3 parts are built (see the implementation notes in ADR-047). DR5 (hardening) is next.**
 
 **Scope decision (owner, 2026-09-29, ADR-056):** **DR4 (QR), DR6 (BLE) and DR7 (Wi-Fi Direct) are POSTPONED** and live in
 [`docs/FUTURE-OPTIMIZATION.md`](../FUTURE-OPTIMIZATION.md) (FO-01, FO-02, FO-03). The active phases are **DR2 (broadcast
@@ -97,6 +97,11 @@ sources feed **candidates** into it; the planner decides, by discovery mode, whe
   reached once.
 - Covers hotspot clients, which cannot see each other's multicast either. Take the hotspot prefix from the
   interface; do not hard-code it.
+- **Built 2026-09-29 (DR3):** `core/network/.../sweep/` (`SubnetSweepPlan`, `SubnetSweeper`, `SweepPolicy`,
+  `SweepController` in `commonMain`; `TcpHostProbe` and the local-subnet source per platform). Hits feed the planner as
+  rule 9 (`sweep:<host>` sightings, dialed unnamed like a gateway probe). Nearby has a "Scan network" action
+  (`docs/ui/nearby-page.md` addendum). Details and the departures from this text are in ADR-047 "DR3 implementation
+  notes". Device check: **DR-03**.
 
 **D. QR first contact (DR4).**
 - Desktop (and phone) can show a QR code containing `flash://<ip>:<port>/<deviceId>/<full identity fingerprint>`
@@ -136,7 +141,7 @@ acceptable there. Rotating ids tie in with audit S9.
 | **DR0 Failure matrix** | Test today's build on real networks: home router, a mesh (bridge mode), a router with IGMP snooping on, a network with client isolation, an Android hotspot with 2+ clients, a desktop with Hyper-V/VPN adapters. For each: does mDNS work, does the `224.0.0.168` beacon work, does a directed broadcast arrive (a small test sender is enough), is TCP 45822 reachable. Screen on and off (some Android devices filter multicast/broadcast with the screen off. **Reported, verify**). Logged in `logs/experiments.md`. | A table saying which source would have fixed which network. It decides whether DR2, DR3 and DR6 are worth building. |
 | **DR1 Remembered endpoints** (**IMPLEMENTED 2026-09-29**; device check DR-01 in `docs/testing/TEST-BACKLOG.md` TODO) | §3.3 A. Persistence port + Room table + migration, the `REMEMBERED` transport, the `forgetEndpoint` change, planner wiring on all hosts. | Tests: a route is written only after an authenticated session; a pin mismatch deletes the route; a live sighting outranks it; restart then reconnect with mDNS disabled. Device check: block multicast (or disable NSD in a debug build), restart both apps, they reconnect. |
 | **DR2 Broadcast beacon** (**IMPLEMENTED 2026-09-29**; device check DR-02 in `docs/testing/TEST-BACKLOG.md` TODO) | §3.3 B on the Android and JVM socket factories. | Test: a packet to the broadcast address is parsed like a multicast one. Device check on a DR0 network where multicast failed but broadcast passed. |
-| **DR3 Subnet sweep** | §3.3 C: `SubnetSweeper` in `commonMain` with platform socket actuals; "Scan network" in Nearby; automatic fallback per D2. | Tests: /24 limit, no run on cellular, rate limits, cancellation. Device check: two hotspot clients find each other; a snooping router with multicast and broadcast both blocked. |
+| **DR3 Subnet sweep** (**IMPLEMENTED 2026-09-29**; device check DR-03 in `docs/testing/TEST-BACKLOG.md` TODO) | §3.3 C: `SubnetSweeper` in `commonMain` with platform socket actuals; "Scan network" in Nearby; automatic fallback per D2. | Tests: /24 limit, no run on cellular, rate limits, cancellation. Device check: two hotspot clients find each other; a snooping router with multicast and broadcast both blocked. |
 | **DR4 QR first contact** (**POSTPONED 2026-09-29**, FO-01) | §3.3 D. ADR-047 amendment for the dependencies; UI component doc; pairing v2 integration. | Desktop shows a QR, phone scans, pairing completes without typing a code, and a tampered fingerprint is refused. Notices regenerated. |
 | **DR5 Hardening** | §3.3 E. **Without *Show QR* while DR4 is postponed:** the hint offers *Scan network* and *Connect by IP* only. | Desktop with Hyper-V + VPN adapters advertises only reachable addresses; hint appears and its two actions work. |
 | **DR6 BLE** (conditional; **POSTPONED 2026-09-29**, FO-02) | §3.3 G, only if DR0 justifies it. Its own ADR. | Owner decision after DR0. |
@@ -165,5 +170,6 @@ acceptable there. Rotating ids tie in with audit S9.
 | D5 | Does Wi-Fi Direct (DR7) come right after this plan? | Owner's call. It is in the original project goals. **Answered 2026-09-29: no, postponed (FO-03).** |
 
 D1 (paired only) is **still unconfirmed**: DR1 was built on the recommendation and the owner has not objected, which is not
-an answer. D2 (automatic sweep fallback) is also unanswered; DR3 follows the recommendation (manual action plus the limited
-automatic fallback) and the fallback is one switch, so the owner can turn it off without a redesign.
+an answer. D2 (automatic sweep fallback) is also unanswered; DR3 was **built** on the recommendation (manual action plus the
+limited automatic fallback). The fallback is one switch (`SweepController(autoEnabled = ...)`, default on, no user setting
+yet), so the owner can turn it off without a redesign.
