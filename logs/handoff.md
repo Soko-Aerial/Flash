@@ -1,5 +1,10 @@
 # Current Handoff
 
+## 2026-09-29 — Test backlog: `docs/testing/TEST-BACKLOG.md` (AGENTS.md §35)
+- Every device test still owed is listed there, including the presence/connections plan and group calling;
+  measurements come last.
+- New rule: any work left untested goes into the backlog before the conversation moves on.
+
 ## 2026-09-29 — Hotspot-host calls fixed in code (ERROR-079 / ADR-054); webrtc-java 0.19.0
 - A phone hosting the Wi-Fi hotspot connected no call legs: libwebrtc ignored its `ap0` interface. Fixed by
   reporting that interface to WebRTC ourselves (`FlashLocalNetworkDetector`). Needs a device check.
