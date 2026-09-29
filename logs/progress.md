@@ -1,5 +1,40 @@
 # Progress Log
 
+## 2026-09-29 — Group trust model, ADR-044 phase V0: threat review (no code)
+
+### Worked on
+Owner order: after DR2/DR3/DR5, the group trust model, then the per-mode session cap. ADR-044 says no code before V0, so
+this session reviewed how membership and trust actually work today and wrote the design V1/V2 must follow.
+
+### Changed
+- **New `docs/group/v0-threat-review.md`:** baseline trust table; findings **F-1 to F-8** read in the code (`Create` overwrites a
+  known group; `State` accepted from any paired peer and its uniqueness check compares a list with itself; sender-chosen
+  wall-clock membership versions poison rows; `SyncPush` trusts `from`/`syncId`; `State` omits tombstones; sender-supplied
+  names; any member may Add; unpaired peers already reach 1:1 paths); actors; the V1 design (owner as trust root,
+  `GroupCharter`, per-subject `MemberCert` carrying the SPKI, `seq` counters, signed group messages, bundles with tombstones,
+  downgrade rules, HELLO `gv`, `PROTOCOL_VERSION` unchanged); the V2 design (`isGroupTrusted`, pin sources
+  `PAIRED > VOUCHED > TOFU` in the trust store, **no `TofuX509TrustManager` change**); a walk-through of each ADR-044 V0
+  scenario; accepted limits; revised phases V1a/V1/V2.
+- **`docs/decisions.md`:** ADR-044 status and a "V0 findings" section (the earlier "must touch `TofuX509TrustManager`"
+  consequence is corrected there, not deleted). `docs/group/README.md` and `docs/security.md` point to the review.
+
+### Verification
+Read-only review: every finding marked *verified* was read in the code on 2026-09-29. Nothing was run or exercised on a device.
+While verifying, two claims in my own first draft turned out wrong and were corrected: the roster "ids unique" check is a no-op
+(list size compared with itself), and the planner has no paired-peer rule of its own (the mode layer and presence already count
+fellow group members as contacts).
+
+### Remaining
+- **V0 gap, stated honestly:** `ConnectionPlanner`'s candidate rule for a discovered peer that is unpaired but a group member was
+  not traced. V2 starts there.
+- V1a (legacy-group hardening), V1 (signed membership and messages), per-mode session cap (`SessionHardeningPolicy` allows 8),
+  V2. Two owner confirmations wanted before V1: sign group messages (recommended yes), legacy groups not upgraded in place
+  (recommended yes).
+
+### Next AI
+Implement **V1a** from `docs/group/v0-threat-review.md` section 8: for each of F-1, F-2 (+ duplicate ids), F-4 and F-5 write the
+attack as a test that fails on the current code, then fix. No wire change, no signatures.
+
 ## 2026-09-29 — DR5: discovery hardening (adapter filter, per-source log, quiet-network hint) (ADR-047)
 
 ### Worked on

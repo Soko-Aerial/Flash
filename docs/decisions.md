@@ -1832,8 +1832,9 @@ A new native payload is added, or a POM changes its licence (the gate fails and 
 2026-09-24
 
 ### Status
-**ACCEPTED by the owner, NOT IMPLEMENTED.** The threat review (phase V0 below) must finish before any code. Until
-V2 lands, `GroupPolicy.MAX_MEMBERS` stays 6 and ADR-030 applies unchanged.
+**ACCEPTED by the owner, NOT IMPLEMENTED. V0 (threat review) COMPLETE 2026-09-29; V1a (hardening of today's groups) is
+next.** Until V2 lands, `GroupPolicy.MAX_MEMBERS` stays 6 and ADR-030 applies unchanged. The V0 findings and the V1/V2
+design are in `docs/group/v0-threat-review.md`; see "V0 findings (2026-09-29)" at the end of this ADR.
 
 **Update 2026-09-29 (ADR-056):** the target is **20**. V3 (= PC6 / MEAS-02) is postponed to `docs/FUTURE-OPTIMIZATION.md`
 FO-05, so **32 is parked** until it is measured. The trust model (V0 to V2) and the per-mode session cap are the next
@@ -1909,6 +1910,63 @@ happen in practice, so the caps would exist only on paper.
 ### Revisit when
 Per-sender E2E keys arrive (`keyEpoch` > 0): these can then replace vouched transport trust. Also revisit if
 attachments in groups land, since N−1 uploads from the sender need a relay design at 20.
+
+### V0 findings (2026-09-29)
+
+Full detail: `docs/group/v0-threat-review.md`. Read in code, not exercised on a device. No code changed by V0.
+
+**Bugs in today's groups, exploitable by a paired peer that knows a group id** (cheap to fix without signatures, and they
+would grow from 6 to 20 members if vouching were built on top of them, so they are fixed first as V1a):
+- **F-1** `Create` overwrites an existing group (no known-id check, `@Upsert`).
+- **F-2** `State` is accepted from any paired peer, not only members; the "ids unique" check compares a list with itself.
+- **F-3** membership versions are sender-chosen wall-clock ms compared with `>`: one huge value poisons a row for good.
+- **F-4** `handleSyncPush` trusts the pushed message's `from` and the `syncId`: any member can forge history.
+- **F-5** `State` carries only active members, so leave/removal tombstones never converge by reconcile.
+- **F-6** names come from the sender; **F-7** any active member may Add; **F-8** unpaired connected peers already reach 1:1
+  paths (adjacent debt, unchanged by this ADR).
+
+**Design decisions taken by V0 (they refine, and where noted replace, the Decision section above):**
+1. **Per-subject signed `MemberCert`s plus an owner-signed `GroupCharter`**, not one signature per `Add` operation
+   (replaces the "signed Add/Leave/Remove operation" wording in Decision 2). A cert is verifiable alone, merges per roster row and
+   relays without extra context. The cert carries the subject's **SPKI**, not only its fingerprint, because the trust store keeps
+   fingerprints and a relay-only verifier could otherwise not check a signature.
+2. **`seq` counters replace wall-clock `membershipVersion`** in v2 groups (closes F-3). Order is `(seq, opId)`, strictly
+   greater wins, so `membershipUpdateWins` is reused.
+3. **Only the owner adds, removes and renames** in v2 groups; a member may sign their own leave (Decision 3 confirmed; the
+   "no admins" 2026-09-07 rule is superseded for v2 groups).
+4. **Group messages are signed by their author** (closes F-4 and F-6 for v2 groups). *Owner confirmation requested; see
+   below.*
+5. **The TLS layer does not change.** `TofuX509TrustManager` only asks `FlashPinVerifier.isPinned`; the vouch lands in the
+   trust store as a pin with a **source** (`PAIRED` > `VOUCHED(groupIds)` > `TOFU`). A vouch installs its pin before the peer
+   connects, replaces an unverified `TOFU` pin (this defeats a device that connected first as the target id), never overrides
+   a `PAIRED` pin (mismatch is shown, member not trusted until re-verified), and is deleted when the last vouching group is gone.
+   This corrects the "must touch `TofuX509TrustManager`" line in Consequences.
+6. **The predicate `isGroupTrusted(groupId, peer)`** (paired, or an active verified cert for that group) replaces the boolean
+   at the group frame handler and the three group frames in `CallCoordinator` only. 1:1 chat/files/calls and push-to-talk keep
+   `isTrusted`. Group attachments go only to paired members. Presence and endpoint tips keep their existing "paired or fellow
+   group member" eligibility, fed from the verified roster; a vouched pin counts as pinned for tip dialing (this is what lets a
+   mesh of 20 form).
+7. **Old clients:** v2 frames use new action names (unknown actions are ignored, invariant 1); HELLO gets an additive `gv`
+   field; `PROTOCOL_VERSION` does **not** change (a mismatch fails the whole handshake). Legacy groups stay legacy (at most 6)
+   and are not upgraded in place; the owner may add to a v2 group only devices that advertised `gv >= 2`.
+8. **Downgrade rules:** a known group id is never re-created, a charter replaces a legacy record of the same id, a v2 group
+   never accepts unsigned membership frames again.
+9. **Resource caps:** at most `MAX_MEMBERS` active certs plus 64 tombstones per bundle, verified certs cached by hash, one
+   bundle per group per peer per 30 s.
+
+**Accepted limits:** the owner is a single point of trust and of failure (lost owner device = frozen roster, no ownership
+transfer); vouched trust is weaker than pairing and the UI says so; no forward secrecy or per-sender keys, so a removed member keeps
+what they received.
+
+**Revised phases (replace the V1/V2 sketch above; V3 unchanged and parked, FO-05):**
+- **V1a** hardening of today's groups, no wire change, no signatures: F-1, F-2 (+ duplicate-id rejection), F-4, F-5, each with a
+  test that fails on the old code.
+- **V1** signed membership and messages for v2 groups, HELLO `gv`, `docs/protocol.md`, golden vectors, persistence migration.
+- **V2** vouched trust, pin sources in both trust stores, planner dialing of vouched members (read `ConnectionPlanner` first;
+  V0 did not trace it), `MAX_MEMBERS = 20`. **Prerequisite: the per-mode session cap** (`SessionHardeningPolicy` allows 8).
+
+**Owner decisions pending (recommended defaults given; V1a does not need them):** (1) sign group messages, recommended yes;
+(2) legacy groups are not upgraded in place, recommended yes.
 
 ## ADR-045 — One connection planner decides who dials; modes will own the connection policy
 
