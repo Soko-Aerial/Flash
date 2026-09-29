@@ -262,8 +262,10 @@ by later testing without anyone recording it: confirm, then mark PASS here **and
      supports them).
   2. Install the current build **over** it (do not uninstall). Open Flash and open the same chat.
   3. Create a small group and send a group message (uses the v4 tables).
+  4. Pair with a device and let it connect once (writes a DR1 route into the v5 `remembered_endpoints` table; see DR-01).
 - **Pass:** old messages are all still there; no crash; `adb logcat` has no `A migration from` and no Room
-  `IllegalStateException`; the group message sends. `FlashMigrations` now builds its statements from the shared list, so
+  `IllegalStateException`; the group message sends; `Remembered route saved peer=` appears after step 4 (the v5 table
+  exists and is writable). `FlashMigrations` now builds its statements from the shared list, so
   this is the one place the Android wrapper is exercised on a real database.
 - **Status:** TODO
 
@@ -272,6 +274,33 @@ by later testing without anyone recording it: confirm, then mark PASS here **and
 - **Steps:** start the new desktop build over the existing state directory and open an old conversation.
 - **Pass:** history is present and `%USERPROFILE%\.flash\desktop.log` has no Room/migration error and no fallback to an
   empty chat. (There is no older desktop file to upgrade, so this is a regression check, not an upgrade check.)
+- **Status:** TODO
+
+## 4b. Discovery resilience plan (`docs/network/DISCOVERY-RESILIENCE-PLAN.md`, DR1)
+
+### DR-01 — A paired peer reconnects after a restart with multicast blocked (DR1, ADR-047)
+- **Setup:** the desktop plus one phone that are already paired, on the same Wi-Fi. Admin PowerShell on the desktop.
+  Logs: phone `adb logcat -v time -s WS:I`, desktop `%USERPROFILE%\.flash\desktop.log` (copy before relaunch).
+- **Steps:**
+  1. With discovery working, let the two connect normally. Note who dialed: the lower device id dials first, and only
+     the dialing side stores the route (an inbound session does not tell you the peer's listening port).
+  2. Look for `Remembered route saved peer=<id> at <ip>:45822` on the dialing side. Do the same with an **unpaired**
+     device: it must not produce that line.
+  3. Break multicast on the desktop (admin PowerShell), one rule per direction. TCP 45822 stays open:
+     `New-NetFirewallRule -DisplayName flash-dr1-in -Direction Inbound -Protocol UDP -LocalPort 5353,45823 -Action Block`
+     `New-NetFirewallRule -DisplayName flash-dr1-out -Direction Outbound -Protocol UDP -RemotePort 5353,45823 -Action Block`
+  4. Force-stop Flash on the phone and quit it on the desktop; start both again. Wait 30 s.
+  5. Remove the rule: `Remove-NetFirewallRule -DisplayName flash-dr1-in,flash-dr1-out`.
+- **Pass:**
+  - After step 4 the peers show Connected without a Wi-Fi toggle. The dialing side's log has
+    `Auto-connect dialing peer=<id> id=<id> at <ip>:45822` and `Auto-connect result peer=<id> success=true`, and has **no**
+    `Discovered endpoints:` line naming that peer before it (discovery really was silent).
+  - `Remembered routes: loaded 1 route(s) for 1 paired peer(s)` appears at startup.
+  - The unpaired device never appears in a `Remembered route` line.
+- **Also note (does not fail the test):** whether the peer showed Online/ring during the silent period. It should not:
+  a remembered route is a dial hint and never makes a peer look present.
+- **Source:** ADR-047, plan §3.3 A and §4 DR1. Unit coverage: `RememberedRoutesTest`, `JvmRouteObserverTest`,
+  `RouteObserverTest`, `FlashJvmMigrationsTest`.
 - **Status:** TODO
 
 ## 5. Measurements — do these last
@@ -286,6 +315,7 @@ They replace every *(measure)* estimate in the plans and decide tuning. Record e
 | MEAS-04 | **G0 codecs** C1 (desktop VP9 on webrtc-java 0.19.0), C2 (`MediaCodecList` on the BelFone and a mid-range phone), C3 (VP8 software vs H.264/VP9 hardware, 540p, 10 min) | GROUP-VIDEO-PLAN §4.6 | Whether **G4b** is built | TODO |
 | MEAS-05 | CPU warning threshold (40 % of all cores for 30 s) against real calls | `CALL_DIAG proc cpu=` from GRP-08 and CALL-03 | The G6 threshold | TODO |
 | MEAS-06 | Desktop render cost: capture + BGRA conversion + Skia upload was ~1.5 of ~2.5 cores (EXP-017) | Profile a 4-person desktop call | Whether hardware video (ADR-052) or render work comes first | TODO |
+| MEAS-07 | **DR0** discovery failure matrix: for each of home router, mesh in bridge mode, router with IGMP snooping, client isolation, Android hotspot with 2+ clients, desktop with Hyper-V/VPN adapters: does mDNS work, does the `224.0.0.168` beacon work, does a directed broadcast arrive, is TCP 45822 reachable; screen on and off | Plan §4 DR0 (a small broadcast test sender is enough); log in `logs/experiments.md` | Whether DR2 (broadcast), DR3 (subnet sweep) and DR6 (BLE) are worth building | TODO |
 
 ---
 

@@ -1,6 +1,6 @@
 # Discovery Resilience Plan (phases DR0–DR7)
 
-**Status: PLAN, written 2026-09-24. Nothing implemented. ADR-047 is PROPOSED.**
+**Status: PLAN, written 2026-09-24. DR1 (remembered endpoints) IMPLEMENTED 2026-09-29, device check DR-01 pending. DR0 and DR2–DR7 not started. ADR-047 is PROPOSED; its DR1 part is built (see the DR1 notes in ADR-047).**
 
 **Order (owner, 2026-09-24):** implement **after group calling**. The order is
 `PRESENCE-CONNECTIONS-PLAN.md` (PC0–PC7) → `docs/calling/GROUP-VIDEO-PLAN.md` (G0–G7) → this plan.
@@ -24,7 +24,7 @@ Out of scope: finding peers with **no** shared IP network. That is Wi-Fi Direct 
 | Flash's own beacon: `FLASH_MCAST` to `224.0.0.168:45823` on every multicast-capable interface; Android holds a `MulticastLock`. Transport name `multicast`. **No broadcast send.** | `MulticastTransport.kt:593–606`, `AndroidMulticastSocketFactory.kt` |
 | Hotspot gateway probe: every auto-connect sweep dials each default IPv4 gateway (Android SoftAP drops mDNS). Android app only. | `DiscoveryEngineHolder.runAutoConnectSweep` (`:1567`) |
 | Manual "Connect by IP", with the TOFU pin checked after HELLO. | ADR-040, `connectManual` |
-| **Peer routes live in memory only.** `WsFlashNetwork.knownEndpoints` is a `ConcurrentHashMap`; `DiscoveryRouteBinder` calls `forgetEndpoint` as soon as discovery stops advertising a peer. So a peer reached a minute ago is unreachable once multicast breaks, and every route is lost on restart. | `WsFlashNetwork.kt:117`, `DiscoveryRouteBinder.kt` |
+| **(Before DR1) Peer routes live in memory only.** *DR1 (2026-09-29) added persisted routes for paired peers beside this table; `knownEndpoints` itself is unchanged.* `WsFlashNetwork.knownEndpoints` is a `ConcurrentHashMap`; `DiscoveryRouteBinder` calls `forgetEndpoint` as soon as discovery stops advertising a peer. So a peer reached a minute ago is unreachable once multicast breaks, and every route is lost on restart. | `WsFlashNetwork.kt:117`, `DiscoveryRouteBinder.kt` |
 | Server ports: WebSocket prefers **TCP 45822** and falls back to an **ephemeral** port if it is taken; Android data channels use 45823–45842; the probe server uses 45821. | `WsTransferServer.PREFERRED_PORT`, `DataChannelServer.start`, `LanProbeServer` |
 | Calls use WebRTC with **no ICE servers** (host candidates only), so they need direct L2/L3 reachability without NAT. | `FlashCallSession.kt:833` |
 | No persisted endpoint store, no broadcast, no subnet scan, no QR, no BLE, no Wi-Fi Direct code (`WifiP2pManager` has no references). | grep, 2026-09-24 |
@@ -57,6 +57,11 @@ sources feed **candidates** into it; the planner decides, by discovery mode, whe
 - `forgetEndpoint` stops deleting these; it removes only the *discovery* route. A persisted route is removed on a
   pin mismatch (the address now belongs to someone else), or after K failed dials over at least 7 days.
 - Surfaced as a `FlashRadioTransport` named `REMEMBERED`, ranked **below** every live radio, so live sightings win.
+  **SUPERSEDED when built (2026-09-29):** not a transport. Transports feed `discoveredEndpoints`, which drives PC3's
+  `reachablePeerIds` (Online ring) and the peer list, so a remembered route emitted there would show every paired
+  peer as Online whether or not it is reachable. Remembered routes are planner sightings appended after discovery's
+  and the tips' (the planner keeps the first sighting per device id, which is what makes a live sighting win). See
+  `RememberedRoutes` and ADR-047's DR1 notes.
 
 **B. Broadcast beacon (DR2).**
 - Send the existing `FLASH_MCAST` packet to each interface's **directed broadcast** address (e.g. `192.168.1.255`)
@@ -112,7 +117,7 @@ acceptable there. Rotating ids tie in with audit S9.
 | Phase | Work | Exit criteria |
 |---|---|---|
 | **DR0 Failure matrix** | Test today's build on real networks: home router, a mesh (bridge mode), a router with IGMP snooping on, a network with client isolation, an Android hotspot with 2+ clients, a desktop with Hyper-V/VPN adapters. For each: does mDNS work, does the `224.0.0.168` beacon work, does a directed broadcast arrive (a small test sender is enough), is TCP 45822 reachable. Screen on and off (some Android devices filter multicast/broadcast with the screen off. **Reported, verify**). Logged in `logs/experiments.md`. | A table saying which source would have fixed which network. It decides whether DR2, DR3 and DR6 are worth building. |
-| **DR1 Remembered endpoints** | §3.3 A. Persistence port + Room table + migration, the `REMEMBERED` transport, the `forgetEndpoint` change, planner wiring on all hosts. | Tests: a route is written only after an authenticated session; a pin mismatch deletes the route; a live sighting outranks it; restart then reconnect with mDNS disabled. Device check: block multicast (or disable NSD in a debug build), restart both apps, they reconnect. |
+| **DR1 Remembered endpoints** (**IMPLEMENTED 2026-09-29**; device check DR-01 in `docs/testing/TEST-BACKLOG.md` TODO) | §3.3 A. Persistence port + Room table + migration, the `REMEMBERED` transport, the `forgetEndpoint` change, planner wiring on all hosts. | Tests: a route is written only after an authenticated session; a pin mismatch deletes the route; a live sighting outranks it; restart then reconnect with mDNS disabled. Device check: block multicast (or disable NSD in a debug build), restart both apps, they reconnect. |
 | **DR2 Broadcast beacon** | §3.3 B on the Android and JVM socket factories. | Test: a packet to the broadcast address is parsed like a multicast one. Device check on a DR0 network where multicast failed but broadcast passed. |
 | **DR3 Subnet sweep** | §3.3 C: `SubnetSweeper` in `commonMain` with platform socket actuals; "Scan network" in Nearby; automatic fallback per D2. | Tests: /24 limit, no run on cellular, rate limits, cancellation. Device check: two hotspot clients find each other; a snooping router with multicast and broadcast both blocked. |
 | **DR4 QR first contact** | §3.3 D. ADR-047 amendment for the dependencies; UI component doc; pairing v2 integration. | Desktop shows a QR, phone scans, pairing completes without typing a code, and a tampered fingerprint is refused. Notices regenerated. |

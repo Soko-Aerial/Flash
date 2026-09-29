@@ -1,5 +1,53 @@
 # Progress Log
 
+## 2026-09-29 — Discovery resilience DR1: remembered endpoints for paired peers (ADR-047)
+
+### Worked on
+Owner: "lets move to discovery resilience". Started the plan (`docs/network/DISCOVERY-RESILIENCE-PLAN.md`) with DR1, the
+first code phase. DR0 (failure matrix) is a device measurement and is owed, not done: TEST-BACKLOG MEAS-07.
+
+### Changed
+- **Persistence:** Room table `remembered_endpoints` (entity + DAO), schema v5 (`5.json` exported), `FlashSchemaSteps.STEP_4_5`
+  and `FlashMigrations.MIGRATION_4_5`, using the ADR-055 mechanism, so Android and desktop get the same step.
+- **`core:network` commonMain `remembered/`:** `RememberedRoute` + `RememberedEndpointStore` (port), `RouteObserver`
+  (what a dial proved), `RememberedRoutes` (the policy: paired only, max 4 routes per peer, backoff, expiry, storage
+  write-behind).
+- **Networks:** `WsFlashNetwork` and `JvmWsFlashNetwork` gained `routeObserver`; the dial path reports
+  `onAuthenticated` after TLS + HELLO + pin, and `onIdentityMismatch` on a named dial's certificate rejection or a failed
+  post-HELLO pin check. No report when TLS is off or HELLO names a different device than the dial did.
+- **Hosts (all three):** app holder, `Flash.create`, desktop engine build a `RememberedRoutes`, append `sightings()`
+  after discovery's and the tips', dial a route with the device named, report failures, and add `changes` to the
+  connector's wake edges. Room adapters: `RoomRememberedEndpointStore` (core:engine androidMain) and
+  `DesktopRememberedEndpointStore` (desktop). `resetBackoff` runs on the app's re-arm and the desktop's manual retry.
+- Docs: ADR-047 status and "DR1 implementation notes", plan status/§3.3 A/§4, TEST-BACKLOG DR-01 + MEAS-07 + MIG-01 step.
+
+### Decisions that depart from the plan's wording (ADR-047 notes)
+- **Not a `REMEMBERED` transport.** Transports feed `discoveredEndpoints`, which drives PC3's Online ring; a remembered
+  route there would show every paired peer as Online. Routes are planner sightings, like PC4 tips.
+- **`forgetEndpoint` unchanged:** routes live in their own store, so nothing had to change.
+- **Only the dialing side records a route.** An inbound session has the peer's ephemeral port and HELLO carries no listen
+  port. Putting it in HELLO would be a wire change (own ADR); not done.
+- D1 (paired only) is **assumed** as the plan recommends; owner has not confirmed.
+
+### Verification
+- `:core:persistence:jvmTest` 38/38 (v4→v5 validated by Room against `5.json`); Android host 33/45, the 12 failures are the
+  known Windows DataStore rename problem. The Android chain test failed once, correctly, when `MIGRATION_4_5` was added
+  (the named-list test pinned three names); updated.
+- `:core:network:jvmTest` 219/219 (+19 `RememberedRoutesTest` incl. the plan's exit criteria through the real planner,
+  +6 `JvmRouteObserverTest` over real TLS); `:core:network:testAndroidHostTest` 316/316 (+5 `RouteObserverTest`);
+  `:core:engine` host 9 / jvm 4; `:desktop:jvmTest` 91/91; compile of `:core:engine:compileAndroidMain`,
+  `:desktop:compileKotlinJvm`, `:app:compileDebugKotlin` green.
+- **Not device-tested:** DR-01 (restart with multicast blocked), MIG-01 (Android upgrade incl. the v5 table).
+
+### Remaining
+DR0 measurement (MEAS-07) decides DR2 (broadcast), DR3 (subnet sweep), DR6 (BLE). Next code phase: DR2. Open: D2–D5.
+Gaps noted in ADR-047: no ECO-specific "remembered routes only on a network change" rule; `connect(device)` still uses the
+discovery table only; no route for a peer that has only ever dialed us.
+
+### Next AI
+Run DR-01 before building on DR1. Do not add a remembered-route transport (see the notes above). To let the accepting
+side record routes, design the HELLO listen-port field first (protocol.md + ADR).
+
 ## 2026-09-29 — Desktop Room migrations (ERROR-080, ADR-055) and verification of the 2026-09-28 audit
 
 ### Worked on
