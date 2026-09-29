@@ -37,7 +37,7 @@ The user chooses the trade-off with the existing discovery modes: **ECO** (batte
 | The engine holds a partial **wake lock** and a `WIFI_MODE_FULL_LOW_LATENCY` Wi-Fi lock for its whole lifetime (the ERROR-026 fix). **Android docs (checked 2026-09-24):** the low-latency lock is only active with the screen on, the app in the foreground and a connection to an access point. So the screen-off cost is the CPU wake lock plus our own timer wake-ups. | `DiscoveryEngineHolder` (`:2194`–`:2203`); developer.android.com `WifiManager` reference |
 | **The online dot is the session set** (`activeSessions`). The 6 s offline hold is presentation-only. Sends and calls need a live session. | `RealFlashChatRepository.isOnline`, `holdOfflineTransitions` |
 | Recovery is asymmetric: the original dialer redials with a 1 s floor; the accepting side has a backup loop with a 4 s floor. | `WsFlashNetwork` (ERROR-026) |
-| **Every host caps live sessions at 8** (`SessionHardeningPolicy.DEFAULT_MAX_CONCURRENT_SESSIONS`; found 2026-09-28 while preparing PC0). A 9th peer is refused with "session cap reached", and both sides retry every 5 s. So today a phone cannot hold 12 or 19 sessions, and groups above 9 members cannot form a full mesh. PC2 must decide the cap per mode; ADR-044 V2 and the group caps depend on it. | `SessionHardeningPolicy.kt:76`, `WsFlashNetwork.registerSession:547`, `JvmWsFlashNetwork:427` |
+| **Every host caps live sessions at 8** (`SessionHardeningPolicy.DEFAULT_MAX_CONCURRENT_SESSIONS`; found 2026-09-28 while preparing PC0). A 9th peer is refused with "session cap reached", and both sides retry every 5 s. So today a phone cannot hold 12 or 19 sessions, and groups above 9 members cannot form a full mesh. PC2 must decide the cap per mode; ADR-044 V2 and the group caps depend on it. **Superseded 2026-09-29 (ADR-057): the ceiling is 24 for every mode and STANDARD/BOOST limit their own dials in a crowd; this row records what was found.** | `SessionHardeningPolicy.kt:76`, `WsFlashNetwork.registerSession:547`, `JvmWsFlashNetwork:427` |
 
 **Invariants this plan must not break** (each one was learned from a real field bug):
 - Never judge a peer dead from a wall-clock gap without proving our own scheduler ran (`WsKeepalive` stall rule,
@@ -287,9 +287,28 @@ all call it. This follows the migration direction (one shared frame) and makes �
   healthy pair; a dead one is still reaped), presence mixed-mode tests (27 mode mixes, no flicker). Full suites:
   network 190 JVM / 288 host, messaging 193, engine 4 + 9, desktop 82, app 39.
 - **Not covered:** a drop that was not a park still redials an unwanted ECO peer until the next park cycle (ADR-048);
-  the session cap stays 8 for every mode until PC6.
+  the session cap stays 8 for every mode until PC6. *(Superseded 2026-09-29: ADR-057 sets it to 24 by reasoning; PC6 is
+  postponed, FO-05.)*
 - **Pending device check:** each mode on two phones and the desktop; ECO holds ≤ 3 + active sessions after 10 min
   idle; switching modes with a call or transfer running drops nothing; a 1-hour screen-off test per §5.
+
+### Session ceiling — code done 2026-09-29 (device check pending, SC-01/SC-02). ADR-057
+- `SessionHardeningPolicy.DEFAULT_MAX_CONCURRENT_SESSIONS` **8 → 24**, one number for every mode and tier. Reasoning:
+  a 20-member group needs 19 sessions, plus a call or transfer peer outside it, a pairing peer and a duplicate being
+  replaced. ECO must never refuse an incoming session (ADR-048), so a per-mode admission ceiling would either break that
+  or be the same number; a LOW-tier ceiling below the group's need would cause refuse-and-retry churn every 5 s, which
+  costs more than the sessions. Each live session pins one `Dispatchers.IO` read thread (pool max(64, cores), shared
+  app-wide), so 24 leaves room. **All of this is an estimate, not a measurement (FO-05).**
+- **What a mode changes is how many sessions it asks for.** ECO: ring neighbours + active + call (unchanged). STANDARD and
+  BOOST: everyone while the devices around fit `DIAL_BUDGET` (20 = ceiling − `DIAL_HEADROOM` 4), so nothing changes in a
+  normal room. Above it `DialBudget` keeps held sessions and spends the free slots on busy peers, then contacts (paired
+  and group members), then strangers, in device-id order. While Nearby is open the budget is the full ceiling.
+- **Known gap (kept on purpose):** strangers that dial *in* are still admitted first-come up to the ceiling, so 24
+  strangers dialing one phone can still fill it. The headroom only protects against this device's own dial choices. A
+  priority admission (contacts displace strangers) needs the network layer to know contacts; not built.
+- Code `e9d1563`. Tests: `DialBudgetTest` (11), `ConnectionModeControllerTest` (+3: crowd, ECO/STANDARD guard, filter log),
+  `ConnectionModePolicyTest` (+1), `SessionHardeningPolicyTest` (+1, default 24). Full `core:network` suites: 281 JVM /
+  373 host; `:desktop:compileKotlinJvm` green.
 
 ### PC7 — platform note written 2026-09-28; tuning no longer waits for PC6 (P9, 2026-09-29)
 - `docs/android-platform-notes.md`: OEM freezers (ERROR-074) ignore the foreground service and the battery whitelist,

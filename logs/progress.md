@@ -1,5 +1,44 @@
 # Progress Log
 
+## 2026-09-29 — Session ceiling 24 and crowd-time dial budget (ADR-057, code `e9d1563`)
+
+### Worked on
+The "per-mode session cap" the owner ordered after the group trust model's V1a, and the prerequisite for ADR-044 V2
+(`MAX_MEMBERS = 20` needs 19 sessions per phone; every host capped live sessions at 8).
+
+### Changed
+- `SessionHardeningPolicy.DEFAULT_MAX_CONCURRENT_SESSIONS` **8 → 24**, one ceiling for every mode and tier. No per-mode
+  admission ceiling: ECO must never refuse an incoming session (ADR-048), and a LOW-tier ceiling under the group's need only
+  causes 5 s refuse-and-retry churn. What a mode changes is what it asks for.
+- New `DialBudget` (pure) + `ConnectionModePolicy.DIAL_HEADROOM = 4` / `DIAL_BUDGET = 20`. STANDARD and BOOST dial everyone
+  while the devices around fit the budget (a normal room is unchanged). Above it: held sessions stay, then busy peers,
+  contacts, strangers (device-id order) fill the free slots. Nearby open lifts the limit to the ceiling. ECO unchanged.
+- `ConnectionModeController` now sets `dialFilter` from `DialBudget` for STANDARD/BOOST and logs `Dial filter A -> B (...)` on
+  a change (read by SC-01/SC-02).
+- Docs: ADR-057 (and updates to ADR-044, ADR-048), PRESENCE-CONNECTIONS-PLAN, PC0-RUNBOOK (a 19-peer run now holds 19 sessions;
+  older PC0 numbers were taken at 8), FUTURE-OPTIMIZATION, v0-threat-review, TEST-BACKLOG **SC-01/SC-02** and MEAS-01 wording.
+
+### Verification
+- **Red first:** the crowd controller test failed with the controller change stashed (12 run, 1 failed); the ECO/STANDARD guard
+  test and the policy tests describe unchanged behaviour and pass either way.
+- **After:** `:core:network:jvmTest` 281/281, `:core:network:testAndroidHostTest` 373/373 (includes the existing cap test with a
+  ceiling of 1), `:desktop:compileKotlinJvm` green.
+- **Not verified on a device or with real load:** SC-01 (20 farm peers, phone holds 20, zero refusals) and SC-02 (30 farm
+  peers, at most 24). Thread and handshake cost at 19 sessions are unmeasured (FO-05); 24, 4 and 20 are estimates.
+
+### Found while reading (no change made)
+- `ConnectionPlanner.plan` has no pairing rule: STANDARD and BOOST already dial an unpaired discovered device, so an unpaired
+  group member that discovery sees is a dial candidate. This answers part of V2's "trace the planner" item; ECO's rule
+  ("unpaired only while Nearby is open") is the part V2 still has to handle.
+- **Gap kept on purpose:** strangers that dial *in* are admitted first-come up to the ceiling, so 24 strangers dialing one phone
+  can still fill it. The dial budget only protects against this device's own dial choices. Priority admission (contacts
+  displace strangers) is described in ADR-057 "Consequences" and not built.
+
+### Next AI
+V1 (signed membership and messages, HELLO `gv`, signed `author` for F-9) is next per ADR-044, and it needs the two owner
+confirmations in `docs/group/v0-threat-review.md` §9 first: sign group messages (recommended yes) and legacy groups not
+upgraded in place (recommended yes). V2 must add a test that `GroupPolicy.MAX_MEMBERS - 1 <= ConnectionModePolicy.DIAL_BUDGET`.
+
 ## 2026-09-29 — Group trust model, ADR-044 phase V1a: legacy-group hardening (code `3f33c61`)
 
 ### Worked on
