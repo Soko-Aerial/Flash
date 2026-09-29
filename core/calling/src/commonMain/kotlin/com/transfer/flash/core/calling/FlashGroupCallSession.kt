@@ -1482,8 +1482,9 @@ public class FlashGroupCallSession(
      * A connection still being set up (under [LEG_SETUP_GRACE_MS] old, not failed) is kept:
      * rebuilding it made a second offer while the peer was answering the first, and that late
      * answer then failed DTLS (CERTIFICATE_UNKNOWN) on the new connection. When this device is
-     * the offerer and its offer is still unanswered, the same offer is sent again, in case the
-     * peer lost it. An older or failed connection is rebuilt as before (the peer may have
+     * the offerer and its offer is still unanswered after [OFFER_RESEND_MIN_AGE_MS], the same
+     * offer is sent again, in case the peer lost it (sooner, the peer is still answering it: the
+     * 2026-09-29 test re-sent one 8 ms after the first and got two answers). An older or failed connection is rebuilt as before (the peer may have
      * restarted). Caller holds the leg mutex.
      */
     private suspend fun keepSettingUpLeg(leg: GroupLeg, cause: String): Boolean = onMediaThread {
@@ -1506,7 +1507,9 @@ public class FlashGroupCallSession(
             "Leg ${leg.peerId} pc#${leg.pcGeneration} kept on $cause (connection=$connection signaling=$signaling age=${ageMs}ms)",
         )
         val offer = pc.localDescription
-        if (localDeviceId > leg.peerId && signaling == SignalingState.HaveLocalOffer && offer != null) {
+        if (localDeviceId > leg.peerId && signaling == SignalingState.HaveLocalOffer && offer != null &&
+            ageMs >= OFFER_RESEND_MIN_AGE_MS
+        ) {
             sendFrame(CallWireFrame.Offer(callId = callId, from = localDeviceId, sdp = offer.sdp), leg.peerId)
             FlashLog.i("GROUP_CALL", "Re-sent pending offer to ${leg.peerId} pc#${leg.pcGeneration}")
         }
@@ -1611,6 +1614,9 @@ public class FlashGroupCallSession(
 
         /** How long a connection being set up is kept through repeated accepts/joins (ERROR-076). */
         const val LEG_SETUP_GRACE_MS = 10_000L
+
+        /** A pending offer younger than this is not re-sent on a repeated accept/join: the peer is still answering it. */
+        const val OFFER_RESEND_MIN_AGE_MS = 3_000L
 
         /** Participants whose video can be asked for (G3): in the call, or briefly unreachable. */
         val VIDEO_PRESENT = setOf(

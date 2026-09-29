@@ -1,5 +1,12 @@
 # Current Handoff
 
+## 2026-09-29 — Desktop frame leak fixed (ERROR-078); desktop call stats fixed; hardware video assessed (ADR-052)
+- Every video frame from webrtc-java is now released (was ~50 MB/s leaked; 9.8 GB after a 3-minute call).
+- Desktop group-call stats were always empty (enum type names); fixed in jvm `RtcStats`.
+- CPU is mostly encoding 720p once per participant; ADR-052 lists hardware-video options (recommend a send-height
+  cap + webrtc-java 0.18.0 first).
+- Tests green; **next:** owner re-test with `desktop.log` (+ W999 logcat for its stuck leg).
+
 ## 2026-09-29 — Desktop pairing fix (ERROR-077) and animal/fruit device names
 - A PC had pinned its own key under the other PC's id (shared mDNS name → self-dial). TOFU now refuses the own
   key and replaces such pins on the next handshake.

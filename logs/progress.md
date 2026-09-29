@@ -1,5 +1,28 @@
 # Progress Log
 
+## 2026-09-29 — Desktop call: the real native leak (ERROR-078), empty desktop stats, hardware-video assessment
+
+### Worked on
+Owner: still a lot of RAM and CPU in a desktop video call; read the log, check the live process, and say what
+hardware decoding would take.
+
+### Changed
+- `DesktopVideoSink` releases every webrtc-java frame (each is a native I420 copy the sink owns): the ~50 MB/s leak.
+- jvm `RtcStats.type` returns W3C names, so desktop group-call stats (RTT, loss, speaking, decoder, CALL_DIAG) work.
+- A pending group offer is re-sent only after 3 s.
+- ERROR-078; ERROR-075 marked incomplete; ADR-052 (hardware video, PROPOSED).
+
+### Verification
+Live process before the fix: 9.8 GB private, heap ≤ 1 GB, idle CPU after hang-up. calling jvm 104 / host 120,
+callui 22, desktop 91, app compile green. Not device-tested.
+
+### Remaining
+Owner re-test with logs; webrtc-java 0.18.0 upgrade; send-height cap for several recipients (ADR-052 option 3);
+W999 leg stuck in ICE checking (needs phone logcat).
+
+### Next AI
+Read the next `CALL_DIAG` lines (`committed=` flat? `vout … enc=` ms per connection) before choosing ADR-052's path.
+
 ## 2026-09-29 — Desktops that couldn't pair (ERROR-077); unique animal/fruit device names
 
 ### Worked on
