@@ -51,6 +51,13 @@ import kotlin.math.roundToInt
  * - the frame is read inside the draw lambda, so a new frame redraws the canvas without
  *   recomposing anything.
  *
+ * **Every frame is released (2026-09-29, ERROR-078).** webrtc-java's native sink hands each
+ * frame over as a fresh full-size I420 *copy* with one reference taken for the Java side
+ * (`VideoTrackSink::OnFrame`: `I420Buffer::Copy` + `AddRef`); the sink owns that reference and
+ * must call [VideoFrame.release]. Nothing did, so every decoded and every camera frame leaked:
+ * ~50 MB/s of native memory in a four-person call, with a flat JVM heap. [onVideoFrame] now
+ * releases the frame on every path, including the ones that skip it.
+ *
  * WebRTC frames carry a clockwise [VideoFrame.rotation] (0, 90, 180, 270): a phone held upright
  * sends landscape frames tagged 90 or 270. The canvas turns them, so the picture is upright, and
  * the fit is computed on the turned size: [CallVideoFit.Balanced] fills the box only when the
@@ -132,7 +139,7 @@ internal actual fun FlashCallVideoSurface(
 private fun sameOrientation(w: Float, h: Float, boxW: Float, boxH: Float): Boolean = (h > w) == (boxH > boxW)
 
 /** One converted frame: a Skia image this surface owns and must close, plus its rotation. */
-private class ConvertedFrame(val image: SkiaImage, val rotation: Int)
+internal class ConvertedFrame(val image: SkiaImage, val rotation: Int)
 
 /**
  * Binds/unbinds a [VideoStreamTrack]'s JVM sink and hands converted frames to the canvas.
@@ -141,7 +148,7 @@ private class ConvertedFrame(val image: SkiaImage, val rotation: Int)
  * Threads: [onVideoFrame] runs on WebRTC's decode (or capture) thread; [frameForDraw],
  * [bind] and [release] on the UI thread. The two frame slots are guarded by `this`.
  */
-private class DesktopVideoSink : VideoTrackSink {
+internal class DesktopVideoSink : VideoTrackSink {
 
     /** Bumped for every frame ready to draw. */
     val frameTick = mutableLongStateOf(0L)
@@ -229,6 +236,16 @@ private class DesktopVideoSink : VideoTrackSink {
     }
 
     override fun onVideoFrame(frame: VideoFrame) {
+        // This sink owns the frame's reference (ERROR-078): release it on every path. Nothing
+        // here keeps the buffer — the Skia image holds its own copy of the pixels.
+        try {
+            renderFrame(frame)
+        } finally {
+            runCatching { frame.release() }
+        }
+    }
+
+    private fun renderFrame(frame: VideoFrame) {
         val buffer = frame.buffer ?: return
         val width = buffer.width
         val height = buffer.height

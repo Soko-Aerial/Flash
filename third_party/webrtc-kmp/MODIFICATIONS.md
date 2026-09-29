@@ -21,3 +21,4 @@ Modified files also carry a header comment pointing here.
 | 2026-09-16 | `94d9200` | jvm `LocalVideoStreamTrack.kt` / `MediaDevices.kt`: camera capture for desktop video calls, and camera switching. |
 | 2026-09-17 | `fbd3967`, `7f97c89` | `settings.gradle.kts`: added a Maven Central mirror as a fallback repository. |
 | 2026-09-29 | (ERROR-075) | jvm `MediaDevices.kt` / `LocalVideoStreamTrack.kt`: the camera opens at the best mode within the requested size (largest picture, then highest frame rate; the smallest mode if none fits) instead of the first mode the camera lists; camera switching uses the same choice; the local track's `settings` report the opened width, height, frame rate and device; one `[webrtc-jvm] camera … opened at` line is printed (Flash ERROR-075). |
+| 2026-09-29 | (ERROR-078) | jvm `RtcStats.kt`: `type` is the W3C stats type name (`inbound-rtp`) instead of webrtc-java's enum name (`INBOUND_RTP`), matching Android (Flash ERROR-078). |

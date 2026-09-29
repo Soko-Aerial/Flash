@@ -1,5 +1,79 @@
 # Error Log
 
+## ERROR-078 — Desktop video calls leaked every video frame (~50 MB/s); desktop call stats were always empty
+
+### Date
+2026-09-29
+
+### Area
+Desktop video rendering (`FlashCallVideoSurface.jvm.kt`) / webrtc-kmp jvm stats (`RtcStats.kt`)
+
+### Symptoms
+Owner, after the ERROR-075 build: "it's still using a lot of RAM and CPU". Four-person group video call on this PC
+(`:desktop:run`, commit `db739e8`), 10:35–10:38. Measured live afterwards: **9.8 GB private memory** with the call
+already over, JVM heap capped at 1 GB.
+
+### Evidence (`~/.flash/desktop.log`)
+```text
+10:35:35 CALL_DIAG proc cpu=?            heap=118/1024MB committed=527MB  sysFree=11321MB
+10:36:16 CALL_DIAG proc cpu=394%core ... heap=52/1024MB  committed=2911MB
+10:37:27 CALL_DIAG proc cpu=507%core ... heap=50/1024MB  committed=7174MB
+10:38:33 CALL_DIAG proc cpu=353%core ... heap=74/1024MB  committed=9783MB  sysFree=2231MB
+CALL_RENDER render stats track=1eacd9a6 in=30.0fps converted=29.2fps ... output=468x264 convertMs=2.4   <- renderer fine
+CALL_DIAG leg=a6400328-… pc#1 CONNECTED | vin none                                                     <- stats empty
+```
+Committed memory grew a steady ~52 MB/s while the heap stayed flat, and stayed at 9.8 GB after hang-up (CPU back
+to 2% of one core). The rate matches the frames reaching the sinks: 720p I420 (1.38 MB) x ~27 fps + 640x360 I420
+(0.35 MB) x ~80 fps across three tiles = 55–65 MB/s.
+
+### Root cause
+1. **Leak.** webrtc-java's native sink (`VideoTrackSink::OnFrame`, checked in the v0.17.0 source on GitHub) makes
+   a full I420 copy of every frame (`I420Buffer::Copy`) and calls `AddRef()` on it for the Java side; the Java
+   sink owns that reference and must call `VideoFrame.release()`. `DesktopVideoSink.onVideoFrame` never did, on
+   any path (converted, dropped, or failed), so every camera and every decoded frame stayed allocated for the life
+   of the process. ERROR-075's renderer rewrite fixed its own Skia images but missed this, which was the larger
+   leak; the heap-only view (`heap=` flat) is why it looked native.
+2. **Empty stats.** webrtc-java reports `RTCStats.type` as an enum (`INBOUND_RTP`); the jvm `RtcStats` passed
+   the enum name through, while callers compare W3C names (`inbound-rtp`). The 1:1 session normalises, the group
+   session and `CallDiagnostics` do not, so **on the desktop, group calls read no RTT, bytes, packet loss,
+   speaking levels (G3 talker-first, speaking indicators) or decoder name (G6 software-decode warning)**, and every
+   `CALL_DIAG leg=` line said `vin none`.
+
+### Fix (code; device check pending)
+- `DesktopVideoSink.onVideoFrame` releases the frame in `finally` on every path (`renderFrame` does the work).
+  The Skia image keeps its own copy of the pixels; the scaled `cropAndScale` buffer was already released.
+- jvm `RtcStats.type` is the W3C name (`native.type.name.lowercase().replace('_', '-')`), matching Android
+  (webrtc-kmp MODIFICATIONS.md row).
+- Group calls no longer re-send a pending offer younger than 3 s on a repeated accept/join
+  (`OFFER_RESEND_MIN_AGE_MS`): in this test the ERROR-076 re-send went out 8 ms after the first offer and the
+  phone answered both. (That leg, Flash Meerkat, stayed `ice=Checking` for the whole call; the duplicate answer is
+  harmless in the shared code, so the cause is unknown without the phone's logcat — see below.)
+
+### Also found, not changed
+- webrtc-java **0.18.0** (2026-09-15) fixed a double `DeleteLocalRef` in this same `OnFrame` (undefined behaviour
+  on every frame in 0.17.0) and a native `PeerConnection` leaked on every `close()` (#283). Upgrading is
+  recommended; not done here (it makes `RTCRtpSender`/`Receiver`/`Transceiver` disposable, so the webrtc-kmp jvm
+  layer needs a pass).
+- CPU (44–63% of 8 cores in the call) is mostly **encoding**: the desktop sent its camera to three participants at
+  720p30 (`sending={…=720, …=720, …=720}`), one libvpx VP8 encoder per connection in the mesh. Decoding three
+  640x360 streams is small by comparison. Per-connection encode/decode times were unreadable (cause 2); the next
+  log will have them (`vout … enc=… ms`, `vin … dec=… ms`). See ADR-052 for hardware video.
+- Leg `5e8e2183` (Flash Meerkat, 10.167.108.67): offer/answer completed, ICE never left `Checking`. Needs that
+  phone's logcat (its ICE candidates are not logged on the desktop).
+
+### Verification
+calling jvm 104 / host 120, callui 22 (new `DesktopVideoSinkReleaseTest`: skipped and failed frames are released),
+desktop 91, app compile: green. **Device check:** a desktop video call with `CALL_DIAG proc … committed=` flat
+over minutes, and `CALL_DIAG leg=` lines showing `vin`/`vout` numbers.
+
+### Related files
+- `ui/callui/src/jvmMain/kotlin/com/transfer/flash/ui/calling/FlashCallVideoSurface.jvm.kt`
+- `third_party/webrtc-kmp/webrtc-kmp/src/jvmMain/kotlin/com/shepeliev/webrtckmp/RtcStats.kt`
+- `core/calling/src/commonMain/kotlin/com/transfer/flash/core/calling/FlashGroupCallSession.kt`
+
+### Status
+OPEN (fix in code; device check pending)
+
 ## ERROR-077 — Two desktops could never pair: one had pinned its OWN key under the other's id
 
 ### Date
@@ -157,6 +231,8 @@ to VLC; adding it would ship ~100 MB of native VLC libraries without changing de
 Flash's own conversion and memory handling (above). Recorded in ADR-051.
 
 ### Working fix (code, not device-verified)
+**Incomplete — see ERROR-078 (2026-09-29):** the sink also never released the frames webrtc-java hands it, which
+was the larger leak; memory kept climbing ~50 MB/s after this fix.
 - Renderer: frames are scaled to the tile's pixel size with libyuv (`VideoFrameBuffer.cropAndScale`) before
   conversion; a frame arriving before the previous one was drawn is dropped before any work; at most two Skia
   images per tile, each closed when replaced; drawn with the Skia canvas directly (`SamplingMode.LINEAR`), read in

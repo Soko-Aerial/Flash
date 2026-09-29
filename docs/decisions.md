@@ -2230,3 +2230,43 @@ Don't add vlcj. Fix the renderer and camera capture instead (ERROR-075).
 A desktop hardware *decoder* is wanted: that belongs inside libwebrtc (a webrtc-java build with a hardware decoder
 factory), not in a player library. Decide from `CALL_DIAG … dec=` and decode-time numbers first.
 
+## ADR-052 — Hardware video on the desktop: what it would take (assessment)
+
+### Date
+2026-09-29
+
+### Status
+**PROPOSED** — assessment for the owner ("can we add hardware decoding rather than CPU"); nothing built.
+
+### Context
+Desktop calls use webrtc-java 0.17.0, whose libwebrtc has only software codecs: libvpx VP8 (Flash negotiates
+VP8 only, `CallSdp.enforceVp8Only`, because the bundled library advertises H.264/VP9/AV1 it cannot decode).
+The 2026-09-29 four-person call (ERROR-078) spent 44–63% of 8 cores; the largest share is **encoding** the camera
+three times at 720p30 (one encoder per mesh connection), not decoding three 640x360 streams.
+
+### Findings
+- webrtc-java has **no API to install a video encoder/decoder factory**. `PeerConnectionFactory` takes only audio
+  modules (0.17.0 bytecode); 0.18.0 added field trials; 0.19.0 (2026-09-27) added a native extension API and an
+  FFmpeg module, but for *sources* (playing a file into a call), not codecs.
+- Windows hardware decode is universal for **H.264** (Media Foundation / DXVA); VP8 hardware decode is rare, VP9
+  and AV1 depend on the GPU. Android phones encode and decode H.264 in hardware everywhere. Hardware only pays off
+  with a switch to H.264 (VP8 kept as fallback), which also removes the reason for `enforceVp8Only`.
+- Even with a hardware decoder, each frame is copied to I420 in system memory by webrtc-java's sink, then
+  converted to BGRA and uploaded by Flash; a GPU-texture path would need its own renderer.
+
+### Options
+1. **Fork webrtc-java** and give its `PeerConnectionFactory` hardware codec factories: an H.264 decoder and
+   encoder on Media Foundation (or FFmpeg with `d3d11va`/`qsv`/`nvenc`/`amf`), with software fallback. Needs a
+   Windows libwebrtc build (depot_tools, ~20+ GB checkout, hours per build), C++ codec work, per-GPU testing
+   (Intel/AMD/NVIDIA), and a rebuild on every webrtc-java update; macOS (VideoToolbox) and Linux (VA-API) are
+   separate work. Weeks, not days.
+2. **Upstream it**: propose codec-factory hooks to webrtc-java (the 0.19.0 extension table was designed for "a
+   hardware encoder" too), then implement the codec as an extension. Less to maintain; depends on the maintainer.
+3. **Cut the work instead** (no native code): cap the send height when sending to several participants (e.g. 540p
+   for two, 360p for three or more), which cuts the dominant encode cost roughly in proportion to pixels, and
+   upgrade to webrtc-java 0.18.0+ for its native leak fixes.
+
+### Recommendation
+Do 3 first and measure with the now-working `CALL_DIAG` encode/decode times (ERROR-078). Take on 1 or 2 only if
+the numbers still show codec CPU as the limit.
+
