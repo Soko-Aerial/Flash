@@ -4,12 +4,7 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
 import android.util.Log
-import com.transfer.flash.core.messaging.ptt.PttAudioLevel
-import com.transfer.flash.core.messaging.ptt.PttJitterBuffer
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicLong
-import kotlinx.coroutines.channels.BufferOverflow
-import kotlinx.coroutines.channels.Channel
 
 /**
  * Speaker playout loop for PTT reception (ADR-032, Phase 1).
@@ -25,25 +20,18 @@ import kotlinx.coroutines.channels.Channel
  * buffer reset is ever needed. [snapshot] reads volatiles/counters only and is safe
  * from any thread. Unexpected track death reports [onPlayoutLost] (engine ends the
  * listen); [stop] never reports.
+ *
+ * Android implementation of [PttPlayoutDevice] (ADR-058). The inbox, jitter buffer, concealment and
+ * counters moved to the shared [PttPlayoutCore]; this class keeps only the `AudioTrack` and its thread.
  */
-public class PttPlayout(
+internal class PttPlayout(
     private val sampleRateHz: Int,
     private val packetMs: Int,
-    targetDepthMs: Long = 120L,
+    targetDepthMs: Long = PttPlayoutCore.DEFAULT_TARGET_DEPTH_MS,
     private val onAmplitude: (Float) -> Unit = {},
     private val onPlayoutLost: () -> Unit = {},
-) {
-    public data class Snapshot(
-        val readyTotal: Long,
-        val concealedTotal: Long,
-        val depthPackets: Int,
-        val amplitude01: Float,
-    )
-
-    private data class Incoming(val seq: Long, val captureTsMs: Long, val pcm: ByteArray)
-
-    private val inbox = Channel<Incoming>(INBOX_CAPACITY, BufferOverflow.DROP_OLDEST)
-    private val buffer = PttJitterBuffer(targetDepthMs)
+) : PttPlayoutDevice {
+    private val core = PttPlayoutCore(sampleRateHz, packetMs, targetDepthMs)
     private val running = AtomicBoolean(false)
 
     @Volatile
@@ -52,28 +40,18 @@ public class PttPlayout(
     @Volatile
     private var audioTrack: AudioTrack? = null
 
-    private val concealedTotal = AtomicLong(0L)
-    private val readyTotal = AtomicLong(0L)
-
-    @Volatile
-    private var lastDepthPackets: Int = 0
-
-    @Volatile
-    private var lastAmplitude: Float = 0f
-
-    private val bytesPerPacket: Int = sampleRateHz * packetMs / 1000 * 2
+    private val bytesPerPacket: Int = core.bytesPerPacket
 
     /** Non-blocking enqueue from any thread. Rejects packets outside the negotiated format. */
-    public fun offer(seq: Long, captureTsMs: Long, pcm: ByteArray): Boolean {
-        if (!running.get() || pcm.size != bytesPerPacket) return false
-        return inbox.trySend(Incoming(seq, captureTsMs, pcm)).isSuccess
+    override fun offer(seq: Long, captureTsMs: Long, pcm: ByteArray): Boolean {
+        if (!running.get()) return false
+        return core.offer(seq, captureTsMs, pcm)
     }
 
-    public fun snapshot(): Snapshot =
-        Snapshot(readyTotal.get(), concealedTotal.get(), lastDepthPackets, lastAmplitude)
+    override fun snapshot(): PttPlayoutSnapshot = core.snapshot()
 
     /** Starts playout. False when the track cannot be built (caller ends the listen). */
-    public fun start(): Boolean {
+    override fun start(): Boolean {
         if (running.get()) return true
         val track = openTrack() ?: return false
         audioTrack = track
@@ -85,7 +63,7 @@ public class PttPlayout(
     }
 
     /** Stops playout and frees the track. Safe from any thread, never reports loss. */
-    public fun stop() {
+    override fun stop() {
         running.set(false)
         val track = audioTrack
         runCatching { track?.pause() }
@@ -142,37 +120,10 @@ public class PttPlayout(
     }
 
     private fun loop(track: AudioTrack) {
-        val zeros = ByteArray(bytesPerPacket)
-        var last: ByteArray? = null
         try {
             while (running.get()) {
-                var incoming = inbox.tryReceive().getOrNull()
-                while (incoming != null) {
-                    buffer.push(incoming.seq, incoming.captureTsMs, incoming.pcm)
-                    incoming = inbox.tryReceive().getOrNull()
-                }
-                val level: Float
-                when (val tick = buffer.poll(packetMs.toLong())) {
-                    is PttJitterBuffer.Poll.Ready -> {
-                        writeFully(track, tick.pcm)
-                        last = tick.pcm
-                        readyTotal.incrementAndGet()
-                        level = PttAudioLevel.rms01(tick.pcm)
-                    }
-                    is PttJitterBuffer.Poll.Concealed -> {
-                        val fill = last ?: zeros
-                        writeFully(track, fill)
-                        concealedTotal.incrementAndGet()
-                        level = PttAudioLevel.rms01(fill) * 0.5f
-                    }
-                    is PttJitterBuffer.Poll.Starving -> {
-                        writeFully(track, zeros)
-                        level = 0f
-                    }
-                }
-                lastAmplitude = level
-                lastDepthPackets = buffer.stats().depthPackets
-                onAmplitude(level)
+                writeFully(track, core.nextPacket())
+                onAmplitude(core.lastAmplitude)
             }
         } catch (error: Exception) {
             // Track death mid-session (route torn down underneath us). running is still true
@@ -201,7 +152,6 @@ public class PttPlayout(
 
     private companion object {
         const val TAG = "PTT_OUT"
-        const val INBOX_CAPACITY = 64
         const val TRACK_PACKETS = 8
     }
 }

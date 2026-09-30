@@ -9,20 +9,21 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertNull
-import org.junit.Assert.assertTrue
-import org.junit.Test
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /**
- * Host-JVM tests for the two inbound seams of [PttSessionEngine] plus the press/lease gates.
+ * Common tests (they run on the JVM target and the Android host target) for the two inbound seams of
+ * [PttSessionEngine] plus the press/lease gates.
  *
- * Scope is deliberately the *decision* surface: decode, dedup, fail-closed rejection, and which
- * frames are claimed (`true` = consumed). Nothing here starts a floor session — a `Talk`/`Listen`
- * state opens a real `AudioRecord`/`AudioTrack`, which needs a physical device and is tested
- * there, not on the JVM.
+ * Scope is the *decision* surface: decode, dedup, fail-closed rejection, and which frames are
+ * claimed (`true` = consumed). Nothing here starts a floor session; that is
+ * [PttSessionEngineSessionTest], which drives the same engine against fake audio devices. No test in
+ * this module touches real audio hardware.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class PttSessionEngineTest {
@@ -34,6 +35,8 @@ class PttSessionEngineTest {
 
     /** Every text frame handed to the transport sink, so a fan-out test can decode it back. */
     private val sentControl = mutableListOf<Pair<String, String>>()
+
+    private val audio = FakePttAudio()
 
     private fun newEngine(): PttSessionEngine = PttSessionEngine(
         localId = { LOCAL_ID },
@@ -48,6 +51,8 @@ class PttSessionEngineTest {
         hasMicPermission = { micGranted },
         isCallActive = { callActive },
         audioRateHz = { 16_000 },
+        audio = audio,
+        elapsedRealtimeMs = { 1L },
     )
 
     // ------------------------------------------------------------------ inbound ping
@@ -99,7 +104,7 @@ class PttSessionEngineTest {
             PttPingFrame(eventId = "evt-3", from = "someone-else", senderName = "Mallory", sentAt = 1L),
         )
 
-        assertTrue("a recognized-but-rejected frame must still be consumed", engine.onInboundText(PEER, text))
+        assertTrue(engine.onInboundText(PEER, text), "a recognized-but-rejected frame must still be consumed")
         assertTrue(received.isEmpty())
 
         collector.cancel()
@@ -232,7 +237,7 @@ class PttSessionEngineTest {
         assertEquals(PttPressOutcome.VOICE_NOTE_ACTIVE, engine.onPttButton())
 
         engine.releaseVoiceNoteLease(lease!!)
-        assertNotNull("the gate is free again after its own lease is released", engine.acquireVoiceNoteLease())
+        assertNotNull(engine.acquireVoiceNoteLease(), "the gate is free again after its own lease is released")
 
         engine.shutdown()
     }

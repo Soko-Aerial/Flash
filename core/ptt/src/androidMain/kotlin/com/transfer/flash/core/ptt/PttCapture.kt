@@ -26,21 +26,16 @@ import java.util.concurrent.atomic.AtomicBoolean
  * still armed reports [onCaptureLost] (read error, system silence); the engine treats it
  * like `MicDenied` and releases the floor. All callbacks may arrive on any thread — the
  * engine serializes them.
+ *
+ * Android implementation of [PttCaptureDevice] (ADR-058). Internal since the multiplatform
+ * conversion: the engine reaches it only through [PttAudioPlatform], see [platformPttAudio].
  */
-public class PttCapture(
+internal class PttCapture(
     private val requestedRateHz: Int,
     private val packetMs: Int,
     private val onPacket: (pcm: ByteArray, captureTsMs: Long) -> Unit,
     private val onCaptureLost: () -> Unit,
-) {
-    public sealed interface StartResult {
-        public data class Started(
-            val actualRateHz: Int,
-            val actualPacketMs: Int,
-        ) : StartResult
-        public data object Failed : StartResult
-    }
-
+) : PttCaptureDevice {
     private data class OpenedRecorder(
         val recorder: AudioRecord,
         val rateHz: Int,
@@ -67,9 +62,9 @@ public class PttCapture(
     private var actualPacketMs: Int = packetMs
 
     /** Starts capture. Idempotent while running. Never blocks the caller on audio I/O. */
-    public fun start(): StartResult {
-        if (running.get()) return StartResult.Started(actualRateHz, actualPacketMs)
-        val built = openRecorder() ?: return StartResult.Failed
+    override fun start(): PttCaptureStart {
+        if (running.get()) return PttCaptureStart.Started(actualRateHz, actualPacketMs)
+        val built = openRecorder() ?: return PttCaptureStart.Failed
         recorder = built.recorder
         actualRateHz = built.rateHz
         actualPacketMs = built.packetMs
@@ -117,19 +112,19 @@ public class PttCapture(
                 }
             }
         }
-        return StartResult.Started(actualRateHz, actualPacketMs)
+        return PttCaptureStart.Started(actualRateHz, actualPacketMs)
     }
 
     /**
      * Opens packet delivery after the session Start control frame has been sent. AudioRecord
      * may warm up before this, but no binary frame can overtake the receiver's format claim.
      */
-    public fun enablePackets() {
+    override fun enablePackets() {
         if (running.get()) packetsEnabled.set(true)
     }
 
     /** Stops capture and frees the mic. Safe from any thread, never reports loss. */
-    public fun stop() {
+    override fun stop() {
         packetsEnabled.set(false)
         running.set(false)
         runCatching { recorder?.stop() }
