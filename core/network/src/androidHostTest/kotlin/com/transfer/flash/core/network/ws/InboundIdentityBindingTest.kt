@@ -1,6 +1,7 @@
 package com.transfer.flash.core.network.ws
 
 import com.transfer.flash.core.common.model.FlashDeviceId
+import com.transfer.flash.core.common.protocol.Base64
 import com.transfer.flash.core.common.result.FlashResult
 import com.transfer.flash.core.network.tls.FlashPinVerifier
 import com.transfer.flash.core.network.tls.SoftwareCertMaker
@@ -88,6 +89,31 @@ class InboundIdentityBindingTest {
             victim.activeSessions.value.containsKey(FlashDeviceId(contactId)),
         )
         assertEquals("the contact's pin must be untouched", fingerprint(contactIdentity), victimPins[contactId])
+    }
+
+    @Test(timeout = 20_000L)
+    fun `both sides see the peer's TLS identity key on the session peer`() = runBlocking {
+        // ADR-044 V1 plan D10: a v2 group owner takes each invitee's key from the live session.
+        victimPins[contactId] = fingerprint(contactIdentity)
+        val victim = victim()
+        val port = start(victim)
+        val contact = dialer(contactIdentity, claimedId = contactId)
+        start(contact)
+
+        val dial = contact.connectManual("127.0.0.1", port, victimId)
+        assertTrue("the pinned contact must connect: $dial", dial is FlashResult.Success)
+        repeat(40) { if (victim.activeSessions.value.isEmpty()) delay(50) }
+
+        val dialerSeesVictim = (dial as FlashResult.Success).value.peer.identityKey
+        val victimSeesContact = victim.activeSessions.value.getValue(FlashDeviceId(contactId)).peer.identityKey
+        assertEquals(Base64.encode(victimIdentity.certificate.publicKey.encoded), dialerSeesVictim)
+        assertEquals(Base64.encode(contactIdentity.certificate.publicKey.encoded), victimSeesContact)
+        // The pin is the SHA-256 of exactly these bytes, which is what lets a receiver bind a cert key to it.
+        assertEquals(
+            fingerprint(contactIdentity),
+            MessageDigest.getInstance("SHA-256").digest(Base64.decode(victimSeesContact!!))
+                .joinToString("") { "%02X".format(it) },
+        )
     }
 
     @Test(timeout = 20_000L)

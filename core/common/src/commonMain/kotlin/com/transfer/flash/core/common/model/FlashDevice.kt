@@ -10,6 +10,10 @@ package com.transfer.flash.core.common.model
  * @property protocolVersion The highest supported Flash protocol version of the peer.
  * @property groupProtocol The group protocol level the peer advertised in its HELLO (`gv`), 1 when it
  *   sent none. A v2 group only admits a device whose level is at least 2 (ADR-044 V1).
+ * @property identityKey The peer's TLS leaf public key (X.509 SPKI, base64) as presented in this
+ *   session's handshake, or null when the session is not TLS (tests). The leaf is the identity key,
+ *   so its SHA-256 is the fingerprint the trust store pins; a v2 group owner needs the key itself to
+ *   write a member cert, and checks it against that pin before using it (ADR-044 V1, plan D10).
  */
 public data class FlashDevice(
     val id: FlashDeviceId,
@@ -18,4 +22,5 @@ public data class FlashDevice(
     val presence: FlashPeerPresence = FlashPeerPresence.Online,
     val protocolVersion: Int = 1,
     val groupProtocol: Int = 1,
+    val identityKey: String? = null,
 )
