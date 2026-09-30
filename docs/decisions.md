@@ -1834,7 +1834,9 @@ A new native payload is added, or a POM changes its licence (the gate fails and 
 ### Status
 **ACCEPTED by the owner, PARTLY IMPLEMENTED. V0 (threat review) COMPLETE 2026-09-29; V1a (hardening of today's groups) BUILT
 2026-09-29 (`3f33c61`, device check GT-01 owed); V1 (signed membership and messages) BUILT 2026-09-30 (S1 `e8e6d08`, S2 `029ec26`,
-S3 `1e3ad36`, S4 and docs below; device check GT-02 owed); V2 (vouched trust, groups of 20) is next.** Until V2 lands, `GroupPolicy.MAX_MEMBERS` stays 6 and ADR-030 applies unchanged. The V0 findings and the V1/V2
+S3 `1e3ad36`, S4 and docs below; device check GT-02 owed); V2 (vouched trust, groups of 20) BUILT 2026-09-30 (S1 `bc4e687`, S2
+`e4cc004`, S3 `6684120`, S4 `b67923f`, S5 `9674ab0`; device check GT-03 owed, see "V2 built" at the end of this ADR).** Legacy
+groups keep `GroupPolicy.MAX_MEMBERS` = 6 and ADR-030's rules; v2 groups take up to 20 (`MAX_MEMBERS_V2`). The V0 findings and the V1/V2
 design are in `docs/group/v0-threat-review.md`; see "V0 findings (2026-09-29)" at the end of this ADR.
 
 **Update 2026-09-29 (ADR-056):** the target is **20**. V3 (= PC6 / MEAS-02) is postponed to `docs/FUTURE-OPTIMIZATION.md`
@@ -2009,6 +2011,48 @@ SPKI in the trust store at pairing (schema and both trust stores change, and exi
 
 **Still open before V2:** the device check GT-02, the sign/verify cost measurement MEAS-08, and the V2 prerequisites already
 listed above (vouched pins, planner dialing of vouched members, the `MAX_MEMBERS - 1 <= DIAL_BUDGET` test).
+*(Update 2026-09-30: the V2 prerequisites are built, see "V2 built" below; GT-02 and MEAS-08 are still owed.)*
+
+### V2 built (2026-09-30)
+
+Plan and rationale: `docs/group/v2-vouched-trust-plan.md` (E1 to E6). Security summary: `docs/security.md` section 9. Wire:
+`docs/protocol.md` (no change; the V2 paragraph states it). Slices: S1 trust stores (`bc4e687`), S2 messaging rules, owner remove and
+groups of 20 (`e4cc004`), S3 group calls and host wiring (`6684120`), S4 dial-budget/presence/ECO tests (`b67923f`), S5 UI labels and
+Verify (`9674ab0`).
+
+**Decisions taken while building (recorded so a later reader does not re-derive them):**
+- **`gv` stays 2, no wire change.** V1 and V2 were never released apart, so no field device has V1 without V2. A wire bump would have
+  broken nothing but also bought nothing.
+- **Vouching goes through the pin store, not the TLS layer.** `FlashTrustStore` gained four abstract methods (`pinSource`,
+  `vouchVerdict`, `applyVouch`, `revokeVouch`) with no default body, so the compiler finds every implementer; a default no-op would
+  have turned vouching off silently on a host. `PinSource` is derived from existing state plus one new per-device set of vouching
+  group ids. Rejected: a second trust list read by `TofuX509TrustManager` (a TLS change with two sources of truth for one decision).
+- **The group gate never reads the pin store.** A vouch is honoured when the peer's *live* TLS key equals the cert key, so a first-use
+  pin an attacker planted, or a session opened before the vouch replaced the pin, cannot speak as a member. Rejected: gating on
+  `PinSource == VOUCHED` (correct only if the pin store and the roster never drift).
+- **The port is `GroupVouching`, the adapter is `TrustStoreGroupVouching` in `core:engine`.** `core:messaging` stays free of a
+  `core:security` type at its edge; the adapter is wired identically in `DiscoveryEngineHolder`, `Flash.create` and `DesktopEngine`
+  (the same shape as `FlashGroupCrypto`).
+- **Trust is one hop deep.** The receiver must be paired with the owner; only the owner's cert vouches; a vouched member's certs are
+  never a source of trust. Files, 1:1 and push-to-talk are not opened by a vouch (group attachments are paired-only both ways).
+- **Vouching is the first side effect of `onBundle`, after every ignore check, and `ensureVouches` self-heals** a trust store that was
+  cleared. `leave()` revokes every vouch of the group.
+- **Limits:** `MAX_MEMBERS_V2` = 20, `MAX_BUNDLE_CERTS` = 84. `core:engine` holds the test `MAX_MEMBERS_V2 - 1 <= ConnectionModePolicy.DIAL_BUDGET`
+  (the only module that sees both); a member of a full group holds 19 sessions, so the ceiling of 24 (ADR-057) leaves 5 for anything else.
+- **Owner remove is built without a UI** (an API and tests: `removeGroupMember`, signed tombstone, revokes the vouch on receivers).
+  Reason: the member sheet has no destructive per-row action design yet (UI-029 addendum); revisit when the owner asks for it.
+- **UI (UI-029 addendum, DESIGNED first):** a third line "Added by <owner> · not verified" and a trailing **Verify** action; Verify
+  reuses ordinary pairing and adds no trust logic to the UI. Alternatives considered in `docs/ui/group-ui.md`.
+
+**Accepted limits:** those of `docs/security.md` section 9, chiefly: a lying owner can vouch a key it controls (mitigated by the
+label and Verify); a removed member keeps what they received; vouched members get no files; an established call leg is not
+re-checked; deleting a chat without leaving keeps its rows and vouches.
+
+**Not verified on a device.** GT-03 (four or more devices, two of them never paired with each other) is owed, as are GT-02, SC-01,
+SC-02, MEAS-08. Do not describe groups of 20 as tested until they are.
+
+**Revisit when:** the owner wants remove in the UI; per-sender keys or ownership transfer are requested; a group needs more than 64
+tombstones; MEAS-02 / PC6 (FO-05) is run and 32 is reconsidered.
 
 ## ADR-045 — One connection planner decides who dials; modes will own the connection policy
 

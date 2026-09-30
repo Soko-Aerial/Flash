@@ -491,7 +491,7 @@ FLASH_GROUP action=bundle groupId=<g2-id> from=<id> opId=<uuid> version=0
   owner sends the full set to a newly added device); **leave** = charter + the leaver's own tombstone; **reconcile on
   session-up** = charter + every cert including tombstones. Because it is self-authenticating, any paired member may relay one.
 - The decoder rejects a bundle with a missing required field, a non-boolean `c<i>a`, a `certCount` outside
-  `0..MAX_BUNDLE_CERTS` (`MAX_MEMBERS_V2 + 64` = 70), or two certs for the same subject.
+  `0..MAX_BUNDLE_CERTS` (`MAX_MEMBERS_V2 + 64` = 84 since V2, was 70), or two certs for the same subject.
 
 **Receiver rules (bundle).**
 
@@ -522,8 +522,24 @@ authenticated by the TLS session (`from` equals the peer). Delete additionally n
 frame's `from`, which is correct in a v2 group because relayed messages keep their true author.
 
 **Old clients (D9).** An old client is never admitted to a v2 group (create and add require `gv ≥ 2`). It ignores the bundle
-action, ignores `sig`/`author`, and still chats 1:1 and in legacy groups. `MAX_MEMBERS_V2` is `6` (same as legacy) until the
-vouched-trust phase.
+action, ignores `sig`/`author`, and still chats 1:1 and in legacy groups.
+
+**Vouched trust and groups of 20 (ADR-044 V2, 2026-09-30): no wire change.** `gv` stays `2`, no frame, field or action name is added
+or changed, and the golden vectors are unchanged (no build that carried V1 without V2 was ever released, so there is no device to
+keep compatible with). What changes is what a receiver does with frames it already understood:
+
+- `MAX_MEMBERS_V2` is `20` (legacy `MAX_MEMBERS` stays `6`: every shipped codec rejects a longer legacy roster), so a v2 roster has
+  at most 20 active certs and 64 tombstones.
+- An owner-issued **active** cert for a subject the receiver is not paired with is accepted as an introduction (a *vouch*) unless
+  the trust store says another group already vouches a different key for that id, or the receiver is paired with that id under a
+  different key. The receiver still requires to be paired with the **owner** (one hop, no chains). A self-issued leave for an
+  unpaired subject is still refused.
+- The gate for group text, receipts, reads, deletes, typing, sync and bundles of a **known** v2 group, and for group-call invite,
+  presence, query and join list, is "paired, or an active member of the stored verified roster whose live TLS identity key equals the
+  cert key". A group media announcement and a group attachment stay paired-only, so a vouched member sends and receives no files.
+- 1:1 chat, files, calls and push-to-talk are unchanged: a vouch grants nothing outside the group.
+
+Rationale, the pin-store rules and the accepted limits: `docs/group/v2-vouched-trust-plan.md`, `docs/security.md` section 9.
 
 ## PTT ping (v1, 2026-09-09)
 

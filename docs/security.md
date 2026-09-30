@@ -139,10 +139,11 @@ Wire and byte layouts: `docs/protocol.md` "v2 groups". Design: `docs/group/v1-si
   else's name and delete authority follows the real author (ERROR-082 / F-9, fixed for v2).
 - Legacy membership frames for a `g2-` id are dropped; a v2 group never goes back to legacy; old clients are never admitted.
 - Receiver-side CPU is bounded: only a cert that would replace what is stored is verified, at most 120 verifications per peer per
-  minute, bundles capped at 70 certs.
+  minute, bundles capped at 84 certs (20 active + 64 tombstones since V2; 70 before).
 
 **Known limits (accepted for V1):**
-- Every v2 member must still be paired with every other member. Vouched trust (V2) is what lifts this and the 6-member cap.
+- ~~Every v2 member must still be paired with every other member.~~ **Lifted by V2** (section 9): members need to be paired with the
+  owner only, and a v2 group holds up to 20.
 - The owner is the single point of trust and failure: no ownership transfer, no rename, no owner-side remove UI. A lost owner device
   freezes the roster.
 - Creating a group with an invitee that has no live session yields a legacy group (its level is unknown). An invitee that advertises
@@ -151,3 +152,48 @@ Wire and byte layouts: `docs/protocol.md` "v2 groups". Design: `docs/group/v1-si
 - A relay that never saw a newer tombstone can show an outdated active cert; bounded by the full-roster reconcile on every session-up.
 - No forward secrecy or per-sender keys: a removed member keeps what they received.
 - Signing cost on the target phones is unmeasured (StrongBox sign latency, ECDSA verify per message): owed as a measurement (TEST-BACKLOG).
+
+
+## 9. Vouched trust: members who never paired with each other (ADR-044 V2, 2026-09-30)
+
+Design and slices: `docs/group/v2-vouched-trust-plan.md` (E1 to E6). Built and unit-tested (`TrustStoreGroupVouching` tests for both
+stores, `SignedGroupsTest`, `CallCoordinatorSecurityTest`, the dial-budget and presence/ECO tests); **not yet run between real devices
+(TEST-BACKLOG GT-03; GT-02 for V1 is also still owed)**.
+
+**What it changes, for a v2 group only.** Everyone pairs with the **owner**; the owner's signed cert for a member is the introduction.
+A member the receiver never paired can then chat in that group and join its group calls. They cannot do anything else: no 1:1 chat,
+no files (group attachments are paired-only in both directions), no 1:1 calls, no push-to-talk, no pairing rights.
+
+**How the pieces fit:**
+- **Pin sources.** Each trust store derives `PinSource` (PAIRED > VOUCHED > TOFU) and keeps one new thing, the set of group ids that
+  vouch for a device (`vouch_<id>` on Android, `vouch.<id>` on desktop). `VouchRules` is the single copy of the rule; a vouch installs
+  the pin **before** the peer connects, so TLS needs no change (`TofuX509TrustManager` still only asks "is this key pinned for that id?").
+- **Precedence.** A vouch never overrides a paired pin (`CONFLICT_PAIRED`, cert refused). It replaces an unverified first-use pin, which
+  is what defeats a device that connected first under a member's id. Two groups that vouch different keys for one id keep the first
+  (`CONFLICT_VOUCHED`). Blank input is `INVALID`.
+- **The group gate does not trust the pin store.** `isGroupPeerTrusted(groupId, peer)` = paired, **or** an active member of the stored
+  verified roster **and** the peer's live TLS key equals the cert key. So a TOFU session an attacker opened before the vouch replaced
+  its pin still is not trusted in the group, and knowing a member's id is not enough to speak as them.
+- **Side effects are ordered.** Vouching is the first side effect of accepting a bundle, after every ignore check, so a bundle that is
+  ignored leaves no pin behind. Leaving a v2 group, or an owner tombstone, revokes the vouch (deleting a chat without leaving does not, see the limits); a paired pin is never touched
+  by a group operation, and unpairing a vouched member keeps the pin while a vouch record exists.
+- **Owner remove.** `removeGroupMember` (owner only, next `seq`, signed tombstone) revokes the removed member's vouch on every device
+  that had one. It has an API and tests but **no UI yet**.
+- **Visible to the user.** A member the local device never paired shows "Added by <owner> · not verified" and a **Verify** action that
+  runs ordinary pairing (`connectManual` + `beginPair`); pairing turns the member PAIRED and the label disappears.
+
+**Accepted limits (V2):**
+- The owner is still the single point of trust and failure. **A lying owner can vouch a key it controls** for a name it chooses; the
+  "Added by" label and Verify mitigate this, they do not prevent it. Trust is one hop deep by design (a vouched member's vouches count
+  for nothing).
+- A removed member keeps what they already received (no per-sender keys, no forward secrecy).
+- Vouched members get no files in either direction.
+- An already-established group **call** leg is not re-checked: a member removed mid-call stays connected until the call ends
+  (pre-existing behaviour of call legs, unchanged by V2).
+- Deleting a v2 chat **without leaving** keeps its member rows and vouches, and a stale-row rejoin after a delete is a latent V1
+  issue that V2 inherits. Leaving is the clean path (it revokes everything).
+- An attacker's already-open TOFU session under a vouched id stays a 1:1 peer (review finding F-8, adjacent debt); it is not group-trusted
+  because its key differs from the cert's.
+- A bundle carries at most 20 active certs and 64 tombstones (84). The 64 is V1's cap, unchanged; what happens to a group that has
+  removed more members than that was not designed in V2.
+- Unmeasured: a 20-member roster's verification cost and the mesh's session count on phones (MEAS-08, SC-01, SC-02).

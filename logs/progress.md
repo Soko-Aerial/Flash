@@ -1,5 +1,50 @@
 # Progress Log
 
+## 2026-09-30 — Vouched trust and groups of 20 built: ADR-044 V2, slices S1 to S6 (`bc4e687`, `e4cc004`, `6684120`, `b67923f`, `9674ab0`)
+
+### Worked on
+ADR-044 V2: in a v2 group a member no longer has to be paired with every other member. Everyone pairs with the owner, and the owner's
+signed cert is the introduction. v2 groups take up to 20 members (legacy stays 6).
+
+### Changed
+- **S1 `bc4e687`** `core:security`: `PinSource`, `VouchVerdict`, `VouchRules`, four abstract `FlashTrustStore` methods, Android
+  (`vouch_<id>`) and desktop (`vouch.<id>`) implementations, every fake in the repo.
+- **S2 `e4cc004`** `core:messaging`: `GroupVouching` port, vouchable branch in `GroupSignatureRules`, `SignedGroups` vouch/revoke/ensure
+  (vouching is the first side effect of `onBundle`, after every ignore check), the group gate `isGroupPeerTrusted` (paired, or an
+  active roster member whose live TLS key equals the cert key), `MAX_MEMBERS_V2 = 20`, `MAX_BUNDLE_CERTS = 84`, owner-only
+  `removeGroupMember` (no UI), attachments kept paired-only.
+- **S3 `6684120`** `CallCoordinator.isGroupTrustedPeer`, `TrustStoreGroupVouching` adapter in `core:engine`, wiring in
+  `DiscoveryEngineHolder`, `Flash.create`, `DesktopEngine`, `GroupSizeBudgetTest` (`MAX_MEMBERS_V2 - 1 <= DIAL_BUDGET`).
+- **S4 `b67923f`** tests only: a vouched, unpaired member is dialed from a presence tip once it has a pin (and not before); a roster of
+  20 unpaired members still forms an ECO ring.
+- **S5 `9674ab0`** UI-029 addendum (DESIGNED first): `FlashGroupMemberUi.introducedBy`, a third line "Added by <owner> · not verified"
+  and a Verify action (`connectManual` + `beginPair`); hosts wired in `MainActivity` and `DesktopShell`.
+- **S6** docs: `docs/protocol.md` (no wire change, `gv` stays 2), `docs/security.md` section 9, ADR-044 "V2 built", plan "As built",
+  review pointer, TEST-BACKLOG GT-03.
+
+### Verification
+- Module totals at S5, all green: messaging 311 host / 158 jvm, ui:chat 291 (jvm and host), calling 133 host / 106 jvm, engine 12 host /
+  7 jvm, desktop 102, network 381 host / 290 jvm; `:app:compileDebugUnitTestKotlin` and `:sample:consumer:compileDebugUnitTestKotlin` compile.
+- **A flake to know about:** in the first S5 run three `RealFlashChatRepositoryTest` cases failed (`an inbound image offer stays a file
+  card until its bytes land...`, `delete for everyone sends direct action only for the local author`, `outbox drain preserves the
+  composing conversationId...`) while seven Gradle tasks ran in parallel; the class passed 60/60 in isolation and the whole module passed
+  311/311 on a solo `--rerun-tasks`. The S5 change only edits the group state combine. If they fail again on an idle machine, open an ERROR.
+- Persistence `testAndroidHostTest` still has the known Windows DataStore lock failures (TASK-CORE-PER-2), unrelated.
+- **Not verified on a device.** GT-03 (four or more devices, two never paired) is owed, as are GT-02 (V1), SC-01, SC-02 and MEAS-08.
+
+### Problems
+- No new ERROR. Tooling only: CRLF files (`SignedGroups.kt`, `RealFlashChatRepository.kt`, `SignedGroupsTest.kt`) defeat multi-line
+  patches (use a CRLF-aware helper); kotlin.test puts the message second (`assertTrue(actual, message)`).
+
+### Remaining
+- Owner remove has no UI. Deleting a chat without leaving keeps its rows and vouches. An established call leg is not re-checked when a
+  member is removed. Vouched members get no files. All listed in `docs/security.md` section 9.
+- Open audit items unchanged: 3.6, 3.2, S6, 3.4, 3.7, 3.11.
+
+### Next AI
+Run or schedule GT-03 (and GT-02) with the owner. Otherwise pick from the open audit items. Do not describe groups of 20 as tested
+before GT-03 and SC-01/SC-02 pass. FO-04 (attachment fan-out), FO-05 (group size 32), DR4, DR6 and DR7 stay postponed.
+
 ## 2026-09-30 — Signed (v2) groups built: ADR-044 V1, slices S1 to S4 (`e8e6d08`, `029ec26`, `1e3ad36`, `c8deb40`, `c0c7ae8`)
 
 ### Worked on
