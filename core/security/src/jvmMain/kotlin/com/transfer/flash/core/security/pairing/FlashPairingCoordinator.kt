@@ -72,7 +72,7 @@ public data class FlashTrustedPeer(
 public class FlashPairingCoordinator(
     public val localFingerprintHex: String,
     private val localDeviceId: String,
-    private val localName: String,
+    localName: String,
     private val localModel: String,
     private val ephemeralPublicKey: ByteArray,
     private val trustStore: FlashTrustStore,
@@ -117,9 +117,28 @@ public class FlashPairingCoordinator(
     private val pendingLock = Any()
     private var pendingPair: Pair<String, String>? = null
 
+    /** The name a pairing request carries. Changed only by [updateLocalName]; read when a protocol is built. */
+    @Volatile
+    private var localName: String = localName
+
     @Volatile
     private var protocol: DefaultFlashPairingProtocol = newProtocol()
     private var collectorJob: Job = launchCollectors()
+
+    /**
+     * This device was renamed: the next pairing request carries [newName].
+     *
+     * The protocol stamps the name when it is built, and every pairing ending rebuilds it, so a pairing already
+     * on screen keeps the name it started with and the next one picks the new name up. An idle protocol is
+     * rebuilt before this returns (not from a launched coroutine), so a `beginPair` issued right after a rename
+     * is already under the new name.
+     */
+    public fun updateLocalName(newName: String) {
+        val trimmed = newName.trim()
+        if (trimmed.isEmpty() || trimmed == localName) return
+        localName = trimmed
+        if (protocol.session.value.phase == PairingPhase.Idle) resetProtocol()
+    }
 
     /** A WS session to [peerId] came up — announce our fingerprint so the peer can derive the code. */
     public fun onSessionUp(peerId: String) {

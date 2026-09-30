@@ -168,6 +168,39 @@ class FlashPairingCoordinatorTest {
     }
 
     @Test
+    fun aRenamedDevice_asksToPairUnderItsNewName() = runBlocking {
+        // Chat/group sync audit, step 5: the coordinator captured its name at construction, so a renamed
+        // desktop kept introducing itself under the old one in every pairing request.
+        val pair = Pair()
+        pair.a.onSessionUp(ID_B)
+        pair.b.onSessionUp(ID_A)
+
+        pair.a.updateLocalName("  Ada Desktop ")
+        pair.a.beginPair(ID_B, "Harness B")
+
+        waitUntil("B must see the request") {
+            pair.b.pairing.value?.phase == PairingPhase.RequestReceived
+        }
+        assertEquals("Ada Desktop", pair.b.pairing.value?.peerName, "the request names the renamed device, trimmed")
+    }
+
+    @Test
+    fun aRenameDuringAPairingDoesNotDisturbIt() = runBlocking {
+        val pair = Pair()
+        pair.a.onSessionUp(ID_B)
+        pair.b.onSessionUp(ID_A)
+        pair.a.beginPair(ID_B, "Harness B")
+        waitUntil("B must see the request") { pair.b.pairing.value?.phase == PairingPhase.RequestReceived }
+        val codeBefore = pair.b.pairing.value?.numericCode
+
+        pair.a.updateLocalName("Ada Desktop")
+
+        assertEquals(PairingPhase.RequestReceived, pair.b.pairing.value?.phase, "the request on screen survives the rename")
+        assertEquals(codeBefore, pair.b.pairing.value?.numericCode)
+        assertEquals("Harness A", pair.b.pairing.value?.peerName, "and it keeps the name it started with")
+    }
+
+    @Test
     fun aPeerAdvertisingOnlyV1_isRefusedWithAnUpdateMessage() = runBlocking {
         // Owner decision 2026-09-23: no new pairing with a v1 peer, whose code could be forced.
         val pair = Pair()
