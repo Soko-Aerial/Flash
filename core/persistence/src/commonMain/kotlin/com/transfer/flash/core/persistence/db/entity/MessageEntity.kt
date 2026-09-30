@@ -48,4 +48,10 @@ public data class MessageEntity(
      */
     val replyToId: String? = null,
     val replyToPreview: String? = null,
+    /**
+     * v6 (ADR-044 V1): the author's base64 signature over the canonical message bytes, for a message
+     * in a v2 group. Stored because the row is later relayed by offline sync and the receiver must
+     * be able to verify it. Null for direct messages, legacy groups and unsigned rows.
+     */
+    val groupSig: String? = null,
 )
