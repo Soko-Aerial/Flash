@@ -1,5 +1,18 @@
 # Current Handoff
 
+## 2026-09-30 — Chat/group sync audit implemented (7 steps); device checks CGS-01...07 and DNAME-01/02 owed
+- **Done (commits `cd3ca0a1`, `031b6ab4`, `b9b43ece`, `c31b30cd`, `4e843cd9`, `3156e400`, `5060ac82`, `5b3ae1d9`):** desktop session-up edges, all outbox
+  retry deadlines kept, group read ticks, catch-up receipts to the author, catch-up label for attachments, desktop rename propagation,
+  Message Info sheet (UI-051), catch-up banner (UI-052). ADR-059, ERROR-084.
+- **Verified (unit tests, mutation-checked):** messaging 352, ui:chat 310, desktop 110; app, desktop and ui:chat compile.
+  **Not verified:** anything on a device (`docs/testing/TEST-BACKLOG.md` section 4g: `CGS-01`...`CGS-07`, `DNAME-01`, `DNAME-02`).
+- **Known:** a connected peer learns a renamed desktop on reconnect only; Message Info lists only members with a delivery row; vouched
+  members still get no files (FO-04 postponed).
+- **Recommended next task:** run section 4g with two phones and the desktop (about 30 minutes), then GT-03 / PTTD-01.
+- Files most relevant: `core/messaging/.../RealFlashChatRepository.kt` (`recordCatchUpArrival`, `observeMessageInfo`, `handleSyncPush`),
+  `MessageInfoBuilder.kt`, `ui/chat/.../FlashMessageInfoSheet.kt`, `FlashGroupSyncBanner.kt`, `desktop/.../DesktopEngine.kt`.
+- Postponed by the owner, do not start: DR4, DR6, DR7, FO-04, MEAS-02/PC6, group size 32.
+
 ## 2026-09-30 — Desktop push-to-talk built (ADR-058): `:core:ptt` is KMP, the Windows app joins PTT; device checks PTTD-01...07 owed
 - **Done (commits `c8a9aa3`, `824aeb0`, `37a2e66` + docs):** one PTT engine for Android and desktop (`PttSessionEngine` in commonMain,
   hardware behind `PttAudioPlatform`; JVM uses `javax.sound.sampled`); `DesktopEngine` builds and routes it; the session card is

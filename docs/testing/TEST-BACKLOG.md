@@ -687,6 +687,106 @@ What exists: one `PttSessionEngine` for Android and desktop, `DesktopEngine` wir
 - **Source:** UI-051 Addendum A; `PttSessionOverlayRenderTest` proves only that the card draws and Stop reaches the engine.
 - **Status:** TODO
 
+## 4g. Chat and group sync audit (`docs/audit/2026-09-28-chat-group-sync-audit-and-plan.md`, 2026-09-30)
+
+Built and unit-tested (SignedGroupsTest, RealFlashChatRepositoryTest, two-real-engine desktop tests, UI math tests); each fix was
+mutation-checked. **Nothing here has crossed a real network between real devices.** Two phones and the Windows desktop are
+enough for everything below. Keep `adb logcat` running on the phones; "tick" means the marks under your own message.
+
+### CGS-01 — A desktop that comes back online learns its groups and catches up (audit area 2, commit `cd3ca0a1`)
+- **Setup:** a v2 group of the desktop and one phone (A). Desktop and phone on the same Wi-Fi.
+- **Steps:**
+  1. Close the desktop app. On phone A send two messages to the group.
+  2. Start the desktop app and wait for phone A to show "Connected" in Nearby.
+  3. Open the group on the desktop.
+- **Pass:** within about 10 s of the session coming up, the desktop shows the group and **both** messages. Before the fix it
+  showed nothing until a new message arrived. Phone A's two messages end on "Delivered" (two ticks) without resending.
+- **Source:** `DesktopEngineGroupSessionUpTest`, the desktop session-up edges.
+- **Status:** TODO
+
+### CGS-02 — A group message the receiver dropped is retried within seconds, not after a minute (commits `cd3ca0a1`, `031b6ab4`)
+- **Setup:** group with a phone A and a phone B, where B does not know the group yet when A's message arrives (a fresh
+  install of B, or B removed from the group and re-added).
+- **Steps:** A sends one group message while B is connected but has not learned the group yet. Watch A's tick and B's chat.
+- **Pass:** B shows the message **within about 10 s** of learning the group (logcat on A: outbox resends at roughly 1, 2, 4 s,
+  never a 60 s gap). A's tick turns to Delivered.
+- **Fail:** B shows it only after about a minute.
+- **Source:** `RealFlashChatRepositoryTest` (group resend ladder; two writes inside one backoff window).
+- **Status:** TODO
+
+### CGS-03 — Read ticks in a group (audit area 1, commit `b9b43ece`)
+- **Setup:** a group of three devices: sender S and readers R1, R2 (two phones and the desktop in any roles).
+- **Steps:**
+  1. S sends a message. Keep R1 and R2 on the chats list (not inside the group).
+  2. Open the group on R1 only. Look at S.
+  3. Open the group on R2. Look at S.
+  4. Remove R2 from the group (owner), send another message, read it on R1 only.
+- **Pass:** after step 1: S shows Delivered (two grey ticks). After step 2: **still Delivered**. After step 3: Read (ticks take
+  the read colour). After step 4: Read as soon as R1 reads (a removed member does not hold it back).
+- **Fail:** the message reads Read after only R1 opened it, or never reaches Read.
+- **Source:** 7 `SignedGroupsTest` read-cursor cases, `ReadCursorDao`.
+- **Status:** TODO
+
+### CGS-04 — A member that catches up tells the author (audit area 3, commit `c31b30cd`)
+- **Setup:** a v2 group of S, member M and member L. S and M connected; L powered off (or Flash stopped).
+- **Steps:** S sends a message, M receives it. Start L. Wait for L to catch up from M or S.
+- **Pass:** L shows the message; S's message ends on **Delivered** (all members), not stuck on a single tick. Message Info
+  (CGS-06) lists L under "Delivered" for that message.
+- **Source:** `SignedGroupsTest` (relay receipt, the author records a SyncAck, a receipt for a direct message is ignored).
+- **Status:** TODO
+
+### CGS-05 — A late member sees a label for an earlier photo or voice note, not an empty bubble (audit area 2, commit `4e843cd9`)
+- **Setup:** a **legacy** group (created before v2 groups) of S and M; a third device N not yet in it.
+- **Steps:** S sends a photo, a video, a file and a voice note. Add N to the group. Open the group on N.
+- **Pass:** N shows one line per item: `[Photo] name`, `[Video] name`, `[File] name`, `[Voice message]`; **no empty bubbles** and no
+  raw `vmsg:` text. No file bytes are fetched (attachments of earlier messages are not shared; FO-04 is postponed).
+- **Source:** `SignedGroupsTest` catch-up label case.
+- **Status:** TODO
+
+### CGS-06 — Message Info sheet (UI-051, commit `5060ac82`)
+- **Setup:** a group of S, R1, R2 (R2 offline or off Wi-Fi) and a 1:1 chat.
+- **Steps:**
+  1. In the group, S sends a message. With R1 having read it and R2 offline, long-press the message (Android) or right-click
+     (desktop) and choose **Message Info**. Also tap the ticks under the message.
+  2. Bring R2 online, and watch the open sheet.
+  3. Remove R2 from the group before it received a later message; open Message Info for that message.
+  4. Long-press a **received** message and a call row; open a 1:1 message you sent.
+- **Pass:** step 1: title "Message info", R1 under Read, R2 under "Waiting for device to connect"; step 2: R2 moves to
+  Delivered **while the sheet is open**, with a time; step 3: R2 reads "No longer in the group"; step 4: a received message and
+  a call row have no Message Info entry; the 1:1 sheet shows a single recipient. TalkBack reads each row sensibly.
+- **Source:** `MessageInfoBuilderTest`, `FlashMessageInfoMathTest`, SignedGroupsTest message-info cases, `docs/ui/message-info.md`.
+- **Status:** TODO
+
+### CGS-07 — Catch-up banner (UI-052)
+- **Setup:** a v2 group with at least 10 messages of history; a device D that was away (Flash stopped) while they were sent.
+- **Steps:** start D with the group open and watch the top of the conversation as history arrives. Then leave it alone for 5 s.
+  Repeat once with "Remove animations" (Android) turned on.
+- **Pass:** a strip "Catching up on earlier messages · N" appears under the header when the first earlier message arrives, N
+  counts up, a thin line sweeps left to right (static with reduced motion), and the strip **disappears about 3 s after the last
+  message**. It never appears in a direct chat, and never for a live message sent while you are looking at the group.
+- **Fail:** the strip stays forever, flickers away mid-catch-up, or shows for a normal incoming message.
+- **Source:** `SignedGroupsTest` catch-up banner cases, `FlashGroupSyncMathTest`, `docs/ui/group-ui.md` UI-052.
+- **Status:** TODO
+
+### DNAME-01 — Renaming the desktop shows everywhere on the desktop (audit area 5, commit `3156e400`)
+- **Setup:** the Windows desktop app with a paired phone connected.
+- **Steps:** Settings → rename this device. Look at Settings, the sidebar avatar/initials and the Nearby header. Start a new
+  pairing with another device straight away. Create a **new** group and send a message in it.
+- **Pass:** all three places change at once without restarting; the other device's pairing request shows the **new** name;
+  the new group and its message carry the new name. Restart the desktop: the name is unchanged.
+- **Known limit (not a failure):** a peer that stays connected keeps the old name until it reconnects; an existing v2 group
+  keeps the name signed into its roster.
+- **Source:** `DesktopEngineRenameTest`, pairing and signed-groups rename tests.
+- **Status:** TODO
+
+### DNAME-02 — The phone sees the new desktop name after a reconnect (audit area 5)
+- **Setup:** as DNAME-01, phone A paired with the desktop.
+- **Steps:** rename the desktop. Turn the desktop's Wi-Fi off and on (or restart the app). Look at phone A's chat list, the
+  chat header and Nearby; also a **legacy** group the desktop belongs to.
+- **Pass:** after the reconnect the phone shows the new name in all three and in the legacy group's member list.
+- **Source:** `DesktopEngineRenameTest` (transport hello), `SignedGroupsTest` (legacy group row renamed).
+- **Status:** TODO
+
 ## 5. Measurements — do these last
 
 They replace every *(measure)* estimate in the plans and decide tuning. Record each in `logs/experiments.md`.
