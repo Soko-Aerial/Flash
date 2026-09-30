@@ -1832,8 +1832,9 @@ A new native payload is added, or a POM changes its licence (the gate fails and 
 2026-09-24
 
 ### Status
-**ACCEPTED by the owner, NOT IMPLEMENTED. V0 (threat review) COMPLETE 2026-09-29; V1a (hardening of today's groups) BUILT
-2026-09-29 (`3f33c61`, device check GT-01 owed); V1 (signed membership) is next.** Until V2 lands, `GroupPolicy.MAX_MEMBERS` stays 6 and ADR-030 applies unchanged. The V0 findings and the V1/V2
+**ACCEPTED by the owner, PARTLY IMPLEMENTED. V0 (threat review) COMPLETE 2026-09-29; V1a (hardening of today's groups) BUILT
+2026-09-29 (`3f33c61`, device check GT-01 owed); V1 (signed membership and messages) BUILT 2026-09-30 (S1 `e8e6d08`, S2 `029ec26`,
+S3 `1e3ad36`, S4 and docs below; device check GT-02 owed); V2 (vouched trust, groups of 20) is next.** Until V2 lands, `GroupPolicy.MAX_MEMBERS` stays 6 and ADR-030 applies unchanged. The V0 findings and the V1/V2
 design are in `docs/group/v0-threat-review.md`; see "V0 findings (2026-09-29)" at the end of this ADR.
 
 **Update 2026-09-29 (ADR-056):** the target is **20**. V3 (= PC6 / MEAS-02) is postponed to `docs/FUTURE-OPTIMIZATION.md`
@@ -1976,6 +1977,38 @@ what they received.
 
 **Owner decisions (answered 2026-09-29, chat; both the recommended default):** (1) **sign group messages, not only membership:
 YES**; (2) **legacy groups are not upgraded in place: YES**, they stay legacy (up to 6, V1a rules). V1 is unblocked.
+
+### V1 built (2026-09-30)
+
+Plan and rationale: `docs/group/v1-signed-membership-plan.md` (D1 to D10). Wire: `docs/protocol.md` "v2 groups". Security
+summary: `docs/security.md` section 8. Slices: S1 protocol layer, S2 wire and HELLO `gv`, S3 schema v6, S4 repository and hosts.
+
+**Amendment to the V0 review's rule 4 (D1).** The review proposed "a charter replaces a legacy record of the same id". V1 does not
+need that rule: a v2 group id is `g2-` plus a hash of the owner's key and a nonce, so an id names exactly one possible owner and
+nobody can pre-create it. The prefix is reserved; a legacy frame for a `g2-` id is dropped, and there is no replace-legacy path.
+Legacy groups keep their ids and rules.
+
+**Decision D10, taken while building S4: the owner takes an invitee's key from the live TLS session.** A cert carries the subject's
+SPKI, and nothing stored had it (the trust store keeps only the pin, a hash). `WsConnection.peerPublicKeyEncoded` reads the leaf
+key after the handshake and it is exposed as `FlashDevice.identityKey`; the TLS certificate key is the identity key, so
+`SHA-256(key)` is the pin, and the owner refuses to sign a cert for a key the pin does not vouch for (`keyMatchesPin`). A device that
+advertises `gv >= 2` but has no key or a mismatching one fails create/add (`V2_KEY_UNAVAILABLE`); it never silently becomes a legacy
+group. Alternatives rejected: a new key-exchange frame (a second channel to keep consistent with TLS, more wire) and storing the
+SPKI in the trust store at pairing (schema and both trust stores change, and existing pairings would have no key).
+
+**Also decided while building (recorded so a later reader does not re-derive them):**
+- Only a cert that would replace what the receiver holds is verified and counted against the per-peer budget; a stale bundle is free.
+- A known group's bundle must come from an active member of the stored roster, or carry a verified active cert for the sender.
+  An unknown group's bundle may come from any paired peer but must carry a valid, active cert for the receiver.
+- A v2 group never exceeds `MAX_MEMBERS_V2` (6, equal to `MAX_MEMBERS` until V2) active members after a merge.
+- The stored label is the owner's signed label; `updateMemberDisplayName` skips rows with a `certSig`, so a peer rename cannot
+  change what a v2 roster shows.
+- A message row without an author signature is never relayed in a v2 group; a direct message or relayed push needs an *active*
+  author, so **sync does not re-deliver a former member's messages** (accepted limit, `docs/security.md` section 8).
+- Messages are not budgeted, only bundles.
+
+**Still open before V2:** the device check GT-02, the sign/verify cost measurement MEAS-08, and the V2 prerequisites already
+listed above (vouched pins, planner dialing of vouched members, the `MAX_MEMBERS - 1 <= DIAL_BUDGET` test).
 
 ## ADR-045 — One connection planner decides who dials; modes will own the connection policy
 

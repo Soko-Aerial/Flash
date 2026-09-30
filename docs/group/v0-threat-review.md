@@ -1,5 +1,10 @@
 # ADR-044 phase V0 — threat review of group membership and vouched trust
 
+> **Update 2026-09-30:** V1 (signed membership and messages) is built; see `docs/group/v1-signed-membership-plan.md` and the
+> "V1 built" section of ADR-044. It fixes F-3, F-6 and F-9 for v2 groups. **Rule 4 of section 4.3 (a charter replaces a legacy record of
+> the same id) is superseded:** v2 ids are derived from the owner's key in a reserved `g2-` namespace, so no replace-legacy path exists
+> (plan D1). Findings F-3, F-6 and F-9 remain true of **legacy** groups, which stay legacy by owner decision.
+
 **Status: COMPLETE 2026-09-29.** No code changed by this review. Its output is (a) the findings F-1 to F-9 about the code as it is
 today, (b) the design V1 and V2 must follow, and (c) the phase plan in section 8. ADR-044 carries a short summary; this is the
 detail. Method: read the receiving and sending paths in `RealFlashChatRepository`, `GroupWireFrame`/`GroupFrameCodec`,

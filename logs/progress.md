@@ -1,5 +1,52 @@
 # Progress Log
 
+## 2026-09-30 — Signed (v2) groups built: ADR-044 V1, slices S1 to S4 (`e8e6d08`, `029ec26`, `1e3ad36`, `c8deb40`, `c0c7ae8`)
+
+### Worked on
+ADR-044 V1: owner-rooted signed membership and signed messages for new groups (owner decisions of 2026-09-29: sign messages, legacy
+groups stay legacy). Fixes ERROR-082 (F-9) and F-3/F-6 for v2 groups.
+
+### Changed
+- **S1 `e8e6d08`** protocol layer (`GroupCanonical`, `GroupCharter`, `MemberCert`, `GroupSigning`, `GroupSignatureRules`, `VerifyBudget`).
+- **S2 `029ec26`** wire: `FLASH_GROUP action=bundle`, `sig` on `FLASH_GMSG`, `author`+`sig` on `FLASH_GSYNC push`, HELLO `gv`
+  (`FlashDevice.groupProtocol`), `docs/protocol.md` with golden vectors.
+- **S3 `1e3ad36`** schema v6 (`STEP_5_6`): group proto/owner key/nonce/charter sig, member `subjectKey`/`certSig`/`issuerId`,
+  message `groupSig`; `updateMemberDisplayName` skips signed rows.
+- **S4a `c8deb40`** `WsConnection.peerPublicKeyEncoded` -> `FlashDevice.identityKey` (plan D10: the owner takes an invitee's key from
+  the live TLS session and checks it against the pin before signing).
+- **S4 `c0c7ae8`** `SignedGroups` (create/add/leave/bundle/verify), `RealFlashChatRepository` v2 branches (create, owner-only add,
+  leave, signed send, signed receive and relay, legacy-frame drop for `g2-`, no relay of unsigned rows), `FlashGroupCrypto` adapter in
+  `core:engine`, host wiring in the Android holder, `Flash.create` and `DesktopEngine`, `Group v2 created/joined` log lines.
+- Tests: new `SignedGroupsTest` (26); DAO fakes extracted to `GroupTestFakes` and shared with `GroupLateJoinDiagnosticTest`.
+- Docs: plan D10 + new known limits, `docs/security.md` section 8, ADR-044 "V1 built" (D1 amendment replaces review rule 4.3-4), review
+  pointer, ERROR-082 status, TEST-BACKLOG GT-02 and MEAS-08.
+
+### Verification
+- `:core:messaging:testAndroidHostTest` 292/292, `:core:messaging:jvmTest` 158/158, `:desktop:jvmTest` 95/95, `:core:engine:jvmTest` 4/4,
+  `:core:network` identity-binding tests (jvm 3, android host 4), `:app:compileDebugKotlin`, `:core:engine:compileAndroidMain` and
+  `:desktop:compileKotlinJvm` green.
+- **Mutation check:** with signature verification and the cert check bypassed in `SignedGroups`, 9 of the 26 `SignedGroupsTest`
+  cases fail (forged/unsigned/tampered/impersonated message, forged relay, non-owner add and remove, key swap, corrupt cert, legacy mix),
+  so they test the guards and not just the honest path. (The first attempt did not apply the mutation because the file has CRLF line
+  endings, and its green run was a plain re-test.)
+- **Not verified on a device:** GT-02 (create/join, messages, catch-up, leave, owner-only add, legacy mix between real devices).
+  Sign latency and verify cost are unmeasured (MEAS-08).
+
+### Problems
+- Compile: `SignedGroups.kt` needed the file-level `@OptIn(FlashInternalApi)` for `FlashLog`, and two `?: return null` inside an expression
+  body had to become a block body.
+- Test expectation error (mine): a newcomer's first cert has `seq = 1`, not 2 (`seq` is per subject).
+
+### Remaining
+- Sync does not re-deliver messages of a former member (documented limit, `docs/security.md` section 8).
+- V2 (vouched trust, `MAX_MEMBERS` 20) is not started. No remove/rename UI (owner API for tombstones lands with V2's owner tools).
+
+### Next AI
+Run GT-02 if devices are available; otherwise V2 per ADR-044 "Revised phases": vouched pins with a source in both trust stores,
+`isGroupTrusted(groupId, peer)` at the group gates only, planner dialing of vouched members (read `ConnectionPlanner` and ECO's
+"unpaired only while Nearby is open" rule first), and the test `GroupPolicy.MAX_MEMBERS - 1 <= ConnectionModePolicy.DIAL_BUDGET`.
+Do not change the v2 wire bytes: a change needs a new tag (`...-v2`, `docs/protocol.md`).
+
 ## 2026-09-29 — Session ceiling 24 and crowd-time dial budget (ADR-057, code `e9d1563`)
 
 ### Worked on

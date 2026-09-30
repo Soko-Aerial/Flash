@@ -448,6 +448,43 @@ by later testing without anyone recording it: confirm, then mark PASS here **and
   unit tests only: `RealFlashChatRepositoryTest` (`F-1`, `F-2`, `F-4`, `F-5` cases), `OutgoingSyncRequestTest`.
 - **Status:** TODO
 
+### GT-02 — Signed (v2) groups between real devices (ADR-044 V1)
+- **Setup:** four devices on the V1 build (`gv=2`): A (creates the group, the owner), B, C and D, all paired with each other; at
+  least one phone and the desktop. Optional fifth device E on the **previous** build for step 6. Phone log
+  `adb logcat -v time -s CHAT:I` (v2 rejections are logged at warning level with a `SECURITY:` prefix); desktop log
+  `%USERPROFILE%\.flash\desktop.log`. Every pair must have a live session before step 1 (a group made with an unconnected
+  invitee is legacy by design).
+- **Steps:**
+  1. A creates "Signed" with B and C. Check all three show the group with three members and A as the only owner.
+  2. B and C each send two messages. Check every device shows the four messages under the right names.
+  3. Turn C's Wi-Fi off. A sends three messages and B sends two. Then B leaves. Turn C's Wi-Fi back on and wait 30 s.
+  4. A adds D. Check D gets the group and its history.
+  5. On B (the former member, or on C if B is gone from the UI), try to add a member to the group.
+  6. *(Optional, needs E)* A creates "Mixed" with B and E.
+- **Pass:**
+  - Step 1: A's log has `Group v2 created: group=g2-...`; B's and C's logs have `Group v2 joined: group=g2-... owner=<A's id>`;
+    no `Group Create` line for that group.
+  - Step 2: no `SECURITY:` line on any device; names are the ones A's device gave B and C (the signed labels).
+  - Step 3: C shows the five messages and B as no longer a member within about 30 s of reconnecting.
+  - Step 4: D shows the group and the history **written by A and C**. D does **not** show B's messages: B left, and sync does not
+    re-deliver a former member's messages (documented limit, `docs/security.md` section 8). That is a pass, not a failure.
+  - Step 5: a clear failure ("Only the group owner can add members"), nothing sent.
+  - Step 6: "Mixed" is created as a legacy group and E receives it as before; A's log has no `Group v2 created` for it.
+  - In none of the steps do the logs contain `Group bundle ignored` (except `no-own-cert` for a bundle that does not concern
+    that device), `SECURITY:` or `Group cert dropped`.
+- **A FAIL means:** a member that never appears or a message that never arrives (look for `Group bundle ignored ... reason=` and
+  `Group cert dropped ... reason=`; the reason names the rule: `subject-key-binding` means the receiver's pin for that device
+  is not the key on the wire, i.e. a pairing or TOFU pin problem, not a group bug; `owner-not-paired` means the receiver is not
+  paired with the owner); the group created as legacy when every device was connected (check that each invitee's session
+  reported level 2: a stale build or a session that came up after the create); the desktop failing to sign or verify (its
+  `PersistedFlashCrypto` key). Each is a new `ERROR-NNN`.
+- **Also note:** how long B and C took to show the group after A created it; whether D's catch-up needed the 2 s backup push.
+- **Source:** `docs/group/v1-signed-membership-plan.md` (D1 to D10), `docs/protocol.md` "v2 groups". The attacks themselves
+  (forged charter, cert by a non-owner, key swap, unsigned or wrongly signed message, forged relay, replay, legacy frame for a
+  `g2-` id, budget) cannot be staged from the UI and are covered by unit tests only: `SignedGroupsTest`,
+  `GroupSignatureRulesTest`, `GroupBundleCodecTest`.
+- **Status:** TODO
+
 ## 4d. Session ceiling and dial budget (ADR-057, `docs/network/PRESENCE-CONNECTIONS-PLAN.md` "Session ceiling")
 
 ### SC-01 — A phone holds a 20-member group's sessions (ceiling 24)
@@ -482,6 +519,7 @@ They replace every *(measure)* estimate in the plans and decide tuning. Record e
 | MEAS-05 | CPU warning threshold (40 % of all cores for 30 s) against real calls | `CALL_DIAG proc cpu=` from GRP-08 and CALL-03 | The G6 threshold | TODO |
 | MEAS-06 | Desktop render cost: capture + BGRA conversion + Skia upload was ~1.5 of ~2.5 cores (EXP-017) | Profile a 4-person desktop call | Whether hardware video (ADR-052) or render work comes first | TODO |
 | MEAS-07 | **DR0** discovery failure matrix: for each of home router, mesh in bridge mode, router with IGMP snooping, client isolation, Android hotspot with 2+ clients, desktop with Hyper-V/VPN adapters: does mDNS work, does the `224.0.0.168` beacon work, does a directed broadcast arrive, is TCP 45822 reachable; screen on and off | Plan §4 DR0 (a small broadcast test sender is enough); log in `logs/experiments.md` | Which network each of DR2 (broadcast) and DR3 (subnet sweep) fixes. DR2/DR3 are built without waiting for it (owner 2026-09-29); DR6 (BLE) is postponed, FO-02 | TODO |
+| MEAS-08 | **Signed groups (ADR-044 V1):** identity-key sign latency (StrongBox and TEE phones, desktop) and ECDSA P-256 verify cost per message and per bundle, including a 100-message catch-up round in a 6-member group | Add a temporary `PERFORMANCE` timing log around `GroupSigning.signMessage` and `SignedGroups.verifiedAuthorLabel`, run GT-02 step 3 and a 100-message sync; log in `logs/experiments.md` | Whether the per-peer verification budget (120 per minute) and the message path need tuning, and whether signing on the send path needs to move off the caller | TODO |
 
 ---
 
