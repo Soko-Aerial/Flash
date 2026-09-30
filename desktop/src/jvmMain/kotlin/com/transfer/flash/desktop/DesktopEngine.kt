@@ -750,6 +750,9 @@ public class DesktopEngine(
                 // ADR-044 V1: signed groups. The port signs with the identity key the TLS certificate presents; the
                 // pin and the session's level and key are what an owner checks before certifying an invitee.
                 groupCrypto = com.transfer.flash.core.engine.group.FlashGroupCrypto(crypto),
+                // ADR-044 V2: an owner-signed certificate becomes a pin here, so a member never paired with this
+                // device still connects and is trusted inside that group (and only there).
+                groupVouching = com.transfer.flash.core.engine.group.TrustStoreGroupVouching(trustStore),
                 pinnedFingerprint = { peerId -> trustStore.getPin(FlashDeviceId(peerId)) },
                 peerGroupProtocol = { peerId -> network.activeSessions.value[FlashDeviceId(peerId)]?.peer?.groupProtocol ?: 1 },
                 peerIdentityKey = { peerId ->
@@ -857,6 +860,10 @@ public class DesktopEngine(
             // Group Phase 0 trust closure, like the app host: only paired peers can place or
             // receive calls; an inbound invite from a stranger is auto-declined, never rung.
             isTrustedPeer = { peerId -> trustStore.isTrusted(FlashDeviceId(peerId)) },
+            // ADR-044 V2: a vouched member of a v2 group may join that group's calls without being paired.
+            isGroupTrustedPeer = { peerId, groupId ->
+                chatImpl?.isGroupPeerTrusted(groupId, peerId) ?: trustStore.isTrusted(FlashDeviceId(peerId))
+            },
             // Honest desktop settings: voice priority and performance mode read per call via
             // lambdas so settings changes take immediate effect.
             prioritiseVoice = { _settings.value.prioritiseVoiceQuality },

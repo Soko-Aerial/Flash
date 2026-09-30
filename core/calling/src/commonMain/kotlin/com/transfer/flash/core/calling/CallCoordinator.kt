@@ -51,6 +51,14 @@ public class CallCoordinator(
      */
     private val isTrustedPeer: (peerId: String) -> Boolean = { true },
     /**
+     * ADR-044 V2: whether [peerId] may take part in a call of group [groupId]. A member of a v2 group that the
+     * group owner vouched for is trusted there without being paired; 1:1 calls keep using [isTrustedPeer]. The
+     * default (paired only) is what a host without vouched groups wants. Suspend: the answer comes from the
+     * group roster, which lives in the chat database.
+     */
+    private val isGroupTrustedPeer: suspend (peerId: String, groupId: String) -> Boolean =
+        { peerId, _ -> isTrustedPeer(peerId) },
+    /**
      * Called once per finished call, with everything needed to write a call row into the
      * chat thread. Fired for every session that terminates, including declined and missed
      * ones, so a call log has no holes in it.
@@ -160,7 +168,7 @@ public class CallCoordinator(
         video: Boolean,
     ): Boolean {
         if (currentSession != null || currentGroupSession != null) return false // one call at a time
-        val trustedMembers = memberIds.filter { isTrustedPeer(it) && it != localDeviceId }
+        val trustedMembers = memberIds.filter { it != localDeviceId && isGroupTrustedPeer(it, groupId) }
         if (trustedMembers.isEmpty()) return false
 
         val currentMap = _ongoingGroupCalls.value.toMutableMap()
@@ -210,7 +218,7 @@ public class CallCoordinator(
         video: Boolean,
     ): Boolean {
         if (currentSession != null || currentGroupSession != null) return false
-        val trustedMembers = memberIds.filter { isTrustedPeer(it) && it != localDeviceId }
+        val trustedMembers = memberIds.filter { it != localDeviceId && isGroupTrustedPeer(it, groupId) }
         if (trustedMembers.isEmpty()) return false
 
         val groupCallUi = _ongoingGroupCalls.value[groupId]
@@ -257,7 +265,7 @@ public class CallCoordinator(
 
     /** Queries online members of a group to discover if an active call is ongoing. */
     override suspend fun queryGroupCall(groupId: String, memberIds: List<String>) {
-        val trustedMembers = memberIds.filter { isTrustedPeer(it) && it != localDeviceId }
+        val trustedMembers = memberIds.filter { it != localDeviceId && isGroupTrustedPeer(it, groupId) }
         val frame = CallWireFrame.GroupQuery(from = localDeviceId, groupId = groupId)
         trustedMembers.forEach { peerId ->
             sendFrame(frame, peerId)
@@ -283,7 +291,7 @@ public class CallCoordinator(
         if (frame !is CallWireFrame.GroupJoin && frame.from != peerId) return false
 
         if (frame is CallWireFrame.GroupPresence) {
-            if (!isTrustedPeer(peerId)) return false
+            if (!isGroupTrustedPeer(peerId, frame.groupId)) return false
             currentGroupSession?.takeIf { it.callId == frame.callId }?.let { live ->
                 live.onInboundFrame(frame, peerId)
                 return true
@@ -303,7 +311,7 @@ public class CallCoordinator(
         }
 
         if (frame is CallWireFrame.GroupQuery) {
-            if (!isTrustedPeer(peerId)) return false
+            if (!isGroupTrustedPeer(peerId, frame.groupId)) return false
             val liveSession = currentGroupSession
             if (liveSession != null && liveSession.groupId == frame.groupId && !liveSession.isSessionEnded) {
                 sendFrame(liveSession.presenceFrame(), peerId)
@@ -362,7 +370,7 @@ public class CallCoordinator(
         }
 
         if (frame is CallWireFrame.GroupInvite) {
-            if (!isTrustedPeer(peerId)) {
+            if (!isGroupTrustedPeer(peerId, frame.groupId)) {
                 sendFrame(CallWireFrame.GroupDecline(callId = frame.callId, from = localDeviceId, groupId = frame.groupId), peerId)
                 return true
             }
