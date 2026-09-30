@@ -54,4 +54,12 @@ public object FlashProtocol {
      * guesses about the other's framing semantics.
      */
     public fun isCompatible(peerVersion: Int): Boolean = peerVersion == VERSION
+
+    /**
+     * Group protocol level this build speaks, advertised in the WebSocket HELLO as `gv`
+     * (ADR-044 V1). Level 2 is "v2 groups": owner-rooted, signed membership and signed messages.
+     * A peer that sends no `gv` is level 1. Additive on purpose: [VERSION] is an exact-match
+     * gate and must not change for this.
+     */
+    public const val GROUP_PROTOCOL_LEVEL: Int = 2
 }

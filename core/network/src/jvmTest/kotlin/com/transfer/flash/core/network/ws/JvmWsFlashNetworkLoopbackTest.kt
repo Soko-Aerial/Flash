@@ -1,6 +1,8 @@
 package com.transfer.flash.core.network.ws
 
+import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.common.perf.FlashPerformanceMode
+import com.transfer.flash.core.common.protocol.FlashProtocol
 import com.transfer.flash.core.common.result.FlashResult
 import java.util.concurrent.ConcurrentLinkedQueue
 import kotlinx.coroutines.CoroutineScope
@@ -29,6 +31,7 @@ import org.junit.Test
  * tiebreaker (ERROR-023) must converge both instances onto ONE session per peer rather than
  * letting the sockets cross-wire and die.
  */
+@OptIn(FlashInternalApi::class)
 class JvmWsFlashNetworkLoopbackTest {
 
     private val testScope = CoroutineScope(Dispatchers.IO)
@@ -71,6 +74,29 @@ class JvmWsFlashNetworkLoopbackTest {
             assertTrue("B must receive the text frame", awaitTrue(10_000) { received.isNotEmpty() })
             assertEquals("ping-from-A", received.first())
             job.cancel()
+        } finally {
+            runBlocking { a.stop() }
+            runBlocking { b.stop() }
+        }
+    }
+
+    @Test
+    fun `both HELLOs carry the group protocol level to each side (ADR-044 V1)`() {
+        val a = newNetwork("device-A", "Desktop A")
+        val b = newNetwork("device-B", "Desktop B")
+        try {
+            runBlocking { a.start(0) }
+            val portB = (runBlocking { b.start(0) } as FlashResult.Success).value
+            val dial = runBlocking { withTimeout(15_000) { a.connectManual("127.0.0.1", portB) } }
+            assertTrue("dial must succeed: $dial", dial is FlashResult.Success)
+            assertTrue("B must register A", awaitTrue(10_000) { b.activeSessions.value.isNotEmpty() })
+
+            // The dialer learned it from the accepting side's reply, the acceptor from the dialer's HELLO.
+            val peerAsSeenByA = (dial as FlashResult.Success).value.peer
+            val peerAsSeenByB = b.activeSessions.value.values.single().peer
+            assertEquals(FlashProtocol.GROUP_PROTOCOL_LEVEL, peerAsSeenByA.groupProtocol)
+            assertEquals(FlashProtocol.GROUP_PROTOCOL_LEVEL, peerAsSeenByB.groupProtocol)
+            assertTrue("this build must advertise at least level 2", peerAsSeenByA.groupProtocol >= 2)
         } finally {
             runBlocking { a.stop() }
             runBlocking { b.stop() }

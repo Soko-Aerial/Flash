@@ -7,6 +7,7 @@ import com.transfer.flash.core.common.result.runSuspendCatching
 import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.common.logging.FlashLog
 import com.transfer.flash.core.common.model.FlashDevice
+import com.transfer.flash.core.common.protocol.FlashProtocol
 import com.transfer.flash.core.common.model.FlashDeviceId
 import com.transfer.flash.core.common.model.FlashPeerPresence
 import com.transfer.flash.core.common.model.FlashTransportType
@@ -289,6 +290,7 @@ public class JvmWsFlashNetwork(
                 "deviceId" to localDeviceId,
                 "name" to localFriendlyName,
                 "ping" to connection.keepalivePingIntervalMs.toString(),
+                "gv" to FlashProtocol.GROUP_PROTOCOL_LEVEL.toString(),
             )
             connection.sendText(helloMsg)
 
@@ -456,6 +458,7 @@ public class JvmWsFlashNetwork(
                 "deviceId" to localDeviceId,
                 "name" to localFriendlyName,
                 "ping" to connection.keepalivePingIntervalMs.toString(),
+                "gv" to FlashProtocol.GROUP_PROTOCOL_LEVEL.toString(),
             )
             connection.sendText(helloReply)
 
@@ -784,6 +787,7 @@ public class JvmWsFlashNetwork(
                 transportType = FlashTransportType.LAN,
                 presence = FlashPeerPresence.Online,
                 protocolVersion = peerVersion,
+                groupProtocol = parseGroupProtocol(parsedFields["gv"]),
             )
 
             // Raises the read cap from 64 KiB to the post-handshake limit (audit S5).
