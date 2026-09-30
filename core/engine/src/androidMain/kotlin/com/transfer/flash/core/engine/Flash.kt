@@ -485,6 +485,9 @@ private class Wiring(
             // ADR-044 V1: signed groups. The port signs with the identity key the TLS certificate presents; the
             // pin and the session's level and key are what an owner checks before certifying an invitee.
             groupCrypto = com.transfer.flash.core.engine.group.FlashGroupCrypto(crypto),
+            // ADR-044 V2: an owner-signed certificate becomes a pin here, so a member never paired with this device
+            // still connects and is trusted inside that group (and only there).
+            groupVouching = com.transfer.flash.core.engine.group.TrustStoreGroupVouching(trustStore),
             pinnedFingerprint = { peerId -> trustStore.getPin(FlashDeviceId(peerId)) },
             peerGroupProtocol = { peerId -> networkImpl.activeSessions.value[FlashDeviceId(peerId)]?.peer?.groupProtocol ?: 1 },
             peerIdentityKey = { peerId ->

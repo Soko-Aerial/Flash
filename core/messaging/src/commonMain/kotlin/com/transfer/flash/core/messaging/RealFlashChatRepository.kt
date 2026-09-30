@@ -2259,8 +2259,9 @@ public class RealFlashChatRepository(
      * ADR-044 V2 (E3): a peer this device accepts group traffic from. Paired, or an active member of a v2 group whose
      * verified certificate names the very key the peer's live TLS session presented. It never reads the pin store, so
      * a device that only knows a member's id, or connected as that id before the vouch replaced its pin, is refused.
+     * Public so a host can hand the same predicate to the call layer (a vouched member may join a group call).
      */
-    private suspend fun isGroupPeerTrusted(groupId: String, deviceId: String): Boolean =
+    public suspend fun isGroupPeerTrusted(groupId: String, deviceId: String): Boolean =
         isTrustedPeer(deviceId) ||
             signedGroups?.isVouchedMember(groupId, deviceId, peerIdentityKey(deviceId)) == true
 
