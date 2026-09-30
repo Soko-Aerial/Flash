@@ -7,6 +7,7 @@ import com.transfer.flash.core.common.result.runSuspendCatching
 import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.common.logging.FlashLog
 import com.transfer.flash.core.common.model.FlashDevice
+import com.transfer.flash.core.common.protocol.Base64
 import com.transfer.flash.core.common.protocol.FlashProtocol
 import com.transfer.flash.core.common.model.FlashDeviceId
 import com.transfer.flash.core.common.model.FlashPeerPresence
@@ -788,6 +789,7 @@ public class JvmWsFlashNetwork(
                 presence = FlashPeerPresence.Online,
                 protocolVersion = peerVersion,
                 groupProtocol = parseGroupProtocol(parsedFields["gv"]),
+                identityKey = connection.peerPublicKeyEncoded?.let { Base64.encode(it) },
             )
 
             // Raises the read cap from 64 KiB to the post-handshake limit (audit S5).

@@ -79,6 +79,17 @@ public class WsConnection(
     /** The network's shared keepalive clock (PC1), or null to run a private loop as before. */
     private val ticker: WsKeepaliveTicker? = null,
 ) {
+    /**
+     * The peer's TLS leaf public key (X.509 SPKI) exactly as presented in this connection's handshake,
+     * or null on a plaintext socket (tests only). The leaf is Flash's identity key
+     * (`docs/security.md` sections 3.1 and 7), so its SHA-256 is the fingerprint the trust store pins. A v2 group
+     * owner needs the key itself to write a member cert (ADR-044 V1, plan D10). Read once at
+     * construction: a [WsConnection] is only built after the handshake has completed.
+     */
+    public val peerPublicKeyEncoded: ByteArray? = (socket as? javax.net.ssl.SSLSocket)?.let { tls ->
+        runCatching { tls.session.peerCertificates.firstOrNull()?.publicKey?.encoded }.getOrNull()
+    }
+
     public interface Listener {
         public fun onTextMessage(connection: WsConnection, text: String)
         public fun onBinaryMessage(connection: WsConnection, data: ByteArray)
