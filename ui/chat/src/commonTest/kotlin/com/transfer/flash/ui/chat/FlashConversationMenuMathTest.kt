@@ -45,4 +45,20 @@ class FlashConversationMenuMathTest {
         assertTrue(lastMember.contains(FlashConversationMenuItem.GROUP_INFO))
         assertTrue(lastMember.contains(FlashConversationMenuItem.MARK_UNREAD))
     }
+
+    @Test
+    fun aDeviceThatIsOutOfTheGroupCanReadAndSearchButNotAddOrLeave() {
+        val out = FlashConversationMenuMath.groupItems(canLeave = true, isMember = false)
+
+        assertEquals(
+            listOf(
+                FlashConversationMenuItem.GROUP_INFO,
+                FlashConversationMenuItem.SEARCH,
+                FlashConversationMenuItem.MARK_UNREAD,
+            ),
+            out,
+        )
+        assertFalse(out.contains(FlashConversationMenuItem.ADD_MEMBERS))
+        assertFalse(out.contains(FlashConversationMenuItem.LEAVE_GROUP))
+    }
 }

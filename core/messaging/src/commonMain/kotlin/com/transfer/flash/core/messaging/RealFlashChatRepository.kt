@@ -25,6 +25,7 @@ import com.transfer.flash.core.messaging.model.FlashMessageStatus
 import com.transfer.flash.core.messaging.model.FlashMessageUi
 import com.transfer.flash.core.messaging.model.FlashNetworkTransport
 import com.transfer.flash.core.messaging.model.FlashQuotedReplyUi
+import com.transfer.flash.core.messaging.model.FlashSelfMembership
 import com.transfer.flash.core.messaging.model.FlashReaction
 import com.transfer.flash.core.messaging.model.FlashVoiceAttachmentUi
 import com.transfer.flash.core.messaging.protocol.ChatWireFrame
@@ -700,6 +701,7 @@ public class RealFlashChatRepository(
                 val conversationEntity = conversationDao.get(conversationId)
                 if (conversationEntity?.isGroup == true) {
                     val members = groupMemberDao?.activeMembers(conversationId).orEmpty()
+                    val selfMembership = selfMembershipOf(groupMemberDao?.member(conversationId, localDeviceId))
                     val memberIds = members.mapTo(HashSet()) { it.deviceId }
                     val onlineMembers = members.count { it.deviceId in peers.online }
                     val onlineMemberIds = members.filter { it.deviceId in peers.online }.mapTo(HashSet()) { it.deviceId }
@@ -725,8 +727,9 @@ public class RealFlashChatRepository(
                             memberCount = members.size,
                             onlineCount = onlineMembers,
                             typingMemberNames = activeTypingNames,
-                            // Group voice & video calls supported via multi-leg full-mesh CallCoordinator
-                            showCallActions = true,
+                            // Group voice & video calls supported via multi-leg full-mesh CallCoordinator; a device that
+                            // left or was removed is out of the calls too.
+                            showCallActions = selfMembership == FlashSelfMembership.Active,
                         ),
                         messages = content.messages,
                         draftText = content.draftText,
@@ -736,8 +739,10 @@ public class RealFlashChatRepository(
                                 introducedBy = introducedByOf(member, ownerName),
                             )
                         },
-                        canRemoveMembers = conversationEntity.groupProto == GroupPolicy.V2_PROTOCOL &&
+                        canRemoveMembers = selfMembership == FlashSelfMembership.Active &&
+                            conversationEntity.groupProto == GroupPolicy.V2_PROTOCOL &&
                             conversationEntity.groupCreatedBy == localDeviceId,
+                        selfMembership = selfMembership,
                     ) to Pair(content.newestMessageId, content.newestInboundId)
                 } else {
                     directHeaderState(content, peers, typingByConversation, conversationId)
@@ -1166,6 +1171,12 @@ public class RealFlashChatRepository(
     ) {
         val members = groupMemberDao ?: return
         val deliveries = groupDeliveryDao ?: return
+        if (isRemovedHere(members, conversation.id)) {
+            // The composer is replaced by a notice, so this is only a stale draft or a race. Storing the row would leave
+            // a PENDING message that every receiver drops and that this device would retry for good.
+            FlashLog.w("CHAT", "Group message not sent: this device is no longer a member of ${conversation.id}")
+            return
+        }
         val recipients = members.activeMembers(conversation.id)
             .filter { it.deviceId != localDeviceId }
         if (recipients.isEmpty()) return
@@ -1387,6 +1398,7 @@ public class RealFlashChatRepository(
         val deliveries = groupDeliveryDao
         scope.launch(ioDispatcher) {
             if (conversationDao.get(conversationId)?.isGroup != true) return@launch
+            if (members != null && isRemovedHere(members, conversationId)) return@launch
             // ADR-044 V2 (E3): files are paired-only, so a vouched member is not a recipient and cannot leave
             // this message PENDING for a delivery that will never be attempted.
             val recipients = members?.activeMembers(conversationId)
@@ -1811,7 +1823,7 @@ public class RealFlashChatRepository(
                 }
             }
             is GroupWireFrame.GroupMedia -> {
-                if (!isActiveTrustedMember(members, frame.groupId, frame.from)) return
+                if (isRemovedHere(members, frame.groupId) || !isActiveTrustedMember(members, frame.groupId, frame.from)) return
                 pendingGroupMedia[frame.transferId] = frame
                 val now = timeSource.nowMs()
                 groupTransportSink?.send(
@@ -1974,7 +1986,15 @@ public class RealFlashChatRepository(
             val groupIds = members.activeGroupIdsFor(localDeviceId)
             for (groupId in groupIds) {
                 val peer = members.member(groupId, peerDeviceId) ?: continue
-                if (!peer.isActive) continue
+                if (!peer.isActive) {
+                    // A device the owner removed while it was offline hears of it here: a member never sends a roster to
+                    // an inactive peer, and that peer (still thinking it belongs) is ignored when it sends its own, so
+                    // without this it would wait for the group forever. Only the owner's tombstone travels this way.
+                    if (isV2Group(groupId)) {
+                        signedGroups?.removalNoticeFor(groupId, peerDeviceId)?.let { groupTransportSink?.send(peerDeviceId, it) }
+                    }
+                    continue
+                }
                 if (isV2Group(groupId)) {
                     // A v2 group reconciles with its signed roster (charter + every cert, tombstones included).
                     signedGroups?.bundleFor(groupId)?.let { groupTransportSink?.send(peerDeviceId, it) }
@@ -2300,12 +2320,39 @@ public class RealFlashChatRepository(
         isTrustedPeer(deviceId) ||
             signedGroups?.isVouchedMember(groupId, deviceId, peerIdentityKey(deviceId)) == true
 
-    /** [isGroupPeerTrusted] and an active roster row: what group text, receipts, reads, deletes, typing and sync require. */
+    /**
+     * [isGroupPeerTrusted] and an active roster row: what group text, receipts, reads, deletes, typing and sync require.
+     * A device that is itself no longer a member takes none of it (it left, or the owner removed it), so a member that
+     * has not yet heard of the removal cannot keep feeding it messages it would otherwise store.
+     */
     private suspend fun isActiveGroupMember(
         members: GroupMemberDao,
         groupId: String,
         deviceId: String,
-    ): Boolean = isGroupPeerTrusted(groupId, deviceId) && members.member(groupId, deviceId)?.isActive == true
+    ): Boolean = !isRemovedHere(members, groupId) &&
+        isGroupPeerTrusted(groupId, deviceId) && members.member(groupId, deviceId)?.isActive == true
+
+    /** True when this device's own roster row says it is no longer a member: it left, or the owner removed it. */
+    private suspend fun isRemovedHere(members: GroupMemberDao, groupId: String): Boolean =
+        members.member(groupId, localDeviceId)?.isActive == false
+
+    /**
+     * A peer allowed into [groupId]'s calls: trusted in the group (paired, or vouched with a matching live key) **and**
+     * an active roster member, while this device is itself still a member. [isGroupPeerTrusted] alone is not enough
+     * for calls: a paired member the owner removed would otherwise keep ringing and joining the group's calls.
+     * Public so a host can hand it to the call layer.
+     */
+    public suspend fun isGroupCallPeer(groupId: String, deviceId: String): Boolean {
+        val members = groupMemberDao ?: return isGroupPeerTrusted(groupId, deviceId)
+        return isActiveGroupMember(members, groupId, deviceId)
+    }
+
+    private fun selfMembershipOf(row: GroupMemberEntity?): FlashSelfMembership = when {
+        row == null || row.isActive -> FlashSelfMembership.Active
+        // A leave is issued by the leaver (v2) or carries no issuer (legacy); only an owner tombstone is a removal.
+        row.issuerId == null || row.issuerId == localDeviceId -> FlashSelfMembership.Left
+        else -> FlashSelfMembership.Removed
+    }
 
     private suspend fun applyMembership(members: GroupMemberDao, candidate: GroupMemberEntity) {
         val current = members.member(candidate.groupId, candidate.deviceId)

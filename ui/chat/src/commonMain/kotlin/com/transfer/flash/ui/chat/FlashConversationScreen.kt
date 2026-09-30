@@ -56,6 +56,7 @@ import com.transfer.flash.core.messaging.model.FlashImageAttachmentUi
 import com.transfer.flash.core.messaging.model.FlashMessageUi
 import com.transfer.flash.core.messaging.model.FlashQuotedReplyUi
 import com.transfer.flash.core.messaging.model.FlashReaction
+import com.transfer.flash.core.messaging.model.FlashSelfMembership
 import com.transfer.flash.core.messaging.util.sampleFlashConversationState
 import com.transfer.flash.ui.shims.FlashBackHandler
 import com.transfer.flash.ui.shims.FlashPermission
@@ -338,7 +339,10 @@ fun FlashConversationScreen(
     var showLeaveConfirm by remember { mutableStateOf(false) }
     var memberToRemove by remember { mutableStateOf<FlashGroupMemberUi?>(null) }
     val menuItems = if (state.header.isGroup) {
-        FlashConversationMenuMath.groupItems(canLeave = state.header.memberCount > 1)
+        FlashConversationMenuMath.groupItems(
+            canLeave = state.header.memberCount > 1,
+            isMember = state.selfMembership == FlashSelfMembership.Active,
+        )
     } else {
         FlashConversationMenuMath.directItems(canRevokeTrust = isPeerTrusted && onRevokePeerTrust != null)
     }
@@ -589,7 +593,10 @@ fun FlashConversationScreen(
             }
         },
         bottomBar = {
-            FlashComposer(
+            // UI-029 addendum 3: a device that left or was removed has nothing to type into; say so instead.
+            if (state.selfMembership != FlashSelfMembership.Active) {
+                FlashGroupSelfNotice(membership = state.selfMembership)
+            } else FlashComposer(
                 draft = draft,
                 onDraftChanged = {
                     draft = it

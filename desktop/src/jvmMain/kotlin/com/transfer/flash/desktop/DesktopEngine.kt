@@ -862,7 +862,7 @@ public class DesktopEngine(
             isTrustedPeer = { peerId -> trustStore.isTrusted(FlashDeviceId(peerId)) },
             // ADR-044 V2: a vouched member of a v2 group may join that group's calls without being paired.
             isGroupTrustedPeer = { peerId, groupId ->
-                chatImpl?.isGroupPeerTrusted(groupId, peerId) ?: trustStore.isTrusted(FlashDeviceId(peerId))
+                chatImpl?.isGroupCallPeer(groupId, peerId) ?: trustStore.isTrusted(FlashDeviceId(peerId))
             },
             // Honest desktop settings: voice priority and performance mode read per call via
             // lambdas so settings changes take immediate effect.

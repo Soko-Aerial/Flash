@@ -2,6 +2,7 @@ package com.transfer.flash.core.messaging
 
 import com.transfer.flash.core.common.result.FlashError
 import com.transfer.flash.core.common.result.FlashResult
+import com.transfer.flash.core.messaging.model.FlashSelfMembership
 import com.transfer.flash.core.messaging.protocol.GroupCanonical
 import com.transfer.flash.core.messaging.protocol.GroupCharter
 import com.transfer.flash.core.messaging.protocol.GroupPolicy
@@ -870,6 +871,165 @@ class SignedGroupsTest {
 
         assertNull("V1: x is unknown to a device that never paired it", directory.getValue("recv").members.members[created.groupId to "x"])
         assertFalse(receiver.isVouchedMember(created.groupId, "x", keyOf(directory, "x")))
+    }
+
+    // ------------------------------------------------------------------------------ removal ripple
+
+    /** Takes [id] off the network: no session with anyone, so nothing reaches it and it hears nothing. */
+    private fun goOffline(id: String) {
+        liveSessions.removeIf { id in it.split("|") }
+    }
+
+    @Test
+    fun `a member removed while offline learns of it when a member reconnects`() = runBlocking {
+        vouchedTrust = true
+        unpair("dev-b", "dev-c")
+        mesh("dev-a", "dev-b", "dev-c")
+        val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+        goOffline("dev-c")
+
+        val removed = nodes.getValue("dev-a").repo.removeGroupMember(groupId, "dev-c")
+        assertTrue("remove must succeed: $removed", removed is FlashResult.Success)
+        settle()
+        assertEquals("c was offline, so nothing reached it", setOf("dev-a", "dev-b", "dev-c"), active("dev-c", groupId))
+
+        // b never sends a roster to an inactive peer, and c's own roster is ignored by b: only the notice tells c.
+        connect("dev-b", "dev-c")
+        settle()
+
+        assertEquals("c now knows it is out", setOf("dev-a", "dev-b"), active("dev-c", groupId))
+        assertEquals("the owner's tombstone, relayed by b", "dev-a", row("dev-c", groupId, "dev-c").issuerId)
+        assertEquals("c withdrew the vouch it held for b", emptySet<String>(), vouchingOf("dev-c").groupsOf("dev-b"))
+        assertNull(vouchingOf("dev-c").pinOf("dev-b"))
+    }
+
+    @Test
+    fun `a member who left by choice is not sent a removal notice`() = runBlocking {
+        mesh("dev-a", "dev-b", "dev-c")
+        val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+        nodes.getValue("dev-c").repo.leaveGroup(groupId)
+        settle()
+        outbound.clear()
+
+        connect("dev-b", "dev-c")
+        settle()
+
+        assertTrue(
+            "a leave is the member's own act, so nothing is sent to them",
+            outbound.none { it.from == "dev-b" && it.to == "dev-c" && it.frame is GroupWireFrame.Bundle },
+        )
+    }
+
+    @Test
+    fun `a removed member cannot send, its screen says so and it is out of the calls`() = runBlocking {
+        vouchedTrust = true
+        mesh("dev-a", "dev-b", "dev-c")
+        val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+        val c = nodes.getValue("dev-c").repo
+        c.openConversation(groupId)
+        settle()
+        assertEquals(FlashSelfMembership.Active, c.conversationState.value.selfMembership)
+        assertTrue(c.conversationState.value.header.showCallActions)
+
+        nodes.getValue("dev-a").repo.removeGroupMember(groupId, "dev-c")
+        settle()
+
+        assertEquals(FlashSelfMembership.Removed, c.conversationState.value.selfMembership)
+        assertFalse("no call buttons for a device that is out", c.conversationState.value.header.showCallActions)
+        outbound.clear()
+        c.sendText("hello?")
+        settle()
+        assertNull("nothing is stored, so nothing stays PENDING for good", stored("dev-c", groupId, "hello?"))
+        assertTrue(outbound.none { it.from == "dev-c" && it.frame is GroupWireFrame.Message })
+        assertTrue("the members it left behind still see the group as theirs", nodes.getValue("dev-b").repo.isGroupCallPeer(groupId, "dev-a"))
+    }
+
+    @Test
+    fun `a member who leaves sees the group as left and cannot send`() = runBlocking {
+        mesh("dev-a", "dev-b", "dev-c")
+        val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+        val b = nodes.getValue("dev-b").repo
+        b.openConversation(groupId)
+        b.leaveGroup(groupId)
+        settle()
+
+        assertEquals(FlashSelfMembership.Left, b.conversationState.value.selfMembership)
+        assertFalse(b.conversationState.value.canRemoveMembers)
+        b.sendText("one more thing")
+        settle()
+        assertNull(stored("dev-b", groupId, "one more thing"))
+    }
+
+    @Test
+    fun `a removed member is no longer a call peer although it is still paired`() = runBlocking {
+        mesh("dev-a", "dev-b", "dev-c")
+        val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+        val b = nodes.getValue("dev-b").repo
+        assertTrue("an active member is a call peer", b.isGroupCallPeer(groupId, "dev-c"))
+
+        nodes.getValue("dev-a").repo.removeGroupMember(groupId, "dev-c")
+        settle()
+
+        assertFalse("the removed member may not ring or join the group's calls", b.isGroupCallPeer(groupId, "dev-c"))
+        assertTrue("the plain gate is unchanged, c is still paired", b.isGroupPeerTrusted(groupId, "dev-c"))
+        assertTrue(b.isGroupCallPeer(groupId, "dev-a"))
+        assertFalse("and the removed device is out of every call of the group", nodes.getValue("dev-c").repo.isGroupCallPeer(groupId, "dev-a"))
+        assertFalse("a group nobody here knows has no call peers", b.isGroupCallPeer("g2-" + "0".repeat(32), "dev-a"))
+    }
+
+    @Test
+    fun `a removed member takes nothing from a member that has not heard of the removal yet`() = runBlocking {
+        vouchedTrust = true
+        unpair("dev-b", "dev-c")
+        mesh("dev-a", "dev-b", "dev-c")
+        val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+        goOffline("dev-b")
+
+        nodes.getValue("dev-a").repo.removeGroupMember(groupId, "dev-c")
+        settle()
+        assertEquals("b is stale: it still lists c", setOf("dev-a", "dev-b", "dev-c"), active("dev-b", groupId))
+        assertEquals(setOf("dev-a", "dev-b"), active("dev-c", groupId))
+        assertNull("c withdrew its vouch for b", vouchingOf("dev-c").pinOf("dev-b"))
+
+        // b reconnects to c first: its roster and its next message both reach a device that is out.
+        connect("dev-b", "dev-c")
+        deliver("dev-b", "dev-c", message(groupId, "m-stale", "dev-b", "for members only", sign("dev-b", groupId, "m-stale", "dev-b", "for members only")))
+
+        assertNull("c stores nothing from a group it was removed from", stored("dev-c", groupId, "for members only"))
+        assertNull("and b's roster did not bring the pin back", vouchingOf("dev-c").pinOf("dev-b"))
+
+        // Any member that has the tombstone converges b.
+        connect("dev-a", "dev-b")
+        settle()
+        assertEquals("b caught up from the owner", setOf("dev-a", "dev-b"), active("dev-b", groupId))
+    }
+
+    @Test
+    fun `a removed member can be added again and takes part again`() = runBlocking {
+        vouchedTrust = true
+        unpair("dev-b", "dev-c")
+        mesh("dev-a", "dev-b", "dev-c")
+        val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+        nodes.getValue("dev-a").repo.removeGroupMember(groupId, "dev-c")
+        settle()
+        assertEquals(emptySet<String>(), vouchingOf("dev-b").groupsOf("dev-c"))
+
+        val readded = nodes.getValue("dev-a").repo.addGroupMembers(groupId, setOf("dev-c"))
+        assertTrue("the owner can add the removed member back: $readded", readded is FlashResult.Success)
+        settle()
+
+        for (id in listOf("dev-a", "dev-b", "dev-c")) {
+            assertEquals("$id: everybody is back", setOf("dev-a", "dev-b", "dev-c"), active(id, groupId))
+        }
+        assertEquals("the re-add outranks the removal", 3L, row("dev-b", groupId, "dev-c").membershipVersion)
+        assertEquals("b vouches c again", setOf(groupId), vouchingOf("dev-b").groupsOf("dev-c"))
+        val c = nodes.getValue("dev-c").repo
+        c.openConversation(groupId)
+        settle()
+        assertEquals(FlashSelfMembership.Active, c.conversationState.value.selfMembership)
+        say("dev-c", groupId, "I am back")
+        assertNotNull("a and b store what c says once c is back", stored("dev-a", groupId, "I am back"))
+        assertNotNull(stored("dev-b", groupId, "I am back"))
     }
 
     // ------------------------------------------------------------------------------ harness: nodes
