@@ -11,7 +11,7 @@
 # transitive resolution failure for the consumer, not a missing feature.
 #
 # 1.1.0 added four (core:calling, ui:theme, ui:chat, ui:callui); the current dev tree adds
-# core:ptt (artifact `core-ptt`, api-depended on by core:engine) and ui:platform-shims
+# core:ptt (artifact `core-ptt`, api-depended on by core:engine and, since ADR-058, ui:callui) and ui:platform-shims
 # (artifact `ui-platform-shims`, a runtime dependency of ui-chat). The ui:* modules build
 # against compileSdk 37 while core:* stay on 35, so they are the ones to look at first if a
 # JitPack build starts failing on an SDK platform it cannot install.

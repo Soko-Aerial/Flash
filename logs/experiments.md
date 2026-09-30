@@ -1,5 +1,31 @@
 # Experiments Log
 
+## EXP-018 — `javax.sound.sampled` for desktop push-to-talk: formats, release behaviour, cold-open latency
+
+### Date
+2026-09-30
+
+### Setup
+This PC (Windows 11, default microphone and speakers; the JDK used for the probe was not recorded). A throwaway Java probe (not committed; it lived
+in the session scratchpad) opened the default capture and playback lines at 16 kHz and 8 kHz, 16-bit signed little-endian mono,
+which is exactly the PTT wire format (ADR-032). **The raw probe output was not saved**, so only the conclusions below are recorded;
+re-run a probe on other hardware (PTTD-02) before generalising anything here.
+
+### Observed
+| Question | Answer on this machine |
+|---|---|
+| Are 16 kHz and 8 kHz mono PCM16 supported for capture and for playback? | Yes, both directions, both rates |
+| Does a blocked `SourceDataLine.write` return when the line is flushed, stopped and closed from another thread? | Yes (the JVM playout relies on it to stop promptly; unit-tested with a fake, hardware-confirmed here) |
+| Cold open of the capture line | about 1.0 s the first time, about 0.23 s on later opens |
+
+### Conclusions
+- The formats need no resampler on this hardware. The JVM capture still tries the requested rate then 8 kHz and reports the rate
+  actually opened, so a device that refuses 16 kHz degrades to LOW quality instead of failing.
+- A ~1 s first open means the first words of the first session after launch can be clipped. A pre-warm (open and immediately
+  stop the line once at startup) is the obvious mitigation and is **not built** (PTTD-04).
+- Do **not** treat one Windows sound stack as representative: USB headsets and Linux ALSA/PulseAudio are untested (PTTD-02).
+  This is not a throughput or quality benchmark.
+
 ## EXP-017 — Desktop group video call: where the CPU goes, and memory after the frame-leak fix
 
 ### Date

@@ -1,5 +1,65 @@
 # Progress Log
 
+## 2026-09-30 — Push-to-talk on the desktop: `:core:ptt` is Kotlin Multiplatform, the Windows app takes part (ADR-058)
+
+### Worked on
+The owner asked for the benefits and risks of the multiplatform refactor, stated that iOS and Linux are future goals, and then
+asked for PTT to be implemented. The refactor trade-off was explained first (NET-1 via `jvmAndAndroidMain` gives nothing to iOS or
+Linux and contradicts D1 = Option B; ENG-1 is worthwhile but only after a device-verified baseline and before any iOS host;
+MSG-2/APP-2 are maintainability only). The PTT work itself is the cheapest step toward iOS that also delivers something now, so
+it was built. Three commits: `c8a9aa3` (module), `824aeb0` (desktop engine), `37a2e66` (UI).
+
+### Changed
+- **`:core:ptt` (c8a9aa3):** KMP with Android + `jvm()` targets. `PttSessionEngine` and `PttPlayoutCore` are commonMain. The hardware
+  is behind `PttAudioPlatform` / `PttCaptureDevice` / `PttPlayoutDevice`. Android actual = the old `AudioRecord`/`AudioTrack` code
+  reshaped; JVM actual = `javax.sound.sampled` through `PttPcmLines` (testable without hardware). `expect`s: `pttElapsedRealtimeMs()`
+  (now public), `PttLock`, `platformPttAudio()`. `elapsedRealtimeMs` is an engine constructor parameter because the Android host
+  test stub of `SystemClock` throws. Nested `StartResult`/`Snapshot` are top-level `PttCaptureStart`/`PttPlayoutSnapshot`;
+  `PttCapture`/`PttPlayout` are internal.
+- **`DesktopEngine` (824aeb0):** builds the engine, routes `FLASH_PTT`/`FLASH_PTSS` text and `PTT1` binary before the other parsers,
+  members = active sessions that are paired, `isCallActive` from the call coordinator, a call starting calls `onCallStarted()`,
+  `stop()` shuts it down, `ptt` is exposed like `calls`. Constructor seam `pttAudio` (default `platformPttAudio()`).
+- **UI (37a2e66):** `PttSessionOverlayContent` moved to `:ui:callui` (now `api(project(":core:ptt"))`); Android's `PttSessionOverlay`
+  keeps the deferred press, the microphone prompt and the notification and delegates the card. Desktop: `DesktopPttButton` in the
+  rail footer (new optional `footer` slot on `FlashNavigationRail`, null on Android) and a floating button above the compact bottom
+  nav, `Ctrl+Shift+T`, `Esc` = Stop/Leave, notices and refused presses to the snackbar, pointer-swallowing scrim. Shared
+  `pttPressOutcomeMessage`. UI-051 Addendum A written first (DESIGNED).
+- **Docs:** ADR-058, EXP-018, ERROR-049 update, TEST-BACKLOG `PTTD-01`...`PTTD-07`, UI-051 Addendum A, public-api section 14,
+  architecture, the stale `:core:ptt` comments (ci.yml, core/engine, jitpack), the developer-guide `core-ptt.md` (it described an API
+  that never existed), AGENTS.md section 29.
+
+### Verification
+- `:core:ptt:allTests`: 55 jvm + 41 android host tests (engine ported to commonMain, session tests for talk/listen at 16 and 8 kHz,
+  stop/leave ordering (ERROR-046), capture/playout loss, heartbeat RTT; JVM capture and playout loops against fake PCM lines).
+- `DesktopEnginePttTest` (2 tests): two real `DesktopEngine`s over the real WS transport and real mDNS/multicast on this PC, paired
+  through the real pairing flow; A presses, B's fake playout receives Start and eight `PTT1` frames in order and stops after A's
+  Stop; an unpaired press answers `NO_PEERS`. `:desktop:jvmTest` 106/106 (was 104).
+- `PttSessionOverlayRenderTest` (3 tests): the card is drawn in a real Skia scene; the Stop and Leave targets reach `stopLocal()`;
+  Idle draws nothing. `PttElapsedFormatTest` moved from `:app` to `:ui:callui` (+1 case). `:ui:callui` 31 jvm / 18 android,
+  `:ui:chat` 298/298 on both targets, `:app:testDebugUnitTest` 35/35; `:app:compileDebugKotlin` green.
+- Maven-local dry run: `core-ptt` (root, `-android`, `-jvm`) and `ui-callui` publish; the new `ui-callui-jvm` module metadata lists
+  `core-ptt`. (The full `jitpack.yml` install line was not re-run.)
+- Real-hardware probe of `javax.sound.sampled` on this PC (EXP-018): 16 kHz and 8 kHz capture and playback supported, a blocked
+  writer is released by flush/stop/close, cold capture open about 1.0 s then about 0.23 s.
+- **Not verified:** any sound between two machines; desktop <-> phone; the Android PTT path after the re-shape; Windows microphone
+  privacy switch behaviour; other audio hardware; the card's look at other scales. All are `PTTD-01`...`PTTD-07`.
+
+### Problems
+- Android host tests failed 18 times at first: the platform `SystemClock.elapsedRealtime()` stub throws on the JVM. `isReturnDefaultValues`
+  fixed most but two heartbeat tests still failed on a constant-0 clock (the codec rejects timestamp 0). Fix: inject the clock into
+  the engine; tests use a positive monotonic clock. (Not an ERROR entry: found and fixed before any behaviour shipped.)
+- Known defects recorded rather than fixed: silent capture under the Windows privacy switch is undetected (PTTD-03); the first
+  words can be clipped by a ~1 s cold open (PTTD-04, pre-warm not built).
+
+### Remaining
+- The seven `PTTD-*` device checks. A failure in PTTD-05 may be old (Android PTT never passed its own gate, ADR-032).
+- Not started on purpose: NET-1 (rejected), ENG-1, MSG-2, APP-2 (deferred), an iOS `PttAudioPlatform`, a global hotkey, desktop
+  notification actions.
+
+### Next AI
+Do not touch the PTT wire format or floor machine. If PTTD-01 fails, read the `PTT_SESS` and `WS` lines in `~/.flash/desktop.log` and
+the phone's logcat first: the wiring is in `DesktopEngine.assemble` (search `ptt engine built`) and its two inbound routing points.
+
 ## 2026-09-30 — Four small audit fixes: group text transaction (3.6), stream default (3.4), NSD orphan registration (3.7), Linux CI vault
 
 ### Worked on

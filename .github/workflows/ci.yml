@@ -22,8 +22,8 @@ jobs:
 
       - name: Unit tests + assemble debug
         # allTests exists only in the KMP modules (:core:common ... :ui:theme); testDebugUnitTest
-        # exists only in the plain AGP modules (:app, :core:calling, :core:ptt, :ui:callui,
-        # :sample:*). An unqualified task name runs where it exists and silently skips where it
+        # exists only in the plain AGP modules (:app, :sample:*; :core:ptt joined the KMP modules
+        # in ADR-058, so `allTests` runs its android-host and jvm tests). An unqualified task name runs where it exists and silently skips where it
         # does not, so one command alone covers half the repo — both are needed. Verified via
         # --dry-run: see docs/publishing/library-compliance-review.md addendum A1.
         # --continue: without it the first failing module hid every later one, so CI reported one

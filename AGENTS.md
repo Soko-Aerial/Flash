@@ -922,6 +922,11 @@ DR-01…DR-04, MIG-01/02, MEAS-*, older CALL-/GRP-/PC-/OLD- items). **Postponed 
 do not start unasked): DR4 QR, DR6 BLE, DR7 Wi-Fi Direct, FO-04 group attachment fan-out, the scale measurement (PC6 / MEAS-02, ADR-044
 V3) and group size 32.
 
+**Desktop push-to-talk (ADR-058, built and unit-tested 2026-09-30, not device-verified):** `:core:ptt` is Kotlin Multiplatform (Android + JVM)
+behind an audio-device seam, so the Windows app runs the same PTT engine as the phones and shares the session card (`:ui:callui`). Device
+checks: `PTTD-01`…`PTTD-07` in `docs/testing/TEST-BACKLOG.md`. This was the owner's chosen first step toward future iOS and Linux support; the
+larger refactors (NET-1, ENG-1, MSG-2, APP-2) stay rejected or deferred, and D1 = Option B stands.
+
 **Adaptive UI — phone → tablet → desktop:** AD-1…AD-6 implemented (fully or in part) on 2026-09-18; AD-7 partial; AD-8 not started; none
 device-verified (status re-checked against the code 2026-09-24; per-phase detail in `docs/migration/ADAPTIVE-UI-PLAN.md` §2.3). Premium
 chat UI components UI-001–UI-050 are implemented except the UI-045 quality gate (it runs after device verification). Authoritative live
@@ -947,13 +952,13 @@ Android's look preserved or improved).
   documented hash. Pause intent does not survive process death (ADR-021 "revisit").
 - Chat and groups: text, replies, reactions, typing, drafts, file / image / video / voice attachments, a durable outbox; legacy groups
   (≤ 6) and v2 signed groups (≤ 20: owner-signed roster, vouched members, owner remove); 1:1 and group voice / video calls; push-to-talk
-  (ADR-025, 030, 031, 032, 044).
+  (ADR-025, 030, 031, 032, 044; on Windows desktop too since ADR-058, unit-tested only).
 - Premium chat UI (`docs/ui/`, UI-001–UI-050 except UI-045) with the `Flash*` design system.
 - Documentation, logging and the device-test backlog strategy (§5–§10, §35).
 
 ## In Progress
 
-- **Owner device checks** of everything above (`docs/testing/TEST-BACKLOG.md`), then the UI-045 quality gate.
+- **Owner device checks** of everything above (`docs/testing/TEST-BACKLOG.md`, including `PTTD-01`…`PTTD-07`), then the UI-045 quality gate.
 - Open audit items (`docs/audit/2026-09-28-architectural-audit-and-tasks.md`): §3.2, S6, §3.11. §3.6, §3.4, §3.7 and the Linux CI vault
   were fixed and unit-tested 2026-09-30 (device checks `AUD-01`...`AUD-03`; ERROR-073 stays OPEN until `AUD-01`).
 - **Adaptive UI upgrade** (`docs/migration/ADAPTIVE-UI-PLAN.md`): code exists for AD-1 (UI-scale density multiplier, persisted), AD-2 (automatic list-pane width + a 640×480 dp minimum window; **no draggable splitter**, AD-D3 still open), AD-3 (conversation in the detail pane on both hosts), AD-4 (keyboard shortcuts only; pointer idioms and AD-D5 selection not done), AD-5 (580 dp bubble cap), AD-6 (Android navigation rail ≥ 600 dp and two-pane layout; width measured manually, no fold-posture support; AD-D4 not formally answered) and part of AD-7 (desktop keeps the open conversation across tab switches). None of it is device-verified.

@@ -1234,12 +1234,14 @@ The facade that turns eight modules into one object (C7.0, ADR-010). This is the
 knows how the others wire together; it declares `:core:discovery`, `:core:network`,
 `:core:transfer`, `:core:messaging`, `:core:security`, `:core:persistence` and `:core:common` with
 `api()`, so a consumer of `core-engine` gets every published type transitively and adds one
-dependency, not eight. Two more are declared on the **android** target rather than in commonMain,
-because both are plain AGP Android libraries with no JVM variant and a commonMain entry breaks
-`:core:engine`'s `jvm()` target at variant selection (ERROR-049): `:core:ptt` as `api`, and
-`:core:calling` as **`compileOnly`** (ADR-033) — `FlashCalling` is part of the engine's public API,
-but the dependency is not published, so `core-engine` never drags native WebRTC into a consumer that
-does not call. Nothing outside `androidMain` names either module.
+dependency, not eight. Two more are declared on the **android** target rather than in commonMain:
+`:core:ptt` as `api`, and `:core:calling` as **`compileOnly`** (ADR-033) — `FlashCalling` is part of
+the engine's public API, but the dependency is not published, so `core-engine` never drags native
+WebRTC into a consumer that does not call. Nothing outside `androidMain` names either module. They
+were placed there because both were plain AGP Android libraries with no JVM variant, which a
+commonMain entry breaks at variant selection (ERROR-049); `:core:ptt` (ADR-058) and `:core:calling`
+have since become KMP, so the placement is now a choice that waits for the engine refactor rather
+than a constraint.
 
 ### `Flash` / `FlashConfig`
 - **Stability:** Stable
@@ -1758,6 +1760,15 @@ Push-to-talk (ADR-032): a strict half-duplex voice floor — one holder transmit
 only receives. Publishes as `core-ptt`; namespace `com.transfer.flash.core.ptt`. The wire format is
 in `docs/protocol.md` (PTT ping + PTT voice session sections); the floor rules live in
 `:core:messaging` (`PttFloorMachine`) and this module is the driver that executes them.
+
+**Kotlin Multiplatform since ADR-058** (Android + `jvm()`): the driver `PttSessionEngine` is commonMain and
+takes its microphone and speaker as a `PttAudioPlatform` (`createCapture` / `createPlayout`, returning a
+`PttCaptureDevice` / `PttPlayoutDevice`); the default is `platformPttAudio()` (Android `AudioRecord` /
+`AudioTrack`; JVM `javax.sound.sampled`). `pttElapsedRealtimeMs()` is public because a session card reads
+`now - PttFloorState.startedAtMs` and both must use that one clock. The Windows desktop app and the Android
+app run the same engine; the desktop wiring is `DesktopEngine` and the shared card is `PttSessionOverlayContent`
+in `:ui:callui`. Other hosts (iOS, Linux) need only a `PttAudioPlatform` actual and the small `expect`s
+(`pttElapsedRealtimeMs`, `PttLock`, `platformPttAudio`).
 
 **Inside the umbrella, but opt-in.** `:core:engine` declares `:core:ptt` with `api()`, so a
 `core-engine` consumer already has the artifact — but nothing is created until the host attaches it

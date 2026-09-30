@@ -42,7 +42,9 @@ Dependency direction is strictly downward, with two deliberate exceptions:
   engine and attaches it, because only an app can supply the signaling channel it already owns, the
   runtime mic/camera grants and the `microphone|camera` foreground service (ADR-025). `:app` and
   `:ui:callui` depend on `:core:calling` directly. `:core:ptt` is the contrasting case — an `api`
-  dependency, since it carries no native payload.
+  dependency, since it carries no native payload. It is Kotlin Multiplatform since ADR-058 (Android +
+  JVM, the audio hardware behind `PttAudioPlatform`), so the Windows desktop app runs the same push-to-talk
+  engine, and `:ui:callui` (which shares the session card) `api`s it.
 - **Persistence is inverted, not depended on.** `:core:messaging` and `:core:transfer` define
   storage ports; the Room-backed adapters live in `:core:engine` (ADR-024), so neither domain module
   depends on `:core:persistence` and no Room type reaches a public signature.

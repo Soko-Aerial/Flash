@@ -2848,3 +2848,82 @@ Facts from the code that shape the answer:
 ### Revisit when
 A device check shows refusals with contacts present (build priority admission), FO-05 measures the cost of a session (tune
 24, 4 and 20), or groups are raised above 20.
+
+## ADR-058 — `:core:ptt` becomes Kotlin Multiplatform behind an audio-device seam; the desktop app joins push-to-talk
+
+### Date
+2026-09-30
+
+### Status
+**IMPLEMENTED, device check pending (PTTD-01...PTTD-07).** The desktop <-> phone path has been exercised only by two real
+`DesktopEngine`s with fake microphones and speakers (`DesktopEnginePttTest`); no sound has crossed a wire between machines.
+
+### Context
+Push-to-talk (ADR-031, ADR-032) lived in `:core:ptt`, a plain AGP Android library: `AudioRecord`, `AudioTrack`,
+`SystemClock` and `android.util.Log` inside the engine itself. A plain AGP module has no JVM variant, so the desktop app
+could not depend on it (ERROR-049) and a Windows user could not take part in a PTT session even though the floor machine
+(`PttFloorMachine`) and the wire codecs were already platform-free in `:core:messaging`.
+
+The owner's goals at the time of the decision: desktop PTT now, and **iOS and Linux support later**. A refactor that does not
+move toward those two is cost without benefit.
+
+### Decision
+1. **`:core:ptt` is a KMP module with an Android and a `jvm()` target** (same plugin pair as the other converted modules,
+   `explicitApi()`, `-Xexpect-actual-classes`). The engine, `PttPlayoutCore` (drop-oldest inbox plus `PttJitterBuffer`) and the
+   public types are **commonMain**: `PttSessionEngine` uses only `FlashLog`, `UuidIdGenerator`, `SystemTimeSource`, coroutines
+   and the codecs/floor machine from `:core:messaging`.
+2. **One seam for the hardware: `PttAudioPlatform`** with `PttCaptureDevice` and `PttPlayoutDevice` (commonMain interfaces).
+   The engine receives it as a constructor argument (default `platformPttAudio()`), as it does `elapsedRealtimeMs`. The Android
+   actual wraps `AudioRecord`/`AudioTrack` unchanged in behaviour; the JVM actual uses `javax.sound.sampled` through a small
+   `PttPcmLines` abstraction so the loops are unit-testable without hardware. Three other `expect`s: `pttElapsedRealtimeMs()`
+   (public: a session card must read the clock `PttFloorState.startedAtMs` came from), `PttLock` and `platformPttAudio()`.
+3. **Decision D1 = Option B stands.** `commonMain` stays strict; the JDK-bound bodies are duplicated per target, **not** shared
+   through a `jvmAndAndroidMain` intermediate source set. The two JDK-flavoured helpers (`PttLock`, the nanoTime clock) are
+   eight lines each.
+4. **The session card is shared.** `PttSessionOverlayContent` (role, elapsed, stats, level meter, Stop/Leave) moved from the
+   Android app to `:ui:callui` commonMain, which now `api`s `:core:ptt`. Android keeps the deferred hardware press, the
+   `RECORD_AUDIO` prompt and the notification mirror in its wrapper; the desktop shell adds a mic button (rail footer or floating),
+   `Ctrl+Shift+T` (in-window only) and the snackbar. Design: UI-051 Addendum A.
+5. **`DesktopEngine` wiring:** it builds the same `PttSessionEngine` over its WS sessions. Members are the active sessions that are
+   paired; PTT text and `PTT1` binary frames are routed to it before the pairing/chat/transfer parsers; `stop()` shuts it down;
+   a call becoming active calls `onCallStarted()`. The audio pair is a constructor parameter so tests never open a microphone.
+6. **No global hotkey on desktop**, no notification actions, no mic-permission step (Windows' privacy switch is the gate and may
+   silently deliver zeros: PTTD-03).
+7. **`:core:engine` is unchanged:** it still names `:core:ptt` in `androidMain` only. Moving it to commonMain is now *possible*
+   (the variant-selection failure of ERROR-049 no longer applies to `:core:ptt`), but it is a public-API and publication change
+   with no current consumer, so it waits for the engine refactor (ENG-1) if that is ever approved.
+
+### What this does and does not buy (iOS and Linux)
+- **Linux:** the JVM actual runs on Linux as written (`javax.sound.sampled` exists there). The remaining Linux items are outside
+  this module (identity vault actual, webrtc-java natives, packaging); PTT itself needs only a device check (PTTD-02).
+- **iOS:** the engine and the floor machine are now commonMain, so an iOS target only has to supply a `PttAudioPlatform` actual
+  (AVAudioEngine) and the three small `expect`s. That is a **real step**, not the whole job: iOS also needs the transport and TLS
+  off the JDK, Bonjour discovery, a WebRTC iOS stack, a Mac build host, and an iOS app. Nothing in this ADR starts any of it.
+- **Rejected alongside it:** the audit's NET-1 proposal of a `jvmAndAndroidMain` source set. It would share JDK code between
+  Android and desktop, gives nothing to iOS or Linux-as-a-target-of-its-own, and contradicts D1 = Option B. Rejected for now; if
+  duplication between the two JDK targets becomes a maintenance cost, a drift-guard test is the alternative to try first.
+  ENG-1, MSG-2 and APP-2 remain **deferred** (maintainability only; the owner has not approved them).
+
+### Alternatives considered
+- **Desktop-only PTT engine in `:desktop`.** Rejected: a second copy of the floor driver, which has already had correctness bugs
+  (ERROR-046, -048, -050). The one engine is what makes desktop <-> phone interoperable by construction.
+- **`jvmAndAndroidMain` for the shared JDK code.** See above; rejected under D1 = B.
+- **Opus instead of raw PCM on the wire.** Out of scope: the wire format is ADR-032's and is unchanged, so old and new builds
+  interoperate.
+- **A global (system-wide) hotkey.** Needs a native key hook the project does not have and would fire while typing in other apps.
+  Revisit on an owner request.
+
+### Consequences
+- `ERROR-049`'s constraint ("`:core:ptt` has no JVM variant") is gone; the entry stays as history with an update.
+- `:ui:callui`'s POM gains `core-ptt` as an `api` dependency (published, and already in `jitpack.yml`).
+- `PttCapture`/`PttPlayout` are now `internal` Android classes; their nested `StartResult`/`Snapshot` types are top-level
+  `PttCaptureStart`/`PttPlayoutSnapshot`.
+- Android behaviour was re-shaped (engine moved, devices behind an interface): **the Android PTT path must be re-verified on a
+  phone (PTTD-05)**, on top of the standing fact that Android PTT never passed its own device gate (ADR-032).
+- Known desktop limits: cold capture open took about 1 s the first time and about 0.23 s later on this machine (EXP-018), so the
+  first words of a session can be clipped; a pre-warm is the obvious fix and is **not built** (PTTD-04). Windows' microphone
+  privacy switch can produce silent capture that the engine cannot detect (PTTD-03).
+
+### Revisit when
+A device check shows clipped starts (pre-warm), an iOS target is approved (write its `PttAudioPlatform` actual and revisit the
+engine's `api(project(":core:ptt"))` placement), or duplication between the two JDK targets starts to hurt (drift guard first).

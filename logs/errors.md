@@ -1544,6 +1544,14 @@ the published `core-engine-android` Gradle metadata lists `core-ptt`.
 ### Status
 RESOLVED
 
+### Update 2026-09-30 — the constraint no longer applies to `:core:ptt` (ADR-058)
+`:core:ptt` was converted to Kotlin Multiplatform (Android + `jvm()`), so it now has a JVM variant and `:desktop` depends on it
+(`implementation(project(":core:ptt"))`). `:core:engine` still declares it in `androidMain` only: that placement is now a choice,
+not a necessity, and is left alone on purpose (ADR-058 item 7). `:core:calling` was converted earlier (Phase 25; `:ui:callui`
+depends on it from commonMain), so the engine's `compileOnly` placement of it (ADR-033) is likewise a choice and not a variant
+problem, although the comments in `core/engine/build.gradle.kts` still describe it as Android-only. Historical text above is
+unchanged.
+
 ## ERROR-050 â `FlashPtt.sendPing()` notified exactly one peer (`any {}` short-circuit)
 
 ### Date
