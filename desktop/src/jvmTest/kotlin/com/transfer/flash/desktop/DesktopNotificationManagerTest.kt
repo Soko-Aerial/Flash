@@ -30,7 +30,7 @@ class DesktopNotificationManagerTest {
     @Test
     fun messageNotificationSentWhenWindowIsHidden() {
         val stateDir = tempFolder.newFolder("desktop_state")
-        val engine = DesktopEngine(stateDir = stateDir)
+        val engine = testDesktopEngine(stateDir = stateDir)
         val notifications = mutableListOf<Notification>()
 
         var isWindowVisible = false
@@ -60,7 +60,7 @@ class DesktopNotificationManagerTest {
     @Test
     fun messageNotificationSuppressedWhenWindowIsVisibleAndSameConversationOpen() {
         val stateDir = tempFolder.newFolder("desktop_state")
-        val engine = DesktopEngine(stateDir = stateDir)
+        val engine = testDesktopEngine(stateDir = stateDir)
         val notifications = mutableListOf<Notification>()
 
         var isWindowVisible = true
@@ -88,7 +88,7 @@ class DesktopNotificationManagerTest {
     @Test
     fun messageNotificationSentWhenWindowIsVisibleAndDifferentConversationOpen() {
         val stateDir = tempFolder.newFolder("desktop_state")
-        val engine = DesktopEngine(stateDir = stateDir)
+        val engine = testDesktopEngine(stateDir = stateDir)
         val notifications = mutableListOf<Notification>()
 
         var isWindowVisible = true
@@ -118,7 +118,7 @@ class DesktopNotificationManagerTest {
     @Test
     fun messageNotificationSuppressedWhenDisabledInSettings() {
         val stateDir = tempFolder.newFolder("desktop_state")
-        val engine = DesktopEngine(stateDir = stateDir)
+        val engine = testDesktopEngine(stateDir = stateDir)
         val notifications = mutableListOf<Notification>()
 
         val manager = DesktopNotificationManager(
@@ -143,7 +143,7 @@ class DesktopNotificationManagerTest {
     @Test
     fun groupMessageNotificationFormatsWithGroupTitle() {
         val stateDir = tempFolder.newFolder("desktop_state")
-        val engine = DesktopEngine(stateDir = stateDir)
+        val engine = testDesktopEngine(stateDir = stateDir)
         val notifications = mutableListOf<Notification>()
 
         val manager = DesktopNotificationManager(
@@ -170,7 +170,7 @@ class DesktopNotificationManagerTest {
     @Test
     fun transferCompletedNotificationSentOnStateTransition() {
         val stateDir = tempFolder.newFolder("desktop_state")
-        val engine = DesktopEngine(stateDir = stateDir)
+        val engine = testDesktopEngine(stateDir = stateDir)
         val notifications = mutableListOf<Notification>()
 
         val manager = DesktopNotificationManager(
@@ -212,7 +212,7 @@ class DesktopNotificationManagerTest {
     @Test
     fun incomingCallNotificationSent() {
         val stateDir = tempFolder.newFolder("desktop_state")
-        val engine = DesktopEngine(stateDir = stateDir)
+        val engine = testDesktopEngine(stateDir = stateDir)
         val notifications = mutableListOf<Notification>()
 
         val manager = DesktopNotificationManager(
@@ -243,7 +243,7 @@ class DesktopNotificationManagerTest {
     @Test
     fun pairingRequestNotificationSent() {
         val stateDir = tempFolder.newFolder("desktop_state")
-        val engine = DesktopEngine(stateDir = stateDir)
+        val engine = testDesktopEngine(stateDir = stateDir)
         val notifications = mutableListOf<Notification>()
 
         val manager = DesktopNotificationManager(
@@ -272,7 +272,7 @@ class DesktopNotificationManagerTest {
     @Test
     fun messageNotificationSentWhenWindowIsVisibleAndSameConversationOpenButMinimized() {
         val stateDir = tempFolder.newFolder("desktop_state")
-        val engine = DesktopEngine(stateDir = stateDir)
+        val engine = testDesktopEngine(stateDir = stateDir)
         val notifications = mutableListOf<Notification>()
         var backgroundMessageReceived = false
 
@@ -305,7 +305,7 @@ class DesktopNotificationManagerTest {
     @Test
     fun messageNotificationSentWhenWindowIsVisibleAndSameConversationOpenButNotFocused() {
         val stateDir = tempFolder.newFolder("desktop_state")
-        val engine = DesktopEngine(stateDir = stateDir)
+        val engine = testDesktopEngine(stateDir = stateDir)
         val notifications = mutableListOf<Notification>()
         var backgroundConvId: String? = null
 
@@ -338,7 +338,7 @@ class DesktopNotificationManagerTest {
     @Test
     fun attachmentNotificationSentWhenWindowMinimized() {
         val stateDir = tempFolder.newFolder("desktop_state")
-        val engine = DesktopEngine(stateDir = stateDir)
+        val engine = testDesktopEngine(stateDir = stateDir)
         val notifications = mutableListOf<Notification>()
         var backgroundAttachmentFired = false
 

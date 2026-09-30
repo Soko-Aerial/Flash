@@ -42,7 +42,7 @@ class DesktopReceivedStorageTest {
         val state = Files.createTempDirectory("flash-desktop-storage-state").toFile()
         tempDirs += received
         tempDirs += state
-        return DesktopEngine(receivedRoot = received, stateDir = state)
+        return testDesktopEngine(receivedRoot = received, stateDir = state)
     }
 
     @Test
