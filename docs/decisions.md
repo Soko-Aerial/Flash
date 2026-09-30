@@ -2927,3 +2927,40 @@ move toward those two is cost without benefit.
 ### Revisit when
 A device check shows clipped starts (pre-warm), an iOS target is approved (write its `PttAudioPlatform` actual and revisit the
 engine's `api(project(":core:ptt"))` placement), or duplication between the two JDK targets starts to hurt (drift guard first).
+
+
+---
+
+## ADR-059 — Message Info is a pure Kotlin mapping over three flows, and the catch-up banner is indeterminate
+
+### Date
+2026-09-30
+
+### Status
+**IMPLEMENTED, device checks pending (CGS-06, CGS-07).**
+
+### Context
+The chat/group sync audit (`docs/audit/2026-09-28-chat-group-sync-audit-and-plan.md`) proposed (a) a SQL join across
+`group_deliveries`, `group_members` and `read_cursors` for a "Message Info" screen and (b) a determinate progress bar while a member
+catches up on group history.
+
+### Decision
+1. **Message Info** (`observeMessageInfo`, `MessageInfoBuilder`): `GroupDeliveryDao.observeForMessage` (one scoped query) is combined in
+   Kotlin with the roster and the read cursors. First match wins per member: read cursor `upToSentAt >= sentAt` (the predicate of
+   `MessageDao.markReadUpTo`) -> Read; delivery state `DELIVERED` -> Delivered with its time; otherwise Waiting (LeftGroup when the roster
+   row is inactive). Only members with a delivery row are listed. A direct message gets a single recipient taken from its status; a
+   message that is not ours, deleted, or a call row gets none. The sheet is a `Flash*` component (UI-051), opened from the context menu
+   and the ticks.
+2. **Catch-up banner** (UI-052): indeterminate strip with an arrival count. It starts on the first row newly inserted by a `SyncPush`
+   (a duplicate does not count) and clears `GroupPolicy.SYNC_QUIET_MS` (3 s, above the slowest 200 ms pacing gap and the 2 s backup
+   delay) after the last arrival; a generation counter stops a stale timer from closing a newer banner.
+
+### Alternatives considered
+- SQL join: rejected, it would duplicate the read predicate in SQL and need a Room schema-independent test path; the flows are small
+  (at most 20 members).
+- Determinate bar: rejected, the requester receives no total and cannot derive an end; a wrong percentage is worse than none.
+
+### Revisit when
+Device checks show the 3 s quiet period is too long or too short for real pacing, or a protocol change lets a holder announce a total
+(then a determinate bar becomes honest).
+

@@ -1,5 +1,41 @@
 # Progress Log
 
+## 2026-09-30 — Chat and group sync audit implemented step by step (7 steps, ERROR-084, ADR-059); device checks CGS-01...07, DNAME-01/02 owed
+
+### Worked on
+`docs/audit/2026-09-28-chat-group-sync-audit-and-plan.md`. Each claim was checked against the current code first (the audit is partly
+stale), then fixed one step at a time with a test that fails without the change, a mutation check and a focused commit.
+
+### Changed
+1. `cd3ca0a1` desktop fires the session-up chat edges (`notifyPeerSessionUp`, `sendGroupSyncRequests`, `reconcileGroupMembership`);
+   a group row's retry deadline is registered. 2. `031b6ab4` the outbox drain keeps every retry deadline, not only the earliest.
+3. `b9b43ece` group read ticks (reader fans `Read` out, the author flips READ at the slowest active member's cursor).
+4. `c31b30cd` a catching-up member tells the author; `handleSyncAck` records delivery; a receipt for a direct message id is ignored.
+5. `4e843cd9` a legacy catch-up sends a label for an attachment row instead of an empty bubble.
+6. `3156e400` renaming the desktop reaches the UI, the transport hello, pairing and group chats.
+7. `5060ac82` Message Info sheet (UI-051); `5b3ae1d9` catch-up banner (UI-052).
+Deviations from the audit (no wire change, `docs/protocol.md` untouched): label instead of new wire fields, pure-Kotlin Message Info
+mapping instead of a SQL join, indeterminate banner instead of a determinate bar (ADR-059, ERROR-084).
+
+### Verification
+Unit tests at the last run: `:core:messaging:testAndroidHostTest` 352/0, `:ui:chat:jvmTest` 310/0, `:desktop:jvmTest` 110/0;
+`:app:compileDebugKotlin`, `:desktop:compileKotlinJvm`, `:ui:chat:compileAndroidMain` compile. 24 Message Info mutants and 9 banner
+mutants were each killed by a failing test. `:core:persistence:testAndroidHostTest` keeps its 12 known Windows-only DataStore rename
+failures (baseline, not a regression). **No device run.**
+
+### Problems
+Mutant R3 (direct conversation) first survived: added a test. `kotlin.test` takes the message as the LAST argument (two test files
+were first written with it first and did not compile).
+
+### Remaining
+Device checks `CGS-01`...`CGS-07`, `DNAME-01`, `DNAME-02` (`docs/testing/TEST-BACKLOG.md` section 4g). Known limits: a connected peer
+learns a rename only on reconnect; a v2 group keeps the signed label; Message Info lists only members with a delivery row.
+
+### Next AI
+Do not start DR4/DR6/DR7/FO-04/MEAS-02/group size 32 unasked. With the owner's devices: run section 4g.
+
+---
+
 ## 2026-09-30 — Push-to-talk on the desktop: `:core:ptt` is Kotlin Multiplatform, the Windows app takes part (ADR-058)
 
 ### Worked on

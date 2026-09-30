@@ -1,5 +1,66 @@
 # Error Log
 
+## ERROR-084 — Chat and group sync gaps: desktop skipped the session-up edges, retry deadlines were lost, group read/receipt ticks never completed, renaming a desktop reached nothing
+
+### Date
+2026-09-30
+
+### Area
+Chat / groups (`RealFlashChatRepository`, `SignedGroups`), desktop host (`DesktopEngine`, `DesktopShell`), pairing, transport hello
+
+### Symptoms
+From `docs/audit/2026-09-28-chat-group-sync-audit-and-plan.md` (written by another AI, partly stale). Every claim was re-checked against
+the current code before fixing; none was observed on a device. What was real:
+- A desktop never re-sent a membership frame a peer had missed, never asked a returning peer for group history and never made that
+  peer's group deliveries due (the Android host did all three on every session-up).
+- The outbox drain loop kept **one** wake-up time (the earliest). A session-up pass moves a row's deadline later than one already
+  pending, so the earlier one fired with nothing due and the newer was never stored: the loop slept its 60 s idle net. A group row
+  also ignored its own retry deadline and waited for that net. (Found because `DesktopEngineGroupSessionUpTest` flaked.)
+- A reader in a group sent its read receipt to the group id, which is not a device, so a group message never passed Delivered.
+- A member that caught up from a relay did not tell the author; the `SyncAck` reached the relay only, so the author's tick stayed at
+  one of N. A member could also name a direct message's id in a group `Receipt` and have it marked delivered and dropped from the outbox.
+- A legacy catch-up pushed an attachment row with its own (empty, or `vmsg:` waveform) text: an empty bubble for a late member.
+- `renameLocalDevice` on the desktop wrote the store and nudged discovery; the UI read a plain property, the WebSocket hello, pairing
+  requests and group messages kept the boot-time name.
+
+### Root cause
+Each was a place where a path assumed someone else had done the work: the desktop host was wired by hand and missed three edges the
+Android host had; the drain loop's bookkeeping was a scalar where the problem needs a set; a group was treated like a device on the
+receipt path; `toSyncMessage()` reused a row's `text` although an attachment row's text is not a caption; the name was captured by value
+in five constructors.
+
+### Failed attempts / not taken
+- The audit's TASK-GRP-SYNC-1 proposed new `mediaSummary`/`attachmentType` wire fields: rejected, a label in the existing text field
+  needs no protocol change and cannot be forged beyond what legacy groups already allow (ERROR-082). `docs/protocol.md` is unchanged.
+- TASK-MSG-INFO-1 proposed a SQL join across `group_deliveries`, `group_members` and `read_cursors`: replaced by a pure Kotlin builder
+  (`MessageInfoBuilder`) over three observed flows, so the read-cursor predicate is the same code the receive path uses and is unit-tested.
+- TASK-GRP-SYNC-2 proposed a determinate `LinearProgressIndicator`: a requester cannot know how many messages will arrive, so an
+  indeterminate strip with an arrival count is used (ADR-059).
+
+### Working fix
+Commits `cd3ca0a1` (desktop session-up edges, group retry deadline), `031b6ab4` (all retry deadlines kept), `b9b43ece` (group read ticks),
+`c31b30cd` (catch-up receipt to the author, `recordGroupDelivery`), `4e843cd9` (catch-up label), `3156e400` (rename propagation),
+`5060ac82` (Message Info sheet, UI-051) and the UI-052 catch-up banner commit.
+
+### Verification
+Every commit: a test that fails without the change, plus one-line mutations of each fix (24 for Message Info, 9 for the banner state).
+Suites at the last run: see `logs/progress.md`. **Not verified on a device: TEST-BACKLOG `CGS-01`…`CGS-07`, `DNAME-01`, `DNAME-02`.**
+
+### Known limits kept on purpose
+A peer that stays connected learns a renamed desktop only on reconnect; a v2 group keeps the owner-signed label. Message Info lists only
+members that have a delivery row (members added after a message was sent are not listed for it). Vouched members still get no files (FO-04).
+
+### Related files
+- `core/messaging/.../RealFlashChatRepository.kt`, `MessageInfoBuilder.kt`, `protocol/GroupPolicy.kt`, `SignedGroups.kt`
+- `desktop/.../DesktopEngine.kt`, `DesktopShell.kt`; `core/security/.../FlashPairingCoordinator.kt`
+- `ui/chat/.../FlashMessageInfoSheet.kt`, `FlashGroupSyncBanner.kt`, `FlashConversationScreen.kt`
+- `docs/ui/message-info.md`, `docs/ui/group-ui.md` (UI-052), `docs/testing/TEST-BACKLOG.md` section 4g
+
+### Status
+RESOLVED in code and unit tests; device verification owed (`CGS-*`, `DNAME-*`).
+
+---
+
 ## ERROR-083 — Removing a group member only reached devices that were online; a removed device could still send and join calls
 
 ### Date

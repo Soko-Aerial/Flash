@@ -922,6 +922,11 @@ DR-01…DR-04, MIG-01/02, MEAS-*, older CALL-/GRP-/PC-/OLD- items). **Postponed 
 do not start unasked): DR4 QR, DR6 BLE, DR7 Wi-Fi Direct, FO-04 group attachment fan-out, the scale measurement (PC6 / MEAS-02, ADR-044
 V3) and group size 32.
 
+**Chat and group sync audit implemented 2026-09-30 (ADR-059, ERROR-084): desktop session-up edges, every outbox retry deadline kept,
+group read ticks, catch-up receipts to the author, catch-up labels for attachments, desktop rename propagation, Message Info
+sheet (UI-051) and the catch-up banner (UI-052). Unit-tested and mutation-checked, none device-verified: `CGS-01`...`CGS-07`,
+`DNAME-01`/`DNAME-02` in `docs/testing/TEST-BACKLOG.md` section 4g.**
+
 **Desktop push-to-talk (ADR-058, built and unit-tested 2026-09-30, not device-verified):** `:core:ptt` is Kotlin Multiplatform (Android + JVM)
 behind an audio-device seam, so the Windows app runs the same PTT engine as the phones and shares the session card (`:ui:callui`). Device
 checks: `PTTD-01`…`PTTD-07` in `docs/testing/TEST-BACKLOG.md`. This was the owner's chosen first step toward future iOS and Linux support; the
