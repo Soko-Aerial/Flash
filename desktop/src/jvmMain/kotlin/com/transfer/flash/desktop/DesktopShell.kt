@@ -153,6 +153,8 @@ public fun DesktopShell(
 
     val ready by engine.ready.collectAsState()
     val startError by engine.startError.collectAsState()
+    // The display name is observed, not read: a rename has to reach Settings, the sidebar and Nearby at once.
+    val localFriendlyName by engine.localFriendlyNameState.collectAsState()
 
     // One snackbar surface for the whole window. Declared here, above the collectors that raise
     // messages, so nothing depends on declaration order.
@@ -345,7 +347,7 @@ public fun DesktopShell(
                 discoveryState = discoveryState,
                 ui = pairingUi,
                 ready = ready,
-                localFriendlyName = engine.localFriendlyName,
+                localFriendlyName = localFriendlyName,
                 localDeviceId = engine.localDeviceId,
                 liveSessions = activeSessions.size,
                 scan = sweepState.toNearbyScan(),
@@ -897,9 +899,9 @@ public fun DesktopShell(
     LaunchedEffect(engine, ready, desktopSettings.saveLocation) {
         if (ready) receivedBytes = withContext(Dispatchers.IO) { DesktopHelpers.receivedFilesBytes(engine) }
     }
-    val settings = remember(engine, ready, receivedBytes, themeMode, trustedPeersByCoordinator, desktopSettings) {
+    val settings = remember(engine, ready, receivedBytes, themeMode, trustedPeersByCoordinator, desktopSettings, localFriendlyName) {
         FlashSettingsModel(
-            displayName = engine.localFriendlyName,
+            displayName = localFriendlyName,
             deviceIdShort = engine.localDeviceId.take(8).ifBlank { "00000000" },
             appVersion = engine.appVersionName,
             protocolVersion = engine.protocolVersionLabel,
@@ -1671,7 +1673,7 @@ public fun DesktopShell(
         // named "Flash Desktop" forever.
         if (showRenameDialog) {
             FlashDisplayNameDialog(
-                initial = engine.localFriendlyName,
+                initial = localFriendlyName,
                 onDismiss = { showRenameDialog = false },
                 onConfirm = { name ->
                     showRenameDialog = false
@@ -1846,7 +1848,7 @@ public fun DesktopShell(
                         }
                     },
                     unreadCount = totalUnreadCount,
-                    localDisplayName = engine.localFriendlyName,
+                    localDisplayName = localFriendlyName,
                     onProfileClick = {
                         nav.selectTab(FlashDestination.Settings)
                     },

@@ -120,7 +120,7 @@ public fun interface GroupTransportSink {
  */
 public class RealFlashChatRepository(
     private val localDeviceId: String,
-    private val localDisplayName: String,
+    localDisplayName: String,
     private val messageDao: MessageDao,
     private val conversationDao: ConversationDao,
     private val outboxDao: OutboxDao,
@@ -238,6 +238,13 @@ public class RealFlashChatRepository(
      */
     private val readCursorDao: ReadCursorDao? = null,
 ) : FlashChatRepository {
+
+    /**
+     * The name this device stamps on what it sends. A var because the owner can rename the device while the
+     * repository lives; see [updateLocalDisplayName].
+     */
+    @Volatile
+    private var localDisplayName: String = localDisplayName
 
     private val _chatListState = MutableStateFlow(FlashChatListUiState())
 
@@ -799,6 +806,20 @@ public class RealFlashChatRepository(
                 }
             }
         }
+    }
+
+    /**
+     * This device was renamed: what it sends from now on is stamped with [newName], and so are the groups it
+     * creates. Messages already sent keep the name they carried. The device's own row in every LEGACY group is
+     * rewritten too; a v2 row is left alone (`updateMemberDisplayName` skips it) because its name is the
+     * owner-signed label, which only the owner can re-issue.
+     */
+    public suspend fun updateLocalDisplayName(newName: String) {
+        val trimmed = newName.trim()
+        if (trimmed.isEmpty() || trimmed == localDisplayName) return
+        localDisplayName = trimmed
+        signedGroups?.updateLocalDisplayName(trimmed)
+        groupMemberDao?.updateMemberDisplayName(localDeviceId, trimmed)
     }
 
     /**

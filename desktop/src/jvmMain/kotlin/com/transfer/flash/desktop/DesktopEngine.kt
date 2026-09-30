@@ -194,6 +194,15 @@ public class DesktopEngine(
     public val identity: com.transfer.flash.core.security.identity.FlashIdentity
         get() = identityStore.getIdentity()
 
+    private val _localFriendlyName = MutableStateFlow(identityStore.getIdentity().friendlyName)
+
+    /**
+     * This device's display name as something the UI can observe. [localFriendlyName] was a plain read of the
+     * store, so nothing in Compose ever learned of a rename: Settings, the sidebar avatar and the Nearby header
+     * kept the old name until something unrelated recomposed them.
+     */
+    public val localFriendlyNameState: StateFlow<String> = _localFriendlyName.asStateFlow()
+
     /**
      * The desktop identity crypto — Phase 26 (P2, ADR-035): a P-256 identity keypair generated
      * once, DPAPI-protected at rest under `<stateDir>/identity/id-key.bin`, surviving restarts.
@@ -347,7 +356,7 @@ public class DesktopEngine(
     public val trust: com.transfer.flash.core.security.trust.FlashTrustStore get() = trustStore
 
     public val localDeviceId: String get() = identity.deviceId.value
-    public val localFriendlyName: String get() = identity.friendlyName
+    public val localFriendlyName: String get() = _localFriendlyName.value
 
     /**
      * Forces an immediate rediscovery and reconnect sweep across discovered endpoints, matching
@@ -408,13 +417,21 @@ public class DesktopEngine(
         val renamed = runCatching { identityStore.updateFriendlyName(trimmed) }.getOrNull()
         if (renamed !is FlashResult.Success) return false
 
+        // Every place that holds a copy of the name. Before, only the store changed and discovery was nudged,
+        // so the UI, the WebSocket hello, pairing requests and group messages all kept the old name.
+        _localFriendlyName.value = trimmed
+        networkImpl?.localFriendlyName = trimmed
+        pairing.updateLocalName(trimmed)
+        runCatching { chatImpl?.updateLocalDisplayName(trimmed) }
+            .onFailure { FlashLog.w(TAG_DISCOVERY, "Chat display name update failed after rename", it) }
+
         // Re-advertise, or peers keep the old name: the name rides the discovery TXT record, which
         // was published at boot. `updateIdentity` swaps what `startAdvertising` will publish, and
         // `advertisedPort` is the port bound at boot, so no session is disturbed.
         //
-        // KNOWN LIMIT: the WS handshake name is captured when `JvmWsFlashNetwork` is constructed and
-        // has no setter, so a peer that stays connected keeps the previous name in its session until
-        // it reconnects. The Nearby/chat rows read discovery, so they update immediately.
+        // KNOWN LIMIT: a peer that stays connected keeps the previous name in its live session until it
+        // reconnects (the hello name is sent once per connection). The Nearby/chat rows read discovery, so
+        // they update immediately.
         runCatching {
             discoveryImpl?.let { discovery ->
                 discovery.updateIdentity(buildAdvertisedIdentity())

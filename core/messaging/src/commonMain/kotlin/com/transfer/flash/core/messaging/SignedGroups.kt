@@ -36,7 +36,7 @@ import com.transfer.flash.core.persistence.db.entity.GroupMemberEntity
  */
 internal class SignedGroups(
     private val localDeviceId: String,
-    private val localDisplayName: String,
+    localDisplayName: String,
     private val crypto: GroupCrypto,
     private val conversationDao: ConversationDao,
     private val members: GroupMemberDao,
@@ -51,6 +51,18 @@ internal class SignedGroups(
         crypto.sha256(newId().encodeToByteArray()).copyOf(GroupPolicy.CHARTER_NONCE_BYTES)
     },
 ) {
+    /**
+     * The label this device's own cert carries in a group it creates from now on. A cert already issued keeps the
+     * label it was signed with (see the class note), so a rename reaches only groups created after it.
+     */
+    @kotlin.concurrent.Volatile
+    private var localDisplayName: String = localDisplayName
+
+    /** This device was renamed; later groups name it [newName]. */
+    fun updateLocalDisplayName(newName: String) {
+        localDisplayName = newName
+    }
+
     private val rules = GroupSignatureRules(crypto, localDeviceId, isPaired, pinnedFingerprint, vouching)
     private val signing = GroupSigning(crypto)
     private val pinnedFingerprintOf = pinnedFingerprint

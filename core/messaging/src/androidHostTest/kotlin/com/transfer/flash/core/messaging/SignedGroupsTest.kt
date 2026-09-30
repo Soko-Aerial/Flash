@@ -1293,6 +1293,31 @@ class SignedGroupsTest {
         assertTrue("and none claims an attachment it cannot open", caught.values.none { it.attachmentTransferId != null })
     }
 
+    // ------------------------------------------------------------------------------ rename
+    // Chat/group sync audit, step 5. The repository captured the device's name at construction, so a renamed
+    // device kept stamping its old name on everything it sent and on the groups it made.
+
+    @Test
+    fun `a renamed device uses its new name from then on, and a signed label keeps the name it was issued with`() = runBlocking {
+        level["dev-c"] = 1
+        mesh("dev-a", "dev-b", "dev-c")
+        val legacy = createGroup("dev-a", "Old", "dev-b", "dev-c")
+        val v2 = createGroup("dev-a", "New", "dev-b")
+        assertEquals("the legacy group starts with the old name", "Ada", row("dev-a", legacy, "dev-a").displayName)
+
+        nodes.getValue("dev-a").repo.updateLocalDisplayName("  Ada Lovelace ")
+        settle()
+
+        assertEquals("the device's own legacy row is renamed", "Ada Lovelace", row("dev-a", legacy, "dev-a").displayName)
+        assertEquals("a v2 row is a stored cert and stays as the owner signed it", "Ada", row("dev-a", v2, "dev-a").displayName)
+
+        say("dev-a", legacy, "hello again")
+        assertEquals("what it sends is stamped with the new name", "Ada Lovelace", stored("dev-b", legacy, "hello again")!!.senderName)
+
+        val later = createGroup("dev-a", "Later", "dev-b")
+        assertEquals("a group it creates now signs the new name into its owner cert", "Ada Lovelace", row("dev-b", later, "dev-a").displayName)
+    }
+
     // ------------------------------------------------------------------------------ harness: nodes
 
     private class Node(
