@@ -102,6 +102,25 @@ internal object FlashSchemaSteps {
         ),
     )
 
+    /**
+     * v5 → v6: v2 groups (ADR-044 V1). Every column is nullable or defaulted, so existing rows read
+     * as legacy (`groupProto = 1`, no keys, no signatures) and nothing is rewritten.
+     */
+    val STEP_5_6: FlashSchemaStep = FlashSchemaStep(
+        from = 5,
+        to = 6,
+        statements = listOf(
+            "ALTER TABLE conversations ADD COLUMN groupProto INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE conversations ADD COLUMN groupOwnerKey TEXT",
+            "ALTER TABLE conversations ADD COLUMN groupNonce TEXT",
+            "ALTER TABLE conversations ADD COLUMN groupCharterSig TEXT",
+            "ALTER TABLE group_members ADD COLUMN subjectKey TEXT",
+            "ALTER TABLE group_members ADD COLUMN certSig TEXT",
+            "ALTER TABLE group_members ADD COLUMN issuerId TEXT",
+            "ALTER TABLE messages ADD COLUMN groupSig TEXT",
+        ),
+    )
+
     /** Every step, in order, from version 1 to `FlashDatabase.DATABASE_VERSION`. */
-    val ALL: List<FlashSchemaStep> = listOf(STEP_1_2, STEP_2_3, STEP_3_4, STEP_4_5)
+    val ALL: List<FlashSchemaStep> = listOf(STEP_1_2, STEP_2_3, STEP_3_4, STEP_4_5, STEP_5_6)
 }

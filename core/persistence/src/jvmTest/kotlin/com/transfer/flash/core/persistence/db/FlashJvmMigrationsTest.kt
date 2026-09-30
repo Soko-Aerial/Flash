@@ -49,7 +49,7 @@ class FlashJvmMigrationsTest {
     @Test
     fun `the exported schemas the tests depend on are present`() {
         // A missing schema would make the helper fail with a message about JSON, not about this.
-        listOf(1, 3, 4, FlashDatabase.DATABASE_VERSION).forEach { version ->
+        listOf(1, 3, 4, 5, FlashDatabase.DATABASE_VERSION).forEach { version ->
             assertTrue(
                 Files.exists(SCHEMA_DIR.resolve("com.transfer.flash.core.persistence.db.FlashDatabase/$version.json")),
                 "schemas/…/$version.json is missing; the tests run from the module directory",
@@ -91,6 +91,93 @@ class FlashJvmMigrationsTest {
                 assertEquals(45822L, row.getLong(0))
                 assertTrue(row.isNull(1), "firstFailureAt must be nullable and default to NULL")
             }
+        }
+    }
+
+    @Test
+    fun `a v5 database gains the v2 group columns and its legacy rows read as legacy`() = runBlocking {
+        // The ADR-044 V1 step: the only change between v5 and v6.
+        helper.createDatabase(5).use { v5 ->
+            v5.execSQL(
+                "INSERT INTO conversations (id, title, isGroup, pinned, muted, archived, sortOrder, groupCreatedBy, groupCreatedAt) " +
+                    "VALUES ('g-old', 'Old group', 1, 0, 0, 0, 1, 'owner', 1)",
+            )
+            v5.execSQL(
+                "INSERT INTO group_members (groupId, deviceId, displayName, role, joinedAt, membershipVersion, operationId, isActive) " +
+                    "VALUES ('g-old', 'owner', 'Owner', 'owner', 1, 1, 'op-1', 1)",
+            )
+            v5.execSQL(
+                "INSERT INTO messages (localId, conversationId, senderId, text, sentAt, status, attachmentSize) " +
+                    "VALUES ('m-old', 'g-old', 'owner', 'hi', 1, 'SENT', 0)",
+            )
+        }
+
+        helper.runMigrationsAndValidate(FlashDatabase.DATABASE_VERSION, FlashJvmMigrations.ALL.toList()).use { upgraded ->
+            upgraded.prepare("SELECT groupProto, groupOwnerKey, groupNonce, groupCharterSig FROM conversations WHERE id = 'g-old'").use { row ->
+                assertTrue(row.step(), "the legacy group conversation was lost by the migration")
+                assertEquals(1L, row.getLong(0), "an existing group must read as protocol 1 (legacy)")
+                assertTrue(row.isNull(1) && row.isNull(2) && row.isNull(3), "charter columns must default to NULL")
+            }
+            upgraded.prepare("SELECT subjectKey, certSig, issuerId FROM group_members WHERE deviceId = 'owner'").use { row ->
+                assertTrue(row.step(), "the legacy member row was lost by the migration")
+                assertTrue(row.isNull(0) && row.isNull(1) && row.isNull(2), "cert columns must default to NULL")
+            }
+            upgraded.prepare("SELECT groupSig FROM messages WHERE localId = 'm-old'").use { row ->
+                assertTrue(row.step(), "the legacy message row was lost by the migration")
+                assertTrue(row.isNull(0), "groupSig must default to NULL")
+            }
+        }
+    }
+
+    @Test
+    fun `v2 group columns round trip through the DAOs and a rename skips signed rows`() = runBlocking {
+        helper.createDatabase(5).close()
+        val db = openEncryptedFlashDatabase(dbFile, KEY)
+        try {
+            db.conversationDao().upsert(
+                com.transfer.flash.core.persistence.db.entity.ConversationEntity(
+                    id = "g2-abc", title = "Crew", isGroup = true, groupCreatedBy = "owner", groupCreatedAt = 7L,
+                    groupProto = 2, groupOwnerKey = "T1dORVI=", groupNonce = "Tk9OQ0U=", groupCharterSig = "Q0hBUlRFUg==",
+                ),
+            )
+            val conversation = db.conversationDao().get("g2-abc")!!
+            assertEquals(2, conversation.groupProto)
+            assertEquals("T1dORVI=", conversation.groupOwnerKey)
+            assertEquals("Tk9OQ0U=", conversation.groupNonce)
+            assertEquals("Q0hBUlRFUg==", conversation.groupCharterSig)
+
+            val members = db.groupMemberDao()
+            members.upsert(
+                com.transfer.flash.core.persistence.db.entity.GroupMemberEntity(
+                    groupId = "g2-abc", deviceId = "bea", displayName = "Béa", role = "member", joinedAt = 1L,
+                    membershipVersion = 3L, operationId = "op-3", isActive = true,
+                    subjectKey = "QkVB", certSig = "U0lH", issuerId = "owner",
+                ),
+            )
+            members.upsert(
+                com.transfer.flash.core.persistence.db.entity.GroupMemberEntity(
+                    groupId = "g-legacy", deviceId = "bea", displayName = "Béa", role = "member", joinedAt = 1L,
+                    membershipVersion = 1L, operationId = "op-1", isActive = true,
+                ),
+            )
+            members.updateMemberDisplayName("bea", "Beatrice")
+
+            val signed = members.member("g2-abc", "bea")!!
+            assertEquals("Béa", signed.displayName, "a signed label must not be rewritten by a device rename")
+            assertEquals("QkVB", signed.subjectKey)
+            assertEquals("U0lH", signed.certSig)
+            assertEquals("owner", signed.issuerId)
+            assertEquals("Beatrice", members.member("g-legacy", "bea")!!.displayName, "a legacy row still follows the device name")
+
+            db.messageDao().insert(
+                com.transfer.flash.core.persistence.db.entity.MessageEntity(
+                    localId = "m1", conversationId = "g2-abc", senderId = "bea", senderName = "Béa", text = "hi",
+                    sentAt = 1L, status = "SENT", groupSig = "TVNHU0lH",
+                ),
+            )
+            assertEquals("TVNHU0lH", db.messageDao().getByLocalId("m1")!!.groupSig)
+        } finally {
+            db.close()
         }
     }
 

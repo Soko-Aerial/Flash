@@ -105,6 +105,7 @@ public abstract class FlashDatabase : RoomDatabase() {
         // v3: MessageEntity gained reply columns (replyToId/replyToPreview).
         // v4: group membership/delivery tables and conversation group provenance.
         // v5: remembered_endpoints, the DR1 dial hints for paired peers (ADR-047).
-        public const val DATABASE_VERSION: Int = 5
+        // v6: signed group membership and messages, the nullable v2-group columns (ADR-044 V1).
+        public const val DATABASE_VERSION: Int = 6
     }
 }

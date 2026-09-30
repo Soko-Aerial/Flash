@@ -22,4 +22,13 @@ public data class GroupMemberEntity(
     val membershipVersion: Long,
     val operationId: String,
     val isActive: Boolean = true,
+    /**
+     * v6 (ADR-044 V1), v2 groups only, all null for a legacy row: the member's public key (base64
+     * SPKI), the signature of the cert that produced this row, and who issued it. For a v2 row
+     * [membershipVersion] is the cert `seq`, [operationId] the cert `opId` and [displayName] the
+     * signed label, so the row can be relayed to another member as a verifiable cert.
+     */
+    val subjectKey: String? = null,
+    val certSig: String? = null,
+    val issuerId: String? = null,
 )

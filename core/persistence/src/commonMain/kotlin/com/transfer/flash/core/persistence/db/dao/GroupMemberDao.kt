@@ -34,7 +34,11 @@ public interface GroupMemberDao {
     )
     public suspend fun activeGroupIdsFor(deviceId: String): List<String>
 
-    /** Update display name for a device across every group it belongs to (device-name change). */
-    @Query("UPDATE group_members SET displayName = :newName WHERE deviceId = :deviceId")
+    /**
+     * Update display name for a device across every legacy group it belongs to (device-name change).
+     * A v2 row (`certSig` set) is skipped: its name is the owner-signed label, and rewriting it would
+     * make the stored cert fail verification when it is relayed to another member.
+     */
+    @Query("UPDATE group_members SET displayName = :newName WHERE deviceId = :deviceId AND certSig IS NULL")
     public suspend fun updateMemberDisplayName(deviceId: String, newName: String)
 }

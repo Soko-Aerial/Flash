@@ -20,4 +20,15 @@ public data class ConversationEntity(
     /** Non-null only for a group conversation; immutable provenance for the membership log. */
     val groupCreatedBy: String? = null,
     val groupCreatedAt: Long? = null,
+    /**
+     * v6 (ADR-044 V1): the group protocol of this conversation. 1 = legacy (unsigned membership),
+     * 2 = a v2 group whose id is derived from [groupOwnerKey]. Rows written before v6 read as 1.
+     */
+    val groupProto: Int = 1,
+    /** v2 only: the owner's public key (base64 X.509 SPKI) from the signed charter. */
+    val groupOwnerKey: String? = null,
+    /** v2 only: the 16-byte charter nonce (base64) the group id was derived with. */
+    val groupNonce: String? = null,
+    /** v2 only: the owner's signature over the charter; [title] and [groupCreatedAt] are signed fields. */
+    val groupCharterSig: String? = null,
 )

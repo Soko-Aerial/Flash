@@ -28,6 +28,9 @@ public object FlashMigrations {
     /** v4 -> v5: DR1's `remembered_endpoints` table (ADR-047). */
     public val MIGRATION_4_5: Migration = SupportSqlMigration(FlashSchemaSteps.STEP_4_5)
 
+    /** v5 -> v6: v2-group columns (ADR-044 V1). */
+    public val MIGRATION_5_6: Migration = SupportSqlMigration(FlashSchemaSteps.STEP_5_6)
+
     /** Every migration, in order, for the open path. */
     public val ALL: Array<Migration> = FlashSchemaSteps.ALL.map { SupportSqlMigration(it) }.toTypedArray()
 }
