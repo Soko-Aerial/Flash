@@ -5,6 +5,7 @@ import com.transfer.flash.core.common.result.FlashResult
 import com.transfer.flash.core.security.identity.FlashIdentity
 import com.transfer.flash.core.security.identity.FlashIdentityStore
 import com.transfer.flash.core.security.trust.FlashTrustStore
+import com.transfer.flash.core.security.trust.VouchVerdict
 import java.util.Properties
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -81,6 +82,15 @@ internal class DesktopIdentityStore(private val stateDir: java.io.File) : FlashI
 }
 
 internal class DesktopTrustStore(private val stateDir: java.io.File) : FlashTrustStore {
+
+    // Vouched pins (ADR-044 V2): this fake does not exercise them.
+
+    override fun vouchingGroups(deviceId: FlashDeviceId): Set<String> = emptySet()
+
+    override fun applyVouch(deviceId: FlashDeviceId, fingerprintHex: String, groupId: String): VouchVerdict = VouchVerdict.INVALID
+
+    override fun revokeVouch(deviceId: FlashDeviceId, groupId: String) = Unit
+
 
     private val file = java.io.File(stateDir, "trust.properties")
     private val lock = Any()

@@ -66,5 +66,35 @@ public interface FlashTrustStore {
 
     /** True when [deviceId]'s current pairing was made with protocol v2. Cleared by [revokeTrust]. */
     public fun isVerified(deviceId: FlashDeviceId): Boolean = false
+
+    // --- Vouched pins (ADR-044 V2, docs/group/v2-vouched-trust-plan.md E1) ---
+    //
+    // These three have no default body on purpose: a no-op default would silently turn vouching off on a
+    // host, and a group member could then never connect. The compiler must find every implementer.
+
+    /** The ids of the groups whose owner vouched [deviceId]'s current pin. Empty for a pin nobody vouched. */
+    public fun vouchingGroups(deviceId: FlashDeviceId): Set<String>
+
+    /**
+     * Applies an owner's vouch: makes [fingerprintHex] the pin of [deviceId] on behalf of [groupId] when
+     * [VouchRules.decide] allows it, and returns that verdict. Nothing changes unless it is
+     * [VouchVerdict.ACCEPT]. A paired device keeps its pairing (its pin can only equal the vouched key); the group is
+     * still recorded, so unpairing later does not strand the member behind a first-use pin.
+     */
+    public fun applyVouch(deviceId: FlashDeviceId, fingerprintHex: String, groupId: String): VouchVerdict
+
+    /**
+     * Withdraws [groupId]'s vouch for [deviceId]. When no group vouches the device any more and it is not paired,
+     * the pin is deleted. A pin [groupId] never vouched (a first-use or paired pin) is left alone.
+     */
+    public fun revokeVouch(deviceId: FlashDeviceId, groupId: String)
+
+    /** Where [deviceId]'s pin came from, or null when it has none. */
+    public fun pinSource(deviceId: FlashDeviceId): PinSource? =
+        VouchRules.sourceOf(isTrusted(deviceId), getPin(deviceId), vouchingGroups(deviceId))
+
+    /** What [applyVouch] would answer, without changing anything. */
+    public fun vouchVerdict(deviceId: FlashDeviceId, fingerprintHex: String, groupId: String): VouchVerdict =
+        VouchRules.decide(isTrusted(deviceId), getPin(deviceId), vouchingGroups(deviceId), fingerprintHex, groupId)
 }
 
