@@ -11,6 +11,8 @@ import com.transfer.flash.core.security.identity.FlashIdentity
 import com.transfer.flash.core.security.identity.FlashIdentityStore
 import com.transfer.flash.core.security.identity.IdentityKeyVault
 import com.transfer.flash.core.security.trust.FlashTrustStore
+import com.transfer.flash.core.security.trust.VouchRules
+import com.transfer.flash.core.security.trust.VouchVerdict
 import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
@@ -131,6 +133,9 @@ internal class DesktopTrustStore(
     private val sealedSessionKeys = ConcurrentHashMap<FlashDeviceId, String>()
     private val pins = ConcurrentHashMap<FlashDeviceId, String>()
 
+    /** Groups whose owner vouched a device's pin (ADR-044 V2); guarded by [lock] for writes. */
+    private val vouches = ConcurrentHashMap<FlashDeviceId, Set<String>>()
+
     /** Peers whose current pairing was made with protocol v2 (ADR-042). */
     private val verified = ConcurrentHashMap.newKeySet<FlashDeviceId>()
 
@@ -177,6 +182,12 @@ internal class DesktopTrustStore(
                         }
                     }
                 props.stringPropertyNames()
+                    .filter { it.startsWith("vouch.") }
+                    .forEach { key ->
+                        val groups = props.getProperty(key).orEmpty().split(',').filter { it.isNotBlank() }.toSet()
+                        if (groups.isNotEmpty()) vouches[FlashDeviceId(key.removePrefix("vouch."))] = groups
+                    }
+                props.stringPropertyNames()
                     .filter { it.startsWith("verified.") && props.getProperty(it) == "true" }
                     .forEach { verified += FlashDeviceId(it.removePrefix("verified.")) }
                 // Rewrite once so legacy plaintext keys leave the disk immediately.
@@ -197,6 +208,7 @@ internal class DesktopTrustStore(
         cache.forEach { (id, name) -> props.setProperty("trusted.${id.value}", name) }
         sealedSessionKeys.forEach { (id, sealed) -> props.setProperty("session_key.${id.value}", sealed) }
         pins.forEach { (id, pin) -> props.setProperty("pin.${id.value}", pin) }
+        vouches.forEach { (id, groups) -> props.setProperty("vouch.${id.value}", groups.joinToString(",")) }
         verified.forEach { id -> props.setProperty("verified.${id.value}", "true") }
         file.outputStream().use { output: OutputStream -> props.store(output, "Flash desktop trust") }
     }
@@ -250,10 +262,43 @@ internal class DesktopTrustStore(
             sessionKeys.remove(deviceId)
             sealedSessionKeys.remove(deviceId)
             verified.remove(deviceId)
-            pins.remove(deviceId)
+            // Unpairing must not strand a member of a group behind a first-use pin: while a group still
+            // vouches for this key, the pin stays (its source becomes VOUCHED).
+            if (vouches[deviceId].isNullOrEmpty()) pins.remove(deviceId)
             runCatching { persist() }
         }
         return FlashResult.Success(Unit)
+    }
+
+    override fun vouchingGroups(deviceId: FlashDeviceId): Set<String> = vouches[deviceId].orEmpty()
+
+    override fun applyVouch(deviceId: FlashDeviceId, fingerprintHex: String, groupId: String): VouchVerdict {
+        synchronized(lock) {
+            val verdict = vouchVerdict(deviceId, fingerprintHex, groupId)
+            if (verdict != VouchVerdict.ACCEPT) return verdict
+            val fingerprint = VouchRules.normalize(fingerprintHex)
+            // A different key replaces the old pin and with it the groups that vouched the old key (`decide` only
+            // allows that when they are exactly this group or none). A paired device only ever gets here with its
+            // own key (or with no stored pin), so its pairing is never overwritten.
+            val kept = if (pins[deviceId]?.let(VouchRules::normalize) == fingerprint) vouches[deviceId].orEmpty() else emptySet()
+            pins[deviceId] = fingerprint
+            vouches[deviceId] = kept + groupId
+            runCatching { persist() }
+            return verdict
+        }
+    }
+
+    override fun revokeVouch(deviceId: FlashDeviceId, groupId: String) {
+        synchronized(lock) {
+            val remaining = VouchRules.afterRevoke(vouches[deviceId].orEmpty(), groupId) ?: return
+            if (remaining.isEmpty()) {
+                vouches.remove(deviceId)
+                if (!isTrusted(deviceId)) pins.remove(deviceId)
+            } else {
+                vouches[deviceId] = remaining
+            }
+            runCatching { persist() }
+        }
     }
 
     override fun getTrustedPeers(): Map<FlashDeviceId, String> = cache.toMap()

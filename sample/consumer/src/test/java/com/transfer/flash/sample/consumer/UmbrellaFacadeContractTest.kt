@@ -31,6 +31,7 @@ import com.transfer.flash.core.network.FlashNetworkState
 import com.transfer.flash.core.network.FlashSession
 import com.transfer.flash.core.persistence.settings.FlashSettingsDataStore
 import com.transfer.flash.core.security.trust.FlashTrustStore
+import com.transfer.flash.core.security.trust.VouchVerdict
 import com.transfer.flash.core.transfer.FlashTransferRepository
 import com.transfer.flash.core.transfer.model.FlashTransfer
 import com.transfer.flash.core.transfer.model.FlashTransferId
@@ -527,6 +528,15 @@ class UmbrellaFacadeContractTest {
     }
 
     private class FakeTrustStore : FlashTrustStore {
+
+        // Vouched pins (ADR-044 V2): this fake does not exercise them.
+
+        override fun vouchingGroups(deviceId: FlashDeviceId): Set<String> = emptySet()
+
+        override fun applyVouch(deviceId: FlashDeviceId, fingerprintHex: String, groupId: String): VouchVerdict = VouchVerdict.INVALID
+
+        override fun revokeVouch(deviceId: FlashDeviceId, groupId: String) = Unit
+
         override fun isTrusted(deviceId: FlashDeviceId): Boolean = false
         override fun trustPeer(deviceId: FlashDeviceId, friendlyName: String): FlashResult<Unit> = FlashResult.Success(Unit)
         override fun revokeTrust(deviceId: FlashDeviceId): FlashResult<Unit> = FlashResult.Success(Unit)

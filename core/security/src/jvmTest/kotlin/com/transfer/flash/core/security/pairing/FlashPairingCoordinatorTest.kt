@@ -3,6 +3,7 @@ package com.transfer.flash.core.security.pairing
 import com.transfer.flash.core.common.model.FlashDeviceId
 import com.transfer.flash.core.common.result.FlashResult
 import com.transfer.flash.core.security.trust.FlashTrustStore
+import com.transfer.flash.core.security.trust.VouchVerdict
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -37,6 +38,15 @@ import kotlinx.coroutines.runBlocking
 class FlashPairingCoordinatorTest {
 
     private class RecordingTrustStore : FlashTrustStore {
+
+        // Vouched pins (ADR-044 V2): this fake does not exercise them.
+
+        override fun vouchingGroups(deviceId: FlashDeviceId): Set<String> = emptySet()
+
+        override fun applyVouch(deviceId: FlashDeviceId, fingerprintHex: String, groupId: String): VouchVerdict = VouchVerdict.INVALID
+
+        override fun revokeVouch(deviceId: FlashDeviceId, groupId: String) = Unit
+
         val trusted = ConcurrentHashMap<FlashDeviceId, String>()
 
         override fun isTrusted(deviceId: FlashDeviceId): Boolean = trusted.containsKey(deviceId)

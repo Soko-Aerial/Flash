@@ -39,13 +39,50 @@ public class AndroidPreferencesTrustStore(
     }
 
     override fun revokeTrust(deviceId: FlashDeviceId): FlashResult<Unit> {
-        preferences.edit()
+        val edit = preferences.edit()
             .remove(keyFor(deviceId.value))
             .remove(sessionKeyFor(deviceId.value))
-            .remove(pinKeyFor(deviceId.value))
             .remove(verifiedKeyFor(deviceId.value))
-            .apply()
+        // Unpairing must not strand a member of a group behind a first-use pin: while a group still vouches
+        // for this key, the pin stays (its source becomes VOUCHED).
+        if (vouchingGroups(deviceId).isEmpty()) edit.remove(pinKeyFor(deviceId.value))
+        edit.apply()
         return FlashResult.Success(Unit)
+    }
+
+    @Synchronized
+    override fun vouchingGroups(deviceId: FlashDeviceId): Set<String> =
+        preferences.getString(vouchKeyFor(deviceId.value), null)
+            ?.split(VOUCH_SEPARATOR)?.filter { it.isNotBlank() }?.toSet().orEmpty()
+
+    @Synchronized
+    override fun applyVouch(deviceId: FlashDeviceId, fingerprintHex: String, groupId: String): VouchVerdict {
+        val verdict = vouchVerdict(deviceId, fingerprintHex, groupId)
+        if (verdict != VouchVerdict.ACCEPT) return verdict
+        val groups = vouchingGroups(deviceId)
+        val fingerprint = VouchRules.normalize(fingerprintHex)
+        // A different key replaces the old pin, and with it the groups that vouched the old key
+        // (`decide` only allows that when they are exactly this group or none). A paired device only ever
+        // gets here with its own key (or with no stored pin), so its pairing is never overwritten.
+        val kept = if (getPin(deviceId)?.let(VouchRules::normalize) == fingerprint) groups else emptySet()
+        preferences.edit()
+            .putString(pinKeyFor(deviceId.value), fingerprint)
+            .putString(vouchKeyFor(deviceId.value), (kept + groupId).joinToString(VOUCH_SEPARATOR))
+            .apply()
+        return verdict
+    }
+
+    @Synchronized
+    override fun revokeVouch(deviceId: FlashDeviceId, groupId: String) {
+        val remaining = VouchRules.afterRevoke(vouchingGroups(deviceId), groupId) ?: return
+        val edit = preferences.edit()
+        if (remaining.isEmpty()) {
+            edit.remove(vouchKeyFor(deviceId.value))
+            if (!isTrusted(deviceId)) edit.remove(pinKeyFor(deviceId.value))
+        } else {
+            edit.putString(vouchKeyFor(deviceId.value), remaining.joinToString(VOUCH_SEPARATOR))
+        }
+        edit.apply()
     }
 
     override fun saveSessionKey(deviceId: FlashDeviceId, key: ByteArray): FlashResult<Unit> {
@@ -114,6 +151,7 @@ public class AndroidPreferencesTrustStore(
 
     private fun pinKeyFor(deviceId: String): String = "$PIN_PREFIX$deviceId"
     private fun verifiedKeyFor(deviceId: String): String = "$VERIFIED_PREFIX$deviceId"
+    private fun vouchKeyFor(deviceId: String): String = "$VOUCH_PREFIX$deviceId"
 
     public companion object {
         public const val PREFERENCES_NAME: String = "flash_ws_pairing"
@@ -123,6 +161,10 @@ public class AndroidPreferencesTrustStore(
 
         /** Set once a pairing completes with protocol v2 (ADR-042); absent = legacy v1 pairing. */
         public const val VERIFIED_PREFIX: String = "verified_v2_"
+
+        /** Comma-joined ids of the groups vouching a device's pin (ADR-044 V2). Group ids never contain a comma. */
+        public const val VOUCH_PREFIX: String = "vouch_"
+        private const val VOUCH_SEPARATOR: String = ","
 
         /** Marks a sealed session-key value; anything without it is a legacy plaintext entry. */
         public const val SEALED_PREFIX: String = "s1:"
