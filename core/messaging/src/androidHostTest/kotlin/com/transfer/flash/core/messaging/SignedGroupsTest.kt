@@ -1244,6 +1244,55 @@ class SignedGroupsTest {
         assertEquals("READ", status("dev-a", two.localId))
     }
 
+    // ------------------------------------------------------------------------------ catch-up media
+    // Chat/group sync audit, step 4. A catch-up never re-sends file bytes, so a file row must reach the newcomer
+    // as a one-line label, not as an empty bubble or a voice note's raw metadata.
+
+    private fun attachmentRow(id: String, groupId: String, mime: String, name: String, sentAt: Long, text: String = "") =
+        MessageEntity(
+            localId = id,
+            conversationId = groupId,
+            senderId = "dev-a",
+            senderName = "Ada",
+            text = text,
+            sentAt = sentAt,
+            status = "SENT",
+            attachmentTransferId = "transfer-$id",
+            attachmentName = name,
+            attachmentMime = mime,
+            attachmentSize = 2_000_000L,
+        )
+
+    @Test
+    fun `a legacy catch-up labels files instead of sending empty bubbles`() = runBlocking {
+        level["dev-c"] = 1
+        mesh("dev-a", "dev-b", "dev-c")
+        val groupId = createGroup("dev-a", "Old and new", "dev-b", "dev-c")
+        goOffline("dev-c")
+        val now = System.currentTimeMillis()
+        val author = nodes.getValue("dev-a").messageDao
+        author.insert(attachmentRow("att-photo", groupId, "image/jpeg", "holiday.jpg", now - 4))
+        author.insert(attachmentRow("att-video", groupId, "video/mp4", "clip.mp4", now - 3))
+        author.insert(attachmentRow("att-file", groupId, "application/pdf", "plan.pdf", now - 2))
+        author.insert(attachmentRow("att-voice", groupId, "audio/mp4", "note.m4a", now - 1, text = "vmsg:2400:3,9,4"))
+        say("dev-a", groupId, "plain text")
+
+        connect("dev-a", "dev-c")
+        settleLong()
+
+        val caught = nodes.getValue("dev-c").messageDao.messages
+        assertEquals("[Photo] holiday.jpg", caught["att-photo"]?.text)
+        assertEquals("[Video] clip.mp4", caught["att-video"]?.text)
+        assertEquals("[File] plan.pdf", caught["att-file"]?.text)
+        assertEquals("a voice note is labelled, its waveform metadata is not shown", "[Voice message]", caught["att-voice"]?.text)
+        assertNotNull("ordinary text still catches up", stored("dev-c", groupId, "plain text"))
+        assertTrue(
+            "no row the newcomer holds is empty or carries raw metadata",
+            caught.values.filter { it.conversationId == groupId }.none { it.text.isBlank() || it.text.startsWith("vmsg:") },
+        )
+        assertTrue("and none claims an attachment it cannot open", caught.values.none { it.attachmentTransferId != null })
+    }
+
     // ------------------------------------------------------------------------------ harness: nodes
 
     private class Node(
