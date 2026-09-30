@@ -1,5 +1,50 @@
 # Error Log
 
+## ERROR-085 — Stale IP lockout: ConnectionPlanner suppression keyed by deviceId instead of endpoint blocked valid IP on network switch
+
+### Date
+2026-09-30
+
+### Area
+Networking / Connection planning (`ConnectionPlanner.kt`), auto-connect (`AutoConnector.kt`), network switch recovery
+
+### Symptoms
+- When devices moved from an Infinix Hot 50 hotspot (`10.13.65.x`) to a home Wi-Fi network (`192.168.1.x`), devices could not discover or connect to each other.
+- In logcat, devices attempted to dial stale hotspot IPs (`10.13.65.211:45822 via=routed-fallback`) over the home Wi-Fi network. Sockets hung for 4000ms until connect timeout.
+- While the stale dial was in flight, discovery found the peer's new IP (`192.168.1.123:45822`), but the planner skipped it (`inFlight`).
+- After the 4s dial failed, `ConnectionPlanner` suppressed the peer's `deviceId` for 15 seconds (`DEFAULT_SUPPRESS_MS = 15_000L`).
+- During the 15-second suppression window, `ConnectionPlanner` refused to dial the newly discovered IP (`192.168.1.123:45822`) because suppression was keyed by `deviceId` rather than endpoint.
+- Tapping 1:1 chat or sending messages triggered `planUrgent`, which also rejected dials because `nowMs - it < floorMs` (5s), printing `Failed to dispatch chat wireFrame: no active session`.
+- Re-arming discovery (e.g. screen on or network switch) called `rememberedRoutes?.resetBackoff()` and `connector.sweepNow()`, which repeated the stale dial loop.
+- Force-stopping the app on one device wiped in-memory suppression, allowing the new IP to be dialed on relaunch.
+
+### Root cause
+- `ConnectionPlanner.State.lastAttemptMs` and suppression checks in `step()` and `planUrgent()` were keyed solely by `key` (`deviceId`). A failed connection attempt to a dead IP on a previous network suppressed all attempts to that peer, even when discovery or a presence tip offered a valid, newly reachable endpoint on the current network.
+- Hardware/OS context: Transsion AP client isolation on Infinix Hot 50 hotspot drops inter-station ARP/multicast packets (`EHOSTUNREACH`), while `Hiber` daemon freezes background processes 6–10s after screen-off (ERROR-074).
+
+### Ramifications & failed attempts considered
+- **Disabling `routed-fallback` in `LanRouteChooser`**: Rejected because that would break multi-subnet/VLAN enterprise networks where peers communicate across subnets via corporate routers.
+- **Cancelling in-flight dials**: Rejected because cancelling active socket coroutines adds cross-module lifecycle complexity and glare risk; letting the 4s connect timeout finish naturally is safe once post-timeout suppression no longer blocks the new endpoint.
+- **Clearing suppression without endpoint awareness**: Rejected because that would cause tight dial loops against dead endpoints.
+
+### Working fix
+- Made `ConnectionPlanner` suppression endpoint-aware using `EndpointKey(key, host, port)`.
+- In `step()`: candidates are only suppressed if the exact same `(key, host, port)` was attempted within `suppressMs` (15s). A newly discovered IP or port for the same peer bypasses suppression and dials immediately once any in-flight dial completes.
+- In `planUrgent()`: urgent on-demand dials are only floored by `floorMs` (5s) if the sighting matches the same endpoint as the previous attempt.
+- Each endpoint is independently suppressed, preventing ping-ponging if multiple dead endpoints are reported.
+- A live session clears all endpoints for that peer.
+
+### Verification
+- Added unit tests in `ConnectionPlannerTest.kt`:
+  - `suppression is endpoint-aware so a new IP or port is dialed without waiting for the old endpoint window`
+  - `urgent dial to a new endpoint bypasses the floor window`
+  - `multiple failed endpoints for the same peer are each suppressed independently without ping-ponging`
+- Ran `:core:network:jvmTest` (284 tests passed).
+- Ran `:core:network:testAndroidHostTest` (381 tests passed).
+
+### Status
+RESOLVED in code and unit tests.
+
 ## ERROR-084 — Chat and group sync gaps: desktop skipped the session-up edges, retry deadlines were lost, group read/receipt ticks never completed, renaming a desktop reached nothing
 
 ### Date

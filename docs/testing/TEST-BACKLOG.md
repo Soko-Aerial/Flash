@@ -787,6 +787,25 @@ enough for everything below. Keep `adb logcat` running on the phones; "tick" mea
 - **Source:** `DesktopEngineRenameTest` (transport hello), `SignedGroupsTest` (legacy group row renamed).
 - **Status:** TODO
 
+## 4h. Network switch & stale route recovery (ERROR-085, 2026-09-30)
+
+### NET-SW-01 — Automatic reconnection after switching from mobile hotspot to home Wi-Fi (ERROR-085)
+- **Setup:** two phones A and B. Phone A connects to a mobile hotspot (e.g. Infinix `10.13.65.x`). Both phones are on the hotspot
+  and have established connection or exchanged presence tips/routes.
+- **Steps:**
+  1. Turn off the hotspot. Connect both phones A and B to a home Wi-Fi network (`192.168.1.x`).
+  2. Leave Flash open in the foreground on both phones.
+  3. Watch logcat (`adb logcat -v time -s WS:I CHAT:I`).
+  4. Send a 1:1 chat message from phone A to phone B.
+- **Pass:**
+  - Phone A and B discover each other at their new `192.168.1.x` addresses within 5–10 s of joining the Wi-Fi network.
+  - The failed dial to the old `10.13.65.x` endpoint does NOT suppress dialing the new `192.168.1.x` endpoint.
+  - No need to force-stop or restart either app.
+  - The 1:1 chat message delivers immediately with single/double ticks without getting stuck in outbox.
+- **Fail:** phones stay Offline or report "Failed to dispatch chat wireFrame: no active session" until force stopped.
+- **Source:** ERROR-085; `ConnectionPlannerTest` endpoint-aware suppression and urgent-dial tests.
+- **Status:** TODO
+
 ## 5. Measurements — do these last
 
 They replace every *(measure)* estimate in the plans and decide tuning. Record each in `logs/experiments.md`.
