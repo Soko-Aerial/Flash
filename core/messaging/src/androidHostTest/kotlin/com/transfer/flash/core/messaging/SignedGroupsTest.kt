@@ -6,6 +6,7 @@ import com.transfer.flash.core.messaging.protocol.GroupCanonical
 import com.transfer.flash.core.messaging.protocol.GroupCharter
 import com.transfer.flash.core.messaging.protocol.GroupPolicy
 import com.transfer.flash.core.messaging.protocol.GroupSigning
+import com.transfer.flash.core.messaging.protocol.GroupVouching
 import com.transfer.flash.core.messaging.protocol.GroupWireFrame
 import com.transfer.flash.core.messaging.protocol.MemberCert
 import com.transfer.flash.core.messaging.protocol.TestGroupCrypto
@@ -48,7 +49,9 @@ class SignedGroupsTest {
 
     private val dispatcher = Executors.newFixedThreadPool(4).asCoroutineDispatcher()
 
-    private val names = mapOf("dev-a" to "Ada", "dev-b" to "Bo", "dev-c" to "Cy", "dev-d" to "Di", "dev-e" to "Eve")
+    /** Five named devices, plus dev-f..dev-u so a group of twenty (and one more) can be built. */
+    private val names = mapOf("dev-a" to "Ada", "dev-b" to "Bo", "dev-c" to "Cy", "dev-d" to "Di", "dev-e" to "Eve") +
+        ('f'..'u').associate { "dev-$it" to "Member $it" }
     private val cryptos = names.keys.associateWith { TestGroupCrypto() }
 
     /** `owner -> peers it has removed from its trust store`. Everyone trusts everyone else by default. */
@@ -62,6 +65,12 @@ class SignedGroupsTest {
 
     /** A key a device presented that differs from the one its pin vouches for. */
     private val presentedKey = ConcurrentHashMap<String, ByteArray>()
+
+    /** ADR-044 V2: when true every repository gets a trust store that can vouch. The default keeps V1 behaviour. */
+    private var vouchedTrust = false
+
+    /** Each device's trust store as the group layer sees it; created on first use. */
+    private val vouchings = ConcurrentHashMap<String, TestVouching>()
 
     private val nodes = LinkedHashMap<String, Node>()
     private val wire = ConcurrentLinkedQueue<Envelope>()
@@ -508,6 +517,316 @@ class SignedGroupsTest {
         }
     }
 
+    // ------------------------------------------------------------------------------ V2: vouched members
+
+    @Test
+    fun `unpaired members of a v2 group are vouched by the owner and talk to each other`() = runBlocking {
+        vouchedTrust = true
+        unpair("dev-b", "dev-c")
+        mesh("dev-a", "dev-b", "dev-c")
+        val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+
+        assertEquals(setOf("dev-a", "dev-b", "dev-c"), active("dev-b", groupId))
+        assertEquals(setOf("dev-a", "dev-b", "dev-c"), active("dev-c", groupId))
+        assertEquals("b vouches c's real key on the owner's word", setOf(groupId), vouchingOf("dev-b").groupsOf("dev-c"))
+        assertEquals(pinOf("dev-c"), vouchingOf("dev-b").pinOf("dev-c"))
+        assertEquals(setOf(groupId), vouchingOf("dev-c").groupsOf("dev-b"))
+        assertEquals(pinOf("dev-b"), vouchingOf("dev-c").pinOf("dev-b"))
+
+        say("dev-b", groupId, "hello from b")
+        val received = stored("dev-c", groupId, "hello from b")
+        assertNotNull("c accepts b although they never paired", received)
+        assertEquals("the name shown is the roster's signed label", "Bo", received!!.senderName)
+        say("dev-c", groupId, "and back")
+        assertNotNull("b accepts c", stored("dev-b", groupId, "and back"))
+    }
+
+    @Test
+    fun `without a trust store that can vouch an unpaired member is still refused`() = runBlocking {
+        unpair("dev-b", "dev-c")
+        mesh("dev-a", "dev-b", "dev-c")
+        val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+
+        assertEquals("c never learns b, exactly as in V1", setOf("dev-a", "dev-c"), active("dev-c", groupId))
+        say("dev-b", groupId, "hello")
+        assertNull(stored("dev-c", groupId, "hello"))
+    }
+
+    @Test
+    fun `a first-use pin left under a member's id is replaced by the owner's vouch`() = runBlocking {
+        vouchedTrust = true
+        unpair("dev-b", "dev-c")
+        // dev-e connected to c first and claimed b's id: the pin c holds for "dev-b" is e's key.
+        vouchingOf("dev-c").tofu("dev-b", fingerprintHex(keyOf("dev-e")))
+        mesh("dev-a", "dev-b", "dev-c")
+        val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+
+        assertEquals(pinOf("dev-b"), vouchingOf("dev-c").pinOf("dev-b"))
+        assertEquals(setOf(groupId), vouchingOf("dev-c").groupsOf("dev-b"))
+        assertNotNull(row("dev-c", groupId, "dev-b"))
+    }
+
+    @Test
+    fun `a peer that presents another key than its certificate is not trusted in the group`() = runBlocking {
+        vouchedTrust = true
+        unpair("dev-b", "dev-c")
+        mesh("dev-a", "dev-b", "dev-c")
+        val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+        val signed = sign("dev-b", groupId, "m-imp", "dev-b", "i am b")
+
+        // The live session at c under the id dev-b holds e's key, not the key the owner certified for b.
+        presentedKey["dev-b"] = keyOf("dev-e")
+        deliver("dev-b", "dev-c", message(groupId, "m-imp", "dev-b", "i am b", signed))
+        assertNull("the id alone is not enough", stored("dev-c", groupId, "i am b"))
+
+        presentedKey.remove("dev-b")
+        deliver("dev-b", "dev-c", message(groupId, "m-imp", "dev-b", "i am b", signed))
+        assertNotNull("the same frame over the certified key is accepted", stored("dev-c", groupId, "i am b"))
+    }
+
+    @Test
+    fun `a device that is not in the roster is not trusted in the group even when the owner knows it`() = runBlocking {
+        vouchedTrust = true
+        unpair("dev-c", "dev-d")
+        mesh("dev-a", "dev-b", "dev-c", "dev-d")
+        val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+
+        deliver("dev-d", "dev-c", message(groupId, "m-out", "dev-d", "let me in", sign("dev-d", groupId, "m-out", "dev-d", "let me in")))
+
+        assertNull(stored("dev-c", groupId, "let me in"))
+        assertNull("no pin appears for a device that was never vouched", vouchingOf("dev-c").pinOf("dev-d"))
+    }
+
+    @Test
+    fun `an owner cert that names another key for a paired member is refused and the pairing stays`() = runBlocking {
+        vouchedTrust = true
+        mesh("dev-a", "dev-b", "dev-c")
+        val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+        val charter = charterOf("dev-a", groupId)
+        val swapped = GroupSigning(cryptos.getValue("dev-a")).issueCert(
+            groupId, "dev-b", keyOf("dev-e"), "Bo", MemberCert.ROLE_MEMBER, 2L, "op-swap", true, "dev-a",
+        )
+
+        deliver("dev-a", "dev-c", GroupWireFrame.Bundle(groupId, "dev-a", "op", charter, listOf(swapped)))
+
+        assertEquals(GroupCanonical.encode(keyOf("dev-b")), row("dev-c", groupId, "dev-b").subjectKey)
+        assertEquals(1L, row("dev-c", groupId, "dev-b").membershipVersion)
+        assertEquals("the pairing pin is untouched", pinOf("dev-b"), vouchingOf("dev-c").pinOf("dev-b"))
+    }
+
+    @Test
+    fun `the owner removes a member, every device withdraws the vouch and the member is silenced`() = runBlocking {
+        vouchedTrust = true
+        unpair("dev-b", "dev-c")
+        mesh("dev-a", "dev-b", "dev-c")
+        val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+        assertEquals(setOf(groupId), vouchingOf("dev-b").groupsOf("dev-c"))
+
+        val removed = nodes.getValue("dev-a").repo.removeGroupMember(groupId, "dev-c")
+        assertTrue("remove must succeed: $removed", removed is FlashResult.Success)
+        settle()
+
+        for (id in listOf("dev-a", "dev-b", "dev-c")) {
+            assertEquals("$id: c is gone", setOf("dev-a", "dev-b"), active(id, groupId))
+            assertEquals("the owner signed the tombstone", "dev-a", row(id, groupId, "dev-c").issuerId)
+        }
+        assertEquals(emptySet<String>(), vouchingOf("dev-b").groupsOf("dev-c"))
+        assertNull("the vouched pin goes with the last vouch", vouchingOf("dev-b").pinOf("dev-c"))
+        deliver("dev-c", "dev-b", message(groupId, "m-gone", "dev-c", "still here", sign("dev-c", groupId, "m-gone", "dev-c", "still here")))
+        assertNull(stored("dev-b", groupId, "still here"))
+    }
+
+    @Test
+    fun `only the owner can remove a member`() = runBlocking {
+        vouchedTrust = true
+        mesh("dev-a", "dev-b", "dev-c")
+        val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+
+        val refused = nodes.getValue("dev-b").repo.removeGroupMember(groupId, "dev-c")
+
+        assertTrue(refused is FlashResult.Failure)
+        assertEquals(setOf("dev-a", "dev-b", "dev-c"), active("dev-a", groupId))
+        val owner = nodes.getValue("dev-a").repo.removeGroupMember(groupId, "dev-a")
+        assertTrue("the owner cannot remove itself", owner is FlashResult.Failure)
+    }
+
+    @Test
+    fun `a member who leaves withdraws the vouches it made and the others withdraw theirs for it`() = runBlocking {
+        vouchedTrust = true
+        unpair("dev-b", "dev-c")
+        mesh("dev-a", "dev-b", "dev-c")
+        val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+
+        val left = nodes.getValue("dev-b").repo.leaveGroup(groupId)
+        assertTrue(left is FlashResult.Success)
+        settle()
+
+        assertEquals("b no longer vouches anyone", emptySet<String>(), vouchingOf("dev-b").groupsOf("dev-c"))
+        assertNull(vouchingOf("dev-b").pinOf("dev-c"))
+        assertEquals("c no longer vouches b", emptySet<String>(), vouchingOf("dev-c").groupsOf("dev-b"))
+        assertNull(vouchingOf("dev-c").pinOf("dev-b"))
+    }
+
+    @Test
+    fun `a file sent to a group is offered to paired members only`() = runBlocking {
+        vouchedTrust = true
+        unpair("dev-b", "dev-c")
+        mesh("dev-a", "dev-b", "dev-c")
+        val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+
+        nodes.getValue("dev-b").repo.sendGroupAttachment(
+            groupId, "att-1", "tr-1", "photo.jpg", "image/jpeg", 10L, null, 0L, emptyList(),
+        )
+        settle()
+
+        val targets = nodes.getValue("dev-b").deliveryDao.rows.keys.filter { it.first == "att-1" }.map { it.second }
+        assertEquals("only the paired owner is a recipient, so nothing waits for c forever", listOf("dev-a"), targets)
+    }
+
+    @Test
+    fun `a group of twenty forms when only the owner is paired with everyone`() = runBlocking {
+        vouchedTrust = true
+        val others = ('b'..'t').map { "dev-$it" }
+        others.forEach { x -> others.filter { it != x }.forEach { y -> distrust(x, y) } }
+        node("dev-a")
+        others.forEach { node(it) }
+        others.forEach { connect("dev-a", it) }
+        settle()
+
+        val groupId = createGroup("dev-a", "Everyone", *others.toTypedArray())
+
+        assertEquals(20, active("dev-a", groupId).size)
+        for (id in others) {
+            assertEquals("$id holds the whole roster", 20, active(id, groupId).size)
+            assertEquals("$id vouches every other member it never paired", 18, vouchingOf(id).pinnedDevices().size)
+        }
+    }
+
+    @Test
+    fun `a twenty-first member is refused at creation and a big group needs every member on v2`() = runBlocking {
+        vouchedTrust = true
+        val tooMany = (('b'..'t').map { "dev-$it" } + "dev-u").toSet()
+        node("dev-a")
+        val over = nodes.getValue("dev-a").repo.createGroup("Too big", tooMany)
+        assertTrue(over is FlashResult.Failure)
+        assertTrue(((over as FlashResult.Failure).error as FlashError.Unknown).message.contains("2-${GroupPolicy.MAX_MEMBERS_V2}"))
+
+        level["dev-c"] = 1
+        val legacy = nodes.getValue("dev-a").repo.createGroup("Half old", ('b'..'h').map { "dev-$it" }.toSet())
+        assertTrue(legacy is FlashResult.Failure)
+        assertTrue(
+            "the user is told why: ${(legacy as FlashResult.Failure).error}",
+            (legacy.error as FlashError.Unknown).message.contains("latest Flash"),
+        )
+    }
+
+    // ------------------------------------------------------------------------------ V2: SignedGroups alone
+
+    @Test
+    fun `twenty members fit in one bundle and a twenty-first is ignored without leaving a pin`() = runBlocking {
+        val others = (1..19).map { "m$it" }
+        val directory = parties("owner", "recv", *others.toTypedArray())
+        val invitees = (others.take(18) + "recv").associateWith { keyOf(directory, it) }
+        val created = engine(directory, "owner").create("Twenty", invitees) { it }
+        val vouching = vouchingFor(directory, setOf("owner"))
+        val receiver = engine(directory, "recv", vouching = vouching, paired = { it == "owner" })
+
+        assertEquals(SignedGroups.BundleOutcome.Applied(created.groupId, joined = true), receiver.onBundle("owner", created.bundle))
+        assertEquals(20, directory.getValue("recv").members.members.values.count { it.isActive })
+        others.take(18).forEach { assertEquals(setOf(created.groupId), vouching.groupsOf(it)) }
+
+        val added = engine(directory, "owner").addMembers(created.groupId, mapOf("m19" to keyOf(directory, "m19"))) { it }!!
+        assertEquals(SignedGroups.BundleOutcome.Ignored("too-many-members"), receiver.onBundle("owner", added.changed))
+        assertNull("no pin for a member the roster refused", vouching.pinOf("m19"))
+    }
+
+    @Test
+    fun `a cert whose key another group vouched differently is dropped and the rest applies`() = runBlocking {
+        val directory = parties("owner", "recv", "x", "y")
+        val vouching = vouchingFor(directory, setOf("owner"))
+        val otherKey = fingerprintHex(TestGroupCrypto().publicKey)
+        vouching.vouch("x", otherKey, "g2-other")
+        val invitees = mapOf("recv" to keyOf(directory, "recv"), "x" to keyOf(directory, "x"), "y" to keyOf(directory, "y"))
+        val created = engine(directory, "owner").create("Team", invitees) { it }
+        val receiver = engine(directory, "recv", vouching = vouching, paired = { it == "owner" })
+
+        val outcome = receiver.onBundle("owner", created.bundle)
+
+        assertEquals(SignedGroups.BundleOutcome.Applied(created.groupId, joined = true), outcome)
+        assertNull("x is not stored: two owners disagree about its key", directory.getValue("recv").members.members[created.groupId to "x"])
+        assertNotNull(directory.getValue("recv").members.members[created.groupId to "y"])
+        assertEquals("the first vouch is untouched", otherKey, vouching.pinOf("x"))
+        assertEquals(setOf("g2-other"), vouching.groupsOf("x"))
+    }
+
+    @Test
+    fun `a relay that is not a member cannot leave a pin behind`() = runBlocking {
+        val directory = parties("owner", "recv", "x", "stranger", "newbie")
+        val vouching = vouchingFor(directory, setOf("owner", "stranger"))
+        val created = engine(directory, "owner").create(
+            "Team", mapOf("recv" to keyOf(directory, "recv"), "x" to keyOf(directory, "x")),
+        ) { it }
+        val receiver = engine(directory, "recv", vouching = vouching, paired = { it in setOf("owner", "stranger") })
+        assertTrue(receiver.onBundle("owner", created.bundle) is SignedGroups.BundleOutcome.Applied)
+        val added = engine(directory, "owner").addMembers(created.groupId, mapOf("newbie" to keyOf(directory, "newbie"))) { it }!!
+
+        val outcome = receiver.onBundle("stranger", added.changed)
+
+        assertEquals(SignedGroups.BundleOutcome.Ignored("sender-not-member"), outcome)
+        assertNull(vouching.pinOf("newbie"))
+        assertNull(directory.getValue("recv").members.members[created.groupId to "newbie"])
+    }
+
+    @Test
+    fun `a replayed bundle re-installs the vouches a cleared trust store lost`() = runBlocking {
+        val directory = parties("owner", "recv", "x")
+        val vouching = vouchingFor(directory, setOf("owner"))
+        val created = engine(directory, "owner").create(
+            "Team", mapOf("recv" to keyOf(directory, "recv"), "x" to keyOf(directory, "x")),
+        ) { it }
+        val receiver = engine(directory, "recv", vouching = vouching, paired = { it == "owner" })
+        assertTrue(receiver.onBundle("owner", created.bundle) is SignedGroups.BundleOutcome.Applied)
+        assertEquals(setOf(created.groupId), vouching.groupsOf("x"))
+
+        vouching.clear()
+        val replay = receiver.onBundle("owner", created.bundle)
+
+        assertEquals(SignedGroups.BundleOutcome.Applied(created.groupId, joined = false), replay)
+        assertEquals(setOf(created.groupId), vouching.groupsOf("x"))
+        assertEquals(fingerprintHex(keyOf(directory, "x")), vouching.pinOf("x"))
+    }
+
+    @Test
+    fun `a vouched member counts in the group only over the key its certificate names`() = runBlocking {
+        val directory = parties("owner", "recv", "x", "stranger")
+        val vouching = vouchingFor(directory, setOf("owner"))
+        val created = engine(directory, "owner").create(
+            "Team", mapOf("recv" to keyOf(directory, "recv"), "x" to keyOf(directory, "x")),
+        ) { it }
+        val receiver = engine(directory, "recv", vouching = vouching, paired = { it == "owner" })
+        receiver.onBundle("owner", created.bundle)
+
+        assertTrue(receiver.isVouchedMember(created.groupId, "x", keyOf(directory, "x")))
+        assertFalse("another key under the same id", receiver.isVouchedMember(created.groupId, "x", keyOf(directory, "stranger")))
+        assertFalse("no session key (plaintext socket)", receiver.isVouchedMember(created.groupId, "x", null))
+        assertFalse("not in the roster", receiver.isVouchedMember(created.groupId, "stranger", keyOf(directory, "stranger")))
+        assertFalse("not this group", receiver.isVouchedMember("g2-elsewhere", "x", keyOf(directory, "x")))
+    }
+
+    @Test
+    fun `without a vouching port every member must still be paired`() = runBlocking {
+        val directory = parties("owner", "recv", "x")
+        val created = engine(directory, "owner").create(
+            "Team", mapOf("recv" to keyOf(directory, "recv"), "x" to keyOf(directory, "x")),
+        ) { it }
+        val receiver = engine(directory, "recv", paired = { it == "owner" })
+
+        assertTrue(receiver.onBundle("owner", created.bundle) is SignedGroups.BundleOutcome.Applied)
+
+        assertNull("V1: x is unknown to a device that never paired it", directory.getValue("recv").members.members[created.groupId to "x"])
+        assertFalse(receiver.isVouchedMember(created.groupId, "x", keyOf(directory, "x")))
+    }
+
     // ------------------------------------------------------------------------------ harness: nodes
 
     private class Node(
@@ -532,6 +851,19 @@ class SignedGroupsTest {
         distrusted.getOrPut(owner) { ConcurrentHashMap.newKeySet() }.add(peer)
     }
 
+    /** Neither device is paired with the other (they may still be connected). */
+    private fun unpair(x: String, y: String) {
+        distrust(x, y)
+        distrust(y, x)
+    }
+
+    private fun isPairedWith(id: String, peer: String): Boolean =
+        peer in names.keys && peer != id && distrusted[id]?.contains(peer) != true
+
+    private fun vouchingOf(id: String): TestVouching = vouchings.getOrPut(id) {
+        TestVouching(isPaired = { peer -> isPairedWith(id, peer) }, pairedPin = { peer -> pinOf(peer) })
+    }
+
     private fun node(id: String): Node = nodes.getOrPut(id) {
         val created = Node(id)
         val scope = CoroutineScope(dispatcher + SupervisorJob())
@@ -548,7 +880,7 @@ class SignedGroupsTest {
             reactionDao = NoopReactionDao(),
             groupMemberDao = created.memberDao,
             groupDeliveryDao = created.deliveryDao,
-            isTrustedPeer = { peer -> peer in names.keys && peer != id && distrusted[id]?.contains(peer) != true },
+            isTrustedPeer = { peer -> isPairedWith(id, peer) },
             groupTransportSink = GroupTransportSink { target, frame -> transmit(id, target, frame) },
             transportSink = MessageTransportSink { _, _ -> true },
             scope = scope,
@@ -558,6 +890,7 @@ class SignedGroupsTest {
             pinnedFingerprint = { peer -> pinOf(peer) },
             peerGroupProtocol = { peer -> level[peer] ?: GroupPolicy.V2_PROTOCOL },
             peerIdentityKey = { peer -> if (peer in keyless) null else presentedKey[peer] ?: cryptos[peer]?.publicKey },
+            groupVouching = if (vouchedTrust) vouchingOf(id) else null,
         )
         created
     }
@@ -729,7 +1062,13 @@ class SignedGroupsTest {
 
     private val counter = AtomicInteger()
 
-    private fun engine(directory: Map<String, Party>, id: String, budget: VerifyBudget = VerifyBudget()): SignedGroups {
+    private fun engine(
+        directory: Map<String, Party>,
+        id: String,
+        budget: VerifyBudget = VerifyBudget(),
+        vouching: GroupVouching? = null,
+        paired: (String) -> Boolean = { peer -> peer in directory && peer != id },
+    ): SignedGroups {
         val party = directory.getValue(id)
         return SignedGroups(
             localDeviceId = id,
@@ -737,13 +1076,21 @@ class SignedGroupsTest {
             crypto = party.crypto,
             conversationDao = party.conversations,
             members = party.members,
-            isPaired = { peer -> peer in directory && peer != id },
+            isPaired = paired,
             pinnedFingerprint = { peer -> directory[peer]?.crypto?.publicKey?.let { fingerprintHex(it) } },
+            vouching = vouching,
             nowMs = { 1_700_000_000_000L },
             newId = { "id-${counter.incrementAndGet()}" },
             budget = budget,
         )
     }
+
+    /** A trust store for [id] that is paired with [pairedWith] only, every pairing under the device's real key. */
+    private fun vouchingFor(directory: Map<String, Party>, pairedWith: Set<String>): TestVouching =
+        TestVouching(
+            isPaired = { peer -> peer in pairedWith },
+            pairedPin = { peer -> directory[peer]?.crypto?.publicKey?.let { fingerprintHex(it) } },
+        )
 
     private fun fingerprintHex(key: ByteArray): String =
         MessageDigest.getInstance("SHA-256").digest(key).joinToString("") { "%02X".format(it) }

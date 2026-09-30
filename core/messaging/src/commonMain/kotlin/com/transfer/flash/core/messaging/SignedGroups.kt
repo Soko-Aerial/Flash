@@ -10,6 +10,8 @@ import com.transfer.flash.core.messaging.protocol.GroupMembershipVersion
 import com.transfer.flash.core.messaging.protocol.GroupPolicy
 import com.transfer.flash.core.messaging.protocol.GroupSignatureRules
 import com.transfer.flash.core.messaging.protocol.GroupSigning
+import com.transfer.flash.core.messaging.protocol.GroupVouchVerdict
+import com.transfer.flash.core.messaging.protocol.GroupVouching
 import com.transfer.flash.core.messaging.protocol.GroupWireFrame
 import com.transfer.flash.core.messaging.protocol.MemberCert
 import com.transfer.flash.core.messaging.protocol.VerifyBudget
@@ -40,6 +42,8 @@ internal class SignedGroups(
     private val members: GroupMemberDao,
     isPaired: (String) -> Boolean,
     pinnedFingerprint: (String) -> String?,
+    /** ADR-044 V2: the trust store vouched pins. Null keeps V1: every member must be paired with this device. */
+    private val vouching: GroupVouching? = null,
     private val nowMs: () -> Long,
     private val newId: () -> String,
     private val budget: VerifyBudget = VerifyBudget(),
@@ -47,7 +51,7 @@ internal class SignedGroups(
         crypto.sha256(newId().encodeToByteArray()).copyOf(GroupPolicy.CHARTER_NONCE_BYTES)
     },
 ) {
-    private val rules = GroupSignatureRules(crypto, localDeviceId, isPaired, pinnedFingerprint)
+    private val rules = GroupSignatureRules(crypto, localDeviceId, isPaired, pinnedFingerprint, vouching)
     private val signing = GroupSigning(crypto)
     private val pinnedFingerprintOf = pinnedFingerprint
 
@@ -65,6 +69,9 @@ internal class SignedGroups(
 
     /** What the owner sends after adding members: the changed certs, and the full set for newcomers. */
     class AddedMembers(val changed: GroupWireFrame.Bundle, val full: GroupWireFrame.Bundle)
+
+    /** The owner tombstone for a removed member; the removed device is told too, so it stops sending. */
+    class RemovedMember(val bundle: GroupWireFrame.Bundle)
 
     suspend fun isV2(groupId: String): Boolean = conversationDao.get(groupId)?.groupProto == GroupPolicy.V2_PROTOCOL
 
@@ -169,7 +176,35 @@ internal class SignedGroups(
             issuerId = localDeviceId,
         )
         members.upsert(cert.toRow(joinedAt = mine.joinedAt))
+        // A member who has left no longer has any reason to hold the pins the group vouched.
+        revokeAll(groupId)
         return GroupWireFrame.Bundle(groupId, localDeviceId, newId(), charter, listOf(cert))
+    }
+
+    /**
+     * Owner-only removal (ADR-044 V2): an owner-signed tombstone with the next `seq`. The vouch for the removed
+     * key is withdrawn at once. Null when this device is not the owner, the subject is the owner, or the
+     * subject is not an active member. The caller sends the bundle to the remaining members and to the removed one.
+     */
+    suspend fun removeMember(groupId: String, subjectId: String): RemovedMember? {
+        val charter = storedCharter(groupId) ?: return null
+        if (charter.ownerId != localDeviceId || subjectId == localDeviceId) return null
+        val current = members.member(groupId, subjectId)?.takeIf { it.isActive } ?: return null
+        val key = current.subjectKey?.let { GroupCanonical.decode(it) } ?: return null
+        val cert = signing.issueCert(
+            groupId = groupId,
+            subjectId = subjectId,
+            subjectKey = key,
+            label = current.displayName,
+            role = current.role,
+            seq = current.membershipVersion + 1L,
+            opId = newId(),
+            active = false,
+            issuerId = localDeviceId,
+        )
+        members.upsert(cert.toRow(joinedAt = current.joinedAt))
+        vouching?.revoke(subjectId, groupId)
+        return RemovedMember(GroupWireFrame.Bundle(groupId, localDeviceId, newId(), charter, listOf(cert)))
     }
 
     /**
@@ -228,11 +263,11 @@ internal class SignedGroups(
         if (!known) {
             rules.checkCharter(charter)?.let { return ignored(groupId, peerId, "charter:$it") }
         }
-        val accepted = ArrayList<MemberCert>()
+        val verified = ArrayList<MemberCert>()
         for (cert in candidates) {
             val reason = rules.checkCert(charter, cert, rows[cert.subjectId]?.subjectKey)
             if (reason == null) {
-                accepted += cert
+                verified += cert
             } else {
                 FlashLog.w("CHAT", "Group cert dropped: group=$groupId subject=${cert.subjectId} from=$peerId reason=$reason")
             }
@@ -240,18 +275,27 @@ internal class SignedGroups(
 
         if (!known) {
             // A bundle that does not carry our own valid, active cert is not an invitation to us.
-            if (accepted.none { it.subjectId == localDeviceId && it.active }) return ignored(groupId, peerId, "no-own-cert")
+            if (verified.none { it.subjectId == localDeviceId && it.active }) return ignored(groupId, peerId, "no-own-cert")
         } else {
             // A relay is fine, but only from someone who is (or is being proven to be) a member.
-            val senderIsMember = rows[peerId]?.isActive == true || accepted.any { it.subjectId == peerId && it.active }
+            val senderIsMember = rows[peerId]?.isActive == true || verified.any { it.subjectId == peerId && it.active }
             if (!senderIsMember) return ignored(groupId, peerId, "sender-not-member")
         }
 
-        val activeAfter = (rows.keys + accepted.map { it.subjectId }).count { id ->
-            accepted.firstOrNull { it.subjectId == id }?.active ?: rows[id]?.isActive ?: false
+        val activeAfter = (rows.keys + verified.map { it.subjectId }).count { id ->
+            verified.firstOrNull { it.subjectId == id }?.active ?: rows[id]?.isActive ?: false
         }
         if (activeAfter > GroupPolicy.MAX_MEMBERS_V2) return ignored(groupId, peerId, "too-many-members")
-        if (accepted.isEmpty() && known) return BundleOutcome.Applied(groupId, joined = false)
+
+        // ADR-044 V2: a verified owner-signed cert is a vouch. It becomes a pin before the row is stored, so the
+        // real member connects against it, and a tombstone withdraws it. This is the first side effect of the
+        // bundle: nothing above may leave a pin behind for a bundle that is then ignored. A vouch the trust store
+        // refuses after all (it was checked once already, so only a race) keeps that member out of the roster.
+        val accepted = installVouches(groupId, peerId, charter, verified)
+        if (accepted.isEmpty() && known) {
+            ensureVouches(groupId, charter)
+            return BundleOutcome.Applied(groupId, joined = false)
+        }
 
         val now = nowMs()
         if (!known) {
@@ -272,7 +316,27 @@ internal class SignedGroups(
             )
         }
         accepted.forEach { members.upsert(it.toRow(joinedAt = rows[it.subjectId]?.joinedAt ?: now)) }
+        ensureVouches(groupId, charter)
         return BundleOutcome.Applied(groupId, joined = !known)
+    }
+
+    /**
+     * True when [deviceId] is an active member of the stored, verified roster of [groupId] **and** [sessionKey], the
+     * identity key its live TLS session presented, is the key its certificate names. This is what makes a vouched
+     * member trusted in the group without pairing (plan E3). It does not consult the pin store: an impostor that
+     * connected first as this id, before the vouch replaced its pin, still presents a different key and fails here.
+     */
+    suspend fun isVouchedMember(groupId: String, deviceId: String, sessionKey: ByteArray?): Boolean {
+        if (sessionKey == null || sessionKey.isEmpty()) return false
+        val row = members.member(groupId, deviceId)?.takeIf { it.isActive } ?: return false
+        val key = row.subjectKey?.let { GroupCanonical.decode(it) } ?: return false
+        return key.contentEquals(sessionKey)
+    }
+
+    /** Withdraws every vouch [groupId] made (this device left the group). */
+    suspend fun revokeAll(groupId: String) {
+        val port = vouching ?: return
+        members.allMembers(groupId).filter { it.deviceId != localDeviceId }.forEach { port.revoke(it.deviceId, groupId) }
     }
 
     /**
@@ -296,6 +360,50 @@ internal class SignedGroups(
     }
 
     // ---------------------------------------------------------------- helpers
+
+    /**
+     * Applies the vouch each of [certs] makes, and returns the certs that may be stored. This device and the owner
+     * need none (the owner was bound to a pairing by the charter check); a tombstone withdraws the vouch.
+     */
+    private fun installVouches(groupId: String, peerId: String, charter: GroupCharter, certs: List<MemberCert>): List<MemberCert> {
+        val port = vouching ?: return certs
+        return certs.filter { cert ->
+            when {
+                cert.subjectId == localDeviceId || cert.subjectId == charter.ownerId -> true
+                !cert.active -> {
+                    port.revoke(cert.subjectId, groupId)
+                    true
+                }
+                else -> {
+                    val key = GroupCanonical.decode(cert.subjectKey)
+                    val verdict = if (key == null) {
+                        GroupVouchVerdict.INVALID
+                    } else {
+                        port.vouch(cert.subjectId, GroupCanonical.fingerprintHex(crypto, key), groupId)
+                    }
+                    if (verdict != GroupVouchVerdict.ACCEPT) {
+                        FlashLog.w("CHAT", "SECURITY: vouch refused: group=$groupId subject=${cert.subjectId} from=$peerId verdict=$verdict")
+                    }
+                    verdict == GroupVouchVerdict.ACCEPT
+                }
+            }
+        }
+    }
+
+    /**
+     * Re-installs the vouch of every stored active member whose pin is missing (a trust store that was cleared, or a
+     * member who was unpaired since), so the roster and the pins cannot drift apart for long. Idempotent, and a no-op
+     * for members whose pin is already vouched.
+     */
+    private suspend fun ensureVouches(groupId: String, charter: GroupCharter) {
+        val port = vouching ?: return
+        for (row in members.allMembers(groupId)) {
+            if (!row.isActive || row.deviceId == localDeviceId || row.deviceId == charter.ownerId) continue
+            val key = row.subjectKey?.let { GroupCanonical.decode(it) } ?: continue
+            val fingerprint = GroupCanonical.fingerprintHex(crypto, key)
+            if (!port.isVouched(row.deviceId, fingerprint, groupId)) port.vouch(row.deviceId, fingerprint, groupId)
+        }
+    }
 
     private suspend fun storedCharter(groupId: String): GroupCharter? {
         val conversation = conversationDao.get(groupId) ?: return null

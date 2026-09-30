@@ -5,15 +5,19 @@ package com.transfer.flash.core.messaging.protocol
  * message is genuine. Every check returns `null` when the object is valid and a short reason
  * otherwise, so the caller can log a security event that says why.
  *
- * @param isPaired whether this device completed pairing with a peer (the only source of trust in V1)
+ * @param isPaired whether this device completed pairing with a peer
  * @param pinnedFingerprint the identity-key fingerprint pinned for a device id (hex of SHA-256
  *   over the SPKI, any case, colons allowed), or null when nothing is pinned
+ * @param vouching the trust store's view of vouched pins (ADR-044 V2). When present, an owner-signed
+ *   active cert is enough to accept a member this device never paired with, unless the trust store
+ *   refuses the vouch. Null keeps the V1 rule: every member must be paired.
  */
 internal class GroupSignatureRules(
     private val crypto: GroupCrypto,
     private val localDeviceId: String,
     private val isPaired: (String) -> Boolean,
     private val pinnedFingerprint: (String) -> String?,
+    private val vouching: GroupVouching? = null,
 ) {
 
     fun checkCharter(charter: GroupCharter): String? {
@@ -64,7 +68,9 @@ internal class GroupSignatureRules(
         // An owner tombstone needs no key for the subject; everything else must be bound to the
         // subject's real key (a pin, our own key, the owner key, or the key we already recorded).
         if (cert.active || !ownerIssued) {
-            if (!subjectKeyIsBound(charter, cert.subjectId, subjectKey, knownKey)) return "subject-key-binding"
+            // An owner-issued active cert is a vouch; a self-issued leave never is.
+            val vouchable = ownerIssued && cert.active
+            if (!subjectKeyIsBound(charter, cert.subjectId, subjectKey, knownKey, vouchable)) return "subject-key-binding"
         }
         val signature = GroupCanonical.decode(cert.sig)?.takeIf { it.isNotEmpty() } ?: return "signature"
         val bytes = GroupCanonical.certBytes(cert) ?: return "signature"
@@ -97,6 +103,7 @@ internal class GroupSignatureRules(
         subjectId: String,
         subjectKey: ByteArray,
         knownKey: String?,
+        vouchable: Boolean,
     ): Boolean = when (subjectId) {
         localDeviceId -> subjectKey.contentEquals(crypto.publicKey)
         // The owner's key was bound to a pin (or to ours) when the charter was accepted.
@@ -104,7 +111,10 @@ internal class GroupSignatureRules(
         else -> {
             val known = knownKey?.let { GroupCanonical.decode(it) }
             (known != null && known.contentEquals(subjectKey)) ||
-                (isPaired(subjectId) && keyMatchesPin(subjectId, subjectKey))
+                (isPaired(subjectId) && keyMatchesPin(subjectId, subjectKey)) ||
+                // ADR-044 V2: the owner (the trust root, paired with us) names this key. The trust store
+                // decides whether it clashes with a pairing or with another owner's vouch.
+                (vouchable && vouching?.verdict(subjectId, GroupCanonical.fingerprintHex(crypto, subjectKey), charter.groupId) == GroupVouchVerdict.ACCEPT)
         }
     }
 
