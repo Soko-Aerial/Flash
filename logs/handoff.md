@@ -1,5 +1,20 @@
 # Current Handoff
 
+## 2026-09-30 — Four small audit fixes done (3.6, 3.4, 3.7, Linux CI vault); ERROR-073 has a candidate fix
+- **Done:** group text send is one transaction and bumps the thread to the top (3.6); `defaultStreams: Int? = null`, so an explicit 2
+  is honoured (3.4); NSD registration is idempotent (one live registration per reconnect, none after stop) in the transport and the
+  real bridge (3.7); interop and desktop tests use a pass-through identity vault off Windows, DPAPI unchanged in production, to
+  turn Linux CI green.
+- **Verified (unit tests, mutation-checked):** messaging 321, discovery 151, transfer 163, engine 9, desktop 104; app and sample compile.
+  **Not verified:** real `NsdManager` behaviour, Linux CI, a group send on a device (`AUD-01`...`AUD-03`). ERROR-073 stays OPEN.
+- **Known:** 3 `DesktopMediaDevicesTest` cases are expected to still fail on Linux (undiagnosed).
+- **Recommended next task:** `AUD-01` on a phone with the farm (also closes OLD-02 if it passes), then GT-03. Open audit items:
+  3.2, S6, 3.11 (and the refactors, which need an ADR against D1 = Option B).
+- Files most relevant: `core/discovery/.../nsd/NsdTransport.kt` (`registerAdvertisement`, `RealNsdManagerBridge.advertise`),
+  `core/messaging/.../RealFlashChatRepository.kt` (`sendGroupText`), `core/transfer/.../RealFlashTransferRepository.kt`,
+  `desktop/.../DesktopEngine.kt` (`identityVault`), `core/engine/src/jvmTest/.../interop/FixtureIdentityVault.kt`.
+- Postponed by the owner, do not start: DR4 (QR), DR6 (BLE), DR7 (Wi-Fi Direct), FO-04 (attachment fan-out), MEAS-02/PC6 and group size 32 (FO-05).
+
 ## 2026-09-30 — Removal ripple fixed (ERROR-083, `1701fc3`); AGENTS.md section 29 rewritten; GT-03 has three new steps
 - **Done:** removing a v2 member now reaches a device that was offline (a member sends it the owner's tombstone on reconnect); a device
   that is out (removed or left) cannot send, takes no group traffic, withdraws the group's vouches and shows a notice instead of the

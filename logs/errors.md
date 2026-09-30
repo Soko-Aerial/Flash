@@ -682,10 +682,29 @@ peer then spends a dial every 5 s on it, and the phone keeps multicast power sav
 OEM freezer that also firewalls frozen uids would refuse). The refused port still needs
   the reproduction below.
 
+### Update 2026-09-30 — a reachable cause found by reading the code; candidate fix in, not verified
+Re-reading the audit (`docs/audit/2026-09-28-architectural-audit-and-tasks.md` section 7) found an orphaned-registration
+path that needs no OEM behaviour at all:
+- `RealNsdManagerBridge.advertise()` overwrote its single `advertiseListener` reference without unregistering the previous
+  listener, and `unadvertise()` only releases the latest one. Every registration made while another was live was leaked
+  for good.
+- `NsdFlashDiscovery.startAdvertising` had no "already advertising" guard, and it runs on **every** Wi-Fi (re)connect:
+  `DiscoveryEngineHolder.onUsableNetwork` and `Flash.kt` both call `engine.startAdvertising(port)`, while the transport's
+  own `onNetworkChanged` also ran `restartAdvertising()` for the same event. In either order one registration was orphaned.
+  An orphan keeps advertising the WebSocket port after the engine stops: the symptom in this entry.
+- **Candidate fix (2026-09-30, see `logs/progress.md`):** the transport releases the
+  outstanding registration before it registers again (`registrationOutstanding`), and the real bridge unregisters a
+  replaced listener and drops that listener's stale callbacks. Three fake-bridge tests (`NsdTransportLogicTest`, fake
+  models the leak) fail without it: repeated `startAdvertising` leaves one live registration, a reconnect in either order
+  leaves one, `stop()` leaves none.
+- **Not proven to be the cause of the refused ports seen on 2026-09-28.** A unit test cannot show that. The OEM-freezer
+  explanation (ERROR-074) remains possible for the locks. The device check is `AUD-01` in `docs/testing/TEST-BACKLOG.md`.
+
 ### Next step
-Reproduce: start Flash, then stop the engine the ways a user or the OS can (swipe away, Stop in the notification,
-OEM kill, service `onTimeout`). After each, check `dumpsys wifi` multicast locks and browse `_flash-transfer._tcp`
-from the farm. Find which path skips `unregisterService` / multicast lock release.
+Run `AUD-01` (and `OLD-02`) on a phone. If a stopped engine is still advertised after the fix, the orphan is elsewhere:
+then reproduce as follows. Start Flash, then stop the engine the ways a user or the OS can (swipe away, Stop in the
+notification, OEM kill, service `onTimeout`). After each, check `dumpsys wifi` multicast locks and browse
+`_flash-transfer._tcp` from the farm. Find which path skips `unregisterService` / multicast lock release.
 
 ### Related files
 - `core/discovery/src/androidMain/.../nsd/NsdFlashDiscovery.kt`, `NsdTransport.kt`
@@ -693,7 +712,7 @@ from the farm. Find which path skips `unregisterService` / multicast lock releas
 - `app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt`
 
 ### Status
-OPEN (suspected; root cause not investigated)
+OPEN (suspected). A plausible cause was found and a candidate fix is in (2026-09-30); not reproduced, not device-verified.
 
 ## ERROR-072 — Windows Context Menu "Send with Flash" throws "This file does not have an app associated with it" on file click
 
