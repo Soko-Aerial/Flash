@@ -20,8 +20,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
  *    re-arms at once instead of waiting out an old suppression window.
  * 3. **The reconnect engine goes first.** No dial while its backoff loop is redialing that peer,
  *    because two outbound dials to one peer only widen the glare window (ERROR-023).
- * 4. **One attempt per [suppressMs] per peer, never two at once**, until [dialFinished]. This is
- *    the old `AutoConnectGate`, unchanged.
+ * 4. **One attempt per [suppressMs] per endpoint, never two at once per peer**, until [dialFinished].
+ *    Suppression is keyed per endpoint (`(deviceId, host, port)`) so a dead route on an old network
+ *    does not suppress an authoritative route on a new network (e.g. moving from a phone hotspot
+ *    to home Wi-Fi). A live session clears every endpoint of the peer.
  * 5. **Deterministic first dialer (new in PC2).** When a peer with no session first becomes
  *    dialable, the side with the lower device id dials at once and the higher id waits
  *    [firstContactDeferMs]. Usually the lower id's session lands in that time, so the higher id
@@ -97,8 +99,10 @@ public class ConnectionPlanner(
      */
     public data class Plan(val dials: List<Dial>, val recheckInMs: Long?)
 
+    private data class EndpointKey(val key: String, val host: String, val port: Int)
+
     private data class State(
-        val lastAttemptMs: Map<String, Long> = emptyMap(),
+        val lastAttemptMs: Map<EndpointKey, Long> = emptyMap(),
         val inFlight: Set<String> = emptySet(),
         /** When each peer was first seen dialable in its current no-session episode (rule 5). */
         val dialableSinceMs: Map<String, Long> = emptyMap(),
@@ -178,6 +182,7 @@ public class ConnectionPlanner(
         val key = sighting.deviceId
         val live = links.hasLiveSession(key)
         val reconnecting = links.isReconnectInFlight(key)
+        val ep = EndpointKey(key = key, host = sighting.host, port = sighting.port)
         while (true) {
             val current = state.value
             val next: State
@@ -185,17 +190,17 @@ public class ConnectionPlanner(
             when {
                 live -> {
                     next = current.copy(
-                        lastAttemptMs = current.lastAttemptMs - key,
+                        lastAttemptMs = current.lastAttemptMs.filterKeys { it.key != key },
                         inFlight = current.inFlight - key,
                         dialableSinceMs = current.dialableSinceMs - key,
                     )
                     dial = null
                 }
                 reconnecting || key in current.inFlight -> return null
-                current.lastAttemptMs[key]?.let { nowMs - it < floorMs } == true -> return null
+                current.lastAttemptMs[ep]?.let { nowMs - it < floorMs } == true -> return null
                 else -> {
                     next = current.copy(
-                        lastAttemptMs = current.lastAttemptMs + (key to nowMs),
+                        lastAttemptMs = current.lastAttemptMs + (ep to nowMs),
                         inFlight = current.inFlight + key,
                     )
                     dial = Dial(key = key, host = sighting.host, port = sighting.port, peerDeviceId = key, name = sighting.name)
@@ -224,13 +229,14 @@ public class ConnectionPlanner(
         for (c in candidates) {
             val key = c.dial.key
             if (c.live) {
-                last.remove(key)
+                last.entries.removeAll { it.key.key == key }
                 inFlight.remove(key)
                 since.remove(key)
                 continue
             }
             if (c.reconnecting || key in inFlight) continue
-            val previous = last[key]
+            val ep = EndpointKey(key = key, host = c.dial.host, port = c.dial.port)
+            val previous = last[ep]
             if (previous != null && now - previous < suppressMs) continue
             if (c.deferred) {
                 val start = since.getOrPut(key) { now }
@@ -240,22 +246,23 @@ public class ConnectionPlanner(
                     continue
                 }
             }
-            last[key] = now
+            last[ep] = now
             inFlight += key
             dials += c.dial
         }
 
-        // Forget peers discovery no longer reports once their suppression has run out. A peer that
-        // flickers out of discovery and back inside the window stays suppressed.
+        // Forget endpoints discovery no longer reports once their suppression has run out. An endpoint
+        // that flickers out of discovery and back inside the window stays suppressed.
+        val presentEndpoints = candidates.mapTo(HashSet()) { EndpointKey(it.dial.key, it.dial.host, it.dial.port) }
+        last.entries.removeAll { (ep, at) -> ep !in presentEndpoints && ep.key !in inFlight && now - at >= suppressMs }
         val present = candidates.mapTo(HashSet()) { it.dial.key }
-        last.entries.removeAll { (key, at) -> key !in present && key !in inFlight && now - at >= suppressMs }
         since.keys.retainAll(present)
 
         return State(last, inFlight, since) to Plan(dials, recheck)
     }
 
     public companion object {
-        /** The old `AutoConnectGate` window: at most one auto-dial per peer per 15 s. */
+        /** The old `AutoConnectGate` window: at most one auto-dial per endpoint per 15 s. */
         public const val DEFAULT_SUPPRESS_MS: Long = 15_000L
 
         /** Rule 5's wait for the higher id. Must stay well under pairing's 3 s HELLO wait. */

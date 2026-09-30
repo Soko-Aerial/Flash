@@ -1,5 +1,15 @@
 # Current Handoff
 
+## 2026-09-30 — Endpoint-aware suppression implemented in ConnectionPlanner (ERROR-085, commit `69a4398`); stale IP lockout on network switch resolved
+- **Done:** `ConnectionPlanner` suppression is now endpoint-aware using `EndpointKey(key, host, port)` instead of being keyed solely by `key` (peer `deviceId`). When moving from a mobile hotspot (e.g. Infinix `10.13.65.x`) to a home Wi-Fi (`192.168.1.x`), a failed dial to an old IP no longer suppresses dials to newly discovered or tipped on-link endpoints. Urgent on-demand dials (`planUrgent`) now only enforce the 5s floor when the candidate matches the attempted endpoint. Each endpoint is independently suppressed for 15s to prevent dial ping-ponging, `inFlight` still guarantees at most one dial per peer at a time, and a live session clears all endpoints for that peer.
+- **Root causes clarified:**
+  1. Infinix Hot 50 hotspot enforces AP Client Isolation in driver/firmware (`ap_isolate=1`), dropping ARP broadcasts and mDNS multicast between client stations (`EHOSTUNREACH`). Direct client-to-client TCP over the hotspot Wi-Fi is physically dropped by the AP.
+  2. Infinix screen-off freeze: Transsion's `Hiber` daemon freezes the Flash process 6–10s after screen-off (ERROR-074), while other OEM phones stay alive.
+  3. Stale IP lockout: on switching to home Wi-Fi, the dialer attempted the old hotspot IP via `routed-fallback`, which failed after 4s, suppressing the peer for 15s and blocking the new `192.168.1.x` address discovered by mDNS.
+- **Verified:** `:core:network:jvmTest` (284 tests passed), `:core:network:testAndroidHostTest` (381 tests passed). Unit tests cover endpoint-aware suppression, urgent dial floor bypass on new endpoints, and multi-endpoint independent suppression.
+- **Recommended next task:** Device check with two phones switching between hotspot and home Wi-Fi to confirm immediate connection recovery.
+- **Files most relevant:** `core/network/.../planner/ConnectionPlanner.kt`, `ConnectionPlannerTest.kt`.
+
 ## 2026-09-30 — Chat/group sync audit implemented (7 steps); device checks CGS-01...07 and DNAME-01/02 owed
 - **Done (commits `cd3ca0a1`, `031b6ab4`, `b9b43ece`, `c31b30cd`, `4e843cd9`, `3156e400`, `5060ac82`, `5b3ae1d9`):** desktop session-up edges, all outbox
   retry deadlines kept, group read ticks, catch-up receipts to the author, catch-up label for attachments, desktop rename propagation,

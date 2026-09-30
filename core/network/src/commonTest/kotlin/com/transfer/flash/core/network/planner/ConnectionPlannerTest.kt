@@ -291,4 +291,72 @@ class ConnectionPlannerTest {
         )
         assertEquals(listOf("gateway:192.168.43.1", "sweep:192.168.43.1"), plan.dials.map { it.key })
     }
+
+    // --- endpoint-aware suppression ---
+
+    @Test
+    fun `suppression is endpoint-aware so a new IP or port is dialed without waiting for the old endpoint window`() {
+        val p = planner(suppress = 1_000L)
+        val oldSighting = Sighting("c", "10.13.65.211", 45822, "P-c")
+        val newSighting = Sighting("c", "192.168.1.123", 45822, "P-c")
+
+        val d1 = p.plan(0, listOf(oldSighting), links).dials.single()
+        assertEquals("10.13.65.211", d1.host)
+        p.dialFinished("c")
+
+        // Old endpoint is suppressed within 1000ms.
+        assertEquals(emptyList(), p.plan(200, listOf(oldSighting), links).dials)
+
+        // New endpoint is dialed immediately even inside the 1000ms suppression of the old endpoint.
+        val d2 = p.plan(200, listOf(newSighting), links).dials.single()
+        assertEquals("192.168.1.123", d2.host)
+        p.dialFinished("c")
+
+        // Now the new endpoint is also suppressed within its own 1000ms window.
+        assertEquals(emptyList(), p.plan(500, listOf(newSighting), links).dials)
+    }
+
+    @Test
+    fun `urgent dial to a new endpoint bypasses the floor window`() {
+        val p = planner()
+        val oldSighting = Sighting("c", "10.13.65.211", 45822, "P-c")
+        val newSighting = Sighting("c", "192.168.1.123", 45822, "P-c")
+
+        assertEquals("c", p.planUrgent(0, oldSighting, links, floorMs = 1_000L)?.key)
+        p.dialFinished("c")
+
+        // Urgent dial to same endpoint within floor is floored.
+        assertNull(p.planUrgent(100, oldSighting, links, floorMs = 1_000L))
+
+        // Urgent dial to a different endpoint is allowed immediately.
+        val urgent = p.planUrgent(100, newSighting, links, floorMs = 1_000L)
+        assertEquals("c", urgent?.key)
+        assertEquals("192.168.1.123", urgent?.host)
+    }
+
+    @Test
+    fun `multiple failed endpoints for the same peer are each suppressed independently without ping-ponging`() {
+        val p = planner(suppress = 1_000L)
+        val ep1 = Sighting("c", "10.13.65.211", 45822, "P-c")
+        val ep2 = Sighting("c", "192.168.1.123", 45822, "P-c")
+
+        // Dial ep1 at t=0, fails.
+        p.plan(0, listOf(ep1), links)
+        p.dialFinished("c")
+
+        // Dial ep2 at t=200, fails.
+        p.plan(200, listOf(ep2), links)
+        p.dialFinished("c")
+
+        // At t=400, both ep1 (400 < 1000) and ep2 (400 - 200 = 200 < 1000) are suppressed: no ping-pong.
+        assertEquals(emptyList(), p.plan(400, listOf(ep1), links).dials)
+        assertEquals(emptyList(), p.plan(400, listOf(ep2), links).dials)
+
+        // At t=1050, ep1 has passed its 1000ms window and can be retried.
+        assertEquals(listOf("c"), p.plan(1_050, listOf(ep1), links).dials.map { it.key })
+        p.dialFinished("c")
+
+        // But ep2 at t=1050 is still within its window (1050 - 200 = 850 < 1000).
+        assertEquals(emptyList(), p.plan(1_050, listOf(ep2), links).dials)
+    }
 }

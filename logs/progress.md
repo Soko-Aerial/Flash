@@ -1,5 +1,40 @@
 # Progress Log
 
+## 2026-09-30 — Endpoint-aware suppression in ConnectionPlanner fixes stale IP lockout across network switches (ERROR-085)
+
+### Worked on
+Investigated client discovery/connection failure when switching from an Infinix Hot 50 hotspot (`10.13.65.x`) to a home Wi-Fi network (`192.168.1.x`), where client devices dialed stale hotspot IPs via `routed-fallback` and then became suppressed from dialing newly discovered on-link IPs for 15 seconds.
+
+### Changed
+- `core/network/src/commonMain/kotlin/com/transfer/flash/core/network/planner/ConnectionPlanner.kt`:
+  - Introduced `private data class EndpointKey(val key: String, val host: String, val port: Int)`.
+  - Changed `State.lastAttemptMs` from `Map<String, Long>` to `Map<EndpointKey, Long>`.
+  - In `step()`: candidates are only suppressed if the exact same `(key, host, port)` was attempted within `suppressMs` (15 s). A newly discovered endpoint on a new network is dialed immediately without waiting for the old endpoint's window.
+  - In `planUrgent()`: urgent on-demand dials are only floored by `floorMs` (5 s) if the sighting matches the same endpoint as the previous attempt.
+  - Live session clears all suppression entries for that `key`.
+  - Pruning removes expired endpoints once they are no longer in candidates and not in flight.
+- `core/network/src/commonTest/kotlin/com/transfer/flash/core/network/planner/ConnectionPlannerTest.kt`:
+  - Added unit tests:
+    - `suppression is endpoint-aware so a new IP or port is dialed without waiting for the old endpoint window`
+    - `urgent dial to a new endpoint bypasses the floor window`
+    - `multiple failed endpoints for the same peer are each suppressed independently without ping-ponging`
+
+### Ramifications considered
+- Preserved `LanRouteChooser`'s `routed-fallback`: did NOT disable routed fallback for RFC 1918 addresses, maintaining full support for corporate/enterprise multi-VLAN routed networks.
+- Preserved "never two dials at once per peer": `inFlight` still tracks by `deviceId`.
+- Preserved "deterministic first dialer": `deferred` and `dialableSinceMs` still track by `deviceId`.
+- Anti-hammering preserved: each individual endpoint is still suppressed for 15 seconds after a failed attempt.
+- No ping-ponging: multiple failed endpoints for the same peer are each suppressed independently.
+
+### Verification
+- `:core:network:jvmTest` (284 tests passed in 16s).
+- `:core:network:testAndroidHostTest` (381 tests passed).
+
+### Status
+RESOLVED in code and unit tests.
+
+---
+
 ## 2026-09-30 — Chat and group sync audit implemented step by step (7 steps, ERROR-084, ADR-059); device checks CGS-01...07, DNAME-01/02 owed
 
 ### Worked on
