@@ -1192,31 +1192,37 @@ public class RealFlashChatRepository(
         } else {
             null
         }
-        messageDao.insert(
-            MessageEntity(
-                localId = localId,
-                conversationId = conversation.id,
-                senderId = localDeviceId,
-                senderName = localDisplayName,
-                text = text,
-                sentAt = now,
-                status = "PENDING",
-                replyToId = replyToId,
-                replyToPreview = replyToPreview,
-                groupSig = signature,
-            ),
-        )
-        deliveries.insertAll(
-            recipients.map { recipient ->
-                GroupDeliveryEntity(
-                    messageId = localId,
-                    memberId = recipient.deviceId,
-                    nextAttemptAt = now,
-                )
-            },
-        )
-        draftDao.clear(conversation.id)
-        outboxDao.enqueue(OutboxEntity(localId, nextAttemptAt = now, payloadJson = text, createdAt = now))
+        // One transaction, like [enqueueDirectText]: a process kill between the message row and the outbox row used to
+        // leave a PENDING group message the drain could not see. The conversation is bumped to the top of the list too
+        // (audit 3.6): a group send used to leave the thread where it was, unlike every other send path.
+        runInTransaction {
+            messageDao.insert(
+                MessageEntity(
+                    localId = localId,
+                    conversationId = conversation.id,
+                    senderId = localDeviceId,
+                    senderName = localDisplayName,
+                    text = text,
+                    sentAt = now,
+                    status = "PENDING",
+                    replyToId = replyToId,
+                    replyToPreview = replyToPreview,
+                    groupSig = signature,
+                ),
+            )
+            deliveries.insertAll(
+                recipients.map { recipient ->
+                    GroupDeliveryEntity(
+                        messageId = localId,
+                        memberId = recipient.deviceId,
+                        nextAttemptAt = now,
+                    )
+                },
+            )
+            touchConversation(conversation.id, now)
+            draftDao.clear(conversation.id)
+            outboxDao.enqueue(OutboxEntity(localId, nextAttemptAt = now, payloadJson = text, createdAt = now))
+        }
         drainOutboxOnce()
     }
 
