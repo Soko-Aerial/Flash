@@ -53,7 +53,7 @@ class DesktopEngineBootTest {
         stateDir = state
         receivedRoot = received
 
-        val booted = DesktopEngine(receivedRoot = received, stateDir = state)
+        val booted = testDesktopEngine(receivedRoot = received, stateDir = state)
         engine = booted
 
         booted.start()

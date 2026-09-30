@@ -44,7 +44,7 @@ class DesktopEngineAutoDialTest {
         val received = Files.createTempDirectory("flash-desktop-$name-received").toFile()
         tempDirs += state
         tempDirs += received
-        return DesktopEngine(receivedRoot = received, stateDir = state).also { engines += it }
+        return testDesktopEngine(receivedRoot = received, stateDir = state).also { engines += it }
     }
 
     @Test

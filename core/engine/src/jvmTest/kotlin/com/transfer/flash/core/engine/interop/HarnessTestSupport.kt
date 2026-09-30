@@ -71,7 +71,7 @@ internal class DesktopEndpointFixture(
     val stateDir = File(System.getProperty("java.io.tmpdir"), "flash-interop-$name").apply { mkdirs() }
     val identity = DesktopIdentityStore(stateDir).getIdentity()
     val trustStore = DesktopTrustStore(stateDir)
-    private val crypto: FlashCrypto = PersistedFlashCrypto(stateDir)
+    private val crypto: FlashCrypto = PersistedFlashCrypto(stateDir, fixtureIdentityVault())
 
     /**
      * Real TLS, built exactly as `DesktopEngine` builds it (audit S3/S1, ADR-042). The fixture used to run

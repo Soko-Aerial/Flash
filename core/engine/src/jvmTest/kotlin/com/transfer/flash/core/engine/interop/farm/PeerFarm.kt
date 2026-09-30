@@ -20,6 +20,7 @@ import com.transfer.flash.core.network.tls.TlsOptions
 import com.transfer.flash.core.network.tls.TofuPinVerifier
 import com.transfer.flash.core.network.ws.JvmWsFlashNetwork
 import com.transfer.flash.core.network.ws.WsSession
+import com.transfer.flash.core.engine.interop.fixtureIdentityVault
 import com.transfer.flash.core.security.crypto.PersistedFlashCrypto
 import java.io.File
 import java.io.FileWriter
@@ -229,7 +230,7 @@ public object PeerFarm {
         private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         val identity = DesktopIdentityStore(stateDir.apply { mkdirs() }).getIdentity()
         private val trustStore = DesktopTrustStore(stateDir)
-        private val crypto = PersistedFlashCrypto(stateDir)
+        private val crypto = PersistedFlashCrypto(stateDir, fixtureIdentityVault())
 
         /** Same TLS construction as the harness and `DesktopEngine` (audit S3/S1). */
         private val tlsOptions = TlsOptions(

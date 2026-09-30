@@ -180,7 +180,7 @@ public object DesktopInteropHarness {
         private val trustStore = DesktopTrustStore(stateDir)
 
         /** Declared before [network]: its TLS identity IS this key (property init runs top to bottom). */
-        private val crypto: FlashCrypto = PersistedFlashCrypto(stateDir)
+        private val crypto: FlashCrypto = PersistedFlashCrypto(stateDir, fixtureIdentityVault())
 
         /**
          * The same TLS construction `DesktopEngine` uses (audit S3/S1, ADR-042): the harness used to run

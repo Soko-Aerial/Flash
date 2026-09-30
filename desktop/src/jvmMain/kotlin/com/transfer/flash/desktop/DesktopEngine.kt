@@ -144,6 +144,12 @@ public class DesktopEngine(
     receivedRoot: File? = null,
     /** Root for identity/trust/settings-free state. Default: `~/.flash`. */
     private val stateDir: File = File(System.getProperty("user.home", "."), ".flash"),
+    /**
+     * At-rest protection for the identity key (ADR-035). Production leaves the default, Windows DPAPI. Tests on a
+     * machine without DPAPI pass `IdentityKeyVault.PassThrough`; nothing else should.
+     */
+    identityVault: com.transfer.flash.core.security.identity.IdentityKeyVault =
+        com.transfer.flash.core.security.identity.IdentityKeyVault.Dpapi,
 ) {
     public val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -184,7 +190,7 @@ public class DesktopEngine(
      * [PersistedFlashCrypto]'s degradation contract.
      */
     public val crypto: com.transfer.flash.core.security.crypto.FlashCrypto =
-        com.transfer.flash.core.security.crypto.PersistedFlashCrypto(stateDir)
+        com.transfer.flash.core.security.crypto.PersistedFlashCrypto(stateDir, identityVault)
 
     private val ephemeralKeyPair = crypto.generateEphemeralEcdhKeyPair()
 
