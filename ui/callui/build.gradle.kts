@@ -55,6 +55,9 @@ kotlin {
             // classpath. This also re-exports webrtc-kmp transitively (:core:calling api()s it,
             // ADR-025) — which the renderer seam needs for VideoStreamTrack.
             api(project(":core:calling"))
+            // api(): PttSessionOverlayContent's SIGNATURE exposes FlashPtt (and PttFloorState through
+            // it), so a host cannot call the shared PTT card without them (ADR-058, UI-051 addendum A).
+            api(project(":core:ptt"))
             implementation(project(":ui:theme"))
             // Phase 25 S3b: `:ui:platform-shims` supplies the FlashBackHandler actual and (on
             // desktop) the Swing host the video renderer needs — replacing this module's last

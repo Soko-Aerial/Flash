@@ -2,7 +2,7 @@ package com.transfer.flash.core.ptt
 
 import android.os.SystemClock
 
-internal actual fun pttElapsedRealtimeMs(): Long = SystemClock.elapsedRealtime()
+public actual fun pttElapsedRealtimeMs(): Long = SystemClock.elapsedRealtime()
 
 internal actual class PttLock {
     private val monitor = Any()

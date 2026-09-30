@@ -1,6 +1,6 @@
 package com.transfer.flash.core.ptt
 
-internal actual fun pttElapsedRealtimeMs(): Long = System.nanoTime() / NANOS_PER_MILLI
+public actual fun pttElapsedRealtimeMs(): Long = System.nanoTime() / NANOS_PER_MILLI
 
 private const val NANOS_PER_MILLI = 1_000_000L
 

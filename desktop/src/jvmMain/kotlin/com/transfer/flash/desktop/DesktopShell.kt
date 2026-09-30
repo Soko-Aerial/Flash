@@ -3,6 +3,7 @@
 package com.transfer.flash.desktop
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -28,9 +29,11 @@ import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.isCtrlPressed
 import androidx.compose.ui.input.key.isMetaPressed
+import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import com.transfer.flash.core.common.model.FlashDevice
 import com.transfer.flash.core.common.model.FlashDeviceId
@@ -60,7 +63,10 @@ import com.transfer.flash.core.transfer.model.FlashTransferDirection as DomainDi
 import com.transfer.flash.core.transfer.model.FlashTransferState as DomainState
 import com.transfer.flash.core.common.result.getOrNull
 import com.transfer.flash.ui.adaptive.FlashAdaptiveMath
+import com.transfer.flash.core.messaging.ptt.PttFloorState
 import com.transfer.flash.ui.calling.FlashCallScreen
+import com.transfer.flash.ui.calling.PttSessionOverlayContent
+import com.transfer.flash.ui.calling.pttPressOutcomeMessage
 import com.transfer.flash.ui.chat.FlashChatListScreen
 import com.transfer.flash.ui.chat.FlashConversationScreen
 import com.transfer.flash.core.common.perf.FlashPerformanceMode
@@ -203,6 +209,32 @@ public fun DesktopShell(
     val activeCall by remember(calls) {
         calls?.activeCall ?: MutableStateFlow(null)
     }.collectAsState()
+    // ── Push-to-talk (UI-051 addendum A, ADR-058) ──
+    // `engine.ptt` is null until assemble builds it, so it is keyed on `ready` like `calls`. The state
+    // flow is read here only for "is a session live"; the card reads it again for role and name.
+    val ptt = remember(engine, ready) { engine.ptt }
+    val pttState by remember(ptt) {
+        ptt?.state ?: MutableStateFlow<PttFloorState>(PttFloorState.Idle)
+    }.collectAsState()
+    val pttActive = pttState !is PttFloorState.Idle
+    LaunchedEffect(ptt, snackbarHostState) {
+        // Same `collectLatest` reasoning as the pairing messages below: newest notice wins.
+        ptt?.notices?.collectLatest { notice ->
+            snackbarHostState.showSnackbar(message = notice, duration = SnackbarDuration.Short)
+        }
+    }
+    // One entry for the rail button, the compact floating button and Ctrl+Shift+T: toggle the floor and
+    // say why when the engine refuses.
+    val onPttToggle: () -> Unit = {
+        val message = if (ptt == null) {
+            "Flash is starting — try again"
+        } else {
+            pttPressOutcomeMessage(ptt.onPttButton())
+        }
+        if (message != null) {
+            scope.launch { snackbarHostState.showSnackbar(message = message, duration = SnackbarDuration.Short) }
+        }
+    }
     val ongoingGroupCalls by (calls?.ongoingGroupCalls
         ?: remember { MutableStateFlow(emptyMap<String, com.transfer.flash.core.calling.model.OngoingGroupCallUi>()) }
         ).collectAsState()
@@ -1543,6 +1575,11 @@ public fun DesktopShell(
                     val isModifierPressed = event.isCtrlPressed || event.isMetaPressed
                     if (event.key == Key.Escape) {
                         when {
+                            // The PTT card is modal: Esc is its Stop/Leave, before any pane-closing below.
+                            pttActive -> {
+                                ptt?.stopLocal()
+                                true
+                            }
                             isSearching -> {
                                 isSearching = false
                                 searchQuery = ""
@@ -1598,6 +1635,13 @@ public fun DesktopShell(
                             Key.Comma -> {
                                 nav.selectTab(FlashDestination.Settings)
                                 true
+                            }
+                            // In-window only; there is deliberately no global hotkey (UI-051 addendum A).
+                            Key.T -> if (event.isShiftPressed) {
+                                onPttToggle()
+                                true
+                            } else {
+                                false
                             }
                             else -> false
                         }
@@ -1806,6 +1850,7 @@ public fun DesktopShell(
                     onProfileClick = {
                         nav.selectTab(FlashDestination.Settings)
                     },
+                    footer = { DesktopPttButton(active = pttActive, onClick = onPttToggle) },
                 )
                 DesktopTwoPane(
                     listPane = listPaneContent,
@@ -1838,7 +1883,28 @@ public fun DesktopShell(
                         },
                     )
                 }
+                // No rail in this layout, so the push-to-talk button floats above the hanging nav on the
+                // tab roots (the only screens that have one).
+                DesktopPttButton(
+                    active = pttActive,
+                    onClick = onPttToggle,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(end = 16.dp, bottom = tabBottomInset + 12.dp),
+                )
             }
+        }
+
+        // Push-to-talk session card (UI-051): derived from the floor state, so it cannot outlive the
+        // session. Before the call overlay in z-order, so an incoming call paints above it (a call
+        // tears the session down anyway). The scrim swallows taps so nothing behind the card is hit.
+        if (ptt != null && pttActive) {
+            PttSessionOverlayContent(
+                engine = ptt,
+                state = pttState,
+                animateLevels = (desktopSettings.performanceMode ?: FlashPerformanceMode.HIGH) != FlashPerformanceMode.LOW,
+                scrimModifier = Modifier.pointerInput(Unit) { detectTapGestures { } },
+            )
         }
 
         // Voice/video calls, 33a: the shared screen as a topmost overlay, mirroring Android's
