@@ -386,7 +386,15 @@ public data class FlashConversationUiState(
     val canRemoveMembers: Boolean = false,
     /** Removal ripple: false once this device left the group or the owner removed it; the composer gives way to a notice. */
     val selfMembership: FlashSelfMembership = FlashSelfMembership.Active,
+    /** UI-052: non-null while earlier group messages are arriving through catch-up; drives the "catching up" banner. */
+    val groupSync: FlashGroupSyncUi? = null,
 )
+
+/**
+ * Earlier messages of this group are arriving (catch-up, UI-052). [receivedCount] is how many new ones have landed since
+ * the banner appeared. There is deliberately no total: the requester cannot know how many holders will push.
+ */
+public data class FlashGroupSyncUi(val receivedCount: Int)
 
 public data class FlashConversation(
     val id: FlashConversationId,
