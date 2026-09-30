@@ -178,7 +178,9 @@ no files (group attachments are paired-only in both directions), no 1:1 calls, n
   ignored leaves no pin behind. Leaving a v2 group, or an owner tombstone, revokes the vouch (deleting a chat without leaving does not, see the limits); a paired pin is never touched
   by a group operation, and unpairing a vouched member keeps the pin while a vouch record exists.
 - **Owner remove.** `removeGroupMember` (owner only, next `seq`, signed tombstone) revokes the removed member's vouch on every device
-  that had one. It has an API and tests but **no UI yet**.
+  that had one. The members sheet offers it (a **Remove** action per row, never the owner's own, shown only when the repository
+  says `canRemoveMembers`, i.e. this device owns a v2 group) behind a confirmation whose copy says a removed member keeps what they
+  already received. Unit-tested; **not device-verified (TEST-BACKLOG GT-03 step 7)**.
 - **Visible to the user.** A member the local device never paired shows "Added by <owner> · not verified" and a **Verify** action that
   runs ordinary pairing (`connectManual` + `beginPair`); pairing turns the member PAIRED and the label disappears.
 

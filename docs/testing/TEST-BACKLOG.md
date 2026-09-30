@@ -498,7 +498,9 @@ by later testing without anyone recording it: confirm, then mark PASS here **and
   4. Start a group **voice** call from A, then have B and C join. Check B and C hear each other, not only A.
   5. On B send a photo to the group. Then open a 1:1 chat with C and try to send C a file.
   6. On B tap **Verify** next to C. Complete the pairing on both sides. Then open the member list again.
-  7. On C leave the group. On B check that C is no longer listed.
+  7. **Owner removes a member.** On A open the member list. Check which rows show **Remove**, tap it next to D, read the dialog and
+     confirm. Then have D try to send a message to the group.
+  8. On C leave the group. On B check that C is no longer listed.
 - **Pass:**
   - Step 1: A's log has `Group v2 created: group=g2-...`; B, C and D each log `Group v2 joined: group=g2-... owner=<A's id>`; the
     group shows four members with A as the only owner.
@@ -509,17 +511,24 @@ by later testing without anyone recording it: confirm, then mark PASS here **and
   - Step 5: A receives the photo; **C and D do not** (a group attachment goes only to paired members: vouched members get no
     files). The 1:1 file to C is refused like for any unpaired peer until step 6. This is a pass, not a failure.
   - Step 6: after pairing, C's row on B no longer says "Added by" and has no Verify action; group messages still flow.
-  - Step 7: B's member list drops C (the leave tombstone, which also revokes C's vouch on B).
+  - Step 7: A's sheet shows **Remove** on B, C and D but **not on A's own row**; B's and C's sheets show it on no row. The dialog is
+    titled "Remove <D's name>?" and says D keeps what it already received. After confirming, D's row disappears from A's sheet at
+    once and from B's and C's within seconds; A's log has `Group v2 member removed: group=g2-... member=<D's id>`; nothing D sends
+    afterwards appears on A, B or C.
+  - Step 8: B's member list drops C (the leave tombstone, which also revokes C's vouch on B).
   - The logs contain no `SECURITY: vouch refused` (that line means the owner's cert clashed with a paired pin or another group's vouch).
 - **A FAIL means:** C's messages never reach B (or the reverse): check that each device has a session with the other (a vouch only
   installs the pin; the planner still has to dial, and ECO dials only neighbours), that the roster arrived (`Group v2 joined`), and
   whether the peer's live key equals the cert key (a stale or reinstalled member: the owner must re-issue the cert); B shows C with
   no label (the row was treated as paired: check the pair state) or with a label but no Verify action; a file that reaches a vouched member
-  (a gate bug, serious); group call legs missing between B and C; a removed member still being accepted. Each is a new
+  (a gate bug, serious); group call legs missing between B and C; a removed member still being accepted; **Remove** shown to a
+  member, missing on the owner's sheet, or offered on the owner's own row (`canRemoveMembers` / `canRemove`); the removed row still
+  listed in the owner's open sheet after confirming (the roster did not re-emit). Each is a new
   `ERROR-NNN`.
 - **Also note:** how long B took to reach C after the group was created (dial time between two never-paired devices), which mode each
-  device was in (STANDARD, BOOST, ECO), and whether B and C were discovered before step 3 or only after. **Owner remove has no UI
-  yet,** so "removal revokes the vouch" is covered by unit tests only, not by this test.
+  device was in (STANDARD, BOOST, ECO), and whether B and C were discovered before step 3 or only after. what D's own screen shows after the
+  removal (there is no designed "you were removed" state; write down what it does), and whether D's device learned of it at once or only
+  when it next reconnected.
 - **Source:** `docs/group/v2-vouched-trust-plan.md`, ADR-044 "V2 built", `docs/security.md` section 9. The attacks themselves (a first-use
   pin squatting a member's id, a paired-key conflict, a second owner vouching a different key, an impersonated session key, a cert
   from a non-owner, removal revoking the vouch) cannot be staged from the UI and are covered by unit tests only: `SignedGroupsTest`

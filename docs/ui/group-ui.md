@@ -193,7 +193,7 @@ introduction into a real pairing. The plan is `docs/group/v2-vouched-trust-plan.
 | Action | Trailing text `"Verify"`, `bodyDefault`, `accentPrimary`, `Modifier.clickable` like `Pair Device` in the Nearby detail pane. Shown only when the host passes `onVerifyMember` and the member has `introducedBy`. Min touch height 48dp via the row padding. |
 | What Verify does | The host runs the ordinary pairing flow (`connectManual` if discovery knows an address, then `pairing.beginPair`), exactly like `onVerifyTrustedClick`. The other user sees the normal Accept/Decline. When it completes the member is paired and the line disappears; there is no new trust logic in the UI. |
 | Semantics | Row description appends `", added by <owner>, not verified"`. The action has `Role.Button` and description `"Verify <name>"`. |
-| Not done here | Owner removal has API and tests (`RealFlashChatRepository.removeGroupMember`) but no UI: it needs a member action menu and a confirmation, which UI-029 deferred ("long-press member actions"). |
+| Not done here | *(Done later the same day, see addendum 2.)* Owner removal has API and tests (`RealFlashChatRepository.removeGroupMember`) but no UI: it needs a member action menu and a confirmation, which UI-029 deferred ("long-press member actions"). |
 
 **Checklist.** Unit: label copy, null for paired, row description. Physical device: see `docs/testing/TEST-BACKLOG.md` GT-03.
 
@@ -230,3 +230,9 @@ ownership.
 
 **Checklist.** Unit: `canRemove` (never the Owner row), dialog copy, blank name; repository: `canRemoveMembers` true for the v2
 owner only. Physical device: `docs/testing/TEST-BACKLOG.md` GT-03 step 7 (owner removes a member).
+
+**Status: IMPLEMENTED 2026-09-30 (`39d8905`).** Files: `FlashGroupMembersSheet.kt` (`FlashGroupMembersMath.canRemove/removeTitle/removeMessage`,
+`onRemoveMember`, the row action), `FlashAddMembersSheet.kt` (`FlashRemoveMemberDialog`, beside the leave dialog it copies),
+`FlashConversationScreen.kt` (`onRemoveGroupMember`, `memberToRemove`), hosts `MainActivity` / `DesktopShell`, state
+`FlashConversationUiState.canRemoveMembers`. Unit tests green; **Compose previews and the physical-device check are still open.**
+Known gap: the removed member's own device has no designed "you were removed" state; it just stops receiving.

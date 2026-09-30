@@ -1,5 +1,41 @@
 # Progress Log
 
+## 2026-09-30 — Owner remove UI (ADR-044 V2 E5), `39d8905`
+
+### Worked on
+The owner of a v2 group could remove a member only through an API nobody could reach (`removeGroupMember`). The owner asked for the UI.
+
+### Changed
+- **Design first (AGENTS.md section 34):** UI-029 addendum 2 in `docs/ui/group-ui.md`, three approaches (long-press menu, per-member
+  sheet, trailing action); the trailing **Remove** action plus a confirmation was chosen.
+- `FlashConversationUiState.canRemoveMembers` (repository: v2 group and this device is the owner); `removeGroupMember` on the
+  `FlashChatRepository` interface (declining default; `RealFlashChatRepository` overrides).
+- `FlashGroupMembersSheet` (`onRemoveMember`, `FlashGroupMembersMath.canRemove/removeTitle/removeMessage`), `FlashRemoveMemberDialog`,
+  `FlashConversationScreen` (`onRemoveGroupMember`, `memberToRemove`), hosts `MainActivity` (toast on failure) and `DesktopShell` (snackbar).
+- **A defect found on the way:** the conversation state read the roster inside its combine but was not re-run by member-table changes,
+  so a removed member would have stayed in an open sheet (a leave or an add made on another device had the same staleness). The outer
+  combine now includes `groupMemberDao.observeMembers` for a group; the header member count refreshes too. The in-memory test DAO
+  now re-emits on upsert like a Room flow.
+
+### Verification
+- messaging 312 host / 158 jvm, ui:chat 294 (jvm and host), desktop 102 (all green); `:app:compileDebugUnitTestKotlin` and
+  `:sample:consumer:compileDebugUnitTestKotlin` compile.
+- **Mutation checks:** with `canRemoveMembers` forced true, the new `SignedGroupsTest` fails ("a member may not"); with the roster flow
+  removed, it fails ("the roster the sheet shows drops the removed member"). Both were reverted and the diff re-read.
+- **Not verified on a device or in a preview:** GT-03 step 7 (TEST-BACKLOG) is the check. Compose previews of the new row action are still open.
+
+### Problems
+- No new ERROR. My first mutation did not compile (`flowOf(emptyList())` needs a type argument), which is why the mutation run was repeated.
+
+### Remaining
+- The removed member's own screen has no designed state (it just stops receiving). **Add members** is offered to every member of a v2
+  group, but only the owner can add; both hosts ignore the result of `addGroupMembers`, so a non-owner's attempt (and "Update Flash on
+  that device", and the 20-member cap) fails with nothing visible. After Verify completes the "Added by" line clears only on the next
+  state refresh, because trust changes are not a flow the state observes.
+
+### Next AI
+GT-03 with the owner, or the open audit items (see the handoff).
+
 ## 2026-09-30 — Vouched trust and groups of 20 built: ADR-044 V2, slices S1 to S6 (`bc4e687`, `e4cc004`, `6684120`, `b67923f`, `9674ab0`)
 
 ### Worked on
