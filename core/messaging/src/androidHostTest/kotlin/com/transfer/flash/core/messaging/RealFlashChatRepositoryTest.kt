@@ -2467,6 +2467,99 @@ class RealFlashChatRepositoryTest {
     }
 
     @Test
+    fun `group text writes its rows in one transaction`() = runBlocking {
+        val memberDao = FakeGroupMemberDao()
+        val deliveryDao = FakeGroupDeliveryDao()
+        val outboxDao = FakeOutboxDao()
+        val messageDao = FakeMessageDao()
+        val conversationDao = FakeConversationDao()
+
+        // A DAO write counts as "inside a transaction" only while runInTransaction's block is running.
+        val depth = java.util.concurrent.atomic.AtomicInteger(0)
+        val transactions = java.util.concurrent.atomic.AtomicInteger(0)
+        val writes = java.util.Collections.synchronizedList(mutableListOf<Pair<String, Boolean>>())
+        fun record(name: String) { writes.add(name to (depth.get() > 0)) }
+
+        val repository = newRepository(
+            messageDao = object : MessageDao by messageDao {
+                override suspend fun insert(message: MessageEntity): Long {
+                    record("message"); return messageDao.insert(message)
+                }
+            },
+            conversationDao = object : ConversationDao by conversationDao {
+                override suspend fun upsert(conversation: ConversationEntity) {
+                    record("conversation"); conversationDao.upsert(conversation)
+                }
+            },
+            outboxDao = object : OutboxDao by outboxDao {
+                override suspend fun enqueue(item: OutboxEntity): Long {
+                    record("outbox"); return outboxDao.enqueue(item)
+                }
+            },
+            groupMemberDao = memberDao,
+            groupDeliveryDao = object : GroupDeliveryDao by deliveryDao {
+                override suspend fun insertAll(deliveries: List<GroupDeliveryEntity>) {
+                    record("deliveries"); deliveryDao.insertAll(deliveries)
+                }
+            },
+            trustedPeers = setOf("peer-a", "peer-b"),
+            groupSink = { _, _ -> true },
+            runInTransaction = { block ->
+                transactions.incrementAndGet()
+                depth.incrementAndGet()
+                try { block() } finally { depth.decrementAndGet() }
+            },
+        )
+        val groupId = (repository.createGroup("Team", setOf("peer-a", "peer-b")) as FlashResult.Success).value
+        repository.openConversation(groupId)
+        writes.clear()
+        transactions.set(0)
+
+        repository.sendText("hello team")
+        kotlinx.coroutines.withTimeout(5_000) { while (outboxDao.queue.isEmpty()) kotlinx.coroutines.delay(10) }
+        kotlinx.coroutines.delay(100)
+
+        assertEquals(
+            setOf("message", "deliveries", "conversation", "outbox"),
+            synchronized(writes) { writes.filter { it.second }.map { it.first }.toSet() },
+        )
+        assertEquals(
+            "every row of a group send belongs to the transaction",
+            emptyList<String>(),
+            synchronized(writes) { writes.filter { !it.second }.map { it.first } },
+        )
+        assertEquals("one transaction for the whole send", 1, transactions.get())
+    }
+
+    @Test
+    fun `group text moves its conversation to the top without rewriting its identity`() = runBlocking {
+        val conversationDao = FakeConversationDao()
+        val outboxDao = FakeOutboxDao()
+        val repository = newRepository(
+            conversationDao = conversationDao,
+            outboxDao = outboxDao,
+            groupMemberDao = FakeGroupMemberDao(),
+            groupDeliveryDao = FakeGroupDeliveryDao(),
+            trustedPeers = setOf("peer-a", "peer-b"),
+            groupSink = { _, _ -> true },
+        )
+        val groupId = (repository.createGroup("Team", setOf("peer-a", "peer-b")) as FlashResult.Success).value
+        repository.openConversation(groupId)
+        // The thread sits at the bottom of the list, archived, before the send.
+        conversationDao.upsert(conversationDao.get(groupId)!!.copy(sortOrder = 1L, archived = true))
+
+        repository.sendText("hello team")
+        kotlinx.coroutines.withTimeout(5_000) { while (outboxDao.queue.isEmpty()) kotlinx.coroutines.delay(10) }
+        kotlinx.coroutines.delay(100)
+
+        val after = conversationDao.get(groupId)!!
+        assertTrue("sortOrder was bumped, was ${after.sortOrder}", after.sortOrder > 1L)
+        assertFalse("sending brings an archived thread back", after.archived)
+        assertTrue("still a group", after.isGroup)
+        assertEquals("the title is not replaced by the id", "Team", after.title)
+    }
+
+    @Test
     fun `direct typing keeps its single addressed frame behavior`() = runBlocking {
         val sent = java.util.Collections.synchronizedList(mutableListOf<Pair<String, MessageWireFrame>>())
         val repository = newRepository(
@@ -2971,6 +3064,7 @@ class RealFlashChatRepositoryTest {
         trustedPeers: Set<String> = emptySet(),
         onlinePeerIds: Flow<Set<String>> = MutableStateFlow(trustedPeers + setOf("peer-a", "peer-b", "peer-c", "dev-a", "dev-b", "dev-c")),
         groupSink: (suspend (String, GroupWireFrame) -> Boolean)? = null,
+        runInTransaction: suspend (block: suspend () -> Unit) -> Unit = { it() },
         messageSink: suspend (String, MessageWireFrame) -> Boolean = { _, _ -> true },
         onInboundTextMessage: (String, String?, String) -> Unit = { _, _, _ -> },
         onInboundTextMessageWithGroupTitle: (String, String?, String, String?) -> Unit =
@@ -2996,6 +3090,7 @@ class RealFlashChatRepositoryTest {
         transportSink = MessageTransportSink { target, frame -> messageSink(target, frame) },
         onlinePeerIds = onlinePeerIds,
         ioDispatcher = testDispatcher,
+        runInTransaction = runInTransaction,
         onInboundTextMessage = onInboundTextMessage,
         onInboundTextMessageWithGroupTitle = onInboundTextMessageWithGroupTitle,
         onInboundAttachmentWithGroupTitle = onInboundAttachmentWithGroupTitle,
