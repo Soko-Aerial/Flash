@@ -1559,6 +1559,11 @@ public class RealFlashChatRepository(
                 messageDao.markDeleted(frame.messageId, timeSource.nowMs())
                 outboxDao.delete(frame.messageId)
             }
+            is GroupWireFrame.Bundle -> {
+                // ADR-044 V1 slice S2: the frame decodes, but the v2 receive path lands in S4. Until
+                // then a bundle is dropped exactly like an unknown action.
+                FlashLog.w("CHAT", "Group bundle ignored: v2 groups are not handled yet (group ${frame.groupId}, from ${frame.from})")
+            }
             is GroupWireFrame.Sync -> {
                 if (!isActiveTrustedMember(members, frame.groupId, frame.from)) return
                 when (frame) {

@@ -57,6 +57,28 @@ public sealed interface GroupWireFrame : ChatWireFrame {
         val members: List<RosterEntry>,
     ) : Membership
 
+    /**
+     * v2 membership (ADR-044 V1): the group's signed charter plus any subset of its signed member
+     * certs. It replaces `Create`/`Add`/`Leave`/`State` for a v2 group and is self-authenticating,
+     * so any member may relay it: create is the charter with every cert, an add or removal is the
+     * changed certs, a leave is the leaver's own tombstone, and the reconcile on every session-up is
+     * the charter with every cert including tombstones. [operationId] only tags the frame.
+     * `docs/group/v1-signed-membership-plan.md` D4.
+     */
+    public data class Bundle(
+        override val groupId: String,
+        override val from: String,
+        val operationId: String,
+        val charter: GroupCharter,
+        val certs: List<MemberCert>,
+    ) : GroupWireFrame {
+        init {
+            require(charter.groupId == groupId && certs.all { it.groupId == groupId }) {
+                "a bundle carries one group"
+            }
+        }
+    }
+
     /** One member's versioned state inside a [State] roster. */
     public data class RosterEntry(
         val deviceId: String,
@@ -78,6 +100,12 @@ public sealed interface GroupWireFrame : ChatWireFrame {
         val replyToId: String? = null,
         val replyToPreview: String? = null,
         val keyEpoch: Long = 0L,
+        /**
+         * v2 groups: base64 signature by [from] over the canonical message bytes (plan D3). Null
+         * for a legacy group. For a message inside a [SyncPush] this is what makes the relayed
+         * copy verifiable, and [from] is then the explicit author, not the pusher.
+         */
+        val signature: String? = null,
     ) : GroupWireFrame
 
     public data class Receipt(

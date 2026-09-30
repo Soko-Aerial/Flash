@@ -50,6 +50,30 @@ public object GroupFrameCodec {
                     )
                 },
             )
+            is GroupWireFrame.Bundle -> GROUP_PREFIX to listOf(
+                "action" to "bundle", "groupId" to frame.groupId, "from" to frame.from,
+                "opId" to frame.operationId, "version" to "0",
+                "cName" to frame.charter.name,
+                "cOwner" to frame.charter.ownerId,
+                "cOwnerKey" to frame.charter.ownerKey,
+                "cCreated" to frame.charter.createdAt.toString(),
+                "cNonce" to frame.charter.nonce,
+                "cProto" to frame.charter.proto.toString(),
+                "cSig" to frame.charter.sig,
+                "certCount" to frame.certs.size.toString(),
+            ) + frame.certs.flatMapIndexed { index, cert ->
+                listOf(
+                    "c${index}s" to cert.subjectId,
+                    "c${index}k" to cert.subjectKey,
+                    "c${index}l" to cert.label,
+                    "c${index}r" to cert.role,
+                    "c${index}q" to cert.seq.toString(),
+                    "c${index}o" to cert.opId,
+                    "c${index}a" to cert.active.toString(),
+                    "c${index}i" to cert.issuerId,
+                    "c${index}g" to cert.sig,
+                )
+            }
             is GroupWireFrame.Message -> MESSAGE_PREFIX to listOf(
                 "groupId" to frame.groupId,
                 "msgId" to frame.messageId,
@@ -60,7 +84,7 @@ public object GroupFrameCodec {
                 "replyTo" to (frame.replyToId ?: ""),
                 "replyPreview" to (frame.replyToPreview ?: ""),
                 "keyEpoch" to frame.keyEpoch.toString(),
-            )
+            ) + listOfNotNull(frame.signature?.let { "sig" to it })
             is GroupWireFrame.Receipt -> RECEIPT_PREFIX to listOf(
                 "groupId" to frame.groupId,
                 "msgId" to frame.messageId,
@@ -101,7 +125,13 @@ public object GroupFrameCodec {
                 "sentAt" to frame.message.sentAt.toString(), "text" to frame.message.text,
                 "replyTo" to (frame.message.replyToId ?: ""),
                 "replyPreview" to (frame.message.replyToPreview ?: ""),
-            )
+            ) + if (frame.message.signature != null) {
+                // v2: the pusher is only a relay, so the author travels explicitly with the
+                // signature that proves it (F-9). A legacy push carries neither.
+                listOf("author" to frame.message.from, "sig" to frame.message.signature)
+            } else {
+                emptyList()
+            }
             is GroupWireFrame.SyncAck -> SYNC_PREFIX to listOf(
                 "op" to "ack", "groupId" to frame.groupId, "syncId" to frame.syncId,
                 "from" to frame.from, "hasMore" to frame.hasMore.toString(),
@@ -157,6 +187,7 @@ public object GroupFrameCodec {
                     }
                     GroupWireFrame.State(groupId, from, operationId, version, name, creator, roster)
                 }
+                "bundle" -> decodeBundle(fields, groupId, from, operationId)
                 else -> null
             }
         }
@@ -171,6 +202,7 @@ public object GroupFrameCodec {
                 replyToId = fields["replyTo"]?.ifBlank { null },
                 replyToPreview = fields["replyPreview"]?.ifBlank { null },
                 keyEpoch = fields.long("keyEpoch") ?: 0L,
+                signature = fields["sig"]?.ifBlank { null },
             )
         }
         FlashTextFraming.parseFields(text, RECEIPT_PREFIX)?.let { fields ->
@@ -232,10 +264,13 @@ public object GroupFrameCodec {
                 )
                 "push" -> GroupWireFrame.SyncPush(
                     groupId, syncId, from, GroupWireFrame.Message(
-                        groupId, fields.required("msgId") ?: return null, from,
+                        groupId, fields.required("msgId") ?: return null,
+                        // A v2 push names its author; a legacy one has none, so the pusher stands in (F-9).
+                        fields["author"]?.ifBlank { null } ?: from,
                         fields.required("name") ?: return null, fields.long("sentAt") ?: return null,
                         fields["text"] ?: return null, fields["replyTo"]?.ifBlank { null },
                         fields["replyPreview"]?.ifBlank { null }, epoch,
+                        signature = fields["sig"]?.ifBlank { null },
                     ), epoch,
                 )
                 "ack" -> GroupWireFrame.SyncAck(
@@ -246,6 +281,44 @@ public object GroupFrameCodec {
             }
         }
         return null
+    }
+
+    /** Null when anything a bundle must carry is missing or the cert list is over its cap. */
+    private fun decodeBundle(
+        fields: Map<String, String>,
+        groupId: String,
+        from: String,
+        operationId: String,
+    ): GroupWireFrame.Bundle? {
+        val count = fields.int("certCount") ?: return null
+        if (count !in 0..GroupPolicy.MAX_BUNDLE_CERTS) return null
+        val charter = GroupCharter(
+            groupId = groupId,
+            name = fields.required("cName") ?: return null,
+            ownerId = fields.required("cOwner") ?: return null,
+            ownerKey = fields.required("cOwnerKey") ?: return null,
+            createdAt = fields.long("cCreated") ?: return null,
+            nonce = fields.required("cNonce") ?: return null,
+            proto = fields.int("cProto") ?: return null,
+            sig = fields.required("cSig") ?: return null,
+        )
+        val certs = (0 until count).map { index ->
+            MemberCert(
+                groupId = groupId,
+                subjectId = fields.required("c${index}s") ?: return null,
+                subjectKey = fields.required("c${index}k") ?: return null,
+                label = fields.required("c${index}l") ?: return null,
+                role = fields.required("c${index}r") ?: return null,
+                seq = fields.long("c${index}q") ?: return null,
+                opId = fields.required("c${index}o") ?: return null,
+                active = fields["c${index}a"]?.toBooleanStrictOrNull() ?: return null,
+                issuerId = fields.required("c${index}i") ?: return null,
+                sig = fields.required("c${index}g") ?: return null,
+            )
+        }
+        // An honest sender never repeats a subject; a repeat only costs the receiver verifications.
+        if (certs.map { it.subjectId }.toSet().size != certs.size) return null
+        return GroupWireFrame.Bundle(groupId, from, operationId, charter, certs)
     }
 
     private fun membershipFields(

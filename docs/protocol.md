@@ -299,6 +299,21 @@ because a callee that declines and a callee whose caller gave up both end the ca
 distinction exists on the caller's side (an inbound `decline` ends as DECLINED, a dial timeout as
 NO_ANSWER) and is simply not recoverable on the callee's.
 
+#### Group protocol level and the `gv` HELLO field (ADR-044 V1, 2026-09-30)
+
+```text
+FLASH_WS_HELLO version=2 deviceId=<id> name=<name> ping=<ms> gv=<group-protocol-level>
+```
+
+- `gv` is the group protocol level the sender speaks. This build sends `2` (`FlashProtocol.GROUP_PROTOCOL_LEVEL`): it
+  understands **v2 groups** (owner-rooted signed membership and signed messages, see "v2 groups" under Groups).
+- **Optional and additive.** A HELLO without `gv`, or with a value that is not a positive integer, means level `1`
+  (`parseGroupProtocol`; values above 255 are clamped). `version=` is **not** bumped: it is an exact-match gate
+  (`FlashProtocol.isCompatible`) and an old peer must keep connecting.
+- Both the dialer and the acceptor learn the peer's level from the peer's HELLO; it is exposed as
+  `FlashDevice.groupProtocol` on the session's `peer`. A v2 group is created or extended only with devices whose level
+  is at least `2`.
+
 ## Groups (Phase 1, 2026-09-08)
 
 Ad-hoc text groups ride the WS mesh as text frames under four new prefixes, encoded with the
@@ -315,6 +330,9 @@ stale/replayed `add` cannot resurrect; only a strictly newer `add` reactivates i
 membership is **6 including the creator**; only trusted (paired) peers may be added.
 
 ### Membership frames
+
+> These four frames are the **legacy** (v1) group membership protocol. A **v2** group uses the signed `bundle` frame instead;
+> see "v2 groups" at the end of this section. Legacy frames for a `g2-` group id are dropped.
 
 ```text
 FLASH_GROUP action=create groupId=<uuid> from=<id> opId=<uuid> version=<ms> name=<escaped> memberCount=<n> member0=<id> …
@@ -347,6 +365,8 @@ see `docs/group/v0-threat-review.md`, findings F-1, F-2, F-4, F-5.
   (`from` is the pusher), so relayed messages are attributed to the pusher until a later version adds one (ERROR-082).
 
 ### Chat and receipt frames
+
+> In a v2 group `FLASH_GMSG` also carries a `sig` field (see "v2 groups"). The frames below are shown without it.
 
 ```text
 FLASH_GMSG  groupId=<uuid> msgId=<uuid> from=<id> name=<escaped> sentAt=<ms> text=<escaped> replyTo=<id> replyPreview=<escaped> keyEpoch=0
@@ -397,6 +417,113 @@ FLASH_GSYNC op=ack     groupId=<uuid> syncId=<uuid> from=<id> hasMore=<0|1> msgC
   is `(tierRank, hash(deviceId + msgId))`; rank 0 pushes paced to `maxPerSec`, rank 1 arms a
   2 s backup, others stand down; a broadcast batch `ack` cancels backups. Budgets: LOW
   returner 5/sec · 100/round; MEDIUM/HIGH 20/sec · 500/round; TTL 24 h; ≤ 2 copies/message.
+
+### v2 groups (ADR-044 V1, 2026-09-30)
+
+Design and rationale: `docs/group/v1-signed-membership-plan.md` (D1–D9) and `docs/group/v0-threat-review.md`. A v2 group is
+**owner-rooted**: the owner signs the group's charter and every membership fact; every member signs their own chat messages.
+Nothing a member sends can forge another member's message, add or remove anybody, or take the group over. Legacy groups
+(sections above) are unchanged and are never upgraded in place.
+
+**Group id namespace.** A v2 id is
+
+```text
+groupId = "g2-" + lowercase-hex( SHA-256( "flash-gid-v1" ‖ len(ownerSpki) ‖ ownerSpki ‖ len(nonce) ‖ nonce ) )[0 .. 32)
+```
+
+(35 characters; `len` is the 4-byte big-endian field length below). An id therefore names exactly one possible owner. The
+prefix `g2-` is reserved: a legacy `create`/`add`/`leave`/`state` frame for a `g2-` id is dropped and logged, a charter for
+a non-`g2-` id is dropped, and a group never goes back to legacy.
+
+**Canonical bytes (what is signed).** Every signed byte string is `tag ‖ field ‖ field …`. Each field is a 4-byte big-endian
+length followed by its bytes; the tag is itself the first field. Text is UTF-8, a `long` is 8 bytes big-endian, a boolean is one
+byte (`0x00`/`0x01`), an absent optional string is the empty string. The order is fixed; there are no optional fields.
+
+| Signed thing | Tag | Fields in order |
+|---|---|---|
+| charter | `flash-gcharter-v1` | groupId, name, ownerId, ownerSpki, createdAt, nonce, proto |
+| member cert | `flash-gcert-v1` | groupId, subjectId, subjectSpki, label, role, seq, opId, active, issuerId |
+| group message | `flash-gmsg-v1` | groupId, msgId, from, sentAt, replyToId, replyPreview, text |
+| group id | `flash-gid-v1` | ownerSpki, nonce (hash input only; not signed) |
+
+Signatures are ECDSA P-256 / SHA-256 over these bytes with the signer's identity key (the same key whose SHA-256 fingerprint
+the trust store pins). Key and signature bytes travel as standard base64; `nonce` is 16 random bytes.
+
+Golden vectors (inputs: owner SPKI = bytes `00..0f`, subject SPKI = bytes `20..2f`, nonce = bytes `a0..af`; produced by an
+independent Python reference and asserted in `GroupCanonicalTest`). Group id: `g2-6f01129f28cff84f8ef67cb9d1970499`.
+
+```text
+charter  (name "Café Crew", ownerId "owner-1", createdAt 1700000000000, proto 2)
+  00000011666c6173682d67636861727465722d76310000002367322d36663031313239663238636666383466386566363763623964313937303439390000000a436166c3a92043726577000000076f776e65722d3100000010000102030405060708090a0b0c0d0e0f000000080000018bcfe5680000000010a0a1a2a3a4a5a6a7a8a9aaabacadaeaf000000080000000000000002
+
+cert  (subject "dev-b", label "Béa", role member, seq 3, opId "op-7", active true, issuer "owner-1")
+  0000000e666c6173682d67636572742d76310000002367322d3666303131323966323863666638346638656636376362396431393730343939000000056465762d6200000010202122232425262728292a2b2c2d2e2f0000000442c3a961000000066d656d626572000000080000000000000003000000046f702d370000000101000000076f776e65722d31
+
+message  (msgId "m-1", from "dev-b", sentAt 1700000000123, no reply, text "héllo")
+  0000000d666c6173682d676d73672d76310000002367322d3666303131323966323863666638346638656636376362396431393730343939000000036d2d31000000056465762d62000000080000018bcfe5687b00000000000000000000000668c3a96c6c6f
+```
+
+A change to any of these is a wire break and needs a new tag (`…-v2`).
+
+**Charter and cert rules.** The charter is immutable: `{groupId, name, ownerId, ownerSpki, createdAt, nonce, proto=2}` signed by
+the owner key; it is valid only if `groupId` equals the derivation above, the owner is paired with the receiver, and the owner's
+pin fingerprint equals `SHA-256(ownerSpki)`. A member cert `{groupId, subjectId, subjectSpki, label, role, seq, opId, active,
+issuerId}` is issued by the owner (add, remove) or by the subject about themselves (leave: `active=false`, `issuerId=subjectId`).
+It is valid when: the signature verifies under the issuer's key; `role=owner` iff `subjectId` is the charter owner; `label` is 1–80
+characters; `seq ≥ 1`; `opId` is non-blank; and the key is bound: for another device the receiver's pin store holds a pin whose
+fingerprint equals `SHA-256(subjectSpki)`, for the receiver itself it is the receiver's own key, for the owner it is the charter's
+key. An owner-issued tombstone needs no subject binding. Certs merge per subject by the same `(seq, opId)` rule as legacy
+membership; a leave is a tombstone that only a strictly greater `(seq, opId)` from the owner can undo.
+
+**Bundle frame** — the single v2 membership frame; it replaces `create`/`add`/`leave`/`state` for a v2 group:
+
+```text
+FLASH_GROUP action=bundle groupId=<g2-id> from=<id> opId=<uuid> version=0
+            cName=<escaped> cOwner=<id> cOwnerKey=<b64> cCreated=<ms> cNonce=<b64> cProto=2 cSig=<b64>
+            certCount=<n>
+            c0s=<subject id> c0k=<b64 spki> c0l=<escaped label> c0r=<owner|member> c0q=<seq> c0o=<opId> c0a=<true|false> c0i=<issuer id> c0g=<b64 sig>
+            c1s=… (one group of nine fields per cert, index 0 … certCount-1)
+```
+
+- `groupId`, `from`, `opId`, `version` keep the common header so a legacy decoder that reaches the action treats it as an unknown
+  action and drops it. `opId` only tags the frame; `version` is unused (`0`).
+- A bundle may carry any subset of certs: **create** = charter + every cert; **add/remove** = charter + the changed certs (the
+  owner sends the full set to a newly added device); **leave** = charter + the leaver's own tombstone; **reconcile on
+  session-up** = charter + every cert including tombstones. Because it is self-authenticating, any paired member may relay one.
+- The decoder rejects a bundle with a missing required field, a non-boolean `c<i>a`, a `certCount` outside
+  `0..MAX_BUNDLE_CERTS` (`MAX_MEMBERS_V2 + 64` = 70), or two certs for the same subject.
+
+**Receiver rules (bundle).**
+
+1. Common gate: `from` equals the transport session's peer and the peer is paired.
+2. Unknown `g2-` group: accepted iff the charter is valid and **my own cert in the bundle is valid, active and for my key**.
+   The sender may be any paired peer.
+3. Known v2 group: the charter must equal the stored one (else ignored and logged); each cert is verified independently and
+   merged per subject; a bad cert is dropped without stopping the rest. Only the owner adds, removes or relabels; a member can
+   only tombstone themselves.
+4. Verification budget: a cert whose `sig` equals the stored row's costs nothing; new certs cost one verification each; a peer
+   over `BUNDLE_VERIFICATIONS_PER_WINDOW` (120 per 60 s) has further bundles dropped until the window rolls.
+
+**Signed group message.** `FLASH_GMSG` gains an optional `sig=<b64>`: the author's signature over the `flash-gmsg-v1` bytes. `from` is the
+author. `sig` is **omitted for a legacy group's message**, so legacy frames are byte-identical to before. In a v2 group the
+receiver requires: the author is an active member of the *verified* roster, is paired, and `sig` verifies under the roster key
+for the author. The stored sender name is the roster `label`, never the frame's `name`. A missing or bad signature drops the
+message and no receipt is sent.
+
+**Signed relay (`FLASH_GSYNC op=push`).** A push gains `author=<id>` and `sig=<b64>`, written only when the pushed message is signed.
+The pushed message's `from` is then `author`, not the pusher: the pusher is only a relay and the signature is what proves the
+author (this fixes ERROR-082 / finding F-9 for v2). A push without `author` is decoded as before (the pusher stands in) and is
+only valid for a legacy group. The V1a solicitation rule (a push is ingested only for a `syncId` this receiver sent in a request
+to that same peer for that group in the last 10 minutes) still applies. A message row without a stored signature is never
+relayed in a v2 group.
+
+**Unchanged in v2:** `FLASH_GRCPT`, `FLASH_GREAD`, `FLASH_GACT delete`, `FLASH_GMEDIA` and the sync `request`/`claim`/`ack` are
+authenticated by the TLS session (`from` equals the peer). Delete additionally needs the stored row's `senderId` to equal the
+frame's `from`, which is correct in a v2 group because relayed messages keep their true author.
+
+**Old clients (D9).** An old client is never admitted to a v2 group (create and add require `gv ≥ 2`). It ignores the bundle
+action, ignores `sig`/`author`, and still chats 1:1 and in legacy groups. `MAX_MEMBERS_V2` is `6` (same as legacy) until the
+vouched-trust phase.
 
 ## PTT ping (v1, 2026-09-09)
 
