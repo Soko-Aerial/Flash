@@ -9,6 +9,7 @@ import com.transfer.flash.core.persistence.db.dao.GroupDeliveryDao
 import com.transfer.flash.core.persistence.db.dao.GroupMemberDao
 import com.transfer.flash.core.persistence.db.dao.MessageDao
 import com.transfer.flash.core.persistence.db.dao.OutboxDao
+import com.transfer.flash.core.persistence.db.dao.ReadCursorDao
 import com.transfer.flash.core.persistence.db.dao.ReactionDao
 import com.transfer.flash.core.persistence.db.dao.ReceiptDao
 import com.transfer.flash.core.persistence.db.dao.RecentSearchDao
@@ -18,6 +19,7 @@ import com.transfer.flash.core.persistence.db.entity.GroupDeliveryEntity
 import com.transfer.flash.core.persistence.db.entity.GroupMemberEntity
 import com.transfer.flash.core.persistence.db.entity.MessageEntity
 import com.transfer.flash.core.persistence.db.entity.OutboxEntity
+import com.transfer.flash.core.persistence.db.entity.ReadCursorEntity
 import com.transfer.flash.core.persistence.db.entity.ReactionEntity
 import com.transfer.flash.core.persistence.db.entity.ReceiptEntity
 import com.transfer.flash.core.persistence.db.entity.RecentSearchEntity
@@ -108,7 +110,19 @@ internal class InMemoryMessageDao : MessageDao {
         publish()
     }
 
-    override suspend fun markReadUpTo(conversationId: String, selfId: String, upToMessageId: String) = Unit
+    /**
+     * Mirrors the Room query: our own rows in the thread that are not READ yet and were sent at or before the
+     * named message. A name that resolves to no row bounds nothing (SQL `sentAt <= NULL` is never true).
+     */
+    override suspend fun markReadUpTo(conversationId: String, selfId: String, upToMessageId: String) {
+        val bound = messages[upToMessageId]?.sentAt ?: return
+        messages.values
+            .filter {
+                it.conversationId == conversationId && it.senderId == selfId && it.status != "READ" && it.sentAt <= bound
+            }
+            .forEach { messages[it.localId] = it.copy(status = "READ") }
+        publish()
+    }
 
     override suspend fun newestLocalId(conversationId: String): String? =
         messages.values.filter { it.conversationId == conversationId }.maxByOrNull { it.sentAt }?.localId
@@ -367,4 +381,28 @@ internal class NoopReactionDao : ReactionDao {
         MutableStateFlow<List<ReactionEntity>>(emptyList()).asStateFlow()
     override suspend fun get(messageId: String, emoji: String): ReactionEntity? = null
     override suspend fun remove(messageId: String, emoji: String) = Unit
+}
+
+/**
+ * In-memory read cursors. `advanceFurthest` is deliberately NOT overridden: the interface's own monotonic
+ * read-compare-write runs on top of these three primitives, so a test exercises the production ordering rule.
+ */
+internal class InMemoryReadCursorDao : ReadCursorDao {
+    val cursors = ConcurrentHashMap<Pair<String, String>, ReadCursorEntity>()
+
+    override suspend fun get(conversationId: String, memberId: String): ReadCursorEntity? =
+        cursors[conversationId to memberId]
+
+    override suspend fun insertSeed(cursor: ReadCursorEntity) {
+        cursors.putIfAbsent(cursor.conversationId to cursor.memberId, cursor)
+    }
+
+    override suspend fun updateCursor(conversationId: String, memberId: String, upToMessageId: String, upToSentAt: Long) {
+        cursors[conversationId to memberId]?.let {
+            cursors[conversationId to memberId] = it.copy(upToMessageId = upToMessageId, upToSentAt = upToSentAt)
+        }
+    }
+
+    override fun observeCursors(conversationId: String): Flow<List<ReadCursorEntity>> =
+        MutableStateFlow(cursors.values.filter { it.conversationId == conversationId }.sortedBy { it.memberId }).asStateFlow()
 }

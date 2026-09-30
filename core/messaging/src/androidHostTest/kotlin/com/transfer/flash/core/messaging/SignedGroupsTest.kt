@@ -1101,6 +1101,149 @@ class SignedGroupsTest {
         assertEquals("DELIVERED", nodes.getValue("dev-a").messageDao.messages.getValue(original.localId).status)
     }
 
+    // ------------------------------------------------------------------------------ read ticks
+    // Chat/group sync audit, step 3. A group message is READ only once every active remote member has read past it.
+    // Before this the reader sent a direct receipt to the group id, which is not a device, so nobody ever heard it.
+
+    private fun status(id: String, messageId: String): String =
+        nodes.getValue(id).messageDao.messages.getValue(messageId).status
+
+    private fun readFrames(from: String, to: String): List<GroupWireFrame.Read> =
+        outbound.filter { it.from == from && it.to == to }.mapNotNull { it.frame as? GroupWireFrame.Read }
+
+    @Test
+    fun `a reader tells every other member how far it has read, and only them`() = runBlocking {
+        mesh("dev-a", "dev-b", "dev-c")
+        val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+        say("dev-a", groupId, "read me")
+        val sent = stored("dev-a", groupId, "read me")!!
+        outbound.clear()
+
+        nodes.getValue("dev-c").repo.openConversation(groupId)
+        settle()
+
+        assertEquals("c names the message to the author", listOf(sent.localId), readFrames("dev-c", "dev-a").map { it.upToMessageId })
+        assertEquals("and to the other member", listOf(sent.localId), readFrames("dev-c", "dev-b").map { it.upToMessageId })
+        assertTrue("never to itself", outbound.none { it.to == "dev-c" && it.frame is GroupWireFrame.Read })
+        assertEquals("every Read is stamped with the reader", setOf("dev-c"), outbound.mapNotNull { (it.frame as? GroupWireFrame.Read)?.from }.toSet())
+        assertEquals("a kept c's cursor", sent.localId, nodes.getValue("dev-a").readCursorDao.cursors[groupId to "dev-c"]?.upToMessageId)
+    }
+
+    @Test
+    fun `the author's message turns read only when the last member has read it`() = runBlocking {
+        mesh("dev-a", "dev-b", "dev-c")
+        val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+        say("dev-a", groupId, "read by all")
+        val sent = stored("dev-a", groupId, "read by all")!!
+        assertEquals("both members acknowledged delivery", "DELIVERED", status("dev-a", sent.localId))
+
+        nodes.getValue("dev-b").repo.openConversation(groupId)
+        settle()
+        assertEquals("b has read it, c has not", "DELIVERED", status("dev-a", sent.localId))
+        assertNotNull("a holds b's cursor", nodes.getValue("dev-a").readCursorDao.cursors[groupId to "dev-b"])
+
+        nodes.getValue("dev-c").repo.openConversation(groupId)
+        settle()
+        assertEquals("c was the last to read", "READ", status("dev-a", sent.localId))
+    }
+
+    @Test
+    fun `the read tick stops at the member that has read the least`() = runBlocking {
+        mesh("dev-a", "dev-b", "dev-c")
+        val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+        say("dev-a", groupId, "one")
+        val one = stored("dev-a", groupId, "one")!!
+        nodes.getValue("dev-b").repo.openConversation(groupId)
+        nodes.getValue("dev-c").repo.openConversation(groupId)
+        settle()
+        assertEquals("both have read the first message", "READ", status("dev-a", one.localId))
+
+        // c puts the conversation away; a says more; b (still looking at it) reads on, c does not.
+        nodes.getValue("dev-c").repo.closeConversation()
+        delay(5)
+        say("dev-a", groupId, "two")
+        val two = stored("dev-a", groupId, "two")!!
+        settle()
+
+        assertEquals("b's cursor moved on", two.localId, nodes.getValue("dev-a").readCursorDao.cursors[groupId to "dev-b"]?.upToMessageId)
+        assertEquals("c's did not", one.localId, nodes.getValue("dev-a").readCursorDao.cursors[groupId to "dev-c"]?.upToMessageId)
+        assertEquals("so the first message stays read", "READ", status("dev-a", one.localId))
+        assertNotEquals("and the second is held back by c", "READ", status("dev-a", two.localId))
+    }
+
+    @Test
+    fun `a member that left does not hold the read tick back`() = runBlocking {
+        mesh("dev-a", "dev-b", "dev-c")
+        val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+        say("dev-a", groupId, "first")
+        val first = stored("dev-a", groupId, "first")!!
+        nodes.getValue("dev-b").repo.openConversation(groupId)
+        settle()
+        assertEquals("c has not read it", "DELIVERED", status("dev-a", first.localId))
+
+        assertTrue(nodes.getValue("dev-a").repo.removeGroupMember(groupId, "dev-c") is FlashResult.Success)
+        settle()
+        say("dev-a", groupId, "second")
+        val second = stored("dev-a", groupId, "second")!!
+
+        // b's newest inbound message is now `second`; the roster is {a, b}, so b alone decides.
+        nodes.getValue("dev-b").repo.openConversation(groupId)
+        settle()
+        assertEquals("read by every member still in the group", "READ", status("dev-a", second.localId))
+        assertEquals("and so is everything before it", "READ", status("dev-a", first.localId))
+    }
+
+    @Test
+    fun `a read from someone outside the group changes nothing`() = runBlocking {
+        mesh("dev-a", "dev-b", "dev-c")
+        val groupId = createGroup("dev-a", "Team", "dev-b")
+        say("dev-a", groupId, "members only")
+        val sent = stored("dev-a", groupId, "members only")!!
+
+        deliver("dev-c", "dev-a", GroupWireFrame.Read(groupId, "dev-c", sent.localId, SENT_AT))
+
+        assertNull("no cursor is kept for a stranger", nodes.getValue("dev-a").readCursorDao.cursors[groupId to "dev-c"])
+        assertNotEquals("READ", status("dev-a", sent.localId))
+    }
+
+    @Test
+    fun `a read that names a message this device does not hold moves nothing`() = runBlocking {
+        mesh("dev-a", "dev-b")
+        val groupId = createGroup("dev-a", "Team", "dev-b")
+        say("dev-a", groupId, "mine")
+        val sent = stored("dev-a", groupId, "mine")!!
+
+        deliver("dev-b", "dev-a", GroupWireFrame.Read(groupId, "dev-b", "no-such-message", SENT_AT))
+        assertTrue("an unknown name stores no cursor", nodes.getValue("dev-a").readCursorDao.cursors.isEmpty())
+        assertNotEquals("READ", status("dev-a", sent.localId))
+
+        // A message that exists but belongs to another conversation cannot stand in for one of this group.
+        val other = "other-conversation-message"
+        nodes.getValue("dev-a").messageDao.messages[other] =
+            sent.copy(localId = other, conversationId = "dev-z", text = "elsewhere")
+        deliver("dev-b", "dev-a", GroupWireFrame.Read(groupId, "dev-b", other, SENT_AT))
+        assertTrue("a foreign message stores no cursor either", nodes.getValue("dev-a").readCursorDao.cursors.isEmpty())
+        assertNotEquals("READ", status("dev-a", sent.localId))
+    }
+
+    @Test
+    fun `an older read never moves a cursor backwards`() = runBlocking {
+        mesh("dev-a", "dev-b")
+        val groupId = createGroup("dev-a", "Team", "dev-b")
+        say("dev-a", groupId, "one")
+        delay(5)
+        say("dev-a", groupId, "two")
+        val one = stored("dev-a", groupId, "one")!!
+        val two = stored("dev-a", groupId, "two")!!
+        assertTrue("the two messages are ordered", two.sentAt > one.sentAt)
+
+        deliver("dev-b", "dev-a", GroupWireFrame.Read(groupId, "dev-b", two.localId, SENT_AT))
+        deliver("dev-b", "dev-a", GroupWireFrame.Read(groupId, "dev-b", one.localId, SENT_AT))
+
+        assertEquals("the later cursor stands", two.localId, nodes.getValue("dev-a").readCursorDao.cursors[groupId to "dev-b"]?.upToMessageId)
+        assertEquals("READ", status("dev-a", two.localId))
+    }
+
     // ------------------------------------------------------------------------------ harness: nodes
 
     private class Node(
@@ -1110,6 +1253,7 @@ class SignedGroupsTest {
         val outboxDao: InMemoryOutboxDao = InMemoryOutboxDao(),
         val memberDao: InMemoryGroupMemberDao = InMemoryGroupMemberDao(),
         val deliveryDao: InMemoryGroupDeliveryDao = InMemoryGroupDeliveryDao(),
+        val readCursorDao: InMemoryReadCursorDao = InMemoryReadCursorDao(),
     ) {
         lateinit var repo: RealFlashChatRepository
     }
@@ -1154,6 +1298,7 @@ class SignedGroupsTest {
             reactionDao = NoopReactionDao(),
             groupMemberDao = created.memberDao,
             groupDeliveryDao = created.deliveryDao,
+            readCursorDao = created.readCursorDao,
             isTrustedPeer = { peer -> isPairedWith(id, peer) },
             groupTransportSink = GroupTransportSink { target, frame -> transmit(id, target, frame) },
             transportSink = MessageTransportSink { _, _ -> true },
