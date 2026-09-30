@@ -35,6 +35,7 @@ import com.transfer.flash.core.messaging.protocol.GroupSyncCursor
 import com.transfer.flash.core.messaging.protocol.GroupSyncPolicy
 import com.transfer.flash.core.messaging.protocol.GroupSyncRoundState
 import com.transfer.flash.core.messaging.protocol.GroupSyncTier
+import com.transfer.flash.core.messaging.protocol.GroupVouching
 import com.transfer.flash.core.messaging.protocol.GroupWireFrame
 import com.transfer.flash.core.messaging.protocol.MessageWireFrame
 import com.transfer.flash.core.messaging.protocol.OutgoingSyncRequest
@@ -222,6 +223,11 @@ public class RealFlashChatRepository(
     private val peerGroupProtocol: (String) -> Int = { 1 },
     /** A peer's identity key (SPKI) from its live TLS session, or null; checked against the pin before use. */
     private val peerIdentityKey: (String) -> ByteArray? = { null },
+    /**
+     * ADR-044 V2: the trust store's vouched pins. Null keeps V1 behaviour, where every member of a v2 group
+     * must be paired with this device.
+     */
+    private val groupVouching: GroupVouching? = null,
 ) : FlashChatRepository {
 
     private val _chatListState = MutableStateFlow(FlashChatListUiState())
@@ -246,6 +252,7 @@ public class RealFlashChatRepository(
                 members = groupMemberDao,
                 isPaired = isTrustedPeer,
                 pinnedFingerprint = pinnedFingerprint,
+                vouching = groupVouching,
                 nowMs = { timeSource.nowMs() },
                 newId = { UuidIdGenerator.newId() },
             )
@@ -835,8 +842,8 @@ public class RealFlashChatRepository(
         val groupName = GroupPolicy.normalizedName(name)
             ?: return FlashResult.Failure(FlashError.Unknown("Group name must be 1-${GroupPolicy.MAX_GROUP_NAME_LENGTH} characters"))
         val allMembers = memberIds + localDeviceId
-        if (!GroupPolicy.validMemberIds(allMembers, localDeviceId)) {
-            return FlashResult.Failure(FlashError.Unknown("Groups support 2-${GroupPolicy.MAX_MEMBERS} unique members"))
+        if (!GroupPolicy.validMemberIds(allMembers, localDeviceId, GroupPolicy.MAX_MEMBERS_V2)) {
+            return FlashResult.Failure(FlashError.Unknown("Groups support 2-${GroupPolicy.MAX_MEMBERS_V2} unique members"))
         }
         if (memberIds.any { !isTrustedPeer(it) }) {
             return FlashResult.Failure(FlashError.Unknown("Every group member must be trusted"))
@@ -848,6 +855,14 @@ public class RealFlashChatRepository(
         val signed = signedGroups
         if (signed != null && memberIds.all { peerGroupProtocol(it) >= GroupPolicy.V2_PROTOCOL }) {
             return createV2GroupLocked(signed, groupName, memberIds)
+        }
+        // Legacy groups keep their old limit: every shipped codec rejects a longer legacy roster.
+        if (!GroupPolicy.validMemberIds(allMembers, localDeviceId)) {
+            return FlashResult.Failure(
+                FlashError.Unknown(
+                    "Groups of more than ${GroupPolicy.MAX_MEMBERS} need every member on the latest Flash version",
+                ),
+            )
         }
         val now = timeSource.nowMs()
         val groupId = UuidIdGenerator.newId()
@@ -961,6 +976,31 @@ public class RealFlashChatRepository(
 
     override suspend fun leaveGroup(groupId: String): FlashResult<Unit> =
         withContext(ioDispatcher) { leaveGroupLocked(groupId) }
+
+    /**
+     * ADR-044 V2 (E5): the owner of a v2 group removes [deviceId]. The owner-signed tombstone reaches every remaining
+     * member and the removed device (so it stops sending), and the vouch for that key is withdrawn here at once.
+     */
+    public suspend fun removeGroupMember(groupId: String, deviceId: String): FlashResult<Unit> =
+        withContext(ioDispatcher) { removeGroupMemberLocked(groupId, deviceId) }
+
+    private suspend fun removeGroupMemberLocked(groupId: String, deviceId: String): FlashResult<Unit> {
+        val members = groupMemberDao
+            ?: return FlashResult.Failure(FlashError.Unknown("Group storage unavailable"))
+        val signed = signedGroups
+        if (signed == null || !isV2Group(groupId)) {
+            return FlashResult.Failure(FlashError.Unknown("Only groups made with the latest Flash version support removing members"))
+        }
+        if (conversationDao.get(groupId)?.groupCreatedBy != localDeviceId) {
+            return FlashResult.Failure(FlashError.Unknown("Only the group owner can remove members"))
+        }
+        val removed = signed.removeMember(groupId, deviceId)
+            ?: return FlashResult.Failure(FlashError.Unknown("That device is not a removable member of this group"))
+        val targets = members.activeMembers(groupId).map { it.deviceId }.filter { it != localDeviceId } + deviceId
+        targets.distinct().forEach { groupTransportSink?.send(it, removed.bundle) }
+        FlashLog.i("CHAT", "Group v2 member removed: group=$groupId member=$deviceId")
+        return FlashResult.Success(Unit)
+    }
 
     private suspend fun leaveGroupLocked(groupId: String): FlashResult<Unit> {
         val members = groupMemberDao
@@ -1312,8 +1352,10 @@ public class RealFlashChatRepository(
         val deliveries = groupDeliveryDao
         scope.launch(ioDispatcher) {
             if (conversationDao.get(conversationId)?.isGroup != true) return@launch
+            // ADR-044 V2 (E3): files are paired-only, so a vouched member is not a recipient and cannot leave
+            // this message PENDING for a delivery that will never be attempted.
             val recipients = members?.activeMembers(conversationId)
-                ?.filter { it.deviceId != localDeviceId }
+                ?.filter { it.deviceId != localDeviceId && isTrustedPeer(it.deviceId) }
                 .orEmpty()
             messageDao.insert(
                 MessageEntity(
@@ -1496,7 +1538,7 @@ public class RealFlashChatRepository(
      * `from` field cannot claim another trusted member's identity.
      */
     public suspend fun onInboundGroupWireFrame(peerDeviceId: String, frame: GroupWireFrame) {
-        if (peerDeviceId != frame.from || !isTrustedPeer(peerDeviceId)) return
+        if (peerDeviceId != frame.from || !isGroupPeerTrusted(frame.groupId, peerDeviceId)) return
         val members = groupMemberDao ?: return
         if (frame is GroupWireFrame.Membership && GroupPolicy.isV2GroupId(frame.groupId)) {
             // ADR-044 V1 (D1): the `g2-` namespace belongs to signed groups. A legacy frame for it can
@@ -1638,7 +1680,7 @@ public class RealFlashChatRepository(
                 requestGroupCatchUp(frame.groupId)
             }
             is GroupWireFrame.Message -> {
-                if (!isActiveTrustedMember(members, frame.groupId, frame.from) ||
+                if (!isActiveGroupMember(members, frame.groupId, frame.from) ||
                     frame.text.length > GroupPolicy.MAX_MESSAGE_TEXT_LENGTH
                 ) return
                 // v2: the author must sign the message, and the name shown is the roster's signed label.
@@ -1689,7 +1731,7 @@ public class RealFlashChatRepository(
                 )
             }
             is GroupWireFrame.Receipt -> {
-                if (!isActiveTrustedMember(members, frame.groupId, frame.from)) return
+                if (!isActiveGroupMember(members, frame.groupId, frame.from)) return
                 val deliveries = groupDeliveryDao ?: return
                 deliveries.markDelivered(frame.messageId, frame.from, frame.deliveredAt)
                 if (deliveries.pendingForMessage(frame.messageId).isEmpty()) {
@@ -1698,12 +1740,12 @@ public class RealFlashChatRepository(
                 }
             }
             is GroupWireFrame.Read -> {
-                if (!isActiveTrustedMember(members, frame.groupId, frame.from)) return
+                if (!isActiveGroupMember(members, frame.groupId, frame.from)) return
                 // The existing cursor DAO is already per (conversation, member); UI read aggregation
                 // remains a Phase 1 UI follow-up while the durable monotonic record lands now.
             }
             is GroupWireFrame.DeleteForEveryone -> {
-                if (!isActiveTrustedMember(members, frame.groupId, frame.from)) return
+                if (!isActiveGroupMember(members, frame.groupId, frame.from)) return
                 val message = messageDao.getByLocalId(frame.messageId) ?: return
                 if (message.conversationId != frame.groupId || message.senderId != frame.from) return
                 messageDao.markDeleted(frame.messageId, timeSource.nowMs())
@@ -1725,7 +1767,7 @@ public class RealFlashChatRepository(
                 }
             }
             is GroupWireFrame.Sync -> {
-                if (!isActiveTrustedMember(members, frame.groupId, frame.from)) return
+                if (!isActiveGroupMember(members, frame.groupId, frame.from)) return
                 when (frame) {
                     is GroupWireFrame.SyncRequest -> handleSyncRequest(frame)
                     is GroupWireFrame.SyncClaim -> handleSyncClaim(frame)
@@ -2206,11 +2248,28 @@ public class RealFlashChatRepository(
     private suspend fun isKnownGroup(members: GroupMemberDao, groupId: String): Boolean =
         conversationDao.get(groupId) != null || members.member(groupId, localDeviceId) != null
 
+    /** Paired **and** an active member: legacy membership frames, group media and attachment sends (ADR-044 V2, E3). */
     private suspend fun isActiveTrustedMember(
         members: GroupMemberDao,
         groupId: String,
         deviceId: String,
     ): Boolean = isTrustedPeer(deviceId) && members.member(groupId, deviceId)?.isActive == true
+
+    /**
+     * ADR-044 V2 (E3): a peer this device accepts group traffic from. Paired, or an active member of a v2 group whose
+     * verified certificate names the very key the peer's live TLS session presented. It never reads the pin store, so
+     * a device that only knows a member's id, or connected as that id before the vouch replaced its pin, is refused.
+     */
+    private suspend fun isGroupPeerTrusted(groupId: String, deviceId: String): Boolean =
+        isTrustedPeer(deviceId) ||
+            signedGroups?.isVouchedMember(groupId, deviceId, peerIdentityKey(deviceId)) == true
+
+    /** [isGroupPeerTrusted] and an active roster row: what group text, receipts, reads, deletes, typing and sync require. */
+    private suspend fun isActiveGroupMember(
+        members: GroupMemberDao,
+        groupId: String,
+        deviceId: String,
+    ): Boolean = isGroupPeerTrusted(groupId, deviceId) && members.member(groupId, deviceId)?.isActive == true
 
     private suspend fun applyMembership(members: GroupMemberDao, candidate: GroupMemberEntity) {
         val current = members.member(candidate.groupId, candidate.deviceId)
@@ -2320,7 +2379,7 @@ public class RealFlashChatRepository(
                 val typingConversationId = if (isGroup) {
                     val members = groupMemberDao ?: return
                     if (transportPeerId != null && frame.memberId != transportPeerId) return
-                    if (!isActiveTrustedMember(members, frame.conversationId, frame.memberId)) return
+                    if (!isActiveGroupMember(members, frame.conversationId, frame.memberId)) return
                     frame.conversationId
                 } else {
                     // Direct hosts historically keyed inbound typing under the transport peer rather
@@ -2828,7 +2887,7 @@ public class RealFlashChatRepository(
                     from = localDeviceId,
                 )
                 members.activeMembers(conversation.id)
-                    .filter { it.deviceId != localDeviceId && isTrustedPeer(it.deviceId) }
+                    .filter { it.deviceId != localDeviceId && isGroupPeerTrusted(conversation.id, it.deviceId) }
                     .forEach { member -> groupTransportSink?.send(member.deviceId, frame) }
             } else {
                 transportSink?.send(

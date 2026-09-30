@@ -32,10 +32,12 @@ public object GroupPolicy {
     public const val V2_PROTOCOL: Int = 2
 
     /**
-     * Members of a v2 group. Equal to [MAX_MEMBERS] until V2 (vouched trust) lifts it: V1 still
-     * requires every member to be paired with every other one, which is what bounds it at six.
+     * Members of a v2 group (ADR-044 V2). Six was bound by "every member paired with every other member";
+     * vouched trust removes that need, so the limit is 20. A legacy group stays at [MAX_MEMBERS]: every shipped
+     * codec rejects a longer legacy roster. The mesh this implies (19 sessions per device) fits the dial budget
+     * and session ceiling of ADR-057, which `core:engine` pins with a test.
      */
-    public const val MAX_MEMBERS_V2: Int = MAX_MEMBERS
+    public const val MAX_MEMBERS_V2: Int = 20
 
     /** Leave/removal certs a bundle may carry on top of the active members. */
     public const val MAX_BUNDLE_TOMBSTONES: Int = 64
@@ -55,12 +57,16 @@ public object GroupPolicy {
     public fun normalizedName(name: String): String? = name.trim()
         .takeIf { it.isNotEmpty() && it.length <= MAX_GROUP_NAME_LENGTH }
 
-    public fun validMemberIds(memberIds: Collection<String>, localDeviceId: String): Boolean {
+    public fun validMemberIds(
+        memberIds: Collection<String>,
+        localDeviceId: String,
+        maxMembers: Int = MAX_MEMBERS,
+    ): Boolean {
         val members = memberIds.toSet()
         return members.size == memberIds.size &&
             members.none { it.isBlank() } &&
             localDeviceId in members &&
-            members.size in 2..MAX_MEMBERS
+            members.size in 2..maxMembers
     }
 
     public fun syncLimits(tier: GroupSyncTier): Pair<Int, Int> = when (tier) {
