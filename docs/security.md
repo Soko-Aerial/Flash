@@ -181,6 +181,12 @@ no files (group attachments are paired-only in both directions), no 1:1 calls, n
   that had one. The members sheet offers it (a **Remove** action per row, never the owner's own, shown only when the repository
   says `canRemoveMembers`, i.e. this device owns a v2 group) behind a confirmation whose copy says a removed member keeps what they
   already received. Unit-tested; **not device-verified (TEST-BACKLOG GT-03 step 7)**.
+- **What the other devices do (removal ripple, ERROR-083).** A member that hears of the removal drops the vouch and the row; a member that
+  reconnects later to a removed device that was offline hands it the owner's tombstone (`removalNoticeFor`, verified by the removed
+  device against the owner key in the charter). A device that is out (removed or left) ignores every bundle except an invitation back,
+  withdraws the vouches when it verifies its own tombstone, refuses to send, store group traffic or place calls, and its screen shows a
+  notice instead of the composer. Group calls use `isGroupCallPeer` (trusted in the group **and** an active roster row), not the plain
+  gate, so a removed member that is still paired cannot ring or join. Re-adding is the ordinary owner Add members flow and lifts all of it.
 - **Visible to the user.** A member the local device never paired shows "Added by <owner> · not verified" and a **Verify** action that
   runs ordinary pairing (`connectManual` + `beginPair`); pairing turns the member PAIRED and the label disappears.
 
@@ -188,7 +194,9 @@ no files (group attachments are paired-only in both directions), no 1:1 calls, n
 - The owner is still the single point of trust and failure. **A lying owner can vouch a key it controls** for a name it chooses; the
   "Added by" label and Verify mitigate this, they do not prevent it. Trust is one hop deep by design (a vouched member's vouches count
   for nothing).
-- A removed member keeps what they already received (no per-sender keys, no forward secrecy).
+- A removed member keeps what they already received (no per-sender keys, no forward secrecy). Removal is also **eventually consistent**:
+  a member that has not heard of it yet keeps sending to the removed device, and a modified removed client could read that until the
+  member converges from the owner or another member.
 - Vouched members get no files in either direction.
 - An already-established group **call** leg is not re-checked: a member removed mid-call stays connected until the call ends
   (pre-existing behaviour of call legs, unchanged by V2).

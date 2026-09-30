@@ -1,5 +1,73 @@
 # Error Log
 
+## ERROR-083 — Removing a group member only reached devices that were online; a removed device could still send and join calls
+
+### Date
+2026-09-30
+
+### Area
+Group chat / trust (ADR-044 V2 removal: `SignedGroups.onBundle`, `RealFlashChatRepository.reconcileGroupMembership`, `sendGroupText`,
+`isGroupPeerTrusted`, `CallCoordinator`), conversation screen
+
+### Symptoms
+None observed on a device. Found while answering "what happens to the other users when the owner removes someone" right after the owner
+Remove UI was built. Read from the code, then reproduced as unit tests before the fix:
+- **A member removed while offline never learned of it.** `reconcileGroupMembership` skips a peer whose row is inactive, and the
+  removed device's own roster (it still thinks it belongs) is ignored by every member (`sender-not-member`), so nothing ever told it.
+- **A removed (or left) device could keep sending.** `sendGroupText` had no local-membership guard: the row was stored `PENDING`, every
+  receiver dropped it, and the outbox retried it for good. The screen still showed a live composer and call buttons.
+- **A removed member that is still paired could ring and join group calls.** The call gate (`isGroupPeerTrusted`) is "paired, or a
+  vouched active member", and a paired peer passes it whether or not its roster row is active.
+- **A removed device kept the pins the group vouched** and re-installed them (`ensureVouches`) every time a bundle arrived, and it still
+  stored group messages from members that had not yet heard of the removal.
+
+### Root cause
+Removal was designed as "send the tombstone to the members that are online" plus convergence through session-up reconcile, and
+reconcile was written for the case of a live member that missed something. The removed device is the one participant that never
+qualified: it is inactive in every member's roster, so it is excluded from reconcile in both directions. Separately nothing checked
+the *local* device's own membership on the send, receive, call and pin paths; each path only asked whether the *other* party was a
+member.
+
+### Failed attempts
+- Sending the removed device a full roster on reconcile was rejected: it would hand a removed member the current roster (labels of
+  members it should no longer see change) for no reason; the owner's tombstone is all it needs and it verifies it itself.
+- Making the removed device forward its own tombstone (its reconcile sends a bundle to members that still list it) was rejected as a
+  fix: it works only if the removed device cooperates.
+
+### Working fix
+- `SignedGroups.removalNoticeFor(groupId, subjectId)`: charter + the subject's **owner-issued** tombstone, nothing else. Reconcile sends
+  it to an inactive v2 peer; a self-issued leave is never sent. No wire change (an ordinary bundle).
+- `SignedGroups.onBundle`: a device whose own row is inactive ignores every bundle except an invitation back (its own newer active
+  cert) and withdraws all vouches when it verifies its own tombstone; `ensureVouches` does nothing for an inactive device.
+- `isActiveGroupMember` and the group-media branch refuse when this device is itself out (`isRemovedHere`); `sendGroupText` and group
+  attachments refuse to store anything.
+- `FlashConversationUiState.selfMembership` (`Active` / `Left` / `Removed`) drives a notice in place of the composer, no call
+  buttons, and no Add members / Leave in the menu (UI-029 addendum 3).
+- New `RealFlashChatRepository.isGroupCallPeer(groupId, peer)` = `isActiveGroupMember` (trusted in the group, an active roster row, and
+  this device still a member); both hosts hand it to `CallCoordinator`. `isGroupPeerTrusted` is unchanged, so messages, receipts and
+  bundles keep their existing gates.
+
+### Known limits kept on purpose
+Removal is eventually consistent: a member that has not yet heard of it keeps sending to the removed device (and the removed device,
+if modified, can read that) until it converges from the owner or any member. Without per-sender keys nothing can prevent that. An
+established call leg is not re-checked. A removed device that never reconnects to any member never learns it was removed.
+
+### Verification
+- Seven new `SignedGroupsTest` cases (removed while offline, leave not notified, send/state/calls, left state, call peer, stale member
+  vs removed device, re-add) plus `FlashGroupSelfNoticeMathTest` and a menu case. Each fix was reverted in turn and the intended test
+  failed (no notice; inbound not dropped; pins re-installed / not revoked; send guard; call gate; state).
+- messaging 319 host / 158 jvm, ui:chat 298, calling 133, desktop 102; `:app` and `:sample:consumer` compile.
+- **Not verified on a device:** TEST-BACKLOG **GT-03** steps 7 and 9-11.
+
+### Related files
+- `core/messaging/.../SignedGroups.kt`, `RealFlashChatRepository.kt`, `model/FlashMessagingModels.kt`
+- `ui/chat/.../FlashGroupSelfNotice.kt`, `FlashConversationScreen.kt`, `FlashConversationMenu.kt`
+- `app/.../DiscoveryEngineHolder.kt`, `desktop/.../DesktopEngine.kt` (call gate wiring)
+- `docs/ui/group-ui.md` (addendum 3), ADR-044, `docs/security.md` section 9
+
+### Status
+RESOLVED in code and unit tests (2026-09-30). Device check GT-03: TODO.
+
 ## ERROR-082 — A relayed group message loses its author: every synced message is stored as sent by the relaying peer (F-9)
 
 ### Date

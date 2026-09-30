@@ -913,41 +913,69 @@ This section must be updated by the AI as implementation progresses.
 
 ## Current Phase
 
-**Adaptive UI — phone → tablet → desktop: AD-1…AD-6 implemented (fully or in part) on 2026-09-18; AD-7 partial; AD-8 not started; none device-verified** (status re-checked against the code 2026-09-24; per-phase detail in `docs/migration/ADAPTIVE-UI-PLAN.md` §2.3). Premium chat UI component sequence is largely implemented (UI-001–UI-050); LAN MVP networking continues in parallel. Authoritative live status: `logs/handoff.md` + `docs/ui/ui-research-index.md`; authoritative plan for sizing/resize/pane/layout work: `docs/migration/ADAPTIVE-UI-PLAN.md` (AD-D1's desktop-scale decision is recorded in its §5.1: OS scale baseline + a desktop-only UI-scale, Android's look preserved or improved).
+**Group trust, discovery resilience and the member-removal ripple: built and unit-tested 2026-09-29/30, none of it device-verified.**
+ADR-044 V0–V2 (signed v2 groups, vouched introductions so a group of up to 20 needs each member paired with the owner only, the owner's
+Remove action, and the removal-ripple fixes: a device removed while offline is told when a member reconnects, a removed or left device
+cannot send and sees a notice instead of the composer, and the call gate needs an active roster row), ADR-057 (session ceiling 24) and
+ADR-047 DR1–DR3 + DR5 are implemented. Every device check they owe is listed in `docs/testing/TEST-BACKLOG.md` (GT-01…GT-03, SC-01/02,
+DR-01…DR-04, MIG-01/02, MEAS-*, older CALL-/GRP-/PC-/OLD- items). **Postponed by the owner** (ADR-056, `docs/FUTURE-OPTIMIZATION.md`,
+do not start unasked): DR4 QR, DR6 BLE, DR7 Wi-Fi Direct, FO-04 group attachment fan-out, the scale measurement (PC6 / MEAS-02, ADR-044
+V3) and group size 32.
+
+**Adaptive UI — phone → tablet → desktop:** AD-1…AD-6 implemented (fully or in part) on 2026-09-18; AD-7 partial; AD-8 not started; none
+device-verified (status re-checked against the code 2026-09-24; per-phase detail in `docs/migration/ADAPTIVE-UI-PLAN.md` §2.3). Premium
+chat UI components UI-001–UI-050 are implemented except the UI-045 quality gate (it runs after device verification). Authoritative live
+status: `logs/handoff.md` + `docs/ui/ui-research-index.md`; authoritative plan for sizing/resize/pane/layout work:
+`docs/migration/ADAPTIVE-UI-PLAN.md` (AD-D1's desktop-scale decision is recorded in its §5.1: OS scale baseline + a desktop-only UI-scale,
+Android's look preserved or improved).
 
 **Before any layout, sizing, density, resize or pane work, read `docs/migration/ADAPTIVE-UI-PLAN.md`.** It recorded three defects on 2026-09-15 (the desktop conversation rendered in the list pane; no desktop sizing policy existed, so everything looked phone-sized; Android had no adaptive layout). All three have code fixes since 2026-09-18 (AD-3, AD-1, AD-6) that still await owner device checks.
 
 ## Stable Features
 
-- Project architecture defined.
-- LAN transport concept defined.
-- Wi‑Fi Direct transport concept defined.
-- Shared transfer-engine architecture defined.
-- Persistent progress/documentation strategy defined.
-- Premium chat UI master plan and `docs/ui/` research structure (2026-08-19).
-- Provisional conversation UI scaffold (not accepted — pending UI-001+ research).
+"Stable" here means implemented and unit-tested; it is called device-verified only where a source says so.
+
+- Architecture: modular Kotlin Multiplatform libraries (`core:*`, `ui:*`) hosted by the Android app and a Windows desktop app that share one
+  engine, one chat repository and one UI (ADR-008, ADR-036; `docs/migration/`).
+- Transport and identity: a WebSocket mesh over TLS with pinned device identities; NSD/mDNS discovery plus the DR1–DR3/DR5 resilience
+  sources; one connection planner with ECO / STANDARD / BOOST modes (ADR-016, ADR-035, ADR-040, ADR-045, ADR-047, ADR-048, ADR-057).
+  Chat and chunked file transfers both ride that WebSocket mesh (ADR-016), not the raw TCP sketched in §3.
+- Pairing v2: commit-then-reveal code bound to both TLS identities (ADR-042). **Pairing, chat, calls, transfers and upgrading an install
+  with v1 pairings were device-verified by the owner on 2026-09-23** (`logs/handoff.md`).
+- Chunked transfer: framing v2, each chunk's SHA-256 verified before it is written, resume from the persisted done-set (`TransferEntity`),
+  multi-stream dispatch, pause / resume / retry (ADR-014, 015, 018, 019, 021). BLAKE3 was deferred on purpose (ADR-010): SHA-256 is the
+  documented hash. Pause intent does not survive process death (ADR-021 "revisit").
+- Chat and groups: text, replies, reactions, typing, drafts, file / image / video / voice attachments, a durable outbox; legacy groups
+  (≤ 6) and v2 signed groups (≤ 20: owner-signed roster, vouched members, owner remove); 1:1 and group voice / video calls; push-to-talk
+  (ADR-025, 030, 031, 032, 044).
+- Premium chat UI (`docs/ui/`, UI-001–UI-050 except UI-045) with the `Flash*` design system.
+- Documentation, logging and the device-test backlog strategy (§5–§10, §35).
 
 ## In Progress
 
-- Android Studio project implementation.
-- LAN discovery MVP and persistent `LanSession`.
-- Premium chat UI component sequence (`docs/ui/`) — UI-001–UI-050 largely implemented; device verification and the UI-045 quality gate remain.
+- **Owner device checks** of everything above (`docs/testing/TEST-BACKLOG.md`), then the UI-045 quality gate.
+- Open audit items (`docs/audit/2026-09-28-architectural-audit-and-tasks.md`): §3.6, §3.2, S6, §3.4, §3.7, §3.11.
 - **Adaptive UI upgrade** (`docs/migration/ADAPTIVE-UI-PLAN.md`): code exists for AD-1 (UI-scale density multiplier, persisted), AD-2 (automatic list-pane width + a 640×480 dp minimum window; **no draggable splitter**, AD-D3 still open), AD-3 (conversation in the detail pane on both hosts), AD-4 (keyboard shortcuts only; pointer idioms and AD-D5 selection not done), AD-5 (580 dp bubble cap), AD-6 (Android navigation rail ≥ 600 dp and two-pane layout; width measured manually, no fold-posture support; AD-D4 not formally answered) and part of AD-7 (desktop keeps the open conversation across tab switches). None of it is device-verified.
 
 ## Not Yet Implemented
 
-- Custom composer, selection, context menu, reactions (UI-007–UI-013) per research-first plan.
-- **Adaptive layout remainder:** draggable splitter (AD-2 / AD-D3), pointer idioms and desktop selection (AD-4 / AD-D5), fold posture (AD-6 / AD-D4), state continuity when a resize crosses a breakpoint (AD-7), and the adaptive quality gate (AD-8). See `docs/migration/ADAPTIVE-UI-PLAN.md`.
-- Complete LAN transfer.
-- Wi‑Fi Direct transfer path.
-- Pairing.
-- TLS integration.
-- Chunked transfer.
-- Resume.
-- BLAKE3/integrity verification.
-- Persistent transfer state.
-- Production background-transfer implementation.
-- Performance benchmarking (UI-042/UI-043).
+- **Wi‑Fi Direct transport.** No `WifiP2pManager` code exists (verified 2026-09-24); postponed (ADR-056, FO-03). The concept and the transport
+  abstraction only.
+- **Adaptive layout remainder:** draggable splitter (AD-2 / AD-D3), pointer idioms and desktop selection (AD-4 / AD-D5), fold posture
+  (AD-6 / AD-D4), state continuity when a resize crosses a breakpoint (AD-7), and the adaptive quality gate (AD-8). See
+  `docs/migration/ADAPTIVE-UI-PLAN.md`.
+- **Device verification** (not missing code): the groups / discovery-resilience / removal work above, the adaptive UI, and the premium UI
+  quality gate UI-045.
+- **Performance benchmarking on devices:** EXP-001…EXP-017 are individual findings, not the benchmark matrix of §23; the MEAS-* tests
+  (chunk size, streams, LAN vs hotspot, thermals) and the UI-042/UI-043 device numbers are owed, and the scale measurement is postponed.
+- **Background transfer as a supported claim:** a foreground service (`connectedDevice|dataSync`) and a 15-minute WorkManager wake-up
+  exist (ADR-041), but background liveness differs by handset (EXP-002: Samsung 90 %, Infinix 4 %; Transsion's freezer), so do not claim
+  it is fully supported.
+- **Group gaps, accepted or open:** no per-sender keys, so a removed member keeps what it already received and can read what a member that
+  has not yet heard of the removal sends; a lying owner can vouch a key it controls; vouched members get no files (FO-04); a call leg
+  already established is not re-checked after a removal; a non-owner in a v2 group still sees "Add members" and it fails silently;
+  legacy groups keep the forgeable membership of ERROR-082 by the owner's decision.
+- **Persisted pause intent** for transfers, and BLAKE3 (deferred until a benchmark asks for it).
 
 ## Known Risks
 

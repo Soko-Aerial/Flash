@@ -1,5 +1,24 @@
 # Current Handoff
 
+## 2026-09-30 — Removal ripple fixed (ERROR-083, `1701fc3`); AGENTS.md section 29 rewritten; GT-03 has three new steps
+- **Done:** removing a v2 member now reaches a device that was offline (a member sends it the owner's tombstone on reconnect); a device
+  that is out (removed or left) cannot send, takes no group traffic, withdraws the group's vouches and shows a notice instead of the
+  composer (UI-029 addendum 3, `FlashConversationUiState.selfMembership`); group calls use `isGroupCallPeer` (active roster row), so a
+  removed member that is still paired cannot ring or join. No wire change. Also: AGENTS.md section 29 was stale (it listed pairing, TLS,
+  chunked transfer and resume as not implemented) and now matches the code and docs.
+- **Verified:** messaging 319 host / 158 jvm, ui:chat 298, calling 133, desktop 102; app and sample compile; each fix mutation-checked.
+  **Not verified on a device:** GT-03 steps 7, 9, 10, 11.
+- **Status answers:** DR1/DR2/DR3/DR5 built, unit-tested, device checks DR-01...DR-04 owed; DR0 (MEAS-07) not run; ADR-047 PROPOSED;
+  DR4/DR6/DR7 postponed. ADR-044: V0, V1a, V1, V2 built, V3 postponed (FO-05); there is no V4.
+- **Known limits (accepted):** removal is eventually consistent (a member that has not converged still sends to the removed device);
+  no per-sender keys; an established call leg is not re-checked; non-owner "Add members" fails silently in a v2 group.
+- **Recommended next task:** GT-03 on real devices with the owner, or the open audit items (3.6, 3.2, S6, 3.4, 3.7, 3.11).
+- Files most relevant: `core/messaging/.../SignedGroups.kt` (`removalNoticeFor`, `onBundle`), `RealFlashChatRepository.kt`
+  (`reconcileGroupMembership`, `isRemovedHere`, `isGroupCallPeer`, `selfMembershipOf`), `ui/chat/.../FlashGroupSelfNotice.kt`.
+- Owed device tests: GT-03, GT-02, GT-01, SC-01, SC-02, DR-01...DR-04, MIG-01, MIG-02, MEAS-07, MEAS-01, MEAS-08, older items.
+- Postponed by the owner, do not start: DR4 (QR), DR6 (BLE), DR7 (Wi-Fi Direct), FO-04 (attachment fan-out), MEAS-02/PC6 and group size 32 (FO-05).
+
+
 ## 2026-09-30 — Vouched trust and groups of 20 built (ADR-044 V2, `9674ab0` + docs); device check GT-03 owed
 - **Done:** in a v2 group members need to be paired with the **owner** only; the owner's signed cert is an introduction that installs a
   vouched pin in both trust stores (Android `vouch_<id>`, desktop `vouch.<id>`). A vouched member can chat in that group and join its
