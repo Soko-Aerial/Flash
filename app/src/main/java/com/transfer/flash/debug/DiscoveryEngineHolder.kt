@@ -1015,6 +1015,15 @@ object DiscoveryEngineHolder {
             groupMemberDao = db.groupMemberDao(),
             groupDeliveryDao = db.groupDeliveryDao(),
             runInTransaction = { block -> db.runInWriteTransaction(block) },
+            // ADR-044 V1: signed groups. The port signs with the identity key the TLS certificate presents; the
+            // pin and the session's level and key are what an owner checks before certifying an invitee.
+            groupCrypto = com.transfer.flash.core.engine.group.FlashGroupCrypto(crypto),
+            pinnedFingerprint = { peerId -> trustStore.getPin(FlashDeviceId(peerId)) },
+            peerGroupProtocol = { peerId -> networkImpl.activeSessions.value[FlashDeviceId(peerId)]?.peer?.groupProtocol ?: 1 },
+            peerIdentityKey = { peerId ->
+                networkImpl.activeSessions.value[FlashDeviceId(peerId)]?.peer?.identityKey
+                    ?.let { com.transfer.flash.core.common.protocol.Base64.decode(it) }
+            },
             isTrustedPeer = { peerId -> trustStore.isTrusted(peerId) },
             isChannelEncrypted = { peerId -> trustStore.getSessionKey(peerId) != null },
             // Online indicator: a peer is online iff it has a live session. activeSessions is keyed

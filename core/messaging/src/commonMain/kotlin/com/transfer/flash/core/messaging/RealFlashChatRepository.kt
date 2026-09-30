@@ -28,6 +28,7 @@ import com.transfer.flash.core.messaging.model.FlashQuotedReplyUi
 import com.transfer.flash.core.messaging.model.FlashReaction
 import com.transfer.flash.core.messaging.model.FlashVoiceAttachmentUi
 import com.transfer.flash.core.messaging.protocol.ChatWireFrame
+import com.transfer.flash.core.messaging.protocol.GroupCrypto
 import com.transfer.flash.core.messaging.protocol.GroupMembershipVersion
 import com.transfer.flash.core.messaging.protocol.GroupPolicy
 import com.transfer.flash.core.messaging.protocol.GroupSyncCursor
@@ -210,6 +211,17 @@ public class RealFlashChatRepository(
      * the inline default suits the fake-DAO tests, which have no database to roll back.
      */
     private val runInTransaction: suspend (block: suspend () -> Unit) -> Unit = { it() },
+    /**
+     * ADR-044 V1: this device's signing identity. Null keeps every group legacy and makes the device
+     * ignore v2 frames, which is what tests and hosts without a crypto identity get.
+     */
+    private val groupCrypto: GroupCrypto? = null,
+    /** The trust store's pinned fingerprint (hex) for a device, or null when nothing is pinned. */
+    private val pinnedFingerprint: (String) -> String? = { null },
+    /** The group protocol level a peer advertised on its live session; 1 when unknown or offline. */
+    private val peerGroupProtocol: (String) -> Int = { 1 },
+    /** A peer's identity key (SPKI) from its live TLS session, or null; checked against the pin before use. */
+    private val peerIdentityKey: (String) -> ByteArray? = { null },
 ) : FlashChatRepository {
 
     private val _chatListState = MutableStateFlow(FlashChatListUiState())
@@ -222,6 +234,27 @@ public class RealFlashChatRepository(
      * opened cold from the chat list is corrected by the combine's first Room emission.
      */
     private val groupTitleCache = SyncMap<String, String>()
+
+    /** The v2 group engine (ADR-044 V1); null when the host gave no crypto identity or group storage. */
+    private val signedGroups: SignedGroups? =
+        if (groupCrypto != null && groupMemberDao != null) {
+            SignedGroups(
+                localDeviceId = localDeviceId,
+                localDisplayName = localDisplayName,
+                crypto = groupCrypto,
+                conversationDao = conversationDao,
+                members = groupMemberDao,
+                isPaired = isTrustedPeer,
+                pinnedFingerprint = pinnedFingerprint,
+                nowMs = { timeSource.nowMs() },
+                newId = { UuidIdGenerator.newId() },
+            )
+        } else {
+            null
+        }
+
+    private suspend fun isV2Group(groupId: String): Boolean =
+        conversationDao.get(groupId)?.groupProto == GroupPolicy.V2_PROTOCOL
 
     /**
      * F3: this device's performance tier as seen by the sync protocol — it paces pushes TO us
@@ -810,6 +843,12 @@ public class RealFlashChatRepository(
         }
         val members = groupMemberDao
             ?: return FlashResult.Failure(FlashError.Unknown("Group storage unavailable"))
+        // ADR-044 V1: a new group is v2 when this device can sign and every invitee advertised the
+        // level on its live session; otherwise it is created exactly as before (legacy).
+        val signed = signedGroups
+        if (signed != null && memberIds.all { peerGroupProtocol(it) >= GroupPolicy.V2_PROTOCOL }) {
+            return createV2GroupLocked(signed, groupName, memberIds)
+        }
         val now = timeSource.nowMs()
         val groupId = UuidIdGenerator.newId()
         val operationId = UuidIdGenerator.newId()
@@ -863,6 +902,7 @@ public class RealFlashChatRepository(
         }
         val members = groupMemberDao
             ?: return FlashResult.Failure(FlashError.Unknown("Group storage unavailable"))
+        if (isV2Group(groupId)) return addV2MembersLocked(members, groupId, memberIds)
         val existing = members.activeMembers(groupId)
         if (existing.none { it.deviceId == localDeviceId }) {
             return FlashResult.Failure(FlashError.Unknown("You are not an active group member"))
@@ -925,6 +965,16 @@ public class RealFlashChatRepository(
     private suspend fun leaveGroupLocked(groupId: String): FlashResult<Unit> {
         val members = groupMemberDao
             ?: return FlashResult.Failure(FlashError.Unknown("Group storage unavailable"))
+        if (isV2Group(groupId)) {
+            val signed = signedGroups
+                ?: return FlashResult.Failure(FlashError.Unknown("Signed groups are unavailable on this device"))
+            val bundle = signed.leave(groupId)
+                ?: return FlashResult.Failure(FlashError.Unknown("Unknown group"))
+            members.activeMembers(groupId).filter { it.deviceId != localDeviceId }.forEach { target ->
+                groupTransportSink?.send(target.deviceId, bundle)
+            }
+            return FlashResult.Success(Unit)
+        }
         val current = members.member(groupId, localDeviceId)
             ?: return FlashResult.Failure(FlashError.Unknown("Unknown group"))
         val now = timeSource.nowMs()
@@ -935,6 +985,71 @@ public class RealFlashChatRepository(
             groupTransportSink?.send(target.deviceId, frame)
         }
         return FlashResult.Success(Unit)
+    }
+
+    private suspend fun createV2GroupLocked(
+        signed: SignedGroups,
+        groupName: String,
+        memberIds: Set<String>,
+    ): FlashResult<String> {
+        val keys = inviteeKeys(signed, memberIds)
+            ?: return FlashResult.Failure(FlashError.Unknown(V2_KEY_UNAVAILABLE))
+        val created = signed.create(groupName, keys) { peerNameResolver(it) ?: it }
+        groupTitleCache[created.groupId] = groupName
+        FlashLog.i("CHAT", "Group v2 created: group=${created.groupId} members=${memberIds.size + 1}")
+        memberIds.forEach { groupTransportSink?.send(it, created.bundle) }
+        return FlashResult.Success(created.groupId)
+    }
+
+    /** Owner-only add for a v2 group: changed certs to existing members, the full set to newcomers. */
+    private suspend fun addV2MembersLocked(
+        members: GroupMemberDao,
+        groupId: String,
+        memberIds: Set<String>,
+    ): FlashResult<Unit> {
+        val signed = signedGroups
+            ?: return FlashResult.Failure(FlashError.Unknown("Signed groups are unavailable on this device"))
+        if (conversationDao.get(groupId)?.groupCreatedBy != localDeviceId) {
+            return FlashResult.Failure(FlashError.Unknown("Only the group owner can add members"))
+        }
+        val existing = members.activeMembers(groupId)
+        if (existing.none { it.deviceId == localDeviceId }) {
+            return FlashResult.Failure(FlashError.Unknown("You are not an active group member"))
+        }
+        val newcomers = memberIds.filter { id -> existing.none { it.deviceId == id } }.toSet()
+        if (newcomers.isEmpty()) return FlashResult.Success(Unit)
+        if (existing.size + newcomers.size > GroupPolicy.MAX_MEMBERS_V2) {
+            return FlashResult.Failure(FlashError.Unknown("Groups support at most ${GroupPolicy.MAX_MEMBERS_V2} members"))
+        }
+        if (newcomers.any { peerGroupProtocol(it) < GroupPolicy.V2_PROTOCOL }) {
+            return FlashResult.Failure(FlashError.Unknown("Update Flash on that device before adding it to this group"))
+        }
+        val keys = inviteeKeys(signed, newcomers)
+            ?: return FlashResult.Failure(FlashError.Unknown(V2_KEY_UNAVAILABLE))
+        val added = signed.addMembers(groupId, keys) { peerNameResolver(it) ?: it }
+            ?: return FlashResult.Success(Unit)
+        (members.activeMembers(groupId).map { it.deviceId } - localDeviceId).forEach { target ->
+            groupTransportSink?.send(target, if (target in newcomers) added.full else added.changed)
+        }
+        return FlashResult.Success(Unit)
+    }
+
+    /**
+     * Each invitee's key from its live session, or null unless every one is present and is the key
+     * the trust store pinned for that device. The owner signs a cert over the key, so it never
+     * signs one it cannot tie to a pin.
+     */
+    private fun inviteeKeys(signed: SignedGroups, memberIds: Collection<String>): Map<String, ByteArray>? {
+        val keys = HashMap<String, ByteArray>()
+        for (id in memberIds) {
+            val key = peerIdentityKey(id)?.takeIf { it.isNotEmpty() && signed.keyMatchesPin(id, it) }
+            if (key == null) {
+                FlashLog.w("CHAT", "Group v2: no verified key for $id (offline, unencrypted session, or the key does not match its pin)")
+                return null
+            }
+            keys[id] = key
+        }
+        return keys
     }
 
     override suspend fun groupMembers(groupId: String): List<FlashGroupMemberUi> =
@@ -979,6 +1094,18 @@ public class RealFlashChatRepository(
         val recipients = members.activeMembers(conversation.id)
             .filter { it.deviceId != localDeviceId }
         if (recipients.isEmpty()) return
+        // v2: the signature is made once, here, and stored on the row, because the row is later
+        // relayed by offline sync and the receiver has to be able to verify it.
+        val signature = if (conversation.groupProto == GroupPolicy.V2_PROTOCOL) {
+            val signed = signedGroups
+            if (signed == null) {
+                FlashLog.w("CHAT", "Group message not sent: ${conversation.id} is a signed group but this device cannot sign")
+                return
+            }
+            signed.signMessage(conversation.id, localId, now, replyToId, replyToPreview, text)
+        } else {
+            null
+        }
         messageDao.insert(
             MessageEntity(
                 localId = localId,
@@ -990,6 +1117,7 @@ public class RealFlashChatRepository(
                 status = "PENDING",
                 replyToId = replyToId,
                 replyToPreview = replyToPreview,
+                groupSig = signature,
             ),
         )
         deliveries.insertAll(
@@ -1370,6 +1498,12 @@ public class RealFlashChatRepository(
     public suspend fun onInboundGroupWireFrame(peerDeviceId: String, frame: GroupWireFrame) {
         if (peerDeviceId != frame.from || !isTrustedPeer(peerDeviceId)) return
         val members = groupMemberDao ?: return
+        if (frame is GroupWireFrame.Membership && GroupPolicy.isV2GroupId(frame.groupId)) {
+            // ADR-044 V1 (D1): the `g2-` namespace belongs to signed groups. A legacy frame for it can
+            // only be an attempt to pre-empt or overwrite one.
+            FlashLog.w("CHAT", "SECURITY: legacy group membership frame dropped for v2 id ${frame.groupId} (from ${frame.from})")
+            return
+        }
         when (frame) {
             is GroupWireFrame.Create -> {
                 // ADR-044 V1a (F-1): a group id is created once. A Create for an id this device
@@ -1507,23 +1641,39 @@ public class RealFlashChatRepository(
                 if (!isActiveTrustedMember(members, frame.groupId, frame.from) ||
                     frame.text.length > GroupPolicy.MAX_MESSAGE_TEXT_LENGTH
                 ) return
+                // v2: the author must sign the message, and the name shown is the roster's signed label.
+                var senderName: String? = frame.senderName
+                var groupSig: String? = null
+                if (isV2Group(frame.groupId)) {
+                    val label = signedGroups?.verifiedAuthorLabel(
+                        frame.groupId, frame.from, frame.messageId, frame.sentAt,
+                        frame.replyToId, frame.replyToPreview, frame.text, frame.signature,
+                    )
+                    if (label == null) {
+                        FlashLog.w("CHAT", "SECURITY: group message dropped, no valid signature (group=${frame.groupId} msg=${frame.messageId} from=${frame.from})")
+                        return
+                    }
+                    senderName = label
+                    groupSig = frame.signature
+                }
                 val inserted = messageDao.insert(
                     MessageEntity(
                         localId = frame.messageId,
                         conversationId = frame.groupId,
                         senderId = frame.from,
-                        senderName = frame.senderName,
+                        senderName = senderName,
                         text = frame.text,
                         sentAt = frame.sentAt,
                         status = "DELIVERED",
                         replyToId = frame.replyToId,
                         replyToPreview = frame.replyToPreview,
+                        groupSig = groupSig,
                     ),
                 )
                 if (inserted != -1L) {
                     onInboundTextMessageWithGroupTitle(
                         frame.groupId,
-                        frame.senderName,
+                        senderName,
                         frame.text,
                         conversationDao.get(frame.groupId)?.title?.ifBlank { null },
                     )
@@ -1560,9 +1710,19 @@ public class RealFlashChatRepository(
                 outboxDao.delete(frame.messageId)
             }
             is GroupWireFrame.Bundle -> {
-                // ADR-044 V1 slice S2: the frame decodes, but the v2 receive path lands in S4. Until
-                // then a bundle is dropped exactly like an unknown action.
-                FlashLog.w("CHAT", "Group bundle ignored: v2 groups are not handled yet (group ${frame.groupId}, from ${frame.from})")
+                val signed = signedGroups
+                if (signed == null) {
+                    FlashLog.w("CHAT", "Group bundle ignored: signed groups are not enabled on this device (group ${frame.groupId})")
+                    return
+                }
+                val outcome = signed.onBundle(peerDeviceId, frame)
+                if (outcome is SignedGroups.BundleOutcome.Applied && outcome.joined) {
+                    FlashLog.i("CHAT", "Group v2 joined: group=${frame.groupId} owner=${frame.charter.ownerId} from=$peerDeviceId")
+                    groupTitleCache[frame.groupId] = frame.charter.name
+                    // The group is new here and holds no messages, and F3 sync only fires on a
+                    // session-up edge: ask for history now, as a legacy bootstrap does.
+                    requestGroupCatchUp(frame.groupId)
+                }
             }
             is GroupWireFrame.Sync -> {
                 if (!isActiveTrustedMember(members, frame.groupId, frame.from)) return
@@ -1738,6 +1898,11 @@ public class RealFlashChatRepository(
             for (groupId in groupIds) {
                 val peer = members.member(groupId, peerDeviceId) ?: continue
                 if (!peer.isActive) continue
+                if (isV2Group(groupId)) {
+                    // A v2 group reconciles with its signed roster (charter + every cert, tombstones included).
+                    signedGroups?.bundleFor(groupId)?.let { groupTransportSink?.send(peerDeviceId, it) }
+                    continue
+                }
                 val state = buildStateFrame(groupId) ?: continue
                 groupTransportSink?.send(peerDeviceId, state)
             }
@@ -1848,11 +2013,14 @@ public class RealFlashChatRepository(
      */
     private suspend fun handleSyncRequest(frame: GroupWireFrame.SyncRequest) {
         val (maxPerSecond, maxTotal) = GroupPolicy.syncLimits(frame.tier)
+        // A v2 group only relays rows that carry their author's signature; an unsigned row (an
+        // attachment) could not be verified by the receiver.
+        val v2Group = isV2Group(frame.groupId)
         val owned = GroupSyncPolicy.ownedMessages(
             messages = messageDao.historyAfter(
                 frame.groupId, frame.sinceSentAt, frame.sinceMessageId,
                 maxTotal.coerceAtMost(GroupPolicy.MAX_PENDING_SYNC_MESSAGES),
-            ),
+            ).filter { !v2Group || it.groupSig != null },
             cursor = GroupSyncCursor(frame.sinceSentAt, frame.sinceMessageId),
             maxTotal = maxTotal,
             nowMs = timeSource.nowMs(),
@@ -1949,6 +2117,7 @@ public class RealFlashChatRepository(
         text = text,
         replyToId = replyToId,
         replyToPreview = replyToPreview,
+        signature = groupSig,
     )
 
     /** Requester side: an elected holder pushed a message — ingest idempotently by msgId. */
@@ -1962,23 +2131,40 @@ public class RealFlashChatRepository(
             return
         }
         val message = frame.message
+        // v2: the pusher is only a relay. The message counts only if its named author signed it and is
+        // an active member, and the name stored is that member's signed label (fixes F-9 for v2).
+        var senderName: String? = message.senderName
+        var groupSig: String? = null
+        if (isV2Group(frame.groupId)) {
+            val label = signedGroups?.verifiedAuthorLabel(
+                frame.groupId, message.from, message.messageId, message.sentAt,
+                message.replyToId, message.replyToPreview, message.text, message.signature,
+            )
+            if (label == null) {
+                FlashLog.w("CHAT", "SECURITY: group SyncPush message dropped, no valid signature (group=${frame.groupId} msg=${message.messageId} author=${message.from} relay=${frame.from})")
+                return
+            }
+            senderName = label
+            groupSig = message.signature
+        }
         val inserted = messageDao.insert(
             MessageEntity(
                 localId = message.messageId,
                 conversationId = frame.groupId,
                 senderId = message.from,
-                senderName = message.senderName,
+                senderName = senderName,
                 text = message.text,
                 sentAt = message.sentAt,
                 status = "DELIVERED",
                 replyToId = message.replyToId,
                 replyToPreview = message.replyToPreview,
+                groupSig = groupSig,
             ),
         )
         if (inserted != -1L) {
             onInboundTextMessageWithGroupTitle(
                 frame.groupId,
-                message.senderName,
+                senderName,
                 message.text,
                 conversationDao.get(frame.groupId)?.title?.ifBlank { null },
             )
@@ -2345,6 +2531,7 @@ public class RealFlashChatRepository(
             text = message.text,
             replyToId = message.replyToId,
             replyToPreview = message.replyToPreview,
+            signature = message.groupSig,
         )
         val results = coroutineScope {
             pending.map { delivery ->
@@ -2977,6 +3164,10 @@ public class RealFlashChatRepository(
     }
 
     private companion object {
+        /** Why a v2 group could not be created or extended: the invitee's key is not verifiably available. */
+        const val V2_KEY_UNAVAILABLE: String =
+            "Connect to every invited device and try again (its security key could not be verified)"
+
         /**
          * Neutral conversation state: no thread is open (ERROR-034).
          *
