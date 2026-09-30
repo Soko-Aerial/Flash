@@ -2501,6 +2501,46 @@ class RealFlashChatRepositoryTest {
     }
 
     @Test
+    fun `a session-up pass that pushes a row's deadline out does not lose the retry`() = runBlocking {
+        // Chat/group sync audit, step 5 (found by a flaking desktop test). The drain loop kept ONE deadline, the
+        // earliest. A session-up pass that resent the row moved its deadline later, the older one fired with
+        // nothing due, was dropped, and the newer one had never been stored: the loop then slept its 60 s idle net
+        // while a receiver that had dropped the frame (it did not know the group yet) waited for a retry.
+        val memberDao = FakeGroupMemberDao()
+        val deliveryDao = FakeGroupDeliveryDao()
+        val outboxDao = FakeOutboxDao()
+        val writes = java.util.concurrent.atomic.AtomicInteger(0)
+        val repository = newRepository(
+            outboxDao = outboxDao,
+            groupMemberDao = memberDao,
+            groupDeliveryDao = deliveryDao,
+            trustedPeers = setOf("peer-a"),
+            groupSink = { _, frame ->
+                if (frame is GroupWireFrame.Message) writes.incrementAndGet()
+                true
+            },
+        )
+        val groupId = (repository.createGroup("Team", setOf("peer-a")) as FlashResult.Success).value
+        repository.openConversation(groupId)
+        repository.sendText("hello team")
+        val first = System.currentTimeMillis() + 3_000
+        while (writes.get() < 1 && System.currentTimeMillis() < first) kotlinx.coroutines.delay(10)
+        assertEquals("the first send happened", 1, writes.get())
+
+        // Inside the first 1 s backoff window the member's session comes up: one more send, and this row's deadline
+        // moves to about 1.4 s while the old 1 s one is still pending.
+        kotlinx.coroutines.delay(400)
+        repository.notifyPeerSessionUp("peer-a")
+
+        val deadline = System.currentTimeMillis() + 6_000
+        while (writes.get() < 3 && System.currentTimeMillis() < deadline) kotlinx.coroutines.delay(25)
+        assertTrue(
+            "the row must still be retried on the ladder after the session-up pass; got ${writes.get()} write(s)",
+            writes.get() >= 3,
+        )
+    }
+
+    @Test
     fun `a group receipt that names a message with no delivery rows changes nothing`() = runBlocking {
         // Chat/group sync audit, step 2: only a message this device wrote to a group has delivery rows. A member
         // that names some other id (here a direct message still waiting for its own acknowledgement) must not be able

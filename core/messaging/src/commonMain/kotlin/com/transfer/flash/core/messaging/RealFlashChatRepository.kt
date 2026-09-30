@@ -319,6 +319,17 @@ public class RealFlashChatRepository(
     @Volatile
     private var outboxNextDueAt: Long? = null
 
+    /**
+     * Every retry deadline a drain pass has scheduled and not yet seen pass; [outboxNextDueAt] is the smallest.
+     *
+     * A single stored "earliest" was not enough: a pass that resends a row (a session-up pass does, after
+     * resetting its attempts) moves that row's deadline LATER than one already pending, the older deadline then
+     * fires with nothing due and is dropped, and the later one was never kept, so the loop slept its idle net
+     * while the row waited. Touched only inside [drainOutboxOnce], under [drainMutex].
+     * MUST be declared above the init block, for the reason recorded on [drainMutex].
+     */
+    private val outboxDeadlines = mutableListOf<Long>()
+
     // Ephemeral in-memory typing state: conversationId -> (memberId -> memberName) currently typing.
     // Mirrored into [typingFlow] so the conversation UI can observe it (#11). Never persisted.
     private val typingStates = SyncMap<String, SyncMap<String, String>>()
@@ -2676,7 +2687,7 @@ public class RealFlashChatRepository(
         // absent direct sink suppress an otherwise deliverable group outbox.
         if (transportSink == null && groupTransportSink == null) return@withLock false
         val items = outboxDao.dueForDelivery(now, limit = OUTBOX_BATCH_LIMIT)
-        var earliestScheduled: Long? = null
+        val scheduled = mutableListOf<Long>()
         for (item in items) {
             // The outbox row stores only the payload, so recover the conversationId, sender name
             // and original sentAt from the durable message row. Reconstructing the frame from
@@ -2705,7 +2716,7 @@ public class RealFlashChatRepository(
                 // The group branch re-arms on the same ladder as the direct one and must tell the loop so,
                 // or its retry waits for the idle net (chat/group sync audit, step 1).
                 drainGroupMessage(item, message, now, queuedForMs)?.let { nextAttemptAt ->
-                    earliestScheduled = earliestScheduled?.coerceAtMost(nextAttemptAt) ?: nextAttemptAt
+                    scheduled += nextAttemptAt
                 }
                 continue
             }
@@ -2758,14 +2769,17 @@ public class RealFlashChatRepository(
             // receipt that clears this row.
             val nextAttemptAt = now + backoffDelayMs(item.attempts + 1)
             outboxDao.rescheduleAttempt(item.localId, nextAttemptAt)
-            earliestScheduled = earliestScheduled?.coerceAtMost(nextAttemptAt) ?: nextAttemptAt
+            scheduled += nextAttemptAt
         }
-        // Wake for the earliest deadline still ahead of us, which is not necessarily the earliest
-        // this pass set: a row that was not yet due carries a deadline this pass never saw, and
-        // overwriting it would sleep straight past that row. A deadline already in the past belongs
-        // to a row that has since been acknowledged and deleted, so it is dropped here rather than
-        // left to pin the loop at [OutboxDrainSchedule.MIN_WAIT_MS] forever.
-        outboxNextDueAt = listOfNotNull(outboxNextDueAt?.takeIf { it > now }, earliestScheduled).minOrNull()
+        // Wake for the earliest deadline still ahead of us, which is not necessarily one this pass set: a row
+        // that was not yet due carries a deadline this pass never saw, and forgetting it would sleep straight
+        // past that row. So every future deadline is kept, not only the earliest (see [outboxDeadlines]). One
+        // already in the past belongs to a row that was acknowledged and deleted, or that this or a later pass
+        // has rescheduled further out; it is dropped here rather than left to pin the loop at
+        // [OutboxDrainSchedule.MIN_WAIT_MS] forever.
+        outboxDeadlines.removeAll { it <= now }
+        outboxDeadlines.addAll(scheduled)
+        outboxNextDueAt = outboxDeadlines.minOrNull()
         items.size >= OUTBOX_BATCH_LIMIT
     }
 
