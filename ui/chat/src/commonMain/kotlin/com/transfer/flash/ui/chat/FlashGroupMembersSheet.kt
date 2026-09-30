@@ -2,6 +2,7 @@ package com.transfer.flash.ui.chat
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,6 +22,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -76,6 +78,19 @@ object FlashGroupMembersMath {
 
     /** Rendered-row count cap helper. */
     fun visibleRowCount(requested: Int, max: Int = MAX_VISIBLE_ROWS): Int = requested.coerceIn(0, max)
+
+    /**
+     * "Added by Ada · not verified" for a member the group owner introduced (ADR-044 V2); null for a paired member and
+     * for yourself, so no line is drawn. A blank name falls back to "the group owner".
+     */
+    fun introducedByLabel(introducedBy: String?): String? =
+        introducedBy?.let { "Added by ${ownerName(it)} · not verified" }
+
+    /** The spoken form of [introducedByLabel], appended to the row's accessibility description. */
+    fun introducedByDescription(introducedBy: String?): String? =
+        introducedBy?.let { "added by ${ownerName(it)}, not verified" }
+
+    private fun ownerName(name: String): String = name.ifBlank { "the group owner" }
 }
 
 /**
@@ -87,6 +102,11 @@ fun FlashGroupMembersSheet(
     members: List<FlashGroupMemberUi>,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
+    /**
+     * ADR-044 V2: verify a member the owner introduced by running ordinary pairing with them. Null hides the action
+     * (previews, hosts without pairing); it is only ever offered for a member that has `introducedBy`.
+     */
+    onVerifyMember: ((FlashGroupMemberUi) -> Unit)? = null,
 ) {
     val colors = FlashTheme.colors
     val sorted = remember(members) { FlashGroupMembersMath.sortMembers(members) }
@@ -156,53 +176,88 @@ fun FlashGroupMembersSheet(
                             .background(colors.borderSubtle),
                     )
                 }
-                FlashMemberRow(member = member)
+                FlashMemberRow(
+                    member = member,
+                    onVerify = onVerifyMember?.takeIf { member.introducedBy != null }?.let { verify -> { verify(member) } },
+                )
             }
         }
     }
 }
 
-/** Single member row: avatar + online dot, name/transport subtitle, transport glyph, role badge. */
+/**
+ * Single member row: avatar + online dot, name/transport subtitle, transport glyph, role badge, and for a member the
+ * owner introduced an "Added by" line and a Verify action. The Verify button sits outside the merged description so
+ * it stays a separate accessibility target.
+ */
 @Composable
-private fun FlashMemberRow(member: FlashGroupMemberUi) {
+private fun FlashMemberRow(member: FlashGroupMemberUi, onVerify: (() -> Unit)?) {
     val colors = FlashTheme.colors
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .semantics(mergeDescendants = true) {
-                contentDescription = memberRowDescription(member)
-            }
             .padding(vertical = FlashSpacing.space12),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
     ) {
-        MemberAvatar(member = member)
-
-        Column(
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(FlashSpacing.space2),
+        Row(
+            modifier = Modifier
+                .weight(1f)
+                .semantics(mergeDescendants = true) {
+                    contentDescription = memberRowDescription(member)
+                },
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
         ) {
-            FlashText(
-                text = member.name,
-                style = FlashTheme.typography.bodyDefault.copy(fontWeight = FontWeight.Bold),
-                color = colors.textPrimary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            FlashText(
-                text = memberSubtitle(member),
-                style = FlashTheme.typography.metadataDefault,
-                color = colors.textSecondary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            MemberAvatar(member = member)
+
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(FlashSpacing.space2),
+            ) {
+                FlashText(
+                    text = member.name,
+                    style = FlashTheme.typography.bodyDefault.copy(fontWeight = FontWeight.Bold),
+                    color = colors.textPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                FlashText(
+                    text = memberSubtitle(member),
+                    style = FlashTheme.typography.metadataDefault,
+                    color = colors.textSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                FlashGroupMembersMath.introducedByLabel(member.introducedBy)?.let { label ->
+                    FlashText(
+                        text = label,
+                        style = FlashTheme.typography.metadataDefault,
+                        color = colors.textTertiary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+
+            MemberTransportGlyph(member.transport)
+
+            FlashGroupMembersMath.roleBadgeLabel(member.role)?.let { badge ->
+                RoleBadge(label = badge)
+            }
         }
 
-        MemberTransportGlyph(member.transport)
-
-        FlashGroupMembersMath.roleBadgeLabel(member.role)?.let { badge ->
-            RoleBadge(label = badge)
+        if (onVerify != null) {
+            FlashText(
+                text = "Verify",
+                modifier = Modifier
+                    .semantics { contentDescription = "Verify ${member.name}" }
+                    .clickable(role = Role.Button, onClick = onVerify)
+                    .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space12),
+                style = FlashTheme.typography.bodyDefault,
+                color = colors.accentPrimary,
+                maxLines = 1,
+            )
         }
     }
 }
@@ -286,6 +341,10 @@ private fun memberRowDescription(member: FlashGroupMemberUi): String {
             append(", ")
             append(it)
         }
+        FlashGroupMembersMath.introducedByDescription(member.introducedBy)?.let {
+            append(", ")
+            append(it)
+        }
     }
 }
 
@@ -318,6 +377,7 @@ fun sampleGroupMembers(): List<FlashGroupMemberUi> = listOf(
     FlashGroupMemberUi("m4", "Lina Farid", "LF", isOnline = false, role = FlashMemberRole.Member, transport = FlashNetworkTransport.Relay),
     FlashGroupMemberUi("m5", "Ben Kato", "BK", isOnline = true, role = FlashMemberRole.Member, transport = FlashNetworkTransport.Relay),
     FlashGroupMemberUi("m6", "Dana Wolfe", "DW", isOnline = false, role = FlashMemberRole.Member),
+    FlashGroupMemberUi("m7", "Kai Moreno", "KM", isOnline = true, role = FlashMemberRole.Member, transport = FlashNetworkTransport.Lan, introducedBy = "Alex Rivera"),
 )
 
 @Preview(name = "Members — small group", showBackground = true, widthDp = 390)
@@ -346,6 +406,7 @@ private fun FlashGroupMembersLargePreview() {
                 )
             },
             onDismiss = {},
+            onVerifyMember = {},
         )
     }
 }

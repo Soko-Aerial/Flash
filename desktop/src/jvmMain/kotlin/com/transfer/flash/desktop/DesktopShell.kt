@@ -1175,6 +1175,19 @@ public fun DesktopShell(
                     }
                 }
             },
+            // ADR-044 V2: a member the group owner introduced is verified by ordinary pairing, like Nearby's Pair.
+            onVerifyGroupMember = { memberId, memberName ->
+                val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == memberId }
+                val net = engine.network
+                if (endpoint != null && net != null) {
+                    scope.launch {
+                        net.connectManual(endpoint.hostAddress, endpoint.port)
+                        engine.pairing.beginPair(memberId, memberName)
+                    }
+                } else {
+                    engine.pairing.beginPair(memberId, memberName)
+                }
+            },
             onClearConversation = { id ->
                 chatRepository.deleteConversations(setOf(id))
                 chatRepository.closeConversation()

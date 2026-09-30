@@ -704,6 +704,7 @@ public class RealFlashChatRepository(
                         emptyList()
                     }
                     val title = conversationEntity.title.ifBlank { conversationId }
+                    val ownerName = ownerDisplayName(conversationId, conversationEntity)
                     FlashConversationUiState(
                         header = FlashChatHeaderUiState(
                             title = title,
@@ -722,7 +723,10 @@ public class RealFlashChatRepository(
                         messages = content.messages,
                         draftText = content.draftText,
                         members = members.map { member ->
-                            member.toMemberUi(isOnline = member.deviceId in peers.online)
+                            member.toMemberUi(
+                                isOnline = member.deviceId in peers.online,
+                                introducedBy = introducedByOf(member, ownerName),
+                            )
                         },
                     ) to Pair(content.newestMessageId, content.newestInboundId)
                 } else {
@@ -1094,7 +1098,27 @@ public class RealFlashChatRepository(
 
     override suspend fun groupMembers(groupId: String): List<FlashGroupMemberUi> =
         withContext(ioDispatcher) {
-            groupMemberDao?.activeMembers(groupId)?.map { it.toMemberUi() }.orEmpty()
+            val ownerName = ownerDisplayName(groupId, conversationDao.get(groupId))
+            groupMemberDao?.activeMembers(groupId)
+                ?.map { it.toMemberUi(introducedBy = introducedByOf(it, ownerName)) }
+                .orEmpty()
+        }
+
+    /** The group owner's stored label, even after the owner left (their row stays as a tombstone). */
+    private suspend fun ownerDisplayName(groupId: String, conversation: ConversationEntity?): String? =
+        conversation?.groupCreatedBy
+            ?.let { ownerId -> groupMemberDao?.member(groupId, ownerId)?.displayName }
+            ?.takeIf { it.isNotBlank() }
+
+    /**
+     * ADR-044 V2: who introduced [member] to this device, or null when nobody had to. A member this device never
+     * paired with is trusted in a v2 group only because the owner (whom it did pair with) certified their key.
+     */
+    private fun introducedByOf(member: GroupMemberEntity, ownerName: String?): String? =
+        if (member.deviceId == localDeviceId || member.role == "owner" || isTrustedPeer(member.deviceId)) {
+            null
+        } else {
+            ownerName ?: "the group owner"
         }
 
     /**
@@ -1110,7 +1134,7 @@ public class RealFlashChatRepository(
         }
 
     /** Phase B: one shared mapping so the sheet and the state carry identical rows. */
-    private fun GroupMemberEntity.toMemberUi(isOnline: Boolean = false): FlashGroupMemberUi =
+    private fun GroupMemberEntity.toMemberUi(isOnline: Boolean = false, introducedBy: String? = null): FlashGroupMemberUi =
         FlashGroupMemberUi(
             id = deviceId,
             name = displayName,
@@ -1119,6 +1143,7 @@ public class RealFlashChatRepository(
             role = if (role == "owner") FlashMemberRole.Owner else FlashMemberRole.Member,
             // Online members share our LAN/WS mesh; offline ones have no known transport.
             transport = if (isOnline) FlashNetworkTransport.Lan else FlashNetworkTransport.Unknown,
+            introducedBy = introducedBy,
         )
 
     private suspend fun sendGroupText(

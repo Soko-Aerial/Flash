@@ -206,6 +206,11 @@ fun FlashConversationScreen(
      */
     onLeaveGroup: (groupId: String) -> Unit = {},
     /**
+     * ADR-044 V2: run pairing with a group member the owner introduced (they show "Added by <owner>"). Null hides the
+     * Verify action; the host routes to the same pairing flow as the Nearby screen.
+     */
+    onVerifyGroupMember: ((memberId: String, name: String) -> Unit)? = null,
+    /**
      * Group Phase D: trusted peers that could be added to this group (host filters out current
      * members); drives the Add-members sheet's roster. Default empty keeps previews inert.
      */
@@ -844,6 +849,7 @@ fun FlashConversationScreen(
         FlashGroupMembersSheet(
             members = groupMembers,
             onDismiss = { showGroupMembers = false },
+            onVerifyMember = onVerifyGroupMember?.let { verify -> { member -> verify(member.id, member.name) } },
         )
     }
 

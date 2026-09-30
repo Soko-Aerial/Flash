@@ -542,6 +542,28 @@ class SignedGroupsTest {
     }
 
     @Test
+    fun `the member list says who introduced a member this device never paired`() = runBlocking {
+        vouchedTrust = true
+        unpair("dev-b", "dev-c")
+        mesh("dev-a", "dev-b", "dev-c")
+        val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+
+        val atC = nodes.getValue("dev-c").repo.groupMembers(groupId).associateBy { it.id }
+        assertEquals("b was never paired with c, the owner vouched", "Ada", atC.getValue("dev-b").introducedBy)
+        assertNull("the owner is paired by construction", atC.getValue("dev-a").introducedBy)
+        assertNull("nor is the local device introduced to itself", atC.getValue("dev-c").introducedBy)
+
+        val atA = nodes.getValue("dev-a").repo.groupMembers(groupId).associateBy { it.id }
+        assertNull("the owner paired with everyone it invited", atA.getValue("dev-b").introducedBy)
+        assertNull(atA.getValue("dev-c").introducedBy)
+
+        // Pairing (Verify) removes the label: the row shows the member as an ordinary contact.
+        distrusted["dev-c"]?.remove("dev-b")
+        val afterVerify = nodes.getValue("dev-c").repo.groupMembers(groupId).associateBy { it.id }
+        assertNull(afterVerify.getValue("dev-b").introducedBy)
+    }
+
+    @Test
     fun `without a trust store that can vouch an unpaired member is still refused`() = runBlocking {
         unpair("dev-b", "dev-c")
         mesh("dev-a", "dev-b", "dev-c")
