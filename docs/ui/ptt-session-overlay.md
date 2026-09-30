@@ -4,7 +4,7 @@
 
 **Component ID:** UI-051
 
-**Last updated:** 2026-09-10
+**Last updated:** 2026-09-30 (Addendum A: desktop host)
 
 **Owner phase:** PTT voice session, ADR-032 Phase 3
 
@@ -162,3 +162,58 @@ blocks useful concurrent reading. Do not add controls until the half-duplex prot
 The surface is intentionally smaller than a call screen and stricter than a generic voice room: it
 mirrors Flash's deterministic one-floor protocol, keeps local-first operation visible, and scales its
 motion and sampling cost to the device tier without hiding the user's only safety action.
+
+---
+
+## Addendum A — Desktop host (2026-09-30, ADR-058)
+
+**Status of this addendum:** DESIGNED, then IMPLEMENTED the same day; not device-verified.
+
+The Windows desktop app now runs the same `PttSessionEngine` (ADR-058), so the surface above needs a
+desktop form. The floor machine, the wording, the layout tokens and the level meter do not change; only
+*where the card's code lives* and *how a desktop user starts a session* are new.
+
+### Approaches compared (desktop)
+
+1. **A second desktop-only card.** Rejected: two copies of the state-to-copy mapping ("You're talking",
+   "Listening — {name}", Stop/Leave, the `Live • n listening • x ms` line) drift, and this card is the
+   user's only safety action.
+2. **Share the card, keep host wrappers.** The card, its three leaf composables and `formatPttElapsed`
+   move to `:ui:callui` commonMain (`PttSessionOverlayContent`). The Android wrapper keeps what is
+   Android-only (deferred hardware press, `RECORD_AUDIO` prompt, `FlashNotificationManager`); the desktop
+   shell adds its own thin wrapper. **Chosen.**
+3. **A OS-level always-on-top overlay window on desktop.** Rejected for now for the reasons row 3 of
+   "Existing approaches studied" gives, plus a second AWT window to focus-manage.
+
+### Behaviour on desktop
+
+- **Talk control.** A mic button in the navigation rail footer (expanded two-pane layout) and a floating
+  mic button above the bottom nav on tab roots (compact layout). One click toggles the floor
+  (`FlashPtt.onPttButton()`), the same toggle semantics as the hardware press, *not* hold-to-talk.
+- **Hotkey.** `Ctrl+Shift+T`, in-window only. **No global (system-wide) hotkey**: a global hook needs a
+  native key hook the project does not have, and would fire while typing in other apps. Revisit only on an
+  owner request.
+- **Overlay.** Derived from `PttFloorState` exactly as on Android (visible for Talking/Listening). On
+  desktop the scrim also swallows pointer input so a click cannot fall through to the list behind the
+  card. `Esc` while a session is live = Stop/Leave.
+- **Outcomes.** `NO_PEERS`, `CALL_ACTIVE`, `VOICE_NOTE_ACTIVE` and every engine notice are shown in the
+  window's snackbar (Android uses toasts) using the same strings as the Android wrapper.
+- **No permission step.** A desktop has no per-app microphone grant to request; Windows' microphone
+  privacy switch is the gate and does not always report a denial (TEST-BACKLOG PTTD-03).
+- **No notification actions.** The Android notification mirror has no desktop counterpart; the window is
+  the only surface while the app runs. A minimised window keeps the session (the engine, not the window,
+  owns it) but has no visible Stop; the button/hotkey need the window.
+
+### Accessibility (desktop)
+
+Same requirements as above, plus: the rail/floating button has a `contentDescription` that flips between
+"Push to talk" and "Stop talking"; `Ctrl+Shift+T` is listed in the shortcuts help if one exists; keyboard
+focus order is not changed (the button is pointer/hotkey only in this pass; a focusable button is
+TEST-BACKLOG PTTD-07).
+
+### Testing checklist (desktop)
+
+- [x] Engine wiring exercised over two real `DesktopEngine`s (`DesktopEnginePttTest`)
+- [x] Elapsed formatting (`PttElapsedFormatTest`, moved with the composable)
+- [ ] Physical: desktop <-> phone, both directions (PTTD-01), Stop/Leave from the card, Esc, hotkey
+- [ ] Hi-DPI / 125% / 150% scale and the 640x480 minimum window (PTTD-07)

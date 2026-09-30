@@ -21,6 +21,7 @@ public fun DesktopSideBar(
     unreadCount: Int = 0,
     localDisplayName: String? = null,
     onProfileClick: (() -> Unit)? = null,
+    footer: (@Composable () -> Unit)? = null,
 ) {
     val railTabs = tabs.map { tab ->
         FlashNavigationRailTab(
@@ -38,6 +39,7 @@ public fun DesktopSideBar(
         modifier = modifier,
         localDisplayName = localDisplayName,
         onProfileClick = onProfileClick,
+        footer = footer,
     )
 }
 

@@ -72,6 +72,7 @@ fun FlashNavigationRail(
     modifier: Modifier = Modifier,
     localDisplayName: String? = null,
     onProfileClick: (() -> Unit)? = null,
+    footer: (@Composable () -> Unit)? = null,
 ) {
     val colors = FlashTheme.colors
 
@@ -209,6 +210,13 @@ fun FlashNavigationRail(
             }
 
             Spacer(Modifier.weight(1f))
+
+            // Optional host control above the profile avatar (desktop: the push-to-talk button). Null on
+            // Android, so its rail is unchanged.
+            if (footer != null) {
+                footer()
+                Spacer(Modifier.height(FlashSpacing.space12))
+            }
 
             // Bottom Profile / Device Avatar
             val initials = localDisplayName?.take(1)?.uppercase() ?: ""

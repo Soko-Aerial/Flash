@@ -12,8 +12,11 @@ package com.transfer.flash.core.ptt
  * Android keeps `SystemClock.elapsedRealtime()` (it keeps counting in doze, which the burst cap and
  * the heartbeat timeout rely on); the JVM uses `System.nanoTime()`. The value is only ever compared
  * with another value from the same device, so the origin does not matter.
+ *
+ * Public because a session card shows "elapsed" as `now - PttFloorState.startedAtMs`, and both must be
+ * read from this one clock (a wall clock or a different monotonic origin would show nonsense).
  */
-internal expect fun pttElapsedRealtimeMs(): Long
+public expect fun pttElapsedRealtimeMs(): Long
 
 /** Monitor lock for the few synchronous gates (press / voice-note lease, heartbeat ledger). */
 internal expect class PttLock() {
