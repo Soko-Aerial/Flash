@@ -220,6 +220,13 @@ public class RealNsdManagerBridge(
 
     private var multicastLock: WifiManager.MulticastLock? = null
     private var advertiseListener: NsdManager.RegistrationListener? = null
+
+    /**
+     * Bumped by every [advertise]. A listener made under an older generation belongs to a registration that was
+     * replaced, and its late callbacks (an `onServiceUnregistered` arriving after the new `onServiceRegistered`) must
+     * not reach the transport: they would mark the live advertisement down.
+     */
+    private val advertiseGeneration = java.util.concurrent.atomic.AtomicInteger(0)
     private var discoveryListener: NsdManager.DiscoveryListener? = null
 
     /**
@@ -286,18 +293,35 @@ public class RealNsdManagerBridge(
     }
 
     override fun advertise(request: AdvertiseRequest, events: AdvertiseEvents): Boolean {
+        val generation = advertiseGeneration.incrementAndGet()
+        // One live registration at a time (audit 3.7). `advertiseListener` holds a single reference and
+        // `unadvertise` releases only that one, so replacing it without unregistering the previous listener left that
+        // registration advertised for good, pointing at a port nothing listens on once the engine stopped (ERROR-073).
+        advertiseListener?.let { previous ->
+            runCatching { nsdManager.unregisterService(previous) }
+                .onFailure { Log.w(tag, "Unable to unregister the previous NSD registration", it) }
+        }
         val listener = object : NsdManager.RegistrationListener {
-            override fun onServiceRegistered(info: NsdServiceInfo) =
-                events.onRegistered(info.serviceName, info.port)
+            private fun isCurrent() = generation == advertiseGeneration.get()
 
-            override fun onRegistrationFailed(info: NsdServiceInfo, errorCode: Int) =
+            override fun onServiceRegistered(info: NsdServiceInfo) {
+                if (isCurrent()) events.onRegistered(info.serviceName, info.port)
+            }
+
+            override fun onRegistrationFailed(info: NsdServiceInfo, errorCode: Int) {
+                if (!isCurrent()) return
+                // Nothing is registered, so there is nothing for a later unadvertise to release.
+                if (advertiseListener === this) advertiseListener = null
                 events.onRegistrationFailed(errorCode)
+            }
 
-            override fun onServiceUnregistered(info: NsdServiceInfo) =
-                events.onUnregistered()
+            override fun onServiceUnregistered(info: NsdServiceInfo) {
+                if (isCurrent()) events.onUnregistered()
+            }
 
-            override fun onUnregistrationFailed(info: NsdServiceInfo, errorCode: Int) =
-                events.onUnregistrationFailed(errorCode)
+            override fun onUnregistrationFailed(info: NsdServiceInfo, errorCode: Int) {
+                if (isCurrent()) events.onUnregistrationFailed(errorCode)
+            }
         }
         advertiseListener = listener
         val serviceInfo = NsdServiceInfo().apply {
@@ -936,6 +960,14 @@ public class NsdTransport(
      */
     @Volatile private var advertiseDesired = false
 
+    /**
+     * True from the moment a registration is handed to the bridge until one is explicitly released. Deliberately NOT
+     * cleared by a failure or unregistration callback: such a callback can be a stale one from a registration that was
+     * already replaced, and trusting it would let the next registration orphan the live one. Releasing a registration
+     * that is already gone is harmless (the bridge ignores it), leaking a live one is not (audit 3.7, ERROR-073).
+     */
+    @Volatile private var registrationOutstanding = false
+
     /** Debounced connectivity-change restart. */
     @Volatile private var networkChangeJob: Job? = null
 
@@ -1151,6 +1183,11 @@ public class NsdTransport(
 
     /** Builds the request from [identity] and hands it to the radio. True when the call took. */
     private fun registerAdvertisement(port: Int, identity: FlashAdvertisedIdentity): Boolean {
+        // At most one live registration. `startAdvertising` runs on every Wi-Fi (re)connect (the holder's
+        // `onUsableNetwork` and `Flash.kt`) and so does this transport's own connectivity re-registration; the bridge
+        // only ever releases the latest registration, so each unguarded overlap orphaned one.
+        if (registrationOutstanding) runCatching { bridge.unadvertise(advertiseEvents) }
+        registrationOutstanding = true
         val txt = NsdTxtCodec.encode(identity)
         val request = AdvertiseRequest(
             serviceName = "$instancePrefix ${identity.friendlyName.take(MAX_NAME_LENGTH)}",
@@ -1158,7 +1195,10 @@ public class NsdTransport(
             port = port,
             txtRecords = txt,
         )
-        return runCatching { bridge.advertise(request, advertiseEvents) }.getOrElse { false }
+        val initiated = runCatching { bridge.advertise(request, advertiseEvents) }.getOrElse { false }
+        // The call itself threw: nothing was registered. (An asynchronous failure does not reach here.)
+        if (!initiated) registrationOutstanding = false
+        return initiated
     }
 
     /**
@@ -1199,9 +1239,9 @@ public class NsdTransport(
     private suspend fun restartAdvertising() {
         if (!advertiseDesired) return
         val identity = lastAdvertisedIdentity ?: return
-        runCatching { bridge.unadvertise(advertiseEvents) }
         advertising = false
         acquireMulticastLockIfNeeded()
+        // registerAdvertisement releases the registration it replaces.
         registerAdvertisement(lastAdvertisedPort, identity)
     }
 
@@ -1234,6 +1274,7 @@ public class NsdTransport(
         advertiseWatchdogJob?.cancel()
         advertiseWatchdogJob = null
         runCatching { bridge.unadvertise(advertiseEvents) }
+        registrationOutstanding = false
         advertising = false
         releaseMulticastLockIfIdle()
     }
@@ -1669,6 +1710,7 @@ public class NsdTransport(
         monitorRetries.clear()
         runCatching { bridge.stopBrowse() }
         runCatching { bridge.unadvertise(advertiseEvents) }
+        registrationOutstanding = false
         runCatching { bridge.cancelMonitors() }
         runCatching { bridge.stopObservingNetworkChanges() }
         observingNetwork = false

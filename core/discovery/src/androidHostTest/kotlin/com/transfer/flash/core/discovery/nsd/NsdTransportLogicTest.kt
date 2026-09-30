@@ -110,6 +110,15 @@ class NsdTransportLogicTest {
         var unadvertiseCalled = false
         var unadvertiseCount = 0
 
+        /**
+         * Registrations the platform would still hold. Models [RealNsdManagerBridge]: it keeps ONE listener reference and
+         * `unadvertise` releases only that one, so an `advertise` made while an earlier registration is still live
+         * orphans the earlier one for good.
+         */
+        private var latestRegistrationLive = false
+        private var orphanedRegistrations = 0
+        val liveRegistrations: Int get() = orphanedRegistrations + if (latestRegistrationLive) 1 else 0
+
         // Volatile: the connectivity re-arm path resumes on a scheduler thread
         // (it uses a REAL delay for its debounce), so these are read cross-thread.
         @Volatile var stopBrowseCount = 0
@@ -149,10 +158,13 @@ class NsdTransportLogicTest {
         override fun advertise(request: AdvertiseRequest, events: AdvertiseEvents): Boolean {
             advertiseRequests += request
             advertiseEventsRef = events
+            if (latestRegistrationLive) orphanedRegistrations += 1
             val failure = advertiseFailureCode
             if (failure != null) {
+                latestRegistrationLive = false
                 events.onRegistrationFailed(failure)
             } else {
+                latestRegistrationLive = advertiseResult
                 events.onRegistered(request.serviceName, request.port)
             }
             return advertiseResult
@@ -161,6 +173,7 @@ class NsdTransportLogicTest {
         override fun unadvertise(events: AdvertiseEvents) {
             unadvertiseCalled = true
             unadvertiseCount += 1
+            latestRegistrationLive = false
         }
 
         override fun startBrowse(request: BrowseRequest, events: BrowseEvents): Boolean {
@@ -1328,6 +1341,77 @@ class NsdTransportLogicTest {
         assertEquals(1, bridge.unadvertiseCount)
         assertEquals(0, bridge.browseStartCount) // never browsing: no browse restart
         runBlocking { transport.stop() }
+    }
+
+    // ------------------------------------------------------------------
+    // One live registration (audit 3.7, ERROR-073)
+    // ------------------------------------------------------------------
+
+    @Test
+    fun startAdvertising_calledAgain_replacesTheRegistrationInsteadOfOrphaningIt() {
+        // The holder's onUsableNetwork and Flash.kt both call startAdvertising on every Wi-Fi (re)connect.
+        val bridge = FakeBridge()
+        val transport = newTransport(apiLevel = 34, directory = StandardEndpointDirectory(), bridge = bridge)
+
+        runBlocking {
+            transport.startAdvertising(45821, identity())
+            transport.startAdvertising(45821, identity())
+            transport.startAdvertising(45821, identity())
+        }
+
+        assertEquals(3, bridge.advertiseRequests.size)
+        assertEquals("one live registration, not three", 1, bridge.liveRegistrations)
+        runBlocking { transport.stop() }
+        assertEquals("stop() leaves nothing advertised", 0, bridge.liveRegistrations)
+    }
+
+    @Test
+    fun aWifiReconnect_inEitherOrder_leavesOneRegistration_andStopLeavesNone() {
+        // Reconnect = this transport's own connectivity re-registration + the engine's startAdvertising call.
+        // The two arrive in either order.
+        val bridge = FakeBridge()
+        val transport = newTransport(
+            apiLevel = 34,
+            directory = StandardEndpointDirectory(),
+            bridge = bridge,
+            networkChangeDebounceMs = 0L,
+        )
+        runBlocking { transport.startAdvertising(45821, identity()) }
+
+        bridge.fireNetworkChanged()
+        runBlocking { transport.startAdvertising(45821, identity()) }
+        assertEquals("network change, then startAdvertising", 1, bridge.liveRegistrations)
+
+        runBlocking { transport.startAdvertising(45821, identity()) }
+        bridge.fireNetworkChanged()
+        assertEquals("startAdvertising, then network change", 1, bridge.liveRegistrations)
+
+        runBlocking { transport.stop() }
+        assertEquals("the registration does not outlive the transport", 0, bridge.liveRegistrations)
+    }
+
+    @Test
+    fun aRegistrationThatFailedToStart_isRetriedAndLeavesNothingBehindOnStop() {
+        val ticker = ManualTicker()
+        val bridge = FakeBridge().apply { advertiseFailureCode = 3 }
+        val transport = newTransport(
+            apiLevel = 34,
+            directory = StandardEndpointDirectory(),
+            bridge = bridge,
+            advertiseWatchdogMs = 10_000L,
+            advertiseWatchdogSleep = ticker.sleep,
+            maxAdvertiseWatchdogTicks = 1,
+        )
+        runBlocking { transport.startAdvertising(45821, identity()) }
+        assertEquals(0, bridge.liveRegistrations)
+
+        bridge.advertiseFailureCode = null
+        ticker.tick()
+
+        assertEquals("the retry registered", 2, bridge.advertiseRequests.size)
+        assertEquals(1, bridge.liveRegistrations)
+        runBlocking { transport.stop() }
+        assertEquals(0, bridge.liveRegistrations)
     }
 
     /** Bounded spin for the one assertion that crosses a thread boundary. */
