@@ -91,10 +91,16 @@ class DesktopEnginePairingTest {
                 "retries=$retries messages=${alpha.pairing.messages.replayCache}",
         )
 
-        val initiatorPhase = assertNotNull(alpha.pairing.pairing.value).phase
+        // Awaited, not read once: the phase leaves AwaitingPeerNonce when the peer's fingerprint hello is
+        // processed, which is a few milliseconds behind the tap whenever the machine is busy (the session-up
+        // chat edges added in the chat/group audit, step 1, made that visible in a full-suite run). The claim is
+        // unchanged: the initiator must reach the compare-the-code state.
+        val reachedConfirmation = await(PAIR_TIMEOUT_MS) {
+            alpha.pairing.pairing.value?.phase == com.transfer.flash.core.security.pairing.PairingPhase.AwaitingPeerConfirmation
+        }
         assertTrue(
-            initiatorPhase == com.transfer.flash.core.security.pairing.PairingPhase.AwaitingPeerConfirmation,
-            "the initiator must publish AwaitingPeerConfirmation (compare-the-code), was $initiatorPhase",
+            reachedConfirmation,
+            "the initiator must publish AwaitingPeerConfirmation (compare-the-code), was ${alpha.pairing.pairing.value?.phase}",
         )
 
         // The other half of the same claim: the peer shows an actionable request.

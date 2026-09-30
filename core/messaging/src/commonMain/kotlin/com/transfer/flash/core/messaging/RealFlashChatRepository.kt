@@ -2588,7 +2588,11 @@ public class RealFlashChatRepository(
             val conversation = conversationDao.get(message.conversationId)
             val queuedForMs = now - item.createdAt
             if (conversation?.isGroup == true) {
-                drainGroupMessage(item, message, now, queuedForMs)
+                // The group branch re-arms on the same ladder as the direct one and must tell the loop so,
+                // or its retry waits for the idle net (chat/group sync audit, step 1).
+                drainGroupMessage(item, message, now, queuedForMs)?.let { nextAttemptAt ->
+                    earliestScheduled = earliestScheduled?.coerceAtMost(nextAttemptAt) ?: nextAttemptAt
+                }
                 continue
             }
             val wireFrame = MessageWireFrame.TextMessage(
@@ -2651,24 +2655,25 @@ public class RealFlashChatRepository(
         items.size >= OUTBOX_BATCH_LIMIT
     }
 
+    /** @return when this row is next due, or null when the pass ended it (given up, delivered, or unsendable). */
     private suspend fun drainGroupMessage(
         item: OutboxEntity,
         message: MessageEntity,
         now: Long,
         queuedForMs: Long,
-    ) {
-        val deliveries = groupDeliveryDao ?: return
-        val sink = groupTransportSink ?: return
+    ): Long? {
+        val deliveries = groupDeliveryDao ?: return null
+        val sink = groupTransportSink ?: return null
         if (queuedForMs >= OUTBOX_GIVE_UP_AFTER_MS) {
             messageDao.updateStatusIfUnacknowledged(item.localId, "FAILED")
             outboxDao.delete(item.localId)
-            return
+            return null
         }
         val pending = deliveries.pendingForMessage(item.localId)
         if (pending.isEmpty()) {
             messageDao.updateStatusIfUnacknowledged(item.localId, "DELIVERED")
             outboxDao.delete(item.localId)
-            return
+            return null
         }
         val frame = GroupWireFrame.Message(
             groupId = message.conversationId,
@@ -2702,7 +2707,9 @@ public class RealFlashChatRepository(
             )
         }
         if (anySent) messageDao.updateStatusIfUnacknowledged(item.localId, "SENT")
-        outboxDao.rescheduleAttempt(item.localId, now + backoffDelayMs(item.attempts + 1))
+        val nextAttemptAt = now + backoffDelayMs(item.attempts + 1)
+        outboxDao.rescheduleAttempt(item.localId, nextAttemptAt)
+        return nextAttemptAt
     }
 
     /**

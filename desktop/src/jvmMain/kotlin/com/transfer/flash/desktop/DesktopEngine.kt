@@ -1198,6 +1198,18 @@ public class DesktopEngine(
                         // lets the peer derive the shared 6-digit code the moment either side taps
                         // Pair (FLASH_PAIR hello carries the identity fingerprint).
                         pairing.onSessionUp(session.peerDeviceId.value)
+                        // The three chat edges the app host fires on every session-up (chat/group audit,
+                        // step 1). Their absence meant a desktop never re-sent a membership frame a peer
+                        // missed, never asked a returning peer for group history, and never made that
+                        // peer's group deliveries due, so a group message sent while a member was away
+                        // kept its single tick until the slow backoff timer happened to retry it.
+                        // Bug 5: flush the durable outbox; the peer id also makes that member's group
+                        // deliveries retryable.
+                        chatImpl?.notifyPeerSessionUp(session.peerDeviceId.value)
+                        // F3: holder-coordinated group catch-up (FLASH_GSYNC) with the returning peer.
+                        chatImpl?.sendGroupSyncRequests(session.peerDeviceId.value)
+                        // F7: heal a membership frame this peer may have missed while it was offline.
+                        chatImpl?.reconcileGroupMembership(session.peerDeviceId.value)
                         // A live session again: close any recovery window so a renegotiation that
                         // needs this channel (ICE restart after a roam) can travel on it.
                         callsImpl?.onSignalingRestored(session.peerDeviceId.value)
