@@ -220,6 +220,20 @@ internal class SignedGroups(
         return GroupWireFrame.Bundle(groupId, localDeviceId, newId(), charter, capped)
     }
 
+    /**
+     * What a member hands a device it knows the owner removed, in case that device was offline for the removal: the
+     * charter and that device's owner-issued tombstone, nothing else. Null for a member still active, for one who left
+     * by their own choice (they know) and for an unknown subject. The removed device checks the owner's signature
+     * itself, so any member can relay it, and a device that already knows treats it as a free, stale replay.
+     */
+    suspend fun removalNoticeFor(groupId: String, subjectId: String): GroupWireFrame.Bundle? {
+        val charter = storedCharter(groupId) ?: return null
+        val row = members.member(groupId, subjectId)?.takeIf { !it.isActive } ?: return null
+        if (row.issuerId != charter.ownerId || row.issuerId == subjectId) return null
+        val cert = row.toCert() ?: return null
+        return GroupWireFrame.Bundle(groupId, localDeviceId, newId(), charter, listOf(cert))
+    }
+
     /** Base64 signature over the canonical bytes of a message this device authors in [groupId]. */
     fun signMessage(
         groupId: String,
@@ -281,6 +295,13 @@ internal class SignedGroups(
             val senderIsMember = rows[peerId]?.isActive == true || verified.any { it.subjectId == peerId && it.active }
             if (!senderIsMember) return ignored(groupId, peerId, "sender-not-member")
         }
+        // A device that is no longer a member (removed, or it left) takes nothing from a bundle except an invitation
+        // back: its own, newer, active cert. Otherwise a removed member would keep re-installing the pins of members
+        // it can no longer talk to, and every reconnect would refresh a roster it has no part in.
+        val localRow = rows[localDeviceId]
+        if (localRow != null && !localRow.isActive && verified.none { it.subjectId == localDeviceId && it.active }) {
+            return ignored(groupId, peerId, "local-not-member")
+        }
 
         val activeAfter = (rows.keys + verified.map { it.subjectId }).count { id ->
             verified.firstOrNull { it.subjectId == id }?.active ?: rows[id]?.isActive ?: false
@@ -316,6 +337,8 @@ internal class SignedGroups(
             )
         }
         accepted.forEach { members.upsert(it.toRow(joinedAt = rows[it.subjectId]?.joinedAt ?: now)) }
+        // This device was just told it is out: it no longer has a reason to keep the pins the group vouched (as on leave).
+        if (accepted.any { it.subjectId == localDeviceId && !it.active }) revokeAll(groupId)
         ensureVouches(groupId, charter)
         return BundleOutcome.Applied(groupId, joined = !known)
     }
@@ -397,6 +420,7 @@ internal class SignedGroups(
      */
     private suspend fun ensureVouches(groupId: String, charter: GroupCharter) {
         val port = vouching ?: return
+        if (members.member(groupId, localDeviceId)?.isActive != true) return
         for (row in members.allMembers(groupId)) {
             if (!row.isActive || row.deviceId == localDeviceId || row.deviceId == charter.ownerId) continue
             val key = row.subjectKey?.let { GroupCanonical.decode(it) } ?: continue

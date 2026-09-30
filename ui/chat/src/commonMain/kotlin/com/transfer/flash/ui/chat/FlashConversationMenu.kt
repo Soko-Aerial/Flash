@@ -49,15 +49,20 @@ public object FlashConversationMenuMath {
         add(FlashConversationMenuItem.CLEAR_CONVERSATION)
     }
 
-    /** Items for a group conversation. Leave is hidden when the device is the sole member. */
+    /**
+     * Items for a group conversation. Leave is hidden when the device is the sole member. A device that is no longer a
+     * member ([isMember] false: it left, or the owner removed it) can still read, search and mark as unread, but adding
+     * members and leaving would both fail, so they are not offered.
+     */
     public fun groupItems(
         canLeave: Boolean,
+        isMember: Boolean = true,
     ): List<FlashConversationMenuItem> = buildList {
         add(FlashConversationMenuItem.GROUP_INFO)
-        add(FlashConversationMenuItem.ADD_MEMBERS)
+        if (isMember) add(FlashConversationMenuItem.ADD_MEMBERS)
         add(FlashConversationMenuItem.SEARCH)
         add(FlashConversationMenuItem.MARK_UNREAD)
-        if (canLeave) add(FlashConversationMenuItem.LEAVE_GROUP)
+        if (canLeave && isMember) add(FlashConversationMenuItem.LEAVE_GROUP)
     }
 }
 

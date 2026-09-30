@@ -236,3 +236,43 @@ owner only. Physical device: `docs/testing/TEST-BACKLOG.md` GT-03 step 7 (owner 
 `FlashConversationScreen.kt` (`onRemoveGroupMember`, `memberToRemove`), hosts `MainActivity` / `DesktopShell`, state
 `FlashConversationUiState.canRemoveMembers`. Unit tests green; **Compose previews and the physical-device check are still open.**
 Known gap: the removed member's own device has no designed "you were removed" state; it just stops receiving.
+
+### UI-029 addendum 3 — a device that was removed or left (ADR-044 V2, removal ripple), DESIGNED 2026-09-30
+
+**Why.** Once the owner removes a member, or a member leaves, that device keeps the conversation but is out of the group: the other
+devices drop everything it sends. Until now its screen did not say so. The composer stayed live, a message typed there was stored as
+`PENDING` and retried forever (nobody accepts it), and the call buttons rang members who would decline. The repository now refuses those
+sends and reports `FlashConversationUiState.selfMembership` (`Active`, `Left`, `Removed`); this addendum is what the screen does with it.
+
+**Approaches considered.**
+
+1. *Keep the composer but disable it in place, with a hint.* Rejected: a greyed field still looks like something to tap, "disabled"
+   does not tell a screen-reader user why, and the composer's own animations and attachment button would need a fourth state.
+2. *Delete the conversation when the device is removed.* Rejected: the removal dialog promises the removed member keeps what they
+   already received, the history is theirs, and an automatic delete is destructive and surprising (and would also delete the only
+   record of who removed them).
+3. *Replace the composer with a one-line notice, take the group actions away, keep the history readable.* **Selected.** Nothing
+   pretends the member can still talk, nothing is lost, and there is no new modal surface.
+
+**Specification.**
+
+| Element | Value |
+|---|---|
+| Model | `FlashConversationUiState.selfMembership: FlashSelfMembership` (`Active` default). `Left`: this device left (v2 tombstone issued by itself, or a legacy leave). `Removed`: the owner's tombstone. Decided by the repository from the device's own roster row. |
+| Composer | When `selfMembership != Active` the bottom bar shows `FlashGroupSelfNotice` instead of `FlashComposer`: `backgroundSurfaceSubtle` bar, group icon, a title and one line of detail, above the navigation-bar inset. It is not interactive. |
+| Copy | `Removed`: title "You were removed from this group", detail "You can still read what you already received." `Left`: title "You left this group", same detail. Pure text from `FlashGroupSelfNoticeMath` (unit-tested). |
+| Semantics | One merged node, description "<title>. <detail>". Nothing to focus or click. |
+| Header | `showCallActions` is false (the repository sets it), so no voice or video button. An ongoing-call banner can still arrive from members who have not heard; its Join is refused by the call gate. |
+| Menu | `FlashConversationMenuMath.groupItems(isMember = false)` keeps Group info, Search and Mark as unread, and drops Add members and Leave group (both would fail). |
+| Members sheet | Still readable. Remove is not offered (`canRemoveMembers` is false when not `Active`). |
+| Rejoining | Only the owner can add the device back (the ordinary Add members flow on their device). When that arrives the state returns to `Active` and the composer comes back on its own; no button here. |
+| Not done here | No "delete this chat" action inside a removed group, no "removed by <name>" line (the owner's name is in the roster if wanted later), no notification when the removal arrives. |
+
+**Checklist.** Unit: notice copy per state, menu without Add/Leave for a non-member, repository `selfMembership` for removed and left
+(`SignedGroupsTest`). Physical device: `docs/testing/TEST-BACKLOG.md` GT-03 step 7 (what D's own screen shows). Compose preview and
+the accessibility pass are still open.
+
+**Status: IMPLEMENTED 2026-09-30.** Files: `FlashGroupSelfNotice.kt` (`FlashGroupSelfNoticeMath`, `FlashGroupSelfNotice`, two previews),
+`FlashConversationScreen.kt` (bottom bar and menu), `FlashConversationMenu.kt` (`groupItems(isMember)`), state
+`FlashConversationUiState.selfMembership`. Unit tests green (`FlashGroupSelfNoticeMathTest`, `FlashConversationMenuMathTest`,
+`SignedGroupsTest`); **previews and the device check are still open.**

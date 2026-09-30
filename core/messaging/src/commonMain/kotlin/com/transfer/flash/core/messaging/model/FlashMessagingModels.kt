@@ -318,6 +318,13 @@ public data class FlashActiveGroupCallBarUi(
     val participantCount: Int = 1,
 )
 
+/**
+ * Whether this device is still a member of the group it is looking at (ADR-044 V2, removal ripple). A device that left,
+ * or that the owner removed, keeps the conversation and everything it already received, but can neither send nor place
+ * calls: [Left] and [Removed] tell the screen which sentence to show. Direct chats are always [Active].
+ */
+public enum class FlashSelfMembership { Active, Left, Removed }
+
 public data class FlashConversationUiState(
     val header: FlashChatHeaderUiState,
     val messages: List<FlashMessageUi>,
@@ -336,6 +343,8 @@ public data class FlashConversationUiState(
      * chats, legacy groups (no signed roster to remove from) and groups someone else owns.
      */
     val canRemoveMembers: Boolean = false,
+    /** Removal ripple: false once this device left the group or the owner removed it; the composer gives way to a notice. */
+    val selfMembership: FlashSelfMembership = FlashSelfMembership.Active,
 )
 
 public data class FlashConversation(

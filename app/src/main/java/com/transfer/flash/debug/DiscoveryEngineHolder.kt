@@ -1240,7 +1240,7 @@ object DiscoveryEngineHolder {
             isTrustedPeer = { peerId -> trustStore.isTrusted(peerId) },
             // ADR-044 V2: inside a v2 group a member the owner vouched for (verified certificate key equals the
             // key of its live session) may take part in the group's calls without being paired.
-            isGroupTrustedPeer = { peerId, groupId -> chatImpl.isGroupPeerTrusted(groupId, peerId) },
+            isGroupTrustedPeer = { peerId, groupId -> chatImpl.isGroupCallPeer(groupId, peerId) },
             // Read per sample, not captured once: flipping the switch mid-call has to take effect
             // on that call, not the next one.
             prioritiseVoice = { prioritiseVoiceQuality },
