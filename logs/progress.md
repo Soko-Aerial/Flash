@@ -1,5 +1,83 @@
 # Progress Log
 
+## 2026-09-30 — Four small audit fixes: group text transaction (3.6), stream default (3.4), NSD orphan registration (3.7), Linux CI vault
+
+### Worked on
+The owner picked items 1-4 of the recommended order in audit section 7. All four are implemented and unit-tested. None is
+device-verified; `AUD-01`...`AUD-03` in `docs/testing/TEST-BACKLOG.md` list what is owed.
+
+### Changed
+- **3.6 group text** (`RealFlashChatRepository.sendGroupText`): message row, delivery rows, `touchConversation`, draft clear
+  and outbox row now run in one `runInTransaction`, like `enqueueDirectText`. A group send also moves the thread to the top
+  of the list (it did not before). Tests: `group text writes its rows in one transaction`,
+  `group text moves its conversation to the top without rewriting its identity`. `newRepository` in the test gained a
+  `runInTransaction` parameter.
+- **3.4 stream default** (`RealFlashTransferRepository`): `defaultStreams: Int? = null`. The old `Int = 2` was compared with
+  `!= 2` to mean "not set", so an explicit 2 silently became the HIGH profile's 4. No production caller passes it (nine tests
+  pass 1). Three new tests (`an explicit stream count of 2 is honoured...`, `... of 1 ...`, `without an explicit ... profile decides`).
+- **3.7 NSD orphan registration** (ERROR-073, hypothesis only): `NsdFlashDiscovery.registerAdvertisement` releases the outstanding
+  registration before it registers (`registrationOutstanding`, cleared only by an explicit release, never by a callback,
+  because a stale callback would otherwise let the next registration orphan the live one). `RealNsdManagerBridge.advertise`
+  unregisters a replaced listener, drops the late callbacks of a replaced listener (generation counter) and forgets a
+  listener whose registration failed. `FakeBridge` in `NsdTransportLogicTest` now models the leak (`liveRegistrations`);
+  three new tests.
+- **Linux CI** (test-side only): `DesktopEngine` gained an `identityVault` constructor parameter (default `IdentityKeyVault.Dpapi`,
+  production unchanged). Interop fixtures (`HarnessTestSupport`, `DesktopInteropHarness`, `PeerFarm`) and the desktop tests
+  use `fixtureIdentityVault()` / `testDesktopEngine(...)`: DPAPI on Windows, pass-through elsewhere (ADR-035). Two small
+  tests pin that choice.
+- Docs: audit section 7 status note, ERROR-073 update (still OPEN), TEST-BACKLOG `AUD-01`...`AUD-03`, AGENTS.md section 29.
+
+### Verification
+- `:core:messaging:testAndroidHostTest` 321/321 (run alone), `:core:discovery:testAndroidHostTest` 151/151,
+  `:core:transfer:testAndroidHostTest` 163/163, `:core:engine:jvmTest` 9/9, `:desktop:jvmTest` 104/104;
+  `:app:compileDebugUnitTestKotlin` and `:sample:consumer:compileDebugUnitTestKotlin` compile.
+- **Mutation checks (each fix reverted, the intended test failed):** 3.6 without the transaction: the transaction test fails;
+  without `touchConversation`: the sort-order test and the transaction test fail. 3.4 reproduced before the fix (expected
+  `[0,1]`, was `[0,1,2,3]`). 3.7 without the release-before-register line: three tests fail (both new leak tests and the existing
+  `connectivityChange_reRegistersAdvertising...` count). CI vault: with a simulated failing DPAPI vault, 24 of the 27 Linux CI failures
+  went away (3 `DesktopMediaDevicesTest` failures remain, undiagnosed, probably the WebRTC natives).
+- **Not verified:** the real `NsdManager` behaviour (the bridge changes have no unit test: it needs the Android framework);
+  Linux CI itself (this machine is Windows, DPAPI works here); a group send on a device.
+
+### Problems
+- The desktop tests failed to compile when `identityVault = ...` was added at each call site (`@FlashInternalApi` needs a
+  file-level opt-in for the type even as an argument). Fixed with one opted-in helper file, `TestIdentityVault.kt`.
+- No new ERROR entry. ERROR-073 stays OPEN: a plausible cause and a candidate fix, not a reproduction.
+
+### Remaining
+- Audit items 3.2 (close socket first in both `WsConnection.kt` copies), S6 (activation token), 3.11 (dead settings) were not
+  chosen. Large refactors (NET-1, ENG-1, MSG-2, APP-2, PER-3) and TASK-CORE-PTT-1 are not started.
+- `AUD-01` (NSD on a phone), `AUD-02` (group thread order), `AUD-03` (GitHub CI run).
+
+### Next AI
+Do not start 3.2, S6, 3.11 or a refactor unasked. If `AUD-01` fails, ERROR-073's leak is somewhere else: follow its "Next step".
+
+## 2026-09-30 — Audit of 2026-09-28 re-verified claim by claim (docs only, nothing implemented)
+
+### Worked on
+The owner asked for every claim in `docs/audit/2026-09-28-architectural-audit-and-tasks.md` to be verified before choosing what to
+implement. Each claim was re-read against HEAD `338ab04`, the logs and the GitHub CI history. Result: audit section 7.
+
+### Changed
+- `docs/audit/2026-09-28-architectural-audit-and-tasks.md`: appended section 7 (corrections to section 6, reconfirmed items, order).
+- No code.
+
+### Verification
+- `:core:persistence:jvmTest` 41/41; `:core:persistence:testAndroidHostTest` 12 failed of 46 (Windows DataStore rename, test-only).
+- `gh run view 36007442208` (last CI run on `dev`, 2026-09-24): failed with `UnsatisfiedLinkError` in the desktop and engine-interop tests.
+
+### Found (new, not in the audit or in section 6)
+- **NSD orphan registration is reachable on every Wi-Fi reconnect** (`startAdvertising` unguarded + `onUsableNetwork` + `restartAdvertising`).
+  A plausible cause of ERROR-073, not reproduced.
+- **CI is red on Linux** because the engine interop fixtures use the DPAPI vault by default.
+- Section 6 was wrong or stale on DR1 (built), the JmDNS adapter filter (DR5 built), the duplicate count (12, two adapted) and the S3 hashes.
+
+### Remaining
+The owner chooses. Recommended order is in audit section 7. Owed device tests are unchanged.
+
+### Next AI
+Do not implement any audit item unasked. If ERROR-073 is worked, add the fake-bridge test first, then reproduce on a phone.
+
 ## 2026-09-30 — Removal ripple fixed (ERROR-083), `1701fc3`; AGENTS.md section 29 brought up to date
 
 ### Worked on

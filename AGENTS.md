@@ -954,7 +954,8 @@ Android's look preserved or improved).
 ## In Progress
 
 - **Owner device checks** of everything above (`docs/testing/TEST-BACKLOG.md`), then the UI-045 quality gate.
-- Open audit items (`docs/audit/2026-09-28-architectural-audit-and-tasks.md`): §3.6, §3.2, S6, §3.4, §3.7, §3.11.
+- Open audit items (`docs/audit/2026-09-28-architectural-audit-and-tasks.md`): §3.2, S6, §3.11. §3.6, §3.4, §3.7 and the Linux CI vault
+  were fixed and unit-tested 2026-09-30 (device checks `AUD-01`...`AUD-03`; ERROR-073 stays OPEN until `AUD-01`).
 - **Adaptive UI upgrade** (`docs/migration/ADAPTIVE-UI-PLAN.md`): code exists for AD-1 (UI-scale density multiplier, persisted), AD-2 (automatic list-pane width + a 640×480 dp minimum window; **no draggable splitter**, AD-D3 still open), AD-3 (conversation in the detail pane on both hosts), AD-4 (keyboard shortcuts only; pointer idioms and AD-D5 selection not done), AD-5 (580 dp bubble cap), AD-6 (Android navigation rail ≥ 600 dp and two-pane layout; width measured manually, no fold-posture support; AD-D4 not formally answered) and part of AD-7 (desktop keeps the open conversation across tab switches). None of it is device-verified.
 
 ## Not Yet Implemented

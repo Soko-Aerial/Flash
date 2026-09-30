@@ -256,3 +256,60 @@ NOT CONFIRMED = the code does not match the claim.
 ### What to do with this list
 Worth doing, in this order: §3.6 (small, user-visible), §3.2 (close the socket first), S6 (token), §3.4, §3.7, §3.11.
 Do not do: TASK-DSK-1, TASK-APP-1, TASK-CORE-CALL-1, TASK-CORE-CALL-2, TASK-CORE-ENG-2, TASK-CORE-NET-3.
+
+
+---
+
+## 7. Re-verification (2026-09-30, HEAD `338ab04`)
+
+The owner asked for every claim to be checked again before choosing what to implement. This section re-read the code, the logs
+and the CI history; it corrects §6 where §6 was wrong or out of date and adds what §6 missed. §6 is kept as written (AGENTS.md
+section 27). Nothing was implemented. "Not run" still means a code-reading verdict: nothing below was reproduced on a device.
+
+### Corrections to §6 and to the audit's own text
+
+| Item | §6 / audit said | HEAD says |
+|---|---|---|
+| **§3.7 NSD listener overwrite** | "Plausible; needs a registration still pending when the watchdog fires." | **Stronger than that.** `NsdTransport.startAdvertising` has no "already advertising" guard, and `DiscoveryEngineHolder` (`onUsableNetwork`, ~line 673) and `Flash.kt:298` call `engine.startAdvertising(port)` on **every Wi-Fi (re)connect**, while `NsdTransport.onNetworkChanged` also runs `restartAdvertising()` for the same event. In either order one registration is orphaned (the listener reference is overwritten, `unadvertise` only unregisters the latest). That matches ERROR-073 (advertised, port closed after the engine stops). Still not reproduced. |
+| **§3.9 route eviction (DR1)** | "Real, known; planned after group calling." | **Stale.** DR1 (remembered routes) was built 2026-09-29 (`RememberedRoutes`, `RoomRememberedEndpointStore`, `DesktopRememberedEndpointStore`); device check DR-01 owed. `forgetEndpoint` still runs, by design: routes are planner hints beside it. |
+| **TASK-CORE-DISC-2 virtual adapters** | "Real; filter is isUp && !isLoopback && supportsMulticast." | **Stale.** `multicastCapableAddresses` now goes through `VirtualAdapters.selectInterfaces` (DR5): name-based skip list (hyper-v, vethernet, vmware, virtualbox, wsl, docker, tailscale, zerotier, ...), never empties the list. Device effect not run. |
+| **§1.5 / TASK-CORE-NET-1 duplicated files** | "11 files" / §6: "10 identical, `WsTransferClient` adapted." | 12 files exist in both source sets: **10 identical apart from a 4-line note**, and **two adapted: `WsTransferClient` and `TcpHostProbe`** (no `ConnectivityManager` on desktop). No test guards drift; the only guard is the comment "Do NOT edit one copy without the other". |
+| **§2.2 S3 commit hashes** | "resolved in `8e34090` and `14fff33`" | The fix is **`05ad4f2`** (2026-09-23, "fail closed when TLS cannot be initialised (audit S3)"). `14fff33` is S1b (plaintext chat frames) and `8e34090` is a docs commit. The conclusion (fails closed, `requireTransportSecurity` in all three engines) is right. |
+| **§1.3 / §5.3 DPAPI, "CI on Linux is blocked"** | §6: BY DESIGN. | Production is by design (ADR-035, Windows-only desktop), **but CI is red because of it.** The last GitHub run on `dev` (2026-09-24, `e61bf95`) failed `:core:engine:allTests` (2 of 10) and `:desktop:allTests` (25 of 82) on ubuntu, with `UnsatisfiedLinkError` / JNA `NativeLibrary` init among the causes. The engine interop fixtures build `PersistedFlashCrypto(stateDir)` with the default `IdentityKeyVault.Dpapi`; ADR-035 says tests should use a pass-through vault. The other desktop failures (`DesktopNotificationManagerTest` 11, `DesktopReceivedStorageTest` 4, `DesktopCallingTest` 4, `DesktopMediaDevicesTest` 3, engine boot / auto-dial / pairing 1 each) were not diagnosed; WebRTC natives and Windows-only APIs are the likely causes. No newer run is listed. |
+| **§1.2 database version** | "schema is version 4" | It is **6** (`DATABASE_VERSION`). Desktop registers `FlashJvmMigrations.ALL`; `FlashJvmMigrationsTest` exists. (ERROR-080 stays FIXED.) |
+| **§3.2 blocking write** | Structure real; impact not run. | Refined: bulk chunks ride the **control** WebSocket whenever the peer is a desktop or has no data server (`wsFallback` in `DiscoveryEngineHolder`, `sessionChannel` in `DesktopEngine`); only phone-to-phone with a data server uses a separate socket. So the exposure is real for exactly the phone-desktop path. Blocked `write` calls are not cancellable, and `close()` writes CLOSE under `writeLock` before `socket.close()`, so a stuck write is only released when TCP gives up (order of minutes; `soTimeout` is a read timeout only). The listener is told first, so the session is logically closed; the cost is stuck threads and sockets, not a frozen session. |
+| **§3.11 placebo knobs** | 3 unused. | Confirmed: `maxAdaptiveChunkSizeBytes` and `maxImagePreviewDimension` have no reader, `allowVideoThumbnails` is read only by a test. `sqliteCacheSizeKb` **is** read (`FlashDatabaseOpener`). The KDoc promises "adaptive up to 1 MB" and thumbnail switches that no code implements. |
+| Line counts | 2,981 / 2,805 / 2,410 / 1,410 | Now `RealFlashChatRepository` 3,372, `MainActivity` 2,882, `DiscoveryEngineHolder` 2,686, `DesktopEngine` 1,578. The refactor tasks are subjective either way. |
+
+### Reconfirmed as §6 had them
+
+- **REAL:** §3.6 `sendGroupText` (no `runInTransaction`, no `touchConversation`; the direct path `enqueueDirectText` has both, group media/receive call `touchConversation`), §3.4 `defaultStreams != 2` (no production caller passes it; nine tests pass `1`), §3.1 S6 (loopback port, no token; port file in `~/.flash/app.port`; only raises the window and queues paths in the share dialog, the user still picks the recipient), §3.10 (`:core:ptt` is `android.library`), TASK-CORE-PER-2 (**run today: `testAndroidHostTest` 12 failed of 46, `jvmTest` 41/41; test-only, DataStore is Android-only in production**), TASK-CORE-SEC-2 (constant AAD, a wire break to change), TASK-CORE-SEC-3 (two `copyOfRange` per frame, perf-only, unmeasured), TASK-UI-CHT-1/2 (no splitter and no pointer idioms in the code; UI-CHT-3 is partial).
+- **BY DESIGN / not a defect:** §3.3 (whole-file digest is in `FILE_START`; the pre-pass cost is real and **has never been measured**, `logs/experiments.md` has no entry), §1.4 (`DesktopEngine` is deliberately not a `FlashEngine`), TASK-CORE-ENG-2, TASK-CORE-CALL-2 (VP8-only after ERROR-065/066), TASK-CORE-COM-1 (the classifier is calibrated on a field report where an 8-core 4 GB Infinix "worked fine"), TASK-UI-SHM-1 (documented deliberate use of the deprecated clipboard API), TASK-CORE-PER-3 (`core:messaging`, `core:engine` and `desktop` use the DAOs and entities directly, so `internal` would break the module graph).
+- **STALE / WRONG:** TASK-DSK-1 (desktop compiles; `:desktop:jvmTest` 102 passed at `1701fc3`), §3.5 (`remoteVideoTracks` map, `FlashGroupVideoGrid` uses it), TASK-APP-1 (the engine outlives the service on purpose, see `onTimeout`), TASK-UI-CAL-1 (no `frameState`; `frameTick` is a `mutableLongStateOf` and the frame buffers are guarded with `synchronized(this)`), §3.8 (one map entry per peer id; a stale deadline correctly means "no wait in flight").
+
+### Recommended order (small first, all unit-testable without a device)
+
+1. **§3.6** group text: one transaction plus `touchConversation` (~30 lines, 2 tests).
+2. **§3.4** `defaultStreams: Int? = null` (trivial).
+3. **§3.7** unregister the previous listener in `advertise()` (and/or guard `startAdvertising`), with a fake-bridge test that two advertises leave one live registration. Then check ERROR-073 on a phone (farm browse after a Wi-Fi off/on and an engine stop).
+4. **CI on Linux:** give the interop fixtures a pass-through vault so `allTests` is green off Windows (test-side only).
+5. **§3.2** `close()` releases the socket without waiting behind a stuck write (two identical copies: android and jvm), with a test that stalls a receiver.
+6. **S6** random token in `app.port` (desktop only).
+7. Optional: **§3.11** delete the three dead fields and fix the KDoc; **TASK-CORE-PER-2** make the Windows DataStore tests close their store before cleanup.
+
+Not recommended now: TASK-CORE-NET-1 (needs an ADR that overturns D1 = Option B), TASK-CORE-ENG-1, MSG-2, APP-2 (refactors), TASK-CORE-PTT-1 (a feature), the "do not do" list in §6, and the AD-* UI tasks (owner-gated).
+
+
+### Status after the owner's choice (2026-09-30)
+
+Items 1-4 of the order above are **implemented and unit-tested, not device-verified** (see `logs/progress.md`, 2026-09-30, and
+`docs/testing/TEST-BACKLOG.md` `AUD-01`...`AUD-03`):
+
+| Item | State |
+|---|---|
+| 3.6 group text transaction + `sortOrder` | DONE (2 tests, mutation-checked) |
+| 3.4 `defaultStreams: Int? = null` | DONE (3 tests, bug reproduced first) |
+| 3.7 NSD orphan registration | DONE in the transport and the real bridge (3 fake-bridge tests, mutation-checked); ERROR-073 stays OPEN until `AUD-01` |
+| CI on Linux (DPAPI vault in fixtures) | DONE test-side (`DesktopEngine.identityVault`, default unchanged); Linux run itself not seen; 3 `DesktopMediaDevicesTest` failures expected to remain |
+
+Still open and **not chosen**: 3.2, S6, 3.11 / TASK-CORE-PER-2, and the refactors and features listed under "Not recommended now".

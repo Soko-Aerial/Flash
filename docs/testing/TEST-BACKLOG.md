@@ -570,6 +570,43 @@ by later testing without anyone recording it: confirm, then mark PASS here **and
   If it does, that is the trigger for priority admission (ADR-057, Revisit when).
 - **Source:** ADR-057. **Status:** TODO
 
+## 4e. Audit fixes of 2026-09-30 (`docs/audit/2026-09-28-architectural-audit-and-tasks.md` section 7)
+
+Three small fixes with unit tests, and a CI change. Only the first needs a device.
+
+### AUD-01 — A stopped engine is no longer advertised, and a Wi-Fi reconnect leaves one registration (audit 3.7, ERROR-073)
+- **Setup:** one phone with the new build, and a second device that can browse `_flash-transfer._tcp` (the PC0 farm,
+  `:core:engine:peerFarm`, or a desktop Flash). Both on the same Wi-Fi.
+- **Steps:**
+  1. Start Flash on the phone. Browse `_flash-transfer._tcp` from the second device: exactly **one** "Flash <phone>" entry.
+  2. Turn the phone's Wi-Fi off and on **three times** (each time wait until it is connected again). Browse again after each.
+  3. Stop the engine (Stop in the notification), wait 30 s and browse again. Repeat with a swipe-away from recents.
+  4. `adb logcat` on the phone during steps 2-3, filtered for the NSD transport (`Advertisement is down`, `re-registering NSD advertisement`).
+- **Pass:** one entry after step 1 and after every reconnect in step 2 (never two entries for the same phone, even briefly
+  once the mDNS cache expires); **no** entry 30 s after step 3, and no dial to the phone gets `Connection refused` afterwards
+  (grep the farm log for `Auto-connect`). No repeating "Unable to unregister" warnings in logcat.
+- **Fail:** a second entry appears after a reconnect, or the phone is still advertised after the engine stopped. Then the leak
+  is somewhere else: record a new ERROR and keep ERROR-073 OPEN.
+- **Source:** ERROR-073 (update 2026-09-30), audit section 7, `NsdTransportLogicTest` (3 new tests). Related: OLD-02.
+- **Status:** TODO
+
+### AUD-02 — Sending to a group moves the thread to the top of the chat list (audit 3.6)
+- **Setup:** an existing group with at least one other member; a second 1:1 chat that has a newer message than the group.
+- **Steps:** open the chats list (the group sits below the 1:1 chat), open the group, send a text, go back to the list.
+- **Pass:** the group is now first. Its name and member count are unchanged. (An archived group also un-archives.)
+- **Source:** audit 3.6; `RealFlashChatRepositoryTest` (`group text ...`, 2 tests).
+- **Status:** TODO
+
+### AUD-03 — Linux CI is green (audit section 7, "CI on Linux")
+- **Setup:** push `dev` (or run the workflow manually) and read the GitHub Actions run.
+- **Pass:** `:core:engine:allTests` and `:desktop:allTests` pass on ubuntu. **Expected remaining failure:** the 3
+  `DesktopMediaDevicesTest` cases (undiagnosed, probably the WebRTC natives): if only those fail, record them as a new
+  ERROR and mark this test PASS for the DPAPI part.
+- **Not verifiable locally:** this machine is Windows, and DPAPI works here. The fix was proven only by simulating a failing
+  DPAPI vault.
+- **Source:** audit section 7; `FixtureIdentityVaultTest`, `TestIdentityVaultTest`.
+- **Status:** TODO
+
 ## 5. Measurements — do these last
 
 They replace every *(measure)* estimate in the plans and decide tuning. Record each in `logs/experiments.md`.
