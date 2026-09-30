@@ -2052,6 +2052,16 @@ Verify (`9674ab0`).
   device). The outer combine now includes `groupMemberDao.observeMembers` for a group conversation, which also refreshes the header
   member count. Unit tests: `SignedGroupsTest` (canRemoveMembers for the owner only, and the roster drops the removed member; both
   fail if the change is reverted), `FlashGroupMembersLogicTest` (who is removable, dialog copy).
+- **Removal ripple (2026-09-30, ERROR-083).** Reviewing what removal does to the *other* devices found four gaps, all fixed without a wire
+  change: (1) a member removed while offline was never told (reconcile skips inactive peers, members ignore the removed device's own
+  roster), so a member now sends an inactive v2 peer the owner's tombstone alone (`removalNoticeFor`); (2) a removed or left device could
+  keep sending (rows stayed `PENDING` for good), so sends refuse and `FlashConversationUiState.selfMembership` swaps the composer for a
+  notice (UI-029 addendum 3, three approaches: disabled composer, delete the chat, notice bar; the notice bar chosen); (3) a device that
+  is out ignores every bundle but an invitation back, withdraws the vouches when it verifies its own tombstone and takes no group
+  traffic; (4) the call gate ignored roster activity for a paired peer, so hosts now use `isGroupCallPeer` (active row and local device
+  still a member) while `isGroupPeerTrusted` stays as it was. Rejected: sending the removed device the full roster; relying on the
+  removed device to forward its own tombstone. **Known limit:** removal is eventually consistent, and a member that has not converged
+  still sends to the removed device; only per-sender keys would close that.
 - **UI (UI-029 addendum, DESIGNED first):** a third line "Added by <owner> · not verified" and a trailing **Verify** action; Verify
   reuses ordinary pairing and adds no trust logic to the UI. Alternatives considered in `docs/ui/group-ui.md`.
 

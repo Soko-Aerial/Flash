@@ -147,7 +147,13 @@ Everything above was built as written. What is different from, or added to, the 
 
 - ~~**Owner remove has no UI.**~~ Built afterwards (`39d8905`, UI-029 addendum 2 in `docs/ui/group-ui.md`): a Remove action per row for
   the owner of a v2 group plus a confirmation, `canRemoveMembers` from the repository. Open: what the *removed* member's own screen
-  shows is undesigned, and the flow is not device-verified (GT-03 step 7).
+  shows is undesigned, and the flow is not device-verified (GT-03 step 7). *(The undesigned screen was closed the same day by UI-029
+  addendum 3, see the next bullet.)*
+- **Removal ripple (ERROR-083).** Removal only reached online devices and a removed device could keep sending and join calls. Fixed with
+  no wire change: an inactive peer is sent the owner's tombstone on session-up (`removalNoticeFor`); a device that is out ignores bundles
+  except an invitation back, withdraws its vouches, refuses to send and store group traffic; `selfMembership` shows a notice in place of
+  the composer (UI-029 addendum 3); calls use `isGroupCallPeer` (active roster row) instead of `isGroupPeerTrusted`. Known limit:
+  eventual consistency, a member that has not converged still sends to the removed device. Device check: GT-03 steps 7 and 9-11.
 - **Deleting a v2 chat without leaving** keeps the member rows and their vouches, and a rejoin after such a delete meets stale rows (a latent V1 issue). The plan's E2 sentence "Leaving or deleting a v2 group revokes every vouch it made" is true of **leaving** only.
 - **An established group-call leg is not re-checked:** a member removed mid-call stays connected until the call ends (pre-existing
   for call legs).

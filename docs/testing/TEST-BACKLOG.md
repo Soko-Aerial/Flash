@@ -499,8 +499,13 @@ by later testing without anyone recording it: confirm, then mark PASS here **and
   5. On B send a photo to the group. Then open a 1:1 chat with C and try to send C a file.
   6. On B tap **Verify** next to C. Complete the pairing on both sides. Then open the member list again.
   7. **Owner removes a member.** On A open the member list. Check which rows show **Remove**, tap it next to D, read the dialog and
-     confirm. Then have D try to send a message to the group.
-  8. On C leave the group. On B check that C is no longer listed.
+     confirm. Then look at D's screen and have D try to send a message to the group.
+  8. On C leave the group. On B check that C is no longer listed. Open the group on C and look at its screen.
+  9. **Add D back.** On A use Add members and pick D. Check D's screen, then send a message from D.
+  10. **Removed while offline.** Turn D's Wi-Fi off (or stop the desktop). On A remove D again and wait until A, B show D gone. Turn D's
+      network back on, wait for it to reconnect to any member (no manual action on D), and look at D's screen.
+  11. **Calls.** While D is out (after step 10), start a group voice call from B. Check whether D rings, and have D look for a Join
+      banner.
 - **Pass:**
   - Step 1: A's log has `Group v2 created: group=g2-...`; B, C and D each log `Group v2 joined: group=g2-... owner=<A's id>`; the
     group shows four members with A as the only owner.
@@ -514,8 +519,16 @@ by later testing without anyone recording it: confirm, then mark PASS here **and
   - Step 7: A's sheet shows **Remove** on B, C and D but **not on A's own row**; B's and C's sheets show it on no row. The dialog is
     titled "Remove <D's name>?" and says D keeps what it already received. After confirming, D's row disappears from A's sheet at
     once and from B's and C's within seconds; A's log has `Group v2 member removed: group=g2-... member=<D's id>`; nothing D sends
-    afterwards appears on A, B or C.
-  - Step 8: B's member list drops C (the leave tombstone, which also revokes C's vouch on B).
+    afterwards appears on A, B or C. **On D** the composer is replaced by "You were removed from this group / You can still read what you
+    already received.", there are no voice or video buttons, and the menu has no Add members or Leave group; D's old messages are still
+    readable; a message D managed to type before the notice appeared is not stored (no `PENDING` bubble that never clears).
+  - Step 8: B's member list drops C (the leave tombstone, which also revokes C's vouch on B). On C the notice reads "You left this group".
+  - Step 9: A's Add members offers D; D's composer comes back on its own, D's message reaches A, B and C, and B and C accept D again
+    (no `SECURITY:` line on any device).
+  - Step 10: D shows the removed notice within about a minute of reconnecting, with no action on D. Until it reconnects D still looks like
+    a member: that is expected, write down how long it took. The only log line for a later replay is a warning
+    `Group bundle ignored: group=g2-... reason=local-not-member`, at most one per reconnect.
+  - Step 11: D does not ring and has no Join banner; a stale Join tap on D leads to no call leg.
   - The logs contain no `SECURITY: vouch refused` (that line means the owner's cert clashed with a paired pin or another group's vouch).
 - **A FAIL means:** C's messages never reach B (or the reverse): check that each device has a session with the other (a vouch only
   installs the pin; the planner still has to dial, and ECO dials only neighbours), that the roster arrived (`Group v2 joined`), and
@@ -523,12 +536,13 @@ by later testing without anyone recording it: confirm, then mark PASS here **and
   no label (the row was treated as paired: check the pair state) or with a label but no Verify action; a file that reaches a vouched member
   (a gate bug, serious); group call legs missing between B and C; a removed member still being accepted; **Remove** shown to a
   member, missing on the owner's sheet, or offered on the owner's own row (`canRemoveMembers` / `canRemove`); the removed row still
-  listed in the owner's open sheet after confirming (the roster did not re-emit). Each is a new
+  listed in the owner's open sheet after confirming (the roster did not re-emit); D still shows a live composer after the removal; D
+  never learns of a removal made while it was offline; D rings or joins a group call while out; a message D sent while out stays `PENDING`
+  on D. Each is a new
   `ERROR-NNN`.
 - **Also note:** how long B took to reach C after the group was created (dial time between two never-paired devices), which mode each
   device was in (STANDARD, BOOST, ECO), and whether B and C were discovered before step 3 or only after. what D's own screen shows after the
-  removal (there is no designed "you were removed" state; write down what it does), and whether D's device learned of it at once or only
-  when it next reconnected.
+  removal, and whether D's device learned of it at once or only when it next reconnected (step 10).
 - **Source:** `docs/group/v2-vouched-trust-plan.md`, ADR-044 "V2 built", `docs/security.md` section 9. The attacks themselves (a first-use
   pin squatting a member's id, a paired-key conflict, a second owner vouching a different key, an impersonated session key, a cert
   from a non-owner, removal revoking the vouch) cannot be staged from the UI and are covered by unit tests only: `SignedGroupsTest`

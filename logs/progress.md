@@ -1,5 +1,53 @@
 # Progress Log
 
+## 2026-09-30 — Removal ripple fixed (ERROR-083), `1701fc3`; AGENTS.md section 29 brought up to date
+
+### Worked on
+The owner asked whether the effect of removing a member on the *other* devices had been considered. It had only been considered for the
+devices that are online. Reading the code found real gaps; this entry is the fix. The owner also asked for AGENTS.md "Not Yet
+Implemented" to be updated and for the status of DR2/DR3/DR5 and of V3/V4.
+
+### Changed
+- **A member removed while offline is now told.** `SignedGroups.removalNoticeFor` (charter + the owner's tombstone only) is sent by
+  `reconcileGroupMembership` to an inactive v2 peer; a self-issued leave is never sent. No wire change.
+- **A device that is out (removed or left)** ignores every bundle except an invitation back, withdraws the group's vouches when it
+  verifies its own tombstone (and no longer re-installs them), refuses to store group text or media from members that have not
+  converged, and refuses to send (text and attachments); nothing stays `PENDING` for good.
+- **`FlashConversationUiState.selfMembership`** (`Active` / `Left` / `Removed`): the composer is replaced by a notice, no call buttons,
+  no Add members / Leave in the menu (UI-029 addendum 3, designed first: disabled composer vs delete chat vs notice bar).
+- **Call gate:** hosts now hand `CallCoordinator` `isGroupCallPeer` (trusted in the group, an active roster row, this device still a
+  member) instead of `isGroupPeerTrusted`, so a removed member that is still paired cannot ring or join a group call.
+- **AGENTS.md section 29** rewritten from the code and the docs: it still listed pairing, TLS, chunked transfer, resume, integrity and the
+  custom composer as "not yet implemented". It now says what exists (with its verification status), what is postponed, and what is owed.
+
+### Answers recorded for the owner
+- DR2, DR3, DR5 (with DR1) are **built and unit-tested, not device-verified** (DR-01...DR-04 TODO); DR0 (MEAS-07) has not been run;
+  ADR-047 is still PROPOSED; DR4/DR6/DR7 are postponed (FO-01/02/03).
+- ADR-044 has V0, V1a, V1, V2 built and **V3** (the scale measurement, PC6 / MEAS-02, decides group size 32) postponed as FO-05. There is
+  no V4 in any document; the closest thing is per-sender keys, which ADR-044 lists under "Revisit when".
+
+### Verification
+- Seven new `SignedGroupsTest` cases; `FlashGroupSelfNoticeMathTest` (3) and one menu case. **Mutation checks:** each fix reverted in
+  turn, the intended test failed every time (no notice, inbound not dropped, pins re-installed / not revoked, send guard, call gate,
+  state). My first state mutation did not compile (warnings are errors) and its result XML was stale, which is why the test-results
+  directory is now emptied before each mutation run.
+- messaging 319 host / 158 jvm (run alone), ui:chat 298 (jvm and host), calling 133, desktop 102; `:app:compileDebugUnitTestKotlin` and
+  `:sample:consumer:compileDebugUnitTestKotlin` compile.
+- **Not verified on a device or in a preview:** TEST-BACKLOG GT-03 steps 7 and 9-11 (D's screen, re-add, removed while offline, calls).
+  Compose previews of `FlashGroupSelfNotice` exist but were not looked at.
+
+### Problems
+- ERROR-083 (found and fixed here). No other new errors.
+
+### Remaining
+- Removal stays eventually consistent: a member that has not heard of it still sends to the removed device. Only per-sender keys close
+  that. An established call leg is not re-checked. A non-owner in a v2 group still sees "Add members" and it fails silently (both hosts
+  ignore the `addGroupMembers` result). Deleting a chat without leaving keeps rows and vouches.
+
+### Next AI
+GT-03 with the owner (steps 7 and 9-11 are new), or the open audit items (3.6, 3.2, S6, 3.4, 3.7, 3.11). Do not start DR4, DR6, DR7, FO-04
+or the scale measurement unasked.
+
 ## 2026-09-30 — Owner remove UI (ADR-044 V2 E5), `39d8905`
 
 ### Worked on

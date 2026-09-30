@@ -503,6 +503,14 @@ FLASH_GROUP action=bundle groupId=<g2-id> from=<id> opId=<uuid> version=0
    only tombstone themselves.
 4. Verification budget: a cert whose `sig` equals the stored row's costs nothing; new certs cost one verification each; a peer
    over `BUNDLE_VERIFICATIONS_PER_WINDOW` (120 per 60 s) has further bundles dropped until the window rolls.
+5. A device whose own stored row is **inactive** (it left, or the owner removed it) ignores every bundle that does not carry a valid
+   *active* cert for itself (an invitation back), logs `local-not-member`, installs no vouch and re-installs none. When it verifies an
+   inactive cert for itself it withdraws every vouch the group made. It also takes no other group frame for that group.
+
+**Removal notice (sender behaviour, no wire change).** On session-up a member sends an *inactive* v2 peer a bundle of the charter plus
+that peer's stored tombstone, and only when the tombstone is owner-issued (`issuerId` is the owner and not the subject); a self-issued
+leave is never sent. The receiver checks the owner's signature itself, so any member can relay it; a device that already knows treats it
+as a stale replay (no verification cost). Members never send a roster to an inactive peer.
 
 **Signed group message.** `FLASH_GMSG` gains an optional `sig=<b64>`: the author's signature over the `flash-gmsg-v1` bytes. `from` is the
 author. `sig` is **omitted for a legacy group's message**, so legacy frames are byte-identical to before. In a v2 group the
