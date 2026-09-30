@@ -697,4 +697,69 @@ class RealFlashTransferRepositoryTest {
         )
         assertTrue("every batch reached the right transfer", store.marked.all { it.first == "rx-race" })
     }
+
+    /**
+     * Sends 2 MB (32 chunks of the HIGH profile's 64 KB, so no stream is dropped for lack of work) through a
+     * repository built with [streams] and returns the channel ids the dispatcher asked the factory for. The
+     * channels never ACK, so the transfer stays in flight until it is cancelled.
+     */
+    private fun channelIdsOpenedFor(streams: Int?): Set<Int> {
+        val payload = ByteArray(2 * 1024 * 1024) { (it % 127).toByte() }
+        val opened = java.util.Collections.synchronizedSet(mutableSetOf<Int>())
+        val factory = StreamChannelFactory { channelId, _ ->
+            opened += channelId
+            object : StreamChannel {
+                override val id: Int = channelId
+                override suspend fun sendFrame(frameBytes: ByteArray): Boolean = true
+            }
+        }
+        val repo = if (streams == null) {
+            RealFlashTransferRepository(
+                streamChannelFactory = factory,
+                fileSourceOpener = { Buffer().write(payload) },
+                repositoryScope = newScope(),
+                workerDispatcher = testDispatcher,
+            )
+        } else {
+            RealFlashTransferRepository(
+                streamChannelFactory = factory,
+                fileSourceOpener = { Buffer().write(payload) },
+                repositoryScope = newScope(),
+                workerDispatcher = testDispatcher,
+                defaultStreams = streams,
+            )
+        }
+        val target = FlashDevice(
+            id = com.transfer.flash.core.common.model.FlashDeviceId("stream-count-peer"),
+            friendlyName = "Peer",
+            transportType = com.transfer.flash.core.common.model.FlashTransportType.LAN,
+        )
+        val result = runBlocking {
+            repo.sendFile(target, "content://media/big.bin", "big.bin", payload.size.toLong())
+        }
+        val transferId = (result as FlashResult.Success).value
+        awaitUntil(describe = { "no channel was opened" }) { opened.isNotEmpty() }
+        // Every channel is opened in one pass, milliseconds after the first; give a wrongly wide pass time to show.
+        Thread.sleep(300)
+        val seen = synchronized(opened) { opened.toSet() }
+        runBlocking { repo.cancelTransfer(transferId) }
+        return seen
+    }
+
+    @Test
+    fun `an explicit stream count of 2 is honoured, not read as the default`() {
+        // 2 used to be the "not set" sentinel, so passing exactly 2 fell through to the HIGH profile's 4.
+        assertEquals(setOf(0, 1), channelIdsOpenedFor(streams = 2))
+    }
+
+    @Test
+    fun `an explicit stream count of 1 is honoured`() {
+        assertEquals(setOf(0), channelIdsOpenedFor(streams = 1))
+    }
+
+    @Test
+    fun `without an explicit stream count the performance profile decides`() {
+        // The default performance mode is HIGH, whose profile is 4 streams.
+        assertEquals(setOf(0, 1, 2, 3), channelIdsOpenedFor(streams = null))
+    }
 }

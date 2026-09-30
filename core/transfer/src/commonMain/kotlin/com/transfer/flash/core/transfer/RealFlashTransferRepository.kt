@@ -55,7 +55,12 @@ public class RealFlashTransferRepository(
     private val store: TransferStore? = null,
     private val repositoryScope: CoroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
     private val workerDispatcher: CoroutineDispatcher = Dispatchers.IO,
-    private val defaultStreams: Int = 2,
+    /**
+     * Parallel streams per send. Null (the default, and what every production host passes) lets the
+     * performance profile decide. An explicit value always wins, including 2: the default used to be the
+     * number 2, so a caller that asked for exactly 2 was read as "not set" and got the profile's count.
+     */
+    private val defaultStreams: Int? = null,
     /**
      * When true (production wiring), every OUTBOUND send parks after emitting FILE_START and does
      * NOT stream chunks until the receiver explicitly accepts (a RESUME control frame). This is the
@@ -298,7 +303,7 @@ public class RealFlashTransferRepository(
         val source = ChunkSource { fileSourceOpener.open(fileUri) }
 
         val transferProfile = performanceMode().transfer
-        val resolvedStreams = if (defaultStreams != 2) defaultStreams else transferProfile.streamCount
+        val resolvedStreams = defaultStreams ?: transferProfile.streamCount
         val dispatcher = MultiStreamDispatcher(
             chunker = chunker,
             meta = meta,
