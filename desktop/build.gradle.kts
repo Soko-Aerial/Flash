@@ -29,9 +29,10 @@ kotlin {
             dependencies {
                 // Engine + core modules — all jvm()-capable KMP. `:core:engine`'s jvm target
                 // is thin (PlatformLock only) but carries the six api() core modules, so this
-                // one line brings the whole stack. `:core:ptt` is NOT here: a plain AGP module
-                // with no JVM variant (ERROR-049). `:core:calling` converted to KMP in Phase 25
-                // and joins below for Phase 33a (D11 = B).
+                // one line brings the whole stack. `:core:ptt` is not part of it: `:core:engine`
+                // names it in androidMain only, and it joins below (it converted to KMP in ADR-058,
+                // ending ERROR-049). `:core:calling` converted to KMP in Phase 25 and joins below
+                // for Phase 33a (D11 = B).
                 implementation(project(":core:engine"))
                 implementation(project(":core:common"))
                 implementation(project(":core:security"))
@@ -54,6 +55,9 @@ kotlin {
                 // Phase 33a: the shared call engine. webrtc-kmp arrives transitively via
                 // `:core:calling`'s api() edge (ADR-025 re-export), so no direct webrtc dep here.
                 implementation(project(":core:calling"))
+                // ADR-058: push-to-talk. The engine is commonMain; the jvm target brings the
+                // javax.sound.sampled microphone and speaker.
+                implementation(project(":core:ptt"))
 
                 // Desktop native windowing for the CURRENT OS. This is the artifact that
                 // supplies `androidx.compose.ui.window.Window`/`application` on a JVM.
