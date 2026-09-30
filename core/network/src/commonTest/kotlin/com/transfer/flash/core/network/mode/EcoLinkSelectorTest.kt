@@ -77,6 +77,19 @@ class EcoLinkSelectorTest {
     }
 
     @Test
+    fun `a group nobody in it is paired with still gets its ring neighbours from the roster`() {
+        // ADR-044 V2: the host builds contacts as paired peers plus every active group roster, so a vouched member
+        // is a contact even when this device never paired it. Twenty of them, all unpaired, still form a ring.
+        val roster = (1..20).map { "m" + it.toString().padStart(2, '0') }
+        val v = view(available = roster.toSet() - "m01", contacts = roster.toSet())
+
+        val wanted = EcoLinkSelector.wanted("m01", v)
+
+        assertEquals(EcoLinkSelector.neighbours("m01", roster - "m01"), wanted)
+        assertEquals(ConnectionModePolicy.ECO_NEIGHBOURS, wanted.size)
+    }
+
+    @Test
     fun `only idle, unwanted sessions this side dialed are parked`() {
         val contacts = (1..8).map { "p$it" }.toSet()
         val activity = mapOf(
