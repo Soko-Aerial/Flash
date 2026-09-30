@@ -284,6 +284,45 @@ class PresenceStateTest {
     }
 
     @Test
+    fun aVouchedGroupMemberIsDialedFromATipOnceItHasAPinAndNotBefore() {
+        // ADR-044 V2: C is a fellow member of B's group but was never paired with B. The owner's vouch is what
+        // gives B a pin for C, and a tip is only ever dialed against a pinned subject.
+        val b = Node("B")
+        b.trusted = setOf("A")
+        b.rosters = listOf(setOf("A", "B", "C"))
+        b.sessions = setOf("A")
+        val report = PresenceFrame.Report(
+            full = true,
+            entries = listOf(PresenceEntry("C", 0, PresenceReportState.Seen, 1, PresenceEndpoint("10.0.0.7", 45822))),
+        )
+        assertTrue(b.state.onFrame(0, "A", report, b.view()), "C is a contact through the roster, so the report is kept")
+
+        b.pinned = setOf("A")
+        assertTrue(b.state.tips(0, b.view()).isEmpty(), "no pin yet: trust-on-first-use would pin whoever answers")
+
+        b.pinned = setOf("A", "C")
+        val tip = b.state.tips(0, b.view()).getValue("C")
+        assertEquals("A", tip.source)
+        assertEquals(PresenceEndpoint("10.0.0.7", 45822), tip.endpoint)
+    }
+
+    @Test
+    fun theHostViewCountsAnUnpairedRosterMemberWithAPinAsPinned() {
+        val view = PresenceLocalView.of(
+            ghost = false,
+            sessions = emptyMap(),
+            isLive = { false },
+            sightings = emptyList(),
+            trusted = setOf("owner"),
+            hasPin = { it == "owner" || it == "vouched" },
+            rosters = listOf(setOf("owner", "vouched", "unvouched")),
+        )
+
+        assertEquals(setOf("owner", "vouched"), view.pinned)
+        assertEquals(setOf("owner"), view.trusted)
+    }
+
+    @Test
     fun aSuccessfulTipResetsTheFailureCount() {
         val b = Node("B")
         b.trusted = setOf("A", "C")
