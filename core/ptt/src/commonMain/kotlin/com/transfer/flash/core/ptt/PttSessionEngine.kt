@@ -1,6 +1,11 @@
+@file:OptIn(FlashInternalApi::class)
+
 package com.transfer.flash.core.ptt
 
-import android.util.Log
+import com.transfer.flash.core.common.annotation.FlashInternalApi
+import com.transfer.flash.core.common.id.UuidIdGenerator
+import com.transfer.flash.core.common.logging.FlashLog
+import com.transfer.flash.core.common.time.SystemTimeSource
 import com.transfer.flash.core.messaging.protocol.PttFrameCodec
 import com.transfer.flash.core.messaging.protocol.PttPingFrame
 import com.transfer.flash.core.messaging.protocol.PttAudioFrame
@@ -13,7 +18,7 @@ import com.transfer.flash.core.messaging.ptt.PttFloorEvent
 import com.transfer.flash.core.messaging.ptt.PttFloorMachine
 import com.transfer.flash.core.messaging.ptt.PttFloorState
 import com.transfer.flash.core.messaging.ptt.PttTransition
-import java.util.UUID
+import kotlin.concurrent.Volatile
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -51,6 +56,10 @@ import kotlinx.coroutines.withContext
  *
  * Phase 1 executes audio + wire effects fully; later phases expose [notices], the
  * role-specific foreground service, and the state-driven overlay.
+ *
+ * Multiplatform (ADR-058): this class is `commonMain` and touches no platform API. Capture and playout
+ * come from [audio] (`AudioRecord`/`AudioTrack` on Android, `javax.sound.sampled` on the desktop); the
+ * monotonic clock and the monitor lock are the `expect` seams in `PttPlatform.kt`.
  */
 public class PttSessionEngine(
     private val localId: () -> String?,
@@ -62,6 +71,8 @@ public class PttSessionEngine(
     private val hasMicPermission: () -> Boolean,
     private val isCallActive: () -> Boolean,
     private val audioRateHz: () -> Int,
+    private val audio: PttAudioPlatform = platformPttAudio(),
+    private val elapsedRealtimeMs: () -> Long = ::pttElapsedRealtimeMs,
 ) : FlashPtt {
     private data class OutPacket(val sessionId: String, val pcm: ByteArray, val captureTsMs: Long)
 
@@ -90,14 +101,14 @@ public class PttSessionEngine(
     private val _pings = MutableSharedFlow<PttPingEvent>(extraBufferCapacity = 16)
     override public val pings: Flow<PttPingEvent> = _pings.asSharedFlow()
 
-    private val seenPingEventIds =
-        java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<String, Boolean>())
+    private val pingDedupLock = PttLock()
+    private val seenPingEventIds = HashSet<String>()
 
     @Volatile
-    private var capture: PttCapture? = null
+    private var capture: PttCaptureDevice? = null
 
     @Volatile
-    private var playout: PttPlayout? = null
+    private var playout: PttPlayoutDevice? = null
 
     // Session fields below are written on engine-scope coroutines and read from session
     // loops, audio threads and UI observers. Correctness-bearing floor changes stay in the
@@ -119,9 +130,9 @@ public class PttSessionEngine(
 
     @Volatile
     private var sessionJobKey: SessionJobKey? = null
-    private val hbLock = Any()
+    private val hbLock = PttLock()
     private var hbSeq: Long = 0L
-    private val sentHb = java.util.concurrent.ConcurrentHashMap<Pair<Long, String>, Long>()
+    private val sentHb = HeartbeatLedger()
 
     @Volatile
     private var lastRttMs: Long? = null
@@ -137,7 +148,7 @@ public class PttSessionEngine(
 
     @Volatile
     private var pttStartPending: Boolean = false
-    private val voiceNoteGate = Any()
+    private val voiceNoteGate = PttLock()
 
     private val audioOut = Channel<OutPacket>(64, BufferOverflow.DROP_OLDEST)
 
@@ -147,33 +158,40 @@ public class PttSessionEngine(
      */
     override public fun onPttButton(): PttPressOutcome {
         if (isCallActive()) {
-            Log.w(TAG, "PTT press refused: call active")
+            FlashLog.w(TAG, "PTT press refused: call active")
             return PttPressOutcome.CALL_ACTIVE
         }
         if (voiceNoteLeaseId != null) {
-            Log.w(TAG, "PTT press refused: voice note active")
+            FlashLog.w(TAG, "PTT press refused: voice note active")
             scope.launch { _notices.emit("Voice recording in progress — PTT unavailable") }
             return PttPressOutcome.VOICE_NOTE_ACTIVE
         }
         if (floor is PttFloorState.Idle) {
             if (snapshotMembers().isEmpty()) return PttPressOutcome.NO_PEERS
             if (!hasMicPermission()) {
-                Log.w(TAG, "PTT press refused: no mic permission")
+                FlashLog.w(TAG, "PTT press refused: no mic permission")
                 scope.launch { _notices.emit("Microphone permission is needed to talk") }
                 return PttPressOutcome.NO_MIC
             }
-            synchronized(voiceNoteGate) {
-                if (voiceNoteLeaseId != null) return PttPressOutcome.VOICE_NOTE_ACTIVE
-                if (pttStartPending) return PttPressOutcome.ACCEPTED
-                pttStartPending = true
+            val refused = voiceNoteGate.withLock {
+                when {
+                    voiceNoteLeaseId != null -> PttPressOutcome.VOICE_NOTE_ACTIVE
+                    // A start is already on its way: this press is absorbed, not a second toggle.
+                    pttStartPending -> PttPressOutcome.ACCEPTED
+                    else -> {
+                        pttStartPending = true
+                        null
+                    }
+                }
             }
+            if (refused != null) return refused
         }
         scope.launch {
             try {
                 dispatchIo(
                     PttFloorEvent.LocalPress(
                         nowMs = nowMs(),
-                        sessionId = UUID.randomUUID().toString(),
+                        sessionId = UuidIdGenerator.newId(),
                         holderId = localId().orEmpty(),
                     ),
                 )
@@ -190,10 +208,10 @@ public class PttSessionEngine(
         if (recipients.isEmpty()) return false
         val ping = PttFrameCodec.encode(
             PttPingFrame(
-                eventId = UUID.randomUUID().toString(),
+                eventId = UuidIdGenerator.newId(),
                 from = self,
                 senderName = localName() ?: "Peer",
-                sentAt = System.currentTimeMillis(),
+                sentAt = SystemTimeSource.nowMs(),
             ),
         )
         // Every recipient gets the frame — `any {}` would stop at the first successful write and
@@ -211,11 +229,10 @@ public class PttSessionEngine(
     override public fun onInboundText(peerId: String, text: String): Boolean {
         PttFrameCodec.decode(text)?.let { frame ->
             if (frame.from != peerId || !isTrustedPeer(peerId)) {
-                Log.w(TAG, "PTT ping dropped: claimed from=${frame.from} transport=$peerId trusted=${isTrustedPeer(peerId)}")
+                FlashLog.w(TAG, "PTT ping dropped: claimed from=${frame.from} transport=$peerId trusted=${isTrustedPeer(peerId)}")
                 return true
             }
-            if (seenPingEventIds.add(frame.eventId)) {
-                if (seenPingEventIds.size > SEEN_PING_CAP) seenPingEventIds.clear()
+            if (firstSightingOfPing(frame.eventId)) {
                 val event = frame.toEvent()
                 if (!_pings.tryEmit(event)) scope.launch { _pings.emit(event) }
             }
@@ -232,11 +249,11 @@ public class PttSessionEngine(
     public fun onControlFrame(peerId: String, frame: PttSessionFrame) {
         scope.launch {
             if (frame.from != peerId) {
-                Log.w(TAG, "PTT session frame dropped: claimed from=${frame.from} != transport peer=$peerId")
+                FlashLog.w(TAG, "PTT session frame dropped: claimed from=${frame.from} != transport peer=$peerId")
                 return@launch
             }
             if (!isTrustedPeer(peerId)) {
-                Log.w(TAG, "PTT session frame dropped: untrusted peer=$peerId")
+                FlashLog.w(TAG, "PTT session frame dropped: untrusted peer=$peerId")
                 return@launch
             }
             val now = nowMs()
@@ -244,7 +261,7 @@ public class PttSessionEngine(
             when (frame) {
                 is PttSessionFrame.Start -> {
                     if (isCallActive() || voiceNoteLeaseId != null) {
-                        Log.i(TAG, "PTT start ignored while local audio path is busy peer=$peerId")
+                        FlashLog.i(TAG, "PTT start ignored while local audio path is busy peer=$peerId")
                         return@launch
                     }
                     dispatchIo(
@@ -294,7 +311,7 @@ public class PttSessionEngine(
                         current != null && current.sessionId == frame.sessionId &&
                         peerId in members
                     ) {
-                        sentHb.remove(frame.seq to peerId)?.let { sentAt ->
+                        sentHb.take(frame.seq, peerId)?.let { sentAt ->
                             val sample = (now - sentAt).coerceAtLeast(0L)
                             lastRttMs = lastRttMs?.let { (it + sample) / 2 } ?: sample
                             refreshPttSessionStats()
@@ -348,26 +365,28 @@ public class PttSessionEngine(
      * Voice-message capture gate. A successful acquisition returns a lease that only its owner
      * can release, so disposal of an unrelated conversation cannot clear another recorder's gate.
      */
-    override public fun acquireVoiceNoteLease(): String? = synchronized(voiceNoteGate) {
+    override public fun acquireVoiceNoteLease(): String? = voiceNoteGate.withLock {
         if (
             voiceNoteLeaseId != null || pttStartPending ||
             floor !is PttFloorState.Idle || isCallActive()
         ) {
-            Log.w(TAG, "Voice note refused: PTT, call, or another voice note active")
-            return@synchronized null
+            FlashLog.w(TAG, "Voice note refused: PTT, call, or another voice note active")
+            null
+        } else {
+            val leaseId = UuidIdGenerator.newId()
+            voiceNoteLeaseId = leaseId
+            FlashLog.i(TAG, "Voice note capture gate acquired")
+            leaseId
         }
-        val leaseId = UUID.randomUUID().toString()
-        voiceNoteLeaseId = leaseId
-        Log.i(TAG, "Voice note capture gate acquired")
-        leaseId
     }
 
     /** Releases only the matching lease id returned by [acquireVoiceNoteLease]. */
     override public fun releaseVoiceNoteLease(leaseId: String) {
-        synchronized(voiceNoteGate) {
-            if (voiceNoteLeaseId != leaseId) return
-            voiceNoteLeaseId = null
-            Log.i(TAG, "Voice note capture gate released")
+        voiceNoteGate.withLock {
+            if (voiceNoteLeaseId == leaseId) {
+                voiceNoteLeaseId = null
+                FlashLog.i(TAG, "Voice note capture gate released")
+            }
         }
     }
 
@@ -462,8 +481,8 @@ public class PttSessionEngine(
         members = freshMembers
         val rate = audioRateHz()
         val packetMs = if (rate <= 8000) 60 else 20
-        val slot = arrayOfNulls<PttCapture>(1)
-        val instance = PttCapture(
+        val slot = arrayOfNulls<PttCaptureDevice>(1)
+        val instance = audio.createCapture(
             requestedRateHz = rate,
             packetMs = packetMs,
             onPacket = { pcm, captureTs ->
@@ -479,12 +498,12 @@ public class PttSessionEngine(
         slot[0] = instance
         capture = instance
         when (val started = instance.start()) {
-            is PttCapture.StartResult.Started -> {
+            is PttCaptureStart.Started -> {
                 sessionRateHz = started.actualRateHz
                 sessionPacketMs = started.actualPacketMs
                 val self = localId()
                 if (self == null) {
-                    Log.w(TAG, "Talking with no local id — ending")
+                    FlashLog.w(TAG, "Talking with no local id — ending")
                     processLocked(PttFloorEvent.LocalStopPress)
                     return
                 }
@@ -493,7 +512,7 @@ public class PttSessionEngine(
                         sessionId = sessionId,
                         from = self,
                         senderName = localName() ?: "Peer",
-                        sentAt = System.currentTimeMillis(),
+                        sentAt = SystemTimeSource.nowMs(),
                         sampleRateHz = sessionRateHz,
                         packetMs = sessionPacketMs,
                     ),
@@ -501,7 +520,7 @@ public class PttSessionEngine(
                 val announcedMembers = members.filter { sendControl(it, start) }
                 members = announcedMembers
                 if (announcedMembers.isEmpty()) {
-                    Log.w(TAG, "PTT start reached no members — ending session=$sessionId")
+                    FlashLog.w(TAG, "PTT start reached no members — ending session=$sessionId")
                     processLocked(PttFloorEvent.LocalStopPress)
                     _notices.emit("No paired devices online")
                     return
@@ -510,9 +529,9 @@ public class PttSessionEngine(
                 processLocked(PttFloorEvent.StartAnnounced(sessionId))
                 sentHb.clear()
                 lastRttMs = null
-                Log.i(TAG, "Talking session=$sessionId members=${members.size} rate=$sessionRateHz")
+                FlashLog.i(TAG, "Talking session=$sessionId members=${members.size} rate=$sessionRateHz")
             }
-            is PttCapture.StartResult.Failed -> {
+            is PttCaptureStart.Failed -> {
                 if (capture === instance) capture = null
                 processLocked(PttFloorEvent.MicDenied)
             }
@@ -534,7 +553,7 @@ public class PttSessionEngine(
         val listening = floor as? PttFloorState.Listening
         val holder = listening?.holderId
         if (listening?.sessionId != effect.sessionId || holder == null) {
-            Log.w(TAG, "Listen without accepted holder — unwinding session=${effect.sessionId}")
+            FlashLog.w(TAG, "Listen without accepted holder — unwinding session=${effect.sessionId}")
             processLocked(PttFloorEvent.LocalStopPress)
             return
         }
@@ -543,8 +562,8 @@ public class PttSessionEngine(
         sessionPacketMs = effect.packetMs
         // Drain stale audio from a previous session before the new one flows.
         while (audioOut.tryReceive().getOrNull() != null) Unit
-        val slot = arrayOfNulls<PttPlayout>(1)
-        val instance = PttPlayout(
+        val slot = arrayOfNulls<PttPlayoutDevice>(1)
+        val instance = audio.createPlayout(
             sampleRateHz = sessionRateHz,
             packetMs = sessionPacketMs,
             onAmplitude = { refreshPttSessionStats() },
@@ -565,7 +584,7 @@ public class PttSessionEngine(
             _notices.emit("Could not start listening")
             return
         }
-        Log.i(TAG, "Listening session=${effect.sessionId} holder=$holder rate=$sessionRateHz")
+        FlashLog.i(TAG, "Listening session=${effect.sessionId} holder=$holder rate=$sessionRateHz")
     }
 
     private fun stopListen() {
@@ -581,7 +600,7 @@ public class PttSessionEngine(
     private fun sendStop(sessionId: String) {
         val self = localId() ?: return
         val stop = PttSessionCodec.encode(
-            PttSessionFrame.Stop(sessionId, self, System.currentTimeMillis()),
+            PttSessionFrame.Stop(sessionId, self, SystemTimeSource.nowMs()),
         )
         members.forEach { sendControl(it, stop) }
         members = emptyList()
@@ -591,21 +610,21 @@ public class PttSessionEngine(
         val self = localId()
         val holder = holderId
         if (self == null || holder == null) {
-            Log.w(TAG, "Leave not sent session=$sessionId (self=$self holder=$holder)")
+            FlashLog.w(TAG, "Leave not sent session=$sessionId (self=$self holder=$holder)")
             return
         }
         sendControl(
             holder,
-            PttSessionCodec.encode(PttSessionFrame.Leave(sessionId, self, System.currentTimeMillis())),
+            PttSessionCodec.encode(PttSessionFrame.Leave(sessionId, self, SystemTimeSource.nowMs())),
         )
-        Log.i(TAG, "Leave sent session=$sessionId to holder=$holder")
+        FlashLog.i(TAG, "Leave sent session=$sessionId to holder=$holder")
     }
 
     private fun removeMember(sessionId: String, peerId: String) {
         if (!members.contains(peerId)) return
         members = members - peerId
         refreshPttSessionStats()
-        Log.i(TAG, "Listener left session=$sessionId peer=$peerId remaining=${members.size}")
+        FlashLog.i(TAG, "Listener left session=$sessionId peer=$peerId remaining=${members.size}")
     }
 
     private fun syncJobs(current: PttFloorState) {
@@ -641,15 +660,10 @@ public class PttSessionEngine(
             val talking = floor as? PttFloorState.Talking
             if (talking == null || talking.sessionId != sessionId) break
             val self = localId() ?: break
-            val seq = synchronized(hbLock) { ++hbSeq }
+            val seq = hbLock.withLock { ++hbSeq }
             val now = nowMs()
             val recipients = members
-            recipients.forEach { peerId -> sentHb[seq to peerId] = now }
-            if (sentHb.size > MAX_TRACKED_HB) {
-                sentHb.entries.sortedBy { it.value }
-                    .take(sentHb.size - MAX_TRACKED_HB)
-                    .forEach { sentHb.remove(it.key) }
-            }
+            sentHb.record(seq, recipients, now)
             val heartbeat = PttSessionCodec.encode(
                 PttSessionFrame.Heartbeat(sessionId, self, seq, now, lastRttMs),
             )
@@ -711,7 +725,40 @@ public class PttSessionEngine(
         }
     }
 
-    private fun nowMs(): Long = android.os.SystemClock.elapsedRealtime()
+    private fun nowMs(): Long = elapsedRealtimeMs()
+
+    /**
+     * True the first time [eventId] is seen. PTT pings are fire-and-forget with no outbox, so the set
+     * only guards a duplicated frame on the wire; clearing it wholesale at the cap costs at most one
+     * replayed notification.
+     */
+    private fun firstSightingOfPing(eventId: String): Boolean = pingDedupLock.withLock {
+        val first = seenPingEventIds.add(eventId)
+        if (first && seenPingEventIds.size > SEEN_PING_CAP) seenPingEventIds.clear()
+        first
+    }
+
+    /**
+     * Heartbeats sent and not yet acknowledged, `(seq, peer) -> sentAt`, for the round-trip estimate.
+     * Bounded: a peer that never answers must not grow it for the life of a 60 s session.
+     */
+    private class HeartbeatLedger {
+        private val lock = PttLock()
+        private val sentAtBySeqAndPeer = HashMap<Pair<Long, String>, Long>()
+
+        fun record(seq: Long, peers: List<String>, sentAtMs: Long) = lock.withLock {
+            peers.forEach { peerId -> sentAtBySeqAndPeer[seq to peerId] = sentAtMs }
+            val excess = sentAtBySeqAndPeer.size - MAX_TRACKED_HB
+            if (excess > 0) {
+                sentAtBySeqAndPeer.entries.sortedBy { it.value }.take(excess)
+                    .forEach { sentAtBySeqAndPeer.remove(it.key) }
+            }
+        }
+
+        fun take(seq: Long, peerId: String): Long? = lock.withLock { sentAtBySeqAndPeer.remove(seq to peerId) }
+
+        fun clear() = lock.withLock { sentAtBySeqAndPeer.clear() }
+    }
 
     public companion object {
         private const val TAG = "PTT_SESS"
