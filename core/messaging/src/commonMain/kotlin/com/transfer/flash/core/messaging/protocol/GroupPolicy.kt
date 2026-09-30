@@ -26,6 +26,32 @@ public object GroupPolicy {
     public const val SYNC_REQUEST_TTL_MS: Long = 10L * 60L * 1000L
     public const val MAX_OUTGOING_SYNC_REQUESTS: Int = 256
 
+    // --- v2 groups (ADR-044 V1, docs/group/v1-signed-membership-plan.md) ---
+
+    /** The `proto` of a [GroupCharter]; also the group protocol level a device needs (`gv`). */
+    public const val V2_PROTOCOL: Int = 2
+
+    /**
+     * Members of a v2 group. Equal to [MAX_MEMBERS] until V2 (vouched trust) lifts it: V1 still
+     * requires every member to be paired with every other one, which is what bounds it at six.
+     */
+    public const val MAX_MEMBERS_V2: Int = MAX_MEMBERS
+
+    /** Leave/removal certs a bundle may carry on top of the active members. */
+    public const val MAX_BUNDLE_TOMBSTONES: Int = 64
+    public const val MAX_BUNDLE_CERTS: Int = MAX_MEMBERS_V2 + MAX_BUNDLE_TOMBSTONES
+    public const val MAX_LABEL_LENGTH: Int = 80
+    public const val CHARTER_NONCE_BYTES: Int = 16
+
+    /** Every id in this namespace is a v2 group id and can only be created by a valid charter. */
+    public const val V2_GROUP_ID_PREFIX: String = "g2-"
+
+    /** Signature verifications a single peer may cost this device per [VERIFY_WINDOW_MS]. */
+    public const val BUNDLE_VERIFICATIONS_PER_WINDOW: Int = 120
+    public const val VERIFY_WINDOW_MS: Long = 60_000L
+
+    public fun isV2GroupId(groupId: String): Boolean = groupId.startsWith(V2_GROUP_ID_PREFIX)
+
     public fun normalizedName(name: String): String? = name.trim()
         .takeIf { it.isNotEmpty() && it.length <= MAX_GROUP_NAME_LENGTH }
 
