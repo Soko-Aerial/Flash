@@ -598,6 +598,14 @@ fun FlashConversationScreen(
                                     )
                                 }
                             }
+                            // UI-052: earlier messages of this group are arriving (catch-up). Shown only while true.
+                            AnimatedVisibility(
+                                visible = state.groupSync != null,
+                                enter = fadeIn(motion.tweenNormalSpec()),
+                                exit = fadeOut(motion.tweenFastSpec()),
+                            ) {
+                                state.groupSync?.let { sync -> FlashGroupSyncBanner(sync = sync) }
+                            }
                         }
                     }
                 }

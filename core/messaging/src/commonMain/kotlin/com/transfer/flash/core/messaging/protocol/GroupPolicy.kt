@@ -10,6 +10,12 @@ public object GroupPolicy {
     public const val CLAIM_WINDOW_MS: Long = 300L
     public const val LOW_CLAIM_WINDOW_MS: Long = 500L
     public const val BACKUP_DELAY_MS: Long = 2_000L
+
+    /**
+     * How long after the last catch-up message arrived the "catching up" banner (UI-052) stays up. It must outlast
+     * [BACKUP_DELAY_MS], the gap before a backup holder's push, so a two-holder round reads as one burst.
+     */
+    public const val SYNC_QUIET_MS: Long = 3_000L
     public const val LOW_MAX_PER_SECOND: Int = 5
     public const val LOW_MAX_TOTAL: Int = 100
     public const val DEFAULT_MAX_PER_SECOND: Int = 20

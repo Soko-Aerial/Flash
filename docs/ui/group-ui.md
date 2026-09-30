@@ -305,14 +305,24 @@ without a wire change, and inventing a total would be a lie on the screen. This 
 | Model | `FlashGroupSyncUi(receivedCount: Int)`; `FlashConversationUiState.groupSync: FlashGroupSyncUi? = null` (non-null = history arriving). Carried in the state like `ongoingCall`, so hosts wire nothing. |
 | Start | The first accepted push that **inserts a new row** for the group (a push of a message already present does not count, so a redundant second holder never starts a banner). |
 | Count | New rows inserted by catch-up pushes since the banner appeared. |
-| End | `GROUP_SYNC_QUIET_MS` (3 s) after the last counted push. Longer than the slowest pacing gap (1 s) so a slow holder does not flicker it, shorter than the 24 h horizon nobody waits for. A later push (for example the backup holder's, 2 s after the first) starts a fresh banner from 1. |
+| End | `GroupPolicy.SYNC_QUIET_MS` (3 s) after the last counted push. Longer than the 2 s backup delay (`BACKUP_DELAY_MS`) and the 200 ms pacing gap, so a two-holder round reads as one burst and a slow holder does not flicker it. A later push (for example the backup holder's, 2 s after the first) starts a fresh banner from 1. |
 | Scope | Per group, shown only in that conversation. Not persisted; a restart mid-catch-up shows nothing (the pushes resume into an ordinary conversation). |
 | Copy | `"Catching up on earlier messages · 12"`; before the first count is rendered `"Catching up on earlier messages"`. Copy from `FlashGroupSyncMath.label(receivedCount)` (pure, unit-tested; a count ≤ 0 has no number). |
 | Placement | Directly under the header, in the same stack as `FlashConnectionBanner` / `FlashOngoingCallBanner` (above the message list). Enter `fadeIn(tweenNormalSpec)`, exit `fadeOut(tweenFastSpec)`, like its siblings. |
-| Surface | Full-width strip on `colors.backgroundElevated`, `space16` horizontal / `space8` vertical padding, label `metadataDefault` in `textSecondary`, the count in `metadataEmphasis` / `textPrimary`. |
+| Surface | Full-width strip on `colors.backgroundSurfaceSubtle` (there is no `backgroundElevated` token), `space16` horizontal / `space8` vertical padding, label `metadataDefault` in `textSecondary`, the count in `metadataEmphasis` / `textPrimary`. |
 | Progress line | A 2 dp custom line (no stock `LinearProgressIndicator`, UI prohibition): `borderSubtle` track with an `accentPrimary` segment (35% of the width) sweeping left→right, 1.4 s linear loop. Reduced motion: the segment is static at 35% and only the count changes. |
 | Semantics | The strip is one `liveRegion = Polite` node: `"Catching up on earlier messages, 12 received"`. The line is decorative. |
 | Not done here | No cancel, no per-holder detail, no total, no retry action (catch-up already re-asks on every session-up edge). |
 
-**Checklist.** Unit: `FlashGroupSyncMath.label`; repository: banner state appears on the first inserted push, ignores a duplicate,
-counts inserted rows, clears after the quiet period, is scoped to its group. Physical device: `docs/testing/TEST-BACKLOG.md` CGS-07.
+**Checklist.** Unit: `FlashGroupSyncMathTest` (4: copy, count label, spoken form, sweep geometry); repository (`SignedGroupsTest`
+catch-up banner section, 3): starts on the first inserted push, counts inserted rows, ignores a duplicate, never starts on one,
+a newer arrival outlives the first timer, clears after the quiet period, is scoped to its group. The repository takes
+`groupSyncQuietMs` (default `GroupPolicy.SYNC_QUIET_MS`) so a test need not wait 3 s. Physical device:
+`docs/testing/TEST-BACKLOG.md` CGS-07. Compose preview (two in `FlashGroupSyncBanner.kt`), dark mode, reduced motion and the
+accessibility pass are still open.
+
+**Status: IMPLEMENTED 2026-09-30** (unit-tested, mutation-checked, not device-verified). Files: `FlashGroupSyncBanner.kt`
+(`FlashGroupSyncMath`, `FlashGroupSyncBanner`), `FlashConversationScreen.kt` (banner stack), `FlashMessagingModels.kt`
+(`FlashGroupSyncUi`, `FlashConversationUiState.groupSync`), `RealFlashChatRepository.kt` (`recordCatchUpArrival`, the
+`groupSyncActivity` map and the fifth combine input), `GroupPolicy.SYNC_QUIET_MS`. The spec's "Model" row says state is carried
+like `ongoingCall`; that held, hosts wire nothing.

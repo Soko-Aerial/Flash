@@ -3,6 +3,7 @@ package com.transfer.flash.core.messaging
 import com.transfer.flash.core.common.result.FlashError
 import com.transfer.flash.core.common.result.FlashResult
 import com.transfer.flash.core.messaging.model.FlashMessageInfoUi
+import com.transfer.flash.core.messaging.model.FlashGroupSyncUi
 import com.transfer.flash.core.messaging.model.FlashSelfMembership
 import com.transfer.flash.core.messaging.model.FlashWaitingReason
 import com.transfer.flash.core.messaging.protocol.GroupCanonical
@@ -74,6 +75,9 @@ class SignedGroupsTest {
 
     /** ADR-044 V2: when true every repository gets a trust store that can vouch. The default keeps V1 behaviour. */
     private var vouchedTrust = false
+
+    /** How long the catch-up banner outlives its last arrival in these tests (the product value is 3 s). */
+    private val syncQuietMs = 700L
 
     /** Each device's trust store as the group layer sees it; created on first use. */
     private val vouchings = ConcurrentHashMap<String, TestVouching>()
@@ -1398,6 +1402,88 @@ class SignedGroupsTest {
         assertNull("a direct message has no recipient rows; its status is on the bubble", infoOf("dev-a", sent.localId).first())
     }
 
+    // ------------------------------------------------------------------------------ catch-up banner
+    // Chat/group sync audit, step 7 (UI-052). The requester never learns how many messages will come, so the banner only
+    // says history is arriving and counts what has landed. It starts on the first NEW message, not on a request.
+
+    private suspend fun syncOf(id: String, predicate: (FlashGroupSyncUi?) -> Boolean): FlashGroupSyncUi? {
+        val repo = nodes.getValue(id).repo
+        withTimeout(5_000) {
+            while (!predicate(repo.conversationState.value.groupSync)) delay(20)
+        }
+        return repo.conversationState.value.groupSync
+    }
+
+    private suspend fun pushHistory(requesterSync: String, holder: String, requester: String, groupId: String, messageId: String, text: String) {
+        val frame = message(groupId, messageId, holder, text, sign(holder, groupId, messageId, holder, text))
+        deliver(holder, requester, GroupWireFrame.SyncPush(groupId, requesterSync, holder, frame))
+    }
+
+    @Test
+    fun `the catch-up banner starts on the first new message, counts the arrivals and clears after the quiet period`() = runBlocking {
+        assertTrue("the quiet period outlasts a backup holder's push", GroupPolicy.SYNC_QUIET_MS > GroupPolicy.BACKUP_DELAY_MS)
+        mesh("dev-a", "dev-b")
+        val groupId = createGroup("dev-a", "Team", "dev-b")
+        nodes.getValue("dev-b").repo.openConversation(groupId)
+        settle()
+        assertNull("nothing is arriving yet", nodes.getValue("dev-b").repo.conversationState.value.groupSync)
+
+        val syncId = interceptSyncRequest(requester = "dev-b", holder = "dev-a", groupId = groupId)
+        assertNull("a request alone shows nothing", nodes.getValue("dev-b").repo.conversationState.value.groupSync)
+
+        pushHistory(syncId, "dev-a", "dev-b", groupId, "h-1", "first")
+        assertEquals(FlashGroupSyncUi(1), syncOf("dev-b") { it != null })
+        pushHistory(syncId, "dev-a", "dev-b", groupId, "h-2", "second")
+        assertEquals("each new message counts", FlashGroupSyncUi(2), syncOf("dev-b") { it?.receivedCount == 2 })
+        pushHistory(syncId, "dev-a", "dev-b", groupId, "h-2", "second")
+        delay(150)
+        assertEquals("a message already stored does not count", FlashGroupSyncUi(2), nodes.getValue("dev-b").repo.conversationState.value.groupSync)
+
+        assertNull("the banner goes away once pushes stop", syncOf("dev-b") { it == null })
+
+        pushHistory(syncId, "dev-a", "dev-b", groupId, "h-2", "second")
+        delay(150)
+        assertNull("a duplicate never starts a banner", nodes.getValue("dev-b").repo.conversationState.value.groupSync)
+
+        pushHistory(syncId, "dev-a", "dev-b", groupId, "h-3", "third")
+        assertEquals("a later burst starts again from one", FlashGroupSyncUi(1), syncOf("dev-b") { it != null })
+    }
+
+    @Test
+    fun `a newer arrival keeps the banner up past the first arrival's quiet period`() = runBlocking {
+        mesh("dev-a", "dev-b")
+        val groupId = createGroup("dev-a", "Team", "dev-b")
+        nodes.getValue("dev-b").repo.openConversation(groupId)
+        settle()
+        val syncId = interceptSyncRequest(requester = "dev-b", holder = "dev-a", groupId = groupId)
+
+        pushHistory(syncId, "dev-a", "dev-b", groupId, "h-1", "first")
+        syncOf("dev-b") { it != null }
+        delay(syncQuietMs * 2 / 3)
+        pushHistory(syncId, "dev-a", "dev-b", groupId, "h-2", "second")
+        delay(syncQuietMs * 2 / 3)
+
+        // 1.33 quiet periods after the first arrival, but only 0.67 after the last.
+        assertEquals("the first timer must not close a banner a newer arrival extended", FlashGroupSyncUi(2), nodes.getValue("dev-b").repo.conversationState.value.groupSync)
+        assertNull(syncOf("dev-b") { it == null })
+    }
+
+    @Test
+    fun `the catch-up banner belongs to its own group only`() = runBlocking {
+        mesh("dev-a", "dev-b")
+        val first = createGroup("dev-a", "One", "dev-b")
+        val second = createGroup("dev-a", "Two", "dev-b")
+        nodes.getValue("dev-b").repo.openConversation(first)
+        settle()
+        val syncId = interceptSyncRequest(requester = "dev-b", holder = "dev-a", groupId = second)
+
+        pushHistory(syncId, "dev-a", "dev-b", second, "h-1", "history of two")
+        assertNotNull("the message did land in the other group", stored("dev-b", second, "history of two"))
+        delay(200)
+
+        assertNull("the open group shows no banner for another group's history", nodes.getValue("dev-b").repo.conversationState.value.groupSync)
+    }
+
     // ------------------------------------------------------------------------------ harness: nodes
 
     private class Node(
@@ -1453,6 +1539,7 @@ class SignedGroupsTest {
             groupMemberDao = created.memberDao,
             groupDeliveryDao = created.deliveryDao,
             readCursorDao = created.readCursorDao,
+            groupSyncQuietMs = syncQuietMs,
             isTrustedPeer = { peer -> isPairedWith(id, peer) },
             groupTransportSink = GroupTransportSink { target, frame -> transmit(id, target, frame) },
             transportSink = MessageTransportSink { _, _ -> true },

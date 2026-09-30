@@ -19,6 +19,7 @@ import com.transfer.flash.core.messaging.model.FlashConversationUiState
 import com.transfer.flash.core.messaging.model.FlashFileAttachmentUi
 import com.transfer.flash.core.messaging.model.FlashFileTransferStatus
 import com.transfer.flash.core.messaging.model.FlashGroupMemberUi
+import com.transfer.flash.core.messaging.model.FlashGroupSyncUi
 import com.transfer.flash.core.messaging.model.FlashImageAttachmentUi
 import com.transfer.flash.core.messaging.model.FlashMemberRole
 import com.transfer.flash.core.messaging.model.FlashMessageInfoUi
@@ -87,10 +88,12 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
@@ -240,6 +243,8 @@ public class RealFlashChatRepository(
      * (what a host without the cursor table gets), and leaves 1:1 read receipts untouched.
      */
     private val readCursorDao: ReadCursorDao? = null,
+    /** How long the catch-up banner outlives the last arrival; a parameter so a test need not wait [GroupPolicy.SYNC_QUIET_MS]. */
+    private val groupSyncQuietMs: Long = GroupPolicy.SYNC_QUIET_MS,
 ) : FlashChatRepository {
 
     /**
@@ -339,6 +344,32 @@ public class RealFlashChatRepository(
      * MUST be declared above the init block, for the reason recorded on [drainMutex].
      */
     private val outboxDeadlines = mutableListOf<Long>()
+
+    /** Catch-up arrivals per group (UI-052). [generation] lets the quiet timer tell whether a newer arrival superseded it. */
+    private data class SyncActivity(val received: Int, val generation: Long)
+
+    private val groupSyncActivity = MutableStateFlow<Map<String, SyncActivity>>(emptyMap())
+
+    /**
+     * A catch-up push stored a NEW message in [groupId] (a duplicate does not count, so a redundant second holder never
+     * starts the banner). Counts it and restarts the quiet timer; [groupSyncQuietMs] after the last arrival the group's
+     * entry is removed and the banner goes away.
+     */
+    private fun recordCatchUpArrival(groupId: String) {
+        var generation = 0L
+        groupSyncActivity.update { current ->
+            val previous = current[groupId]
+            generation = (previous?.generation ?: 0L) + 1L
+            current + (groupId to SyncActivity((previous?.received ?: 0) + 1, generation))
+        }
+        val armed = generation
+        scope.launch {
+            delay(groupSyncQuietMs)
+            groupSyncActivity.update { current ->
+                if (current[groupId]?.generation == armed) current - groupId else current
+            }
+        }
+    }
 
     // Ephemeral in-memory typing state: conversationId -> (memberId -> memberName) currently typing.
     // Mirrored into [typingFlow] so the conversation UI can observe it (#11). Never persisted.
@@ -718,13 +749,20 @@ public class RealFlashChatRepository(
             } else {
                 flowOf(emptyList())
             }
-            // Outer combine (4 flows): join live presence, typing and roster changes onto the header (#11).
+            // UI-052: how many catch-up messages have arrived, for the banner; nothing for a direct chat.
+            val syncFlow = if (isGroupConversation) {
+                groupSyncActivity.map { it[conversationId]?.received }.distinctUntilChanged()
+            } else {
+                flowOf(null)
+            }
+            // Outer combine (5 flows): join live presence, typing, roster and catch-up changes onto the header (#11).
             combine(
                 contentFlow,
                 displayedPresence,
                 typingFlow,
                 rosterFlow,
-            ) { content, peers, typingByConversation, _ ->
+                syncFlow,
+            ) { content, peers, typingByConversation, _, syncReceived ->
                 // Group Phase A: a group thread derives its header from the member roster, not
                 // from a peer-name lookup (a groupId is not a device id — the UUID used to win).
                 val conversationEntity = conversationDao.get(conversationId)
@@ -772,6 +810,7 @@ public class RealFlashChatRepository(
                             conversationEntity.groupProto == GroupPolicy.V2_PROTOCOL &&
                             conversationEntity.groupCreatedBy == localDeviceId,
                         selfMembership = selfMembership,
+                        groupSync = syncReceived?.let { FlashGroupSyncUi(receivedCount = it) },
                     ) to Pair(content.newestMessageId, content.newestInboundId)
                 } else {
                     directHeaderState(content, peers, typingByConversation, conversationId)
@@ -2407,6 +2446,7 @@ public class RealFlashChatRepository(
             ),
         )
         if (inserted != -1L) {
+            recordCatchUpArrival(frame.groupId)
             onInboundTextMessageWithGroupTitle(
                 frame.groupId,
                 senderName,
