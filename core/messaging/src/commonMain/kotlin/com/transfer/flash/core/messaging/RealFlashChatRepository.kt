@@ -56,6 +56,7 @@ import com.transfer.flash.core.persistence.db.dao.GroupDeliveryDao
 import com.transfer.flash.core.persistence.db.dao.GroupMemberDao
 import com.transfer.flash.core.persistence.db.dao.MessageDao
 import com.transfer.flash.core.persistence.db.dao.OutboxDao
+import com.transfer.flash.core.persistence.db.dao.ReadCursorDao
 import com.transfer.flash.core.persistence.db.dao.ReactionDao
 import com.transfer.flash.core.persistence.db.dao.ReceiptDao
 import com.transfer.flash.core.persistence.db.dao.RecentSearchDao
@@ -73,6 +74,7 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -229,6 +231,12 @@ public class RealFlashChatRepository(
      * must be paired with this device.
      */
     private val groupVouching: GroupVouching? = null,
+    /**
+     * Per-member read cursors. Group "Read" ticks need them: a group message is READ only once every active remote
+     * member has read past it, which no single `ReadReceipt` can say. Null keeps a group's sent bubbles at Delivered
+     * (what a host without the cursor table gets), and leaves 1:1 read receipts untouched.
+     */
+    private val readCursorDao: ReadCursorDao? = null,
 ) : FlashChatRepository {
 
     private val _chatListState = MutableStateFlow(FlashChatListUiState())
@@ -761,19 +769,69 @@ public class RealFlashChatRepository(
                     // the peer uses to locate its thread for us. Idempotent via `markReadUpTo`.
                     if (newestInboundId != null && newestInboundId != lastAckedInboundId) {
                         lastAckedInboundId = newestInboundId
-                        transportSink?.send(
-                            conversationId,
-                            MessageWireFrame.ReadReceipt(
-                                conversationId = conversationId,
-                                memberId = localDeviceId,
-                                upToMessageId = newestInboundId,
-                                readAt = timeSource.nowMs(),
-                            ),
-                        )
+                        if (isGroupConversation) {
+                            // A group id is not a device, so the direct receipt below had no one to reach. Each
+                            // active member gets its own `Read` frame and keeps this device's cursor.
+                            sendGroupRead(conversationId, newestInboundId)
+                        } else {
+                            transportSink?.send(
+                                conversationId,
+                                MessageWireFrame.ReadReceipt(
+                                    conversationId = conversationId,
+                                    memberId = localDeviceId,
+                                    upToMessageId = newestInboundId,
+                                    readAt = timeSource.nowMs(),
+                                ),
+                            )
+                        }
                     }
                 }
             }
         }
+    }
+
+    /**
+     * Tells every other active member of [groupId] that this device has read up to [upToMessageId]. One frame per
+     * member because the wire has no broadcast: each connection carries its own. Runs to completion even if the
+     * state collector is cancelled by a newer emission (`collectLatest`); the caller has already recorded this id
+     * as sent, so a cut-off fan-out would not be retried until the next inbound message or a re-open.
+     * Nothing is sent once this device is no longer a member. Best effort and not durable, like the 1:1 receipt:
+     * a member that is offline now hears it the next time this conversation is opened.
+     */
+    private suspend fun sendGroupRead(groupId: String, upToMessageId: String) {
+        val members = groupMemberDao ?: return
+        val sink = groupTransportSink ?: return
+        if (isRemovedHere(members, groupId)) return
+        withContext(NonCancellable) {
+            val readAt = timeSource.nowMs()
+            members.activeMembers(groupId).filter { it.deviceId != localDeviceId }.forEach { target ->
+                sink.send(
+                    target.deviceId,
+                    GroupWireFrame.Read(groupId = groupId, from = localDeviceId, upToMessageId = upToMessageId, readAt = readAt),
+                )
+            }
+        }
+    }
+
+    /**
+     * Records that [reader] has read [groupId] up to [upToMessageId], then flips this device's own sent messages to
+     * READ as far as EVERY active remote member has read. A cursor is stored per member, so the group tick can
+     * only move when the slowest member catches up; a member that never sent a `Read` holds it back.
+     *
+     * The named message must be one this device holds for that group: its `sentAt` is what orders the cursor,
+     * and a name this device cannot resolve (not synced here yet) moves nothing rather than guessing.
+     */
+    private suspend fun onGroupRead(members: GroupMemberDao, groupId: String, reader: String, upToMessageId: String) {
+        val cursors = readCursorDao ?: return
+        val target = messageDao.getByLocalId(upToMessageId)?.takeIf { it.conversationId == groupId } ?: return
+        cursors.advanceFurthest(groupId, reader, upToMessageId, target.sentAt)
+        val remote = members.activeMembers(groupId).filter { it.deviceId != localDeviceId }
+        if (remote.isEmpty()) return
+        // The slowest active member decides. Removed members are not in `remote`, so a stale cursor from one
+        // cannot hold the tick back, and a missing cursor (never read) holds it at its current value.
+        val slowest = remote.map { cursors.get(groupId, it.deviceId) ?: return }
+            .minWithOrNull(compareBy({ it.upToSentAt }, { it.upToMessageId })) ?: return
+        messageDao.markReadUpTo(groupId, localDeviceId, slowest.upToMessageId)
     }
 
     /**
@@ -1789,8 +1847,7 @@ public class RealFlashChatRepository(
             }
             is GroupWireFrame.Read -> {
                 if (!isActiveGroupMember(members, frame.groupId, frame.from)) return
-                // The existing cursor DAO is already per (conversation, member); UI read aggregation
-                // remains a Phase 1 UI follow-up while the durable monotonic record lands now.
+                onGroupRead(members, frame.groupId, frame.from, frame.upToMessageId)
             }
             is GroupWireFrame.DeleteForEveryone -> {
                 if (!isActiveGroupMember(members, frame.groupId, frame.from)) return

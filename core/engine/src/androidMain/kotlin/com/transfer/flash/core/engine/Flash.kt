@@ -481,6 +481,7 @@ private class Wiring(
             reactionDao = db.reactionDao(),
             groupMemberDao = db.groupMemberDao(),
             groupDeliveryDao = db.groupDeliveryDao(),
+            readCursorDao = db.readCursorDao(),
             runInTransaction = { block -> db.runInWriteTransaction(block) },
             // ADR-044 V1: signed groups. The port signs with the identity key the TLS certificate presents; the
             // pin and the session's level and key are what an owner checks before certifying an invitee.
