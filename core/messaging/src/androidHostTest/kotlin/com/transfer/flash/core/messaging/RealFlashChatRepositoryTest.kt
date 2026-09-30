@@ -2467,6 +2467,40 @@ class RealFlashChatRepositoryTest {
     }
 
     @Test
+    fun `an unacknowledged group delivery is resent on the backoff ladder, not after the idle minute`() = runBlocking {
+        // Chat/group sync audit, step 1. The direct-chat branch of the drain registered its retry deadline with the
+        // drain loop; the group branch did not, so a group frame the receiver dropped (it had not yet learned the
+        // group, which is the ordinary race on a reconnect) waited for the loop's 60 s idle net instead of the
+        // 1 s / 2 s / 4 s ladder. Every write "succeeds" here, like a receiver that drops the frame silently.
+        val memberDao = FakeGroupMemberDao()
+        val deliveryDao = FakeGroupDeliveryDao()
+        val outboxDao = FakeOutboxDao()
+        val messageDao = FakeMessageDao()
+        val writes = java.util.concurrent.atomic.AtomicInteger(0)
+        val repository = newRepository(
+            messageDao = messageDao,
+            outboxDao = outboxDao,
+            groupMemberDao = memberDao,
+            groupDeliveryDao = deliveryDao,
+            trustedPeers = setOf("peer-a"),
+            groupSink = { _, frame ->
+                if (frame is GroupWireFrame.Message) writes.incrementAndGet()
+                true
+            },
+        )
+        val groupId = (repository.createGroup("Team", setOf("peer-a")) as FlashResult.Success).value
+        repository.openConversation(groupId)
+        repository.sendText("hello team")
+
+        val deadline = System.currentTimeMillis() + 6_000
+        while (writes.get() < 2 && System.currentTimeMillis() < deadline) {
+            kotlinx.coroutines.delay(25)
+        }
+        assertTrue("the frame should have been resent on the ladder, got ${writes.get()} write(s)", writes.get() >= 2)
+        assertEquals("the row survives until the member acknowledges", 1, outboxDao.queue.size)
+    }
+
+    @Test
     fun `group text writes its rows in one transaction`() = runBlocking {
         val memberDao = FakeGroupMemberDao()
         val deliveryDao = FakeGroupDeliveryDao()
