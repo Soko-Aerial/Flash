@@ -30,9 +30,17 @@ Result on the receiving device: every relayed message has `senderId = the pusher
 None. Not fixed in ADR-044 V1a because it needs a wire addition.
 
 ### Working fix
-Not done. Planned in ADR-044 V1: an additive, signed `author` field on the pushed message (old decoders ignore unknown
-fields; a new decoder falls back to the pusher when it is absent, which is today's behaviour), so a v2 group keeps the author
-and delete authority follows the author. Until then the behaviour above stands for legacy groups.
+**v2 groups (2026-09-30, ADR-044 V1):** `FLASH_GSYNC op=push` gains `author=<id>` and `sig=<b64>`, written only when the pushed
+message is signed. A new decoder uses `author` as the message's `from` (the pusher is only a relay) and falls back to the pusher
+when it is absent; old decoders ignore the unknown fields. `handleSyncPush` in a v2 group accepts the message only if its named
+author is an active member of the verified roster and the author's signature over the canonical message bytes verifies; the stored
+sender name is the roster's signed label. A message row without a stored signature is never relayed in a v2 group.
+`SignedGroupsTest."a relay that names another author but signed the message itself is dropped, an honest relay is kept"` covers
+both directions and fails when signature verification is disabled (checked by mutation). Delete authority follows the true author
+because the stored `senderId` is now the author.
+
+**Legacy groups are unchanged by owner decision** (legacy groups are not upgraded in place, ADR-044): relayed history in a legacy
+group is still stored as sent by the relayer, and the effects above still apply to them.
 
 ### Related files
 - `core/messaging/src/commonMain/.../protocol/GroupFrameCodec.kt` (`SyncPush` encode and decode)
@@ -40,7 +48,8 @@ and delete authority follows the author. Until then the behaviour above stands f
 - `core/persistence/.../dao/MessageDao.kt` (`historyAfter`)
 
 ### Status
-OPEN (found 2026-09-29; scheduled with ADR-044 V1).
+**RESOLVED for v2 groups** (built and unit-tested 2026-09-30; the device check GT-02 in `docs/testing/TEST-BACKLOG.md` is still owed).
+**Still OPEN for legacy groups**, by design: they stay legacy (at most 6 members) and are not upgraded in place. Found 2026-09-29.
 
 ## ERROR-081 — Group membership and history could be rewritten by any paired peer that knows a group id (F-1, F-2, F-4, F-5)
 

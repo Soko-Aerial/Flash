@@ -14,7 +14,7 @@
 | Identity theft across reinstalls/backups | Cloned identity | Identity key non-exportable in AndroidKeyStore; excluded from Android backup (manifest flag at app layer) | `KeystoreFlashCrypto` |
 | Evil-twin peer impersonation | MITM on first connection | Pairing v2 (ADR-042): commit-then-reveal nonces; the 6-digit code covers both TLS-pinned identity keys, both ephemeral keys and both nonces, so a MITM cannot force a match (≈10^-6). Each side refuses a pairing fingerprint that is not the key TLS pinned for that connection. Inbound TLS requires the client certificate (audit S1). Mismatch after pinning = hard fail + `PeerKeyChanged` | `PairingV2`, `PairingSessionStateMachine`, `TofuPinVerifier`, `WsFlashNetwork.inboundIdentityFailure` |
 | Legacy trust flag abuse | Old "trusted" flag silently becoming a crypto pin | Legacy migration writes `LEGACY_UNBOUND_FINGERPRINT`; TOFU re-prompts on first contact instead of trusting blindly | `LegacyTrustMigration` |
-| Group membership forgery / roster poisoning | Today (legacy groups, ≤ 6) membership is unsigned rows; a paired peer that knows a group id can overwrite, evict or forge history (findings F-1 to F-5). **Status: reviewed 2026-09-29, fixes scheduled** (V1a hardening, then V1 signed certs + messages, then V2 vouched trust; ADR-044) | `docs/group/v0-threat-review.md` |
+| Group membership forgery / roster poisoning | Legacy groups (≤ 6, unchanged) have unsigned rows; V1a (2026-09-29) closed the cheap forgeries (F-1, F-2, F-4, F-5). **v2 groups (ADR-044 V1, built 2026-09-30, device check GT-02 owed):** an owner-signed charter, per-member owner-signed certs and per-message author signatures, so a paired member can no longer rewrite the roster, forge another member's message or take the group over. Vouched trust (groups of 20) is V2, not built | `docs/group/v0-threat-review.md`, `docs/group/v1-signed-membership-plan.md`, section 8 below |
 | Timing side channels on comparisons | Fingerprint/code oracle | All secret-material comparisons via `MessageDigest.isEqual` (constant-time) | `FlashFingerprint.constantTimeEquals`, `NumericComparisonCode.hashesEqual` |
 
 Out of scope for v1: anonymity / metadata protection beyond the local network, forward secrecy across session-key compromise (see §4 Rekey), post-quantum.
@@ -125,3 +125,29 @@ Mesh WebSocket transport provides wire-level encryption (`wss://`) with Trust-On
 - **Engine Integration**:
   - Handled via `TlsOptions` across `WsFlashNetwork`, `JvmWsFlashNetwork`, `WsTransferClient`, `DesktopEngine`, `Flash.kt`, and `DiscoveryEngineHolder`.
 
+## 8. v2 groups: signed membership and signed messages (ADR-044 V1, 2026-09-30)
+
+Wire and byte layouts: `docs/protocol.md` "v2 groups". Design: `docs/group/v1-signed-membership-plan.md`. Built and unit-tested
+(`SignedGroupsTest`, `GroupSignatureRulesTest`, codec and migration tests); **not yet run between real devices (TEST-BACKLOG GT-02)**.
+
+**What it guarantees, for a v2 group only:**
+- The group id is derived from the owner's key (`g2-` + hash of key and nonce), so an id names exactly one possible owner. Nobody can
+  pre-create or re-own an id.
+- Only the owner adds a member; a member can only sign their own leave. A cert binds a device id to a key the *receiver's own pin*
+  vouches for (or the receiver's own key, or the owner's), so the owner cannot slip a key of its choosing under another member's id.
+- Every message carries its author's signature. A relay (catch-up) keeps the true author, so a member cannot plant text under someone
+  else's name and delete authority follows the real author (ERROR-082 / F-9, fixed for v2).
+- Legacy membership frames for a `g2-` id are dropped; a v2 group never goes back to legacy; old clients are never admitted.
+- Receiver-side CPU is bounded: only a cert that would replace what is stored is verified, at most 120 verifications per peer per
+  minute, bundles capped at 70 certs.
+
+**Known limits (accepted for V1):**
+- Every v2 member must still be paired with every other member. Vouched trust (V2) is what lifts this and the 6-member cap.
+- The owner is the single point of trust and failure: no ownership transfer, no rename, no owner-side remove UI. A lost owner device
+  freezes the roster.
+- Creating a group with an invitee that has no live session yields a legacy group (its level is unknown). An invitee that advertises
+  level 2 but whose session key is missing or does not match its pin makes create/add fail, **never** a silent legacy fallback.
+- Sync does not re-deliver messages written by a former member (a relayed message must name an active author).
+- A relay that never saw a newer tombstone can show an outdated active cert; bounded by the full-roster reconcile on every session-up.
+- No forward secrecy or per-sender keys: a removed member keeps what they received.
+- Signing cost on the target phones is unmeasured (StrongBox sign latency, ECDSA verify per message): owed as a measurement (TEST-BACKLOG).

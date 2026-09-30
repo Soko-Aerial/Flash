@@ -1,5 +1,26 @@
 # Current Handoff
 
+## 2026-09-30 — Signed (v2) groups built (ADR-044 V1, `c0c7ae8`); device check GT-02 owed; V2 next
+- **Done:** new groups are v2 when the creator can sign and every invitee advertised `gv>=2` on a live session with a key that matches
+  its pin; otherwise they are created exactly as before (legacy, at most 6). v2: owner-signed charter, owner-signed member certs,
+  author-signed messages and relays; only the owner adds; a member signs their own leave; legacy frames for `g2-` ids are dropped. The
+  key an owner certifies comes from the live TLS session (`FlashDevice.identityKey`, plan D10). ERROR-082 is resolved **for v2 groups**.
+- **Commits:** S1 `e8e6d08`, S2 `029ec26`, S3 `1e3ad36`, S4a `c8deb40`, S4 `c0c7ae8`. Wire and golden vectors: `docs/protocol.md`
+  "v2 groups". Design: `docs/group/v1-signed-membership-plan.md` D1 to D10. Summary and limits: `docs/security.md` section 8.
+- **Verified:** messaging 292 host + 158 jvm, desktop 95, engine 4, network identity tests, app/engine/desktop compile; 9 of the 26 new
+  tests fail if signature or cert checks are bypassed. **Not verified on a device:** GT-02 (log lines to look for:
+  `Group v2 created`, `Group v2 joined`, and none of `SECURITY:`, `Group cert dropped`, `Group bundle ignored` except `no-own-cert`).
+- **Known limits (accepted):** sync does not re-deliver a former member's messages; every v2 member must still be paired with every
+  other; owner is a single point of trust; no remove/rename UI; an invitee with no live session makes the group legacy.
+- **Recommended next task:** GT-02 on real devices if the owner has them; otherwise **V2** (vouched trust, `MAX_MEMBERS` 20):
+  vouched pins with a source in both trust stores, `isGroupTrusted(groupId, peer)` at the group gates only, planner dialing of
+  vouched members, ECO's "unpaired only while Nearby is open" rule against group members, and the test
+  `GroupPolicy.MAX_MEMBERS - 1 <= ConnectionModePolicy.DIAL_BUDGET`. V2 needs a 4+ device check with 2 that never paired.
+- Files most relevant: `core/messaging/.../SignedGroups.kt`, `RealFlashChatRepository.kt` (`createV2GroupLocked`, `addV2MembersLocked`,
+  `onInboundGroupWireFrame`, `handleSyncPush`), `core/messaging/.../protocol/Group*.kt`, `core/engine/.../group/FlashGroupCrypto.kt`.
+- Owed device tests: GT-02, GT-01, SC-01, SC-02, DR-01...DR-04, MIG-01, MIG-02, MEAS-07, MEAS-01, MEAS-08, older items.
+
+
 ## 2026-09-29 — Session ceiling 24 + dial budget built (`e9d1563`, ADR-057); V1 next, needs owner confirmations
 - **Done:** ceiling 8 → 24 for every mode (no per-mode admission ceiling, by ADR-048's "ECO never refuses"), `DialBudget`
   limits STANDARD/BOOST dials only in a crowd (more than 20 devices around), `Dial filter` log lines. ADR-057 has the reasoning,

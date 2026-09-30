@@ -132,7 +132,7 @@ public interface GroupCrypto {
 
 `RealFlashChatRepository` gets `groupCrypto: GroupCrypto? = null` (null = every group is created legacy and v2 frames are ignored),
 `pinnedFingerprint: (String) -> String?` (the trust store's TOFU/pairing pin for a device, normalised hex) and
-`peerGroupProtocol: (String) -> Int` (1 when unknown). The three hosts (`DiscoveryEngineHolder`, `Flash.create`, `DesktopEngine`)
+`peerGroupProtocol: (String) -> Int` (1 when unknown) and `peerIdentityKey: (String) -> ByteArray?` (D10). The three hosts (`DiscoveryEngineHolder`, `Flash.create`, `DesktopEngine`)
 wire them from `FlashCrypto`, `FlashFingerprint` and the live session's `peer.groupProtocol`.
 
 ## D8. Storage (schema v6, one step, `STEP_5_6`)
@@ -155,6 +155,22 @@ An old client never appears in a v2 group (creation and add both require `gv ≥
 for a legacy id behaves exactly as today; for a `g2-` id it drops it (D5.5). A v2 device and an old device still chat 1:1 and can
 still share a legacy group.
 
+## D10. Where the owner gets an invitee's key (decided while building S4, 2026-09-30)
+
+A cert carries the subject's SPKI, so the owner must hold each invitee's key before signing. Nothing stored had it: the trust store
+keeps only the pin, the SHA-256 of the key, and a hash cannot be turned back into the key.
+
+- **Source:** the live TLS session. `WsConnection.peerPublicKeyEncoded` reads the peer's leaf public key once, after the handshake;
+  it becomes `FlashDevice.identityKey` (base64) on the session's `peer`. The TLS certificate key **is** the identity key on both
+  Android and desktop (`docs/security.md` sections 3.1 and 7: the pairing fingerprint must equal the SPKI fingerprint TLS pinned), so `SHA-256(identityKey)` is exactly the pin.
+- **Check before signing:** `SignedGroups.keyMatchesPin(id, key)`. The owner refuses to certify a key the pin does not vouch for.
+- **Failure mode:** a device that advertised `gv >= 2` but whose key is missing (plaintext test socket) or does not match its pin
+  fails create/add with `V2_KEY_UNAVAILABLE`. It does **not** fall back to a legacy group: a legacy group would silently give up
+  the properties the owner asked for. Only `gv < 2` (or no live session, level unknown) is legacy, as D6 says.
+- **Port:** `peerIdentityKey: (String) -> ByteArray?` beside `peerGroupProtocol`, wired in the three hosts from
+  `activeSessions[id].peer`. The signing port is `FlashGroupCrypto` in `core:engine` (one adapter over `FlashCrypto` and
+  `FlashFingerprint`, shared by all three hosts).
+
 ## Slices (each ends green with its own tests; code and docs are separate commits)
 
 | Slice | Content | Tests |
@@ -174,4 +190,10 @@ still share a legacy group.
   without a higher `seq`, and issues `last known + 1`): a self-inflicted denial, not an attack on others.
 - A relay that never saw a newer tombstone can show a receiver an outdated active cert (review §6 residual); bounded by full-set
   reconcile on every session-up.
+- Sync does not re-deliver messages written by a **former** member: a relayed message must name an *active* author (D5), and a member
+  who left is a tombstone. A member who was present when the message was written still has it; a device that joins later never
+  gets it. Accepted for V1: the alternative is to trust a relay about who used to be a member.
+- Only a certificate that would replace what the receiver holds is verified and budgeted; replays cost nothing, but a hostile
+  paired peer can still spend its own budget of fresh-looking bad certs per minute.
+- Messages are not budgeted, only bundles (a message costs one verification and is bounded by the sync caps and TLS).
 - Verification cost is unmeasured on the target phones (StrongBox sign latency, ECDSA verify per message): owed as a measurement.
