@@ -121,4 +121,27 @@ class FlashGroupMembersLogicTest {
     fun `introducedBy defaults to null so existing rows are unchanged`() {
         assertNull(member("1", "Bo").introducedBy)
     }
+
+    // --- ADR-044 V2 E5: the owner removes a member ---
+
+    @Test
+    fun `remove is offered on every row except the owner's own`() {
+        assertEquals(false, FlashGroupMembersMath.canRemove(member("o", "Ada", role = FlashMemberRole.Owner)))
+        assertEquals(true, FlashGroupMembersMath.canRemove(member("m", "Bo", role = FlashMemberRole.Member)))
+        assertEquals(true, FlashGroupMembersMath.canRemove(member("a", "Cy", role = FlashMemberRole.Admin)))
+    }
+
+    @Test
+    fun `the remove confirmation names the member and says what stays behind`() {
+        assertEquals("Remove Bo?", FlashGroupMembersMath.removeTitle("Bo"))
+        val message = FlashGroupMembersMath.removeMessage("Bo")
+        assertEquals(true, message.startsWith("Bo will be removed for everyone in the group"))
+        assertEquals(true, message.contains("already received stay on their device"), "a removed member keeps what they have, so the copy must not promise otherwise")
+    }
+
+    @Test
+    fun `a blank member name reads as this member in the remove confirmation`() {
+        assertEquals("Remove this member?", FlashGroupMembersMath.removeTitle("  "))
+        assertEquals(true, FlashGroupMembersMath.removeMessage("").startsWith("This member will be removed"))
+    }
 }

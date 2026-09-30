@@ -196,3 +196,37 @@ introduction into a real pairing. The plan is `docs/group/v2-vouched-trust-plan.
 | Not done here | Owner removal has API and tests (`RealFlashChatRepository.removeGroupMember`) but no UI: it needs a member action menu and a confirmation, which UI-029 deferred ("long-press member actions"). |
 
 **Checklist.** Unit: label copy, null for paired, row description. Physical device: see `docs/testing/TEST-BACKLOG.md` GT-03.
+
+### UI-029 addendum 2 — owner removes a member (ADR-044 V2 E5), DESIGNED 2026-09-30
+
+**Why.** `RealFlashChatRepository.removeGroupMember` (owner-only, signed tombstone, revokes the vouch on every receiver) had an API
+and tests but no way to reach it. A group owner who wants someone out today has no option short of everyone leaving.
+
+**Who sees it.** Only the owner of a **v2** group, on every row except their own. Not a member (they cannot remove anyone), not in a
+legacy group (there is no signed roster to remove from), not on the owner's own row (the owner cannot remove itself; leaving is the
+existing menu action). The repository decides and says so with `FlashConversationUiState.canRemoveMembers`; the UI never derives
+ownership.
+
+**Approaches considered.**
+
+1. *Long-press a row for a context menu.* Rejected: no visible affordance (a destructive action nobody can find is as bad as none),
+   it needs custom accessibility actions, and desktop has no long-press habit.
+2. *Tap a row to open a per-member detail sheet holding Verify and Remove.* Rejected for now: a whole new surface for one action.
+   It is the likely home if promote/demote or per-member info ever arrive; nothing here prevents that move.
+3. *A trailing "Remove" text action on each removable row, in the error colour, followed by a confirmation dialog.* **Selected.**
+   Same shape as Verify (visible, a real button for screen readers, 48 dp touch height through the row padding), and the dialog
+   is the same `FlashConfirmHost` the leave-group confirmation already uses.
+
+**Specification.**
+
+| Element | Value |
+|---|---|
+| Model | `FlashConversationUiState.canRemoveMembers: Boolean = false`; true only when `groupProto` is v2 and `groupCreatedBy` is this device. |
+| Action | Trailing text `"Remove"`, `bodyDefault`, `textError`, `Modifier.clickable(role = Role.Button)`. Shown when the host passes `onRemoveMember`, the state says `canRemoveMembers`, and the row is not the Owner row. Sits after Verify when both apply (they cannot for a healthy owner, who is paired with everyone it invited). |
+| Semantics | The action's description is `"Remove <name> from the group"`; it stays outside the merged row description, like Verify. |
+| Confirmation | `FlashRemoveMemberDialog`: title `"Remove <name>?"`, body `"<name> will be removed for everyone in the group and stop receiving new messages. Messages they already received stay on their device."`, actions `Cancel` and `Remove` (error colour). Copy comes from `FlashGroupMembersMath.removeTitle/removeMessage` (pure, unit-tested; a blank name reads "this member"). The body is deliberately honest: Flash has no per-sender keys, so a removed member keeps what they already have. |
+| After confirming | The host calls `removeGroupMember`. Success needs no message: the roster is reactive, the row disappears when the tombstone is stored. Failure shows a toast (Android) or snackbar (desktop): `"Couldn't remove <name> — try again"`. The sheet stays open. |
+| Not done here | No undo (re-adding is the ordinary Add members flow), no bulk remove, no promote/demote, no "remove and block". |
+
+**Checklist.** Unit: `canRemove` (never the Owner row), dialog copy, blank name; repository: `canRemoveMembers` true for the v2
+owner only. Physical device: `docs/testing/TEST-BACKLOG.md` GT-03 step 7 (owner removes a member).

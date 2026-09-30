@@ -659,6 +659,29 @@ class SignedGroupsTest {
     }
 
     @Test
+    fun `only the owner of a v2 group is offered member removal in the conversation state`() = runBlocking {
+        vouchedTrust = true
+        mesh("dev-a", "dev-b", "dev-c")
+        val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+
+        nodes.getValue("dev-a").repo.openConversation(groupId)
+        nodes.getValue("dev-b").repo.openConversation(groupId)
+        settle()
+
+        assertTrue("the owner may remove members", nodes.getValue("dev-a").repo.conversationState.value.canRemoveMembers)
+        assertFalse("a member may not", nodes.getValue("dev-b").repo.conversationState.value.canRemoveMembers)
+
+        val removed = nodes.getValue("dev-a").repo.removeGroupMember(groupId, "dev-c")
+        assertTrue(removed is FlashResult.Success)
+        settle()
+        assertEquals(
+            "the roster the sheet shows drops the removed member",
+            setOf("dev-a", "dev-b"),
+            nodes.getValue("dev-a").repo.conversationState.value.members.map { it.id }.toSet(),
+        )
+    }
+
+    @Test
     fun `only the owner can remove a member`() = runBlocking {
         vouchedTrust = true
         mesh("dev-a", "dev-b", "dev-c")

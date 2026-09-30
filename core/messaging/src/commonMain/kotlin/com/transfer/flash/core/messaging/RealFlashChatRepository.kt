@@ -681,12 +681,20 @@ public class RealFlashChatRepository(
                 )
             }
 
-            // Outer combine (3 flows): join live presence + typing onto the header (#11).
+            // The roster is read inside the combine below, so a change to the member table (an owner removal, a leave, an
+            // add from another device) has to re-run it, or an open members sheet keeps showing the old members.
+            val rosterFlow = if (isGroupConversation) {
+                groupMemberDao?.observeMembers(conversationId) ?: flowOf(emptyList())
+            } else {
+                flowOf(emptyList())
+            }
+            // Outer combine (4 flows): join live presence, typing and roster changes onto the header (#11).
             combine(
                 contentFlow,
                 displayedPresence,
                 typingFlow,
-            ) { content, peers, typingByConversation ->
+                rosterFlow,
+            ) { content, peers, typingByConversation, _ ->
                 // Group Phase A: a group thread derives its header from the member roster, not
                 // from a peer-name lookup (a groupId is not a device id — the UUID used to win).
                 val conversationEntity = conversationDao.get(conversationId)
@@ -728,6 +736,8 @@ public class RealFlashChatRepository(
                                 introducedBy = introducedByOf(member, ownerName),
                             )
                         },
+                        canRemoveMembers = conversationEntity.groupProto == GroupPolicy.V2_PROTOCOL &&
+                            conversationEntity.groupCreatedBy == localDeviceId,
                     ) to Pair(content.newestMessageId, content.newestInboundId)
                 } else {
                     directHeaderState(content, peers, typingByConversation, conversationId)
@@ -985,7 +995,7 @@ public class RealFlashChatRepository(
      * ADR-044 V2 (E5): the owner of a v2 group removes [deviceId]. The owner-signed tombstone reaches every remaining
      * member and the removed device (so it stops sending), and the vouch for that key is withdrawn here at once.
      */
-    public suspend fun removeGroupMember(groupId: String, deviceId: String): FlashResult<Unit> =
+    override suspend fun removeGroupMember(groupId: String, deviceId: String): FlashResult<Unit> =
         withContext(ioDispatcher) { removeGroupMemberLocked(groupId, deviceId) }
 
     private suspend fun removeGroupMemberLocked(groupId: String, deviceId: String): FlashResult<Unit> {
