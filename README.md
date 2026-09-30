@@ -368,7 +368,7 @@ Take the umbrella, or compose only the lightweight pieces:
 | `ui-theme` | Experimental — shipped | No | The Flash design system (colors, typography, motion, icons) for Compose. |
 | `ui-platform-shims` | Experimental — shipped | No | Platform seams (back handling, clipboard, file picking, permissions, image decode, audio playback, voice capture) that `ui-chat` compiles against. Transitive — depend on it only if you are reimplementing the chat UI. |
 | `ui-chat` | Experimental — shipped | No | The chat list / conversation / transfers / settings UI. Stateless; add `core-messaging` for its state types. |
-| `ui-callui` | Experimental — shipped | No (`api`s `core-calling`) | `FlashCallScreen`, the full-screen in-call surface. |
+| `ui-callui` | Experimental — shipped | No (`api`s `core-calling` and `core-ptt`) | `FlashCallScreen`, the full-screen in-call surface, and `PttSessionOverlayContent`, the shared push-to-talk session card. |
 
 A LAN-only, no-database transfer app can depend on just `core-transfer`,
 `core-network`, and `core-discovery`, skipping the SQLCipher native libraries entirely.

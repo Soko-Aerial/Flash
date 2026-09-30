@@ -1,5 +1,23 @@
 # Current Handoff
 
+## 2026-09-30 — Desktop push-to-talk built (ADR-058): `:core:ptt` is KMP, the Windows app joins PTT; device checks PTTD-01...07 owed
+- **Done (commits `c8a9aa3`, `824aeb0`, `37a2e66` + docs):** one PTT engine for Android and desktop (`PttSessionEngine` in commonMain,
+  hardware behind `PttAudioPlatform`; JVM uses `javax.sound.sampled`); `DesktopEngine` builds and routes it; the session card is
+  shared (`:ui:callui` `PttSessionOverlayContent`); desktop has a mic button (rail footer / floating when compact), `Ctrl+Shift+T`
+  (in-window only), `Esc` = Stop/Leave. D1 = Option B stands; NET-1 (`jvmAndAndroidMain`) rejected; ENG-1/MSG-2/APP-2 still deferred.
+- **Verified (unit tests):** `:core:ptt` 55 jvm / 41 android, `:desktop:jvmTest` 106 (two real engines, fake audio), `:ui:callui` 31 / 18
+  incl. a Skia render test of the card, `:ui:chat` 298, `:app` 35; Maven-local dry run of `core-ptt` and `ui-callui` OK.
+  **Not verified:** any real sound between machines, desktop <-> phone, Android PTT after the re-shape (it never passed its own gate,
+  ADR-032), Windows microphone privacy behaviour (expected silent, PTTD-03), cold-open clipping (~1 s, PTTD-04).
+- **Known:** the desktop has no global hotkey, no notification actions, no permission step; the compact-layout button floats above the
+  bottom nav; the button has no keyboard focus stop.
+- **Recommended next task:** `PTTD-01` (desktop <-> phone on the LAN) with the owner, then `PTTD-05` on two phones. Without devices:
+  the open audit items (3.2, S6, 3.11; refactors need the owner's go-ahead).
+- Files most relevant: `core/ptt/src/commonMain/.../PttSessionEngine.kt`, `PttAudioDevices.kt`, `PttPlatform.kt`;
+  `core/ptt/src/jvmMain/.../JvmPttCapture.kt`, `JvmPttPlayout.kt`, `PttPcmLines.kt`; `desktop/.../DesktopEngine.kt` (`ptt engine built`),
+  `DesktopShell.kt` (`onPttToggle`), `DesktopPttButton.kt`; `ui/callui/.../PttSessionOverlayContent.kt`.
+- Postponed by the owner, do not start: DR4 (QR), DR6 (BLE), DR7 (Wi-Fi Direct), FO-04 (attachment fan-out), MEAS-02/PC6 and group size 32 (FO-05).
+
 ## 2026-09-30 — Four small audit fixes done (3.6, 3.4, 3.7, Linux CI vault); ERROR-073 has a candidate fix
 - **Done:** group text send is one transaction and bumps the thread to the top (3.6); `defaultStreams: Int? = null`, so an explicit 2
   is honoured (3.4); NSD registration is idempotent (one live registration per reconnect, none after stop) in the transport and the

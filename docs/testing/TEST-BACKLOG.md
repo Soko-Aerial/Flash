@@ -607,6 +607,86 @@ Three small fixes with unit tests, and a CI change. Only the first needs a devic
 - **Source:** audit section 7; `FixtureIdentityVaultTest`, `TestIdentityVaultTest`.
 - **Status:** TODO
 
+## 4f. Push-to-talk on desktop (ADR-058, `docs/ui/ptt-session-overlay.md` Addendum A)
+
+What exists: one `PttSessionEngine` for Android and desktop, `DesktopEngine` wiring, the shared session card, a mic button,
+`Ctrl+Shift+T`, `Esc`. What has been run: unit tests and two real `DesktopEngine`s with **fake** audio devices
+(`DesktopEnginePttTest`), and a Skia render test of the card. No sound has crossed a real wire.
+
+### PTTD-01 — Desktop <-> phone push-to-talk, both directions, on the LAN (ADR-058)
+- **Setup:** one Windows desktop build and one Android phone (build from this commit), paired, on the same Wi-Fi; speakers and a
+  microphone on the PC.
+- **Steps:** (1) on the desktop click the mic button in the rail (or press `Ctrl+Shift+T`) and speak a sentence for ~5 s; (2) stop
+  with the card's Stop; (3) on the phone start PTT (hardware key or the app's control) and speak; (4) the desktop should show
+  "Listening - <phone name>" and play it; (5) leave with Leave; (6) repeat with both sides pressing at once.
+- **Pass:** the phone hears (1) intelligibly within about a second, the desktop hears (3); the card shows the right role, a running
+  clock and an `ms` figure; Stop/Leave end the session on both sides (`PTT_SESS` log lines on both: `Talking`/`Listening`, then
+  the stop); with presses within ~1 s of each other exactly one side ends up Talking (the lower device id wins inside the 1.5 s collision window, `PttFloorMachine`).
+- **Also look for:** `PTT frame dropped` or `PTT control dropped: no session` in `~/.flash/desktop.log`; clipped first words
+  (PTTD-04).
+- **Source:** ADR-058; `DesktopEnginePttTest` covers the wiring with fakes only.
+- **Status:** TODO
+
+### PTTD-02 — Audio formats on other hardware (16 kHz / 8 kHz; USB headset; Linux later)
+- **Setup:** repeat PTTD-01 (desktop side only) with (a) a USB headset as default device, (b) a Bluetooth headset, (c) a PC whose
+  default microphone does not support 16 kHz, (d) a LOW performance mode session (8 kHz / 60 ms).
+- **Pass:** each either works or degrades with a **logged** rate (`PTT_SESS ... rate=`), never silence or a crash; the phone hears
+  the desktop in (d) at the LOW profile. Record what failed in `logs/experiments.md` (EXP-018's follow-up).
+- **Source:** ADR-058; EXP-018 (one machine only).
+- **Status:** TODO
+
+### PTTD-03 — Windows microphone privacy switch: silent capture
+- **Setup:** Windows Settings > Privacy & security > Microphone > "Let desktop apps access your microphone" = Off.
+- **Steps:** press talk on the desktop and speak.
+- **Pass (desired):** the user is told. **Expected today: FAIL** - the engine opens the line, reads zeros and sends silence without any
+  message, because `DesktopEngine` passes `hasMicPermission = { true }` and the capture cannot distinguish silence from a muted
+  mic. If it fails as expected, record it as an `ERROR-NNN` (design: detect N seconds of all-zero capture and raise a notice).
+- **Source:** ADR-058 consequences; UI-051 Addendum A "No permission step".
+- **Status:** TODO
+
+### PTTD-04 — Cold-open latency: are the first words clipped?
+- **Setup:** fresh desktop launch, phone listening.
+- **Steps:** first press of the session, say a word immediately; repeat after the first session has ended.
+- **Pass:** the phone hears the first word in both cases. **If clipped:** measure the gap (Start frame to first audible audio) and
+  build the pre-warm described in EXP-018 (open the line once at startup, or keep it warm while a peer is paired and online).
+- **Source:** EXP-018 (about 1.0 s cold, about 0.23 s warm on one machine); `JvmPttCapture` (capture opens on the press and packets are
+  enabled only after the Start frame is sent, so speech before the line is live is simply not captured).
+- **Status:** TODO
+
+### PTTD-05 — Android PTT after the engine re-shape
+- **Setup:** two Android phones (a rugged handset with a hardware PTT key if available), paired, same LAN.
+- **Steps:** talk and listen both ways; hardware press toggle; Stop from the card; Stop/Leave from the notification; press during a
+  call and during a voice-note recording; screen off for 60 s mid-session.
+- **Pass:** everything ADR-032's device gate asked for still works; `PttCapture`/`PttPlayout` now sit behind `PttAudioPlatform` and
+  the clock is `pttElapsedRealtimeMs()` (same `SystemClock.elapsedRealtime()`), so behaviour should be identical. **Android PTT has
+  never passed its own gate** (ADR-032), so a failure here may be old, not new: compare with `git stash`/the parent commit
+  `b1d6236` before calling it a regression.
+- **Source:** ADR-058 consequences; commit `c8a9aa3`.
+- **Status:** TODO
+
+### PTTD-06 — A call and push-to-talk never share the desktop microphone
+- **Setup:** desktop paired with a phone.
+- **Steps:** (1) start a PTT session on the desktop, then start a call from the phone or the desktop; (2) during a call press the mic
+  button / `Ctrl+Shift+T`; (3) while a PTT session is live, have the phone place a call to the desktop.
+- **Pass:** (1) the PTT session ends when the call becomes active and the card disappears; (2) the press is refused with the
+  snackbar "Call in progress - PTT unavailable" and no capture opens; (3) the call screen paints above the card and the call has
+  working audio (the microphone was released).
+- **Source:** ADR-032 mutual exclusion; `DesktopEngine` (`isCallActive`, `onCallStarted` collector).
+- **Status:** TODO
+
+### PTTD-07 — Card, button and hotkey look and behave right on the desktop (UI-051 Addendum A)
+- **Setup:** Windows at 100 %, 125 % and 150 % scale, window at 640x480 dp (compact layout) and wide (rail), dark and light theme,
+  the desktop UI-scale setting at its extremes (ADAPTIVE-UI-PLAN AD-1).
+- **Steps:** find the mic button (rail footer when wide; floating above the bottom nav on a tab root when narrow); open a session;
+  press `Esc` (Stop/Leave); press `Ctrl+Shift+T` with focus in the message composer; click behind the card; keyboard-Tab to the
+  button; start a session from a phone and watch the card and the snackbar notices ("<name> stopped talking").
+- **Pass:** the button is reachable and not clipped in both layouts; the card is centred and readable at every scale; `Esc` ends the
+  session first (before closing a pane); `Ctrl+Shift+T` works from the composer; a click behind the card hits nothing; the button is
+  announced "Push to talk" / "Stop talking" by a screen reader. **Known gap:** the button is pointer/hotkey only (no keyboard focus
+  stop) - if Tab should reach it, raise it as a follow-up.
+- **Source:** UI-051 Addendum A; `PttSessionOverlayRenderTest` proves only that the card draws and Stop reaches the engine.
+- **Status:** TODO
+
 ## 5. Measurements — do these last
 
 They replace every *(measure)* estimate in the plans and decide tuning. Record each in `logs/experiments.md`.

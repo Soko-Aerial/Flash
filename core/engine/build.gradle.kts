@@ -99,9 +99,10 @@ kotlin {
         // is not declared: it arrives transitively as `api` from every one of the six, exactly
         // as before.
         //
-        // The seventh, `:core:ptt`, is deliberately NOT here: it is not a converted KMP module
-        // but a plain AGP Android library, so it has no JVM variant to hand commonMain — see
-        // androidMain below.
+        // The seventh, `:core:ptt`, is deliberately NOT here. It was a plain AGP Android library with no
+        // JVM variant (ERROR-049); it became KMP in ADR-058, so the placement is now a choice, kept
+        // because nothing in commonMain names PTT and moving it is a public-API/publication change (ENG-1).
+        // See androidMain below.
         commonMain.dependencies {
             api(project(":core:common"))
             api(project(":core:security"))
@@ -115,12 +116,13 @@ kotlin {
             // PUBLIC `FlashEngine.attachPtt(...)` / `FlashEngine.ptt` signatures, so a consumer
             // cannot call them without it on its compile classpath.
             //
-            // And androidMain rather than commonMain, unlike the six above: `:core:ptt` is a
-            // plain AGP Android library, so it exposes Android variants only. Declaring it in
-            // commonMain makes `jvmMainCompileClasspath` request a JVM-compatible variant of it
-            // and fail variant selection — which broke `:core:engine:compileKotlinJvm`, its
-            // `jvmTest`, and `publishToMavenLocal` (hence the whole JitPack install list) while
-            // `compileAndroidMain` stayed green. Nothing in commonMain or jvmMain names PTT.
+            // And androidMain rather than commonMain, unlike the six above. History (ERROR-049): `:core:ptt`
+            // was a plain AGP Android library exposing Android variants only, and declaring it in
+            // commonMain made `jvmMainCompileClasspath` fail variant selection — which broke
+            // `:core:engine:compileKotlinJvm`, its `jvmTest`, and `publishToMavenLocal` (hence the whole
+            // JitPack install list) while `compileAndroidMain` stayed green. Since ADR-058 `:core:ptt` has
+            // a JVM target, so that failure no longer applies; the placement stays until the engine
+            // facade is refactored. Nothing in commonMain or jvmMain names PTT.
             api(project(":core:ptt"))
 
             // `compileOnly`, NOT `api` — the module registers this in the OTHER direction.

@@ -1,90 +1,101 @@
 # Core Push-To-Talk Module (`:core:ptt`)
 
-The `:core:ptt` module provides a specialized, low-latency Push-To-Talk (PTT) voice streaming engine. It is designed for walkie-talkie style voice communication, rugged handsets (e.g. BelFone devices), half-duplex floor control, and instant audio delivery.
+> **Rewritten 2026-09-30 (ADR-058).** The previous revision of this page described an API that the code never had
+> (`pressFloor`, `releaseFloor`, `joinChannel`, `FlashPttState`, `REQUEST_FLOOR` / `FLOOR_GRANTED` frames, Opus chunks
+> in `FLASH_PTT_CHUNK`). None of that exists. What follows was written from the code; the authoritative sources remain
+> `docs/protocol.md` (wire format), `docs/architecture/public-api.md` section 14 (public API) and ADR-031 / ADR-032 / ADR-058.
+> The old text is in git history.
+
+`:core:ptt` is the push-to-talk voice engine: a strict **half-duplex** floor where one device transmits and every other
+paired, online device listens. It is a Kotlin Multiplatform module with an **Android** and a **JVM** target, used by the
+Android app and by the Windows desktop app.
 
 ---
 
-## 1. Gradle Dependency Coordinates
+## 1. Gradle dependency
 
 ```kotlin
 dependencies {
-    implementation("com.transfer.flash:core-ptt:2.0.0-beta")
+    implementation("com.transfer.flash:core-ptt:2.0.0-beta")   // coordinates as published by this repo's build
 }
 ```
 
----
-
-## 2. Architecture and Floor Arbitration
-
-Unlike full-duplex WebRTC calling, PTT operates in half-duplex mode:
-
-1. **Floor Request & Arbitration:**
-   * Before streaming voice, a client requests the floor (`REQUEST_FLOOR`).
-   * The channel host or consensus coordinator awards the floor (`FLOOR_GRANTED`) to one speaker at a time, rejecting conflicting simultaneous presses (`FLOOR_BUSY`).
-   * When the user releases the PTT button, the floor is released (`FLOOR_RELEASED`).
-2. **Streaming Audio Frames:**
-   * Voice is encoded in compact Opus chunks and streamed directly over low-latency binary frames (`FLASH_PTT_CHUNK`).
-   * Recipients play audio immediately through [`FlashAudioPlayer`](file:///C:/Users/KaliOxygen/Downloads/Flash/ui/platform-shims/src/commonMain/kotlin/com/transfer/flash/ui/shims/FlashAudioPlayer.kt) with minimal jitter buffering.
+`core-engine` already exposes it on Android (`api`), and `ui-callui` `api`s it because the shared session card takes a
+`FlashPtt`. Nothing is created until the host builds the engine and attaches it (Android: `FlashEngine.attachPtt`;
+desktop: `DesktopEngine` builds it during `assemble`).
 
 ---
 
-## 3. Key Public Interfaces and Classes
+## 2. How a session works (ADR-032)
 
-### 3.1 `FlashPtt`
-Located in [`com.transfer.flash.core.ptt`](file:///C:/Users/KaliOxygen/Downloads/Flash/core/ptt):
+- **Floor:** there is no request/grant round trip. The floor machine (`PttFloorMachine`, in `:core:messaging`) is a pure
+  reducer: a local press on an idle device starts capture and announces `Start`; a device that hears a `Start` from a
+  trusted peer becomes a listener; a second press stops. If two devices start within the 1.5 s collision window, the one with the lower
+  device id keeps the floor and the other stops and listens (no coordinator). Control frames are text (`FLASH_PTT` ping; `FLASH_PTSS` start / stop / leave / heartbeat / heartbeat-ack).
+- **Audio:** raw PCM16 little-endian mono in binary frames with the `PTT1` magic, 16 kHz / 20 ms (MEDIUM and HIGH devices) or
+  8 kHz / 60 ms (LOW). There is no codec. A receiver feeds a small jitter buffer (target depth 120 ms) and repeats the last
+  packet at half level, then zeros, rather than stalling.
+- **Safety rules:** a 60 s cap per burst, a 1 Hz heartbeat that also measures RTT, mutual exclusion with calls and voice notes,
+  scope = paired peers only, and trust is checked against the *authenticated transport peer*, never against a claimed id.
+- **Effect order that must not change:** `StartAnnounced` is sent before capture packets are enabled; a listener's local stop
+  stops playout and then sends `Leave`, and the holder id must survive the playout stop (ERROR-046).
+
+---
+
+## 3. The public surface
+
+`FlashPtt` (in `com.transfer.flash.core.ptt`) is the whole public interface:
+
+| Member | Meaning |
+|---|---|
+| `state: StateFlow<PttFloorState>` | `Idle`, `Talking` or `Listening` |
+| `stats: StateFlow<PttSessionStats?>` | 1 Hz telemetry (role, RTT, loss, depth, level, members); null when idle |
+| `notices: SharedFlow<String>` | user-facing one-shots ("<name> stopped talking", burst warnings) |
+| `pings: Flow<PttPingEvent>` | accepted, de-duplicated `FLASH_PTT` pings |
+| `onPttButton(): PttPressOutcome` | toggle the floor; `ACCEPTED`, `NO_PEERS`, `NO_MIC`, `CALL_ACTIVE`, `VOICE_NOTE_ACTIVE` |
+| `stopLocal()` / `onCallStarted()` / `shutdown()` | stop, tear down for a call, terminal teardown |
+| `acquireVoiceNoteLease()` / `releaseVoiceNoteLease(id)` | the microphone gate for voice messages |
+| `onInboundText(peerId, text)` / `onInboundBinary(peerId, data)` | host routing seams; return true for PTT frames **including rejected ones** |
+
+The host routes inbound frames to the engine **before** its own parsers, so a forged PTT frame can never be read as a chat frame.
+
+---
+
+## 4. The audio seam (ADR-058)
+
+`PttSessionEngine` is commonMain and never touches audio hardware. It takes a `PttAudioPlatform`:
 
 ```kotlin
-public interface FlashPtt {
-    /** Reactive state of the PTT channel and floor owner. */
-    public val pttState: StateFlow<FlashPttState>
-
-    /** Requests the floor to start broadcasting voice. */
-    public suspend fun pressFloor(channelId: String): FlashResult<Unit>
-
-    /** Releases the floor when the user lets go of the button. */
-    public suspend fun releaseFloor(channelId: String)
-
-    /** Joins a PTT channel or multicast group. */
-    public suspend fun joinChannel(channelId: String)
-
-    /** Leaves the PTT channel. */
-    public suspend fun leaveChannel(channelId: String)
+public interface PttAudioPlatform {
+    public fun createCapture(requestedRateHz: Int, packetMs: Int,
+        onPacket: (pcm: ByteArray, captureTsMs: Long) -> Unit, onCaptureLost: () -> Unit): PttCaptureDevice
+    public fun createPlayout(sampleRateHz: Int, packetMs: Int,
+        onAmplitude: (Float) -> Unit, onPlayoutLost: () -> Unit): PttPlayoutDevice
 }
-
-public data class FlashPttState(
-    val currentChannel: String?,
-    val isFloorHeldByMe: Boolean,
-    val currentSpeakerName: String?,
-    val isConnecting: Boolean
-)
 ```
+
+| Target | Implementation |
+|---|---|
+| Android | `AudioRecord` / `AudioTrack` (`PttCapture`, `PttPlayout`, internal) |
+| JVM (Windows; Linux untested) | `javax.sound.sampled` through `PttPcmLines` (`JvmPttCapture`, `JvmPttPlayout`); tries the requested rate then 8 kHz and reports the rate it opened |
+
+A host that needs neither (tests, a new platform) passes its own implementation; `DesktopEngine` takes one as a constructor
+parameter so tests never open a real microphone. Three small `expect`s complete the module: `pttElapsedRealtimeMs()`
+(public; the clock `PttFloorState.startedAtMs` uses), `PttLock`, and `platformPttAudio()`.
 
 ---
 
-## 4. Practical Code Example
+## 5. Hosting it
 
-```kotlin
-import com.transfer.flash.core.ptt.FlashPtt
-import kotlinx.coroutines.launch
+- **Android:** the engine is created by `FlashEngine`; `PttSessionOverlay` (app) adds the deferred hardware press, the
+  `RECORD_AUDIO` prompt and the notification mirror, and draws the card.
+- **Desktop:** `DesktopEngine.assemble` builds the engine over its WebSocket sessions (members = active sessions that are paired),
+  and the shell adds a mic button, `Ctrl+Shift+T` (in-window only) and `Esc`.
+- **The card** is `PttSessionOverlayContent` in `:ui:callui`, shared by both hosts (UI-051, Addendum A).
 
-fun setupPttButton(ptt: FlashPtt, channelId: String) {
-    // When physical or UI PTT button is pressed down:
-    fun onButtonPressed() {
-        scope.launch {
-            val result = ptt.pressFloor(channelId)
-            result.fold(
-                onSuccess = { println("Floor granted! Speaking...") },
-                onFailure = { println("Channel busy. Someone else is speaking.") }
-            )
-        }
-    }
+## 6. Status
 
-    // When button is released:
-    fun onButtonReleased() {
-        scope.launch {
-            ptt.releaseFloor(channelId)
-            println("Floor released.")
-        }
-    }
-}
-```
+Unit-tested on both targets, including two real desktop engines talking through real sockets with fake audio. **Not
+device-verified**: desktop <-> phone, other audio hardware, and the Android path after the ADR-058 re-shape are
+`PTTD-01`...`PTTD-07` in `docs/testing/TEST-BACKLOG.md`. Known limits: Windows' microphone privacy switch can give silent
+capture the engine cannot detect; a cold capture open took about 1 s on the one machine measured (EXP-018).
