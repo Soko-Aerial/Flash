@@ -485,6 +485,47 @@ by later testing without anyone recording it: confirm, then mark PASS here **and
   `GroupSignatureRulesTest`, `GroupBundleCodecTest`.
 - **Status:** TODO
 
+### GT-03 — Vouched members: two devices that never paired share a v2 group (ADR-044 V2)
+- **Setup:** four devices on the V2 build (`gv=2`): A (the owner), B, C and D; at least one phone and the desktop. **A is paired with
+  B, C and D; B, C and D are not paired with one another** (fresh installs, or unpair them: Nearby must offer "Pair" between B and C).
+  Every device needs a live session with A before step 1 (a group made with an unconnected invitee is legacy by design). B and C must
+  be discoverable on the same network. Phone log `adb logcat -v time -s CHAT:I` (V2 refusals are logged at warning level with a
+  `SECURITY:` prefix, the vouching one as `SECURITY: vouch refused`); desktop log `%USERPROFILE%\.flash\desktop.log`.
+- **Steps:**
+  1. A creates "Wide" with B, C and D.
+  2. On B open the group's member list. Do the same on C.
+  3. B sends two messages, C sends two, D sends one. Check every device shows all five under the right names.
+  4. Start a group **voice** call from A, then have B and C join. Check B and C hear each other, not only A.
+  5. On B send a photo to the group. Then open a 1:1 chat with C and try to send C a file.
+  6. On B tap **Verify** next to C. Complete the pairing on both sides. Then open the member list again.
+  7. On C leave the group. On B check that C is no longer listed.
+- **Pass:**
+  - Step 1: A's log has `Group v2 created: group=g2-...`; B, C and D each log `Group v2 joined: group=g2-... owner=<A's id>`; the
+    group shows four members with A as the only owner.
+  - Step 2: on B, C's row shows **"Added by <A's name> · not verified"** and a **Verify** action; A's and (if it is paired) any paired
+    member's rows show neither. The label names the owner, not the member.
+  - Step 3: all five messages arrive everywhere; the names are the ones A's device gave (signed labels); no `SECURITY:` line on any device.
+  - Step 4: B and C are heard by each other (media legs between two devices that never paired).
+  - Step 5: A receives the photo; **C and D do not** (a group attachment goes only to paired members: vouched members get no
+    files). The 1:1 file to C is refused like for any unpaired peer until step 6. This is a pass, not a failure.
+  - Step 6: after pairing, C's row on B no longer says "Added by" and has no Verify action; group messages still flow.
+  - Step 7: B's member list drops C (the leave tombstone, which also revokes C's vouch on B).
+  - The logs contain no `SECURITY: vouch refused` (that line means the owner's cert clashed with a paired pin or another group's vouch).
+- **A FAIL means:** C's messages never reach B (or the reverse): check that each device has a session with the other (a vouch only
+  installs the pin; the planner still has to dial, and ECO dials only neighbours), that the roster arrived (`Group v2 joined`), and
+  whether the peer's live key equals the cert key (a stale or reinstalled member: the owner must re-issue the cert); B shows C with
+  no label (the row was treated as paired: check the pair state) or with a label but no Verify action; a file that reaches a vouched member
+  (a gate bug, serious); group call legs missing between B and C; a removed member still being accepted. Each is a new
+  `ERROR-NNN`.
+- **Also note:** how long B took to reach C after the group was created (dial time between two never-paired devices), which mode each
+  device was in (STANDARD, BOOST, ECO), and whether B and C were discovered before step 3 or only after. **Owner remove has no UI
+  yet,** so "removal revokes the vouch" is covered by unit tests only, not by this test.
+- **Source:** `docs/group/v2-vouched-trust-plan.md`, ADR-044 "V2 built", `docs/security.md` section 9. The attacks themselves (a first-use
+  pin squatting a member's id, a paired-key conflict, a second owner vouching a different key, an impersonated session key, a cert
+  from a non-owner, removal revoking the vouch) cannot be staged from the UI and are covered by unit tests only: `SignedGroupsTest`
+  (V2 cases), `TrustStoreGroupVouchingTest` (desktop), the `core:security` vouching tests, `CallCoordinatorSecurityTest`.
+- **Status:** TODO
+
 ## 4d. Session ceiling and dial budget (ADR-057, `docs/network/PRESENCE-CONNECTIONS-PLAN.md` "Session ceiling")
 
 ### SC-01 — A phone holds a 20-member group's sessions (ceiling 24)
@@ -519,7 +560,7 @@ They replace every *(measure)* estimate in the plans and decide tuning. Record e
 | MEAS-05 | CPU warning threshold (40 % of all cores for 30 s) against real calls | `CALL_DIAG proc cpu=` from GRP-08 and CALL-03 | The G6 threshold | TODO |
 | MEAS-06 | Desktop render cost: capture + BGRA conversion + Skia upload was ~1.5 of ~2.5 cores (EXP-017) | Profile a 4-person desktop call | Whether hardware video (ADR-052) or render work comes first | TODO |
 | MEAS-07 | **DR0** discovery failure matrix: for each of home router, mesh in bridge mode, router with IGMP snooping, client isolation, Android hotspot with 2+ clients, desktop with Hyper-V/VPN adapters: does mDNS work, does the `224.0.0.168` beacon work, does a directed broadcast arrive, is TCP 45822 reachable; screen on and off | Plan §4 DR0 (a small broadcast test sender is enough); log in `logs/experiments.md` | Which network each of DR2 (broadcast) and DR3 (subnet sweep) fixes. DR2/DR3 are built without waiting for it (owner 2026-09-29); DR6 (BLE) is postponed, FO-02 | TODO |
-| MEAS-08 | **Signed groups (ADR-044 V1):** identity-key sign latency (StrongBox and TEE phones, desktop) and ECDSA P-256 verify cost per message and per bundle, including a 100-message catch-up round in a 6-member group | Add a temporary `PERFORMANCE` timing log around `GroupSigning.signMessage` and `SignedGroups.verifiedAuthorLabel`, run GT-02 step 3 and a 100-message sync; log in `logs/experiments.md` | Whether the per-peer verification budget (120 per minute) and the message path need tuning, and whether signing on the send path needs to move off the caller | TODO |
+| MEAS-08 | **Signed groups (ADR-044 V1):** identity-key sign latency (StrongBox and TEE phones, desktop) and ECDSA P-256 verify cost per message and per bundle, including a 100-message catch-up round in a 6-member group and a first bundle of a 20-member v2 group (up to 21 verifications; ADR-044 V2) | Add a temporary `PERFORMANCE` timing log around `GroupSigning.signMessage` and `SignedGroups.verifiedAuthorLabel`, run GT-02 step 3 and a 100-message sync; log in `logs/experiments.md` | Whether the per-peer verification budget (120 per minute) and the message path need tuning, and whether signing on the send path needs to move off the caller | TODO |
 
 ---
 

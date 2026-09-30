@@ -1,5 +1,29 @@
 # Current Handoff
 
+## 2026-09-30 — Vouched trust and groups of 20 built (ADR-044 V2, `9674ab0` + docs); device check GT-03 owed
+- **Done:** in a v2 group members need to be paired with the **owner** only; the owner's signed cert is an introduction that installs a
+  vouched pin in both trust stores (Android `vouch_<id>`, desktop `vouch.<id>`). A vouched member can chat in that group and join its
+  group calls; nothing else (no 1:1, no files, no push-to-talk). v2 groups hold up to 20 (`MAX_MEMBERS_V2`), legacy stays 6. **No wire
+  change, `gv` stays 2.** The group gate is `isGroupPeerTrusted` = paired, or an active roster member whose live TLS key equals the cert
+  key (it never reads the pin store). The member sheet shows "Added by <owner> · not verified" and a Verify action (ordinary pairing).
+- **Commits:** plan `9997470`, S1 `bc4e687`, S2 `e4cc004`, S3 `6684120`, S4 `b67923f`, S5 `9674ab0`, S6 docs. Design:
+  `docs/group/v2-vouched-trust-plan.md` (with "As built"). Summary and limits: `docs/security.md` section 9. Decision: ADR-044 "V2 built".
+- **Verified:** messaging 311 host / 158 jvm, ui:chat 291, calling 133, engine 12 host / 7 jvm, desktop 102, network 381 / 290, app and
+  sample compile. Three `RealFlashChatRepositoryTest` cases failed once under a parallel Gradle run and passed alone and on a solo
+  re-run (`logs/progress.md` 2026-09-30, "A flake to know about"). **Not verified on a device:** GT-03. Log line to look for:
+  `Group v2 joined`; none of `SECURITY:` (especially `SECURITY: vouch refused`).
+- **Known limits (accepted):** a lying owner can vouch a key it controls (label + Verify mitigate); no per-sender keys; vouched members
+  get no files; owner remove exists (`removeGroupMember`) but has no UI; deleting a chat without leaving keeps rows and vouches; an
+  established call leg is not re-checked after a removal.
+- **Recommended next task:** GT-03 (and GT-02 which it builds on) on real devices with the owner. If no devices: the open audit items
+  (3.6, 3.2, S6, 3.4, 3.7, 3.11), or an owner-remove UI if the owner wants it (needs a UI-029 design first, section 34).
+- Files most relevant: `core/messaging/.../SignedGroups.kt`, `RealFlashChatRepository.kt` (`isGroupPeerTrusted`, `removeGroupMember`,
+  `introducedByOf`), `core/security/.../VouchRules.kt`, `core/engine/.../group/TrustStoreGroupVouching.kt`,
+  `ui/chat/.../FlashGroupMembersSheet.kt`.
+- Owed device tests: GT-03, GT-02, GT-01, SC-01, SC-02, DR-01...DR-04, MIG-01, MIG-02, MEAS-07, MEAS-01, MEAS-08, older items.
+- Postponed by the owner, do not start: DR4 (QR), DR6 (BLE), DR7 (Wi-Fi Direct), FO-04 (attachment fan-out), MEAS-02/PC6 and group size 32 (FO-05).
+
+
 ## 2026-09-30 — Signed (v2) groups built (ADR-044 V1, `c0c7ae8`); device check GT-02 owed; V2 next
 - **Done:** new groups are v2 when the creator can sign and every invitee advertised `gv>=2` on a live session with a key that matches
   its pin; otherwise they are created exactly as before (legacy, at most 6). v2: owner-signed charter, owner-signed member certs,

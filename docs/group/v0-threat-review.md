@@ -4,6 +4,10 @@
 > "V1 built" section of ADR-044. It fixes F-3, F-6 and F-9 for v2 groups. **Rule 4 of section 4.3 (a charter replaces a legacy record of
 > the same id) is superseded:** v2 ids are derived from the owner's key in a reserved `g2-` namespace, so no replace-legacy path exists
 > (plan D1). Findings F-3, F-6 and F-9 remain true of **legacy** groups, which stay legacy by owner decision.
+>
+> **Update 2026-09-30 (later):** V2 (vouched trust, groups of 20) is built; see `docs/group/v2-vouched-trust-plan.md` and "V2 built" in
+> ADR-044. Where section 5 (vouched trust) and that plan differ, the plan wins: the pin rules are in its E1 table (a fifth verdict,
+> `INVALID`), the group gate is the live-key predicate of its E3 and does not read the pin store, and `gv` stays 2.
 
 **Status: COMPLETE 2026-09-29.** No code changed by this review. Its output is (a) the findings F-1 to F-9 about the code as it is
 today, (b) the design V1 and V2 must follow, and (c) the phase plan in section 8. ADR-044 carries a short summary; this is the

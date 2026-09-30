@@ -1,6 +1,7 @@
 # ADR-044 phase V2 — vouched trust and groups of 20: build plan
 
-**Status: PLAN 2026-09-30, slices S1–S6 below. No owner decision is open** (ADR-044 #3 owner-only vouching, #4 scope, #6 the limit of
+**Status: BUILT 2026-09-30 (S1 `bc4e687`, S2 `e4cc004`, S3 `6684120`, S4 `b67923f`, S5 `9674ab0`, docs S6); NOT device-verified,
+TEST-BACKLOG GT-03 is owed (see "As built" at the end). No owner decision is open** (ADR-044 #3 owner-only vouching, #4 scope, #6 the limit of
 20 were accepted; ADR-056 confirmed 20 and parked 32). V2 builds on V1 (`docs/group/v1-signed-membership-plan.md`, code `c0c7ae8`,
 device check GT-02 owed) and on the session ceiling (ADR-057: ceiling 24, dial budget 20). Design source: review
 `docs/group/v0-threat-review.md` section 5. Where this file and the review differ, this file wins for V2.
@@ -121,3 +122,37 @@ makes the member PAIRED.
 - An attacker's already-open TOFU session as a vouched id stays a 1:1 peer (review F-8, adjacent debt); it is not trusted in the group
   because its key differs from the cert's.
 - Owner and members must all be `gv >= 2`; nothing changes for legacy groups (still at most 6, everyone mutually paired).
+
+
+## As built (2026-09-30)
+
+Everything above was built as written. What is different from, or added to, the plan:
+
+- The port between `core:messaging` and the trust store is `GroupVouching` with its own `GroupVouchVerdict` (which includes `INVALID`),
+  and the adapter `TrustStoreGroupVouching` lives in `core:engine`, next to `FlashGroupCrypto`. `core:messaging` sees no `FlashTrustStore`.
+- `RealFlashChatRepository.isGroupPeerTrusted` is public, so `CallCoordinator` (through `isGroupTrustedPeer`) and the hosts use one predicate.
+- `FlashGroupMemberUi.introducedBy` carries the owner's display name for a member this device never paired (null for self, owner and
+  paired members; legacy groups never set it). The UI shows the label and a Verify action; Verify is `connectManual` (when the member is
+  discovered) followed by `beginPair`, i.e. the ordinary pairing flow (component doc: `docs/ui/group-ui.md`, UI-029 addendum).
+- S4 needed no production change: the planner already dials every discovered device in STANDARD and BOOST, ECO counts rosters as
+  contacts, and presence tips dial only pinned subjects, so the vouch pin is the only missing piece. Tests pin those facts
+  (`PresenceStateTest`, `EcoLinkSelectorTest`, `GroupSizeBudgetTest`).
+- Test results at S5 (all green): messaging 311 host / 158 jvm, ui:chat 291, calling 133 host / 106 jvm, engine 12 host / 7 jvm,
+  desktop 102, network 381 host / 290 jvm. Three `RealFlashChatRepositoryTest` cases failed once when the whole matrix ran in parallel
+  (`an inbound image offer stays a file card...`, `delete for everyone sends direct action only for the local author`, `outbox drain
+  preserves the composing conversationId...`), passed in isolation and on a full solo re-run; treat them as load-sensitive timing, and
+  re-check if they fail again on an idle machine.
+
+### Known limits added while building
+
+- **Owner remove has no UI.** `removeGroupMember` exists with tests (revocation on every receiver); the member sheet has no destructive row action.
+- **Deleting a v2 chat without leaving** keeps the member rows and their vouches, and a rejoin after such a delete meets stale rows (a latent V1 issue). The plan's E2 sentence "Leaving or deleting a v2 group revokes every vouch it made" is true of **leaving** only.
+- **An established group-call leg is not re-checked:** a member removed mid-call stays connected until the call ends (pre-existing
+  for call legs).
+- **Vouched members get no files** (group media announcements and attachment sends are paired-only).
+- **No compaction of tombstones:** a bundle carries at most 20 active certs and 64 tombstones.
+
+### Still owed
+
+GT-03 (four or more devices, two never paired), plus GT-02 (V1) that it builds on; MEAS-08 (sign/verify cost at 20 members), SC-01
+and SC-02 (a phone holding 20 sessions). Groups of 20 are **not** device-tested.
