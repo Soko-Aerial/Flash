@@ -4,7 +4,10 @@ import com.transfer.flash.core.common.result.FlashResult
 import com.transfer.flash.core.messaging.model.FlashChatListUiState
 import com.transfer.flash.core.messaging.model.FlashConversationUiState
 import com.transfer.flash.core.messaging.model.FlashGroupMemberUi
+import com.transfer.flash.core.messaging.model.FlashMessageInfoUi
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.flowOf
 
 /**
  * High-level messaging repository contract for conversation management and message exchange.
@@ -37,6 +40,13 @@ public interface FlashChatRepository {
 
     /** Real roster for the currently requested group; lightweight implementations remain empty. */
     public suspend fun groupMembers(groupId: String): List<FlashGroupMemberUi> = emptyList()
+
+    /**
+     * Message Info (UI-051): who has read, received or not yet received one group message this device sent, observed
+     * live while the sheet is open. Null when the message is not one of this device's own group messages (a direct
+     * message's info is built by the screen from its bubble status) or does not exist. The default declines.
+     */
+    public fun observeMessageInfo(messageId: String): Flow<FlashMessageInfoUi?> = flowOf(null)
 
     /**
      * Legacy group-media hook retained for source compatibility. It cannot provide the complete

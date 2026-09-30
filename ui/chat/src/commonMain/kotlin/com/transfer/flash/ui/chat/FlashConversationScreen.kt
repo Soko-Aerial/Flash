@@ -53,6 +53,7 @@ import com.transfer.flash.core.messaging.model.FlashConversationUiState
 import com.transfer.flash.core.messaging.model.FlashFileTransferStatus
 import com.transfer.flash.core.messaging.model.FlashGroupMemberUi
 import com.transfer.flash.core.messaging.model.FlashImageAttachmentUi
+import com.transfer.flash.core.messaging.model.FlashMessageInfoUi
 import com.transfer.flash.core.messaging.model.FlashMessageUi
 import com.transfer.flash.core.messaging.model.FlashQuotedReplyUi
 import com.transfer.flash.core.messaging.model.FlashReaction
@@ -67,6 +68,7 @@ import com.transfer.flash.ui.shims.rememberFlashVoiceRecorder
 import com.transfer.flash.ui.theme.FlashSpacing
 import com.transfer.flash.ui.theme.FlashTheme
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.ui.tooling.preview.Preview
 
@@ -219,6 +221,12 @@ fun FlashConversationScreen(
      */
     onRemoveGroupMember: ((groupId: String, memberId: String, name: String) -> Unit)? = null,
     /**
+     * UI-051 Message Info: live recipients (read / delivered / not yet) of one group message this device sent, from the
+     * repository's `observeMessageInfo`. Null hides Message Info in a group (a host without the source); a one-to-one
+     * chat never needs it, its single recipient is built from the bubble's own status.
+     */
+    observeMessageInfo: ((messageId: String) -> Flow<FlashMessageInfoUi?>)? = null,
+    /**
      * Group Phase D: trusted peers that could be added to this group (host filters out current
      * members); drives the Add-members sheet's roster. Default empty keeps previews inert.
      */
@@ -304,6 +312,9 @@ fun FlashConversationScreen(
         onDispose { onPersistDraft(latestDraft) }
     }
     var focusedMessage by remember { mutableStateOf<FlashMessageUi?>(null) }
+    // UI-051: the message whose info sheet is open (its id, so the content follows the live list).
+    var messageInfoId by remember { mutableStateOf<String?>(null) }
+    val messageInfoOffered = !state.header.isGroup || observeMessageInfo != null
     var replyingToMessage by remember { mutableStateOf<FlashMessageUi?>(null) }
     var highlightedMessageId by remember { mutableStateOf<String?>(null) }
     var selectedMessageIds by remember { mutableStateOf(emptySet<String>()) }
@@ -755,6 +766,7 @@ fun FlashConversationScreen(
                 onCancelTransfer = { _, file ->
                     onCancelTransfer(file.id)
                 },
+                onOpenMessageInfo = if (messageInfoOffered) { msg -> messageInfoId = msg.id } else null,
                 highlightedMessageId = highlightedMessageId,
                 peerTypingName = if (state.header.presence != FlashPeerPresence.Offline) {
                     state.header.typingMemberNames.firstOrNull()
@@ -829,7 +841,30 @@ fun FlashConversationScreen(
             } else {
                 null
             },
+            onMessageInfo = if (messageInfoOffered && FlashMessageInfoMath.isAvailable(msg)) {
+                { messageInfoId = msg.id }
+            } else {
+                null
+            },
         )
+    }
+
+    // UI-051 Message Info sheet. It is closed when its message disappears (deleted for everyone, or cleared).
+    messageInfoId?.let { id ->
+        val infoMessage = localMessages.firstOrNull { it.id == id }
+        if (infoMessage == null) {
+            LaunchedEffect(id) { messageInfoId = null }
+        } else {
+            FlashMessageInfoHost(
+                message = infoMessage,
+                isGroup = state.header.isGroup,
+                peerId = conversationId ?: state.header.avatarSeed,
+                peerName = state.header.title,
+                peerInitials = state.header.avatarInitials,
+                observeMessageInfo = observeMessageInfo,
+                onDismiss = { messageInfoId = null },
+            )
+        }
     }
 
     // UI-012 Modal Attachment Sheet & Palette

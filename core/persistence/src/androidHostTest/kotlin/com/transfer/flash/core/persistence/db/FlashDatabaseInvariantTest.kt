@@ -423,6 +423,30 @@ class FlashDatabaseInvariantTest {
     }
 
     @Test
+    fun groupDeliveryRowsOfOneMessageAreObservableAndScopedToIt() = runTest {
+        // Message Info (UI-051): the sheet observes exactly the recipient rows of one message, and sees a receipt land.
+        val dao = db.groupDeliveryDao()
+        assertTrue(dao.observeForMessage("m1").first().isEmpty())
+        dao.insertAll(
+            listOf(
+                GroupDeliveryEntity("m1", "peer-b", nextAttemptAt = 10L),
+                GroupDeliveryEntity("m1", "peer-a", nextAttemptAt = 10L),
+                GroupDeliveryEntity("m2", "peer-a", state = "DELIVERED", nextAttemptAt = 10L),
+            ),
+        )
+        assertEquals(listOf("peer-a", "peer-b"), dao.observeForMessage("m1").first().map { it.memberId })
+
+        val afterReceipt = async {
+            dao.observeForMessage("m1").first { rows ->
+                rows.any { it.memberId == "peer-a" && it.state == "DELIVERED" && it.deliveredAt == 50L }
+            }
+        }
+        assertEquals(1, dao.markDelivered("m1", "peer-a", deliveredAt = 50L))
+        afterReceipt.await()
+        assertEquals(setOf("m1"), dao.observeForMessage("m1").first().map { it.messageId }.toSet())
+    }
+
+    @Test
     fun groupDeliveryStateTransitionsAreMonotonicAndScoped() = runTest {
         val dao = db.groupDeliveryDao()
         dao.insertAll(

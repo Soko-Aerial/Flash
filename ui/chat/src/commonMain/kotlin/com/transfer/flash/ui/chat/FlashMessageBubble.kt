@@ -6,6 +6,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -129,6 +130,11 @@ fun FlashMessageBubble(
      */
     suppressSenderHeader: Boolean = false,
     deliveryStatus: (@Composable () -> Unit)? = null,
+    /**
+     * UI-051: tapping the delivery badge (`2/3` and the tick) opens Message Info. Null leaves the badge inert: a received
+     * message, a call row, or a host that cannot supply the recipients.
+     */
+    onOpenMessageInfo: (() -> Unit)? = null,
 ) {
     val alignment = if (message.isMine) Alignment.End else Alignment.Start
 
@@ -162,6 +168,7 @@ fun FlashMessageBubble(
                 isHighlighted = isHighlighted,
                 deliveryStatus = deliveryStatus,
                 searchQuery = searchQuery,
+                onOpenMessageInfo = onOpenMessageInfo,
             )
         }
 
@@ -195,6 +202,7 @@ private fun FlashBubbleSurface(
     isHighlighted: Boolean,
     deliveryStatus: (@Composable () -> Unit)?,
     searchQuery: String?,
+    onOpenMessageInfo: (() -> Unit)?,
 ) {
     val colors = FlashTheme.colors
     val typography = FlashTheme.typography
@@ -389,6 +397,7 @@ private fun FlashBubbleSurface(
                 message = message,
                 deliveryStatus = deliveryStatus,
                 onOpenActions = onOpenActions,
+                onOpenMessageInfo = onOpenMessageInfo,
             )
         }
     }
@@ -428,6 +437,7 @@ private fun FlashMessageTimestampRow(
     modifier: Modifier = Modifier,
     deliveryStatus: (@Composable () -> Unit)? = null,
     onOpenActions: (() -> Unit)? = null,
+    onOpenMessageInfo: (() -> Unit)? = null,
 ) {
     val colors = FlashTheme.colors
     val typography = FlashTheme.typography
@@ -451,26 +461,46 @@ private fun FlashMessageTimestampRow(
         )
         if (message.isMine) {
             Spacer(modifier = Modifier.padding(start = FlashSpacing.space4))
-            groupDeliveryLabel(message.deliveredTo, message.deliveredTotal)?.let { label ->
-                FlashText(
-                    text = label,
-                    style = typography.metadataEmphasis,
-                    color = timestampColor,
-                    modifier = Modifier
-                        .padding(end = FlashSpacing.space4)
-                        .clearAndSetSemantics {
-                            contentDescription = groupDeliveryAccessibilityText(
-                                message.deliveredTo,
-                                message.deliveredTotal,
-                            ).orEmpty()
-                        },
-                )
-            }
-            if (deliveryStatus != null) {
-                deliveryStatus()
-            } else {
-                val status = message.deliveryStatus ?: com.transfer.flash.core.messaging.model.FlashMessageStatus.Read
-                FlashDeliveryStatusIcon(status = status)
+            // The badge (count + tick) is one tap target for Message Info; its visual size is unchanged, and the same
+            // screen is always reachable from the message menu for anyone who cannot hit a badge this small.
+            Row(
+                modifier = if (onOpenMessageInfo != null) {
+                    Modifier
+                        .clip(RoundedCornerShape(FlashSpacing.space4))
+                        .clickable(
+                            onClickLabel = FlashMessageInfoMath.BADGE_ACTION_LABEL,
+                            role = Role.Button,
+                            onClick = {
+                                haptics(FlashHaptic.Confirm)
+                                onOpenMessageInfo()
+                            },
+                        )
+                } else {
+                    Modifier
+                },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                groupDeliveryLabel(message.deliveredTo, message.deliveredTotal)?.let { label ->
+                    FlashText(
+                        text = label,
+                        style = typography.metadataEmphasis,
+                        color = timestampColor,
+                        modifier = Modifier
+                            .padding(end = FlashSpacing.space4)
+                            .clearAndSetSemantics {
+                                contentDescription = groupDeliveryAccessibilityText(
+                                    message.deliveredTo,
+                                    message.deliveredTotal,
+                                ).orEmpty()
+                            },
+                    )
+                }
+                if (deliveryStatus != null) {
+                    deliveryStatus()
+                } else {
+                    val status = message.deliveryStatus ?: com.transfer.flash.core.messaging.model.FlashMessageStatus.Read
+                    FlashDeliveryStatusIcon(status = status)
+                }
             }
         }
         if (onOpenActions != null) {

@@ -276,3 +276,43 @@ the accessibility pass are still open.
 `FlashConversationScreen.kt` (bottom bar and menu), `FlashConversationMenu.kt` (`groupItems(isMember)`), state
 `FlashConversationUiState.selfMembership`. Unit tests green (`FlashGroupSelfNoticeMathTest`, `FlashConversationMenuMathTest`,
 `SignedGroupsTest`); **previews and the device check are still open.**
+
+### UI-052 — catch-up progress banner (chat/group sync audit, TASK-GRP-SYNC-2), DESIGNED 2026-09-30
+
+**Why.** A device that has just joined a group (or returned after a long absence) asks the holders for the history it lacks, and
+they answer with paced pushes (`GroupWireFrame.SyncPush`, 5–20 per second). Messages appear above the composer one by one while
+nothing says why, so the conversation looks broken or "still loading" with no cause. One line that says history is arriving turns that
+into an expected state.
+
+**What the requester can and cannot know.** The requester sends a `SyncRequest`; the holders answer with pushes. Nothing tells the
+requester *how many* will come (the claim with the id list goes to the co-holders, not to it) and nothing tells it the batch is over
+(the `SyncAck` flows the other way). So **there is no honest percentage**. The audit's `receivedCount/totalExpected` bar cannot be built
+without a wire change, and inventing a total would be a lie on the screen. This design is therefore *indeterminate by construction*.
+
+**Approaches considered.**
+
+1. *Determinate bar `received/total`* (the audit's sketch). Rejected: needs a `total` on the wire (a holder cannot even know it, since
+   co-holders push disjoint subsets), and a wrong number is worse than none.
+2. *A banner while any outgoing `SyncRequest` is live.* Rejected: a request goes out on every session-up edge to every peer, and in a
+   group that is fully up to date nothing comes back, so the banner would flash on and off at every reconnect with nothing to report.
+3. *A banner only while history is actually arriving: appears on the first accepted push, counts the new messages, goes away after a
+   quiet period with no further push.* **Selected.** It only ever shows when it is true.
+
+**Specification.**
+
+| Element | Value |
+|---|---|
+| Model | `FlashGroupSyncUi(receivedCount: Int)`; `FlashConversationUiState.groupSync: FlashGroupSyncUi? = null` (non-null = history arriving). Carried in the state like `ongoingCall`, so hosts wire nothing. |
+| Start | The first accepted push that **inserts a new row** for the group (a push of a message already present does not count, so a redundant second holder never starts a banner). |
+| Count | New rows inserted by catch-up pushes since the banner appeared. |
+| End | `GROUP_SYNC_QUIET_MS` (3 s) after the last counted push. Longer than the slowest pacing gap (1 s) so a slow holder does not flicker it, shorter than the 24 h horizon nobody waits for. A later push (for example the backup holder's, 2 s after the first) starts a fresh banner from 1. |
+| Scope | Per group, shown only in that conversation. Not persisted; a restart mid-catch-up shows nothing (the pushes resume into an ordinary conversation). |
+| Copy | `"Catching up on earlier messages · 12"`; before the first count is rendered `"Catching up on earlier messages"`. Copy from `FlashGroupSyncMath.label(receivedCount)` (pure, unit-tested; a count ≤ 0 has no number). |
+| Placement | Directly under the header, in the same stack as `FlashConnectionBanner` / `FlashOngoingCallBanner` (above the message list). Enter `fadeIn(tweenNormalSpec)`, exit `fadeOut(tweenFastSpec)`, like its siblings. |
+| Surface | Full-width strip on `colors.backgroundElevated`, `space16` horizontal / `space8` vertical padding, label `metadataDefault` in `textSecondary`, the count in `metadataEmphasis` / `textPrimary`. |
+| Progress line | A 2 dp custom line (no stock `LinearProgressIndicator`, UI prohibition): `borderSubtle` track with an `accentPrimary` segment (35% of the width) sweeping left→right, 1.4 s linear loop. Reduced motion: the segment is static at 35% and only the count changes. |
+| Semantics | The strip is one `liveRegion = Polite` node: `"Catching up on earlier messages, 12 received"`. The line is decorative. |
+| Not done here | No cancel, no per-holder detail, no total, no retry action (catch-up already re-asks on every session-up edge). |
+
+**Checklist.** Unit: `FlashGroupSyncMath.label`; repository: banner state appears on the first inserted push, ignores a duplicate,
+counts inserted rows, clears after the quiet period, is scoped to its group. Physical device: `docs/testing/TEST-BACKLOG.md` CGS-07.

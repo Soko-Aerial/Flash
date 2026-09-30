@@ -87,6 +87,11 @@ fun FlashMessageList(
     showSenderHeaders: Boolean = true,
     /** UI-023: active in-chat search query — matching substrings are highlighted in bubbles. */
     searchQuery: String? = null,
+    /**
+     * UI-051: a tap on a sent message's delivery badge. Null (the default) leaves every badge inert; the list only offers
+     * it on messages that pass [FlashMessageInfoMath.isAvailable].
+     */
+    onOpenMessageInfo: ((FlashMessageUi) -> Unit)? = null,
 ) {
     val colors = FlashTheme.colors
     val motion = FlashTheme.motion
@@ -152,6 +157,8 @@ fun FlashMessageList(
     val currentOnPauseTransfer by rememberUpdatedState(onPauseTransfer)
     val currentOnResumeTransfer by rememberUpdatedState(onResumeTransfer)
     val currentOnCancelTransfer by rememberUpdatedState(onCancelTransfer)
+    val currentOnOpenMessageInfo by rememberUpdatedState(onOpenMessageInfo)
+    val messageInfoOffered = onOpenMessageInfo != null
 
     val ordered = messages.asReversed()
 
@@ -226,6 +233,7 @@ fun FlashMessageList(
                 val onPauseTransferLambda = remember(message.id) { { file: com.transfer.flash.core.messaging.model.FlashFileAttachmentUi -> currentOnPauseTransfer(currentMessage, file) } }
                 val onResumeTransferLambda = remember(message.id) { { file: com.transfer.flash.core.messaging.model.FlashFileAttachmentUi -> currentOnResumeTransfer(currentMessage, file) } }
                 val onCancelTransferLambda = remember(message.id) { { file: com.transfer.flash.core.messaging.model.FlashFileAttachmentUi -> currentOnCancelTransfer(currentMessage, file) } }
+                val onOpenMessageInfoLambda = remember(message.id) { { currentOnOpenMessageInfo?.invoke(currentMessage); Unit } }
 
                 FlashMessageBubble(
                     message = message,
@@ -243,6 +251,7 @@ fun FlashMessageList(
                     onPauseTransfer = onPauseTransferLambda,
                     onResumeTransfer = onResumeTransferLambda,
                     onCancelTransfer = onCancelTransferLambda,
+                    onOpenMessageInfo = if (messageInfoOffered && FlashMessageInfoMath.isAvailable(message)) onOpenMessageInfoLambda else null,
                     isHighlighted = isHighlighted,
                     searchQuery = searchQuery,
                     suppressSenderHeader = !showSenderHeaders,

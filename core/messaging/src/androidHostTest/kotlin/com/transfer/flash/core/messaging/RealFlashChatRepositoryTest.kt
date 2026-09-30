@@ -35,6 +35,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -1460,8 +1462,10 @@ class RealFlashChatRepositoryTest {
     private class FakeGroupDeliveryDao : GroupDeliveryDao {
         val rows = ConcurrentHashMap<Pair<String, String>, GroupDeliveryEntity>()
         private val counts = MutableStateFlow<List<GroupDeliveryCount>>(emptyList())
+        private val version = MutableStateFlow(0L)
 
         private fun publishCounts() {
+            version.update { it + 1 }
             counts.value = rows.values.groupBy { it.messageId }.map { (messageId, deliveries) ->
                 GroupDeliveryCount(
                     messageId = messageId,
@@ -1478,6 +1482,8 @@ class RealFlashChatRepositoryTest {
         override suspend fun pendingForMessage(messageId: String): List<GroupDeliveryEntity> =
             rows.values.filter { it.messageId == messageId && it.state != "DELIVERED" }
                 .sortedBy { it.nextAttemptAt }
+        override fun observeForMessage(messageId: String): Flow<List<GroupDeliveryEntity>> =
+            version.map { rows.values.filter { it.messageId == messageId }.sortedBy { it.memberId } }
         override suspend fun memberCount(messageId: String): Int =
             rows.values.count { it.messageId == messageId }
         override suspend fun deliveredCount(messageId: String): Int =
@@ -1497,6 +1503,7 @@ class RealFlashChatRepositoryTest {
         override suspend fun reschedule(messageId: String, memberId: String, state: String, nextAttemptAt: Long) {
             val key = messageId to memberId
             rows[key]?.let { rows[key] = it.copy(state = state, attempts = it.attempts + 1, nextAttemptAt = nextAttemptAt) }
+            publishCounts()
         }
         override suspend fun makePendingDueForMember(memberId: String, now: Long) {
             rows.values.filter { it.memberId == memberId && it.state != "DELIVERED" }

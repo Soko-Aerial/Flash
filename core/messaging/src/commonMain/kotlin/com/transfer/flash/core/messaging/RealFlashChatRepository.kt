@@ -21,6 +21,7 @@ import com.transfer.flash.core.messaging.model.FlashFileTransferStatus
 import com.transfer.flash.core.messaging.model.FlashGroupMemberUi
 import com.transfer.flash.core.messaging.model.FlashImageAttachmentUi
 import com.transfer.flash.core.messaging.model.FlashMemberRole
+import com.transfer.flash.core.messaging.model.FlashMessageInfoUi
 import com.transfer.flash.core.messaging.model.FlashMessageStatus
 import com.transfer.flash.core.messaging.model.FlashMessageUi
 import com.transfer.flash.core.messaging.model.FlashNetworkTransport
@@ -87,6 +88,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withContext
@@ -806,6 +809,43 @@ public class RealFlashChatRepository(
                 }
             }
         }
+    }
+
+    /**
+     * Message Info (UI-051). Only a message this device wrote in a group has recipient rows; anything else is null.
+     * The mapping lives in [buildGroupMessageInfo]; this only gathers its inputs and keeps them live, so a receipt or
+     * a read cursor that arrives while the sheet is open moves the recipient to its new section.
+     */
+    override fun observeMessageInfo(messageId: String): Flow<FlashMessageInfoUi?> = flow {
+        val message = messageDao.getByLocalId(messageId)
+        val deliveries = groupDeliveryDao
+        val members = groupMemberDao
+        if (message == null || message.senderId != localDeviceId || message.deletedAt != null ||
+            deliveries == null || members == null ||
+            conversationDao.get(message.conversationId)?.isGroup != true
+        ) {
+            emit(null)
+            return@flow
+        }
+        val preview = if (message.attachmentTransferId != null) message.attachmentLabel() else message.text
+        emitAll(
+            combine(
+                deliveries.observeForMessage(messageId),
+                members.observeMembers(message.conversationId),
+                readCursorDao?.observeCursors(message.conversationId) ?: flowOf(emptyList()),
+            ) { rows, roster, cursors ->
+                buildGroupMessageInfo(
+                    messageId = messageId,
+                    preview = preview,
+                    sentAt = message.sentAt,
+                    deliveries = rows,
+                    members = roster,
+                    cursors = cursors,
+                    formatTime = ::formatTime,
+                    initialsOf = ::computeInitials,
+                )
+            },
+        )
     }
 
     /**

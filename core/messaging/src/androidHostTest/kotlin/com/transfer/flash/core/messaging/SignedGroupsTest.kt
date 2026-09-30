@@ -2,7 +2,9 @@ package com.transfer.flash.core.messaging
 
 import com.transfer.flash.core.common.result.FlashError
 import com.transfer.flash.core.common.result.FlashResult
+import com.transfer.flash.core.messaging.model.FlashMessageInfoUi
 import com.transfer.flash.core.messaging.model.FlashSelfMembership
+import com.transfer.flash.core.messaging.model.FlashWaitingReason
 import com.transfer.flash.core.messaging.protocol.GroupCanonical
 import com.transfer.flash.core.messaging.protocol.GroupCharter
 import com.transfer.flash.core.messaging.protocol.GroupPolicy
@@ -23,7 +25,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -1316,6 +1320,82 @@ class SignedGroupsTest {
 
         val later = createGroup("dev-a", "Later", "dev-b")
         assertEquals("a group it creates now signs the new name into its owner cert", "Ada Lovelace", row("dev-b", later, "dev-a").displayName)
+    }
+
+    // ------------------------------------------------------------------------------ message info
+    // Chat/group sync audit, step 6 (UI-051). The sheet behind the delivery badge: who has read, received or not yet
+    // received a message this device sent, kept live from the delivery rows, the roster and the read cursors.
+
+    private fun infoOf(id: String, messageId: String) = nodes.getValue(id).repo.observeMessageInfo(messageId)
+
+    private suspend fun infoWhere(id: String, messageId: String, predicate: (FlashMessageInfoUi) -> Boolean): FlashMessageInfoUi =
+        withTimeout(5_000) { infoOf(id, messageId).first { it != null && predicate(it) }!! }
+
+    @Test
+    fun `message info puts each recipient where it stands and follows a read`() = runBlocking {
+        mesh("dev-a", "dev-b", "dev-c")
+        val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+        say("dev-a", groupId, "who has it")
+        val sent = stored("dev-a", groupId, "who has it")!!
+
+        val first = infoOf("dev-a", sent.localId).first()!!
+        assertEquals("the message it describes", "who has it", first.preview)
+        assertTrue("and when it was sent", first.sentLabel.isNotBlank())
+        assertEquals("both members confirmed delivery", setOf("dev-b", "dev-c"), first.deliveredTo.map { it.id }.toSet())
+        assertTrue("a delivered recipient carries the confirmation time", first.deliveredTo.all { it.deliveredAtLabel != null })
+        assertTrue("nobody has read it yet", first.readBy.isEmpty())
+        assertTrue("and nobody is left waiting", first.waiting.isEmpty())
+
+        nodes.getValue("dev-b").repo.openConversation(groupId)
+        settle()
+        val afterRead = infoWhere("dev-a", sent.localId) { it.readBy.size == 1 }
+
+        assertEquals("b moved to read", listOf("dev-b"), afterRead.readBy.map { it.id })
+        assertEquals("a read row has no time, only a cursor is stored", null, afterRead.readBy.single().deliveredAtLabel)
+        assertEquals("c is still delivered", listOf("dev-c"), afterRead.deliveredTo.map { it.id })
+    }
+
+    @Test
+    fun `message info names a member that has not been reached, and one that has since left`() = runBlocking {
+        mesh("dev-a", "dev-b", "dev-c")
+        val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+        goOffline("dev-c")
+        say("dev-a", groupId, "are you there")
+        val sent = stored("dev-a", groupId, "are you there")!!
+
+        val waiting = infoOf("dev-a", sent.localId).first()!!
+        assertEquals(listOf("dev-b"), waiting.deliveredTo.map { it.id })
+        assertEquals("c has not got it", listOf("dev-c"), waiting.waiting.map { it.id })
+        assertEquals("because its device is not reachable", FlashWaitingReason.DeviceNotReached, waiting.waiting.single().waitingReason)
+
+        assertTrue(nodes.getValue("dev-a").repo.removeGroupMember(groupId, "dev-c") is FlashResult.Success)
+        settle()
+        val removed = infoWhere("dev-a", sent.localId) { info -> info.waiting.any { it.waitingReason == FlashWaitingReason.LeftGroup } }
+        assertEquals("a removed member that never got it is marked as no longer in the group", listOf("dev-c"), removed.waiting.map { it.id })
+    }
+
+    @Test
+    fun `message info is only for a message this device wrote in a group`() = runBlocking {
+        mesh("dev-a", "dev-b")
+        val groupId = createGroup("dev-a", "Team", "dev-b")
+        say("dev-a", groupId, "mine")
+        val sent = stored("dev-a", groupId, "mine")!!
+        settle()
+
+        assertNull("the receiver has no recipient rows for it", infoOf("dev-b", sent.localId).first())
+        assertNull("an unknown id", infoOf("dev-a", "no-such-message").first())
+        nodes.getValue("dev-a").repo.deleteMessage(sent.localId)
+        settle()
+        assertNull("a deleted message", infoOf("dev-a", sent.localId).first())
+    }
+
+    @Test
+    fun `message info is not offered for a direct message`() = runBlocking {
+        mesh("dev-a", "dev-b")
+        say("dev-a", "dev-b", "just us two")
+        val sent = stored("dev-a", "dev-b", "just us two")!!
+
+        assertNull("a direct message has no recipient rows; its status is on the bubble", infoOf("dev-a", sent.localId).first())
     }
 
     // ------------------------------------------------------------------------------ harness: nodes
