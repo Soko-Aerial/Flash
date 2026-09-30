@@ -168,3 +168,31 @@ Dependencies: **none added**.
 ### What makes this Flash?
 
 Every element speaks the P2P language: an online dot means *reachable on the mesh*, the subtitle names the actual path (LAN vs Wi-Fi Direct vs Relay) instead of a generic "last seen", avatars reuse the shared seeded palette so members keep their color everywhere, and the whole row is built from Flash primitives — zero stock list-item chrome, zero cloned roster design.
+
+### UI-029 addendum — vouched members (ADR-044 V2), DESIGNED 2026-09-30
+
+**Why.** In a v2 group a member may be someone this device never paired with: the group owner (whom this device *did* pair
+with) signed a certificate for them. The user must be able to tell that person from a paired contact, and to turn the
+introduction into a real pairing. The plan is `docs/group/v2-vouched-trust-plan.md` E6.
+
+**Approaches considered.**
+
+1. *A badge on the avatar* (shield, question mark). Rejected: one more glyph the row already has three of (online dot,
+   transport, role pill), and an icon alone does not say *who* vouched.
+2. *A separate "Not verified" section in the sheet.* Rejected: it splits the sorted list (online → role → name) and hides
+   online members below offline ones.
+3. *A third text line under the transport subtitle, plus a trailing text action.* **Selected.** Same row anatomy, nothing new
+   to learn, the line names the introducer, and the action sits where the eye already goes for the role pill.
+
+**Specification.**
+
+| Element | Value |
+|---|---|
+| Model | `FlashGroupMemberUi.introducedBy: String?`. The owner's display name for a member this device never paired with; null for yourself, the owner (the charter needs the owner paired) and every paired member. Legacy groups never set it. |
+| Line | `"Added by <owner> · not verified"`, `metadataDefault`, `textTertiary`, single line, ellipsized. Copy comes from `FlashGroupMembersMath.introducedByLabel` (pure, unit-tested). |
+| Action | Trailing text `"Verify"`, `bodyDefault`, `accentPrimary`, `Modifier.clickable` like `Pair Device` in the Nearby detail pane. Shown only when the host passes `onVerifyMember` and the member has `introducedBy`. Min touch height 48dp via the row padding. |
+| What Verify does | The host runs the ordinary pairing flow (`connectManual` if discovery knows an address, then `pairing.beginPair`), exactly like `onVerifyTrustedClick`. The other user sees the normal Accept/Decline. When it completes the member is paired and the line disappears; there is no new trust logic in the UI. |
+| Semantics | Row description appends `", added by <owner>, not verified"`. The action has `Role.Button` and description `"Verify <name>"`. |
+| Not done here | Owner removal has API and tests (`RealFlashChatRepository.removeGroupMember`) but no UI: it needs a member action menu and a confirmation, which UI-029 deferred ("long-press member actions"). |
+
+**Checklist.** Unit: label copy, null for paired, row description. Physical device: see `docs/testing/TEST-BACKLOG.md` GT-03.

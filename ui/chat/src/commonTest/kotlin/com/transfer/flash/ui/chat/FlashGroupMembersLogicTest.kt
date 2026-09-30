@@ -100,4 +100,25 @@ class FlashGroupMembersLogicTest {
         assertEquals(5, FlashGroupMembersMath.visibleRowCount(requested = 12, max = 5))
         assertEquals(3, FlashGroupMembersMath.visibleRowCount(requested = 3, max = 5))
     }
+
+    // --- ADR-044 V2: members the owner introduced ---
+
+    @Test
+    fun `an introduced member gets an added-by line and a spoken form, a paired member gets none`() {
+        assertEquals("Added by Ada · not verified", FlashGroupMembersMath.introducedByLabel("Ada"))
+        assertEquals("added by Ada, not verified", FlashGroupMembersMath.introducedByDescription("Ada"))
+        assertNull(FlashGroupMembersMath.introducedByLabel(null))
+        assertNull(FlashGroupMembersMath.introducedByDescription(null))
+    }
+
+    @Test
+    fun `a blank owner name falls back to the group owner`() {
+        assertEquals("Added by the group owner · not verified", FlashGroupMembersMath.introducedByLabel(""))
+        assertEquals("added by the group owner, not verified", FlashGroupMembersMath.introducedByDescription("  "))
+    }
+
+    @Test
+    fun `introducedBy defaults to null so existing rows are unchanged`() {
+        assertNull(member("1", "Bo").introducedBy)
+    }
 }

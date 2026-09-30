@@ -1754,6 +1754,16 @@ private fun FlashShell(
                     }
                 }
             },
+            // ADR-044 V2: a member the group owner introduced is verified by ordinary pairing, the same flow as
+            // Nearby's "Verify" for a peer paired under the old code.
+            onVerifyGroupMember = { memberId, memberName ->
+                val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == memberId }
+                scope.launch {
+                    val net = engine.network
+                    if (endpoint != null && net != null) net.connectManual(endpoint.hostAddress, endpoint.port)
+                    engine.pairing?.beginPair(memberId, memberName)
+                }
+            },
             onClearConversation = { id ->
                 chatRepository.deleteConversations(setOf(id))
                 chatRepository.closeConversation()

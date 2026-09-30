@@ -303,6 +303,12 @@ public data class FlashGroupMemberUi(
     val isOnline: Boolean = false,
     val role: FlashMemberRole = FlashMemberRole.Member,
     val transport: FlashNetworkTransport = FlashNetworkTransport.Unknown,
+    /**
+     * ADR-044 V2: the display name of the group owner who introduced this member when this device never paired with
+     * them (their key is trusted in this group on the owner's word, until the user verifies them). Null for yourself,
+     * for the owner, and for every paired member; legacy groups never set it.
+     */
+    val introducedBy: String? = null,
 )
 
 public data class FlashActiveGroupCallBarUi(
