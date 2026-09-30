@@ -2263,17 +2263,35 @@ public class RealFlashChatRepository(
     /** syncId → the device that requested the round (pushes and acks are unicast to it). */
     private val syncRequesters = SyncMap<String, String>()
 
-    private fun MessageEntity.toSyncMessage() = GroupWireFrame.Message(
-        groupId = conversationId,
-        messageId = localId,
-        from = senderId,
-        senderName = senderName ?: senderId,
-        sentAt = sentAt,
-        text = text,
+    private fun MessageEntity.toSyncMessage() = GroupWireFrame.Message(
+        groupId = conversationId,
+        messageId = localId,
+        from = senderId,
+        senderName = senderName ?: senderId,
+        sentAt = sentAt,
+        text = if (attachmentTransferId != null) attachmentLabel() else text,
         replyToId = replyToId,
         replyToPreview = replyToPreview,
         signature = groupSig,
     )
+
+    /**
+     * The one-line stand-in a catch-up carries for an attachment row. A sync push never re-sends file bytes, and
+     * the row's own `text` is empty (or a voice note's `vmsg:` waveform metadata), so sending it as is would leave
+     * the newcomer with an empty bubble or raw metadata. Only legacy groups reach this: a v2 group relays signed
+     * rows only, and an attachment row is unsigned, so the holder's request filter already leaves it out.
+     */
+    private fun MessageEntity.attachmentLabel(): String {
+        val mime = attachmentMime.orEmpty()
+        val kind = when {
+            mime.startsWith("audio/") -> return "[Voice message]"
+            mime.startsWith("image/") -> "Photo"
+            mime.startsWith("video/") -> "Video"
+            else -> "File"
+        }
+        val name = attachmentName?.trim()?.ifEmpty { null }?.take(SYNC_LABEL_NAME_MAX)
+        return if (name == null) "[$kind]" else "[$kind] $name"
+    }
 
     /** Requester side: an elected holder pushed a message — ingest idempotently by msgId. */
     private suspend fun handleSyncPush(frame: GroupWireFrame.SyncPush) {
@@ -3438,6 +3456,8 @@ public class RealFlashChatRepository(
 
         // Namespaced marker stored in a voice row's text column: "vmsg:<durationMs>:<csv amplitudes>".
         const val VOICE_META_PREFIX = "vmsg:"
+        /** Longest file name a catch-up label carries. */
+        const val SYNC_LABEL_NAME_MAX = 80
         // Namespaced marker stored in a call row's text column: "cmsg:<KIND>:<video 0|1>:<durationMs>".
         const val CALL_META_PREFIX = "cmsg:"
         // Upper bound on full-history search hits scanned per query (#12); collapsed to conversations.
