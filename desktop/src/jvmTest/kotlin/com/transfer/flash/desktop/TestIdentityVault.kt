@@ -2,6 +2,7 @@
 
 package com.transfer.flash.desktop
 
+import com.transfer.flash.core.ptt.PttAudioPlatform
 import com.transfer.flash.core.security.identity.IdentityKeyVault
 import java.io.File
 
@@ -17,5 +18,9 @@ internal fun testIdentityVault(osName: String = System.getProperty("os.name", ""
  * A [DesktopEngine] for tests, with [testIdentityVault]. One helper instead of an opt-in in every test file: the
  * vault type is an internal API, and this is the only place that should name it.
  */
-internal fun testDesktopEngine(receivedRoot: File? = null, stateDir: File): DesktopEngine =
-    DesktopEngine(receivedRoot = receivedRoot, stateDir = stateDir, identityVault = testIdentityVault())
+internal fun testDesktopEngine(
+    receivedRoot: File? = null,
+    stateDir: File,
+    pttAudio: PttAudioPlatform = FakePttAudio(),
+): DesktopEngine =
+    DesktopEngine(receivedRoot = receivedRoot, stateDir = stateDir, identityVault = testIdentityVault(), pttAudio = pttAudio)

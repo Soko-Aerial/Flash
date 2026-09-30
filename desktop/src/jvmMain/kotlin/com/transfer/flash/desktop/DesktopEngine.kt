@@ -34,9 +34,16 @@ import com.transfer.flash.core.messaging.protocol.DirectChatFamily
 import com.transfer.flash.core.messaging.protocol.DirectMessageActionCodec
 import com.transfer.flash.core.messaging.protocol.GroupFrameCodec
 import com.transfer.flash.core.messaging.protocol.MessageWireFrame
+import com.transfer.flash.core.messaging.protocol.PttAudioFrame
+import com.transfer.flash.core.messaging.protocol.PttFrameCodec
+import com.transfer.flash.core.messaging.protocol.PttSessionCodec
 import com.transfer.flash.core.messaging.util.FlashMimeTypes
 import com.transfer.flash.core.persistence.db.FlashDatabase
 import com.transfer.flash.core.persistence.db.openEncryptedFlashDatabase
+import com.transfer.flash.core.ptt.FlashPtt
+import com.transfer.flash.core.ptt.PttAudioPlatform
+import com.transfer.flash.core.ptt.PttSessionEngine
+import com.transfer.flash.core.ptt.platformPttAudio
 import com.transfer.flash.core.network.bridge.DiscoveryRouteBinder
 import com.transfer.flash.core.network.mode.ConnectionModeController
 import com.transfer.flash.core.network.mode.ConnectionModePolicy
@@ -95,6 +102,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.runBlocking
@@ -150,6 +158,11 @@ public class DesktopEngine(
      */
     identityVault: com.transfer.flash.core.security.identity.IdentityKeyVault =
         com.transfer.flash.core.security.identity.IdentityKeyVault.Dpapi,
+    /**
+     * Microphone and speaker for push-to-talk (ADR-058). Production leaves the default, `javax.sound`. Tests pass a
+     * fake, because the default opens the real microphone.
+     */
+    private val pttAudio: PttAudioPlatform = platformPttAudio(),
 ) {
     public val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -247,6 +260,10 @@ public class DesktopEngine(
     private var chatDb: FlashDatabase? = null
     private var callsImpl: CallCoordinator? = null
 
+    /** Push-to-talk voice sessions (ADR-032, ADR-058); built in [assemble], routed from the inbound text/binary paths. */
+    @Volatile
+    private var pttImpl: PttSessionEngine? = null
+
     private val networkWatcher = com.transfer.flash.core.network.resilience.JvmNetworkWatcher(
         scope = scope,
         onAvailable = {
@@ -318,6 +335,12 @@ public class DesktopEngine(
      * rather than an empty stand-in: there is no honest "empty call", only absence.
      */
     public val calls: FlashCalling? get() = callsImpl
+
+    /**
+     * Push-to-talk. The shared [PttSessionEngine] once [assemble] has built it; null before that, so the shell
+     * renders no PTT control until it exists (nullable like [calls]: there is no honest "empty" session).
+     */
+    public val ptt: FlashPtt? get() = pttImpl
     public val transfers: FlashTransferRepository? get() = transferImpl
     public val network: FlashNetwork? get() = networkImpl
     public val discovery: FlashDiscovery? get() = discoveryImpl
@@ -556,6 +579,9 @@ public class DesktopEngine(
         // tell — it is set true by a completed assembly and false here.
         FlashLog.i(TAG_WS, "engine stop() — cancelling scope (ready=${_ready.value})")
         networkWatcher.stop()
+        // A live PTT session holds the microphone; shutdown() releases it (and resets the flows).
+        runCatching { pttImpl?.shutdown() }
+        pttImpl = null
         runCatching {
             runBlocking {
                 discoveryImpl?.stopAll()
@@ -904,6 +930,59 @@ public class DesktopEngine(
         )
         boot("call coordinator built")
 
+        // PTT (ADR-032, ADR-058): the same engine the Android host runs, over this host's transport. Every
+        // transport access is a lazy lambda, so it does not matter that sessions come and go after this point.
+        val ptt = PttSessionEngine(
+            localId = { localId },
+            localName = { friendlyName },
+            isTrustedPeer = { peerId -> trustStore.isTrusted(FlashDeviceId(peerId)) },
+            snapshotMembers = {
+                network.activeSessions.value.keys.mapNotNull { deviceId ->
+                    deviceId.value.takeIf { it != localId && trustStore.isTrusted(deviceId) }
+                }
+            },
+            sendControl = { peerId, text ->
+                val session = network.activeSessions.value[FlashDeviceId(peerId)] as? WsSession
+                if (session != null) {
+                    runCatching { session.connection.sendText(text) }
+                        .onFailure { FlashLog.w(TAG_WS, "PTT control send failed peer=$peerId", it) }
+                        .getOrDefault(false)
+                } else {
+                    FlashLog.w(TAG_WS, "PTT control dropped: no session for $peerId", null)
+                    false
+                }
+            },
+            // Blocking socket write by contract: the engine calls this only from its sender loop on Dispatchers.IO.
+            sendAudio = { peerId, bytes ->
+                val session = network.activeSessions.value[FlashDeviceId(peerId)] as? WsSession
+                if (session == null) {
+                    FlashLog.w(TAG_WS, "PTT audio dropped: no session for $peerId", null)
+                } else {
+                    runCatching { session.connection.sendBinary(bytes) }
+                        .onFailure { FlashLog.w(TAG_WS, "PTT audio send failed peer=$peerId", it) }
+                }
+            },
+            // No per-app microphone permission to ask for on a desktop: the OS gates access (Windows privacy
+            // switch) and, unlike Android, does not always say so. That case is a documented limitation (PTTD-03).
+            hasMicPermission = { true },
+            isCallActive = { callsImpl?.activeCall?.value?.let { it.state != FlashCallState.ENDED } == true },
+            audioRateHz = {
+                if ((_settings.value.performanceMode ?: FlashPerformanceMode.HIGH) == FlashPerformanceMode.LOW) 8_000 else 16_000
+            },
+            audio = pttAudio,
+        )
+        pttImpl = ptt
+        scope.launch { ptt.notices.collect { FlashLog.i(TAG_WS, "PTT notice: $it") } }
+        // Mic exclusivity (ADR-032): a call becoming active tears any PTT session down; the press path refuses
+        // while a call is active, so the floor can never fight the call for the microphone.
+        scope.launch {
+            callsImpl?.activeCall
+                ?.map { call -> call != null && call.state != FlashCallState.ENDED }
+                ?.distinctUntilChanged()
+                ?.collect { active -> if (active) ptt.onCallStarted() }
+        }
+        boot("ptt engine built")
+
         val pipeline = ReceivePipeline(
             sink = { _, _ -> error("legacy shared sink must not be invoked with sinkFactory set") },
             sinkFactory = { start ->
@@ -1217,6 +1296,12 @@ public class DesktopEngine(
      * events, including the already-completed short-circuit and the resumable-retry auto-accept.
      */
     private fun handleInboundBinary(peerDeviceId: String, data: ByteArray, reply: (ByteArray) -> Boolean) {
+        // PTT voice audio first (ADR-032): the PTT1 magic is disjoint from the transfer pipeline's FLSH, so this
+        // costs one 4-byte compare, and it returns unconditionally so PTT audio can never reach the transfer parser.
+        if (PttAudioFrame.isPttAudio(data)) {
+            pttImpl?.onInboundBinary(peerDeviceId, data)
+            return
+        }
         val transfer = transferImpl ?: return
         val sessionKey = trustStore.getSessionKey(FlashDeviceId(peerDeviceId))
         val frameData = if (SecureBinaryFrameCodec.isSecureFrame(data)) {
@@ -1378,6 +1463,16 @@ public class DesktopEngine(
         if (presenceExchange?.onInboundText(peerDeviceId, text) == true) return
         // Link control (PC5): consumes every FLASH_LINK frame, valid or not.
         if (modeController?.onInboundText(peerDeviceId, text) == true) return
+        // PTT (ADR-032): ping and session control share one entry point. The engine owns decode, dedup, the
+        // fail-closed transport-binding/trust check and the floor reduction, and answers true for a
+        // recognized-but-rejected frame too, so a PTT frame can never fall through into the families below.
+        val ptt = pttImpl
+        if (ptt != null) {
+            if (ptt.onInboundText(peerDeviceId, text)) return
+        } else if (PttFrameCodec.decode(text) != null || PttSessionCodec.decode(text) != null) {
+            FlashLog.w(TAG_WS, "PTT frame dropped (engine not started)", null)
+            return
+        }
         // Phase 26-3: pairing traffic shares the FLASH_XFER routing point but its own prefix —
         // check it FIRST so a pairing line is never handed to the transfer repository.
         if (FlashTextFraming.parseFields(text, "FLASH_PAIR") != null) {
