@@ -145,7 +145,9 @@ Everything above was built as written. What is different from, or added to, the 
 
 ### Known limits added while building
 
-- **Owner remove has no UI.** `removeGroupMember` exists with tests (revocation on every receiver); the member sheet has no destructive row action.
+- ~~**Owner remove has no UI.**~~ Built afterwards (`39d8905`, UI-029 addendum 2 in `docs/ui/group-ui.md`): a Remove action per row for
+  the owner of a v2 group plus a confirmation, `canRemoveMembers` from the repository. Open: what the *removed* member's own screen
+  shows is undesigned, and the flow is not device-verified (GT-03 step 7).
 - **Deleting a v2 chat without leaving** keeps the member rows and their vouches, and a rejoin after such a delete meets stale rows (a latent V1 issue). The plan's E2 sentence "Leaving or deleting a v2 group revokes every vouch it made" is true of **leaving** only.
 - **An established group-call leg is not re-checked:** a member removed mid-call stays connected until the call ends (pre-existing
   for call legs).

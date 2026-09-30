@@ -2041,6 +2041,17 @@ Verify (`9674ab0`).
   (the only module that sees both); a member of a full group holds 19 sessions, so the ceiling of 24 (ADR-057) leaves 5 for anything else.
 - **Owner remove is built without a UI** (an API and tests: `removeGroupMember`, signed tombstone, revokes the vouch on receivers).
   Reason: the member sheet has no destructive per-row action design yet (UI-029 addendum); revisit when the owner asks for it.
+  **Superseded 2026-09-30 (`39d8905`): the owner asked, and the UI is built.** UI-029 addendum 2 (DESIGNED first, three approaches):
+  a trailing **Remove** action on every row but the owner's own, then `FlashRemoveMemberDialog` (copy says a removed member keeps
+  what they already received). Ownership is decided by the repository (`FlashConversationUiState.canRemoveMembers` = v2 group and
+  this device is `groupCreatedBy`), never derived in the UI; `removeGroupMember` moved onto the `FlashChatRepository` interface with a
+  declining default. Rejected: a long-press menu (no visible affordance, custom accessibility actions, no desktop habit) and a
+  per-member detail sheet (a new surface for one action; the likely home if promote/demote ever arrive).
+  **Found while building:** the conversation state read the roster inside its combine but never re-ran when the member table
+  changed, so a removed member would have stayed in an open sheet (the same staleness applied to a leave or an add made on another
+  device). The outer combine now includes `groupMemberDao.observeMembers` for a group conversation, which also refreshes the header
+  member count. Unit tests: `SignedGroupsTest` (canRemoveMembers for the owner only, and the roster drops the removed member; both
+  fail if the change is reverted), `FlashGroupMembersLogicTest` (who is removable, dialog copy).
 - **UI (UI-029 addendum, DESIGNED first):** a third line "Added by <owner> · not verified" and a trailing **Verify** action; Verify
   reuses ordinary pairing and adds no trust logic to the UI. Alternatives considered in `docs/ui/group-ui.md`.
 
@@ -2051,7 +2062,8 @@ re-checked; deleting a chat without leaving keeps its rows and vouches.
 **Not verified on a device.** GT-03 (four or more devices, two of them never paired with each other) is owed, as are GT-02, SC-01,
 SC-02, MEAS-08. Do not describe groups of 20 as tested until they are.
 
-**Revisit when:** the owner wants remove in the UI; per-sender keys or ownership transfer are requested; a group needs more than 64
+**Revisit when:** ~~the owner wants remove in the UI~~ (built 2026-09-30); what the removed member sees on their own device is
+undesigned; per-sender keys or ownership transfer are requested; a group needs more than 64
 tombstones; MEAS-02 / PC6 (FO-05) is run and 32 is reconsidered.
 
 ## ADR-045 — One connection planner decides who dials; modes will own the connection policy

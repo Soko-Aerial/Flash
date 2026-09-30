@@ -6,6 +6,11 @@
   group calls; nothing else (no 1:1, no files, no push-to-talk). v2 groups hold up to 20 (`MAX_MEMBERS_V2`), legacy stays 6. **No wire
   change, `gv` stays 2.** The group gate is `isGroupPeerTrusted` = paired, or an active roster member whose live TLS key equals the cert
   key (it never reads the pin store). The member sheet shows "Added by <owner> · not verified" and a Verify action (ordinary pairing).
+- **Update (same day, `39d8905`): owner remove now has a UI.** A **Remove** action per member row for the owner of a v2 group (never
+  the owner's own row) plus a confirmation dialog; `FlashConversationUiState.canRemoveMembers` (from the repository) decides who sees it;
+  `removeGroupMember` is on the `FlashChatRepository` interface. Also fixed: the conversation state did not re-run when the member table
+  changed (an open sheet would have kept a removed member); the combine now includes `observeMembers`. Design: UI-029 addendum 2.
+  Tests: messaging 312 host / 158 jvm, ui:chat 294, desktop 102, app and sample compile. Not device-verified (GT-03 step 7).
 - **Commits:** plan `9997470`, S1 `bc4e687`, S2 `e4cc004`, S3 `6684120`, S4 `b67923f`, S5 `9674ab0`, S6 docs. Design:
   `docs/group/v2-vouched-trust-plan.md` (with "As built"). Summary and limits: `docs/security.md` section 9. Decision: ADR-044 "V2 built".
 - **Verified:** messaging 311 host / 158 jvm, ui:chat 291, calling 133, engine 12 host / 7 jvm, desktop 102, network 381 / 290, app and
@@ -13,10 +18,11 @@
   re-run (`logs/progress.md` 2026-09-30, "A flake to know about"). **Not verified on a device:** GT-03. Log line to look for:
   `Group v2 joined`; none of `SECURITY:` (especially `SECURITY: vouch refused`).
 - **Known limits (accepted):** a lying owner can vouch a key it controls (label + Verify mitigate); no per-sender keys; vouched members
-  get no files; owner remove exists (`removeGroupMember`) but has no UI; deleting a chat without leaving keeps rows and vouches; an
+  get no files; deleting a chat without leaving keeps rows and vouches; the removed member's own screen has no designed state; an
   established call leg is not re-checked after a removal.
 - **Recommended next task:** GT-03 (and GT-02 which it builds on) on real devices with the owner. If no devices: the open audit items
-  (3.6, 3.2, S6, 3.4, 3.7, 3.11), or an owner-remove UI if the owner wants it (needs a UI-029 design first, section 34).
+  (3.6, 3.2, S6, 3.4, 3.7, 3.11; order and reasoning in `docs/audit/2026-09-28-architectural-audit-and-tasks.md`, "What to do with
+  this list").
 - Files most relevant: `core/messaging/.../SignedGroups.kt`, `RealFlashChatRepository.kt` (`isGroupPeerTrusted`, `removeGroupMember`,
   `introducedByOf`), `core/security/.../VouchRules.kt`, `core/engine/.../group/TrustStoreGroupVouching.kt`,
   `ui/chat/.../FlashGroupMembersSheet.kt`.
