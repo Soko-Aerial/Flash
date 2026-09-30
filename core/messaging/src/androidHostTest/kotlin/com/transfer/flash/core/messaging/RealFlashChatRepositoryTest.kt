@@ -2501,6 +2501,40 @@ class RealFlashChatRepositoryTest {
     }
 
     @Test
+    fun `a group receipt that names a message with no delivery rows changes nothing`() = runBlocking {
+        // Chat/group sync audit, step 2: only a message this device wrote to a group has delivery rows. A member
+        // that names some other id (here a direct message still waiting for its own acknowledgement) must not be able
+        // to mark it delivered and drop its outbox row.
+        val memberDao = FakeGroupMemberDao()
+        val deliveryDao = FakeGroupDeliveryDao()
+        val outboxDao = FakeOutboxDao()
+        val messageDao = FakeMessageDao()
+        val repository = newRepository(
+            messageDao = messageDao,
+            outboxDao = outboxDao,
+            groupMemberDao = memberDao,
+            groupDeliveryDao = deliveryDao,
+            trustedPeers = setOf("peer-a", "peer-b"),
+            groupSink = { _, _ -> true },
+            messageSink = { _, _ -> false },
+        )
+        val groupId = (repository.createGroup("Team", setOf("peer-a")) as FlashResult.Success).value
+        repository.openConversation("peer-b")
+        repository.sendText("a direct message")
+        kotlinx.coroutines.delay(100)
+        val directId = outboxDao.queue.keys.single()
+
+        repository.onInboundGroupWireFrame(
+            "peer-a",
+            GroupWireFrame.Receipt(groupId, directId, "peer-a", System.currentTimeMillis()),
+        )
+        kotlinx.coroutines.delay(100)
+
+        assertTrue("the direct message is still waiting for its own acknowledgement", outboxDao.queue.containsKey(directId))
+        assertEquals("PENDING", messageDao.messages.getValue(directId).status)
+    }
+
+    @Test
     fun `group text writes its rows in one transaction`() = runBlocking {
         val memberDao = FakeGroupMemberDao()
         val deliveryDao = FakeGroupDeliveryDao()

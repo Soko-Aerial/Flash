@@ -1785,12 +1785,7 @@ public class RealFlashChatRepository(
             }
             is GroupWireFrame.Receipt -> {
                 if (!isActiveGroupMember(members, frame.groupId, frame.from)) return
-                val deliveries = groupDeliveryDao ?: return
-                deliveries.markDelivered(frame.messageId, frame.from, frame.deliveredAt)
-                if (deliveries.pendingForMessage(frame.messageId).isEmpty()) {
-                    messageDao.updateStatusIfUnacknowledged(frame.messageId, "DELIVERED")
-                    outboxDao.delete(frame.messageId)
-                }
+                recordGroupDelivery(frame.messageId, frame.from, frame.deliveredAt)
             }
             is GroupWireFrame.Read -> {
                 if (!isActiveGroupMember(members, frame.groupId, frame.from)) return
@@ -2283,16 +2278,60 @@ public class RealFlashChatRepository(
                 keyEpoch = frame.keyEpoch,
             ),
         )
+        // Chat/group sync audit, step 2. The SyncAck goes to the relay, which may not be the author, and the author
+        // is the only device that keeps a delivery row for this message. Tell it directly, as a live delivery
+        // would have, or its tick stays at "1/2" until its own retry reaches us (and never moves once its outbox
+        // gave up). Only a relayed message needs this: when the pusher is the author, the ack above is the news
+        // (see [handleSyncAck]). Dropped without harm when the author has no session with this device.
+        if (message.from != localDeviceId && message.from != frame.from) {
+            groupTransportSink?.send(
+                message.from,
+                GroupWireFrame.Receipt(
+                    groupId = frame.groupId,
+                    messageId = message.messageId,
+                    from = localDeviceId,
+                    deliveredAt = timeSource.nowMs(),
+                ),
+            )
+        }
     }
 
-    /** Holder side: retire only acknowledged ids and end the round after its full batch is acked. */
-    private fun handleSyncAck(frame: GroupWireFrame.SyncAck) {
+    /**
+     * Holder side: retire only acknowledged ids and end the round after its full batch is acked.
+     *
+     * An acknowledged id is also news for the message's author: the requester now holds it. When this device
+     * wrote the message, that is a delivery like any other (chat/group sync audit, step 2). Before, this handler
+     * only updated the round's in-memory sets, so a member that caught up straight from its author never moved
+     * the author's tick.
+     */
+    private suspend fun handleSyncAck(frame: GroupWireFrame.SyncAck) {
         val round = syncRounds[frame.syncId] ?: return
-        round.acknowledgedMessageIds.addAll(frame.messageIds.filter { it in round.messageIds })
+        val acknowledged = frame.messageIds.filter { it in round.messageIds }
+        round.acknowledgedMessageIds.addAll(acknowledged)
+        val now = timeSource.nowMs()
+        acknowledged.forEach { recordGroupDelivery(it, frame.from, now) }
         val ackState = GroupSyncRoundState(round.messageIds.toSet(), round.acknowledgedMessageIds.toSet())
         if (ackState.isComplete) {
             syncRounds.remove(frame.syncId, round)
             syncRequesters.remove(frame.syncId)
+        }
+    }
+
+    /**
+     * [memberId] holds [messageId]: mark its delivery row done and, when that was the last one, retire the message.
+     *
+     * Only a message this device wrote has delivery rows, so a name this device merely holds (a sync ack lists
+     * every message the round pushed, whoever wrote it) or no longer tracks changes nothing. The guard also stops
+     * a receipt that names some other message id (a direct message, say) from marking it delivered and dropping
+     * its outbox row. Idempotent: a repeated receipt re-evaluates the same rows.
+     */
+    private suspend fun recordGroupDelivery(messageId: String, memberId: String, deliveredAt: Long) {
+        val deliveries = groupDeliveryDao ?: return
+        if (deliveries.memberCount(messageId) == 0) return
+        deliveries.markDelivered(messageId, memberId, deliveredAt)
+        if (deliveries.pendingForMessage(messageId).isEmpty()) {
+            messageDao.updateStatusIfUnacknowledged(messageId, "DELIVERED")
+            outboxDao.delete(messageId)
         }
     }
 

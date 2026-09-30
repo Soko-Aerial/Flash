@@ -27,6 +27,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -1030,6 +1031,74 @@ class SignedGroupsTest {
         say("dev-c", groupId, "I am back")
         assertNotNull("a and b store what c says once c is back", stored("dev-a", groupId, "I am back"))
         assertNotNull(stored("dev-b", groupId, "I am back"))
+    }
+
+    // ------------------------------------------------------------------------------ delivery ticks
+    // Chat/group sync audit, step 2. The tick of a group message moves when its author learns that each member
+    // holds it. Live delivery already told it; a member that caught up later did not.
+
+    /** Pushes every queued retry of [id]'s outbox an hour out, so only what a test sends by hand reaches anyone. */
+    private fun freezeOutbox(id: String) {
+        val outbox = nodes.getValue(id).outboxDao
+        outbox.queue.keys.forEach { key ->
+            outbox.queue[key]?.let { outbox.queue[key] = it.copy(nextAttemptAt = System.currentTimeMillis() + 3_600_000L) }
+        }
+    }
+
+    private fun deliveryState(id: String, messageId: String, member: String): String? =
+        nodes.getValue(id).deliveryDao.rows[messageId to member]?.state
+
+    @Test
+    fun `a member that catches up from a relay tells the author, whose tick then moves`() = runBlocking {
+        mesh("dev-a", "dev-b", "dev-c")
+        val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+        goOffline("dev-b")
+        say("dev-a", groupId, "while b was away")
+        val original = stored("dev-a", groupId, "while b was away")!!
+        assertEquals("c was online and acknowledged", "DELIVERED", deliveryState("dev-a", original.localId, "dev-c"))
+        assertNotEquals("b was away", "DELIVERED", deliveryState("dev-a", original.localId, "dev-b"))
+        assertNotEquals("so the message is not delivered yet", "DELIVERED", nodes.getValue("dev-a").messageDao.messages.getValue(original.localId).status)
+
+        // b is back with a and with c, but a's own retry has not fired (frozen) and no session-up edge ran.
+        freezeOutbox("dev-a")
+        liveSessions.add(pairKey("dev-a", "dev-b"))
+        liveSessions.add(pairKey("dev-b", "dev-c"))
+        val syncId = interceptSyncRequest(requester = "dev-b", holder = "dev-c", groupId = groupId)
+        outbound.clear()
+
+        // c relays a's own signed message to b, as an elected holder does.
+        val relayed = GroupWireFrame.Message(
+            groupId, original.localId, "dev-a", "Ada", original.sentAt, original.text, null, null, 0L, original.groupSig,
+        )
+        deliver("dev-c", "dev-b", GroupWireFrame.SyncPush(groupId, syncId, "dev-c", relayed))
+
+        assertNotNull("b stored the relayed message", stored("dev-b", groupId, "while b was away"))
+        assertTrue(
+            "b tells the author itself, not only the relay",
+            outbound.any { it.from == "dev-b" && it.to == "dev-a" && (it.frame as? GroupWireFrame.Receipt)?.messageId == original.localId },
+        )
+        assertEquals("DELIVERED", deliveryState("dev-a", original.localId, "dev-b"))
+        assertEquals("every member holds it now", "DELIVERED", nodes.getValue("dev-a").messageDao.messages.getValue(original.localId).status)
+        assertNull("so the outbox row is retired", nodes.getValue("dev-a").outboxDao.queue[original.localId])
+    }
+
+    @Test
+    fun `the author marks a member delivered when that member acknowledges its catch-up push`() = runBlocking {
+        mesh("dev-a", "dev-b")
+        val groupId = createGroup("dev-a", "Team", "dev-b")
+        goOffline("dev-b")
+        say("dev-a", groupId, "catch up from me")
+        val original = stored("dev-a", groupId, "catch up from me")!!
+        assertNotEquals("b was away", "DELIVERED", deliveryState("dev-a", original.localId, "dev-b"))
+
+        freezeOutbox("dev-a")
+        liveSessions.add(pairKey("dev-a", "dev-b"))
+        nodes.getValue("dev-b").repo.sendGroupSyncRequests("dev-a")
+        settleLong()
+
+        assertNotNull("b caught up from its author", stored("dev-b", groupId, "catch up from me"))
+        assertEquals("the ack names the message, so the author records the delivery", "DELIVERED", deliveryState("dev-a", original.localId, "dev-b"))
+        assertEquals("DELIVERED", nodes.getValue("dev-a").messageDao.messages.getValue(original.localId).status)
     }
 
     // ------------------------------------------------------------------------------ harness: nodes
