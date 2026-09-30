@@ -91,6 +91,17 @@ object FlashGroupMembersMath {
         introducedBy?.let { "added by ${ownerName(it)}, not verified" }
 
     private fun ownerName(name: String): String = name.ifBlank { "the group owner" }
+
+    /** Owner-only removal is offered on every row except the creator's own: the owner cannot remove itself. */
+    fun canRemove(member: FlashGroupMemberUi): Boolean = member.role != FlashMemberRole.Owner
+
+    /** Title of the remove confirmation. */
+    fun removeTitle(name: String): String = "Remove ${name.ifBlank { "this member" }}?"
+
+    /** Body of the remove confirmation: honest that a removed member keeps what they already received. */
+    fun removeMessage(name: String): String =
+        "${name.ifBlank { "This member" }} will be removed for everyone in the group and stop receiving new messages. " +
+            "Messages they already received stay on their device."
 }
 
 /**
@@ -107,6 +118,11 @@ fun FlashGroupMembersSheet(
      * (previews, hosts without pairing); it is only ever offered for a member that has `introducedBy`.
      */
     onVerifyMember: ((FlashGroupMemberUi) -> Unit)? = null,
+    /**
+     * ADR-044 V2 (E5): the owner removes a member. Null hides the action; the host passes it only for the owner of a v2
+     * group, and it is never offered on the Owner row (see [FlashGroupMembersMath.canRemove]).
+     */
+    onRemoveMember: ((FlashGroupMemberUi) -> Unit)? = null,
 ) {
     val colors = FlashTheme.colors
     val sorted = remember(members) { FlashGroupMembersMath.sortMembers(members) }
@@ -179,6 +195,7 @@ fun FlashGroupMembersSheet(
                 FlashMemberRow(
                     member = member,
                     onVerify = onVerifyMember?.takeIf { member.introducedBy != null }?.let { verify -> { verify(member) } },
+                    onRemove = onRemoveMember?.takeIf { FlashGroupMembersMath.canRemove(member) }?.let { remove -> { remove(member) } },
                 )
             }
         }
@@ -187,11 +204,11 @@ fun FlashGroupMembersSheet(
 
 /**
  * Single member row: avatar + online dot, name/transport subtitle, transport glyph, role badge, and for a member the
- * owner introduced an "Added by" line and a Verify action. The Verify button sits outside the merged description so
- * it stays a separate accessibility target.
+ * owner introduced an "Added by" line and a Verify action; the owner of a v2 group also gets a Remove action. The action
+ * buttons sit outside the merged description so each stays a separate accessibility target.
  */
 @Composable
-private fun FlashMemberRow(member: FlashGroupMemberUi, onVerify: (() -> Unit)?) {
+private fun FlashMemberRow(member: FlashGroupMemberUi, onVerify: (() -> Unit)?, onRemove: (() -> Unit)?) {
     val colors = FlashTheme.colors
 
     Row(
@@ -256,6 +273,19 @@ private fun FlashMemberRow(member: FlashGroupMemberUi, onVerify: (() -> Unit)?) 
                     .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space12),
                 style = FlashTheme.typography.bodyDefault,
                 color = colors.accentPrimary,
+                maxLines = 1,
+            )
+        }
+
+        if (onRemove != null) {
+            FlashText(
+                text = "Remove",
+                modifier = Modifier
+                    .semantics { contentDescription = "Remove ${member.name} from the group" }
+                    .clickable(role = Role.Button, onClick = onRemove)
+                    .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space12),
+                style = FlashTheme.typography.bodyDefault,
+                color = colors.textError,
                 maxLines = 1,
             )
         }
@@ -407,6 +437,7 @@ private fun FlashGroupMembersLargePreview() {
             },
             onDismiss = {},
             onVerifyMember = {},
+            onRemoveMember = {},
         )
     }
 }

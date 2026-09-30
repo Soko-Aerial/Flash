@@ -161,3 +161,44 @@ public fun FlashLeaveGroupDialog(
         },
     )
 }
+
+/**
+ * ADR-044 V2 (E5): remove-member confirmation for the owner of a v2 group. Removal is for everyone and cannot be undone
+ * from here (re-adding is the ordinary Add members flow), so it asks once. The host performs the removal.
+ */
+@Composable
+public fun FlashRemoveMemberDialog(
+    memberName: String,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val colors = FlashTheme.colors
+    FlashConfirmHost(
+        onDismiss = onDismiss,
+        containerColor = colors.backgroundSurface,
+        title = {
+            FlashText(
+                text = FlashGroupMembersMath.removeTitle(memberName),
+                style = FlashTheme.typography.headingMedium,
+                color = colors.textPrimary,
+            )
+        },
+        text = {
+            FlashText(
+                text = FlashGroupMembersMath.removeMessage(memberName),
+                style = FlashTheme.typography.bodyDefault,
+                color = colors.textSecondary,
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text("Remove", color = colors.textError)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel", color = colors.textSecondary)
+            }
+        },
+    )
+}

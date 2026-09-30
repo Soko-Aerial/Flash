@@ -1188,6 +1188,18 @@ public fun DesktopShell(
                     engine.pairing.beginPair(memberId, memberName)
                 }
             },
+            // ADR-044 V2 (E5): only offered to the owner of a v2 group (conversation state canRemoveMembers).
+            onRemoveGroupMember = { groupId, memberId, memberName ->
+                scope.launch {
+                    val removed = chatRepository.removeGroupMember(groupId, memberId)
+                    if (removed !is com.transfer.flash.core.common.result.FlashResult.Success) {
+                        snackbarHostState.showSnackbar(
+                            message = "Couldn't remove $memberName — try again",
+                            duration = SnackbarDuration.Short,
+                        )
+                    }
+                }
+            },
             onClearConversation = { id ->
                 chatRepository.deleteConversations(setOf(id))
                 chatRepository.closeConversation()

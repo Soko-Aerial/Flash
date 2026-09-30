@@ -331,6 +331,11 @@ public data class FlashConversationUiState(
     val members: List<FlashGroupMemberUi> = emptyList(),
     /** Active ongoing group call announced by peers, if any. */
     val ongoingCall: FlashActiveGroupCallBarUi? = null,
+    /**
+     * ADR-044 V2 (E5): true only when this device owns this v2 group, i.e. it may remove members. False for direct
+     * chats, legacy groups (no signed roster to remove from) and groups someone else owns.
+     */
+    val canRemoveMembers: Boolean = false,
 )
 
 public data class FlashConversation(

@@ -51,6 +51,7 @@ import androidx.compose.ui.Modifier
 import com.transfer.flash.core.common.model.FlashPeerPresence
 import com.transfer.flash.core.messaging.model.FlashConversationUiState
 import com.transfer.flash.core.messaging.model.FlashFileTransferStatus
+import com.transfer.flash.core.messaging.model.FlashGroupMemberUi
 import com.transfer.flash.core.messaging.model.FlashImageAttachmentUi
 import com.transfer.flash.core.messaging.model.FlashMessageUi
 import com.transfer.flash.core.messaging.model.FlashQuotedReplyUi
@@ -211,6 +212,12 @@ fun FlashConversationScreen(
      */
     onVerifyGroupMember: ((memberId: String, name: String) -> Unit)? = null,
     /**
+     * ADR-044 V2 (E5): the owner of a v2 group removes a member, after a confirmation. Null hides the action; it is also
+     * hidden unless the state says [FlashConversationUiState.canRemoveMembers]. The host routes to the repository's
+     * removeGroupMember and reports a failure.
+     */
+    onRemoveGroupMember: ((groupId: String, memberId: String, name: String) -> Unit)? = null,
+    /**
      * Group Phase D: trusted peers that could be added to this group (host filters out current
      * members); drives the Add-members sheet's roster. Default empty keeps previews inert.
      */
@@ -329,6 +336,7 @@ fun FlashConversationScreen(
     var menuExpanded by remember { mutableStateOf(false) }
     var showAddMembers by remember { mutableStateOf(false) }
     var showLeaveConfirm by remember { mutableStateOf(false) }
+    var memberToRemove by remember { mutableStateOf<FlashGroupMemberUi?>(null) }
     val menuItems = if (state.header.isGroup) {
         FlashConversationMenuMath.groupItems(canLeave = state.header.memberCount > 1)
     } else {
@@ -850,6 +858,11 @@ fun FlashConversationScreen(
             members = groupMembers,
             onDismiss = { showGroupMembers = false },
             onVerifyMember = onVerifyGroupMember?.let { verify -> { member -> verify(member.id, member.name) } },
+            onRemoveMember = if (state.canRemoveMembers && conversationId != null && onRemoveGroupMember != null) {
+                { member -> memberToRemove = member }
+            } else {
+                null
+            },
         )
     }
 
@@ -860,6 +873,18 @@ fun FlashConversationScreen(
             onDismiss = { showAddMembers = false },
             onAdd = { memberIds -> onAddGroupMembers(conversationId, memberIds) },
         )
+    }
+    memberToRemove?.let { member ->
+        if (conversationId != null && onRemoveGroupMember != null) {
+            FlashRemoveMemberDialog(
+                memberName = member.name,
+                onConfirm = {
+                    memberToRemove = null
+                    onRemoveGroupMember(conversationId, member.id, member.name)
+                },
+                onDismiss = { memberToRemove = null },
+            )
+        }
     }
     if (showLeaveConfirm && conversationId != null) {
         FlashLeaveGroupDialog(

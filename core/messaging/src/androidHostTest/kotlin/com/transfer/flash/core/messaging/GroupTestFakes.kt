@@ -238,15 +238,19 @@ internal class InMemoryOutboxDao : OutboxDao {
 internal class InMemoryGroupMemberDao : GroupMemberDao {
     val members = ConcurrentHashMap<Pair<String, String>, GroupMemberEntity>()
 
+    /** Bumped on every upsert so observeMembers re-emits like a Room table flow does. */
+    private val changes = MutableStateFlow(0)
+
     override suspend fun upsert(member: GroupMemberEntity) {
         members[member.groupId to member.deviceId] = member
+        changes.value = changes.value + 1
     }
 
     override fun observeMembers(groupId: String): Flow<List<GroupMemberEntity>> =
-        MutableStateFlow(
+        changes.map {
             members.values.filter { it.groupId == groupId }
-                .sortedWith(compareBy({ it.joinedAt }, { it.deviceId })),
-        ).asStateFlow()
+                .sortedWith(compareBy({ it.joinedAt }, { it.deviceId }))
+        }
 
     override suspend fun activeMembers(groupId: String): List<GroupMemberEntity> =
         members.values.filter { it.groupId == groupId && it.isActive }

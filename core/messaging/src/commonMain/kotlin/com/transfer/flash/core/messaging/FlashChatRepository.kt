@@ -28,6 +28,13 @@ public interface FlashChatRepository {
     public suspend fun leaveGroup(groupId: String): FlashResult<Unit> =
         FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Groups unavailable"))
 
+    /**
+     * ADR-044 V2: the owner of a v2 group removes [deviceId]. Fails for every other caller and for legacy groups;
+     * lightweight implementations decline.
+     */
+    public suspend fun removeGroupMember(groupId: String, deviceId: String): FlashResult<Unit> =
+        FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Groups unavailable"))
+
     /** Real roster for the currently requested group; lightweight implementations remain empty. */
     public suspend fun groupMembers(groupId: String): List<FlashGroupMemberUi> = emptyList()
 
