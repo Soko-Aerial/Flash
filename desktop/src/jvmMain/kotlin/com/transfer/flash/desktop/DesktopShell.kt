@@ -1234,6 +1234,8 @@ public fun DesktopShell(
                     }
                 }
             },
+            // UI-051: Message Info for a group message this device sent (who read / got / has not yet got it).
+            observeMessageInfo = chatRepository::observeMessageInfo,
             onClearConversation = { id ->
                 chatRepository.deleteConversations(setOf(id))
                 chatRepository.closeConversation()

@@ -41,6 +41,13 @@ public interface GroupDeliveryDao {
         selfId: String,
     ): Flow<List<GroupDeliveryCount>>
 
+    /**
+     * Every recipient row of one message, observable: the source of the Message Info sheet (UI-051). Ordered only for
+     * stability; what to show first is decided by the mapping in `core:messaging`, not here.
+     */
+    @Query("SELECT * FROM group_deliveries WHERE messageId = :messageId ORDER BY memberId")
+    public fun observeForMessage(messageId: String): Flow<List<GroupDeliveryEntity>>
+
     @Query(
         "UPDATE group_deliveries SET state = 'DELIVERED', deliveredAt = :deliveredAt " +
             "WHERE messageId = :messageId AND memberId = :memberId AND state != 'DELIVERED'",

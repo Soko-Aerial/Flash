@@ -311,6 +311,47 @@ public data class FlashGroupMemberUi(
     val introducedBy: String? = null,
 )
 
+/** Where one recipient stands for a message the user sent (Message Info, UI-051). */
+public enum class FlashRecipientState { Read, Delivered, Waiting }
+
+/** Why a [FlashRecipientState.Waiting] recipient has not got the message yet. */
+public enum class FlashWaitingReason {
+    /** Still a member; the device has not been reachable since the message was sent. */
+    DeviceNotReached,
+
+    /** No longer in the group (left or removed) without having received the message. */
+    LeftGroup,
+}
+
+/** One recipient of a message in the Message Info sheet. */
+public data class FlashMessageRecipientUi(
+    val id: String,
+    val name: String,
+    val initials: String,
+    val state: FlashRecipientState,
+    /**
+     * Local time the delivery was confirmed, for a [FlashRecipientState.Delivered] recipient. Null for everyone else:
+     * a read recipient carries no time because Flash stores a read cursor, not when it moved.
+     */
+    val deliveredAtLabel: String? = null,
+    val waitingReason: FlashWaitingReason? = null,
+)
+
+/**
+ * The Message Info sheet's content (UI-051): one message the user sent and who has read it, received it, or not yet.
+ * [recipients] is already ordered: read, then delivered (earliest first), then waiting.
+ */
+public data class FlashMessageInfoUi(
+    val messageId: String,
+    val preview: String,
+    val sentLabel: String,
+    val recipients: List<FlashMessageRecipientUi>,
+) {
+    val readBy: List<FlashMessageRecipientUi> get() = recipients.filter { it.state == FlashRecipientState.Read }
+    val deliveredTo: List<FlashMessageRecipientUi> get() = recipients.filter { it.state == FlashRecipientState.Delivered }
+    val waiting: List<FlashMessageRecipientUi> get() = recipients.filter { it.state == FlashRecipientState.Waiting }
+}
+
 public data class FlashActiveGroupCallBarUi(
     val callId: String,
     val callerName: String,

@@ -82,6 +82,8 @@ fun FlashMessageFocusOverlay(
     onDelete: () -> Unit,
     onDeleteForEveryone: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
+    /** UI-051: shows a "Message Info" item. The host passes it only for a message that offers it. */
+    onMessageInfo: (() -> Unit)? = null,
 ) {
     val colors = FlashTheme.colors
 
@@ -179,6 +181,12 @@ fun FlashMessageFocusOverlay(
                     onDeleteForEveryone = onDeleteForEveryone?.let { deleteForEveryone ->
                         {
                             deleteForEveryone()
+                            onDismiss()
+                        }
+                    },
+                    onMessageInfo = onMessageInfo?.let { messageInfo ->
+                        {
+                            messageInfo()
                             onDismiss()
                         }
                     },
@@ -390,6 +398,7 @@ fun FlashContextMenuCard(
     onDelete: () -> Unit,
     onDeleteForEveryone: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
+    onMessageInfo: (() -> Unit)? = null,
 ) {
     val colors = FlashTheme.colors
 
@@ -421,6 +430,13 @@ fun FlashContextMenuCard(
             label = "Select Multiple",
             onClick = onSelectMultiple,
         )
+        if (onMessageInfo != null) {
+            FlashContextMenuItem(
+                icon = FlashIcons.Read,
+                label = FlashMessageInfoMath.MENU_LABEL,
+                onClick = onMessageInfo,
+            )
+        }
         HorizontalDivider(
             color = colors.borderSubtle,
             thickness = FlashDimensions.borderHairline,
@@ -444,11 +460,12 @@ fun FlashContextMenuCard(
 }
 
 /** Pure action visibility used by common tests and the context menu. */
-internal fun messageActionLabels(isMine: Boolean): List<String> = buildList {
+internal fun messageActionLabels(isMine: Boolean, hasMessageInfo: Boolean = false): List<String> = buildList {
     add("Reply")
     add("Copy Text")
     add("Forward")
     add("Select Multiple")
+    if (hasMessageInfo) add(FlashMessageInfoMath.MENU_LABEL)
     if (isMine) add("Delete for everyone")
     add("Delete")
 }
