@@ -215,4 +215,7 @@ public interface FlashChatRepository {
     public fun unarchiveConversations(ids: Set<String>) {
         ids.forEach { unarchiveConversation(it) }
     }
+
+    /** Updates the local display name used for outbound chat messages and signed groups. */
+    public suspend fun updateLocalDisplayName(newName: String) {}
 }

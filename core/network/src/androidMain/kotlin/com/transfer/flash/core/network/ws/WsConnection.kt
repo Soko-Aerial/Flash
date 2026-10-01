@@ -7,7 +7,9 @@ import com.transfer.flash.core.common.logging.FlashLog
 import java.io.InputStream
 import java.io.OutputStream
 import java.net.Socket
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.locks.ReentrantLock
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -116,7 +118,7 @@ public class WsConnection(
         peerHelloAccepted = true
         maxMessageBytes = WebSocketCodec.MAX_MESSAGE_BYTES
     }
-    private val writeLock = Any()
+    private val writeLock = ReentrantLock()
     private val input: InputStream = socket.getInputStream()
     private val output: OutputStream = socket.getOutputStream()
 
@@ -301,8 +303,17 @@ public class WsConnection(
         ticker?.unregister(tickTarget)
         scope.launch {
             runCatching {
-                synchronized(writeLock) {
-                    WebSocketCodec.writeFrame(output, WebSocketCodec.OPCODE_CLOSE, ByteArray(0), maskOutboundFrames)
+                // Try to acquire writeLock with a short timeout so a clean CLOSE frame is sent
+                // if the channel is idle or quickly drained. If a write is stuck/stalled under
+                // writeLock, do NOT hang here waiting indefinitely: proceed immediately to closing
+                // the socket, which aborts the blocked write and unblocks the stuck thread.
+                val acquired = writeLock.tryLock(200, TimeUnit.MILLISECONDS)
+                if (acquired) {
+                    try {
+                        WebSocketCodec.writeFrame(output, WebSocketCodec.OPCODE_CLOSE, ByteArray(0), maskOutboundFrames)
+                    } finally {
+                        writeLock.unlock()
+                    }
                 }
             }
             runCatching { socket.close() }
@@ -316,8 +327,12 @@ public class WsConnection(
         // Classified before the write: a consumed payload is masked in place by it.
         val userTraffic = isUserTraffic(opcode, payload)
         return runCatching {
-            synchronized(writeLock) {
+            writeLock.lock()
+            try {
+                if (closed.get()) throw java.io.IOException("Connection closed")
                 WebSocketCodec.writeFrame(output, opcode, payload, maskOutboundFrames, maskPayloadInPlace = consumePayload)
+            } finally {
+                writeLock.unlock()
             }
             // Written frames feed the peer's watchdog, which is what lets a busy pair skip pings.
             val now = nowMs()

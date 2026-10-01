@@ -22,6 +22,7 @@ internal actual fun FlashCallVideoSurface(
     track: VideoStreamTrack?,
     fit: CallVideoFit,
     modifier: Modifier,
+    zOrderMediaOverlay: Boolean,
 ) {
     // (same orientation, different orientation): Balanced fits a picture turned the other way
     // whole instead of zooming into it (see CallVideoFit.Balanced).
@@ -34,7 +35,14 @@ internal actual fun FlashCallVideoSurface(
     val holder = remember { FlashVideoSink() }
 
     AndroidView(
-        factory = { context -> SurfaceViewRenderer(context).also { holder.attach(it, scaling) } },
+        factory = { context ->
+            SurfaceViewRenderer(context).also {
+                if (zOrderMediaOverlay) {
+                    it.setZOrderMediaOverlay(true)
+                }
+                holder.attach(it, scaling)
+            }
+        },
         modifier = modifier,
         update = { holder.bind(track) },
         onRelease = { holder.release() },

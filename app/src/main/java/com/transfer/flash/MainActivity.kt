@@ -805,6 +805,18 @@ private fun FlashShell(
         openConversationEntry?.let { FlashNotificationManager.clearConversation(notifyContext, it) }
     }
 
+    // ERROR-087: any way off the Conversation destination - the system back gesture above all, which only pops the nav
+    // stack - ends the chat's "open" state. Left open, the repository keeps marking later messages read and sends the
+    // peer a Read receipt for a thread nobody is looking at. Only the transition from an open entry counts; a hop
+    // straight from one conversation to another is handled by openConversation().
+    var lastOpenConversationEntry by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(openConversationEntry) {
+        if (openConversationEntry == null && lastOpenConversationEntry != null) {
+            chatRepository.closeConversation()
+        }
+        lastOpenConversationEntry = openConversationEntry
+    }
+
     // Bug 7: consume a notification-tap navigation request once the engine is ready (the
     // real repository must exist to open the thread; navigating before it does would show an
     // empty conversation). Cleared after consuming so re-taps re-trigger.

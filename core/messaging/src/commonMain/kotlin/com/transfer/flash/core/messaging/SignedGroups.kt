@@ -368,6 +368,17 @@ internal class SignedGroups(
         return key.contentEquals(sessionKey)
     }
 
+    /**
+     * [isVouchedMember] without the live session (ERROR-088): the stored, verified roster holds an active member of
+     * [groupId] whose owner-signed certificate names a key. It says the owner introduced this device to the member,
+     * so the member may be dialed and invited; it says nothing about the connection that answers, which
+     * [isVouchedMember] still has to match against the certified key before a frame is accepted or sent.
+     */
+    suspend fun hasVouchedRosterKey(groupId: String, deviceId: String): Boolean {
+        val row = members.member(groupId, deviceId)?.takeIf { it.isActive } ?: return false
+        return row.subjectKey?.let { GroupCanonical.decode(it) }?.isNotEmpty() == true
+    }
+
     /** Withdraws every vouch [groupId] made (this device left the group). */
     suspend fun revokeAll(groupId: String) {
         val port = vouching ?: return

@@ -387,6 +387,7 @@ private fun FlashCallVideoSurfaces(
         FlashCallVideoSurface(
             track = if (pipIsLocal) remoteTrack else localTrack,
             fit = CallVideoFit.Fit,
+            zOrderMediaOverlay = true,
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .statusBarsPadding()

@@ -69,6 +69,15 @@ class FlashGroupVideoGridTest {
     }
 
     @Test
+    fun `an invitee the invite has not reached says so and one that was reached is just invited`() {
+        // ERROR-088: the caller's tile for a member with no session yet must not read as "Invited".
+        val p = FlashCallParticipantUi(peerId = "p", name = "P", state = FlashCallParticipantState.INVITED)
+        assertEquals("Invited", participantStatusLabel(p), "reachable is the default")
+        assertEquals("Not reachable yet", participantStatusLabel(p.copy(reachable = false)))
+        assertEquals("Connecting…", participantStatusLabel(p.copy(state = FlashCallParticipantState.CONNECTING, reachable = false)))
+    }
+
+    @Test
     fun `the compact main tile falls back from the core's choice to a live video to the first person`() {
         val a = FlashCallParticipantUi(peerId = "a", name = "A")
         val b = FlashCallParticipantUi(peerId = "b", name = "B", video = FlashParticipantVideo.RECEIVING)

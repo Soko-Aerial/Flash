@@ -267,9 +267,12 @@ object DiscoveryEngineHolder {
     private var modeController: ConnectionModeController? = null
     private var modeJob: Job? = null
 
-    /** The peer of the call in progress, if any; ECO keeps that session (PC5). */
+    /**
+     * The devices the call in progress needs a session with (the peer of a 1:1 call, the
+     * participants of a group call; empty when idle); ECO keeps those sessions (PC5, ERROR-086 (k)).
+     */
     @Volatile
-    private var busyPeerId: String? = null
+    private var busyPeerIds: Set<String> = emptySet()
 
     private val nearbyComposed = MutableStateFlow(false)
     private val uiStarted = MutableStateFlow(false)
@@ -525,10 +528,16 @@ object DiscoveryEngineHolder {
         if (trimmed.isBlank()) return
         localDeviceName = trimmed
         (network as? WsFlashNetwork)?.localFriendlyName = trimmed
+        pairing?.updateLocalName(trimmed)
+        chatRepo?.let { chat ->
+            appScope.launch {
+                runCatching { chat.updateLocalDisplayName(trimmed) }
+            }
+        }
         val engine = composite
         val port = (network as? WsFlashNetwork)?.serverPort ?: 0
         val id = localDeviceId
-        if (engine != null && port > 0 && id != null) {
+        if (engine != null && id != null) {
             val newIdentity = FlashAdvertisedIdentity(
                 deviceId = FlashDeviceId(id),
                 friendlyName = trimmed,
@@ -537,10 +546,12 @@ object DiscoveryEngineHolder {
                 capabilities = setOf(FlashDeviceKind.CAP_MOBILE),
             )
             engine.updateIdentity(newIdentity)
-            appScope.launch {
-                if (engine.state.value.isAdvertising) {
-                    engine.stopAdvertising()
-                    engine.startAdvertising(port)
+            if (port > 0) {
+                appScope.launch {
+                    if (engine.state.value.isAdvertising) {
+                        engine.stopAdvertising()
+                        engine.startAdvertising(port)
+                    }
                 }
             }
         }
@@ -983,7 +994,7 @@ object DiscoveryEngineHolder {
                     contacts = trustStore.getTrustedPeers().keys.mapTo(HashSet()) { it.value } +
                         presenceChat?.activeGroupRosters().orEmpty().flatten(),
                     activity = networkImpl.linkActivity(),
-                    busy = setOfNotNull(busyPeerId),
+                    busy = busyPeerIds,
                     nearbyOpen = _nearbyVisible.value,
                 )
             },
@@ -1242,6 +1253,12 @@ object DiscoveryEngineHolder {
             // ADR-044 V2: inside a v2 group a member the owner vouched for (verified certificate key equals the
             // key of its live session) may take part in the group's calls without being paired.
             isGroupTrustedPeer = { peerId, groupId -> chatImpl.isGroupCallPeer(groupId, peerId) },
+            // ERROR-088: who is in the call is the roster (paired or vouched), not who has a live session right now;
+            // the live-key check above is applied when an announcement is sent or received.
+            isGroupMember = { peerId, groupId -> chatImpl.isGroupCallMember(groupId, peerId) },
+            // ERROR-088: a member that is not connected yet is dialed on demand (also in ECO), so it can be invited
+            // and can join. Cheap when a session is live; bounded by the planner's urgent-dial floor otherwise.
+            reachPeer = { peerId -> autoConnector?.ensureSession(peerId, AutoConnector.CALL_DIAL_BUDGET_MS) ?: false },
             // Read per sample, not captured once: flipping the switch mid-call has to take effect
             // on that call, not the next one.
             prioritiseVoice = { prioritiseVoiceQuality },
@@ -1778,7 +1795,7 @@ object DiscoveryEngineHolder {
                     FlashCallService.start(appContext)
                 }
                 val callOwnsAudio = state != null && state.state != FlashCallState.ENDED
-                busyPeerId = state?.peerId?.takeIf { callOwnsAudio }
+                busyPeerIds = state?.busyPeerIds.orEmpty()
                 setCallActive(callOwnsAudio, engine)
             }
         }
@@ -2611,7 +2628,7 @@ object DiscoveryEngineHolder {
         modeJob?.cancel()
         modeJob = null
         modeController = null
-        busyPeerId = null
+        busyPeerIds = emptySet()
         // Silence the ring before the scope dies: appScope.cancel() below kills the collector, so
         // nothing would ever deliver the stopping edge, and a MediaPlayer nobody holds keeps looping.
         callRingJob?.cancel()

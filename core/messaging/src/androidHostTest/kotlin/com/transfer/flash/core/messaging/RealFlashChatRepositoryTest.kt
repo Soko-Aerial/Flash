@@ -3168,12 +3168,70 @@ class RealFlashChatRepositoryTest {
         )
     }
 
+    @Test
+    fun `toggleReaction fans out to all active group members`() = runBlocking {
+        val memberDao = FakeGroupMemberDao()
+        val conversationDao = FakeConversationDao()
+        val reactionDao = FakeReactionDao()
+        val sentFrames = mutableListOf<Pair<String, MessageWireFrame>>()
+        val repository = newRepository(
+            conversationDao = conversationDao,
+            groupMemberDao = memberDao,
+            reactionDao = reactionDao,
+            trustedPeers = setOf("peer-a", "peer-b"),
+            messageSink = { target, frame ->
+                sentFrames += target to frame
+                true
+            },
+        )
+        val groupId = (repository.createGroup("Team", setOf("peer-a", "peer-b")) as FlashResult.Success).value
+        repository.openConversation(groupId)
+
+        repository.toggleReaction("msg-1", "👍")
+        kotlinx.coroutines.delay(50)
+
+        assertEquals(2, sentFrames.size)
+        assertEquals(setOf("peer-a", "peer-b"), sentFrames.map { it.first }.toSet())
+        val frameA = sentFrames.first { it.first == "peer-a" }.second as MessageWireFrame.ReactionFrame
+        assertEquals("msg-1", frameA.messageId)
+        assertEquals(groupId, frameA.conversationId)
+        assertEquals("my-device-id", frameA.memberId)
+        assertEquals("👍", frameA.emoji)
+        assertTrue(frameA.isAdded)
+    }
+
+    @Test
+    fun `inbound reaction from inactive member in group conversation is ignored`() = runBlocking {
+        val memberDao = FakeGroupMemberDao()
+        val reactionDao = FakeReactionDao()
+        val repository = newRepository(
+            groupMemberDao = memberDao,
+            reactionDao = reactionDao,
+            trustedPeers = setOf("peer-a"),
+        )
+        val groupId = (repository.createGroup("Team", setOf("peer-a")) as FlashResult.Success).value
+        // Deactivate peer-a
+        memberDao.upsert(memberDao.member(groupId, "peer-a")!!.copy(isActive = false))
+
+        val frame = MessageWireFrame.ReactionFrame(
+            messageId = "msg-1",
+            conversationId = groupId,
+            memberId = "peer-a",
+            emoji = "❤️",
+            isAdded = true,
+        )
+        repository.onInboundWireFrame(frame, transportPeerId = "peer-a")
+
+        assertNull(reactionDao.get("msg-1", "❤️"))
+    }
+
     /** Shared construction for the ERROR-034 tests; every DAO is an in-memory fake. */
     private fun newRepository(
         localDeviceId: String = "my-device-id",
         messageDao: MessageDao = FakeMessageDao(),
         conversationDao: ConversationDao = FakeConversationDao(),
         outboxDao: OutboxDao = FakeOutboxDao(),
+        reactionDao: FakeReactionDao = FakeReactionDao(),
         groupMemberDao: GroupMemberDao? = null,
         groupDeliveryDao: GroupDeliveryDao? = null,
         trustedPeers: Set<String> = emptySet(),
@@ -3197,7 +3255,7 @@ class RealFlashChatRepositoryTest {
         receiptDao = FakeReceiptDao(),
         draftDao = FakeDraftDao(),
         recentSearchDao = FakeRecentSearchDao(),
-        reactionDao = FakeReactionDao(),
+        reactionDao = reactionDao,
         groupMemberDao = groupMemberDao,
         groupDeliveryDao = groupDeliveryDao,
         isTrustedPeer = { it in trustedPeers || it == localDeviceId },

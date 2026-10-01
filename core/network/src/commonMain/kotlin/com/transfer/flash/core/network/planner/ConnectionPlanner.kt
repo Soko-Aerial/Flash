@@ -135,9 +135,14 @@ public class ConnectionPlanner(
     ): Plan {
         val candidates = ArrayList<Candidate>(sightings.size + gatewayHosts.size + sweepHosts.size)
         val seen = HashSet<String>()
+        // A device can be listed under several endpoints (discovery, a presence tip, a remembered
+        // route). Every distinct one is a candidate, in the caller's order: when the first is inside
+        // its suppression window the next is tried (ERROR-085 follow-up), and once one is dialed the
+        // device is in flight, so the others wait. Only an exact repeat of an endpoint is dropped.
+        val seenEndpoints = HashSet<EndpointKey>()
         for (s in sightings) {
             if (s.deviceId == localDeviceId || (allowed != null && s.deviceId !in allowed)) continue
-            if (!seen.add(s.deviceId)) continue
+            if (!seenEndpoints.add(EndpointKey(key = s.deviceId, host = s.host, port = s.port))) continue
             candidates += Candidate(
                 dial = Dial(key = s.deviceId, host = s.host, port = s.port, peerDeviceId = s.deviceId, name = s.name),
                 live = links.hasLiveSession(s.deviceId),

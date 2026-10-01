@@ -120,6 +120,7 @@ internal fun FlashGroupVideoSurfaces(
         FlashCallVideoSurface(
             track = localTrack,
             fit = CallVideoFit.Fit,
+            zOrderMediaOverlay = true,
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .statusBarsPadding()
@@ -241,7 +242,7 @@ private fun FlashGroupVideoTile(
 
 /** The status word under a participant's name, or null when there is nothing to say. */
 internal fun participantStatusLabel(participant: FlashCallParticipantUi): String? = when (participant.state) {
-    FlashCallParticipantState.INVITED -> "Invited"
+    FlashCallParticipantState.INVITED -> if (participant.reachable) "Invited" else "Not reachable yet"
     FlashCallParticipantState.CONNECTING -> "Connecting…"
     FlashCallParticipantState.CONNECTED -> when {
         participant.isMuted -> "Muted"

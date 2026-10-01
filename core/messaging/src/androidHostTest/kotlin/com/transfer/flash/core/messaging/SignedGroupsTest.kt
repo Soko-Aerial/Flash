@@ -264,6 +264,156 @@ class SignedGroupsTest {
         assertEquals("the roster label, not the name on the wire", "Bo", relayed.senderName)
     }
 
+    @Test
+    fun `sendGroupAttachment signs message and beginGroupAttachment propagates signature over wire in v2 group`() = runBlocking {
+        mesh("dev-a", "dev-b", "dev-c")
+        val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+        val aNode = nodes.getValue("dev-a")
+
+        aNode.repo.sendGroupAttachment(
+            conversationId = groupId,
+            messageId = "att-1",
+            transferId = "xfer-1",
+            fileName = "photo.jpg",
+            mimeType = "image/jpeg",
+            sizeBytes = 1024L,
+            localPath = "content://photo",
+        )
+        settle()
+
+        val stored = aNode.messageDao.getByLocalId("att-1")
+        assertNotNull("attachment row exists", stored)
+        assertNotNull("groupSig is signed for v2 group attachment", stored!!.groupSig)
+
+        val before = outbound.size
+        val sent = aNode.repo.beginGroupAttachment(
+            groupId = groupId,
+            recipientDeviceId = "dev-b",
+            messageId = "att-1",
+            transferId = "xfer-1",
+            wireFileId = "wire-1",
+            fileName = "photo.jpg",
+            mimeType = "image/jpeg",
+            sizeBytes = 1024L,
+        )
+        assertTrue(sent)
+        val mediaFrame = outbound.drop(before).map { it.frame }.filterIsInstance<GroupWireFrame.GroupMedia>().single()
+        assertEquals(stored.groupSig, mediaFrame.signature)
+        assertEquals(stored.sentAt, mediaFrame.sentAt)
+    }
+
+    @Test
+    fun `beginGroupAttachment before sendGroupAttachment in production order signs and matches stored message row`() = runBlocking {
+        mesh("dev-a", "dev-b", "dev-c")
+        val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+        val aNode = nodes.getValue("dev-a")
+        val bNode = nodes.getValue("dev-b")
+
+        val before = outbound.size
+        // In MainActivity.kt and DesktopShell.kt, beginGroupAttachment is called in a loop for each member first:
+        val sentB = aNode.repo.beginGroupAttachment(
+            groupId = groupId,
+            recipientDeviceId = "dev-b",
+            messageId = "att-prod-1",
+            transferId = "xfer-b-1",
+            wireFileId = "wire-prod-1",
+            fileName = "diagram.png",
+            mimeType = "image/png",
+            sizeBytes = 2048L,
+        )
+        val sentC = aNode.repo.beginGroupAttachment(
+            groupId = groupId,
+            recipientDeviceId = "dev-c",
+            messageId = "att-prod-1",
+            transferId = "xfer-c-1",
+            wireFileId = "wire-prod-1",
+            fileName = "diagram.png",
+            mimeType = "image/png",
+            sizeBytes = 2048L,
+        )
+        assertTrue(sentB)
+        assertTrue(sentC)
+
+        val frames = outbound.drop(before).map { it.frame }.filterIsInstance<GroupWireFrame.GroupMedia>()
+        assertEquals(2, frames.size)
+        val frameB = frames.first { it.transferId == "xfer-b-1" }
+        val frameC = frames.first { it.transferId == "xfer-c-1" }
+        assertNotNull("frame for dev-b carries v2 signature", frameB.signature)
+        assertEquals("both frames share the exact same signature", frameB.signature, frameC.signature)
+        assertEquals("both frames share the exact same sentAt timestamp", frameB.sentAt, frameC.sentAt)
+
+        // Then sendGroupAttachment is called afterwards to create the local sender bubble
+        aNode.repo.sendGroupAttachment(
+            conversationId = groupId,
+            messageId = "att-prod-1",
+            transferId = "att-prod-1",
+            fileName = "diagram.png",
+            mimeType = "image/png",
+            sizeBytes = 2048L,
+            localPath = "content://diagram",
+        )
+        settle()
+
+        val storedA = aNode.messageDao.getByLocalId("att-prod-1")
+        assertNotNull("sender row exists", storedA)
+        assertEquals("stored sender row matches wire signature", frameB.signature, storedA!!.groupSig)
+        assertEquals("stored sender row matches wire sentAt", frameB.sentAt, storedA.sentAt)
+
+        // Now deliver the wire frame to dev-b: it must be accepted and verified
+        deliver("dev-a", "dev-b", frameB)
+        val storedB = bNode.messageDao.getByLocalId("att-prod-1")
+        assertNotNull("recipient accepted and stored the attachment", storedB)
+        assertEquals("Ada", storedB!!.senderName)
+        assertEquals(frameB.signature, storedB.groupSig)
+    }
+
+    @Test
+    fun `inbound GroupMedia with invalid signature is dropped, honest signature accepted and author label verified`() = runBlocking {
+        mesh("dev-a", "dev-b", "dev-c")
+        val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+        val bNode = nodes.getValue("dev-b")
+        val cNode = nodes.getValue("dev-c")
+        val sentAt = System.currentTimeMillis()
+
+        // 1. Inbound GroupMedia with forged/invalid signature -> dropped
+        val forgedSig = GroupSigning(cryptos.getValue("dev-c")).signMessage(groupId, "att-forged", "dev-b", sentAt, null, null, "")
+        deliver("dev-b", "dev-c", GroupWireFrame.GroupMedia(
+            groupId = groupId,
+            messageId = "att-forged",
+            transferId = "xfer-forged",
+            wireFileId = "wire-forged",
+            from = "dev-b",
+            senderName = "Spoofed Name",
+            fileName = "doc.pdf",
+            mimeType = "application/pdf",
+            sizeBytes = 500L,
+            sentAt = sentAt,
+            signature = forgedSig,
+        ))
+        assertNull("forged media not stored", cNode.messageDao.getByLocalId("att-forged"))
+
+        // 2. Inbound GroupMedia with honest signature by dev-b -> accepted, signed roster label used
+        val honestSig = GroupSigning(cryptos.getValue("dev-b")).signMessage(groupId, "att-honest", "dev-b", sentAt, null, null, "")
+        deliver("dev-b", "dev-c", GroupWireFrame.GroupMedia(
+            groupId = groupId,
+            messageId = "att-honest",
+            transferId = "xfer-honest",
+            wireFileId = "wire-honest",
+            from = "dev-b",
+            senderName = "Ignored Wire Name",
+            fileName = "doc.pdf",
+            mimeType = "application/pdf",
+            sizeBytes = 500L,
+            sentAt = sentAt,
+            signature = honestSig,
+        ))
+        val accepted = cNode.messageDao.getByLocalId("att-honest")
+        assertNotNull("honest media stored", accepted)
+        assertEquals("dev-b", accepted!!.senderId)
+        assertEquals("Bo", accepted.senderName) // Roster signed label
+        assertEquals(honestSig, accepted.groupSig)
+    }
+
     // ------------------------------------------------------------------------------ membership
 
     @Test
@@ -984,6 +1134,64 @@ class SignedGroupsTest {
         assertTrue(b.isGroupCallPeer(groupId, "dev-a"))
         assertFalse("and the removed device is out of every call of the group", nodes.getValue("dev-c").repo.isGroupCallPeer(groupId, "dev-a"))
         assertFalse("a group nobody here knows has no call peers", b.isGroupCallPeer("g2-" + "0".repeat(32), "dev-a"))
+    }
+
+    // ------------------------------------------------------------------------------ call membership (ERROR-088)
+
+    @Test
+    fun `a vouched member this device is not paired with is in the call without a session and may be sent to only on the certified key`() = runBlocking {
+        vouchedTrust = true
+        unpair("dev-b", "dev-c")
+        mesh("dev-a", "dev-b", "dev-c")
+        val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+        val b = nodes.getValue("dev-b").repo
+
+        assertTrue("the owner introduced c, so c is in the call", b.isGroupCallMember(groupId, "dev-c"))
+        assertTrue("and a frame may go to a session presenting the certified key", b.isGroupCallPeer(groupId, "dev-c"))
+
+        // c is not connected yet: there is no session key to check
+        keyless += "dev-c"
+        assertTrue("a member with no session is still a member of the call", b.isGroupCallMember(groupId, "dev-c"))
+        assertFalse("but nothing may be sent to a connection that presents no key", b.isGroupCallPeer(groupId, "dev-c"))
+        keyless -= "dev-c"
+
+        // somebody else answers on c's address
+        presentedKey["dev-c"] = keyOf("dev-e")
+        assertTrue("membership is a roster fact, an impostor does not change it", b.isGroupCallMember(groupId, "dev-c"))
+        assertFalse("the live-key gate still refuses the impostor", b.isGroupCallPeer(groupId, "dev-c"))
+        presentedKey.remove("dev-c")
+        assertTrue(b.isGroupCallPeer(groupId, "dev-c"))
+    }
+
+    @Test
+    fun `only an active roster member is in the call - a paired stranger, a removed member and a member who left are not`() = runBlocking {
+        mesh("dev-a", "dev-b", "dev-c", "dev-d")
+        val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+        val b = nodes.getValue("dev-b").repo
+
+        assertTrue(b.isGroupCallMember(groupId, "dev-a"))
+        assertTrue(b.isGroupCallMember(groupId, "dev-c"))
+        assertFalse("paired with b but not on the roster", b.isGroupCallMember(groupId, "dev-d"))
+        assertFalse("a group nobody here knows has no call members", b.isGroupCallMember("g2-" + "0".repeat(32), "dev-a"))
+
+        nodes.getValue("dev-a").repo.removeGroupMember(groupId, "dev-c")
+        settle()
+        assertFalse("the owner removed c", b.isGroupCallMember(groupId, "dev-c"))
+        assertFalse("a device that is out of the group is in none of its calls", nodes.getValue("dev-c").repo.isGroupCallMember(groupId, "dev-a"))
+    }
+
+    @Test
+    fun `a member who left the group is not in its calls`() = runBlocking {
+        mesh("dev-a", "dev-b", "dev-c")
+        val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+        val b = nodes.getValue("dev-b").repo
+        assertTrue(b.isGroupCallMember(groupId, "dev-c"))
+
+        nodes.getValue("dev-c").repo.leaveGroup(groupId)
+        settle()
+
+        assertFalse(b.isGroupCallMember(groupId, "dev-c"))
+        assertFalse("and a member that left is in no call itself", nodes.getValue("dev-c").repo.isGroupCallMember(groupId, "dev-a"))
     }
 
     @Test

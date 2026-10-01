@@ -97,6 +97,24 @@ class GroupFrameCodecTest {
     }
 
     @Test
+    fun groupMediaFrameRoundTripsSignatureInV2() {
+        val frame = GroupWireFrame.GroupMedia(
+            groupId = "g-1",
+            messageId = "msg-1",
+            transferId = "t-1",
+            wireFileId = "wire-1",
+            from = "peer-a",
+            senderName = "Peer A",
+            fileName = "photo.jpg",
+            mimeType = "image/jpeg",
+            sizeBytes = 123456L,
+            sentAt = 42L,
+            signature = "sig-abc-123",
+        )
+        assertEquals(frame, GroupFrameCodec.decode(GroupFrameCodec.encode(frame)))
+    }
+
+    @Test
     fun deleteForEveryoneRoundTripsAsDistinctGroupAction() {
         val frame = GroupWireFrame.DeleteForEveryone(
             groupId = "g-1",

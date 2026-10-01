@@ -52,6 +52,7 @@ import com.transfer.flash.core.common.model.FlashPeerPresence
 import com.transfer.flash.core.messaging.model.FlashConversationUiState
 import com.transfer.flash.core.messaging.model.FlashFileTransferStatus
 import com.transfer.flash.core.messaging.model.FlashGroupMemberUi
+import com.transfer.flash.core.messaging.model.FlashGroupSyncUi
 import com.transfer.flash.core.messaging.model.FlashImageAttachmentUi
 import com.transfer.flash.core.messaging.model.FlashMessageInfoUi
 import com.transfer.flash.core.messaging.model.FlashMessageUi
@@ -585,18 +586,26 @@ fun FlashConversationScreen(
                                     },
                                 )
                             }
+                            var lastOngoingCall by remember { mutableStateOf<com.transfer.flash.core.messaging.model.FlashActiveGroupCallBarUi?>(null) }
+                            if (state.ongoingCall != null) {
+                                lastOngoingCall = state.ongoingCall
+                            }
                             // Ongoing group call banner — displayed when active call presence is detected.
                             AnimatedVisibility(
                                 visible = state.ongoingCall != null,
                                 enter = fadeIn(motion.tweenNormalSpec()),
                                 exit = fadeOut(motion.tweenFastSpec()),
                             ) {
-                                state.ongoingCall?.let { ongoing ->
+                                (state.ongoingCall ?: lastOngoingCall)?.let { ongoing ->
                                     FlashOngoingCallBanner(
                                         ongoingCall = ongoing,
                                         onJoin = { onJoinGroupCall(ongoing.callId, ongoing.video) },
                                     )
                                 }
+                            }
+                            var lastGroupSync by remember { mutableStateOf<FlashGroupSyncUi?>(null) }
+                            if (state.groupSync != null) {
+                                lastGroupSync = state.groupSync
                             }
                             // UI-052: earlier messages of this group are arriving (catch-up). Shown only while true.
                             AnimatedVisibility(
@@ -604,7 +613,7 @@ fun FlashConversationScreen(
                                 enter = fadeIn(motion.tweenNormalSpec()),
                                 exit = fadeOut(motion.tweenFastSpec()),
                             ) {
-                                state.groupSync?.let { sync -> FlashGroupSyncBanner(sync = sync) }
+                                (state.groupSync ?: lastGroupSync)?.let { sync -> FlashGroupSyncBanner(sync = sync) }
                             }
                         }
                     }

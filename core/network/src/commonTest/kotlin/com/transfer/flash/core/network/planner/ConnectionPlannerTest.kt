@@ -359,4 +359,61 @@ class ConnectionPlannerTest {
         // But ep2 at t=1050 is still within its window (1050 - 200 = 850 < 1000).
         assertEquals(emptyList(), p.plan(1_050, listOf(ep2), links).dials)
     }
+
+    // ERROR-085 follow-up: one device listed under two endpoints in the same sighting list (discovery
+    // plus a presence tip or a remembered route). Before, only the first was ever a candidate, so
+    // a suppressed first endpoint hid a second one that might work.
+
+    @Test
+    fun `a second endpoint of the same peer is dialed while the first is suppressed`() {
+        val p = planner(suppress = 1_000L)
+        val ep1 = Sighting("c", "10.13.65.211", 45822, "P-c")
+        val ep2 = Sighting("c", "192.168.1.123", 45822, "P-c")
+        val both = listOf(ep1, ep2)
+
+        assertEquals("10.13.65.211", p.plan(0, both, links).dials.single().host)
+        p.dialFinished("c")
+
+        // ep1 is inside its window: the same list now yields ep2 instead of nothing.
+        assertEquals("192.168.1.123", p.plan(200, both, links).dials.single().host)
+        p.dialFinished("c")
+
+        // Both inside their windows: no ping-pong.
+        assertEquals(emptyList(), p.plan(400, both, links).dials)
+
+        // ep1's window ends first (0 + 1000), ep2's still runs (200 + 1000).
+        assertEquals("10.13.65.211", p.plan(1_050, both, links).dials.single().host)
+    }
+
+    @Test
+    fun `a peer with two endpoints has one dial in flight, not two`() {
+        val p = planner()
+        val both = listOf(Sighting("c", "10.13.65.211", 45822, "P-c"), Sighting("c", "192.168.1.123", 45822, "P-c"))
+
+        assertEquals(1, p.plan(0, both, links).dials.size)
+        // Still in flight: neither endpoint is handed out again, however often the sweep runs.
+        assertEquals(emptyList(), p.plan(5_000, both, links).dials)
+    }
+
+    @Test
+    fun `a live session clears the suppression of every endpoint of the peer`() {
+        val p = planner(suppress = 1_000L)
+        val both = listOf(Sighting("c", "10.13.65.211", 45822, "P-c"), Sighting("c", "192.168.1.123", 45822, "P-c"))
+        p.plan(0, both, links); p.dialFinished("c")
+        p.plan(100, both, links); p.dialFinished("c")
+
+        links.live += "c"
+        assertEquals(emptyList(), p.plan(200, both, links).dials)
+        links.live -= "c"
+
+        // The session dropped: the peer is dialed at once again, the old windows forgotten.
+        assertEquals(1, p.plan(300, both, links).dials.size)
+    }
+
+    @Test
+    fun `an exact repeat of an endpoint is still one candidate`() {
+        val p = planner()
+        val ep = Sighting("c", "10.13.65.211", 45822, "P-c")
+        assertEquals(1, p.plan(0, listOf(ep, ep, ep.copy(name = "other")), links).dials.size)
+    }
 }

@@ -1,7 +1,6 @@
 package com.transfer.flash.core.engine
 
 import com.transfer.flash.core.calling.FlashCalling
-import com.transfer.flash.core.calling.model.FlashCallState
 import com.transfer.flash.core.discovery.FlashDiscovery
 import com.transfer.flash.core.messaging.FlashChatRepository
 import com.transfer.flash.core.network.FlashNetwork
@@ -83,6 +82,12 @@ public interface FlashEngine : Closeable {
      * [close] calls this, so a host only needs it to stop PTT while keeping the engine alive.
      */
     public fun detachPtt()
+
+    /**
+     * Updates the local device friendly name across the network transport, chat repository, and discovery.
+     * Returns false when the name is blank or the operation fails.
+     */
+    public fun updateFriendlyName(name: String): Boolean = false
 
     /**
      * The attached voice/video calling engine (ADR-025), or null when none is attached.
@@ -182,6 +187,7 @@ public class DefaultFlashEngine(
         isCallActive: () -> Boolean,
         audioRateHz: () -> Int,
     ) -> FlashPtt)? = null,
+    private val onUpdateFriendlyName: ((String) -> Boolean)? = null,
 ) : FlashEngine {
     private val closed = java.util.concurrent.atomic.AtomicBoolean(false)
     private val pttLock = Any()
@@ -219,15 +225,16 @@ public class DefaultFlashEngine(
     @Volatile
     private var callingSignalingRestored: ((peerId: String) -> Unit)? = null
 
-    /** The peer of the call in progress, captured like the seams above (PC5: ECO keeps it). */
+    /** The devices the call in progress needs, captured like the seams above (PC5: ECO keeps them). */
     @Volatile
-    private var callingBusyPeer: (() -> String?)? = null
+    private var callingBusyPeers: (() -> Set<String>)? = null
 
     /**
-     * The peer of the attached engine's call in progress, or null. Safe on a consumer without
+     * The devices the attached engine's call in progress needs a session with (the peer of a 1:1
+     * call, the participants of a group call), or empty. Safe on a consumer without
      * `:core:calling` classes for the same reason as [onInboundCallText].
      */
-    internal fun busyCallPeerId(): String? = callingBusyPeer?.invoke()
+    internal fun busyCallPeerIds(): Set<String> = callingBusyPeers?.invoke().orEmpty()
 
     override val calls: FlashCalling? get() = attachedCalling
 
@@ -266,9 +273,7 @@ public class DefaultFlashEngine(
             callingInbound = { peerId, text -> engine.onInboundText(peerId, text) }
             callingSignalingLost = { peerId -> engine.onSignalingLost(peerId) }
             callingSignalingRestored = { peerId -> engine.onSignalingRestored(peerId) }
-            callingBusyPeer = {
-                engine.activeCall.value?.takeIf { it.state != FlashCallState.ENDED }?.peerId
-            }
+            callingBusyPeers = { engine.activeCall.value?.busyPeerIds.orEmpty() }
         }
     }
 
@@ -278,7 +283,7 @@ public class DefaultFlashEngine(
             callingInbound = null
             callingSignalingLost = null
             callingSignalingRestored = null
-            callingBusyPeer = null
+            callingBusyPeers = null
         }
         // No hangUp() here: the engine is the host's (media, foreground service, audio route), and
         // FlashCalling exposes no shutdown. See the interface KDoc — detaching is not hanging up.
@@ -294,6 +299,9 @@ public class DefaultFlashEngine(
     override fun onCallSignalingRestored(peerDeviceId: String) {
         callingSignalingRestored?.invoke(peerDeviceId)
     }
+
+    override fun updateFriendlyName(name: String): Boolean =
+        onUpdateFriendlyName?.invoke(name) ?: false
 
     override fun close() {
         if (closed.compareAndSet(false, true)) {
