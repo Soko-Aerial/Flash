@@ -56,8 +56,11 @@ import kotlinx.coroutines.flow.StateFlow
  *
  * Every tile is a direct child of one [Layout], keyed by device id, so a participant's renderer stays
  * the same composable instance when others join or leave and its tile moves to another row. Each
- * tile always composes its [FlashCallVideoSurface] (the track may be null) and covers it with the
- * avatar while there is no video, so a renegotiated track only re-binds the sink.
+ * tile that has a picture (granted, or an older client that always sends) composes its
+ * [FlashCallVideoSurface], whose track may be null for a moment, so a renegotiated track only
+ * re-binds the sink. A tile with no picture shows only the avatar and composes no surface at all:
+ * on Android every surface is a native view with its own renderer thread and compositor layer, and
+ * a call of eight with one watched peer would otherwise carry seven of them for nothing.
  */
 @Composable
 internal fun FlashGroupVideoSurfaces(
@@ -191,7 +194,11 @@ private fun FlashGroupVideoTile(
             )
             .semantics { contentDescription = description },
     ) {
-        FlashCallVideoSurface(track = track, fit = CallVideoFit.Balanced, modifier = Modifier.fillMaxSize())
+        // Keyed on the grant, not on the track: the renderer is released only when the view is discarded (a track
+        // change must never release it), and a grant that is lost really does discard it.
+        if (participant.video.hasPicture()) {
+            FlashCallVideoSurface(track = track, fit = CallVideoFit.Balanced, modifier = Modifier.fillMaxSize())
+        }
         if (!showsVideo) {
             Box(
                 modifier = Modifier.fillMaxSize().background(EMPTY_TILE),
@@ -241,7 +248,7 @@ private fun FlashGroupVideoTile(
 }
 
 /** The status word under a participant's name, or null when there is nothing to say. */
-internal fun participantStatusLabel(participant: FlashCallParticipantUi): String? = when (participant.state) {
+internal fun participantStatusLabel(participant: FlashCallParticipantUi): String? = participant.note ?: when (participant.state) {
     FlashCallParticipantState.INVITED -> if (participant.reachable) "Invited" else "Not reachable yet"
     FlashCallParticipantState.CONNECTING -> "Connecting…"
     FlashCallParticipantState.CONNECTED -> when {

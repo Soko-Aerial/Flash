@@ -488,6 +488,11 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+/** Toast when a group call could not be placed at all (ERROR-095); a call that starts but leaves someone out names them on its screen. */
+private const val GROUP_CALL_NOT_STARTED: String =
+    "Couldn't start the group call: none of its members can be called from this device " +
+        "(you must be paired with them, or a call is already running)"
+
 private val bottomNavTabs = listOf(
     FlashBottomNavItem(FlashDestination.ChatList, FlashIcons.Chat, "Chats"),
     FlashBottomNavItem(FlashDestination.Transfers, FlashIcons.Transfer, "Transfers"),
@@ -1683,12 +1688,19 @@ private fun FlashShell(
                                 } else {
                                     chatRepository.groupMembers(peerId).map { it.id }
                                 }
-                                engine.calls?.startGroupCall(
+                                val started = engine.calls?.startGroupCall(
                                     groupId = peerId,
                                     groupName = conversationState.header.title,
                                     memberIds = memberIds,
                                     video = false,
                                 )
+                                if (started == false) {
+                                    // ERROR-095: the result used to be dropped, so a call that could not be placed
+                                    // (no member this device may call, or a call already live) looked like a dead button.
+                                    withContext(Dispatchers.Main) {
+                                        Toast.makeText(callCtx, GROUP_CALL_NOT_STARTED, Toast.LENGTH_LONG).show()
+                                    }
+                                }
                             } else {
                                 engine.calls?.startCall(peerId, conversationState.header.title, video = false)
                             }
@@ -1717,12 +1729,19 @@ private fun FlashShell(
                                 } else {
                                     chatRepository.groupMembers(peerId).map { it.id }
                                 }
-                                engine.calls?.startGroupCall(
+                                val started = engine.calls?.startGroupCall(
                                     groupId = peerId,
                                     groupName = conversationState.header.title,
                                     memberIds = memberIds,
                                     video = true,
                                 )
+                                if (started == false) {
+                                    // ERROR-095: the result used to be dropped, so a call that could not be placed
+                                    // (no member this device may call, or a call already live) looked like a dead button.
+                                    withContext(Dispatchers.Main) {
+                                        Toast.makeText(callCtx, GROUP_CALL_NOT_STARTED, Toast.LENGTH_LONG).show()
+                                    }
+                                }
                             } else {
                                 engine.calls?.startCall(peerId, conversationState.header.title, video = true)
                             }
@@ -2335,10 +2354,13 @@ private fun FlashShell(
                             chatRepository.openConversation(groupId)
                             nav.navigate(FlashDestination.Conversation, conversationId = groupId)
                         } else {
+                            // The repository's own reason when it has one (ERROR-095: a member that is offline).
+                            val reason = ((result as? com.transfer.flash.core.common.result.FlashResult.Failure)?.error
+                                as? com.transfer.flash.core.common.result.FlashError.Unknown)?.message
                             Toast.makeText(
                                 toastContext,
-                                "Couldn't create the group — check that every member is paired",
-                                Toast.LENGTH_SHORT,
+                                reason ?: "Couldn't create the group — check that every member is paired",
+                                Toast.LENGTH_LONG,
                             ).show()
                         }
                     }

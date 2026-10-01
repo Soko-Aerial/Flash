@@ -1,5 +1,264 @@
 # Error Log
 
+## ERROR-097 — Group video audit (another AI's report, checked claim by claim): nine real defects fixed in code, one ordering defect hardened, six claims wrong, by design, not applied or not verified
+
+### Date
+2026-10-01 (the owner pasted the report "Comprehensive Architectural Audit: Group Video Calling, Network Congestion, Low-End Device
+Constraints, and Video Subscription Architecture" and asked "check this audit and fix them"). Every claim was checked against the code, its
+callers, its prior state and the project's invariants before anything was changed. Fixed in code, unit-tested and mutation-checked,
+**NOT device-verified**; status stays OPEN until `GVID-01`…`GVID-07`.
+
+### Area
+Group calls / request-based video (`GroupVideoRouter.kt`, `GroupVideoTuning.kt`, `FlashGroupCallSession.kt`, `CallCoordinator.kt`,
+`ui/callui/.../FlashGroupVideoGrid.kt`)
+
+### Symptoms (as the report claimed them)
+Camera "off" still encoding for existing watchers; a request or its answer lost with nothing asking again; a pinned peer that denies leaves a
+fallback stream decoding for nobody; a muted talker evicting watchers; a floor that pins small copies; no voice protection in the group; a
+native surface composed for every tile; a leg stuck in `Disconnected`.
+
+### Environment
+Code audit only. No device, no log. Unit tests on the JVM host (`:core:calling:testAndroidHostTest`, `:ui:callui:jvmTest`).
+
+### Verdict on every claim
+| # | Claim | Verdict | What was done |
+|---|---|---|---|
+| 1 | `setCameraOff(true)` returns nothing, so existing watchers keep getting video | **REAL** | `setCameraOff(true)` now denies every current watcher (`CAMERA_OFF`), clears them, adjusts the level and returns the sending changes; turning the camera on announces room to those turned down. Test: camera off with watchers. |
+| 2 | `onRequest` tests `existing` before `cameraOff` | **REAL ordering, unreachable after #1** | The camera-off case now comes first (defence). With #1 no watcher can exist while the camera is off, so no test can tell the old order from the new one (a reorder mutant is equivalent); not claimed as tested. |
+| 3 | Reconnect hangs because the router never re-requests | **MISREPORTED** | By design and documented in the router: a dropped connection is not a release, grants survive a rebuilt leg, and the sender re-tunes on `PeerConnectionState.Connected`. No change. The real gap next to it is #4. |
+| 4 | No retry of a dropped request or answer | **REAL** | A request still unanswered after 5 s is sent again under a new sequence number (an answer to the old one is ignored); a granted request is never repeated. Tests: retry after the window and not before; no repeat once granted. |
+| 5 | A request that arrives after its sender left adds a zombie watcher | **REAL (narrow)** | The session accepted a `VideoRequest` whenever a leg object existed, including a `LEFT` one. It now requires a non-`LEFT` leg. Test: departed peer not granted, live peer granted. |
+| 6 | Compact mode (room for one video) keeps a ghost stream when the pin is denied | **REAL** | With `receive <= 1` and the pinned peer in `blocked`, nobody else is asked. With room for two, the second video still fills the other slot. Tests for both. |
+| 7 | A muted local talker evicts watchers | **REAL** | `isLocalTalker(micMuted, level)`: a muted microphone is never a talker. Test. |
+| 8 | Legacy peers bypass the send budget | **BY DESIGN** | An old client never asks and is always sent the full profile (router doc, compatibility rule). Not changed. |
+| 9 | The mesh has no congestion control | **PARTLY REAL** | WebRTC's own bandwidth estimator runs on every connection, so "none" is overstated. What was missing is the voice-priority governor the 1:1 call has (D8). Each group leg now has its own `CallQualityGovernor`; a bad link costs that leg its video only, applies to its sender only, and the "Prioritise voice quality" setting (default on) turns it off. Tests: per-leg isolation, recovery after 5 clean samples, setting off resets to full. |
+| 10 | The `minBitrateBps` floor (HIGH 600, MEDIUM 250 kbps) pins small copies | **REAL for small copies; "remove the floor" not applied** | A 600 kbps floor on a 360p copy (ceiling 450) held the encoder constant. The floor is now at most half the copy's ceiling and is dropped on every concession rung (as in the 1:1 call). Not removed: no measurement says it should go (`MEAS-09`). Test: floor below ceiling; kept where there is room; dropped on every rung. |
+| 11 | The CPU overload threshold is dead on multi-core; use 120 % of one core | **NOT APPLIED** | The threshold is 40 % of all cores for 30 s ("Provisional, G0 replaces it"). The proposed 120 % of one core would trigger on a healthy desktop (the 2-party desktop call already reads about 179 % of one core, 22 % of all cores). The real question is what a bad value is: needs the G0 measurement (`MEAS-05`). |
+| 12 | The software-decode warning is unreachable on LOW | **BY DESIGN** | It needs two or more videos arriving (HIGH and the desktop decode in software as a matter of course). A LOW device receives one, and "Show fewer" cannot help at one video. No change. |
+| 13 | The LOW tier sends to 2 watchers at 360p | **NOT CHANGED, owner decision + unmeasured** | The 2.4 GHz split budget doubles capacity at 360p (owner decision Q8). The claim that a second hardware encoder instance is the problem is unmeasured (`MEAS-03`). |
+| 14 | A `SurfaceViewRenderer` is composed for every tile | **REAL as a cost (size unmeasured)** | A tile composes a surface only while it has a picture (granted, or an older client); the others show the avatar only. Keyed on the grant, not on the track, so a renegotiated track still only re-binds the sink and the renderer-lifetime rule holds (released only when the view is discarded). Surface count is owed on a device (`GVID-04`). No unit test (a Compose layout, see Verification). |
+| 15 | Desktop Skia conversion runs for occluded tiles | **NOT VERIFIED** | Not reproduced and not measured. A tile with no grant now has no surface and no frames. Whether a granted but occluded tile still converts frames was not investigated. |
+| 16 | A leg stays in `PeerConnectionState.Disconnected` | **REAL** | The group only recovered from `Failed`. The offerer now also rebuilds a leg still `Disconnected` after 10 s (the 1:1 call has had this since ERROR-033; a Wi-Fi roam leaves ICE no candidates to repair). Not when signaling to that peer is down (`onSignalingRestored` owns that). Not unit-testable (rebuilding needs a native PeerConnection): device check `GVID-06`. |
+
+### Root cause
+Not one cause: the G3 request protocol was written for the happy path (peers that answer, stay, and keep their camera on), and the group
+session reused the 1:1 call's encoder numbers without its protection (floor sized for a full-height stream, no voice priority, no
+`Disconnected` recovery).
+
+### Failed attempts
+None. Considered and **not** built: removing the floor outright (audit P2: no measurement), the 120 %-of-one-core CPU metric (would
+false-trigger), a shared governor for the whole call (the legs are separate links with separate bandwidth estimates), and any change to
+LOW-tier capacity (owner decision Q8, unmeasured).
+
+### Working fix
+See the table. New code: `GroupVideoTuning.kt` (`groupVideoTuning`, `isLocalTalker`), per-leg `governor` / `concession` / loss baseline /
+`signalingLost` on `GroupLeg`, `applyVoicePriority`, `DISCONNECTED_REBUILD_AFTER_MS = 10 s`, `GroupVideoRouter(requestRetryMs = 5 s)`,
+`prioritiseVoice` passed from `CallCoordinator` to the three group sessions. No wire change.
+
+### Verification
+- Unit tests (new): `GroupVideoRouterTest` (5 new), `GroupVideoTuningTest` (7), `FlashGroupCallVideoAuditTest` (4).
+- Mutation-checked: see the progress log entry for the exact count and which tests caught which mutant.
+- The Compose change (#14) has no unit test: the grid is a `Layout` of native surfaces and the repository has no Compose UI test for it. It
+  is a one-line condition on `hasPicture()`; the device count `GVID-04` is what proves it.
+- **No device was used.** Nothing here is device-verified.
+
+### Related files
+- `core/calling/src/commonMain/kotlin/com/transfer/flash/core/calling/GroupVideoRouter.kt`
+- `core/calling/src/commonMain/kotlin/com/transfer/flash/core/calling/GroupVideoTuning.kt` (new)
+- `core/calling/src/commonMain/kotlin/com/transfer/flash/core/calling/FlashGroupCallSession.kt`
+- `core/calling/src/commonMain/kotlin/com/transfer/flash/core/calling/CallCoordinator.kt`
+- `ui/callui/src/commonMain/kotlin/com/transfer/flash/ui/calling/FlashGroupVideoGrid.kt`
+- `docs/decisions.md` (ADR-066), `docs/testing/TEST-BACKLOG.md` section 4n
+
+### Status
+OPEN (fixed in code, awaiting `GVID-01`…`GVID-07`; the measurement items `MEAS-09`, `MEAS-05` and `MEAS-03` are separate and do not block it)
+
+## ERROR-096 — A member who joins a group call late is not connected to a member who joined earlier: the lower-id device waits for an offer that is never sent
+
+### Date
+2026-10-01 (found from the owner's Android logcat of call `2e1ebc6e` plus `~/.flash/desktop.log`; fixed in code the same day, unit-tested
+and mutation-checked, **NOT device-verified**; status stays OPEN until `GCALL-15`…`GCALL-17`). The owner's words: "some devices are not
+registering, some are not connecting, the coordination is messed up" (the sentence was cut off after "and also can").
+
+### Area
+Group calls / mesh bootstrap (`core/calling/.../FlashGroupCallSession.kt`: `accept`, `armPresenceAnnouncement`, `onInboundFrame`)
+
+### Symptoms
+- A three-device call (caller `15590fd6` "Gazelle", Android `a6400328` "Ocelot", Windows desktop `d2b2daa2`): both phones connected to each
+  other, the desktop joined 27 s later and connected to the caller only. The Android's leg to the desktop stayed `CONNECTING` for the
+  rest of the call (13:23:03 to 13:23:30) and the desktop's own leg list was `legs=[15590fd6:CONNECTED#1]` the whole time.
+- No error anywhere. Both sides kept receiving each other's `GroupPresence`, so nothing looked broken to the pruning logic.
+- On the Android↔caller leg no video moved in either direction (`vin 0.0fps`, `vout active=false`, `receive={}`, `sending={}`) while
+  concealed audio samples grew.
+
+### Environment
+Android phone `a6400328` (Transsion handset, pid 15949, 192.168.1.100) and Windows desktop `d2b2daa2` on one 5 GHz LAN; the caller's own
+logcat was **not** captured. Group `g2-66a22d4be87184fba575ce798542442f` (v2, signed). Members `63abef69` (192.168.1.114) and `5e8e2183`
+(192.168.1.129) were unreachable for the whole call and were re-dialled repeatedly.
+
+### Error
+No exception. The two logs together:
+```text
+Android 13:23:03.762  rx from=d2b2daa2 leg=none GroupPresence(...)
+Android 13:23:03.871  rx from=d2b2daa2 via=15590fd6 leg=none GroupJoin(...)      <- relayed by the caller
+Android 13:23:03.891  Leg d2b2daa2 pc#1 created role=answerer
+Android 13:23:07.761 ... 13:23:27.778  rx from=d2b2daa2 leg=CONNECTING GroupPresence   (every 4 s, never an offer)
+desktop 13:23:04.307 ... Call sendFrame action=GroupPresence peer=a6400328 (hasSession=true)   (every 4 s)
+desktop legs=[15590fd6:CONNECTED#1]                                                             (no leg for a6400328)
+```
+
+### Root cause
+**Proven from the two logs and the code:**
+1. Glare rule: the **higher** device id offers (`ensureLegConnected`). `d2b2daa2 > a6400328`, so the desktop must offer to the Android, and
+   the Android only answers.
+2. A device that accepts a ringing group call tells **only the inviter** (`GroupAccept`). Everyone else learns about it through the inviter's
+   relayed `GroupJoin`, once. The relay reached the Android for the desktop's join (line above) but the desktop **never received a relay for
+   the Android's earlier join**, so it built no leg to the Android and, as the offerer, never offered.
+3. The desktop ignored the Android's presence because a presence from a member with no leg was dropped (no leg to attach it to), and the
+   Android's answerer leg waited for an offer for ever. `pruneUnansweredLegs` does not fire because a presence counts as a sign of life.
+4. This is old behaviour (`startIncomingRinging` creates a leg only for the inviter; the others are held for presence only), **not** a
+   regression from ERROR-088.
+
+**Not proven (do not treat as fixed):**
+- **Why the caller's relay of the Android's join did not reach the desktop.** Needs the caller's logcat.
+- **Why the Android sent no `GroupPresence` and no video request between 13:22:36 and 13:23:30.** The Android log has no `Call sendFrame
+  action=GroupPresence` line at all (the hangups are logged the same way), and no refusal line, no exception. `accept()` arms the
+  presence loop and the loop sends every 4 s, so something between the loop and the socket withheld it; a refusal logged *before* the
+  captured window (`logRefusal` writes the same refusal at most once per 60 s) would fit but is unverified. Because of this the
+  Android↔caller leg exchanged no video. Needs a capture that starts before the accept.
+- Two members (`63abef69`, `5e8e2183`) were offline the whole call. They cost dial attempts but nothing in the logs shows them causing the
+  failure.
+
+### Failed attempts
+None yet; nothing was tried and rejected. (Considered and not built, ADR-065: a new `GroupRoster` wire frame, and re-relaying joins on every
+presence.)
+
+### Working fix (2026-10-01, unit-tested + mutation-checked, not device-verified)
+No wire change; all three parts reuse existing frames.
+1. **Accepting tells everyone the call was offered to.** `accept()` sends `GroupAccept` to the inviter as before, then directly to every
+   other member in `announceMembers` (`announceAcceptToOtherMembers`), once each. A receiver with no leg builds one and, if it is the
+   offerer, offers.
+2. **A presence from a member with no leg adopts it** once this device is in the call (`adoptMemberInCall`): media acquired, call state
+   ACTIVE / CONNECTING / DIALING, the frame is the peer's own (not relayed), and the call is not full (a full call still turns the member
+   away). While ringing, relayed, or full, no leg is added.
+3. **An answerer leg that gets no offer says so.** After 8 s (`OFFER_NUDGE_AFTER_MS`) in CONNECTING with no remote description, and only on
+   the answerer side (lower id), the presence loop sends `GroupAccept` straight to the peer, again every 8 s, at most 3 times
+   (`MAX_OFFER_NUDGES`). The peer builds the missing leg, re-sends a young pending offer, or rebuilds an older leg, so repeats escalate.
+
+### Not fixed
+- The two unproven items above.
+- A leg that fails for a different reason (ICE, media) is still handled by the existing connect deadline (45 s), not by this.
+- Group call log rows (ERROR-086 "not done").
+
+### Verification
+- Unit (`FlashGroupCallReachTest`, 10 tests in the class, 184 in `:core:calling`, 0 failures): late presence adopts the leg; no leg while
+  ringing / relayed / full; accepting tells every other member once and nobody twice; the answerer nudges, escalates and stops after
+  three; the offerer never nudges.
+- Mutation-checked 2026-10-01 (8 mutants in 6 runs, every one failed the test written for it): presence ignored, accept fan-out removed,
+  nudge disabled, nudge on the offerer side, full-call guard removed, ringing guard removed, relayed guard removed, unbounded nudges.
+- `:ui:callui:jvmTest`, `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm` green.
+- Device: owed, `GCALL-15`…`GCALL-17` in `docs/testing/TEST-BACKLOG.md` §4m.
+
+### Related files
+- `core/calling/src/commonMain/.../FlashGroupCallSession.kt`
+- `core/calling/src/androidHostTest/.../FlashGroupCallReachTest.kt`
+- `docs/decisions.md` ADR-065, ERROR-088 / ADR-061, ERROR-095 / ADR-064
+
+### Status
+OPEN (fixed in code, not device-verified; two causes unproven)
+
+---
+
+## ERROR-095 — A group call started by a device that is not paired with every member leaves those members out, silently, and a "legacy" group can never include them
+
+### Date
+2026-10-01 (reported by the owner: "if the one starting a group call is not paired with other users in a group, if he calls it doesn't
+work, so do the research and see why and fix it, be sure"; investigated from the real desktop log, fixed in code the same day,
+unit-tested, **NOT device-verified**; status stays OPEN until `GCALL-11`…`GCALL-14`)
+
+### Area
+Group calls / group trust / group creation (`core/calling/.../CallCoordinator.kt`, `FlashGroupCallSession.kt`,
+`core/messaging/.../RealFlashChatRepository.kt` `createGroupLocked`, `MainActivity.kt` / `DesktopShell.kt`, `ui/callui` participant tile)
+
+### Symptoms
+- A group call placed by a member who is not paired with some of the others rings only the members the caller is paired with. The
+  members it is not paired with get no ring and no "ongoing call" banner, even though they are in the group.
+- The caller sees nothing wrong: the call opens, the left-out members are simply not on the screen, and the Android host ignores the
+  result of `startGroupCall`, so a call that could not be placed at all looks like a dead button.
+- One of the members that **was** called (Gazelle) declined within 140 ms, with no log line on the declining side and no reason on the
+  wire.
+
+### Environment
+Windows desktop, `~/.flash/desktop.log` of the failing call (overwritten at every launch; copy it before the next start). No log from the
+phones. Which phone builds were running is not known.
+
+### Error
+No error is raised. The caller's log holds, for the call:
+```text
+GROUP_CALL: Group call start group=<uuid>: member <Quokka> left out (not an active roster member this device trusts or was introduced to)
+```
+and `Peer <Gazelle> left group call <id> (declined)` 140 ms after the invite.
+
+### Root cause
+Established from the log plus the code:
+1. **The group is a legacy group** (`groupId` is a UUID, not `g2-…`). A legacy group has an unsigned roster and no vouching, so the only
+   trust a device has for a member is "I am paired with it" (`isGroupCallMember` = active roster row AND (paired OR vouched roster
+   key); the second half exists only in a `g2-` group). The caller is not paired with Quokka, so `callMembers` leaves Quokka out.
+2. **The leaving-out was invisible.** One log line, no UI, and the host dropped the Boolean result.
+3. **No other path can reach Quokka.** The invite carries the caller's already-filtered member list, so the members that are paired
+   with Quokka never learn Quokka was meant to be called, and ERROR-088's "reach them through another participant" relay has nothing
+   to relay.
+4. **Why the group is legacy (likely, not proven):** `createGroupLocked` made a group v2 only when every invitee reported
+   `groupProtocol >= 2` on a **live session**; `peerGroupProtocol` returns 1 for a device with no session. So creating a group while
+   any member was offline (two of the members are offline in the log: no session, not discovered) silently produced a legacy group,
+   permanently. The creation screen said nothing.
+5. **The 140 ms decline (cause not proven):** the only instant declines in `CallCoordinator.onInboundText` are the two "busy" ones and
+   the untrusted one. The "busy" paths never cleared an **ended group session still holding the slot** (ERROR-086's zombie): the start
+   paths call `clearEndedGroupSession()`, the inbound path did not, so a device whose previous call ended without `onEnded` answered
+   every group invite "busy" until the app was restarted. The busy declines wrote no log line, so the report cannot tell which of the
+   three it was.
+
+### Failed attempts
+None. Considered and rejected (ADR-064): trusting an unpaired legacy member because the roster lists it (would hand call media and
+presence to anyone who can forge a legacy roster, ERROR-082), and building a call leg to a member the caller has no trust path to.
+
+### Working fix (2026-10-01, unit-tested + mutation-checked, not device-verified)
+1. **No silent legacy group.** `createGroupLocked`: when this device can sign, an invitee on a live session that reports the old level
+   still yields a legacy group (logged `Group created as legacy: [...]`), but an invitee with **no live session** (so its level is
+   unknown) now fails creation naming it: "Wait until X show as online, then try again. A group made while someone is offline can't
+   include them in calls." Both hosts show the repository's reason (it was a generic "check that every member is paired").
+2. **The caller sees who is missing.** `CallCoordinator.callMembers` returns the callable members **and** the members it left out with a
+   reason; `startOutgoing(…, unavailable)` shows each as a tile "Not paired with you" (`FlashCallParticipantUi.note`), never a leg, never
+   sent a frame; a member that later joins through someone else shows as itself. Android toasts when a group call could not be placed
+   at all.
+3. **The zombie.** `onInboundText` now clears an ended group session before it decides "busy", and both busy declines log why.
+4. **Diagnosable next time.** The two busy declines write a `GROUP_CALL` line, the left-out members get a summary line (`N member(s)
+   callable, M left out`), and a group made legacy writes `Group created as legacy: [...]` under `CHAT`.
+
+### Not fixed (by design, see ADR-064)
+- An **existing legacy group** still cannot call a member the caller is not paired with. Make a new group (a v2 `g2-…` group) from a
+  device paired with every member, while every member is online and on a build with signed groups ("Continue in a new group" does the
+  same from the old one).
+- A decline carries no reason on the wire (the caller sees "Left"); a busy device is only visible in the callee's log.
+- Why Gazelle declined in 140 ms is still unknown: capture `GROUP_CALL` lines from the callee (`GCALL-12`).
+
+### Verification
+- Unit: `CallCoordinatorGroupEndTest` (zombie slot + left-out reason), `FlashGroupCallReachTest` (unavailable tile, no frame, no leg, joins
+  as itself), `FlashGroupVideoGridTest` (label), `SignedGroupsTest` (offline invitee does not make a legacy group).
+- Device: owed, `GCALL-11`…`GCALL-14` in `docs/testing/TEST-BACKLOG.md` §4l.
+
+### Related files
+- `core/calling/src/commonMain/.../CallCoordinator.kt`, `FlashGroupCallSession.kt`, `model/FlashCallModels.kt`
+- `core/messaging/src/commonMain/.../RealFlashChatRepository.kt`
+- `ui/callui/src/commonMain/.../FlashGroupVideoGrid.kt`
+- `app/.../MainActivity.kt`, `desktop/.../DesktopShell.kt`
+- `docs/decisions.md` ADR-064, ERROR-088 / ADR-061, ERROR-086 / ADR-060
+
+### Status
+OPEN (fixed in code, not device-verified)
+
+---
+
 ## ERROR-094 — "Delete for everyone" and reactions are one best-effort send, and a delete leaves the text in the database
 
 ### Date

@@ -193,7 +193,8 @@ public class CallCoordinator(
     ): Boolean {
         clearEndedGroupSession()
         if (currentSession != null || currentGroupSession != null) return false // one call at a time
-        val members = callMembers(groupId, memberIds, "start")
+        val callable = callMembers(groupId, memberIds, "start")
+        val members = callable.members
         if (members.isEmpty()) {
             FlashLog.w("GROUP_CALL", "Group call refused: group=$groupId has no member this device may call (${memberIds.size} listed)")
             return false
@@ -219,10 +220,11 @@ public class CallCoordinator(
             peerNameResolver = peerNameResolver,
             networkBand = networkBand,
             smallerVideoForMany = smallerVideoForMany,
+            prioritiseVoice = prioritiseVoice,
         )
         currentGroupSession = session
         observeGroupSession(session)
-        return session.startOutgoing(members)
+        return session.startOutgoing(members, unavailable = callable.leftOut)
     }
 
     /** Joins an ongoing group call announced by peers. */
@@ -234,7 +236,7 @@ public class CallCoordinator(
     ): Boolean {
         clearEndedGroupSession()
         if (currentSession != null || currentGroupSession != null) return false
-        val members = callMembers(groupId, memberIds, "join")
+        val members = callMembers(groupId, memberIds, "join").members
         if (members.isEmpty()) {
             FlashLog.w("GROUP_CALL", "Group call join refused: group=$groupId call=$callId has no member this device may call (${memberIds.size} listed)")
             return false
@@ -258,6 +260,7 @@ public class CallCoordinator(
             peerNameResolver = peerNameResolver,
             networkBand = networkBand,
             smallerVideoForMany = smallerVideoForMany,
+            prioritiseVoice = prioritiseVoice,
         )
         currentGroupSession = session
         observeGroupSession(session)
@@ -271,7 +274,7 @@ public class CallCoordinator(
 
     /** Queries online members of a group to discover if an active call is ongoing. */
     override suspend fun queryGroupCall(groupId: String, memberIds: List<String>) {
-        val members = callMembers(groupId, memberIds, "query")
+        val members = callMembers(groupId, memberIds, "query").members
         val frame = CallWireFrame.GroupQuery(from = localDeviceId, groupId = groupId)
         members.forEach { peerId ->
             sendGroupFrame(groupId, frame, peerId)
@@ -332,6 +335,9 @@ public class CallCoordinator(
             return false
         }
 
+        // ERROR-095: an ended group session that was never cleared would answer every invite "busy". The start
+        // paths already drop it; an inbound invite is the other way a call begins.
+        clearEndedGroupSession()
         val p2pSession = currentSession
         val groupSession = currentGroupSession
 
@@ -348,6 +354,7 @@ public class CallCoordinator(
                 return true
             }
             if (frame is CallWireFrame.GroupInvite) {
+                FlashLog.i("GROUP_CALL", "Invite from $peerId for group=${frame.groupId} call=${frame.callId} declined: busy in a 1:1 call ${p2pSession.callId}")
                 sendFrame(CallWireFrame.GroupDecline(callId = frame.callId, from = localDeviceId, groupId = frame.groupId), peerId)
                 return true
             }
@@ -365,6 +372,7 @@ public class CallCoordinator(
                 return true
             }
             if (frame is CallWireFrame.GroupInvite) {
+                FlashLog.i("GROUP_CALL", "Invite from $peerId for group=${frame.groupId} call=${frame.callId} declined: busy in group call ${groupSession.callId} of group=${groupSession.groupId}")
                 sendFrame(CallWireFrame.GroupDecline(callId = frame.callId, from = localDeviceId, groupId = frame.groupId), peerId)
                 return true
             }
@@ -563,6 +571,12 @@ public class CallCoordinator(
         }
     }
 
+    /** Test seam: makes [session] the live group call without the media a real start needs. */
+    internal fun installGroupSessionForTesting(session: FlashGroupCallSession) {
+        currentGroupSession = session
+        observeGroupSession(session)
+    }
+
     /** Drops a live-call slot held by a group session that has already ended (ERROR-086's zombie). */
     private fun clearEndedGroupSession() {
         currentGroupSession?.takeIf { it.isSessionEnded }?.let(::onGroupSessionEnded)
@@ -606,18 +620,28 @@ public class CallCoordinator(
      * live-key gate: a member this device is not paired with and has no session to yet is still a member of the call,
      * dialed and checked when a frame is sent. Each member left out is logged with the reason.
      */
-    private suspend fun callMembers(groupId: String, memberIds: List<String>, purpose: String): List<String> {
+    internal suspend fun callMembers(groupId: String, memberIds: List<String>, purpose: String): CallMembers {
         val members = ArrayList<String>()
+        val leftOut = LinkedHashMap<String, String>()
         for (id in memberIds.distinct()) {
             if (id == localDeviceId) continue
             if (isGroupMember(id, groupId)) {
                 members += id
             } else {
+                // ERROR-095: a legacy group has no way to trust a member this device is not paired with, and the call
+                // used to leave that member out with nothing but this line. The caller's screen now names them.
+                leftOut[id] = NOT_PAIRED_NOTE
                 FlashLog.w("GROUP_CALL", "Group call $purpose group=$groupId: member $id left out (not an active roster member this device trusts or was introduced to)")
             }
         }
-        return members
+        if (leftOut.isNotEmpty()) {
+            FlashLog.w("GROUP_CALL", "Group call $purpose group=$groupId: ${members.size} member(s) callable, ${leftOut.size} left out: ${leftOut.keys}")
+        }
+        return CallMembers(members, leftOut)
     }
+
+    /** The members a call is built for, and the roster members this device had to leave out with the reason for the caller. */
+    internal class CallMembers(val members: List<String>, val leftOut: Map<String, String>)
 
     /** Why [isGroupTrustedPeer] said no, for the log: by construction it implies [isGroupMember], so the two answers name the cause. */
     private suspend fun refusalReason(peerId: String, groupId: String): String =
@@ -698,6 +722,7 @@ public class CallCoordinator(
             peerNameResolver = peerNameResolver,
             networkBand = networkBand,
             smallerVideoForMany = smallerVideoForMany,
+            prioritiseVoice = prioritiseVoice,
         )
         currentGroupSession = session
         observeGroupSession(session)
@@ -707,5 +732,8 @@ public class CallCoordinator(
     private companion object {
         /** The same refusal is written to the log once a minute (see [logRefusal]). */
         const val REFUSAL_LOG_INTERVAL_MS = 60_000L
+
+        /** What a caller reads on the tile of a roster member it cannot call (ERROR-095). */
+        const val NOT_PAIRED_NOTE = "Not paired with you"
     }
 }

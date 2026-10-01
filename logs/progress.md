@@ -1,5 +1,126 @@
 # Progress Log
 
+## 2026-10-01 — Group video audit checked claim by claim: nine real defects fixed in code, six claims wrong, by design or not safe to apply (ERROR-097, ADR-066); unit-tested and mutation-checked, NOT device-verified
+
+### Worked on
+The owner pasted another AI's report ("Comprehensive Architectural Audit: Group Video Calling, Network Congestion, Low-End Device
+Constraints, and Video Subscription Architecture") and asked to "check this audit and fix them". Each of its 16 claims was checked against the
+code, its callers, its prior state and the project invariants (memory `audit-other-ai-reports`).
+
+### Verdicts (full table in ERROR-097)
+- **Real, fixed:** camera off kept existing watchers encoding; no retry of a lost request; a request after a hangup left a zombie watcher; a
+  denied pin kept a fallback video decoding in compact mode; a muted talker evicted watchers; the 600 kbps floor pinned small copies; no voice
+  priority in the group; a native surface composed for every tile; a leg stuck in `Disconnected`.
+- **Wrong or by design (no change):** "reconnect hang" (grants survive a rebuilt leg on purpose; the sender re-tunes on Connected); the
+  software-decode warning being unreachable on LOW (it needs two videos by design); legacy peers bypassing the send budget (compatibility).
+- **Not safe to apply:** the 120 %-of-one-core CPU threshold (a healthy desktop already reads about 179 % of one core); removing the floor
+  outright (no measurement); LOW-tier 2 watchers at 360p (owner decision Q8, encoder-instance claim unmeasured).
+- **Not verified:** Skia conversion for occluded desktop tiles.
+
+### Changed
+- `GroupVideoRouter`: camera off tears down current watchers; the camera-off case is checked before the existing-watcher case; a request
+  unanswered for 5 s is re-sent under a new number; a denied pin with room for one video asks nobody else.
+- `GroupVideoTuning.kt` (new): `groupVideoTuning` (copy ceiling, floor at most half of it, dropped on every concession rung) and
+  `isLocalTalker`.
+- `FlashGroupCallSession`: per-leg `CallQualityGovernor` fed per-interval loss/RTT/jitter and applied to that leg's sender only
+  (`applyVoicePriority`); `prioritiseVoice` parameter; `VideoRequest` from a `LEFT` leg ignored; a leg `Disconnected` for 10 s is rebuilt by
+  its offerer unless its signaling is down; the loss baseline resets on a rebuilt connection.
+- `CallCoordinator`: passes `prioritiseVoice` to the three group sessions.
+- `FlashGroupVideoGrid`: a tile composes its video surface only while it has a picture.
+- New tests: `GroupVideoRouterTest` (+5), `GroupVideoTuningTest` (7, new), `FlashGroupCallVideoAuditTest` (4, new).
+
+### Verification
+- `:core:calling:testAndroidHostTest` 200 tests, 0 failures; `:ui:callui:jvmTest`, `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm` green.
+- Mutation-checked: 9 mutants, each caught by the test written for it; one (a governor shared by all legs) first survived and the test was rewritten to interleave samples; the claim-2 reorder is an equivalent mutant and is not claimed.
+- **No device was used.** The surface change has no unit test (a Compose layout of native views); `GVID-04` is its proof. The `Disconnected`
+  rebuild needs a native PeerConnection: `GVID-06`. `GVID-01`…`GVID-07` owed (backlog 4n); `MEAS-09` added.
+
+### Remaining
+- Device checks above; ERROR-097 stays OPEN. Measurements `MEAS-09`, `MEAS-05`, `MEAS-03` decide the numbers that are provisional here
+  (5 s retry, 10 s rebuild, floor at half the ceiling).
+- Not changed on purpose: LOW-tier capacity (Q8), the CPU threshold, legacy-peer compatibility.
+
+### Next AI
+Do not commit unasked. The tree holds uncommitted work from ERROR-095, ERROR-096 and this audit in the same files
+(`FlashGroupCallSession.kt`, `CallCoordinator.kt`, `GroupVideoRouter.kt`); commit them together or split by hunk with care.
+
+## 2026-10-01 — Fixed in code: a late joiner in a group call was never connected to an earlier joiner (ERROR-096, ADR-065); unit-tested and mutation-checked, NOT device-verified
+
+### Worked on
+The owner pasted an Android logcat of group call `2e1ebc6e` and asked for the desktop log to be checked too ("some devices are not
+registering, some are not connecting, the coordination is messed up"; the sentence was cut off after "and also can"). Read both logs
+against the call code.
+
+### Findings (evidence in ERROR-096)
+- **Proven:** the desktop (higher id, so the offerer) joined 27 s after the Android and never built a leg to it (`legs=[15590fd6:CONNECTED]`),
+  so it never offered; the Android's answerer leg stayed CONNECTING until the call ended. Presence kept arriving both ways, which is why the
+  existing prune did not fire. Cause: a device that accepts tells only the inviter, everyone else relies on one relayed `GroupJoin`, and a
+  presence from a member with no leg was dropped.
+- **Not proven:** why the caller's relay of the Android's join did not reach the desktop; why the Android sent no presence and no video
+  request in the captured 54 s (no refusal line, no exception). Needs a capture that starts before the accept, including the caller.
+- Two members (`63abef69`, `5e8e2183`) were offline all call and re-dialled; a cost, not shown to be the failure.
+
+### Changed
+- `FlashGroupCallSession`: `accept()` tells every other invited member directly; a presence from a member with no leg adopts it once this
+  device is in the call (`adoptMemberInCall`); an answerer leg with no offer after 8 s nudges its peer, 3 times at most
+  (`nudgeSilentOfferers`, `OFFER_NUDGE_AFTER_MS`, `MAX_OFFER_NUDGES`). No wire change, trust gate unchanged (ADR-065).
+- `FlashGroupCallReachTest`: five new tests.
+
+### Verification
+- `:core:calling:testAndroidHostTest` 184 tests, 0 failures; `:ui:callui:jvmTest`, `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm` green.
+- Mutation-checked: 8 mutants (6 runs), each failed the test written for it; source restored and re-run green.
+- **No device was used.** `GCALL-15`…`GCALL-17` owed (backlog 4m).
+
+### Remaining
+- Device checks above; ERROR-096 stays OPEN. The two unproven items need logs from before the accept on every device including the caller.
+- The owner's mesh-versus-SFU question (see `FlashGroupCallLimits`: 8 video / 12 voice) is a design decision, not made here.
+
+### Next AI
+Do not commit unasked. If a new capture shows a refusal line for the Android's presence, the gate (ADR-061) is the thing to read, not the
+fan-out. Uncommitted work from ERROR-095 and ERROR-096 shares files (`FlashGroupCallSession.kt`, `CallCoordinator.kt`); commit them together.
+
+## 2026-10-01 — Fixed in code: a group call from a caller not paired with every member (ERROR-095, ADR-064); unit-tested and mutation-checked, NOT device-verified
+
+### Worked on
+The owner's report: "if the one starting a group call is not paired with other users in a group, it doesn't work". Research from the real
+`~/.flash/desktop.log` plus the code, then fixes.
+
+### Findings (evidence in ERROR-095)
+- The group in the log is a **legacy** group (UUID id). A legacy group has no trust path to a member the caller is not paired with, so
+  `callMembers` left that member out with one log line; the host ignored the result; nothing told the caller. ERROR-088's relay through
+  another participant cannot help because the invite carries the caller's already-filtered list.
+- The group is most likely legacy because creation silently falls back to legacy when any invitee has no live session
+  (`peerGroupProtocol` answers 1 for an offline device). Two members are offline in the log.
+- A called member declined in 140 ms with no log: the inbound path never cleared an ended group session still holding the slot (the start
+  paths did), and the two busy declines wrote nothing. **Not proven to be the cause** (no callee log).
+
+### Changed
+- `RealFlashChatRepository.createGroupLocked`: an invitee with no live session (unknown level) fails creation naming it, instead of a
+  silent legacy group; legacy only for a device seen online on the old level. Both hosts show the repository's reason.
+- `CallCoordinator`: `callMembers` returns callable + left-out-with-reason; `startOutgoing(…, unavailable)`; the inbound path clears an
+  ended group session before answering busy; busy declines log; query path adapted.
+- `FlashGroupCallSession` / `FlashCallParticipantUi.note` / `participantStatusLabel`: the left-out member is a tile "Not paired with you"
+  (not a leg, never sent a frame).
+- `MainActivity`: toast when `startGroupCall` returns false.
+- No wire change, no trust change (ADR-064).
+
+### Verification
+- `:core:calling:testAndroidHostTest`, `:core:messaging:testAndroidHostTest`, `:ui:callui:jvmTest`, `:app:compileDebugKotlin`,
+  `:desktop:compileKotlinJvm` all green in one run (BUILD SUCCESSFUL, 2026-10-01).
+- New tests: `CallCoordinatorGroupEndTest` (zombie slot, left-out reason), `FlashGroupCallReachTest` (unavailable tile),
+  `FlashGroupVideoGridTest` (label), `SignedGroupsTest` (offline invitee).
+- **Mutation-checked:** removing the inbound `clearEndedGroupSession()`, not recording the left-out reason, not showing the unavailable
+  tiles, the label precedence and the offline-invitee refusal each failed exactly its own test (5 of 5), then restored.
+
+### Remaining
+- Device checks `GCALL-11`…`GCALL-14` (`docs/testing/TEST-BACKLOG.md` section 4l). ERROR-095 stays OPEN.
+- The owner's existing legacy group still cannot call the member the desktop is not paired with: create a new group from a device paired
+  with all members while all are online ("Continue in a new group" does it from the old one).
+- A decline has no reason on the wire; the 140 ms decline needs the callee's `GROUP_CALL` log (GCALL-12).
+
+### Next AI
+Do not weaken the legacy trust rule. If the owner asks for unpaired legacy members in calls, read ADR-064's rejected alternatives first.
+
 ## 2026-10-01 — Fixed in code: Option A (ADR-063: Co-owners / Admins & Successor on Leave); unit-tested and verified
 
 ### Worked on

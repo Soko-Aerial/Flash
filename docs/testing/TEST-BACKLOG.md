@@ -1126,6 +1126,153 @@ those are not tests yet: turn one into a test here when it is picked up.
 - **Pass:** a denied prompt is explained somewhere; after resume the session returns and queued messages arrive.
 - **Status:** TODO
 
+## 4l. Group call from a caller not paired with every member (ERROR-095, 2026-10-01)
+
+Capture first: `~/.flash/desktop.log` is **overwritten at every launch**, so copy it before restarting the desktop app; on a phone use
+`adb logcat -v time -s GROUP_CALL:I CHAT:I`. A FAIL here needs the `GROUP_CALL` lines of the caller **and** of one member that did not ring.
+
+### GCALL-11 — A new group made while every member is online is v2 and every member can be called (ERROR-095)
+- **Setup:** a phone P paired with members A, B and C; A, B and C are **not** paired with each other. All four online on one Wi-Fi, all on
+  this build. (Not the desktop, unless it is paired with all three.)
+- **Steps:** on P create a group with A, B, C. Open each member's group info: the group id is not shown, so read it from the log line
+  `Group v2 created: group=g2-...` on P. Then on A start a group call (voice, then video). Watch P, B and C for 30 s.
+- **Pass:** the log line says `Group v2 created` (not `Group created as legacy`); P, B and C ring (or show the ongoing-call banner within
+  ~8 s) although A is not paired with B or C; all can join; A's screen shows B and C as invited, then connected.
+- **Source:** ERROR-095, ADR-064, ADR-061, ADR-044 V2. **Status:** TODO
+
+### GCALL-12 — The old legacy group: the caller sees who is missing, and the callee's log says why it declined (ERROR-095)
+- **Setup:** the owner's existing legacy group (UUID id) with Ocelot, Gazelle, Quokka; the desktop is not paired with Quokka. Capture the
+  logs of the desktop **and of Gazelle** (`adb logcat -v time -s GROUP_CALL:I`).
+- **Steps:** the desktop starts a group call. Look at the desktop's call screen and at Gazelle's log.
+- **Pass:** the desktop's screen lists Quokka with "Not paired with you" (not Invited, not missing); the desktop log has
+  `N member(s) callable, 1 left out`; if Gazelle declines, its log has `declined: busy in ...` or `declined silently: <reason>`, and
+  after a **cold restart** of Gazelle the same call rings it (a cold restart separates "busy zombie" from "untrusted").
+- **Pre-fix:** Quokka absent from the screen, no reason anywhere; Gazelle declined in 140 ms with no log line.
+- **Source:** ERROR-095. **Status:** TODO
+
+### GCALL-13 — Creating a group while a member is offline is refused with the member's name (ERROR-095)
+- **Setup:** a phone P paired with A and B; turn B's Wi-Fi off and wait until P shows B offline (and no session in the log).
+- **Steps:** on P create a group with A and B. Then turn B's Wi-Fi on, wait until B shows online, create it again. Repeat on the desktop
+  (paired with both).
+- **Pass:** the first attempt shows "Wait until <B's name> show as online, then try again..." (toast on Android, snackbar on the
+  desktop), nothing is created and no chat appears; the second attempt creates a `g2-` group. A member that runs an **old build** and is
+  online still yields a legacy group, with `Group created as legacy: [...]` in the log.
+- **Source:** ERROR-095, ADR-064. **Status:** TODO
+
+### GCALL-14 — An ended call never leaves a device answering "busy" (ERROR-095 follow-up of ERROR-086)
+- **Setup:** three phones in one group (any kind). Capture `GROUP_CALL` on the callee.
+- **Steps:** place a group call, answer it, end it from the caller, then end it from the callee side; repeat 5 times, ending in different
+  orders (caller first, callee first, both within a second, the callee's screen off). After each end, start a new call from the other phone.
+- **Pass:** every new call rings; no `declined: busy in group call` line appears while no call is on screen; the overlay clears ~2 s after
+  each end.
+- **Source:** ERROR-095 (zombie slot), ERROR-086. **Status:** TODO
+
+## 4m. A late joiner connects to every member already in the group call (ERROR-096, 2026-10-01)
+
+Capture first, and **start the capture before the call rings**: `adb logcat -v time -s GROUP_CALL:I WS:I > phone-<name>.txt` on every phone
+(the owner's last log began after the accept, which hid the one thing still unexplained), and copy `~/.flash/desktop.log` before the next
+desktop launch (it is overwritten). Include the **caller's** log.
+
+### GCALL-15 — The second callee to accept connects to the first one (ERROR-096)
+- **Setup:** three devices in one v2 group, all paired through the owner (a phone caller C, a phone A, the desktop D); note which of A and D
+  has the lower device id (the lower one answers, the higher one offers). Repeat with the roles swapped so each pair is the late joiner once.
+- **Steps:** C starts a video group call. A accepts and waits 20 s. Then D accepts. Watch all three screens for 30 s.
+- **Pass:** within about 12 s of D accepting, D and A show each other as connected (video or audio flowing) and the logs have a
+  `Leg <peer> pc#1 ... Connected` line on both; neither side has a leg stuck in CONNECTING; on the lower-id device the log may show up to three
+  `has waited ... for an offer; telling it directly` lines but not more.
+- **Pre-fix:** the lower-id device's leg to the other stayed CONNECTING for the whole call (27 s in the owner's log), no offer was sent.
+- **Source:** ERROR-096, ADR-065. **Status:** TODO
+
+### GCALL-16 — Capture: does the phone send `GroupPresence` after it accepts? (ERROR-096, unexplained)
+- **Setup:** as GCALL-15 with the capture started **before** the call rings, on the phone that accepts first and on the caller.
+- **Steps:** place the call, accept on the phone, keep it open 40 s.
+- **Pass:** the phone's log has `Call sendFrame action=GroupPresence peer=<caller>` roughly every 4 s and a `VideoRequest` (or
+  `video route ... receive={<peer>}`) once a video stream is wanted; **or**, if it does not, the log has a refusal line naming the gate
+  (`logRefusal`, ADR-061) that explains why. Either result closes the question; "no frames and no refusal line" means a new bug.
+- **Pre-fix:** 54 s of log with no presence, no refusal and no video on the Android↔caller leg (`vin 0.0fps`, `vout active=false`).
+- **Source:** ERROR-096 (not proven). **Status:** TODO
+
+### GCALL-17 — A member who joins late in a larger call, and a full call still turns the extra member away (ERROR-096)
+- **Setup:** four or more devices in one v2 group, every member on this build.
+- **Steps:** one starts the call; two accept at once; a third accepts after 40 s; if the group has 9+ video-capable members, let the
+  extra ones join until the cap (8 video, 12 voice) is reached.
+- **Pass:** every pair of members that accepted ends up connected (each device's log shows a Connected leg per other member); a member
+  past the cap sees "call is full" and is **not** shown as a connected tile; no device logs more than 3 `telling it directly` lines per
+  leg; CPU and heat do not spike at the moment of the late accept.
+- **Source:** ERROR-096, ADR-065. **Status:** TODO
+
+## 4n. Group video audit (ERROR-097 / ADR-066, 2026-10-01)
+
+Nothing here was run on a device. Capture on every phone: `adb logcat -v time -s GROUP_CALL:I WS:I`; copy `~/.flash/desktop.log` before the
+next desktop launch. Useful log lines: `video route`, `Leg <peer> video send=on|off height=`, `video sender tuned ... concession=`, `Leg <peer>
+voice priority: video <from> -> <to>`, `Leg <peer> ... rebuilding`.
+
+### GVID-01 — Turning the camera off stops the video to the people already watching (ERROR-097 #1)
+- **Setup:** three devices in a video group call, A sending to B and C (both showing A's tile with video).
+- **Steps:** A turns its camera off, waits 10 s, turns it on.
+- **Pass:** within about 2 s of "off" both tiles show A's avatar and "Camera off"; A's log has `video send=off` for B and C and the `tuned`
+  line shows `active=false`; A's outbound video bytes (the `CALL_DIAG` line) stop growing; after "on" B and C show A's video again within
+  about 5 s with no action on their side.
+- **Pre-fix:** the existing watchers kept receiving an encoded stream while the UI said the camera was off.
+- **Source:** ERROR-097 #1. **Status:** TODO
+
+### GVID-02 — A lost request is asked again (ERROR-097 #4)
+- **Setup:** three devices on one Wi-Fi in a video call. On B, turn Wi-Fi off for about 3 s right as the call connects (or while B changes
+  which participant is pinned).
+- **Steps:** B pins A after the blip and waits 15 s.
+- **Pass:** B's log shows a second `VideoRequest` to A with a new sequence (about 5 s after the first) and then A's grant; A's tile on B
+  shows video without B doing anything else. No further `VideoRequest` to A once granted (check 60 s of log).
+- **Pre-fix:** a request lost in a session gap was never repeated and the tile stayed on "Requested" for the rest of the call.
+- **Source:** ERROR-097 #4. **Status:** TODO
+
+### GVID-03 — A pinned peer that turns the request down leaves no ghost video on a one-video phone (ERROR-097 #6)
+- **Setup:** one LOW-tier phone P (room for one video) and two other devices X and Y; make X refuse (X at its send cap, or hot).
+- **Steps:** on P pin X while X refuses; watch P's log and the thermal/CPU for 30 s.
+- **Pass:** P's tile for X says Busy; P's log shows `receive={}`: no video arriving from Y, and no decoder running (CPU not above the
+  idle-call level). Unpinning X brings Y's video back.
+- **Source:** ERROR-097 #6. **Status:** TODO
+
+### GVID-04 — Native surfaces exist only for tiles with a picture (ERROR-097 #14)
+- **Setup:** five or more devices in a video call; one MEDIUM or HIGH phone as the observer.
+- **Steps:** on the observer run `adb shell dumpsys SurfaceFlinger --list | grep -c -i <package>` (or the layer list in Developer options)
+  while the call shows 5 tiles, then after "Show fewer".
+- **Pass:** the layer count for the call screen equals the videos actually arriving plus the local preview, not one per participant;
+  a tile whose peer turned the camera off or was turned down shows the avatar and adds no layer; rotation and a pin change do not leave a
+  black tile or a frozen frame; a track renegotiation does not flash the tile.
+- **Source:** ERROR-097 #14. **Status:** TODO
+
+### GVID-05 — A bad link costs only that leg its video, and the setting turns it off (ERROR-097 #9)
+- **Setup:** three devices on a phone hotspot (or any weak link); one device D moves away from the access point until its leg is lossy,
+  the other two stay close. "Prioritise voice quality" on (the default).
+- **Steps:** hold the call 60 s with D far, then bring D back, then switch "Prioritise voice quality" off in Settings and repeat.
+- **Pass:** the log shows `Leg <D> voice priority: video FULL -> REDUCED_BITRATE` (and further rungs if it stays bad) for D's leg **only**;
+  the two close devices keep full video to each other; D's audio stays intelligible; about 5 s after the link is clean the rung steps
+  back, and the `tuned` line shows the floor (`min=`) only at FULL. With the setting off no `voice priority` line appears and a reduced
+  leg returns to full on the next tick.
+- **Pre-fix:** the group had no voice priority at all; the 1:1 call did.
+- **Source:** ERROR-097 #9. **Status:** TODO
+
+### GVID-06 — A leg that stays Disconnected after a Wi-Fi roam is rebuilt (ERROR-097 #16)
+- **Setup:** three devices in a call; on B switch the Wi-Fi network (5 GHz to 2.4 GHz of the same router, or off and on after 3 s).
+- **Steps:** wait 30 s. Repeat with the hotspot owner moving.
+- **Pass:** if the leg to the higher-id peer stays `Disconnected`, the log shows `pc#N failed; rebuilding (1/3)` about 10 s later (from the
+  higher-id device, the offerer) and a new `pc#N+1 created`, then the leg is Connected and video returns; a leg that heals by itself within
+  10 s is **not** rebuilt; while signaling to the peer is down no rebuild is logged.
+- **Pre-fix:** the leg stayed Disconnected for the rest of the call.
+- **Source:** ERROR-097 #16. **Status:** TODO
+
+### GVID-07 — A muted talker does not evict a watcher; a departed peer holds no slot (ERROR-097 #5, #7)
+- **Setup:** four devices where the sender S has a send cap of 1 or 2 (a LOW or MEDIUM phone) and two or more watchers.
+- **Steps:** (a) S mutes the microphone and makes noise next to it while a third device asks to watch S; then (b) S unmutes and talks; (c) a
+  watcher hangs up (during a pin change) and the log is read for the rest of the call.
+- **Pass:** (a) no existing watcher is dropped and the new one gets "Busy"; (b) talking makes room by dropping the oldest unpinned watcher
+  (owner decision Q5); (c) after the hangup the log shows no `video send=on` for that peer and S's free slots return to the cap.
+- **Source:** ERROR-097 #5, #7. **Status:** TODO
+
+### Measurements added to section 5
+`MEAS-09` (group video floor value) was added; the CPU threshold is `MEAS-05` and the LOW-tier second watcher / encoder instances are
+part of `MEAS-03`. They are not tests of ERROR-097 and do not block it.
+
 ## 5. Measurements — do these last
 
 They replace every *(measure)* estimate in the plans and decide tuning. Record each in `logs/experiments.md`.
@@ -1140,6 +1287,7 @@ They replace every *(measure)* estimate in the plans and decide tuning. Record e
 | MEAS-06 | Desktop render cost: capture + BGRA conversion + Skia upload was ~1.5 of ~2.5 cores (EXP-017) | Profile a 4-person desktop call | Whether hardware video (ADR-052) or render work comes first | TODO |
 | MEAS-07 | **DR0** discovery failure matrix: for each of home router, mesh in bridge mode, router with IGMP snooping, client isolation, Android hotspot with 2+ clients, desktop with Hyper-V/VPN adapters: does mDNS work, does the `224.0.0.168` beacon work, does a directed broadcast arrive, is TCP 45822 reachable; screen on and off | Plan §4 DR0 (a small broadcast test sender is enough); log in `logs/experiments.md` | Which network each of DR2 (broadcast) and DR3 (subnet sweep) fixes. DR2/DR3 are built without waiting for it (owner 2026-09-29); DR6 (BLE) is postponed, FO-02 | TODO |
 | MEAS-08 | **Signed groups (ADR-044 V1):** identity-key sign latency (StrongBox and TEE phones, desktop) and ECDSA P-256 verify cost per message and per bundle, including a 100-message catch-up round in a 6-member group and a first bundle of a 20-member v2 group (up to 21 verifications; ADR-044 V2) | Add a temporary `PERFORMANCE` timing log around `GroupSigning.signMessage` and `SignedGroups.verifiedAuthorLabel`, run GT-02 step 3 and a 100-message sync; log in `logs/experiments.md` | Whether the per-peer verification budget (120 per minute) and the message path need tuning, and whether signing on the send path needs to move off the caller | TODO |
+| MEAS-09 | **Group video floor** (ADR-066): the encoder floor is now at most half the copy ceiling and dropped on every voice-priority rung (HIGH 360p copy: 225 kbps instead of a pinned 450); is half the right ratio, and does a 720p copy want 600 kbps? | 3 devices on a hotspot, record `video sender tuned` lines plus received fps / freeze count at 360p, 540p, 720p copies with the floor at 0, 1/4, 1/2 and 1 of the ceiling | The floor ratio in `groupVideoTuning`; whether the profile floor stays | TODO |
 
 ---
 

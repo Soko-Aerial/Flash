@@ -418,6 +418,95 @@ class GroupVideoRouterTest {
     }
 
     @Test
+    fun `turning the camera off stops the video to the people already watching, and each is told why`() {
+        val a = node("a", receive = 0, send = 5)
+        val b = node("b", receive = 1, send = 5)
+        val c = node("c", receive = 1, send = 5)
+        val mesh = Mesh(a, b, c).apply { join() }
+        assertEquals(setOf("b", "c"), a.sendingTo)
+        mesh.step(a) { setCameraOff(true) }
+        // Audit finding: the encoders used to keep running for the existing watchers with the camera "off".
+        assertTrue(a.sendingTo.isEmpty())
+        assertEquals(FlashParticipantVideo.CAMERA_OFF, b.router.receiveState("a"))
+        assertEquals(FlashParticipantVideo.CAMERA_OFF, c.router.receiveState("a"))
+        assertEquals(0, a.router.freeSlots())
+        // And a watcher that asks again meanwhile is still turned down.
+        mesh.step(b) { setFocus("a") }
+        assertTrue(a.sendingTo.isEmpty())
+        // The camera back on: everyone who was turned down is told and gets the video again.
+        mesh.step(a) { setCameraOff(false) }
+        assertEquals(setOf("b", "c"), a.sendingTo)
+        assertEquals(FlashParticipantVideo.RECEIVING, b.router.receiveState("a"))
+    }
+
+    @Test
+    fun `a request nobody answered is asked again after the retry window, and not before`() {
+        val a = node("a", receive = 0, send = 5)
+        val b = node("b", receive = 1, send = 5)
+        val mesh = Mesh(a, b)
+        a.router.onAnnouncement("b", videoRequests = true, videoFree = 5)
+        b.router.onAnnouncement("a", videoRequests = true, videoFree = 5)
+        // The first request is lost on the wire (the peer's session was down for a moment).
+        val lost = b.router.startReceiving().filterIsInstance<GroupVideoRouter.Effect.Send>()
+            .map { it.frame }.filterIsInstance<CallWireFrame.VideoRequest>()
+        assertEquals(1, lost.size)
+        assertTrue(a.sendingTo.isEmpty())
+        assertEquals(FlashParticipantVideo.REQUESTED, b.router.receiveState("a"))
+
+        now += 4_000
+        mesh.step(b) { tick(now) }
+        assertTrue(a.sendingTo.isEmpty(), "not yet asked again")
+
+        now += 1_500
+        mesh.step(b) { tick(now) }
+        assertEquals(setOf("b"), a.sendingTo)
+        assertEquals(FlashParticipantVideo.RECEIVING, b.router.receiveState("a"))
+        // A grant that answers the lost, older request cannot be taken for this one.
+        assertTrue(b.router.onGrant("a", CallWireFrame.VideoGrant(CALL, "a", lost.single().seq, 540)).isEmpty())
+        assertEquals(FlashParticipantVideo.RECEIVING, b.router.receiveState("a"))
+    }
+
+    @Test
+    fun `a granted request is not asked again, however long the call runs`() {
+        val a = node("a", receive = 0, send = 5)
+        val b = node("b", receive = 1, send = 5)
+        val mesh = Mesh(a, b).apply { join() }
+        val before = mesh.wire.count { it is CallWireFrame.VideoRequest }
+        repeat(20) {
+            now += 5_000
+            mesh.step(b) { tick(now) }
+        }
+        assertEquals(before, mesh.wire.count { it is CallWireFrame.VideoRequest })
+        assertEquals(FlashParticipantVideo.RECEIVING, b.router.receiveState("a"))
+    }
+
+    @Test
+    fun `with room for one video, a denied pin does not leave a fallback video decoding for nobody`() {
+        val a = node("a", receive = 0, send = 0)
+        val b = node("b", receive = 1, send = 5)
+        val c = node("c", receive = 0, send = 5)
+        b.router.setFocus("a")
+        Mesh(a, b, c).join()
+        assertEquals(FlashParticipantVideo.BUSY, b.router.receiveState("a"))
+        // Audit finding: c used to be asked as the fallback, and its stream arrived with no tile to show it.
+        assertEquals(FlashParticipantVideo.OFF, b.router.receiveState("c"))
+        assertTrue(c.sendingTo.isEmpty())
+        assertTrue(a.sendingTo.isEmpty())
+    }
+
+    @Test
+    fun `with room for two videos, a denied pin still lets the next participant fill the other slot`() {
+        val a = node("a", receive = 0, send = 0)
+        val b = node("b", receive = 2, send = 5)
+        val c = node("c", receive = 0, send = 5)
+        b.router.setFocus("a")
+        Mesh(a, b, c).join()
+        assertEquals(FlashParticipantVideo.BUSY, b.router.receiveState("a"))
+        assertEquals(FlashParticipantVideo.RECEIVING, b.router.receiveState("c"))
+        assertEquals(setOf("b"), c.sendingTo)
+    }
+
+    @Test
     fun `a lower receive limit releases the extra videos on the next tick`() {
         val a = Node("a", GroupVideoLimits(receive = 2, send = 5, quality = 540))
         val b = node("b", receive = 0, send = 5)

@@ -3152,3 +3152,136 @@ Option D ("Continue in a new group") was implemented to rescue already-orphaned 
 - Groups with appointed admins survive owner loss (such as uninstallation or phone destruction) without roster freeze.
 - When an owner leaves gracefully, leadership is explicitly transferred to a successor.
 - Two-hop vouching allows admins to onboard new members without requiring the founder to be present.
+
+
+## ADR-064 — A legacy group never gets a member it cannot trust into a call; a group is not silently made legacy; the caller is told who was left out
+
+### Decision (2026-10-01, ERROR-095)
+1. **Trust is not weakened.** A member of a **legacy** group (UUID id, unsigned roster) that the caller is not paired with is not called.
+   No TOFU on the roster, no "paired with anyone in the call" shortcut. The only way such a member joins a call is a signed v2 group
+   (ADR-044 V2: owner-vouched key, live-key match, ADR-061).
+2. **Creation never silently produces a legacy group.** When this device can sign, `createGroupLocked` creates a legacy group only for
+   an invitee that was **seen** on a live session reporting the old level. An invitee with no live session is of unknown level
+   (`peerGroupProtocol` answers 1 for it) and creation fails, naming it: "Wait until X show as online, then try again." A capable
+   invitee with no verified key keeps the existing `V2_KEY_UNAVAILABLE` failure. A device that cannot sign (`signedGroups == null`)
+   is unchanged.
+3. **The caller is told.** `CallCoordinator.callMembers` returns the callable members and the left-out ones with a reason; the session
+   shows the left-out as tiles ("Not paired with you", `FlashCallParticipantUi.note`), which are not legs and receive no frame.
+   Android toasts when `startGroupCall` returns false (desktop already did).
+4. **A finished group session never answers "busy".** `onInboundText` clears an ended group session first (as the start paths do), and the
+   busy declines log the reason.
+
+### Context
+The owner reported that a group call started by a device not paired with every member "doesn't work". The desktop log showed a legacy
+group, a member left out with one log line, and an instant decline from a called member. Legacy groups are forgeable by design (ERROR-082,
+accepted by the owner), so the call gate cannot rely on the roster for them. The group was most likely legacy because it was created while
+some members were offline.
+
+### Alternatives considered
+- **Trust a legacy roster member for calls.** Rejected: anyone who can forge the roster gets the call's presence and media.
+- **Put all roster members in the invite's member list so a callee paired with the missing member relays the announcement.** Not built:
+  the missing member could then see and join the call through the callee, but the caller and that member still have no trust path, so
+  the caller-to-member media leg (a full mesh needs it) cannot be built; the partial call would look connected and be broken. Revisit
+  only with a partial-mesh design.
+- **A reason on `GroupDecline`.** Not built (no wire change in this fix); the callee's log now says why.
+- **Allow creating a legacy group with an offline invitee after a confirmation.** Not built: it is the failure mode being removed.
+  Reconsider if owners need to create groups while members are offline; the clean answer is then v2 with a member added later
+  (`addV2MembersLocked` needs the key too, so the same wait applies).
+
+### Consequences
+- Creating a group while any member is offline now fails with a message; the owner waits or creates a smaller group.
+- An existing legacy group keeps its limit; "Continue in a new group" or a new group from a device paired with all members fixes it.
+- A call can show a tile that stays "Not paired with you" for its whole length.
+- Not device-verified: `GCALL-11`…`GCALL-14`.
+
+### Revisit when
+GCALL-11..14 are run, or when owners report the offline-member creation failure as a blocker.
+
+
+---
+
+## ADR-065 — Every member that joins a group call tells every other invited member directly, a presence adopts a missing leg, and a silent answerer nudges its offerer
+
+### Decision (2026-10-01, ERROR-096)
+1. **The inviter is no longer the only route.** A device that accepts a ringing group call sends `GroupAccept` to the inviter and then, once, to
+   every other member the call was offered to. The inviter's relayed `GroupJoin` stays as a second route.
+2. **A presence is proof the member is in the call.** A `GroupPresence` from a member this device has no leg for, received once this device is
+   itself in the call (media acquired; ACTIVE, CONNECTING or DIALING), adds a leg and starts connecting it. Not while ringing, not when
+   relayed, not when the call is full (the member is turned away as before).
+3. **An answerer that is never offered to speaks up.** An answerer leg (this device id is lower) still CONNECTING 8 s after its connection was
+   built, with no remote description, sends `GroupAccept` straight to the peer, at most 3 times, 8 s apart.
+4. **No wire change, no trust change.** The live-key gate of ADR-061 still runs on every announcement frame.
+
+### Context
+The owner's call log (call `2e1ebc6e`) showed a late joiner (desktop, higher id) with no leg to an earlier joiner (Android, lower id): the
+Android waited 27 s for an offer. The mesh was bootstrapped by one relay through the inviter; one lost or missing relay left a pair of
+devices permanently unconnected while presence kept both looking healthy.
+
+### Alternatives considered
+- **A `GroupRoster` frame from the inviter listing who is in the call.** Not built: a new wire frame (compatibility with older builds) and it
+  still depends on the inviter being alive and reachable by everyone.
+- **Re-relay joins on every presence.** Not built: the echo-storm risk the existing "only the direct recipient fans out" rule exists to
+  prevent.
+- **Let the offerer be whoever sees the other first (drop the glare rule).** Not built: it brings back double offers.
+- **Prune the unanswered leg sooner.** Not enough on its own: presence keeps the leg looking alive, and pruning only moves the leg back to INVITED.
+
+### Consequences
+- A late joiner reaches every other member within a presence tick (4 s) or a nudge (8 s) instead of never, when the member is reachable.
+- More `GroupAccept` frames per accept (one per other member); each goes through the existing trust gate and dials the member if needed,
+  so a crowd of offline members costs dial attempts (already the case for presence).
+- A device may receive `GroupAccept` from a member it has no leg for and build one; a full call still turns it away.
+
+### Revisit when
+`GCALL-15`…`GCALL-17` are run, or a call of more than 8 shows the extra accepts as load. If the unproven Android no-presence behaviour turns
+out to be a trust refusal, the gate rather than this fan-out is the thing to change.
+
+
+---
+
+## ADR-066 — Group video: a leg's own voice priority, a floor that fits the copy, a request that is asked again, a surface only for a picture, and a rebuild after Disconnected
+
+### Decision (2026-10-01, ERROR-097)
+1. **Voice priority is per leg.** Each `GroupLeg` owns a `CallQualityGovernor` and the `VideoConcession` rung it last chose
+   (FULL → REDUCED_BITRATE → REDUCED_RESOLUTION → PAUSED). The stats tick feeds it that leg's RTT, audio jitter and **per-interval** loss; a
+   new rung is applied to that leg's video sender only. The "Prioritise voice quality" setting (default on, `prioritiseVoice`) switches it off
+   for every leg and returns reduced legs to full. The call's `videoLimitReason` shows the worst rung.
+2. **The encoder numbers come from one pure function** (`groupVideoTuning`): the copy's ceiling is the profile's, capped for the copy's height
+   (1.8 Mbps / 0.9 / 0.45), the **floor is at most half the copy's ceiling** (so congestion control can still move the encoder) and is dropped on
+   every concession rung (a floor is a promise to keep spending). The profile's floor is not removed.
+3. **A request nobody answered is asked again** after 5 s, under a new sequence number; a granted request is never repeated. Peers that
+   announce the protocol only, so a legacy peer is never asked.
+4. **A tile composes a native video surface only while it has a picture** (granted, or an older client that always sends). Keyed on the grant,
+   not the track, so renegotiation still re-binds the same renderer.
+5. **A leg that stays `Disconnected` for 10 s is rebuilt by its offerer** (the `Failed` path of ERROR-086, now also reached from
+   `Disconnected`), unless signaling to that peer is down (`onSignalingRestored` owns that case).
+6. **Protocol corrections:** a camera that goes off stops every current watcher at once; a request from a departed peer is ignored; with room
+   for one video a denied pin asks nobody else; a muted microphone is never a talker.
+
+### Context
+Another AI's audit of group video was checked claim by claim (ERROR-097). Nine claims were real; the group session had reused the 1:1
+call's encoder numbers without its voice protection, and the request protocol was not robust to a lost frame, a camera switched off mid-call
+or a peer leaving mid-request.
+
+### Alternatives considered
+- **Remove the encoder floor entirely** (the audit's P2). Not built: nothing measured says a floor should go; a floor at full height still
+  stops a healthy link from dribbling bitrate away. Revisit with `MEAS-09`.
+- **One governor for the whole call.** Not built: every leg is its own connection with its own bandwidth estimate; one bad link must not take
+  video from the others.
+- **A mesh-wide congestion governor / a single-core CPU metric of 120 %.** Not built: WebRTC already estimates bandwidth per connection, and
+  120 % of one core would trigger on a healthy desktop. The CPU threshold needs the G0 measurement first (`MEAS-05`).
+- **Make the receiver re-request on every reconnect** (the audit's "reconnect hang"). Not built: grants surviving a rebuilt leg is the
+  documented design and the sender re-tunes on Connected; the real gap was a lost request, which item 3 covers.
+- **Conditional surface keyed on the track.** Rejected: a renegotiation that briefly drops the track would discard and re-create the renderer
+  (the renderer-lifetime rule).
+
+### Consequences
+- A weak link now costs its leg video (quality, then resolution, then pause) before it costs everyone audio; a recovered link takes about
+  5 s of clean samples to restore each rung. The user can switch it off.
+- 360p copies on a HIGH device are no longer held at a constant 450 kbps; they may go lower under congestion (down to the floor, 225 kbps).
+  *(measure)*
+- A leg's video can now restart after a Wi-Fi roam instead of waiting on a connection that never heals; the rebuild costs one offer/answer.
+- Requests are repeated every 5 s for a peer that never answers: a few bytes, only for peers known to speak the protocol.
+- The numbers 5 s (retry), 10 s (Disconnected rebuild) and the floor ratio (half the ceiling) are provisional, not measured.
+
+### Revisit when
+`GVID-01`…`GVID-07` are run, and after `MEAS-09`, `MEAS-05` and `MEAS-03` (floor value, CPU threshold, LOW-tier encoder instances).

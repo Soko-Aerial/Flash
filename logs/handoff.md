@@ -1,5 +1,56 @@
 # Current Handoff
 
+## 2026-10-01 (latest) — ERROR-097 / ADR-066: group video audit checked claim by claim; nine real defects fixed in code, NOT device-verified
+- **What was asked:** "check this audit and fix them" (another AI's report on group video, congestion and low-end devices). 16 claims
+  checked against the code: 9 real and fixed, 1 ordering defect hardened (unreachable after the fix), 3 wrong or by design, 2 not applied (CPU
+  threshold; LOW-tier capacity), 1 not verified (table in ERROR-097).
+- **Fixed:** camera off stops current watchers; a lost request is asked again after 5 s; a request from a departed peer adds no watcher; a
+  denied pin in compact mode asks nobody else; a muted mic is never a talker; the encoder floor fits the copy and is dropped on every
+  voice-priority rung; each group leg has its own voice-priority governor (setting "Prioritise voice quality" turns it off); a tile has a
+  native surface only while it has a picture; a leg `Disconnected` for 10 s is rebuilt by its offerer.
+- **Deliberately not changed:** the CPU threshold (the audit's 120 % of one core would false-trigger), removing the floor, LOW-tier capacity,
+  legacy-peer compatibility, "reconnect hang" (not a bug: grants survive a rebuilt leg).
+- **Device checks owed:** `GVID-01`…`GVID-07` (backlog 4n); measurement `MEAS-09` added. ERROR-097 stays OPEN.
+- **Verified:** `:core:calling:testAndroidHostTest` 200 tests, 0 failures; `:ui:callui:jvmTest`, `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm`;
+  mutation-checked (9 mutants, each caught by the test written for it; one (a governor shared by all legs) first survived and the test was rewritten to interleave samples; the claim-2 reorder is an equivalent mutant and is not claimed).
+- **Files:** `core/calling/.../GroupVideoRouter.kt`, `GroupVideoTuning.kt` (new), `FlashGroupCallSession.kt`, `CallCoordinator.kt`,
+  `ui/callui/.../FlashGroupVideoGrid.kt`, tests `GroupVideoRouterTest`, `GroupVideoTuningTest`, `FlashGroupCallVideoAuditTest`.
+- **Uncommitted:** this, the ERROR-096 and the ERROR-095 work share files; the owner has not answered the offer to commit them together.
+  Still unanswered: the cut-off sentence of the earlier report ("and also can...").
+
+## 2026-10-01 — ERROR-096 / ADR-065: a late joiner in a group call was never connected to an earlier joiner; fixed in code, NOT device-verified
+- **What the logs showed:** desktop (higher id, the offerer) joined late and had no leg to the Android; the Android's answerer leg waited
+  27 s for an offer that was never sent. Presence kept both looking alive. Cause: accepting told only the inviter, one relayed `GroupJoin`
+  was the only other route, and a presence from a member with no leg was dropped.
+- **Fixed:** accepting tells every other invited member directly; a presence adopts a missing leg once this device is in the call; an
+  answerer leg with no offer after 8 s nudges its peer (3 times at most). No wire change, trust gate unchanged.
+- **Not proven (open questions):** why the caller's relay of the Android's join did not reach the desktop; why the Android sent no
+  `GroupPresence` / video request during the captured 54 s (no refusal line). **Capture before the accept, on every device including the
+  caller** (`adb logcat -v time -s GROUP_CALL:I WS:I`; copy `~/.flash/desktop.log` before the next launch).
+- **Owner decisions pending:** the cut-off sentence of the report ("and also can...") has not been completed; mesh versus SFU for bigger
+  group calls (the call keeps a full mesh, caps 8 video / 12 voice) is a design decision and needs an ADR before any work.
+- **Device checks owed:** `GCALL-15`…`GCALL-17` (backlog 4m). ERROR-096 stays OPEN.
+- **Verified:** `:core:calling:testAndroidHostTest` 184/0, `:ui:callui:jvmTest`, `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm`; 8
+  mutants each caught.
+- **Files:** `core/calling/.../FlashGroupCallSession.kt`, `FlashGroupCallReachTest.kt`.
+- **Uncommitted:** this and the ERROR-095 work (not asked); both touch `FlashGroupCallSession.kt` and `CallCoordinator.kt`, so commit them together.
+
+## 2026-10-01 — ERROR-095 / ADR-064: group call from a caller not paired with every member; fixed in code, NOT device-verified
+- **Why the call did not work (from the real desktop log):** the group is legacy (UUID id), a legacy group has no trust path to a member
+  the caller is not paired with, the member was left out with one log line and nothing on screen. The group is probably legacy because
+  it was made while members were offline (creation silently fell back to legacy).
+- **Fixed:** creation refuses an offline invitee by name (no silent legacy); the call screen shows the left-out member as "Not paired with
+  you"; Android toasts when a group call cannot be placed; an ended group session no longer answers inbound invites "busy"; the busy
+  declines log. No wire change, trust unchanged (ADR-064).
+- **For the owner:** make a **new** group (or "Continue in a new group") from a device paired with every member, with every member online and
+  on this build. Then a member not paired with the caller can be called (v2 vouching, ADR-061).
+- **Not proven:** why Gazelle declined in 140 ms. Capture `GROUP_CALL` from Gazelle (`GCALL-12`); copy `~/.flash/desktop.log` before the
+  next desktop start (it is overwritten).
+- **Device checks owed:** `GCALL-11`…`GCALL-14` (backlog 4l). ERROR-095 stays OPEN.
+- **Files:** `core/calling/.../CallCoordinator.kt`, `FlashGroupCallSession.kt`, `core/messaging/.../RealFlashChatRepository.kt`,
+  `ui/callui/.../FlashGroupVideoGrid.kt`, `MainActivity.kt`, `DesktopShell.kt`.
+- **Uncommitted:** these edits are not committed (the owner has not asked); `git status` before committing.
+
 ## 2026-10-01 — Option A (ADR-063: Co-owners / Admins & Successor on Leave) FIXED IN CODE; unit-tested, NOT device-verified
 - **Current branch:** `dev`
 - **Last verified build:** `c10abce8`

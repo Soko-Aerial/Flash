@@ -1,5 +1,6 @@
 package com.transfer.flash.core.calling
 
+import com.transfer.flash.core.calling.model.FlashCallDirection
 import com.transfer.flash.core.calling.model.FlashCallEndReason
 import com.transfer.flash.core.calling.model.FlashCallState
 import com.transfer.flash.core.calling.protocol.CallFrameCodec
@@ -91,6 +92,64 @@ class CallCoordinatorGroupEndTest {
         advanceTimeBy(2_500L)
         runCurrent()
         assertNull("the ended call's overlay is cleared shortly after", c.activeCall.value)
+    }
+
+    @Test
+    fun `an invite that arrives while an ended group session still holds the slot rings instead of being declined busy`() = runTest {
+        // ERROR-095: the start paths dropped such a zombie, the inbound path did not, so the device answered every group
+        // invite with an instant "busy" decline (140 ms in the report) until the app was restarted.
+        val sent = mutableListOf<Pair<CallWireFrame, String>>()
+        val c = CallCoordinator(
+            localDeviceId = "me-0001",
+            localName = "Me",
+            scope = backgroundScope,
+            sendFrame = { frame, peer ->
+                sent += frame to peer
+                true
+            },
+            isTrustedPeer = { it == host },
+        )
+        val zombie = FlashGroupCallSession(
+            callId = "old-call",
+            groupId = groupId,
+            groupName = "G",
+            direction = FlashCallDirection.INCOMING,
+            video = false,
+            localDeviceId = "me-0001",
+            localName = "Me",
+            scope = backgroundScope,
+            sendFrame = { _, _ -> true },
+            onEnded = {}, // the coordinator is never told: that is what makes it a zombie
+            nowMs = { 1_700_000_000_000L + testScheduler.currentTime },
+        )
+        zombie.startIncomingRinging(peerId = host, callerName = "Host")
+        zombie.onInboundFrame(CallWireFrame.GroupHangup(callId = "old-call", from = host, groupId = groupId), peerId = host)
+        runCurrent()
+        assertTrue("the old call has ended", zombie.isSessionEnded)
+        c.installGroupSessionForTesting(zombie)
+
+        assertTrue(c.onInboundText(host, invite("call-2")))
+        runCurrent()
+
+        assertEquals("the new call rings", "call-2", c.activeCall.value?.callId)
+        assertEquals(FlashCallState.RINGING, c.activeCall.value?.state)
+        assertTrue("and nobody was told this device is busy", sent.none { it.first is CallWireFrame.GroupDecline })
+    }
+
+    @Test
+    fun `a roster member the caller cannot trust is named as left out with the reason, not just dropped`() = runTest {
+        val c = CallCoordinator(
+            localDeviceId = "me-0001",
+            localName = "Me",
+            scope = backgroundScope,
+            sendFrame = { _, _ -> true },
+            isGroupMember = { peer, _ -> peer == "paired" },
+        )
+
+        val callable = c.callMembers(groupId, listOf("me-0001", "paired", "stranger", "paired"), "start")
+
+        assertEquals(listOf("paired"), callable.members)
+        assertEquals(mapOf("stranger" to "Not paired with you"), callable.leftOut)
     }
 
     @Test
