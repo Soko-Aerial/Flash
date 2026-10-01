@@ -92,6 +92,8 @@ fun FlashMessageList(
      * it on messages that pass [FlashMessageInfoMath.isAvailable].
      */
     onOpenMessageInfo: ((FlashMessageUi) -> Unit)? = null,
+    /** ERROR-089: retry a failed outgoing message. */
+    onRetryMessage: (String) -> Unit = {},
 ) {
     val colors = FlashTheme.colors
     val motion = FlashTheme.motion
@@ -158,6 +160,7 @@ fun FlashMessageList(
     val currentOnResumeTransfer by rememberUpdatedState(onResumeTransfer)
     val currentOnCancelTransfer by rememberUpdatedState(onCancelTransfer)
     val currentOnOpenMessageInfo by rememberUpdatedState(onOpenMessageInfo)
+    val currentOnRetryMessage by rememberUpdatedState(onRetryMessage)
     val messageInfoOffered = onOpenMessageInfo != null
 
     val ordered = messages.asReversed()
@@ -252,6 +255,7 @@ fun FlashMessageList(
                     onResumeTransfer = onResumeTransferLambda,
                     onCancelTransfer = onCancelTransferLambda,
                     onOpenMessageInfo = if (messageInfoOffered && FlashMessageInfoMath.isAvailable(message)) onOpenMessageInfoLambda else null,
+                    onRetryMessage = { currentOnRetryMessage(message.id) },
                     isHighlighted = isHighlighted,
                     searchQuery = searchQuery,
                     suppressSenderHeader = !showSenderHeaders,

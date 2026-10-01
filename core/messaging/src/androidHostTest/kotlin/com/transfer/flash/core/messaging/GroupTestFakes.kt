@@ -145,9 +145,16 @@ internal class InMemoryMessageDao : MessageDao {
 
     override suspend fun markDeleted(localId: String, deletedAt: Long) {
         messages[localId]?.takeIf { it.deletedAt == null }?.let {
-            messages[localId] = it.copy(deletedAt = deletedAt)
+            messages[localId] = it.copy(deletedAt = deletedAt, text = "")
             publish()
         }
+    }
+
+    override suspend fun clearReplyPreviews(localId: String) {
+        messages.values.filter { it.replyToId == localId }.forEach {
+            messages[it.localId] = it.copy(replyToPreview = "")
+        }
+        publish()
     }
 
     override suspend fun deleteByConversations(ids: List<String>) {

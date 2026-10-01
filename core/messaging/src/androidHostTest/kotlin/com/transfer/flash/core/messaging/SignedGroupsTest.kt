@@ -1692,6 +1692,64 @@ class SignedGroupsTest {
         assertNull("the open group shows no banner for another group's history", nodes.getValue("dev-b").repo.conversationState.value.groupSync)
     }
 
+    @Test
+    fun `option D continue in new group establishes new owner and preserves history`() = runBlocking {
+        mesh("dev-a", "dev-b", "dev-c")
+        val oldGroupId = createGroup("dev-a", "Sprint Planning", "dev-b", "dev-c")
+        say("dev-a", oldGroupId, "Welcome to sprint planning")
+
+        val repoA = nodes.getValue("dev-a").repo
+        val repoB = nodes.getValue("dev-b").repo
+        val repoC = nodes.getValue("dev-c").repo
+
+        repoA.openConversation(oldGroupId)
+        repoB.openConversation(oldGroupId)
+        settle()
+
+        // Verify conversation states on old group
+        val stateA = repoA.conversationState.value
+        assertTrue("creator can add members", stateA.canAddMembers)
+        assertTrue("creator is group owner", stateA.isGroupOwner)
+        assertTrue("creator can remove members", stateA.canRemoveMembers)
+        assertFalse("creator cannot continue in new group", stateA.canContinueInNewGroup)
+
+        val stateB = repoB.conversationState.value
+        assertFalse("non-owner cannot add members in v2 group", stateB.canAddMembers)
+        assertFalse("non-owner is not group owner", stateB.isGroupOwner)
+        assertFalse("non-owner cannot remove members", stateB.canRemoveMembers)
+        assertTrue("non-owner can continue in new group", stateB.canContinueInNewGroup)
+
+        // Now dev-b continues in new group
+        val newGroupResult = repoB.continueInNewGroup(oldGroupId)
+        assertTrue("continueInNewGroup must succeed: $newGroupResult", newGroupResult is FlashResult.Success)
+        val newGroupId = (newGroupResult as FlashResult.Success).value
+        assertNotEquals("new group has distinct id", oldGroupId, newGroupId)
+
+        settle()
+
+        // dev-b opens new group
+        repoB.openConversation(newGroupId)
+        settle()
+
+        val stateBNew = repoB.conversationState.value
+        assertEquals("new group keeps old title", "Sprint Planning", stateBNew.header.title)
+        assertTrue("dev-b is owner of new group", stateBNew.isGroupOwner)
+        assertTrue("dev-b can add members in new group", stateBNew.canAddMembers)
+        assertTrue("dev-b can remove members in new group", stateBNew.canRemoveMembers)
+        assertFalse("dev-b cannot continue in new group as owner", stateBNew.canContinueInNewGroup)
+
+        // Verify old group still exists on dev-b with old history
+        assertNotNull("old group still in conversationDao", nodes.getValue("dev-b").conversationDao.get(oldGroupId))
+        assertNotNull("old messages still preserved", stored("dev-b", oldGroupId, "Welcome to sprint planning"))
+
+        // dev-c receives the new group
+        val memberDaoC = nodes.getValue("dev-c").memberDao
+        assertNotNull("dev-c is active member in new group", memberDaoC.member(newGroupId, "dev-c"))
+        assertTrue("dev-c active in new group", memberDaoC.member(newGroupId, "dev-c")?.isActive == true)
+        // old owner dev-a was not invited to the new group
+        assertNull("old owner was excluded from new group", memberDaoC.member(newGroupId, "dev-a"))
+    }
+
     // ------------------------------------------------------------------------------ harness: nodes
 
     private class Node(

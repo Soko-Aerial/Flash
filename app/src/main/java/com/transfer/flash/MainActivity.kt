@@ -1623,6 +1623,9 @@ private fun FlashShell(
                     }
                 }
             },
+            onRetryMessage = { messageId ->
+                chatRepository.retryMessage(messageId)
+            },
             onPauseTransfer = { transferId ->
                 engine.transfers?.let { repo ->
                     scope.launch {
@@ -1763,6 +1766,26 @@ private fun FlashShell(
                             "Couldn't leave the group — try again",
                             Toast.LENGTH_SHORT,
                         ).show()
+                    }
+                }
+            },
+            onContinueInNewGroup = { groupId ->
+                scope.launch {
+                    val result = chatRepository.continueInNewGroup(groupId)
+                    when (result) {
+                        is com.transfer.flash.core.common.result.FlashResult.Success -> {
+                            chatRepository.openConversation(result.value)
+                            nav.navigate(FlashDestination.Conversation, conversationId = result.value)
+                        }
+                        is com.transfer.flash.core.common.result.FlashResult.Failure -> {
+                            val errMessage = (result.error as? com.transfer.flash.core.common.result.FlashError.Unknown)?.message
+                                ?: "Couldn't continue in new group"
+                            Toast.makeText(
+                                toastContext,
+                                errMessage,
+                                Toast.LENGTH_SHORT,
+                            ).show()
+                        }
                     }
                 }
             },

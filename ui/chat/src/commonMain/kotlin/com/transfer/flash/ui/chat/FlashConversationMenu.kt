@@ -53,13 +53,18 @@ public object FlashConversationMenuMath {
      * Items for a group conversation. Leave is hidden when the device is the sole member. A device that is no longer a
      * member ([isMember] false: it left, or the owner removed it) can still read, search and mark as unread, but adding
      * members and leaving would both fail, so they are not offered.
+     * [canAddMembers]: only the owner in v2 groups, or active members in legacy groups, can add members (GO-24).
+     * [canContinueInNewGroup]: Option D (GO-23), offers continuing the group under new ownership.
      */
     public fun groupItems(
         canLeave: Boolean,
         isMember: Boolean = true,
+        canAddMembers: Boolean = true,
+        canContinueInNewGroup: Boolean = false,
     ): List<FlashConversationMenuItem> = buildList {
         add(FlashConversationMenuItem.GROUP_INFO)
-        if (isMember) add(FlashConversationMenuItem.ADD_MEMBERS)
+        if (isMember && canAddMembers) add(FlashConversationMenuItem.ADD_MEMBERS)
+        if (isMember && canContinueInNewGroup) add(FlashConversationMenuItem.CONTINUE_IN_NEW_GROUP)
         add(FlashConversationMenuItem.SEARCH)
         add(FlashConversationMenuItem.MARK_UNREAD)
         if (canLeave && isMember) add(FlashConversationMenuItem.LEAVE_GROUP)
@@ -78,6 +83,7 @@ public enum class FlashConversationMenuItem(
     CLEAR_CONVERSATION("Clear conversation", FlashIcons.Delete, isDestructive = true),
     GROUP_INFO("Group info", FlashIcons.Group),
     ADD_MEMBERS("Add members", FlashIcons.Group),
+    CONTINUE_IN_NEW_GROUP("Continue in new group", FlashIcons.Group),
     LEAVE_GROUP("Leave group", FlashIcons.Close, isDestructive = true),
 }
 

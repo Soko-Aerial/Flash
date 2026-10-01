@@ -1084,6 +1084,9 @@ public fun DesktopShell(
                     }
                 }
             },
+            onRetryMessage = { messageId ->
+                chatRepository.retryMessage(messageId)
+            },
             onPauseTransfer = { tid ->
                 engine.transfers?.let { repo ->
                     scope.launch {
@@ -1206,6 +1209,25 @@ public fun DesktopShell(
                             message = "Couldn't leave the group — try again",
                             duration = SnackbarDuration.Short,
                         )
+                    }
+                }
+            },
+            onContinueInNewGroup = { groupId ->
+                scope.launch {
+                    val result = chatRepository.continueInNewGroup(groupId)
+                    when (result) {
+                        is com.transfer.flash.core.common.result.FlashResult.Success -> {
+                            chatRepository.openConversation(result.value)
+                            nav.navigate(FlashDestination.Conversation, conversationId = result.value)
+                        }
+                        is com.transfer.flash.core.common.result.FlashResult.Failure -> {
+                            val errMessage = (result.error as? com.transfer.flash.core.common.result.FlashError.Unknown)?.message
+                                ?: "Couldn't continue in new group"
+                            snackbarHostState.showSnackbar(
+                                message = errMessage,
+                                duration = SnackbarDuration.Short,
+                            )
+                        }
                     }
                 }
             },

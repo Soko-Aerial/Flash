@@ -144,8 +144,14 @@ class RealFlashChatRepositoryTest {
 
         override suspend fun markDeleted(localId: String, deletedAt: Long) {
             messages[localId]?.takeIf { it.deletedAt == null }
-                ?.let { messages[localId] = it.copy(deletedAt = deletedAt) }
+                ?.let { messages[localId] = it.copy(deletedAt = deletedAt, text = "") }
             flow.value = messages.values.filter { it.deletedAt == null }.sortedByDescending { it.sentAt }
+        }
+
+        override suspend fun clearReplyPreviews(localId: String) {
+            messages.values.filter { it.replyToId == localId }.forEach {
+                messages[it.localId] = it.copy(replyToPreview = "")
+            }
         }
 
         override suspend fun deleteByConversations(ids: List<String>) {
@@ -3223,6 +3229,117 @@ class RealFlashChatRepositoryTest {
         repository.onInboundWireFrame(frame, transportPeerId = "peer-a")
 
         assertNull(reactionDao.get("msg-1", "❤️"))
+    }
+
+    @Test
+    fun `retryMessage resets outbox attempts and enqueues failed message`() = runBlocking {
+        val messageDao = FakeMessageDao()
+        val outboxDao = FakeOutboxDao()
+        val repository = newRepository(
+            messageDao = messageDao,
+            outboxDao = outboxDao,
+            trustedPeers = setOf("peer-a"),
+        )
+        // Store a failed message
+        messageDao.insert(
+            MessageEntity(
+                localId = "msg-fail",
+                conversationId = "peer-a",
+                senderId = "my-device-id",
+                senderName = "Kali",
+                text = "Hello retry",
+                sentAt = 1000L,
+                status = "FAILED",
+            )
+        )
+        repository.retryMessage("msg-fail")
+        kotlinx.coroutines.delay(100)
+
+        // Since newRepository default messageSink returns true, drainOutboxOnce successfully sends and updates status to SENT
+        assertEquals("SENT", messageDao.getByLocalId("msg-fail")?.status)
+        val outboxItem = outboxDao.queue["msg-fail"]
+        assertNotNull(outboxItem)
+        // The drain pass claimed the item and sent it, so attempts was incremented from 0 to 1
+        assertEquals(1, outboxItem?.attempts)
+        assertEquals("Hello retry", outboxItem?.payloadJson)
+    }
+
+    @Test
+    fun `inbound message timestamp ahead of clock is clamped`() = runBlocking {
+        val messageDao = FakeMessageDao()
+        val repository = newRepository(
+            messageDao = messageDao,
+            trustedPeers = setOf("peer-a"),
+        )
+        val futureTime = System.currentTimeMillis() + 100_000_000L
+        val frame = MessageWireFrame.TextMessage(
+            localId = "msg-future",
+            conversationId = "my-device-id",
+            senderId = "peer-a",
+            senderName = "Alice",
+            text = "From the future",
+            sentAt = futureTime,
+        )
+        repository.onInboundWireFrame(frame, transportPeerId = "peer-a")
+        kotlinx.coroutines.delay(100)
+
+        val saved = messageDao.getByLocalId("msg-future")
+        assertNotNull(saved)
+        assertTrue(saved!!.sentAt < futureTime)
+    }
+
+    @Test
+    fun `delete for everyone clears reply previews and inserts tombstone`() = runBlocking {
+        val messageDao = FakeMessageDao()
+        val repository = newRepository(
+            messageDao = messageDao,
+            trustedPeers = setOf("peer-a"),
+        )
+        // Insert message that will be quoted
+        messageDao.insert(
+            MessageEntity(
+                localId = "msg-quoted",
+                conversationId = "peer-a",
+                senderId = "peer-a",
+                senderName = "Alice",
+                text = "Secret text",
+                sentAt = 1000L,
+                status = "DELIVERED",
+            )
+        )
+        // Insert reply quoting it
+        messageDao.insert(
+            MessageEntity(
+                localId = "msg-reply",
+                conversationId = "peer-a",
+                senderId = "my-device-id",
+                senderName = "Kali",
+                text = "I saw it",
+                sentAt = 2000L,
+                status = "DELIVERED",
+                replyToId = "msg-quoted",
+                replyToPreview = "Secret text",
+            )
+        )
+        // Inbound delete for everyone from Alice
+        val deleteFrame = MessageWireFrame.DeleteForEveryone(
+            messageId = "msg-quoted",
+            conversationId = "peer-a",
+            from = "peer-a",
+        )
+        repository.onInboundWireFrame(deleteFrame, transportPeerId = "peer-a")
+        kotlinx.coroutines.delay(100)
+
+        // The quoted message is marked deleted and blanked
+        val quoted = messageDao.getByLocalId("msg-quoted")
+        assertNotNull(quoted)
+        assertNotNull(quoted?.deletedAt)
+        assertEquals("", quoted?.text)
+
+        // The reply quoting it has its preview cleared
+        val reply = messageDao.getByLocalId("msg-reply")
+        assertNotNull(reply)
+        assertEquals("", reply?.replyToPreview)
     }
 
     /** Shared construction for the ERROR-034 tests; every DAO is an in-memory fake. */

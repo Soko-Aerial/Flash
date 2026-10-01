@@ -69,4 +69,38 @@ class DesktopEngineSanitizationTest {
         val result = DesktopEngine.sanitizeRelativePath("bad:file*name?.txt")
         assertEquals("bad_file_name_.txt", result)
     }
+
+    @Test
+    fun unicodeCharacters_preserved() {
+        assertEquals("تقرير_2026.pdf", DesktopEngine.sanitizeRelativePath("تقرير_2026.pdf"))
+        assertEquals("文档.docx", DesktopEngine.sanitizeRelativePath("文档.docx"))
+        assertEquals("Café.png", DesktopEngine.sanitizeRelativePath("Café.png"))
+    }
+
+    @Test
+    fun spaces_preserved() {
+        assertEquals("my vacation photo.jpg", DesktopEngine.sanitizeRelativePath("my vacation photo.jpg"))
+    }
+
+    @Test
+    fun windowsReservedNames_prefixed() {
+        assertEquals("_CON.txt", DesktopEngine.sanitizeRelativePath("CON.txt"))
+        assertEquals("_nul", DesktopEngine.sanitizeRelativePath("nul"))
+        assertEquals("_com1.png", DesktopEngine.sanitizeRelativePath("com1.png"))
+    }
+
+    @Test
+    fun longFileName_truncatesPreservingExtension() {
+        val longName = "a".repeat(150) + ".pdf"
+        val result = DesktopEngine.sanitizeRelativePath(longName)
+        assertEquals(120, result.length)
+        assertTrue(result.endsWith(".pdf"))
+        assertEquals("a".repeat(116) + ".pdf", result)
+    }
+
+    @Test
+    fun trailingDotsAndSpaces_trimmed() {
+        assertEquals("file.txt", DesktopEngine.sanitizeRelativePath("file.txt."))
+        assertEquals("file", DesktopEngine.sanitizeRelativePath("file   "))
+    }
 }

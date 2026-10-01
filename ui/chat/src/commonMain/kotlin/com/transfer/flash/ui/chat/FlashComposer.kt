@@ -252,7 +252,11 @@ fun FlashComposer(
                             ) {
                                 BasicTextField(
                                     value = draft,
-                                    onValueChange = onDraftChanged,
+                                    onValueChange = { newDraft ->
+                                        if (newDraft.length <= com.transfer.flash.core.messaging.protocol.GroupPolicy.MAX_MESSAGE_TEXT_LENGTH) {
+                                            onDraftChanged(newDraft)
+                                        }
+                                    },
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .heightIn(min = 20.dp, max = 120.dp)
