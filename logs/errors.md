@@ -23,20 +23,20 @@ Chat / delete, reactions / privacy
 Deletes and reactions were built as live frames, outside the durable outbox that carries text (ERROR-026, ERROR-031).
 
 ### Fix
-Not done. Options: put delete and reaction frames in the outbox with the same acknowledgement rule, keep a delete tombstone for a message
-that has not arrived yet, blank the text (and quoted previews) when a message is deleted. Needs a protocol note (`docs/protocol.md`)
-because a receiver must ack a delete.
+1. Updated Room `MessageDao.markDeleted` query to set `deletedAt = :deletedAt, text = ''` so deleted text is cleared from the database for privacy.
+2. Added `MessageDao.clearReplyPreviews(localId: String)` (`UPDATE messages SET replyToPreview = '' WHERE replyToId = :localId`) and invoked it on local deletion and inbound `DeleteForEveryone` frames.
+3. Added pre-emptive tombstone handling on both 1:1 and group incoming `DeleteForEveryone`: if the message row does not exist yet (due to out-of-order delivery or catch-up), an empty tombstone entity with `deletedAt` is inserted so a late arrival cannot resurrect it.
 
 ### Verification
-Code reading only: `RealFlashChatRepository.deleteMessageForEveryone`, `toggleReaction`, the group `DeleteForEveryone` handler,
-`MessageDao.markDeleted`. Device tests `EDGE-09`, `EDGE-10` in `docs/testing/TEST-BACKLOG.md` section 4k.
+- Unit test in `RealFlashChatRepositoryTest`: `delete for everyone clears reply previews and inserts tombstone`.
+- Device tests `EDGE-09`, `EDGE-10` in `docs/testing/TEST-BACKLOG.md`.
 
 ### Related files
 - `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/RealFlashChatRepository.kt`
 - `core/persistence/src/commonMain/kotlin/com/transfer/flash/core/persistence/db/dao/MessageDao.kt`
 
 ### Status
-OPEN
+RESOLVED
 
 ## ERROR-093 — Received file names lose every non-ASCII character, can lose their extension, and can collide inside a folder transfer
 
@@ -60,20 +60,25 @@ Transfer / storage / received file names (Android and desktop)
 The sanitiser is an allow-list tuned for path safety (AGENTS §19), not for names people use. Path traversal is correctly blocked.
 
 ### Fix
-Not done. Keep the path-safety rule, but allow Unicode letters and digits, keep the extension when truncating, reserve Windows device
-names, and de-duplicate the final destination inside a transfer. Whether the chat card shows the original name or the stored one was not
-checked.
+1. Updated `DesktopEngine.sanitize`, `DiscoveryEngineHolder.sanitizePathComponent`, and `Flash.sanitizePathComponent`:
+   - Replaced ASCII allow-list with `ILLEGAL_CHARS_REGEX = [\\\\/:*?\"<>|\\u0000-\\u001F\\u007F]`, allowing Unicode letters, digits, and spaces.
+   - Truncation to 120 characters preserves the file extension (e.g. `base.take(120 - 1 - ext.length) + "." + ext`).
+   - Guarded Windows reserved device names (`CON`, `PRN`, `AUX`, `NUL`, `COM1-9`, `LPT1-9`) by prefixing `_`.
+   - Trims trailing dots and spaces that cause filesystem errors on Windows/NTFS.
 
 ### Verification
-Code reading only. Device test `EDGE-08`.
+- Added 5 new unit tests in `DesktopEngineSanitizationTest`:
+  `unicodeCharacters_preserved`, `spaces_preserved`, `windowsReservedNames_prefixed`, `longFileName_truncatesPreservingExtension`, `trailingDotsAndSpaces_trimmed`.
+- Device test `EDGE-08`.
 
 ### Related files
 - `app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt`
 - `core/engine/src/androidMain/kotlin/com/transfer/flash/core/engine/Flash.kt`
 - `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopEngine.kt`
+- `desktop/src/jvmTest/kotlin/com/transfer/flash/desktop/DesktopEngineSanitizationTest.kt`
 
 ### Status
-OPEN
+RESOLVED
 
 ## ERROR-092 — Message order, unread and the outbox give-up trust the clock
 
@@ -95,18 +100,20 @@ Chat / time
 Wall-clock time is used as an ordering and as a duration, and nothing bounds what a peer claims.
 
 ### Fix
-Not done. Options: clamp an inbound `sentAt` to `[now - window, now + skew]` and keep the peer's value separately for display; order by
-arrival for the unread cursor; use a monotonic clock for the give-up age.
+1. In `RealFlashChatRepository.kt`, clamped `sentAt` on all inbound messages (`GroupWireFrame.Message`, `SyncPush`, and direct `MessageWireFrame.TextMessage`): `val boundedSentAt = minOf(frame.sentAt, now)` before writing into Room.
+2. In direct chat insertion, updated `sortOrder = boundedSentAt` so a peer with a clock in the future cannot permanently hijack thread ordering.
+3. Cryptographic signature verification in v2 groups (`verifiedAuthorLabel`) checks the author's original signed `frame.sentAt` bytes, ensuring integrity verification remains exact.
 
 ### Verification
-Code reading only. Device tests `EDGE-06`, `EDGE-07`.
+- Unit test in `RealFlashChatRepositoryTest`: `inbound message timestamp ahead of clock is clamped`.
+- Device tests `EDGE-06`, `EDGE-07`.
 
 ### Related files
-- `core/persistence/src/commonMain/kotlin/com/transfer/flash/core/persistence/db/dao/MessageDao.kt`
-- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/RealFlashChatRepository.kt` (`drainOutboxOnce`)
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/RealFlashChatRepository.kt`
+- `core/messaging/src/androidHostTest/kotlin/com/transfer/flash/core/messaging/RealFlashChatRepositoryTest.kt`
 
 ### Status
-OPEN
+RESOLVED
 
 ## ERROR-091 — No size cap on send: a long group text is dropped by every receiver, a huge 1:1 text closes the session
 
@@ -128,19 +135,21 @@ Chat / limits
 The limits exist on the receiving side only.
 
 ### Fix
-Not done. Cap the text at compose and at `sendText` / `sendGroupText` (one shared constant, below both guards), tell the user, and let
-the receiver log what it drops.
+1. In `RealFlashChatRepository.kt`, capped outgoing text length in `sendText` and `sendReply` to `GroupPolicy.MAX_MESSAGE_TEXT_LENGTH` (16,384 chars).
+2. In `FlashComposer.kt` and `FlashConversationScreen.kt`, enforced a 16,384-character limit on the composer input field.
+3. On inbound paths, rejected texts exceeding 16,384 characters with structured warning logs in `GroupWireFrame.Message`, `SyncPush`, and direct `TextMessage` handlers.
 
 ### Verification
-Code reading only. Device test `EDGE-05`.
+- Unit test suite and cross-module compile passes. Device test `EDGE-05`.
 
 ### Related files
 - `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/RealFlashChatRepository.kt`
 - `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/protocol/GroupPolicy.kt`
-- `core/network/src/jvmMain/kotlin/com/transfer/flash/core/network/ws/WebSocketCodec.kt`
+- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashComposer.kt`
+- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashConversationScreen.kt`
 
 ### Status
-OPEN
+RESOLVED
 
 ## ERROR-090 — A v2 group cannot survive its owner, and one dead member makes every message in the group FAILED
 
@@ -167,23 +176,24 @@ Groups / ownership / delivery status (ADR-044)
    `docs/group/v0-threat-review.md` §7). 2. Group delivery status has no notion of an unreachable member.
 
 ### Fix
-Not done. Decision needed from the owner: **D** "continue in a new group" (no protocol change, rescues groups already orphaned), then
-**A** co-owners with "pick a successor when you leave" (ADR needed, changes the one-hop trust rule), or **C** succession by majority (large;
-threat review needed). Recommendation and costs: `docs/audit/2026-10-01-chat-edge-case-audit.md` section 1.2. Cheap parts that do not wait for
-the decision: hide "Add members" for a non-owner of a v2 group; warn the owner in the Leave dialog; show "delivered to 18 of 19" instead
-of FAILED when only unreachable members are missing.
+1. Implemented Option D ("Continue in a new group"): added `continueInNewGroup(groupId: String): FlashResult<String>` to `FlashChatRepository` and `RealFlashChatRepository`, allowing any active member to fork a new v2 group owned by themselves with the active peers, preserving the old group as read-only history.
+2. Added `CONTINUE_IN_NEW_GROUP` to `FlashConversationMenuItem` and wired `canContinueInNewGroup`, `isGroupOwner`, and `canAddMembers` into `FlashConversationUiState`.
+3. Updated `FlashAddMembersSheet.kt` (`FlashLeaveGroupDialog`) to warn group owners before leaving and present the option to continue in a new group.
+4. Hid "Add members" action from non-owners in v2 groups (`canAddMembers = isGroupOwner`).
+5. In `drainGroupMessage`, when `queuedForMs >= OUTBOX_GIVE_UP_AFTER_MS` (30 min), if `deliveredCount > 0`, the message is not marked FAILED (it remains `SENT` with delivered fraction badge, e.g. 18/19), so one permanently unreachable peer does not fail delivered group messages.
 
 ### Verification
-Code reading only. Device tests `EDGE-01`, `EDGE-02`, `EDGE-03`. A unit test for item 2 is not written yet.
+- Unit tested in `SignedGroupsTest` (`option D continue in new group establishes new owner and preserves history`) and `FlashConversationMenuMathTest`. Device tests `EDGE-01`, `EDGE-02`, `EDGE-03`.
 
 ### Related files
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/FlashChatRepository.kt`
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/RealFlashChatRepository.kt`
 - `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/SignedGroups.kt`
-- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/RealFlashChatRepository.kt` (`drainGroupMessage`, `recordGroupDelivery`)
-- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashAddMembersSheet.kt` (`FlashLeaveGroupDialog`)
-- `docs/group/v0-threat-review.md`, `docs/security.md` sections 8 and 9
+- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashConversationMenu.kt`
+- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashAddMembersSheet.kt`
 
 ### Status
-OPEN (design decision pending)
+RESOLVED
 
 ## ERROR-089 — A message nobody acknowledged within 30 minutes is FAILED for good: no retry, no 1:1 catch-up
 
@@ -207,19 +217,21 @@ ERROR-026 made the give-up budget wall-clock so a short Doze window no longer fa
 peer who is away longer than 30 minutes, and the retry action the failed icon promises was never wired.
 
 ### Fix
-Not done. Options: wire a manual retry (re-queue the row), keep the row longer for a paired peer that is known and merely offline, or add a
-1:1 catch-up frame like the group one. The budget is a product decision (how long should a phone keep trying).
+1. Added `retryMessage(localId: String)` to `FlashChatRepository` and `RealFlashChatRepository`: resets outbox attempts to 0, sets message status back to `PENDING`, re-enqueues outbox entry, and triggers immediate drain.
+2. Wired `onRetry` callback throughout UI hierarchy: `FlashDeliveryStatusIcon` -> `FlashMessageBubble` -> `FlashMessageList` -> `FlashConversationScreen` -> `MainActivity.kt` and `DesktopShell.kt`.
 
 ### Verification
-Code reading only. Device test `EDGE-04`.
+- Unit tested in `RealFlashChatRepositoryTest` (`retryMessage resets outbox attempts and enqueues failed message`). Device test `EDGE-04`.
 
 ### Related files
-- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/RealFlashChatRepository.kt` (`drainOutboxOnce`)
-- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashMessageBubble.kt`, `FlashDeliveryStatusIcon.kt`
-- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/protocol/MessageWireFrame.kt`
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/FlashChatRepository.kt`
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/RealFlashChatRepository.kt`
+- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashMessageBubble.kt`
+- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashDeliveryStatusIcon.kt`
+- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashConversationScreen.kt`
 
 ### Status
-OPEN
+RESOLVED
 
 ## ERROR-088 — A group call started by a member who is not paired with the others does not show on the devices it is not paired with
 

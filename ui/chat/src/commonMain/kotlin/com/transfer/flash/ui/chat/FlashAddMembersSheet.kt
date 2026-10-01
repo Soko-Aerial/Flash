@@ -130,6 +130,7 @@ public fun FlashAddMembersSheet(
 public fun FlashLeaveGroupDialog(
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
+    isOwner: Boolean = false,
 ) {
     val colors = FlashTheme.colors
     FlashConfirmHost(
@@ -144,14 +145,18 @@ public fun FlashLeaveGroupDialog(
         },
         text = {
             FlashText(
-                text = "You will stop receiving messages from this group. Your chat history stays on this device.",
+                text = if (isOwner) {
+                    "You created this group. If you leave, no one will be able to add or remove members in this group. Your chat history stays on this device."
+                } else {
+                    "You will stop receiving messages from this group. Your chat history stays on this device."
+                },
                 style = FlashTheme.typography.bodyDefault,
                 color = colors.textSecondary,
             )
         },
         confirmButton = {
             TextButton(onClick = onConfirm) {
-                Text("Leave", color = colors.accentPrimary)
+                Text("Leave", color = colors.textError)
             }
         },
         dismissButton = {

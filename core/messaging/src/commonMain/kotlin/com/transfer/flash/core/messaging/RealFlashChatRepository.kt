@@ -794,6 +794,9 @@ public class RealFlashChatRepository(
                     }
                     val title = conversationEntity.title.ifBlank { conversationId }
                     val ownerName = ownerDisplayName(conversationId, conversationEntity)
+                    val isOwner = conversationEntity.groupCreatedBy == localDeviceId
+                    val isV2 = conversationEntity.groupProto == GroupPolicy.V2_PROTOCOL
+                    val isMemberActive = selfMembership == FlashSelfMembership.Active
                     FlashConversationUiState(
                         header = FlashChatHeaderUiState(
                             title = title,
@@ -818,9 +821,10 @@ public class RealFlashChatRepository(
                                 introducedBy = introducedByOf(member, ownerName),
                             )
                         },
-                        canRemoveMembers = selfMembership == FlashSelfMembership.Active &&
-                            conversationEntity.groupProto == GroupPolicy.V2_PROTOCOL &&
-                            conversationEntity.groupCreatedBy == localDeviceId,
+                        canRemoveMembers = isMemberActive && isV2 && isOwner,
+                        canAddMembers = isMemberActive && (!isV2 || isOwner),
+                        isGroupOwner = isMemberActive && isOwner,
+                        canContinueInNewGroup = isMemberActive && !isOwner,
                         selfMembership = selfMembership,
                         groupSync = syncReceived?.let { FlashGroupSyncUi(receivedCount = it) },
                     ) to Pair(content.newestMessageId, content.newestInboundId)
@@ -1272,6 +1276,31 @@ public class RealFlashChatRepository(
         return FlashResult.Success(Unit)
     }
 
+    override suspend fun continueInNewGroup(groupId: String): FlashResult<String> =
+        withContext(ioDispatcher) { continueInNewGroupLocked(groupId) }
+
+    private suspend fun continueInNewGroupLocked(groupId: String): FlashResult<String> {
+        val oldConv = conversationDao.get(groupId)
+            ?: return FlashResult.Failure(FlashError.Unknown("Unknown group"))
+        if (!oldConv.isGroup) {
+            return FlashResult.Failure(FlashError.Unknown("Not a group conversation"))
+        }
+        val members = groupMemberDao
+            ?: return FlashResult.Failure(FlashError.Unknown("Group storage unavailable"))
+        val active = members.activeMembers(groupId)
+        if (active.none { it.deviceId == localDeviceId }) {
+            return FlashResult.Failure(FlashError.Unknown("You are not an active member of this group"))
+        }
+        val invitees = active
+            .map { it.deviceId }
+            .filter { it != localDeviceId && it != oldConv.groupCreatedBy }
+            .toSet()
+        if (invitees.isEmpty()) {
+            return FlashResult.Failure(FlashError.Unknown("No other active members to continue the group with"))
+        }
+        return createGroupLocked(oldConv.title, invitees)
+    }
+
     private suspend fun createV2GroupLocked(
         signed: SignedGroups,
         groupName: String,
@@ -1456,6 +1485,12 @@ public class RealFlashChatRepository(
     override fun sendText(text: String) {
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return
+        val capped = if (trimmed.length > GroupPolicy.MAX_MESSAGE_TEXT_LENGTH) {
+            FlashLog.w("CHAT", "sendText truncated from ${trimmed.length} to ${GroupPolicy.MAX_MESSAGE_TEXT_LENGTH}")
+            trimmed.take(GroupPolicy.MAX_MESSAGE_TEXT_LENGTH)
+        } else {
+            trimmed
+        }
         val conversationId = activeConversationId ?: return
         val now = timeSource.nowMs()
         val localId = UuidIdGenerator.newId()
@@ -1463,10 +1498,10 @@ public class RealFlashChatRepository(
         scope.launch(ioDispatcher) {
             val conversation = conversationDao.get(conversationId)
             if (conversation?.isGroup == true) {
-                sendGroupText(conversation, trimmed, now, localId, replyToId = null, replyToPreview = null)
+                sendGroupText(conversation, capped, now, localId, replyToId = null, replyToPreview = null)
                 return@launch
             }
-            enqueueDirectText(conversationId, trimmed, now, localId, replyToId = null, replyToPreview = null)
+            enqueueDirectText(conversationId, capped, now, localId, replyToId = null, replyToPreview = null)
             notifyOutboxDrain()
             drainOutboxOnce()
         }
@@ -1475,6 +1510,12 @@ public class RealFlashChatRepository(
     override fun sendReply(text: String, replyToId: String, replyToPreview: String) {
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return
+        val capped = if (trimmed.length > GroupPolicy.MAX_MESSAGE_TEXT_LENGTH) {
+            FlashLog.w("CHAT", "sendReply truncated from ${trimmed.length} to ${GroupPolicy.MAX_MESSAGE_TEXT_LENGTH}")
+            trimmed.take(GroupPolicy.MAX_MESSAGE_TEXT_LENGTH)
+        } else {
+            trimmed
+        }
         val conversationId = activeConversationId ?: return
         val now = timeSource.nowMs()
         val localId = UuidIdGenerator.newId()
@@ -1482,10 +1523,40 @@ public class RealFlashChatRepository(
         scope.launch(ioDispatcher) {
             val conversation = conversationDao.get(conversationId)
             if (conversation?.isGroup == true) {
-                sendGroupText(conversation, trimmed, now, localId, replyToId, replyToPreview)
+                sendGroupText(conversation, capped, now, localId, replyToId, replyToPreview)
                 return@launch
             }
-            enqueueDirectText(conversationId, trimmed, now, localId, replyToId, replyToPreview)
+            enqueueDirectText(conversationId, capped, now, localId, replyToId, replyToPreview)
+            notifyOutboxDrain()
+            drainOutboxOnce()
+        }
+    }
+
+    override fun retryMessage(localId: String) {
+        scope.launch(ioDispatcher) {
+            val message = messageDao.getByLocalId(localId) ?: return@launch
+            if (message.senderId != localDeviceId || message.deletedAt != null) return@launch
+            val now = timeSource.nowMs()
+            messageDao.updateStatusIfUnacknowledged(localId, "PENDING")
+            val isGroup = conversationDao.get(message.conversationId)?.isGroup == true
+            if (isGroup) {
+                val deliveries = groupDeliveryDao
+                if (deliveries != null) {
+                    val pending = deliveries.pendingForMessage(localId)
+                    for (del in pending) {
+                        deliveries.reschedule(localId, del.memberId, "PENDING", now)
+                    }
+                }
+            }
+            outboxDao.enqueue(
+                OutboxEntity(
+                    localId = localId,
+                    attempts = 0,
+                    createdAt = now,
+                    nextAttemptAt = now,
+                    payloadJson = message.text,
+                ),
+            )
             notifyOutboxDrain()
             drainOutboxOnce()
         }
@@ -1992,6 +2063,8 @@ public class RealFlashChatRepository(
                     senderName = label
                     groupSig = frame.signature
                 }
+                val now = timeSource.nowMs()
+                val boundedSentAt = minOf(frame.sentAt, now)
                 val inserted = messageDao.insert(
                     MessageEntity(
                         localId = frame.messageId,
@@ -1999,7 +2072,7 @@ public class RealFlashChatRepository(
                         senderId = frame.from,
                         senderName = senderName,
                         text = frame.text,
-                        sentAt = frame.sentAt,
+                        sentAt = boundedSentAt,
                         status = "DELIVERED",
                         replyToId = frame.replyToId,
                         replyToPreview = frame.replyToPreview,
@@ -2034,9 +2107,26 @@ public class RealFlashChatRepository(
             }
             is GroupWireFrame.DeleteForEveryone -> {
                 if (!isActiveGroupMember(members, frame.groupId, frame.from)) return
-                val message = messageDao.getByLocalId(frame.messageId) ?: return
-                if (message.conversationId != frame.groupId || message.senderId != frame.from) return
-                messageDao.markDeleted(frame.messageId, timeSource.nowMs())
+                val now = timeSource.nowMs()
+                val message = messageDao.getByLocalId(frame.messageId)
+                if (message != null) {
+                    if (message.conversationId != frame.groupId || message.senderId != frame.from) return
+                    messageDao.markDeleted(frame.messageId, now)
+                } else {
+                    messageDao.insert(
+                        MessageEntity(
+                            localId = frame.messageId,
+                            conversationId = frame.groupId,
+                            senderId = frame.from,
+                            senderName = null,
+                            text = "",
+                            sentAt = now,
+                            status = "DELIVERED",
+                            deletedAt = now,
+                        ),
+                    )
+                }
+                messageDao.clearReplyPreviews(frame.messageId)
                 outboxDao.delete(frame.messageId)
             }
             is GroupWireFrame.Bundle -> {
@@ -2529,6 +2619,10 @@ public class RealFlashChatRepository(
             return
         }
         val message = frame.message
+        if (message.text.length > GroupPolicy.MAX_MESSAGE_TEXT_LENGTH) {
+            FlashLog.w("CHAT", "Group SyncPush text exceeds length cap (${message.text.length} > ${GroupPolicy.MAX_MESSAGE_TEXT_LENGTH}), dropping")
+            return
+        }
         // v2: the pusher is only a relay. The message counts only if its named author signed it and is
         // an active member, and the name stored is that member's signed label (fixes F-9 for v2).
         var senderName: String? = message.senderName
@@ -2545,6 +2639,8 @@ public class RealFlashChatRepository(
             senderName = label
             groupSig = message.signature
         }
+        val now = timeSource.nowMs()
+        val boundedSentAt = minOf(message.sentAt, now)
         val inserted = messageDao.insert(
             MessageEntity(
                 localId = message.messageId,
@@ -2552,7 +2648,7 @@ public class RealFlashChatRepository(
                 senderId = message.from,
                 senderName = senderName,
                 text = message.text,
-                sentAt = message.sentAt,
+                sentAt = boundedSentAt,
                 status = "DELIVERED",
                 replyToId = message.replyToId,
                 replyToPreview = message.replyToPreview,
@@ -2732,6 +2828,10 @@ public class RealFlashChatRepository(
             is MessageWireFrame.TextMessage -> {
                 // SENTINEL: Fail closed on claimed-author vs transport-peer mismatch
                 if (transportPeerId != null && frame.senderId != transportPeerId) return
+                if (frame.text.length > GroupPolicy.MAX_MESSAGE_TEXT_LENGTH) {
+                    FlashLog.w("CHAT", "Inbound 1:1 message exceeds length cap (${frame.text.length} > ${GroupPolicy.MAX_MESSAGE_TEXT_LENGTH}), dropping")
+                    return
+                }
                 // conversationId doubles as the transport routing key (a device id). The sender
                 // addressed US by OUR id, so `frame.conversationId` is the receiver's own device id
                 // — threading the message under it would key our reply's routing to ourselves (the
@@ -2739,13 +2839,15 @@ public class RealFlashChatRepository(
                 // device id (`frame.senderId`), which is the remote peer from our side and the id our
                 // outbound sends must target. Mirrors the delivery-receipt routing fix below.
                 val threadId = frame.senderId
+                val now = timeSource.nowMs()
+                val boundedSentAt = minOf(frame.sentAt, now)
                 val entity = MessageEntity(
                     localId = frame.localId,
                     conversationId = threadId,
                     senderId = frame.senderId,
                     senderName = frame.senderName,
                     text = frame.text,
-                    sentAt = frame.sentAt,
+                    sentAt = boundedSentAt,
                     status = "DELIVERED",
                     replyToId = frame.replyToId,
                     replyToPreview = frame.replyToPreview,
@@ -2763,7 +2865,7 @@ public class RealFlashChatRepository(
                         title = peerNameResolver(threadId)?.ifBlank { null }
                             ?: frame.senderName?.ifBlank { null }
                             ?: frame.senderId,
-                        sortOrder = frame.sentAt,
+                        sortOrder = boundedSentAt,
                     )
                 }
                 if (insertedRowId != -1L) {
@@ -2847,9 +2949,26 @@ public class RealFlashChatRepository(
             is MessageWireFrame.DeleteForEveryone -> {
                 val peerId = transportPeerId ?: return
                 if (peerId != frame.from || frame.conversationId != peerId) return
-                val message = messageDao.getByLocalId(frame.messageId) ?: return
-                if (message.conversationId != peerId || message.senderId != frame.from) return
-                messageDao.markDeleted(frame.messageId, timeSource.nowMs())
+                val now = timeSource.nowMs()
+                val message = messageDao.getByLocalId(frame.messageId)
+                if (message != null) {
+                    if (message.conversationId != peerId || message.senderId != frame.from) return
+                    messageDao.markDeleted(frame.messageId, now)
+                } else {
+                    messageDao.insert(
+                        MessageEntity(
+                            localId = frame.messageId,
+                            conversationId = peerId,
+                            senderId = frame.from,
+                            senderName = null,
+                            text = "",
+                            sentAt = now,
+                            status = "DELIVERED",
+                            deletedAt = now,
+                        ),
+                    )
+                }
+                messageDao.clearReplyPreviews(frame.messageId)
                 outboxDao.delete(frame.messageId)
             }
 
@@ -2952,7 +3071,7 @@ public class RealFlashChatRepository(
                 continue
             }
             val conversation = conversationDao.get(message.conversationId)
-            val queuedForMs = now - item.createdAt
+            val queuedForMs = maxOf(0L, now - item.createdAt)
             if (conversation?.isGroup == true) {
                 // The group branch re-arms on the same ladder as the direct one and must tell the loop so,
                 // or its retry waits for the idle net (chat/group sync audit, step 1).
@@ -3034,7 +3153,10 @@ public class RealFlashChatRepository(
         val deliveries = groupDeliveryDao ?: return null
         val sink = groupTransportSink ?: return null
         if (queuedForMs >= OUTBOX_GIVE_UP_AFTER_MS) {
-            messageDao.updateStatusIfUnacknowledged(item.localId, "FAILED")
+            val delivered = deliveries.deliveredCount(item.localId)
+            if (delivered == 0) {
+                messageDao.updateStatusIfUnacknowledged(item.localId, "FAILED")
+            }
             outboxDao.delete(item.localId)
             return null
         }
@@ -3157,15 +3279,23 @@ public class RealFlashChatRepository(
 
     override fun openAttachmentPicker() {}
 
+    private fun escapeSqlLike(query: String): String {
+        return query
+            .replace("\\", "\\\\")
+            .replace("%", "\\%")
+            .replace("_", "\\_")
+    }
+
     override suspend fun searchMessageBodies(query: String): Set<String> {
         val trimmed = query.trim()
         if (trimmed.isEmpty()) return emptySet()
+        val escaped = escapeSqlLike(trimmed)
         // Case-insensitive substring match over ALL message bodies (LIKE is case-insensitive for
         // ASCII in SQLite), newest-first, capped. Collapse to the distinct set of conversations so
         // the chat list can surface a thread whose only match is deep in history (#12). Tombstoned
         // rows are already excluded by the query.
         return kotlinx.coroutines.withContext(ioDispatcher) {
-            messageDao.searchMessages(trimmed, limit = SEARCH_RESULT_LIMIT)
+            messageDao.searchMessages(escaped, limit = SEARCH_RESULT_LIMIT)
                 .asSequence()
                 .map { it.conversationId }
                 .toSet()
@@ -3179,8 +3309,9 @@ public class RealFlashChatRepository(
     ): List<String> {
         val trimmed = query.trim()
         if (trimmed.isEmpty()) return emptyList()
+        val escaped = escapeSqlLike(trimmed)
         return kotlinx.coroutines.withContext(ioDispatcher) {
-            messageDao.searchConversationMessages(conversationId, trimmed, limit)
+            messageDao.searchConversationMessages(conversationId, escaped, limit)
                 .map { it.localId }
         }
     }
@@ -3418,6 +3549,7 @@ public class RealFlashChatRepository(
             // Apply the local tombstone before attempting the network, and always retire a queued
             // message so an older payload cannot be sent after its deletion action.
             messageDao.markDeleted(localId, timeSource.nowMs())
+            messageDao.clearReplyPreviews(localId)
             outboxDao.delete(localId)
 
             if (conversation.isGroup) {

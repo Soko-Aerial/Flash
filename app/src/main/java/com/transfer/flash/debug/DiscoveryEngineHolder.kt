@@ -2342,9 +2342,35 @@ object DiscoveryEngineHolder {
     fun receivedFilesRoot(context: Context): File =
         File(context.applicationContext.getExternalFilesDir(null), RECEIVED_FILES_DIRECTORY)
 
+    private val ILLEGAL_CHARS_REGEX = Regex("[\\\\/:*?\"<>|\\u0000-\\u001F\\u007F]")
+    private val WINDOWS_RESERVED_NAMES = setOf(
+        "CON", "PRN", "AUX", "NUL",
+        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    )
+
     /** Strips anything that could escape the intended directory (path-traversal guard, AGENTS.md §19). */
-    private fun sanitizePathComponent(raw: String): String =
-        raw.replace(Regex("[^A-Za-z0-9._ ()-]"), "_").trim('.').ifBlank { "unnamed" }.take(120)
+    private fun sanitizePathComponent(raw: String): String {
+        val replaced = raw.replace(ILLEGAL_CHARS_REGEX, "_").trimEnd('.', ' ')
+        if (replaced.isBlank() || replaced == "." || replaced == "..") return "unnamed"
+
+        val dotIdx = replaced.indexOf('.')
+        val baseName = if (dotIdx != -1) replaced.substring(0, dotIdx) else replaced
+        val safeBase = if (baseName.uppercase() in WINDOWS_RESERVED_NAMES) "_$replaced" else replaced
+
+        return truncatePreservingExtension(safeBase, 120)
+    }
+
+    private fun truncatePreservingExtension(name: String, maxLen: Int): String {
+        if (name.length <= maxLen) return name
+        val lastDot = name.lastIndexOf('.')
+        if (lastDot > 0 && lastDot < name.length - 1 && (name.length - lastDot) <= 16) {
+            val ext = name.substring(lastDot)
+            val maxBaseLen = maxOf(1, maxLen - ext.length)
+            return name.substring(0, maxBaseLen) + ext
+        }
+        return name.take(maxLen)
+    }
 
     /**
      * Sanitizes a relative file path (potentially with subdirectories from a folder transfer)

@@ -1,5 +1,63 @@
 # Progress Log
 
+## 2026-10-01 — Fixed in code: Chat edge-case suite (Option D, ERROR-089..094, F1-F7, F9); unit-tested and verified
+
+### Worked on
+Implemented solutions for the critical edge cases identified in `docs/audit/2026-10-01-chat-edge-case-audit.md` following user's decision to proceed with Option D ("Continue in a new group") and resolve high/medium severity findings:
+- Option D: "Continue in a new group" to rescue orphaned v2 groups (F1, GO-01..03, GO-23..24, ERROR-090).
+- Dead/unreachable member delivery status (F2, ERROR-090 part 2).
+- Durable outbox retry wiring for failed messages (F3, ERROR-089).
+- Send-side & composer text length limits (F4, ERROR-091).
+- Timestamp clamping against clock skew / future timestamps (F5, ORD-01, ERROR-092).
+- Non-ASCII file name preservation, extension protection, and Windows reserved name safety (F6, TXT-09..11, ERROR-093).
+- Delete-for-everyone privacy (text wiping, reply preview clearing) and pre-emptive tombstones (F7, ERROR-094).
+- Search wildcard character escaping (F9, MSG-16).
+
+### Changed
+- `FlashChatRepository.kt` & `RealFlashChatRepository.kt`:
+  - Added `continueInNewGroup(groupId: String): FlashResult<String>` (forks a new v2 group owned by the caller with active peers).
+  - Added `retryMessage(localId: String)` (resets outbox attempts, sets status to PENDING, re-enqueues outbox, triggers immediate drain).
+  - In `drainGroupMessage`: when `queuedForMs >= OUTBOX_GIVE_UP_AFTER_MS` (30 min), if `deliveredCount > 0`, the message is not marked FAILED (stays `SENT` with delivered fraction, e.g. 18/19).
+  - Outgoing text length in `sendText` / `sendReply` capped to `GroupPolicy.MAX_MESSAGE_TEXT_LENGTH` (16,384 chars).
+  - Inbound text length validated across `GroupWireFrame.Message`, `SyncPush`, and direct `TextMessage`.
+  - Inbound `sentAt` clamped to `minOf(frame.sentAt, now)` for DB storage and `sortOrder`, while author signature verification preserves original signed `sentAt` bytes.
+  - Room `escapeSqlLike` utility escaping `\`, `%`, and `_` before querying.
+  - Delete-for-everyone handler clears reply previews via `MessageDao.clearReplyPreviews` and inserts pre-emptive tombstone if message is not yet in DB.
+- `MessageDao.kt`:
+  - `markDeleted` sets `text = ''` and `deletedAt = :deletedAt`.
+  - Added `clearReplyPreviews(localId: String)` (`UPDATE messages SET replyToPreview = '' WHERE replyToId = :localId`).
+  - Added `ESCAPE '\'` clause to `searchMessages` and `searchConversationMessages`.
+- `FlashComposer.kt` & `FlashConversationScreen.kt`:
+  - Enforced 16,384 character limit in composer input field.
+  - Wired `onRetry` callback in message list.
+- `FlashDeliveryStatusIcon.kt`, `FlashMessageBubble.kt`, `FlashMessageList.kt`:
+  - Wired retry click handler when status is FAILED.
+- `FlashConversationMenu.kt` & `FlashAddMembersSheet.kt`:
+  - Added `CONTINUE_IN_NEW_GROUP` menu item.
+  - Added `canContinueInNewGroup`, `isGroupOwner`, `canAddMembers` checks.
+  - "Add members" hidden for non-owners in v2 groups.
+  - Owner leave dialog warns owner and offers "Continue in a new group".
+- `MainActivity.kt` & `DesktopShell.kt`:
+  - Wired `onContinueInNewGroup` and `onRetryMessage`.
+- `DesktopEngine.kt`, `DiscoveryEngineHolder.kt`, `Flash.kt`:
+  - Replaced ASCII-only regex with `ILLEGAL_CHARS_REGEX = [\\\\/:*?\"<>|\\u0000-\\u001F\\u007F]`, allowing Unicode letters, digits, and spaces.
+  - Truncation to 120 characters preserves the file extension.
+  - Windows reserved device names prefixed with `_`.
+  - Trailing dots/spaces trimmed.
+
+### Verification
+- Full test pass:
+  - `:desktop:jvmTest` (including 5 new tests in `DesktopEngineSanitizationTest`).
+  - `:ui:chat:jvmTest` (including `FlashConversationMenuMathTest`).
+  - `:core:messaging:testAndroidHostTest` (including `SignedGroupsTest` and `RealFlashChatRepositoryTest`).
+  - `:desktop:compileKotlinJvm` and `:app:compileDebugKotlin`.
+  - All 132 tasks successful (0 failures).
+
+### Remaining
+- Option A: Co-owners / Admins & Successor on Leave (needs ADR, role certificate mechanics, UI support).
+- Device verification for `EDGE-01` through `EDGE-10`.
+
+
 ## 2026-10-01 — Edge-case audit of the chat app, and the answer to "what if the group creator is gone" (docs only, nothing run, nothing fixed)
 
 ### Worked on

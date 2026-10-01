@@ -384,6 +384,12 @@ public data class FlashConversationUiState(
      * chats, legacy groups (no signed roster to remove from) and groups someone else owns.
      */
     val canRemoveMembers: Boolean = false,
+    /** Whether this device can add members to the group (owner in v2 groups, active member in legacy groups). */
+    val canAddMembers: Boolean = false,
+    /** True if this device is the owner of the group. */
+    val isGroupOwner: Boolean = false,
+    /** Option D: whether active members can continue/fork this group into a new group (e.g. if the creator left or is gone). */
+    val canContinueInNewGroup: Boolean = false,
     /** Removal ripple: false once this device left the group or the owner removed it; the composer gives way to a notice. */
     val selfMembership: FlashSelfMembership = FlashSelfMembership.Active,
     /** UI-052: non-null while earlier group messages are arriving through catch-up; drives the "catching up" banner. */

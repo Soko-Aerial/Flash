@@ -135,6 +135,10 @@ fun FlashMessageBubble(
      * message, a call row, or a host that cannot supply the recipients.
      */
     onOpenMessageInfo: (() -> Unit)? = null,
+    /**
+     * ERROR-089: tapping a failed delivery status icon retries delivery via [FlashChatRepository.retryMessage].
+     */
+    onRetryMessage: ((String) -> Unit)? = null,
 ) {
     val alignment = if (message.isMine) Alignment.End else Alignment.Start
 
@@ -169,6 +173,7 @@ fun FlashMessageBubble(
                 deliveryStatus = deliveryStatus,
                 searchQuery = searchQuery,
                 onOpenMessageInfo = onOpenMessageInfo,
+                onRetryMessage = onRetryMessage,
             )
         }
 
@@ -203,6 +208,7 @@ private fun FlashBubbleSurface(
     deliveryStatus: (@Composable () -> Unit)?,
     searchQuery: String?,
     onOpenMessageInfo: (() -> Unit)?,
+    onRetryMessage: ((String) -> Unit)? = null,
 ) {
     val colors = FlashTheme.colors
     val typography = FlashTheme.typography
@@ -398,6 +404,7 @@ private fun FlashBubbleSurface(
                 deliveryStatus = deliveryStatus,
                 onOpenActions = onOpenActions,
                 onOpenMessageInfo = onOpenMessageInfo,
+                onRetryMessage = onRetryMessage,
             )
         }
     }
@@ -438,6 +445,7 @@ private fun FlashMessageTimestampRow(
     deliveryStatus: (@Composable () -> Unit)? = null,
     onOpenActions: (() -> Unit)? = null,
     onOpenMessageInfo: (() -> Unit)? = null,
+    onRetryMessage: ((String) -> Unit)? = null,
 ) {
     val colors = FlashTheme.colors
     val typography = FlashTheme.typography
@@ -499,7 +507,12 @@ private fun FlashMessageTimestampRow(
                     deliveryStatus()
                 } else {
                     val status = message.deliveryStatus ?: com.transfer.flash.core.messaging.model.FlashMessageStatus.Read
-                    FlashDeliveryStatusIcon(status = status)
+                    FlashDeliveryStatusIcon(
+                        status = status,
+                        onRetry = if (status == com.transfer.flash.core.messaging.model.FlashMessageStatus.Failed && onRetryMessage != null) {
+                            { onRetryMessage(message.id) }
+                        } else null,
+                    )
                 }
             }
         }

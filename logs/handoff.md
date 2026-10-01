@@ -1,5 +1,32 @@
 # Current Handoff
 
+## 2026-10-01 — Chat edge-case fixes implemented (Option D, ERROR-089..094, F1-F7, F9); unit-tested, NOT device-verified
+- **Current branch:** `dev`
+- **Working features / fixes implemented:**
+  - Option D ("Continue in a new group"): Any active member can fork a new v2 group owned by themselves with the active peers when the owner is absent; old history preserved as read-only.
+  - Group ownership guards: Owner warning on leave, non-owners cannot see "Add members" button.
+  - Group delivery status with dead/offline members: messages stay `SENT` with delivered fraction (e.g. 18/19) instead of failing after 30 min.
+  - Durable outbox retry: `retryMessage` wired through repository and UI (`FlashDeliveryStatusIcon`, `FlashMessageBubble`, `FlashConversationScreen`, Android and Desktop hosts).
+  - Send-side & composer text limit: 16,384 characters capped on draft and send, inbound oversized texts rejected cleanly.
+  - Timestamp clamping: Inbound `sentAt` clamped to `now` for DB storage and `sortOrder`, while author signature verification preserves original signed `sentAt` bytes.
+  - File name sanitization: Non-ASCII characters and spaces preserved, extension preserved during 120-char truncation, Windows reserved names prefixed (`_`).
+  - Privacy: Delete-for-everyone wipes message text, clears reply previews, and inserts pre-emptive tombstones against out-of-order delivery.
+  - Search: Room SQL LIKE queries escape `\`, `%`, and `_`.
+- **Verified (unit):**
+  - `:desktop:jvmTest` (including 5 new tests in `DesktopEngineSanitizationTest`).
+  - `:ui:chat:jvmTest` (including `FlashConversationMenuMathTest`).
+  - `:core:messaging:testAndroidHostTest` (including `SignedGroupsTest` and `RealFlashChatRepositoryTest`).
+  - `:desktop:compileKotlinJvm` and `:app:compileDebugKotlin`.
+  - All 132 tasks successful (0 failures).
+- **In progress / Next task:**
+  - Option A: Co-owners / Admins & Successor on Leave (needs ADR, role certificate mechanics, UI support).
+- **Device checks owed:** `EDGE-01` through `EDGE-10` in `docs/testing/TEST-BACKLOG.md` section 4k.
+- **Files most relevant:**
+  - `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/SignedGroups.kt`
+  - `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/protocol/GroupSignatureRules.kt`
+  - `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/RealFlashChatRepository.kt`
+  - `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashAddMembersSheet.kt`
+
 ## 2026-10-01 (later) — Edge-case audit written; nothing fixed, group-ownership decision pending
 - **Done:** `docs/audit/2026-10-01-chat-edge-case-audit.md` (190 cases, owner loss in section 1), ERROR-089...094 in `logs/errors.md`,
   device tests `EDGE-01`...`EDGE-18` in `docs/testing/TEST-BACKLOG.md` section 4k. Docs only; **uncommitted**.

@@ -61,4 +61,24 @@ class FlashConversationMenuMathTest {
         assertFalse(out.contains(FlashConversationMenuItem.ADD_MEMBERS))
         assertFalse(out.contains(FlashConversationMenuItem.LEAVE_GROUP))
     }
+
+    @Test
+    fun nonOwnerOfV2GroupCannotAddMembers() {
+        val memberItems = FlashConversationMenuMath.groupItems(canLeave = true, isMember = true, canAddMembers = false)
+        assertFalse(memberItems.contains(FlashConversationMenuItem.ADD_MEMBERS), "non-owner must not see Add members")
+        assertTrue(memberItems.contains(FlashConversationMenuItem.GROUP_INFO))
+        assertTrue(memberItems.contains(FlashConversationMenuItem.LEAVE_GROUP))
+    }
+
+    @Test
+    fun continueInNewGroupOfferedWhenPermitted() {
+        val continueItems = FlashConversationMenuMath.groupItems(
+            canLeave = true,
+            isMember = true,
+            canAddMembers = false,
+            canContinueInNewGroup = true,
+        )
+        assertTrue(continueItems.contains(FlashConversationMenuItem.CONTINUE_IN_NEW_GROUP))
+        assertFalse(continueItems.contains(FlashConversationMenuItem.ADD_MEMBERS))
+    }
 }

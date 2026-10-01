@@ -172,9 +172,13 @@ public interface MessageDao {
     @Query("UPDATE messages SET editedAt = :editedAt WHERE localId = :localId")
     public suspend fun markEdited(localId: String, editedAt: Long)
 
-    /** Tombstone only — never deletes the row (history pagination must stay stable). */
-    @Query("UPDATE messages SET deletedAt = :deletedAt WHERE localId = :localId AND deletedAt IS NULL")
+    /** Tombstone only — never deletes the row (history pagination must stay stable). Blanks text for privacy (ERROR-094). */
+    @Query("UPDATE messages SET deletedAt = :deletedAt, text = '' WHERE localId = :localId AND deletedAt IS NULL")
     public suspend fun markDeleted(localId: String, deletedAt: Long)
+
+    /** Blanks the quote preview of any reply pointing to a deleted message (ERROR-094). */
+    @Query("UPDATE messages SET replyToPreview = '' WHERE replyToId = :localId")
+    public suspend fun clearReplyPreviews(localId: String)
 
     /** Hard-delete every message of the given conversations. Used only by the chat-list bulk
      *  delete (the whole thread is going away), not by per-message tombstoning. */
@@ -185,9 +189,10 @@ public interface MessageDao {
      * Full-history content search (UI-search): case-insensitive substring match over message
      * `text` across ALL conversations, newest first. Tombstoned rows are excluded. Voice-meta
      * marker rows (`vmsg:` blobs) never match real queries, so no extra filter is needed.
+     * Uses ESCAPE '\' so % and _ can be searched literally (EDGE-14).
      */
     @Query(
-        "SELECT * FROM messages WHERE deletedAt IS NULL AND text LIKE '%' || :query || '%' " +
+        "SELECT * FROM messages WHERE deletedAt IS NULL AND text LIKE '%' || :query || '%' ESCAPE '\\' " +
             "ORDER BY sentAt DESC, localId DESC LIMIT :limit",
     )
     public suspend fun searchMessages(query: String, limit: Int): List<MessageEntity>
@@ -195,10 +200,11 @@ public interface MessageDao {
     /**
      * In-conversation content search: case-insensitive substring match over message
      * `text` within a specific conversation, newest first. Tombstoned rows are excluded.
+     * Uses ESCAPE '\' so % and _ can be searched literally (EDGE-14).
      */
     @Query(
         "SELECT * FROM messages WHERE conversationId = :conversationId AND deletedAt IS NULL " +
-            "AND text LIKE '%' || :query || '%' ORDER BY sentAt DESC, localId DESC LIMIT :limit",
+            "AND text LIKE '%' || :query || '%' ESCAPE '\\' ORDER BY sentAt DESC, localId DESC LIMIT :limit",
     )
     public suspend fun searchConversationMessages(
         conversationId: String,

@@ -161,6 +161,11 @@ fun FlashConversationScreen(
      * send from whatever the receiver already has. Default no-op keeps previews inert.
      */
     onRetryTransfer: (transferId: String) -> Unit = {},
+    /**
+     * ERROR-089: retry a failed outgoing message from its chat bubble. [messageId] is the localId;
+     * host routes it to [FlashChatRepository.retryMessage]. Default no-op keeps previews inert.
+     */
+    onRetryMessage: (messageId: String) -> Unit = {},
     /** Pause an active attachment transfer. */
     onPauseTransfer: (transferId: String) -> Unit = {},
     /** Resume a paused attachment transfer. */
@@ -210,6 +215,11 @@ fun FlashConversationScreen(
      * repository's leaveGroup and navigates back on success.
      */
     onLeaveGroup: (groupId: String) -> Unit = {},
+    /**
+     * Option D (GO-23): Continue group under new ownership. Creates a new group with the active members
+     * of [groupId] and navigates to it.
+     */
+    onContinueInNewGroup: ((groupId: String) -> Unit)? = null,
     /**
      * ADR-044 V2: run pairing with a group member the owner introduced (they show "Added by <owner>"). Null hides the
      * Verify action; the host routes to the same pairing flow as the Nearby screen.
@@ -354,6 +364,8 @@ fun FlashConversationScreen(
         FlashConversationMenuMath.groupItems(
             canLeave = state.header.memberCount > 1,
             isMember = state.selfMembership == FlashSelfMembership.Active,
+            canAddMembers = state.canAddMembers,
+            canContinueInNewGroup = state.canContinueInNewGroup && onContinueInNewGroup != null,
         )
     } else {
         FlashConversationMenuMath.directItems(canRevokeTrust = isPeerTrusted && onRevokePeerTrust != null)
@@ -556,6 +568,8 @@ fun FlashConversationScreen(
                                                     conversationId?.let { onClearConversation(it) }
                                                 FlashConversationMenuItem.GROUP_INFO -> showGroupMembers = true
                                                 FlashConversationMenuItem.ADD_MEMBERS -> showAddMembers = true
+                                                FlashConversationMenuItem.CONTINUE_IN_NEW_GROUP ->
+                                                    conversationId?.let { onContinueInNewGroup?.invoke(it) }
                                                 FlashConversationMenuItem.LEAVE_GROUP ->
                                                     conversationId?.let { showLeaveConfirm = true }
                                             }
@@ -627,9 +641,12 @@ fun FlashConversationScreen(
             } else FlashComposer(
                 draft = draft,
                 onDraftChanged = {
-                    draft = it
+                    val capped = if (it.length > com.transfer.flash.core.messaging.protocol.GroupPolicy.MAX_MESSAGE_TEXT_LENGTH) {
+                        it.take(com.transfer.flash.core.messaging.protocol.GroupPolicy.MAX_MESSAGE_TEXT_LENGTH)
+                    } else it
+                    draft = capped
                     // #11: fire only on transitions (not every keystroke) to keep the wire quiet.
-                    val typingNow = it.isNotBlank()
+                    val typingNow = capped.isNotBlank()
                     if (typingNow != isTypingSignalled) {
                         isTypingSignalled = typingNow
                         onTypingChanged(typingNow)
@@ -783,6 +800,7 @@ fun FlashConversationScreen(
                 onCancelTransfer = { _, file ->
                     onCancelTransfer(file.id)
                 },
+                onRetryMessage = onRetryMessage,
                 onOpenMessageInfo = if (messageInfoOffered) { msg -> messageInfoId = msg.id } else null,
                 highlightedMessageId = highlightedMessageId,
                 peerTypingName = if (state.header.presence != FlashPeerPresence.Offline) {
@@ -947,6 +965,7 @@ fun FlashConversationScreen(
     }
     if (showLeaveConfirm && conversationId != null) {
         FlashLeaveGroupDialog(
+            isOwner = state.isGroupOwner,
             onConfirm = {
                 showLeaveConfirm = false
                 onLeaveGroup(conversationId)

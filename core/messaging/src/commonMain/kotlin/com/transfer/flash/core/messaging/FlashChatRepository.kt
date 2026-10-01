@@ -19,6 +19,12 @@ public interface FlashChatRepository {
     public fun closeConversation()
     public fun sendText(text: String)
 
+    /**
+     * Retry sending a previously failed message (#21, ERROR-089).
+     * Re-inserts the message into the outbox with attempts reset and now as createdAt.
+     */
+    public fun retryMessage(localId: String) {}
+
     /** Creates an ad-hoc trusted group. Phase 1 allows at most six members including this device. */
     public suspend fun createGroup(name: String, memberIds: Set<String>): FlashResult<String> =
         FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Groups unavailable"))
@@ -40,6 +46,14 @@ public interface FlashChatRepository {
 
     /** Real roster for the currently requested group; lightweight implementations remain empty. */
     public suspend fun groupMembers(groupId: String): List<FlashGroupMemberUi> = emptyList()
+
+    /**
+     * Option D (GO-23): creates a new group owned by this device containing all active, paired members
+     * of [groupId] (excluding the previous owner or departed members). The old group remains intact as
+     * historical record. Returns the new group ID on success.
+     */
+    public suspend fun continueInNewGroup(groupId: String): FlashResult<String> =
+        FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Groups unavailable"))
 
     /**
      * Message Info (UI-051): who has read, received or not yet received one group message this device sent, observed
