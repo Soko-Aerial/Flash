@@ -1,5 +1,41 @@
 # Progress Log
 
+## 2026-10-01 — Fixed in code: Option A (ADR-063: Co-owners / Admins & Successor on Leave); unit-tested and verified
+
+### Worked on
+Implemented Option A from `docs/audit/2026-10-01-chat-edge-case-audit.md` (ADR-063) after Option D:
+- Owner can promote active members to admins (`promoteAdmin`) and demote them back (`demoteAdmin`).
+- Admins receive permission to add members (`addGroupMembers`) and remove regular members (`removeGroupMember`).
+- Admins are subject to strict privilege separation: cannot promote fellow admins, cannot remove the group founder, and cannot remove other admins.
+- Owner leaving the group can name an active successor admin via `leaveGroup(groupId, successorId)` with UI selection dialog; the successor is promoted to admin before the founder exits, allowing the group roster to continue being managed indefinitely.
+- Wire compatibility preserved: `MemberCert.ROLE_ADMIN = "admin"` serializes cleanly into `certBytes` and maps directly to Room's existing `role: String` column without schema migrations.
+- Dynamic two-hop trust delegation: inbound bundles verify admin certs via `adminLookup` against owner-signed certs and install vouches for admin-introduced members.
+
+### Changed
+- `docs/decisions.md`: Added **ADR-063** documenting co-owners/admins, two-hop delegation, privilege boundaries, and successor mechanics.
+- `MemberCert.kt`: Added `ROLE_ADMIN = "admin"`.
+- `GroupSignatureRules.kt`: Added `adminLookup: ((String) -> ByteArray?)?` to `checkCert`, validated `ROLE_ADMIN`, and enforced admin privilege limits (cannot issue admin, cannot remove owner/admin).
+- `SignedGroups.kt`: Added `promoteAdmin`, `demoteAdmin`, `leave(groupId, successorId)`. Updated `addMembers` and `removeMember` to accept caller role `ROLE_ADMIN`. In `onBundle`, extracted dynamic `adminKeys` map from cert chain and passed to `checkCert`.
+- `FlashChatRepository.kt` & `RealFlashChatRepository.kt`: Added `promoteAdmin`, `demoteAdmin`, overloaded `leaveGroup(groupId, successorId)`. Exposed `isGroupAdmin`, `canPromoteAdmin`, and updated `canAddMembers = isOwner || isAdmin` and `canRemoveMembers = isOwner || isAdmin` in `FlashConversationUiState`.
+- `FlashGroupMemberUi.kt`: Added `FlashMemberRole.Admin` and mapped `"admin"` role in `toMemberUi`.
+- `FlashGroupMembersSheet.kt`: Added "Make Admin" / "Dismiss Admin" buttons for owner. Updated `FlashGroupMembersMath.canRemove` for admin permissions.
+- `FlashAddMembersSheet.kt`: Updated `FlashLeaveGroupDialog` with successor selection list, radio buttons, and `onConfirmWithSuccessor`.
+- `FlashConversationScreen.kt`: Threaded `onPromoteGroupAdmin`, `onDemoteGroupAdmin`, and `onLeaveGroupWithSuccessor` callbacks.
+- `MainActivity.kt` & `DesktopShell.kt`: Wired admin promotion, demotion, and successor leave callbacks to `chatRepository`.
+- `GroupSignatureRulesTest.kt`: Added 6 unit tests covering admin cert issuance, member cert issuance by admin, admin privilege guards, and unauthorized issuer rejections.
+- `SignedGroupsTest.kt`: Added 2 end-to-end tests: `owner promotes admin and admin adds and removes member` and `owner leaves group naming a successor admin`.
+
+### Verification
+- Full test pass:
+  - `:core:messaging:testAndroidHostTest` (all 378 tests passed, including `GroupSignatureRulesTest` and `SignedGroupsTest`).
+  - `:ui:chat:jvmTest` (all tests passed).
+  - `:desktop:jvmTest` (all tests passed).
+  - `:desktop:compileKotlinJvm` and `:app:compileDebugKotlin` (clean compilation).
+- Device checks owed: `EDGE-01`, `EDGE-02`, `EDGE-02b` in `docs/testing/TEST-BACKLOG.md`.
+
+### Remaining
+- Device verification for `EDGE-01` through `EDGE-10`.
+
 ## 2026-10-01 — Fixed in code: Chat edge-case suite (Option D, ERROR-089..094, F1-F7, F9); unit-tested and verified
 
 ### Worked on

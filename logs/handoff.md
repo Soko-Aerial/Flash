@@ -1,31 +1,35 @@
 # Current Handoff
 
-## 2026-10-01 — Chat edge-case fixes implemented (Option D, ERROR-089..094, F1-F7, F9); unit-tested, NOT device-verified
+## 2026-10-01 — Option A (ADR-063: Co-owners / Admins & Successor on Leave) FIXED IN CODE; unit-tested, NOT device-verified
 - **Current branch:** `dev`
-- **Last verified build:** `d2b392d`
 - **Working features / fixes implemented:**
-  - Option D ("Continue in a new group"): Any active member can fork a new v2 group owned by themselves with the active peers when the owner is absent; old history preserved as read-only.
-  - Group ownership guards: Owner warning on leave, non-owners cannot see "Add members" button.
-  - Group delivery status with dead/offline members: messages stay `SENT` with delivered fraction (e.g. 18/19) instead of failing after 30 min.
-  - Durable outbox retry: `retryMessage` wired through repository and UI (`FlashDeliveryStatusIcon`, `FlashMessageBubble`, `FlashConversationScreen`, Android and Desktop hosts).
-  - Send-side & composer text limit: 16,384 characters capped on draft and send, inbound oversized texts rejected cleanly.
-  - Timestamp clamping: Inbound `sentAt` clamped to `now` for DB storage and `sortOrder`, while author signature verification preserves original signed `sentAt` bytes.
-  - File name sanitization: Non-ASCII characters and spaces preserved, extension preserved during 120-char truncation, Windows reserved names prefixed (`_`).
-  - Privacy: Delete-for-everyone wipes message text, clears reply previews, and inserts pre-emptive tombstones against out-of-order delivery.
-  - Search: Room SQL LIKE queries escape `\`, `%`, and `_`.
+  - **Option A (ADR-063):**
+    - Co-owners / admins: Owner can promote active members to admin (`promoteAdmin`) or demote back (`demoteAdmin`).
+    - Admin privileges: Admins can add new members and remove regular members.
+    - Privilege boundaries: Admins cannot promote fellow admins, cannot remove the owner, and cannot remove other admins.
+    - Successor on leave: When the owner leaves, the leave dialog allows selecting a successor admin; the successor is promoted before owner leaves.
+    - Two-hop delegation: Dynamic admin keys extracted during bundle verification, validating admin-issued certs and installing vouches for new members.
+    - Wire compatibility: `MemberCert.ROLE_ADMIN = "admin"` serializes cleanly into `certBytes` without wire breaks.
+  - **Option D ("Continue in a new group"):** Any active member can fork a new v2 group with active peers; old group preserved as read-only.
+  - **Edge-case audit fixes (F1–F7, F9):**
+    - F2 (ERROR-090 part 2): Resilient group delivery status with dead/offline members (fractional badges, e.g. 18/19).
+    - F3 (ERROR-089): Durable outbox retry (`retryMessage`).
+    - F4 (ERROR-091): Send-side and composer 16,384 text length capping.
+    - F5 (ERROR-092): Inbound `sentAt` clamping against future clocks.
+    - F6 (ERROR-093): Non-ASCII file name preservation, extension preservation, Windows reserved name protection.
+    - F7 (ERROR-094): Delete-for-everyone privacy (text wiping, reply preview clearing, pre-emptive tombstones).
+    - F9 (MSG-16): Search wildcard escaping (`\`, `%`, `_`).
 - **Verified (unit):**
-  - `:desktop:jvmTest` (including 5 new tests in `DesktopEngineSanitizationTest`).
-  - `:ui:chat:jvmTest` (including `FlashConversationMenuMathTest`).
-  - `:core:messaging:testAndroidHostTest` (including `SignedGroupsTest` and `RealFlashChatRepositoryTest`).
-  - `:desktop:compileKotlinJvm` and `:app:compileDebugKotlin`.
-  - All 132 tasks successful (0 failures).
-- **In progress / Next task:**
-  - Option A: Co-owners / Admins & Successor on Leave (needs ADR, role certificate mechanics, UI support).
+  - `:core:messaging:testAndroidHostTest` (all 378 tests passed, including `GroupSignatureRulesTest` and `SignedGroupsTest`).
+  - `:ui:chat:jvmTest` (all tests passed).
+  - `:desktop:jvmTest` (all tests passed).
+  - `:desktop:compileKotlinJvm` and `:app:compileDebugKotlin` (clean compilation).
 - **Device checks owed:** `EDGE-01` through `EDGE-10` in `docs/testing/TEST-BACKLOG.md` section 4k.
 - **Files most relevant:**
   - `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/SignedGroups.kt`
   - `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/protocol/GroupSignatureRules.kt`
   - `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/RealFlashChatRepository.kt`
+  - `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashGroupMembersSheet.kt`
   - `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashAddMembersSheet.kt`
 
 ## 2026-10-01 (later) — Edge-case audit written; nothing fixed, group-ownership decision pending

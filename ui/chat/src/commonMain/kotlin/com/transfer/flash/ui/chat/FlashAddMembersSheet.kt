@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -21,6 +22,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import com.transfer.flash.core.messaging.model.FlashGroupMemberUi
+import com.transfer.flash.core.messaging.model.FlashMemberRole
 import com.transfer.flash.ui.avatar.FlashAvatar
 import com.transfer.flash.ui.icons.FlashIcon
 import com.transfer.flash.ui.icons.FlashIcons
@@ -131,8 +134,17 @@ public fun FlashLeaveGroupDialog(
     onConfirm: () -> Unit,
     onDismiss: () -> Unit,
     isOwner: Boolean = false,
+    eligibleSuccessors: List<FlashGroupMemberUi> = emptyList(),
+    onConfirmWithSuccessor: ((successorId: String?) -> Unit)? = null,
 ) {
     val colors = FlashTheme.colors
+    var selectedSuccessorId by remember(eligibleSuccessors) {
+        mutableStateOf<String?>(
+            eligibleSuccessors.firstOrNull { it.role == FlashMemberRole.Admin }?.id
+                ?: eligibleSuccessors.firstOrNull()?.id,
+        )
+    }
+
     FlashConfirmHost(
         onDismiss = onDismiss,
         containerColor = colors.backgroundSurface,
@@ -144,18 +156,52 @@ public fun FlashLeaveGroupDialog(
             )
         },
         text = {
-            FlashText(
-                text = if (isOwner) {
-                    "You created this group. If you leave, no one will be able to add or remove members in this group. Your chat history stays on this device."
-                } else {
-                    "You will stop receiving messages from this group. Your chat history stays on this device."
-                },
-                style = FlashTheme.typography.bodyDefault,
-                color = colors.textSecondary,
-            )
+            Column(verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8)) {
+                FlashText(
+                    text = if (isOwner && eligibleSuccessors.isNotEmpty()) {
+                        "You created this group. Choose a successor admin before leaving so the group roster can continue to be managed:"
+                    } else if (isOwner) {
+                        "You created this group. If you leave, no one will be able to add or remove members in this group. Your chat history stays on this device."
+                    } else {
+                        "You will stop receiving messages from this group. Your chat history stays on this device."
+                    },
+                    style = FlashTheme.typography.bodyDefault,
+                    color = colors.textSecondary,
+                )
+                if (isOwner && eligibleSuccessors.isNotEmpty()) {
+                    eligibleSuccessors.take(5).forEach { candidate ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { selectedSuccessorId = candidate.id }
+                                .padding(vertical = FlashSpacing.space4),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+                        ) {
+                            RadioButton(
+                                selected = selectedSuccessorId == candidate.id,
+                                onClick = { selectedSuccessorId = candidate.id },
+                            )
+                            FlashText(
+                                text = candidate.name + if (candidate.role == FlashMemberRole.Admin) " (Admin)" else "",
+                                style = FlashTheme.typography.bodyDefault,
+                                color = colors.textPrimary,
+                            )
+                        }
+                    }
+                }
+            }
         },
         confirmButton = {
-            TextButton(onClick = onConfirm) {
+            TextButton(
+                onClick = {
+                    if (onConfirmWithSuccessor != null) {
+                        onConfirmWithSuccessor(selectedSuccessorId)
+                    } else {
+                        onConfirm()
+                    }
+                },
+            ) {
                 Text("Leave", color = colors.textError)
             }
         },

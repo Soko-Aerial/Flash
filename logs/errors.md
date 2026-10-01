@@ -181,16 +181,22 @@ Groups / ownership / delivery status (ADR-044)
 3. Updated `FlashAddMembersSheet.kt` (`FlashLeaveGroupDialog`) to warn group owners before leaving and present the option to continue in a new group.
 4. Hid "Add members" action from non-owners in v2 groups (`canAddMembers = isGroupOwner`).
 5. In `drainGroupMessage`, when `queuedForMs >= OUTBOX_GIVE_UP_AFTER_MS` (30 min), if `deliveredCount > 0`, the message is not marked FAILED (it remains `SENT` with delivered fraction badge, e.g. 18/19), so one permanently unreachable peer does not fail delivered group messages.
+6. Implemented Option A (ADR-063: Co-owners / Admins & Successor on Leave): added `MemberCert.ROLE_ADMIN = "admin"`, two-hop trust delegation in `GroupSignatureRules`, owner promotion/demotion actions (`promoteAdmin`, `demoteAdmin`), successor selection dialog on owner leave (`leaveGroup(groupId, successorId)`), and admin privilege boundaries (admins cannot promote admins, cannot remove founder/admins, but can add and remove regular members).
 
 ### Verification
-- Unit tested in `SignedGroupsTest` (`option D continue in new group establishes new owner and preserves history`) and `FlashConversationMenuMathTest`. Device tests `EDGE-01`, `EDGE-02`, `EDGE-03`.
+- Unit tested in `SignedGroupsTest` (`option D continue in new group establishes new owner and preserves history`, `owner promotes admin and admin adds and removes member`, `owner leaves group naming a successor admin`), `GroupSignatureRulesTest` (`anOwnerCanIssueAnAdminCert`, `anAdminCanIssueAMemberCert`, `anAdminCannotIssueAnotherAdminCert`, `anAdminCannotRemoveOwnerOrAdmin`, `anAdminCanRemoveARegularMember`, `anUnauthorizedIssuerIsRejected`), and `FlashConversationMenuMathTest`. Device tests `EDGE-01`, `EDGE-02`, `EDGE-03`.
 
 ### Related files
 - `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/FlashChatRepository.kt`
 - `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/RealFlashChatRepository.kt`
 - `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/SignedGroups.kt`
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/protocol/GroupSignatureRules.kt`
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/protocol/MemberCert.kt`
+- `docs/decisions.md` (ADR-063)
 - `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashConversationMenu.kt`
 - `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashAddMembersSheet.kt`
+- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashGroupMembersSheet.kt`
+- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashConversationScreen.kt`
 
 ### Status
 RESOLVED

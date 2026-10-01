@@ -388,6 +388,10 @@ public data class FlashConversationUiState(
     val canAddMembers: Boolean = false,
     /** True if this device is the owner of the group. */
     val isGroupOwner: Boolean = false,
+    /** ADR-063: true if this device is an active admin of the group. */
+    val isGroupAdmin: Boolean = false,
+    /** ADR-063: true if this device can promote/demote admins in this group (owner only). */
+    val canPromoteAdmin: Boolean = false,
     /** Option D: whether active members can continue/fork this group into a new group (e.g. if the creator left or is gone). */
     val canContinueInNewGroup: Boolean = false,
     /** Removal ripple: false once this device left the group or the owner removed it; the composer gives way to a notice. */
