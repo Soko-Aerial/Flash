@@ -14,7 +14,7 @@
   unwired; 3 s dial budget unmeasured (ERROR-087 / ERROR-088 "Not fixed").
 - **Committed together on 2026-10-01 at the owner's request ("comit them together"):** one commit on `dev` holds ERROR-086/085/087/088 and
   the other session's edits that shared files with them (friendly-name propagation, group attachments and reactions, WS close, call video
-  surface, catch-up banner animation), plus the new test files and docs. The commit hash is in the line below. The commit was not pushed.
+  surface, catch-up banner animation), plus the new test files and docs. **Commit: `af191108`** on `dev` (not pushed; this hash line was added in a follow-up docs commit, since a commit cannot name itself).
 - **My new files (untracked):** `ConversationReadStateTest.kt`, `ConversationRowReadStateJvmTest.kt`, `CallCoordinatorGroupReachTest.kt`,
   `FlashGroupCallReachTest.kt` (plus the earlier `FlashGroupCallEndTest.kt`, `CallCoordinatorGroupEndTest.kt`, `FlashCallBusyPeersTest.kt`).
 - **Recommended next task:** run section 4j with two phones and the desktop (about 45 minutes), starting with `GCALL-08` in STANDARD and ECO,
