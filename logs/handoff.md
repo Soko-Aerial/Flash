@@ -2,6 +2,7 @@
 
 ## 2026-10-01 — Option A (ADR-063: Co-owners / Admins & Successor on Leave) FIXED IN CODE; unit-tested, NOT device-verified
 - **Current branch:** `dev`
+- **Last verified build:** `c10abce8`
 - **Working features / fixes implemented:**
   - **Option A (ADR-063):**
     - Co-owners / admins: Owner can promote active members to admin (`promoteAdmin`) or demote back (`demoteAdmin`).
