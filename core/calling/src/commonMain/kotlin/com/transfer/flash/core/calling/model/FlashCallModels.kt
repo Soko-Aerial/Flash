@@ -192,6 +192,12 @@ public data class FlashCallParticipantUi(
      * session could be dialed yet). The caller sees "Not reachable yet" instead of "Invited".
      */
     public val reachable: Boolean = true,
+    /**
+     * Why this device cannot call the participant at all (ERROR-095), for example "Not paired with you": a member of
+     * the group this device left out of the call because nothing lets it trust them. Shown instead of the state word,
+     * so a caller sees who is missing and why instead of a call that quietly leaves someone out.
+     */
+    public val note: String? = null,
 )
 
 /** This device's view of one participant's video in a group call (G3 request protocol). */

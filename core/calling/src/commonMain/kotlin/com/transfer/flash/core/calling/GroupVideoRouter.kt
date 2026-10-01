@@ -148,6 +148,7 @@ internal class GroupVideoRouter(
     private val clock: () -> Long,
     private val speakerHoldMs: Long = 2_000L,
     private val stepUpMs: Long = 5_000L,
+    private val requestRetryMs: Long = REQUEST_RETRY_MS,
 ) {
     sealed interface Effect {
         data class Send(val frame: CallWireFrame, val peerId: String) : Effect
@@ -166,7 +167,13 @@ internal class GroupVideoRouter(
 
     private class Watcher(val seq: Long, val quality: Int, val focus: Boolean, val requestedAt: Long)
 
-    private class Asked(val seq: Long, val quality: Int, val focus: Boolean, var granted: Boolean = false)
+    private class Asked(
+        val seq: Long,
+        val quality: Int,
+        val focus: Boolean,
+        val sentAt: Long,
+        var granted: Boolean = false,
+    )
 
     private val capability = HashMap<String, Capability>()
 
@@ -265,12 +272,14 @@ internal class GroupVideoRouter(
         val now = clock()
         val existing = watchers[peerId]
         when {
-            existing != null -> watchers[peerId] = Watcher(frame.seq, frame.quality, frame.focus, now)
+            // Before the existing-watcher case: a camera that is off keeps nobody, whoever asks again.
             cameraOff -> {
+                if (watchers.remove(peerId) != null) adjustLevel(now)
                 turnedDown += peerId
                 out += deny(peerId, frame.seq, VideoDenyReason.CAMERA_OFF)
                 return out + sendingChanges()
             }
+            existing != null -> watchers[peerId] = Watcher(frame.seq, frame.quality, frame.focus, now)
             !limits().acceptNew -> {
                 turnedDown += peerId
                 out += deny(peerId, frame.seq, VideoDenyReason.THERMAL)
@@ -335,9 +344,24 @@ internal class GroupVideoRouter(
         return stop + roomAnnouncements() + reconcile()
     }
 
+    /**
+     * A camera that is off is sent to nobody: switching it off turns every current watcher down
+     * (`camera`) and stops their encodings, instead of leaving them watching black frames that
+     * still cost an encoder and bandwidth per copy. Each is remembered as turned down, so switching
+     * the camera on again announces the room to them and they ask afresh. An old client cannot be
+     * denied and keeps getting the frames it always did.
+     */
     fun setCameraOff(off: Boolean): List<Effect> {
         cameraOff = off
-        return if (off) emptyList() else roomAnnouncements()
+        if (!off) return roomAnnouncements()
+        val out = mutableListOf<Effect>()
+        watchers.entries.toList().forEach { (peerId, watcher) ->
+            out += deny(peerId, watcher.seq, VideoDenyReason.CAMERA_OFF)
+            turnedDown += peerId
+        }
+        watchers.clear()
+        adjustLevel(clock())
+        return out + sendingChanges()
     }
 
     fun setLocalSpeaking(speaking: Boolean) {
@@ -405,8 +429,12 @@ internal class GroupVideoRouter(
         val present = participants().filter { it != localId }
         val eligible = present.filter { capability[it] == Capability.REQUESTS && it !in blocked }
         val ordered = (listOfNotNull(pinned, followed).filter { it in eligible } + eligible).distinct()
-        val want = ordered.take(limit.receive.coerceAtLeast(0))
+        // With room for one video the screen shows only the pinned person: while that person has turned the
+        // request down the tile says so, and a fallback video would be decoded for nobody to see.
+        val pinDenied = limit.receive <= 1 && pinned?.let { it in blocked } == true
+        val want = if (pinDenied) emptyList() else ordered.take(limit.receive.coerceAtLeast(0))
         val out = mutableListOf<Effect>()
+        val now = clock()
         asked.keys.toList().filter { it !in want }.forEach { peerId ->
             asked.remove(peerId)
             out += Effect.Send(CallWireFrame.VideoRelease(callId, localId, nextSeq()), peerId)
@@ -414,9 +442,13 @@ internal class GroupVideoRouter(
         want.forEach { peerId ->
             val focus = peerId == pinned
             val current = asked[peerId]
-            if (current == null || current.focus != focus || current.quality != limit.quality) {
+            // A request or its answer can be lost (the peer's session was down for a moment), and nothing else
+            // would ever ask again: one still unanswered after [requestRetryMs] is sent afresh, under a new
+            // number, so the sender treats it as the current ask and an answer to the old one is ignored.
+            val stale = current != null && !current.granted && now - current.sentAt >= requestRetryMs
+            if (current == null || current.focus != focus || current.quality != limit.quality || stale) {
                 val seq = nextSeq()
-                asked[peerId] = Asked(seq, limit.quality, focus)
+                asked[peerId] = Asked(seq, limit.quality, focus, now)
                 out += Effect.Send(CallWireFrame.VideoRequest(callId, localId, seq, limit.quality, focus), peerId)
             }
         }
@@ -483,5 +515,8 @@ internal class GroupVideoRouter(
     private companion object {
         const val OFF = 0
         const val FULL = -1
+
+        /** How long a request waits for its grant or deny before it is asked again. */
+        const val REQUEST_RETRY_MS = 5_000L
     }
 }

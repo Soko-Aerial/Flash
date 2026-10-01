@@ -135,6 +135,22 @@ class SignedGroupsTest {
     }
 
     @Test
+    fun `a group is not created as legacy for an invitee that is simply not connected`() = runBlocking {
+        // ERROR-095: an offline device reports level 1 because nothing is known about it, and the group used to be made
+        // legacy without a word; a legacy group can never call a member the caller is not paired with.
+        level["dev-c"] = 1
+        mesh("dev-a", "dev-b", "dev-c")
+        keyless += "dev-c" // no live session to dev-c
+        val result = nodes.getValue("dev-a").repo.createGroup("Offline one", setOf("dev-b", "dev-c"))
+
+        assertTrue("create must fail: $result", result is FlashResult.Failure)
+        val message = ((result as FlashResult.Failure).error as FlashError.Unknown).message
+        assertTrue("the owner is told whom to wait for: $message", message.contains("Cy") && !message.contains("Bo") && message.contains("online"))
+        assertTrue("nothing was written", nodes.getValue("dev-a").conversationDao.conversations.isEmpty())
+        assertTrue("nothing was sent", outbound.none { it.frame is GroupWireFrame })
+    }
+
+    @Test
     fun `a legacy group and a v2 group coexist and each keeps its own rules`() = runBlocking {
         level["dev-c"] = 1
         mesh("dev-a", "dev-b", "dev-c")

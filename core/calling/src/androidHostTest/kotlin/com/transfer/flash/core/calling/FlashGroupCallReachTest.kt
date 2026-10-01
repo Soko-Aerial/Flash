@@ -2,6 +2,7 @@ package com.transfer.flash.core.calling
 
 import com.transfer.flash.core.calling.model.FlashCallDirection
 import com.transfer.flash.core.calling.model.FlashCallParticipantState
+import com.transfer.flash.core.calling.model.FlashGroupCallLimits
 import com.transfer.flash.core.calling.protocol.CallWireFrame
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.TestScope
@@ -100,6 +101,36 @@ class FlashGroupCallReachTest {
     }
 
     @Test
+    fun `a member the caller cannot call is shown with the reason, gets no frame and has no leg`() = runTest {
+        // ERROR-095: a legacy group has no way to trust a member this device is not paired with.
+        val s = session()
+        s.markMediaAcquiredForTesting()
+        reachable += "a"
+
+        assertTrue(s.startOutgoing(listOf("a"), unavailable = mapOf("q" to "Not paired with you", "me" to "x", "a" to "y")))
+        runCurrent()
+        tick()
+
+        val q = s.state.value.participants.filter { it.peerId == "q" }
+        assertEquals("one tile for the member that cannot be called", 1, q.size)
+        assertEquals("Not paired with you", q.single().note)
+        assertEquals(FlashCallParticipantState.INVITED, q.single().state)
+        assertEquals(false, q.single().reachable)
+        assertEquals("a callable member never gets a note, and neither does this device", 2, s.state.value.participants.size)
+        assertTrue(s.state.value.participants.filter { it.peerId != "q" }.all { it.note == null })
+        assertEquals("it is not a leg", null, s.getLegStateForTesting("q"))
+        assertTrue("nothing is sent to it, not an invite and not a presence tick", sent.none { it.second == "q" })
+
+        // It joins through somebody that can reach it: it is a participant like any other now.
+        s.addJoinedLegForTesting("q", FlashCallParticipantState.CONNECTED)
+        s.onInboundFrame(CallWireFrame.GroupPresence(callId = callId, from = "a", groupId = groupId, callerName = "G", video = false), peerId = "a")
+        runCurrent()
+        val after = s.state.value.participants.filter { it.peerId == "q" }
+        assertEquals(1, after.size)
+        assertEquals(null, after.single().note)
+    }
+
+    @Test
     fun `an unreached invitee is offered the call only while it would still be ringing`() = runTest {
         val s = session()
         s.markMediaAcquiredForTesting()
@@ -151,6 +182,111 @@ class FlashGroupCallReachTest {
 
         assertFalse("never announces to itself", sent.any { it.second == "me" })
         assertEquals("the inviter once", 1, presencesTo("host"))
+    }
+
+    // ---------------------------------------------------------------- ERROR-096: devices in the same call that never connect
+
+    private fun presenceFrom(from: String) = CallWireFrame.GroupPresence(callId = callId, from = from, groupId = groupId, callerName = "G", video = false)
+
+    private fun acceptsTo(peer: String) = sent.count { (f, p) -> f is CallWireFrame.GroupAccept && p == peer }
+
+    @Test
+    fun `a presence from a member this device has no leg for connects it once this device is in the call`() = runTest {
+        // The 2026-10-01 log: the desktop accepted a call whose other participant had joined while it rang, was never told
+        // (the inviter's relayed join did not arrive) and so built no leg to it; that participant's presence was ignored.
+        val s = session(FlashCallDirection.INCOMING)
+        s.startIncomingRinging(peerId = "host", callerName = "Host", members = listOf("host", "me", "z"))
+        s.markMediaAcquiredForTesting()
+        s.markConnectingForTesting()
+        assertEquals("only the inviter has a leg", null, s.getLegStateForTesting("z"))
+
+        s.onInboundFrame(presenceFrom("z"), peerId = "z")
+        runCurrent()
+
+        assertEquals("z is in the call: it has a leg and is connecting", FlashCallParticipantState.CONNECTING, s.getLegStateForTesting("z"))
+    }
+
+    @Test
+    fun `a presence adds no leg while this device is still ringing, when relayed, or when the call is full`() = runTest {
+        val ringing = session(FlashCallDirection.INCOMING)
+        ringing.startIncomingRinging(peerId = "host", callerName = "Host", members = listOf("host", "me", "z"))
+        ringing.onInboundFrame(presenceFrom("z"), peerId = "z")
+        runCurrent()
+        assertEquals("a ringing device is not in the call yet: no connection to build", null, ringing.getLegStateForTesting("z"))
+
+        val joined = session(FlashCallDirection.INCOMING)
+        joined.startIncomingRinging(peerId = "host", callerName = "Host", members = listOf("host", "me", "z"))
+        joined.markMediaAcquiredForTesting()
+        joined.markConnectingForTesting()
+        joined.onInboundFrame(presenceFrom("z"), peerId = "host") // relayed: sent by someone else
+        runCurrent()
+        assertEquals("only a presence the member sent itself says it is in the call", null, joined.getLegStateForTesting("z"))
+
+        val full = session(FlashCallDirection.INCOMING)
+        full.startIncomingRinging(peerId = "host", callerName = "Host", members = emptyList())
+        full.markMediaAcquiredForTesting()
+        full.markConnectingForTesting()
+        (1..FlashGroupCallLimits.maxParticipants(video = false)).forEach { full.addJoinedLegForTesting("p$it", FlashCallParticipantState.CONNECTED) }
+        full.onInboundFrame(presenceFrom("late"), peerId = "late")
+        runCurrent()
+        assertEquals("a full call gives no tile to the member it turns away", null, full.getLegStateForTesting("late"))
+        assertTrue("and tells it", sent.any { it.first is CallWireFrame.GroupFull && it.second == "late" })
+    }
+
+    @Test
+    fun `accepting tells every other member the call was offered to, directly, and nobody twice`() = runTest {
+        val s = session(FlashCallDirection.INCOMING)
+        s.startIncomingRinging(peerId = "host", callerName = "Host", members = listOf("host", "me", "c", "d", "c"))
+
+        // What accept() does after it told the legs: the host already has its GroupAccept, so it is skipped.
+        s.announceAcceptToOtherMembers(skip = setOf("host"))
+        runCurrent()
+
+        assertEquals(1, acceptsTo("c"))
+        assertEquals(1, acceptsTo("d"))
+        assertEquals("the inviter is told by accept() itself", 0, acceptsTo("host"))
+        assertFalse("never itself", sent.any { it.second == "me" })
+    }
+
+    @Test
+    fun `an answerer leg that gets no offer tells the peer it is in the call, escalating, and stops after three`() = runTest {
+        val s = session() // "me" < "z": z must offer, this device waits for it
+        s.addSettingUpLegForTesting("z", pcCreatedAtMs = BASE, heardAtMs = BASE + 1_000L) // z's presence keeps arriving
+        s.markConnectingForTesting()
+        s.armPresenceAnnouncement()
+        runCurrent()
+        assertEquals("not at once", 0, acceptsTo("z"))
+
+        advanceTimeBy(7_900L)
+        runCurrent()
+        assertEquals("not before it has waited", 0, acceptsTo("z"))
+
+        advanceTimeBy(300L) // 8.2 s
+        runCurrent()
+        assertEquals("after 8 s of silence the peer is told once", 1, acceptsTo("z"))
+
+        advanceTimeBy(8_000L) // 16.2 s
+        runCurrent()
+        assertEquals(2, acceptsTo("z"))
+
+        advanceTimeBy(40_000L)
+        runCurrent()
+        assertEquals("bounded", 3, acceptsTo("z"))
+        assertEquals("and the leg is not torn down meanwhile: z is alive", FlashCallParticipantState.CONNECTING, s.getLegStateForTesting("z"))
+    }
+
+    @Test
+    fun `the offerer side never nudges, the peer is waiting for its offer not the other way round`() = runTest {
+        val s = session() // "a" < "me": this device offers
+        s.addSettingUpLegForTesting("a", pcCreatedAtMs = BASE, heardAtMs = BASE + 1_000L)
+        s.markConnectingForTesting()
+        s.armPresenceAnnouncement()
+        runCurrent()
+
+        advanceTimeBy(30_000L)
+        runCurrent()
+
+        assertEquals(0, acceptsTo("a"))
     }
 
     companion object {

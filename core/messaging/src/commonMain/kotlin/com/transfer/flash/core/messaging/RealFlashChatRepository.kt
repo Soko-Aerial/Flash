@@ -1106,8 +1106,19 @@ public class RealFlashChatRepository(
         // ADR-044 V1: a new group is v2 when this device can sign and every invitee advertised the
         // level on its live session; otherwise it is created exactly as before (legacy).
         val signed = signedGroups
-        if (signed != null && memberIds.all { peerGroupProtocol(it) >= GroupPolicy.V2_PROTOCOL }) {
-            return createV2GroupLocked(signed, groupName, memberIds)
+        if (signed != null) {
+            // ERROR-095: peerGroupProtocol answers 1 for a device with no live session, which means "not known",
+            // not "an old build". Such a group used to be created as legacy without a word, and a legacy group
+            // cannot call a member the caller is not paired with, for good. Only a device seen on a live session
+            // that reports the old level is a reason to create a legacy group.
+            val old = memberIds.filter { peerGroupProtocol(it) < GroupPolicy.V2_PROTOCOL }
+            if (old.isEmpty()) return createV2GroupLocked(signed, groupName, memberIds)
+            val unknown = old.filter { peerIdentityKey(it).let { key -> key == null || key.isEmpty() } }
+            if (unknown.isNotEmpty()) {
+                FlashLog.w("CHAT", "Group not created: no live session to $unknown to learn whether they support signed groups")
+                return FlashResult.Failure(FlashError.Unknown(membersOfflineMessage(unknown)))
+            }
+            FlashLog.i("CHAT", "Group created as legacy: $old are on a build without signed groups")
         }
         // Legacy groups keep their old limit: every shipped codec rejects a longer legacy roster.
         if (!GroupPolicy.validMemberIds(allMembers, localDeviceId)) {
@@ -2647,13 +2658,20 @@ public class RealFlashChatRepository(
     /** syncId → the device that requested the round (pushes and acks are unicast to it). */
     private val syncRequesters = SyncMap<String, String>()
 
-    private fun MessageEntity.toSyncMessage() = GroupWireFrame.Message(
-        groupId = conversationId,
-        messageId = localId,
-        from = senderId,
-        senderName = senderName ?: senderId,
-        sentAt = sentAt,
-        text = if (attachmentTransferId != null) attachmentLabel() else text,
+    private fun MessageEntity.toSyncMessage() = GroupWireFrame.Message(
+
+        groupId = conversationId,
+
+        messageId = localId,
+
+        from = senderId,
+
+        senderName = senderName ?: senderId,
+
+        sentAt = sentAt,
+
+        text = if (attachmentTransferId != null) attachmentLabel() else text,
+
         replyToId = replyToId,
         replyToPreview = replyToPreview,
         signature = groupSig,
@@ -3962,6 +3980,13 @@ public class RealFlashChatRepository(
             diff < 86400_000 -> "${diff / 3600_000}h"
             else -> platformFormatMonthDay(millis)
         }
+    }
+
+    /** Why a group was not created while an invitee is offline (ERROR-095): the names, so the owner knows whom to wait for. */
+    private fun membersOfflineMessage(offline: List<String>): String {
+        val names = offline.joinToString(", ") { peerNameResolver(it)?.takeIf { name -> name.isNotBlank() } ?: it }
+        return "Wait until $names show as online, then try again. A group made while someone is offline " +
+            "can't include them in calls."
     }
 
     private companion object {

@@ -78,6 +78,16 @@ class FlashGroupVideoGridTest {
     }
 
     @Test
+    fun `a member the caller cannot call reads the reason, not Invited`() {
+        // ERROR-095: the note wins over the state word.
+        val p = FlashCallParticipantUi(
+            peerId = "p", name = "P", state = FlashCallParticipantState.INVITED, reachable = false, note = "Not paired with you",
+        )
+        assertEquals("Not paired with you", participantStatusLabel(p))
+        assertEquals("Invited", participantStatusLabel(p.copy(note = null, reachable = true)))
+    }
+
+    @Test
     fun `the compact main tile falls back from the core's choice to a live video to the first person`() {
         val a = FlashCallParticipantUi(peerId = "a", name = "A")
         val b = FlashCallParticipantUi(peerId = "b", name = "B", video = FlashParticipantVideo.RECEIVING)

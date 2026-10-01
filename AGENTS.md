@@ -986,6 +986,24 @@ Android's look preserved or improved).
   26 gaps, 63 not checked), ERROR-089...094 (all OPEN) and device tests `EDGE-01`...`EDGE-18` (backlog section 4k). Answers the owner's
   "what if the group creator is gone": the group keeps chatting but its roster is frozen; **the fix path (D, then A) is the owner's decision, so
   write no ownership code until it is made**.
+- **Fixed in code 2026-10-01, unit-tested and mutation-checked, NOT device-verified (ERROR-095 stays OPEN):** ERROR-095 / ADR-064 (a group call
+  from a caller not paired with every member left them out silently: a legacy group has no trust path to them, and creation silently
+  made legacy groups while members were offline. Creation now refuses an offline invitee by name, the call screen shows "Not paired with
+  you", Android toasts a call that cannot be placed, and an ended group session no longer answers invites "busy"). An existing legacy
+  group stays limited: make a new group. Device checks `GCALL-11`...`GCALL-14` in `docs/testing/TEST-BACKLOG.md` section 4l.
+- **Fixed in code 2026-10-01, unit-tested and mutation-checked, NOT device-verified (ERROR-096 stays OPEN):** ERROR-096 / ADR-065 (a group
+  call member that joined late was never connected to an earlier joiner when the inviter's one relayed `GroupJoin` did not reach it: the
+  higher-id device never offered and the lower-id leg waited CONNECTING for the whole call. Accepting now tells every other invited
+  member directly, a presence adopts a missing leg, and an answerer that gets no offer nudges its peer 3 times). Two causes are **not
+  proven** (why the relay was missing; why the Android sent no presence in the captured window): capture from before the accept on
+  every device. Device checks `GCALL-15`...`GCALL-17` in `docs/testing/TEST-BACKLOG.md` section 4m.
+- **Fixed in code 2026-10-01, unit-tested and mutation-checked, NOT device-verified (ERROR-097 stays OPEN):** ERROR-097 / ADR-066 (another AI's
+  group-video audit checked claim by claim: 9 real defects fixed, the rest wrong, by design or deliberately not applied. Camera off stops
+  current watchers, a lost video request is asked again after 5 s, a departed peer's late request adds no watcher, a denied pin in compact
+  mode asks nobody else, a muted mic is never a talker, the encoder floor fits the copy and drops on every voice-priority rung, every group
+  leg has its own voice-priority governor, a tile composes a native surface only while it has a picture, and a leg `Disconnected` for 10 s is
+  rebuilt). Not changed on purpose: the CPU threshold, LOW-tier capacity, legacy-peer compatibility. Device checks `GVID-01`...`GVID-07`
+  in `docs/testing/TEST-BACKLOG.md` section 4n; measurement `MEAS-09` added.
 - **Adaptive UI upgrade** (`docs/migration/ADAPTIVE-UI-PLAN.md`): code exists for AD-1 (UI-scale density multiplier, persisted), AD-2 (automatic list-pane width + a 640×480 dp minimum window; **no draggable splitter**, AD-D3 still open), AD-3 (conversation in the detail pane on both hosts), AD-4 (keyboard shortcuts only; pointer idioms and AD-D5 selection not done), AD-5 (580 dp bubble cap), AD-6 (Android navigation rail ≥ 600 dp and two-pane layout; width measured manually, no fold-posture support; AD-D4 not formally answered) and part of AD-7 (desktop keeps the open conversation across tab switches). None of it is device-verified.
 
 ## Not Yet Implemented

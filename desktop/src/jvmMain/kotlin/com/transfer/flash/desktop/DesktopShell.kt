@@ -1760,9 +1760,12 @@ public fun DesktopShell(
                             chatRepository.openConversation(groupId)
                             nav.navigate(FlashDestination.Conversation, conversationId = groupId)
                         } else {
+                            // The repository's own reason when it has one (ERROR-095: a member that is offline).
+                            val reason = ((result as? com.transfer.flash.core.common.result.FlashResult.Failure)?.error
+                                as? com.transfer.flash.core.common.result.FlashError.Unknown)?.message
                             snackbarHostState.showSnackbar(
-                                message = "Couldn't create the group — check that every member is paired",
-                                duration = SnackbarDuration.Short,
+                                message = reason ?: "Couldn't create the group — check that every member is paired",
+                                duration = SnackbarDuration.Long,
                             )
                         }
                     }

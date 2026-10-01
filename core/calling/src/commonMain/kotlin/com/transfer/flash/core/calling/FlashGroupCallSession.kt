@@ -103,6 +103,11 @@ public class FlashGroupCallSession(
      * stats tick so turning it on mid-call takes effect within a second or two.
      */
     private val smallerVideoForMany: () -> Boolean = { false },
+    /**
+     * The user's "Prioritise voice quality" setting (D8, default on), read on every stats tick: when on, a leg whose link
+     * is bad gives up video before audio suffers ([CallQualityGovernor]).
+     */
+    private val prioritiseVoice: () -> Boolean = { true },
     /** Wall clock for the leg-liveness bookkeeping; injectable so tests can run on virtual time. */
     private val nowMs: () -> Long = { SystemTimeSource.nowMs() },
 ) : FlashCallMedia {
@@ -248,6 +253,10 @@ public class FlashGroupCallSession(
     public val isSessionEnded: Boolean get() = isEnded
     public fun countConnectedParticipants(): Int = countConnectedLegs()
     private var soloWaitingJob: Job? = null
+
+    /** Members the caller could not call, by device id, with the reason shown on their tile (see [startOutgoing]). */
+    @Volatile
+    private var unavailableNotes: Map<String, String> = emptyMap()
     private var dialTimeoutJob: Job? = null
     private var ringTimeoutJob: Job? = null
     private var connectDeadlineJob: Job? = null
@@ -295,6 +304,19 @@ public class FlashGroupCallSession(
         var inviteExpected: Boolean = false,
         /** The invite went out on a live session. Until it has, the presence tick offers it again while the call is set up. */
         var inviteDelivered: Boolean = false,
+        /** Times this device re-sent its join to a peer that never offered (ERROR-096); bounded by [MAX_OFFER_NUDGES]. */
+        var offerNudges: Int = 0,
+        /** When the last such re-send went out. */
+        var lastNudgeAtMs: Long = 0L,
+        /** D8 for groups: decides how much of this leg's video is given up to keep voice intelligible. One per leg, one link each. */
+        val governor: CallQualityGovernor = CallQualityGovernor(),
+        /** The rung [governor] last chose; [tuneVideoSender] applies it, including to a rebuilt connection's new sender. */
+        var concession: VideoConcession = VideoConcession.FULL,
+        /** Inbound packet counters at the previous stats sample, for the per-interval loss the governor needs. */
+        var lastLost: Long = 0L,
+        var lastReceived: Long = 0L,
+        /** The signaling session to this peer is down; [onSignalingRestored] owns that recovery, not the connection watchdog. */
+        var signalingLost: Boolean = false,
     )
 
     internal fun getLegStateForTesting(peerId: String): FlashCallParticipantState? = legs[peerId]?.state
@@ -310,6 +332,14 @@ public class FlashGroupCallSession(
         isMediaAcquired = true
         refreshUiState()
     }
+
+    /** Test hook: one quality sample for [peerId]'s leg goes to its voice-priority governor and the result is applied. */
+    internal suspend fun applyVoicePriorityForTesting(peerId: String, sample: CallQualitySample) {
+        val leg = legs[peerId] ?: return
+        applyVoicePriority(listOf(leg to sample))
+    }
+
+    internal fun concessionForTesting(peerId: String): VideoConcession? = legs[peerId]?.concession
 
     /** Test hook: the call is connected (what the first leg reaching CONNECTED does). */
     internal fun markActiveForTesting() {
@@ -367,11 +397,21 @@ public class FlashGroupCallSession(
         }
     }
 
-    /** Starts an outgoing group call, sending invites to all initial members. */
-    public suspend fun startOutgoing(initialMemberIds: List<String>): Boolean {
+    /**
+     * Starts an outgoing group call, sending invites to all initial members.
+     *
+     * [unavailable] names the members of the group this device could not build a leg for, with the reason (ERROR-095:
+     * not paired, so nothing lets it trust them). They are not legs and never get a frame; they only show on the
+     * caller's participant list with the reason, so a missing member is visible instead of silently left out.
+     */
+    public suspend fun startOutgoing(
+        initialMemberIds: List<String>,
+        unavailable: Map<String, String> = emptyMap(),
+    ): Boolean {
         val invitees = initialMemberIds.filter { it != localDeviceId }.distinct()
         sessionMutex.withLock {
             if (isEnded) return false
+            unavailableNotes = unavailable.filterKeys { it != localDeviceId && it !in invitees }
             announceMembers = invitees
             inviteRetryUntilMs = nowMs() + RING_TIMEOUT_MS
             invitees.forEach { memberId ->
@@ -478,19 +518,11 @@ public class FlashGroupCallSession(
         coroutineScope {
             currentPeers.forEach { peerId ->
                 launch {
-                    sendFrame(
-                        CallWireFrame.GroupAccept(
-                            callId = callId,
-                            from = localDeviceId,
-                            groupId = groupId,
-                            band = networkBand(),
-                            videoRequests = true,
-                        ),
-                        peerId,
-                    )
+                    sendFrame(acceptFrame(), peerId)
                 }
             }
         }
+        announceAcceptToOtherMembers(skip = currentPeers.toSet())
 
         // Initiate legs with peers where localDeviceId > peerId
         currentPeers.forEach { peerId ->
@@ -499,6 +531,30 @@ public class FlashGroupCallSession(
             }
         }
         return true
+    }
+
+    private fun acceptFrame() = CallWireFrame.GroupAccept(
+        callId = callId,
+        from = localDeviceId,
+        groupId = groupId,
+        band = networkBand(),
+        videoRequests = true,
+    )
+
+    /**
+     * ERROR-096: tells the other members this call was offered to that this device joined, directly. Accepting used to tell
+     * only the inviter, who relayed it as a [CallWireFrame.GroupJoin]; when that one frame did not reach a member (it
+     * was still ringing, or the inviter was busy), the member never learned this device was in the call, built no leg to it,
+     * and, being the device that must offer, never offered. This device then waited for an offer that could not come.
+     *
+     * A member that is not in the call and is not ringing drops the frame (it has no such call), a member that is
+     * ringing records the join like a relayed one, and a member in the call connects. Each send is its own coroutine:
+     * a member that cannot be reached is dialed for seconds and must not hold up this device's own connections.
+     */
+    internal fun announceAcceptToOtherMembers(skip: Set<String>) {
+        announceMembers.filter { it != localDeviceId && it !in skip }.forEach { memberId ->
+            scope.launch { sendFrame(acceptFrame(), memberId) }
+        }
     }
 
     /** Joins an ongoing group call announced by peers. */
@@ -579,6 +635,13 @@ public class FlashGroupCallSession(
                     } catch (t: Throwable) {
                         FlashLog.w("GROUP_CALL", "pruneUnansweredLegs error: ${t.message}")
                     }
+                    try {
+                        nudgeSilentOfferers()
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (t: Throwable) {
+                        FlashLog.w("GROUP_CALL", "nudgeSilentOfferers error: ${t.message}")
+                    }
                 }
                 delay(4_000L)
             }
@@ -647,6 +710,60 @@ public class FlashGroupCallSession(
             }
         }
         refreshUiState()
+    }
+
+    /**
+     * ERROR-096: this device is the answerer of a leg (the lower device id; the other side offers), its connection has been
+     * built for [OFFER_NUDGE_AFTER_MS] and no offer came. The peer is alive (presence keeps arriving, which is why
+     * [pruneUnansweredLegs] leaves the leg alone), so the likeliest cause is that it never learned this device is in the call and
+     * has no leg to offer on. This device tells it directly, again, every [OFFER_NUDGE_AFTER_MS], at most [MAX_OFFER_NUDGES]
+     * times. A peer with no leg for this device builds one and offers; a peer whose own connection to this device is under
+     * [LEG_SETUP_GRACE_MS] old keeps it and re-sends its pending offer, an older one is rebuilt and offers again
+     * ([keepSettingUpLeg]), so the repeats escalate rather than just repeat.
+     */
+    internal suspend fun nudgeSilentOfferers() {
+        if (isEnded) return
+        val now = nowMs()
+        legs.valuesSnapshot().filter { leg ->
+            leg.state == FlashCallParticipantState.CONNECTING &&
+                localDeviceId < leg.peerId &&
+                leg.pcCreatedAtMs > 0L &&
+                !leg.remoteDescriptionSet &&
+                leg.offerNudges < MAX_OFFER_NUDGES &&
+                now - maxOf(leg.pcCreatedAtMs, leg.lastNudgeAtMs) >= OFFER_NUDGE_AFTER_MS
+        }.forEach { leg ->
+            leg.offerNudges++
+            leg.lastNudgeAtMs = now
+            FlashLog.i(
+                "GROUP_CALL",
+                "Leg ${leg.peerId} pc#${leg.pcGeneration} has waited ${(now - leg.pcCreatedAtMs) / 1000}s for an offer; " +
+                    "telling it directly that this device is in call $callId (${leg.offerNudges}/$MAX_OFFER_NUDGES)",
+            )
+            scope.launch { sendFrame(acceptFrame(), leg.peerId) }
+        }
+    }
+
+    /**
+     * ERROR-096: a presence from a member this device has no leg for, while this device is in the call. The coordinator only
+     * hands over presences of roster members it trusts, for this call, so the member is in the call. Such a member used to be
+     * ignored: the presence handler needs a leg, and the only things that made one were a relayed join and an offer. When
+     * the join was not relayed, both devices were in the same call and never connected. The member gets a leg
+     * and [reviveIfInCall] connects it; whichever side has the higher id offers, as always.
+     */
+    private suspend fun adoptMemberInCall(peerId: String) {
+        if (!isMediaAcquired || peerId == localDeviceId) return
+        val callState = _state.value.state
+        if (callState != FlashCallState.ACTIVE && callState != FlashCallState.CONNECTING && callState != FlashCallState.DIALING) return
+        // A full call turns the member away before it is given a tile (it would otherwise sit there as "invited").
+        if (legs[peerId] == null && turnAwayIfFull(peerId)) return
+        sessionMutex.withLock {
+            if (isEnded) return@withLock
+            if (legs[peerId] == null) {
+                legs[peerId] = GroupLeg(peerId = peerId, peerName = resolveName(peerId), state = FlashCallParticipantState.INVITED)
+                FlashLog.i("GROUP_CALL", "Member $peerId is in call $callId (presence) and had no leg here; adding it")
+            }
+        }
+        reviveIfInCall(peerId)
     }
 
     /**
@@ -855,12 +972,22 @@ public class FlashGroupCallSession(
                     legs[effectivePeerId]?.recordBand(frame.band)
                     routeVideo { onAnnouncement(effectivePeerId, frame.videoRequests, frame.videoFree) }
                     reviveIfInCall(effectivePeerId)
+                } else if (frame.from == peerId) {
+                    adoptMemberInCall(effectivePeerId)
+                    legs[effectivePeerId]?.let {
+                        it.recordBand(frame.band)
+                        routeVideo { onAnnouncement(effectivePeerId, frame.videoRequests, frame.videoFree) }
+                    }
                 }
             }
 
             // G3 video requests: only between participants of this call (the coordinator has
             // already checked that `from` is the transport peer).
-            is CallWireFrame.VideoRequest -> if (legs[effectivePeerId] != null) routeVideo { onRequest(effectivePeerId, frame) }
+            // A request that arrives after its sender left (a frame in flight) must not add a watcher: nothing would
+            // ever remove it, and it would hold an encoder slot for the rest of the call.
+            is CallWireFrame.VideoRequest -> if (legs[effectivePeerId]?.let { it.state != FlashCallParticipantState.LEFT } == true) {
+                routeVideo { onRequest(effectivePeerId, frame) }
+            }
             is CallWireFrame.VideoRelease -> if (legs[effectivePeerId] != null) routeVideo { onRelease(effectivePeerId, frame) }
             is CallWireFrame.VideoGrant -> if (legs[effectivePeerId] != null) routeVideo { onGrant(effectivePeerId, frame) }
             is CallWireFrame.VideoDeny -> if (legs[effectivePeerId] != null) routeVideo { onDeny(effectivePeerId, frame) }
@@ -948,6 +1075,9 @@ public class FlashGroupCallSession(
         )
         leg.pcGeneration++
         leg.pcCreatedAtMs = SystemTimeSource.nowMs()
+        // A new connection counts its packets from zero: a stale baseline would hide the first seconds of loss from the governor.
+        leg.lastLost = 0L
+        leg.lastReceived = 0L
         FlashLog.i(
             "GROUP_CALL",
             "Leg ${leg.peerId} pc#${leg.pcGeneration} created role=${if (localDeviceId > leg.peerId) "offerer" else "answerer"}",
@@ -1034,7 +1164,12 @@ public class FlashGroupCallSession(
                         // tuned, so set this leg's on/off again now that it is connected.
                         routeVideo {
                             leg.videoSender?.let {
-                                tuneVideoSender(it, active = isSending(leg.peerId), height = sendHeight(leg.peerId)?.takeIf { h -> h > 0 })
+                                tuneVideoSender(
+                                    it,
+                                    active = isSending(leg.peerId),
+                                    height = sendHeight(leg.peerId)?.takeIf { h -> h > 0 },
+                                    concession = leg.concession,
+                                )
                             }
                             reconcile()
                         }
@@ -1045,8 +1180,15 @@ public class FlashGroupCallSession(
                             refreshUiState()
                             checkSoloState()
                         }
-                        // Disconnected usually heals by itself; Failed never does (ERROR-086 (e)).
-                        if (connState == PeerConnectionState.Failed) scheduleLegRecovery(leg, generation)
+                        // Failed never heals (ERROR-086 (e)). Disconnected usually does, but not after a Wi-Fi roam: the
+                        // local candidates are gone and ICE cannot repair that (ERROR-033, the 1:1 call restarts ICE for
+                        // it), and a leg left here holds a slot for the whole call. So it is rebuilt if it is still down
+                        // after a longer wait.
+                        if (connState == PeerConnectionState.Failed) {
+                            scheduleLegRecovery(leg, generation)
+                        } else {
+                            scheduleLegRecovery(leg, generation, firstDelayMs = DISCONNECTED_REBUILD_AFTER_MS)
+                        }
                     }
                     PeerConnectionState.Closed -> {
                         leg.state = FlashCallParticipantState.LEFT
@@ -1303,7 +1445,7 @@ public class FlashGroupCallSession(
      * offer ([handleInboundOffer]). Bounded: [MAX_LEG_RECOVERIES] rebuilds until the leg connects
      * again. A [onSignalingRestored] rebuild that got there first wins, and this one stands down.
      */
-    private fun scheduleLegRecovery(leg: GroupLeg, generation: Int) {
+    private fun scheduleLegRecovery(leg: GroupLeg, generation: Int, firstDelayMs: Long? = null) {
         if (isEnded || localDeviceId <= leg.peerId) return
         if (leg.recoveryAttempts >= MAX_LEG_RECOVERIES) {
             FlashLog.w("GROUP_CALL", "Leg ${leg.peerId} pc#$generation failed; giving up after $MAX_LEG_RECOVERIES rebuilds")
@@ -1311,8 +1453,10 @@ public class FlashGroupCallSession(
         }
         val attempt = ++leg.recoveryAttempts
         scope.launch {
-            delay(LEG_RECOVERY_DELAY_MS * attempt)
+            delay(firstDelayMs ?: (LEG_RECOVERY_DELAY_MS * attempt))
             if (isEnded || leg.pcGeneration != generation || leg.state != FlashCallParticipantState.DISCONNECTED) return@launch
+            // Signaling to the peer is down: an offer could not be delivered, and onSignalingRestored rebuilds this leg itself.
+            if (leg.signalingLost) return@launch
             FlashLog.i("GROUP_CALL", "Leg ${leg.peerId} pc#$generation failed; rebuilding ($attempt/$MAX_LEG_RECOVERIES)")
             val rebuild = leg.legMutex.withLock {
                 if (isEnded || leg.pcGeneration != generation || leg.state != FlashCallParticipantState.DISCONNECTED) {
@@ -1391,8 +1535,12 @@ public class FlashGroupCallSession(
                             "GROUP_CALL",
                             "Leg ${effect.peerId} video send=${if (effect.on) "on" else "off"} height=${effect.height ?: "full"}",
                         )
-                        val sender = legs[effect.peerId]?.videoSender
-                        if (sender != null) onMediaThread { tuneVideoSender(sender, active = effect.on, height = effect.height) }
+                        val leg = legs[effect.peerId]
+                        val sender = leg?.videoSender
+                        if (sender != null) {
+                            val concession = leg.concession
+                            onMediaThread { tuneVideoSender(sender, active = effect.on, height = effect.height, concession = concession) }
+                        }
                     }
                 }
             }
@@ -1498,6 +1646,7 @@ public class FlashGroupCallSession(
         var localAudioLevel: Double? = null
         // G6: legs whose arriving video is decoded in software.
         var softwareDecodedLegs = 0
+        val qualitySamples = mutableListOf<Pair<GroupLeg, CallQualitySample>>()
         for (leg in activeLegs) {
             val pc = leg.peerConnection ?: continue
             // Pinned: getStats() is native.
@@ -1538,8 +1687,21 @@ public class FlashGroupCallSession(
             val outbound = all.filter { it.type == "outbound-rtp" }
             totalBytesIn += inbound.sumOf { it.members.num("bytesReceived")?.toLong() ?: 0L }
             totalBytesOut += outbound.sumOf { it.members.num("bytesSent")?.toLong() ?: 0L }
-            totalLost += inbound.sumOf { it.members.num("packetsLost")?.toLong() ?: 0L }
-            totalReceived += inbound.sumOf { it.members.num("packetsReceived")?.toLong() ?: 0L }
+            val legLost = inbound.sumOf { it.members.num("packetsLost")?.toLong() ?: 0L }
+            val legReceived = inbound.sumOf { it.members.num("packetsReceived")?.toLong() ?: 0L }
+            totalLost += legLost
+            totalReceived += legReceived
+            // D8 for groups: this leg's own link quality over the last interval only (a cumulative loss could never recover).
+            val lostDelta = (legLost - leg.lastLost).coerceAtLeast(0L)
+            val receivedDelta = (legReceived - leg.lastReceived).coerceAtLeast(0L)
+            leg.lastLost = legLost
+            leg.lastReceived = legReceived
+            qualitySamples += leg to CallQualitySample(
+                rttMs = rttSec?.let { (it * 1000).roundToInt() },
+                audioJitterMs = inbound.firstOrNull { it.members.str("kind") == "audio" }?.members?.num("jitter")
+                    ?.let { (it * 1000).roundToInt() },
+                lossFraction = (lostDelta + receivedDelta).takeIf { it > 0L }?.let { lostDelta.toDouble() / it },
+            )
 
             val decoder = inbound.firstOrNull { it.members.str("kind") == "video" }?.members?.str("decoderImplementation")
             if (videoStates[leg.peerId]?.hasPicture() == true && CallHealthMonitor.isSoftwareDecoder(decoder)) {
@@ -1568,6 +1730,7 @@ public class FlashGroupCallSession(
         if (uiNeedsRefresh) {
             refreshUiState()
         }
+        applyVoicePriority(qualitySamples)
         val speakers = activeLegs.filter { it.isSpeaking }.map { it.peerId }.toSet()
         val sampledAt = SystemTimeSource.nowMs()
         val cpuPercent = sampleCpuPercent(sampledAt)
@@ -1587,7 +1750,7 @@ public class FlashGroupCallSession(
                         "softwareDecode=$softwareDecode",
                 )
             }
-            setLocalSpeaking((localAudioLevel ?: 0.0) > 0.01)
+            setLocalSpeaking(isLocalTalker(_state.value.micMuted, localAudioLevel))
             // G4: tick lets a split budget step back up and picks up changed limits.
             onSpeakers(speakers) + tick()
         }
@@ -1632,6 +1795,7 @@ public class FlashGroupCallSession(
 
     public fun onSignalingLost(peerId: String) {
         val leg = legs[peerId] ?: return
+        leg.signalingLost = true
         leg.state = FlashCallParticipantState.DISCONNECTED
         refreshUiState()
         leg.signalingGraceJob?.cancel()
@@ -1645,6 +1809,7 @@ public class FlashGroupCallSession(
 
     public fun onSignalingRestored(peerId: String) {
         val leg = legs[peerId] ?: return
+        leg.signalingLost = false
         leg.signalingGraceJob?.cancel()
         leg.signalingGraceJob = null
         if (leg.state == FlashCallParticipantState.DISCONNECTED) {
@@ -1728,6 +1893,19 @@ public class FlashGroupCallSession(
                 video = videoStates[leg.peerId] ?: FlashParticipantVideo.OFF,
                 reachable = !(leg.inviteExpected && !leg.inviteDelivered && leg.state == FlashCallParticipantState.INVITED),
             )
+        } + unavailableNotes.mapNotNull { (peerId, note) ->
+            // A member that has since joined through someone else has a leg and shows as itself.
+            if (legs[peerId] != null) {
+                null
+            } else {
+                FlashCallParticipantUi(
+                    peerId = peerId,
+                    name = resolveName(peerId),
+                    state = FlashCallParticipantState.INVITED,
+                    reachable = false,
+                    note = note,
+                )
+            }
         }
         updateUi {
             it.copy(
@@ -2053,45 +2231,79 @@ public class FlashGroupCallSession(
     /**
      * Tunes the video encoding of one leg. [height] is the copy's height from the G4 budget: the
      * encoder scales the camera down to it and caps the bitrate for that height. Null keeps the
-     * full camera profile (an old client, or a leg not yet decided).
+     * full camera profile (an old client, or a leg not yet decided). [concession] is the leg's own
+     * voice-priority rung (D8); the numbers are worked out in [groupVideoTuning].
      */
-    private fun tuneVideoSender(sender: RtpSender, active: Boolean, height: Int? = null) {
+    private fun tuneVideoSender(
+        sender: RtpSender,
+        active: Boolean,
+        height: Int? = null,
+        concession: VideoConcession = VideoConcession.FULL,
+    ) {
         val profile = captureProfile ?: groupCaptureProfile()
-        val sent = height?.coerceIn(1, profile.captureHeight) ?: profile.captureHeight
-        val scaleDown = profile.captureHeight.toDouble() / sent
-        val maxKbps = if (height == null) {
-            profile.maxBitrateKbps
-        } else {
-            minOf(profile.maxBitrateKbps, GroupVideoLimits.maxBitrateKbps(sent))
-        }
-        val minKbps = minOf(profile.minBitrateKbps, maxKbps)
+        val tuning = groupVideoTuning(profile, height, concession, active)
         try {
-            val applied = sender.applyVideoTuning(
-                VideoSendTuning(
-                    maxBitrateBps = maxKbps * BPS_PER_KBPS,
-                    minBitrateBps = minKbps * BPS_PER_KBPS,
-                    maxFramerate = profile.captureFps.toDouble(),
-                    scaleResolutionDownBy = scaleDown,
-                    active = active,
-                    demoteForVoice = true,
-                    maintainFramerate = true,
-                ),
-            )
+            val applied = sender.applyVideoTuning(tuning)
             if (!applied) {
                 FlashLog.w("GROUP_CALL", "video sender has no encodings to tune")
                 return
             }
             FlashLog.i(
                 "GROUP_CALL",
-                "video sender tuned applied=$applied active=$active height=${sent}p max=${maxKbps}kbps " +
-                    "fps=${profile.captureFps} degradation=MAINTAIN_FRAMERATE",
+                "video sender tuned applied=$applied active=${tuning.active} height=${height ?: "full"} " +
+                    "max=${tuning.maxBitrateBps / BPS_PER_KBPS}kbps min=${tuning.minBitrateBps?.div(BPS_PER_KBPS) ?: "none"}kbps " +
+                    "fps=${profile.captureFps} concession=$concession degradation=MAINTAIN_FRAMERATE",
             )
         } catch (t: Throwable) {
             FlashLog.w("GROUP_CALL", "video sender tuning failed: ${t.message}")
         }
     }
 
+    /**
+     * D8 for groups: feeds each connected leg's quality sample to its own [CallQualityGovernor] and applies a new rung to
+     * that leg's sender only, so one bad link costs that leg its video and not everybody's. With the user's "Prioritise voice
+     * quality" off, every leg goes back to full. No video, no concession. The decision is the governor's; this applies it.
+     */
+    private suspend fun applyVoicePriority(samples: List<Pair<GroupLeg, CallQualitySample>>) {
+        if (!video || isEnded) return
+        val enabled = prioritiseVoice()
+        val changed = mutableListOf<GroupLeg>()
+        for ((leg, sample) in samples) {
+            val next = if (enabled) {
+                leg.governor.onSample(sample)
+            } else if (leg.concession != VideoConcession.FULL) {
+                leg.governor.reset()
+                VideoConcession.FULL
+            } else {
+                null
+            }
+            if (next != null && next != leg.concession) {
+                FlashLog.i("GROUP_CALL", "Leg ${leg.peerId} voice priority: video ${leg.concession} -> $next")
+                leg.concession = next
+                changed += leg
+            }
+        }
+        if (changed.isEmpty()) return
+        routeVideo {
+            changed.forEach { leg ->
+                val sender = leg.videoSender ?: return@forEach
+                tuneVideoSender(
+                    sender,
+                    active = isSending(leg.peerId),
+                    height = sendHeight(leg.peerId)?.takeIf { h -> h > 0 },
+                    concession = leg.concession,
+                )
+            }
+            emptyList()
+        }
+        val worst = legs.valuesSnapshot().map { it.concession }.maxByOrNull { it.ordinal } ?: VideoConcession.FULL
+        updateUi { it.copy(videoLimitReason = worst.reason) }
+    }
+
     private companion object {
+        /** How long a leg may stay Disconnected before the offerer rebuilds its connection (ERROR-033 for groups). */
+        const val DISCONNECTED_REBUILD_AFTER_MS = 10_000L
+
         /** How long a group call with nobody connected waits for someone to come back before it ends (ERROR-086). */
         const val SOLO_GRACE_MS = 30_000L
 
@@ -2112,6 +2324,12 @@ public class FlashGroupCallSession(
 
         /** How long a built connection may get no frame from its peer before the leg is given up on (ERROR-086 (d)). */
         const val UNANSWERED_LEG_MS = 15_000L
+
+        /** How long an answerer leg waits for an offer before this device tells the peer it is in the call (ERROR-096), and the repeat interval. */
+        const val OFFER_NUDGE_AFTER_MS = 8_000L
+
+        /** How many times that is repeated for one leg. */
+        const val MAX_OFFER_NUDGES = 3
 
         /** Rebuilds of a failed leg before giving up, and the delay unit between them (ERROR-086 (e)). */
         const val MAX_LEG_RECOVERIES = 3
