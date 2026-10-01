@@ -2,6 +2,7 @@
 
 ## 2026-10-01 — Chat edge-case fixes implemented (Option D, ERROR-089..094, F1-F7, F9); unit-tested, NOT device-verified
 - **Current branch:** `dev`
+- **Last verified build:** `d2b392d`
 - **Working features / fixes implemented:**
   - Option D ("Continue in a new group"): Any active member can fork a new v2 group owned by themselves with the active peers when the owner is absent; old history preserved as read-only.
   - Group ownership guards: Owner warning on leave, non-owners cannot see "Add members" button.
