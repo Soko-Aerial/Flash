@@ -927,6 +927,14 @@ group read ticks, catch-up receipts to the author, catch-up labels for attachmen
 sheet (UI-051) and the catch-up banner (UI-052). Unit-tested and mutation-checked, none device-verified: `CGS-01`...`CGS-07`,
 `DNAME-01`/`DNAME-02` in `docs/testing/TEST-BACKLOG.md` section 4g.**
 
+**Group call end fixed in code 2026-09-30 (ADR-060, ERROR-086, still OPEN): a group call can always be closed.** The owner's report (a call that
+needed a force-stop on Windows and some phones) was the 30 s solo timer cancelling its own teardown. `endSession` now publishes ENDED and
+calls `onEnded` before any native work, ENDED is sticky, the coordinator drops an ended session, and rings / dials / joins have timeouts; legs
+that never answer are pruned, the connection-mode `busy` set holds the participants (`FlashCallUiState.busyPeerIds`), and the planner
+keeps every endpoint of a device (ERROR-085 follow-up). Unit-tested and mutation-checked, none device-verified: `GCALL-01`...`GCALL-07` in
+`docs/testing/TEST-BACKLOG.md` section 4i. Not done: group call log rows. Committed on 2026-10-01 in one commit with the ERROR-087/088 work
+and the edits of another session that shared files with it (see `logs/handoff.md`).
+
 **Desktop push-to-talk (ADR-058, built and unit-tested 2026-09-30, not device-verified):** `:core:ptt` is Kotlin Multiplatform (Android + JVM)
 behind an audio-device seam, so the Windows app runs the same PTT engine as the phones and shares the session card (`:ui:callui`). Device
 checks: `PTTD-01`…`PTTD-07` in `docs/testing/TEST-BACKLOG.md`. This was the owner's chosen first step toward future iOS and Linux support; the
@@ -966,6 +974,14 @@ Android's look preserved or improved).
 - **Owner device checks** of everything above (`docs/testing/TEST-BACKLOG.md`, including `PTTD-01`…`PTTD-07`), then the UI-045 quality gate.
 - Open audit items (`docs/audit/2026-09-28-architectural-audit-and-tasks.md`): §3.2, S6, §3.11. §3.6, §3.4, §3.7 and the Linux CI vault
   were fixed and unit-tested 2026-09-30 (device checks `AUD-01`...`AUD-03`; ERROR-073 stays OPEN until `AUD-01`).
+- **Fixed in code 2026-10-01, unit-tested and mutation-checked, NOT device-verified (both ERRORs stay OPEN):** ERROR-087 / ADR-062 (a chat
+  showed unread after it was opened: the repository's full-row conversation upsert reset the read cursor, pin and mute; it now refreshes
+  the stored row inside the insert's transaction, a close flushes the acknowledgement, system back closes the chat, a new message
+  unarchives) and ERROR-088 / ADR-061 (a group call from a member not paired with the others did not reach them: a call's members now come
+  from the roster, announcements dial the member first and apply the live-key gate per frame, undelivered invites are re-offered, members
+  without a leg hear the presence tick so they see the banner and can Join, the caller sees "Not reachable yet"). Still open there:
+  `onStop` with a chat open, a member nobody can reach, hosts ignore a refused start (UNREAD-05, GCALL-10). Device checks `UNREAD-01`...`05`,
+  `GCALL-08`...`10` in `docs/testing/TEST-BACKLOG.md` section 4j. Committed together with ERROR-086/085 and the other session's edits on 2026-10-01 (see `logs/handoff.md`).
 - **Adaptive UI upgrade** (`docs/migration/ADAPTIVE-UI-PLAN.md`): code exists for AD-1 (UI-scale density multiplier, persisted), AD-2 (automatic list-pane width + a 640×480 dp minimum window; **no draggable splitter**, AD-D3 still open), AD-3 (conversation in the detail pane on both hosts), AD-4 (keyboard shortcuts only; pointer idioms and AD-D5 selection not done), AD-5 (580 dp bubble cap), AD-6 (Android navigation rail ≥ 600 dp and two-pane layout; width measured manually, no fold-posture support; AD-D4 not formally answered) and part of AD-7 (desktop keeps the open conversation across tab switches). None of it is device-verified.
 
 ## Not Yet Implemented

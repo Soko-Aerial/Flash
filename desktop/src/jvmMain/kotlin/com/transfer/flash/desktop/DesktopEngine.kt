@@ -754,9 +754,7 @@ public class DesktopEngine(
                     contacts = trustStore.getTrustedPeers().keys.mapTo(HashSet()) { it.value } +
                         chatImpl?.activeGroupRosters().orEmpty().flatten(),
                     activity = network.linkActivity(),
-                    busy = setOfNotNull(
-                        callsImpl?.activeCall?.value?.takeIf { it.state != FlashCallState.ENDED }?.peerId,
-                    ),
+                    busy = callsImpl?.activeCall?.value?.busyPeerIds.orEmpty(),
                     nearbyOpen = _nearbyVisible.value,
                 )
             },
@@ -914,6 +912,12 @@ public class DesktopEngine(
             isGroupTrustedPeer = { peerId, groupId ->
                 chatImpl?.isGroupCallPeer(groupId, peerId) ?: trustStore.isTrusted(FlashDeviceId(peerId))
             },
+            // ERROR-088: who is in the call is the roster (paired or vouched); the live-key check above is applied when
+            // an announcement is sent or received. A member that is not connected yet is dialed on demand.
+            isGroupMember = { peerId, groupId ->
+                chatImpl?.isGroupCallMember(groupId, peerId) ?: trustStore.isTrusted(FlashDeviceId(peerId))
+            },
+            reachPeer = { peerId -> autoConnector?.ensureSession(peerId, AutoConnector.CALL_DIAL_BUDGET_MS) ?: false },
             // Honest desktop settings: voice priority and performance mode read per call via
             // lambdas so settings changes take immediate effect.
             prioritiseVoice = { _settings.value.prioritiseVoiceQuality },

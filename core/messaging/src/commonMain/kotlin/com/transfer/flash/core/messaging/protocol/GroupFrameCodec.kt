@@ -148,7 +148,7 @@ public object GroupFrameCodec {
                 "mime" to frame.mimeType,
                 "size" to frame.sizeBytes.toString(),
                 "sentAt" to frame.sentAt.toString(),
-            )
+            ) + listOfNotNull(frame.signature?.let { "sig" to it })
         }
         return FlashTextFraming.encodeFields(prefix, fields)
     }
@@ -242,6 +242,7 @@ public object GroupFrameCodec {
                 mimeType = fields["mime"] ?: "application/octet-stream",
                 sizeBytes = fields.long("size") ?: 0L,
                 sentAt = fields.long("sentAt") ?: 0L,
+                signature = fields["sig"]?.ifBlank { null },
             )
         }
         FlashTextFraming.parseFields(text, SYNC_PREFIX)?.let { fields ->

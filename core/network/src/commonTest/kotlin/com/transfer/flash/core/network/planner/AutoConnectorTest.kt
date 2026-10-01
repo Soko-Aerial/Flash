@@ -22,6 +22,7 @@ class AutoConnectorTest {
         val sightings = MutableStateFlow<List<ConnectionPlanner.Sighting>>(emptyList())
         val live = HashSet<String>()
         val dials = ArrayList<String>()
+        val dialedHosts = ArrayList<String>()
         val logs = ArrayList<String>()
         var result: FlashResult<*> = FlashResult.Success(Unit)
         var quiet = quiet
@@ -34,7 +35,7 @@ class AutoConnectorTest {
             planner = ConnectionPlanner(localDeviceId = local, suppressMs = 15_000L, firstContactDeferMs = 1_500L),
             links = links,
             sightings = { sightings.value },
-            dial = { d -> dials += d.key; result },
+            dial = { d -> dials += d.key; dialedHosts += d.host; result },
             quiet = { this.quiet },
             log = { logs += it },
             nowMs = { scope.testScheduler.currentTime },
@@ -163,6 +164,27 @@ class AutoConnectorTest {
         repeat(16) { assertFalse(rig.connector.ensureSession("c")) }
         assertEquals(listOf("c"), rig.dials)
         assertTrue(testScheduler.currentTime - start <= 1_000, "one shared budget, not 16")
+    }
+
+    @Test
+    fun `ensureSession tries a peer's second endpoint when the first one just failed`() = runTest {
+        val rig = Rig(this)
+        rig.result = FlashResult.Failure(FlashError.Unknown("refused"))
+        rig.quiet = true                                  // keep the sweep out of this test
+        rig.sightings.value = listOf(
+            ConnectionPlanner.Sighting("c", "10.0.0.1", 45822, "N-c"),
+            ConnectionPlanner.Sighting("c", "192.168.1.9", 45822, "N-c"),
+        )
+        rig.connector.start()
+
+        // First send: the first endpoint is dialed (and refuses).
+        assertFalse(rig.connector.ensureSession("c"))
+        assertEquals(listOf("10.0.0.1"), rig.dialedHosts)
+
+        // Second send, inside the first endpoint's suppression window: the other endpoint is tried,
+        // not "no dial" for a peer that has a second way in.
+        assertFalse(rig.connector.ensureSession("c"))
+        assertEquals(listOf("10.0.0.1", "192.168.1.9"), rig.dialedHosts)
     }
 
     // --- sweep hits (DR3) ---

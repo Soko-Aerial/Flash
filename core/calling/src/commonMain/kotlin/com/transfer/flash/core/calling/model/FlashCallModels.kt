@@ -111,7 +111,35 @@ public data class FlashCallUiState(
      * banner no longer offers it.
      */
     public val smallerVideoForMany: Boolean = false,
-)
+) {
+    /**
+     * The devices this call needs a session with right now; the connection-mode controller keeps
+     * exactly these alive and dials them first. A 1:1 call: [peerId]. A group call: its [peerId]
+     * is the *group* id, which is no device, so asking for it protected nobody and the call's
+     * real sessions could be parked (ERROR-086 (k)); the participants are listed instead. A
+     * participant that is only INVITED counts while the call is still ringing or dialing (it is
+     * who the call is waiting for) and not once the call is live (then INVITED means "not in the
+     * call", e.g. a member given up on). Empty for an ended call.
+     */
+    public val busyPeerIds: Set<String>
+        get() = when {
+            state == FlashCallState.ENDED -> emptySet()
+            !isGroup -> setOf(peerId)
+            else -> {
+                val waiting = state == FlashCallState.DIALING || state == FlashCallState.RINGING
+                participants.filter { p ->
+                    when (p.state) {
+                        FlashCallParticipantState.CONNECTING,
+                        FlashCallParticipantState.CONNECTED,
+                        FlashCallParticipantState.DISCONNECTED,
+                        -> true
+                        FlashCallParticipantState.INVITED -> waiting
+                        FlashCallParticipantState.LEFT -> false
+                    }
+                }.mapTo(LinkedHashSet()) { it.peerId }
+            }
+        }
+}
 
 /**
  * How many people a group call holds, this device included (G7, `docs/calling/GROUP-VIDEO-PLAN.md` §5;
@@ -159,6 +187,11 @@ public data class FlashCallParticipantUi(
     public val state: FlashCallParticipantState = FlashCallParticipantState.CONNECTED,
     /** Whether this device is getting the participant's video in a group video call (G3). */
     public val video: FlashParticipantVideo = FlashParticipantVideo.OFF,
+    /**
+     * False while this device invited the participant but its invite has not gone out on a live session (ERROR-088: no
+     * session could be dialed yet). The caller sees "Not reachable yet" instead of "Invited".
+     */
+    public val reachable: Boolean = true,
 )
 
 /** This device's view of one participant's video in a group call (G3 request protocol). */

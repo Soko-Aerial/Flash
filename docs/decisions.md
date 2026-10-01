@@ -2964,3 +2964,136 @@ catches up on group history.
 Device checks show the 3 s quiet period is too long or too short for real pacing, or a protocol change lets a holder announce a total
 (then a determinate bar becomes honest).
 
+
+## ADR-060 — A group call reaches ENDED before any native work, prunes legs that never answer, and protects its participants, not its group id
+
+### Date
+2026-09-30
+
+### Status
+**IMPLEMENTED (unit-tested, mutation-checked), device checks pending (GCALL-01…GCALL-07).** Fixes ERROR-086.
+
+### Context
+A group call left alone for 30 s could not be closed (ERROR-086): the solo grace timer's `endSession` cancelled its own coroutine,
+the native teardown aborted, and because ENDED and `onEnded` came only after that teardown, the call never ended, hang-up did nothing
+and the coordinator refused every later call. The audit found ten related weaknesses in the same code (rings that never stop, legs
+for members who never joined, no recovery of a failed leg, no joiner timeout, a mode-controller `busy` set holding the group id).
+
+### Decision
+1. **Order of ending.** `endSession` claims the end atomically (`endClaim`), cancels the other timers (never the coroutine it runs
+   in), publishes ENDED, calls `onEnded`, and only then releases the native resources, under `NonCancellable`. This is the order
+   the 1:1 `FlashCallSession.end()` already had. ENDED is terminal: every other UI write goes through `updateUi`, a compare-and-set
+   that refuses to leave ENDED. Native work that was queued before the end checks `isEnded` inside the media thread and lifecycle lock.
+2. **The coordinator trusts nothing about a finished session.** One `onGroupSessionEnded` (was copied three times), and every call
+   entry point plus `hangUp()` first drops a live-call slot held by a session that `isSessionEnded`.
+3. **Who is in the call is learned, not assumed.** A joiner still builds a leg for every member (it has no roster of the call), but
+   a leg whose peer sent nothing for 15 s after its connection was built is closed and shown as INVITED; a presence or a join frame
+   from that peer brings it back; a peer that left is never brought back. A leg that fails is rebuilt by the offerer only, at most
+   3 times. A joiner or accepter that connects to nobody in 45 s ends with ERROR. The solo grace and the connect deadline wait
+   (10 s at a time, for attempts younger than 40 s) for a leg whose peer is answering.
+4. **Ringing ends.** An incoming group call rings at most 45 s and stops when the caller hangs up (unless another member is in it); an
+   outgoing one ends after 30 s with nobody, sends GroupHangup to the invitees, and ends at once when everyone declines.
+5. **One rule for "who does this call need".** `FlashCallUiState.busyPeerIds` (1:1: the peer; group: connecting / connected /
+   disconnected participants, plus invited ones while dialing or ringing; ended: none) feeds `LinkView.busy` on Android, in the
+   `Flash.kt` facade and on the desktop.
+
+### Alternatives considered
+- **Only stop the timer cancelling itself.** Rejected as the whole fix: any other throw or hang in the teardown would again leave a
+  call that cannot be closed, which is the failure the owner cannot recover from without a force-stop.
+- **Create legs only for members who sent a join (the audit's first idea for phantom legs).** Rejected: the offerer of a leg is the
+  higher device id, so a joiner with the higher id would wait for an offer from a member that never knew it had joined, and a
+  lower-id member would never offer. Pruning keeps the symmetric handshake and costs one idle PeerConnection for 15 s.
+- **A UI "force close" that resets the coordinator.** Not built: hang-up now cannot be blocked before ENDED. Revisit if GCALL-01 still
+  traps a call on a device.
+- **Leave `busy` as the call's peerId.** Rejected: for a group call that is the group id, which is no device, so no session was
+  protected.
+
+### Consequences
+- A member who is in the call but whose first frames were lost may be shown as INVITED for up to ~4 s until its next presence frame.
+- Up to 3 rebuilds per failed leg means up to ~9 s of extra recovery delay before a leg is given up; the call itself continues.
+- Not done: group call log rows (ERROR-086 (g)); the 1:1 session is unchanged.
+
+### Revisit when
+GCALL-01…07 show a timer value (15 s, 30 s, 45 s) is wrong on real networks, or a leg that is pruned wrongly is reported.
+
+## ADR-061 — A group call is offered to its roster members and dials them; the live-key check stays on every announcement
+
+### Decision
+1. **Two questions, two predicates.** "Who is in this group's call" is `isGroupCallMember`: an active roster member, this device not
+   removed or left, and the member is paired or its owner-signed certificate names a key (`SignedGroups.hasVouchedRosterKey`). It needs
+   no session. "May this frame go to, or come from, this connection" stays `isGroupCallPeer` (ADR-044 V2: a vouched member needs a live
+   session whose TLS key is the certified one). `CallCoordinator` takes both (`isGroupMember`, `isGroupTrustedPeer`); a host that
+   supplies only the second keeps the old, strict behaviour.
+2. **Membership is decided from the roster, the key is checked when a frame is sent.** A call's member list is built with the first
+   predicate (start, join, query). Every announcement (`GroupInvite`, `GroupPresence`, `GroupAccept`, `GroupJoin`, `GroupQuery`) goes
+   through `CallCoordinator.sendGroupFrame`: membership, then `reachPeer`, then the strict gate, then send. Offers, answers,
+   candidates, declines and hangups are never dialed.
+3. **Dial on demand.** `reachPeer` is `AutoConnector.ensureSession(peer, 3 s)` on both hosts, allowed in ECO (an ECO device parks
+   sessions to save battery; a call is the reason to wake one).
+4. **Invites are re-offered, presence reaches everyone offered.** An undelivered invite is offered again by the 4 s presence tick while the
+   invitee would still ring (45 s). The invite's member list is kept by every receiver as announce-only targets of its own presence
+   tick (no leg, no connection), so a member the caller cannot reach still learns of the call from any participant that can.
+5. **The caller is told.** `FlashCallParticipantUi.reachable`; the tile reads "Not reachable yet". Every refusal logs under `GROUP_CALL`
+   (once a minute per peer, frame and cause, since the presence tick would repeat it every 4 s).
+
+### Context
+ERROR-088: a member of a v2 group who is not paired with the caller (vouched by the owner) never saw the call. The strict gate was applied
+once, at the tap, to build the member list, so a member with no live session at that moment never got a leg, an invite or a presence;
+nothing dialed it; nobody was told. Pairing every member with every other member (what the owner's report implies) is exactly what
+ADR-044 V2 exists to avoid.
+
+### Alternatives considered
+- **Relax the strict gate for calls** (accept a vouched member without a live key). Rejected: the live-key match is what stops a device
+  that answers on a member's address from receiving the invite and the presence of a call; the roster says who is a member, not who is
+  on the other end of this socket.
+- **Dial from the UI before starting the call.** Rejected: it would block the tap on the slowest member and still not help a member who
+  connects later; per-announcement dialing covers both.
+- **Build a connection for every invited member from the start.** Rejected: a leg is a native PeerConnection; an unreachable or absent
+  member would cost one per call and count against the size cap. Announce-only entries cost a text frame every 4 s.
+- **Query the group on every presence tick (`queryGroupCall`).** Not wired: presence from participants already reaches every member.
+
+### Consequences
+- A member nobody can reach still sees nothing; the call needs at least one participant with a path to it.
+- A 3 s dial budget is a guess (unmeasured); a longer dial is retried on the next 4 s tick.
+- The hosts still ignore the Boolean from `startGroupCall` / `joinGroupCall`; a refusal is only logged.
+- `FlashGroupCallSession.armPresenceAnnouncement` and `CallCoordinator.sendGroupFrame` are `internal` so the host tests can drive them.
+- Not device-verified: `GCALL-08`, `GCALL-09`, `GCALL-10`.
+
+### Revisit when
+GCALL-08..10 show the dial budget, the retry window or the announce-only relay behaving differently on a real network, or when a
+screen for "who cannot be reached" is designed.
+
+## ADR-062 — The read cursor is never overwritten by a row refresh, a close flushes the acknowledgement, and a new message unarchives
+
+### Decision
+1. **Refresh the stored row, never replace it.** A direct chat's inbound text and outbound send, and a legacy group's `Create` / `State`
+   frame, read the stored `ConversationEntity` and write a `copy` of it (`upsertDirectConversation`, `upsertLegacyGroupConversation`),
+   inside the **same write transaction as the message insert**. `lastReadCursor`, `pinned`, `muted` and a legacy group's position and
+   provenance therefore survive; `touchConversation` already worked this way.
+2. **A new message unarchives the chat** (`archived = false`), as `touchConversation` already did for group messages and attachments.
+   Pin and mute are kept.
+3. **Leaving a chat finishes its acknowledgement.** The open chat records what its screen showed (`OpenConversationReadState`);
+   `acknowledgeShown` is idempotent; `closeConversation()` and opening another chat call `endOpenConversation()`, which writes any
+   cursor and sends any Read receipt that the collector had published but not yet written.
+4. **System back closes the chat** on Android (`MainActivity.kt`: the nav entry leaving `Conversation` calls `closeConversation()`).
+
+### Context
+ERROR-087: `ConversationDao.upsert` is Room `@Upsert`, a full-row replace, and a freshly built `ConversationEntity` has a NULL cursor, which
+`observeUnreadCounts` reads as "no message was ever read". Every inbound direct text reset the cursor, so the badge counted the whole
+history; and the open chat's "publish to the screen, then write the cursor" could lose the second step to a close or to `collectLatest`.
+
+### Alternatives considered
+- **`@Insert(IGNORE)` plus targeted `UPDATE`s** (so the full-row replace can never wipe a field again). Better in principle, left for a
+  later schema/DAO pass: it changes every writer of the table; the copy-in-a-transaction is the smallest fix with a real-Room proof.
+- **Re-assert the cursor on every emission** instead of flushing on leave. The collector already acknowledges on every emission; the gap
+  was the cancelled write, which a flush on leave closes.
+- **Keep an incoming message from unarchiving.** Rejected: an archived chat that receives a message and stays hidden loses the message
+  for the owner, and the group paths already behaved this way.
+
+### Consequences
+- Still open: `onStop` with a chat open on Android (UNREAD-05), the sender's clock in `sortOrder` and the cursor comparison (root cause C),
+  and the fake `InMemoryMessageDao.observeUnreadCounts` ignoring the cursor.
+- Not device-verified: `UNREAD-01`...`UNREAD-05`.
+
+### Revisit when
+UNREAD-01..05 show the badge wrong on a phone, or the DAO is reworked to targeted updates.

@@ -9,10 +9,13 @@ import com.transfer.flash.core.calling.model.FlashCallUiState
 import com.transfer.flash.core.calling.model.OngoingGroupCallUi
 import com.transfer.flash.core.calling.protocol.CallFrameCodec
 import com.transfer.flash.core.calling.protocol.CallWireFrame
+import com.transfer.flash.core.common.concurrent.SyncMap
+import com.transfer.flash.core.common.logging.FlashLog
 import com.transfer.flash.core.common.perf.FlashNetworkBand
 import com.transfer.flash.core.common.perf.FlashPerformanceMode
 import com.transfer.flash.core.common.time.SystemTimeSource
 import kotlin.concurrent.Volatile
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -105,7 +108,27 @@ public class CallCoordinator(
      * group call: a lambda for the same reasons as [prioritiseVoice].
      */
     private val smallerVideoForMany: () -> Boolean = { false },
+    /**
+     * ERROR-088: whether [peerId] belongs to group [groupId]'s call at all (an active roster member this device trusts or
+     * was introduced to by the group owner), with or without a session to it right now. [isGroupTrustedPeer] is the
+     * narrower "may a frame go to or come from this live connection" (a vouched member needs a session whose key is the
+     * certified one). A call's members are chosen with this and the narrow gate is applied when an announcement is
+     * sent or received, so a member that is not paired with this device and not connected yet is still invited.
+     * The default is the narrow gate: what a host without vouched groups wants.
+     */
+    private val isGroupMember: suspend (peerId: String, groupId: String) -> Boolean =
+        { peerId, groupId -> isGroupTrustedPeer(peerId, groupId) },
+    /**
+     * ERROR-088: makes sure a session to [peerId] exists, dialing it when it does not (`AutoConnector.ensureSession`), and
+     * says whether one exists on return. Called when a group call's announcement (or a connection's offer) has no
+     * session to go to, so a member that has not been connected yet can still be invited and can still join. Must be
+     * cheap when a session is live. The default dials nothing.
+     */
+    private val reachPeer: suspend (peerId: String) -> Boolean = { false },
 ) : FlashCalling {
+    /** When each refusal line (see [logRefusal]) was last written. */
+    private val refusalLoggedAt = SyncMap<String, Long>()
+
     private val _activeCall = MutableStateFlow<FlashCallUiState?>(null)
     override val activeCall: StateFlow<FlashCallUiState?> = _activeCall.asStateFlow()
 
@@ -144,6 +167,7 @@ public class CallCoordinator(
     /** Outgoing call entry point (chat header call / video-call buttons). */
     override suspend fun startCall(peerId: String, peerName: String, video: Boolean): Boolean {
         if (!isTrustedPeer(peerId)) return false // trust gate: only paired peers are callable
+        clearEndedGroupSession()
         if (currentSession != null || currentGroupSession != null) return false // one call at a time
         val resolvedName = peerNameResolver(peerId)?.ifBlank { null }
             ?: peerName.takeIf { it.isNotBlank() && it != peerId }
@@ -167,9 +191,13 @@ public class CallCoordinator(
         memberIds: List<String>,
         video: Boolean,
     ): Boolean {
+        clearEndedGroupSession()
         if (currentSession != null || currentGroupSession != null) return false // one call at a time
-        val trustedMembers = memberIds.filter { it != localDeviceId && isGroupTrustedPeer(it, groupId) }
-        if (trustedMembers.isEmpty()) return false
+        val members = callMembers(groupId, memberIds, "start")
+        if (members.isEmpty()) {
+            FlashLog.w("GROUP_CALL", "Group call refused: group=$groupId has no member this device may call (${memberIds.size} listed)")
+            return false
+        }
 
         val currentMap = _ongoingGroupCalls.value.toMutableMap()
         currentMap.remove(groupId)
@@ -185,21 +213,8 @@ public class CallCoordinator(
             localDeviceId = localDeviceId,
             localName = localName,
             scope = scope,
-            sendFrame = sendFrame,
-            onEnded = { ended ->
-                if (currentGroupSession === ended) {
-                    currentGroupSession = null
-                    stateCollector?.cancel()
-                    stateCollector = null
-                    _activeCall.value = ended.state.value
-                    scope.launch {
-                        kotlinx.coroutines.delay(2_000L)
-                        if (currentSession == null && currentGroupSession == null) {
-                            _activeCall.value = null
-                        }
-                    }
-                }
-            },
+            sendFrame = { frame, peerId -> sendGroupFrame(groupId, frame, peerId) },
+            onEnded = ::onGroupSessionEnded,
             performanceMode = performanceMode,
             peerNameResolver = peerNameResolver,
             networkBand = networkBand,
@@ -207,7 +222,7 @@ public class CallCoordinator(
         )
         currentGroupSession = session
         observeGroupSession(session)
-        return session.startOutgoing(trustedMembers)
+        return session.startOutgoing(members)
     }
 
     /** Joins an ongoing group call announced by peers. */
@@ -217,9 +232,13 @@ public class CallCoordinator(
         memberIds: List<String>,
         video: Boolean,
     ): Boolean {
+        clearEndedGroupSession()
         if (currentSession != null || currentGroupSession != null) return false
-        val trustedMembers = memberIds.filter { it != localDeviceId && isGroupTrustedPeer(it, groupId) }
-        if (trustedMembers.isEmpty()) return false
+        val members = callMembers(groupId, memberIds, "join")
+        if (members.isEmpty()) {
+            FlashLog.w("GROUP_CALL", "Group call join refused: group=$groupId call=$callId has no member this device may call (${memberIds.size} listed)")
+            return false
+        }
 
         val groupCallUi = _ongoingGroupCalls.value[groupId]
         val groupName = groupCallUi?.groupName ?: "Group Call"
@@ -233,21 +252,8 @@ public class CallCoordinator(
             localDeviceId = localDeviceId,
             localName = localName,
             scope = scope,
-            sendFrame = sendFrame,
-            onEnded = { ended ->
-                if (currentGroupSession === ended) {
-                    currentGroupSession = null
-                    stateCollector?.cancel()
-                    stateCollector = null
-                    _activeCall.value = ended.state.value
-                    scope.launch {
-                        delay(2_000L)
-                        if (currentSession == null && currentGroupSession == null) {
-                            _activeCall.value = null
-                        }
-                    }
-                }
-            },
+            sendFrame = { frame, peerId -> sendGroupFrame(groupId, frame, peerId) },
+            onEnded = ::onGroupSessionEnded,
             performanceMode = performanceMode,
             peerNameResolver = peerNameResolver,
             networkBand = networkBand,
@@ -260,15 +266,15 @@ public class CallCoordinator(
         currentMap.remove(groupId)
         _ongoingGroupCalls.value = currentMap
 
-        return session.joinExisting(trustedMembers)
+        return session.joinExisting(members)
     }
 
     /** Queries online members of a group to discover if an active call is ongoing. */
     override suspend fun queryGroupCall(groupId: String, memberIds: List<String>) {
-        val trustedMembers = memberIds.filter { it != localDeviceId && isGroupTrustedPeer(it, groupId) }
+        val members = callMembers(groupId, memberIds, "query")
         val frame = CallWireFrame.GroupQuery(from = localDeviceId, groupId = groupId)
-        trustedMembers.forEach { peerId ->
-            sendFrame(frame, peerId)
+        members.forEach { peerId ->
+            sendGroupFrame(groupId, frame, peerId)
         }
     }
 
@@ -291,7 +297,10 @@ public class CallCoordinator(
         if (frame !is CallWireFrame.GroupJoin && frame.from != peerId) return false
 
         if (frame is CallWireFrame.GroupPresence) {
-            if (!isGroupTrustedPeer(peerId, frame.groupId)) return false
+            if (!isGroupTrustedPeer(peerId, frame.groupId)) {
+                FlashLog.w("GROUP_CALL", "Presence from $peerId for group=${frame.groupId} call=${frame.callId} dropped: ${refusalReason(peerId, frame.groupId)}")
+                return false
+            }
             currentGroupSession?.takeIf { it.callId == frame.callId }?.let { live ->
                 live.onInboundFrame(frame, peerId)
                 return true
@@ -311,7 +320,10 @@ public class CallCoordinator(
         }
 
         if (frame is CallWireFrame.GroupQuery) {
-            if (!isGroupTrustedPeer(peerId, frame.groupId)) return false
+            if (!isGroupTrustedPeer(peerId, frame.groupId)) {
+                FlashLog.w("GROUP_CALL", "Query from $peerId for group=${frame.groupId} dropped: ${refusalReason(peerId, frame.groupId)}")
+                return false
+            }
             val liveSession = currentGroupSession
             if (liveSession != null && liveSession.groupId == frame.groupId && !liveSession.isSessionEnded) {
                 sendFrame(liveSession.presenceFrame(), peerId)
@@ -371,6 +383,7 @@ public class CallCoordinator(
 
         if (frame is CallWireFrame.GroupInvite) {
             if (!isGroupTrustedPeer(peerId, frame.groupId)) {
+                FlashLog.w("GROUP_CALL", "Invite from $peerId for group=${frame.groupId} call=${frame.callId} declined silently: ${refusalReason(peerId, frame.groupId)}")
                 sendFrame(CallWireFrame.GroupDecline(callId = frame.callId, from = localDeviceId, groupId = frame.groupId), peerId)
                 return true
             }
@@ -400,8 +413,14 @@ public class CallCoordinator(
 
     /** Local user hung up / ended the call. */
     override suspend fun hangUp(): Boolean {
-        currentGroupSession?.let {
-            it.hangUp()
+        currentGroupSession?.let { session ->
+            try {
+                session.hangUp()
+            } finally {
+                // Defense in depth (ERROR-086): once a session is over it must not stay the live call,
+                // whatever its own teardown did. The button the user pressed always has an effect.
+                clearEndedGroupSession()
+            }
             return true
         }
         val session = currentSession ?: return false
@@ -525,6 +544,30 @@ public class CallCoordinator(
         )
     }
 
+    /**
+     * A group session finished: hand its last state to the UI, free the coordinator for the next
+     * call, and clear the overlay shortly after. The one place this is done (it was copied three
+     * times). Idempotent, and a no-op for a session that is no longer the live one.
+     */
+    private fun onGroupSessionEnded(ended: FlashGroupCallSession) {
+        if (currentGroupSession !== ended) return
+        currentGroupSession = null
+        stateCollector?.cancel()
+        stateCollector = null
+        _activeCall.value = ended.state.value
+        scope.launch {
+            delay(2_000L)
+            if (currentSession == null && currentGroupSession == null) {
+                _activeCall.value = null
+            }
+        }
+    }
+
+    /** Drops a live-call slot held by a group session that has already ended (ERROR-086's zombie). */
+    private fun clearEndedGroupSession() {
+        currentGroupSession?.takeIf { it.isSessionEnded }?.let(::onGroupSessionEnded)
+    }
+
     private fun observeSession(session: FlashCallSession) {
         stateCollector?.cancel()
         stateCollector = scope.launch {
@@ -558,6 +601,87 @@ public class CallCoordinator(
         observeSession(session)
     }
 
+    /**
+     * The members a call of [groupId] is built for (ERROR-088): everyone listed that [isGroupMember] accepts. Not the
+     * live-key gate: a member this device is not paired with and has no session to yet is still a member of the call,
+     * dialed and checked when a frame is sent. Each member left out is logged with the reason.
+     */
+    private suspend fun callMembers(groupId: String, memberIds: List<String>, purpose: String): List<String> {
+        val members = ArrayList<String>()
+        for (id in memberIds.distinct()) {
+            if (id == localDeviceId) continue
+            if (isGroupMember(id, groupId)) {
+                members += id
+            } else {
+                FlashLog.w("GROUP_CALL", "Group call $purpose group=$groupId: member $id left out (not an active roster member this device trusts or was introduced to)")
+            }
+        }
+        return members
+    }
+
+    /** Why [isGroupTrustedPeer] said no, for the log: by construction it implies [isGroupMember], so the two answers name the cause. */
+    private suspend fun refusalReason(peerId: String, groupId: String): String =
+        if (isGroupMember(peerId, groupId)) {
+            "member of the group, but its live session does not present the key its certificate names (or there is no live session)"
+        } else {
+            "not an active roster member this device trusts or was introduced to"
+        }
+
+    /**
+     * Every frame of a group call goes through here (ERROR-088). An announcement (invite, presence, accept, join) reveals
+     * that the call exists, so it only goes to a roster member whose live session presents the key its certificate names;
+     * the session is dialed first when there is none, which is what lets a member that is not paired with this device
+     * and not connected yet be invited and join. Everything else (offers, candidates, farewells) is sent as before and
+     * never dials: an announcement always precedes a connection, so its session exists by then, and a dial must not hold
+     * a leg's lock or the media thread.
+     */
+    internal suspend fun sendGroupFrame(groupId: String, frame: CallWireFrame, peerId: String): Boolean {
+        if (frame is CallWireFrame.GroupInvite || frame is CallWireFrame.GroupPresence ||
+            frame is CallWireFrame.GroupAccept || frame is CallWireFrame.GroupJoin || frame is CallWireFrame.GroupQuery
+        ) {
+            if (!isGroupMember(peerId, groupId)) {
+                logRefusal(peerId, groupId, frame, deferred = false)
+                return false
+            }
+            dialIfNeeded(peerId)
+            if (!isGroupTrustedPeer(peerId, groupId)) {
+                logRefusal(peerId, groupId, frame, deferred = true)
+                return false
+            }
+            return sendFrame(frame, peerId)
+        }
+        return sendFrame(frame, peerId)
+    }
+
+    /**
+     * Writes why an announcement was not sent, at most once per [REFUSAL_LOG_INTERVAL_MS] for the same peer, group, frame and
+     * cause: the presence tick offers the call to a member that cannot be reached every 4 s for as long as the call lasts.
+     */
+    private suspend fun logRefusal(peerId: String, groupId: String, frame: CallWireFrame, deferred: Boolean) {
+        val key = "$peerId|$groupId|${frame.frameName()}|$deferred"
+        val now = SystemTimeSource.nowMs()
+        val last = refusalLoggedAt[key]
+        if (last != null && now - last < REFUSAL_LOG_INTERVAL_MS) return
+        refusalLoggedAt[key] = now
+        val reason = refusalReason(peerId, groupId)
+        if (deferred) {
+            FlashLog.i("GROUP_CALL", "${frame.frameName()} to $peerId for group=$groupId not sent yet: $reason")
+        } else {
+            FlashLog.w("GROUP_CALL", "${frame.frameName()} to $peerId for group=$groupId not sent: $reason")
+        }
+    }
+
+    private suspend fun dialIfNeeded(peerId: String): Boolean = try {
+        reachPeer(peerId)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (t: Throwable) {
+        FlashLog.w("GROUP_CALL", "Dial on demand to $peerId failed: ${t.message}")
+        false
+    }
+
+    private fun CallWireFrame.frameName(): String = this::class.simpleName ?: "frame"
+
     private fun startIncomingGroup(peerId: String, frame: CallWireFrame.GroupInvite) {
         val session = FlashGroupCallSession(
             callId = frame.callId,
@@ -568,21 +692,8 @@ public class CallCoordinator(
             localDeviceId = localDeviceId,
             localName = localName,
             scope = scope,
-            sendFrame = sendFrame,
-            onEnded = { ended ->
-                if (currentGroupSession === ended) {
-                    currentGroupSession = null
-                    stateCollector?.cancel()
-                    stateCollector = null
-                    _activeCall.value = ended.state.value
-                    scope.launch {
-                        kotlinx.coroutines.delay(2_000L)
-                        if (currentSession == null && currentGroupSession == null) {
-                            _activeCall.value = null
-                        }
-                    }
-                }
-            },
+            sendFrame = { out, to -> sendGroupFrame(frame.groupId, out, to) },
+            onEnded = ::onGroupSessionEnded,
             performanceMode = performanceMode,
             peerNameResolver = peerNameResolver,
             networkBand = networkBand,
@@ -590,6 +701,11 @@ public class CallCoordinator(
         )
         currentGroupSession = session
         observeGroupSession(session)
-        session.startIncomingRinging(peerId = peerId, callerName = frame.callerName)
+        session.startIncomingRinging(peerId = peerId, callerName = frame.callerName, members = frame.members)
+    }
+
+    private companion object {
+        /** The same refusal is written to the log once a minute (see [logRefusal]). */
+        const val REFUSAL_LOG_INTERVAL_MS = 60_000L
     }
 }

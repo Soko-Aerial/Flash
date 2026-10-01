@@ -283,10 +283,12 @@ private class Wiring(
 
         var boundServerPort = 0
         var networkRestartJob: Job? = null
+        var currentFriendlyName = identity.friendlyName
+        var currentIdentity = identity
         val networkImpl = WsFlashNetwork(
             context = appContext,
             localDeviceId = localId,
-            localFriendlyName = identity.friendlyName,
+            localFriendlyName = currentFriendlyName,
             tlsOptions = tlsOptions,
             // PC5 (ADR-048): keepalive and redial pacing follow the discovery mode (ECO / BOOST).
             transportProfile = { connectionPolicy(engine).transport },
@@ -408,7 +410,7 @@ private class Wiring(
                     contacts = trustStore.getTrustedPeers().keys.mapTo(HashSet()) { it.value } +
                         presenceChat?.activeGroupRosters().orEmpty().flatten(),
                     activity = networkImpl.linkActivity(),
-                    busy = setOfNotNull((facade as? DefaultFlashEngine)?.busyCallPeerId()),
+                    busy = (facade as? DefaultFlashEngine)?.busyCallPeerIds().orEmpty(),
                     // No Nearby screen of its own: a consumer pairs through its own UI.
                     nearbyOpen = false,
                 )
@@ -685,7 +687,7 @@ private class Wiring(
             }
             DiscoveryRouteBinder.observe(scope, engine.discoveredEndpoints, networkImpl)
             engine.setMode(FlashDiscoveryMode.STANDARD)
-            val started = engine.startAll(serverPort, identity)
+            val started = engine.startAll(serverPort, currentIdentity)
             if (!started.isSuccess) Log.e(TAG, "Discovery startAll failed: ${(started as? FlashResult.Failure)?.error}")
 
             dataPort = runCatching { dcServer.start(preferredPort = serverPort + 1) }.getOrElse {
@@ -713,7 +715,7 @@ private class Wiring(
             pttFactory = { hasMicPermission, isCallActive, audioRateHz ->
                 PttSessionEngine(
                     localId = { localId },
-                    localName = { identity.friendlyName },
+                    localName = { currentFriendlyName },
                     isTrustedPeer = { peerId -> trustStore.isTrusted(FlashDeviceId(peerId)) },
                     snapshotMembers = {
                         networkImpl.activeSessions.value.keys
@@ -746,6 +748,36 @@ private class Wiring(
                     isCallActive = isCallActive,
                     audioRateHz = audioRateHz,
                 )
+            },
+            onUpdateFriendlyName = { newName ->
+                val trimmed = newName.trim()
+                if (trimmed.isEmpty()) false
+                else {
+                    currentFriendlyName = trimmed
+                    networkImpl.localFriendlyName = trimmed
+                    scope.launch {
+                        runCatching { chatImpl.updateLocalDisplayName(trimmed) }
+                    }
+                    val id = localId
+                    val newIdentity = FlashAdvertisedIdentity(
+                        deviceId = FlashDeviceId(id),
+                        friendlyName = trimmed,
+                        deviceModel = android.os.Build.MODEL ?: "unknown",
+                        protocolVersion = 2,
+                        capabilities = setOf(FlashDeviceKind.CAP_MOBILE),
+                    )
+                    currentIdentity = newIdentity
+                    engine.updateIdentity(newIdentity)
+                    if (boundServerPort > 0) {
+                        scope.launch {
+                            if (engine.state.value.isAdvertising) {
+                                engine.stopAdvertising()
+                                engine.startAdvertising(boundServerPort)
+                            }
+                        }
+                    }
+                    true
+                }
             },
             onClose = {
                 runCatching { dcServer.stop() }

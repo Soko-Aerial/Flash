@@ -300,6 +300,9 @@ public class RealFlashChatRepository(
     private var activeConversationId: String? = null
     private var activeConversationJob: Job? = null
 
+    /** ERROR-087: what the open chat has put on screen and already acknowledged; [endOpenConversation] finishes the difference. */
+    private var activeReadState: OpenConversationReadState? = null
+
     // Bug 6 / crash at drainOutboxOnce: MUST be declared before the init block below.
     // Kotlin runs property initializers + init blocks in source order, and the init block
     // launches a coroutine that can reach drainOutboxOnce() on Dispatchers.IO before the
@@ -322,6 +325,10 @@ public class RealFlashChatRepository(
      * MUST be declared above the init block, for the reason recorded on [drainMutex].
      */
     private val drainWake = Channel<Unit>(Channel.CONFLATED)
+
+    private fun notifyOutboxDrain() {
+        drainWake.trySend(Unit)
+    }
 
     /**
      * Earliest retry deadline [drainOutboxOnce] has scheduled, or null when nothing is known to be
@@ -575,7 +582,7 @@ public class RealFlashChatRepository(
         // folded into the loop because the loop has to be free to be *asleep* while this stays
         // subscribed — a Room Flow only invalidates for as long as something is collecting it.
         scope.launch(ioDispatcher) {
-            outboxDao.observeCount().collect { drainWake.trySend(Unit) }
+            outboxDao.observeCount().collect { notifyOutboxDrain() }
         }
 
         // Stamp the on-disk path of every finished attachment onto its row. Live progress is
@@ -613,8 +620,10 @@ public class RealFlashChatRepository(
     }
 
     override fun openConversation(conversationId: String) {
+        // ERROR-087: leave the previous chat properly first, so what it displayed is acknowledged even when its
+        // collector was cancelled before it got to write the cursor.
+        endOpenConversation()
         activeConversationId = conversationId
-        activeConversationJob?.cancel()
 
         // ERROR-034: clear the previous thread *before* the new collector runs. The combine below
         // emits asynchronously (Room + IO dispatcher), so without this reset the outgoing thread's
@@ -656,11 +665,14 @@ public class RealFlashChatRepository(
         // Track the newest message id we've already marked read so an unchanged head does not
         // rewrite the cursor (and needlessly re-emit the chat list) on every recomposition, plus
         // the newest INBOUND id we've already acked so we don't re-send the same read receipt.
-        var lastMarkedReadId: String? = null
-        var lastAckedInboundId: String? = null
+        // Both live in [readState] (not in locals of the collector) so closing the chat can finish
+        // an acknowledgement the cancelled collector never reached (ERROR-087).
+        val readState = OpenConversationReadState(conversationId)
+        activeReadState = readState
 
         activeConversationJob = scope.launch(ioDispatcher) {
             val isGroupConversation = conversationDao.get(conversationId)?.isGroup == true
+            readState.isGroup = isGroupConversation
             val deliveryCountsFlow = if (isGroupConversation) {
                 groupDeliveryDao?.observeDeliveryCounts(conversationId, localDeviceId) ?: flowOf(emptyList())
             } else {
@@ -819,33 +831,12 @@ public class RealFlashChatRepository(
             }.collectLatest { (state, cursors) ->
                 val (newestMessageId, newestInboundId) = cursors
                 _conversationState.value = state
-                if (newestMessageId != null && newestMessageId != lastMarkedReadId) {
-                    conversationDao.updateLastReadCursor(conversationId, newestMessageId)
-                    lastMarkedReadId = newestMessageId
-                    // Tell the peer we've read up to its newest message so its sent bubbles flip
-                    // Delivered → Read (C6.3). Only fires when the peer has actually sent us
-                    // something (never for our own outbound head) and never re-acks the same id.
-                    // Routed to the peer (conversationId is its device id); memberId is our id, which
-                    // the peer uses to locate its thread for us. Idempotent via `markReadUpTo`.
-                    if (newestInboundId != null && newestInboundId != lastAckedInboundId) {
-                        lastAckedInboundId = newestInboundId
-                        if (isGroupConversation) {
-                            // A group id is not a device, so the direct receipt below had no one to reach. Each
-                            // active member gets its own `Read` frame and keeps this device's cursor.
-                            sendGroupRead(conversationId, newestInboundId)
-                        } else {
-                            transportSink?.send(
-                                conversationId,
-                                MessageWireFrame.ReadReceipt(
-                                    conversationId = conversationId,
-                                    memberId = localDeviceId,
-                                    upToMessageId = newestInboundId,
-                                    readAt = timeSource.nowMs(),
-                                ),
-                            )
-                        }
-                    }
-                }
+                // Record what is now on screen BEFORE the suspending writes: collectLatest or a close can cancel
+                // this block between the render and the cursor write, and a message the user was shown must not
+                // stay unread because of that (ERROR-087).
+                readState.shownNewestMessageId = newestMessageId
+                readState.shownNewestInboundId = newestInboundId
+                acknowledgeShown(readState)
             }
         }
     }
@@ -893,7 +884,7 @@ public class RealFlashChatRepository(
      * rewritten too; a v2 row is left alone (`updateMemberDisplayName` skips it) because its name is the
      * owner-signed label, which only the owner can re-issue.
      */
-    public suspend fun updateLocalDisplayName(newName: String) {
+    public override suspend fun updateLocalDisplayName(newName: String) {
         val trimmed = newName.trim()
         if (trimmed.isEmpty() || trimmed == localDisplayName) return
         localDisplayName = trimmed
@@ -1012,8 +1003,74 @@ public class RealFlashChatRepository(
     )
 
     override fun closeConversation() {
-        activeConversationJob?.cancel()
+        endOpenConversation()
         activeConversationId = null
+    }
+
+    /**
+     * ERROR-087: the read bookkeeping of ONE open chat. The collector in [openConversation] publishes a state to the
+     * screen first and acknowledges it (read cursor, read receipt) second, and `collectLatest` or a close can cancel it
+     * between the two. The newest ids the screen showed are therefore recorded before the writes, and
+     * [endOpenConversation] writes whatever is still outstanding when the chat is left.
+     */
+    private class OpenConversationReadState(val conversationId: String) {
+        @Volatile var isGroup: Boolean = false
+        @Volatile var shownNewestMessageId: String? = null
+        @Volatile var shownNewestInboundId: String? = null
+        @Volatile var markedReadId: String? = null
+        @Volatile var ackedInboundId: String? = null
+
+        fun hasOutstandingAcknowledgement(): Boolean = shownNewestMessageId.let { it != null && it != markedReadId }
+    }
+
+    /**
+     * Writes the read cursor up to the newest message the screen showed, then tells the author (a `Read` receipt, or
+     * a `Read` frame per active member in a group). Idempotent: an unchanged head writes nothing, so it is safe to
+     * call from every emission and again from the close flush.
+     */
+    private suspend fun acknowledgeShown(read: OpenConversationReadState) {
+        val newestMessageId = read.shownNewestMessageId ?: return
+        if (newestMessageId == read.markedReadId) return
+        conversationDao.updateLastReadCursor(read.conversationId, newestMessageId)
+        read.markedReadId = newestMessageId
+        // Tell the peer we've read up to its newest message so its sent bubbles flip
+        // Delivered → Read (C6.3). Only fires when the peer has actually sent us
+        // something (never for our own outbound head) and never re-acks the same id.
+        // Routed to the peer (conversationId is its device id); memberId is our id, which
+        // the peer uses to locate its thread for us. Idempotent via `markReadUpTo`.
+        val newestInboundId = read.shownNewestInboundId
+        if (newestInboundId != null && newestInboundId != read.ackedInboundId) {
+            read.ackedInboundId = newestInboundId
+            if (read.isGroup) {
+                // A group id is not a device, so the direct receipt below had no one to reach. Each
+                // active member gets its own `Read` frame and keeps this device's cursor.
+                sendGroupRead(read.conversationId, newestInboundId)
+            } else {
+                transportSink?.send(
+                    read.conversationId,
+                    MessageWireFrame.ReadReceipt(
+                        conversationId = read.conversationId,
+                        memberId = localDeviceId,
+                        upToMessageId = newestInboundId,
+                        readAt = timeSource.nowMs(),
+                    ),
+                )
+            }
+        }
+    }
+
+    /**
+     * Stops the open chat's collector and, off the caller's thread, acknowledges anything it displayed but had not yet
+     * marked read. Called by [closeConversation] and by [openConversation] (opening B straight after A leaves A).
+     */
+    private fun endOpenConversation() {
+        activeConversationJob?.cancel()
+        activeConversationJob = null
+        val read = activeReadState
+        activeReadState = null
+        if (read != null && read.hasOutstandingAcknowledgement()) {
+            scope.launch(ioDispatcher) { acknowledgeShown(read) }
+        }
     }
 
     override suspend fun createGroup(name: String, memberIds: Set<String>): FlashResult<String> =
@@ -1388,10 +1445,11 @@ public class RealFlashChatRepository(
                     )
                 },
             )
-            touchConversation(conversation.id, now)
+            touchConversationInTransaction(conversation.id, now)
             draftDao.clear(conversation.id)
             outboxDao.enqueue(OutboxEntity(localId, nextAttemptAt = now, payloadJson = text, createdAt = now))
         }
+        notifyOutboxDrain()
         drainOutboxOnce()
     }
 
@@ -1409,6 +1467,7 @@ public class RealFlashChatRepository(
                 return@launch
             }
             enqueueDirectText(conversationId, trimmed, now, localId, replyToId = null, replyToPreview = null)
+            notifyOutboxDrain()
             drainOutboxOnce()
         }
     }
@@ -1427,6 +1486,7 @@ public class RealFlashChatRepository(
                 return@launch
             }
             enqueueDirectText(conversationId, trimmed, now, localId, replyToId, replyToPreview)
+            notifyOutboxDrain()
             drainOutboxOnce()
         }
     }
@@ -1460,14 +1520,11 @@ public class RealFlashChatRepository(
             )
             // Title uses the friendly name when known — never the raw conversationId, which (via
             // @Upsert full-row replace) would otherwise clobber a good inbound-set title with the
-            // peer's device UUID.
-            conversationDao.upsert(
-                ConversationEntity(
-                    id = conversationId,
-                    title = peerNameResolver(conversationId)?.ifBlank { null } ?: conversationId,
-                    isGroup = false,
-                    sortOrder = now,
-                ),
+            // peer's device UUID. The stored row's read cursor, pin and mute are kept (ERROR-087).
+            upsertDirectConversation(
+                conversationId = conversationId,
+                title = peerNameResolver(conversationId)?.ifBlank { null },
+                sortOrder = now,
             )
             draftDao.clear(conversationId)
             outboxDao.enqueue(
@@ -1572,8 +1629,21 @@ public class RealFlashChatRepository(
         val members = groupMemberDao
         val deliveries = groupDeliveryDao
         scope.launch(ioDispatcher) {
-            if (conversationDao.get(conversationId)?.isGroup != true) return@launch
+            val conv = conversationDao.get(conversationId)
+            if (conv?.isGroup != true) return@launch
             if (members != null && isRemovedHere(members, conversationId)) return@launch
+            val cached = pendingGroupAttachmentSignatures.remove(messageId)
+            val sentAt = cached?.first ?: now
+            val signature = cached?.second ?: if (conv.groupProto == GroupPolicy.V2_PROTOCOL) {
+                val signed = signedGroups
+                if (signed == null) {
+                    FlashLog.w("CHAT", "Group attachment not sent: $conversationId is a signed group but this device cannot sign")
+                    return@launch
+                }
+                signed.signMessage(conversationId, messageId, sentAt, null, null, "")
+            } else {
+                null
+            }
             // ADR-044 V2 (E3): files are paired-only, so a vouched member is not a recipient and cannot leave
             // this message PENDING for a delivery that will never be attempted.
             val recipients = members?.activeMembers(conversationId)
@@ -1586,13 +1656,14 @@ public class RealFlashChatRepository(
                     senderId = localDeviceId,
                     senderName = localDisplayName,
                     text = rowText,
-                    sentAt = now,
+                    sentAt = sentAt,
                     status = if (recipients.isEmpty()) "SENT" else "PENDING",
                     attachmentTransferId = transferId,
                     attachmentName = fileName,
                     attachmentMime = mimeType,
                     attachmentSize = sizeBytes,
                     attachmentPath = localPath,
+                    groupSig = signature,
                 ),
             )
             if (recipients.isNotEmpty() && deliveries != null) {
@@ -1653,6 +1724,7 @@ public class RealFlashChatRepository(
                             attachmentMime = media.mimeType.ifBlank { mimeType },
                             attachmentSize = if (media.sizeBytes > 0) media.sizeBytes else sizeBytes,
                             attachmentPath = null,
+                            groupSig = media.signature,
                         ),
                     )
                     touchConversation(media.groupId, now)
@@ -1782,16 +1854,15 @@ public class RealFlashChatRepository(
                 ) return
                 val name = GroupPolicy.normalizedName(frame.name) ?: return
                 groupTitleCache[frame.groupId] = name
-                conversationDao.upsert(
-                    ConversationEntity(
-                        id = frame.groupId,
+                runInTransaction {
+                    upsertLegacyGroupConversation(
+                        groupId = frame.groupId,
                         title = name,
-                        isGroup = true,
                         sortOrder = frame.membershipVersion,
-                        groupCreatedBy = frame.from,
-                        groupCreatedAt = frame.membershipVersion,
-                    ),
-                )
+                        createdBy = frame.from,
+                        createdAt = frame.membershipVersion,
+                    )
+                }
                 frame.memberIds.forEach { memberId ->
                     applyMembership(
                         members,
@@ -1870,16 +1941,17 @@ public class RealFlashChatRepository(
                 // re-own the group, and only the owner is "owner" (the wire carries a free-form role).
                 val creatorId = existingGroupConversation?.groupCreatedBy ?: frame.creatorId
                 groupTitleCache[frame.groupId] = name
-                conversationDao.upsert(
-                    ConversationEntity(
-                        id = frame.groupId,
+                // ERROR-087: this frame is re-sent on every session-up; replacing the row reset its read cursor, pin,
+                // mute and archive state each time.
+                runInTransaction {
+                    upsertLegacyGroupConversation(
+                        groupId = frame.groupId,
                         title = name,
-                        isGroup = true,
-                        sortOrder = existingGroupConversation?.sortOrder ?: frame.membershipVersion,
-                        groupCreatedBy = creatorId,
-                        groupCreatedAt = existingGroupConversation?.groupCreatedAt ?: frame.membershipVersion,
-                    ),
-                )
+                        sortOrder = frame.membershipVersion,
+                        createdBy = creatorId,
+                        createdAt = frame.membershipVersion,
+                    )
+                }
                 roster.forEach { entry ->
                     applyMembership(
                         members,
@@ -1993,7 +2065,21 @@ public class RealFlashChatRepository(
             }
             is GroupWireFrame.GroupMedia -> {
                 if (isRemovedHere(members, frame.groupId) || !isActiveTrustedMember(members, frame.groupId, frame.from)) return
-                pendingGroupMedia[frame.transferId] = frame
+                var senderName = frame.senderName
+                var groupSig: String? = null
+                if (isV2Group(frame.groupId)) {
+                    val label = signedGroups?.verifiedAuthorLabel(
+                        frame.groupId, frame.from, frame.messageId, frame.sentAt,
+                        null, null, "", frame.signature,
+                    )
+                    if (label == null) {
+                        FlashLog.w("CHAT", "SECURITY: group media dropped, no valid signature (group=${frame.groupId} msg=${frame.messageId} from=${frame.from})")
+                        return
+                    }
+                    senderName = label
+                    groupSig = frame.signature
+                }
+                pendingGroupMedia[frame.transferId] = frame.copy(senderName = senderName)
                 val now = timeSource.nowMs()
                 groupTransportSink?.send(
                     frame.from,
@@ -2013,7 +2099,7 @@ public class RealFlashChatRepository(
                             groupId = frame.groupId,
                             messageId = frame.messageId,
                             senderId = frame.from,
-                            senderName = frame.senderName,
+                            senderName = senderName,
                         )
                         touchConversation(frame.groupId, now)
                     } else if (claimedGroupMedia.add(frame.transferId)) {
@@ -2025,7 +2111,7 @@ public class RealFlashChatRepository(
                                 localId = frame.messageId,
                                 conversationId = frame.groupId,
                                 senderId = frame.from,
-                                senderName = frame.senderName,
+                                senderName = senderName,
                                 text = "",
                                 sentAt = frame.sentAt.takeIf { it > 0 } ?: now,
                                 status = "DELIVERED",
@@ -2034,6 +2120,7 @@ public class RealFlashChatRepository(
                                 attachmentMime = frame.mimeType,
                                 attachmentSize = frame.sizeBytes,
                                 attachmentPath = null,
+                                groupSig = groupSig,
                             ),
                         )
                         touchConversation(frame.groupId, now)
@@ -2041,7 +2128,7 @@ public class RealFlashChatRepository(
                             runCatching {
                                 onInboundAttachmentWithGroupTitle(
                                     frame.groupId,
-                                    frame.senderName,
+                                    senderName,
                                     frame.fileName,
                                     frame.mimeType,
                                     conversationDao.get(frame.groupId)?.title?.ifBlank { null },
@@ -2080,6 +2167,13 @@ public class RealFlashChatRepository(
     /** Maps a per-recipient transfer id back to its outbound group message id. */
     private val transferToGroupMessage = SyncMap<String, String>()
 
+    /**
+     * Stashes signature and timestamp when [beginGroupAttachment] is called before [sendGroupAttachment]
+     * (the Android and Desktop UI caller sequence), so multiple recipient announcements share the
+     * exact same timestamp and signature, and the subsequent [sendGroupAttachment] persists them identically.
+     */
+    private val pendingGroupAttachmentSignatures = SyncMap<String, Pair<Long, String?>>()
+
     override fun getRecipientTransferIds(messageId: String): Set<String> =
         groupMessageTransfers[messageId]?.toSet().orEmpty()
 
@@ -2103,6 +2197,25 @@ public class RealFlashChatRepository(
         if (!isActiveTrustedMember(members, groupId, recipientDeviceId)) return false
         groupMessageTransfers.getOrPut(messageId) { SyncSet() }.add(transferId)
         transferToGroupMessage[transferId] = messageId
+        val existing = messageDao.getByLocalId(messageId)
+        val (sentAt, signature) = if (existing != null) {
+            existing.sentAt to existing.groupSig
+        } else {
+            val cached = pendingGroupAttachmentSignatures[messageId]
+            if (cached != null) {
+                cached
+            } else {
+                val now = timeSource.nowMs()
+                val sig = if (isV2Group(groupId)) {
+                    signedGroups?.signMessage(groupId, messageId, now, null, null, "")
+                } else {
+                    null
+                }
+                val pair = now to sig
+                pendingGroupAttachmentSignatures[messageId] = pair
+                pair
+            }
+        }
         return groupTransportSink?.send(
             recipientDeviceId,
             GroupWireFrame.GroupMedia(
@@ -2115,7 +2228,8 @@ public class RealFlashChatRepository(
                 fileName = fileName,
                 mimeType = mimeType,
                 sizeBytes = sizeBytes,
-                sentAt = timeSource.nowMs(),
+                sentAt = sentAt,
+                signature = signature,
             ),
         ) == true
     }
@@ -2579,6 +2693,21 @@ public class RealFlashChatRepository(
         return isActiveGroupMember(members, groupId, deviceId)
     }
 
+    /**
+     * Whether [deviceId] is somebody a call of [groupId] is offered to at all (ERROR-088): an active roster member this
+     * device already trusts (paired) or has been introduced to by the group owner (a verified certificate names a key),
+     * while this device is itself still a member. Unlike [isGroupCallPeer] it does not need a live session, so it
+     * answers "who is in this group's call", not "may this frame go to, or come from, this connection". The call
+     * layer builds a call's member list with it and applies [isGroupCallPeer] when it sends or receives an announcement:
+     * a member the caller is not paired with and has no session to yet can still be dialed and invited.
+     */
+    public suspend fun isGroupCallMember(groupId: String, deviceId: String): Boolean {
+        val members = groupMemberDao ?: return isGroupPeerTrusted(groupId, deviceId)
+        if (isRemovedHere(members, groupId)) return false
+        if (members.member(groupId, deviceId)?.isActive != true) return false
+        return isTrustedPeer(deviceId) || signedGroups?.hasVouchedRosterKey(groupId, deviceId) == true
+    }
+
     private fun selfMembershipOf(row: GroupMemberEntity?): FlashSelfMembership = when {
         row == null || row.isActive -> FlashSelfMembership.Active
         // A leave is issued by the leaver (v2) or carries no issuer (legacy); only an owner tombstone is a removal.
@@ -2623,17 +2752,20 @@ public class RealFlashChatRepository(
                 )
                 // -1 == IGNORE-conflict: this localId already exists (replayed frame after a
                 // reconnect). Only a fresh row notifies (Bug 7 dedupe guarantee).
-                val insertedRowId = messageDao.insert(entity)
-                conversationDao.upsert(
-                    ConversationEntity(
-                        id = threadId,
+                // ERROR-087: the row is refreshed, not replaced (its read cursor, pin and mute are the device's own),
+                // and in the SAME transaction as the insert so the open chat acknowledging this message cannot be
+                // overwritten by a stale copy of the row.
+                var insertedRowId = -1L
+                runInTransaction {
+                    insertedRowId = messageDao.insert(entity)
+                    upsertDirectConversation(
+                        conversationId = threadId,
                         title = peerNameResolver(threadId)?.ifBlank { null }
                             ?: frame.senderName?.ifBlank { null }
                             ?: frame.senderId,
-                        isGroup = false,
                         sortOrder = frame.sentAt,
-                    ),
-                )
+                    )
+                }
                 if (insertedRowId != -1L) {
                     runCatching {
                         onInboundTextMessageWithGroupTitle(threadId, frame.senderName, frame.text, null)
@@ -2723,6 +2855,14 @@ public class RealFlashChatRepository(
 
             is MessageWireFrame.ReactionFrame -> {
                 if (transportPeerId != null && frame.memberId != transportPeerId) return
+                if (conversationDao.get(frame.conversationId)?.isGroup == true) {
+                    val members = groupMemberDao ?: return
+                    if (!isActiveGroupMember(members, frame.conversationId, frame.memberId)) return
+                } else {
+                    if (transportPeerId != null && !isTrustedPeer(transportPeerId)) return
+                }
+                val msg = messageDao.getByLocalId(frame.messageId)
+                if (msg != null && msg.conversationId != frame.conversationId) return
                 // Apply the peer's reaction delta to the aggregated row, attributed to its memberId
                 // (#7). Self-reaction state is unaffected — that only flips for localDeviceId.
                 applyReactionDelta(
@@ -3010,6 +3150,7 @@ public class RealFlashChatRepository(
             // without waking deliveries for members that are still offline.
             outboxDao.makePendingDue(now)
             peerDeviceId?.let { groupDeliveryDao?.makePendingDueForMember(it, now) }
+            notifyOutboxDrain()
             drainOutboxOnce()
         }
     }
@@ -3045,31 +3186,48 @@ public class RealFlashChatRepository(
     }
 
     override fun toggleReaction(messageId: String, emoji: String) {
-        val conversationId = activeConversationId ?: return
+        val activeConv = activeConversationId
         scope.launch(ioDispatcher) {
+            val conversationId = messageDao.getByLocalId(messageId)?.conversationId
+                ?: activeConv
+                ?: return@launch
+            val isGroup = conversationDao.get(conversationId)?.isGroup == true
+            val members = groupMemberDao
+            if (isGroup && members != null && isRemovedHere(members, conversationId)) {
+                return@launch
+            }
             // Toggle our own reaction: if we already reacted with this emoji, remove it; else add it.
             val existing = reactionDao.get(messageId, emoji)
             val currentlySelf = existing?.selfReacted == true ||
                 (existing != null && localDeviceId in decodeReactorIds(existing.reactorIdsJson))
             val isAdded = !currentlySelf
             applyReactionDelta(messageId, emoji, localDeviceId, isAdded)
-            // Broadcast the delta so the peer's aggregate matches (#7).
-            transportSink?.send(
-                conversationId,
-                MessageWireFrame.ReactionFrame(
-                    messageId = messageId,
-                    conversationId = conversationId,
-                    memberId = localDeviceId,
-                    emoji = emoji,
-                    isAdded = isAdded,
-                ),
+            val frame = MessageWireFrame.ReactionFrame(
+                messageId = messageId,
+                conversationId = conversationId,
+                memberId = localDeviceId,
+                emoji = emoji,
+                isAdded = isAdded,
             )
+            if (isGroup) {
+                members?.activeMembers(conversationId)
+                    ?.filter { it.deviceId != localDeviceId && isGroupPeerTrusted(conversationId, it.deviceId) }
+                    ?.forEach { member -> transportSink?.send(member.deviceId, frame) }
+            } else {
+                // Broadcast the delta so the peer's aggregate matches (#7).
+                transportSink?.send(conversationId, frame)
+            }
         }
     }
 
     override fun setTyping(isTyping: Boolean) {
         val conversationId = activeConversationId ?: return
         scope.launch(ioDispatcher) {
+            val isGroup = conversationDao.get(conversationId)?.isGroup == true
+            val members = groupMemberDao
+            if (isGroup && members != null && isRemovedHere(members, conversationId)) {
+                return@launch
+            }
             val frame = MessageWireFrame.TypingFrame(
                 conversationId = conversationId,
                 memberId = localDeviceId,
@@ -3077,9 +3235,9 @@ public class RealFlashChatRepository(
                 isTyping = isTyping,
                 timestampMs = timeSource.nowMs(),
             )
-            if (conversationDao.get(conversationId)?.isGroup == true) {
-                groupMemberDao?.activeMembers(conversationId)
-                    ?.filter { it.deviceId != localDeviceId }
+            if (isGroup) {
+                members?.activeMembers(conversationId)
+                    ?.filter { it.deviceId != localDeviceId && isGroupPeerTrusted(conversationId, it.deviceId) }
                     ?.forEach { member -> transportSink?.send(member.deviceId, frame) }
             } else {
                 // Keep the direct route and MessageWireFrame bytes exactly as before F5.3.
@@ -3134,6 +3292,17 @@ public class RealFlashChatRepository(
         now: Long,
         directFallbackTitle: String? = null,
     ) {
+        // ERROR-087: read-modify-write of the row; in its own write transaction so a read cursor written in between
+        // (the open chat acknowledging the message just inserted) is not overwritten with the stale copy.
+        runInTransaction { touchConversationInTransaction(conversationId, now, directFallbackTitle) }
+    }
+
+    /** [touchConversation] for a caller that is already inside a [runInTransaction] block (a transaction does not nest here). */
+    private suspend fun touchConversationInTransaction(
+        conversationId: String,
+        now: Long,
+        directFallbackTitle: String? = null,
+    ) {
         val existing = conversationDao.get(conversationId)
         if (existing != null) {
             conversationDao.upsert(existing.copy(sortOrder = now, archived = false))
@@ -3148,6 +3317,53 @@ public class RealFlashChatRepository(
                 isGroup = false,
                 sortOrder = now,
                 archived = false,
+            ),
+        )
+    }
+
+    /**
+     * ERROR-087: creates or refreshes a DIRECT chat's row WITHOUT replacing what only this device decides about it.
+     * `@Upsert` is a full-row replace, so a freshly built [ConversationEntity] reset `lastReadCursor` on every inbound or
+     * outbound text (a NULL cursor counts every message the peer ever sent as unread) and put `pinned` / `muted` back to
+     * false. A new message brings an archived chat back, as [touchConversationInTransaction] does.
+     *
+     * Run it inside the same [runInTransaction] block as the message insert it accompanies: it reads the row and writes it
+     * back, and a cursor written in between would otherwise be lost.
+     */
+    private suspend fun upsertDirectConversation(conversationId: String, title: String?, sortOrder: Long) {
+        val existing = conversationDao.get(conversationId)
+        conversationDao.upsert(
+            existing?.copy(title = title ?: existing.title, sortOrder = sortOrder, archived = false)
+                ?: ConversationEntity(id = conversationId, title = title ?: conversationId, isGroup = false, sortOrder = sortOrder),
+        )
+    }
+
+    /**
+     * ERROR-087: the legacy (v1) group `Create` / `State` write. An existing row keeps its position, provenance, archive,
+     * pin, mute and read cursor and only takes the new [title]; a new row starts at [sortOrder]. Run inside a
+     * [runInTransaction] block for the same reason as [upsertDirectConversation].
+     */
+    private suspend fun upsertLegacyGroupConversation(
+        groupId: String,
+        title: String,
+        sortOrder: Long,
+        createdBy: String?,
+        createdAt: Long?,
+    ) {
+        val existing = conversationDao.get(groupId)
+        conversationDao.upsert(
+            existing?.copy(
+                title = title,
+                isGroup = true,
+                groupCreatedBy = existing.groupCreatedBy ?: createdBy,
+                groupCreatedAt = existing.groupCreatedAt ?: createdAt,
+            ) ?: ConversationEntity(
+                id = groupId,
+                title = title,
+                isGroup = true,
+                sortOrder = sortOrder,
+                groupCreatedBy = createdBy,
+                groupCreatedAt = createdAt,
             ),
         )
     }

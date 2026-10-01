@@ -803,7 +803,192 @@ enough for everything below. Keep `adb logcat` running on the phones; "tick" mea
   - No need to force-stop or restart either app.
   - The 1:1 chat message delivers immediately with single/double ticks without getting stuck in outbox.
 - **Fail:** phones stay Offline or report "Failed to dispatch chat wireFrame: no active session" until force stopped.
-- **Source:** ERROR-085; `ConnectionPlannerTest` endpoint-aware suppression and urgent-dial tests.
+- **Also (follow-up fix, 2026-09-30):** while discovery still lists the old `10.13.65.x` address for the peer (it ages out after
+  ~30 s) and a presence tip or remembered route offers the new `192.168.1.x` one, the **second** endpoint is now dialed as soon
+  as the first is suppressed, not after the old address disappears. Expect Phone A's log to show a dial to each address,
+  each at most once per 15 s, and never two dials to the same peer at once.
+- **Source:** ERROR-085; `ConnectionPlannerTest` endpoint-aware suppression and urgent-dial tests, and the multi-endpoint tests
+  (`a second endpoint of the same peer is dialed while the first is suppressed` and three more);
+  `AutoConnectorTest.ensureSession tries a peer's second endpoint when the first one just failed`.
+- **Status:** TODO
+
+## 4i. Group call end and recovery (ERROR-086, audit 2026-09-30)
+
+These check the ERROR-086 fix, **implemented and unit-tested 2026-09-30 (not yet on a device)**: `FlashGroupCallEndTest` (20),
+`CallCoordinatorGroupEndTest` (3) and `FlashCallBusyPeersTest` (5) cover the state machine, but not the real `PeerConnection`,
+camera, audio or foreground service, which is what these tests are for. Run them on at least one Windows desktop and two Android
+phones. Logs: `~/.flash/desktop.log` on Windows, `adb logcat -v time -s GROUP_CALL:I` on Android.
+
+### GCALL-01 — Being left alone in a group call does not trap you in it (ERROR-086 root cause)
+- **Setup:** desktop D and phones A, B in one group; start a **video** group call from D; A and B join.
+- **Steps:** A and B hang up. On D wait **40 s** (past the 30 s grace), then press hang-up. Then start a new 1:1 call from D to A.
+- **Pass:** at about 30 s D's call ends by itself (log `Grace timeout expired…` followed by the call screen showing ended and
+  going away); the camera light goes off; the new call rings on A. Repeat with a phone as the one left alone: the Android call
+  notification disappears and chat to a peer that was not in the call connects within ~10 s (auto-connect is back).
+- **Fail:** the call screen stays, hang-up does nothing, or the new call is refused, i.e. the ERROR-086 symptom.
+- **Also check:** the log shows `Grace timeout expired with no peers; ending group call …` then `Group call … ending
+  reason=NORMAL`, and on Android the call notification goes away (the foreground service stops).
+- **Source:** ERROR-086; `FlashGroupCallEndTest.theSoloGraceTimerEndsTheCallInsteadOfCancellingItself` and
+  `hangUpEndsAnActiveCallOnceAndIsIdempotent` (mutation-checked).
+- **Status:** TODO
+
+### GCALL-02 — A peer rejoining inside the grace window keeps the call (ERROR-086 (b))
+- **Setup:** as GCALL-01 with only D and A in the call.
+- **Steps:** A hangs up; after ~25 s A rejoins from the group's call banner.
+- **Pass:** D's call does **not** end at the 30 s mark; A's video and audio are back within a few seconds; the call continues
+  for at least another minute. If A's rejoin never connects, D's call still ends by itself within ~40 s of the rejoin attempt
+  (it is not held open forever).
+- **Source:** ERROR-086 (b); the desktop log of call `0596ebc3` (rejoin at +27 s, grace timeout at +30 s);
+  `aPeerRejoiningInsideTheGraceWindowKeepsTheCall`, `aRejoinThatNeverConnectsDoesNotKeepTheCallForever`.
+- **Status:** TODO
+
+### GCALL-03 — Invitees stop ringing (ERROR-086 (c))
+- **Setup:** phones A, B and desktop D in one group.
+- **Steps:** (1) D starts a group call and hangs up after 5 s before anyone answers. (2) D starts again and nobody answers for 60 s.
+- **Pass:** in (1) A and B stop ringing within ~2 s of D's hang-up; in (2) D's call ends with "No answer" after about 30 s
+  (log `No members answered outgoing group call … in 30s`), A and B stop ringing at that moment (they receive D's GroupHangup)
+  or at their own 45 s ring timeout (`Incoming group call … was not answered in 45s; stopping the ring`), and no call screen is
+  left behind. Also: if A and B both decline, D's call ends at once with "Declined".
+- **Source:** ERROR-086 (c); `theCallerHangingUpStopsTheRingOfAnInvitee`, `anOutgoingCallNobodyAnswersEndsAndTellsTheInvitees`,
+  `everyInviteeDecliningEndsTheOutgoingCallAtOnce`.
+- **Status:** TODO
+
+### GCALL-04 — Members who never join are not shown as connecting forever (ERROR-086 (d))
+- **Setup:** a group of 5 where only 3 devices are online.
+- **Steps:** a joiner (or accepter) builds a connection to **every** group member, because it has no list of who is in the call,
+  so right after joining, offline members appear as connecting tiles. Start a video group call, have 2 online members join, and
+  watch the participant grid and the `CALL_DIAG … legs=[…]` line for ~30 s.
+- **Pass:** within about 15-20 s the offline members' tiles change from connecting to **Invited** (log `Leg … gave no sign of
+  life in 15s; not in the call, back to invited`); they stop counting toward the call's size (a 6th member can still join a
+  voice call of 12) and stop using a PeerConnection. If one of them then joins, it is brought back within ~4 s (its presence
+  frame) and connects. A member who **left** is never brought back by a stale presence frame.
+- **Fail:** a never-joined member stays "connecting" for the whole call, or a member who joined late is never connected.
+- **Design note:** the audit first proposed "legs only for members that sent a join". That was rejected (a joiner with the
+  higher id would wait for an offer that never comes); the leg is pruned instead.
+- **Source:** ERROR-086 (d); the three `CONNECTING#1` legs in `~/.flash/desktop.log` for call `0596ebc3`;
+  `aMemberWhoNeverAnswersIsGivenUpOnAndShownAsInvited`, `aPresenceFrameBringsAGivenUpLegBack`,
+  `aStalePresenceFrameDoesNotUndoAHangup`, `aGivenUpLegNoLongerFillsTheCall`.
+- **Status:** TODO
+
+### GCALL-05 — A leg whose Wi-Fi blips comes back without rejoining (ERROR-086 (e))
+- **Setup:** a 3-way video group call.
+- **Steps:** on one phone toggle Wi-Fi off for 5 s and back on (or walk out of range briefly).
+- **Pass:** that phone's tiles recover within ~15 s on every device without anyone pressing anything; the log on the higher-id
+  device of the pair shows `Leg … failed; rebuilding (1/3)` (only the offerer rebuilds; after 3 tries `giving up after 3
+  rebuilds`); no device ends up alone in a call it cannot close (GCALL-01). Short blips that ICE heals on its own need no rebuild.
+- **Source:** ERROR-086 (e); log line `Leg a6400328… pc#2 ice=Disconnected` with no rebuild.
+- **Status:** TODO
+
+### GCALL-06 — A call in ECO mode keeps its participants' sessions (ERROR-086 (k))
+- **Setup:** three devices in **ECO** connection mode (Settings), one being a phone with the screen on, all in one group; a voice
+  group call that lasts longer than ECO's 10-minute idle-park rule.
+- **Steps:** start the call, leave it running 12 minutes without typing anything; then hang up and wait ~11 more minutes.
+- **Pass:** during the call no `Link park requested peer=<a participant>` / `Link parked peer=<a participant>` appears for a
+  participant of the call; once the call has ended and the session has been idle 10 minutes, parking of those sessions resumes
+  as before. Before the fix the participants were not protected (the call's `peerId` is the group id) and only the chatter of the
+  call frames kept them alive.
+- **Source:** ERROR-086 (k); `FlashCallBusyPeersTest` (the rule), Android `DiscoveryEngineHolder`, `Flash.kt`, `DesktopEngine`.
+- **Status:** TODO
+
+### GCALL-07 — Joining a call that ended while you were joining does not hang (ERROR-086 (f))
+- **Setup:** a group with D and A in a call; a third device B has the group's call banner.
+- **Steps:** on B press join, and immediately after D and A hang up (or turn A's and D's Wi-Fi off) before B connects to anyone.
+- **Pass:** B's call screen leaves "Connecting…" and ends with a failure message within ~45 s (log `Group call … did not connect
+  to anyone in 45s; ending`), the camera/microphone indicators go off, and B can start or join another call. A call that is
+  merely slow (a peer that is answering) is given more time, up to ~40 s per connection attempt.
+- **Source:** ERROR-086 (f); `aJoinerThatConnectsToNobodyGivesUp`, `aJoinerWithALegThatIsAnsweringIsGivenTimeToConnect`,
+  `aLegThatAnswersButNeverConnectsIsWaitedForOnlyAWhile`.
+- **Status:** TODO
+
+## 4j. Unread state and calls from unpaired members (ERROR-087 / ERROR-088, audit 2026-10-01)
+
+Both defects were **fixed in code on 2026-10-01 and unit-tested, none of it device-verified** (ERROR-087 / ADR-062, ERROR-088 / ADR-061;
+both ERRORs stay OPEN until these pass). Run the tests below on a build that contains the fixes. The text of each test keeps the
+pre-fix behaviour it was written against as "Pre-fix", so a FAIL can be told apart from the old defect. The unit proof is
+`ConversationReadStateTest` and `ConversationRowReadStateJvmTest` (unread), `CallCoordinatorGroupReachTest`, `FlashGroupCallReachTest`
+and `SignedGroupsTest` (calls); a unit test cannot show how often the phones hit the race, so a device PASS is the evidence.
+
+### UNREAD-01 — Leaving a chat never leaves it unread (ERROR-087 A)
+- **Setup:** two devices paired, a direct chat with at least 3 messages received from the peer. A also with one more chat open on
+  neither side.
+- **Steps:** on A open the chat, have B send 1 message while A is looking at it, then leave with the **on-screen back arrow**, look at
+  the list; repeat 10 times, sometimes leaving at once after the message lands, sometimes after 10 s; also send a message from A while
+  the chat is open and leave.
+- **Pass:** the list never shows a badge for that chat after leaving; the badge is absent in all 10 rounds.
+- **Also check:** `adb logcat` has no cursor write failing; after each round the chat's row keeps its pin / mute (see `UNREAD-02`).
+  Leave it with the system back gesture in some rounds too (`UNREAD-03`).
+- **Pre-fix:** the inbound text reset the cursor to NULL, so every message ever received counted as unread.
+- **Source:** ERROR-087 (A); fixed 2026-10-01 (ADR-062); unit proof `ConversationReadStateTest`, `ConversationRowReadStateJvmTest`.
+- **Status:** TODO
+
+### UNREAD-02 — A new message while the list is showing counts as one, and keeps pin and mute (ERROR-087 A)
+- **Setup:** direct chat with 5 messages from the peer, all read; pin the chat and mute it.
+- **Steps:** stay on the chat list; the peer sends 1 message.
+- **Pass:** the badge shows **1** (not 6), and the chat is still pinned and still muted. Then repeat with the chat archived: the rule is
+  now decided (ADR-062): an incoming message **unarchives** the chat, pin and mute stay. Confirm that is what the owner wants on a phone.
+- **Pre-fix:** the badge showed the number of all messages ever received from that peer, and the pin / mute were reset.
+- **Source:** ERROR-087 (A): the real-Room test showed unread 3 where 1 is right and `pinned`/`muted`/`archived` back to false.
+- **Status:** TODO
+
+### UNREAD-03 — Leaving with the system back gesture closes the thread (ERROR-087 B)
+- **Setup:** an Android phone in single-pane layout (not a tablet), a direct chat with a peer.
+- **Steps:** open the chat, leave it with the **system back gesture / button**; the peer sends a message.
+- **Pass:** the chat shows an unread badge of 1 and the notification appears; the **peer's** copy of the message stays at
+  Delivered (not Read) until the owner opens the chat. Repeat after leaving by switching tab. (Pressing Home is `UNREAD-05`.)
+- **Pre-fix (code reading):** no badge and the sender saw Read at once, because the gesture never called `closeConversation()`.
+- **Source:** ERROR-087 (B); fixed 2026-10-01: `MainActivity.kt` closes the conversation when the nav entry leaves `Conversation`.
+- **Status:** TODO
+
+### UNREAD-04 — A legacy group's rename or member change does not reset its unread state (ERROR-087 A)
+- **Setup:** a legacy (v1, up to 6 members) group with read messages, pinned and muted on the device under test.
+- **Steps:** with the chat closed, have another member rename the group or the owner add a member.
+- **Pass:** no badge appears and the pin and mute stay, and the group keeps its place in the list. Also run it for a v2 group (it
+  passed before the fix too).
+- **Source:** ERROR-087 (A): the legacy `Create` / `State` frames upserted a fresh row; now `upsertLegacyGroupConversation` copies it.
+- **Status:** TODO
+
+### UNREAD-05 — A message that arrives while the app is in the background with a chat open (ERROR-087, open question)
+- **Setup:** an Android phone, a direct chat with a peer, all read.
+- **Steps:** open the chat, press **Home** (not back), have the peer send a message, wait 10 s, then open the app and go to the list
+  (not into the chat).
+- **Observe, then decide:** does the list show a badge of 1, and did the peer's copy go to Read while the phone was in the background?
+  The fix did not change this (`onStop` does not close the chat). If the sender sees Read for a message the owner never saw, the
+  owner must decide whether `onStop` should close the conversation; record the answer in ADR-062 and file the change.
+- **Pass:** a badge of 1 and the sender's copy still Delivered. Anything else is the open question, not a regression.
+- **Source:** ERROR-087 "Not fixed / not covered" (b).
+- **Status:** TODO
+
+### GCALL-08 — A group call from a member the others are not paired with reaches them (ERROR-088)
+- **Setup:** a v2 group of owner O and members X, Y, Z (X, Y, Z are each paired with O only, so X, Y and Z are vouched to each other);
+  all online on one Wi-Fi. Run it twice: in **STANDARD** and with X in **ECO**. Enable the logs: `adb logcat -v time -s GROUP_CALL:I`
+  or `~/.flash/desktop.log`, and note the "Active sessions" count on X at the moment of the tap.
+- **Steps:** X starts a group call (voice, then video). Watch O, Y and Z for 30 s. On Y, if it only shows the banner, tap Join.
+- **Pass:** O, Y and Z all ring (or show the ongoing-call banner within ~8 s, one dial plus one presence tick) in both modes, Y and Z can
+  join from the banner or the ring, and X's call shows all of them as invited then connected. In the log of X: for a member with no
+  session at the tap, a dial (`ensureSession`) and either the invite going out or `Invite for call ... not delivered (no usable
+  session yet); will offer it again`, and later the delivery; no `left out` line for Y or Z.
+- **Pre-fix (code reading):** only O rang; Y and Z never saw the call, even after X and Y connected a moment later; X got no message.
+- **Source:** ERROR-088 (ADR-061); `isGroupCallMember` + dial on demand + invite retry + announce-only members.
+- **Status:** TODO
+
+### GCALL-09 — A caller is told when members cannot be reached (ERROR-088, after the fix)
+- **Setup:** as `GCALL-08`, with Y's Wi-Fi off.
+- **Steps:** X starts a call.
+- **Pass:** X's tile for Y reads **"Not reachable yet"** (not "Invited"), the call runs with O and Z, and when Y comes back within the
+  ring window (45 s) Y rings and the tile changes to "Invited" then connects. `GROUP_CALL` shows `... not sent yet:` / `... not
+  delivered` lines naming the cause for Y. After 30 s with nobody joined the outgoing call ends as before (ERROR-086).
+- **Source:** ERROR-088 (ADR-061) fixes 4, 6 and 7.
+- **Status:** TODO
+
+### GCALL-10 — A member the caller cannot reach at all still sees the call through another participant (ERROR-088)
+- **Setup:** a v2 group of O, X, Y, Z as in `GCALL-08`, but Z can reach O and cannot reach X (a network that isolates clients from each
+  other, or X and Z on different subnets with O bridging). Hardest of the ERROR-088 tests; skip it and record BLOCKED if no such
+  network is at hand.
+- **Steps:** X calls, O accepts, watch Z for 15 s, then tap Join on Z.
+- **Pass:** Z shows the ongoing-call banner within ~8 s of O joining (O's presence tick tells it: O got the member list from X's invite);
+  Join connects Z to O (and to Y), and X appears in Z's call only if some path exists. X's tile for Z reads "Not reachable yet" until
+  then. No crash and no stuck "Connecting…" on Z (the connect deadline ends a join that reaches nobody).
+- **Source:** ERROR-088 (ADR-061) announce-only members; `FlashGroupCallReachTest` "an incoming call tells every member of the invite".
 - **Status:** TODO
 
 ## 5. Measurements — do these last

@@ -1,5 +1,84 @@
 # Current Handoff
 
+## 2026-10-01 — ERROR-087 (unread) and ERROR-088 (calls from unpaired members) FIXED IN CODE; unit-tested, NOT device-verified
+- **Done:** ERROR-087 / ADR-062 (the conversation row is refreshed, never replaced, inside the message insert's transaction; closing a chat
+  flushes the read cursor and Read receipt; system back closes the chat; a new message unarchives). ERROR-088 / ADR-061 (a call's members
+  come from the roster via `isGroupCallMember`; announcements dial the member, then apply the live-key gate per frame; undelivered invites
+  are re-offered by the presence tick for 45 s; members without a leg hear the presence tick so they see the banner and can Join; the
+  caller's tile says "Not reachable yet"; refusals logged under `GROUP_CALL`, once a minute per cause). Both ERRORs stay **OPEN**.
+- **Verified (unit, mutation-checked):** Unit, all green on 2026-10-01: `:core:calling` android-host 176 (161 before, 15 new) and jvm 111; `:core:messaging` android-host 370 (`SignedGroupsTest` 77 incl. 3 new, `ConversationReadStateTest` 9); `:core:network` jvm 300 and android-host 389; `:core:persistence:jvmTest` 44 (`ConversationRowReadStateJvmTest` 3); `:ui:callui:jvmTest` 32 (1 new). `:app:compileDebugKotlin` and `:desktop:compileKotlinJvm` compile.
+  **Not verified:** anything on a device.
+- **Device checks owed:** `UNREAD-01`...`05`, `GCALL-08`...`10` (`docs/testing/TEST-BACKLOG.md` section 4j). `UNREAD-05` and `GCALL-10` are
+  open questions / hard setups, not regressions.
+- **Open gaps:** `onStop` with a chat open on Android; a member nobody can reach; hosts ignore a refused `startGroupCall`; `queryGroupCall`
+  unwired; 3 s dial budget unmeasured (ERROR-087 / ERROR-088 "Not fixed").
+- **Committed together on 2026-10-01 at the owner's request ("comit them together"):** one commit on `dev` holds ERROR-086/085/087/088 and
+  the other session's edits that shared files with them (friendly-name propagation, group attachments and reactions, WS close, call video
+  surface, catch-up banner animation), plus the new test files and docs. The commit hash is in the line below. The commit was not pushed.
+- **My new files (untracked):** `ConversationReadStateTest.kt`, `ConversationRowReadStateJvmTest.kt`, `CallCoordinatorGroupReachTest.kt`,
+  `FlashGroupCallReachTest.kt` (plus the earlier `FlashGroupCallEndTest.kt`, `CallCoordinatorGroupEndTest.kt`, `FlashCallBusyPeersTest.kt`).
+- **Recommended next task:** run section 4j with two phones and the desktop (about 45 minutes), starting with `GCALL-08` in STANDARD and ECO,
+  then `UNREAD-01`; then `GCALL-01` (ERROR-086) from section 4i.
+- Files most relevant: `core/messaging/.../RealFlashChatRepository.kt` (`upsertDirectConversation`, `endOpenConversation`,
+  `isGroupCallMember`), `core/calling/.../CallCoordinator.kt` (`sendGroupFrame`, `callMembers`), `FlashGroupCallSession.kt`
+  (`deliverInvite`, `announceTo`, `announceMembers`), `core/messaging/.../SignedGroups.kt` (`hasVouchedRosterKey`).
+
+## 2026-10-01 — Investigation: unread state (ERROR-087) and calls from unpaired members (ERROR-088); nothing fixed [SUPERSEDED by the entry above: both fixed in code]
+- **Done:** root-caused ERROR-087 (full-row `@Upsert` of the conversation resets `lastReadCursor`, `pinned`, `muted`, `archived` on every
+  inbound direct text, direct send and legacy group frame; proven on real Room) and narrowed ERROR-088 (vouched members need a live
+  keyed session, and `startGroupCall` filters members once at the tap so a filtered member is never invited; not reproduced on a device).
+- **Added:** two `@Ignore`d failing reproductions (`ConversationRowReadStateJvmTest`, `UnreadCursorWipeReproTest`), backlog 4j
+  (`UNREAD-01`...`04`, `GCALL-08`, `GCALL-09`).
+- **Verified (unit):** persistence jvmTest 43 (2 skipped), messaging androidHost 360 (2 skipped), 0 failures. **Not verified:** anything on a device.
+- **Working tree warning (unchanged):** the ERROR-086/085 work and the other session's edits are still uncommitted and mixed in six
+  files; the two new test files are mine and untracked.
+- **Recommended next task:** implement ERROR-087 (see `logs/errors.md`), then run `GCALL-08` for logs before touching ERROR-088.
+- Files most relevant: `core/messaging/.../RealFlashChatRepository.kt` (`onInboundWireFrame` TextMessage upsert ~2691, `enqueueDirectText`
+  ~1471, legacy group frames ~1807/1895, `touchConversation`, `openConversation`/`closeConversation`), `core/persistence/.../ConversationDao.kt`,
+  `MessageDao.observeUnreadCounts`, `app/.../MainActivity.kt` (`BackHandler` ~1301), `core/calling/.../CallCoordinator.kt` (`startGroupCall`).
+
+## 2026-09-30 — ERROR-086 fixed in code (group call can always be closed); unit-tested, NOT device-verified
+- **Done:** ENDED-first teardown, sticky ENDED, rejoin-aware solo grace, ring / dial / connect timeouts, hang-up frames to invitees,
+  pruning of legs that never answer, bounded leg rebuild, coordinator clears an ended session, `decline()` non-blocking, the `busy` set
+  now holds the participants (`FlashCallUiState.busyPeerIds`), and the planner keeps every endpoint of a device (ERROR-085 follow-up).
+  Design and rejected alternatives: ADR-060. ERROR-086 stays **OPEN** until GCALL-01 passes on devices.
+- **Verified (unit):** calling 161 android-host / 111 jvm, network 300 jvm / 389 android-host, all green; mutation-checked; `:app`,
+  `:desktop`, `:core:engine` compile. **Not verified:** any real call (native teardown, camera, audio, Android foreground service).
+- **Working tree warning:** uncommitted edits by another session are mixed into `FlashGroupCallSession.kt`, `CallCoordinator.kt`,
+  `DiscoveryEngineHolder.kt`, `Flash.kt`, `FlashEngine.kt` and `DesktopEngine.kt` (friendly-name propagation, group attachments, WS
+  close, call video surface). Nothing of this task is committed; do not `git checkout`/`stash` those files.
+  My new files: `FlashGroupCallEndTest.kt`, `CallCoordinatorGroupEndTest.kt`, `FlashCallBusyPeersTest.kt`.
+- **Recommended next task:** `GCALL-01` (desktop + two phones, about 10 minutes), then `GCALL-02`…`07` and `NET-SW-01`
+  (`docs/testing/TEST-BACKLOG.md` section 4i / 4h).
+- Files most relevant: `core/calling/.../FlashGroupCallSession.kt` (`endSession`, `cancelTimers`, `teardownMedia`, `checkSoloState`,
+  `pruneUnansweredLegs`, `armConnectDeadline`, `scheduleLegRecovery`), `CallCoordinator.kt` (`onGroupSessionEnded`),
+  `model/FlashCallModels.kt` (`busyPeerIds`), `core/network/.../planner/ConnectionPlanner.kt` (`plan`).
+
+## 2026-09-30 — Audit: a group call left alone for 30 s cannot be closed (ERROR-086) [SUPERSEDED by the fix entry above: fixed in code, device checks owed]
+- **Found (proven by log + unit test):** the solo grace timer cancels its own teardown in `FlashGroupCallSession.endSession`;
+  the call never reaches ENDED, hang-up does nothing, no new call can start, and on Android discovery/auto-connect stay in
+  call-quiet until a force-stop. Ten related group-call defects are listed in ERROR-086 (a)–(k).
+- **No production code changed.** The reproduction test was temporary; add it permanently with the fix.
+- **Recommended next task:** fix ERROR-086: never cancel the running job from `endSession`, and publish ENDED + `onEnded`
+  before the native teardown as `FlashCallSession.end()` does. Then GCALL-01…05 (`docs/testing/TEST-BACKLOG.md` section 4i).
+- **Also open from this audit:** ERROR-085 follow-up (the planner dedups sightings per device before the endpoint-aware
+  suppression), and the `busy` set holding a group id during group calls.
+- Files most relevant: `core/calling/.../FlashGroupCallSession.kt` (`checkSoloState`, `endSession`, `accept`, `joinExisting`),
+  `CallCoordinator.kt`, `FlashCallSession.kt` (`end()`), `core/network/.../planner/ConnectionPlanner.kt` (`plan`).
+
+## 2026-09-30 — Audited Core & UI Fixes Implemented & Verified
+- **Done:**
+  1. *V2 Group Attachment Signing Order:* Fixed call-order inversion in `RealFlashChatRepository`. `beginGroupAttachment` computes and caches the timestamp and cryptographic signature in `pendingGroupAttachmentSignatures` so all wire frames share identical timestamps and valid signatures before `sendGroupAttachment` persists to Room.
+  2. *Group Reactions Over Wire:* `toggleReaction` resolves conversation ID from `messageDao`, checks `isRemovedHere`, and fans out `ReactionFrame` to all active trusted group members. Added peer trust validation and conversation-matching for inbound direct-chat reactions.
+  3. *WebSocket Close Deadlock:* In `WsConnection.close()` (Android & JVM), switched from blocking `lock()` to `tryLock(200ms)` before sending `OPCODE_CLOSE`, ensuring `socket.close()` is reached even if network writes stall.
+  4. *Outbox Drain Starvation:* In `notifyPeerSessionUp`, calls `notifyOutboxDrain()` and `drainOutboxOnce()` to wake outbox workers immediately upon connection.
+  5. *PiP Video Surface Layering:* Added `zOrderMediaOverlay = true` in `FlashCallVideoSurface.android.kt` and wired it into `FlashCallScreen` / `FlashGroupVideoGrid` to prevent remote video from obscuring local PiP.
+  6. *Catch-Up Banner FadeOut Exit Animation:* In `FlashConversationScreen`, cached `lastOngoingCall` and `lastGroupSync` in state so exit fade transitions do not flash/snap out instantly.
+  7. *Friendly Name Propagation:* Propagated renames unconditionally to `pairing`, `chatRepo`, and `engine.updateIdentity` in `DiscoveryEngineHolder`, `Flash.kt`, and `PairingCoordinator`.
+- **Verified:** Unit tests passed across `:core:messaging`, `:core:network`, `:ui:callui`, and `:ui:chat`. Clean compilation of `:app` (Android) and `:desktop` (JVM).
+- **Not verified:** Physical hardware video compositor punch-through and multi-device live Wi-Fi Direct sync (tracked in `docs/testing/TEST-BACKLOG.md`).
+- **Recommended next task:** Physical device verification of group reactions and video PiP surface rendering across physical Android devices.
+
 ## 2026-09-30 — Endpoint-aware suppression implemented in ConnectionPlanner (ERROR-085, commit `69a4398`); stale IP lockout on network switch resolved
 - **Done:** `ConnectionPlanner` suppression is now endpoint-aware using `EndpointKey(key, host, port)` instead of being keyed solely by `key` (peer `deviceId`). When moving from a mobile hotspot (e.g. Infinix `10.13.65.x`) to a home Wi-Fi (`192.168.1.x`), a failed dial to an old IP no longer suppresses dials to newly discovered or tipped on-link endpoints. Urgent on-demand dials (`planUrgent`) now only enforce the 5s floor when the candidate matches the attempted endpoint. Each endpoint is independently suppressed for 15s to prevent dial ping-ponging, `inFlight` still guarantees at most one dial per peer at a time, and a live session clears all endpoints for that peer.
 - **Root causes clarified:**

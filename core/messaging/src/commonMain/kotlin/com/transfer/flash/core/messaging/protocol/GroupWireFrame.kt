@@ -193,6 +193,7 @@ public sealed interface GroupWireFrame : ChatWireFrame {
         val mimeType: String,
         val sizeBytes: Long,
         val sentAt: Long,
+        val signature: String? = null,
     ) : GroupWireFrame
 }
 

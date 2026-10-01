@@ -22,6 +22,7 @@ internal expect fun FlashCallVideoSurface(
     track: VideoStreamTrack?,
     fit: CallVideoFit,
     modifier: Modifier = Modifier,
+    zOrderMediaOverlay: Boolean = false,
 )
 
 /** How the frame fills its box. Names are neutral; each actual maps to its own scaling enum. */

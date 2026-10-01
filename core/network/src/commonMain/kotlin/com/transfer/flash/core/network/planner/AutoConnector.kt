@@ -86,10 +86,14 @@ public class AutoConnector(
      */
     public suspend fun ensureSession(deviceId: String, budgetMs: Long = DIAL_ON_DEMAND_BUDGET_MS): Boolean {
         if (links.hasLiveSession(deviceId)) return true
-        val sighting = runCatching { sightings() }.getOrDefault(emptyList())
-            .firstOrNull { it.deviceId == deviceId } ?: return false
+        val known = runCatching { sightings() }.getOrDefault(emptyList())
+            .filter { it.deviceId == deviceId }
+            .distinctBy { it.host to it.port }
+        if (known.isEmpty()) return false
         val now = nowMs()
-        val dial = planner.planUrgent(now, sighting, links)
+        // The first endpoint that is not floored or already in flight; a peer known under two
+        // endpoints is not stuck behind the one that just failed.
+        val dial = known.firstNotNullOfOrNull { planner.planUrgent(now, it, links) }
         val deadline = if (dial != null) {
             val until = now + budgetMs
             waitDeadlines.update { it + (deviceId to until) }
@@ -167,6 +171,13 @@ public class AutoConnector(
 
         /** Plan §3.5: "dials first, with a ~1 s budget on a LAN, then sends". */
         public const val DIAL_ON_DEMAND_BUDGET_MS: Long = 1_000L
+
+        /**
+         * ERROR-088: how long a group call waits for the session to a member it dials on demand. A call frame is
+         * worth more patience than a chat line, and the presence tick offers it again every 4 s, so a dial that
+         * outlasts this still lands on a later tick.
+         */
+        public const val CALL_DIAL_BUDGET_MS: Long = 3_000L
 
         private const val ENSURE_POLL_MS = 25L
     }

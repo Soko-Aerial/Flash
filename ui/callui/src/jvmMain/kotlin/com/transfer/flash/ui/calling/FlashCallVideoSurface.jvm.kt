@@ -72,6 +72,7 @@ internal actual fun FlashCallVideoSurface(
     track: VideoStreamTrack?,
     fit: CallVideoFit,
     modifier: Modifier,
+    zOrderMediaOverlay: Boolean,
 ) {
     val holder = remember { DesktopVideoSink() }
 

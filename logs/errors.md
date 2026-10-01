@@ -1,5 +1,379 @@
 # Error Log
 
+## ERROR-088 — A group call started by a member who is not paired with the others does not show on the devices it is not paired with
+
+### Date
+2026-10-01 (reported by the owner: "when a member of a group who has not paired with other users starts a call it doesn't show on the
+unpaired devices even though they are in the group"; investigated, then fixed in code the same day, unit-tested, NOT device-verified)
+
+### Area
+Group calls / group trust (`core/calling/.../CallCoordinator.kt`, `FlashGroupCallSession.kt`, `core/messaging/.../RealFlashChatRepository.kt`
+`isGroupCallPeer`, `SignedGroups.kt` `isVouchedMember`, hosts `DiscoveryEngineHolder.kt` / `Flash.kt` / `DesktopEngine.kt`,
+`MainActivity.kt` / `DesktopShell.kt` call buttons)
+
+### Symptoms
+- v2 group (ADR-044 V2) of owner O and members X, Y, Z; X, Y, Z are each paired with O only. X starts a group call. O rings and shows
+  the call. Y and Z (in the group, not paired with X) get no ring and no "ongoing call" banner.
+- Nothing is shown to X either: no "could not reach" message, and when every other member is filtered the call button does nothing.
+
+### Environment
+Not captured. The only call log on this machine (`~/.flash/desktop.log`, call `0596ebc3`) is a call between four members that were all
+paired, so it holds no unpaired case. Which of the paths below the owner's devices took is therefore NOT established.
+
+### Error
+No error is raised. The members are dropped silently and **no log line is written** by any of the gates (`isGroupTrustedPeer` in
+`CallCoordinator` lines ~173, 211, 245, 271, 291, 350), so the next device repro would be blind as well.
+
+### Root cause
+The trust gate for a call is `RealFlashChatRepository.isGroupCallPeer` = active roster member **and** `isGroupPeerTrusted` =
+`isTrustedPeer(id) || signedGroups.isVouchedMember(groupId, id, peerIdentityKey(id))`. A paired peer passes without anything else. A
+**vouched** peer (a member the owner introduced) passes only while this device has a **live session** whose TLS key equals the key in
+the owner-signed certificate. Proven by unit test (a copy of the `SignedGroupsTest` harness, not kept): with live sessions
+`b->c callPeer=true, c->b callPeer=true`; with no live session at b, `c callPeer=false (vouched, unpaired)` while `a callPeer=true
+(paired)`. That explains why the owner (paired with everyone) sees the call and the unpaired members do not.
+
+What turns that gate into "the call never shows" (code reading, not run against real media):
+1. `CallCoordinator.startGroupCall` filters `memberIds` through the gate **once, at the tap**, and passes only the survivors to
+   `FlashGroupCallSession.startOutgoing`. A filtered member never gets a `GroupLeg`, so it receives **no GroupInvite** (sent once per
+   survivor, never retried) and **no GroupPresence** (the 4 s announcement goes to `legs.keysSnapshot()` only). The call is invisible to
+   it for its whole length, even if a session to it comes up two seconds after the tap.
+2. Nothing makes the session exist: Android `sendFrame` waits up to 2 s for a session for `Invite`/`GroupInvite` but never dials, and
+   `autoConnector.ensureSession` (dial on demand) is used for chat text only. ECO keeps sessions only with ring neighbours among the
+   contacts, peers with traffic in the last window and call-busy peers (`EcoLinkSelector.wanted`); STANDARD/BOOST narrow to a dial
+   budget in a crowd (ADR-057). So two group members that are not ring neighbours may simply have no session when the call starts.
+   (Whether that was the owner's situation is unmeasured.)
+3. The receiver applies the same gate to an inbound `GroupInvite`, `GroupPresence` and `GroupQuery`; a failing `GroupInvite` is answered
+   with a silent `GroupDecline`, a failing presence/query is dropped. It also needs the roster row's `subjectKey`; a member added after
+   X last synced the roster (X never received the bundle, so X holds no vouch for the newcomer) fails the same way.
+4. The hosts ignore the Boolean from `startGroupCall` (`MainActivity.kt` ~1705, `DesktopShell.kt` ~575/601), so a refused call gives no
+   feedback.
+
+### Failed attempts
+None yet; this was an investigation. Ruled out by reading the code: the transport (mutual TLS is enforced both ways, so `identityKey`
+is populated on inbound and outbound sockets), and the pairing filter of the auto-connector (a vouch is a pin in the trust store, which
+the TLS layer honours).
+
+### Working fix
+**SUPERSEDED by "Fix applied 2026-10-01" below** (kept as the plan the fix followed). Recommended (smallest first):
+1. Do not decide membership of the call from the live key at the tap. Build the legs from the active roster, and apply the live-key
+   check **when a frame is sent to that member** (an invite must not go to a session whose key is not the certified one).
+2. Keep re-offering: send the `GroupInvite` again with the 4 s presence tick to a leg that is still INVITED, bounded by the 30 s dial
+   timeout, re-checking the gate each time, so a session that comes up later still rings.
+3. Dial on demand for call frames (`ensureSession`, as chat text does; allowed in ECO) when the gate fails only for lack of a session.
+4. Tell X who could not be reached ("Y is not reachable") instead of returning false silently.
+5. Log every gate rejection with the `GROUP_CALL` tag (peer, group, which condition failed).
+6. Tests: `isGroupCallPeer` for a vouched member with and without a live key in `SignedGroupsTest`; a coordinator test that a member whose
+   session appears after the tap still gets the invite and the presence.
+
+### Fix applied 2026-10-01 (ADR-061)
+Membership of a call and trust in a connection are now two questions. Nothing here is verified on a device.
+1. **Who is in the call (no session needed).** `RealFlashChatRepository.isGroupCallMember(groupId, deviceId)`: an active roster row, this
+   device not removed or left, and the member is paired **or** its owner-signed certificate names a key
+   (`SignedGroups.hasVouchedRosterKey`). `CallCoordinator` takes it as `isGroupMember` (default: the strict gate, so a host that wires
+   nothing behaves as before) and builds the member list of a start, a join and a query with it (`callMembers`).
+2. **May this frame go to this connection (unchanged strictness).** `isGroupCallPeer` / `isGroupTrustedPeer` still needs the live session
+   whose TLS key is the certified one. It is now applied **per announcement** in `CallCoordinator.sendGroupFrame`, not once at the tap:
+   `GroupInvite`, `GroupPresence`, `GroupAccept`, `GroupJoin`, `GroupQuery` go membership check, then `reachPeer`, then strict gate, then
+   send. Offers, answers, candidates, declines and hangups never dial (a dial must not hold a leg's lock or the media thread).
+3. **Dial on demand.** `reachPeer` = `AutoConnector.ensureSession(peer, CALL_DIAL_BUDGET_MS = 3 s)` on both hosts
+   (`DiscoveryEngineHolder.kt`, `DesktopEngine.kt`); allowed in ECO. A dial that outlasts 3 s lands on a later presence tick.
+4. **Keep offering.** The outgoing session fans the invites out in parallel and, while an invite is undelivered, the 4 s presence tick
+   offers it again until the invitee's ring window (45 s) is over; a delivered invite is never repeated.
+5. **Announce-only members.** The invite carries the member list; every receiver remembers it (`announceMembers`) and its presence tick
+   tells each of them, with no leg and no connection built (accepting still builds legs only for participants). So a member the caller
+   could not reach sees the ongoing-call banner from any participant that can reach it, which is the owner's "so they can click and
+   join" (Join goes through `joinGroupCall`, which builds the member list the same way).
+6. **The caller is told.** `FlashCallParticipantUi.reachable` is false for an invitee whose invite has not gone out; the group tile reads
+   "Not reachable yet" instead of "Invited".
+7. **Logging.** Every refusal or deferred send writes a `GROUP_CALL` line naming the cause (not on the roster / roster member but the live
+   session does not present the certified key), at most once a minute per peer, frame and cause because the presence tick repeats it every 4 s.
+Tests (all pass; mutation-checked, see Verification): `SignedGroupsTest` 3 new (`isGroupCallMember` for a vouched member with no session,
+with no key and with a wrong key; a paired stranger, a removed member and a member who left), `CallCoordinatorGroupReachTest` 11 (one covers the once-a-minute refusal log),
+`FlashGroupCallReachTest` 4, `FlashGroupVideoGridTest` 1 (the label).
+
+**Not fixed / accepted gaps:** (a) a member nobody can reach at all still sees nothing; the call needs one participant with a path to it.
+(b) The hosts still ignore the Boolean from `startGroupCall` / `joinGroupCall`, so a call refused because nobody listed is a member
+gives no on-screen message (it is logged). (c) `queryGroupCall` is not wired by the hosts; the banner relies on presence. (d) An inbound
+`GroupAccept` / `GroupJoin` for the live call id is not checked against group membership (pre-existing; the live session and the key
+gate apply). (e) A vouched member added after the caller last synced the roster is still unknown to the caller (no cert), so the
+caller cannot invite it; it can still reach the call through any participant that knows it. (f) Whether a 3 s dial is the right
+budget on a real hotspot is unmeasured.
+
+### Verification
+- Unit: `:core:calling:testAndroidHostTest` 176 passed (161 before + 15 new), `:core:messaging:testAndroidHostTest` (`SignedGroupsTest`
+  77 passed, 3 of them new). Mutation checks (a source line removed, the new tests must fail): no invite retry, presence only to legs, retry
+  after the ring window, no dial before an announcement, every frame dials, strict gate dropped, membership not checked before the dial,
+  vouched roster key never counts, refusal logged every tick. Results in `logs/progress.md` (2026-10-01 entry).
+- **Not reproduced or verified on devices.** Device checks owed: `GCALL-08`, `GCALL-09` in `docs/testing/TEST-BACKLOG.md` section 4j.
+  Capture the `GROUP_CALL` and `Active sessions` lines of the caller and one unpaired member.
+
+### Related files
+- `core/calling/src/commonMain/kotlin/com/transfer/flash/core/calling/CallCoordinator.kt`
+- `core/calling/src/commonMain/kotlin/com/transfer/flash/core/calling/FlashGroupCallSession.kt`
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/RealFlashChatRepository.kt` (`isGroupCallPeer`)
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/SignedGroups.kt` (`isVouchedMember`)
+- `core/network/src/commonMain/kotlin/com/transfer/flash/core/network/mode/EcoLinkSelector.kt`
+- `app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt` (`sendFrame`)
+
+### Status
+OPEN (fixed in code 2026-10-01, ADR-061; stays OPEN until `GCALL-08` and `GCALL-09` pass on devices).
+
+## ERROR-087 — A chat shows unread after it was opened: the repository rewrites the whole conversation row and resets the read cursor
+
+### Date
+2026-10-01 (reported by the owner: "if I leave a chat, sometimes after a new message has come or otherwise, it will just show unread
+even though I have opened the chat"; investigated, then fixed in code the same day, unit-tested, NOT device-verified)
+
+### Area
+Chat state / read cursor (`core/messaging/.../RealFlashChatRepository.kt`, `core/persistence/.../ConversationDao.kt`,
+`MessageDao.observeUnreadCounts`, Android `MainActivity.kt` navigation)
+
+### Symptoms
+- A conversation the owner has opened shows an unread badge in the chat list. It happens after a new message arrived and, per the
+  report, also without one. The badge count (if shown as a number) can be larger than the number of new messages (see the proof).
+
+### Environment
+Reproduced in unit tests only: real Room + `BundledSQLiteDriver` on the JVM, and the in-memory DAOs. No device log.
+
+### Error
+No error. `ConversationEntity.lastReadCursor` becomes NULL; `observeUnreadCounts` treats a NULL cursor as "nothing was ever read".
+
+### Root cause
+**A (proven).** Unread is `inbound messages with sentAt > the cursor message's sentAt`, and **every inbound message when the cursor is
+NULL** (`MessageDao.observeUnreadCounts`). The cursor lives in the same `conversations` row as `title`, `pinned`, `muted`, `archived`,
+and `ConversationDao.upsert` is Room `@Upsert`, a **full-row replace** (the repository's own comment in `touchConversation` says so).
+Four places upsert a freshly built `ConversationEntity(...)` instead of copying the stored row:
+- `onInboundWireFrame` / `TextMessage` (~line 2691): runs for **every inbound direct text**, as a second write right after the message
+  insert, not inside a transaction;
+- `enqueueDirectText` (~1471): every direct send (inside the same transaction as the insert);
+- the legacy group `Create` (~1807) and `State` (~1895) frames (renames, member changes).
+Group texts, attachments and calls use `touchConversation` (copies the row) and v2 groups only upsert on creation, so they keep the
+cursor. Proof (real Room): cursor `m3`, messages m1 (peer), m2 (self), m3 (peer) -> 0 unread; insert m4 (peer) and run the inbound
+upsert -> **cursor = null, unread = 3** (should be 1); `pinned`/`muted`/`archived` set to true come back **false**. Repository level
+(in-memory DAOs): a closed chat with cursor `m1` has cursor **null** after m2 arrives.
+How it becomes "opened but still unread": the open chat's collector writes the cursor only when the newest message id changes
+(`lastMarkedReadId`). If the inbound upsert lands **after** that write, the cursor stays NULL while the chat is open, nothing re-writes
+it until the head message changes, and leaving the chat shows the whole inbound history as unread. Forced-order repro (slow upsert):
+open chat, m2 arrives, cursor after = **null**. With the chat closed it needs no race at all: every inbound message resets the cursor, so
+the badge counts all history; opening the chat repairs it. A legacy group's rename/member frame does the same without any new message
+("or otherwise"). How often the unlucky ordering happens with the chat open on a phone is NOT measured.
+Why no test saw it: `InMemoryMessageDao.observeUnreadCounts` (`GroupTestFakes.kt`) ignores the cursor entirely.
+
+**B (code reading, same area, opposite symptom, not tested).** On a phone the system back gesture is handled by
+`BackHandler(enabled = nav.canGoBack) { nav.back() }` (`MainActivity.kt` ~1301), which never calls `chatRepository.closeConversation()`;
+only the on-screen back arrow (~1397) and the two-pane back do. After leaving a chat by gesture the repository still treats it as open
+(`activeConversationId` stays set), so the next message in that thread moves the cursor at once (no badge) and sends the sender a Read
+receipt although the owner never saw it; `onStop` does not close it either. The notification is still shown (it follows the nav state).
+
+**C (minor, not the report).** The cursor and the unread test compare `sentAt`, which is the **sender's** clock for inbound messages, so a
+peer whose clock is behind can have a new message sorted before the cursor and counted as read; the inbound upsert also sets
+`sortOrder = frame.sentAt` (peer clock).
+
+### Failed attempts
+None; this was an investigation.
+
+### Working fix
+**SUPERSEDED by "Fix applied 2026-10-01" below** (kept as the plan the fix followed). Recommended (smallest first):
+1. Stop replacing the row: the inbound direct text, direct send and legacy group frames must go through a copy-the-stored-row path
+   (like `touchConversation`) or a targeted query, so `lastReadCursor`, `pinned`, `muted` (and `archived` unless the rule is to unarchive)
+   survive. Prefer `@Insert(IGNORE)` + targeted `UPDATE`s so nothing can wipe the row again.
+2. Make the open chat self-correcting: re-assert the cursor on every emission (a cheap `UPDATE ... WHERE lastReadCursor IS NOT :id`), and
+   write it once more in `closeConversation()` so leaving never loses it.
+3. Call `closeConversation()` whenever the conversation leaves the screen on Android (system back, tab change, `onStop`), ideally from
+   the nav state like `FlashNotificationManager.openConversationId`; check the desktop equivalent.
+4. Fix `InMemoryMessageDao.observeUnreadCounts` to honour the cursor, un-ignore the two reproductions (below) and add a pinned/muted test.
+
+### Fix applied 2026-10-01 (ADR-062)
+Nothing here is verified on a device.
+1. **The row is no longer replaced** (root cause A). `upsertDirectConversation` (inbound direct text, direct send) and
+   `upsertLegacyGroupConversation` (legacy `Create` / `State`) read the stored row and write a **copy** of it, so `lastReadCursor`,
+   `pinned`, `muted` (and a legacy group's position and provenance) survive; `touchConversation` already copied. Each runs inside the
+   **same write transaction as the message insert** (`runInTransaction`; the nested variant is `touchConversationInTransaction`, because a
+   transaction does not nest), so a cursor the open chat writes in between is not overwritten with the stale copy. Rule recorded in
+   ADR-062: an incoming message **unarchives** the chat (as `touchConversation` already did); pin and mute are kept.
+2. **Closing a chat finishes the acknowledgement** (the "after it was opened" race). The open chat's state is an
+   `OpenConversationReadState` (the newest ids the screen showed, what was already marked read / receipted); `acknowledgeShown` is
+   idempotent and runs on every emission; `endOpenConversation` (from `closeConversation()` and from opening another chat) writes whatever
+   the screen showed but was not yet marked, and sends the Read receipt, off the caller's thread. This replaces the recommended "re-assert
+   on every emission" with "flush on leave"; both close the window.
+3. **System back closes the chat** (root cause B). `MainActivity.kt`: a transition-only `LaunchedEffect` calls `closeConversation()` when
+   the nav entry leaves `Conversation`, so the gesture, the on-screen arrow and the two-pane back all end the same way.
+Tests: `core/messaging/.../ConversationReadStateTest.kt` (9: cursor / pin / mute / archive survive an inbound or outbound text and a legacy
+group `State`; an open chat follows its newest message; close flushes the cursor and the Read receipt even when the cursor write was still
+pending; opening another chat acknowledges the first; a clean close writes nothing) and
+`core/persistence/src/jvmTest/.../ConversationRowReadStateJvmTest.kt` (3, real Room + SQLite: the `@Upsert` replace semantics that made it
+a bug, the unread arithmetic with a kept cursor, and a 20-round race of a cursor write against the refresh that the transaction must
+serialise). The earlier `@Ignore`d repro tests were replaced by these (the `UnreadCursorWipeReproTest` file no longer exists). Mutation
+checks: the pre-fix repository file back in, and the transaction removed, each fail the tests above.
+
+**Not fixed / not covered:** (a) the desktop keeps the open conversation across tab switches (AD-7), so nothing closes it there, by design;
+(b) Android backgrounding (`onStop`) with a chat open still counts the chat as open, so a message arriving then is marked read: unchanged,
+needs an owner decision; (c) root cause C (the sender's clock in `sortOrder` / the cursor comparison) is untouched; (d)
+`InMemoryMessageDao.observeUnreadCounts` still ignores the cursor, so the messaging tests assert the stored row, and the badge arithmetic
+is proven only by the real-Room test; (e) how often the unlucky ordering happened on a phone was never measured, so a pass on
+`UNREAD-01` after the fix is the evidence, not the unit tests.
+
+### Verification
+- Unit: `:core:messaging:testAndroidHostTest` (`ConversationReadStateTest` 9 + the rest of the module) and `:core:persistence:jvmTest`
+  (`ConversationRowReadStateJvmTest` 3) pass; mutation-checked (see `logs/progress.md`, 2026-10-01 entry).
+- **Not reproduced or verified on a device.** Device checks owed: `UNREAD-01`...`UNREAD-04` in `docs/testing/TEST-BACKLOG.md` section 4j.
+
+### Related files
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/RealFlashChatRepository.kt` (~620-835 `openConversation`,
+  ~1471, ~1807, ~1895, ~2691, `touchConversation` ~3222, `closeConversation` ~1018)
+- `core/persistence/src/commonMain/kotlin/com/transfer/flash/core/persistence/db/dao/ConversationDao.kt`, `MessageDao.kt`
+  (`observeUnreadCounts`), `entity/ConversationEntity.kt`
+- `core/messaging/src/androidHostTest/kotlin/com/transfer/flash/core/messaging/GroupTestFakes.kt` (fake unread ignores the cursor)
+- `app/src/main/java/com/transfer/flash/MainActivity.kt` (~1301, ~1368, ~1397)
+
+### Status
+OPEN (fixed in code 2026-10-01, ADR-062; stays OPEN until `UNREAD-01`...`UNREAD-04` pass on a device).
+
+## ERROR-086 — A group call left alone for 30 s cannot be closed: the solo grace timer cancels its own teardown
+
+### Date
+2026-09-30 (found by audit; reported by the owner on Windows and on some Android phones: "I couldn't close the call, I had
+to force stop the app")
+
+### Area
+Calling / group calls (`core/calling/.../FlashGroupCallSession.kt`, `CallCoordinator.kt`), call UI (`ui/callui/.../FlashCallScreen.kt`)
+
+### Symptoms
+- A video group call keeps showing as active; the hang-up button does nothing; the camera and microphone stay on; the only way
+  out is to force-stop the app. On Android the call foreground service and the call-quiet mode (discovery in ECO, the
+  auto-connector's sweep switched off) also stay on until the force-stop.
+- No new call can be started or answered afterwards (`CallCoordinator.startCall/startGroupCall/joinGroupCall` return false
+  while `currentGroupSession != null`).
+- It hits whichever device is left with no CONNECTED leg for 30 s, which is why it is seen on some devices of a call and not
+  on others.
+
+### Evidence (`~/.flash/desktop.log`, call `0596ebc3`, Windows desktop, 2026-09-30)
+```text
+13:39:57.424 GROUP_CALL: Peer a6400328… left group call 0596ebc3… (left)
+13:39:57.426 GROUP_CALL: All remote members left group call 0596ebc3…; waiting 30s for peers...
+13:40:24.871 GROUP_CALL: rx from=a6400328… leg=LEFT pc#1 GroupJoin(...)          <- the peer rejoins at +27 s
+13:40:27.174 GROUP_CALL: Leg a6400328… pc#2 state changed to Connecting
+13:40:27.427 GROUP_CALL: Grace timeout expired with no peers; ending group call 0596ebc3…
+13:40:28.091 GROUP_CALL: Leg a6400328… pc#2 state changed to Connected      <- media flows in a call that is "ended"
+13:43:18.754 GROUP_CALL: Leg a6400328… pc#2 ice=Disconnected
+```
+No "ENDED" state and no coordinator clean-up follow the grace-timeout line; `CALL_DIAG` lines stop (the stats job was
+cancelled) while the leg keeps running. The same log shows three legs (`15590fd6`, `5e8e2183`, `c76d6103`) that stayed
+`CONNECTING#1` for the whole call: members that never joined, see "Related defects" (d).
+
+### Root cause
+`checkSoloState()` launches `soloWaitingJob`; after 30 s that job calls `endSession(NORMAL)`. `endSession` sets
+`isEnded = true` and then calls `cancelSoloWaiting()`, which cancels **the job it is running in**. The next suspension point,
+`onMediaThread { … }` (`withContext`, which checks cancellation on entry), throws `CancellationException`. Everything after it
+never runs: the legs and the local stream are not released, the state never becomes ENDED and `onEnded` is never called, so
+`CallCoordinator` keeps `currentGroupSession`. `isEnded` is already true, so `hangUp()` → `leave()` returns at its first line:
+the button can never work again.
+
+A second design fault makes any teardown problem fatal to the UI: `endSession` publishes ENDED and calls `onEnded` only
+**after** the native teardown. The 1:1 `FlashCallSession.end()` does it the right way round (state and `onEnded` first,
+media release launched afterwards).
+
+### Reproduction (unit test, run 2026-09-30, then removed so the tree was left as found)
+A temporary `AuditGroupCallEndTest` in `core/calling/src/androidHostTest` with a temporary `markActiveForTesting()` hook:
+- `soloGraceTimeoutEndsTheCall` — one CONNECTED leg, peer sends GroupHangup, advance 31 s → **FAILED**:
+  `state=ACTIVE isSessionEnded=true onEnded=0` (`expected:<ENDED> but was:<ACTIVE>`).
+- `hangUpAfterTheSoloTimerStillEndsTheCall` — same, then `hangUp()` → **FAILED**: `state=ACTIVE onEnded=0`.
+- `aPeerRejoiningInsideTheGraceWindowKeepsTheCall` — the peer rejoins at +27 s (the log above) → **FAILED**:
+  `isSessionEnded=true leg=CONNECTING`: the timer counts only CONNECTED legs and is not cancelled by a rejoin.
+An earlier mutation run (not calling `cancelSoloWaiting()` from inside the timer) made the first test reach ENDED, confirming
+the self-cancel as the cause.
+
+**The tests are now permanent** (added with the fix, 2026-09-30): `FlashGroupCallEndTest` (20 cases, `core/calling/src/androidHostTest`)
+and `CallCoordinatorGroupEndTest` (3 cases). Mutation check: putting the original ordering back (self-cancelling timer, cancellable
+teardown before ENDED, `onEnded` last) fails exactly six of them: `theSoloGraceTimerEndsTheCallInsteadOfCancellingItself`,
+`anIncomingCallNobodyAnswersStopsRingingByItself`, `anOutgoingCallNobodyAnswersEndsAndTellsTheInvitees`,
+`aJoinerThatConnectsToNobodyGivesUp`, `aRejoinThatNeverConnectsDoesNotKeepTheCallForever` and
+`aLegThatAnswersButNeverConnectsIsWaitedForOnlyAWhile`; restored, all pass.
+
+### Related defects found in the same audit (code reading; not device-verified)
+- (a) ENDED/`onEnded` after native teardown (above): any hang or throw in `PeerConnection.close()` or `localStream.release()`
+  also leaves an un-closable call.
+- (b) The grace timer counts only CONNECTED legs and is not reset when a peer rejoins, so it kills a call a peer is rejoining.
+- (c) Invitees can ring forever: a group invite has no ring timeout, the caller's 30 s NO_ANSWER end sends no frame, and a
+  GroupHangup that reaches a RINGING device only marks the caller's leg LEFT (`checkSoloState` acts only in ACTIVE).
+- (d) `accept()` and `joinExisting()` create a leg for **every** listed member, joined or not. Members who never join stay
+  `CONNECTING` for the whole call (three of them in the log above), use a PeerConnection each and count as participants.
+- (e) No ICE restart or leg rebuild when a leg goes Failed/Disconnected; only a fresh GroupJoin rebuilds it.
+- (f) A joiner whose legs never connect stays in CONNECTING with no timeout.
+- (g) Group calls write no call-log row (`publishCallLog` is called only for 1:1 sessions).
+- (h) `endSession` closes legs without taking each leg's `legMutex`; on Android (`Dispatchers.Default`) a leg operation can
+  race the close and touch a disposed PeerConnection.
+- (i) The ENDED screen's Close button and back press call `onDismiss`, which both hosts pass as `{}`: there is no UI escape
+  hatch when the engine does not end the call.
+- (j) Remote video tracks are unpublished after `PeerConnection.close()`, not before (the 1:1 session unpublishes first,
+  see the WebRTC renderer-lifetime rule).
+- (k) The connection-mode `busy` set is fed with the call's `peerId`, which for a group call is the group id, so ECO rule 3
+  and `DialBudget`'s busy-first rule never see the actual participants (Android `DiscoveryEngineHolder`, `DesktopEngine`,
+  `Flash.kt` facade). Mostly masked because call frames count as recent activity.
+
+### Working fix (implemented 2026-09-30; unit-tested, NOT device-verified)
+All in `core/calling` unless noted.
+
+**The root cause and the fragility around it**
+- `endSession` is idempotent through an atomic claim (`endClaim`), `cancelTimers()` never cancels the coroutine it runs in, and
+  ENDED is published and `onEnded` is called **before** any suspension point. The native teardown runs afterwards under
+  `NonCancellable`, so a timer, a cancelled caller or a hung `PeerConnection.close()` can no longer leave an un-closable call
+  (the 1:1 `FlashCallSession.end()` ordering, (a)).
+- ENDED is terminal: every other UI-state write goes through `updateUi { }` (a compare-and-set that refuses to leave ENDED), so a
+  late leg event, stats tick or toggle cannot bring a finished call back. `isEnded` is checked inside the media thread and under
+  `mediaLifecycleMutex`, so a leg operation queued before the end does nothing after it.
+- Teardown takes each leg's `legMutex` (bounded wait of 2 s, then closes anyway so a stuck operation cannot keep the camera on)
+  and unpublishes the tracks before closing the connections, like the 1:1 session ((h), (j)).
+- `CallCoordinator`: one `onGroupSessionEnded` replaces three copies of the end lambda, and `clearEndedGroupSession()` runs at the
+  start of every call entry point and after `hangUp()`, so a session that has ended can never hold the one-call slot (defense in
+  depth, (i)). `decline()` now sends its frames in the background so the Decline button cannot wait on a dead socket.
+
+**The grace timer and the ring** ((b), (c))
+- The 30 s solo grace counts a leg that is being rebuilt with an answering peer (`hasRejoiningLeg`: CONNECTING, heard from since
+  the attempt began, attempt younger than 40 s) and waits 10 s at a time for it; a rejoin that never connects still ends the call.
+- Incoming group call: ring timeout 45 s; the caller's hang-up ends a RINGING call unless another member is already in it.
+  Outgoing: 30 s with nobody connected ends with NO_ANSWER **and sends GroupHangup to every invitee** so they stop ringing; all
+  invitees declining ends the call at once.
+
+**Phantom legs and broken legs** ((d), (e), (f))
+- Not done as the audit first suggested ("create legs only for members that sent a join"): a joiner has no list of who is in the
+  call, and skipping a leg deadlocks when the joiner has the higher id (the offerer is the higher id). Instead a leg whose peer
+  has sent nothing 15 s after its connection was built is closed and shown as INVITED (`pruneUnansweredLegs`, run on the 4 s
+  presence tick); a later presence frame or join from that peer revives it. A LEFT leg is never revived.
+- A leg that goes Failed is rebuilt by the offerer only, up to 3 times with growing delay, and only while it is still the same
+  generation. A joiner or accepter that connects to nobody in 45 s (and has no rejoining leg) ends with ERROR and tells the peers.
+
+**Mode controller** ((k))
+- `FlashCallUiState.busyPeerIds` is the one rule: a 1:1 call's peer; a group call's CONNECTING / CONNECTED / DISCONNECTED
+  participants (INVITED ones too while the call is still DIALING or RINGING); empty when ENDED. Android `DiscoveryEngineHolder`,
+  the `Flash.kt` facade (`DefaultFlashEngine.busyCallPeerIds`) and `DesktopEngine` all pass it as `LinkView.busy`.
+
+**Deliberately not done**
+- (g) group call log rows (a feature, not part of the close/stuck bug; not started).
+- (i) no change to `FlashCallScreen` or the hosts' `onDismiss = {}`: hang-up now always reaches ENDED first, so the "force close"
+  the audit proposed has nothing left to escape from. Revisit if GCALL-01 still traps a call on a device.
+
+Original recommendation from the audit (kept for history, SUPERSEDED by the above): cancel the solo timer only when it is not the
+current job (or run the teardown under `NonCancellable`), publish ENDED + `onEnded` before the native teardown, then (b), (c), (d)
+"legs only for members that sent a join" (rejected, see above), (i) a UI force close (not needed), (k).
+
+### Verification
+- `:core:calling:testAndroidHostTest` (161 tests incl. `FlashGroupCallEndTest` 20, `CallCoordinatorGroupEndTest` 3,
+  `FlashCallBusyPeersTest` 5) and `:core:calling:jvmTest` (111 tests) pass; mutation-checked as described above.
+- `:core:engine:compileAndroidMain`, `:app:compileDebugKotlin` and `:desktop:compileKotlinJvm` compile with the host changes.
+- **Device checks owed:** `GCALL-01`…`GCALL-07` in `docs/testing/TEST-BACKLOG.md` section 4i. Nothing here is proven on a phone or
+  the Windows app yet; the report came from two phones and a desktop, and the native teardown path (real `PeerConnection`,
+  camera, audio) is the part the unit tests cannot exercise.
+
+### Related files
+- `core/calling/src/commonMain/kotlin/com/transfer/flash/core/calling/FlashGroupCallSession.kt` (`checkSoloState`, `endSession`, `leave`, `accept`, `joinExisting`)
+- `core/calling/src/commonMain/kotlin/com/transfer/flash/core/calling/CallCoordinator.kt` (group `onEnded`, `hangUp`)
+- `core/calling/src/commonMain/kotlin/com/transfer/flash/core/calling/FlashCallSession.kt` (`end()`, the correct pattern)
+- `ui/callui/src/commonMain/kotlin/com/transfer/flash/ui/calling/FlashCallScreen.kt`, `app/.../MainActivity.kt`, `desktop/.../DesktopShell.kt`
+
+### Status
+OPEN: fix implemented and unit-tested 2026-09-30; stays OPEN until GCALL-01 (and ideally GCALL-02…07) pass on devices.
+
 ## ERROR-085 — Stale IP lockout: ConnectionPlanner suppression keyed by deviceId instead of endpoint blocked valid IP on network switch
 
 ### Date
@@ -44,6 +418,27 @@ Networking / Connection planning (`ConnectionPlanner.kt`), auto-connect (`AutoCo
 
 ### Status
 RESOLVED in code and unit tests.
+
+### Follow-up (audit, 2026-09-30) — residual gap; FIXED in code and unit tests 2026-09-30 (see below)
+`ConnectionPlanner.plan()` keeps only the **first** sighting per device (`if (!seen.add(s.deviceId)) continue`) before the
+endpoint-keyed suppression runs, and `AutoConnector.ensureSession` also takes `firstOrNull`. The hosts build the list as
+`discoveredEndpoints + presence.tipSightings() + remembered.sightings()`. So while discovery still lists a stale address for a
+peer (it ages out after the 30 s presence grace), a fresher presence tip or remembered route for the same peer is never
+considered, and once the stale endpoint is suppressed nothing is dialed. The three tests above each pass **one** sighting per
+call, so they do not cover two sightings for one device in the same list. Effect: a delay of up to ~35 s after a network
+switch, not a lockout. Suggested fix: keep every distinct endpoint per device as a candidate and dial the first one that is not
+suppressed (one in flight per device still holds). `NET-SW-01` covers it on devices.
+
+**Fix (2026-09-30):** `ConnectionPlanner.plan()` now drops only an exact repeat of an endpoint (same device, host and port) and keeps
+every distinct one as a candidate in the caller's order; `step()` dials the first that is not suppressed, and the one-in-flight
+rule per device stops it handing out a second endpoint in the same pass. `AutoConnector.ensureSession` tries each distinct
+endpoint of the device with `planUrgent` and uses the first that is not floored or in flight. Bound: at most one dial per
+endpoint per 15 s, so a device known under N endpoints is dialed up to N times per 15 s and never twice at once.
+Tests: `ConnectionPlannerTest` (+4: second endpoint while the first is suppressed, one dial in flight for two endpoints, a live
+session clears every endpoint's suppression, an exact repeat is one candidate) and `AutoConnectorTest` (+1:
+`ensureSession tries a peer's second endpoint when the first one just failed`). Mutation check: restoring the first-sighting-wins
+dedup fails `a second endpoint of the same peer is dialed while the first is suppressed`. `:core:network:jvmTest` (300 tests) and
+`:core:network:testAndroidHostTest` (389 tests) pass. Device check: `NET-SW-01` (unchanged, still owed).
 
 ## ERROR-084 — Chat and group sync gaps: desktop skipped the session-up edges, retry deadlines were lost, group read/receipt ticks never completed, renaming a desktop reached nothing
 
