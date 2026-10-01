@@ -15,7 +15,9 @@
   mutation-checked (9 mutants, each caught by the test written for it; one (a governor shared by all legs) first survived and the test was rewritten to interleave samples; the claim-2 reorder is an equivalent mutant and is not claimed).
 - **Files:** `core/calling/.../GroupVideoRouter.kt`, `GroupVideoTuning.kt` (new), `FlashGroupCallSession.kt`, `CallCoordinator.kt`,
   `ui/callui/.../FlashGroupVideoGrid.kt`, tests `GroupVideoRouterTest`, `GroupVideoTuningTest`, `FlashGroupCallVideoAuditTest`.
-- **Uncommitted:** this, the ERROR-096 and the ERROR-095 work share files; the owner has not answered the offer to commit them together.
+- **Committed:** `e0bf029c` (dev) holds the ERROR-095, ERROR-096 and ERROR-097 work together (they share files); pushed on the owner's request.
+  Note: `RealFlashChatRepository.kt` is stored with CRLF in history (`.gitattributes` says LF); it was committed as CRLF so the diff stays small.
+  Normalising it to LF is a separate whole-file commit nobody has asked for.
   Still unanswered: the cut-off sentence of the earlier report ("and also can...").
 
 ## 2026-10-01 — ERROR-096 / ADR-065: a late joiner in a group call was never connected to an earlier joiner; fixed in code, NOT device-verified
@@ -33,7 +35,7 @@
 - **Verified:** `:core:calling:testAndroidHostTest` 184/0, `:ui:callui:jvmTest`, `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm`; 8
   mutants each caught.
 - **Files:** `core/calling/.../FlashGroupCallSession.kt`, `FlashGroupCallReachTest.kt`.
-- **Uncommitted:** this and the ERROR-095 work (not asked); both touch `FlashGroupCallSession.kt` and `CallCoordinator.kt`, so commit them together.
+- **Committed** in `e0bf029c` together with ERROR-095 and ERROR-097.
 
 ## 2026-10-01 — ERROR-095 / ADR-064: group call from a caller not paired with every member; fixed in code, NOT device-verified
 - **Why the call did not work (from the real desktop log):** the group is legacy (UUID id), a legacy group has no trust path to a member
@@ -49,7 +51,7 @@
 - **Device checks owed:** `GCALL-11`…`GCALL-14` (backlog 4l). ERROR-095 stays OPEN.
 - **Files:** `core/calling/.../CallCoordinator.kt`, `FlashGroupCallSession.kt`, `core/messaging/.../RealFlashChatRepository.kt`,
   `ui/callui/.../FlashGroupVideoGrid.kt`, `MainActivity.kt`, `DesktopShell.kt`.
-- **Uncommitted:** these edits are not committed (the owner has not asked); `git status` before committing.
+- **Committed** in `e0bf029c` together with ERROR-096 and ERROR-097.
 
 ## 2026-10-01 — Option A (ADR-063: Co-owners / Admins & Successor on Leave) FIXED IN CODE; unit-tested, NOT device-verified
 - **Current branch:** `dev`
