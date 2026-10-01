@@ -145,8 +145,10 @@ internal class SignedGroups(
         labelOf: (String) -> String,
     ): AddedMembers? {
         val charter = storedCharter(groupId) ?: return null
-        check(charter.ownerId == localDeviceId) { "only the owner adds members" }
         val rows = members.allMembers(groupId).associateBy { it.deviceId }
+        val self = rows[localDeviceId]
+        val canAdd = charter.ownerId == localDeviceId || (self?.isActive == true && self.role == MemberCert.ROLE_ADMIN)
+        check(canAdd) { "only the owner or an admin adds members" }
         val changed = ArrayList<MemberCert>()
         for ((subjectId, key) in invitees) {
             val current = rows[subjectId]
@@ -172,11 +174,82 @@ internal class SignedGroups(
         )
     }
 
-    /** This device's own leave: a self-signed tombstone with the next `seq`. Null when it is not an active member. */
-    suspend fun leave(groupId: String): GroupWireFrame.Bundle? {
+    /** Promotes an active member to [MemberCert.ROLE_ADMIN] (ADR-063). */
+    suspend fun promoteAdmin(groupId: String, subjectId: String): GroupWireFrame.Bundle? {
+        val charter = storedCharter(groupId) ?: return null
+        val self = members.member(groupId, localDeviceId)?.takeIf { it.isActive } ?: return null
+        val isOwner = charter.ownerId == localDeviceId
+        val ownerActive = members.member(groupId, charter.ownerId)?.isActive == true
+        val canPromote = isOwner || (!ownerActive && self.role == MemberCert.ROLE_ADMIN)
+        if (!canPromote) return null
+        val current = members.member(groupId, subjectId)?.takeIf { it.isActive } ?: return null
+        if (current.role == MemberCert.ROLE_ADMIN || subjectId == charter.ownerId) return null
+        val key = current.subjectKey?.let { GroupCanonical.decode(it) } ?: return null
+        val cert = signing.issueCert(
+            groupId = groupId,
+            subjectId = subjectId,
+            subjectKey = key,
+            label = current.displayName,
+            role = MemberCert.ROLE_ADMIN,
+            seq = current.membershipVersion + 1L,
+            opId = newId(),
+            active = true,
+            issuerId = localDeviceId,
+        )
+        members.upsert(cert.toRow(joinedAt = current.joinedAt))
+        return GroupWireFrame.Bundle(groupId, localDeviceId, newId(), charter, listOf(cert))
+    }
+
+    /** Demotes an active admin to [MemberCert.ROLE_MEMBER] (ADR-063, owner-only). */
+    suspend fun demoteAdmin(groupId: String, subjectId: String): GroupWireFrame.Bundle? {
+        val charter = storedCharter(groupId) ?: return null
+        if (charter.ownerId != localDeviceId) return null
+        val current = members.member(groupId, subjectId)?.takeIf { it.isActive } ?: return null
+        if (current.role != MemberCert.ROLE_ADMIN) return null
+        val key = current.subjectKey?.let { GroupCanonical.decode(it) } ?: return null
+        val cert = signing.issueCert(
+            groupId = groupId,
+            subjectId = subjectId,
+            subjectKey = key,
+            label = current.displayName,
+            role = MemberCert.ROLE_MEMBER,
+            seq = current.membershipVersion + 1L,
+            opId = newId(),
+            active = true,
+            issuerId = localDeviceId,
+        )
+        members.upsert(cert.toRow(joinedAt = current.joinedAt))
+        return GroupWireFrame.Bundle(groupId, localDeviceId, newId(), charter, listOf(cert))
+    }
+
+    /** This device's own leave: a self-signed tombstone with the next `seq`. If owner and [successorId] given, promotes successor first. */
+    suspend fun leave(groupId: String, successorId: String? = null): GroupWireFrame.Bundle? {
         val charter = storedCharter(groupId) ?: return null
         val mine = members.member(groupId, localDeviceId)?.takeIf { it.isActive } ?: return null
-        val cert = signing.issueCert(
+        val isOwner = charter.ownerId == localDeviceId
+        val certs = ArrayList<MemberCert>()
+
+        if (isOwner && successorId != null && successorId != localDeviceId) {
+            val successor = members.member(groupId, successorId)?.takeIf { it.isActive }
+            val succKey = successor?.subjectKey?.let { GroupCanonical.decode(it) }
+            if (successor != null && succKey != null && successor.role != MemberCert.ROLE_ADMIN) {
+                val promoCert = signing.issueCert(
+                    groupId = groupId,
+                    subjectId = successorId,
+                    subjectKey = succKey,
+                    label = successor.displayName,
+                    role = MemberCert.ROLE_ADMIN,
+                    seq = successor.membershipVersion + 1L,
+                    opId = newId(),
+                    active = true,
+                    issuerId = localDeviceId,
+                )
+                members.upsert(promoCert.toRow(joinedAt = successor.joinedAt))
+                certs += promoCert
+            }
+        }
+
+        val leaveCert = signing.issueCert(
             groupId = groupId,
             subjectId = localDeviceId,
             subjectKey = crypto.publicKey,
@@ -187,21 +260,26 @@ internal class SignedGroups(
             active = false,
             issuerId = localDeviceId,
         )
-        members.upsert(cert.toRow(joinedAt = mine.joinedAt))
+        members.upsert(leaveCert.toRow(joinedAt = mine.joinedAt))
+        certs += leaveCert
         // A member who has left no longer has any reason to hold the pins the group vouched.
         revokeAll(groupId)
-        return GroupWireFrame.Bundle(groupId, localDeviceId, newId(), charter, listOf(cert))
+        return GroupWireFrame.Bundle(groupId, localDeviceId, newId(), charter, certs)
     }
 
     /**
-     * Owner-only removal (ADR-044 V2): an owner-signed tombstone with the next `seq`. The vouch for the removed
-     * key is withdrawn at once. Null when this device is not the owner, the subject is the owner, or the
-     * subject is not an active member. The caller sends the bundle to the remaining members and to the removed one.
+     * Owner or Admin removal (ADR-044 V2, ADR-063): an authorized tombstone with the next `seq`.
+     * Admin cannot remove owner or other admins.
      */
     suspend fun removeMember(groupId: String, subjectId: String): RemovedMember? {
         val charter = storedCharter(groupId) ?: return null
-        if (charter.ownerId != localDeviceId || subjectId == localDeviceId) return null
+        val self = members.member(groupId, localDeviceId)?.takeIf { it.isActive } ?: return null
+        val isOwner = charter.ownerId == localDeviceId
+        val isAdmin = self.role == MemberCert.ROLE_ADMIN
+        if (!isOwner && !isAdmin) return null
+        if (subjectId == localDeviceId || subjectId == charter.ownerId) return null
         val current = members.member(groupId, subjectId)?.takeIf { it.isActive } ?: return null
+        if (isAdmin && current.role == MemberCert.ROLE_ADMIN) return null // admin cannot remove another admin
         val key = current.subjectKey?.let { GroupCanonical.decode(it) } ?: return null
         val cert = signing.issueCert(
             groupId = groupId,
@@ -289,11 +367,23 @@ internal class SignedGroups(
         if (!known) {
             rules.checkCharter(charter)?.let { return ignored(groupId, peerId, "charter:$it") }
         }
+        val adminKeys = rows.values
+            .filter { it.isActive && it.role == MemberCert.ROLE_ADMIN }
+            .mapNotNull { row -> row.subjectKey?.let { k -> GroupCanonical.decode(k)?.let { row.deviceId to it } } }
+            .toMap().toMutableMap()
+
         val verified = ArrayList<MemberCert>()
         for (cert in candidates) {
-            val reason = rules.checkCert(charter, cert, rows[cert.subjectId]?.subjectKey)
+            val reason = rules.checkCert(charter, cert, rows[cert.subjectId]?.subjectKey) { adminId ->
+                adminKeys[adminId]
+            }
             if (reason == null) {
                 verified += cert
+                if (cert.role == MemberCert.ROLE_ADMIN && cert.active) {
+                    GroupCanonical.decode(cert.subjectKey)?.let { adminKeys[cert.subjectId] = it }
+                } else if (!cert.active || cert.role != MemberCert.ROLE_ADMIN) {
+                    adminKeys.remove(cert.subjectId)
+                }
             } else {
                 FlashLog.w("CHAT", "Group cert dropped: group=$groupId subject=${cert.subjectId} from=$peerId reason=$reason")
             }

@@ -1769,6 +1769,25 @@ private fun FlashShell(
                     }
                 }
             },
+            onLeaveGroupWithSuccessor = { groupId, successorId ->
+                scope.launch {
+                    val left = chatRepository.leaveGroup(groupId, successorId)
+                    if (left is com.transfer.flash.core.common.result.FlashResult.Success) {
+                        chatRepository.closeConversation()
+                        if (twoPane) {
+                            nav.navigate(FlashDestination.ChatList)
+                        } else {
+                            nav.back()
+                        }
+                    } else {
+                        Toast.makeText(
+                            toastContext,
+                            "Couldn't leave the group — try again",
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                    }
+                }
+            },
             onContinueInNewGroup = { groupId ->
                 scope.launch {
                     val result = chatRepository.continueInNewGroup(groupId)
@@ -1807,6 +1826,32 @@ private fun FlashShell(
                         Toast.makeText(
                             toastContext,
                             "Couldn't remove $memberName — try again",
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                    }
+                }
+            },
+            // ADR-063: Promote a member to admin in a v2 group (owner only).
+            onPromoteGroupAdmin = { groupId, memberId ->
+                scope.launch {
+                    val res = chatRepository.promoteAdmin(groupId, memberId)
+                    if (res !is com.transfer.flash.core.common.result.FlashResult.Success) {
+                        Toast.makeText(
+                            toastContext,
+                            "Couldn't promote to admin — try again",
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                    }
+                }
+            },
+            // ADR-063: Demote an admin to regular member in a v2 group (owner only).
+            onDemoteGroupAdmin = { groupId, memberId ->
+                scope.launch {
+                    val res = chatRepository.demoteAdmin(groupId, memberId)
+                    if (res !is com.transfer.flash.core.common.result.FlashResult.Success) {
+                        Toast.makeText(
+                            toastContext,
+                            "Couldn't demote admin — try again",
                             Toast.LENGTH_SHORT,
                         ).show()
                     }

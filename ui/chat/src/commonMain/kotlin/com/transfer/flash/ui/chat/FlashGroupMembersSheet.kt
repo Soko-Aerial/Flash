@@ -92,8 +92,10 @@ object FlashGroupMembersMath {
 
     private fun ownerName(name: String): String = name.ifBlank { "the group owner" }
 
-    /** Owner-only removal is offered on every row except the creator's own: the owner cannot remove itself. */
-    fun canRemove(member: FlashGroupMemberUi): Boolean = member.role != FlashMemberRole.Owner
+    /** Owner can remove anyone except the owner; Admin can remove regular members only. */
+    fun canRemove(member: FlashGroupMemberUi, isOwner: Boolean = true): Boolean =
+        if (isOwner) member.role != FlashMemberRole.Owner
+        else member.role == FlashMemberRole.Member
 
     /** Title of the remove confirmation. */
     fun removeTitle(name: String): String = "Remove ${name.ifBlank { "this member" }}?"
@@ -113,16 +115,20 @@ fun FlashGroupMembersSheet(
     members: List<FlashGroupMemberUi>,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
+    isOwner: Boolean = false,
     /**
      * ADR-044 V2: verify a member the owner introduced by running ordinary pairing with them. Null hides the action
      * (previews, hosts without pairing); it is only ever offered for a member that has `introducedBy`.
      */
     onVerifyMember: ((FlashGroupMemberUi) -> Unit)? = null,
     /**
-     * ADR-044 V2 (E5): the owner removes a member. Null hides the action; the host passes it only for the owner of a v2
-     * group, and it is never offered on the Owner row (see [FlashGroupMembersMath.canRemove]).
+     * ADR-044 V2 (E5) / ADR-063: owner or admin removes a member. Null hides the action.
      */
     onRemoveMember: ((FlashGroupMemberUi) -> Unit)? = null,
+    /** ADR-063: promote a member to admin (owner only). */
+    onPromoteAdmin: ((FlashGroupMemberUi) -> Unit)? = null,
+    /** ADR-063: demote an admin to member (owner only). */
+    onDemoteAdmin: ((FlashGroupMemberUi) -> Unit)? = null,
 ) {
     val colors = FlashTheme.colors
     val sorted = remember(members) { FlashGroupMembersMath.sortMembers(members) }
@@ -195,7 +201,9 @@ fun FlashGroupMembersSheet(
                 FlashMemberRow(
                     member = member,
                     onVerify = onVerifyMember?.takeIf { member.introducedBy != null }?.let { verify -> { verify(member) } },
-                    onRemove = onRemoveMember?.takeIf { FlashGroupMembersMath.canRemove(member) }?.let { remove -> { remove(member) } },
+                    onRemove = onRemoveMember?.takeIf { FlashGroupMembersMath.canRemove(member, isOwner) }?.let { remove -> { remove(member) } },
+                    onPromote = onPromoteAdmin?.takeIf { isOwner && member.role == FlashMemberRole.Member }?.let { promo -> { promo(member) } },
+                    onDemote = onDemoteAdmin?.takeIf { isOwner && member.role == FlashMemberRole.Admin }?.let { demote -> { demote(member) } },
                 )
             }
         }
@@ -208,7 +216,13 @@ fun FlashGroupMembersSheet(
  * buttons sit outside the merged description so each stays a separate accessibility target.
  */
 @Composable
-private fun FlashMemberRow(member: FlashGroupMemberUi, onVerify: (() -> Unit)?, onRemove: (() -> Unit)?) {
+private fun FlashMemberRow(
+    member: FlashGroupMemberUi,
+    onVerify: (() -> Unit)?,
+    onRemove: (() -> Unit)?,
+    onPromote: (() -> Unit)? = null,
+    onDemote: (() -> Unit)? = null,
+) {
     val colors = FlashTheme.colors
 
     Row(
@@ -262,6 +276,32 @@ private fun FlashMemberRow(member: FlashGroupMemberUi, onVerify: (() -> Unit)?, 
             FlashGroupMembersMath.roleBadgeLabel(member.role)?.let { badge ->
                 RoleBadge(label = badge)
             }
+        }
+
+        if (onPromote != null) {
+            FlashText(
+                text = "Make Admin",
+                modifier = Modifier
+                    .semantics { contentDescription = "Promote ${member.name} to admin" }
+                    .clickable(role = Role.Button, onClick = onPromote)
+                    .padding(horizontal = FlashSpacing.space8, vertical = FlashSpacing.space12),
+                style = FlashTheme.typography.bodyDefault,
+                color = colors.accentPrimary,
+                maxLines = 1,
+            )
+        }
+
+        if (onDemote != null) {
+            FlashText(
+                text = "Dismiss Admin",
+                modifier = Modifier
+                    .semantics { contentDescription = "Demote ${member.name} to member" }
+                    .clickable(role = Role.Button, onClick = onDemote)
+                    .padding(horizontal = FlashSpacing.space8, vertical = FlashSpacing.space12),
+                style = FlashTheme.typography.bodyDefault,
+                color = colors.textSecondary,
+                maxLines = 1,
+            )
         }
 
         if (onVerify != null) {

@@ -34,11 +34,28 @@ public interface FlashChatRepository {
         FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Groups unavailable"))
 
     /** Leaves a group and persists a tombstone so stale add frames cannot silently rejoin it. */
-    public suspend fun leaveGroup(groupId: String): FlashResult<Unit> =
+    public suspend fun leaveGroup(groupId: String): FlashResult<Unit> = leaveGroup(groupId, null)
+
+    /**
+     * ADR-063: Leaves a group, optionally promoting [successorId] to admin before leaving if the owner.
+     */
+    public suspend fun leaveGroup(groupId: String, successorId: String? = null): FlashResult<Unit> =
         FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Groups unavailable"))
 
     /**
-     * ADR-044 V2: the owner of a v2 group removes [deviceId]. Fails for every other caller and for legacy groups;
+     * ADR-063: Promotes an active member to admin in a v2 group. Owner-only.
+     */
+    public suspend fun promoteAdmin(groupId: String, deviceId: String): FlashResult<Unit> =
+        FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Groups unavailable"))
+
+    /**
+     * ADR-063: Demotes an active admin to regular member in a v2 group. Owner-only.
+     */
+    public suspend fun demoteAdmin(groupId: String, deviceId: String): FlashResult<Unit> =
+        FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Groups unavailable"))
+
+    /**
+     * ADR-044 V2 / ADR-063: the owner or admin of a v2 group removes [deviceId]. Fails for unauthorized callers;
      * lightweight implementations decline.
      */
     public suspend fun removeGroupMember(groupId: String, deviceId: String): FlashResult<Unit> =

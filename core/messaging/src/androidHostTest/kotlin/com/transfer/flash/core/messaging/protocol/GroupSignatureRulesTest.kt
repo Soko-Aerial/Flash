@@ -283,6 +283,135 @@ class GroupSignatureRulesTest {
         assertNull("colon-separated lowercase pins are normalised", rules.checkCert(c, cert(c), null))
     }
 
+    // ------------------------------------------------------------------ ADR-063 admin & co-owner certs
+
+    @Test
+    fun anOwnerCanIssueAnAdminCert() {
+        val c = charter()
+        val adminCert = cert(c, subject = "bea", role = MemberCert.ROLE_ADMIN)
+        assertNull(rules.checkCert(c, adminCert, null))
+    }
+
+    @Test
+    fun anAdminCanIssueAMemberCert() {
+        val c = charter()
+        val adminCert = cert(c, subject = "bea", role = MemberCert.ROLE_ADMIN)
+        assertNull(rules.checkCert(c, adminCert, null))
+
+        // bea (as admin) issues a cert for mal (as member)
+        val memberCert = GroupSigning(bea).issueCert(
+            groupId = c.groupId,
+            subjectId = "mal",
+            subjectKey = mal.publicKey,
+            label = "Mal",
+            role = MemberCert.ROLE_MEMBER,
+            seq = 2L,
+            opId = "op-2",
+            active = true,
+            issuerId = "bea",
+        )
+        val adminLookup: (String) -> ByteArray? = { issuer -> if (issuer == "bea") bea.publicKey else null }
+        assertNull(rules.checkCert(c, memberCert, null, adminLookup))
+    }
+
+    @Test
+    fun anAdminCannotIssueAnotherAdminCert() {
+        val c = charter()
+        val memberCert = GroupSigning(bea).issueCert(
+            groupId = c.groupId,
+            subjectId = "mal",
+            subjectKey = mal.publicKey,
+            label = "Mal",
+            role = MemberCert.ROLE_ADMIN,
+            seq = 2L,
+            opId = "op-2",
+            active = true,
+            issuerId = "bea",
+        )
+        val adminLookup: (String) -> ByteArray? = { issuer -> if (issuer == "bea") bea.publicKey else null }
+        assertEquals("issuer-privilege", rules.checkCert(c, memberCert, null, adminLookup))
+    }
+
+    @Test
+    fun anAdminCannotRemoveOwnerOrAdmin() {
+        val c = charter()
+        val adminLookup: (String) -> ByteArray? = { issuer ->
+            when (issuer) {
+                "bea" -> bea.publicKey
+                "mal" -> mal.publicKey
+                else -> null
+            }
+        }
+
+        // bea tries to remove owner
+        val removeOwnerCert = GroupSigning(bea).issueCert(
+            groupId = c.groupId,
+            subjectId = "owner",
+            subjectKey = owner.publicKey,
+            label = "Owner",
+            role = MemberCert.ROLE_OWNER,
+            seq = 2L,
+            opId = "op-2",
+            active = false,
+            issuerId = "bea",
+        )
+        assertEquals("issuer-privilege", rules.checkCert(c, removeOwnerCert, null, adminLookup))
+
+        // bea tries to remove another admin
+        val existingAdmin = cert(c, subject = "mal", role = MemberCert.ROLE_ADMIN)
+        val removeAdminCert = GroupSigning(bea).issueCert(
+            groupId = c.groupId,
+            subjectId = "mal",
+            subjectKey = mal.publicKey,
+            label = "Mal",
+            role = MemberCert.ROLE_ADMIN,
+            seq = 2L,
+            opId = "op-3",
+            active = false,
+            issuerId = "bea",
+        )
+        assertEquals("issuer-privilege", rules.checkCert(c, removeAdminCert, existingAdmin.subjectKey, adminLookup))
+    }
+
+    @Test
+    fun anAdminCanRemoveARegularMember() {
+        val c = charter()
+        val adminLookup: (String) -> ByteArray? = { issuer -> if (issuer == "bea") bea.publicKey else null }
+
+        val existingMember = cert(c, subject = "mal", role = MemberCert.ROLE_MEMBER)
+        val removeMemberCert = GroupSigning(bea).issueCert(
+            groupId = c.groupId,
+            subjectId = "mal",
+            subjectKey = mal.publicKey,
+            label = "Mal",
+            role = MemberCert.ROLE_MEMBER,
+            seq = 2L,
+            opId = "op-3",
+            active = false,
+            issuerId = "bea",
+        )
+        assertNull(rules.checkCert(c, removeMemberCert, existingMember.subjectKey, adminLookup))
+    }
+
+    @Test
+    fun anUnauthorizedIssuerIsRejected() {
+        val c = charter()
+        // mal is not an admin, tries to issue a cert
+        val forgedCert = GroupSigning(mal).issueCert(
+            groupId = c.groupId,
+            subjectId = "bea",
+            subjectKey = bea.publicKey,
+            label = "Bea",
+            role = MemberCert.ROLE_MEMBER,
+            seq = 2L,
+            opId = "op-2",
+            active = true,
+            issuerId = "mal",
+        )
+        val adminLookup: (String) -> ByteArray? = { null }
+        assertEquals("issuer", rules.checkCert(c, forgedCert, null, adminLookup))
+    }
+
     // ------------------------------------------------------------------ message
 
     private fun signed(

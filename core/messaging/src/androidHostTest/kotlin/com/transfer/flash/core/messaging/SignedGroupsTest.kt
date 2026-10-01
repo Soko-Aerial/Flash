@@ -1750,6 +1750,94 @@ class SignedGroupsTest {
         assertNull("old owner was excluded from new group", memberDaoC.member(newGroupId, "dev-a"))
     }
 
+    // ------------------------------------------------------------------------------ ADR-063: Admins & Successor
+
+    @Test
+    fun `owner promotes admin and admin adds and removes member`() = runBlocking {
+        mesh("dev-a", "dev-b", "dev-c", "dev-d")
+        val groupId = createGroup("dev-a", "Admin Team", "dev-b", "dev-c")
+
+        val repoA = nodes.getValue("dev-a").repo
+        val repoB = nodes.getValue("dev-b").repo
+
+        repoA.openConversation(groupId)
+        repoB.openConversation(groupId)
+        settle()
+
+        // dev-a promotes dev-b to admin
+        val promoteResult = repoA.promoteAdmin(groupId, "dev-b")
+        assertTrue("promote must succeed: $promoteResult", promoteResult is FlashResult.Success)
+        settle()
+
+        // Verify dev-b is now admin on both dev-a and dev-b
+        val memberBOnA = nodes.getValue("dev-a").memberDao.member(groupId, "dev-b")
+        assertEquals("admin", memberBOnA?.role)
+        val memberBOnB = nodes.getValue("dev-b").memberDao.member(groupId, "dev-b")
+        assertEquals("admin", memberBOnB?.role)
+
+        val stateB = repoB.conversationState.value
+        assertTrue("dev-b is admin", stateB.isGroupAdmin)
+        assertTrue("dev-b can add members as admin", stateB.canAddMembers)
+        assertTrue("dev-b can remove members as admin", stateB.canRemoveMembers)
+        assertFalse("dev-b cannot promote admin (owner only)", stateB.canPromoteAdmin)
+
+        // dev-b (as admin) adds dev-d to the group
+        val addResult = repoB.addGroupMembers(groupId, setOf("dev-d"))
+        assertTrue("add members by admin must succeed: $addResult", addResult is FlashResult.Success)
+        settle()
+
+        // dev-d should now have joined and be active
+        val memberDOnB = nodes.getValue("dev-b").memberDao.member(groupId, "dev-d")
+        assertNotNull("dev-d was added by admin", memberDOnB)
+        assertTrue("dev-d is active", memberDOnB?.isActive == true)
+
+        val memberDOnD = nodes.getValue("dev-d").memberDao.member(groupId, "dev-d")
+        assertNotNull("dev-d sees self as member", memberDOnD)
+        assertTrue("dev-d is active on own device", memberDOnD?.isActive == true)
+
+        // dev-b (as admin) removes dev-c
+        val removeResult = repoB.removeGroupMember(groupId, "dev-c")
+        assertTrue("remove member by admin must succeed: $removeResult", removeResult is FlashResult.Success)
+        settle()
+
+        val memberCOnB = nodes.getValue("dev-b").memberDao.member(groupId, "dev-c")
+        assertFalse("dev-c is no longer active", memberCOnB?.isActive == true)
+
+        // dev-b (as admin) cannot remove owner (dev-a)
+        val removeOwnerResult = repoB.removeGroupMember(groupId, "dev-a")
+        assertTrue("admin cannot remove owner", removeOwnerResult is FlashResult.Failure)
+    }
+
+    @Test
+    fun `owner leaves group naming a successor admin`() = runBlocking {
+        mesh("dev-a", "dev-b", "dev-c")
+        val groupId = createGroup("dev-a", "Successor Team", "dev-b", "dev-c")
+
+        val repoA = nodes.getValue("dev-a").repo
+        val repoB = nodes.getValue("dev-b").repo
+
+        repoA.openConversation(groupId)
+        repoB.openConversation(groupId)
+        settle()
+
+        // Owner dev-a leaves group, naming dev-b as successor
+        val leaveResult = repoA.leaveGroup(groupId, "dev-b")
+        assertTrue("leave with successor must succeed: $leaveResult", leaveResult is FlashResult.Success)
+        settle()
+
+        // Verify dev-a is now inactive
+        val memberAOnB = nodes.getValue("dev-b").memberDao.member(groupId, "dev-a")
+        assertFalse("dev-a is inactive", memberAOnB?.isActive == true)
+
+        // Verify dev-b was promoted to admin and can manage members
+        val memberBOnB = nodes.getValue("dev-b").memberDao.member(groupId, "dev-b")
+        assertEquals("admin", memberBOnB?.role)
+
+        val stateB = repoB.conversationState.value
+        assertTrue("dev-b is now admin", stateB.isGroupAdmin)
+        assertTrue("dev-b can add members", stateB.canAddMembers)
+    }
+
     // ------------------------------------------------------------------------------ harness: nodes
 
     private class Node(

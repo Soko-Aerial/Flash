@@ -998,23 +998,29 @@ against the *expected current behaviour* ("Now") and a target ("Pass once fixed"
 after a fix. A test that matches "Now" is a confirmed defect, not a failure of the tester. The audit also lists 63 unchecked cases (❔);
 those are not tests yet: turn one into a test here when it is picked up.
 
-### EDGE-01 — The group keeps working when its owner is gone (ERROR-090)
+### EDGE-01 — The group keeps working when its owner is gone (ERROR-090, Option D)
 - **Setup:** a v2 group of three: owner O, members A and B. A and B are **not** paired with each other (vouched through O). Then **clear
   data** on O (or uninstall it).
 - **Steps:** A and B chat in the group for 5 minutes; A places a group voice call to B; A opens the member sheet and taps **Add members**;
-  note what the roster shows for O; B restarts the app.
-- **Pass (today, the audit expects):** the chat and the call work, O stays listed as an active member and offline ("Not reachable yet" in the
+  note what the roster shows for O; B restarts the app. A taps "Continue in a new group".
+- **Pass (before fix):** the chat and the call work, O stays listed as an active member and offline ("Not reachable yet" in the
   call), Add members does nothing and says nothing; B still reaches A after the restart (vouched pins persisted).
-- **Pass once fixed:** the UI says the owner is gone and offers a way to carry on (option D or A in the audit).
-- **Source:** ERROR-090. **Status:** TODO
+- **Pass once fixed (built 2026-10-01):** "Add members" is hidden for non-owners in v2 groups; A taps "Continue in a new group", creating a new v2 group owned by A with B, while the old group remains read-only history.
+- **Source:** ERROR-090, ADR-063. **Status:** TODO
 
-### EDGE-02 — The owner leaves on purpose (ERROR-090)
+### EDGE-02 — The owner leaves on purpose (ERROR-090, Option A / ADR-063)
 - **Setup:** the same group, O still present.
-- **Steps:** on O open **Leave group**; read the dialog; confirm; on A try Add members and a rename.
-- **Pass (today):** the dialog is the same text a member sees (no warning, no successor choice); afterwards nobody can add or remove
+- **Steps:** on O open **Leave group**; read the dialog; select successor admin from list and confirm; on successor try Add members.
+- **Pass (before fix):** the dialog is the same text a member sees (no warning, no successor choice); afterwards nobody can add or remove
   anyone; the O row is a tombstone and message ticks complete normally.
-- **Pass once fixed:** the dialog warns the owner or asks for a successor.
-- **Source:** ERROR-090. **Status:** TODO
+- **Pass once fixed (built 2026-10-01):** the dialog warns the owner and presents eligible members with radio buttons. When confirmed, the successor is promoted to admin before O leaves, and the successor can add and remove regular members.
+- **Source:** ERROR-090, ADR-063. **Status:** TODO
+
+### EDGE-02b — Admin promotion and admin member management (ADR-063)
+- **Setup:** v2 group with owner O, member A, member B, non-member C.
+- **Steps:** O opens Group Members sheet and taps "Make Admin" on A. A opens Group Members sheet and adds C. A tries to remove B. A tries to remove O.
+- **Pass once fixed (built 2026-10-01):** A's role updates to Admin for all members. A can add C to the group. A can remove regular member B. A cannot remove owner O ("Remove" option hidden or rejected).
+- **Source:** ADR-063. **Status:** TODO
 
 ### EDGE-03 — One dead member and the status of every group message (ERROR-090)
 - **Setup:** a v2 group of three (O, A, B), all online.

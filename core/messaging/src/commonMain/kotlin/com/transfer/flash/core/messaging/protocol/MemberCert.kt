@@ -26,6 +26,7 @@ public data class MemberCert(
 ) {
     public companion object {
         public const val ROLE_OWNER: String = "owner"
+        public const val ROLE_ADMIN: String = "admin"
         public const val ROLE_MEMBER: String = "member"
     }
 }

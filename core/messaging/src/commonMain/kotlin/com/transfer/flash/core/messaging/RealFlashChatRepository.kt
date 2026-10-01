@@ -794,9 +794,11 @@ public class RealFlashChatRepository(
                     }
                     val title = conversationEntity.title.ifBlank { conversationId }
                     val ownerName = ownerDisplayName(conversationId, conversationEntity)
+                    val selfMember = members.firstOrNull { it.deviceId == localDeviceId }
                     val isOwner = conversationEntity.groupCreatedBy == localDeviceId
-                    val isV2 = conversationEntity.groupProto == GroupPolicy.V2_PROTOCOL
                     val isMemberActive = selfMembership == FlashSelfMembership.Active
+                    val isAdmin = isMemberActive && selfMember?.role == "admin"
+                    val isV2 = conversationEntity.groupProto == GroupPolicy.V2_PROTOCOL
                     FlashConversationUiState(
                         header = FlashChatHeaderUiState(
                             title = title,
@@ -821,9 +823,11 @@ public class RealFlashChatRepository(
                                 introducedBy = introducedByOf(member, ownerName),
                             )
                         },
-                        canRemoveMembers = isMemberActive && isV2 && isOwner,
-                        canAddMembers = isMemberActive && (!isV2 || isOwner),
+                        canRemoveMembers = isMemberActive && isV2 && (isOwner || isAdmin),
+                        canAddMembers = isMemberActive && (!isV2 || isOwner || isAdmin),
                         isGroupOwner = isMemberActive && isOwner,
+                        isGroupAdmin = isAdmin,
+                        canPromoteAdmin = isMemberActive && isV2 && isOwner,
                         canContinueInNewGroup = isMemberActive && !isOwner,
                         selfMembership = selfMembership,
                         groupSync = syncReceived?.let { FlashGroupSyncUi(receivedCount = it) },
@@ -1224,11 +1228,66 @@ public class RealFlashChatRepository(
     }
 
     override suspend fun leaveGroup(groupId: String): FlashResult<Unit> =
-        withContext(ioDispatcher) { leaveGroupLocked(groupId) }
+        leaveGroup(groupId, null)
+
+    override suspend fun leaveGroup(groupId: String, successorId: String?): FlashResult<Unit> =
+        withContext(ioDispatcher) { leaveGroupLocked(groupId, successorId) }
 
     /**
-     * ADR-044 V2 (E5): the owner of a v2 group removes [deviceId]. The owner-signed tombstone reaches every remaining
-     * member and the removed device (so it stops sending), and the vouch for that key is withdrawn here at once.
+     * ADR-063: Promotes an active member to admin in a v2 group. Owner-only (or active admin if owner left).
+     */
+    override suspend fun promoteAdmin(groupId: String, deviceId: String): FlashResult<Unit> =
+        withContext(ioDispatcher) { promoteAdminLocked(groupId, deviceId) }
+
+    private suspend fun promoteAdminLocked(groupId: String, deviceId: String): FlashResult<Unit> {
+        val members = groupMemberDao
+            ?: return FlashResult.Failure(FlashError.Unknown("Group storage unavailable"))
+        val signed = signedGroups
+            ?: return FlashResult.Failure(FlashError.Unknown("Signed groups are unavailable on this device"))
+        if (!isV2Group(groupId)) {
+            return FlashResult.Failure(FlashError.Unknown("Only groups made with the latest Flash version support admins"))
+        }
+        val self = members.member(groupId, localDeviceId)?.takeIf { it.isActive }
+        val isOwner = conversationDao.get(groupId)?.groupCreatedBy == localDeviceId
+        val ownerActive = members.member(groupId, conversationDao.get(groupId)?.groupCreatedBy.orEmpty())?.isActive == true
+        if (!isOwner && (ownerActive || self?.role != "admin")) {
+            return FlashResult.Failure(FlashError.Unknown("Only the group owner can promote admins"))
+        }
+        val bundle = signed.promoteAdmin(groupId, deviceId)
+            ?: return FlashResult.Failure(FlashError.Unknown("Could not promote this member to admin"))
+        val targets = members.activeMembers(groupId).map { it.deviceId }.filter { it != localDeviceId }
+        targets.distinct().forEach { groupTransportSink?.send(it, bundle) }
+        FlashLog.i("CHAT", "Group v2 member promoted to admin: group=$groupId member=$deviceId")
+        return FlashResult.Success(Unit)
+    }
+
+    /**
+     * ADR-063: Demotes an active admin to regular member in a v2 group. Owner-only.
+     */
+    override suspend fun demoteAdmin(groupId: String, deviceId: String): FlashResult<Unit> =
+        withContext(ioDispatcher) { demoteAdminLocked(groupId, deviceId) }
+
+    private suspend fun demoteAdminLocked(groupId: String, deviceId: String): FlashResult<Unit> {
+        val members = groupMemberDao
+            ?: return FlashResult.Failure(FlashError.Unknown("Group storage unavailable"))
+        val signed = signedGroups
+            ?: return FlashResult.Failure(FlashError.Unknown("Signed groups are unavailable on this device"))
+        if (!isV2Group(groupId)) {
+            return FlashResult.Failure(FlashError.Unknown("Only groups made with the latest Flash version support admins"))
+        }
+        if (conversationDao.get(groupId)?.groupCreatedBy != localDeviceId) {
+            return FlashResult.Failure(FlashError.Unknown("Only the group owner can demote admins"))
+        }
+        val bundle = signed.demoteAdmin(groupId, deviceId)
+            ?: return FlashResult.Failure(FlashError.Unknown("Could not demote this admin"))
+        val targets = members.activeMembers(groupId).map { it.deviceId }.filter { it != localDeviceId }
+        targets.distinct().forEach { groupTransportSink?.send(it, bundle) }
+        FlashLog.i("CHAT", "Group v2 admin demoted to member: group=$groupId member=$deviceId")
+        return FlashResult.Success(Unit)
+    }
+
+    /**
+     * ADR-044 V2 (E5) / ADR-063: the owner or admin of a v2 group removes [deviceId].
      */
     override suspend fun removeGroupMember(groupId: String, deviceId: String): FlashResult<Unit> =
         withContext(ioDispatcher) { removeGroupMemberLocked(groupId, deviceId) }
@@ -1240,8 +1299,11 @@ public class RealFlashChatRepository(
         if (signed == null || !isV2Group(groupId)) {
             return FlashResult.Failure(FlashError.Unknown("Only groups made with the latest Flash version support removing members"))
         }
-        if (conversationDao.get(groupId)?.groupCreatedBy != localDeviceId) {
-            return FlashResult.Failure(FlashError.Unknown("Only the group owner can remove members"))
+        val self = members.member(groupId, localDeviceId)?.takeIf { it.isActive }
+        val isOwner = conversationDao.get(groupId)?.groupCreatedBy == localDeviceId
+        val isAdmin = self?.role == "admin"
+        if (!isOwner && !isAdmin) {
+            return FlashResult.Failure(FlashError.Unknown("Only the group owner or an admin can remove members"))
         }
         val removed = signed.removeMember(groupId, deviceId)
             ?: return FlashResult.Failure(FlashError.Unknown("That device is not a removable member of this group"))
@@ -1251,13 +1313,13 @@ public class RealFlashChatRepository(
         return FlashResult.Success(Unit)
     }
 
-    private suspend fun leaveGroupLocked(groupId: String): FlashResult<Unit> {
+    private suspend fun leaveGroupLocked(groupId: String, successorId: String? = null): FlashResult<Unit> {
         val members = groupMemberDao
             ?: return FlashResult.Failure(FlashError.Unknown("Group storage unavailable"))
         if (isV2Group(groupId)) {
             val signed = signedGroups
                 ?: return FlashResult.Failure(FlashError.Unknown("Signed groups are unavailable on this device"))
-            val bundle = signed.leave(groupId)
+            val bundle = signed.leave(groupId, successorId)
                 ?: return FlashResult.Failure(FlashError.Unknown("Unknown group"))
             members.activeMembers(groupId).filter { it.deviceId != localDeviceId }.forEach { target ->
                 groupTransportSink?.send(target.deviceId, bundle)
@@ -1323,8 +1385,11 @@ public class RealFlashChatRepository(
     ): FlashResult<Unit> {
         val signed = signedGroups
             ?: return FlashResult.Failure(FlashError.Unknown("Signed groups are unavailable on this device"))
-        if (conversationDao.get(groupId)?.groupCreatedBy != localDeviceId) {
-            return FlashResult.Failure(FlashError.Unknown("Only the group owner can add members"))
+        val self = members.member(groupId, localDeviceId)?.takeIf { it.isActive }
+        val isOwner = conversationDao.get(groupId)?.groupCreatedBy == localDeviceId
+        val isAdmin = self?.role == "admin"
+        if (!isOwner && !isAdmin) {
+            return FlashResult.Failure(FlashError.Unknown("Only the group owner or an admin can add members"))
         }
         val existing = members.activeMembers(groupId)
         if (existing.none { it.deviceId == localDeviceId }) {
@@ -1410,7 +1475,11 @@ public class RealFlashChatRepository(
             name = displayName,
             initials = computeInitials(displayName),
             isOnline = isOnline,
-            role = if (role == "owner") FlashMemberRole.Owner else FlashMemberRole.Member,
+            role = when (role) {
+                "owner" -> FlashMemberRole.Owner
+                "admin" -> FlashMemberRole.Admin
+                else -> FlashMemberRole.Member
+            },
             // Online members share our LAN/WS mesh; offline ones have no known transport.
             transport = if (isOnline) FlashNetworkTransport.Lan else FlashNetworkTransport.Unknown,
             introducedBy = introducedBy,

@@ -54,6 +54,7 @@ import com.transfer.flash.core.messaging.model.FlashFileTransferStatus
 import com.transfer.flash.core.messaging.model.FlashGroupMemberUi
 import com.transfer.flash.core.messaging.model.FlashGroupSyncUi
 import com.transfer.flash.core.messaging.model.FlashImageAttachmentUi
+import com.transfer.flash.core.messaging.model.FlashMemberRole
 import com.transfer.flash.core.messaging.model.FlashMessageInfoUi
 import com.transfer.flash.core.messaging.model.FlashMessageUi
 import com.transfer.flash.core.messaging.model.FlashQuotedReplyUi
@@ -231,6 +232,12 @@ fun FlashConversationScreen(
      * removeGroupMember and reports a failure.
      */
     onRemoveGroupMember: ((groupId: String, memberId: String, name: String) -> Unit)? = null,
+    /** ADR-063: Promote a member to admin in a v2 group (owner only). */
+    onPromoteGroupAdmin: ((groupId: String, memberId: String) -> Unit)? = null,
+    /** ADR-063: Demote an admin to regular member in a v2 group (owner only). */
+    onDemoteGroupAdmin: ((groupId: String, memberId: String) -> Unit)? = null,
+    /** ADR-063: Leave a group, optionally promoting a successor before leaving if owner. */
+    onLeaveGroupWithSuccessor: ((groupId: String, successorId: String?) -> Unit)? = null,
     /**
      * UI-051 Message Info: live recipients (read / delivered / not yet) of one group message this device sent, from the
      * repository's `observeMessageInfo`. Null hides Message Info in a group (a host without the source); a one-to-one
@@ -934,9 +941,20 @@ fun FlashConversationScreen(
         FlashGroupMembersSheet(
             members = groupMembers,
             onDismiss = { showGroupMembers = false },
+            isOwner = state.isGroupOwner,
             onVerifyMember = onVerifyGroupMember?.let { verify -> { member -> verify(member.id, member.name) } },
             onRemoveMember = if (state.canRemoveMembers && conversationId != null && onRemoveGroupMember != null) {
                 { member -> memberToRemove = member }
+            } else {
+                null
+            },
+            onPromoteAdmin = if (state.canPromoteAdmin && conversationId != null && onPromoteGroupAdmin != null) {
+                { member -> onPromoteGroupAdmin(conversationId, member.id) }
+            } else {
+                null
+            },
+            onDemoteAdmin = if (state.canPromoteAdmin && conversationId != null && onDemoteGroupAdmin != null) {
+                { member -> onDemoteGroupAdmin(conversationId, member.id) }
             } else {
                 null
             },
@@ -966,9 +984,18 @@ fun FlashConversationScreen(
     if (showLeaveConfirm && conversationId != null) {
         FlashLeaveGroupDialog(
             isOwner = state.isGroupOwner,
+            eligibleSuccessors = groupMembers.filter { it.role != FlashMemberRole.Owner },
             onConfirm = {
                 showLeaveConfirm = false
                 onLeaveGroup(conversationId)
+            },
+            onConfirmWithSuccessor = { successorId ->
+                showLeaveConfirm = false
+                if (onLeaveGroupWithSuccessor != null) {
+                    onLeaveGroupWithSuccessor(conversationId, successorId)
+                } else {
+                    onLeaveGroup(conversationId)
+                }
             },
             onDismiss = { showLeaveConfirm = false },
         )

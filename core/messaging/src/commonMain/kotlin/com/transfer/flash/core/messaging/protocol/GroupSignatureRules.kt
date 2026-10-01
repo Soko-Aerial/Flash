@@ -44,32 +44,53 @@ internal class GroupSignatureRules(
      * @param charter an already validated charter of the same group
      * @param knownKey the key this device already holds for the subject (the stored roster row),
      *   or null; a subject's own leave is only believed when it is signed by that key
+     * @param adminLookup optional lookup for an active admin's verified public key by deviceId (ADR-063)
      */
-    fun checkCert(charter: GroupCharter, cert: MemberCert, knownKey: String?): String? {
+    fun checkCert(
+        charter: GroupCharter,
+        cert: MemberCert,
+        knownKey: String?,
+        adminLookup: ((String) -> ByteArray?)? = null,
+    ): String? {
         if (cert.groupId != charter.groupId) return "group"
         if (cert.subjectId.isBlank()) return "subject"
         if (cert.opId.isBlank()) return "op-id"
         if (cert.seq < 1L) return "seq"
         if (cert.label.isBlank() || cert.label.length > GroupPolicy.MAX_LABEL_LENGTH) return "label"
         val isOwnerSubject = cert.subjectId == charter.ownerId
-        if (cert.role != (if (isOwnerSubject) MemberCert.ROLE_OWNER else MemberCert.ROLE_MEMBER)) return "role"
+        val validRole = if (isOwnerSubject) {
+            cert.role == MemberCert.ROLE_OWNER
+        } else {
+            cert.role == MemberCert.ROLE_MEMBER || cert.role == MemberCert.ROLE_ADMIN
+        }
+        if (!validRole) return "role"
+
         val ownerIssued = cert.issuerId == charter.ownerId
         val selfIssuedLeave = cert.issuerId == cert.subjectId && !cert.active
-        if (!ownerIssued && !selfIssuedLeave) return "issuer"
-        val subjectKey = GroupCanonical.decode(cert.subjectKey)?.takeIf { it.isNotEmpty() } ?: return "subject-key"
-        // The key a signature is checked against. An owner-issued cert is the owner's word (the
-        // charter fixed the owner key); a self-issued leave is only as good as our knowledge of the
-        // subject's key, otherwise anyone could "sign" a leave for a member with a key they made up.
-        val issuerKey: ByteArray = if (ownerIssued) {
-            GroupCanonical.decode(charter.ownerKey) ?: return "owner-key"
-        } else {
-            subjectKey
+        val adminKey = if (!ownerIssued && !selfIssuedLeave && adminLookup != null) adminLookup(cert.issuerId) else null
+        val adminIssued = adminKey != null
+
+        if (!ownerIssued && !selfIssuedLeave && !adminIssued) return "issuer"
+
+        // An admin cannot promote anyone to admin, cannot remove the founder, and cannot remove other admins
+        if (adminIssued) {
+            if (cert.role == MemberCert.ROLE_ADMIN) return "issuer-privilege"
+            if (!cert.active) {
+                if (cert.subjectId == charter.ownerId) return "issuer-privilege"
+                if (adminLookup != null && adminLookup(cert.subjectId) != null) return "issuer-privilege"
+            }
         }
-        // An owner tombstone needs no key for the subject; everything else must be bound to the
-        // subject's real key (a pin, our own key, the owner key, or the key we already recorded).
-        if (cert.active || !ownerIssued) {
-            // An owner-issued active cert is a vouch; a self-issued leave never is.
-            val vouchable = ownerIssued && cert.active
+
+        val subjectKey = GroupCanonical.decode(cert.subjectKey)?.takeIf { it.isNotEmpty() } ?: return "subject-key"
+        val issuerKey: ByteArray = when {
+            ownerIssued -> GroupCanonical.decode(charter.ownerKey) ?: return "owner-key"
+            adminIssued -> adminKey!!
+            else -> subjectKey
+        }
+
+        // An owner/admin tombstone needs no key binding check; everything else must be bound
+        if (cert.active || (!ownerIssued && !adminIssued)) {
+            val vouchable = (ownerIssued || adminIssued) && cert.active
             if (!subjectKeyIsBound(charter, cert.subjectId, subjectKey, knownKey, vouchable)) return "subject-key-binding"
         }
         val signature = GroupCanonical.decode(cert.sig)?.takeIf { it.isNotEmpty() } ?: return "signature"

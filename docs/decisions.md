@@ -3097,3 +3097,58 @@ history; and the open chat's "publish to the screen, then write the cursor" coul
 
 ### Revisit when
 UNREAD-01..05 show the badge wrong on a phone, or the DAO is reworked to targeted updates.
+
+## ADR-063 — Group Admins (`ROLE_ADMIN`) and Successor on Leave: Delegated Group Authority and Two-Hop Vouching for Resilient Groups
+
+### Date
+2026-10-01
+
+### Context
+In v2 groups (ADR-044), the group identity and root of trust are established by the founding charter (`GroupCharter`), derived deterministically from `(founderKey, nonce)`. In ADR-044 V1/V2, only `charter.ownerId` was permitted to issue membership certificates (add/remove members).
+
+The edge-case audit (`docs/audit/2026-10-01-chat-edge-case-audit.md` §1) identified that owner loss is common rather than rare (app reinstallation, data clear, or new phone generates a new identity, severing the owner permanently). When the creator is gone, the group roster freezes permanently: no new members can be added, dead members cannot be removed, and the owner row remains active indefinitely.
+
+Option D ("Continue in a new group") was implemented to rescue already-orphaned groups without wire or trust changes. Option A ("Co-owners / Admins & Successor on Leave") provides the long-term solution for active groups by allowing delegated administration and orderly ownership transfer.
+
+### Decisions
+
+1. **Three Distinct Membership Roles:**
+   - `ROLE_OWNER` ("owner"): Primary authority of the group. Initiated by the charter founder, or designated via an owner-signed successor certificate. Can promote/demote admins, add/remove members, designate a successor owner, or self-leave.
+   - `ROLE_ADMIN` ("admin"): Delegated administrator appointed by an active owner. Can add regular members and remove regular members. Cannot remove or demote an owner or another admin. Cannot promote anyone to admin or owner.
+   - `ROLE_MEMBER` ("member"): Standard participant. Can send messages, react, vote, and self-leave.
+
+2. **Certificate Rules and Cryptographic Verification (`GroupSignatureRules`):**
+   - Supported roles: `MemberCert.ROLE_OWNER` ("owner"), `MemberCert.ROLE_ADMIN` ("admin"), `MemberCert.ROLE_MEMBER` ("member").
+   - Issuer authorization:
+     - The charter owner (`charter.ownerId`) or an active certified owner (`ROLE_OWNER`) can issue any cert (`ROLE_MEMBER`, `ROLE_ADMIN`, `ROLE_OWNER`, and tombstones `active = false`).
+     - An active certified admin (`ROLE_ADMIN`) can issue `ROLE_MEMBER` (`active = true`) and tombstones (`active = false`) for regular members (`ROLE_MEMBER`). An admin cannot issue `ROLE_ADMIN` or `ROLE_OWNER`, and cannot remove an owner or admin.
+     - Any member can issue their own leave tombstone (`active = false`, `issuerId == subjectId`).
+   - Signature verification:
+     - If `issuerId == charter.ownerId`: verified against `charter.ownerKey`.
+     - If `issuerId != charter.ownerId`: verified against the certified public key of the issuer (`issuer.subjectKey`), which must be an active owner or admin in the group.
+
+3. **Two-Hop Trust Delegation (Amending ADR-044 Decision 3):**
+   - ADR-044 Decision 3 assumed one-hop vouching strictly rooted in the charter owner.
+   - Under ADR-063, trust delegation is extended to two hops: `Owner -> Admin -> Member`.
+   - When an owner-promoted admin introduces a new member, the member cert is signed by the admin's certified key. Receivers verify the admin's active status and accept the vouch into the trust store (`port.vouch`).
+
+4. **Successor on Owner Leave:**
+   - When an owner initiates "Leave group" in a group that has other active members:
+     - The Leave flow requires the owner to choose an active member (an existing admin or member) as their successor.
+     - The owner issues a `ROLE_OWNER` certificate for the successor (`seq + 1`, signed by the owner).
+     - The owner then issues their own leave tombstone (`active = false`, `seq + 1`, signed by the owner).
+     - Both certificates are broadcast in the leave bundle. The successor assumes full `ROLE_OWNER` authority.
+
+5. **Wire & Persistence Compatibility:**
+   - `GroupCanonical.certBytes` already writes `cert.role` as a UTF-8 string field (`.text(cert.role)`). The canonical byte format and tag (`flash-gcert-v1`) remain unchanged.
+   - Room `GroupMemberEntity` already stores `role: String = "member"`. No database schema bump is required.
+   - Existing UI models (`FlashMemberRole.Admin`, `FlashGroupMembersMath.roleBadgeLabel`, `FlashGroupMembersMath.roleRank`) already accommodate admins.
+
+### Alternatives considered and rejected
+- **Symmetric co-owners (multi-owner peer mesh with no hierarchy):** Rejected. Any owner could remove any other owner, creating race conditions and coup surfaces during concurrent split-brain operations. The hierarchical Owner -> Admin model maintains deterministic authority.
+- **Succession by majority voting (Option C):** Rejected as excessive complexity for local network mesh. High latency, split-vote deadlocks, and attack surfaces under dynamic connectivity.
+
+### Consequences
+- Groups with appointed admins survive owner loss (such as uninstallation or phone destruction) without roster freeze.
+- When an owner leaves gracefully, leadership is explicitly transferred to a successor.
+- Two-hop vouching allows admins to onboard new members without requiring the founder to be present.
