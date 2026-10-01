@@ -1,5 +1,42 @@
 # Progress Log
 
+## 2026-10-01 — Edge-case audit of the chat app, and the answer to "what if the group creator is gone" (docs only, nothing run, nothing fixed)
+
+### Worked on
+Owner question: "is there a fix for this edge case: what if the creator of the group is not in it anymore, he deletes his app ... it should
+survive ... think of other chat edge cases ... a total edge-case audit". Read the code behind each case and wrote the audit.
+
+### Changed
+- New `docs/audit/2026-10-01-chat-edge-case-audit.md`: section 1 (owner loss, options D / A / B / C with a recommendation), section 2
+  (findings F1-F9), section 3 (190 cases in 12 areas, each marked handled / partial / gap / not checked), counts, next steps.
+- `logs/errors.md`: ERROR-089 (30-minute give-up, no retry, no 1:1 catch-up), ERROR-090 (a v2 group cannot survive its owner; one dead
+  member makes every group message FAILED), ERROR-091 (no send-side size cap), ERROR-092 (ordering and give-up trust the clock),
+  ERROR-093 (non-ASCII file names mangled, extension lost, folder collisions), ERROR-094 (delete-for-everyone and reactions not durable,
+  text stays in the DB). All OPEN, found by reading code, not reproduced.
+- `docs/testing/TEST-BACKLOG.md` section 4k: `EDGE-01`...`EDGE-18`, all TODO.
+- No product code was changed.
+
+### Answer to the owner's question
+The group keeps working without its owner (chat, calls, vouched keys survive a restart), but its roster is frozen for good: no add, no
+remove, the owner's row stays active, and "Add members" fails silently for a non-owner. Owner loss is likely, not rare, because the identity
+is excluded from backup, so a new phone or a reinstall is a stranger. Related and wider: one dead member (owner or not) makes every group
+message FAILED after 30 minutes, and a 1:1 message to someone offline longer than 30 minutes is lost.
+
+### Verification
+Code reading only (files and symbols named in each ERROR). 190 cases: 26 gaps, 41 partial or accepted, 58 handled, 63 not checked, 2 mixed.
+The 63 unchecked cases are unknown, not safe.
+
+### Remaining
+- Owner decision on group ownership: **D** "continue in a new group" first, then decide **A** (co-owners, successor on leave) in an ADR.
+  No ownership code until then.
+- Cheap fixes that do not wait for that decision: hide "Add members" for a non-owner of a v2 group, warn the owner in the Leave dialog,
+  "delivered to 18 of 19" instead of FAILED, a retry action behind the failed icon, a send-side text cap.
+- The docs are uncommitted.
+
+### Next AI
+Ask the owner which of D / D-then-A they want. Then do the cheap fixes with unit tests, and add `EDGE-xx` results to the backlog's Results
+log as the owner reports them. Do not mark any ERROR-089...094 resolved before its device test passes.
+
 ## 2026-10-01 — Fixed in code: a chat no longer shows unread after it was opened (ERROR-087) and a group call reaches members the caller is not paired with (ERROR-088); NOT device-verified
 
 ### Worked on

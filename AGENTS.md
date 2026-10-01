@@ -982,6 +982,10 @@ Android's look preserved or improved).
   without a leg hear the presence tick so they see the banner and can Join, the caller sees "Not reachable yet"). Still open there:
   `onStop` with a chat open, a member nobody can reach, hosts ignore a refused start (UNREAD-05, GCALL-10). Device checks `UNREAD-01`...`05`,
   `GCALL-08`...`10` in `docs/testing/TEST-BACKLOG.md` section 4j. Committed together with ERROR-086/085 and the other session's edits on 2026-10-01 (see `logs/handoff.md`).
+- **Chat edge-case audit 2026-10-01 (docs only, nothing run, nothing fixed):** `docs/audit/2026-10-01-chat-edge-case-audit.md` (190 cases:
+  26 gaps, 63 not checked), ERROR-089...094 (all OPEN) and device tests `EDGE-01`...`EDGE-18` (backlog section 4k). Answers the owner's
+  "what if the group creator is gone": the group keeps chatting but its roster is frozen; **the fix path (D, then A) is the owner's decision, so
+  write no ownership code until it is made**.
 - **Adaptive UI upgrade** (`docs/migration/ADAPTIVE-UI-PLAN.md`): code exists for AD-1 (UI-scale density multiplier, persisted), AD-2 (automatic list-pane width + a 640×480 dp minimum window; **no draggable splitter**, AD-D3 still open), AD-3 (conversation in the detail pane on both hosts), AD-4 (keyboard shortcuts only; pointer idioms and AD-D5 selection not done), AD-5 (580 dp bubble cap), AD-6 (Android navigation rail ≥ 600 dp and two-pane layout; width measured manually, no fold-posture support; AD-D4 not formally answered) and part of AD-7 (desktop keeps the open conversation across tab switches). None of it is device-verified.
 
 ## Not Yet Implemented

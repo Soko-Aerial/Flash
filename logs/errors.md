@@ -1,5 +1,226 @@
 # Error Log
 
+## ERROR-094 — "Delete for everyone" and reactions are one best-effort send, and a delete leaves the text in the database
+
+### Date
+2026-10-01 (found by the edge-case audit, `docs/audit/2026-10-01-chat-edge-case-audit.md`; code-read, not reproduced)
+
+### Area
+Chat / delete, reactions / privacy
+
+### Symptoms (from the code)
+- `deleteMessageForEveryone` tombstones locally, deletes the outbox row, then calls `transportSink` / `groupTransportSink` once. A recipient
+  that is offline at that moment never receives the delete and keeps the message for good. Nothing retries it, and the author's own
+  tombstoned message is not pushed by catch-up, so a group member who missed it never learns of it either.
+- `toggleReaction` is the same: one send to online members, no outbox, so a reaction made while the peer is offline never arrives and the
+  counts differ for ever.
+- A delete only runs `UPDATE messages SET deletedAt = ?` (`MessageDao.markDeleted`): the text stays in the database, and every reply that
+  quoted the message keeps its `replyToPreview` copy on every device.
+- A delete-for-everyone that arrives before the message (reordered, or a sync that brings the message later) is dropped
+  (`DeleteForEveryone` handler returns when the message row is absent), so the message can appear afterwards.
+
+### Root cause
+Deletes and reactions were built as live frames, outside the durable outbox that carries text (ERROR-026, ERROR-031).
+
+### Fix
+Not done. Options: put delete and reaction frames in the outbox with the same acknowledgement rule, keep a delete tombstone for a message
+that has not arrived yet, blank the text (and quoted previews) when a message is deleted. Needs a protocol note (`docs/protocol.md`)
+because a receiver must ack a delete.
+
+### Verification
+Code reading only: `RealFlashChatRepository.deleteMessageForEveryone`, `toggleReaction`, the group `DeleteForEveryone` handler,
+`MessageDao.markDeleted`. Device tests `EDGE-09`, `EDGE-10` in `docs/testing/TEST-BACKLOG.md` section 4k.
+
+### Related files
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/RealFlashChatRepository.kt`
+- `core/persistence/src/commonMain/kotlin/com/transfer/flash/core/persistence/db/dao/MessageDao.kt`
+
+### Status
+OPEN
+
+## ERROR-093 — Received file names lose every non-ASCII character, can lose their extension, and can collide inside a folder transfer
+
+### Date
+2026-10-01 (edge-case audit; code-read, not reproduced)
+
+### Area
+Transfer / storage / received file names (Android and desktop)
+
+### Symptoms (from the code)
+- Android (`DiscoveryEngineHolder.sanitizePathComponent`, `Flash.sanitizePathComponent`): `[^A-Za-z0-9._ ()-]` becomes `_`, so
+  "照片.jpg", "تقرير.pdf" and "Résumé.pdf" are stored as `__.jpg`, `_____.pdf`, `R_sum_.pdf`. Desktop (`DesktopEngine.sanitize`):
+  `[^A-Za-z0-9._-]`, so spaces also become `_`.
+- `.take(120)` runs after sanitising, so a long name loses its extension, and the type is then guessed as `application/octet-stream`.
+- Inside one folder transfer two names that sanitise to the same text share a destination (`a b.txt` and `a_b.txt` on desktop); on Windows
+  `A.txt` and `a.txt` are one file. The second write overwrites the first without an error.
+- Windows reserved names (`CON`, `NUL`, `COM1`…) pass through the sanitiser; the canonical-path containment check stops an escape,
+  and the failure the user sees was not checked.
+
+### Root cause
+The sanitiser is an allow-list tuned for path safety (AGENTS §19), not for names people use. Path traversal is correctly blocked.
+
+### Fix
+Not done. Keep the path-safety rule, but allow Unicode letters and digits, keep the extension when truncating, reserve Windows device
+names, and de-duplicate the final destination inside a transfer. Whether the chat card shows the original name or the stored one was not
+checked.
+
+### Verification
+Code reading only. Device test `EDGE-08`.
+
+### Related files
+- `app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt`
+- `core/engine/src/androidMain/kotlin/com/transfer/flash/core/engine/Flash.kt`
+- `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopEngine.kt`
+
+### Status
+OPEN
+
+## ERROR-092 — Message order, unread and the outbox give-up trust the clock
+
+### Date
+2026-10-01 (edge-case audit; code-read, not reproduced). Extends the "sender's clock in `sortOrder`" gap left open in ERROR-087.
+
+### Area
+Chat / time
+
+### Symptoms (from the code)
+- `messages` is ordered by `sentAt` (the **sender's** clock; `MessageDao`, index `conversationId, sentAt, localId`) and the receiver inserts
+  it unclamped (`GroupWireFrame.Message` and the direct text path). A peer whose clock is a day ahead sorts after your newer messages for
+  ever; a clock far behind puts its new messages into old history. The unread cursor compares in the same order.
+- The outbox give-up is `now - item.createdAt >= 30 min` on the wall clock. A clock stepped forward by half an hour (a phone that
+  corrects a wrong date, a manual change) fails every queued message at once; a step back stalls the give-up.
+- Not affected: v2 membership (`seq` counters, not time) and certificate validity (never checked).
+
+### Root cause
+Wall-clock time is used as an ordering and as a duration, and nothing bounds what a peer claims.
+
+### Fix
+Not done. Options: clamp an inbound `sentAt` to `[now - window, now + skew]` and keep the peer's value separately for display; order by
+arrival for the unread cursor; use a monotonic clock for the give-up age.
+
+### Verification
+Code reading only. Device tests `EDGE-06`, `EDGE-07`.
+
+### Related files
+- `core/persistence/src/commonMain/kotlin/com/transfer/flash/core/persistence/db/dao/MessageDao.kt`
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/RealFlashChatRepository.kt` (`drainOutboxOnce`)
+
+### Status
+OPEN
+
+## ERROR-091 — No size cap on send: a long group text is dropped by every receiver, a huge 1:1 text closes the session
+
+### Date
+2026-10-01 (edge-case audit; code-read, not reproduced)
+
+### Area
+Chat / limits
+
+### Symptoms (from the code)
+- Group: receivers drop a message over `GroupPolicy.MAX_MESSAGE_TEXT_LENGTH` (16,384) silently (`GroupWireFrame.Message` handler). The
+  sender never checks, stores it, shows it sent, and after 30 minutes marks it FAILED (with no retry, ERROR-089).
+- 1:1: `sendText` only trims and rejects an empty text. The WebSocket guard (`WebSocketCodec.MAX_MESSAGE_BYTES` = 4 MiB) throws
+  `IOException("WebSocket message exceeds size guard")` on the receiver, which ends the session. The outbox resends the same message on
+  every reconnect for 30 minutes, so each reconnect is cut off again, and a call or a transfer on that session goes with it.
+- No composer length limit was found in `ui/chat`.
+
+### Root cause
+The limits exist on the receiving side only.
+
+### Fix
+Not done. Cap the text at compose and at `sendText` / `sendGroupText` (one shared constant, below both guards), tell the user, and let
+the receiver log what it drops.
+
+### Verification
+Code reading only. Device test `EDGE-05`.
+
+### Related files
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/RealFlashChatRepository.kt`
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/protocol/GroupPolicy.kt`
+- `core/network/src/jvmMain/kotlin/com/transfer/flash/core/network/ws/WebSocketCodec.kt`
+
+### Status
+OPEN
+
+## ERROR-090 — A v2 group cannot survive its owner, and one dead member makes every message in the group FAILED
+
+### Date
+2026-10-01 (owner's question: "what if the creator of the group is not in it anymore, he deletes his app"; code-read, not reproduced)
+
+### Area
+Groups / ownership / delivery status (ADR-044)
+
+### Symptoms (from the code)
+1. **Owner gone.** Only the owner may add, remove or rename in a v2 group (`SignedGroups.addMembers`, `removeMember`;
+   `addV2MembersLocked`, `removeGroupMemberLocked`). If the owner deletes the app, gets a new phone, reinstalls or clears data (the identity
+   is excluded from backup, so it is a new, unrelated device), the chat among the others keeps working but the roster is frozen for good:
+   no add, no remove, the owner's row stays active and counts toward 20, the owner can never be added back, and a vouched member whose
+   key changes cannot be re-certified. The UI shows "Add members" to non-owners and it fails silently; the Leave dialog gives the owner no
+   warning and no way to name a successor. Nothing in the UI says why the group cannot change.
+2. **Any dead member (the owner or anybody) blocks delivery status.** `drainGroupMessage` keeps a delivery row per active member and the
+   message is DELIVERED only when every row is delivered (`recordGroupDelivery`). After 30 minutes (`OUTBOX_GIVE_UP_AFTER_MS`) the message
+   is marked FAILED and the outbox row is deleted, although every other member has it. With no retry wired (ERROR-089) the sender sees
+   a failed message for every message ever sent to that group. If the member comes back, a late receipt can still flip it to DELIVERED.
+
+### Root cause
+1. The design records the owner as a single point of trust and failure and builds no ownership transfer (ADR-044 "Accepted limits",
+   `docs/group/v0-threat-review.md` §7). 2. Group delivery status has no notion of an unreachable member.
+
+### Fix
+Not done. Decision needed from the owner: **D** "continue in a new group" (no protocol change, rescues groups already orphaned), then
+**A** co-owners with "pick a successor when you leave" (ADR needed, changes the one-hop trust rule), or **C** succession by majority (large;
+threat review needed). Recommendation and costs: `docs/audit/2026-10-01-chat-edge-case-audit.md` section 1.2. Cheap parts that do not wait for
+the decision: hide "Add members" for a non-owner of a v2 group; warn the owner in the Leave dialog; show "delivered to 18 of 19" instead
+of FAILED when only unreachable members are missing.
+
+### Verification
+Code reading only. Device tests `EDGE-01`, `EDGE-02`, `EDGE-03`. A unit test for item 2 is not written yet.
+
+### Related files
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/SignedGroups.kt`
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/RealFlashChatRepository.kt` (`drainGroupMessage`, `recordGroupDelivery`)
+- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashAddMembersSheet.kt` (`FlashLeaveGroupDialog`)
+- `docs/group/v0-threat-review.md`, `docs/security.md` sections 8 and 9
+
+### Status
+OPEN (design decision pending)
+
+## ERROR-089 — A message nobody acknowledged within 30 minutes is FAILED for good: no retry, no 1:1 catch-up
+
+### Date
+2026-10-01 (edge-case audit; code-read, not reproduced)
+
+### Area
+Chat / durable outbox (ERROR-026 / ERROR-031 follow-up)
+
+### Symptoms (from the code)
+- `drainOutboxOnce` gives up at `OUTBOX_GIVE_UP_AFTER_MS` = 30 minutes: it sets the message FAILED and deletes the outbox row. Nothing
+  re-queues a FAILED message.
+- The bubble shows the failed icon but has no retry: `FlashMessageBubble` calls `FlashDeliveryStatusIcon(status = status)` without
+  `onRetry`, and `FlashChatRepository` has no retry method.
+- The direct protocol has no catch-up: `MessageWireFrame` carries text, receipts, typing, delete and reaction only. So a 1:1 message to
+  someone who is offline for more than 30 minutes (phone off overnight, an OEM that froze the app, a different network) is **never
+  delivered**. Groups recover through catch-up sync on the next session; 1:1 does not.
+
+### Root cause
+ERROR-026 made the give-up budget wall-clock so a short Doze window no longer fails messages; the budget itself was never revisited for a
+peer who is away longer than 30 minutes, and the retry action the failed icon promises was never wired.
+
+### Fix
+Not done. Options: wire a manual retry (re-queue the row), keep the row longer for a paired peer that is known and merely offline, or add a
+1:1 catch-up frame like the group one. The budget is a product decision (how long should a phone keep trying).
+
+### Verification
+Code reading only. Device test `EDGE-04`.
+
+### Related files
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/RealFlashChatRepository.kt` (`drainOutboxOnce`)
+- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashMessageBubble.kt`, `FlashDeliveryStatusIcon.kt`
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/protocol/MessageWireFrame.kt`
+
+### Status
+OPEN
+
 ## ERROR-088 — A group call started by a member who is not paired with the others does not show on the devices it is not paired with
 
 ### Date

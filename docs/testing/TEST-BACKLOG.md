@@ -991,6 +991,135 @@ and `SignedGroupsTest` (calls); a unit test cannot show how often the phones hit
 - **Source:** ERROR-088 (ADR-061) announce-only members; `FlashGroupCallReachTest` "an incoming call tells every member of the invite".
 - **Status:** TODO
 
+## 4k. Edge-case audit (`docs/audit/2026-10-01-chat-edge-case-audit.md`, ERROR-089…094, 2026-10-01)
+
+The audit read the code and found these gaps; **nothing was run on a device and nothing was fixed**, so each test below is written
+against the *expected current behaviour* ("Now") and a target ("Pass once fixed"). Run them on any build to confirm the audit, and again
+after a fix. A test that matches "Now" is a confirmed defect, not a failure of the tester. The audit also lists 63 unchecked cases (❔);
+those are not tests yet: turn one into a test here when it is picked up.
+
+### EDGE-01 — The group keeps working when its owner is gone (ERROR-090)
+- **Setup:** a v2 group of three: owner O, members A and B. A and B are **not** paired with each other (vouched through O). Then **clear
+  data** on O (or uninstall it).
+- **Steps:** A and B chat in the group for 5 minutes; A places a group voice call to B; A opens the member sheet and taps **Add members**;
+  note what the roster shows for O; B restarts the app.
+- **Pass (today, the audit expects):** the chat and the call work, O stays listed as an active member and offline ("Not reachable yet" in the
+  call), Add members does nothing and says nothing; B still reaches A after the restart (vouched pins persisted).
+- **Pass once fixed:** the UI says the owner is gone and offers a way to carry on (option D or A in the audit).
+- **Source:** ERROR-090. **Status:** TODO
+
+### EDGE-02 — The owner leaves on purpose (ERROR-090)
+- **Setup:** the same group, O still present.
+- **Steps:** on O open **Leave group**; read the dialog; confirm; on A try Add members and a rename.
+- **Pass (today):** the dialog is the same text a member sees (no warning, no successor choice); afterwards nobody can add or remove
+  anyone; the O row is a tombstone and message ticks complete normally.
+- **Pass once fixed:** the dialog warns the owner or asks for a successor.
+- **Source:** ERROR-090. **Status:** TODO
+
+### EDGE-03 — One dead member and the status of every group message (ERROR-090)
+- **Setup:** a v2 group of three (O, A, B), all online.
+- **Steps:** turn B's Wi-Fi off and leave it off. A sends 3 messages. Check A's and O's bubbles at once, at 10 minutes and at 35 minutes;
+  open Message Info on A's first message.
+- **Pass (today):** O has the messages; A's ticks stay at sent; after 30 minutes A's messages turn **FAILED** and the failed icon does
+  nothing when tapped. Turn B's Wi-Fi back on: B catches up and A's messages may flip to delivered.
+- **Pass once fixed:** A's bubble reads delivered to O and pending for B, never FAILED while only unreachable members are missing.
+- **Source:** ERROR-090 (2), ERROR-089. **Status:** TODO
+
+### EDGE-04 — A 1:1 message to a peer that is offline for 31 minutes (ERROR-089)
+- **Setup:** two paired phones, a direct chat.
+- **Steps:** turn B's Wi-Fi off; A sends "hello"; wait 31 minutes; turn B's Wi-Fi on; wait 5 minutes. Tap the failed icon on A.
+- **Pass (today):** the message is FAILED on A after 30 minutes, B never receives it, tapping the icon does nothing.
+- **Pass once fixed:** B receives it, or A can retry it with one tap.
+- **Also check:** the same with 20 minutes offline: B gets it as soon as Wi-Fi returns (expected to work today).
+- **Source:** ERROR-089. **Status:** TODO
+
+### EDGE-05 — Oversize text (ERROR-091)
+- **Setup:** a v2 group and a direct chat.
+- **Steps:** paste **20,000 characters** into the group composer and send; then paste about **3 MB** of text into the direct chat, then
+  about **5 MB**. Watch the receivers and `adb logcat` for `exceeds size guard`.
+- **Pass (today):** the group message shows sent on the sender and appears on nobody's phone; the 5 MB message makes the session drop and
+  reconnect repeatedly (a call or transfer on that session is cut).
+- **Pass once fixed:** the sender is told the text is too long and nothing oversize is sent.
+- **Source:** ERROR-091. **Status:** TODO
+
+### EDGE-06 — A peer's clock is wrong (ERROR-092)
+- **Setup:** two paired phones. Turn off automatic time on B and set it **one day ahead**.
+- **Steps:** B sends a message; A sends a message; B sends another. Then set B's clock **one day behind** and repeat. Restore time.
+- **Pass (today):** on A, B's messages sort after A's newer message in the first run and into old history in the second; the unread badge
+  counts follow that order.
+- **Pass once fixed:** the order follows arrival, or the peer's time is clamped.
+- **Source:** ERROR-092. **Status:** TODO
+
+### EDGE-07 — The clock steps forward while messages are queued (ERROR-092)
+- **Setup:** two paired phones; B's Wi-Fi off; A queues 3 messages.
+- **Steps:** on A set the clock forward by one hour; look at the 3 messages.
+- **Pass (today):** all three become FAILED at the next drain pass although only seconds went by.
+- **Source:** ERROR-092. **Status:** TODO
+
+### EDGE-08 — File names (ERROR-093)
+- **Setup:** Android to Android and Android to Windows. Files: `照片 ñ.jpg`, `تقرير.pdf`, a 150-character name ending in `.pdf`; a folder
+  containing `a b.txt` and `a_b.txt`; for Windows also `A.txt` with `a.txt` in one folder, and files named `CON.txt` and `NUL`.
+- **Steps:** send each, accept, open the received item and look at the stored name and the contents of the folder.
+- **Pass (today):** non-ASCII names become underscores, the long name loses `.pdf`, the colliding names end as one file (the second
+  overwrites the first), reserved names fail or are altered; no file escapes the transfer folder in any case.
+- **Pass once fixed:** names are kept, extensions survive, no overwrite.
+- **Source:** ERROR-093. **Status:** TODO
+
+### EDGE-09 — Delete for everyone while the other side is offline (ERROR-094)
+- **Setup:** two paired phones (and the same in a v2 group of three).
+- **Steps:** B's Wi-Fi off; A sends nothing new, picks an old message and uses **Delete for everyone**; turn B's Wi-Fi on; wait 5 minutes.
+- **Pass (today):** the message is gone on A and **still shown on B**. In the group, a member that was offline keeps it too.
+- **Source:** ERROR-094. **Status:** TODO
+
+### EDGE-10 — A reaction while the other side is offline (ERROR-094)
+- **Steps:** B's Wi-Fi off; A reacts to a message; B's Wi-Fi on; compare the reaction on both phones.
+- **Pass (today):** A shows the reaction, B never does.
+- **Source:** ERROR-094. **Status:** TODO
+
+### EDGE-11 — The receiver's storage is full (ATT-01, not yet an ERROR)
+- **Setup:** fill the receiver's storage to under 100 MB free. Send a 500 MB file.
+- **Pass:** a clear error on both sides, no crash, no half file left shown as complete, and the chat keeps working. If it crashes or
+  stalls forever, add an ERROR and fix; the audit found no free-space check.
+- **Status:** TODO
+
+### EDGE-12 — A zero-byte file (ATT-04)
+- **Steps:** send an empty file from Android to Android and to Windows.
+- **Pass:** it completes or is refused with a message; no stuck "0 %" card, no crash.
+- **Status:** TODO
+
+### EDGE-13 — The database cannot write because storage is nearly full (LIFE-04)
+- **Setup:** storage nearly full (under 20 MB). 
+- **Steps:** receive 20 messages and send 5.
+- **Pass:** no crash; a message that cannot be stored is reported or retried. The audit found no `SQLiteFullException` handling.
+- **Status:** TODO
+
+### EDGE-14 — Search with `%` and `_` (MSG-16)
+- **Steps:** have messages "100% sure", "1000 sure" and "a_b", "axb"; search `100%`, then `a_b`.
+- **Pass (today the audit expects a defect):** `100%` also matches "1000 sure" and `a_b` also matches "axb".
+- **Status:** TODO
+
+### EDGE-15 — Delete a group chat without leaving, then a message arrives (GO-18)
+- **Steps:** in a v2 group delete the chat from the list without leaving; another member sends a message.
+- **Pass:** note what happens: does the group come back, with what title, with only the new message, and is a catch-up run? Documented
+  as accepted ("deleting a chat without leaving keeps its rows and vouches"); this records what the user sees.
+- **Status:** TODO
+
+### EDGE-16 — Both phones call each other at the same moment (CALL-01)
+- **Steps:** A and B tap the call button within one second of each other, 10 times.
+- **Pass:** each round ends with one connected call or two clean rings that resolve, never two calls on one pair, never a stuck screen.
+- **Status:** TODO
+
+### EDGE-17 — A cellular call or an alarm during a Flash call (CALL-03)
+- **Steps:** during a connected call, ring the phone from a third phone; answer it; decline it on another run; let an alarm ring.
+- **Pass:** the Flash call mutes or pauses sensibly and resumes or ends cleanly; no one-way audio afterwards.
+- **Status:** TODO
+
+### EDGE-18 — Windows: first-run firewall prompt, sleep and resume (NET-09, LIFE-10)
+- **Steps:** on a clean Windows profile start Flash and **deny** the firewall prompt; look at Nearby from a phone. Then allow it, connect,
+  put the PC to sleep for 10 minutes, wake it, send a message each way.
+- **Pass:** a denied prompt is explained somewhere; after resume the session returns and queued messages arrive.
+- **Status:** TODO
+
 ## 5. Measurements — do these last
 
 They replace every *(measure)* estimate in the plans and decide tuning. Record each in `logs/experiments.md`.

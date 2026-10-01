@@ -1,5 +1,18 @@
 # Current Handoff
 
+## 2026-10-01 (later) — Edge-case audit written; nothing fixed, group-ownership decision pending
+- **Done:** `docs/audit/2026-10-01-chat-edge-case-audit.md` (190 cases, owner loss in section 1), ERROR-089...094 in `logs/errors.md`,
+  device tests `EDGE-01`...`EDGE-18` in `docs/testing/TEST-BACKLOG.md` section 4k. Docs only; **uncommitted**.
+- **Owner question answered:** if a v2 group's creator is gone the chat and calls among the others keep working, but nobody can add,
+  remove or rename (only the owner can), and the owner's row stays active. No fix exists yet.
+- **Decision needed from the owner:** option **D** "continue in a new group" first (no protocol change, rescues groups that are already
+  orphaned), then **A** co-owners / successor on leave via an ADR. Details and costs: audit section 1.2. Do not write ownership code before that.
+- **Other real gaps found (code-read):** 1:1 message lost after 30 min offline and the failed icon has no retry (ERROR-089); one dead member
+  makes every group message FAILED (ERROR-090); no send-side size cap (ERROR-091); order and give-up trust the clock (ERROR-092);
+  non-ASCII file names mangled (ERROR-093); delete-for-everyone and reactions not durable (ERROR-094).
+- **Not verified:** anything on a device; 63 of 190 cases were not checked at all.
+- **Recommended next task:** get the D / A decision, then the cheap fixes listed in the progress entry of the same date.
+
 ## 2026-10-01 — ERROR-087 (unread) and ERROR-088 (calls from unpaired members) FIXED IN CODE; unit-tested, NOT device-verified
 - **Done:** ERROR-087 / ADR-062 (the conversation row is refreshed, never replaced, inside the message insert's transaction; closing a chat
   flushes the read cursor and Read receipt; system back closes the chat; a new message unarchives). ERROR-088 / ADR-061 (a call's members
