@@ -277,6 +277,49 @@ class MulticastTransportTest {
         }
     }
 
+    // -- Hostile input -----------------------------------------------------------
+
+    @Test
+    fun aFloodOfDistinctDeviceIds_isBounded_andKnownPeersKeepRenewing() =
+        withTransport(warnings = mutableListOf()) { transport, _, seen ->
+            fun id(n: Int) = FlashDeviceId("00000000-0000-4000-8000-" + n.toString().padStart(12, '0'))
+
+            for (n in 1..(MulticastTransport.DEFAULT_MAX_PEERS + 50)) {
+                transport.handleDatagram(datagramOf(peerIdentity(id = id(n), name = "Spoof $n")))
+            }
+            assertEquals(MulticastTransport.DEFAULT_MAX_PEERS, seen.found().size)
+
+            // A peer already in the table is unaffected by the full table.
+            seen.clear()
+            transport.handleDatagram(datagramOf(peerIdentity(id = id(1), name = "Spoof 1")))
+            assertEquals(1, seen.filterIsInstance<FlashTransportEvent.Presence>().size)
+        }
+
+    @Test
+    fun aFullTable_reportsItselfOnce_notPerDatagram() {
+        val warnings = mutableListOf<String>()
+        withTransport(warnings = warnings) { transport, _, _ ->
+            fun id(n: Int) = FlashDeviceId("00000000-0000-4000-8000-" + n.toString().padStart(12, '0'))
+            for (n in 1..(MulticastTransport.DEFAULT_MAX_PEERS + 20)) {
+                transport.handleDatagram(datagramOf(peerIdentity(id = id(n))))
+            }
+            assertEquals(1, warnings.count { "peer table full" in it }, "warnings: $warnings")
+        }
+    }
+
+    @Test
+    fun anOversizedNameInAnAnnouncement_isTruncatedOnTheWayIn() =
+        withTransport { transport, _, seen ->
+            // Built by hand: a hostile sender does not go through MulticastProtocol.encode's bound.
+            val text = MulticastProtocol.encode(peerIdentity(), 45822)
+                .replace("Prince%20Ayaata", "A".repeat(900))
+            assertTrue("A".repeat(900) in text, "fixture did not inject the oversized name: $text")
+            transport.handleDatagram(MulticastDatagram(text.encodeToByteArray(), "192.168.0.188"))
+
+            val found = seen.found().single()
+            assertTrue(found.friendlyName.length <= MulticastProtocol.MAX_TEXT_FIELD_CHARS, found.friendlyName)
+        }
+
     // -- Announcing ------------------------------------------------------------
 
     @Test
@@ -436,6 +479,43 @@ class MulticastTransportTest {
             transport.restartBrowsing()
             assertEquals(2, factory.bindCalls)
             assertTrue(factory.bindings.none { it.closed }, "the rebind must leave live sockets")
+        }
+    }
+
+    @Test
+    fun restartBrowsing_keepsAnnouncing_onTheFreshSockets() {
+        // B1: the rebind used to cancel the announce loop together with the receive loops and never
+        // start it again, so every network change (the reason a rebind happens at all) left this
+        // device listening but silent. Peers' leases on us then ran out after 60 s.
+        val factory = FakeFactory()
+        withTransport(factory = factory) { transport, _, _ ->
+            transport.startAdvertising(45822, selfIdentity)
+            kotlinx.coroutines.delay(2_000)
+            assertTrue(factory.bindings.first().sent.isNotEmpty(), "precondition: announcing before the rebind")
+
+            transport.restartBrowsing()
+            kotlinx.coroutines.delay(2_000)
+            assertTrue(
+                factory.bindings.first().sent.isNotEmpty(),
+                "no announcement went out on the rebound socket",
+            )
+            val sentAfterBurst = factory.bindings.first().sent.size
+
+            kotlinx.coroutines.delay(60_000)
+            assertTrue(
+                factory.bindings.first().sent.size > sentAfterBurst,
+                "the periodic cadence must survive the rebind",
+            )
+        }
+    }
+
+    @Test
+    fun restartBrowsing_whileNotAdvertising_staysSilent() {
+        val factory = FakeFactory()
+        withTransport(factory = factory) { transport, _, _ ->
+            transport.restartBrowsing()
+            kotlinx.coroutines.delay(30_000)
+            assertTrue(factory.bindings.all { it.sent.isEmpty() }, "a listener-only transport must not announce")
         }
     }
 

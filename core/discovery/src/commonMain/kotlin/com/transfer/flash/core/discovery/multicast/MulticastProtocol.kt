@@ -105,7 +105,14 @@ internal object MulticastProtocol {
         val port = fields[KEY_PORT]?.trim()?.toIntOrNull()?.takeIf { it in 1..65535 } ?: return null
         // The identity vocabulary is TxtCodec's, shared with every other radio; the announcement's
         // own keys are extra entries it ignores.
-        val identity = TxtCodec.decode(fields) ?: return null
+        val decoded = TxtCodec.decode(fields) ?: return null
+        // [encode] bounds these two, but a datagram comes from anyone on the LAN and need not have
+        // been produced by [encode]: bound them on the way in too, so a hostile announcement cannot
+        // park a megabyte-class name in every neighbour's directory and UI.
+        val identity = decoded.copy(
+            friendlyName = decoded.friendlyName.take(MAX_TEXT_FIELD_CHARS),
+            deviceModel = decoded.deviceModel.take(MAX_TEXT_FIELD_CHARS),
+        )
         return Announcement(identity = identity, port = port)
     }
 }

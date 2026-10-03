@@ -465,7 +465,9 @@ public class CompositeDiscovery(
      * time produce no duplicates because aged entries were removed.
      */
     public fun sweep(nowMs: Long, graceWindowMs: Long = DEFAULT_GRACE_MS) {
-        val agedOut = mutableListOf<AgedOut>()
+        // Keyed by device: the same peer is normally held by several transports (NSD + multicast),
+        // and aging out of more than one directory in a single sweep must still be ONE departure.
+        val agedOut = LinkedHashMap<FlashDeviceId, AgedOut>()
         lock.withLock {
             val serviceNames = HashMap<FlashDeviceId, String>()
             for (transport in transports) {
@@ -474,15 +476,17 @@ public class CompositeDiscovery(
                 }
             }
             for (transport in transports) {
+                // A transport with a longer liveness contract keeps it; nothing goes below the caller's window.
+                val transportGraceMs = maxOf(graceWindowMs, transport.presenceGraceMs ?: 0L)
                 val lost = directoryFor(transport.transportName)
-                    .sweepExpired(graceWindowMs, nowMs)
+                    .sweepExpired(transportGraceMs, nowMs)
                 lost.forEach { diff ->
-                    agedOut += AgedOut(diff.deviceId, serviceNames[diff.deviceId])
+                    agedOut.getOrPut(diff.deviceId) { AgedOut(diff.deviceId, serviceNames[diff.deviceId]) }
                 }
             }
             rebuildEndpointsLocked()
         }
-        for (aged in agedOut) {
+        for (aged in agedOut.values) {
             lock.withLock {
                 val representative = globalRepresentativeLocked(aged.deviceId)
                 if (representative != null) {
@@ -569,8 +573,12 @@ public class CompositeDiscovery(
      * silently stopped browsing is re-armed on the same schedule. Bounded by
      * [maxSweepLoops] as a JVM-test hook.
      */
-    private fun startSweeperLocked() {
-        if (sweeperJob?.isActive == true) return
+    private fun startSweeperLocked() = lock.withLock {
+        // Check-then-set on [sweeperJob]: `startDiscovery`, `restartDiscovery` and `startAll` run on
+        // different callers' coroutines (connectivity callback, screen-on, boot), and two of them
+        // racing here used to start two sweepers. The monitor is reentrant, so callers that already
+        // hold it are unaffected.
+        if (sweeperJob?.isActive == true) return@withLock
         sweeperJob = scope.launch {
             var loops = 0
             while (loops < maxSweepLoops && kotlinx.coroutines.currentCoroutineContext()
@@ -585,7 +593,7 @@ public class CompositeDiscovery(
         }
     }
 
-    private fun stopSweeper() {
+    private fun stopSweeper() = lock.withLock {
         sweeperJob?.cancel()
         sweeperJob = null
     }
@@ -614,19 +622,13 @@ public class CompositeDiscovery(
      * for an unknown peer is promoted to a real sighting rather than discarded.
      */
     private fun applyPresence(transport: FlashRadioTransport, endpoint: FlashDiscoveredEndpoint) {
-        val known = lock.withLock {
-            directoryFor(transport.transportName).get(endpoint.deviceId) != null
-        }
-        if (!known) {
-            applySighting(transport, endpoint)
-            return
-        }
-        lock.withLock {
-            // Unchanged by construction, so no diff to publish and no snapshot
-            // rebuild: only lastSeenAt moves, and the snapshot's contents are
-            // identical (re-publishing would churn the UI list for nothing).
-            directoryFor(transport.transportName).applySeen(endpoint, clock())
-        }
+        // A heartbeat is a sighting that usually changes nothing: [applySighting] bumps lastSeenAt
+        // and stops there when the directory reports Unchanged (no event, no snapshot rebuild, so
+        // no UI churn). Routing it through the same path matters for the other cases: an unknown
+        // peer is promoted to Found (self-heal), and a KNOWN peer whose address, port or name moved
+        // is published as Updated. The earlier special case only moved the timestamp, so a peer
+        // that changed address kept its old one on screen for as long as it stayed quiet.
+        applySighting(transport, endpoint)
     }
 
     /**

@@ -92,6 +92,13 @@ public class MulticastTransport(
      */
     private val broadcastEnabled: Boolean = true,
     /**
+     * Most distinct peers this transport will hold at once. Announcements are unauthenticated UDP
+     * from anyone on the LAN, so without a bound one host cycling device ids grows the lease map,
+     * the directory and every consumer's list without limit. New ids are ignored once the table is
+     * full; known peers keep renewing, and leases expiring frees room again.
+     */
+    private val maxPeers: Int = DEFAULT_MAX_PEERS,
+    /**
      * Pause after a receive that returned nothing.
      *
      * A real socket blocks for [RECEIVE_TIMEOUT_MS] before returning null, so this adds a few
@@ -110,6 +117,14 @@ public class MulticastTransport(
 ) : FlashRadioTransport {
 
     override val transportName: String = TRANSPORT_NAME
+
+    /**
+     * This transport expires its own peers after [peerLeaseMs] and reports `Lost`, so the composite's
+     * generic 30 s sweep must not pre-empt that: with a 20 s announce cadence a single dropped
+     * datagram is a 40 s gap, and a peer reachable only by multicast (the case this transport exists
+     * for) would flap Lost then Found. One sweep interval of slack lets the lease's own `Lost` win.
+     */
+    override val presenceGraceMs: Long get() = peerLeaseMs + sweepIntervalMs
 
     private val _events = MutableSharedFlow<FlashTransportEvent>(
         extraBufferCapacity = EVENT_BUFFER,
@@ -178,6 +193,9 @@ public class MulticastTransport(
     private val leases = HashMap<FlashDeviceId, PeerLease>()
 
     private class PeerLease(val serviceName: String, var lastSeenAtMs: Long)
+
+    /** Latch for [logPeerTableFull]; cleared when a lease expires and room is available again. */
+    private var peerTableFullLogged: Boolean = false
 
     // -- Advertising -----------------------------------------------------------
 
@@ -248,7 +266,13 @@ public class MulticastTransport(
         stopLoops()
         closeBindings()
         browsing = false
-        return startBrowsing()
+        val result = startBrowsing()
+        // [stopLoops] cancelled the announce loop along with the receive loops, and [startBrowsing]
+        // only restores the receive and sweep side. Without this a network change (the reason a
+        // rebind happens at all) left the device listening but silent, and every peer's lease on it
+        // ran out after [peerLeaseMs]. The burst also tells peers on the new network we are here.
+        if (advertising) startAnnounceLoop(burst = true)
+        return result
     }
 
     override suspend fun stop(): FlashResult<Unit> {
@@ -316,6 +340,9 @@ public class MulticastTransport(
         // the decision to answer. Everything below (emitting, sending) happens outside it.
         val outcome = lock.withLock {
             val known = leases[deviceId]
+            if (known == null && leases.size >= maxPeers) {
+                return@withLock null
+            }
             val diff = directory.applySeen(endpoint, now)
             leases[deviceId] = (known ?: PeerLease(endpoint.serviceName, now))
                 .also { it.lastSeenAtMs = now }
@@ -324,8 +351,20 @@ public class MulticastTransport(
             // becoming a per-announcement reply storm between two devices.
             diff to (known == null && advertising)
         }
+        if (outcome == null) {
+            logPeerTableFull()
+            return
+        }
         emitDiff(outcome.first, endpoint, sourceBinding)
         if (outcome.second) replyToNewPeer()
+    }
+
+    /** Logged once per full-table episode, not per rejected datagram: a flood must not also flood the log. */
+    private fun logPeerTableFull() {
+        val first = lock.withLock {
+            if (peerTableFullLogged) false else true.also { peerTableFullLogged = true }
+        }
+        if (first) logWarn("Multicast peer table full ($maxPeers); ignoring announcements from new devices", null)
     }
 
     // -- Announcement ----------------------------------------------------------
@@ -387,6 +426,7 @@ public class MulticastTransport(
      */
     internal fun sweepLeases(nowMs: Long = timeSourceMs()) {
         val expired = lock.withLock {
+            peerTableFullLogged = peerTableFullLogged && leases.size >= maxPeers
             val due = leases.filterValues { nowMs - it.lastSeenAtMs >= peerLeaseMs }.keys.toList()
             due.mapNotNull { deviceId ->
                 val lease = leases.remove(deviceId) ?: return@mapNotNull null
@@ -637,6 +677,9 @@ public class MulticastTransport(
         public const val DEFAULT_PEER_LEASE_MS: Long = 60_000L
 
         public const val DEFAULT_SWEEP_INTERVAL_MS: Long = 5_000L
+
+        /** Far above any real LAN of phones and PCs, far below what a spoofing loop produces. */
+        public const val DEFAULT_MAX_PEERS: Int = 256
 
         /** Blocking receive timeout: bounds how long [stop]/[restartBrowsing] wait for a loop. */
         internal const val RECEIVE_TIMEOUT_MS: Int = 1_000

@@ -535,6 +535,35 @@ class NsdTransportLogicTest {
     }
 
     @Test
+    fun monitorLost_ofAnOldInstanceName_doesNotEvictTheDeviceNowHeldUnderANewName() {
+        // B3: NSD renames a conflicting instance ("Flash Peer" -> "Flash Peer (2)") and a restarted
+        // peer registers under a new name; the platform then withdraws the OLD record. The device is
+        // alive under the new name, so the old name's debounced removal must not evict it.
+        val bridge = FakeBridge()
+        val directory = FakeDirectory()
+        val transport = newTransport(apiLevel = 34, directory = directory, bridge = bridge)
+        runBlocking { transport.startBrowsing() }
+        val recorder = EventRecorder(transport)
+
+        directory.seenResults.addLast(DiffFound(endpointOf("peer-1")))
+        bridge.fireServiceFound("Flash Peer")
+        bridge.fireMonitorUpdated(resolvedData(serviceName = "Flash Peer"))
+        bridge.fireServiceFound("Flash Peer (2)")
+        bridge.fireMonitorUpdated(resolvedData(serviceName = "Flash Peer (2)"))
+
+        directory.lostResult = DiffLost("peer-1")
+        bridge.fireMonitorLost("Flash Peer")
+
+        assertTrue("the live device must stay in the directory", directory.lostCalls.isEmpty())
+        assertTrue(recorder.received.filterIsInstance<FlashTransportEvent.Lost>().isEmpty())
+
+        // ...and the NEW name's own loss still retires it.
+        bridge.fireMonitorLost("Flash Peer (2)")
+        assertEquals(listOf(FlashDeviceId("peer-1")), directory.lostCalls)
+        recorder.cancel()
+    }
+
+    @Test
     fun monitorLost_arrivingWhileBrowsingIsDown_isStillHonored() {
         // A loss is the ONLY signal that can retire a `monitoredServices` entry — NSD gives no
         // periodic positive re-sighting — so it must not be dropped merely because it lands while
