@@ -39,6 +39,7 @@ private class FakeTransport(override val transportName: String) : FlashRadioTran
     val outgoing = MutableSharedFlow<FlashTransportEvent>(extraBufferCapacity = 64)
     override val events: Flow<FlashTransportEvent> get() = outgoing
 
+    override var presenceGraceMs: Long? = null
     val calls = mutableListOf<String>()
     var advertiseResult: FlashResult<Unit> = FlashResult.Success(Unit)
     var browseResult: FlashResult<Unit> = FlashResult.Success(Unit)
@@ -305,6 +306,54 @@ class CompositeDiscoveryTest {
     }
 
     @Test
+    fun sweep_honoursALongerPerTransportGrace_butNeverAShorterOne() = runBlocking {
+        // B11: the multicast beacon renews every ~20 s and promises a peer survives missed datagrams
+        // (60 s lease); the composite's flat 30 s sweep used to evict a multicast-only peer after
+        // ONE dropped datagram. A transport can now declare a longer window; it cannot shorten the default.
+        harness = Harness("LAN", "WIFI_DIRECT")
+        harness.lan.presenceGraceMs = 65_000L
+        harness.wifiDirect.presenceGraceMs = 5_000L // below the default: ignored
+        harness.composite.startAll(40_000, identity)
+        harness.advance(100)
+        harness.lan.found(endpointOf("slow-lan"))
+        harness.wifiDirect.found(
+            endpointOf("quick-p2p", host = "192.168.49.9", transportType = FlashTransportType.WIFI_DIRECT),
+        )
+
+        harness.advance(40_000)
+        harness.composite.sweep(nowMs = harness.now)
+        assertEquals(
+            "the long-lease transport's peer survives, the default-grace one is gone",
+            listOf("slow-lan"),
+            harness.composite.discoveredEndpoints.value.map { it.deviceId.value },
+        )
+
+        harness.advance(30_000) // 70 s since the sighting: past 65 s
+        harness.composite.sweep(nowMs = harness.now)
+        assertEquals(0, harness.composite.discoveredEndpoints.value.size)
+    }
+
+    @Test
+    fun sweep_peerAgedOutOfTwoRadiosAtOnce_emitsOneLost() = runBlocking {
+        // B2: the same device sitting in two transports' directories (NSD + multicast, the normal
+        // desktop and phone case) aged out of both in one sweep and produced one Lost PER directory.
+        harness = Harness("LAN", "WIFI_DIRECT")
+        harness.composite.startAll(40_000, identity)
+        harness.advance(100)
+        harness.lan.found(endpointOf("d1", host = "10.0.0.2"))
+        harness.wifiDirect.found(
+            endpointOf("d1", host = "192.168.49.9", transportType = FlashTransportType.WIFI_DIRECT),
+        )
+
+        harness.advance(CompositeDiscovery.DEFAULT_GRACE_MS + 1)
+        harness.composite.sweep(nowMs = harness.now)
+
+        val lost = harness.events.filterIsInstance<FlashTransportEvent.Lost>()
+        assertEquals("one departed peer must produce one Lost, got $lost", 1, lost.size)
+        assertEquals(0, harness.composite.discoveredEndpoints.value.size)
+    }
+
+    @Test
     fun sweeper_automatic_agesOutDepartedPeer_withoutManualSweepCalls() = runBlocking {
         // Regression (P3.5 field report): a peer that stops advertising or drops
         // off Wi-Fi stayed visible forever because nothing drove the clock.
@@ -527,6 +576,26 @@ class CompositeDiscoveryTest {
 
         assertEquals(1, harness.composite.discoveredEndpoints.value.size)
         assertEquals(1, harness.events.filterIsInstance<FlashTransportEvent.Found>().size)
+    }
+
+    @Test
+    fun presence_carryingAChangedAddress_isPublishedNotSwallowed() = runBlocking {
+        // B5: a heartbeat for a KNOWN peer used to update only the directory entry, so a peer whose
+        // address changed (DHCP renewal, Wi-Fi to hotspot) kept its old address in
+        // discoveredEndpoints and no Updated was emitted until the next Found, which a stable NSD
+        // peer never sends.
+        harness = Harness("LAN")
+        harness.composite.startAll(40_000, identity)
+        harness.advance(100)
+        harness.lan.found(endpointOf("d1", host = "10.0.0.2"))
+
+        harness.advance(1_000)
+        harness.lan.presence(endpointOf("d1", host = "10.0.0.77"))
+
+        assertEquals("10.0.0.77", harness.composite.discoveredEndpoints.value.single().hostAddress)
+        val updated = harness.events.filterIsInstance<FlashTransportEvent.Updated>()
+        assertEquals(1, updated.size)
+        assertEquals("10.0.0.77", updated.single().endpoint.hostAddress)
     }
 
     // ------------------------------------------------------------------

@@ -640,7 +640,14 @@ public class RealNsdManagerBridge(
     }
 
     private fun mapResolved(info: NsdServiceInfo): ResolvedServiceData? {
-        val hostAddress = runCatching { info.host?.hostAddress }.getOrNull()
+        val hostAddress = runCatching {
+            val candidates = if (android.os.Build.VERSION.SDK_INT >= API_HOST_ADDRESSES_LIST) {
+                info.hostAddresses
+            } else {
+                listOfNotNull(info.host)
+            }
+            preferredDialableHost(candidates)
+        }.getOrNull() ?: runCatching { info.host?.hostAddress }.getOrNull()
         val attributes = runCatching {
             info.attributes.mapValues { (_, value) ->
                 value?.toString(StandardCharsets.UTF_8).orEmpty()
@@ -661,6 +668,9 @@ public class RealNsdManagerBridge(
 
     public companion object {
         public const val TAG: String = "DISCOVERY"
+
+        /** `NsdServiceInfo.getHostAddresses()` exists from API 34; below it only the single `host`. */
+        private const val API_HOST_ADDRESSES_LIST = 34
 
         /** Link-bandwidth quantum for the shape fingerprint; see [capabilitiesShape]. */
         private const val BANDWIDTH_BUCKET_KBPS = 1_000
@@ -943,6 +953,14 @@ public class NsdTransport(
     /** Presence heartbeat loop; one per browse session. */
     @Volatile private var heartbeatJob: Job? = null
 
+    /**
+     * The one running [browseLoop]. Tracked so a forced restart or an asynchronous start failure
+     * REPLACES the loop instead of adding a second one: in ECO the old loop is parked in its scan or
+     * idle phase, wakes after the restart finds `browsing` true again, and then drives its own
+     * start/stop browse cycle against the new loop's browse.
+     */
+    @Volatile private var browseLoopJob: Job? = null
+
     /** serviceName → in-flight fast monitor retry (see [retryMonitorSoon]). */
     private val monitorRetryJobs = java.util.concurrent.ConcurrentHashMap<String, Job>()
 
@@ -1037,11 +1055,10 @@ public class NsdTransport(
         }
 
         override fun onStartFailed(errorCode: Int) {
-            scope?.launch(lane) {
-                if (!browsing) return@launch
+            launchBrowseLoop {
+                if (!browsing) return@launchBrowseLoop false
                 logWarn("NSD discovery start failed error=$errorCode")
-                if (!backoffOrGiveUp()) return@launch
-                browseLoop()
+                backoffOrGiveUp()
             }
         }
 
@@ -1296,7 +1313,7 @@ public class NsdTransport(
         observeNetworkChangesIfNeeded()
         browseStartedAtMs = timeSourceMs()
         emitState("Starting browse")
-        scope?.launch(lane) { browseLoop() }
+        launchBrowseLoop()
         startHeartbeat()
         return FlashResult.Success(Unit)
     }
@@ -1313,6 +1330,8 @@ public class NsdTransport(
     override suspend fun restartBrowsing(): FlashResult<Unit> {
         val wasBrowsing = browsing
         browsing = false
+        browseLoopJob?.cancel()
+        browseLoopJob = null
         heartbeatJob?.cancel()
         heartbeatJob = null
         runCatching { bridge.stopBrowse() }
@@ -1334,6 +1353,19 @@ public class NsdTransport(
      * scan → [DiscoveryModePolicy.idleDutyCycleMs] idle → repeat). Duty-cycle
      * knobs are read per iteration so [setMode] takes effect at the next phase.
      */
+    /**
+     * Starts [browseLoop] as THE browse loop, cancelling any previous one first. [gate] runs inside
+     * the new job before the loop and decides whether the loop starts at all (used by the async
+     * start-failure path, which has to back off first).
+     */
+    private fun launchBrowseLoop(gate: suspend () -> Boolean = { true }) {
+        val active = scope ?: return
+        browseLoopJob?.cancel()
+        browseLoopJob = active.launch(lane) {
+            if (gate()) browseLoop()
+        }
+    }
+
     private suspend fun browseLoop() {
         while (browsing && coroutineContext.isActive) {
             val request = BrowseRequest(
@@ -1644,9 +1676,16 @@ public class NsdTransport(
                 // liveness map BEFORE the directory bookkeeping, so a heartbeat racing this
                 // job cannot re-affirm a peer we are in the middle of evicting.
                 monitoredServices.remove(serviceName)
-                val deviceId = synchronized(deviceIdsByServiceName) {
-                    deviceIdsByServiceName.remove(serviceName)
-                } ?: return@launch
+                val (deviceId, heldUnderAnotherName) = synchronized(deviceIdsByServiceName) {
+                    val removed = deviceIdsByServiceName.remove(serviceName)
+                    removed to (removed != null && deviceIdsByServiceName.containsValue(removed))
+                }
+                if (deviceId == null) return@launch
+                // The platform withdrew THIS instance name, but the device is also registered under
+                // another one (NSD renamed a conflicting instance, or the peer restarted under a new
+                // name). The directory is keyed by device, so applying the loss would evict a peer
+                // that is alive; its own name's loss retires it later.
+                if (heldUnderAnotherName) return@launch
                 // Bookkeep the loss in the directory; the typed Lost event below carries the
                 // serviceName we already know, so the generic Diff.Lost emission is skipped
                 // (avoids duplicate Lost events for one radio goodbye).
@@ -1718,6 +1757,7 @@ public class NsdTransport(
         runCatching { bridge.setMulticastLock(false) }
         scope?.cancel()
         scope = null
+        browseLoopJob = null
         // Scope is down, so nothing can touch these concurrently any more.
         pendingLost.clear()
         monitoredServices.clear()

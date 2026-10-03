@@ -87,6 +87,17 @@ public interface FlashRadioTransport {
     public val events: Flow<FlashTransportEvent>
 
     /**
+     * How long [CompositeDiscovery]'s sweeper may go without a sighting or [FlashTransportEvent.Presence]
+     * from this transport before it ages a peer out of this transport's view. `null` (the default) means
+     * the composite's own `DEFAULT_GRACE_MS`; the composite never goes BELOW that default.
+     *
+     * A transport whose own liveness contract is longer than the default must say so here, or the
+     * composite's shorter window overrides it: the multicast beacon renews every ~20 s and promises a
+     * peer survives two missed datagrams, which a flat 30 s sweep would break on the first loss.
+     */
+    public val presenceGraceMs: Long? get() = null
+
+    /**
      * Advertise this device using its own identity details until [stop].
      * Idempotent: re-invoking while advertising updates the advertised record.
      */

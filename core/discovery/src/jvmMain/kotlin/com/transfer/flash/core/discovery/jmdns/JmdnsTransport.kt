@@ -597,6 +597,10 @@ public class JmdnsTransport(
                 // a second time — the failure mode of making a retry once-only.
                 resolveRequested.remove(serviceName)
                 val deviceId = deviceIdsByServiceName.remove(serviceName) ?: return@launch
+                // Another instance name still maps to this device (restart under a new name, or a
+                // name-conflict suffix): the directory is keyed by device, so applying the loss
+                // would evict a live peer. Its own name's removal retires it later.
+                if (deviceIdsByServiceName.containsValue(deviceId)) return@launch
                 // The typed Lost below already carries the serviceName, so the generic Diff.Lost
                 // mapping is skipped — one radio goodbye must not produce two Lost events.
                 directory.applyLost(deviceId)

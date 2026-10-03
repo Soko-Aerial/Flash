@@ -334,6 +334,25 @@ public class JmdnsTransportTest {
         }
 
     @Test
+    public fun removalOfAnOldInstanceNameDoesNotEvictTheDeviceHeldUnderANewName(): Unit =
+        withTransport { transport, bridge, seen ->
+            // B3: the same device is resolved under a second instance name (a restart, or a name
+            // conflict suffix); the old record is then withdrawn. The device is alive under the new
+            // name and must not get a Lost.
+            transport.startBrowsing()
+            bridge.events!!.onServiceResolved(resolved(serviceName = "Flash Pixel"))
+            bridge.events!!.onServiceResolved(resolved(serviceName = "Flash Pixel (2)"))
+            seen.clear()
+
+            bridge.events!!.onServiceRemoved("Flash Pixel")
+            assertTrue("old name's removal evicted a live device", seen.none { it is FlashTransportEvent.Lost })
+
+            bridge.events!!.onServiceRemoved("Flash Pixel (2)")
+            val lost = seen.filterIsInstance<FlashTransportEvent.Lost>().single()
+            assertEquals("peer-1", lost.deviceId.value)
+        }
+
+    @Test
     public fun aReResolveInsideTheDebounceWindowCancelsTheLoss(): Unit {
         // The only test that needs a real (non-zero) debounce, so it drives the window by hand:
         // `sleep` blocks on a signal the test releases after the re-resolve has landed.
