@@ -11,6 +11,8 @@ import com.shepeliev.webrtckmp.RtcConfiguration
 import com.shepeliev.webrtckmp.RtcpMuxPolicy
 import com.shepeliev.webrtckmp.SessionDescription
 import com.shepeliev.webrtckmp.SessionDescriptionType
+import com.shepeliev.webrtckmp.PeerConnectionState
+import com.shepeliev.webrtckmp.onConnectionStateChange
 import com.shepeliev.webrtckmp.onIceCandidate
 import com.shepeliev.webrtckmp.onTrack
 import kotlinx.coroutines.CoroutineScope
@@ -282,5 +284,79 @@ class DesktopMediaStackSmokeTest {
             pc2.close()
             scope.cancel()
         }
+    }
+
+    /**
+     * ADR-078 (ERROR-105 item E): the one check of the SDP risk in a mid-call video upgrade. An audio-only call is
+     * connected first, then a camera is added in each direction (the caller's, then the callee's, which reuses the
+     * transceiver the first renegotiation created) through the same rewriting production applies, and a decoded frame
+     * must arrive each time. The m-line is added after DTLS under MaxBundle; nothing else here exercises that.
+     */
+    @Test
+    fun `a camera added to a connected audio call negotiates in both directions and frames arrive`() = runBlocking {
+        val config = RtcConfiguration(bundlePolicy = BundlePolicy.MaxBundle, iceServers = emptyList(), rtcpMuxPolicy = RtcpMuxPolicy.Require)
+        val pc1 = PeerConnection(config)
+        val pc2 = PeerConnection(config)
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val mode = com.transfer.flash.core.common.perf.FlashPerformanceMode.HIGH
+        try {
+            scope.launch { pc1.onIceCandidate.collect { runCatching { pc2.addIceCandidate(it) } } }
+            scope.launch { pc2.onIceCandidate.collect { runCatching { pc1.addIceCandidate(it) } } }
+            var connected1 = false
+            scope.launch { pc1.onConnectionStateChange.collect { if (it == PeerConnectionState.Connected) connected1 = true } }
+
+            val micStream = runCatching { MediaDevices.getUserMedia { audio { echoCancellation(true) } } }.getOrNull()
+            org.junit.Assume.assumeTrue("no microphone on this host: the audio-call half cannot be built", micStream != null)
+            micStream!!.tracks.forEach { pc1.addTrack(it, micStream) }
+
+            var framesAt2 = 0
+            var framesAt1 = 0
+            fun watch(pc: PeerConnection, count: () -> Unit) = scope.launch {
+                pc.onTrack.collect { event ->
+                    val track = event.track
+                    if (track is com.shepeliev.webrtckmp.VideoStreamTrack) {
+                        track.addSink(object : dev.onvoid.webrtc.media.video.VideoTrackSink {
+                            override fun onVideoFrame(frame: dev.onvoid.webrtc.media.video.VideoFrame) = count()
+                        })
+                    }
+                }
+            }
+            watch(pc2) { framesAt2++ }
+            watch(pc1) { framesAt1++ }
+
+            // Offer from pc1 to pc2, the way FlashCallSession does it: tuned locally, tuned and codec-filtered remotely.
+            suspend fun negotiate(from: PeerConnection, to: PeerConnection, video: Boolean) {
+                val offer = from.createOffer(OfferAnswerOptions(offerToReceiveAudio = true, offerToReceiveVideo = video))
+                val local = SessionDescription(offer.type, CallSdp.enforceVp8Only(CallSdp.tuneLocal(offer.sdp, mode)))
+                from.setLocalDescription(local)
+                to.setRemoteDescription(SessionDescription(SessionDescriptionType.Offer, CallSdp.enforceVp8Only(CallSdp.tuneRemote(local.sdp, mode))))
+                val answer = to.createAnswer(OfferAnswerOptions(offerToReceiveAudio = true, offerToReceiveVideo = video))
+                val answered = SessionDescription(answer.type, CallSdp.enforceVp8Only(CallSdp.tuneLocal(answer.sdp, mode)))
+                to.setLocalDescription(answered)
+                from.setRemoteDescription(SessionDescription(SessionDescriptionType.Answer, CallSdp.enforceVp8Only(CallSdp.tuneRemote(answered.sdp, mode))))
+            }
+
+            negotiate(pc1, pc2, video = false)
+            withTimeout(20_000) { while (!connected1) delay(100) }
+
+            // 1. The caller adds its camera.
+            val cam1 = MediaDevices.getUserMedia { video { width(640); height(480) } }
+            cam1.tracks.forEach { pc1.addTrack(it, cam1) }
+            negotiate(pc1, pc2, video = true)
+            withTimeout(15_000) { while (framesAt2 == 0) delay(200) }
+            assertTrue("the callee decodes the caller's camera added mid-call", framesAt2 > 0)
+
+            // 2. The callee adds its camera: the caller offers again (the callee cannot), reusing the video transceiver.
+            val cam2 = MediaDevices.getUserMedia { video { width(640); height(480) } }
+            cam2.tracks.forEach { pc2.addTrack(it, cam2) }
+            negotiate(pc1, pc2, video = true)
+            withTimeout(15_000) { while (framesAt1 == 0) delay(200) }
+            assertTrue("the caller decodes the callee's camera added mid-call", framesAt1 > 0)
+        } finally {
+            runCatching { pc1.close() }
+            runCatching { pc2.close() }
+            scope.cancel()
+        }
+        Unit
     }
 }

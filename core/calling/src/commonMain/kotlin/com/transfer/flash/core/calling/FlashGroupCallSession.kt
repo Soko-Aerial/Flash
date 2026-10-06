@@ -4,15 +4,14 @@ package com.transfer.flash.core.calling
 
 import com.shepeliev.webrtckmp.AudioStreamTrack
 import com.shepeliev.webrtckmp.BundlePolicy
-import com.shepeliev.webrtckmp.CameraPermissionException
 import com.shepeliev.webrtckmp.IceCandidate
 import com.shepeliev.webrtckmp.MediaDevices
+import com.shepeliev.webrtckmp.onEnded
 import com.shepeliev.webrtckmp.MediaStream
 import com.shepeliev.webrtckmp.MediaStreamTrackKind
 import com.shepeliev.webrtckmp.OfferAnswerOptions
 import com.shepeliev.webrtckmp.PeerConnection
 import com.shepeliev.webrtckmp.PeerConnectionState
-import com.shepeliev.webrtckmp.RecordAudioPermissionException
 import com.shepeliev.webrtckmp.RtcConfiguration
 import com.shepeliev.webrtckmp.RtcpMuxPolicy
 import com.shepeliev.webrtckmp.RtpSender
@@ -28,6 +27,8 @@ import com.shepeliev.webrtckmp.onTrack
 import com.shepeliev.webrtckmp.videoTracks
 import com.transfer.flash.core.calling.model.FlashCallDirection
 import com.transfer.flash.core.calling.model.FlashCallEndReason
+import com.transfer.flash.core.calling.model.FlashCallNotice
+import com.transfer.flash.core.calling.model.FlashCameraProblem
 import com.transfer.flash.core.calling.model.FlashCallParticipantState
 import com.transfer.flash.core.calling.model.FlashCallParticipantUi
 import com.transfer.flash.core.calling.model.FlashCallReactionKind
@@ -59,6 +60,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -272,6 +274,9 @@ public class FlashGroupCallSession(
     private var connectDeadlineJob: Job? = null
     private var statsJob: Job? = null
     private var presenceJob: Job? = null
+
+    /** ERROR-105: reports the local camera's track ending; replaced on a camera restart, cancelled with the media. */
+    private var cameraWatchJob: Job? = null
     private var lastStatsAtMs = 0L
     private var lastBytesReceived = 0L
     private var lastBytesSent = 0L
@@ -443,9 +448,9 @@ public class FlashGroupCallSession(
             refreshUiState()
         }
 
-        val acquired = acquireMedia()
-        if (!acquired) {
-            endSession(FlashCallEndReason.ERROR)
+        val mediaFailure = acquireMedia()
+        if (mediaFailure != null) {
+            endSession(mediaFailure)
             return false
         }
 
@@ -469,6 +474,8 @@ public class FlashGroupCallSession(
      * member's certificate names), and the presence tick offers it again until the invitee's ring window is over.
      */
     private suspend fun deliverInvite(memberId: String): Boolean {
+        // Never invite to a call that is over: the invite would ring a phone for a call nobody is in.
+        if (isEnded) return false
         val sent = sendFrame(
             CallWireFrame.GroupInvite(
                 callId = callId,
@@ -512,8 +519,11 @@ public class FlashGroupCallSession(
         }
     }
 
-    /** Accepts an incoming ringing group call. */
-    public suspend fun accept(): Boolean {
+    /**
+     * Accepts an incoming ringing group call. [audioOnly] joins a video call without opening the camera (the host
+     * passes it when the camera permission was denied).
+     */
+    public suspend fun accept(audioOnly: Boolean = false): Boolean {
         sessionMutex.withLock {
             if (isEnded || _state.value.state != FlashCallState.RINGING) return false
             updateUi { it.copy(state = FlashCallState.CONNECTING) }
@@ -521,9 +531,9 @@ public class FlashGroupCallSession(
         ringTimeoutJob?.cancel()
         ringTimeoutJob = null
 
-        val acquired = acquireMedia()
-        if (!acquired) {
-            endSession(FlashCallEndReason.ERROR)
+        val mediaFailure = acquireMedia(audioOnly)
+        if (mediaFailure != null) {
+            endSession(mediaFailure)
             return false
         }
 
@@ -596,9 +606,9 @@ public class FlashGroupCallSession(
             refreshUiState()
         }
 
-        val acquired = acquireMedia()
-        if (!acquired) {
-            endSession(FlashCallEndReason.ERROR)
+        val mediaFailure = acquireMedia()
+        if (mediaFailure != null) {
+            endSession(mediaFailure)
             return false
         }
 
@@ -671,15 +681,18 @@ public class FlashGroupCallSession(
      * invitee would still be ringing. Skipped when the previous one to the same peer is still in flight.
      */
     private fun announceTo(peerId: String, presence: CallWireFrame.GroupPresence) {
-        if (!announcing.add(peerId)) return
+        if (isEnded || !announcing.add(peerId)) return
         scope.launch {
             try {
+                if (isEnded) return@launch
                 val leg = legs[peerId]
                 if (leg != null && leg.inviteExpected && !leg.inviteDelivered &&
                     leg.state == FlashCallParticipantState.INVITED && nowMs() < inviteRetryUntilMs
                 ) {
                     deliverInvite(peerId)
                 }
+                // The dial above can take seconds; a presence sent after the call ended would bring its banner back.
+                if (isEnded) return@launch
                 sendFrame(presence, peerId)
             } finally {
                 announcing.remove(peerId)
@@ -1892,18 +1905,122 @@ public class FlashGroupCallSession(
     }
 
     public fun toggleCamera(): Boolean {
-        val next = !_state.value.cameraOff
-        updateUi { it.copy(cameraOff = next) }
+        val current = _state.value
+        // ERROR-105: the camera stopped, so the button opens it again (a new capture) instead of unmuting a dead track.
+        if (current.cameraNeedsRestart()) {
+            scope.launch { restartCamera() }
+            return true
+        }
+        // Joined without a camera, so there is nothing to switch on; the button must not claim otherwise.
+        if (current.cameraOff && localStream?.videoTracks.orEmpty().isEmpty()) return true
+        val next = !current.cameraOff
+        updateUi { it.copy(cameraOff = next, cameraProblem = null) }
         val tracks = localStream?.videoTracks.orEmpty()
         if (tracks.isNotEmpty()) {
             scope.launch(callMediaDispatcher) {
-                tracks.forEach { runCatching { it.enabled = !next } }
+                try {
+                    tracks.forEach { it.enabled = !next }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (t: Throwable) {
+                    FlashLog.e("GROUP_CALL", "toggleCamera: could not set camera enabled=${!next} call=$callId", t)
+                    reportCameraProblem(FlashCameraProblem.FAILED)
+                }
             }
         }
         // G3: a camera that is off turns new requests down; turning it on tells those peers.
         scope.launch { routeVideo { setCameraOff(next) } }
         broadcastStatus()
         return next
+    }
+
+    /**
+     * ERROR-105: shows [problem] on the call screen. A stopped camera ([FlashCameraProblem.FAILED]) also turns the
+     * camera off and tells everyone (their tiles stop waiting for a picture, and new requests for it are turned down);
+     * a failed switch clears itself.
+     */
+    internal fun reportCameraProblem(problem: FlashCameraProblem) {
+        if (isEnded) return
+        FlashLog.w("GROUP_CALL", "camera problem=$problem call=$callId")
+        updateUi { it.withCameraProblem(problem) }
+        if (problem == FlashCameraProblem.FAILED) {
+            scope.launch { routeVideo { setCameraOff(true) } }
+            broadcastStatus()
+        } else {
+            scope.launch {
+                delay(SWITCH_PROBLEM_CLEAR_MS)
+                updateUi { if (it.cameraProblem == FlashCameraProblem.SWITCH_FAILED) it.copy(cameraProblem = null) else it }
+            }
+        }
+    }
+
+    /**
+     * ERROR-105: the local camera track ended while the camera was meant to be on (another app took it, it was
+     * unplugged, the driver failed). webrtc-kmp turns the capturer's error into `stop()` and drops the message, so the
+     * track's end is the only signal there is. Cancelled with the call's media.
+     */
+    private fun watchLocalCamera(track: VideoStreamTrack) {
+        cameraWatchJob?.cancel()
+        cameraWatchJob = scope.launch(callMediaDispatcher) {
+            track.onEnded.first()
+            if (_localVideoStreamTrack.value === track) reportCameraProblem(FlashCameraProblem.FAILED)
+        }
+    }
+
+    /**
+     * ERROR-105: opens the camera again after it stopped and hands the new track to every leg's sender
+     * (`replaceTrack`: no renegotiation). Legs built later take it from the call's stream. Any failure leaves the
+     * problem on screen.
+     */
+    private suspend fun restartCamera() {
+        val opened = onMediaThread {
+            mediaLifecycleMutex.withLock {
+                if (isEnded) return@withLock false
+                val stream = localStream ?: return@withLock false
+                val capture = captureProfile ?: groupCaptureProfile()
+                try {
+                    val temporary = MediaDevices.getUserMedia {
+                        video {
+                            width(capture.captureWidth)
+                            height(capture.captureHeight)
+                            frameRate(capture.captureFps.toDouble())
+                        }
+                    }
+                    val fresh = temporary.videoTracks.firstOrNull()
+                    if (fresh == null) {
+                        temporary.release()
+                        return@withLock false
+                    }
+                    // The track moves to the call's own stream; the temporary one is only a container.
+                    temporary.removeTrack(fresh)
+                    temporary.release()
+                    for (leg in legs.valuesSnapshot()) {
+                        leg.videoSender?.let { sender -> runCatching { sender.replaceTrack(fresh) } }
+                    }
+                    val stale = _localVideoStreamTrack.value
+                    stale?.let { runCatching { stream.removeTrack(it) } }
+                    stream.addTrack(fresh)
+                    // Publish the new track before stopping the old one: the old track's watcher only reports
+                    // when its track is still the published one.
+                    _localVideoStreamTrack.value = fresh
+                    runCatching { stale?.stop() }
+                    watchLocalCamera(fresh)
+                    true
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (t: Throwable) {
+                    FlashLog.e("GROUP_CALL", "restartCamera failed call=$callId", t)
+                    false
+                }
+            }
+        }
+        if (opened) {
+            updateUi { it.copy(cameraOff = false, cameraProblem = null) }
+            scope.launch { routeVideo { setCameraOff(false) } }
+            broadcastStatus()
+        } else {
+            reportCameraProblem(FlashCameraProblem.FAILED)
+        }
     }
 
     /** ADR-067: raises or lowers this device's hand and tells everyone in the call. */
@@ -2007,7 +2124,15 @@ public class FlashGroupCallSession(
     }
 
     public suspend fun switchCamera() {
-        onMediaThread { _localVideoStreamTrack.value?.switchCamera() }
+        try {
+            onMediaThread { _localVideoStreamTrack.value?.switchCamera() }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            // ERROR-105: "No other camera available" / "Switch camera failed" used to vanish into the host's launch.
+            FlashLog.e("GROUP_CALL", "switchCamera failed call=$callId", t)
+            reportCameraProblem(FlashCameraProblem.SWITCH_FAILED)
+        }
     }
 
     public fun setSpeaker(on: Boolean) {
@@ -2064,15 +2189,19 @@ public class FlashGroupCallSession(
         _state.update { if (it.state == FlashCallState.ENDED) it else block(it) }
     }
 
-    private suspend fun acquireMedia(): Boolean {
-        if (isMediaAcquired) return true
+    /**
+     * Opens the microphone (and camera for a video call). Null on success; otherwise the reason the call cannot
+     * start (ERROR-105). A video call whose camera cannot open is joined audio only, with a [FlashCallNotice].
+     */
+    private suspend fun acquireMedia(audioOnly: Boolean = false): FlashCallEndReason? {
+        if (isMediaAcquired) return null
         // Pinned: getUserMedia drives ADM device select + factory init. Lifecycle-locked
         // against endSession's teardown (see mediaLifecycleMutex).
         return onMediaThread {
             mediaLifecycleMutex.withLock {
         // The call may have ended while this acquire waited for the lifecycle lock; opening the
         // camera now would leak it, because the teardown has already run (or is waiting behind us).
-        if (isEnded) return@withLock false
+        if (isEnded) return@withLock FlashCallEndReason.ERROR
         try {
             // Same explicit voice processing as 1:1 startMedia: bare audio(true) leaves
             // AEC/NS/AGC null, which the JVM backend maps to off (desktop howls).
@@ -2085,38 +2214,52 @@ public class FlashGroupCallSession(
                 "acquire media video=$video tier=${performanceMode().key}" +
                     (if (video) " camera asked ${capture.captureWidth}x${capture.captureHeight}@${capture.captureFps}" else ""),
             )
-            val stream = MediaDevices.getUserMedia {
-                audio {
-                    echoCancellation(true)
-                    noiseSuppression(true)
-                    autoGainControl(true)
-                }
-                if (video) {
-                    video {
-                        width(capture.captureWidth)
-                        height(capture.captureHeight)
-                        frameRate(capture.captureFps.toDouble())
+            val acquired = acquireWithCameraFallback(video && !audioOnly) { withVideo ->
+                MediaDevices.getUserMedia {
+                    audio {
+                        echoCancellation(true)
+                        noiseSuppression(true)
+                        autoGainControl(true)
+                    }
+                    if (withVideo) {
+                        video {
+                            width(capture.captureWidth)
+                            height(capture.captureHeight)
+                            frameRate(capture.captureFps.toDouble())
+                        }
                     }
                 }
+            }
+            val stream = when (acquired) {
+                is MediaAcquire.Failed -> {
+                    FlashLog.e("GROUP_CALL", "media not available for call $callId reason=${acquired.reason}")
+                    return@withLock acquired.reason
+                }
+                is MediaAcquire.Ready -> acquired.stream
             }
             stream.videoTracks.firstOrNull()?.settings?.let { s ->
                 FlashLog.i("GROUP_CALL", "camera opened ${s.width ?: "?"}x${s.height ?: "?"}@${s.frameRate ?: "?"}")
             }
             localStream = stream
             _localVideoStreamTrack.value = stream.videoTracks.firstOrNull()
+            stream.videoTracks.firstOrNull()?.let { watchLocalCamera(it) }
             isMediaAcquired = true
-            true
-        } catch (e: CameraPermissionException) {
-            FlashLog.e("GROUP_CALL", "CAMERA permission not granted", e)
-            false
-        } catch (e: RecordAudioPermissionException) {
-            FlashLog.e("GROUP_CALL", "RECORD_AUDIO permission not granted", e)
-            false
+            if (video && stream.videoTracks.isEmpty()) {
+                // Joined audio only (the host asked for it after a denial, the camera would not open, or the desktop
+                // has none): the camera is off for everyone's tiles and the user is told why.
+                val notice = when {
+                    audioOnly -> FlashCallNotice.CAMERA_DENIED_AUDIO_ONLY
+                    else -> (acquired as MediaAcquire.Ready).notice ?: FlashCallNotice.CAMERA_UNAVAILABLE_AUDIO_ONLY
+                }
+                FlashLog.i("GROUP_CALL", "joining call $callId without camera notice=$notice")
+                updateUi { it.copy(cameraOff = true, notice = notice) }
+            }
+            null
         } catch (e: CancellationException) {
             throw e
         } catch (t: Throwable) {
             FlashLog.e("GROUP_CALL", "Failed to acquire media for group call", t)
-            false
+            FlashCallEndReason.ERROR
         }
             }
         }
@@ -2139,7 +2282,9 @@ public class FlashGroupCallSession(
         isEnded = true
         FlashLog.i("GROUP_CALL", "Group call $callId ending reason=$reason notifyPeers=$notifyPeers")
         if (notifyPeers) {
-            legs.keysSnapshot().forEach { peerId ->
+            // Every leg, and every member the call was only announced to: a device that never joined shows a "join" banner
+            // from this call's presence, and this goodbye is what takes that banner down.
+            (legs.keysSnapshot() + announceMembers).filter { it != localDeviceId }.distinct().forEach { peerId ->
                 scope.launch {
                     sendFrame(
                         CallWireFrame.GroupHangup(callId = callId, from = localDeviceId, groupId = groupId),
@@ -2185,6 +2330,8 @@ public class FlashGroupCallSession(
      */
     private suspend fun teardownMedia() {
         onMediaThread {
+            cameraWatchJob?.cancel()
+            cameraWatchJob = null
             _localVideoStreamTrack.value = null
             _remoteVideoStreamTrack.value = null
             remoteVideo.clear()

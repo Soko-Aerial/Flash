@@ -212,6 +212,12 @@ public sealed interface CallWireFrame {
         public val receiveVideo: Boolean? = null,
         public val reaction: FlashCallReactionKind? = null,
         public val reactionSeq: Long = 0L,
+        /**
+         * ERROR-105 / ADR-078 (`vu=1`): the sender added a camera to a voice call and asks the CALLER to offer, so the
+         * new video m-line is negotiated by the one device that ever offers (no glare). Only sent to a peer that
+         * advertised `cv1`; an older client ignores the unknown field.
+         */
+        public val videoUpgrade: Boolean? = null,
     ) : CallWireFrame
 
     /** Group call: query whether an active call is ongoing in the group. */

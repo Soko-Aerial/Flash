@@ -9,6 +9,12 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
 /**
+ * ADR-078: the HELLO feature token (`[a-z0-9]{1,16}`) a build advertises when it can take a camera added to a 1:1 call
+ * mid-call. A call offers "Turn on camera" only to a peer that advertised it.
+ */
+public const val FEATURE_VIDEO_UPGRADE: String = "cv1"
+
+/**
  * Public voice/video calling contract (ADR-025) — the calling counterpart of `FlashDiscovery`
  * and `FlashNetwork`.
  *
@@ -95,8 +101,12 @@ public interface FlashCalling {
      * The host must hold the runtime microphone grant (and the camera grant for a video call)
      * before this returns true, and should put the platform audio route into its
      * communication mode first — a microphone opened in the wrong mode does not switch later.
+     *
+     * [audioOnly] (ERROR-105) answers a *video* call without opening the camera: the host passes it when the camera
+     * grant was refused, so the call is joined with the microphone only (camera off, a notice on the call state)
+     * instead of staying on the ringing screen. It has no effect on a voice call.
      */
-    public suspend fun accept(): Boolean
+    public suspend fun accept(audioOnly: Boolean = false): Boolean
 
     /** Declines the ringing inbound call. Returns false when there is nothing to decline. */
     public suspend fun decline(): Boolean
@@ -112,6 +122,13 @@ public interface FlashCalling {
 
     /** Flips between the front and rear camera. No-op when idle or on an audio-only call. */
     public suspend fun switchCamera()
+
+    /**
+     * ADR-078: adds this device's camera to a live 1:1 call that has none of its own (the host asks for the CAMERA
+     * permission first). Only offered while [FlashCallUiState.canUpgradeToVideo] is true. False when it did not happen
+     * (no such call, a group call, a peer that cannot take it, or a camera that would not open).
+     */
+    public suspend fun upgradeToVideo(): Boolean = false
 
     /**
      * Records the caller's speakerphone preference on [activeCall]. Selecting the physical

@@ -89,12 +89,14 @@ class FlashCallControlDockRenderTest {
             "video-default" to callState(),
             "audio-muted" to callState(muted = true).copy(video = false),
             "audio-speaker" to callState(speaker = true).copy(video = false),
+            "audio-can-add-camera" to callState().copy(video = false, canUpgradeToVideo = true),
+            "video-joined-without-camera" to callState(cameraOff = true).copy(canUpgradeToVideo = true),
         )
         for (dark in listOf(true, false)) {
             for ((name, st) in states) {
                 val scene = ImageComposeScene(width = width, height = height, density = Density(2f)) {
                     FlashTheme(darkTheme = dark, motion = rememberFlashMotion(reduceMotion = true)) {
-                        FlashCallControlDock(st, {}, {}, {}, {}, {})
+                        FlashCallControlDock(st, {}, {}, {}, {}, {}, onUpgradeToVideo = {})
                     }
                 }
                 try {
@@ -109,5 +111,29 @@ class FlashCallControlDockRenderTest {
                 }
             }
         }
+    }
+
+    private fun dockBytes(st: FlashCallUiState, upgrade: (() -> Unit)?): ByteArray {
+        val scene = ImageComposeScene(width = width, height = height, density = Density(2f)) {
+            FlashTheme(darkTheme = true, motion = rememberFlashMotion(reduceMotion = true)) {
+                FlashCallControlDock(st, {}, {}, {}, {}, {}, onUpgradeToVideo = upgrade)
+            }
+        }
+        try {
+            scene.render(nanoTime = 1_000_000_000L)
+            return scene.render(nanoTime = 1_100_000_000L).encodeToData(EncodedImageFormat.PNG)!!.bytes
+        } finally {
+            scene.close()
+        }
+    }
+
+    @Test
+    fun `a voice call draws the add camera button only while it is on offer and the host can take it`() {
+        val voice = callState().copy(video = false)
+        val plain = dockBytes(voice, upgrade = {})
+        val offered = dockBytes(voice.copy(canUpgradeToVideo = true), upgrade = {})
+        val hostCannot = dockBytes(voice.copy(canUpgradeToVideo = true), upgrade = null)
+        assertTrue(!plain.contentEquals(offered), "the add camera button did not appear")
+        assertTrue(plain.contentEquals(hostCannot), "a host with no upgrade callback must show no button")
     }
 }

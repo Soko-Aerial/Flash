@@ -46,14 +46,41 @@ public enum class FlashCallEndReason {
     /** Signaling session died mid-call. */
     DISCONNECTED,
 
-    /** Local error (permissions, device media, WebRTC failure). */
+    /** Local error (SDP, transport, WebRTC failure). Media failures have their own reasons below. */
     ERROR,
+
+    /** ERROR-105: this device could not start the call because the microphone permission is not granted. */
+    MIC_DENIED,
+
+    /** ERROR-105: this device could not start the call because the microphone could not be opened (busy or missing). */
+    MIC_UNAVAILABLE,
 
     /**
      * Group calls (G7): the call already had [FlashGroupCallLimits.maxParticipants] people when this
      * device tried to join or accept, so a participant turned it away.
      */
     FULL,
+}
+
+/** ERROR-105: a one-line, informational message about this device's own call media; the call carries on. */
+public enum class FlashCallNotice {
+    /** The camera permission is not granted, so this device joined without sending video. */
+    CAMERA_DENIED_AUDIO_ONLY,
+
+    /** The camera could not be opened (busy or missing), so this device joined without sending video. */
+    CAMERA_UNAVAILABLE_AUDIO_ONLY,
+}
+
+/** ERROR-105: something went wrong with this device's own camera during a call. The call carries on (audio). */
+public enum class FlashCameraProblem {
+    /** The camera stopped delivering (taken by another app, unplugged, a driver error): it is off until restarted. */
+    FAILED,
+
+    /** Switching to the other camera did not work; the current camera still runs. Clears itself after a few seconds. */
+    SWITCH_FAILED,
+
+    /** ADR-078: turning the camera on in a call (adding it mid-call) did not work; the call carries on. Clears itself. */
+    UPGRADE_FAILED,
 }
 
 /**
@@ -131,6 +158,15 @@ public data class FlashCallUiState(
     public val peerDataSaver: Boolean = false,
     /** ADR-067: reactions sent in the last few seconds (ours and theirs), oldest first; expired ones are removed. */
     public val reactions: List<FlashCallReaction> = emptyList(),
+    /** ERROR-105: why this device is on a video call without sending video, or null. */
+    public val notice: FlashCallNotice? = null,
+    /** ERROR-105: the local camera stopped or could not switch, or null. [FlashCameraProblem.FAILED] also sets [cameraOff]. */
+    public val cameraProblem: FlashCameraProblem? = null,
+    /**
+     * ADR-078: a live 1:1 voice call whose peer can take a camera added mid-call (`cv1`), so the dock may offer
+     * "Turn on camera". False on a video call, a group call, a call that is not connected and for an older peer.
+     */
+    public val canUpgradeToVideo: Boolean = false,
 ) {
     /**
      * The devices this call needs a session with right now; the connection-mode controller keeps
@@ -282,6 +318,12 @@ public enum class FlashParticipantVideo {
 
     /** The participant is at its send limit; retried when it announces room. */
     BUSY,
+
+    /** The participant's device is too hot to send more video; retried when it announces room. */
+    SENDER_HOT,
+
+    /** Asked for, and still unanswered after several tries (the request or its answer keeps getting lost). */
+    NO_RESPONSE,
 
     /** The participant's camera is off; retried when it turns the camera on. */
     CAMERA_OFF,

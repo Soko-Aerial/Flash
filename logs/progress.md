@@ -1,5 +1,50 @@
 # Progress Log
 
+## 2026-10-06 (e) - The five open call items of ERROR-104 (ERROR-105, ADR-078, ADR-079)
+
+### Worked on
+Owner pasted the five "Not fixed" items of ERROR-104 and asked to fix them with a plan. Owner decisions: a refused camera answers audio-only automatically; 1:1 voice-to-video first, group later; camera errors as a call-screen banner.
+
+### Changed
+- Typed media failures: `MIC_DENIED` / `MIC_UNAVAILABLE`, an audio-only retry when the camera fails, `accept(audioOnly)` through `FlashCalling` / `CallCoordinator`, Android answers audio-only after a refused CAMERA grant, a dismissible "Joined without camera" notice.
+- Camera errors: the local track's end, a failed flip and a failed toggle show a banner (`cameraProblem`); "Try again" reopens the camera and hands it to the sender with `replaceTrack` (1:1 and group).
+- Data saver / Show fewer words on tiles and chips (`videoOffLabel`).
+- 1:1 voice-to-video: `cv1` HELLO token (Android x2 engines, Desktop), `Status.vu`, `videoActive` in `FlashCallSession`, `upgradeToVideo()`, caller-only offer, a **Camera** dock button, Android permission step, foreground service claims `camera` only while the camera captures.
+- Docs: ERROR-105 (and ERROR-106 for an unrelated failing desktop test), ADR-078, ADR-079, protocol (`cv1`, `vu`), backlog section 4y3.
+
+### Verification
+`:core:calling:allTests`, `:core:calling:testAndroidHostTest`, `:ui:callui:allTests`, `:core:engine:testAndroidHostTest`, `:core:network:allTests` green; `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm` compile. A native two-peer test (desktop `webrtc-java`) adds a camera to a connected audio call in both directions through the production SDP rewriting and decodes frames. Mutation-checked: caller-only offer, `cv1` gate, data-saver label. `:desktop:jvmTest`: `DesktopEngineGroupSessionUpTest` fails with the ERROR-095 creation message, also with my desktop edits removed (ERROR-106, not investigated further).
+Nothing device-verified: `CALLMEDIA-01`..`05`, `GVID-09`, `VUP-01`..`04`.
+
+### Problems
+- A JVM unit test sees `ERROR` or `MIC_UNAVAILABLE` for the same failed `getUserMedia` depending on class-loading order; tests accept both.
+- The Windows desktop has no capturer error hook, so a webcam unplug is not shown there.
+
+### Remaining
+Group voice-to-video upgrade; the Android libwebrtc side of the mid-call m-line; a `vu` during an ICE restart is not retried; `FlashCallActionReceiver` `ACTION_ANSWER` is ungated but unreachable.
+
+### Next AI
+Read ERROR-105, ADR-078 and ADR-079, then `VUP-01` results if the owner has them. Do not add a second offerer (glare) and do not claim the camera foreground type from a state flag that a remote peer can flip.
+
+## 2026-10-06 (d) - Group call leftovers and video feedback (ERROR-104)
+
+### Worked on
+Owner asked for a read-only review of group calling (leftovers after a call, click-to-enable video, errors when a user's feed cannot be switched on), then "start fixing, but I still need the join call banner".
+
+### Changed
+- Banner: a goodbye from a participant of a call this device is not in lowers the banner count and removes it at zero; the banner stays while the call has participants. Ended call ids are remembered for 2 min and a late `GroupInvite` for one is ignored.
+- Session: hangup also goes to announce-only members; no invite or presence is sent after the call ended.
+- Video: router reports `NO_RESPONSE` (12 s) and `SENDER_HOT`; tile labels "Requesting video…", "Video not responding", "Too hot to send video", "Starting video…", and "Video busy · Muted" instead of "Muted" hiding the reason.
+
+### Verification
+`:core:calling:testAndroidHostTest`, `:ui:callui:allTests` green; `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm` compile. Not mutation-checked, nothing device-verified (`GCALL-19`..`21`, `GVID-08`). Corrected my own review claim: during the other peer's 30 s solo grace the call is alive, so the banner is right then; only the end after the final hangup was stale.
+
+### Remaining
+Specific end reasons for mic/camera failure, camera-error surfacing, audio-only fallback when camera permission is denied on accept, per-tile data-saver message. See ERROR-104 "Not fixed".
+
+### Next AI
+Read ERROR-104, then pick the "Not fixed" items; do not change the 30 s solo grace or remove the banner for a call that still has participants.
+
 ## 2026-10-06 (c) - Persistent Android log, export, swarm restart prompt (ADR-077)
 
 ### Worked on

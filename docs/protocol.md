@@ -281,7 +281,7 @@ FLASH_CALL action=gquery    callId=<uuid> groupId=<uuid> from=<id>
 - **Call status (ADR-067, 2026-10-02).** One frame, in 1:1 and group calls, for what a participant's controls say:
 
   ```text
-  FLASH_CALL action=status callId=<uuid> from=<id> [mic=<1|0>] [cam=<1|0>] [hand=<1|0>] [rv=<1|0>] [react=<like|love|wow> rseq=<n>]
+  FLASH_CALL action=status callId=<uuid> from=<id> [mic=<1|0>] [cam=<1|0>] [hand=<1|0>] [rv=<1|0>] [vu=1] [react=<like|love|wow> rseq=<n>]
   ```
 
   - Every field is optional and a missing field means "not stated / unchanged". Anything other than `1` or `0` in a flag reads as not stated.
@@ -293,6 +293,10 @@ FLASH_CALL action=gquery    callId=<uuid> groupId=<uuid> from=<id>
     restored. In a group, to every participant who accepted (not to ones only invited); not sent in a call that has ended.
   - **`rv` in 1:1:** the receiver of `rv=0` sets `encoding.active=false` on its video sender (no renegotiation, the camera track is untouched);
     `rv=1` switches it back, subject to the voice-priority governor. In a group `rv` is not sent: data saver is local (nobody is asked for video).
+  - **`vu=1` (ADR-078, 2026-10-06):** "I added a camera to this 1:1 call, please offer." Sent by the CALLEE after it adds a camera to a
+    connected call; the CALLER answers it with a normal `offer` (only the caller ever offers). A caller that adds its own camera just
+    offers. Only sent to a peer whose HELLO `caps` contained `cv1`; an older client ignores the unknown field. Group calls never send it.
+    A receiver that sees an `offer` with an `m=video` section on a call that had none treats the call as a video call with its own camera off.
   - **Reactions** are a one-shot: `rseq` is wall-clock based and strictly growing per sender; a receiver shows each number once and ignores an
     older or repeated one. A sender sends at most one per 400 ms and a receiver shows at most one per 400 ms per sender (a dropped one still
     spends its number). Reactions are never stored.
@@ -345,6 +349,7 @@ FLASH_WS_HELLO version=2 deviceId=<id> name=<name> ping=<ms> [gv=<level>] [caps=
 - **Reserved / defined tokens:**
   - `sw1`: Group swarm wire v1 support (`FSW1` binary frames).
   - `gs1`: Group secret / invite membership support.
+  - `cv1`: can take a camera added to a 1:1 call mid-call (`Status` `vu`, an offer that adds an `m=video` section) (ADR-078).
 - **Session lifetime:** Features apply to new sessions. Connected sessions retain the features negotiated during handshake until reconnected. Unknown tokens are ignored.
 
 ## Groups (Phase 1, 2026-09-08)

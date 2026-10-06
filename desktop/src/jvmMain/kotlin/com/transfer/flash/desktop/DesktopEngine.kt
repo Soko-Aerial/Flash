@@ -11,6 +11,7 @@ import com.transfer.flash.core.common.protocol.FlashTextFraming
 import com.transfer.flash.core.calling.model.FlashCallState
 import com.transfer.flash.core.common.perf.FlashPerformanceMode
 import com.transfer.flash.core.calling.CallCoordinator
+import com.transfer.flash.core.calling.FEATURE_VIDEO_UPGRADE
 import com.transfer.flash.core.calling.FlashCalling
 import com.transfer.flash.core.calling.model.FlashCallDirection
 import com.transfer.flash.core.calling.protocol.CallFrameCodec
@@ -744,7 +745,7 @@ public class DesktopEngine(
             tlsOptions = tlsOptions,
             // PC5 (ADR-048): the tier's pacing, adjusted by the connection mode (ECO / BOOST).
             transportProfile = { connectionPolicy().transport },
-            localFeatures = { if (swarmBinding != null) setOf("sw1", "gs1") else setOf("gs1") },
+            localFeatures = { if (swarmBinding != null) setOf("sw1", "gs1", FEATURE_VIDEO_UPGRADE) else setOf("gs1", FEATURE_VIDEO_UPGRADE) },
         )
         networkImpl = network
 
@@ -1043,6 +1044,8 @@ public class DesktopEngine(
                 chatImpl?.isGroupCallMember(groupId, peerId) ?: trustStore.isTrusted(FlashDeviceId(peerId))
             },
             reachPeer = { peerId -> autoConnector?.ensureSession(peerId, AutoConnector.CALL_DIAL_BUDGET_MS) ?: false },
+            // ADR-078: "Turn on camera" is offered only to a peer whose HELLO advertised cv1.
+            peerFeatures = { peerId -> network.activeSessions.value[FlashDeviceId(peerId)]?.peer?.features.orEmpty() },
             // Honest desktop settings: voice priority and performance mode read per call via
             // lambdas so settings changes take immediate effect.
             prioritiseVoice = { _settings.value.prioritiseVoiceQuality },

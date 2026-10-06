@@ -70,6 +70,8 @@ internal fun FlashGroupVideoStrip(
                 shown = participant.peerId == main,
                 pinned = participant.peerId == state.videoFocusPeerId,
                 onClick = { onVideoFocus(nextVideoFocus(state, participant.peerId)) },
+                dataSaver = state.dataSaver,
+                showingFewer = state.showingFewerVideos,
             )
         }
     }
@@ -81,10 +83,13 @@ private fun FlashGroupVideoChip(
     shown: Boolean,
     pinned: Boolean,
     onClick: () -> Unit,
+    dataSaver: Boolean,
+    showingFewer: Boolean,
 ) {
     val colors = FlashTheme.colors
     val interaction = remember { MutableInteractionSource() }
-    val status = participantStatusLabel(participant)
+    // ERROR-105: the chip is avatar-only, so the reason a tap shows no video is spoken (the main tile prints it).
+    val status = participantStatusLabel(participant, dataSaver, showingFewer, isMain = shown)
     val description = buildString {
         append(participant.name)
         append(if (shown) ", shown" else ", not shown")

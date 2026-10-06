@@ -71,6 +71,7 @@ import java.security.KeyStore
 import java.security.SecureRandom
 import javax.net.ssl.KeyManagerFactory
 import com.transfer.flash.core.calling.CallCoordinator
+import com.transfer.flash.core.calling.FEATURE_VIDEO_UPGRADE
 import com.transfer.flash.core.calling.FlashCalling
 import com.transfer.flash.core.calling.FlashWebRtcEngine
 import com.transfer.flash.core.calling.model.FlashCallDirection
@@ -780,7 +781,7 @@ object DiscoveryEngineHolder {
             // pinning a tier or switching the mode must reach the next connection and the next
             // redial without restarting the engine; live sessions are re-timed by modeController.
             transportProfile = { connectionPolicy().transport },
-            localFeatures = { if (swarmBinding != null) setOf("sw1", "gs1") else setOf("gs1") },
+            localFeatures = { if (swarmBinding != null) setOf("sw1", "gs1", FEATURE_VIDEO_UPGRADE) else setOf("gs1", FEATURE_VIDEO_UPGRADE) },
         )
         binderJob = DiscoveryRouteBinder.observe(appScope, engine.discoveredEndpoints, networkImpl)
 
@@ -1396,6 +1397,8 @@ object DiscoveryEngineHolder {
             // ERROR-088: a member that is not connected yet is dialed on demand (also in ECO), so it can be invited
             // and can join. Cheap when a session is live; bounded by the planner's urgent-dial floor otherwise.
             reachPeer = { peerId -> autoConnector?.ensureSession(peerId, AutoConnector.CALL_DIAL_BUDGET_MS) ?: false },
+            // ADR-078: "Turn on camera" is offered only to a peer whose HELLO advertised cv1.
+            peerFeatures = { peerId -> networkImpl.activeSessions.value[FlashDeviceId(peerId)]?.peer?.features.orEmpty() },
             // Read per sample, not captured once: flipping the switch mid-call has to take effect
             // on that call, not the next one.
             prioritiseVoice = { prioritiseVoiceQuality },

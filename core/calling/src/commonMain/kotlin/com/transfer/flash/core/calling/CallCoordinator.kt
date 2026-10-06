@@ -23,6 +23,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 /**
@@ -126,6 +127,12 @@ public class CallCoordinator(
      * cheap when a session is live. The default dials nothing.
      */
     private val reachPeer: suspend (peerId: String) -> Boolean = { false },
+    /**
+     * ADR-078: the HELLO feature tokens [peerId] advertised on its live session. A 1:1 call offers "Turn on camera" only
+     * to a peer that advertised [FEATURE_VIDEO_UPGRADE], so an older build is never sent a video section it cannot
+     * answer. The default (nothing advertised) offers it to nobody.
+     */
+    private val peerFeatures: (peerId: String) -> Set<String> = { emptySet() },
 ) : FlashCalling {
     /** When each refusal line (see [logRefusal]) was last written. */
     private val refusalLoggedAt = SyncMap<String, Long>()
@@ -135,6 +142,42 @@ public class CallCoordinator(
 
     private val _ongoingGroupCalls = MutableStateFlow<Map<String, OngoingGroupCallUi>>(emptyMap())
     override val ongoingGroupCalls: StateFlow<Map<String, OngoingGroupCallUi>> = _ongoingGroupCalls.asStateFlow()
+
+    /**
+     * Group calls this device knows are over (callId to when it learned so): one it was in that ended, or one whose
+     * participant said goodbye to a device that was not in it. An invite for such a call is a late retry that lost the race
+     * with the hangup, and must not ring a phone for a call nobody is in.
+     */
+    private val endedGroupCalls = SyncMap<String, Long>()
+
+    private fun rememberEndedGroupCall(callId: String) {
+        val now = SystemTimeSource.nowMs()
+        endedGroupCalls.toMap().forEach { (id, at) -> if (now - at > ENDED_CALL_MEMORY_MS) endedGroupCalls.remove(id) }
+        endedGroupCalls[callId] = now
+    }
+
+    private fun isEndedGroupCall(callId: String): Boolean {
+        val at = endedGroupCalls[callId] ?: return false
+        return SystemTimeSource.nowMs() - at <= ENDED_CALL_MEMORY_MS
+    }
+
+    /**
+     * A participant of a group call this device is not in said goodbye. The "join" banner for that call counts one
+     * participant fewer, and goes at once when that was the last one, instead of waiting out the presence expiry for a
+     * call nobody can join any more. A call that still has participants keeps its banner, and their next presence
+     * restates the count.
+     */
+    private fun onGroupHangupOutsideCall(frame: CallWireFrame.GroupHangup) {
+        _ongoingGroupCalls.update { map ->
+            val entry = map[frame.groupId]?.takeIf { it.callId == frame.callId } ?: return@update map
+            val remaining = entry.participantCount - 1
+            if (remaining <= 0) {
+                map - frame.groupId
+            } else {
+                map + (frame.groupId to entry.copy(participantCount = remaining))
+            }
+        }
+    }
 
     init {
         scope.launch {
@@ -338,6 +381,20 @@ public class CallCoordinator(
             return false
         }
 
+        // A participant of a call this device is not in left. Only its own live session handles a hangup of its own call.
+        if (frame is CallWireFrame.GroupHangup && currentGroupSession?.callId != frame.callId) {
+            if (!isGroupTrustedPeer(peerId, frame.groupId)) return false
+            rememberEndedGroupCall(frame.callId)
+            onGroupHangupOutsideCall(frame)
+            return true
+        }
+
+        // A retried invite that arrives after its call ended (or after this device left or declined it) is stale.
+        if (frame is CallWireFrame.GroupInvite && isEndedGroupCall(frame.callId)) {
+            FlashLog.i("GROUP_CALL", "Invite from $peerId for call=${frame.callId} ignored: that call has already ended")
+            return true
+        }
+
         // ERROR-095: an ended group session that was never cleared would answer every invite "busy". The start
         // paths already drop it; an inbound invite is the other way a call begins.
         clearEndedGroupSession()
@@ -406,9 +463,9 @@ public class CallCoordinator(
     }
 
     /** Local user accepted the incoming call. */
-    override suspend fun accept(): Boolean {
-        currentGroupSession?.let { return it.accept() }
-        return currentSession?.accept() ?: false
+    override suspend fun accept(audioOnly: Boolean): Boolean {
+        currentGroupSession?.let { return it.accept(audioOnly) }
+        return currentSession?.accept(audioOnly) ?: false
     }
 
     /** Local user declined the incoming call. */
@@ -453,6 +510,8 @@ public class CallCoordinator(
         currentGroupSession?.switchCamera()
         currentSession?.switchCamera()
     }
+
+    override suspend fun upgradeToVideo(): Boolean = currentSession?.upgradeToVideo() ?: false
 
     override fun setSpeaker(on: Boolean) {
         currentGroupSession?.setSpeaker(on)
@@ -522,6 +581,7 @@ public class CallCoordinator(
             sendFrame = { frame -> sendFrame(frame, peerId) },
             prioritiseVoice = prioritiseVoice,
             performanceMode = performanceMode,
+            peerCanUpgrade = { FEATURE_VIDEO_UPGRADE in peerFeatures(peerId) },
             onEnded = { ended ->
                 publishCallLog(ended)
                 if (currentSession === ended) {
@@ -577,6 +637,7 @@ public class CallCoordinator(
      */
     private fun onGroupSessionEnded(ended: FlashGroupCallSession) {
         if (currentGroupSession !== ended) return
+        rememberEndedGroupCall(ended.callId)
         currentGroupSession = null
         stateCollector?.cancel()
         stateCollector = null
@@ -754,5 +815,8 @@ public class CallCoordinator(
 
         /** What a caller reads on the tile of a roster member it cannot call (ERROR-095). */
         const val NOT_PAIRED_NOTE = "Not paired with you"
+
+        /** How long an ended group call is remembered; longer than an invite rings (45 s) and its retries. */
+        const val ENDED_CALL_MEMORY_MS = 120_000L
     }
 }

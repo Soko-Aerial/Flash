@@ -212,8 +212,8 @@ class FlashCallService : Service() {
 
         /**
          * The subset of the manifest's `microphone|camera|connectedDevice` types this app currently holds
-         * the runtime permissions for. Camera is only claimed for video calls — an audio
-         * call has no camera in use, and claiming an unused type is itself a violation.
+         * the runtime permissions for. Camera is only claimed while a camera is capturing — an audio
+         * call, or a video call with this device's camera off, has none in use, and claiming an unused type is itself a violation.
          */
         private fun grantedForegroundServiceType(state: FlashCallUiState): Int {
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
@@ -233,7 +233,10 @@ class FlashCallService : Service() {
             if (hasPermission(Manifest.permission.RECORD_AUDIO)) {
                 type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
             }
-            if (state.video && hasPermission(Manifest.permission.CAMERA)) {
+            // ADR-078: only while the camera is capturing. A voice call that the peer turned into a video call
+            // arrives with our camera off, and a camera type claimed from the background throws on Android 14+,
+            // which would drop the microphone type with it.
+            if (state.video && !state.cameraOff && hasPermission(Manifest.permission.CAMERA)) {
                 type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
             }
             if (type == FGS_TYPE_NONE && Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {

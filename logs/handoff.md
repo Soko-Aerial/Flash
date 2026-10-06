@@ -1,5 +1,22 @@
 # Current Handoff
 
+## 2026-10-06 (latest, d) - The five open call items (ERROR-105), not committed
+
+- **Done in code:** specific end reasons for a busy / refused microphone; a refused camera answers audio-only (Android) with a "Joined without camera" notice; camera stopped / flip failed banner with "Try again"; tiles say "Video is off to save data" / "Showing fewer videos"; 1:1 voice calls can add a camera (`cv1`, `Status.vu`, **Camera** dock button, caller-only offer). Group voice-to-video is NOT built.
+- **Verified:** calling, callui, engine and network suites, `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm`; a native two-peer renegotiation test on the desktop stack; three mutation checks. **Not device-verified:** `CALLMEDIA-01`..`05`, `GVID-09`, `VUP-01`..`04` (backlog 4y3).
+- **Broken, not mine:** `:desktop:jvmTest` `DesktopEngineGroupSessionUpTest` (ERROR-106, OPEN): `createGroup` refuses an offline invitee (ERROR-095 rule). Fails without my desktop edits too; not checked at a clean `HEAD`.
+- **Uncommitted:** the tree also holds other sessions' edits (`FlashGroupCallSession.kt`, `CallCoordinator.kt`, `FlashCallModels.kt` carry ERROR-103/104 work). Check `git diff` before committing; commit together.
+- **Next:** run `VUP-01` first (the Android libwebrtc side is the untested risk), then `CALLMEDIA-02`. Decide about ERROR-106.
+- **Files:** `FlashCallSession.kt` (`upgradeToVideo`, `videoActive`), `MediaAcquire.kt`, `CameraProblems.kt`, `FlashCallControlDock.kt`, `MainActivity.kt`, `FlashCallService.kt`.
+
+## 2026-10-06 (latest, c) - Group call leftovers + video feedback (ERROR-104), not committed
+
+- **Done in code:** join banner is taken down when the last participant hangs up (and stays while others are in); late invites for an ended call are ignored; no invite/presence after end; hangup also reaches announce-only members; video tiles say "Requesting video…", "Video not responding" (12 s), "Too hot to send video", "Starting video…", "Video busy · Muted".
+- **Verified:** `:core:calling:testAndroidHostTest`, `:ui:callui:allTests`, `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm`. Not mutation-checked, nothing device-verified: `GCALL-19`..`21`, `GVID-08` (backlog 4y2).
+- **Uncommitted:** touches files that other sessions also have uncommitted edits in (`FlashGroupCallSession.kt`, `CallCoordinator.kt` hold the ERROR-103 membership gate). Commit them together or check `git diff` first.
+- **Open (ERROR-104 "Not fixed"):** generic "Call failed" for mic/camera failures, camera errors not surfaced, no audio-only fallback when camera permission is denied on accept, per-tile data-saver message, voice call cannot upgrade to video.
+- **Next:** pick from that list; leave the 30 s solo grace and the banner-while-joinable behavior as is.
+
 ## 2026-10-06 (latest, b) - Group call member filter (ERROR-103), persistent log + export + swarm restart prompt (ADR-077)
 
 - **Done, committed:** ERROR-103 (a group call only gives tiles to active roster members; `GCALL-18`). **Done, see git log for the commit:** `RotatingFileLogSink`, Settings "Export logs", "Restart Flash?" prompt after the swarm switch, backup exclusions (ADR-077; `LOG-01..03`, `SWM-34`).

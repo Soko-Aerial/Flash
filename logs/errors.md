@@ -1,5 +1,122 @@
 # Error Log
 
+## ERROR-106 - `DesktopEngineGroupSessionUpTest` fails: group creation refuses an offline invitee (found, not investigated)
+
+### Date
+2026-10-06
+
+### Area
+Desktop engine tests / group creation rule of ERROR-095
+
+### Symptoms
+`:desktop:jvmTest` fails deterministically on `DesktopEngineGroupSessionUpTest > a returning member learns the group and receives what was sent while it was away` (3 runs, 115 tests, 1 failed). The test's setup call `createGroup` returns `Failure(Unknown("Wait until beta show as online, then try again. A group made while someone is offline can't include them in calls."))`.
+
+### Root cause
+Not established. The message is the creation rule added for ERROR-095 / ADR-064 (a group is no longer made while an invitee is offline); this test creates the group before its second device is online. It fails the same way with this session's `DesktopEngine.kt` / `DesktopShell.kt` edits removed (checked by reverting them and rerunning), so ERROR-105 did not cause it. It was NOT checked against a clean `HEAD` checkout (the tree holds other sessions' uncommitted edits), so "pre-existing at HEAD" is likely, not proven.
+
+### Next
+Decide whether the test should bring `beta` online before `createGroup` or whether the rule needs an exception for a session that is about to come up. Do not weaken the ERROR-095 rule to make a test pass.
+
+### Related files
+- `desktop/src/jvmTest/kotlin/com/transfer/flash/desktop/DesktopEngineGroupSessionUpTest.kt`
+
+### Status
+OPEN
+
+## ERROR-105 - Calls: failed accept shown as "Call failed", camera denial left a call ringing, camera errors swallowed, silent data-saver taps, no voice-to-video upgrade
+
+### Date
+2026-10-06
+
+### Area
+Calling (`FlashCallSession`, `FlashGroupCallSession`, `CallCoordinator`, call screen and dock, Android `MainActivity` / `FlashCallService`)
+
+### Symptoms
+The five items ERROR-104 listed as "Not fixed", all found by code reading (no device capture):
+- A. A failed accept (microphone or camera busy) ended as the generic "Call failed".
+- B. Denying the camera permission on an incoming video call left the call ringing; the only way out was Decline.
+- C. Local camera errors (capturer stopped, another app took the camera, unplugged) and a failed flip or toggle were never shown.
+- D. Taps on a tile under data saver or "Show fewer" gave no message (the router asks nobody, the tile stays in state `OFF`, and the label for `OFF` was empty).
+- E. A voice call could not get video added later.
+
+### Root cause
+- A/B: `startMedia` / `acquireMedia` returned a Boolean; every failure ended as `ERROR`, and the Android host stopped at a refused CAMERA grant without calling `accept()`.
+- C: webrtc-kmp turns a capturer error into `stop()` and drops the message; nothing observed the track state. `switchCamera` threw into the host's `launch`; `toggleCamera` hid failures in `runCatching`.
+- D: refusal is silent by design in the router (`receiveCap` 0 or 1), the UI had no words for it.
+- E: `video` was a constructor `val` read in about ten places, and 1:1 renegotiation existed only as an ICE restart.
+
+### Working fix
+- A: `MIC_DENIED` and `MIC_UNAVAILABLE` end reasons, and screen text for both. A video call whose camera fails is retried with the microphone only (`acquireWithCameraFallback`), which is the only way to tell a camera failure from a microphone failure; only a failed audio-only retry ends the call. ADR-079.
+- B: on Android a refused CAMERA grant answers the call audio-only (`accept(audioOnly = true)`, toast "Joining without camera"); the call state carries a dismissible notice ("Joined without camera: ..."), `cameraOff` is true and the peer is told. Desktop and the group session use the same fallback.
+- C: the local video track's end is watched (`onEnded`), turns the camera off, tells the peer and shows a persistent "Camera stopped. Another app may be using it" banner with **Try again** (opens the camera again and hands it to the sender with `replaceTrack`, no renegotiation). A failed flip shows "Couldn't switch camera" for 5 s. Desktop has no capturer error hook, so only the toggle and flip catches apply there.
+- D: tiles and the compact strip say "Video is off to save data" (data saver) or "Showing fewer videos" (Show fewer, not the main tile). The words never hide a more specific reason (muted, hand raised, camera off, requesting, reconnecting, not paired).
+- E (1:1 only): ADR-078. `cv1` HELLO token, `Status.vu`, a "Camera" dock button, renegotiation by the caller. Group voice-to-video upgrade is NOT built.
+
+### Not fixed
+- Group voice-to-video upgrade (ADR-078 records why it needs its own design).
+- `FlashCallActionReceiver` `ACTION_ANSWER` accepts without a permission gate; it is unreachable today (nothing sends it) and was left alone.
+- `getUserMedia` (third_party) can leak the audio track when the camera permission check throws after it (unchanged, from ERROR-104).
+- Android capturer errors that do NOT end the track (a frozen camera) stay invisible: webrtc-kmp exposes no event for them.
+- The Android libwebrtc side of the mid-call m-line is untested (the native two-peer test runs on the desktop `webrtc-java` stack only).
+
+### Verification
+`:core:calling:allTests`, `:core:calling:testAndroidHostTest`, `:ui:callui:allTests`, `:core:engine:testAndroidHostTest`, `:core:network:allTests` pass; `:app:compileDebugKotlin` and `:desktop:compileKotlinJvm` compile. New tests: `MediaAcquireTest` (8), `FlashCallVideoUpgradeTest` (7), camera-problem tests in `FlashCallSessionTest` / `FlashGroupCallEndTest`, `FlashCallMediaTextTest`, label tests in `FlashGroupVideoGridTest`, a router case in `GroupVideoRouterTest`, `vu` in `CallFrameCodecTest`, a dock render test, and a native two-peer test in `DesktopMediaStackSmokeTest` that adds a camera to a connected audio call in both directions and decodes frames (ran, 3.7 s). Mutation-checked: caller-only offer, the `cv1` gate and the data-saver label each make a test fail. Not mutation-checked: the other new tests. **Nothing device-verified**: `CALLMEDIA-01`..`05`, `GVID-09`, `VUP-01`..`04` in `docs/testing/TEST-BACKLOG.md` section 4y3.
+`:desktop:jvmTest` has one failure that is not caused by this work (ERROR-106).
+
+### Related files
+- `core/calling/src/commonMain/kotlin/com/transfer/flash/core/calling/{FlashCallSession,FlashGroupCallSession,CallCoordinator,FlashCalling,MediaAcquire,CameraProblems,CallFrameCodec,CallWireFrame}.kt`, `.../model/FlashCallModels.kt`
+- `ui/callui/src/commonMain/kotlin/com/transfer/flash/ui/calling/{FlashCallScreen,FlashCallExtras,FlashCallControlDock,FlashGroupVideoGrid,FlashGroupVideoStrip}.kt`
+- `app/src/main/java/com/transfer/flash/{MainActivity.kt,calling/FlashCallService.kt,debug/DiscoveryEngineHolder.kt}`, `core/engine/.../Flash.kt`, `desktop/.../{DesktopEngine,DesktopShell}.kt`
+- `docs/decisions.md` ADR-078, ADR-079; `docs/protocol.md` (`cv1`, `vu`)
+
+### Status
+OPEN (fixed in code, awaiting `CALLMEDIA-01`..`05`, `GVID-09`, `VUP-01`..`04`)
+
+## ERROR-104 - Group call: stale "join call" banner after the call ended, late invites ringing, video requests failing silently
+
+### Date
+2026-10-06
+
+### Area
+Calling / group call (`FlashGroupCallSession`, `CallCoordinator`, `GroupVideoRouter`, `FlashGroupVideoGrid`)
+
+### Symptoms
+Owner review request: "are there leftovers after a call", "click to enable video", and "appropriate errors when I click and it can't switch on the feed from that user". Found by code reading (no device capture):
+1. After the last participant hung up, devices outside the call kept the "join call" banner until the presence entry expired (12 s plus a 5 s sweep). Nothing told a non-participant the call was over: `GroupHangup` is dropped without a live session.
+2. `deliverInvite` and `announceTo` did not check `isEnded`, so an invite or presence still dialing when the call ended was sent afterwards (a phone could ring for a dead call; a presence could revive a banner). A hangup that overtakes the invite does not help the invitee.
+3. The final hangup went only to `legs`, never to members the call was merely announced to, so those devices never got a goodbye.
+4. A tapped tile gave no sign of progress or failure: `REQUESTED` had no label, a request whose answer was lost was retried forever with no message, `THERMAL` and capacity denials both read "Video busy", a granted video whose track had not arrived showed a bare avatar, and "Muted" outranked every video message.
+
+### Root cause
+Missing end-of-call signal for non-participants; missing `isEnded` guards on two background sends; status labels and router states that could not express "pending", "hot" or "no response".
+
+### Working fix
+- `CallCoordinator`: a `GroupHangup` for a call this device is not in lowers the banner's participant count and removes the banner when it reaches zero (trusted group peers only); the call id is remembered for 2 minutes (also for calls this device was in, declined, or left) and a `GroupInvite` for it is ignored. The banner for a call that still has participants is untouched, so leaving and rejoining still works.
+- `FlashGroupCallSession`: the hangup goes to announce-only members as well as legs; `deliverInvite`, `announceTo` (before and after the dial) stop once the call has ended.
+- `GroupVideoRouter`: `receiveState` reports `NO_RESPONSE` after 12 s of unanswered retries (`Asked.firstSentAt` survives a plain retry) and `SENDER_HOT` for a thermal denial.
+- `FlashGroupVideoGrid`: labels "Requesting video…", "Video not responding", "Too hot to send video", "Starting video…" (granted, track not here yet); a refused or unanswered request is combined with Muted ("Video busy · Muted"); a participant's own camera-off still ranks below Muted (existing rule).
+
+### Not fixed (next)
+> 2026-10-06: the failed-accept / camera-denied (first), camera-error (second) and data-saver / voice-to-video (fourth) items moved to ERROR-105 and are fixed in code there.
+- A failed accept (microphone or camera busy) still ends as a generic "Call failed", and a denied camera permission on an incoming video call leaves it ringing with no audio-only option.
+- Local camera errors (`onCameraError`/`onCameraFreezed`) stay inside webrtc-kmp and are not shown.
+- `getUserMedia` (third_party) leaks the audio track/source when the camera permission check throws after it; the Android host checks permission first.
+- Data saver / "Show fewer" taps still give no per-tile message; a voice call cannot be upgraded to video.
+- A presence frame already in flight when a hangup arrives can still show the banner for one expiry period.
+
+### Verification
+`:core:calling:testAndroidHostTest` and `:ui:callui:allTests` pass; `:app:compileDebugKotlin` and `:desktop:compileKotlinJvm` compile. New tests: 3 in `CallCoordinatorSecurityTest`, 1 in `FlashGroupCallEndTest`, 2 in `GroupVideoRouterTest`, 1 in `FlashGroupVideoGridTest` (+ extended label test). Not mutation-checked, not device-verified: `GCALL-19`..`21`, `GVID-08` in `docs/testing/TEST-BACKLOG.md` section 4y2.
+
+### Related files
+- `core/calling/src/commonMain/kotlin/com/transfer/flash/core/calling/CallCoordinator.kt`
+- `core/calling/src/commonMain/kotlin/com/transfer/flash/core/calling/FlashGroupCallSession.kt`
+- `core/calling/src/commonMain/kotlin/com/transfer/flash/core/calling/GroupVideoRouter.kt`
+- `core/calling/src/commonMain/kotlin/com/transfer/flash/core/calling/model/FlashCallModels.kt`
+- `ui/callui/src/commonMain/kotlin/com/transfer/flash/ui/calling/FlashGroupVideoGrid.kt`
+
+### Status
+OPEN (fixed in code, awaiting GCALL-19..21 and GVID-08)
+
 ## ERROR-103 - Group call participant list showed devices that are not in the group (raw ids)
 
 ### Date
