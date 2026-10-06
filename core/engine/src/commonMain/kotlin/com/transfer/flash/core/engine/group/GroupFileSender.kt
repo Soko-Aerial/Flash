@@ -61,6 +61,11 @@ public class GroupFileSender(
         sizeBytes: Long,
         uri: String,
     ) -> Pair<SwarmManifest, String>?)? = null,
+    /**
+     * Keeps the swarm offer (root, piece size, origin signature) on the sender's row even when no member was announced
+     * to as a swarm, so a member that connects later learns of the file through catch-up (ERROR-117).
+     */
+    private val recordSwarmOffer: ((messageId: String, root: String, pieceSize: Int, rootSig: String) -> Unit)? = null,
 ) {
     public constructor(
         localDeviceId: () -> String,
@@ -188,6 +193,10 @@ public class GroupFileSender(
                     sharedWireFileId,
                 )
             }
+        }
+        if (swarmOrigin != null) {
+            val (manifest, rootSig) = swarmOrigin
+            recordSwarmOffer?.invoke(sharedMessageId, manifest.root.hex, manifest.pieceSize, rootSig)
         }
         sendGroupAttachment(
             groupId,

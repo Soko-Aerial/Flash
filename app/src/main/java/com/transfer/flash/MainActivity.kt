@@ -1353,6 +1353,9 @@ private fun FlashShell(
             prepareSwarmOrigin = { groupId, messageId, fileName, mimeType, sizeBytes, uri ->
                 engine.prepareSwarmOrigin(groupId, messageId, fileName, mimeType, sizeBytes, uri)
             },
+            recordSwarmOffer = { messageId, root, pieceSize, rootSig ->
+                chatRepository.recordSwarmOffer(messageId, root, pieceSize, rootSig)
+            },
         )
     }
 

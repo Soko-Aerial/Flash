@@ -4053,3 +4053,18 @@ UI roadmap 3.2 said captions existed; they did not (ERROR-116). An attachment ro
 
 ### Revisit when
 The owner chooses a caption design.
+
+## ADR-086 - A swarm offer needs no pairing between sender and receiver; a whole-file push still does
+
+### Decision
+In a v2 group the chat layer treats a swarm file offer like group text: any active member the device trusts in the group (paired, or vouched with a live session key that matches its certificate) may be announced to and may announce. A whole-file push stays paired-only (ADR-044 E3). The sender keeps the swarm offer on its own row even when nobody could be announced to as a swarm, so catch-up offers the file to members that connect later. A signed message keeps its signed `sentAt` when it is within 5 minutes of the receiver's clock.
+
+### Context
+ADR-075 already lets the swarm gate admit vouched members; the chat layer's paired-only check (ADR-044) contradicted it, so in a star topology only the owner's paired peers got files (ERROR-117).
+
+### Alternatives considered
+- Allow vouched members for every group file: the transfer layer refuses an unpaired sender's bytes, so the message would sit PENDING; rejected.
+- Store the signed `sentAt` in a new column and keep the clamp for display: correct for every skew, but a schema step for a rare case; revisit if skew beyond 5 minutes shows up.
+
+### Revisit when
+FO-04 (group attachment fan-out to vouched members) is taken up, or a device log shows a signed message dated more than 5 minutes ahead.

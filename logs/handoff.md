@@ -1,5 +1,13 @@
 # Current Handoff
 
+## 2026-10-06 (q) - Swarm star-topology fixed in code (ERROR-117, ADR-086)
+
+- Done and unit-tested, NOT device-verified: vouched members get swarm offers; the offer is recorded on the sender row for catch-up; voice-note and skewed-clock catch-up copies verify. Details: progress (q).
+- Unproven: why the admin got a whole-file push, and whether the clock clamp caused the logged drops (`SWM-45`, `SWM-44`).
+- Device checks owed: `SWM-40`...`SWM-45` (TEST-BACKLOG 4zg), plus the UI roadmap checks `UIP-01`...`UIP-20`, `MIG-12`.
+- `problems.txt` and `docs/SWARM-STAR-TOPOLOGY-INVESTIGATION.md` are the owner's inputs; the second now ends with a verification table.
+- Environment note: `FlashSettingsDataStoreTest` fails on this Windows box (DataStore tmp rename), unrelated.
+
 ## 2026-10-06 (p) - UI roadmap audit fixed (ERROR-116); swarm star-topology next
 
 - **Correction to the entry below:** the plan was NOT 100 % complete. Six parts were false or partial and are now fixed in code (details: progress (p), plan section 2.1, ERROR-116, ADR-084, ADR-085): real swarm piece map, multi-target and group forwarding (Android + desktop), settings search/reset, Clear history, stored multi-pin (`message_pins`, schema v12), 1:1 ripple from real audio level, camera permission and visible failures (desktop hides Camera), roster names in group calls, link open, velocity nav hide, detail-pane shimmer.
