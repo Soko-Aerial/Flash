@@ -2541,6 +2541,44 @@ UIP-02 says a caption is sent together with the files: **obsolete in part**, cap
 - **Pass:** The app opens with all chats intact (no crash on open) and the pin works.
 - **Source:** ADR-084, `STEP_11_12`. **Status:** TODO
 
+## 4zg. Group files in a star topology (ERROR-117, 2026-10-06)
+
+### SWM-40 - A vouched member gets a swarm file
+- **Setup:** 4 phones, swarm switch on everywhere. Group made by the admin A; B, C, D each paired with A only (not with each other). All connected.
+- **Steps:** B sends a 20 MB file to the group.
+- **Pass:** C and D show a file bubble named like the file and download it (from B or A); B's bubble goes DELIVERED; the log on C has `SWARM announce root=... origin=false` and no `SyncPush ... dropped`.
+- **Source:** ERROR-117, ADR-086. **Status:** TODO
+
+### SWM-41 - A vouched member that connects later is offered the file
+- **Setup:** as SWM-40, but C is switched off (or its app killed) while B sends.
+- **Steps:** B sends; start C again.
+- **Pass:** within about 15 s of C connecting to B or A it shows the file bubble and downloads it. Log: catch-up, then `SWARM announce ... origin=false`.
+- **Source:** ERROR-117. **Status:** TODO
+
+### SWM-42 - A member without the swarm switch gets no unusable bubble
+- **Setup:** as SWM-40, swarm switch off on D.
+- **Steps:** B sends a file.
+- **Pass:** D shows no bubble that waits for bytes forever (an offer it cannot use is ignored); A and C behave as in SWM-40. If D should see the file, that is the FO-04 decision, note what D shows.
+- **Source:** ERROR-117. **Status:** TODO
+
+### SWM-43 - Voice note reaches a member that was offline (signed group)
+- **Setup:** v2 group, C offline.
+- **Steps:** A records a voice note; bring C back.
+- **Pass:** C shows the voice note row after catch-up and the log has no `SyncPush message dropped, no valid signature`.
+- **Source:** ERROR-117 (a). **Status:** TODO
+
+### SWM-44 - Catch-up of a message from a faster clock
+- **Setup:** v2 group of 3; set B's clock 3 to 4 s ahead of C's (manual time, automatic time off).
+- **Steps:** B sends a text; C relays it to D (D offline when B sent, then back).
+- **Pass:** no `no valid signature` line on D; the text appears on D. Restore automatic time afterwards.
+- **Source:** ERROR-117 (b); if it passes with a clock more than 5 minutes off, record it (the clamp should then fail it, ADR-086 revisit). **Status:** TODO
+
+### SWM-45 - Why a paired admin got a whole-file push instead of a swarm
+- **Setup:** swarm on for all, sender paired with admin only, all connected.
+- **Steps:** sender sends a 20 MB file; capture `adb logcat` on the sender and the admin from before the send.
+- **Pass:** the admin shows `SWARM announce ... origin=false` (a swarm offer), not only `Data channel joined`. If the admin still gets a whole-file push, capture which `sw1` feature set the sender had for it (the cause is unproven).
+- **Source:** ERROR-117 "Bug 3". **Status:** TODO
+
 ## 5. Measurements — do these last
 
 They replace every *(measure)* estimate in the plans and decide tuning. Record each in `logs/experiments.md`.

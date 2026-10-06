@@ -171,4 +171,64 @@ class GroupFileSenderSwarmTest {
 
         assertEquals(listOf("peer-1"), sendFileCalls)
     }
+
+    // ERROR-117: the owner's test had members that were not connected, or did not advertise "sw1", when the file was
+    // sent. The origin still serves the swarm, so the offer is kept on the sender's row for catch-up.
+
+    @Test
+    fun `the swarm offer is recorded even when no member was announced to as a swarm`() = runTest {
+        val recorded = mutableListOf<List<Any>>()
+        val order = mutableListOf<String>()
+        val members = listOf(
+            FlashGroupMemberUi(id = "self", name = "Me", initials = "M", role = FlashMemberRole.Owner),
+            FlashGroupMemberUi(id = "peer-1", name = "Alice", initials = "A", role = FlashMemberRole.Member),
+        )
+        val sender = GroupFileSender(
+            localDeviceId = { "self" },
+            groupMembers = { members },
+            deviceFor = { id, name -> FlashDevice(FlashDeviceId(id), name, FlashTransportType.LAN) },
+            announce = { _, _, _, _, _, _, _, _, _, _, _, _ -> false },
+            sendFile = { _, _, _, _, _, _ -> },
+            sendGroupAttachment = { _, _, _, _, _, _, _, _, _ -> order += "row" },
+            idFactory = { "id-1" },
+            isV2Group = { true },
+            peerFeatures = { emptySet() }, // nobody connected: no feature is known
+            prepareSwarmOrigin = { _, _, _, _, _, _ -> testManifest to testRootSig },
+            recordSwarmOffer = { messageId, root, pieceSize, rootSig ->
+                order += "offer"
+                recorded += listOf(messageId, root, pieceSize, rootSig)
+            },
+        )
+
+        sender.send("g2-1", "file:///tmp/large.iso", "large.iso", testManifest.totalSize, "application/octet-stream")
+
+        assertEquals(listOf(listOf<Any>("id-1", testManifest.root.hex, testManifest.pieceSize, testRootSig)), recorded)
+        assertEquals(listOf("offer", "row"), order, "the offer is on record before the row is written")
+    }
+
+    @Test
+    fun `a file that is not a swarm records no offer`() = runTest {
+        var recorded = 0
+        val members = listOf(
+            FlashGroupMemberUi(id = "self", name = "Me", initials = "M", role = FlashMemberRole.Owner),
+            FlashGroupMemberUi(id = "peer-1", name = "Alice", initials = "A", role = FlashMemberRole.Member),
+        )
+        val sender = GroupFileSender(
+            localDeviceId = { "self" },
+            groupMembers = { members },
+            deviceFor = { id, name -> FlashDevice(FlashDeviceId(id), name, FlashTransportType.LAN) },
+            announce = { _, _, _, _, _, _, _, _, _, _, _, _ -> true },
+            sendFile = { _, _, _, _, _, _ -> },
+            sendGroupAttachment = { _, _, _, _, _, _, _, _, _ -> },
+            idFactory = { "id-1" },
+            isV2Group = { false }, // a legacy group never swarms
+            peerFeatures = { setOf("sw1") },
+            prepareSwarmOrigin = { _, _, _, _, _, _ -> testManifest to testRootSig },
+            recordSwarmOffer = { _, _, _, _ -> recorded++ },
+        )
+
+        sender.send("g-legacy", "file:///tmp/large.iso", "large.iso", testManifest.totalSize, "application/octet-stream")
+
+        assertEquals(0, recorded)
+    }
 }

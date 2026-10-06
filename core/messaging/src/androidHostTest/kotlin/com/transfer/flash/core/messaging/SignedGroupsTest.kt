@@ -1192,6 +1192,130 @@ class SignedGroupsTest {
         assertTrue(seenC.single().contains("|dev-a|"))
     }
 
+    // ERROR-117: the star topology of the owner's 2026-10-06 test. The sender is paired with the owner only; every other
+    // member is vouched. A swarm offer must reach those members, a whole-file push still must not.
+
+    @Test
+    fun `a swarm offer reaches a vouched member the sender never paired with, and the sender waits for its receipt`() = runBlocking {
+        vouchedTrust = true
+        unpair("dev-b", "dev-c")
+        mesh("dev-a", "dev-b", "dev-c")
+        val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+        val seenC = captureSwarmOffers("dev-c")
+
+        announceSwarmFile("dev-b", groupId, "att-sw", "dev-a", "dev-c")
+
+        assertEquals("the unpaired member heard of the file: $seenC", 1, seenC.size)
+        assertEquals("$groupId|att-sw|att-sw|dev-b|$swarmRoot|$swarmPiece|$swarmSize|$swarmName", seenC.single())
+        val row = nodes.getValue("dev-c").messageDao.getByLocalId("att-sw")!!
+        assertEquals("Bo", row.senderName)
+        assertEquals("att-sw", row.attachmentTransferId)
+        val targets = nodes.getValue("dev-b").deliveryDao.rows.keys.filter { it.first == "att-sw" }.map { it.second }.toSet()
+        assertEquals("both the paired owner and the vouched member are recipients", setOf("dev-a", "dev-c"), targets)
+    }
+
+    @Test
+    fun `a file whose swarm offer was only recorded reaches a vouched member that connects later, signed over the row's clock`() = runBlocking {
+        vouchedTrust = true
+        unpair("dev-b", "dev-c")
+        mesh("dev-a", "dev-b", "dev-c")
+        val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+        val seenC = captureSwarmOffers("dev-c")
+        goOffline("dev-c")
+        val repo = nodes.getValue("dev-b").repo
+
+        // Nobody was announced to as a swarm (the owner got a whole-file push): only the offer is recorded, with the
+        // host's own-clock signature, then the row is written.
+        repo.recordSwarmOffer("att-sw", swarmRoot, swarmPiece, hostRootSig("dev-b", groupId, "att-sw", System.currentTimeMillis() - 9))
+        repo.sendGroupAttachment(groupId, "att-sw", "att-sw", swarmName, swarmMime, swarmSize, "content://big")
+        settle()
+        assertEquals("the row keeps the offer", swarmRoot, nodes.getValue("dev-b").messageDao.getByLocalId("att-sw")!!.swarmRoot)
+
+        connect("dev-b", "dev-c")
+        settleLong()
+
+        assertEquals("the unpaired member learned of the file through catch-up: $seenC", 1, seenC.size)
+        assertEquals("$groupId|att-sw|att-sw|dev-b|$swarmRoot|$swarmPiece|$swarmSize|$swarmName", seenC.single())
+    }
+
+    @Test
+    fun `a signed message from a clock a few seconds ahead is stored as signed, so its relay still verifies`() = runBlocking {
+        mesh("dev-a", "dev-b", "dev-c")
+        val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+        goOffline("dev-c")
+        val ahead = System.currentTimeMillis() + 3_000L
+        val sig = GroupSigning(cryptos.getValue("dev-a")).signMessage(groupId, "msg-skew", "dev-a", ahead, null, null, "hi")
+
+        deliver("dev-a", "dev-b", GroupWireFrame.Message(groupId, "msg-skew", "dev-a", "Ada", ahead, "hi", null, null, 0L, sig))
+        assertEquals("b keeps the signed time", ahead, nodes.getValue("dev-b").messageDao.getByLocalId("msg-skew")!!.sentAt)
+
+        goOffline("dev-a")
+        connect("dev-b", "dev-c")
+        settleLong()
+
+        val atC = nodes.getValue("dev-c").messageDao.getByLocalId("msg-skew")
+        assertNotNull("b's relay of the message verified at c", atC)
+        assertEquals(ahead, atC!!.sentAt)
+    }
+
+    @Test
+    fun `a signed message dated far in the future is still clamped`() = runBlocking {
+        mesh("dev-a", "dev-b", "dev-c")
+        val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+        val before = System.currentTimeMillis()
+        val far = before + 3_600_000L
+        val sig = GroupSigning(cryptos.getValue("dev-a")).signMessage(groupId, "msg-far", "dev-a", far, null, null, "hi")
+
+        deliver("dev-a", "dev-b", GroupWireFrame.Message(groupId, "msg-far", "dev-a", "Ada", far, "hi", null, null, 0L, sig))
+
+        val stored = nodes.getValue("dev-b").messageDao.getByLocalId("msg-far")!!.sentAt
+        assertTrue("an hour ahead does not pin the message to the end of the chat: $stored", stored < before + 60_000L)
+    }
+
+    @Test
+    fun `a whole-file push is still not offered to a vouched member`() = runBlocking {
+        vouchedTrust = true
+        unpair("dev-b", "dev-c")
+        mesh("dev-a", "dev-b", "dev-c")
+        val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+
+        val offered = nodes.getValue("dev-b").repo.beginGroupAttachment(
+            groupId, "dev-c", "att-1", "tr-1", "wire-1", "photo.jpg", "image/jpeg", 10L, null, null, null, null,
+        )
+
+        assertFalse("the transfer layer would refuse an unpaired sender's bytes", offered)
+        assertNull(nodes.getValue("dev-c").messageDao.getByLocalId("att-1"))
+    }
+
+    @Test
+    fun `a vouched member whose swarm is off parks nothing for an offer it cannot use`() = runBlocking {
+        vouchedTrust = true
+        unpair("dev-b", "dev-c")
+        mesh("dev-a", "dev-b", "dev-c")
+        val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+        // dev-c has no swarm listener: the offer is unusable there, and no whole-file push will ever follow.
+
+        announceSwarmFile("dev-b", groupId, "att-sw", "dev-c")
+
+        assertNull("no bubble waits for bytes that cannot come", nodes.getValue("dev-c").messageDao.getByLocalId("att-sw"))
+    }
+
+    @Test
+    fun `a voice note in a signed group reaches a member that was offline, the signature covers the empty text`() = runBlocking {
+        mesh("dev-a", "dev-b", "dev-c")
+        val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+        goOffline("dev-c")
+
+        nodes.getValue("dev-a").repo.sendGroupAttachment(
+            groupId, "att-voice", "tr-voice", "voice.m4a", "audio/mp4", 4_000L, "content://voice", 2_500L, listOf(3, 9, 4),
+        )
+        settle()
+        connect("dev-a", "dev-c")
+        settleLong()
+
+        assertNotNull("the catch-up copy verified against the author's key", nodes.getValue("dev-c").messageDao.getByLocalId("att-voice"))
+    }
+
     @Test
     fun `a relay cannot swap the file of a swarm offer`() = runBlocking {
         mesh("dev-a", "dev-b", "dev-c")

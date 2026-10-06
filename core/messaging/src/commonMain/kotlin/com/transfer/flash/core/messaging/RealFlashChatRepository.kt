@@ -2495,8 +2495,17 @@ public class RealFlashChatRepository(
             if (conv?.isGroup != true) return@launch
             if (members != null && isRemovedHere(members, conversationId)) return@launch
             val cached = pendingGroupAttachmentSignatures.remove(messageId)
-            val swarmOffer = pendingSwarmOffers.remove(messageId)
             val sentAt = cached?.first ?: now
+            // The offer's signature must cover THIS row's sentAt (ERROR-108): a catch-up receiver checks it against the
+            // row it is given. An announcement already signed it so; an offer recorded without one (ERROR-117) carries
+            // the origin's own-clock signature, so it is signed again here.
+            val swarmOffer = pendingSwarmOffers.remove(messageId)?.let { (root, pieceSize, sig) ->
+                Triple(
+                    root,
+                    pieceSize,
+                    signedGroups?.signSwarmAnnouncement(conversationId, messageId, root, sizeBytes, fileName, mimeType, sentAt) ?: sig,
+                )
+            }
             val signature = cached?.second ?: if (conv.groupProto == GroupPolicy.V2_PROTOCOL) {
                 val signed = signedGroups
                 if (signed == null) {
@@ -2507,10 +2516,15 @@ public class RealFlashChatRepository(
             } else {
                 null
             }
-            // ADR-044 V2 (E3): files are paired-only, so a vouched member is not a recipient and cannot leave
-            // this message PENDING for a delivery that will never be attempted.
+            // ADR-044 V2 (E3): a file pushed whole is paired-only, so a vouched member is not a recipient of one and
+            // cannot leave the message PENDING for a delivery that will never be attempted. A swarm offer is different
+            // (ERROR-117): the swarm gate admits any active member, so a vouched member with a live, key-matching
+            // session was announced to and will answer with a receipt; it is a recipient like a paired one.
             val recipients = members?.activeMembers(conversationId)
-                ?.filter { it.deviceId != localDeviceId && isTrustedPeer(it.deviceId) }
+                ?.filter {
+                    it.deviceId != localDeviceId &&
+                        (isTrustedPeer(it.deviceId) || (swarmOffer != null && isGroupPeerTrusted(conversationId, it.deviceId)))
+                }
                 .orEmpty()
             messageDao.insert(
                 MessageEntity(
@@ -2902,7 +2916,7 @@ public class RealFlashChatRepository(
                     groupSig = frame.signature
                 }
                 val now = timeSource.nowMs()
-                val boundedSentAt = minOf(frame.sentAt, now)
+                val boundedSentAt = storedSentAt(frame.sentAt, now, signed = groupSig != null)
                 val inserted = messageDao.insert(
                     MessageEntity(
                         localId = frame.messageId,
@@ -3024,7 +3038,14 @@ public class RealFlashChatRepository(
                 }
             }
             is GroupWireFrame.GroupMedia -> {
-                if (isRemovedHere(members, frame.groupId) || !isActiveTrustedMember(members, frame.groupId, frame.from)) return
+                // ERROR-117: a swarm offer may come from a vouched member (the sender need not be paired with this
+                // device: the swarm gate admits any active member). A whole-file push stays paired-only (ADR-044 E3).
+                val senderAllowed = if (frame.swarm == 1) {
+                    isActiveGroupMember(members, frame.groupId, frame.from)
+                } else {
+                    isActiveTrustedMember(members, frame.groupId, frame.from)
+                }
+                if (isRemovedHere(members, frame.groupId) || !senderAllowed) return
                 var senderName = frame.senderName
                 var groupSig: String? = null
                 if (isV2Group(frame.groupId)) {
@@ -3113,6 +3134,12 @@ public class RealFlashChatRepository(
                         sentAt = frame.sentAt,
                         rootSig = frame.rootSig!!,
                     )
+                    return
+                }
+                if (!isTrustedPeer(frame.from)) {
+                    // A vouched sender's swarm offer this device cannot use (swarm off, or the offer did not verify): no
+                    // whole-file push will ever follow from a device it is not paired with, so park nothing.
+                    FlashLog.w("CHAT", "Group media from unpaired ${frame.from} ignored: not a usable swarm offer (group=${frame.groupId} msg=${frame.messageId})")
                     return
                 }
                 pendingGroupMedia[frame.transferId] = frame.copy(senderName = senderName)
@@ -3663,6 +3690,11 @@ public class RealFlashChatRepository(
     /** messageId -> (root, pieceSize, rootSig) of a swarm file between its first announcement and its row (ERROR-108). */
     private val pendingSwarmOffers = SyncMap<String, Triple<String, Int, String>>()
 
+    /** ERROR-117: keeps the origin's offer for [messageId] unless an announcement already stored one (that one is signed over the row's `sentAt`). */
+    override fun recordSwarmOffer(messageId: String, root: String, pieceSize: Int, rootSig: String) {
+        if (pendingSwarmOffers[messageId] == null) pendingSwarmOffers[messageId] = Triple(root, pieceSize, rootSig)
+    }
+
     override fun getRecipientTransferIds(messageId: String): Set<String> =
         groupMessageTransfers[messageId]?.toSet().orEmpty()
 
@@ -3711,7 +3743,15 @@ public class RealFlashChatRepository(
     ): Boolean {
         if (messageId.isBlank() || transferId.isBlank() || wireFileId.isBlank()) return false
         val members = groupMemberDao ?: return false
-        if (!isActiveTrustedMember(members, groupId, recipientDeviceId)) return false
+        // ERROR-117: a swarm offer goes to any active member this device trusts in the group, paired or vouched (the
+        // swarm gate admits both); a whole-file push stays paired-only (ADR-044 E3), because the transfer layer would
+        // refuse an unpaired sender's bytes.
+        val allowed = if (swarm == 1 && root != null && pieceSize != null) {
+            isActiveGroupMember(members, groupId, recipientDeviceId)
+        } else {
+            isActiveTrustedMember(members, groupId, recipientDeviceId)
+        }
+        if (!allowed) return false
         groupMessageTransfers.getOrPut(messageId) { SyncSet() }.add(transferId)
         transferToGroupMessage[transferId] = messageId
         val existing = messageDao.getByLocalId(messageId)
@@ -4043,7 +4083,13 @@ public class RealFlashChatRepository(
 
         sentAt = sentAt,
 
-        text = if (groupSig == null && attachmentTransferId != null) attachmentLabel() else text,
+        // A signed (v2) attachment row was signed over "" (see sendGroupAttachment), but a voice note's row keeps its
+        // waveform metadata in `text`; sending that would fail the author's signature on every receiver (ERROR-117).
+        text = when {
+            attachmentTransferId == null -> text
+            groupSig == null -> attachmentLabel()
+            else -> ""
+        },
 
         replyToId = replyToId,
         replyToPreview = replyToPreview,
@@ -4082,6 +4128,16 @@ public class RealFlashChatRepository(
         val name = attachmentName?.trim()?.ifEmpty { null }?.take(SYNC_LABEL_NAME_MAX)
         return if (name == null) "[$kind]" else "[$kind] $name"
     }
+
+    /**
+     * The `sentAt` a received message is stored with. A message's timestamp is never allowed far into this device's
+     * future (it would pin the message to the end of the chat), so it is clamped to [now]. A **signed** (v2) message
+     * is the exception for a small skew (ERROR-117): its signature covers the author's `sentAt`, so a clamped copy
+     * can never be relayed in catch-up, every receiver would refuse it as "no valid signature". Phones' clocks differ
+     * by seconds, so a receiver that is a little behind its author kept a copy that nobody else could verify.
+     */
+    private fun storedSentAt(sentAt: Long, now: Long, signed: Boolean): Long =
+        if (signed && sentAt <= now + SIGNED_SENT_AT_SKEW_TOLERANCE_MS) sentAt else minOf(sentAt, now)
 
     /** Requester side: an elected holder pushed a message — ingest idempotently by msgId. */
     private suspend fun handleSyncPush(frame: GroupWireFrame.SyncPush) {
@@ -4133,7 +4189,7 @@ public class RealFlashChatRepository(
             null
         }
         val now = timeSource.nowMs()
-        val boundedSentAt = minOf(message.sentAt, now)
+        val boundedSentAt = storedSentAt(message.sentAt, now, signed = groupSig != null)
         val inserted = messageDao.insert(
             MessageEntity(
                 localId = message.messageId,
@@ -5526,6 +5582,9 @@ public class RealFlashChatRepository(
         const val VOICE_META_PREFIX = "vmsg:"
         /** Longest file name a catch-up label carries. */
         const val SYNC_LABEL_NAME_MAX = 80
+
+        /** How far into this device's future a signed message's own `sentAt` may be and still be stored as signed. */
+        const val SIGNED_SENT_AT_SKEW_TOLERANCE_MS = 5 * 60_000L
         // Namespaced marker stored in a call row's text column: "cmsg:<KIND>:<video 0|1>:<durationMs>".
         const val CALL_META_PREFIX = "cmsg:"
         // Upper bound on full-history search hits scanned per query (#12); collapsed to conversations.

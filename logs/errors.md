@@ -7605,3 +7605,41 @@ Unit tests: `PieceBlocksTest`, `FlashSwarmPieceMapMathTest`, `FlashSettingsSearc
 
 ### Status
 OPEN - fixed in code, unit-tested, NOT device-verified (until UIP-02, UIP-04, UIP-05, UIP-06, UIP-11...UIP-20 pass)
+
+## ERROR-117 - A file sent in a star-topology group reached only the paired member; signed catch-up copies were refused by the other members
+
+### Date
+2026-10-06
+
+### Area
+Group files and swarm offers (`RealFlashChatRepository`, `GroupFileSender`), signed catch-up (ADR-059, ADR-081)
+
+### Symptoms
+Owner test of 2026-10-06, four phones plus a fifth member: the sender (Flash Fox) is paired with the admin only, every other member is vouched. Only the admin received the file. The other members logged `W/CHAT: SECURITY: group SyncPush message dropped, no valid signature (... author=<sender> relay=<member>)`, 12 times in 1.2 s on one phone. Source report: `docs/SWARM-STAR-TOPOLOGY-INVESTIGATION.md`; logs `flash-log-1791285852720/866094/883691/897723.txt`.
+
+### Each claim of the report, checked
+1. **Real.** `beginGroupAttachment` and the outbox recipient filter in `sendGroupAttachment` used `isActiveTrustedMember` (paired only), so a vouched member was never announced to, even for a swarm offer, although the swarm gate (`RosterGroupGate.allows`) admits vouched members by design (ADR-075).
+2. **Real.** An inbound `GroupMedia` from a vouched sender was dropped by the same check.
+3. **"Bug 2", mechanism wrong, symptom real.** The report blames an empty-text signature and an author-key lookup. ERROR-101 had already stopped `toSyncMessage` rewriting a signed row's text, and the roster key lookup is not the failure. Two real causes were found in the code: (a) a signed **voice note** row keeps its waveform metadata in `text` but was signed over `""`, so its catch-up copy failed on every receiver; (b) `handleInboundGroupMessage` and `handleSyncPush` stored a verified signed message with `sentAt = min(sentAt, receiver clock)`, while the signature covers the author's `sentAt`. A receiver whose clock is a little behind the author stores a copy nobody else can verify, so its relay fails. The logs fit (b): the sender's clock is about 2.2 s ahead of the admin's by the data-channel timestamps, and two different relays failed on the same message. (b) is **not proven** from the logs (the message type is not logged), so it stays a probable cause.
+4. **"Bug 3", not a defect as described.** The sender had sessions to the other members, they came up later: one phone was restarted at 11:19:51, four minutes after the first file was announced to a device it was not connected to yet. The report's picture of the admin pulling the file through the swarm is also wrong: the admin's log has no swarm line for it, only `Data channel joined channel=0..3`, the whole-file push. Why the admin was pushed to instead of offered a swarm (its `sw1` feature was not known to the sender at that moment) is **not proven**; the logs carry no feature line.
+
+### Root cause
+Chat-layer gates for group files were written for the whole-file push (ADR-044 E3: paired only) and kept for swarm offers, whose receivers need no pairing. And an offer was only kept on the sender's row if some member was announced to as a swarm, so a member that connected later (or was vouched and unconnected) was never offered a file by catch-up.
+
+### Working fix
+- A swarm offer goes to any active member trusted in the group (paired, or vouched with a live matching key): `beginGroupAttachment` and the recipient filter (only when an offer exists) use `isActiveGroupMember`; inbound `GroupMedia` with `swarm == 1` does too. A whole-file push stays paired-only. An offer an unpaired sender made that this device cannot use (swarm off) is ignored, nothing is parked.
+- `GroupFileSender` calls the new `recordSwarmOffer` before writing the sender row whenever the file has a swarm origin; `sendGroupAttachment` signs the offer over the row's `sentAt`. Catch-up then carries the offer to a member that connects later (ERROR-108's path).
+- A signed row's catch-up text is `""` (what it was signed over).
+- A verified signed message is stored with its signed `sentAt` when it is at most 5 minutes ahead of this clock (`storedSentAt`); further ahead it is still clamped.
+
+### Not changed
+A whole-file push to a vouched member (FO-04, postponed); a message dated more than 5 minutes ahead is still relayed with a clamped time (it fails verification at the next hop); `SyncPush` signature handling itself.
+
+### Verification
+`SignedGroupsTest` (+6): swarm offer reaches a vouched member and the sender waits for its receipt; a whole-file push is still refused; an unusable offer parks nothing; a recorded offer reaches a member that connects later; a voice note reaches an offline member; a signed message from a clock a few seconds ahead is relayable, one an hour ahead is clamped. `GroupFileSenderSwarmTest` (+2). Mutation: reverting the offer gate and the voice text fails 2 tests; reverting the skew tolerance fails 1. Full `:core:messaging`, `:core:engine`, `:core:swarm` tests, `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm` green. Not device-verified.
+
+### Related files
+`core/messaging/.../RealFlashChatRepository.kt`, `FlashChatRepository.kt`, `core/engine/.../group/GroupFileSender.kt`, `app/.../MainActivity.kt`, `desktop/.../DesktopShell.kt`, `SignedGroupsTest.kt`, `GroupFileSenderSwarmTest.kt`
+
+### Status
+OPEN - fixed in code, unit-tested, NOT device-verified (until SWM-40...SWM-45 pass)

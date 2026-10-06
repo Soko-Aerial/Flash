@@ -362,6 +362,14 @@ public interface FlashChatRepository {
         )
     }
 
+    /**
+     * The swarm offer of a group file this device is the origin of ([root], [pieceSize], the origin's signature
+     * [rootSig]), recorded on the sender's row before [sendGroupAttachment] even when no member was offered the file
+     * as a swarm (none connected yet, or none advertises "sw1"). A member that connects later is then given the offer
+     * by catch-up and can pull the file from the swarm (ERROR-117). Default no-op for lightweight/sample implementations.
+     */
+    public fun recordSwarmOffer(messageId: String, root: String, pieceSize: Int, rootSig: String) {}
+
     /** Returns active recipient transfer IDs associated with an outbound group message id. */
     public fun getRecipientTransferIds(messageId: String): Set<String> = emptySet()
 

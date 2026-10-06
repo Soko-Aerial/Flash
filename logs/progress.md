@@ -1,5 +1,29 @@
 # Progress Log
 
+## 2026-10-06 (q) - Swarm star-topology investigation: claims checked, fixes made (ERROR-117, ADR-086)
+
+### Worked on
+`docs/SWARM-STAR-TOPOLOGY-INVESTIGATION.md` and its four logs. Every claim checked in code and logs first (table in the doc's section 6 and in ERROR-117).
+
+### Changed
+- Swarm offers go to, and are accepted from, vouched members (`beginGroupAttachment`, the recipient filter, inbound `GroupMedia`); a whole-file push stays paired-only; an unusable offer from an unpaired sender is ignored.
+- `recordSwarmOffer` (interface, repository, `GroupFileSender`, both hosts): the sender row keeps the offer even when no member was announced to as a swarm, so catch-up reaches late members; the offer is signed over the row's `sentAt` in `sendGroupAttachment`.
+- Catch-up text of a signed attachment row is `""` (voice notes failed verification).
+- `storedSentAt`: a verified signed message keeps its signed `sentAt` within 5 minutes of the receiver's clock (a clamped copy could not be relayed).
+- Tests: `SignedGroupsTest` +6, `GroupFileSenderSwarmTest` +2; one mutation check each.
+
+### Verification
+`:core:messaging` jvm and android host tests, `:core:engine:jvmTest`, `:core:swarm:jvmTest`, `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm` green (see the commit). Not device-verified.
+
+### Unproven (say so, do not assume)
+Why the paired admin received a whole-file push instead of a swarm offer; whether the clock clamp caused the logged `no valid signature` drops. Both need a capture from before the send (`SWM-45`, `SWM-44`).
+
+### Remaining
+Device checks `SWM-40`...`SWM-45`. FO-04 (whole-file fan-out to vouched members) is still postponed.
+
+### Next AI
+Do not widen the paired-only rule for whole-file pushes without reading ADR-086. If `SWM-45` shows the admin still gets a push, look at `peerFeatures` (`engine.peerFeatures`) at the moment `GroupFileSender.send` runs.
+
 ## 2026-10-06 (p) - Audit of the UI polish roadmap: six false "DONE" claims fixed (ERROR-116, ADR-084, ADR-085)
 
 ### Worked on
