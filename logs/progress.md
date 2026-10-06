@@ -1,5 +1,52 @@
 # Progress Log
 
+## 2026-10-06 (g) - Ink launch splash (UI-056, ADR-080)
+
+### Worked on
+The owner's new splash. Round 1 had geometric demos, which the owner rejected. Round 2 had five handwritten demos; the owner picked the "Ink" composition written in "Spark"'s font. The splash should play only on a cold start, always play to the end, work on desktop too, and have a setting to turn it off.
+
+### Changed
+- **`:ui:theme`:**
+  - `FlashInkSplash` (drawing, `drawWithCache`, the clock read only in the draw phase).
+  - `FlashLaunchSplash.kt`: timeline, `InkWriterSchedule`, `FlashLaunchSplashGate`, `FlashLaunchSplashOverlay`.
+  - `FlashInkSplashGlyphs`: Hershey Script 1-stroke "Flash", 9 strokes, with the licence acknowledgement.
+  - `BOLT_POINTS` is now internal.
+- **Android:**
+  - `FlashLaunchSplashProcess` (a process-wide gate; skips call-answer and PTT launches).
+  - `MainActivity`:
+    - The system splash is held while the gate is Pending.
+    - It fades out over 200 ms into the Ink ground when playing.
+    - The setting is read with a 1 s timeout.
+    - The overlay replaces `FlashSplashScreen` (deleted).
+  - `values-night/colors.xml`: the system splash ground is now light or dark with the system.
+- **Desktop:** an application-scoped gate in `DesktopMain`, with the overlay above `DesktopShell`.
+- **Setting:** "Launch animation" in the Appearance section, wired on both hosts.
+  - `FlashSettingsDataStore.launchAnimation` on Android, `DesktopSettings.launchAnimation` on desktop; key `launch_animation`, default on.
+- **Licence:** the Hershey acknowledgement is in `NOTICE` and in `config/aboutlibraries` (`hersheytext.json`, `hershey-fonts`, `hersheytext-mit`).
+- **Generator:** `tools/splash/hershey-strokes.js`.
+- **Docs:** `docs/ui/launch-splash.md` and the index row, ADR-080, backlog §4za.
+
+### Why
+The owner's request. A writing animation needs about 2 s, so the old "leave when the engine is ready" rule would cut it off mid-word on a fast phone.
+
+### Verification
+- **Tests:**
+  - `:ui:theme:jvmTest` and `:ui:theme:testAndroidHostTest`: `FlashLaunchSplashTest` 21/21.
+  - `:ui:chat:jvmTest`: `FlashSettingsLogicTest` 15/15.
+- **Builds:** `:app:compileDebugKotlin` and `:desktop:compileKotlinJvm` green.
+- **Licence notices:** `:app:` and `:desktop:generateThirdPartyNotices` both list the Hershey entry and its texts.
+- **Visual check:** frames rendered off-screen with `ImageComposeScene` (temporary test, deleted).
+  - Light and dark, at 360×720 and 1000×640, at 8 moments from 0.6 s to 5 s.
+  - Checked by eye: writing order, nib, bolt outline/fill/ripple, halo, and fit.
+- Nothing device-verified.
+
+### Remaining
+- `SPLASH-01`…`08` on devices (backlog §4za).
+- Known limitation: the Android system splash follows the system dark mode, not Flash's own theme setting.
+
+### Next AI
+Run `SPLASH-01` (cold start, light and dark) and `SPLASH-06` (Belfone ceiling). If a white or black flash shows between the system splash and the Ink splash, look at the `setOnExitAnimationListener` branch in `MainActivity.onCreate`.
+
 ## 2026-10-06 (f) - Video-upgrade retry and the receiver answer gate (ERROR-105 follow-up)
 
 ### Worked on

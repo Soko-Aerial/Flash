@@ -1,6 +1,18 @@
 # Current Handoff
 
-## 2026-10-06 (latest, f) - Ink launch splash (UI-056 / ADR-080), docs incomplete
+## 2026-10-06 (latest, g) - Ink splash docs completed
+
+- **Committed:** code in `c86b599b`; the docs in the commit after it (see `git log`).
+- **What the docs commit added:**
+  - `docs/ui/launch-splash.md` (UI-056) and its `ui-research-index.md` row
+  - ADR-080
+  - a `logs/progress.md` (g) entry
+  - an AGENTS.md §29 line
+  - the generator at `tools/splash/hershey-strokes.js`
+- Nothing else changed in code.
+- **Next:** `SPLASH-01`, then `SPLASH-06` (TEST-BACKLOG §4za).
+
+## 2026-10-06 (f) - Ink launch splash (UI-056 / ADR-080), docs incomplete (completed in g)
 
 - **Done in code:** the cold-start splash now writes "Flash" in Hershey Script 1-stroke, then draws the bolt, on Android and desktop. The relevant files are:
   - `ui/theme/.../FlashInkSplash.kt`, `FlashLaunchSplash.kt` (with `FlashLaunchSplashGate`) and `FlashInkSplashGlyphs.kt`
