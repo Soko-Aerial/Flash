@@ -104,7 +104,11 @@ because their numbers tune the code (owner decision P8, `docs/network/PRESENCE-C
   - Each device sees both other videos.
   - When one leaves, only that tile disappears, with no black flash on the others.
   - On Android the local PiP draws above the tiles. If it doesn't, give the PiP `setZOrderMediaOverlay(true)`.
-- **Status:** TODO
+- **Status:** PARTIAL (owner-reported 2026-10-02). The owner ran a video call with **3 devices** and another with
+  **4 devices** and puts the realistic limit at 3 to 4 devices. Not recorded: which build, which devices, the log
+  lines, how the call looked on each. Still TODO from this test: the "one leaves, only that tile disappears, no
+  black flash" check, the Android PiP z-order check, and a log review for the `video sender tuned` /
+  `CALL_DIAG` lines. The pass lines above are not marked done until those are reported.
 
 ### GRP-02 — Network band detection (G2)
 - **Steps:** open the call stats badge on Android and desktop on 5 GHz, 2.4 GHz and Ethernet (as available), and on
@@ -174,6 +178,21 @@ because their numbers tune the code (owner decision P8, `docs/network/PRESENCE-C
 - **Pass:** the 4th device gets a clear "Call is full" end; the 3 in the call are unaffected.
 - **Status:** BLOCKED for real group sizes until vouched groups (GV, ADR-044) land; the debug-build check can run
   now.
+
+### GRP-10 — Where group video stops being usable (owner report 2026-10-02)
+- **Why:** the owner tested 3 and 4 devices in a video call and calls 3 to 4 the realistic limit (GRP-01). The
+  code still allows 8 video participants (`FlashGroupCallLimits`) and the per-tier budgets in
+  `GROUP-VIDEO-PLAN.md` are design estimates. One owner observation on unrecorded devices is not a measured limit.
+- **Steps:** on a hotspot or a 5 GHz network, run video calls of 3, 4, 5, 6 and 8 devices if that many are
+  available, cameras on, everyone watching everyone for 5 minutes each. Record the build and every device with
+  its tier and band.
+- **Pass (this is a measurement; the result may move the figure):**
+  - For each size: received fps and freeze count per tile, `CALL_DIAG proc cpu=`, battery drop and temperature
+    on the weakest phone, and whether the health warnings (GRP-08) fire.
+  - A written answer: the largest size that stays usable on a LOW, a MEDIUM and a HIGH phone. Compare it with
+    the 3 to 4 figure; if they differ, update the deck/README wording and decide whether to lower the code cap.
+- **Source:** GRP-01 owner report; `docs/calling/GROUP-VIDEO-PLAN.md` section 8; feeds MEAS-05 and MEAS-09.
+- **Status:** TODO
 
 ## 3. Presence & connections plan (`docs/network/PRESENCE-CONNECTIONS-PLAN.md`, PC1–PC5)
 
@@ -1273,6 +1292,816 @@ voice priority: video <from> -> <to>`, `Leg <peer> ... rebuilding`.
 `MEAS-09` (group video floor value) was added; the CPU threshold is `MEAS-05` and the LOW-tier second watcher / encoder instances are
 part of `MEAS-03`. They are not tests of ERROR-097 and do not block it.
 
+## 4o. Transsion / Infinix screen-off freeze: candidate fixes (owner's list, 2026-10-02)
+
+Nothing here was run. Source: `docs/android-platform-notes.md` addendum of 2026-10-02 and ERROR-074. Do these on the Infinix X6882B
+(Android 14) with a second phone as the sender. Before trusting any result, capture `adb logcat -v time | findstr Hiber`.
+
+### HIB-01 — Which Phone Master activity opens the autostart screen on the Infinix?
+- **Setup:** the Infinix with the current dev build; Phone Master installed (default).
+- **Steps:** (a) run `adb shell cmd package resolve-activity --brief -n com.transsion.phonemaster/com.transsion.phonemaster.autostart.AutoStartActivity`
+  and the same with `AutoStartManageActivity`; (b) in the app, Settings, "Background transfers", note where the OEM screen lands; (c) enable
+  autostart for Flash there, lock the screen for 5 minutes and send a message from the other phone every 30 s.
+- **Pass:** at least one class resolves and its screen opens on the autostart list for Flash (record which); and after (c) either the
+  logcat shows no `freeze uid` for Flash during the 5 minutes, or it still does and that is written down (then autostart alone is not the fix).
+- **Source:** ERROR-074, platform notes 2026-09-28 and 2026-10-02. **Status:** TODO
+
+### HIB-02 — Does a silent audio loop in a `mediaPlayback` service keep Flash running with the screen off?
+- **Setup:** a throwaway build (not for release) with a looping silent track under a `mediaPlayback` foreground service, started with the
+  mesh service; Infinix with Hiber active; 10 minutes with the screen off.
+- **Steps:** send a message every 30 s from the other phone; read `Hiber` lines; note battery % at start and end, and repeat once without the loop.
+- **Pass:** a number for each of: messages delivered with the screen off (of 20), `freeze uid` lines for Flash, battery drain per hour with
+  and without the loop. The experiment is worth keeping only if delivery is near the Samsung's 90 % (EXP-002) and the drain is acceptable
+  to the owner. Record in `logs/experiments.md`.
+- **Source:** the owner's option 2, 2026-10-02. **Status:** TODO
+
+### HIB-03 — First-run guide reaches the right screens (permissions, autostart, pairing)
+- **Setup:** a fresh install on the Infinix and on a Samsung (no OEM freezer); built only after the owner approves the guided first-run flow.
+- **Steps:** follow the guide: notifications, battery exemption, the OEM autostart screen (Infinix only), pair a first device with a code.
+- **Pass:** each step opens the right screen or is skipped cleanly where the phone has none; no crash if the OEM activity is missing; pairing completes.
+- **Source:** deck slide 11 "First-Run Guide". **Status:** TODO (the flow does not exist yet; only the Settings toggle does)
+
+### HIB-04 — Does a Companion Device Manager association keep Flash running with the screen off? (experiment)
+- **Setup:** a throwaway build that associates the Infinix with a Bluetooth device (a spare phone or earbuds) through the Companion Device
+  Manager and holds the three `REQUEST_COMPANION_*` permissions; Hiber active; 10 minutes with the screen off.
+- **Steps:** as HIB-02 (a message every 30 s from the other phone, read `Hiber` lines).
+- **Pass:** a number for messages delivered (of 20) and for `freeze uid` lines, compared with the same build without the association.
+  Worth keeping only if it clearly beats 4 % (EXP-002) and the user can be asked to pair a device.
+- **Source:** platform notes 2026-10-02 (b). **Status:** TODO
+
+## 4p. Hotspot client isolation (owner report 2026-10-02, FO-06)
+
+Nothing here was run. Source: `docs/FUTURE-OPTIMIZATION.md` FO-06 and the ERROR entry of 2026-09-30.
+
+### HOT-01 — Which hotspot hosts isolate their joined phones?
+- **Setup:** three phones (A, B and a host H). Repeat with H = the Infinix, then H = a Samsung, then H = a laptop hotspot if available.
+- **Steps:** join A and B to H's hotspot. On A run `adb shell ping -c 3 <B's IP>` and `adb shell ping -c 3 <H's gateway IP>`; the same from B. Open
+  Flash on A and B and note whether each sees the other under Nearby and whether Connect by IP works.
+- **Pass:** a table per host make: A to B, B to A, A to H, H to A (ping and Flash). The matrix is the result; no pass/fail on the phones.
+  Record it in `logs/experiments.md` and in MEAS-07's "Android hotspot with 2+ clients" row.
+- **Source:** FO-06. **Status:** TODO
+
+### HOT-02 — Does a local-only hotspot avoid the isolation?
+- **Setup:** a throwaway build that calls `startLocalOnlyHotspot` on the Infinix and shows the network name and password; A and B join it by hand.
+- **Steps:** as HOT-01 with the local-only hotspot as H.
+- **Pass:** A and B can ping each other and Flash finds the peer; or it does not, and that is written down (then option 4 of FO-06 is dead for Infinix).
+- **Source:** FO-06 option 4. **Status:** TODO
+
+### HOT-03 — Which of our phones support Wi-Fi Aware?
+- **Setup:** each test phone.
+- **Steps:** `adb shell pm list features | findstr -i aware`; in a throwaway build call `WifiAwareManager.isAvailable()` with the hotspot on and off.
+- **Pass:** a list of phones with `android.hardware.wifi.aware` yes/no, and whether availability changes while a hotspot is running.
+- **Source:** FO-06 option 2. **Status:** TODO
+
+## 4q. In-call control dock: icons, state and motion (UI-050e, 2026-10-02)
+
+Built and unit-tested 2026-10-02 (`FlashCallControlDockTest`, `FlashCallControlDockRenderTest`); rendered in a Skia scene on the desktop JVM only.
+Nothing here has been seen on a phone. Run each on the HIGH tier, then repeat the "no animation" checks with the performance mode pinned to MEDIUM and LOW
+(Settings, performance mode).
+
+### CALLDOCK-01 — Do the new glyphs read correctly on a real screen?
+- **Setup:** two phones, a video call, then an audio call; light and dark theme.
+- **Steps:** look at the dock in each state: mic live / muted, video on / off, speaker / earpiece, camera off with Flip dimmed, End.
+- **Pass:** the mic shows a microphone (not a bell), muted shows the slash; video shows a video camera and off shows the slash; Flip reads as a flip;
+  End is a handset on its back (not "blocked"); each toggled state is the inverted solid button plus the new label.
+- **Source:** UI-050e. **Status:** TODO
+
+### CALLDOCK-02 — HIGH tier: the motion plays and feels right
+- **Setup:** a phone on HIGH, video call.
+- **Steps:** tap Mic, Video, Flip, Route, hold End (do not release off the button). On the ringing screen leave the call ringing for 10 s.
+- **Pass:** Mic / Route glyph pops and a ring leaves (live) or collapses (muted); Video opens like an eyelid; Flip makes a half turn per tap; End tips
+  while held; the Accept handset swings for about half a second every ~2.5 s. No dropped frames (note any), no leftover ring.
+- **Source:** UI-050e. **Status:** TODO
+
+### CALLDOCK-03 — MEDIUM and LOW: no animation, same information
+- **Setup:** the same phone with the performance mode pinned to MEDIUM, then LOW (or the rugged handset on LOW).
+- **Steps:** repeat CALLDOCK-02's taps; ring a call for 10 s.
+- **Pass:** every glyph swaps instantly, no ring, no spin, no tip, no wiggle loop, the dock is opaque; the haptic tick still fires; every label and
+  description is unchanged.
+- **Source:** UI-050e, `FlashPerformanceMode` (reduceMotion / minimalChrome). **Status:** TODO
+
+### CALLDOCK-04 — TalkBack
+- **Setup:** TalkBack on, active video call.
+- **Steps:** swipe through the dock; toggle each control.
+- **Pass:** each control is read once, as the action ("Mute microphone", "Turn camera off", "Switch to earpiece", "End call"); after a toggle the
+  next focus reads the opposite action; Flip is announced as disabled while the camera is off.
+- **Source:** UI-050e. **Status:** TODO
+
+### CALLDOCK-05 — Five slots fit a small screen
+- **Setup:** the smallest handset available (the rugged 480x640 one if possible) and a desktop window at the 640x480 dp minimum; video call.
+- **Steps:** open the call; look at the dock and the labels.
+- **Pass:** all five buttons and labels visible, no ellipsis on a label, no horizontal overflow.
+- **Source:** UI-050e. **Status:** TODO
+
+## 4r. In-call extras (UI-050f, ADR-067, 2026-10-02)
+
+Built and unit-tested 2026-10-02 (`CallStatusBookTest`, `FlashCallStatusTest`, `CallFrameCodecTest`, `FlashCallAudioRoutingTest`,
+`FlashCallExtrasTest`); compiled for Android and desktop. **Nothing has run on a device.** Use two builds that both have this change unless a
+test says "old build" (an old build ignores the new frame). Repeat the visual checks on HIGH, then MEDIUM / LOW.
+
+### CALLX-01 — Audio output list with a headset
+- **Setup:** one phone with Bluetooth earbuds and, separately, wired headphones; a voice call to a second device.
+- **Steps:** with nothing connected tap the output button (it flips speaker / earpiece). Connect the earbuds: the button should name Bluetooth.
+  Tap it: a list shows Earpiece, Speaker, Bluetooth. Pick each; speak and listen. Pick Bluetooth, then switch the earbuds off. Repeat with wired.
+- **Pass:** the sound moves to the chosen output each time; the button label and glyph follow; switching the earbuds off drops back to the
+  earpiece (not silence) and the list loses the entry; `adb logcat -s FlashCallAudioRouter` shows `route=... chosen=...` lines and "route pick ... is gone".
+- **Source:** ADR-067 item 5. **Status:** TODO
+
+### CALLX-02 — Remote mic / camera badges (1:1 and group)
+- **Setup:** two devices (1:1), then three (group video).
+- **Steps:** the other device mutes, turns the camera off, and back on, in turn.
+- **Pass:** a mic-off badge appears and clears under the name; with the camera off the avatar and "<name>'s camera is off" cover the video and clear
+  when it is back; in a group the tile word and badge follow. A joiner who connects after the mute still sees the right state within a second.
+- **Source:** ADR-067. **Status:** TODO
+
+### CALLX-03 — Raise hand and reactions
+- **Setup:** two devices, then three.
+- **Steps:** More, Raise hand on one; the others look. Send like, love, wow, and tap one repeatedly and fast.
+- **Pass:** a hand badge shows on the sender's tile or under the name and clears on lowering; each reaction appears on every screen with the
+  sender's name, floating at HIGH and as a still stack on MEDIUM / LOW; fast taps produce roughly one per 400 ms, not a flood; a replayed frame
+  never shows twice.
+- **Source:** ADR-067 items 1, 3. **Status:** TODO
+
+### CALLX-04 — Data saver, 1:1
+- **Setup:** two phones, a video call, a data counter on the saver's phone.
+- **Steps:** More, Data saver on the first phone; wait 30 s; look at the second phone's note; turn it off.
+- **Pass:** the first phone shows "Video paused" and the pill; its inbound video rate drops to ~0 (call stats) while audio continues; the second
+  phone shows the "on data saver" note and its own video still shows locally; turning it off restores video within a few seconds.
+- **Source:** ADR-067 item 4. **Status:** TODO
+
+### CALLX-05 — Data saver, group
+- **Setup:** three or four devices, a group video call.
+- **Steps:** one device turns on data saver; the others keep video among themselves.
+- **Pass:** the saver receives no video (tiles show avatars), audio from everyone continues, the others' video to each other is unaffected;
+  turning it off re-requests video.
+- **Source:** ADR-067 item 4. **Status:** TODO
+
+### CALLX-06 — Picture-in-picture
+- **Setup:** an Android 12+ phone and an Android 8-11 phone if available; a 1:1 video call.
+- **Steps:** press Home during the call; return; use More, Picture-in-picture; resize the window; end the call while in PiP.
+- **Pass:** on 12+ the call shrinks to a window showing the remote picture (or the avatar) with no controls, video keeps flowing, returning
+  restores the full screen with the call intact and no black surface; on 8-11 the More row does the same; no crash and no activity restart
+  (`adb logcat` shows no `onCreate` on entering PiP). Note any Samsung / Transsion difference.
+- **Source:** ADR-067 item 6, platform notes. **Status:** TODO
+
+### CALLX-07 — Keep screen on during video
+- **Setup:** a phone with a short screen timeout (15 s); a video call.
+- **Steps:** leave the phone untouched for 60 s. Then end the call and wait.
+- **Pass:** the screen stays on for the call, and times out normally after it ends.
+- **Source:** ADR-067 item 6. **Status:** TODO
+
+### CALLX-08 — Proximity screen-off
+- **Setup:** a phone with a proximity sensor; a voice call on the earpiece.
+- **Steps:** hold the phone to the ear; take it away; switch to speaker and hold it near; start a video call and hold it near; connect earbuds.
+- **Pass:** the screen turns off against the ear and on when taken away on the earpiece in a voice call only; not with speaker, a headset or video;
+  the lock is released when the call ends (screen behaves normally). Note a phone without the sensor does nothing.
+- **Source:** ADR-067 item 6. **Status:** TODO
+
+### CALLX-09 — Mirror my video
+- **Setup:** a phone with a front camera, a video call.
+- **Steps:** More, Mirror my video on and off; swap the preview to the main tile (tap it) and repeat.
+- **Pass:** only the local preview flips left-to-right, in the corner and in the main tile; the other person's view of you is unchanged.
+- **Source:** ADR-067. **Status:** TODO
+
+### CALLX-10 — Connection chip and Verified shield
+- **Setup:** two paired phones on one Wi-Fi, then on one phone's hotspot; also one unpaired device if a call can be made (otherwise skip).
+- **Steps:** look at the chip in the first 10 s and during a good and a degraded link (move away from the router).
+- **Pass:** "Local network" with a dot that is green on a quiet LAN, amber or red when RTT / loss rise (record the RTT / loss at each colour:
+  these are the first-guess thresholds 60 / 200 ms and 2 / 8 %); the "Verified" shield shows for a paired 1:1 peer. Record the numbers for `MEAS-*`.
+- **Source:** ADR-067 item 7. **Status:** TODO
+
+### CALLX-11 — Dock fits and the More panel on small screens, desktop included
+- **Setup:** the smallest handset (480x640), a 360 dp phone, and the desktop at its minimum window.
+- **Steps:** video call (six buttons) and voice call (four); open the output list and More.
+- **Pass:** no overflow or ellipsised label, buttons shrink rather than wrap, the panels fit and scroll-free content is fully visible, the close glyph
+  and tapping the dim both close; on desktop the output button stays the speaker toggle (no list).
+- **Source:** UI-050f. **Status:** TODO
+
+### CALLX-12 — Old build compatibility and TalkBack
+- **Setup:** one build with this change, one without; TalkBack on the new one.
+- **Steps:** call between them; mute, raise hand, react on the new one. With TalkBack, swipe through the dock and panels and toggle each.
+- **Pass:** the call works exactly as before, the old build shows nothing new and logs no error for the `status` frame; with TalkBack each control
+  is read once as an action, switches read on / off, and a reaction is announced as "<name> reacted: <kind>".
+- **Source:** ADR-067 item 1. **Status:** TODO
+
+## 4s. Feature-audit checks (docs/audit/2026-10-02-feature-completeness-audit.md, 2026-10-02)
+
+Owed by the audit: the findings were read from code, **nothing was run**. Each test confirms or refutes one finding; a FAIL on the "expected
+good" side becomes an ERROR entry (section 35 rule 3). Fixes are not started.
+
+### FA-01 - Whole-file verification on every host (FA-1, ADR-068, ERROR-098)
+- **Status of the code:** fixed 2026-10-02, unit-tested, **not device-verified**. This test now checks the FIX, not the defect.
+- **Setup:** a phone and the Windows desktop; a 50 MB file; a hex editor. Run once phone to desktop, once desktop to phone, once phone to phone.
+- **Steps (a, healthy):** send the file normally; compare the received file's SHA-256 with the original.
+- **Steps (b, damaged):** start the transfer, stop the **receiving** app mid-way, flip one byte inside the partial file in the receiving app's
+  `FlashReceived/<transferId>/` folder, restart the app and let the transfer resume to the end.
+- **Pass (a):** the transfer completes, the hashes are equal, the row reads "Verified", logcat / desktop log shows `wholeFile=MATCH`.
+- **Pass (b):** the receiver's row reads **Failed** with "The file arrived damaged and was discarded. Try again to receive it afresh.", the file is gone
+  from the folder, logcat shows `wholeFile=MISMATCH`; the **sender's** row reads Failed with "The other device reports the file arrived damaged...";
+  then Retry on either side sends the whole file again and ends Verified with an equal hash. Note whether Retry works from the receiver, the sender or both.
+  On the desktop, which keeps no chunk state across a restart, step (b) needs the app to stay up: pause the transfer, damage the file, resume.
+- **Fail:** any "Verified" label on a damaged file, a surviving damaged file, or a Retry that finishes instantly without resending.
+- **Source:** FA-1, ADR-068. **Status:** TODO
+
+### FA-02 - Out of space (FA-2, ADR-069, ERROR-099)
+- **Status of the code:** fixed 2026-10-03, unit-tested, **not device-verified**. The original audit expectation was "accepted, then fails mid-way with an exception text".
+- **Setup:** a phone (or a small desktop volume) with a few MB free; a sender with a larger file. Run phone to phone, and phone to desktop on a nearly full volume.
+- **Steps:** send, then Accept on the receiver (also once with auto-accept on, if the setting exists). Also: with free space just above the file size, accept and
+  complete; and a resumed transfer with most of it already written while space is tight.
+- **Pass:** the receiver's row turns **Failed** at once with "Not enough free space to receive this file. It needs X and only Y is available...", no file or partial
+  folder is left under `FlashReceived/`, logcat shows `inbound refused ... needed=... free=...`; the sender's parked transfer ends (record exactly what its row says: expected
+  "cancelled" without the reason). Check that "only Y" matches Settings > Storage within a few MB. The exact-fit and resume cases are admitted and finish.
+- **Fail:** the offer is accepted and fails mid-write, a wrong free figure, a refusal when space was enough, or a sender row stuck waiting.
+- **Source:** FA-2, ADR-069. **Status:** TODO
+
+### FA-03 - Failure wording (FA-3, ADR-069, ERROR-099)
+- **Status of the code:** fixed 2026-10-03, unit-tested, **not device-verified**.
+- **Steps:** provoke (a) the source file deleted or its permission revoked while sending, (b) the peer leaves Wi-Fi mid-transfer, (c) cancel by the other side,
+  (d) the peer app force-stopped mid-transfer, on both the sender and the receiver row.
+- **Pass:** every Failed row reads a plain sentence from `TransferFailureText` ("The file could not be read...", "The connection to the other device was lost...",
+  "The other device cancelled the transfer.", or the generic "The transfer stopped unexpectedly. Try again."); none shows `source length mismatch`, `all channels failed`,
+  an exception class or a number-heavy string. Record each string and whether it matched the situation (the generic one is acceptable but note when it appears: that is a
+  reason to add a mapping). logcat has the raw reason under `TRANSFER ... transfer failed`.
+- **Source:** FA-3, ADR-069. **Status:** TODO
+
+### FA-04 - Restart during a transfer (FA-4)
+- **Setup:** two phones, a 500 MB file.
+- **Steps:** at 40 %, force-stop the **sender** app; reopen it. Repeat force-stopping the **receiver**.
+- **Pass (audit expectation = defect):** the Transfers screen lists the earlier transfer or not (record which); the sender can or cannot resume
+  without picking the file again (record which); the receiver's partial progress is or is not reused when the file is sent again.
+- **Source:** FA-4. **Status:** TODO
+
+### FA-05 - Multiple files and a folder from the app (FA-5)
+- **Steps:** in the attach picker on Android and desktop try to select 3 files at once; try a folder. Then share 3 files from the Android gallery
+  to Flash.
+- **Pass (audit expectation = defect):** the picker takes one file; the share target takes all three. Record what the chat shows for the three.
+- **Source:** FA-5. **Status:** TODO
+
+### FA-06 - Empty file (FA-6, ADR-069, ERROR-099)
+- **Status of the code:** fixed 2026-10-03, unit-tested, **not device-verified**. The audit expectation was a Failed or stuck-Queued transfer with a technical message.
+- **Steps:** create a 0-byte file and send it from Android (from the picker and from the system share sheet) and from desktop. Also send a file from a provider that may
+  not report a size (a cloud-drive or "recent" document), and a normal file.
+- **Pass:** the 0-byte file shows a **Failed** row (Transfers list and the chat bubble) reading "This file is empty (0 bytes), so there is nothing to send.", and the
+  receiver is never asked; the unknown-size file is sent normally and completes with the right size; the normal file is unchanged. logcat shows `send refused ... reason=empty`.
+- **Fail:** a Queued row that never moves, a technical message, a receiver offer for the empty file, or a wrongly refused real file.
+- **Source:** FA-6, ADR-069. **Status:** TODO
+
+## 4t. Discovery module review (ERROR-100, `docs/audit/2026-10-03-discovery-module-review.md`, 2026-10-03)
+
+All fixes are unit-tested, none device-verified. Tools: the `Discovery sources:` line (DR5) in logcat / the desktop log shows which transport sees which peer and how
+long ago; filter logcat on `MulticastTransport` and `DISCOVERY`.
+
+### DISC-01 - The beacon survives a network change (B1)
+- **Setup:** one phone and the Windows desktop on the same Wi-Fi; Flash running on both; discovery mode STANDARD.
+- **Steps:** on the phone switch Wi-Fi off and on (or move it from the router to a hotspot and back). Wait 2 minutes without touching either app. On the desktop read the
+  newest `Discovery sources:` line.
+- **Pass:** the desktop still lists the phone, and its `multicast=[...]` entry for the phone shows an age under 30 s; the phone's log has `Forcing multicast rebind`.
+  Before the fix the phone fell out of the desktop's multicast view after about 60 s.
+- **Fail:** the phone is missing from the `multicast=` part or its age keeps growing.
+- **Source:** ERROR-100 B1. **Status:** TODO
+
+### DISC-02 - A changed address is shown (B5)
+- **Setup:** as DISC-01, peer visible in Nearby.
+- **Steps:** change the phone's address without restarting Flash (turn Wi-Fi off and on so DHCP hands out a different address, or renew the lease on the router).
+- **Pass:** within about 30 s the desktop's Nearby entry shows the new address (or the connection re-dials the new one) without the entry disappearing and reappearing.
+- **Fail:** the old address stays until Flash is restarted.
+- **Source:** ERROR-100 B5. **Status:** TODO
+
+### DISC-03 - A restarted peer does not flicker out (B3)
+- **Setup:** phone and desktop paired and visible.
+- **Steps:** force-stop Flash on the phone and open it again within a few seconds, three times.
+- **Pass:** each time the phone reappears in the desktop's Nearby; after the final start it stays listed for at least 2 minutes with no `Lost` for it in the log while it is running.
+- **Fail:** the phone disappears while it is running and only returns after another restart or network change.
+- **Source:** ERROR-100 B3 (reproducing the name-conflict suffix on a device is not guaranteed; this is the closest ordinary route). **Status:** TODO
+
+### DISC-04 - One browse loop in ECO after a restart (B4)
+- **Setup:** an Android phone in ECO mode (20 s browse / 100 s idle), logcat open on `DISCOVERY`/`NsdTransport`.
+- **Steps:** during an idle phase toggle Wi-Fi off and on (forces `restartBrowsing`), then watch 5 minutes.
+- **Pass:** the number of `Scanning network` states stays at one per 120 s cycle; no second browse starts inside a scan window.
+- **Fail:** scan states arrive more often than once per cycle after the toggle.
+- **Source:** ERROR-100 B4 (no unit test exists for this one). **Status:** TODO
+
+### DISC-05 - A flood of fake devices is bounded (B7)
+- **Setup:** a phone with Flash running, a PC on the same Wi-Fi with Python.
+- **Steps:** send 400 announcements with distinct device ids to `224.0.0.168:45823` (format: `MulticastProtocol.encode`; easiest is a short test harness reusing the repo's encoder).
+  Check Nearby and logcat.
+- **Pass:** Nearby never lists more than 256 spoofed devices, logcat shows exactly one `Multicast peer table full (256)` warning, the app stays responsive, and real peers that were already
+  listed stay listed.
+- **Fail:** the list keeps growing, repeated warnings, jank.
+- **Source:** ERROR-100 B7. **Status:** TODO
+
+### DISC-06 - Dual-stack peer resolves to IPv4 (B10)
+- **Setup:** an Android 14+ phone on a router that gives IPv6 addresses; the desktop on the same router (dual-stack).
+- **Steps:** open Nearby on the phone and read the desktop's address in the `Discovery sources:` line for the `NSD` transport.
+- **Pass:** the address is IPv4 (`192.168.x.x`), and a transfer or chat connection to the desktop works.
+- **Fail:** an `fe80::` address, or no connection. (The old code was never observed failing; this is a defensive change.)
+- **Source:** ERROR-100 B10. **Status:** TODO
+
+### DISC-07 - Does the multicast transport hear peers when NSD is idle on Android 14+? (B8, suspected)
+- **Setup:** an Android 14+ phone (the Infinix is API 34) in ECO mode so that NSD's browse is stopped for the 100 s idle phase, the desktop announcing; screen on.
+- **Steps:** watch the `Discovery sources:` line during an idle phase and note the age of the desktop under `multicast=`.
+- **Pass:** the multicast entry's age stays under about 25 s through the idle phase (the beacon is heard without NSD browsing).
+- **Fail:** the age grows through the idle phase and resets only when NSD browses again. That confirms B8: `AndroidMulticastSocketFactory` needs its own multicast lock on API 34+ (battery
+  trade-off to decide with the owner).
+- **Source:** ERROR-100 B8. **Status:** TODO
+
+### DISC-08 - A multicast-only peer survives one lost datagram (B11)
+- **Setup:** a network where NSD does not see the peer but multicast does (a hotspot that passes UDP multicast, or temporarily block mDNS 5353 on the router / firewall of one side).
+- **Steps:** leave both apps running for 10 minutes; note any `Lost` followed by `Found` for the peer in the log.
+- **Pass:** no Lost/Found pair for the peer while both are running. (Before the fix a single dropped announcement, a 40 s gap, caused one.)
+- **Fail:** the peer flaps.
+- **Source:** ERROR-100 B11. **Status:** TODO
+
+## 4u. Transfer v2 / swarm / multi-file decision measurements (plan only, `docs/transfer/TRANSFER-V2-SWARM-AND-MULTIFILE-PLAN.md`, 2026-10-03)
+
+Nothing is built. These are the measurements that decide whether the swarm (P5) and a transport spike (P6) are worth starting. Record each result in `logs/experiments.md`.
+
+### SWM-01 - Group fan-out baseline today
+- **Setup:** one sender phone and 3, 6 and (if available) 10 receivers on the **same router Wi-Fi**; a 100 MB file; same build everywhere.
+- **Steps:** send the file to the group; note start, the time the last member completes, per-member completion times, sender CPU and battery drop, sender temperature.
+- **Pass (measurement):** a table of N vs total time vs sender cost. The question it answers: does time grow with N-1 (sender-limited) or flatten (airtime / receiver-limited)?
+- **Source:** plan section 4.1, FO-04. **Status:** TODO
+
+### SWM-02 - Where the airtime goes
+- **Setup:** as `SWM-01` with 6 receivers; one run with the sender next to the router, one with the sender far from it (weak signal).
+- **Steps:** send; compare total time near vs far, and compare with the same file sent to one receiver.
+- **Pass (measurement):** whether a slow sender link stretches the whole group send (that is the case where a swarm helps) and what the total is relative to N-1 x the one-receiver time.
+- **Source:** plan section 4.1 (an unverified airtime argument). **Status:** TODO
+
+### SWM-03 - Can members reach each other?
+- **Steps:** repeat `HOT-01`..`HOT-03` (section 4p) with the aim of a **member-to-member** session: on a router, and on a phone hotspot with 3 phones joined.
+- **Pass (measurement):** a yes / no per network type per phone model for direct member-to-member sessions. A swarm needs "yes"; a hotspot is expected to say "no" (client isolation).
+- **Source:** plan section 4.2 and 4.3, FO-06, ERROR-088 / 095. **Status:** TODO
+
+### SWM-04 - What the sender spends per recipient
+- **Steps:** send 100 MB to one receiver on a router; capture sender CPU for (a) the normal build, (b) a debug build with per-chunk hashing timed, (c) a debug build with the FSEC layer disabled (test only, never shipped). Repeat the normal run to 3 receivers.
+- **Pass (measurement):** the share of sender CPU in hashing, in the second encryption layer and in the file read, and how it scales with receivers. Decides whether plan stage 0 (hash once) is worth it.
+- **Source:** plan section 2.1, 6.1, 7.1. **Status:** TODO
+
+### SWM-05 - Swarm vs direct fan-out (only after P5 exists)
+- **Pass:** the swarm finishes a 6-member send faster than `SWM-01`'s direct fan-out on the same network, a removed member stops being served within one request window, and the sender can leave after its two first hops. Not runnable yet.
+- **Status:** BLOCKED (nothing built)
+
+### TV2-01 - v2 pull transfer vs v1 push on one pair (only after P4)
+- **Pass:** same 500 MB file, same pair, v2 within 5 % of v1 throughput, and a resume from a random position works. Not runnable yet.
+- **Status:** BLOCKED (nothing built)
+
+### TV2-02 - The EXP-001 follow-ups
+- **Steps:** the three experiments EXP-001 listed and never recorded: 5 GHz router link; chunk-size sweep 64 / 128 / 256 KB; 2 and 4 real sockets (Android to Android) and Windows to phone.
+- **Pass (measurement):** which of network / storage / CPU / TLS / hashing / protocol limits each pair (AGENTS section 23). Decides whether any transport work is justified.
+- **Source:** EXP-001, plan section 7.2. **Status:** TODO
+
+## 4v. Group secret membership, settings and swarm checks (design only, `docs/transfer/GROUP-SWARM-DESIGN.md`, 2026-10-03)
+
+Nothing is built. These are the checks the design in that document will owe once each phase exists; `SWM-01`..`SWM-03` (section 4u) run now and decide whether the swarm phases happen. Record results in the Results log.
+
+**Update 2026-10-04:** the owner made reliability the goal, so `SWM-01`..`SWM-05` no longer decide whether the swarm is built; they tune it (`docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md` 1.2). The swarm checks of the implementation plan are in section 4w.
+
+**Update 2026-10-04 (b):** the owner accepted the group id + secret (D1) and wants every member to receive regardless of pairing. Plan track GM (section 7B) now owes the `GSEC`/`GSET` checks below, with two changes:
+- **Invites are links, not QR codes, in the first version** (plan O-14). QR waits for DR4.
+- **The `RekeyBundle` became a signed rotation notice plus a secret handover over live sessions** (plan 5.7). Read "RekeyBundle" in `GSEC-02` and `GSEC-04` that way.
+
+More membership checks are in section 4x (`GMB-01`..`GMB-14`).
+
+### GSEC-01 - Join with the code, never paired (G1)
+- **Setup:** 3 devices (two Android, one Windows) that have **never been paired** with each other; device A creates a group and shows the invite.
+- **Steps:** B joins by QR, C joins by pasted link; both appear as members; send a group text, a file and start a group call from each.
+- **Pass:** chat, file and call work between all three with no pairing; `1:1` chat to a group-only peer is **not** offered; the log shows `GS_` proofs with the group id only (no secret, no key material).
+- **Source:** design 1.3, 1.5. **Status:** TODO (nothing built)
+
+### GSEC-02 - Wrong or stale code refused (G1)
+- **Steps:** a device with a wrong secret dials a member; a device with the previous epoch's secret dials after a rotation.
+- **Pass:** both are refused with no group data exchanged; the stale-epoch device that is **not** on the roster gets no `RekeyBundle`.
+- **Source:** design 1.3, 1.6. **Status:** TODO (built in GM-6, needs device run)
+
+### GSEC-03 - Relay (man-in-the-middle) fails the proof (G1, mostly a unit/loopback test)
+- **Pass:** a relay holding two TLS sessions between a member and a joiner cannot make `GS_PROOF` verify; replayed and reflected proofs fail.
+- **Source:** design 1.3. **Status:** TODO (nothing built)
+
+### GSEC-04 - Removal rotates the code (G1)
+- **Setup:** group of 4, one member offline.
+- **Steps:** admin removes member X and the app rotates the code; the offline member reconnects later through *another member*; X tries to rejoin with the old code.
+- **Pass:** the offline member receives the `RekeyBundle` from the other member and is back in; X is refused and gets nothing sent after the removal; X keeps what it had already received (documented, not a failure).
+- **Source:** design 1.6. **Status:** TODO (built in GM-6, needs device run)
+
+### GSEC-05 - Join policy (G1, G2)
+- **Steps:** with "admin approves", join from a new device with the code and no admin online, then bring an admin online; with "open with code", repeat.
+- **Pass:** approve mode: the joiner stays `PENDING` and read-only until approval; open mode: the admin device signs the cert automatically when it is online; a leaked code alone admits nobody in approve mode.
+- **Source:** design 1.4, 2.1. **Status:** TODO (nothing built)
+
+### GSEC-06 - Group beacon in the discovery record (G1, optional)
+- **Pass:** the 8-byte rotating tag appears and is matched on every discovery source (NSD, JmDNS, sweep) without the empty-TXT symptom; two devices not in the group cannot link a device to the group for more than ten minutes.
+- **Source:** design 1.7. **Status:** TODO (nothing built)
+
+### GSEC-07 - Old version meets a secret group (G1)
+- **Pass:** a device without the capability sees "update Flash on that device" and no crash; existing 1:1 and legacy-group behaviour is unchanged (regression of `OLD-` tests).
+- **Source:** design 1.4. **Status:** TODO (nothing built)
+
+### GSEC-08 - Gate is evaluated per request (G1/G5)
+- **Steps:** while a member is mid-transfer or mid-call, an admin removes it.
+- **Pass:** its next request is refused within one request window and the call leg is dropped (this is the gap the design closes; the current gap is documented in AGENTS section 29).
+- **Source:** design 1.5. **Status:** TODO (nothing built)
+
+### GSET-01..GSET-04 - Group settings (G2)
+- **GSET-01:** an admin changes a signed setting (join policy, serving allowed); every online member shows it within a few seconds; an offline member shows it after reconnecting; an older `settingsVersion` never overwrites a newer one. **Status:** TODO (GM-9 built and unit-tested in `GroupSettingsTest`, pending devices)
+- **GSET-02:** a non-admin cannot change a signed setting (the control is hidden **and** a forged update is rejected). **Status:** TODO (GM-9 built and unit-tested in `GroupSettingsTest`, pending devices)
+- **GSET-03:** device-local preferences (serve on/off, Wi-Fi-only, battery threshold, keep-available time) persist across restart and never appear in any frame. **Status:** TODO (GM-9 built and unit-tested in `GroupSettingsTest`, pending devices)
+- **GSET-04:** "Change group code" shows the new invite, the old invite stops working, all online members stay connected. **Status:** TODO (built in GM-6, needs device run)
+
+### SWM-06 - "Already have it" (G3)
+- **Steps:** member A sends file F to the group; member B deletes nothing and later member C sends the same bytes.
+- **Pass:** B shows "already on this device" and downloads nothing; the sent bytes counter on C shows no transfer to B; a different file with the same name is **not** treated as a duplicate.
+- **Source:** design 3. **Status:** TODO (nothing built)
+
+### SWM-07 - Availability and "You can go offline now" (G6)
+- **Pass:** the sender sees the message only when every piece is held by at least one other online device; turning the sender off then does not stop the others from finishing; a stuck state appears when the last holder of a piece leaves and clears when it returns.
+- **Source:** design 4.8. **Status:** TODO (SW-11 built and unit-tested in `FlashSwarmUiMathTest`, pending devices)
+
+### SWM-08 - Cross-group privacy (G3/G5)
+- **Pass:** a device in groups G1 and G2 that holds file X (announced only in G1) answers a G2 member's request for X's root with `REJECT(UNKNOWN)`.
+- **Source:** design 3. **Status:** TODO (SW-4/SW-8 built and unit-tested in `SwarmEngineStepTest`, pending devices)
+
+## 4w. Group swarm reliability checks (plan only, `docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md`, 2026-10-04)
+
+Nothing is built. Each check names the plan phase after which it can run. Common setup unless a check says otherwise:
+- a v2 group (`g2-`) of the devices named, every device on the same build with the swarm switch on (it applies after a restart);
+- capture logcat / the desktop log from **before** the send on every device, filtered on the `SWARM`, `TRANSFER` and `SERVICE` tags.
+
+Record results in the Results log (AGENTS 35).
+
+### SWM-09 - Half sent, sender goes offline, the others sync, the sender returns (SW-8; the owner's scenario)
+- **Setup:** 4 devices, A = sender, B, C, D = members (at least one Windows); a 500 MB file on A.
+- **Steps:**
+  1. A sends the file to the group; B, C, D accept.
+  2. When A shows about half delivered, turn A's Wi-Fi off.
+  3. Wait until B, C, D stop moving; note each one's MB count.
+  4. Wait 2 minutes, then turn A's Wi-Fi back on.
+- **Pass:**
+  - before waiting, B, C and D reach **the same** MB count (they exchanged the union);
+  - each shows "Waiting for A…", and its log shows `SWARM: event=wait reason=WAITING_FOR_SENDER`;
+  - **no** `event=request` lines appear while they wait;
+  - after A returns, all three complete and the whole-file check passes;
+  - A's logged upload total is at most about 1.2 x the file size.
+- **Source:** plan 4.2, SIM-02, E-02. **Status:** TODO (SW-8 built and unit-tested in `SwarmInteropTest`, pending devices)
+
+### SWM-10 - Sender offline before anyone got anything (SW-8)
+- **Steps:** A sends to B and C, then goes offline (Wi-Fi off) before either accepts; B and C accept; after 2 minutes A comes back.
+- **Pass:** B and C show "Waiting for A" and send no requests while waiting; both complete after A returns.
+- **Source:** E-01, SIM-03. **Status:** TODO (SW-8 built and unit-tested in `SwarmEngineStepTest`, pending devices)
+
+### SWM-11 - The sender's cancel stops it everywhere, including a member that was offline (SW-9)
+- **Setup:** A, B, C, D; a 1 GB file.
+- **Steps:**
+  1. A sends. When B, C, D have some parts, turn D's Wi-Fi off.
+  2. A taps Cancel on its bubble and confirms "Cancel for everyone".
+  3. After 1 minute turn D's Wi-Fi on, with A still **offline** (only B and C online).
+- **Pass:**
+  - B and C show "Cancelled by A" within a few seconds and their partial files are gone;
+  - D shows "Cancelled by A" after reconnecting, and **its log shows the tombstone applied before any `event=request`** for that file;
+  - a member that had already completed keeps its file (O-2) and never serves it again for this message.
+- **Source:** plan 4.3, E-39, SIM-08. **Status:** TODO (SW-9 built and unit-tested in `SwarmCancelLifecycleTest`, pending devices)
+
+### SWM-12 - A receiver's own cancel affects only itself (SW-9)
+- **Steps:** A sends to B and C; B taps Cancel on its bubble.
+- **Pass:** B shows Cancelled and its partial file is gone; C completes; A still shows C delivered; A gets no cancel.
+- **Source:** E-42. **Status:** TODO (SW-9 built and unit-tested in `SwarmCancelLifecycleTest`, pending devices)
+
+### SWM-13 - The sender is killed or rebooted mid-send (SW-10)
+- **Steps:**
+  1. A (Android) sends a 1 GB file picked through the system picker.
+  2. At about 30 %, force-stop Flash on A; restart it.
+  3. Repeat with a reboot of A.
+  4. Repeat after deleting the file on A (E-19), then pick the same file again (O-3).
+- **Pass:**
+  - after the restart and the reboot, A serves again without any user action, and B and C complete;
+  - with the file deleted, B and C complete what the group holds, the rest ends "A's file is no longer available", and A sees
+    "Pick the file again to keep sharing";
+  - picking the same file resumes serving (`SOURCE_STATUS(RESTORED)` in A's log).
+- **Source:** E-19, E-21, E-22. **Status:** TODO (SW-10 built and unit-tested in `SwarmWaitReasonRecoveryTest`, pending devices). **2026-10-06:** the restart path itself did not exist until ERROR-102 (item 1) and is now implemented and unit-tested; this test is the first device proof.
+
+### SWM-14 - A receiver is killed, rebooted or updated mid-download (SW-10)
+- **Steps:** while B downloads, force-stop B; restart; later reboot B; later install a newer build on B mid-download.
+- **Pass:**
+  - each time, B continues from its persisted parts: its log shows the restored piece count, not 0;
+  - the whole-file check passes at the end;
+  - no part is downloaded twice beyond what was not yet synced (at most one second's worth).
+- **Source:** E-29, E-32, E-33, INV-4. **Status:** TODO (SW-10 built and unit-tested in `RoomSwarmStateStoreTest`, pending devices)
+
+### SWM-15 - A member removed mid-download (SW-9)
+- **Steps:** while D downloads from B and C, the owner removes D from the group.
+- **Pass:**
+  - D's next request is refused (`REJECT(NOT_MEMBER)` in B's or C's log);
+  - D shows "You are no longer in this group" and its partial file is gone;
+  - B and C never send D a piece after the removal.
+- **Source:** E-34, SIM-07, INV-3. **Status:** TODO (SW-9 built and unit-tested in `SwarmHostLifecycleTest`, pending devices)
+
+### SWM-16 - Mixed versions (SW-8)
+- **Setup:** A, B on the swarm build; C on the previous release (no `sw1`).
+- **Pass:**
+  - C receives the file through today's direct push from A;
+  - B never sends C a swarm frame (C's log has no unknown-frame warnings);
+  - chat and calls between all three work as before.
+- **Source:** E-07, SIM-14, R9. **Status:** TODO (SW-8 built and unit-tested in `ZeroChangeProofTest`, pending devices)
+
+### SWM-17 - Android's six-hour service limit pauses, never cancels (SW-9)
+- **Setup:** an Android 15+ phone as A (sender) or as a downloader, plus one other member.
+- **Steps:**
+  1. Run `adb shell am compat enable FGS_INTRODUCE_TIME_LIMITS com.transfer.flash`.
+  2. Run `adb shell device_config put activity_manager data_sync_fgs_timeout_duration 120000` (2 minutes).
+  3. Start a large group send and put Flash in the background.
+- **Pass:**
+  - the log shows `Foreground service timeout reached` and **no** cancel or tombstone;
+  - the rows show "Paused by Android; continues automatically";
+  - opening Flash resumes the transfer, and every member completes.
+  - Record how a service declared `connectedDevice|dataSync` is treated (the platform page does not say).
+- **After the test:** reset with `adb shell device_config delete activity_manager data_sync_fgs_timeout_duration` and
+  `adb shell am compat reset FGS_INTRODUCE_TIME_LIMITS com.transfer.flash`.
+- **Source:** ripple 3, E-30, INV-10, developer.android.com/develop/background-work/services/fg-service-timeout (checked
+  2026-10-04). **Status:** TODO (SW-9 built and unit-tested in `TimeoutStopPlanTest`, pending devices)
+
+### SWM-18 - Not enough space, then space freed (SW-10)
+- **Steps:** fill B's storage until less than the file size is free; A sends; B accepts; then delete something on B to free space.
+- **Pass:**
+  - B shows "Needs X, Y free" and does not fail;
+  - after space is freed (next app open or within 15 minutes), B continues and completes;
+  - mid-download filling behaves the same.
+- **Source:** E-23, E-24, SIM-18. **Status:** TODO (SW-10 built and unit-tested in `SwarmWaitReasonRecoveryTest`, pending devices)
+
+### SWM-19 - A corrupt holder is detected and avoided (SW-10, needs a debug build flag that flips a byte in served pieces)
+- **Steps:** turn the flag on for C; A sends to B, C, D.
+- **Pass:**
+  - B and D log hash failures against C, then a ban after 3 strikes;
+  - both complete and pass the whole-file check;
+  - no corrupt piece is ever written.
+- **Source:** E-13, E-14, SIM-06, INV-2. **Status:** TODO (SW-10 built and unit-tested in `StrikeBookTest`, pending devices)
+
+### SWM-20 - Windows as sender and as holder, including a restart (SW-8)
+- **Steps:** Windows sends to two phones, and is quit and reopened mid-send; then a phone sends and Windows is a holder that serves the other phone while the sender is offline.
+- **Pass:** every transfer completes after the restart (desktop swarm rows survive it, unlike desktop 1:1 rows today); the Windows holder serves the phone.
+- **Source:** ripple 16, E-22. **Status:** TODO (SW-8/SW-10 built and unit-tested in `JvmPieceStorageTest`, pending devices)
+
+### SWM-21 - ECO device downloads but never serves (SW-8)
+- **Pass:** a device in ECO completes its download and its log has no `event=serve` lines; other members never request from it (its SUMMARY says `servingEnabled=false`).
+- **Source:** E-10, D9, SIM-13. **Status:** TODO (SW-8 built and unit-tested in `SwarmHostLifecycleTest`, pending devices)
+
+### SWM-22 - Phone hotspot with client isolation (SW-10)
+- **Setup:** A runs the hotspot; B, C, D are its clients.
+- **Pass:** every member completes (from whichever device it can reach); turning A off mid-send and back on behaves as `SWM-09` for whatever the members could exchange; **no speed claim**; record the time in `logs/experiments.md`.
+- **Source:** E-08, plan 1.2 (D11 superseded), FO-06. **Status:** TODO (SW-10 built and unit-tested in `SwarmWaitReasonRecoveryTest`, pending devices)
+
+### SWM-23 - Swarm off changes nothing (SW-8; run first)
+- **Setup:** the swarm switch off on every device (and separately: the `sample:consumer` app, which never attaches).
+- **Pass:** group sends, 1:1 sends, chat, calls and PTT behave exactly as on the previous build; no `caps` field in the HELLO log lines; no `SWARM` log lines.
+- **Source:** R9, SW-8 task 13. **Status:** TODO (SW-8 built and unit-tested in `ZeroChangeProofTest`, pending devices)
+
+### SWM-24 - What the sender sees (SW-11)
+- **Pass:** "Delivered to k of n" counts correctly as members finish; "You can go offline now" appears only once every part is held by at least one other online device, and turning the sender off right after it appears does not stop the others from finishing.
+- **Source:** plan 4.2, design 4.8, SW-11. **Status:** TODO (SW-11 built and unit-tested in `FlashSwarmUiMathTest`, pending devices)
+
+### SWM-25 - The sender's file changed or deleted after half (SW-10)
+- **Steps:** A sends; at about 40 % edit the file on A (or replace it with another file of the same name); separately repeat with deleting it.
+- **Pass:** A never serves changed bytes (`SOURCE_STATUS(LOST, CHANGED)` in its log); members complete what the group holds and the rest ends with the named sentence; nobody ends with a file that fails the whole-file check.
+- **Source:** E-19, E-20, SIM-20. **Status:** TODO (SW-10 built and unit-tested in `SwarmWaitReasonRecoveryTest`, pending devices)
+
+### SWM-26 - Long run with churn (SW-10)
+- **Setup:** 6 devices (Android and Windows), a 2 GB file.
+- **Steps:** while it spreads, switch random members' Wi-Fi off and on every minute or two for 20 minutes; include the sender twice.
+- **Pass:** all complete; whole-file checks pass; no `Failed` row; note any Transsion `Hiber` lines (E-31) separately.
+- **Source:** E-04, E-06, SIM-05. **Status:** TODO (SW-10 built and unit-tested in `SwarmWaitReasonRecoveryTest`, pending devices)
+
+### SWM-27 - A group call during a swarm (SW-10)
+- **Steps:** start a group call among 3 members while a 1 GB group file spreads among them.
+- **Pass:** call audio stays clear (no more dropouts than the same call without a transfer); the swarm logs the reduced slot count while the call is active and restores it after.
+- **Source:** ripple 19, MEAS-*. **Status:** TODO (SW-10 built and unit-tested in `SwarmEngineStepTest`, pending devices)
+
+### SWM-28 - Group send regression after the refactor (SW-1)
+- **Pass:** on Android and on Windows, a file sent to a group of 3 arrives at both members exactly as on the previous build (bubbles, progress, accept, cancel from the sender's bubble).
+- **Source:** SW-1. **Status:** TODO (SW-1 built and unit-tested in `GroupFileSenderTest`, pending devices)
+
+### SWM-29 - Old and new builds after the seams (SW-2)
+- **Pass:** between a device on the previous release and one on the SW-2 build: chat, a 1:1 file, a group file, a call and PTT all work; the new device's HELLO carries no `caps` while nothing is attached.
+- **Source:** SW-2. **Status:** TODO (SW-2 built and unit-tested in `MagicFrameRouterTest`, pending devices)
+
+### SW-4 Sans-IO Swarm Engine Verification (Unit & Property Tests)
+- **Pass:** Pure state machine verified with table-driven tests (`SwarmEngineStepTest`, `PiecePickerTest`, `SourceSelectorTest`, `ServePolicyTest`, `RequestWindowTest`, `StrikeBookTest`, `WaitClassifierTest`), 1,000-seed property tests verifying all 7 invariants (`SwarmEnginePropertyTest`), and mutation checks on 4f (ServePolicy guards) and 4j (Cancel signature checks).
+- **Source:** SW-4. **Status:** Unit & property verified (2026-10-04). No device checks claimed (device testing owed under SWM-06..SWM-27 in SW-7..SW-10).
+
+### SW-6 Persistence Verification (Room Migration, DAO & State Store Tests)
+- **Pass:** Schema version 7 (`SwarmContentEntity`, `SwarmTombstoneEntity`, `SwarmDao`), `STEP_6_7` in `FlashSchemaSteps`, `MIGRATION_6_7` in `FlashMigrations`, `FlashDatabaseJvmTest` round-trip and query verification, Room SQLite migration verification in `FlashJvmMigrationsTest`, and `RoomSwarmStateStoreTest` in `:core:engine`.
+- **Source:** SW-6. **Status:** Unit verified (2026-10-04). No device checks claimed.
+
+### SW-7 Storage I/O Verification (Unit & Functional Tests)
+- **Pass:** `SourceHandle`, `PartialHandle`, `StorageFinalizeResult`, `PieceStorage` interfaces defined in `:core:swarm`; `JvmPieceStorage` and `AndroidPieceStorage` implemented in `:core:engine`. Positional reads, writes, sync, identity change detection, whole-file SHA-256 validation, name collision handling, and path traversal guards verified in `JvmPieceStorageTest`. Android SAF picker updated with `isPersistable`.
+- **Source:** SW-7. **Status:** Unit & functional verified (2026-10-04). Device checks owed under SWM-13 (physical content-URI streaming and restart resumption on Android).
+
+### SW-8 Driver and Host Integration Verification (Unit & Interop Tests)
+- **Pass:** `SwarmDriver` actor, `FlashSwarm` facade, `SwarmHostBinding` with ports (`SwarmTransport`, `SwarmGroupContext`, `PieceStorage`, `SwarmStateStore`), `attachExternalRows` bridge in `RealFlashTransferRepository`, `attachSwarm` wiring in `FlashEngine`, `MagicFrameRouter` FSW1 routing, GM-5 `GroupGate` integration, `ZeroChangeProofTest` zero-overhead proof, and 3-peer multi-node swarm interop test in `SwarmInteropTest`.
+- **Source:** SW-8. **Status:** Unit & interop verified (2026-10-04). Device checks owed under SWM-09, SWM-10, SWM-16, SWM-20, SWM-21, SWM-23.
+
+### SW-9 Cancel Everywhere and Lifecycle Verification (Unit & Functional Tests)
+- **Pass:** Cryptographic origin cancel propagation via signed `SwarmTombstone`, `CANCEL_ACK` tracking, `SUMMARY` tombstone gossip, delete-for-everyone integration, local recipient cancellation, removal/leave eviction, Android 15+ FGS timeout suspension without tombstones (`TimeoutStopPlanTest`), 15-minute background retention cleanup for expired records/orphaned `.part` files.
+- **Source:** SW-9. **Status:** Unit & lifecycle verified (2026-10-04). Device checks owed under SWM-11, SWM-12, SWM-15, SWM-17.
+
+### SW-10 Errors and Recovery Verification (Unit & Recovery Tests)
+- **Pass:** Comprehensive recovery handling for all 7 `SwarmWaitReason` codes (`SwarmWaitReasonRecoveryTest`), wake-up wiring for network changes, peer sessions, incoming frames, background worker intervals, and storage space restoration. User-friendly sentence formatting in `TransferFailureText`, bad piece detection and peer banning in `StrikeBookTest`.
+- **Source:** SW-10. **Status:** Unit & recovery verified (2026-10-05). Device checks owed under SWM-13, SWM-14, SWM-18, SWM-19, SWM-22, SWM-25, SWM-26, SWM-27.
+
+### SW-11 UI & Availability Presentation Verification (Unit & Logic Tests)
+- **Pass:** Component research doc `docs/ui/group-file-availability.md` (UI-055), mathematical calculations in `FlashSwarmUiMath` tested in `FlashSwarmUiMathTest`, receiver detail lines, sender "Delivered to k of n" and "You can go offline now", `FlashFileMessageCard` bubble badges, `FlashTransfersScreen` status lines (`FlashTransfersLogicTest`), notification origin cancel & detail lines, settings toggles for group file sharing in Android and Desktop hosts (`FlashSettingsLogicTest`).
+- **Source:** SW-11. **Status:** Unit & logic verified (2026-10-05). Device checks owed under SWM-24, SWM-07.
+
+### SWM-30 - Partial downloads survive an app restart (ERROR-102 item 2)
+- **Steps:**
+  1. B starts receiving a large file from A, then force-stop Flash on B at about 40 %.
+  2. Restart Flash on B and open Transfers.
+- **Pass:**
+  - the `.part` file is still there (cleanup did not delete it) and the row shows the persisted progress, not 0;
+  - B's log has `SWARM: restore done contents=1 ...` and `SWARM: restored root=... pieces=N/M`;
+  - the download continues without any user action and completes with a matching file.
+- **Source:** ERROR-102 items 1 and 2, plan R4, E-29. **Status:** TODO
+
+### SWM-31 - The group's serve switches take effect (ERROR-102 item 3)
+- **Steps:**
+  1. In a group of three, B turns "serve to the group" off in this group's preferences.
+  2. A sends a file; C starts, then B finishes.
+  3. Repeat with an admin turning the signed group setting "swarm serving" off.
+- **Pass:**
+  - B (or everyone, for the signed setting) refuses to serve: the requester's log shows a `BUSY` reject and it takes the piece from another holder or waits;
+  - turning the switch back on lets serving resume.
+- **Source:** ERROR-102 item 3, GM-9, ADR-074. **Status:** TODO
+
+### SWM-32 - ECO mode and calls throttle serving (ERROR-102 item 4)
+- **Steps:**
+  1. B is a holder. Switch B to ECO; C requests pieces from B.
+  2. Back to STANDARD; start a group call involving B while C downloads.
+- **Pass:**
+  - within about 2 s of the mode change B rejects requests as `BUSY` (ECO) and resumes after;
+  - during the call B's serve windows shrink (fewer slots) and recover after the call.
+- **Source:** ERROR-102 item 4. **Status:** TODO
+
+### SWM-33 - A cancel while the last piece is in flight, and a paired non-member (ERROR-102 items 6 and 8)
+- **Steps:**
+  1. A sends a small file; B starts; A deletes the message for everyone while B is on the last piece (repeat 5 times).
+  2. Pair D with A and B but do not add D to the group; connect D while the group has swarm content.
+- **Pass:**
+  - B never ends with a completed file after the delete-for-everyone, and no `.part` file is left;
+  - D's log shows no swarm `Summary`, and A's log shows `peer up peer=<D> deniedGroups=1`.
+- **Source:** ERROR-102 items 6 and 8. **Status:** TODO
+
+---
+
+## 4x. Group membership by id + secret, implementation plan (`docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md` section 7B)
+
+GM-1 (cryptographic primitives), GM-2 (invite format & secret storage), GM-3 (proof exchange, `gs1`, membership frames), and GM-5 (group gate integration) are built and unit-tested. On 2026-10-04 the owner made two decisions:
+- **every member of a group receives files, whether or not it is paired;**
+- **groups get a group id + secret** (D1).
+
+Track GM owes these checks, in addition to `GSEC-01`..`GSEC-08` and `GSET-01`..`GSET-04` (section 4v). Run them in the order of
+plan GM-11. Record results in the Results log.
+
+### GMB-01 - Files reach a member that is not paired with the sender (GM-5)
+- **Setup:**
+  - an existing v2 group of 3: A (the owner) is paired with B and with C;
+  - **B and C are not paired with each other** (C is vouched to B).
+
+  This works on today's groups; no secret is needed.
+- **Steps:**
+  1. B sends a photo and a 200 MB file to the group.
+  2. C sends one back.
+- **Pass:**
+  - C receives B's files and B receives C's (bubbles, progress, Accept as configured).
+  - Before GM-5 the log showed C left out of B's recipients. After GM-5 it does not.
+  - Legacy `g-` groups behave exactly as before.
+- **Source:** plan 5.7, GM-5, owner decision 1.3. **Status:** TODO (nothing built)
+
+### GMB-02 - Group-only peers stay out of 1:1 (GM-5, GINV-8)
+- **Steps:** with B and C from `GMB-01` (or a member that joined by invite):
+  1. look for C in B's contacts;
+  2. try a 1:1 message, a 1:1 call and PTT between them. Sending the 1:1 frame may need a debug build.
+- **Pass:**
+  - C is not a 1:1 contact and not a PTT recipient;
+  - a 1:1 call is refused;
+  - a forged 1:1 frame is dropped (a `CHAT` log line);
+  - group chat, calls and files between them keep working.
+- **Source:** plan ripple 36, D4. **Status:** TODO (nothing built)
+
+### GMB-03 - A live group call leg ends when its member is removed (GM-5 task 6)
+- **Steps:**
+  1. Start a group call with 3 devices.
+  2. An admin removes one participant during the call.
+- **Pass:**
+  - On every other device, the removed device's legs end within a few seconds, and the log names the reason "removed".
+  - The others stay connected.
+
+  This is the same check as the call part of `GSEC-08`.
+- **Source:** plan ripple 46, AGENTS 29 gap. **Status:** TODO (nothing built)
+
+### GMB-04 - Invite link round trip (GM-2, GM-4, GM-8, GM-10)
+- **Steps:**
+  1. On Android, A shares an invite to another app (for example a messaging app or notes). Tap it on Android phone D.
+  2. On Windows, A copies the invite to the clipboard. Paste it on Windows E.
+  3. Try a truncated link and an edited link.
+- **Pass:**
+  - D and E both open the join confirmation, with the right group name and inviter.
+  - D and E reach A through the address hints (the log shows the hint dial). With A gone, they reach another discovered member.
+  - A broken link shows "This invite is not valid" and stores nothing.
+- **Source:** plan GM-2, GM-4, GM-8, GM-10, M-01, M-03. **Status:** TODO (GM-10 UI and deep link handling built & verified; ready for physical device test in GM-11)
+
+### GMB-05 - Impostor at the inviter's id (GM-4, ripple 37)
+- **Setup:** a debug device configured to answer as the inviter's device id with its own key, or a second install restored under
+  the same id.
+- **Pass:**
+  - The joiner refuses it at TLS and shows M-04.
+  - Afterwards, the trust store holds no TOFU pin for that id.
+  - The real inviter works later.
+- **Source:** plan ripple 37, named-dial TOFU trap. **Status:** TODO (nothing built)
+
+### GMB-06 - Join while no admin is online, approved later by a co-owner (GM-4)
+- **Setup:** a group with owner O, co-owner K (ADR-063) and member M. O and K are offline.
+- **Steps:**
+  1. Newcomer N joins with M's invite.
+  2. Later, K comes online. O stays offline.
+- **Pass:**
+  - N shows "Waiting for an admin…".
+  - M forwards the request to K when K appears.
+  - K gets one notification and approves.
+  - N becomes a member on M and K, and later on O.
+  - N chats, calls and sends and receives files with all of them, with no pairing at all.
+- **Source:** plan GM-4, M-07. **Status:** TODO (nothing built)
+
+### GMB-07 - A member offline during a removal gets the new code from a non-admin (GM-6)
+- **Setup:** a group of 4. Member Y is offline. The admin removes X.
+- **Steps:**
+  1. The admin goes offline.
+  2. Y comes back and meets only member Z.
+- **Pass:**
+  - Y receives the rotation notice and the secret from Z. The log shows `GsSecret` with no secret bytes.
+  - Y's chat never stopped (O-13).
+  - An invite Y shares afterwards works, and an old invite is refused (M-06).
+  - X never receives the new secret.
+- **Source:** plan 5.7 rotation without sealing, GM-6. **Status:** TODO (built in GM-6, needs device run)
+
+### GMB-08 - Two admins rotate at the same time (GM-6)
+- **Steps:**
+  1. Put the owner and a co-owner on separate network segments.
+  2. Each removes a different member, or presses "Change group code".
+  3. Reconnect them.
+- **Pass:**
+  - Every device ends on the same epoch and secret: the smaller `rotationId` wins, and the losing admin rotates once more.
+  - Both removed members stay out.
+  - Invites made after the merge work.
+- **Source:** plan GM-6 task 5, M-16. **Status:** TODO (built in GM-6, needs device run)
+
+### GMB-09 - An existing v2 group gets a secret (GM-7, O-11)
+- **Setup:** a v2 group created on today's build. Every member is updated except one.
+- **Pass:**
+  - After the owner or a co-owner opens the app on the new build, "Invite people" becomes available to every member on the new
+    build.
+  - The member on the old build keeps chatting, calling and receiving files as before.
+- **Source:** plan GM-7. **Status:** TODO (GM-7 built, unit/host-verified in GroupUpgradeTest; owed on physical devices)
+
+### GMB-10 - A member on an old build trusts a member who joined by invite (GM-4 task 10, ripple 40)
+- **Pass:**
+  - The old-build member shows the new member in the roster, and exchanges group chat and calls with it.
+  - Its log shows the vouch installed, and no `owner-not-paired` or `sender-not-member` refusal.
+- **Source:** plan ripple 40, M-21. **Status:** TODO (nothing built)
+
+### GMB-11 - The secret never appears in logs (GM-2, GINV-1)
+- **Steps:**
+  1. Run a full flow: create, invite, join, remove, rotate, handover.
+  2. Copy the secret part of the invite.
+  3. Collect `adb logcat` from every Android device, and the desktop log files.
+- **Pass:**
+  - Neither the secret (base64url or hex) nor the invite link appears in any log, crash report or notification.
+  - `groupId` and `epoch` may appear.
+- **Source:** plan GINV-1, AGENTS 24. **Status:** TODO (nothing built)
+
+### GMB-12 - A removed device asks to rejoin under "open" (GM-4, GINV-5)
+- **Steps:**
+  1. Set the join policy to "open".
+  2. Remove X.
+  3. Give X a **new** invite, and X joins.
+- **Pass:**
+  - X is **not** admitted automatically.
+  - Admins see the request, marked as previously removed.
+  - X is admitted only after an explicit approval.
+- **Source:** plan GINV-5, M-14. **Status:** TODO (nothing built)
+
+### GMB-13 - Secret store lost on one device (GM-6, M-17)
+- **Steps:** clear the app's key material the way a reinstall with restore, or a Keystore reset, would. GM-2 writes the exact
+  procedure once the storage is known.
+- **Pass:**
+  - The device is still a member: chat, calls and files work (O-13).
+  - For invites, it shows "Getting the group code…".
+  - It gets the secret back from another member.
+- **Source:** plan M-17. **Status:** TODO (built in GM-6, needs device run)
+
+### GMB-14 - Invite sent inside a 1:1 Flash chat (GM-10, O-14, optional)
+- **Pass:**
+  - A `flash://g/...` link in a received 1:1 message shows a "Join" action, which opens the same confirmation as `GMB-04`.
+  - A malformed link shows no action.
+- **Source:** plan O-14, GM-10. **Status:** TODO (built in GM-10 via FlashInlineInviteCard; ready for physical device test in GM-11)
+
 ## 5. Measurements — do these last
 
 They replace every *(measure)* estimate in the plans and decide tuning. Record each in `logs/experiments.md`.
@@ -1295,4 +2124,17 @@ They replace every *(measure)* estimate in the plans and decide tuning. Record e
 
 Newest first. One entry per test session: date, build, devices, tests run, result, and links (ERROR/EXP).
 
-*(No results yet. Backlog created 2026-09-29 at commit `4e71c5d`.)*
+### 2026-10-02 — owner-reported, group video size (GRP-01 partial)
+
+- **Build:** not recorded (the repo HEAD that day was `367167a3`; the owner did not say which build was installed).
+- **Devices:** not recorded.
+- **Reported:** a video call with 3 devices and a video call with 4 devices. The owner's conclusion is that the
+  realistic limit is 3 to 4 devices.
+- **Recorded as:** GRP-01 PARTIAL. The "one leaves", Android PiP and log-review parts were not reported and stay
+  TODO. GRP-10 added to find where video really stops being usable. GRP-09 (call size caps) is a different test and
+  is untouched.
+- **Not claimed:** that 5 or more devices fail (nobody reported that), or that the 3 to 4 figure holds on a LOW
+  phone or on 2.4 GHz.
+- **Links:** `docs/calling/GROUP-VIDEO-PLAN.md` section 8, `logs/experiments.md` (owner observation).
+
+*(Backlog created 2026-09-29 at commit `4e71c5d`.)*

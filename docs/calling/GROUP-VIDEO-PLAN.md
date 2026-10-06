@@ -386,3 +386,11 @@ No open questions remain. Next: G0 measurements (now including C1–C3), and ADR
 Its gate is measurement C3 (G0: VP8 software vs H.264 / VP9 hardware on the BelFone). Owner decision P8 put every
 measurement at the end, so there is nothing yet to justify it. When C3 runs: if it shows a clear CPU, heat or bitrate
 win, build G4b as specified in §6; otherwise record the numbers here and close it.
+
+### Device result 2026-10-02 (owner-reported, GRP-01 partial)
+- The owner ran a video call with 3 devices and one with 4 devices and puts the realistic limit at 3 to 4 devices.
+  Devices, build and logs were not recorded (EXP-019, `docs/testing/TEST-BACKLOG.md` GRP-01).
+- No code was changed for this. The caps in section 5 / `FlashGroupCallLimits` (8 video, 12 voice) still stand; the
+  estimates in section 4 remain unmeasured. A relay peer is still the only way to lift the mesh ceiling and is still an
+  open owner decision needing an ADR.
+- GRP-10 (backlog) measures where video stops being usable so the 3 to 4 figure is either confirmed or moved.

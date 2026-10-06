@@ -15,6 +15,7 @@
 | Evil-twin peer impersonation | MITM on first connection | Pairing v2 (ADR-042): commit-then-reveal nonces; the 6-digit code covers both TLS-pinned identity keys, both ephemeral keys and both nonces, so a MITM cannot force a match (≈10^-6). Each side refuses a pairing fingerprint that is not the key TLS pinned for that connection. Inbound TLS requires the client certificate (audit S1). Mismatch after pinning = hard fail + `PeerKeyChanged` | `PairingV2`, `PairingSessionStateMachine`, `TofuPinVerifier`, `WsFlashNetwork.inboundIdentityFailure` |
 | Legacy trust flag abuse | Old "trusted" flag silently becoming a crypto pin | Legacy migration writes `LEGACY_UNBOUND_FINGERPRINT`; TOFU re-prompts on first contact instead of trusting blindly | `LegacyTrustMigration` |
 | Group membership forgery / roster poisoning | Legacy groups (≤ 6, unchanged) have unsigned rows; V1a (2026-09-29) closed the cheap forgeries (F-1, F-2, F-4, F-5). **v2 groups (ADR-044 V1, built 2026-09-30, device check GT-02 owed):** an owner-signed charter, per-member owner-signed certs and per-message author signatures, so a paired member can no longer rewrite the roster, forge another member's message or take the group over. Vouched trust (groups of 20) is V2, not built | `docs/group/v0-threat-review.md`, `docs/group/v1-signed-membership-plan.md`, section 8 below |
+| Group files between members that never paired; joining a group with its id + secret (**PROPOSED 2026-10-04, nothing built**) | Forged cancels and announcements, stolen or leaked invites, relayed proofs, removed members coming back | Signed swarm statements checked against the origin key; the group gate read per frame; a proof bound to both TLS keys; a rotation on every removal; an invite or pairing as the only charter roots. Full rows in section 10 | ADR-070 to ADR-075, section 10 below |
 | Timing side channels on comparisons | Fingerprint/code oracle | All secret-material comparisons via `MessageDigest.isEqual` (constant-time) | `FlashFingerprint.constantTimeEquals`, `NumericComparisonCode.hashesEqual` |
 
 Out of scope for v1: anonymity / metadata protection beyond the local network, forward secrecy across session-key compromise (see §4 Rekey), post-quantum.
@@ -207,3 +208,48 @@ no files (group attachments are paired-only in both directions), no 1:1 calls, n
 - A bundle carries at most 20 active certs and 64 tombstones (84). The 64 is V1's cap, unchanged; what happens to a group that has
   removed more members than that was not designed in V2.
 - Unmeasured: a 20-member roster's verification cost and the mesh's session count on phones (MEAS-08, SC-01, SC-02).
+
+## 10. Group swarm and membership by group secret (ADR-070 to ADR-075, PROPOSED 2026-10-04, nothing built)
+
+Threat rows written in SW-0 of `docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md`, before any code. Each row names the invariant that answers
+it: INV-x is in the plan's section 5.6, GINV-x in its section 5.7. Wire details: `docs/protocol.md` "Group swarm wire FSW1 v1" and "Group
+membership v1". **None of this exists yet; section 9's limits stay true until GM-5 and SW-8 land.**
+
+### 10.1 The swarm
+
+| Threat | What an attacker tries | Mitigation | Invariant |
+|---|---|---|---|
+| Forged cancel | A member, or anyone with a session, sends `CANCEL` to stop a file for everyone | A tombstone counts only if it verifies against the origin key stored with the announcement, under its own tag `flash-swarm-v1/cancel` | INV-6 |
+| Forged announcement | A member announces content under another member's name, or a root that does not match the file | `rootSig` by the origin's roster key over group, message, origin, root, size, name and type; a `swarm=1` announcement that fails is dropped with no bubble. Pieces are then checked against the manifest, and the manifest against the root | INV-6, INV-2 |
+| Cross-group oracle | A member of group G asks for a root it learned in group H, to learn whether this device holds it | Content is served in G only if this device holds its announcement in G; otherwise `REJECT(UNKNOWN)`, the same answer as for content that does not exist | INV-8 |
+| Request flood | A member asks for everything at once to exhaust upload, memory or battery | At most 64 pieces per `REQUEST`, a per-requester byte budget, serve slots by performance mode, `REJECT(BUSY)` | INV-12 |
+| Corrupt piece | A faulty or hostile member serves wrong bytes; or this device's own disk or source changed | Every piece is hash-checked before it is written and re-hashed before it is served; the whole file is checked at the end (ADR-068); a source of bad pieces gets strikes and is dropped for that transfer | INV-2 |
+| Removed member | A removed device keeps fetching or serving | The gate is read for every request; no cached answer outlives a membership change | INV-3, GINV-6 |
+| Replayed tombstone | An old, valid tombstone is replayed to cancel a later re-send of the same file, or another member's announcement of the same bytes | A tombstone cancels only the announcement `(groupId, messageId)` it names, and verifies only against that announcement's origin key | INV-5, INV-6 |
+| Hostile manifest sizes | A manifest claims a huge piece count, many fragments or oversize fragments | At most 16,384 pieces, 9 fragments of 64 KiB, piece size 64 KiB to 1 MiB; a manifest is used only after its root is recomputed and its size matches the announcement | INV-12 |
+| Malformed-frame flood | A peer sends broken FSW1 frames to burn CPU or to get the session dropped | The decoder never throws; after 3 malformed frames in a minute that peer's FSW1 frames are ignored for 10 minutes; the session (chat, calls) is never dropped for it | INV-12 |
+| Storage exhaustion | A member announces a very large file | Nothing is fetched before Accept unless auto-accept is on (and then only up to the device's size limit); the free-space gate of ADR-069 applies at Accept and before each start | ADR-069 |
+
+### 10.2 Membership by group id + secret
+
+| Threat | What an attacker tries | Mitigation | Invariant |
+|---|---|---|---|
+| Leaked invite | Someone outside the group obtains the link | Under `APPROVE` (the default) the secret alone puts no key into the roster: an admin sees the request and decides. Under `OPEN` the holder is admitted until a removal and the rotation that follows it. "Change group code" rotates on demand | GINV-5, GINV-4 |
+| Relay during the proof | A man in the middle holds two TLS sessions and forwards the proof messages | The MACs cover both live TLS key fingerprints, which differ on the two relayed sessions | GINV-7 |
+| Replayed or reflected proof | An old MAC is replayed, or the responder's MAC is sent back as the initiator's | Fresh 16-byte nonces from both sides, role bytes `I` / `R`, a one-shot state machine, constant-time comparison | GINV-7 |
+| Offline guessing of a weak secret | An observer records a challenge MAC and guesses the secret offline | The app generates 256 random bits; there are no typed codes (D3) | GINV-1 |
+| Membership oracle | A stranger who knows a group id asks devices to prove it, to learn who is in the group | A device that does not hold the group still answers with a random challenge and then a plain failure; it says "stale" only after a valid older proof or to an active roster member | GINV-7 |
+| Stale epoch | A peer claims a newer or older epoch to make others change state | An epoch number is a claim: rotations are learned only from admin-signed notices. A member that missed a rotation keeps chatting (O-13) and asks for the secret | GINV-2, GINV-4 |
+| Removed member rejoins | A removed device uses its old invite, or asks to join again | Every removal rotates the secret, so the old invite fails the proof; `OPEN` never auto-approves a tombstoned key; its tombstone keeps it out of the gate | GINV-4, GINV-5, GINV-6 |
+| Secret handed to a removed device | A member that has not yet heard of a removal hands the new secret to the removed device | The new secret exists only alongside its notice, and the notice names the removed ids: no device hands a secret to an id named in any stored notice, and the handover checks the gate at that moment | GINV-1, GINV-4 |
+| Forged or replayed rotation notice | A member forges a notice to lock others out, or replays an old one | A notice counts only if an admin signed it (tag `flash-grot-v1`); epochs only grow; for one epoch the smaller rotation id wins | GINV-4 |
+| Handed secret that does not match | A peer hands a wrong secret to split the group | The receiver stores it only if it matches the commitment in a valid notice for that epoch | GINV-4 |
+| Join-request flood | Someone floods admins with join requests | A request needs a passed proof (only invite holders can send one); failed proofs are rate-limited per peer; requests are kept once per subject key and expire after 7 days; admin notifications are collapsed per group | GINV-5 |
+| Unknown group pushed onto a device | A peer sends a valid bundle for a group this device never asked for | A charter is trusted only through pairing with its owner or an invite this device accepted for exactly that group id | GINV-3 |
+| Impostor at the inviter's id | A device answers the first dial under the inviter's id | The invite carries the inviter's key fingerprint, installed as a group-scoped vouch before the dial, so TLS refuses any other key and nothing is pinned on first use | GINV-3 |
+| Secret leaked through logs or backups | The secret ends up in logcat, a crash report, a notification or a cloud backup | It is stored only in the encrypted database (desktop protection checked in GM-2), excluded from backups, and never logged: logs show the group id and epoch only | GINV-1 |
+| Group-only peers without app-layer chunk encryption | A passive or active attacker on the LAN reads file chunks between members that never paired | TLS 1.3 to the certified key protects them. There is no pairing session key between such peers, so no `FSEC` envelope, and no group session key is planned. **Accepted limit**, the same as for vouched members today | GINV-2 (identity), accepted |
+| 1:1 escalation | A peer that is only a group member tries 1:1 chat, a 1:1 call, push-to-talk or pairing rights | `isTrustedPeer` still gates every 1:1 feature; group membership grants nothing outside the group | GINV-8 |
+
+**Accepted limits (in addition to section 9):** no forward secrecy; a removed member keeps what it received; removal is eventually
+consistent; under `OPEN` a leaked invite admits its holder until the next rotation; a lying admin can approve a key it controls.

@@ -20,6 +20,7 @@ postponed*. Nothing here is forgotten and nothing here is cancelled; it is simpl
 | FO-03 | Wi-Fi Direct transport (DR7) | 2026-09-29 | POSTPONED |
 | FO-04 | Group file sending: fan-out cost and a revamp of file sending | 2026-09-29 | POSTPONED |
 | FO-05 | Scale and battery measurement, PC6 / MEAS-02 (and the choice of 32) | 2026-09-29 | POSTPONED |
+| FO-06 | Hotspot client isolation (joined phones cannot reach each other) | 2026-10-02 | IDEA (not prioritised) |
 
 ---
 
@@ -108,6 +109,29 @@ groups to 20 (ADR-044 V2) does not wait for it, but the cost is known and accept
 - Per-member resume state on the sender, capped concurrent uploads, and queuing by tier and battery.
 - A broader revamp of the send path: resume, chunking and per-peer scheduling as one design, not a group patch.
 
+**Owner's swarm idea (2026-10-02, recorded, not chosen, no code).** The owner described the relay design above more
+concretely: the sender hands the file to **only two members**; those two pass pieces on to others, and so on, like a torrent.
+Requirements as stated:
+- A member can **receive different pieces from several members at once**.
+- If a source drops, **another member holding that piece takes its place**; the transfer does not restart.
+- The **sender may go offline** after sending only part of the file (for example half to one member): that member shares what it
+  has with the next member, who shares with the next.
+- Shown as a diagram on slide 9 of `Flash Progress Update (12 slides).pptx` (a presentation, outside the repo).
+
+What already exists and would be reused: numbered chunks, SHA-256 verified per chunk before it is written, resume from the
+persisted done-set (`TransferEntity`), multi-stream dispatch, groups of up to 20 with vouched members, session ceiling 24.
+What would be new: (1) a per-member map of which chunks it holds; (2) a **sender-signed list of chunk hashes** so a relay cannot
+substitute a chunk (a member that never talked to the sender has no other way to trust a piece; vouched members exist only since
+ADR-044 V2); (3) choosing which member serves which chunk and re-assigning when a source drops; (4) member-to-member links, which a
+group does not guarantee (ERROR-088 / ERROR-095 show a member may not reach every other member); (5) persistence of "pieces I hold
+and may serve" for a member that is not the receiver of record.
+Honest limit: a file can only complete while **every piece is held by someone who is online**. If half the file left the sender and
+the one holder of that half goes offline too, the rest of the group is stuck until a holder returns. Also a trust question: a member
+that serves pieces learns the file, so serving needs the same group membership gate as receiving (a removed member must stop serving).
+FO-04 stays POSTPONED (ADR-056); nothing here starts it. It needs its own ADR first.
+
+**Research and plan (2026-10-03):** `docs/transfer/TRANSFER-V2-SWARM-AND-MULTIFILE-PLAN.md` (libraries rejected as transport, the swarm's honest limits, the shared manifest + pull-wire foundation, FA-5 and the transport upgrade, phased with measurement gates). Plan only; this item stays POSTPONED until the owner decides.
+
 **Bring it back when.** Groups above 6 exist in practice (after ADR-044 V2), or a user reports slow/failed group file
 sends, or the owner opens the send-path revamp. It needs its own ADR before code.
 
@@ -141,3 +165,40 @@ Expect to handle ERROR-074 (Transsion freezes Flash at screen-off) first.
 
 **Read first.** PC plan §4 PC6, PC7 and decision P8; ADR-044 phase V3; ADR-048 ("session cap stays a uniform 8 until PC6");
 TEST-BACKLOG §5.
+
+
+---
+
+## FO-06 — Hotspot client isolation: phones joined to a phone's hotspot cannot reach each other
+
+**What.** Owner report (2026-10-02): a mobile hotspot isolates the phones connected to it, so they cannot discover or connect to
+each other. The repository already holds the same symptom: on an Infinix Hot 50 hotspot devices could not discover or connect to
+each other (ERROR entry of 2026-09-30, which names the hotspot's client isolation as the likely cause; **not isolated by a
+controlled test**). Earlier hotspot work (memory `nsd-hotspot-discovery`) found that a joined phone can open a connection to the
+hotspot phone but the hotspot phone cannot open one to a joined phone. Android's hotspot documentation
+(source.android.com, "Wi-Fi hotspot (Soft AP)", checked 2026-10-02) does not mention client isolation, so this looks like
+phone-maker behaviour; which makers and models do it is **unknown** (MEAS-07 / HOT-01 measure it).
+
+**Why it is not fixed by discovery.** mDNS, the DR2 beacon and the DR3 subnet sweep all need phone-to-phone packets; isolation
+drops them. DR3 and Connect by IP cover networks that block multicast but allow unicast, not this.
+
+**Options that need no server (none chosen, nothing built, owner has not prioritised).**
+1. **Relay through the hotspot phone.** Every joined phone can reach it, so it forwards frames between joined phones. End-to-end
+   encryption between the two phones exists (ECDH, HKDF, AES-GCM in v2.0.0-beta), so the relay sees ciphertext. Needs a routing
+   frame in the protocol and an ADR; cheap for chat and files, heavy for calls (the host would carry every media stream; see the
+   3-to-4 video limit).
+2. **Wi-Fi Aware** (NAN). Official API from Android 8 (API 26), connects phones with no access point; needs hardware support
+   (`FEATURE_WIFI_AWARE`, `WifiAwareManager.isAvailable()`) and may not work while a hotspot or Wi-Fi Direct is in use (official
+   doc, checked 2026-10-02). `CompositeDiscovery.PRIORITY_ORDER` already reserves `WIFI_AWARE`; no code exists.
+3. **Wi-Fi Direct** is FO-03.
+4. **App-made local-only hotspot** (`WifiManager.startLocalOnlyHotspot`). The Android doc says it exists so that applications on
+   devices connected to the hotspot can communicate with each other; no internet. Whether Transsion applies isolation to it is
+   unknown; joining needs the network name and password and, for a client app, a `WifiNetworkSpecifier` request.
+5. **Host the hotspot elsewhere** (a router, a laptop, another make of phone). Today's workaround; which hosts isolate is unchecked.
+
+Always useful whichever is chosen: detect "same subnet, unreachable" and tell the user why instead of failing silently.
+
+**Bring it back when.** The owner wants the hotspot case to work for phones that join each other, or HOT-01 shows which phones isolate.
+
+**Read first.** `docs/network/DISCOVERY-RESILIENCE-PLAN.md` (DR0 matrix); ADR-056; ERROR entry of 2026-09-30; ERROR-079
+(the hotspot host and WebRTC); `docs/testing/TEST-BACKLOG.md` HOT-01...HOT-03.

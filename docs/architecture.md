@@ -22,6 +22,7 @@ Facade:
 
 Core Engine Libraries (Headless / Zero-UI, compileSdk 35):
   :core:calling     (WebRTC voice/video, FLASH_CALL signaling over a host-owned channel)
+  :core:swarm       (PLANNED, ADR-070: group file swarm, sans-IO engine + FSW1 codec; attached by the host, optional)
   :core:messaging   (Chat repository, Outbox, Receipts, Drafts, Reactions)
   :core:transfer    (SAF File Streaming, Chunking, Reassembly, Checksums)
   :core:network     (Persistent TCP Sessions, RFC 6455 WebSockets, Mesh Routing)
@@ -45,6 +46,13 @@ Dependency direction is strictly downward, with two deliberate exceptions:
   dependency, since it carries no native payload. It is Kotlin Multiplatform since ADR-058 (Android +
   JVM, the audio hardware behind `PttAudioPlatform`), so the Windows desktop app runs the same push-to-talk
   engine, and `:ui:callui` (which shares the session card) `api`s it.
+- **`:core:swarm` (planned, ADR-070, PROPOSED 2026-10-04, not built) follows the PTT pattern, not the calling one.** `:core:engine`
+  `api()`s it and wires it in one place (`SwarmHostBinding`); nothing runs until the host calls `attachSwarm`. It depends only on
+  `:core:common`, `:core:transfer` (model and `Sha256`) and coroutines, and no lower module imports it (a `LayeringTest` will enforce both).
+  The lower layers gain two generic seams that never name it: a `caps` list in the WebSocket HELLO (`FlashDevice.features`) and a router
+  for binary frames by 4-byte magic in `:core:engine`. Group membership by group id + secret (ADR-073) is **not** a module: it extends the
+  group code in `:core:messaging` (package `...messaging.group`, with the `GroupGate` of ADR-075) and `:core:security` (package
+  `...security.group`). Plan: `docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md` sections 2 and 2.6.
 - **Persistence is inverted, not depended on.** `:core:messaging` and `:core:transfer` define
   storage ports; the Room-backed adapters live in `:core:engine` (ADR-024), so neither domain module
   depends on `:core:persistence` and no Room type reaches a public signature.

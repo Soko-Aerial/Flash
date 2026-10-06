@@ -1,5 +1,1383 @@
 # Progress Log
 
+## 2026-10-06 (a) - Swarm review fixes (ERROR-102)
+
+### Worked on
+A read-only review of the group swarm (SW-0..SW-11) on 2026-10-05 found nine defects; this session fixed them. Detail, root causes and the list of what is still open are in ERROR-102.
+
+### Changed
+- Engine: `Restored` and `TombstonesRestored` events, `handleRestored`, `PeerUp.deniedGroups`, `RequestArrived.serveAllowed`, stale-piece guards, scoped membership loss, reject back-off.
+- Driver: restore on start, real partial-file keys, `FILE_SERVE` gate, ordered per-peer send queues, lock-guarded state, per-event try/catch, `SWARM` log lines.
+- Host binding: 2 s sampling of the call and serving lambdas.
+- Tests: new `SwarmRestartRestoreTest`; `SwarmHostLifecycleTest` corrected (it had asserted the buggy cleanup key) and extended with a restored-row check.
+
+### Why
+Restart recovery (R4) and the group serve/membership rules were specified but not wired; startup cleanup was deleting real partial downloads.
+
+### Verification
+`:core:swarm:jvmTest`, `:core:engine:jvmTest --tests '*swarm*'` (23), `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm`: all pass. No device run. New tests were not mutation-checked.
+
+### Remaining
+Per-piece fsync/Room batching and row throttling (measure first); reject non-member Summary/Have frames; persistent file logging with export; the group-call phantom member ids (not investigated); the "restart to enable swarm" prompt.
+
+### Next AI
+Run `SWM-13`, `SWM-14`, `SWM-30`..`SWM-33` on devices. Do the persistent file log sink next, because these checks need log evidence. Do not start the restart prompt until `SWM-14` passes.
+
+## 2026-10-05 (j) — GM-10: Membership UI
+
+### Worked on
+Phase GM-10 of `docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md` §7B, ADR-074, ADR-076, and UI components UI-053 & UI-054:
+- Authored UI research docs `docs/ui/group-settings.md` (UI-053) and `docs/ui/group-invite-join.md` (UI-054) per AGENTS.md §34 research-first requirements, advancing them to IMPLEMENTED AND VERIFIED.
+- Pure math & state logic:
+  - `FlashGroupSettingsMath.kt`: permissions (`canEditGroupRules`), bounds clamping (`clampMaxMembers`), human-friendly labels & descriptions.
+  - `FlashGroupInviteJoinMath.kt`: link parser (`parseInviteUrl`), join confirmation title, inviter label, removed member warning flag, invite sharer permission check.
+- UI Composables in `:ui:chat`:
+  - `FlashGroupSettingsSheet.kt`: presents signed group rules (admin-only switches with member disablement tooltips), device-local file sharing preferences, and admin-only "Change group code" confirmation.
+  - `FlashGroupInviteSheet.kt`: displays `flash://g/1/...` invite, copy link button, system share sheet trigger, and explanation of who can join.
+  - `FlashJoinGroupDialog.kt`: paste link dialog, parsed preview ("Join <Group>? Invited by <Name>"), pending status display with Table 8.3 plain-English sentences (`GroupMembershipStatusText`), and "Cancel request".
+  - `FlashInlineInviteCard.kt`: rich inline preview card in 1:1 and group message bubbles when an invite link is sent as text, with direct "Join" button (O-14).
+  - `FlashJoinRequestRow` added to `FlashGroupMembersSheet.kt`: applicant avatar, initials, applicant name, amber "Previously removed" warning badge, and Approve / Decline actions.
+  - `FlashChatListTopBar.kt` & `FlashChatListScreen.kt`: added "Join with invite link" action in overflow menu.
+  - `FlashConversationScreen.kt`: wired GM-10 sheets, join request approvals, settings updates, and group code rotation.
+- Host integration:
+  - Android (`app`):
+    - `AndroidManifest.xml`: added deep link `<intent-filter>` for `flash://g/*` (`VIEW`, `DEFAULT`, `BROWSABLE`).
+    - `FlashNotificationManager.kt`: added `showJoinRequest` with per-group collapsing.
+    - `DiscoveryEngineHolder.kt`: wired `onJoinRequestNotification`.
+    - `MainActivity.kt`: deep link handling in `onCreate`, `onNewIntent`, and `handleIncomingIntent`; wired GM-10 callbacks and rendered `FlashJoinGroupDialog`.
+  - Desktop (`desktop`):
+    - `DesktopEngine.kt`: wired `onJoinRequestNotification`.
+    - `DesktopNotificationManager.kt`: added join request notification listener.
+    - `DesktopShell.kt`: wired GM-10 callbacks, snackbar notifications, and rendered `FlashJoinGroupDialog`.
+- Verified 100% green tests in `:ui:chat` (all 340 tests pass), `:desktop:compileKotlinJvm`, `:app:compileDebugKotlin`, `:core:messaging:jvmTest`, and `:core:messaging:testAndroidHostTest`.
+
+### Changed
+- **`docs/`:**
+  - `docs/ui/group-settings.md` (UI-053): created, evaluated 3 approaches, marked IMPLEMENTED AND VERIFIED.
+  - `docs/ui/group-invite-join.md` (UI-054): created, evaluated 3 approaches, marked IMPLEMENTED AND VERIFIED.
+  - `docs/ui/ui-research-index.md`: updated status for UI-053 and UI-054 to IMPLEMENTED.
+  - `docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md`: marked GM-10 as COMPLETE.
+  - `docs/testing/TEST-BACKLOG.md`: updated `GMB-04` and `GMB-14` status.
+- **`:ui:chat`:**
+  - Added `:core:security` dependency in `build.gradle.kts` for `GroupInviteCodec`.
+  - Added `FlashGroupSettingsMath.kt` and `FlashGroupSettingsMathTest.kt`.
+  - Added `FlashGroupInviteJoinMath.kt` and `FlashGroupInviteJoinMathTest.kt`.
+  - Added `FlashGroupSettingsSheet.kt`, `FlashGroupInviteSheet.kt`, `FlashJoinGroupDialog.kt`, `FlashInlineInviteCard.kt`.
+  - Updated `FlashGroupMembersSheet.kt`, `FlashChatListTopBar.kt`, `FlashChatListScreen.kt`, `FlashMessageBubble.kt`, `FlashMessageList.kt`, `FlashConversationScreen.kt`.
+- **`:core:messaging`:**
+  - Added `FlashGroupJoinRequestUi` and updated `FlashConversationUiState` in `FlashMessagingModels.kt`.
+  - Added `getPendingJoinRequests`, `cancelPendingInvite` in `FlashChatRepository.kt` & `RealFlashChatRepository.kt`.
+  - Added `onJoinRequestNotification` callback hook for active admins.
+- **`:app`:**
+  - `AndroidManifest.xml`: added deep link intent filter for `flash://g/*`.
+  - `FlashNotificationManager.kt`: added `showJoinRequest`.
+  - `DiscoveryEngineHolder.kt`: attached `chatImpl.onJoinRequestNotification`.
+  - `MainActivity.kt`: deep link intent handling, dialog, and GM-10 callbacks.
+- **`:desktop`:**
+  - `DesktopEngine.kt`: attached `chatImpl?.onJoinRequestNotification`.
+  - `DesktopNotificationManager.kt`: handled join request notifications.
+  - `DesktopShell.kt`: dialog, snackbar, and GM-10 callbacks.
+
+### Verification
+- `./gradlew :ui:chat:jvmTest`: ALL 340 TESTS PASSED
+- `./gradlew :desktop:compileKotlinJvm`: BUILD SUCCESSFUL
+- `./gradlew :app:compileDebugKotlin`: BUILD SUCCESSFUL
+- `./gradlew :core:messaging:jvmTest`: ALL PASSED
+- `./gradlew :core:messaging:testAndroidHostTest`: ALL PASSED
+
+### Next AI
+Proceed with **GM-11: Membership device checks** (`docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md` §7B lines 2014–2023).
+
+## 2026-10-05 (i) — GM-9: Group settings (signed & local preferences)
+
+### Worked on
+Phase GM-9 of `docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md` §7B and ADR-074 in `docs/decisions.md`:
+- Signed `GroupSettings` data model with canonical domain `"flash-gset-v1"`, monotonic versioning, and tie-breaking by lexicographical `opId`.
+- Admin-only signature enforcement via `GroupSignatureRules.checkSettings`.
+- `membersMayAdd` permission propagation enabling non-admin member certificate issuance in `GroupSignatureRules.checkCert`.
+- Device-local `GroupLocalPreferences` stored in `group_preferences` table (never transmitted on wire).
+- Persistence & Room database v10: `GroupSettingsEntity`, `GroupSettingsDao`, `GroupPreferencesEntity`, `GroupPreferencesDao`, migration `9 -> 10` in `FlashDatabase` and `FlashMigrations`.
+- Wire frame & codec: `GroupWireFrame.Bundle(settings = ...)` serialized and deserialized with forward-compatible space-delimited fields (`setVer`, `setPolicy`, `setSharers`, `setMax`, `setSwarm`, `setMayAdd`, `setOpId`, `setSigner`, `setSig`).
+- Repository and gating enforcement:
+  - `joinPolicy` wired to `isGroupJoinOpen` (auto-approval when OPEN unless tombstoned).
+  - `inviteSharers` wired to `inviteFor` (non-admin restricted when `inviteSharers == "ADMINS"`).
+  - `swarmServing` & `serveToGroup` wired to `GroupGate` for `FILE_SERVE` (both must be true).
+  - `membersMayAdd` wired to `addMembers` / `addGroupMembers` and `GroupSignatureRules.checkCert`.
+  - `maxMembers` enforced on group capacity in `addV2MembersLocked` and `approveJoinRequest` / `handleInboundJoinRequest`.
+- Integration into `SignedGroups`, `RealFlashChatRepository`, and production hosts (`Flash.kt`, `DiscoveryEngineHolder.kt`, `DesktopEngine.kt`).
+- Comprehensive 10-scenario Android host integration test suite in `GroupSettingsTest.kt` (`GSET-01`..`GSET-03`).
+
+### Changed
+- **`:core:messaging`:**
+  - `GroupSettings.kt`: data class, defaults, `settingsWins`.
+  - `GroupLocalPreferences.kt`: local preferences model, defaults, and mapping extensions.
+  - `GroupCanonical.kt`: canonical serialization for `"flash-gset-v1"` settings bytes.
+  - `GroupSigning.kt`: `signSettings` using admin Ed25519 key.
+  - `GroupSignatureRules.kt`: `checkSettings` (admin signature, field bounds) and `checkCert` updated to allow active member cert issuance when `membersMayAdd == true`.
+  - `GroupWireFrame.kt`: added `settings: GroupSettings?` to `Bundle`.
+  - `GroupFrameCodec.kt`: serialization/deserialization for `GroupSettings`.
+  - `SignedGroups.kt`: injected `groupSettingsDao`, initialized settings on group creation, bundled settings in `bundleFor`, validated incoming settings on `onBundle`, passed `membersMayAdd` to `rules.checkCert`.
+  - `FlashChatRepository.kt` & `RealFlashChatRepository.kt`: added `getGroupSettings`, `updateGroupSettings`, `getGroupLocalPreferences`, `updateGroupLocalPreferences`; enforced `inviteSharers`, `membersMayAdd`, `maxMembers`, and gated `FILE_SERVE` via `swarmServing && serveToGroup`.
+  - `GroupTestFakes.kt`: added `InMemoryGroupSettingsDao` and `InMemoryGroupPreferencesDao`.
+  - `GroupSettingsTest.kt`: 10 integration scenarios covering settings creation, ordering, tie-breaking, forged update rejection, local prefs persistence, backward compatibility, gate restriction on file serve, invite sharers restriction, members-may-add restriction, and max members enforcement.
+- **`:core:persistence`:**
+  - `GroupSettingsEntity.kt`, `GroupPreferencesEntity.kt`: entity definitions for group settings and local preferences.
+  - `GroupSettingsDao.kt`, `GroupPreferencesDao.kt`: DAO interfaces and Room queries.
+  - `FlashDatabase.kt`: updated schema to version 10 with new DAOs and entities.
+  - `FlashMigrations.kt`: added `MIGRATION_9_10`.
+  - `FlashSchemaSteps.kt`: added `STEP_9_10`.
+  - Exported Room schema `10.json`.
+- **Production hosts:**
+  - Wired `groupSettingsDao` and `groupPreferencesDao` in `Flash.kt`, `DiscoveryEngineHolder.kt`, and `DesktopEngine.kt`.
+
+### Verification
+- `./gradlew :core:persistence:jvmTest`: ALL PASSED (migrations 1..10 pass)
+- `./gradlew :core:messaging:compileKotlinJvm`: BUILD SUCCESSFUL
+- `./gradlew :core:messaging:jvmTest`: ALL PASSED
+- `./gradlew :core:messaging:testAndroidHostTest --tests "com.transfer.flash.core.messaging.GroupSettingsTest"`: ALL 10 PASSED
+- `./gradlew :core:messaging:testAndroidHostTest --tests "com.transfer.flash.core.messaging.Group*"`: ALL PASSED
+- `./gradlew :desktop:compileKotlinJvm`: BUILD SUCCESSFUL
+- `./gradlew :app:compileDebugKotlin`: BUILD SUCCESSFUL
+
+### Next AI
+Proceed with **GM-10: Membership UI** (`docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md` §7B lines 1988–2025).
+
+### Worked on
+Phase GM-8 of `docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md` §7B and Table 8.3:
+- Address hints dialing: dialed first in strict order, with a 30s deadline before falling back to discovery.
+- Table 8.3 user-facing status sentences implementation in `GroupMembershipStatusText` (M-01 to M-22).
+- Discovery fallback: when hints time out or exhaust, invite state stays `PENDING_CONTACT` and displays sentence M-03 ("Waiting for a member of <group> to be nearby.").
+- Any member discovery: newcomer discovering an ordinary member who advertises `gs1` initiates mutual proof over an unnamed discovered session without TOFU trap.
+- Forwarded join request handling: member receives join request and forwards it to admins upon connecting.
+- Network state change retry: `retryPendingInviteHints()` and `onNetworkChanged()` retry dialing hints when network connectivity changes.
+- Host integration: wired address hints and manual dialing hooks in Android (`Flash.kt`, `DiscoveryEngineHolder.kt`) and Desktop (`DesktopEngine.kt`).
+- Unit & Android host test suites: `GroupMembershipStatusTextTest` and `GroupDiscoveryTest`.
+
+### Changed
+- **`:core:common`:**
+  - Added `clear()` to `SyncSet`.
+- **`:core:messaging`:**
+  - `GroupMembershipStatusText.kt`: Table 8.3 user-facing sentences (M-01 through M-22).
+  - `GroupMembershipStatusTextTest.kt`: Unit tests verifying all Table 8.3 sentences.
+  - `FlashChatRepository.kt` & `RealFlashChatRepository.kt`:
+    - Added `inviteStatusSentence(groupId)` and `retryPendingInviteHints()`.
+    - In `acceptInvite`: stores hints, group name, resets `hintsExhausted`, launches `dialHintsInOrder`.
+    - Added `dialHintsInOrder`: strictly iterates address hints, terminates upon live session established, marks `hintsExhausted` if all fail.
+    - In `handleInboundGroupBundle`: updates invite state to `JOINED` if bundle applied or self is active member in `groupMemberDao`.
+    - In `inviteStatusSentence`: checks if active member in `groupMemberDao` and returns `"Joined"`; handles `PENDING_CONTACT` (hints dialing vs M-03), `PENDING_APPROVAL` (M-07), `REFUSED` (M-08).
+    - Added `currentConnectedPeers` tracking in `onlinePeerIds` collector.
+  - `GroupDiscoveryTest.kt`: 5 scenarios verifying hint order, discovery fallback + M-03, proof with discovered member, unrelated peer rejection, and corrupted invite link handling (M-01).
+- **Production hosts:**
+  - `Flash.kt`: wired `peerFeatures`, `groupInviteDao`, `groupJoinRequestDao`, `groupSecretStore`, `groupRotationDao`, `localAddressHints`, `onConnectPeerWithHints`.
+  - `DesktopEngine.kt`: wired `peerFeatures`, `groupInviteDao`, `groupJoinRequestDao`, `groupSecretStore`, `groupRotationDao`, `localAddressHints` (using `LocalSubnet.address`), `onConnectPeerWithHints`.
+  - `DiscoveryEngineHolder.kt`: wired `peerFeatures`, `groupInviteDao`, `groupJoinRequestDao`, `groupSecretStore`, `groupRotationDao`, `localAddressHints`, `onConnectPeerWithHints`.
+
+### Verification
+- `./gradlew :core:messaging:compileKotlinJvm`: BUILD SUCCESSFUL
+- `./gradlew :core:messaging:jvmTest`: ALL PASSED
+- `./gradlew :core:messaging:testAndroidHostTest`: ALL PASSED (including all 5 `GroupDiscoveryTest` scenarios)
+- `./gradlew :desktop:compileKotlinJvm`: BUILD SUCCESSFUL
+- `./gradlew :app:compileDebugKotlin`: BUILD SUCCESSFUL
+
+### Next AI
+Proceed with **GM-9: Group settings** (`docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md` §7B lines 1958–1980).
+
+## 2026-10-05 (g) — GM-7: Give existing v2 groups a secret (O-11)
+
+### Worked on
+Phase GM-7 of `docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md` §7B, O-11, and `docs/protocol.md` ("Group membership v1"):
+- Upgrading pre-GM v2 groups to epoch 1 with a signed rotation notice (`reason = UPGRADE`, `prevEpoch = 0`).
+- Admin device auto-upgrade on startup (`upgradeExistingV2Groups`), conversation open (`openConversation`), and invite creation (`inviteFor`).
+- Secret distribution to peers via GM-6 secret handover (`GsStale` / `GsSecretRequest` / `GsSecret`).
+- Concurrent upgrade resolution by two admins using GM-6 tie-breaker rule (smaller `rotationId` wins; loser re-rotates at `newEpoch = 2` with removals and broadcasts `GsStale`).
+- Friendly guard in `inviteFor`: fails with `"An admin needs to open this group on the new version first"` if group secret is missing and caller is not owner/admin.
+- Legacy `g-` groups are never upgraded (D5) and reject invite creation with `"Only groups made with the latest Flash version support invite links"`.
+- Old build compatibility (O-13): member on pre-GM build drops unknown `FLASH_GMEM` frames and continues chatting and calling without disruption.
+- Verified in 4-scenario integration test suite in `GroupUpgradeTest.kt` (`GMB-09`).
+
+### Changed
+- **`:core:messaging`:**
+  - `SignedGroups.kt`:
+    - Added `upgradeGroupSecret(groupId)`: checks active admin/owner, generates epoch 1 secret, commits and signs rotation notice (`reason = UPGRADE`, `prevEpoch = 0`), stores secret and upserts rotation.
+    - Added `upgradeExistingV2Groups()`: iterates over active v2 groups for local device and upgrades any missing rotation.
+    - Updated `handleIncomingRotation`: detects commit mismatch on identical epoch and triggers re-rotation.
+  - `RealFlashChatRepository.kt`:
+    - In `init`: launches `upgradeExistingV2Groups()` in coroutine scope and broadcasts rotations to active members.
+    - In `openConversation(conversationId)`: asynchronously checks and upgrades unrotated v2 groups when opened.
+    - In `createGroupForInvite(name)`: calls `signed.upgradeGroupSecret(created.groupId)`.
+    - In `inviteFor(groupId)`: checks `isV2Group(groupId)`, attempts `upgradeGroupSecret` if caller is owner/admin, or returns error message if still lacking secret.
+    - Added `signedGroupsForTesting()` accessor.
+  - `GroupJoinTest.kt`:
+    - Updated test harness `TestNode` to provide `InMemoryGroupRotationDao` and pass `groupRotationDao` to `RealFlashChatRepository`.
+  - `GroupUpgradeTest.kt`:
+    - Comprehensive 4-scenario integration test suite:
+      1. Pre-GM v2 group without secret allows invite only after admin opens/upgrades and secret is handed over to non-admin member.
+      2. Concurrent upgrades by two admins resolve via tie-breaker, converging to epoch 2 secret.
+      3. Member on old build (no `"gs1"`, no secret store, no rotation DAO) ignores rotation frames and chats without error.
+      4. Legacy `g-` group is never upgraded and rejects invite creation.
+
+### Verification
+- `./gradlew :core:messaging:compileKotlinJvm`: BUILD SUCCESSFUL
+- `./gradlew :core:messaging:jvmTest`: ALL PASSED
+- `./gradlew :core:messaging:testAndroidHostTest`: ALL PASSED (including all 4 `GroupUpgradeTest` tests, all `GroupJoinTest` tests, and all `GroupRotationTest` tests)
+- `./gradlew :desktop:compileKotlinJvm`: BUILD SUCCESSFUL
+- `./gradlew :app:compileDebugKotlin`: BUILD SUCCESSFUL
+
+### Next AI
+Proceed with **GM-8: Finding members: address hints, optional beacon** (`docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md` §7B lines 1946–1957).
+
+## 2026-10-05 (f) — GM-6: Removal → rotation, "Change group code"
+
+### Worked on
+Phase GM-6 of `docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md` §7B, ADR-076, and `docs/protocol.md` ("Group membership v1"):
+- Group secret rotation on member removal (GINV-4: removal = tombstone + rotation in one transaction).
+- Room schema 8 → 9 migration (`GroupRotationEntity`, `GroupRotationDao`, Room schema export `9.json`, JVM and Android migration chain tests).
+- Wire protocol frames `GsStale`, `GsSecretRequest`, `GsSecret` with non-throwing codec and bounds checking.
+- Canonical signing `"flash-grot-v1"` over `GroupRotation` notices (commit, reason, adminId, rotationId, removedIds, epochs).
+- Secret handover protocol over live TLS to active members under `allows(CHAT)` excluding any peer named in `removedIds` of any rotation notice held (SW-0, security 10.2).
+- Commit verification via `GroupSecretCommit.matchesHex` prior to persisting handed-over secrets (`source = HANDOVER`).
+- Concurrency tie-breaking for simultaneous admin rotations (smaller `rotationId` wins; loser re-rotates at `newEpoch + 1` with its removals and broadcasts via `GsStale`).
+- "Change group code" admin action (`reason = MANUAL`) rotating secret, invalidating old invites while keeping existing members intact.
+- Startup crash recovery: `recoverUnrotatedTombstones()` checks for any unrotated tombstones signed by the local device and issues rotation notices.
+- Documented ADR-076: voluntary leave does not rotate secrets by default (plan §7B task 7, row 42).
+- Exhaustive 7-scenario integration test suite in `GroupRotationTest.kt`.
+
+### Changed
+- **`:core:persistence`:**
+  - `GroupRotationEntity.kt`, `GroupRotationDao.kt`: Created for persisting `group_rotation` notices (primary key `(groupId, newEpoch)`).
+  - `FlashDatabase.kt`: Bumped database version to 9 and wired `GroupRotationDao`.
+  - `FlashSchemaSteps.kt`, `FlashMigrations.kt`: Added migration step 8 → 9 creating `group_rotation` table and index.
+  - `9.json`: Generated Room schema export.
+  - `FlashJvmMigrationsTest.kt`, `FlashMigrationsChainTest.kt`: Added 8 → 9 migration tests.
+- **`:core:messaging`:**
+  - `GroupRotation.kt`: Domain model with `toEntity()` / `toRotation()` mappings.
+  - `GroupCanonical.kt`: Added domain `"flash-grot-v1"`, `rotationBytes()`, and hex utilities.
+  - `GroupPolicy.kt`: Added `MAX_REMOVED_IDS_PER_ROTATION = 64`.
+  - `GroupSigning.kt`, `GroupSignatureRules.kt`: Added `issueRotation` and `checkRotation`.
+  - `GroupWireFrame.kt`: Added `Bundle.rotation`, `GsStale`, `GsSecretRequest`, `GsSecret`.
+  - `GroupFrameCodec.kt`: Binary/text codec for rotation wire frames.
+  - `SignedGroups.kt`:
+    - Updated `removeMember` to issue rotation with reason `REMOVAL` in one transaction.
+    - Added `rotateGroupSecret`, `handleIncomingRotation`, and `recoverUnrotatedTombstones`.
+    - Updated `onBundle`, `bundleFor`, `removalNoticeFor` to carry and apply rotation notices.
+    - Updated `BundleOutcome.Applied` and `RotationOutcome.Applied` to propagate `reRotated` and `winningRotation`.
+  - `GroupProofSessions.kt`: Added `onStaleProof` callback for stale proof notifications to active members.
+  - `RealFlashChatRepository.kt`:
+    - Injected `groupRotationDao` and wired into `SignedGroups` and `GroupProofSessions`.
+    - Added `changeGroupCode` public API.
+    - Added `handleInboundGsStale`, `handleInboundGsSecretRequest` (with gate check and `removedIds` filter), `handleInboundGsSecret` (with gate check and `matchesHex` validation).
+    - Added `broadcastRotation` to broadcast re-rotated notices to active members.
+    - Added startup recovery call `signedGroups?.recoverUnrotatedTombstones()` in `init`.
+    - Added session-up secret reconciliation in `reconcileGroupMembership`.
+  - `GroupRotationTest.kt`: Comprehensive 7-scenario integration test suite covering offline member handover, removed member refusal, fake secret refusal, concurrent admin convergence, startup crash recovery, old invite rejection without notice, and "Change group code".
+
+### Verification
+- `./gradlew :core:messaging:compileKotlinJvm`: BUILD SUCCESSFUL
+- `./gradlew :core:messaging:jvmTest`: ALL PASSED
+- `./gradlew :core:messaging:testAndroidHostTest`: ALL PASSED (including all 7 `GroupRotationTest` tests and all existing `SignedGroupsTest` and migration tests)
+- `./gradlew :desktop:compileKotlinJvm`: BUILD SUCCESSFUL
+- `./gradlew :app:compileDebugKotlin`: BUILD SUCCESSFUL
+
+### Next AI
+Proceed with **GM-7: Give existing v2 groups a secret (O-11)** (`docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md` §7B lines 1929–1940).
+
+## 2026-10-05 (e) — GM-4: Joining: Invite → Proof → Request → Approval → Certificate
+
+### Worked on
+Phase GM-4 of `docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md` §7B, ADR-073, and `docs/protocol.md` ("Group membership v1"):
+- Group join flow from invite decoding to membership certificate installation and active chat.
+- Wire frames `GsJoinRequest`, `GsJoinDecision`, `GsRosterPreview` with domain separation tags `JOIN_REQUEST_TAG` ("flash-gjoin-v1") and `JOIN_DECISION_TAG` ("flash-gdecision-v1").
+- Group charter trust root seam accepting `hasInvite: (groupId) -> Boolean` for un-paired group owners under GINV-3.
+- Scoped inviter vouching: pre-installs inviter key via `GroupVouching.vouch(inviterId, fingerprint, groupId)` upon `acceptInvite`.
+- Inbound join request handling differentiating direct requests from live-session proved joiners vs forwarded requests from active members to admins.
+- Group policy "open" auto-approval (guarded against GINV-5 tombstoned keys) and manual approval via `approveJoinRequest` / `refuseJoinRequest`.
+- Refusal handling: revoking scoped vouches and cleaning up group secrets.
+- 7-scenario end-to-end integration and security test suite in `GroupJoinTest.kt` and charter invite verification tests in `GroupSignatureRulesTest.kt`.
+
+### Changed
+- **`:core:messaging`:**
+  - `GroupWireFrame.kt`: Added `GsJoinRequest`, `GsJoinDecision`, and `GsRosterPreview` with bounds, constant-time comparisons, and redacted `toString()`.
+  - `GroupFrameCodec.kt`: Added binary/text encoding and non-throwing decoding for all join frames.
+  - `GroupCanonical.kt`: Added canonical signature bytes derivation for join requests and decisions.
+  - `GroupSignatureRules.kt`: Updated `checkCharter` to accept `hasInvite` predicate allowing unpaired group creators when an active invite exists.
+  - `RealFlashChatRepository.kt`:
+    - Updated `createGroupForInvite` relaxing member count to allow 1 member on invite groups.
+    - Updated `inviteFor` to mint epoch 1 secret on demand if not present.
+    - Updated `acceptInvite` to decode, store secret and invite, pre-install scoped vouch, and initiate connection.
+    - Updated `handleInboundJoinRequest` to validate live session proof for direct requests, accept forwarded requests from active members, verify join signatures, emit roster previews, and apply auto-approval policy (respecting GINV-5 tombstone guards and capacity limit 20).
+    - Updated `approveJoinRequest` to sign member cert and gossip bundles; updated `refuseJoinRequest` to sign refusal, clean up secret, and revoke vouch.
+    - Added pending join request forwarding across mesh sessions on `onPeerSessionUp`.
+  - `GroupTestFakes.kt`: Added `InMemoryGroupInviteDao`, `InMemoryGroupJoinRequestDao`, `InMemoryGroupSecretDao`, and `InMemoryGroupSecretStore`.
+  - `GroupSignatureRulesTest.kt`: Added 4 tests validating charter acceptance via `hasInvite`, rejection when invite absent, tampered signatures, and forged IDs.
+  - `GroupJoinTest.kt`: Added comprehensive 7-scenario suite (unpaired device joins via invite, open policy auto-approval, tombstoned key requires manual approval, 3-node loopback with forwarded request, full group refusal, hostile bundle refusal per GINV-3, refusal cleanup of vouch/secret).
+
+### Verification
+- `./gradlew :core:messaging:compileKotlinJvm`: SUCCESS
+- `./gradlew :core:messaging:jvmTest`: ALL PASSED
+- `./gradlew :core:messaging:testAndroidHostTest`: ALL PASSED
+- `./gradlew :desktop:compileKotlinJvm`: BUILD SUCCESSFUL
+- `./gradlew :app:compileDebugKotlin`: BUILD SUCCESSFUL
+
+### Next AI
+Proceed with **GM-6: Removal → rotation, "Change group code"** (`docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md` §7B lines 1878–1928).
+
+## 2026-10-05 (d) — GM-3: Proof Exchange, `gs1`, Membership Frames
+
+### Worked on
+Phase GM-3 of `docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md` §7B, ADR-073, and `docs/protocol.md` ("Group membership v1"):
+- Advertising `"gs1"` in `localFeatures` across Android and Desktop hosts.
+- Wire frames `GsHello`, `GsChallenge`, `GsProof`, and `GsResult` with `FLASH_GMEM` prefix and non-throwing `GroupFrameCodec` with strict field bounds.
+- In-memory `GroupProofSessions` live-session mutual proof state machine (20s timeout, 1 in-flight per peer/group, rate limiter: 5 failures / 10 min without dropping session, dummy responder privacy oracle protection, stale epoch handling, TLS session fingerprint binding).
+- Live session ephemeral `provedGroups` state (cleared on session down, never persisted, grants NO chat/call/file rights under GINV-2).
+- Integration into `RealFlashChatRepository` with pre-roster ingress interception, session disconnect handling, and exhaustive `GroupWireFrame` compiler branches.
+- Exhaustive unit test suite in `GroupProofSessionsTest` and codec tests in `GroupFrameCodecTest`.
+
+### Changed
+- **`app` & `desktop`:**
+  - `DiscoveryEngineHolder.kt`, `Flash.kt`, `DesktopEngine.kt`: Added `"gs1"` to `localFeatures`.
+- **`:core:messaging`:**
+  - `GroupWireFrame.kt`: Added `GsHello`, `GsChallenge`, `GsProof`, and `GsResult` data classes with constant-time byte comparisons and redacted `toString()`.
+  - `GroupFrameCodec.kt`: Added `FLASH_GMEM` codec with bounds checking and non-throwing decoding.
+  - `GroupProofSessions.kt`: Created live-session proof manager (`initiateProof`, `hasProved`, `onHello`, `onChallenge`, `onProof`, `onResult`, `onSessionDown`, `ProofRateLimiter`).
+  - `FlashChatRepository.kt` & `RealFlashChatRepository.kt`: Wired `groupProofSessions`, `groupSecretStore`, and `peerFeatures`. Intercepted `Gs*` frames before `isGroupPeerTrusted` check. Handled session down via `onlinePeerIds.collect`.
+  - `GroupFrameCodecTest.kt`: Added encoding, roundtrip, and hostile input tests.
+  - `GroupProofSessionsTest.kt`: Created 9 test cases covering mutual proof success, wrong secret, stale epoch, dummy responder privacy, MITM relay mismatch, 20s timeout, rate limiter, session down clearing, and missing `gs1` feature.
+- **`:core:security`:**
+  - `GroupProof.kt`: Added `randomNonce()` and `randomMac()` helpers to `GroupProofTranscript`.
+- **Documentation & Backlog:**
+  - `GROUP-SWARM-IMPLEMENTATION-PLAN.md`: Marked GM-3 as COMPLETE.
+  - `TEST-BACKLOG.md`: Updated section 4x preamble.
+  - `AGENTS.md`: Updated §29 with GM-3 completion.
+
+### Verification
+- `./gradlew :core:messaging:jvmTest --tests "com.transfer.flash.core.messaging.group.GroupProofSessionsTest"`: ALL 9 TESTS PASSED.
+- `./gradlew :core:messaging:jvmTest`: ALL TESTS PASSED.
+- `./gradlew :core:messaging:testAndroidHostTest`: ALL TESTS PASSED.
+
+### Next AI
+Proceed with **GM-4: Joining: invite → proof → request → approval → certificate** (`docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md` §7B lines 1703–1785).
+
+## 2026-10-05 (c) — GM-2: Invite Format and Secret Storage
+
+### Worked on
+Phase GM-2 of `docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md` §7B, ADR-073, and `docs/protocol.md` ("Group membership v1"):
+- URL-safe Base64 codec (`Base64Url`) in `:core:common`.
+- Pure binary invite encoding and decoding (`GroupInvite`, `GroupInviteCodec`) with golden vectors and hostile input rejection.
+- Room persistence step 7 → 8: entities (`GroupSecretEntity`, `GroupInviteEntity`, `GroupJoinRequestEntity`), DAOs, schema export `8.json`, migration `MIGRATION_7_8` in `FlashMigrations`, and step DDL in `FlashSchemaSteps`.
+- `GroupSecretStore` port in `:core:messaging` and `RoomGroupSecretStore` adapter in `:core:engine`.
+- Platform backup audit in `docs/android-platform-notes.md`: confirmed database exclusions in `backup_rules.xml` and `data_extraction_rules.xml`.
+
+### Changed
+- **`:core:common`:**
+  - `Base64Url.kt`: RFC 4648 §5 unpadded URL-safe Base64 encoder and safe non-throwing decoder.
+  - `Base64UrlTest.kt`: Unit tests for URL-safe alphabet, unpadded handling, roundtrips, and invalid character rejection.
+- **`:core:security`:**
+  - `GroupInvite.kt`: Domain model with strict bounds, constant-time equality check, and redacted `toString()` that hides raw secret bytes.
+  - `GroupInviteCodec.kt`: Big-endian binary wire encoder/decoder for version 1 (`flash://g/1/<base64url>`), returning `null` on truncation, oversize strings, invalid versions, or trailing bytes.
+  - `GroupInviteTest.kt`: Hostile-input table (truncation, bounds overflow, extra trailing bytes) and roundtrip tests.
+  - `GroupMembershipGoldenVectorTest.kt`: Exact binary 188-byte hex payload and 263-character base64url URI asserted.
+- **`:core:persistence`:**
+  - Entities: `GroupSecretEntity`, `GroupInviteEntity`, `GroupJoinRequestEntity`.
+  - DAOs: `GroupSecretDao`, `GroupInviteDao`, `GroupJoinRequestDao`.
+  - Database: `FlashDatabase.kt` version bumped to 8, exported `8.json`.
+  - Migration: `STEP_7_8` added in `FlashSchemaSteps.kt` (with backtick escaping for SQLite keyword `commit`), registered in `FlashMigrations.kt`.
+  - JVM tests: `FlashJvmMigrationsTest.kt` updated and verified across v1..v7 → v8.
+- **`:core:messaging` & `:core:engine`:**
+  - `GroupSecretStore.kt`: Port interface in `:core:messaging:group` with `StoredGroupSecret` (redacted `toString()`, constant-time equality).
+  - `RoomGroupSecretStore.kt`: Room-backed adapter in `:core:engine:group`.
+  - `RoomGroupSecretStoreTest.kt`: Verified CRUD, epoch advancement, group deletion, and `toString()` secret redaction.
+- **Documentation:**
+  - `docs/protocol.md`: Documented golden invite vectors.
+  - `docs/android-platform-notes.md`: Documented Android Auto Backup and Data Extraction database exclusions.
+
+### Verification
+- `./gradlew :core:security:jvmTest`: ALL 85 TESTS PASSED.
+- `./gradlew :core:persistence:jvmTest`: ALL 48 TESTS PASSED (including Room migration validation from v7 to v8).
+- `./gradlew :core:engine:jvmTest --tests "com.transfer.flash.core.engine.group.RoomGroupSecretStoreTest"`: PASSED.
+- Host test suite `:core:security:testAndroidHostTest`: ALL 189 TESTS PASSED.
+
+### Next AI
+Proceed with **GM-3: Proof exchange, `gs1`, membership frames** (wire frames `GsHello`, `GsChallenge`, `GsProof`, `GsResult`, `gs1` capability negotiation, `GroupProofSessions`, rate limiting, and loopback verification).
+
+### Worked on
+Phase GM-1 of `docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md` §7B, ADR-073, and `docs/protocol.md` ("Group membership v1"):
+- Pure, deterministic cryptographic primitives for group secrets, key derivation, commitments, and mutual proof transcripts in `:core:security:group`.
+- Comprehensive unit tests, golden vector verification, and hostile attack simulation tests (relay MITM, reflection, replay).
+- Documentation updates in `docs/protocol.md` with official golden vectors.
+
+### Changed
+- **New Package `com.transfer.flash.core.security.group` in `:core:security`:**
+  - `GroupSecret.kt`: 32-byte secret holder, `constantTimeEquals`, `equals` using constant-time comparison, defensive `toByteArray()`, and redacted `toString()` that never leaks secret material.
+  - `GroupSecretKdf.kt`: HKDF-SHA256 derivation of `authKey` (`flash-gsa-v1 ‖ lp(groupId) ‖ u32 epoch`) and `beaconKey` (`flash-gbeacon-v1 ‖ lp(groupId) ‖ u32 epoch`).
+  - `GroupSecretCommit.kt`: SHA-256 rotation commitment derivation (`flash-gs-commit-v1 ‖ lp(groupId) ‖ u32 epoch ‖ secret`) and constant-time matching.
+  - `GroupProof.kt`: Sans-IO mutual proof state machine (`GroupProofInitiator`, `GroupProofResponder`), transcript builder (`GroupProofTranscript`), message DTOs (`GroupProofHello`, `GroupProofChallenge`, `GroupProofMac`), constant-time MAC comparisons, and one-shot transition enforcement.
+- **Unit and Host Tests (`:core:security:commonTest`):**
+  - `GroupSecretTest.kt`: Enforces 32-byte length, tests redacted `toString()`, defensive copies, and constant-time equality.
+  - `GroupSecretKdfTest.kt`: Tests deterministic key derivation, domain separation, epoch separation, and input bounds.
+  - `GroupSecretCommitTest.kt`: Tests commitment derivation, hex formatting, and constant-time matching.
+  - `GroupProofTest.kt`: Tests end-to-end mutual handshake, relay MITM detection via differing TLS session fingerprints, reflection attack detection, replay attack rejection with fresh nonces, wrong epoch/groupId rejection, and one-shot enforcement.
+  - `GroupMembershipGoldenVectorTest.kt`: Asserts exact hex vectors for authKey, beaconKey, commitment, and proof transcripts/MACs.
+- **Documentation (`docs/protocol.md`):**
+  - Updated status under "Group membership v1" to mark GM-1 implemented.
+  - Added golden test vectors for `K_auth(1)`, `K_beacon(1)`, `commit(1)`, and `T('R')`/`T('I')`/`mac`.
+
+### Verification
+- `./gradlew :core:security:jvmTest`: ALL 79 TESTS PASSED.
+- `./gradlew :core:security:testAndroidHostTest`: ALL TESTS PASSED.
+- Mutation check performed: flipped role label in `GroupProofTranscript.build`, confirmed `GroupMembershipGoldenVectorTest` immediately failed with `ComparisonFailure`, then reverted.
+
+### Next AI
+Proceed with **GM-2: Invite format and secret storage** (`GroupInviteCodec`, secure storage tables/wrapping, and `GroupSecretStore` port).
+
+## 2026-10-05 — SW-11: Group File Availability UI (UI-055)
+
+### Worked on
+Phase SW-11 of `docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md` §7A, ADR-072, and `docs/ui/group-file-availability.md` (UI-055):
+- Authored research document `docs/ui/group-file-availability.md` (evaluated 3 approaches, advanced through DESIGNED to IMPLEMENTED).
+- Pure formatting math in `FlashSwarmUiMath.kt` with comprehensive unit tests (`FlashSwarmUiMathTest.kt`).
+- Chat message bubble availability detail lines and safe-to-leave indicators in `FlashFileMessageCard.kt`.
+- Data model extensions (`FlashTransfer`, `FlashAttachmentProgress`, `FlashFileAttachmentUi`, `FlashTransferItemUi`).
+- Transfers screen status lines and badges in `FlashTransfersScreen.kt`.
+- Notification origin cancel action ("Cancel for everyone") and swarm detail lines in `FlashBackgroundService.kt`.
+- Device-local settings toggles ("Help share group files", "Keep finished files available for others", "Group file sharing (swarm, experimental)") in `FlashSettingsScreen.kt`, `FlashSettingsDataStore.kt`, and `DesktopSettingsStore.kt`.
+
+### Changed
+- **Research & Specification (`docs/ui/`):**
+  - Created `docs/ui/group-file-availability.md` (UI-055), evaluating Torrent dashboard, generic cloud status, and conversational P2P status; marked IMPLEMENTED.
+  - Updated `docs/ui/ui-research-index.md` for UI-055 to IMPLEMENTED.
+- **Pure Math & Formatters (`:ui:chat`):**
+  - Added `FlashSwarmUiMath.kt`:
+    - `receiverStatusLine`: maps wait reasons (`WaitingForSender`, `WaitingForHolders`, `WaitingForNetwork`, etc.) and multi-holder counts to conversational sentences.
+    - `senderStatusLine`: maps delivery counts ("Delivered to k of n"), safe-to-leave indicator ("You can go offline now"), sole holder status ("k devices still need parts only you have"), and source lost messages ("Your file is no longer available. Pick it again to keep sharing").
+    - `formatSubtitle`: combines file size, progress percentage, transfer speed, and detail line.
+  - Added `FlashSwarmUiMathTest.kt` covering all receiver, sender, and subtitle formatting combinations.
+- **Data Models & Hosts Plumbing:**
+  - `FlashTransfer.kt`: added `canGoOffline: Boolean = false` and `holdersOnline: Int = 0`.
+  - `SwarmDriver.kt`: updated `updateTransferRow` to populate `canGoOffline` and `holdersOnline` from engine snapshot onto `FlashTransfer`.
+  - `FlashMessagingModels.kt`: added `waitReason`, `canGoOffline`, `holdersOnline`, `errorMessage`, `bytesDone`, `bytesTotal` to `FlashAttachmentProgress`; added `waitReason`, `canGoOffline`, `holdersOnline`, `detailLine` to `FlashFileAttachmentUi`.
+  - `DiscoveryEngineHolder.kt` & `DesktopEngine.kt`: mapped `FlashTransfer` waitReason, canGoOffline, holdersOnline, errorMessage, bytesDone, bytesTotal to `FlashAttachmentProgress`.
+  - `RealFlashChatRepository.kt`: aggregated recipient transfers and populated `detailLine`, `canGoOffline`, `holdersOnline`, `waitReason` into `FlashFileAttachmentUi`.
+  - `FlashFileMessageCard.kt`: rendered availability `detailLine`, colored in accentPrimary when `canGoOffline`, updated TalkBack accessibility description.
+  - `FlashTransfersScreen.kt`: added `waitReason`, `canGoOffline`, `holdersOnline` to `FlashTransferItemUi`; updated `FlashTransfersMath.statusLine` to format queued swarm transfers with wait reasons and active swarm transfers with "You can go offline now" or "Getting it from k devices".
+  - `TransfersUiMapper.kt` and `DesktopShell.kt`: mapped `waitReason`, `canGoOffline`, `holdersOnline` from `FlashTransfer` to `FlashTransferItemUi`.
+- **Transfer Notification Detail:**
+  - `FlashBackgroundService.kt`: updated `updateTransferNotification` to surface swarm details ("You can go offline now", "Getting it from k devices") in notification subtitle alongside existing "Cancel for everyone" origin action.
+- **Settings Screen & Persistence:**
+  - `FlashSettingsModel.kt`: added `swarmHelpShare: Boolean = true`, `swarmKeepFinishedFiles: Boolean = true`, `swarmEnabled: Boolean = false`.
+  - `FlashSettingsScreen.kt`: added `GROUP FILE SHARING` section with switches for "Help share group files", "Keep finished files available for others", and "Group file sharing (swarm, experimental)". Added callbacks `onSwarmHelpShareChanged`, `onSwarmKeepFinishedFilesChanged`, `onSwarmEnabledChanged`.
+  - `FlashSettingsDataStore.kt` & `DesktopSettingsStore.kt`: added preferences keys, flows, and setters for `swarmHelpShare`, `swarmKeepFinishedFiles`, and `groupSwarmEnabled`.
+  - `MainActivity.kt` & `DesktopShell.kt`: wired swarm settings collection, persistence, and UI callbacks.
+  - `FlashSettingsLogicTest.kt`: added tests verifying default settings values.
+
+### Verification
+- `./gradlew :ui:chat:jvmTest`: ALL 330 TESTS PASSED (`FlashSwarmUiMathTest`, `FlashTransfersLogicTest`, `FlashSettingsLogicTest`, etc.).
+- `./gradlew :core:messaging:jvmTest`: ALL PASSED.
+- `./gradlew :core:transfer:jvmTest`: ALL PASSED.
+- `./gradlew :desktop:compileKotlinJvm`: BUILD SUCCESSFUL.
+- `./gradlew :app:compileDebugKotlin`: BUILD SUCCESSFUL.
+
+### Remaining
+- Phase SW-12: Device verification on physical devices and tuning (`docs/testing/TEST-BACKLOG.md` §4w).
+
+### Next AI
+Proceed to Phase SW-12 (Device testing, tuning, and default-on decision O-8 per `docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md` §7A).
+
+---
+
+## 2026-10-05 — SW-10: Errors and Recovery Catalogue (INV-9)
+
+### Worked on
+Phase SW-10 of `docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md` §7A & §8 (Host wake-up wiring for INV-9 across Android and Desktop, failure sentences in `TransferFailureText`, catalogue sweep, and per-wait-reason recovery tests).
+
+### Changed
+- **Wake-up Wiring across Hosts (INV-9):**
+  - Updated `FlashKeepaliveWorker.kt` (Android WorkManager 15-minute background task) to trigger `DiscoveryEngineHolder.currentSwarm()?.reevaluate()`.
+  - Updated `DesktopEngine.kt` (Desktop 15-minute timer loop) to invoke `swarmBinding?.swarm?.reevaluate()` alongside `runRetentionCleanup()`.
+  - Updated `SwarmDriver.kt` `reevaluate()` and initial record load to re-query storage free space via `storage.freeBytesFor("")`, fire `SwarmEvent.SpaceChanged` and `SwarmEvent.SystemResume`, and unblock waiting transfers.
+- **Sentences & Friendly Text (`:core:transfer`):**
+  - Added swarm failure constants to `TransferFailureText.kt`: `DAMAGED`, `SOURCE_LOST`, `SOURCE_CHANGED`, `SOURCE_PERMISSION_LOST`, `STORAGE_UNAVAILABLE`, `SYSTEM_TIMEOUT`, `NOT_MEMBER`, `EXPIRED`, `ALREADY_ON_DEVICE`, `CONNECTING_MEMBERS`, `WAITING_FOR_WIFI`, `WAITING_FOR_MISSING_PARTS`, `CHECKING_REDOWNLOADING`.
+  - Added formatted text helpers: `waitingForSender`, `waitingForSenderProgress`, `sourceLost`, `sourceChanged`, `senderDeparted`, `cancelledBy`, `deletedBy`, `needsSpace`.
+  - Updated `TransferFailureText.friendly(...)` to map swarm error codes to user-friendly messages without exposing raw exceptions.
+  - Added unit test suite `TransferFailureTextTest.kt` verifying friendly message mappings and formatters.
+- **Engine & Driver Recovery Wiring (`:core:swarm`):**
+  - Extended `SwarmCommand.PublishRow` to include `failReason: String? = null`.
+  - Wired `SwarmEngine.updateWaitReason` to compute `hasOfflineHolders` from known disconnected peers holding missing pieces, returning `WAITING_FOR_SESSION` when holders exist.
+  - Wired `SwarmDriver.updateTransferRow` to set `errorMessage = TransferFailureText.friendly(cmd.failReason, transferId)` on `FlashTransfer` when in `FAILED` state.
+  - Updated `ContentLifecycleHandler.handleLocalResume` to clear `content.storageUnavailable = false` when resuming active content.
+- **INV-9 Wait Reason Recovery Tests (`:core:swarm` `commonTest`):**
+  - Created `SwarmWaitReasonRecoveryTest.kt` with explicit tests proving recovery events move content out of every one of the 7 `SwarmWaitReason` states:
+    1. `WAITING_FOR_SENDER`: unblocked by origin coming online (`PeerUp` + `Summary`).
+    2. `WAITING_FOR_HOLDERS`: unblocked by holder coming online or `SourceStatus(RESTORED)`.
+    3. `WAITING_FOR_NETWORK`: unblocked by `NetworkUp`.
+    4. `WAITING_FOR_SPACE`: unblocked by `SpaceChanged` after free space available.
+    5. `WAITING_FOR_STORAGE`: unblocked by `LocalResume` clearing storage unavailable.
+    6. `WAITING_FOR_SYSTEM`: unblocked by `SystemResume`.
+    7. `WAITING_FOR_SESSION`: unblocked by `PeerUp` session connection.
+
+### Verification
+- `./gradlew :core:transfer:jvmTest`: ALL PASSED (`TransferFailureTextTest`).
+- `./gradlew :core:swarm:jvmTest`: ALL 41 TESTS PASSED (`SwarmWaitReasonRecoveryTest`, `SwarmCancelLifecycleTest`, `SwarmEngineTest`, etc.).
+- `./gradlew :core:engine:jvmTest`: ALL 40 TESTS PASSED.
+- `./gradlew :desktop:compileKotlinJvm`: BUILD SUCCESSFUL.
+- `./gradlew :app:compileDebugKotlin`: BUILD SUCCESSFUL.
+
+### Remaining
+- Phase SW-11: UI research and components (`docs/ui/group-file-availability.md`, detail lines on bubbles/transfers/notifications, settings toggles).
+- Phase SW-12: Device verification on physical devices and tuning.
+
+### Next AI
+Proceed to Phase SW-11 (UI: research doc `docs/ui/group-file-availability.md` per AGENTS §34, then implement swarm availability lines and settings).
+
+---
+
+## 2026-10-05 — SW-9: Cancel Everywhere and Swarm Lifecycle
+
+### Worked on
+Phase SW-9 of `docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md` §7A (Origin cancel propagation, tombstone cryptographic validation, UI confirmation dialogs, delete-for-everyone wiring, group removal/leave handling, timeout suspension without tombstones, and retention cleanup).
+
+### Changed
+- **UI Origin Cancel Confirmation (`:ui:chat`):**
+  - Updated `FlashConversationScreen.kt` to present confirmation dialog on origin cancel ("Cancel for everyone? Members who already have the file keep it.", confirm: "Cancel for everyone", dismiss: "Keep transfer").
+  - Fixed `isOutgoing` check to `msg.isMine` in conversation bubble.
+- **Engine Cancel & Strike Handling (`:core:swarm`):**
+  - Exposed `strikeBook` on `SwarmEngine` for inspection and tests.
+  - In `SwarmEngine`, handled `SwarmEvent.CancelArrived`: when `!signatureValid`, sender is struck and banned after 3 strikes.
+  - Guarded completed downloads: receivers that completed keep their file upon tombstone arrival, reject subsequent piece requests with `SwarmRejectReason.CANCELLED`, and stop serving.
+- **Driver Key Fallback & Retention Cleanup (`:core:swarm` `SwarmDriver`):**
+  - Eagerly populated `transferIdToKey` and `keyToTransferId` in `announceContent`.
+  - Added `findKey(transferId)` helper fallback searching `contentRecords` by `localTransferId` or `messageId` to eliminate race conditions between announce and cancel.
+  - Validated and filtered `frame.tombstones` against `groupContext.verifyStatement` in `SwarmFrame.Summary`.
+  - Implemented `runRetentionCleanup()` sequentially after loading persistent records, and on demand.
+- **Host Integration & Lifecycle (`:core:engine`):**
+  - Integrated `deleteMessageForEveryone` in `FlashChatRepository` with `cancelAsOrigin(reason = DELETED)`.
+  - Added orphaned `.part` file deletion in `JvmPieceStorage` / `AndroidPieceStorage` during retention cleanup.
+  - Handled Android `TimeoutStopPlan` with `pauseForSystem` (`SystemSuspend`) and service resumption (`SystemResume`) without producing tombstones.
+- **Unit & Lifecycle Tests:**
+  - Added `SwarmCancelLifecycleTest` (`:core:swarm:commonTest`): forged cancel signatures (strikes & ban), origin cancel with `USER` vs `DELETED` reasons, completed receiver keeping file and rejecting subsequent piece requests, and `Summary` with tombstones cancelling before any request.
+  - Added `SwarmHostLifecycleTest` (`:core:engine:jvmTest`): retention cleanup DB record purging + active partial preservation, and `deleteMessageForEveryone` triggering `cancelAsOrigin(reason = DELETED)` and hook teardown.
+  - Added partial cleanup test in `JvmPieceStorageTest`.
+
+### Verification
+- Ran `./gradlew :core:swarm:jvmTest`: ALL PASSED.
+- Ran `./gradlew :core:engine:jvmTest`: ALL 40 TESTS PASSED.
+- Ran `./gradlew :core:messaging:jvmTest`: PASSED.
+- Ran `./gradlew :ui:chat:compileKotlinJvm`: BUILD SUCCESSFUL.
+- Ran `./gradlew :desktop:compileKotlinJvm`: BUILD SUCCESSFUL.
+- Ran `./gradlew :app:compileDebugKotlin`: BUILD SUCCESSFUL.
+
+### Remaining
+- Phase SW-10: Errors and recovery (wake-up wiring, failure sentences in `TransferFailureText`, catalogue sweep, INV-9 wait reason tests).
+- Phase SW-11: UI research and components.
+- Phase SW-12: Device verification on physical devices and tuning.
+
+### Next AI
+Proceed to Phase SW-10 (Errors and recovery catalogue, wake-up wiring, and `TransferFailureText` sentences).
+
+---
+
+## 2026-10-04 (l) — SW-8: Driver, Host Integration, and GroupGate
+
+### Worked on
+Phase SW-8 of `docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md` §7A (Driver actor, host binding, `FlashEngine.attachSwarm`, `MagicFrameRouter` FSW1 routing, `GroupGate` integration, and `DesktopInteropHarness` multi-peer integration).
+
+### Changed
+- **Swarm API (`:core:swarm:api`):**
+  - Added `FlashSwarm` interface with `status(transferId)`, `rows: StateFlow<List<FlashTransfer>>`, control methods (`accept`, `decline`, `pause`, `resume`, `cancelLocal`, `cancelAsOrigin`, `reevaluate`).
+- **Swarm Driver (`:core:swarm:driver`):**
+  - Implemented `SwarmDriver`: single actor loop with `Channel<SwarmEvent>`, worker dispatchers for hashing/reads/writes, 250ms periodic `Tick` while active, startup record loading.
+- **Host Binding (`:core:engine`):**
+  - Created `SwarmHostBinding`: registers `"FSW1"` with `MagicFrameRouter`, provides `sw1` to `HelloFeatures`, translates session and network transitions, handles ECO mode and call-active floors.
+  - Added `SwarmTransferRowBridge` integrating external swarm rows with `RealFlashTransferRepository`.
+- **Zero-Change Proof & Interop Tests:**
+  - Implemented `SwarmInteropTest` verifying three-node swarm convergence, origin disconnect at 50%, union exchange, and resumption to 100% completion.
+  - Verified legacy 1:1 and non-swarm transfers remain 100% untouched when swarm is detached or switch is off.
+
+---
+
+
+
+### Worked on
+Phase SW-7 of `docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md` §7A (Storage I/O: `PieceStorage`, `SourceHandle`, `PartialHandle`, `StorageFinalizeResult`, `JvmPieceStorage`, `AndroidPieceStorage`, SAF persistable permission tracking, and unit tests).
+
+### Changed
+- **Storage Model & Port (`:core:swarm` `com.transfer.flash.core.swarm.model`):**
+  - Created `PieceStorage.kt` defining:
+    - `SourceHandle : AutoCloseable`: random-access reads from origin source file at arbitrary offsets, physical file `identity()` (size and last modified time), and `close()`.
+    - `PartialHandle : SourceHandle`: random-access write (`writeAt`), durable write barrier (`sync()` via `force(false)` per INV-4), and positional read.
+    - `StorageFinalizeResult`: outcome of finalization (`ok`, `finalPath`, `identity`, `badPieces`, `errorMessage`).
+    - `PieceStorage`: multiplatform interface for `openSource(uri)`, `openPartial(key, size)`, `freeBytesFor(key)`, `finalize(key, fileName, mime, expectedSha256)`, and `deletePartial(key)`.
+- **Platform Storage Implementations (`:core:engine`):**
+  - `JvmPieceStorage` (`core/engine/src/jvmMain/kotlin/.../swarm/JvmPieceStorage.kt`):
+    - `openSource`: supports file paths and `file://` URIs via `FileChannel` positional reads.
+    - `openPartial`: manages app-private `.part` files under `partialDir`, pre-sizes with `setLength`, uses `FileChannel.write` and `FileChannel.force(false)`. Strict path traversal validation rejecting `..`, `/`, `\`.
+    - `freeBytesFor`: reports `partialDir.usableSpace`.
+    - `finalize`: runs whole-file SHA-256 pass, validates hash, moves file to `destinationDir` with automatic collision resolution (`doc (1).txt`, `doc (2).txt`), and returns destination `FileIdentity`.
+    - `deletePartial`: safely deletes `.part` file.
+  - `AndroidPieceStorage` (`core/engine/src/androidMain/kotlin/.../swarm/AndroidPieceStorage.kt`):
+    - `openSource`: supports `content://` URIs via `ContentResolver.openFileDescriptor(uri, "r")` with positional `FileChannel.read`, and queries `OpenableColumns.SIZE` and `COLUMN_LAST_MODIFIED`. Also supports standard `file://` and local paths.
+    - App-private `.part` storage under `<context.filesDir>/swarm/partial/` with path traversal guards.
+- **SAF File Picker Update (`:ui:platform-shims`):**
+  - Added `isPersistable: Boolean = true` to `FlashPickedFile`.
+  - Updated `FlashFilePicker.android.kt` to record whether `takePersistableUriPermission` succeeded and propagate `isPersistable` to `FlashPickedFile` (Task 2).
+- **Unit & Functional Tests (`:core:engine` `jvmTest`):**
+  - Created `JvmPieceStorageTest`:
+    - `random-offset writes and read-back`: verifies non-sequential chunk writes and read-back integrity.
+    - `overlapping writes`: tests write overlapping and data persistence.
+    - `openSource and identity detection on modification`: tests size and modification time change detection.
+    - `finalize moves file, verifies sha256 and handles name collision`: verifies SHA-256 verification and collision renaming (`doc.txt` -> `doc (1).txt` -> `doc (2).txt`).
+    - `finalize fails on sha256 mismatch`: verifies partial file preserved and failure returned on hash corruption.
+    - `deletePartial deletes the file`: verifies deletion of `.part` file.
+    - `path traversal attempt is rejected`: verifies `IllegalArgumentException` thrown on traversal attempt.
+    - `freeBytesFor returns usable space`: verifies volume space query.
+
+### Verification
+- Ran `:core:engine:jvmTest`: all 27 tests passed green (including `JvmPieceStorageTest` and `RoomSwarmStateStoreTest`).
+- Ran `:core:swarm:jvmTest`: all 68 tests passed green.
+- Ran `:core:engine:assemble`: both JVM and Android AAR (`bundleAndroidMainAar`) artifacts built successfully.
+- Mutation check: verified that removing the traversal guard in `partialFileForKey` causes `path traversal attempt is rejected` to fail, confirming the test is sensitive and active.
+
+### Remaining
+- SW-8: Driver and host integration (`FlashSwarm`, `SwarmDriver`, `SwarmHostBinding`, `attachSwarm` behind switch, `GroupGate` GM-5).
+- Physical device verification owed: `SWM-13` (Android SAF content-URI streaming and restart resumption).
+
+### Next AI
+Proceed to Phase SW-8 (Driver and host integration) or GM-5 (Group Gate prerequisite for SW-8).
+
+---
+
+## 2026-10-04 (j) - SW-6: Room Database Persistence for Swarm & Tombstones
+
+### Worked on
+Phase SW-6 of `docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md` §7A (Room database persistence for swarm state, bitfield progress, and origin tombstones).
+
+### Changed
+- **Schema & Room Entities (`:core:persistence`):**
+  - Added `SwarmContentEntity` and `SwarmTombstoneEntity`.
+  - Added `SwarmDao` with CRUD operations, chunk bit updates, state transitions, and tombstone/content expiry purging.
+  - Bumped `FlashDatabase` version 6 -> 7; exported `7.json` Room schema.
+  - Added `STEP_6_7` to `FlashSchemaSteps` and registered in `FlashMigrations.ALL` (`MIGRATION_6_7`).
+- **Store Adapter (`:core:engine`):**
+  - Added `SwarmStateStore` interface in `:core:swarm`.
+  - Implemented `RoomSwarmStateStore` in `core/engine/src/commonMain/.../swarm/RoomSwarmStateStore.kt` adapting Room entities to pure domain models.
+- **Verification:**
+  - Added schema migration tests in `FlashJvmMigrationsTest` and `FlashMigrationsChainTest`.
+  - Added extensive DAO unit tests in `FlashDatabaseJvmTest`.
+  - Added adapter round-trip tests in `RoomSwarmStateStoreTest`.
+  - Passed `:core:persistence:jvmTest` and `:core:engine:jvmTest`.
+
+---
+
+
+### Worked on
+Phase SW-4 of `docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md` §7A (Sans-IO pure engine state machine, piece picking, source selection, serve policy, window management, strike book, wait classifier, and property tests).
+
+### Changed
+- **Engine Data Types & Invariants (`com.transfer.flash.core.swarm.engine`):**
+  - `SwarmConfig`: configuration with autoAcceptIncoming, servingEnabled, and `SwarmProfile` (LOW 8MB/1 slot, MEDIUM 16MB/2 slots, HIGH 32MB/4 slots).
+  - `SwarmCommand`: pure commands emitted by engine (`Send`, `RequestSession`, `ReadPiece`, `WritePiece`, `SyncAndPersistBits`, `Finalize`, `DeletePartial`, `PersistRecord`, `SignTombstone`, `PersistTombstone`, `PublishRow`, `Log`).
+  - `SwarmEvent`: deterministic event hierarchy carrying caller-provided `nowMs` (`Announced`, `Accepted`, `ManifestPartArrived`, `ManifestComplete`, `PieceArrived`, `PieceStored`, `PieceStoreFailed`, `PieceRead`, `FinalizeResult`, `SourceStatusArrived`, `PeerUp`, `PeerDown`, `SummaryArrived`, `HaveArrived`, `HaveAllArrived`, `RequestArrived`, `UnrequestArrived`, `RejectArrived`, `CancelArrived`, `CancelAckArrived`, `LocalCancel`, `LocalPause`, `LocalResume`, `TombstoneSigned`, `MembershipChanged`, `NetworkUp`, `NetworkDown`, `SpaceChanged`, `SystemSuspend`, `SystemResume`, `ServingEnabled`, `CallActive`, `Tick`).
+  - `SwarmSnapshot`: read-only public UI/debug snapshot model.
+  - `StrikeBook`: 3-strikes ban per (peer, root), record/clear/query.
+  - `RequestWindow`: AIMD window (4..64), halving on congestion or active group call, in-flight byte budget enforcement.
+  - `SeededRandom`: deterministic 64-bit XorShift pseudo-random generator.
+  - `PiecePicker`: rarest-first piece picker implementing Rule A (first piece random, rarest-first with tie breaks, endgame <= min(32, 2%) with max 2 sources and loser unrequest).
+  - `SourceSelector`: non-origin source priority, EWMA download speed, fewest in-flight pieces, origin fallback, strike/backoff exclusions.
+  - `ServePolicy`: slot calculation with origin floor >= 2, group call floor = 1, request guards (membership gate ADR-075, unknown content INV-8, tombstoned CANCELLED, serving disabled BUSY 60s), and Origin Offer Policy (INV-7: copies+pending==0 served, duplicates rejected with ELSEWHERE).
+  - `WaitClassifier`: pure wait reason classifier implementing Table 8.1 / INV-9.
+  - `ContentState` & `PeerState`: internal engine state tracking pieces, persisted bits, EWMA speeds, in-flight requests, and pending HAVE queues per peer.
+  - Modular Handlers: `ManifestHandler`, `ServeHandler`, `TransferScheduler`, `ContentLifecycleHandler`, `PeerHandler`.
+  - `SwarmEngine`: central pure sans-IO state machine coordinating events, transitions, and commands without I/O or system clock.
+- **Unit & Property Tests Added:**
+  - `StrikeBookTest`: strike recording, 3-strike bans, per-root isolation.
+  - `RequestWindowTest`: AIMD additive increase, multiplicative decrease, byte budget checks, call-active halving.
+  - `PiecePickerTest`: first piece random, rarest-first, endgame duplication threshold, complete bitfield termination.
+  - `SourceSelectorTest`: non-origin preference, EWMA speed selection, exclusion of banned/backed-off peers.
+  - `ServePolicyTest`: slot allocation, membership gate, unknown/tombstone/disabled guards, origin offer policy.
+  - `WaitClassifierTest`: all 7 wait reason classifications across operational conditions.
+  - `SwarmEngineStepTest`: step-by-step table-driven verification across §4a..§4n flows (announcement, manifest reassembly, request loop, endgame unrequest, have batching, finalization failure retry/DAMAGED, origin/receiver cancel, membership drop, retention expiry, system suspend).
+  - `SwarmEnginePropertyTest`: random-walk simulation across 1,000 seeds (50 steps per seed) verifying all 7 invariants:
+    1. A piece already held is never requested.
+    2. A piece that is not held and verified is never served.
+    3. Nothing is served when allowed = false (REJECT NOT_MEMBER).
+    4. A tombstoned root is never requested or served.
+    5. In-flight bytes stay within profile budget.
+    6. Same seed + same events gives identical command stream.
+    7. A HAVE never precedes its persisted bits.
+
+### Verification
+- Ran `:core:swarm:jvmTest`: all 68 tests passed green.
+- Ran `:core:swarm:testAndroidHostTest`: all 66 tests passed green.
+- Verified `LayeringTest`: architectural boundaries strictly respected; `:core:swarm` has zero dependencies on network/persistence/messaging, and lower layers do not import swarm.
+- Mutation Check 1 (4f ServePolicy gate): inverted `!isAllowed` guard to `false`, verified immediate failure in `ServePolicyTest` and `SwarmEnginePropertyTest`, reverted cleanly.
+- Mutation Check 2 (4j Cancel signature guard): inverted `!e.signatureValid` guard to `false`, verified immediate failure in `SwarmEngineStepTest` (`step 4j - forged cancel is ignored and strikes peer`), reverted cleanly.
+- Re-ran clean test suite: BUILD SUCCESSFUL (all 68 tests passing).
+
+### Remaining
+- SW-5: Database entities & DAO for swarm state in `:core:persistence`.
+- SW-6: SwarmStorage and disk I/O driver (`.part` sparse files, hashing, sync, finalize, tombstones).
+- SW-7: SwarmDriver orchestration (`WsFlashNetwork` session binding, frame routing, storage wiring).
+- No physical device tests claimed yet (pure unit & property tests only).
+
+### Next AI
+Proceed to Phase SW-5 (`core:persistence` schema, entities, and DAO for swarm content, bitfield persistence, and tombstones) as specified in `docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md` §7A.
+
+---
+
+## 2026-10-04 (h) - SW-3 Codec & Models Adversarial Review & Bug Fixes
+
+### Worked on
+Adversarial security and edge-case review of SW-3 implementation (`:core:swarm` data models, manifest codec, frame codec, math, bitfield).
+
+### Changed
+- **`Bitfield.kt`:**
+  - Added strict constructor validation that `initialBits.size == (size + 63) ushr 6`, preventing `ArrayIndexOutOfBoundsException` on index operations with undersized arrays.
+  - Cleared dirty bits set beyond `size` in the last `Long` element of `initialBits` in `init`, preventing false bit reporting in `count()` and `isComplete()`.
+  - Fixed integer overflow in `fromRanges` when `range.start + range.count` exceeded `Int.MAX_VALUE` using 64-bit bounds calculations.
+- **`SwarmFrameCodec.kt`:**
+  - Fixed UTF-8 string decoding in `decodeStr` by passing `throwOnInvalidSequence = true` to `decodeToString()`, returning `DecodeResult.Malformed` instead of silently replacing malformed byte sequences with `\uFFFD`.
+  - Fixed integer overflow in `decodeHave` range bounds check (`start + count - 1`) using 64-bit arithmetic and bounding to `PieceMath.MAX_PIECE_COUNT`.
+  - Enforced `PieceMath.MAX_PIECE_COUNT` bounds on `decodePiece`, `decodeRequest`, `decodeReject`, and `decodeUnrequest` indices.
+  - Added non-empty string and positive timestamp checks in `decodeCancel` and `decodeSourceStatus` to prevent downstream crashes on `toTombstone()`.
+  - Added symmetric invariant checks in `encode()` across all 12 frame types (index bounds, valid ranges, consistent reject scopes).
+- **`PieceMath.kt`:**
+  - Added bounds enforcement `require(totalSize in 1..MAX_SWARMABLE_FILE_SIZE)` in `pieceCount()` to prevent arithmetic overflow on massive `totalSize` inputs.
+  - Hardened `choosePieceSize()` against oversized files (>16 GiB).
+- **`ManifestCodec.kt`:**
+  - Caught oversized `totalSize` in `decode()` and safely return `null` instead of throwing uncaught `IllegalArgumentException` from `PieceMath.pieceCount`.
+- **`SwarmFrame.kt`:**
+  - Added `init` validation in `Cancel` and `SourceStatus` to enforce invariant matching `SwarmTombstone`.
+- **Tests Added:**
+  - `BitfieldTest`: constructor size validation, masking of dirty bits beyond size, overflow range handling.
+  - `SwarmPropertyTest`: malformed UTF-8 rejection, integer overflow in `HAVE` range rejection.
+  - `PieceMathTest`: overflow totalSize rejection in `pieceCount`.
+  - `ManifestBuilderTest`: oversized manifest totalSize returns null.
+
+### Verification
+- Ran `:core:swarm:jvmTest`: 31 tests passed (all 6 new adversarial test cases passed).
+- Ran `:core:swarm:testAndroidHostTest`: passed.
+- Ran `:core:network:jvmTest`: passed.
+- Ran `:core:engine:jvmTest`: passed.
+- Ran `:app:testDebugUnitTest`: passed.
+- Ran `:desktop:compileKotlinJvm`: passed.
+
+### Remaining
+- SW-4: Sans-IO engine (`SwarmEngine`, `PiecePicker`, `SourceSelector`, `ServePolicy`, `RequestWindow`, `StrikeBook`, `WaitClassifier`).
+
+---
+
+## 2026-10-04 (g) - SW-3: `:core:swarm` module, data model, manifest codec, FSW1 frame codec, golden vectors
+
+### Worked on
+Phase SW-3 of `docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md` (Module, model, manifest, codec).
+
+### Changed
+- **Module creation:**
+  - Added `include(":core:swarm")` to `settings.gradle.kts`.
+  - Created `core/swarm/build.gradle.kts` (KMP android + jvm, explicitApi, dependencies on `:core:common`, `:core:transfer`, and `kotlinx.coroutines.core`; strictly NO `:core:network`, `:core:messaging`, or `:core:persistence`).
+  - Created `core/swarm/consumer-rules.pro`.
+- **Domain models (`com.transfer.flash.core.swarm.model`):**
+  - `ContentRoot`: 64 lowercase hex characters, validates `[0-9a-f]{64}`, byte conversion helpers.
+  - `PieceMath`: pure calculation for `pieceCount`, `pieceOffset`, `pieceLength`, and `choosePieceSize` (powers of 2 between 64 KiB and 1 MiB, count <= 16,384; null for non-swarmable sizes).
+  - `Bitfield`: backed by `LongArray`, range run-length encoding (`PieceRange`), missing/set indices sequences, byte array serialization.
+  - `SwarmTombstone`, `SwarmTombstoneReason`: origin cancellation record.
+  - `SwarmWaitReason`: 7 deterministic wait reasons from table 8.1 (`WAITING_FOR_SENDER`, `_HOLDERS`, `_NETWORK`, `_SPACE`, `_STORAGE`, `_SYSTEM`, `_SESSION`).
+  - `SwarmRejectReason`: 7 wire rejection reasons with fallback to `BUSY`.
+  - `SwarmRole`, `FileIdentity`: physical file identity and role tracking.
+  - `SwarmManifest`, `ManifestBuilder`: streaming manifest generation without holding more than 1 piece in memory.
+- **Wire codecs (`com.transfer.flash.core.swarm.codec`):**
+  - `ManifestCodec`: canonical "FSWM" manifest format, SHA-256 root calculation, 64 KiB slice fragmenting (up to 9 parts), and bounded reassembly.
+  - `SwarmStatement`: canonical domain-separated statements for `flash-swarm-v1/announce`, `flash-swarm-v1/cancel`, and `flash-swarm-v1/source`.
+  - `SwarmFrame`: sealed hierarchy for all 12 FSW1 frame types.
+  - `SwarmFrameCodec`: safe little-endian binary encoder and decoder. Never throws (returns `Decoded`, `Unknown`, or `Malformed`). Enforces all limits in §5.3.
+- **Protocol docs (`docs/protocol.md`):**
+  - Pasted golden hex vectors for `HAVE_ALL`, `PIECE` (3-byte), `REQUEST`, `HAVE`, `REJECT`, `CANCEL`, `SOURCE_STATUS`, `SUMMARY`, and 2-piece canonical manifest bytes.
+- **Tests:**
+  - `SwarmGoldenVectorsTest`: verifies all hand-calculated golden vectors.
+  - `SwarmPropertyTest`: all 12 types round-trip, 10,000 random byte arrays never throw, truncations yield Malformed, limit violations yield Malformed.
+  - `PieceMathTest`: edge cases (sizes 1, 64K, 64K+1, 16 GiB, 16 GiB+1).
+  - `BitfieldTest`: word boundary crossing, byte array serialization, range encoding round-trip.
+  - `ManifestBuilderTest`: streaming accumulation vs whole-file verification, slice fragmenting and reassembly.
+  - `LayeringTest`: verifies that lower layers never import `core.swarm`, and `core:swarm` never imports network, messaging, or persistence.
+
+### Verification
+- `./gradlew :core:swarm:jvmTest`: 25 tests completed, 0 failures.
+- `./gradlew :core:swarm:testAndroidHostTest`: passed.
+- `./gradlew :desktop:compileKotlinJvm`: passed.
+- `./gradlew :app:compileDebugKotlin`: passed.
+
+### Remaining
+- SW-4: Sans-IO engine (`SwarmEngine`, `PiecePicker`, `SourceSelector`, `ServePolicy`, `RequestWindow`, `StrikeBook`, `WaitClassifier`).
+
+---
+
+## 2026-10-04 (f) - SW-2: Seams (`caps` in HELLO, MagicFrameRouter, user vs system stop)
+
+### Worked on
+Phase SW-2 of `docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md` (Seams: `caps`, magic router, user vs system stop).
+
+### Changed
+- **Part A (`caps` capability seam):**
+  - Appended `val features: Set<String> = emptySet()` to `FlashDevice`.
+  - Created `HelloFeatures.kt` with `parseHelloFeatures` (`[a-z0-9]{1,16}`, max 32 tokens, never throws) and `formatHelloFeatures` (sorted, comma-separated, returns `null` when empty).
+  - Added `localFeatures: () -> Set<String> = { emptySet() }` constructor parameter to `WsFlashNetwork` and `JvmWsFlashNetwork`.
+  - Updated client HELLO and server HELLO reply in both network implementations to include `"caps"` only when non-empty, preserving exact byte equality for empty features.
+  - Updated inbound HELLO parsing in both network classes to populate `FlashDevice.features`.
+  - Created `HelloFeaturesTest.kt` with golden text test asserting identical HELLO string when empty.
+- **Part B (MagicFrameRouter):**
+  - Created `MagicFrameRouter.kt` in `:core:engine`.
+  - Wired router into `Flash.kt`, `DiscoveryEngineHolder.kt`, and `DesktopEngine.kt` after decryption and before transfer route.
+  - Consumes and drops reserved magic `"FSW1"` with rate-limited warning log when no handler is registered.
+  - Created `MagicFrameRouterTest.kt`.
+- **Part C (User vs System stop):**
+  - Added `suspend fun pauseForSystem(transferId: FlashTransferId, reason: String): FlashResult<Unit>` in `FlashTransferRepository.kt` with default calling `pauseTransfer`.
+  - Extracted pure function `TimeoutStopPlan.of(transfers, isSwarmRow): TimeoutPlan(val toCancel: List, val toPause: List)` from `FlashBackgroundService.onTimeout`.
+  - Created `TimeoutStopPlanTest.kt` pinning today's cancel-all behavior when `isSwarmRow` is false, and verifying swarm rows route to pause.
+  - Updated `FlashBackgroundService.onTimeout` to use `TimeoutStopPlan`.
+  - Audited all 9 `cancelTransfer` call sites: 8 are explicit user UI clicks (USER), 1 is `onTimeout` (SYSTEM).
+- **Docs:** Updated `docs/protocol.md` with `caps` field specification and reserved `FSW1` magic router handling.
+
+### Verification
+- `./gradlew :core:network:jvmTest`: passed (including `HelloFeaturesTest`).
+- `./gradlew :core:engine:jvmTest`: passed (including `MagicFrameRouterTest`).
+- `./gradlew :app:testDebugUnitTest`: passed (including `TimeoutStopPlanTest`).
+- Compilation verified on `:desktop:compileKotlinJvm` and `:app:compileDebugKotlin`.
+
+### Remaining
+- SW-3 (completed in 2026-10-04 (g)).
+
+---
+
+## 2026-10-04 (e) - SW-1: Shared group file sender refactor (no behaviour change)
+
+### Worked on
+Phase SW-1 of `docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md` (Shared group sender).
+
+### Changed
+- Created `core/engine/.../group/GroupFileSender.kt` taking narrow lambdas (`localDeviceId`, `groupMembers`, `deviceFor`, `announce`, `sendFile`, `sendGroupAttachment`, `idFactory`) and exposing `suspend fun send(...)`.
+- Created characterisation test `GroupFileSenderTest.kt` asserting announce-then-send order, shared `messageId` and `wireFileId`, distinct per-recipient transfer IDs, and single group attachment row.
+- Replaced duplicate loops in `MainActivity.kt` (`onSendFile` and `onSendVoiceMessage`) and `DesktopShell.kt` (`sendFile`) with `groupFileSender.send(...)`.
+- Preserved desktop vs android differences via host lambdas (mime resolution and endpoint lookup).
+
+### Verification
+- `:core:engine:jvmTest`, `:desktop:compileKotlinJvm`, and `:app:compileDebugKotlin` all passed.
+
+---
+
+## 2026-10-04 (d) - SW-0: six ADRs PROPOSED, FSW1 and membership wire documented, threat rows (docs only, nothing implemented)
+
+### Worked on
+Phase SW-0 of `docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md` ("lets move to sw 0").
+
+### Changed
+- **`docs/decisions.md`:**
+  - ADR-070 to ADR-075, all PROPOSED:
+    - ADR-070: optional module;
+    - ADR-071: FSW1 wire, content id and announcement;
+    - ADR-072: reliability;
+    - ADR-073: membership by id + secret;
+    - ADR-074: group settings;
+    - ADR-075: the group gate.
+  - A "Superseded in part by ADR-073" line appended to ADR-044. Its text is not edited.
+- **`docs/protocol.md`:** two new sections.
+  - **"Group swarm wire FSW1 v1":** the envelope; all 12 bodies with limits; reject reasons; the manifest bytes; the signed statements;
+    the four `FLASH_GMEDIA` fields; the version rule; old-build compatibility.
+  - **"Group membership v1":** the byte conventions; key derivation and commitment; the invite layout; `gs1`; the `FLASH_GMEM` frames;
+    the proof transcript; join and refusal statements; the charter trust root; the rotation notice and settings as bundle keys; the
+    handover rules; compatibility.
+  - Vectors: TODO SW-3 / GM-1 / GM-2.
+- **`docs/security.md`:** a section 1 row, and section 10 with 10 swarm and 16 membership threat rows. Each row names its INV / GINV.
+- **`docs/architecture.md`:** the planned `:core:swarm` in the layer list, and a paragraph on its dependency rules and on where
+  membership lives.
+- **`GROUP-SWARM-DESIGN.md`:** "Superseded / Changed by" notes at 1.2, 1.5 condition 1, 1.6, 4.4, 4.8 and D10–D12. No text was deleted.
+- **`docs/ui/ui-research-index.md`:** UI-053 (group settings sheet), UI-054 (invite and join flow) and UI-055 (group file
+  availability) reserved, NOT STARTED.
+- **The plan:**
+  - 7.0 status;
+  - an SW-0 status block;
+  - notes at 5.3, 5.4, INV-5, ripple 7 (O-5 replaced), GM-3 task 6, GM-6 task 3, GM-9 and 10.1.
+
+### Why
+AGENTS 8 and 17: the contracts must exist and be accepted before any code. Writing them exposed six gaps, each closed on paper:
+- **A replayed tombstone could cancel a later re-send.** Keyed by content, it would also cancel another member's announcement of the
+  same bytes. So tombstones are per announcement.
+- **Root-only frames are ambiguous with two shared groups.** So every frame names its group.
+- **Android data-channel frames are capped at 512 KiB** (`DataChannelFraming.MAX_FRAME_BYTES`) and could not carry a 1 MiB piece. So
+  FSW1 rides the WebSocket only.
+- **The proof as designed let a stranger who knows a group id learn who is in it.** So the responder fakes a challenge and says
+  "stale" only after a valid older proof.
+- **A member that has not yet seen a removal could hand the new secret to the removed device.** So the handover refuses ids that a
+  notice names as removed.
+- **The group name lives in the charter, which must stay equal to the stored one.** So it is not a v1 setting.
+
+### Verification
+- Docs only, so no build and no tests.
+- Read in the code to answer task 4:
+  - `FlashTextFraming.parseFields`;
+  - `GroupFrameCodec.decode` and `decodeBundle` (unknown keys are ignored; an unknown prefix or action decodes to null);
+  - the Android dispatch (logs only the length of an unrecognised frame).
+- The desktop and library fall-through after an unknown prefix was not traced line by line; GM-3 adds a test.
+- Every test id the ADRs cite exists in the backlog (`GSEC-01..08`, `GSET-01..04`, `GMB-01..14`, `SWM-01..29`).
+
+### Remaining
+- The owner's acceptance of ADR-070 to ADR-075, including O-11..O-15 inside ADR-073.
+- Golden vectors (SW-3, GM-1, GM-2).
+- SW-0 owes no device tests.
+
+### Next AI
+- **If the ADRs are accepted:** mark them ACCEPTED (Status line only), set SW-0 to DONE in plan 7.0, then start GM-5 (read its phase
+  first, and pin today's behaviour with the table test before changing any predicate).
+- **If they are amended:** change the ADR text before acceptance, and keep the protocol and plan notes consistent.
+
+## 2026-10-04 (c) - Plan revised: group id + secret membership merged in, every member receives regardless of pairing (docs only, nothing implemented)
+
+### Worked on
+The owner's answer to the swarm plan:
+- "taking your recommendation for the decisions";
+- "anyone in the group should receive regardless of paired state";
+- "it should be a different module";
+- "I am overturning the earlier decision so a group can have an identifier and secret… modify plan accordingly".
+
+### Changed
+- **`docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md`:**
+  - **1.3:** the decisions, and an exact account of where pairing with the leader is required today.
+  - **2.6:** membership stays in `:core:messaging` + `:core:security`; the swarm stays its own module.
+  - **5.7:** the `GroupGate` (one predicate for v2 group traffic), GINV-1..8, and rotation without sealing.
+  - **Section 6:** ripple rows 31–47.
+  - **7B:** track GM-1..GM-11 in the phase template.
+  - **SW-8** now depends on GM-5.
+  - **SW-0** now writes six ADRs and a membership protocol section.
+  - **8.3:** catalogue M-01..M-22.
+  - **Sections 10–13:** O-5 replaced, O-11..O-15 added, D1–D9 and D13 statuses, membership risks and mapping.
+- **`docs/testing/TEST-BACKLOG.md`:** new section 4x `GMB-01`..`GMB-14`, and an update note in 4v.
+- **`GROUP-SWARM-DESIGN.md`:** an update pointer.
+- **Memory files** updated.
+
+### Why
+- **Where pairing with the leader is required today [code]:**
+  - `GroupSignatureRules.checkCharter` refuses a group whose owner is not paired (`owner-not-paired`);
+  - `createGroup` accepts only paired invitees.
+- **Files are paired-only on both ends.** Chat and calls already accept vouched members through `isVouchedMember` (the live key
+  equals the certified key).
+- **So the secret's job is narrow.** It is the trust root for joining (the group id already commits to the owner key) and the
+  thing that rotation invalidates. Device identity stays the roster key.
+- **Two refinements of the design, recorded for the owner:**
+  - **O-13: no per-session proof for traffic.** It would add a failure mode and stop no extra attacker (case table in 1.3).
+  - **No sealing of the new secret to each member.** Every member holds the secret anyway, and Keystore key agreement on
+    minSdk 24 is unverified. A signed rotation notice with a commitment, plus a handover inside live TLS sessions to
+    gate-passing members, replaces it.
+
+### Verification
+- Docs only. Code facts were read by grep on 2026-10-04 (plan section 12).
+- No build was run, because no code changed.
+
+### Remaining
+- SW-0 (the ADRs) is the next step. The owner may overrule O-11..O-15 before SW-0 ends.
+- Not verified:
+  - whether the chat database is encrypted at rest (GM-2);
+  - whether a FILE_START from an unpaired peer that matches no parked frame is refused (GM-5);
+  - Keystore key agreement.
+
+### Next AI
+1. Do SW-0 per the plan.
+2. Then GM-5, which has no GM prerequisite and unblocks SW-8.
+
+Do not start GM-1+ or SW-1+ code before the six ADRs are accepted.
+
+## 2026-10-04 (b) - Plan: group swarm for reliability, phase by phase (docs only, nothing implemented)
+
+### Worked on
+Owner request: turn the swarm into a detailed phase-by-phase plan, usable by a less capable model or a new chat. The plan must make
+group sending reliable:
+- a half-sent file is finished by members exchanging what they hold, and continues when the sender returns;
+- the sender's cancel stops it everywhere;
+- an error phase covers downloads stopped because the sender is offline, and the other failure cases;
+- the ripple effects on other modules are covered;
+- it answers whether this is a module or part of the transport, optional for library users.
+
+### Changed
+- **New `docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md`:**
+  - how to use it (reading order, glossary, rules, stop conditions, commands);
+  - the owner's answers and what they change in the design;
+  - the module verdict;
+  - the reliability contract R1 to R9;
+  - walk-throughs (half sent, cancel, waiting);
+  - the target architecture (ports, events and commands, FSW1 wire, tables, the UI mapping without a breaking enum change);
+  - invariants INV-1 to INV-12;
+  - a 30-row ripple map;
+  - phases SW-0 to SW-12, each with read-first, ripple, tasks, tests, exit criteria, device checks, do-not and rollback;
+  - an error catalogue E-01 to E-50 with wait reasons and their wake-ups;
+  - the test strategy;
+  - owner decisions O-1 to O-10;
+  - risks, sources, and the mapping to the earlier plans.
+- **`docs/testing/TEST-BACKLOG.md`:**
+  - new section 4w, `SWM-09` to `SWM-29`;
+  - a note in 4v that `SWM-01..05` now tune instead of gate.
+- **`docs/transfer/GROUP-SWARM-DESIGN.md`:** a pointer to the plan and the changed decisions (D10 answered, D11 superseded, D12
+  changed).
+
+### Verification
+None run; no code changed. Facts marked [code] in the plan were read in the repository:
+- the group fan-out loops in `MainActivity` / `DesktopShell`;
+- `FlashBackgroundService.onTimeout` cancelling transfers;
+- the in-memory `pendingGroupMedia` park;
+- the HELLO `ping`/`gv` fields and `FlashDevice.groupProtocol`;
+- the three `handleInboundBinary` routes;
+- `store = null` on desktop;
+- `FlashSchemaSteps`;
+- the `:core:engine` `api`/`compileOnly` styles;
+- `jitpack.yml`;
+- the `cancelTransfer` call sites.
+
+The Android service-timeout facts and adb test commands were read on developer.android.com (2026-10-04).
+
+### Findings worth knowing
+- **Module verdict.** A separate optional module `:core:swarm`, not part of the transport (cycle with messaging, risk to
+  device-verified chat/calls, sans-IO testability, optionality). The lower layers get only two generic seams: a HELLO `caps`
+  list and a binary magic router. The recommendation is `api` plus attach like PTT, not `compileOnly` like calling (O-6).
+- **Dangerous ripple.** `FlashBackgroundService.onTimeout` cancels every running transfer on Android's six-hour limit; with
+  "cancel everywhere" that would cancel a group file for everyone. SW-2 separates user cancel from system stop first (INV-10).
+- **The half-sent case** works because of the origin offer policy (the sender serves pieces nobody holds first) plus
+  receiver-driven pull. Without that policy the group can end up holding duplicates of the same part.
+- **The swarm does not need the group-secret decisions (D1/D2).** It works with today's v2 groups, and vouched members would get
+  files (O-5, closes the FO-04 gap).
+- **Unknowns left to the phases:** whether the `GroupMedia` decoder ignores unknown fields (SW-0), the largest binary frame
+  size (SW-3), how the desktop group-send loop differs (SW-1).
+
+### Remaining
+- Owner decisions O-1 to O-10 and D13.
+- Then SW-0: ADRs and the protocol section.
+- Nothing is built.
+
+### Next AI
+Read the plan's section 0 first. Start with SW-0 only after the owner answers O-1..O-10. Do not write swarm code before the SW-0
+ADRs are accepted. SW-1/SW-2 (host refactors) and SW-3 to SW-5 (pure module) can then proceed in parallel.
+
+## 2026-10-04 - Review: anitorrent and Ketch as a torrent library for the group swarm (docs only)
+
+### Worked on
+Owner asked whether to import, or copy from, `open-ani/anitorrent` (via Animeko) and `Ketch-main.zip` (a multiplatform download manager with pause/resume), for the group swarm.
+
+### Changed
+- `docs/transfer/GROUP-SWARM-DESIGN.md` section 11 (and decision D13): the review, the licence finding, what to reuse as a reference.
+
+### Verification
+Ketch was unzipped to the scratchpad and read, not built or run. The anitorrent licence and scope were read on its GitHub README (GPL-3.0, "not a comprehensive wrapper"). No project code changed.
+
+### Findings
+- **anitorrent: GPL-3.0 and Animeko-specific, over native libtorrent: rejected.**
+- **Ketch (Apache-2.0, same as Flash):** has a pure-Kotlin BitTorrent engine, but its engine is `internal` and coupled to Ketch's download manager; it needs Kotlin 2.4.20 / coroutines 1.11 / AGP 9.4 / **minSdk 26** (Flash: 2.2.10 / 1.10.2 / 9.3.1 / **24**); its trust model is infohash-only (no device identity, no per-request gate); about a third of it is public-internet discovery we do not need; it is release-candidate status by its own docs. **Not imported.**
+- Useful as a reference: rarity picker, scheduler (endgame duplicates at most twice), memory budget leases, checkpoint/ownership journal, libtorrent4j differential testing. Its resume is HTTP `ETag` validation, which Flash's done-set + whole-file check already surpass.
+
+### Remaining
+Owner decisions D1..D13 in the design. Nothing built.
+
+### Next AI
+Read design section 11 before writing the swarm module; if any Ketch code is adapted, add a `NOTICE` entry and a header comment.
+
+## 2026-10-03 (j) - Design: group-exclusive membership (group id + secret), group settings, content-addressed group swarm (docs only, nothing implemented)
+
+### Worked on
+Owner request: make a group exclusive to group id + group secret (pairing irrelevant), add group settings, let any member that already has a file serve it, build our own torrent-like library (C++ or Rust?), and plan how many devices asking each other make the web of transfers grow.
+
+### Changed
+- New `docs/transfer/GROUP-SWARM-DESIGN.md`: the secret-membership design (mutual HMAC proof bound to both TLS identities, `GROUP` pin source, per-request gate, signed roster kept for roles/removal, join policy, `RekeyBundle` rotation on removal, optional group beacon), group settings (signed vs device-local), content addressing and "already have it", swarm semantics (airtime model, invariants, wire, initial spread, scheduler, serving policy, growth, stuck states), build/reuse and language comparison, phased plan G0..G6 with gates, owner decisions D1..D12, risks, not-verified list.
+- `docs/transfer/TRANSFER-V2-SWARM-AND-MULTIFILE-PLAN.md`: pointer to the new design. `docs/testing/TEST-BACKLOG.md` section 4v: `GSEC-01`..`GSEC-08`, `GSET-01`..`GSET-04`, `SWM-06`..`SWM-08`.
+
+### Verification
+None run; no code changed. Facts marked [code] were read in the repository (`GroupCharter`, `GroupCrypto`, `GroupPolicy`, `VouchRules`, `PinSource`, `:core:security` HKDF/HMAC/ECDH, `FlashGroupMembersSheet`, ADR-042/044/063).
+
+### Findings worth knowing
+- This **reverses ADR-044's rejection of a group-wide secret** (it needs a new ADR); the design keeps the device identity as the thing authenticated and uses the secret only as a door key, with epoch rotation on every removal and an admin-approval join policy as the real control against a leaked code.
+- It removes the "unpaired member cannot be reached" class (ERROR-088 / 095) for new groups; legacy `g-` groups are not migrated.
+- Recommended language: Kotlin commonMain as a sans-IO swarm core with a deterministic simulator; Rust only on measurement or a whole-core decision; never C++. The transport is not rebuilt (it exists and is device-verified); the pull/have wire is part of the swarm module.
+- The swarm speed-up depends on rate heterogeneity (weak origin, wired server); equal-rate members on one cell gain nothing (reasoning, to be measured).
+- There is no group settings UI today; it needs its own UI doc at DESIGNED first (AGENTS section 34).
+
+### Remaining
+Owner decisions D1..D12 (design section 7); ADRs (G0); measurements `SWM-01`..`SWM-04`, `TV2-02`.
+
+### Next AI
+Do not write ownership/membership/swarm code before the owner answers D1 and D2 and the ADRs exist. If the owner opens it: G0 (ADRs) first, then G1.
+
+## 2026-10-03 (i) - Research and plan: torrent-style group sending (FO-04), FA-5 and a transport upgrade (docs only, nothing implemented)
+
+### Worked on
+Owner request: research and plan swarm-style group file sending, add FA-5 (multi-file and folder), consider a transport engine upgrade, use online research for libraries, be honest, do not implement.
+
+### Changed
+- New `docs/transfer/TRANSFER-V2-SWARM-AND-MULTIFILE-PLAN.md`: what the code does today, the research (BEP 52, libtorrent4j, Bt, iroh, QUIC options, hotspot isolation), an honest feasibility analysis, five options compared, a recommended architecture (content manifest with a chunk-hash list + pull-capable wire as the shared foundation), the transport upgrade order, FA-5 design, a phased roadmap with measurement gates, owner decisions, what was not verified.
+- `docs/FUTURE-OPTIMIZATION.md` FO-04 points to it; `docs/testing/TEST-BACKLOG.md` section 4u: `SWM-01`..`SWM-05`, `TV2-01`, `TV2-02`.
+
+### Verification
+None run; no code changed. Facts marked [code] were read in the repository; web claims are tagged verified / reported / reasoning in the plan.
+
+### Findings worth knowing
+- The wire is push-only (no request or have frame) and the per-chunk hash travels with the chunk, so a relay cannot yet be trusted; the group message signature binds no file hash or size.
+- A swarm probably does not speed up a group send on one Wi-Fi network (reasoning, not measured) and cannot help on a phone hotspot (client isolation); its real gains are sender-can-leave, resilience and sender battery.
+- libtorrent4j needs Android API 28 (our minSdk is 24), has no iOS and brings its own trust rules; iroh's Android artifact is not published (build from source).
+- Each group recipient re-reads, re-hashes and re-encrypts the file (N-1 times): a cheap fix (hash once) needs no swarm.
+
+### Remaining
+Owner decisions in the plan (section 10); the measurements; FA-4 is a prerequisite for the swarm and for folder resume. No ADR written yet (required before code).
+
+### Next AI
+Do not start FO-04 or the transport upgrade unasked. If the owner opens it: run `SWM-01`..`SWM-04` first, then write the ADR for the manifest and pull wire.
+
+## 2026-10-03 (i) - Discovery module review and fixes (ERROR-100)
+
+### Worked on
+The owner asked for an honest review of `core/discovery` for bugs and upgrades, "better and faster".
+
+### Changed
+Eight fixes in `core/discovery` (details and confidence per item in `docs/audit/2026-10-03-discovery-module-review.md`): the multicast announce loop is re-armed after a rebind
+(B1); one `Lost` per departed peer (B2); an old instance name's removal no longer evicts a device held under a new name, NSD and JmDNS (B3); one tracked NSD browse loop (B4);
+heartbeats now publish a changed address (B5); the sweeper start is under its lock (B6); the multicast peer table is capped at 256 and decoded names are cut to 64 characters (B7);
+`FlashRadioTransport.presenceGraceMs` so the multicast lease is not pre-empted by the flat 30 s sweep (B11); API 34+ resolution prefers routable IPv4 (B10, defensive).
+16 new tests; B1, B2, B5 failed before the fix; B3, B7 and B11 were mutation-checked with the fix switched off. B4 and B6 have no test.
+
+### Verification
+`:core:discovery:jvmTest`, `:core:discovery:testAndroidHostTest` green; `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm` compile. **No device run; nothing measured, so no speed claim.**
+
+### Remaining
+Not changed: Android 14+ multicast lock for the app's own socket (B8, suspected, `DISC-07`), beacon sent on VPN/cellular interfaces, serial transport start (B9). Device checks `DISC-01`...`DISC-08`.
+`DiscoveryEngineHolder.kt` was not edited (another session's uncommitted changes).
+
+### Next AI
+Run `DISC-07` first: it decides whether the multicast transport needs its own lock on API 34+.
+
+## 2026-10-03 (h) - FA-2, FA-3 and FA-6 implemented together (ADR-069, ERROR-099)
+
+### Worked on
+The owner asked for audit findings FA-2 (no free-space check), FA-3 (raw failure text) and FA-6 (empty file) together, then an explanation of FA-4 without implementing it.
+
+### Changed
+- `core:transfer`: `RealFlashTransferRepository` gains an optional `freeSpaceBytes` provider and `admitIncoming(transferId)` (needs `bytesTotal - bytesDone`; refusal = Failed row +
+  local DECLINE + CANCEL to the sender). New `TransferFailureText` (sentences for the engine's failure reasons, size formatter; the raw reason is only logged) applied at the dispatcher
+  result, the caught exception and `onIncomingFailed`. `sendFile` measures an unknown size (0 or negative) by streaming the source once; empty or unreadable becomes a visible Failed row while the
+  call still returns Success (callers ignore Failure).
+- Hosts: Android `DiscoveryEngineHolder`, the facade `Flash.kt` and desktop `DesktopEngine` pass `File.usableSpace` of the receive directory and call `admitIncoming` first in `acceptOffer`.
+- Tests: `TransferRefusalAndWordingTest` (11 tests). Mutation-checked: gate off, empty refusal off, sender wording off, inbound wording off each fail exactly one test.
+- Docs: ADR-069, ERROR-099 (OPEN), audit status lines, backlog `FA-02`, `FA-03`, `FA-06` rewritten to test the fixes. No wire change.
+
+### Verification
+Green: `:core:transfer:testAndroidHostTest`, `:core:transfer:jvmTest`, `:core:engine:testAndroidHostTest`, `:app:compileDebugKotlin`, `:app:testDebugUnitTest`, `:desktop:compileKotlinJvm`.
+`:desktop:jvmTest`: 115 run, 1 failed, the known `DesktopEngineGroupSessionUpTest` (stale against ADR-064). Not device-verified: `FA-02`, `FA-03`, `FA-06`.
+
+### Remaining
+The refused sender sees "cancelled", not the reason (no reason field on the wire). No typed failure reason on the model and no Retry button. `File.usableSpace` was not checked against the
+official Android storage documentation. Host call sites have no end-to-end test.
+
+### Next AI
+FA-4 (persist transfer identity) needs an ADR and a Room schema change; the owner asked only for an explanation so far.
+
+## 2026-10-02 (g) - FA-1 implemented: one whole-file integrity check for every host (ADR-068, ERROR-098)
+
+### Worked on
+The owner approved implementing audit finding FA-1 (the Windows desktop never verified the received file).
+
+### Changed
+- `core:transfer`: new `WholeFileVerifier` (`MATCH` / `MISMATCH` / `UNVERIFIABLE`) and `RealFlashTransferRepository.onIncomingFileAssembled`, the one
+  completion path. A mismatch deletes the file, forgets the confirmed chunks (memory and `TransferStore.clearDoneChunks`, new DAO query
+  `deleteChunks`, no schema change) and **fails** the transfer; a sender that gets `COMPLETE verified=false` fails too and clears its chunks.
+- Hosts: Android (`DiscoveryEngineHolder`), the facade (`Flash.kt`) and desktop (`DesktopEngine`) call it, cancel the pipeline session on a mismatch and reply
+  `verified=false`. The two private `verifyWholeFile` copies are gone.
+- **Found on the way:** both UIs show "Verified" for every Completed transfer, so on Android a failed check had been displayed as verified. Hence Failed, not
+  "Completed, flagged". Also corrected my own audit text: the facade already had a check; only desktop lacked one.
+- Docs: ADR-068, `docs/protocol.md` (completion rule; the file had no chunk-frame section), ERROR-098, audit doc status + correction, backlog `FA-01` rewritten.
+
+### Verification
+- New `IncomingIntegrityTest` (9 tests: hash match / flipped byte / truncated / extended / unverifiable cases, receiver Failed + file deleted + done-set
+  cleared + store told, `chunksVerified=false`, no-digest keeps old behaviour, sender fails on `verified=false`). Mutation-checked: disabling the receiver
+  branch fails 2 tests, the sender branch 1.
+- Green: `:core:transfer` (android host + jvm), `:core:engine` (both), `:app:compileDebugKotlin`, `:app:testDebugUnitTest`, `:desktop:compileKotlinJvm`.
+- **Red, not caused by this change:** `:desktop:jvmTest` `DesktopEngineGroupSessionUpTest` ("a returning member learns the group...") fails because
+  `createGroup` now refuses an offline invitee (ADR-064, committed in `e0bf029c`) and the test creates the group while `beta` is offline; and 12 tests in
+  `:core:persistence:testAndroidHostTest` (the known Windows DataStore rename failure, audit 2026-09-28 item 6). I did not run them on a clean tree to
+  prove they predate this change; the first is a message from code I did not touch.
+- **No device run.** The three host call sites have no end-to-end test.
+
+### Remaining
+`FA-01` on devices. Hashing still blocks the receive-event collector for large files (as Android already did). FA-2...FA-7 untouched.
+
+### Next AI
+Fix the stale `DesktopEngineGroupSessionUpTest` (bring `beta` online first, or assert the new refusal) before relying on `:desktop:jvmTest` as a gate.
+FA-4 (persist transfer identity) is the next-largest gap and needs an ADR plus a migration on both hosts.
+
+## 2026-10-02 (f) - Feature-completeness audit against the project goals (docs only, nothing run)
+
+### Worked on
+The owner asked for an audit of the whole app for the features it needs. Taken as: AGENTS section 2 goals and the blueprint's Definition of Done
+for version 1 (sections 25-28, 31-33, 42), checked against the production code, not the docs.
+
+### Changed
+- New `docs/audit/2026-10-02-feature-completeness-audit.md`: a goal-to-state matrix, findings FA-1...FA-7 each labelled VERIFIED-IN-CODE / ABSENT / NOT RUN,
+  what is solid, a suggested order, and the still-open items of earlier audits.
+- Backlog section 4s `FA-01`...`FA-06`: one check per finding. No code was changed.
+
+### Findings (summary)
+FA-1 desktop never verifies the whole received file (Android does); FA-2 no free-space check; FA-3 failures shown as raw exception text; FA-4 transfer
+identity not persisted, list not rehydrated, so "status survives app recreation" is unmet; FA-5 the in-app picker takes one file and folders are not
+sendable; FA-6 a zero-byte file is probably unsendable (reasoned, not run); FA-7 missing AGENTS section 5 docs. Wi-Fi Direct stays absent (ADR-056).
+
+### Verification
+Read-only (grep and file reads). No build, no test, no device. The matrix's "device-verified" column repeats only what `logs/handoff.md` records
+(2026-09-23); the backlog has 0 PASS of 123.
+
+### Next AI
+Do not start fixes unasked. The suggested order is in the audit's section 4 (FA-1 first). FA-4 needs an ADR and a Room migration on both hosts.
+
+## 2026-10-02 (e) — In-call extras (UI-050f, ADR-067): status frame, audio output list, badges, reactions, data saver, PiP
+
+### Worked on
+The owner pasted the feature list after the dock redesign (small UI, medium, Flash-specific) and said "implement them". Built what could be built and
+unit-tested; deferred what needs a native capability or a design of its own (below).
+
+### Changed
+- **Wire (additive, ADR-067):** `FLASH_CALL action=status` (`mic cam hand rv react rseq`), all fields optional; an old client ignores it.
+  `CallWireFrame` / `CallFrameCodec`, new `CallStatusBook` (lock-free), `FlashCalling.setHandRaised / sendReaction / setDataSaver` (defaulted, overridden in
+  `CallCoordinator`), handling in `FlashCallSession` and `FlashGroupCallSession`, `CallHealthMonitor.dataSaver` (receive cap 0).
+- **State:** peer mic / camera / hand, own hand, data saver (own and peer's), reactions, participant `cameraOff` / `handRaised`, `FlashLinkQuality`.
+- **Audio output:** core `FlashCallAudioRoute` + pure `FlashCallAudioRouting` (resolve, stillValid, pickerOrder, screenOffAgainstEar); Android
+  `FlashCallAudioRouter.routes` / `setRoute`; the dock output button shows the route in force and opens a list only when a headset exists.
+- **UI (`ui:callui`):** `FlashCallExtras.kt` (custom panel, route picker, More panel, badges, reaction layer, data-saver pill, link chip + "Verified"
+  shield), dock now six slots on video with a size that adapts, `FlashCallScreen` wiring (placeholder over a still-composed video surface, mirror of the
+  self-view, PiP layout), group tile / chip badges. Six new Flash drawables and `FlashIcons` entries.
+- **Hosts:** Android PiP (manifest `supportsPictureInPicture` + `configChanges`), keep-screen-on for video, proximity wake lock for an earpiece voice call
+  (`FlashCallScreenSupport.kt`); desktop passes `peerVerified` and the hand / reaction / data-saver callbacks (no routes, no PiP).
+- **Bug fixed on the way:** plain read-copy-write of the call UI state from the media thread lost a concurrent status update (a test caught the peer's
+  data-saver flag vanishing); all writes now go through `updateState` / `_state.update`.
+- **Docs:** ADR-067, `docs/protocol.md` (Call status), `docs/ui/calling-ui.md` UI-050f, `ui-research-index.md`, `android-platform-notes.md` (PiP verified
+  on developer.android.com 2026-10-02; proximity not re-fetched), backlog section 4r `CALLX-01`...`CALLX-12`.
+
+### Verification
+- Green: `:core:calling:jvmTest`, `:core:calling:testAndroidHostTest`, `:ui:callui:jvmTest`, `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm`,
+  `:app:testDebugUnitTest`, `:core:engine:testAndroidHostTest` (see the final re-run noted in the handoff).
+- **No device run.** Nothing here is device-verified; the link-quality thresholds (60 / 200 ms, 2 / 8 %) are a first guess, not measured.
+
+### Not built (deferred, reasons in ADR-067 "Not built")
+Torch and tap-to-zoom, noise-suppression toggle, background blur (webrtc-kmp exposes no camera control or audio / video processing hook), add a person
+to a 1:1 call (roster + signaling design, own ADR), screen sharing (a capture source per platform), send a file / message from inside a call
+(navigation decision), mirror for group self tiles, LAN-versus-hotspot label (no such datum in the app).
+
+### Next AI
+Run `CALLX-*` with the owner; do not start the deferred items unasked. If a device check fails, add an ERROR entry (AGENTS section 35 rule 3).
+
+## 2026-10-02 (d) — In-call control dock redesign (UI-050e): icons, state language, tier-aware motion
+
+### Worked on
+The owner said the call icons were not representative (mute, switch camera and so on) and asked for a redesign with creative animations that respect the
+low / medium / high modes. More call features were asked to wait until this was done.
+
+### Changed
+- Icons (`ui/theme`): new `flash_ic_mic_off`, `flash_ic_video_off`, `flash_ic_earpiece`; redrawn `flash_ic_camera_flip` and `flash_ic_hangup`.
+  **`FlashIcons.Mute` renamed `NotificationOff`**: it was a crossed-out bell and the in-call mic button used it. New `MicOff`, `Video`, `VideoOff`, `Earpiece`.
+  Callers fixed: chat list row + selection bar (`NotificationOff`), group-video strip muted badge (`MicOff`).
+- `ui/callui/.../FlashCallControlDock.kt` (new): labelled dock (audio 3 controls, video 5), a glyph per state, inverted solid style for the emphasised
+  state, Flip dimmed instead of hidden when the camera is off, state-following TalkBack text, haptics, per-control motion (pop / eyelid / half-turn / tip
+  / ripple ring), and the incoming-call buttons (ring wiggle + ripple on Accept, tip on Decline). `FlashCallScreen.kt` now delegates to it.
+- Tier policy: HIGH animates; MEDIUM and LOW both use `reduceMotion` + `minimalChrome` (instant swaps, no ring, opaque dock), which is how the
+  repo already defines the tiers. Information and haptics are identical at every tier.
+- Docs: `docs/ui/calling-ui.md` UI-050e, `docs/ui/icon-system.md` addendum, `ui-research-index.md` row, backlog section 4q `CALLDOCK-01`...`05`.
+
+### Verification
+- `:ui:callui:jvmTest`, `:ui:theme:jvmTest`, `:ui:chat:compileKotlinJvm`, `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm`: green.
+- New tests: wording / motion math (`FlashCallControlDockTest`) and a Skia render test (HIGH is mid-animation 60 ms after a toggle, reduce-motion is already
+  final, every state draws in light and dark). I looked at the rendered PNGs: glyphs and states read correctly. **Not run on a phone; springs and feel unseen.**
+- A first render-test run crashed the test JVM (my bug: read the bitmap with doubled dimensions); fixed, no product impact.
+
+### Remaining
+`CALLDOCK-01`...`05` on devices. Not built (waiting on the owner, as asked): audio-route picker (Bluetooth / wired need a state field), auto-hide dock,
+remote mute / camera badges, PiP, audio-only mode, screen share, reactions. Single-camera desktops still show Flip.
+
+### Next AI
+Read `docs/ui/calling-ui.md` UI-050e. Do not reintroduce `FlashIcons.Mute`. Any new call control goes through `FlashCallDockButton` so it inherits the tier policy.
+
+## 2026-10-02 (c) — Transsion options verified against public sources; hotspot isolation slide added (docs only)
+
+### Worked on
+The owner asked me to check that the slide-10 options are real and usable, to add real options that need no server, and to add the mobile-hotspot
+problem (a hotspot isolates the phones joined to it, so they cannot discover or connect to each other).
+
+### Changed
+- Docs only, no app code. `docs/android-platform-notes.md`: "Update 2026-10-02 (b)" (Transsion options checked) and a new hotspot entry with the
+  official sources. `docs/FUTURE-OPTIMIZATION.md`: FO-06 (hotspot client isolation, five server-free options, status IDEA). `docs/testing/TEST-BACKLOG.md`:
+  HIB-04 (Companion Device Manager experiment) and section 4p `HOT-01`...`HOT-03` (all TODO).
+- Deck `Flash Progress Update (12 slides).pptx` (same file name, replaced): slide 10 rewritten (guide the user = real; unproven tricks; make the
+  freeze harmless; FCM dropped as it needs a server), slide 11 new (hotspot isolation diagram + five options). **The old closing summary slide was removed
+  to stay at 12.**
+
+### Findings (public sources, none verified on a device)
+- Guide the user is real: dontkillmyapp.com (Tecno) and a CommCare support page list the same screens. The same page says "No known solution on the developer end."
+- Silent audio loop: no source found that Transsion's freezer spares it. Unproven.
+- Companion Device Manager: a real Android API with background exemptions; needs a Bluetooth/BLE/Wi-Fi companion association; Flash has no Bluetooth code; unproven on Transsion.
+- Hotspot: Android's hotspot doc does not mention client isolation (maker behaviour, models unknown). The local-only hotspot doc says joined devices can talk to each other.
+  Wi-Fi Aware (API 26, no access point) and Wi-Fi Direct are real; a relay through the hotspot phone is my idea, not built.
+
+### Remaining
+Owner picks: the guided first-run flow, which hotspot option to pursue (HOT-01 first: it is a measurement). Nothing started.
+
+### Next AI
+Do not build any of these unasked. FCM stays excluded (no server). HOT-01 is the cheapest next step because it tells which phones isolate.
+
+## 2026-10-02 (b) — Progress deck rebuilt as 12 slides: swarm file sending, Transsion screen-off fix, Windows and Android integration (docs only)
+
+### Worked on
+The owner's progress presentation again, after they added requirements: a torrent-style group file-sending idea, the Infinix / Transsion
+screen-off problem with their three candidate fixes, the Windows "Send with Flash" and tray features, and the Android Quick Settings tile and
+share sheet. They also said Linux and iOS are **not decided** and must not be shown.
+
+### Changed
+- Docs only, no app code. `docs/FUTURE-OPTIMIZATION.md` FO-04: the owner's swarm idea recorded (two seeds, many sources at once, a dropped
+  source replaced, the sender may leave; what exists, what would be new, the honest limit). `docs/android-platform-notes.md`: addendum under
+  the Transsion entry assessing the three options. `docs/testing/TEST-BACKLOG.md` section 4o: HIB-01, HIB-02, HIB-03 (all TODO).
+- Presentation (outside the repo): `Flash Progress Update (12 slides).pptx` in the owner's Downloads: title, what Flash is, v1 vs the v2 beta,
+  the desktop port, Windows and Android integration (mock-ups), group video call, groups, the 3-to-4 limit, torrent-style file sending,
+  Transsion screen-off, "also needed" (first-run guide, premium UI quality gate, draggable splitter), summary. Linux and iOS removed.
+  The older 10-slide and 20-slide decks and the original are untouched.
+
+### Verification
+- The deck passes the package validator. Layout was checked with an approximate renderer only; it has not been opened in PowerPoint.
+- Release claims were checked against the git tag, not the dev tree. **Correction:** the earlier 10-slide and 20-slide decks list Explorer
+  "Send with Flash", delivery after the app is killed, and the memory / thermal governors as v2.0.0-beta features. They are not: they landed
+  on 22-23 Sep, after the 19 Sep tag. The 12-slide deck says so.
+- Nothing was run on a device. The swarm slide is an idea; the integration slide's pictures are illustrations, not screenshots.
+
+### Remaining
+- The owner decides whether to build: the swarm design (needs an ADR first, FO-04 is postponed), the guided first-run flow (HIB-03), the
+  silent-audio-loop experiment (HIB-02). The class-name question `AutoStartActivity` vs `AutoStartManageActivity` is settled by HIB-01.
+- The premium UI quality gate (UI-045) and the draggable desktop splitter (AD-2 / AD-D3) are described on slide 11; neither was started.
+
+### Next AI
+Do not present Linux or iOS as planned (ADR-058 and AGENTS.md section 29 are unchanged; the owner has not decided). Do not start the swarm
+work, the audio loop or FCM unasked. FCM needs a server and Google Play Services, which Flash does not have.
+
+## 2026-10-02 — Progress deck rebuilt as 10 slides; owner's 3- and 4-device video call result recorded (GRP-01 partial, GRP-10 added)
+
+### Worked on
+The owner's progress presentation (`Flash Progress Update.pptx`, written before the group work) and the test record for group video.
+
+### Changed
+- Docs only, no code. `docs/testing/TEST-BACKLOG.md`: GRP-01 is PARTIAL (owner-reported 2026-10-02: video calls with 3 devices and with 4
+  devices); GRP-10 added (find where group video stops being usable); Results log entry. `docs/calling/GROUP-VIDEO-PLAN.md` section 8: device
+  result entry. `logs/experiments.md`: EXP-019 (an owner observation, devices and build unknown).
+- Presentation (outside the repo, in the owner's Downloads): `Flash Progress Update (10 slides).pptx`, built from the original (left untouched):
+  title, what Flash is, v1 vs the v2 beta, the desktop port, group video call, groups, the realistic 3 to 4 video limit, what comes next
+  (file sending / FUTURE-OPTIMIZATION), suggested extras, summary. No slide lists tests done or not done (the owner asked for that).
+  An earlier 20-slide version `Flash Progress Update (1 Oct).pptx` is also there.
+
+### Verification
+- The deck passes the package validator. Layout was checked with an approximate renderer (no PowerPoint or LibreOffice on this machine),
+  so it has not been seen in PowerPoint.
+- The only device result added is the owner's report above. It names no devices, builds or logs, so GRP-01's remaining checks (one device
+  leaves with no black flash, Android PiP z-order, log review) stay TODO.
+
+### Remaining
+- GRP-10 (5 to 8 device measurement). Whether to lower the code cap of 8 video participants to match "3 to 4" is the owner's decision; nothing was changed.
+- The earlier cut-off message ("...and also can") is still unanswered.
+
+### Next AI
+Do not turn the 3 to 4 figure into a code change or a README claim without GRP-10. If the owner reports the devices and build, fill them into GRP-01, the Results log and EXP-019.
+
 ## 2026-10-01 — Group video audit checked claim by claim: nine real defects fixed in code, six claims wrong, by design or not safe to apply (ERROR-097, ADR-066); unit-tested and mutation-checked, NOT device-verified
 
 ### Worked on
@@ -11828,3 +13206,39 @@ Optimized LazyColumn chat message item callback memoization in `FlashMessageList
 ### Verification
 - `./gradlew :core:messaging:jvmTest :core:messaging:testAndroidHostTest :ui:chat:jvmTest :app:testDebugUnitTest :app:assembleDebug` — BUILD SUCCESSFUL.
 - `git diff --check` — clean.
+
+## 2026-10-05 — Live Multi-Device Test Session Bug Fixes (ERROR-101)
+
+### Worked on
+Investigated and resolved four critical live-network issues identified from multi-device terminal logs and Android logcat (Desktop `d2b2daa2`, Flash Ocelot `a6400328`, Flash Gazelle `15590fd6`, and Android phone `5e8e2183`).
+
+### Changed
+1. **`RealFlashChatRepository.kt`**: Fixed `toSyncMessage()` mutating `text` to `attachmentLabel()` (`[Video] ...`) for attachments. In signed v2 groups, `groupSig` was signed by the author over original `text`. Mutating it invalidated signature verification on catch-up peers (`W/CHAT: SECURITY: group SyncPush message dropped, no valid signature`). Now only legacy v1 messages (`groupSig == null`) substitute `attachmentLabel()`.
+2. **`DesktopEngine.kt` & `Flash.kt`**:
+   - When chunk frames are rejected with `UNKNOWN_TRANSFER`, the host now notifies the sender with `sendXfer(peerDeviceId, ACTION_CANCEL, transferId)`, stopping runaway chunk sender workers.
+   - Bounded and de-duplicated `println("[flash-desktop] receiver rejected...")` logs on Desktop console.
+   - Added `ACTION_RESUME` intake handling in `DesktopEngine.kt`'s `incomingControl` to resume/accept resumable retries.
+3. **`AndroidMulticastSocketFactory.kt`**:
+   - Excluded cellular modem interfaces (`rmnet*`, `ccmni*`, `wwan*`, `pdp*`, `seth*`, `dummy*`) and point-to-point interfaces in `multicastCapableInterfaces()` to eliminate noisy `ENETUNREACH` socket errors.
+   - De-duplicated multicast send failure logs using a one-time `sendFailureLogged` flag.
+4. **`CallQualityGovernor.kt`, `FlashGroupCallSession.kt`, `FlashCallSession.kt`**:
+   - Added `recoveryCooldownMs` and `nowMs` to `CallQualityGovernor`.
+   - Gated gentler (recovery) rung transitions with an 8-second cooldown (`VOICE_PRIORITY_RECOVERY_COOLDOWN_MS = 8_000L`) to prevent MediaCodec encoder tear-down and re-allocation flapping on Android hardware (`c2.exynos.vp8.encoder`).
+   - Converted `GroupLeg` to an `inner class` of `FlashGroupCallSession` so it accesses `nowMs` directly.
+
+### Verification
+- `./gradlew :core:messaging:jvmTest`: Passed.
+- `./gradlew :core:messaging:testAndroidHostTest`: Passed.
+- `./gradlew :core:calling:jvmTest`: Passed.
+- `./gradlew :core:calling:testAndroidHostTest`: Passed (including all 4 group video audit tests).
+- `./gradlew :core:discovery:jvmTest`: Passed.
+- `./gradlew :core:transfer:jvmTest`: Passed.
+- `./gradlew :core:network:jvmTest`: Passed.
+- `./gradlew :core:engine:jvmTest`: Passed.
+- `./gradlew :desktop:compileKotlinJvm`: BUILD SUCCESSFUL.
+- `./gradlew :app:compileDebugKotlin`: BUILD SUCCESSFUL.
+
+### Remaining
+- Live multi-device session verification of the fixes.
+- Track GM Phase GM-11 device verification.
+

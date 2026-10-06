@@ -1,5 +1,245 @@
 # Error Log
 
+## ERROR-102 - Swarm review: no restore after restart, startup deleted real partial downloads, serve switches ignored, dead environment hooks, unsafe driver state, cancel race, group summaries sent to non-members
+
+### Date
+2026-10-06
+
+### Area
+Group swarm (`:core:swarm` driver and engine, `:core:engine` host binding and group context). Found by a read-only review of the SW-0..SW-11 code on 2026-10-05; nothing was device-tested.
+
+### Symptoms (from reading the code, then confirmed by tests)
+1. **No restore after a restart (plan R4, E-22, E-29).** `SwarmDriver` loaded saved records into its own maps, but nothing turned them back into engine state. After a process death an origin never served again and a half-finished download was stranded. SIM-10 and SIM-11 stayed green because the simulator only disconnects and reconnects.
+2. **Startup deleted every real partial download.** `runRetentionCleanup()` passed `record.partialKey` ("part_<group>_<root>", written by the engine) to `purgeOrphanedPartials`, but the files are named by `SwarmDriver.partialKeyFor()` ("<root>-<hash8>"). Every `.part` file was therefore "orphaned" at each launch. `SwarmHostLifecycleTest` asserted the wrong contract and hid it.
+3. **The per-group serve switches did nothing.** The driver asked the gate about `FILE_RECEIVE`; `FILE_SERVE` (signed `swarmServing` plus the device's `serveToGroup`) was never asked.
+4. **`SwarmHostBinding.updateEnvironment()` was never called**, so the call-active throttle and the ECO "do not serve" rule never reached the engine.
+5. **Unsafe driver state.** Plain maps shared by the actor and `Dispatchers.Default` workers; every `Send` ran in its own coroutine, so frames to one peer could be reordered; one exception in `engine.handle` would have killed the actor.
+6. **Cancel race.** A last piece landing after a cancel flipped CANCELLED to VERIFYING to COMPLETE and brought the file back; unsolicited or duplicate pieces shrank the in-flight byte budget.
+7. **Membership loss was too broad.** `MembershipChanged(localActive=false)` failed COMPLETE rows too, and a roster read that was only momentarily "not a member" deleted partial downloads.
+8. **Privacy.** On connect, a `Summary` (group id, content root hashes, tombstones) went to every `sw1` peer for every group, with no membership check; `ManifestGet` was unchecked. A content root is the file's hash.
+9. A `NOT_MEMBER`, `UNKNOWN`, `GONE` or `CANCELLED` reject set no back-off, so the requester asked again every 250 ms tick.
+
+### Root cause
+The engine was built sans-IO and tested in a simulator, but the glue between persisted state and the engine, and between the gate and the driver, was never exercised end to end. Two keys that meant "the partial file" were computed in two places.
+
+### Failed attempts
+None. Items 1 to 9 were fixed directly.
+
+### Working fix
+- `SwarmEvent.Restored` and `SwarmEvent.TombstonesRestored`; `ContentLifecycleHandler.handleRestored` recomputes progress from the persisted bits (never from `bytesDone`), maps VERIFYING back to ACTIVE, re-finalizes a complete receiver, cancels restored content that has a tombstone, and never finalizes an origin. The driver restores tombstones, then contents, then re-evaluates membership, and holds inbound frames and announcements until that is done.
+- The driver normalizes every record's `partialKey` to `partialKeyFor()` and cleanup preserves exactly those keys.
+- `SwarmGroupContext.isServeAllowed` (default: membership) is implemented with `FILE_SERVE` and carried in `RequestArrived.serveAllowed`; a refused serve answers BUSY with a 60 s retry.
+- The host binding samples the call and serving lambdas every 2 s and tells the engine only about changes.
+- Driver maps are `SyncMap`/`SyncSet`; one ordered send queue per peer; each engine event runs in a try/catch that logs `SWARM` and carries on; dropped malformed or unknown frames are logged (rate-limited); `SwarmCommand.Log` now reaches `FlashLog` under the `SWARM` tag.
+- Late pieces after cancel, pause, failure or completion are ignored; only a requested piece releases in-flight budget.
+- Membership loss leaves COMPLETE, CANCELLED and FAILED rows alone; the driver believes "not a member" only if it still holds 2 s later.
+- `PeerUp.deniedGroups`: the driver asks the gate per known group before a peer is told anything; groups are classified before their first announcement; `ManifestGet` needs membership and a known (group, root).
+- Any reject other than BUSY/ELSEWHERE backs the requester off at least 5 s.
+
+### Verification
+- `:core:swarm:jvmTest` all green, including the new `SwarmRestartRestoreTest` (12 tests).
+- `:core:engine:jvmTest --tests '*swarm*'` all 23 green, including the corrected `SwarmHostLifecycleTest` (restored row after driver start; real file keys preserved).
+- `:app:compileDebugKotlin` and `:desktop:compileKotlinJvm` build.
+- **Not verified:** no device run, no mutation check of the new tests, no run of the wider `:core:engine` or `:core:messaging` suites.
+
+### Related files
+- `core/swarm/src/commonMain/.../driver/SwarmDriver.kt`, `SwarmGroupContext.kt`
+- `core/swarm/src/commonMain/.../engine/` (`SwarmEngine`, `SwarmEvent`, `ContentLifecycleHandler`, `PeerHandler`, `TransferScheduler`, `ServeHandler`)
+- `core/engine/src/commonMain/.../swarm/SwarmHostBinding.kt`, `MessagingSwarmGroupContext.kt`
+- `core/swarm/src/commonTest/.../SwarmRestartRestoreTest.kt`, `core/engine/src/jvmTest/.../SwarmHostLifecycleTest.kt`
+
+### Not fixed (still open, from the same review)
+- Per-piece `fsync` plus a full-bitfield Room write, and `engine.snapshot()` recomputed for every row publish (likely throughput limit, unmeasured).
+- A peer's `Summary` and `Have` frames are still accepted from non-members (they are ignored for scheduling, not rejected).
+- The transfer row's `peerName` is the raw group id.
+
+### Status
+OPEN until the device checks `SWM-13`, `SWM-14`, `SWM-30`..`SWM-33` pass.
+
+## ERROR-101 - Multi-device live session fixes: SyncPush group attachment signature corruption, Desktop UNKNOWN_TRANSFER flood, Android cellular multicast ENETUNREACH, and WebRTC video codec flapping
+
+### Date
+2026-10-05
+
+### Area
+- Messaging: `RealFlashChatRepository` (`toSyncMessage` v2 signed group signatures)
+- Transfer: `DesktopEngine` & `Flash.kt` (rejected chunk handling, rate limiting, cancellation signal, `ACTION_RESUME` handling)
+- Discovery: `AndroidMulticastSocketFactory` (cellular modem interface filtering, one-time error logging)
+- Calling: `CallQualityGovernor`, `FlashGroupCallSession`, `FlashCallSession` (recovery hysteresis cooldown to prevent hardware MediaCodec flapping)
+
+### Symptoms
+1. `W/CHAT: SECURITY: group SyncPush message dropped, no valid signature` logged when catching up on group file attachments in signed v2 groups.
+2. `[flash-desktop] receiver rejected: UNKNOWN_TRANSFER tid=...` repeatedly flooding stdout on desktop after transfer cancellation or reset, while the sender continued pumping chunks endlessly.
+3. `W/MulticastTransport: multicast send failed on rmnet1: java.io.IOException: sendto failed: ENETUNREACH (Network is unreachable)` logged every announcement tick on Android with cellular data active.
+4. WebRTC Group Call video codec flapping on Android: repeated MediaCodec release and re-creation between `REDUCED_BITRATE` (300 kbps) and `FULL` (600 kbps) due to small jitter fluctuations.
+
+### Root Cause
+1. `toSyncMessage()` unconditionally mutated `text` to `attachmentLabel()` (`[Video] ...`) for attachments. In signed v2 groups, `groupSig` was signed over the author's original `text`. Altering `text` caused `GroupSignatureRules.verifyMessage` to fail on the receiving node.
+2. In `DesktopEngine.kt`, when chunks were rejected with `UNKNOWN_TRANSFER` (after session cancellation or unaccepted offer), the engine printed each rejection to stdout without rate-limiting, and never notified the sender. Furthermore, `DesktopEngine.kt`'s `incomingControl` collection ignored `ACTION_RESUME`.
+3. `multicastCapableInterfaces()` in `AndroidMulticastSocketFactory.kt` enumerated all up non-loopback interfaces with IPv4, including cellular modem interfaces (`rmnet*`, `ccmni*`) and point-to-point tunnels. Multicast send on cellular interfaces fails with `ENETUNREACH` and was logged unconditionally on every tick.
+4. `CallQualityGovernor` degraded to `REDUCED_BITRATE` after 2 bad samples and recovered back to `FULL` after only 5 clean samples (5 seconds). Because shedding bitrate relieved congestion, the link appeared clean and immediately recovered back to `FULL`, causing an oscillation loop that repeatedly tore down and re-initialized the hardware VP8 encoder (`c2.exynos.vp8.encoder`).
+
+### Working Fix
+1. In `RealFlashChatRepository.toSyncMessage()`, only substitute `attachmentLabel()` when `groupSig == null` (legacy v1 groups). For v2 signed messages (`groupSig != null`), `text` is preserved as originally signed.
+2. In `DesktopEngine.kt` and `Flash.kt`:
+   - Send `ACTION_CANCEL` via `sendXfer` to the remote peer when `UNKNOWN_TRANSFER` is encountered so the sender terminates its worker.
+   - De-duplicate and rate-limit rejected chunk logging on Desktop console using a bounded set.
+   - Handle `ACTION_RESUME` in `DesktopEngine.kt` `incomingControl` to accept resumable retries.
+3. In `AndroidMulticastSocketFactory.kt`:
+   - Filter out cellular interfaces (`rmnet`, `ccmni`, `wwan`, `pdp`, `seth`, `dummy`) and point-to-point interfaces in `multicastCapableInterfaces()`.
+   - Log multicast send errors once per binding via `sendFailureLogged`.
+4. In `CallQualityGovernor.kt`, `FlashGroupCallSession.kt`, and `FlashCallSession.kt`:
+   - Added `recoveryCooldownMs` and `nowMs` to `CallQualityGovernor`.
+   - Gated gentler (recovery) rung transitions with an 8-second cooldown (`VOICE_PRIORITY_RECOVERY_COOLDOWN_MS = 8_000L`).
+   - Made `GroupLeg` an `inner class` of `FlashGroupCallSession` so it accesses `nowMs` directly.
+
+### Verification
+- `./gradlew :core:messaging:jvmTest`: Passed.
+- `./gradlew :core:messaging:testAndroidHostTest`: Passed.
+- `./gradlew :core:calling:jvmTest`: Passed.
+- `./gradlew :core:calling:testAndroidHostTest`: Passed (including all 4 group video audit tests).
+- `./gradlew :core:discovery:jvmTest`: Passed.
+- `./gradlew :core:transfer:jvmTest`: Passed.
+- `./gradlew :core:network:jvmTest`: Passed.
+- `./gradlew :core:engine:jvmTest`: Passed.
+- `./gradlew :desktop:compileKotlinJvm`: BUILD SUCCESSFUL.
+- `./gradlew :app:compileDebugKotlin`: BUILD SUCCESSFUL.
+
+### Status
+RESOLVED IN CODE (Device test verification pending live multi-device session)
+
+## ERROR-100 - Discovery module review: the multicast beacon went silent after a rebind, duplicate Lost, a renamed instance evicted a live peer, presence updates swallowed, unbounded peer table
+
+### Date
+2026-10-03 (owner request: review the discovery module honestly). Fixed in code, unit-tested, key fixes mutation-checked, **NOT device-verified**; status stays
+OPEN until `DISC-01`...`DISC-08` (backlog section 4t) are run. Full write-up and confidence per item: `docs/audit/2026-10-03-discovery-module-review.md`.
+
+### Area
+`core/discovery`: `MulticastTransport`, `MulticastProtocol`, `CompositeDiscovery`, `NsdTransport`, `JmdnsTransport`, `FlashRadioTransport`.
+
+### Symptoms (from reading the code; none was reported from a device)
+- After a network change the multicast transport listened but stopped announcing; peers' 60 s lease on the device ran out (B1).
+- A peer seen by two transports and gone from both produced two `Lost` events (B2).
+- A service instance withdrawn under its old name evicted the device although it was alive under a new name (B3, NSD and JmDNS).
+- In ECO a forced restart could leave two browse loops (B4).
+- A heartbeat carrying a changed address or port never reached `discoveredEndpoints` (B5).
+- Two sweepers could start under concurrent callers (B6).
+- Any LAN host could grow the multicast peer table without bound and inject very long names (B7).
+- A multicast-only peer flapped after one dropped datagram because the composite swept at a flat 30 s against a 60 s lease (B11).
+- An API 34+ dual-stack peer could resolve to a link-local IPv6 address first (B10, defensive).
+
+### Root cause
+B1 `restartBrowsing` called `stopLoops()` (which cancels the announce job) and `startBrowsing()` (which restores only receive and sweep). B2 `sweep` appended one
+`AgedOut` per directory. B3 the directory is keyed by device but the debounced loss by service name. B4 `browseLoop` was an untracked coroutine. B5 `applyPresence`
+special-cased known peers and only moved a timestamp. B6 `startSweeperLocked` was called without the lock. B7 no bound on `leases`, decode did not bound text.
+B11 `sweep` used one grace for every transport.
+
+### Failed attempts
+None. Not changed on purpose (see the review doc): the Android 14+ multicast-lock rule (B8, needs a measurement), interface choice (VPN / cellular), parallel start (B9).
+
+### Working fix
+Tests first: B1, B2, B5, B7 and B11 failed before their fixes; B3 fails with the fix switched off (both transports). B4 and B6 have no test (the NSD harness cannot park
+a loop; the race is not reproducible inline). Fixes: re-arm the announce burst in `restartBrowsing`; dedupe aged-out peers by device; skip the loss when another
+instance name still maps to the device; one tracked `browseLoopJob`; `applyPresence` delegates to `applySighting`; lock in `startSweeperLocked`;
+`maxPeers = 256` and a 64-character cut on decode; `FlashRadioTransport.presenceGraceMs` (multicast = lease + one sweep interval, never below 30 s);
+`preferredDialableHost` for API 34+.
+
+### Verification
+`:core:discovery:jvmTest` and `:core:discovery:testAndroidHostTest` green (new tests: 16), `:app:compileDebugKotlin` and `:desktop:compileKotlinJvm` green. Device: not done.
+
+### Related files
+- `core/discovery/src/commonMain/.../multicast/MulticastTransport.kt`, `MulticastProtocol.kt`
+- `core/discovery/src/commonMain/.../core/CompositeDiscovery.kt`, `FlashRadioTransport.kt`
+- `core/discovery/src/androidMain/.../nsd/NsdTransport.kt`, `NsdHostSelection.kt`
+- `core/discovery/src/jvmMain/.../jmdns/JmdnsTransport.kt`
+- `docs/audit/2026-10-03-discovery-module-review.md`
+
+### Status
+OPEN (fixed in code, device checks `DISC-01`...`DISC-08` owed)
+
+## ERROR-099 - A receive too big for the disk was accepted, failures showed exception text, and an empty file left a stuck Queued row
+
+### Date
+2026-10-03 (audit findings FA-2, FA-3, FA-6 in `docs/audit/2026-10-02-feature-completeness-audit.md`; fixed the same day). Fixed in code, unit-tested and
+mutation-checked, **NOT device-verified**; status stays OPEN until `FA-02`, `FA-03` and `FA-06` pass on devices.
+
+### Area
+Transfers (`RealFlashTransferRepository`, the three hosts' `acceptOffer`, both transfer UIs that print `errorMessage`)
+
+### Symptoms
+- FA-2: an offer larger than the free space was accepted and written until the disk filled (no `StatFs` / `usableSpace` anywhere in production code).
+- FA-3: a Failed row showed `result.reason` or `t.message` verbatim, for example `source length mismatch: read=4 expected=9 extraByte=-1`.
+- FA-6: a 0-byte file (or a picker that reported size 0) reached `Chunker`, whose `require(totalBytes > 0)` threw inside the launched send job, outside the
+  `try`, so the row stayed Queued and the user saw nothing. Not reproduced on a device (code reading).
+
+### Environment
+Code audit only. No device, no log.
+
+### Root cause
+No gate between "user accepted" and "sink created", no mapping from engine reasons to user text, and the send entry trusted the picker's size.
+
+### Failed attempts
+None. Rejected designs are in ADR-069.
+
+### Working fix
+ADR-069: `admitIncoming` + `freeSpaceBytes` provider (Android, desktop, facade call it first in `acceptOffer`), `TransferFailureText`, and size measurement /
+visible Failed rows in `sendFile`. `TransferRefusalAndWordingTest` (11 tests) in `core:transfer`; mutation-checked (gate off, empty refusal off, sender wording off,
+inbound wording off: each fails exactly the test written for it).
+
+### Verification
+Unit tests and builds only: `:core:transfer:testAndroidHostTest`, `:core:transfer:jvmTest`, `:core:engine:testAndroidHostTest`, `:app:compileDebugKotlin`,
+`:app:testDebugUnitTest`, `:desktop:compileKotlinJvm` green. `:desktop:jvmTest` has only the known `DesktopEngineGroupSessionUpTest` failure (stale against ADR-064).
+The host call sites (one line each) have no end-to-end test.
+
+### Related files
+`core/transfer/.../RealFlashTransferRepository.kt`, `TransferFailureText.kt`, `app/.../DiscoveryEngineHolder.kt`, `desktop/.../DesktopEngine.kt`,
+`core/engine/.../Flash.kt`, `docs/decisions.md` (ADR-069), `docs/testing/TEST-BACKLOG.md` (`FA-02`, `FA-03`, `FA-06`).
+
+### Status
+OPEN (fixed in code, awaiting device checks)
+
+## ERROR-098 - Windows desktop never verified the received file; a failed whole-file check would have been shown as "Verified"
+
+### Date
+2026-10-02 (found by the feature audit, `docs/audit/2026-10-02-feature-completeness-audit.md` FA-1; fixed the same day). Fixed in code, unit-tested and
+mutation-checked, **NOT device-verified**; status stays OPEN until `FA-01` passes on devices.
+
+### Area
+Transfers / integrity (`core:transfer`, `DesktopEngine.kt`, `DiscoveryEngineHolder.kt`, `Flash.kt`, both transfer UI mappers)
+
+### Symptoms
+- Desktop: `transfer.onIncomingCompleted(transferId, event.frame.verified, path)` passed the pipeline's flag straight through. `ReceivePipeline` only
+  computes anything else when `recheckWholeFileDigest = true`, which no production construction sets, so `verified` was always `true`. A damaged
+  resumed partial file would have been reported verified.
+- All hosts: `TransfersUiMapper.kt` (Android) and `DesktopShell.kt` map `verified = state == Completed`. Android's check set only an `errorMessage` on a
+  **Completed** transfer, so even there a failed check was displayed as "Verified".
+
+### Environment
+Code audit only. No device, no log.
+
+### Root cause
+Whole-file verification was built per host (a private copy on Android and in the facade, none on desktop) and its result was a flag the UI never read.
+
+### Failed attempts
+None. Considered and rejected: enabling `recheckWholeFileDigest` (sets a flag nothing shows) and keeping Completed + a message (still labelled Verified); see ADR-068.
+
+### Working fix
+ADR-068: `WholeFileVerifier` + `RealFlashTransferRepository.onIncomingFileAssembled` used by Android, desktop and the facade; a mismatch deletes the
+file, clears the confirmed chunks, fails the transfer, drops the pipeline session and answers `COMPLETE verified=false`; the sender fails and clears its
+chunks on `verified=false`. `IncomingIntegrityTest` (9 tests) in `core:transfer`; mutation-checked (disabling the receiver branch fails 2 tests, the sender
+branch 1).
+
+### Verification
+Unit tests and builds only (`:core:transfer:testAndroidHostTest`, `:core:engine:*`, `:app:testDebugUnitTest`, `:desktop:compileKotlinJvm` green). The host
+call sites (three three-line blocks) have no end-to-end test: the engines' inbound dispatch has no harness (same gap as Phase 1.4 in `FIX-PHASES.md`).
+
+### Related files
+`core/transfer/.../chunked/WholeFileVerifier.kt`, `RealFlashTransferRepository.kt`, `store/TransferStore.kt`, `core/persistence/.../TransferChunkDao.kt`,
+`core/engine/.../RoomTransferStore.kt`, `Flash.kt`, `app/.../DiscoveryEngineHolder.kt`, `desktop/.../DesktopEngine.kt`, `docs/protocol.md`.
+
+### Status
+OPEN (fixed in code; device check `FA-01` pending)
+
 ## ERROR-097 — Group video audit (another AI's report, checked claim by claim): nine real defects fixed in code, one ordering defect hardened, six claims wrong, by design, not applied or not verified
 
 ### Date

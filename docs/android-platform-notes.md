@@ -410,6 +410,75 @@ runnable; https://developer.android.com/develop/background-work/services/fgs) do
 - An in-app hint (detect `Build.MANUFACTURER` in {INFINIX, TECNO, ITEL} and link to the settings) is a candidate
   UI task; it needs a component doc first (AGENTS.md §34) and a verified settings path.
 
+### Addendum 2026-10-02 - the owner's three candidate fixes for the Transsion freeze (assessed, none built)
+The owner pasted a community write-up (Don't Kill My App style; source and date not recorded, **community claim**, not verified here).
+Its claims: Transsion's phone manager hardcodes OEM whitelists; WhatsApp is woken by FCM and YouTube by audio focus / MediaSession.
+Three workarounds came from it. Assessment against this app (no code changed):
+
+1. **Guide the user to the OEM screens** (an Intent to a `ComponentName` in `com.transsion.phonemaster`). Recommended first, because it
+   needs no new permission or service and it is already half there: Settings "Background transfers" requests the battery exemption
+   and then tries the OEM screen (`OemBatteryOptimizationHelper`, with a MainActivity fallback). **Discrepancy to settle on the
+   device:** the helper uses `com.transsion.phonemaster.autostart.AutoStartActivity`; the pasted text uses
+   `com.transsion.phonemaster.autostart.AutoStartManageActivity`. Phone Master activities differ by version and the `ComponentName`
+   may be missing, so every launch needs `resolveActivity`/try-catch and a fallback to the app's own settings page. Test `HIB-01`.
+   An autostart permission does not by itself prove the freezer will spare Flash; EXP-002 already shows the battery exemption is not enough.
+2. **Silent audio loop in a `mediaPlayback` foreground service** (the idea is that Hiber spares an app holding audio focus).
+   Unverified on this handset. Costs: continuous audio output wakes the audio stack and drains battery; Play policy and the Android 14+
+   foreground-service-type rules (`mediaPlayback` needs a real media use) put a store release at risk; a call or a music app would
+   have to share audio focus. It is an experiment, not a design: test `HIB-02`, measure battery and whether `Hiber` still logs `freeze`.
+3. **High-priority FCM data messages.** This is how WhatsApp is woken, but it needs a push server holding a key plus Google Play
+   Services on the phone. Flash has no server and no Google dependency (checked 2026-10-02: no Firebase or Play Services entry in
+   any Gradle, version-catalog or manifest file), and "no server, no account" is a product property. Not recommended unless the owner
+   changes that property; it would also tell Google that "someone messaged you". Needs an ADR before any work.
+
+Suggested order: 1, then 2 as a measured experiment, 3 only if both fall short. All measured claims stay as in the 2026-09-28 entry above
+(freeze about 10 s after screen-off; Infinix 4 % vs Samsung 90 % delivery with the screen off, EXP-002).
+
+### Update 2026-10-02 (b) - the Transsion options checked against public sources
+- **Guide the user: real.** dontkillmyapp.com (Tecno page; the Infinix page returned 404, so XOS steps are unconfirmed there) lists:
+  Battery Lab, Power Saving Management off; Phone Master, Auto-start Management allow; lock the app in the Recents list (lock icon);
+  Power Boost off in Power Marathon; App Booster; Sleep Mode and the screen-off options ("Sleep when screen is off", "Block push
+  notifications when screen is off"). A Dimagi CommCare support page reports the same for HiOS and XOS and says a registered
+  foreground service is still killed. Same page, verbatim: **"No known solution on the developer end."** The app can only guide the user.
+  *community sources, not verified on the Infinix here.*
+- **Silent audio loop: unproven.** A search found no source that Transsion's freezer spares a process that plays audio; the claim came
+  from the owner's pasted text. Android defines `mediaPlayback` as "continue audio or video playback from the background"
+  (https://developer.android.com/develop/background-work/services/fgs/service-types, checked 2026-10-02); a silent loop is outside
+  that intent. Experiment HIB-02 only.
+- **Companion Device Manager: a real server-free option, unproven here.** After a companion association the app may hold
+  `REQUEST_COMPANION_RUN_IN_BACKGROUND`, `REQUEST_COMPANION_USE_DATA_IN_BACKGROUND` and
+  `REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND`; Android 16 adds `startObservingDevicePresence()`; device filters are
+  Bluetooth, BLE or Wi-Fi (https://developer.android.com/develop/connectivity/bluetooth/companion-device-pairing, checked 2026-10-02).
+  Flash has no Bluetooth code, and nothing says Transsion's freezer honours the exemption. Experiment only; recorded as HIB-04.
+- **Already in the code, server-free:** the sender's durable outbox keeps retrying (a message to a frozen phone is late, not lost; not
+  measured on the Infinix) and discovery re-arms on screen-on (ERROR entry of 2026-09-30). **Idea, not built:** tell the sender the
+  other phone is probably asleep.
+- **FCM stays excluded:** it needs a push server and Google Play Services (owner: no server).
+
+## 2026-10-02 - Mobile hotspot: phones joined to it cannot reach each other (client isolation)
+
+### Android version / API level
+Seen on an Infinix Hot 50 hotspot (ERROR entry of 2026-09-30); the owner reports the same on a hotspot generally (2026-10-02).
+
+### APIs involved
+`SoftApConfiguration` (tethered hotspot), `WifiManager.startLocalOnlyHotspot` (API 26), `WifiAwareManager` (API 26),
+`WifiP2pManager` (Wi-Fi Direct).
+
+### Official documentation sources (checked 2026-10-02)
+- https://source.android.com/docs/core/connect/wifi-softap: does **not** mention client isolation.
+- https://developer.android.com/develop/connectivity/wifi/localonlyhotspot: local-only hotspot exists "to enable applications on devices
+  connected to the Wi-Fi hotspot to communicate with each other"; no internet; permission `NEARBY_WIFI_DEVICES` (API 33+) or
+  `ACCESS_FINE_LOCATION` (to API 32); one request per app.
+- https://developer.android.com/develop/connectivity/wifi/wifi-aware: API 26+, no access point, publish/subscribe discovery, data path
+  through `WifiAwareNetworkSpecifier` (IPv6), `NEARBY_WIFI_DEVICES` on 13+, hardware dependent, may not work while Wi-Fi Direct, SoftAP
+  or tethering is in use on some devices.
+- https://developer.android.com/develop/connectivity/wifi/wifip2p: Wi-Fi Direct connects "without an intermediate access point";
+  `NEARBY_WIFI_DEVICES` on 13+; the doc does not say whether normal Wi-Fi can stay connected at the same time.
+
+### Project implication
+- Isolation is most likely a phone-maker setting, not Android behaviour; which models do it is unmeasured (HOT-01).
+- Today's discovery cannot cross it. Options and trade-offs: `docs/FUTURE-OPTIMIZATION.md` FO-06. Nothing is built.
+
 ## 2026-09-28 - Reading the connected Wi-Fi band without location permission (G2)
 
 ### Android version / API level
@@ -431,3 +500,51 @@ All supported levels. API 31+ reads `WifiInfo` from `NetworkCapabilities.getTran
   UNKNOWN, so a redacting OEM degrades to "no band shown", never to a wrong band.
 - A phone hosting the hotspot reports UNKNOWN: its default network is cellular, and its own AP band needs a system API.
 - Device check pending (GROUP-VIDEO-PLAN §8 G2): confirm a real frequency on the Infinix (API 34) and the V760.
+
+## 2026-10-02 - Picture-in-picture and the proximity screen-off for calls (ADR-067)
+
+### Android version / API level
+- Picture-in-picture: `enterPictureInPictureMode` and `PictureInPictureParams` from API 26; `setAutoEnterEnabled` from API 31.
+- Proximity: `PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK` (guarded by `isWakeLockLevelSupported`); the app already holds `WAKE_LOCK`.
+
+### Official documentation source
+- https://developer.android.com/develop/ui/views/picture-in-picture (fetched 2026-10-02, **verified**): the activity needs
+  `android:supportsPictureInPicture="true"` and `android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation"` to avoid being
+  relaunched on the transition; `setAutoEnterEnabled(true)` (API 31+) enters PiP without `onUserLeaveHint`; PiP params from API 26.
+- The proximity wake lock was **not re-fetched** this session (the API has existed since API 21); treat the exact release behaviour as unverified
+  until `CALLX-08` is run.
+
+### Project implication
+- `MainActivity` now declares both attributes and is no longer recreated on a size change (Compose handles it); the activity's state in
+  `remember` survives a PiP transition.
+- Below API 31 the user enters PiP from the call's More panel; no `onUserLeaveHint` override was added.
+- PiP is auto-enabled only while a live 1:1 video call exists and is switched off when it ends.
+- Device check pending: `CALLX-06` (PiP), `CALLX-08` (proximity), on a Samsung and the Infinix (Transsion may behave differently).
+
+## Discovery review 2026-10-03: multicast lock on API 34+ for an app-owned UDP socket (UNVERIFIED)
+- **API / version:** `WifiManager.MulticastLock`, Android 14 (API 34) and later.
+- **What the code assumes:** `NsdTransport` and `AndroidMulticastSocketFactory` both skip the explicit lock from API 34 ("the framework manages it"). For NSD this matches the platform
+  `NsdService` holding its own lock (`docs/network/PC0-RUNBOOK.md`). Nothing found in the official documentation says the platform lock also covers a `MulticastSocket` the app opens itself.
+- **Project implication:** while NSD holds a lock the chipset filter is open for every socket, so the multicast beacon works by side effect; when NSD is not browsing (ECO idle) it may hear nothing.
+  Source status: *not verified* (a documentation search returned only API-reference headings). Settled by the device check `DISC-07`; do not change the lock rule before it runs.
+
+## 2026-10-05 - Group secrets, Room schema v8, and Auto Backup / Data Extraction protection (GM-2)
+
+### Android version / API level
+All supported Android versions (API 24+).
+- API 24–30: legacy Auto Backup governed by `res/xml/backup_rules.xml`.
+- API 31+ (Android 12+): Data Extraction rules governed by `res/xml/data_extraction_rules.xml`.
+
+### APIs / files involved
+- `app/src/main/res/xml/backup_rules.xml` (`<exclude domain="database" path="." />`)
+- `app/src/main/res/xml/data_extraction_rules.xml` (`<exclude domain="database" path="." />`, `<exclude domain="device_database" path="." />`)
+- Room schema v8: `group_secret`, `group_invite`, `group_join_request` tables in the primary SQLCipher encrypted database.
+
+### Official documentation sources
+- https://developer.android.com/guide/topics/data/autobackup (verified): on Android 12+ `android:dataExtractionRules` takes precedence over `android:fullBackupContent`; `device-transfer` must be explicitly configured because `allowBackup="false"` does not prevent OEM device-to-device transfers.
+
+### Project implication
+- The `group_secret` table stores 32-byte group encryption secrets (`secretWrapped` column). The database is encrypted at rest via SQLCipher with a passphrase protected by AndroidKeyStore (`KeystorePassphraseProvider`).
+- Because `backup_rules.xml` and `data_extraction_rules.xml` explicitly exclude `domain="database"` and `domain="device_database"` from both `<cloud-backup>` and `<device-transfer>`, group secrets and encrypted chat databases never leave the device to Google Drive or unencrypted device migration tools.
+- Restoring onto another device would fail to open the database anyway (as the AndroidKeyStore master key is non-exportable hardware-backed), but excluding the files prevents quota exhaustion, unopenable file leaks, and corrupted state on new devices.
+
