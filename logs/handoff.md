@@ -1,6 +1,13 @@
 # Current Handoff
 
-## 2026-10-06 (latest, a) - Swarm review fixes (ERROR-102): restart restore, real partial keys, serve gate, ordered sends
+## 2026-10-06 (latest, b) - Group call member filter (ERROR-103), persistent log + export + swarm restart prompt (ADR-077)
+
+- **Done, committed:** ERROR-103 (a group call only gives tiles to active roster members; `GCALL-18`). **Done, see git log for the commit:** `RotatingFileLogSink`, Settings "Export logs", "Restart Flash?" prompt after the swarm switch, backup exclusions (ADR-077; `LOG-01..03`, `SWM-34`).
+- **Verified:** `:core:calling:testAndroidHostTest`, `:core:common:testAndroidHostTest`, `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm`. Nothing device-verified.
+- **Open:** unpaired roster members still show a raw id in calls (name resolver); 14 app files still use `android.util.Log`; remaining swarm review items listed under the previous entry.
+- **Next:** wire roster display names into the call name resolver; move direct `android.util.Log` calls to `FlashLog`.
+
+## 2026-10-06 (a, earlier) - Swarm review fixes (ERROR-102): restart restore, real partial keys, serve gate, ordered sends
 
 - **Done:** nine swarm defects from the 2026-10-05 review fixed in code (see ERROR-102 in `logs/errors.md`, progress entry 2026-10-06 (a)). The worst two: nothing rebuilt the engine after a restart, and startup cleanup deleted every real `.part` file.
 - **Verified:** `:core:swarm:jvmTest`; `:core:engine:jvmTest --tests '*swarm*'` (23); `:app:compileDebugKotlin`; `:desktop:compileKotlinJvm`. **Not device-verified; new tests not mutation-checked.**

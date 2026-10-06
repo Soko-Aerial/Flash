@@ -1220,13 +1220,42 @@ desktop launch (it is overwritten). Include the **caller's** log.
   leg; CPU and heat do not spike at the moment of the late accept.
 - **Source:** ERROR-096, ADR-065. **Status:** TODO
 
-## 4o. Group call participant list shows only group members (ERROR-103, 2026-10-06)
+## 4y. Group call participant list shows only group members (ERROR-103, 2026-10-06)
 
 ### GCALL-18 - No tile for a device that is not in the group
 - **Setup:** a v2 group with 3 devices (A caller, B, C). Optionally remove C from the group on A while B is offline, then start a call on B.
 - **Steps:** place a group call; look at the participant list on every device; capture `adb logcat -v time -s GROUP_CALL:I`.
 - **Pass:** every tile is a current group member; no raw device id of a non-member appears; a log line "not an active member of group=" appears if a stale list was received. Members who are unpaired may still show an id (known naming gap).
 - **Source:** ERROR-103.
+- **Status:** TODO
+
+## 4z. Persistent log, export and swarm restart prompt (ADR-077, 2026-10-06)
+
+### LOG-01 - The log survives without adb
+- **Setup:** debug or release build installed on a phone; no adb attached.
+- **Steps:** use the app for a minute (open chat, start a transfer), force-stop it, reopen it, Settings > Diagnostics > Export logs, send the file to the desktop.
+- **Pass:** the file starts with the device header and holds lines from before the force-stop with tags such as `DISCOVERY`, `GROUP_CALL`, `SWARM`; no `secret=`, invite link or 64+ character key text appears.
+- **Source:** ADR-077.
+- **Status:** TODO
+
+### LOG-02 - A crash is recorded
+- **Setup:** a debug build; provoke a crash (a test hook or kill a worker with an exception).
+- **Steps:** crash, reopen, export.
+- **Pass:** an `E/CRASH: uncaught in thread` entry with the stack trace is in the export.
+- **Source:** ADR-077.
+- **Status:** TODO
+
+### LOG-03 - The log stays small
+- **Setup:** a phone left running with groups and calls for a day.
+- **Pass:** `files/logs` holds at most 5 files and under ~5.5 MB; no slowdown while a large transfer runs (compare speed with EXP numbers).
+- **Source:** ADR-077.
+- **Status:** TODO
+
+### SWM-34 - Restart prompt for the swarm switch
+- **Setup:** Android build, swarm switch off.
+- **Steps:** Settings > turn "Group file sharing (swarm, experimental)" on; answer "Later", then repeat and answer "Restart now".
+- **Pass:** "Later" keeps the app open; "Restart now" closes and reopens Flash within about 3 s on the Home screen; the switch is still on; logcat or export shows `SWARM` lines at start. Repeat on a Transsion handset (a restart killed by the system must not leave a half-started app).
+- **Source:** ADR-077.
 - **Status:** TODO
 
 ## 4n. Group video audit (ERROR-097 / ADR-066, 2026-10-01)

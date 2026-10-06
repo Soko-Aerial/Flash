@@ -3799,3 +3799,33 @@ The owner decides on ownership loss (ERROR-089); a group kind other than `g-` an
 - Removed members cannot receive new group secrets or decrypt future group swarm transfers or join via old invites.
 - Prospective joiners holding expired/stale invites receive `GroupProofResult.STALE` and no rotation notice (`GsStale` is never sent to non-members).
 - All 7 test cases in `GroupRotationTest` are verified green.
+
+
+## ADR-077 - Persistent on-device log, manual export, restart prompt for the swarm switch (no log server)
+
+### Decision
+Android keeps Flash's own log in rotating files (`files/logs/flash-0..4.log`, 1 MB each, bounded 5 MB) through
+`RotatingFileLogSink`, installed first thing in `FlashApplication.onCreate` and forwarding to logcat as before. An uncaught
+exception is written to the file before the previous handler runs. Settings > Diagnostics > "Export logs" shares the files as
+one text file through the existing FileProvider. Changing the swarm switch offers "Restart now" (relaunch + process end).
+Lines are redacted for secret assignments, invite links and 64+ character key-like runs before they are queued.
+
+### Context
+Owner request 2026-10-06: logs must survive without an `adb logcat` capture (logcat's buffer holds minutes), and the swarm
+switch is read once at engine start so it needs a restart. Only `FlashLog` lines are captured: 14 app files still call
+`android.util.Log` directly and stay logcat-only until moved to `FlashLog`.
+
+### Alternatives considered
+- Log server / automatic upload: rejected for now. It sends device ids, peer ids and timing off the LAN, needs consent UI, a
+  server, retention and a threat model, in an app whose promise is "no cloud". Manual export (share to the owner's own desktop)
+  covers the need. Revisit if the owner runs a fleet of testers.
+- Passive "test evidence" lines mapped to TEST-BACKLOG ids: not built; the file log makes them cheap to add later
+  (`TESTEVIDENCE id=SWM-.. result=..`), but each needs a defined pass condition first.
+- Desktop: already writes `~/.flash/desktop.log` (overwritten per launch); not changed.
+
+### Why
+Bounded size, no caller ever blocks on storage (bounded queue, newest line dropped and counted), no new dependency.
+
+### Revisit when
+A tester cannot reproduce with an export, or a crash happens in a native library (an uncaught-handler line is not written for
+native crashes).
