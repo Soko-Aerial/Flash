@@ -11,7 +11,7 @@ package com.transfer.flash.ui.theme
  *
  * Generated from `svg_fonts/HersheyScript1.svg` of the MIT-licensed `hersheytext` 2.0.0 npm package
  * (github.com/techninja/hersheytextjs; SVG conversion by Windell H. Oskay, evilmadscientist.com).
- * The generator script is described in `docs/ui/launch-splash.md`.
+ * Generator: `node tools/splash/hershey-strokes.js HersheyScript1.svg Flash` (see `docs/ui/launch-splash.md`).
  *
  * Font licence. The Hershey Fonts may be used by anyone for any purpose, commercial or otherwise,
  * providing that:

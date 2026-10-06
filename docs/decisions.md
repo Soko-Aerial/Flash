@@ -3901,3 +3901,62 @@ camera errors are a banner.
 
 ### Revisit when
 `CALLMEDIA-01`..`05` are run.
+
+## ADR-080 - Ink launch splash: handwritten name, cold start only, plays to the end, can be turned off
+
+### Decision
+The launch splash on Android and on the Windows desktop app is the "Ink" design (UI-056, `docs/ui/launch-splash.md`):
+- **What it shows:** the pen writes "Flash" in Hershey Script 1-stroke with a slight wobble, then draws the bolt above
+  it, fills it and sends out one ripple. It follows light/dark and the dynamic accent.
+- **Drawing:** done in Compose in `:ui:theme`, from letter data compiled into the module. No new dependency and no asset.
+- **When it plays:**
+  - Only on a **cold start**, meaning the first time this process (Android) or this application (desktop) shows a
+    window. `FlashLaunchSplashGate` decides once, and the first decision wins.
+  - A warm return, a recreated Activity, a window reopened from the tray, or reopening the app while the foreground
+    service kept the process alive never replays it.
+- **How it ends:**
+  - It always **plays to the end** (about 3.45 s), and taps cannot skip it.
+  - After the intro it leaves as soon as the engine is ready or has failed to start, and no later than 6 s
+    (ERROR-034 ceiling).
+  - Under reduced motion the finished frame shows still for 0.8 s.
+- **Turning it off:** Settings → "Launch animation" (default on; DataStore / `settings.properties` key
+  `launch_animation`).
+- **Skipped:** for launches that must not wait (answering a call, a PTT press), and on Android when the setting read
+  takes longer than 1 s.
+- **Android handoff:**
+  - The `core-splashscreen` system splash is held while the gate is Pending.
+  - When the splash plays, the system splash fades out over 200 ms into the identical Ink ground. Otherwise it is
+    removed when the engine is ready, as before.
+  - `flash_splash_bg` is white by default and dark under `values-night`.
+
+### Context
+- Owner requests of 2026-10-06:
+  - First, a redesign: round 1 geometric demos were rejected.
+  - Then "the font of spark in ink", used as the splash, working on desktop too, "only play on a cold start", "play to
+    end", and "a setting to disable it".
+- The old splash (`FlashSplashScreen` over `FlashBrandAnimation`) vanished the moment the engine was ready. On a fast
+  phone that would cut a 2 s writing animation off mid-word.
+
+### Alternatives considered
+- **Leave as soon as the engine is ready:** the owner ruled it out ("play to end").
+- **Tap to skip:** contradicts play-to-end, and a tap could reach the app hidden underneath. Rejected; input is
+  swallowed. The setting is the way out.
+- **Persist "already shown" across process deaths** (once per install or per day): "cold start" is a new process.
+  Showing it once per process keeps that meaning simple and testable. Rejected.
+- **Lottie / AnimatedVectorDrawable / video:** a dependency or a per-platform asset that cannot follow the dynamic
+  accent and does not run on desktop Compose. Rejected.
+- **An outline script font with a reveal mask:** single-line fonts already are the pen path. Rejected.
+- **Make the system splash follow Flash's own theme setting:** Android draws it from resources before app code runs,
+  so only the system night mode can choose it. Accepted as a limitation.
+
+### Consequences
+- Every cold start with the setting on takes at least about 3.5 s to reach the app.
+- On a slow device the splash already covers boot (it was up to 6 s before too).
+- Call-answer and PTT launches are not delayed.
+- The Hershey font licence requires an acknowledgement to ship with the letter data. It is in `NOTICE`, the glyph
+  file and the generated third-party notices (`config/aboutlibraries`). Conversion to the NTIS "xxx yyy:" format is
+  forbidden; we do not use it.
+- `FlashBrandAnimation` is no longer the splash; it stays for the transfers loading state.
+
+### Revisit when
+`SPLASH-01`..`08` are run (in particular `SPLASH-06` on the Belfone), or the owner asks for a skip gesture.
