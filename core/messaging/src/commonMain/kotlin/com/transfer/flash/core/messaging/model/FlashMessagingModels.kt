@@ -431,6 +431,11 @@ public data class FlashGroupJoinRequestUi(
     val label: String,
     val requestedAtMs: Long,
     val isPreviouslyRemoved: Boolean = false,
+    /**
+     * True when the approving device is paired with the requester. An unpaired requester chose its own [label]
+     * (anyone can call itself "Mom"), so the sheet marks it; a paired one is shown under the name this device knows.
+     */
+    val isKnownDevice: Boolean = false,
 )
 
 /**

@@ -21,6 +21,8 @@ postponed*. Nothing here is forgotten and nothing here is cancelled; it is simpl
 | FO-04 | Group file sending: fan-out cost and a revamp of file sending | 2026-09-29 | POSTPONED |
 | FO-05 | Scale and battery measurement, PC6 / MEAS-02 (and the choice of 32) | 2026-09-29 | POSTPONED |
 | FO-06 | Hotspot client isolation (joined phones cannot reach each other) | 2026-10-02 | IDEA (not prioritised) |
+| FO-07 | Group invite link lifetime: expiry or single use | 2026-10-06 | OPEN DECISION (owner) |
+| FO-08 | Joining by invite: pending-join row, saved address hints, approval timeout | 2026-10-06 | OPEN DECISION (owner) |
 
 ---
 
@@ -202,3 +204,38 @@ Always useful whichever is chosen: detect "same subnet, unreachable" and tell th
 
 **Read first.** `docs/network/DISCOVERY-RESILIENCE-PLAN.md` (DR0 matrix); ADR-056; ERROR entry of 2026-09-30; ERROR-079
 (the hotspot host and WebRTC); `docs/testing/TEST-BACKLOG.md` HOT-01...HOT-03.
+
+---
+
+## FO-07 — Group invite link lifetime: expiry or single use
+
+**What.** An invite link (`flash://g/1/...`) carries the group's secret in the clear, so whoever holds it can start a join request. It has **no expiry, no single-use rule and no binding to a person**. The only way to kill an old link is a group-code change (`changeGroupCode`, or removing a member), which rotates the secret; since 2026-10-06 (ERROR-115, ADR-083) the joiner is then told "This invite was replaced". With the join policy set to OPEN, anyone holding the link joins automatically; with APPROVE (the default) an admin still decides.
+
+**Options (none chosen, nothing built).**
+1. **Expiry** (for example 7 days): the link's `issuedAtMs` is already in the payload but is display-only today (`GroupInviteCodec`). Making it binding changes the wire meaning, so it needs an ADR and a golden-vector update; old builds ignore it.
+2. **Single use**: the issuer remembers which links it handed out and refuses a second proof for the same link. Needs a link id in the payload and state on the issuer; breaks "share one link with a whole class".
+3. **Per-person links**: an admin makes one link per invitee and the issuer binds it to the first device that proves. Heaviest; best for sensitive groups.
+4. **Do nothing**: APPROVE is the default and rotation already revokes everything.
+
+**What the project assumes meanwhile.** The link is a bearer credential; the UI should not call it private. Logs redact it (`flash://g/<redacted>`).
+
+**Bring it back when.** The owner wants links that stop working by themselves, or a group is used where an open link is a problem.
+
+**Read first.** ADR-073, ADR-082, ADR-083; `docs/security.md` section 10; `GroupInviteCodec.kt`; `RealFlashChatRepository.inviteFor` / `acceptInvite`.
+
+---
+
+## FO-08 — Joining by invite: pending-join row, saved address hints, approval timeout
+
+**What.** Three loose ends of the join flow found on 2026-10-06 (investigation of what happens when a user takes an invite link):
+1. **No persistent "pending join" row.** After Join the joiner sees a message once (toast / snackbar) and the group is not in the chat list until it is approved. Nothing shows "waiting for admin" afterwards (ERROR-114 known limit).
+2. **Address hints are not saved.** `pendingInviteHints` is in memory: after a restart the hint dial is not repeated. The invite row is saved and the proof still starts when the inviter connects through discovery, so joining still works; only the dial-by-hint is lost. Hints are the inviter's LAN IPv4 addresses at link time, so they only help on the same network.
+3. **`PENDING_APPROVAL` never expires.** A request nobody answers stays for ever on both sides; `cancelPendingInvite` exists but no screen offers it unless the join dialog is reopened.
+
+**Why parked.** The owner has not chosen (2026-10-06); (1) is UI work, (2) is low value, (3) needs a policy (how long, and what the admin sees).
+
+**What the project assumes meanwhile.** The status sentence (`inviteStatusSentence`) is the only place the state is shown.
+
+**Bring it back when.** A joiner reports "I pressed Join and lost track of it", or the owner picks a timeout.
+
+**Read first.** ERROR-113, ERROR-114, ERROR-115; `docs/testing/TEST-BACKLOG.md` section 4zf; `FlashJoinGroupDialog` (`pendingStatusSentence`, `onCancelPendingJoin`).

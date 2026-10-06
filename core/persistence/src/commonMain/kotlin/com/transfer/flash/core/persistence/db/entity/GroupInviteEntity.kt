@@ -10,7 +10,8 @@ import androidx.room.PrimaryKey
  * This table is the trust root that `checkCharter` reads (GM-4, GINV-3):
  * an unknown v2 group is accepted when the device holds an accepted invite for that group id.
  *
- * [state] is one of `PENDING_CONTACT`, `PENDING_APPROVAL`, `JOINED`, `REFUSED`, `ABANDONED`.
+ * [state] is one of `PENDING_CONTACT`, `PENDING_APPROVAL`, `APPROVED`, `JOINED`, `REFUSED`, `ABANDONED`,
+ * `STALE` (the link's secret is older than the group's) or `INVALID` (the proof was rejected; retried on reconnect).
  */
 @Entity(
     tableName = "group_invite",

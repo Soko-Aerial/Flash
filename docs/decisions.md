@@ -4001,3 +4001,21 @@ Smallest change that keeps the wire format unchanged (old builds interoperate) a
 
 ### Revisit when
 A persistent pending-join row is built, or `pendingInviteHints` is persisted across restarts.
+
+## ADR-083 - An invite that cannot complete is a visible state; the admin is told who is unpaired
+
+### Decision
+1. A proof answered `stale` marks the invite `STALE` (M-06, secret and vouch dropped, not retried); one rejected after the retries marks it `INVALID` (M-05, retried when the peer reconnects); a timeout changes nothing. The column stays a free string, no migration.
+2. The join dialog says who invited when this device knows the inviter's name; it says nothing for a stranger.
+3. A join request from a device the approver is not paired with is marked as such in the members sheet, and its self-chosen name is shown as that; a paired requester is shown under the approver's own name for it.
+
+### Context
+ERROR-115. Reading the path showed an out-of-date link failing silently, and an admin approving on a name the requester picks (anyone can call itself "Mom").
+
+### Alternatives considered
+- Treat `INVALID` as final: a transient send failure would then kill a good invite.
+- Show a key fingerprint to the admin: the joiner has no screen to compare it against, so it would be noise.
+- Put an expiry in the link now: changes the meaning of `issuedAtMs` and is the owner's call (kept as an open decision in the handoff).
+
+### Revisit when
+An expiry or single-use rule is chosen, or a place exists where a device shows its own key code.

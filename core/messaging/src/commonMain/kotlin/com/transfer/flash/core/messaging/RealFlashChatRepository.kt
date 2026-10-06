@@ -631,7 +631,7 @@ public class RealFlashChatRepository(
         // GM-4: Load accepted invite group IDs to restore charter trust roots.
         scope.launch(ioDispatcher) {
             groupInviteDao?.getAll()?.forEach { entity ->
-                if (entity.state != "REFUSED" && entity.state != "ABANDONED") {
+                if (entity.state != "REFUSED" && entity.state != "ABANDONED" && entity.state != "STALE") {
                     acceptedInviteGroupIds.add(entity.groupId)
                 }
             }
@@ -1431,7 +1431,11 @@ public class RealFlashChatRepository(
                 ),
             )
             // Pre-install inviter's key as a scoped vouch
-            groupVouching?.vouch(invite.inviterDeviceId, invite.inviterFingerprintHex.uppercase(), invite.groupId)
+            // The verdict is not an error to the joiner: a refusal means the id is already pinned under another key
+            // (paired, or vouched by another group), the dial is then checked against THAT pin, and an impostor at a
+            // hinted address is turned away by the TLS layer either way.
+            val vouchVerdict = groupVouching?.vouch(invite.inviterDeviceId, invite.inviterFingerprintHex.uppercase(), invite.groupId)
+            FlashLog.i("GROUP", "Inviter vouch: group=${invite.groupId} inviter=${invite.inviterDeviceId} verdict=$vouchVerdict")
             // Dial address hints in order (GM-4 task 3, GM-8 task 1)
             scope.launch(ioDispatcher) {
                 dialHintsInOrder(invite.groupId, invite.inviterDeviceId, invite.addressHints)
@@ -1481,6 +1485,9 @@ public class RealFlashChatRepository(
         hintsExhausted.add(groupId)
     }
 
+    override fun inviterDisplayName(deviceId: String): String? =
+        peerNameResolver(deviceId)?.ifBlank { null }
+
     override suspend fun inviteStatusSentence(groupId: String): String? = withContext(ioDispatcher) {
         val members = groupMemberDao
         if (members?.member(groupId, localDeviceId)?.isActive == true) {
@@ -1505,6 +1512,8 @@ public class RealFlashChatRepository(
             "REFUSED" -> GroupMembershipStatusText.requestDeclined(groupName)
             "JOINED" -> "Joined"
             "ABANDONED" -> "Cancelled"
+            "STALE" -> GroupMembershipStatusText.INVITE_REPLACED
+            "INVALID" -> GroupMembershipStatusText.INVITE_NO_LONGER_VALID
             else -> null
         }
     }
@@ -1625,12 +1634,15 @@ public class RealFlashChatRepository(
             requests.map { req ->
                 val isRemoved = members?.member(groupId, req.subjectId)?.let { !it.isActive } == true ||
                     rotations.any { req.subjectId in it.toRotation().removedIds }
+                val known = isTrustedPeer(req.subjectId)
                 FlashGroupJoinRequestUi(
                     subjectId = req.subjectId,
                     subjectKey = req.subjectKey,
-                    label = req.label,
+                    // A paired device is shown under the name this device gave it, not the one it asked for.
+                    label = if (known) peerNameResolver(req.subjectId)?.ifBlank { null } ?: req.label else req.label,
                     requestedAtMs = req.requestedAtMs,
                     isPreviouslyRemoved = isRemoved,
+                    isKnownDevice = known,
                 )
             }
         }
@@ -3460,7 +3472,9 @@ public class RealFlashChatRepository(
 
     private suspend fun triggerProofForPendingInvites(peerId: String) {
         val pending = groupInviteDao?.getAll()?.filter {
-            it.state == "PENDING_CONTACT" || it.state == "PENDING_APPROVAL"
+            // INVALID is retried: the proof failed when last tried, which a reconnect may cure. STALE is not: the
+            // secret in the link is older than the group's and only a new link helps.
+            it.state == "PENDING_CONTACT" || it.state == "PENDING_APPROVAL" || it.state == "INVALID"
         } ?: emptyList()
         if (pending.isEmpty()) return
         if (!peerFeatures(peerId).contains("gs1")) {
@@ -3488,8 +3502,10 @@ public class RealFlashChatRepository(
                         inviteProofRetries.remove(key)
                         sendJoinRequest(peerId, invite.groupId, secretRecord.epoch)
                     }
-                    GroupProofResult.FAILED, GroupProofResult.TIMEOUT -> scheduleInviteProofRetry(peerId, invite.groupId)
-                    else -> Unit
+                    GroupProofResult.FAILED -> scheduleInviteProofRetry(peerId, invite.groupId, failed = true)
+                    GroupProofResult.TIMEOUT -> scheduleInviteProofRetry(peerId, invite.groupId, failed = false)
+                    GroupProofResult.STALE -> markInviteDead(invite.groupId, "STALE")
+                    GroupProofResult.UNSUPPORTED, null -> Unit
                 }
             } finally {
                 inviteProofsInFlight.remove(key)
@@ -3501,12 +3517,15 @@ public class RealFlashChatRepository(
      * A proof that failed or timed out while the inviter is still connected is tried again a few times: nothing else
      * would retry it until the next reconnect, and the joiner would sit on "waiting" with no request ever sent.
      */
-    private fun scheduleInviteProofRetry(peerId: String, groupId: String) {
+    private fun scheduleInviteProofRetry(peerId: String, groupId: String, failed: Boolean) {
         val key = peerId to groupId
         val attempt = (inviteProofRetries[key] ?: 0) + 1
         if (attempt > INVITE_PROOF_MAX_RETRIES) {
             inviteProofRetries.remove(key)
-            FlashLog.w("GROUP", "Invite proof gave up after ${attempt - 1} retries: group=$groupId peer=$peerId")
+            FlashLog.w("GROUP", "Invite proof gave up after ${attempt - 1} retries: group=$groupId peer=$peerId failed=$failed")
+            // A proof the peer answered and rejected says the link no longer matches the group; a proof that only timed
+            // out says nothing about the link, so the joiner keeps waiting.
+            if (failed) scope.launch(ioDispatcher) { markInviteDead(groupId, "INVALID") }
             return
         }
         inviteProofRetries[key] = attempt
@@ -3517,6 +3536,26 @@ public class RealFlashChatRepository(
                 triggerProofForPendingInvites(peerId)
             }
         }
+    }
+
+    /**
+     * The invite can not complete as it is: [state] is `STALE` (the group's secret moved on since the link was made;
+     * only a new link helps) or `INVALID` (the peer rejected the proof; retried when a peer reconnects). The joiner is
+     * told in words instead of waiting for ever.
+     */
+    private suspend fun markInviteDead(groupId: String, state: String) {
+        val invite = groupInviteDao?.getByGroupId(groupId) ?: return
+        if (invite.state == "JOINED" || invite.state == "REFUSED" || invite.state == "ABANDONED") return
+        groupInviteDao.updateState(groupId, state)
+        pendingInviteHints.remove(groupId)
+        hintsExhausted.remove(groupId)
+        if (state == "STALE") {
+            acceptedInviteGroupIds.remove(groupId)
+            groupVouching?.revoke(invite.inviterId, groupId)
+            groupSecretStore?.forget(groupId)
+        }
+        FlashLog.w("GROUP", "Invite can not complete: group=$groupId state=$state")
+        conversationRefreshTrigger.value = timeSource.nowMs()
     }
 
     private suspend fun sendJoinRequest(peerId: String, groupId: String, epoch: Long) {

@@ -33,6 +33,14 @@
 - **Device checks owed:** `UIP-01`...`UIP-10` in `docs/testing/TEST-BACKLOG.md` §4y.
 - **Recommended next task:** Execute physical device verification of UI flows (UIP-01 to UIP-10) on Android phones and Desktop.
 
+## 2026-10-06 (n) - Invite link follow-ups (ERROR-115, ADR-083)
+
+- **Done in code (unit-tested, none device-verified):** stale / rejected invites say so (M-06 / M-05) and `INVALID` retries on reconnect; the join dialog names a known inviter; the admin's join row marks an unpaired requester and shows the age; the vouch verdict is logged.
+- **Device checks owed:** `GJOIN-04`...`GJOIN-06` (TEST-BACKLOG 4zf), plus the earlier `GJOIN-01`...`03`.
+- **Owner decisions still open (nothing built, parked as FO-07 and FO-08 in `docs/FUTURE-OPTIMIZATION.md`):** (1) should an invite link expire or be single use? Today it is a bearer secret with no expiry; (2) persist the address hints and add a visible "pending join" row for a joiner waiting on approval; (3) should `PENDING_APPROVAL` time out?
+- **Tree note:** another session committed `59641f61` (UI polish) between my edits; the two touch `FlashJoinGroupDialog.kt` and `FlashGroupMembersSheet.kt` only through the small edits listed in progress (n).
+- **Next:** the owner runs `GJOIN-01` / `GJOIN-02`, then `GJOIN-04`.
+
 ## 2026-10-06 (m) - Join by invite and members-may-add (ERROR-112...114)
 
 - **Committed:** see `git log` (the commit after `5f3b4c20`).

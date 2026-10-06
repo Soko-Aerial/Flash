@@ -2614,6 +2614,7 @@ private fun FlashShell(
         if (showJoinGroupDialog) {
             com.transfer.flash.ui.chat.FlashJoinGroupDialog(
                 initialInviteUrl = activeJoinLink,
+                resolveInviterName = { invite -> chatRepository.inviterDisplayName(invite.inviterDeviceId) },
                 onDismiss = {
                     showJoinGroupDialog = false
                     activeJoinLink = null

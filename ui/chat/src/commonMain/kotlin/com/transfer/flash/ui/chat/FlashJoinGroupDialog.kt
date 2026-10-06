@@ -51,6 +51,8 @@ public fun FlashJoinGroupDialog(
     initialInviteUrl: String? = null,
     pendingStatusSentence: String? = null,
     onCancelPendingJoin: (() -> Unit)? = null,
+    /** The name this device knows the inviter by, or null when it is a stranger (the dialog then says so). */
+    resolveInviterName: (com.transfer.flash.core.security.group.GroupInvite) -> String? = { null },
 ) {
     val colors = FlashTheme.colors
     val clipboardManager = LocalClipboardManager.current
@@ -121,7 +123,10 @@ public fun FlashJoinGroupDialog(
                         size = 56.dp,
                     )
                     FlashText(
-                        text = FlashGroupInviteJoinMath.joinConfirmationMessage(parsedInvite.groupName, null),
+                        text = FlashGroupInviteJoinMath.joinConfirmationMessage(
+                            parsedInvite.groupName,
+                            resolveInviterName(parsedInvite),
+                        ),
                         style = FlashTheme.typography.bodyDefault,
                         color = colors.textSecondary,
                         textAlign = TextAlign.Center,

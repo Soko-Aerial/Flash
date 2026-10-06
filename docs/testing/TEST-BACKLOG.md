@@ -2343,6 +2343,27 @@ Capture before you start: export the logs on every device (the new `GROUP` lines
 - **Source:** ERROR-113.
 - **Status:** TODO
 
+### GJOIN-04 - An old invite link says it is out of date
+- **Setup:** admin and a joiner that is not in the group; both online and connected.
+- **Steps:** the admin copies an invite link, then uses "Change group code" (or removes a member). The joiner opens the OLD link and presses Join. Then the admin copies a fresh link and the joiner opens that.
+- **Pass:** with the old link the joiner is told "This invite was replaced. Ask for a new one." within about 25 s (not "Connecting..." for ever), the admin gets no request, and the joiner log has `Invite can not complete: ... state=STALE`. With the new link the request reaches the admin and the join completes as in GJOIN-02.
+- **Source:** ERROR-115.
+- **Status:** TODO
+
+### GJOIN-05 - The invite dialog names the inviter, the admin is warned about strangers
+- **Setup:** one joiner that IS paired with the inviter and one that is NOT; an admin that is paired with only the first.
+- **Steps:** open the same link on both joiners and read the dialog; both request to join; the admin opens the members sheet.
+- **Pass:** the paired joiner's dialog says "You were invited by <the inviter's name>..."; the unpaired one says "You were invited to join ..." with no name. In the admin's sheet the paired requester shows "Requested to join - <time>" under the admin's own name for it; the unpaired one shows "Not paired with you, name chosen by the device - <time>" in the accent colour.
+- **Source:** ADR-083.
+- **Status:** TODO
+
+### GJOIN-06 - A wrong device at the hinted address is turned away
+- **Setup:** a joiner and an admin on one Wi-Fi; a third device (not in the group) that can take the admin's old IP address (stop the admin, give its address to the third device, or edit the link's hint to the third device's `ip:port`).
+- **Steps:** the joiner opens the link and presses Join while the admin is offline.
+- **Pass:** the joiner does NOT connect to the third device (log: certificate rejection / identity mismatch for the inviter id, no `Invite proof` with it), nothing is sent to it, and the status falls back to "Waiting for a member of <group> to be nearby." after 30 s. This is the case that was only verified by reading the code (the vouch installs the inviter's pin and the named dial checks it).
+- **Source:** ADR-083, ERROR-115 notes.
+- **Status:** TODO
+
 ## 4za. Ink launch splash (UI-056, ADR-080, 2026-10-06)
 
 Built and unit-tested (`FlashLaunchSplashTest` 21/21). Desktop frames were rendered off-screen and checked by eye. Not device-verified.

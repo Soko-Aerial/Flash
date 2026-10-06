@@ -62,6 +62,9 @@ public interface FlashChatRepository {
      */
     public suspend fun inviteStatusSentence(groupId: String): String? = null
 
+    /** The name this device knows [deviceId] by (paired or discovered), or null: the invite dialog's "Invited by". */
+    public fun inviterDisplayName(deviceId: String): String? = null
+
     /**
      * Retries dialing address hints for all pending invites (e.g. after a network change).
      */

@@ -75,4 +75,14 @@ class FlashGroupInviteJoinMathTest {
         assertEquals("Yesterday", FlashGroupInviteJoinMath.formatRequestTime(now - 25 * 3600 * 1000L, now))
         assertEquals("3d ago", FlashGroupInviteJoinMath.formatRequestTime(now - 3 * 24 * 3600 * 1000L, now))
     }
+
+    @Test
+    fun joinRequestSubtitleWarnsAboutAnUnpairedRequester() {
+        val now = 10 * 60_000L
+        val known = FlashGroupInviteJoinMath.joinRequestSubtitle(0L, now, isKnownDevice = true)
+        val unknown = FlashGroupInviteJoinMath.joinRequestSubtitle(0L, now, isKnownDevice = false)
+        assertEquals("Requested to join · 10m ago", known)
+        assertTrue(unknown.startsWith("Not paired with you"))
+        assertTrue(unknown.endsWith("10m ago"))
+    }
 }
