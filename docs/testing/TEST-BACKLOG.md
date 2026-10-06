@@ -1327,7 +1327,7 @@ desktop launch (it is overwritten). Include the **caller's** log.
 ### VUP-04 - An upgrade during an ICE restart
 - **Setup:** a connected voice call on Wi-Fi; Android to Android.
 - **Steps:** switch the callee's Wi-Fi off and on to force an ICE restart, and tap **Camera** on either device within a second of the reconnect.
-- **Pass:** either the video arrives once the connection is back, or the camera preview shows with no remote video and the call stays up and audio continues (a known gap: the request is not retried); in no case does the call end because of the upgrade. Record which one happened.
+- **Pass:** either the video arrives once the connection is back, or the camera preview shows with no remote video and the call stays up and audio continues (the request is retried when the connection or signaling returns, so the video should arrive; if it does not, that retry failed on this stack); in no case does the call end because of the upgrade. Record which one happened.
 - **Source:** ADR-078 (known risk).
 - **Status:** TODO
 

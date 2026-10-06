@@ -54,7 +54,8 @@ The five items ERROR-104 listed as "Not fixed", all found by code reading (no de
 
 ### Not fixed
 - Group voice-to-video upgrade (ADR-078 records why it needs its own design).
-- `FlashCallActionReceiver` `ACTION_ANSWER` accepts without a permission gate; it is unreachable today (nothing sends it) and was left alone.
+- (Handled after the first commit, 2026-10-06, not device-verified) `FlashCallActionReceiver` `ACTION_ANSWER` no longer accepts: it brings the app to the front with `EXTRA_ANSWER_CALL`, so `MainActivity` runs its permission gate. Still unreachable today.
+- (Handled after the first commit, 2026-10-06, not device-verified) A video-upgrade request lost to an ICE restart or a dropped session is retried: the caller keeps `upgradeOfferPending` until an offer is delivered and retries on `Connected` and `onSignalingRestored`; the callee repeats `vu=1` on every status until its answer to an offer with a video section is sent; the caller ignores a repeated `vu` while its offer awaits an answer. Unit-tested (state only, mutation-checked); the real negotiation is `VUP-04`.
 - `getUserMedia` (third_party) can leak the audio track when the camera permission check throws after it (unchanged, from ERROR-104).
 - Android capturer errors that do NOT end the track (a frozen camera) stay invisible: webrtc-kmp exposes no event for them.
 - The Android libwebrtc side of the mid-call m-line is untested (the native two-peer test runs on the desktop `webrtc-java` stack only).

@@ -30,10 +30,9 @@ class FlashCallActionReceiver : BroadcastReceiver() {
             return
         }
         when (intent.action) {
-            ACTION_ANSWER -> {
-                scope.launch { calling.accept() }
-                bringAppToFront(context)
-            }
+            // ERROR-105: never accept from here. Answering needs the RECORD_AUDIO / CAMERA checks and the audio
+            // router, which live in MainActivity; the activity's own answer path (EXTRA_ANSWER_CALL) runs them.
+            ACTION_ANSWER -> bringAppToFront(context, answer = true)
             ACTION_DECLINE -> scope.launch { calling.decline() }
             ACTION_HANGUP -> scope.launch { calling.hangUp() }
             else -> Log.w(TAG, "Unknown call action ${intent.action}")
@@ -41,8 +40,9 @@ class FlashCallActionReceiver : BroadcastReceiver() {
     }
 
     /** Brings the app to front so the user lands on the call screen. */
-    private fun bringAppToFront(context: Context) {
+    private fun bringAppToFront(context: Context, answer: Boolean = false) {
         val launch = Intent(context, com.transfer.flash.MainActivity::class.java).apply {
+            if (answer) putExtra(EXTRA_ANSWER_CALL, true)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         }
         runCatching { context.startActivity(launch) }

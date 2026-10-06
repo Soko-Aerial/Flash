@@ -125,4 +125,39 @@ class FlashCallVideoUpgradeTest {
         assertFalse(caller.state.value.video)
         assertFalse(caller.state.value.peerCameraOff)
     }
+
+    @Test
+    fun `a request the caller could not act on is still owed, not forgotten`() = runTest {
+        // No media on a JVM unit test, so the offer cannot be created: the request must stay pending for the retry.
+        val caller = session(direction = FlashCallDirection.OUTGOING)
+        caller.hearPeer(CallWireFrame.Status(callId, peerId, cameraOn = true, videoUpgrade = true))
+        testScheduler.advanceUntilIdle()
+        assertTrue("the offer owed after a lost try is kept for the next connection", caller.upgradeOfferPendingForTesting)
+
+        // A signaling drop and return runs the retry; with no media it still cannot deliver, and it must not end the call.
+        caller.onSignalingLost()
+        caller.onSignalingRestored()
+        testScheduler.advanceUntilIdle()
+        assertTrue(caller.upgradeOfferPendingForTesting)
+        assertEquals(FlashCallState.ACTIVE, caller.state.value.state)
+        assertTrue("no offer was invented without a peer connection: $sent", sent.none { it is CallWireFrame.Offer })
+    }
+
+    @Test
+    fun `a callee whose request is unanswered repeats it on its next status`() = runTest {
+        val callee = session(direction = FlashCallDirection.INCOMING)
+        callee.hearPeer()
+        callee.setUpgradeRequestPendingForTesting(true)
+        callee.onSignalingLost()
+        callee.onSignalingRestored()
+        testScheduler.advanceUntilIdle()
+        assertTrue("the request went out again: ${statuses()}", statuses().any { it.videoUpgrade == true })
+
+        sent.clear()
+        callee.setUpgradeRequestPendingForTesting(false)
+        callee.onSignalingLost()
+        callee.onSignalingRestored()
+        testScheduler.advanceUntilIdle()
+        assertTrue("an answered request is not repeated", statuses().none { it.videoUpgrade == true })
+    }
 }

@@ -1,5 +1,13 @@
 # Current Handoff
 
+## 2026-10-06 (latest, e) - Upgrade retry + receiver gate (ERROR-105 follow-up)
+
+- **Committed before this:** `2c03732e` (ERROR-105 / ADR-078 / ADR-079). This follow-up is committed on top of it (see `git log`).
+- **Done in code:** a lost video-upgrade request or offer is retried (caller `upgradeOfferPending`, callee repeats `vu=1`); `FlashCallActionReceiver` `ACTION_ANSWER` no longer accepts directly.
+- **Verified:** calling and callui suites, `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm`; one mutation checked. Not device-verified (`VUP-04`). ERROR-106 (`DesktopEngineGroupSessionUpTest`) is still open and unrelated.
+- **Deferred on purpose:** group voice-to-video, frozen-camera detection.
+- **Next:** `VUP-01`, then `VUP-04`, then `CALLMEDIA-02`.
+
 ## 2026-10-06 (latest, d) - The five open call items (ERROR-105), not committed
 
 - **Done in code:** specific end reasons for a busy / refused microphone; a refused camera answers audio-only (Android) with a "Joined without camera" notice; camera stopped / flip failed banner with "Try again"; tiles say "Video is off to save data" / "Showing fewer videos"; 1:1 voice calls can add a camera (`cv1`, `Status.vu`, **Camera** dock button, caller-only offer). Group voice-to-video is NOT built.
