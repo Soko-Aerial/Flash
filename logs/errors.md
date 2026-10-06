@@ -7451,3 +7451,98 @@ Cosmetic, found by code reading: a swarm transfer row's `peerName` was the raw g
 
 ### Status
 FIXED IN CODE, unit-tested, NOT device-verified (stays OPEN until SWM-44 passes)
+
+## ERROR-112 - A member added by a plain member (members-may-add) never joined: its cert was dropped as `issuer`
+
+### Date
+2026-10-06
+
+### Area
+Signed groups / `SignedGroups.onBundle`, `GroupSignatureRules.checkCert`
+
+### Symptoms
+Owner-reported with `membersMayAdd` on: a plain member added a device, the owner's roster showed it, the added device saw nothing (no chat, no group). Android log of the added device (`flash-log-1791274838510.txt`), on every reconnect:
+```text
+W/CHAT: Group cert dropped: group=g2-584f... subject=b7d7f081... from=ed225ab8... reason=issuer
+W/CHAT: Group bundle ignored: group=g2-584f... from=ed225ab8... reason=no-own-cert
+```
+
+### Root cause
+`onBundle` built the member-key lookup (`memberKeys`) from the receiver's STORED roster only. A device being added to a group it has never seen has no roster, so the key of the member that issued its cert was not findable, although that member's owner-signed cert travelled in the same bundle. The cert was dropped as `issuer`, so the bundle carried no cert for the receiver and was ignored. The existing test (`testMembersMayAddRestriction`) only asserted the OWNER's roster, never that the added device joined.
+
+Found while fixing it (security): `membersMayAdd` was read from `frame.settings` before that object's signature was checked, so a member could ship its own unsigned settings with `membersMayAdd = true` and have its cert for another device accepted. Now only signature-verified settings count (`SignedGroupsTest` "a member cannot switch on members-may-add by shipping its own unsigned settings" fails on the old code).
+
+### Working fix
+`onBundle` verifies certs in passes: a cert that fails only for lack of an issuer waits, and every verified cert adds its subject's key to `memberKeys` (and `adminKeys` for admins). `membersMayAdd` comes from settings that verify against the owner or a known admin.
+
+### Verification
+`GroupSettingsTest.testMembersMayAddRestriction` (now asserts the added device is active and sees the roster) and 2 new `SignedGroupsTest` cases, which fail on the old code (mutation-checked). `:core:messaging:testAndroidHostTest` and `jvmTest` green. Device check `GJOIN-01`.
+
+### Related files
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/SignedGroups.kt`
+- `core/messaging/src/androidHostTest/kotlin/com/transfer/flash/core/messaging/GroupSettingsTest.kt`, `SignedGroupsTest.kt`
+
+### Status
+OPEN - fixed in code, unit-tested, NOT device-verified (until GJOIN-01 passes)
+
+## ERROR-113 - Joining with an invite while already connected to the inviter sent no join request
+
+### Date
+2026-10-06
+
+### Area
+Group membership / `GroupProofSessions.initiateProof`, `RealFlashChatRepository.acceptInvite`, `triggerProofForPendingInvites`
+
+### Symptoms
+Owner-reported: pasting the invite link on the desktop (already connected to the inviter) opened an empty chat; no request showed on the admin or other members. The request appeared on the admin only much later, after the devices reconnected. Desktop log: `Session already established to inviter a0cd3710... in group g2-584f...` at 08:12:00 and then nothing for the join; the first roster preview came at 09:00:35. The owner also reported that a later join notification showed on the phone, was accepted, and the desktop still did not join (09:34 in the log).
+
+### Root cause
+Proven:
+1. `acceptInvite` and the hint dialer both start the proof when the inviter is already connected. `initiateProof` checked "already in flight" and registered the proof only after a suspend call (the secret read from Room), so both callers passed the check and the second overwrote the first. The inviter answered both hellos, each challenge failed against the wrong nonce, the proof failed, no join request was sent, and nothing retried until the next reconnect (the "one proof per peer and group" rule was broken).
+2. `acceptInvite` awaited the proof inline (up to the 20 s timeout) before returning to the Join button.
+3. The proof code logged nothing, so none of this was visible in a log.
+
+NOT proven: why the 09:34 approval never completed on the desktop. The old logs hold no proof or approval lines. Candidates: the approval was made while the desktop link was down (the log shows "Software caused connection abort" and TLS BAD_PACKET_LENGTH rejections about every 10-12 minutes), or the decision was dropped silently. The retry, redelivery and logging added now will show which on the next capture.
+
+### Working fix
+`initiateProof` claims the pair under a lock with no suspension between check and registration, and a late caller waits for the proof in flight; `triggerProofForPendingInvites` is single-flight per (peer, group) and retries FAILED/TIMEOUT up to 3 times (3 s, 6 s, 9 s) while the inviter is connected; `acceptInvite` starts the proof in the background; a join request from a device that is already an active member is answered with the roster instead of being stored as pending again; every step logs under `GROUP`/`CHAT` (proof result, request sent, request accepted for review, approval and whether the bundle was delivered, a bundle dropped at the gate, a decision with no stored invite).
+
+### Verification
+`GroupProofSessionsTest` race test (fails on the old code, mutation-checked), `GroupJoinTest.testJoinWhileTheInviterIsAlreadyConnected`, `GroupJoinTest` approval-missed-while-offline case. Device checks `GJOIN-02`, `GJOIN-03`.
+
+### Related files
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/group/GroupProofSessions.kt`
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/RealFlashChatRepository.kt`
+- tests: `GroupProofSessionsTest.kt`, `GroupJoinTest.kt`
+
+### Known limit
+`pendingInviteHints` is in memory only: an invite accepted and then lost to a restart before the proof finishes is not retried from hints.
+
+### Status
+OPEN - fixed in code, unit-tested, NOT device-verified (until GJOIN-02/03 pass)
+
+## ERROR-114 - After "Join" the app opened a chat titled with the raw group id
+
+### Date
+2026-10-06
+
+### Area
+UI hosts / `DesktopShell`, `MainActivity` join handler
+
+### Symptoms
+Owner-reported: after pasting an invite the app opened a chat showing the group id instead of the name and members, with nothing to say a request was pending.
+
+### Root cause
+Both hosts navigated to the conversation right after `acceptInvite` succeeded. The conversation row only exists once the roster bundle arrives, so the screen had nothing to show but the id. `inviteStatusSentence` existed but no UI called it.
+
+### Working fix
+The hosts call `inviteStatusSentence` after accept: "Joined" opens the chat; anything else shows the sentence in a snackbar (desktop) or toast (Android) and stays on the list. The group appears in the list when the roster arrives.
+
+### Verification
+`:app:compileDebugKotlin` and `:desktop:compileKotlinJvm` compile; no UI test. Device check `GJOIN-02`.
+
+### Known limit
+There is no persistent "pending join" row in the chat list; the status is shown once.
+
+### Status
+OPEN - fixed in code, NOT device-verified (until GJOIN-02 passes)

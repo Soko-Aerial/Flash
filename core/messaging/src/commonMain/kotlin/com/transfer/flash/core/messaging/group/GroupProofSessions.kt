@@ -3,6 +3,7 @@ package com.transfer.flash.core.messaging.group
 import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.common.concurrent.SyncMap
 import com.transfer.flash.core.common.concurrent.SyncSet
+import com.transfer.flash.core.common.logging.FlashLog
 import com.transfer.flash.core.common.time.FlashTimeSource
 import com.transfer.flash.core.common.time.SystemTimeSource
 import com.transfer.flash.core.messaging.protocol.GroupCrypto
@@ -15,6 +16,8 @@ import com.transfer.flash.core.security.group.GroupProofResponder
 import com.transfer.flash.core.security.group.GroupProofTranscript
 import com.transfer.flash.core.security.group.GroupSecretKdf
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
@@ -118,6 +121,7 @@ public class GroupProofSessions(
     )
 
     private val activeInitiators = SyncMap<Pair<String, String>, InFlightInitiator>()
+    private val initiatorClaim = Mutex()
     private val activeResponders = SyncMap<Pair<String, String>, InFlightResponder>()
 
     /**
@@ -137,65 +141,83 @@ public class GroupProofSessions(
         epoch: Long,
     ): GroupProofResult {
         if (!peerFeatures(peerId).contains(FEATURE_GS1)) {
+            FlashLog.i("GROUP", "Proof skipped: peer=$peerId does not advertise gs1 (group=$groupId)")
             return GroupProofResult.UNSUPPORTED
         }
 
         val crypto = groupCrypto ?: return GroupProofResult.FAILED
-        val peerKey = peerIdentityKey(peerId) ?: return GroupProofResult.FAILED
-        if (peerKey.isEmpty()) return GroupProofResult.FAILED
-
-        val nowMs = timeSource.nowMs()
-        val key = peerId to groupId
-
-        val existing = activeInitiators[key]
-        if (existing != null) {
-            if (nowMs - existing.startedAtMs < timeoutMs) {
-                // Already in flight
-                return GroupProofResult.FAILED
-            } else {
-                activeInitiators.remove(key)?.deferred?.complete(GroupProofResult.TIMEOUT)
-            }
+        val peerKey = peerIdentityKey(peerId)
+        if (peerKey == null || peerKey.isEmpty()) {
+            FlashLog.w("GROUP", "Proof skipped: no live identity key for peer=$peerId (group=$groupId)")
+            return GroupProofResult.FAILED
         }
 
-        val secretRecord = groupSecretStore.get(groupId, epoch) ?: return GroupProofResult.FAILED
+        // The secret is read BEFORE the claim below: the read suspends (it is a database read), and a check made
+        // before it would be stale by the time the proof is registered.
+        val secretRecord = groupSecretStore.get(groupId, epoch) ?: run {
+            FlashLog.w("GROUP", "Proof skipped: no secret stored for group=$groupId epoch=$epoch")
+            return GroupProofResult.FAILED
+        }
         val authKey = GroupSecretKdf.authKey(secretRecord.secret, groupId, epoch)
 
         val fpI = crypto.sha256(crypto.publicKey)
         val fpR = crypto.sha256(peerKey)
 
-        val initiator = GroupProofInitiator(
-            groupId = groupId,
-            epoch = epoch,
-            authKey = authKey,
-            localTlsFingerprint = fpI,
-            remoteTlsFingerprint = fpR,
-            nonceSource = nonceSource,
-        )
-
-        val hello = initiator.createHello()
+        val key = peerId to groupId
         val deferred = CompletableDeferred<GroupProofResult>()
-        activeInitiators[key] = InFlightInitiator(initiator, nowMs, deferred)
+
+        // Rule 1: exactly one proof per (peer, group). Check and register happen under one lock with no suspension
+        // point between them. A caller that finds a live proof does not start a second one (its hello would
+        // overwrite the first initiator, and each challenge would then fail against the wrong nonce): it waits for
+        // the one in flight and reports that result.
+        var liveProof: CompletableDeferred<GroupProofResult>? = null
+        val claimedHello = initiatorClaim.withLock {
+            val nowMs = timeSource.nowMs()
+            val existing = activeInitiators[key]
+            if (existing != null && nowMs - existing.startedAtMs < timeoutMs) {
+                liveProof = existing.deferred
+                return@withLock null
+            }
+            existing?.let { activeInitiators.remove(key)?.deferred?.complete(GroupProofResult.TIMEOUT) }
+            val initiator = GroupProofInitiator(
+                groupId = groupId,
+                epoch = epoch,
+                authKey = authKey,
+                localTlsFingerprint = fpI,
+                remoteTlsFingerprint = fpR,
+                nonceSource = nonceSource,
+            )
+            val hello = initiator.createHello()
+            activeInitiators[key] = InFlightInitiator(initiator, nowMs, deferred)
+            hello
+        }
+        if (claimedHello == null) {
+            val inFlight = liveProof ?: return GroupProofResult.FAILED
+            FlashLog.i("GROUP", "Proof already in flight peer=$peerId group=$groupId; waiting for it")
+            return withTimeoutOrNull(timeoutMs) { inFlight.await() } ?: GroupProofResult.TIMEOUT
+        }
 
         val wireFrame = GroupWireFrame.GsHello(
             groupId = groupId,
             from = localDeviceId,
             epoch = epoch,
-            nonce = hello.nonce,
+            nonce = claimedHello.nonce,
         )
 
         val sent = sendFrame(peerId, wireFrame)
         if (!sent) {
-            activeInitiators.remove(key)
+            activeInitiators.remove(key)?.deferred?.complete(GroupProofResult.FAILED)
+            FlashLog.w("GROUP", "Proof hello not sent peer=$peerId group=$groupId epoch=$epoch")
             return GroupProofResult.FAILED
         }
 
         val result = withTimeoutOrNull(timeoutMs) {
             deferred.await()
         } ?: run {
-            activeInitiators.remove(key)
+            activeInitiators.remove(key)?.deferred?.complete(GroupProofResult.TIMEOUT)
             GroupProofResult.TIMEOUT
         }
-
+        FlashLog.i("GROUP", "Proof finished peer=$peerId group=$groupId epoch=$epoch result=$result")
         return result
     }
 
@@ -203,8 +225,14 @@ public class GroupProofSessions(
         if (peerDeviceId != frame.from) return
         val nowMs = timeSource.nowMs()
 
-        if (!rateLimiter.canAttempt(peerDeviceId, nowMs)) return
-        if (!peerFeatures(peerDeviceId).contains(FEATURE_GS1)) return
+        if (!rateLimiter.canAttempt(peerDeviceId, nowMs)) {
+            FlashLog.w("GROUP", "Proof hello refused: too many failed proofs from peer=$peerDeviceId")
+            return
+        }
+        if (!peerFeatures(peerDeviceId).contains(FEATURE_GS1)) {
+            FlashLog.i("GROUP", "Proof hello ignored: peer=$peerDeviceId does not advertise gs1")
+            return
+        }
 
         val crypto = groupCrypto ?: return
         val peerKey = peerIdentityKey(peerDeviceId) ?: return
@@ -293,6 +321,7 @@ public class GroupProofSessions(
                 ),
             )
         } else {
+            FlashLog.w("GROUP", "Proof challenge did not verify: peer=$peerDeviceId group=${frame.groupId}")
             rateLimiter.recordFailure(peerDeviceId, nowMs)
             activeInitiators.remove(key)?.deferred?.complete(GroupProofResult.FAILED)
         }
@@ -341,6 +370,7 @@ public class GroupProofSessions(
                     } else {
                         // Successful proof!
                         addProved(peerDeviceId, frame.groupId)
+                        FlashLog.i("GROUP", "Peer proved group=${frame.groupId} epoch=${frame.epoch} peer=$peerDeviceId")
                         sendFrame(
                             peerDeviceId,
                             GroupWireFrame.GsResult(

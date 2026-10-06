@@ -4,6 +4,9 @@ import com.transfer.flash.core.common.time.FlashTimeSource
 import com.transfer.flash.core.messaging.protocol.GroupCrypto
 import com.transfer.flash.core.messaging.protocol.GroupWireFrame
 import com.transfer.flash.core.security.group.GroupSecret
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -498,5 +501,72 @@ class GroupProofSessionsTest {
         assertEquals(GroupProofResult.UNSUPPORTED, result)
         assertFalse(frameSent) // No frames sent!
         assertFalse(aliceSessions.hasProved(bobId, testGroupId))
+    }
+
+    /**
+     * Two callers start the same proof at once: joining an invite triggers one directly, and the hint dialer
+     * triggers another when it finds the inviter already connected. The secret lookup suspends between the
+     * "already in flight" check and the registration, so both used to pass the check, the second initiator
+     * overwrote the first, and each GsChallenge then failed against the wrong nonce: no proof, no join request.
+     */
+    @Test
+    fun test_two_simultaneous_initiations_share_one_proof() = runBlocking {
+        val slowStore = object : GroupSecretStore {
+            private val inner = InMemoryGroupSecretStore().apply { set(testGroupId, 1L, sharedSecret) }
+            override suspend fun get(groupId: String, epoch: Long): StoredGroupSecret? {
+                delay(50)
+                return inner.get(groupId, epoch)
+            }
+            override suspend fun current(groupId: String) = inner.current(groupId)
+            override suspend fun put(record: StoredGroupSecret) = inner.put(record)
+            override suspend fun forget(groupId: String) = inner.forget(groupId)
+        }
+        val bobStore = InMemoryGroupSecretStore().apply { set(testGroupId, 1L, sharedSecret) }
+        var aliceRef: GroupProofSessions? = null
+        var bobRef: GroupProofSessions? = null
+        var hellos = 0
+
+        val alice = GroupProofSessions(
+            localDeviceId = aliceId,
+            groupCrypto = aliceCrypto,
+            peerIdentityKey = { if (it == bobId) bobKey else null },
+            peerFeatures = { if (it == bobId) setOf("gs1") else emptySet() },
+            groupSecretStore = slowStore,
+            sendFrame = { _, frame ->
+                when (frame) {
+                    is GroupWireFrame.GsHello -> { hellos++; delay(20); bobRef?.onHello(aliceId, frame) }
+                    is GroupWireFrame.GsProof -> bobRef?.onProof(aliceId, frame)
+                    else -> Unit
+                }
+                true
+            },
+        )
+        aliceRef = alice
+        val bob = GroupProofSessions(
+            localDeviceId = bobId,
+            groupCrypto = bobCrypto,
+            peerIdentityKey = { if (it == aliceId) aliceKey else null },
+            peerFeatures = { if (it == aliceId) setOf("gs1") else emptySet() },
+            groupSecretStore = bobStore,
+            sendFrame = { _, frame ->
+                when (frame) {
+                    is GroupWireFrame.GsChallenge -> aliceRef?.onChallenge(bobId, frame)
+                    is GroupWireFrame.GsResult -> aliceRef?.onResult(bobId, frame)
+                    else -> Unit
+                }
+                true
+            },
+        )
+        bobRef = bob
+
+        val results = listOf(
+            async { alice.initiateProof(bobId, testGroupId, 1L) },
+            async { alice.initiateProof(bobId, testGroupId, 1L) },
+        ).awaitAll()
+
+        assertEquals("both callers see the one proof succeed", listOf(GroupProofResult.OK, GroupProofResult.OK), results)
+        assertEquals("only one hello went out", 1, hellos)
+        assertTrue(alice.hasProved(bobId, testGroupId))
+        assertTrue(bob.hasProved(aliceId, testGroupId))
     }
 }

@@ -3980,3 +3980,24 @@ Smallest change that works with the existing relay model; old builds ignore the 
 
 ### Revisit when
 The 7-day swarm retention and the catch-up TTL disagree in practice, or a second kind of attachment needs the same relay.
+
+## ADR-082 - Group join steps: proof single-flight, verified-settings-only for members-may-add
+
+### Decision
+1. One mutual proof per (peer, group) at a time, claimed under a lock before any suspending call; later callers wait for the one in flight. The invite flow retries a failed or timed-out proof 3 times (3, 6, 9 s) while the inviter is connected.
+2. In `SignedGroups.onBundle`, `membersMayAdd` is taken only from settings that verify against the owner or a known admin, and member-issued certs are verified together with the issuer's own cert in the same bundle.
+3. After Join the UI shows the invite status sentence; the chat opens only when the group is already joined.
+
+### Context
+ERROR-112 / 113 / 114. The proof race broke the "one in flight per peer/group" rule (ADR-070..075 plan, GM-3) and the unsigned-settings read let a member self-authorise adding other devices.
+
+### Alternatives considered
+- Retry only on reconnect: leaves the owner waiting until the next link flap.
+- Add the issuer's cert to the stored roster before verifying it: stores unverified data.
+- Keep opening the chat after Join: the row does not exist until the roster bundle arrives.
+
+### Why
+Smallest change that keeps the wire format unchanged (old builds interoperate) and closes the hole.
+
+### Revisit when
+A persistent pending-join row is built, or `pendingInviteHints` is persisted across restarts.

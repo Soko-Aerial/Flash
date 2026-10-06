@@ -328,6 +328,12 @@ public class RealFlashChatRepository(
     private val pendingInviteGroupNames = SyncMap<String, String>()
     /** GM-8: Groups whose hints have exhausted or timed out without establishing a session. */
     private val hintsExhausted = SyncSet<String>()
+
+    /** (peer, group) pairs whose invite proof is running now: a second trigger for the same pair is skipped. */
+    private val inviteProofsInFlight = SyncSet<Pair<String, String>>()
+
+    /** Failed invite proofs retried so far per (peer, group); cleared on success. */
+    private val inviteProofRetries = SyncMap<Pair<String, String>, Int>()
     /** Connected peers currently active. */
     private val currentConnectedPeers = SyncSet<String>()
 
@@ -1430,10 +1436,12 @@ public class RealFlashChatRepository(
             scope.launch(ioDispatcher) {
                 dialHintsInOrder(invite.groupId, invite.inviterDeviceId, invite.addressHints)
             }
-            // If already connected to inviter or gs1 peer, trigger proof session
+            // If already connected to the inviter, start the proof now. In the background: it waits for the peer's
+            // answers (up to the proof timeout), and the caller (the Join button) must not wait with it.
             if (isPeerOnline(invite.inviterDeviceId)) {
-                triggerProofForPendingInvites(invite.inviterDeviceId)
+                scope.launch(ioDispatcher) { triggerProofForPendingInvites(invite.inviterDeviceId) }
             }
+            FlashLog.i("GROUP", "Invite accepted: group=${invite.groupId} inviter=${invite.inviterDeviceId} hints=${invite.addressHints.size} inviterOnline=${isPeerOnline(invite.inviterDeviceId)}")
             FlashResult.Success(invite.groupId)
         }
 
@@ -1547,8 +1555,10 @@ public class RealFlashChatRepository(
             val now = timeSource.nowMs()
             groupJoinRequestDao?.updateDecision(groupId, subjectId, req.subjectKey, "APPROVED", localDeviceId, now)
             conversationRefreshTrigger.value = now
-            // Send full bundle to subject
-            groupTransportSink?.send(subjectId, added.full)
+            // Send full bundle to subject. If the link is down right now this is lost; the subject asks again when it
+            // reconnects (its request is answered with the roster) and the roster reconcile on session-up covers it too.
+            val bundleSent = groupTransportSink?.send(subjectId, added.full)
+            FlashLog.i("GROUP", "Join approved: group=$groupId subject=$subjectId bundleDelivered=$bundleSent")
             // Broadcast changed bundle to existing members
             active.forEach { member ->
                 if (member.deviceId != localDeviceId && member.deviceId != subjectId) {
@@ -2684,7 +2694,12 @@ public class RealFlashChatRepository(
 
         val isTrusted = isGroupPeerTrusted(frame.groupId, peerDeviceId) ||
             (frame is GroupWireFrame.Bundle && acceptedInviteGroupIds.contains(frame.groupId))
-        if (peerDeviceId != frame.from || !isTrusted) return
+        if (peerDeviceId != frame.from || !isTrusted) {
+            if (frame is GroupWireFrame.Bundle) {
+                FlashLog.w("CHAT", "Group bundle dropped at the gate: group=${frame.groupId} peer=$peerDeviceId from=${frame.from} trusted=$isTrusted")
+            }
+            return
+        }
         val members = groupMemberDao ?: return
         if (frame is GroupWireFrame.Membership && GroupPolicy.isV2GroupId(frame.groupId)) {
             // ADR-044 V1 (D1): the `g2-` namespace belongs to signed groups. A legacy frame for it can
@@ -3304,6 +3319,19 @@ public class RealFlashChatRepository(
             return
         }
 
+        // A device that is already an active member asks again: its approval never reached it (it was offline or the
+        // link dropped when the admin approved). Do not turn the row back into a pending request or notify again;
+        // hand it the roster, which is what completes its join.
+        val alreadyMember = members.member(frame.groupId, frame.subjectId)
+        if (alreadyMember?.isActive == true && alreadyMember.subjectKey == frame.subjectKey) {
+            FlashLog.i("GROUP", "Join request from ${frame.subjectId} for ${frame.groupId}: already a member, resending the roster")
+            if (isDirect) {
+                signedGroups?.bundleFor(frame.groupId)?.let { groupTransportSink?.send(peerDeviceId, it) }
+            }
+            return
+        }
+        FlashLog.i("GROUP", "Join request accepted for review: group=${frame.groupId} subject=${frame.subjectId} direct=$isDirect via=$peerDeviceId")
+
         // 5. Reply GsRosterPreview to joiner if direct
         if (isDirect) {
             val conversation = conversationDao.get(frame.groupId)
@@ -3373,7 +3401,11 @@ public class RealFlashChatRepository(
 
     private suspend fun handleInboundJoinDecision(peerDeviceId: String, frame: GroupWireFrame.GsJoinDecision) {
         if (frame.subjectId != localDeviceId) return
-        val invite = groupInviteDao?.getByGroupId(frame.groupId) ?: return
+        val invite = groupInviteDao?.getByGroupId(frame.groupId)
+        if (invite == null) {
+            FlashLog.w("CHAT", "Group join decision ignored: no invite stored for ${frame.groupId} (from $peerDeviceId)")
+            return
+        }
         if (!frame.approved) {
             groupInviteDao.updateState(frame.groupId, "REFUSED")
             acceptedInviteGroupIds.remove(frame.groupId)
@@ -3427,15 +3459,62 @@ public class RealFlashChatRepository(
     }
 
     private suspend fun triggerProofForPendingInvites(peerId: String) {
-        if (!peerFeatures(peerId).contains("gs1")) return
         val pending = groupInviteDao?.getAll()?.filter {
             it.state == "PENDING_CONTACT" || it.state == "PENDING_APPROVAL"
         } ?: emptyList()
+        if (pending.isEmpty()) return
+        if (!peerFeatures(peerId).contains("gs1")) {
+            FlashLog.i("GROUP", "No invite proof with peer=$peerId: it does not advertise gs1 (${pending.size} invite(s) waiting)")
+            return
+        }
         for (invite in pending) {
-            val secretRecord = groupSecretStore?.current(invite.groupId) ?: continue
-            val result = groupProofSessions?.initiateProof(peerId, invite.groupId, secretRecord.epoch)
-            if (result == GroupProofResult.OK) {
-                sendJoinRequest(peerId, invite.groupId, secretRecord.epoch)
+            val key = peerId to invite.groupId
+            // Joining triggers this from two places at once (the accept itself and the hint dialer that finds the
+            // inviter already connected). One proof per pair is enough; the other trigger has nothing to add.
+            if (!inviteProofsInFlight.add(key)) {
+                FlashLog.i("GROUP", "Invite proof already running: group=${invite.groupId} peer=$peerId")
+                continue
+            }
+            try {
+                val secretRecord = groupSecretStore?.current(invite.groupId)
+                if (secretRecord == null) {
+                    FlashLog.w("GROUP", "No stored secret for pending invite group=${invite.groupId}; cannot prove to peer=$peerId")
+                    continue
+                }
+                val result = groupProofSessions?.initiateProof(peerId, invite.groupId, secretRecord.epoch)
+                FlashLog.i("GROUP", "Invite proof: group=${invite.groupId} peer=$peerId epoch=${secretRecord.epoch} result=$result")
+                when (result) {
+                    GroupProofResult.OK -> {
+                        inviteProofRetries.remove(key)
+                        sendJoinRequest(peerId, invite.groupId, secretRecord.epoch)
+                    }
+                    GroupProofResult.FAILED, GroupProofResult.TIMEOUT -> scheduleInviteProofRetry(peerId, invite.groupId)
+                    else -> Unit
+                }
+            } finally {
+                inviteProofsInFlight.remove(key)
+            }
+        }
+    }
+
+    /**
+     * A proof that failed or timed out while the inviter is still connected is tried again a few times: nothing else
+     * would retry it until the next reconnect, and the joiner would sit on "waiting" with no request ever sent.
+     */
+    private fun scheduleInviteProofRetry(peerId: String, groupId: String) {
+        val key = peerId to groupId
+        val attempt = (inviteProofRetries[key] ?: 0) + 1
+        if (attempt > INVITE_PROOF_MAX_RETRIES) {
+            inviteProofRetries.remove(key)
+            FlashLog.w("GROUP", "Invite proof gave up after ${attempt - 1} retries: group=$groupId peer=$peerId")
+            return
+        }
+        inviteProofRetries[key] = attempt
+        scope.launch(ioDispatcher) {
+            delay(INVITE_PROOF_RETRY_DELAY_MS * attempt)
+            if (isPeerOnline(peerId)) {
+                FlashLog.i("GROUP", "Retrying invite proof ($attempt/$INVITE_PROOF_MAX_RETRIES): group=$groupId peer=$peerId")
+                triggerProofForPendingInvites(peerId)
             }
         }
     }
@@ -3463,7 +3542,8 @@ public class RealFlashChatRepository(
             requestedAtMs = now,
             signature = sig,
         )
-        groupTransportSink?.send(peerId, req)
+        val sent = groupTransportSink?.send(peerId, req)
+        FlashLog.i("GROUP", "Join request sent: group=$groupId to=$peerId delivered=$sent")
         groupInviteDao?.updateState(groupId, "PENDING_APPROVAL")
     }
 
@@ -5335,6 +5415,8 @@ public class RealFlashChatRepository(
     private companion object {
         /** GM-8: Default timeout for address hint dialing before falling back to discovery (M-03). */
         const val HINT_DIAL_TIMEOUT_MS: Long = 30_000L
+        const val INVITE_PROOF_MAX_RETRIES: Int = 3
+        const val INVITE_PROOF_RETRY_DELAY_MS: Long = 3_000L
 
         /** Why a v2 group could not be created or extended: the invitee's key is not verifiably available. */
         const val V2_KEY_UNAVAILABLE: String =

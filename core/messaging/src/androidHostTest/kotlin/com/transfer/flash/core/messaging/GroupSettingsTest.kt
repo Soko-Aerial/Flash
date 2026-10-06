@@ -470,6 +470,13 @@ class GroupSettingsTest {
         // Check dev-c is now in group on dev-a and dev-b
         val membersA = node("dev-a").memberDao.activeMembers(groupId)
         assertTrue(membersA.any { it.deviceId == "dev-c" })
+
+        // The added device itself must end up in the group, with the roster and the real name. A member-issued
+        // cert used to be dropped there (reason=issuer) because the receiver had no roster to find the issuer's key in.
+        val rowOfC = node("dev-c").memberDao.member(groupId, "dev-c")
+        assertTrue("dev-c never joined the group it was added to", rowOfC?.isActive == true)
+        assertEquals("Zeta", node("dev-c").conversationDao.get(groupId)?.title)
+        assertEquals(3, node("dev-c").memberDao.activeMembers(groupId).size)
     }
 
     @Test

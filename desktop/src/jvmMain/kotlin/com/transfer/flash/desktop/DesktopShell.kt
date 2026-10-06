@@ -1905,9 +1905,18 @@ public fun DesktopShell(
                             is com.transfer.flash.core.common.result.FlashResult.Success -> {
                                 showJoinGroupDialog = false
                                 activeJoinLink = null
-                                chatRepository.openConversation(result.value)
-                                selectedChatConversationId = result.value
-                                nav.navigate(FlashDestination.Conversation, conversationId = result.value)
+                                // A group this device has not joined yet has no conversation row: opening it would show
+                                // an empty chat titled with the raw group id. The group appears in the list once the
+                                // admin approves; until then say where the request stands.
+                                val status = chatRepository.inviteStatusSentence(result.value)
+                                if (status == "Joined") {
+                                    chatRepository.openConversation(result.value)
+                                    selectedChatConversationId = result.value
+                                    nav.navigate(FlashDestination.Conversation, conversationId = result.value)
+                                } else {
+                                    val message = status ?: "Join request sent"
+                                    snackbarHostState.showSnackbar(message, duration = SnackbarDuration.Long)
+                                }
                             }
                             is com.transfer.flash.core.common.result.FlashResult.Failure -> {
                                 val err = (result.error as? com.transfer.flash.core.common.result.FlashError.Unknown)?.message
