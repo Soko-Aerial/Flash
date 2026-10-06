@@ -16,6 +16,7 @@ public class MessagingSwarmGroupContext(
     private val groupGate: GroupGate,
     private val groupMemberDao: suspend () -> GroupMemberDao?,
     private val groupCrypto: GroupCrypto,
+    private val groupTitleLookup: suspend (String) -> String? = { null },
 ) : SwarmGroupContext {
 
     override suspend fun isPeerAllowed(groupId: String, peerId: String): Boolean {
@@ -53,6 +54,8 @@ public class MessagingSwarmGroupContext(
         val dao = groupMemberDao() ?: return null
         return dao.member(groupId, authorId)?.subjectKey
     }
+
+    override suspend fun groupTitle(groupId: String): String? = groupTitleLookup(groupId)
 
     override val membershipChanges: Flow<String> = groupGate.changes
 }

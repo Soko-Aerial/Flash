@@ -1,5 +1,23 @@
 # Progress Log
 
+## 2026-10-06 (k) - Swarm non-member frames and row name (ERROR-110, ERROR-111)
+
+### Worked on
+Items 3 and 4 of the owner's list: "a Summary or Have from a non-member is still accepted" and "the transfer row's peerName is the group id".
+
+### Changed
+- Driver and engine ignore Summary / Have / HaveAll from a device that is not a member of the group (ERROR-110).
+- `SwarmGroupContext.groupTitle` and a `groupTitleLookup` on `MessagingSwarmGroupContext`; the row shows the group's name or "Group" (ERROR-111).
+
+### Verification
+`SwarmNonMemberFramesTest` (2, failed first), `SwarmHostLifecycleTest` (2 new, mutation-checked); `:core:swarm:jvmTest`, `:core:engine:jvmTest`, `:app` and `:desktop` compile green. Two full-suite runs each failed one unrelated engine test (`RoomSwarmStateStoreTest` "store operations delegate correctly to dao", then `SwarmInteropTest` "OriginDropAndRejoin": "Converged bitfield must still be incomplete while origin is offline", a timing assumption); each passed on rerun (the interop one three times in a row alone, the engine suite once). Not investigated. Not device-verified: `SWM-43`, `SWM-44`.
+
+### Remaining
+The four items of the owner's list are done in code: ERROR-107, 108, 109, 110/111. Everything stays device-unverified.
+
+### Next AI
+Read `logs/handoff.md` (2026-10-06 (l)). If `SwarmInteropTest` OriginDropAndRejoin fails again, check whether ERROR-107's Summary reply made the peers converge before the origin is dropped.
+
 ## 2026-10-06 (j) - Swarm origin source lost (ERROR-109)
 
 ### Worked on

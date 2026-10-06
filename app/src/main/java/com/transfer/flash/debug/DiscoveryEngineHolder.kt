@@ -453,6 +453,7 @@ object DiscoveryEngineHolder {
                 groupGate = gate,
                 groupMemberDao = { db.groupMemberDao() },
                 groupCrypto = com.transfer.flash.core.engine.group.FlashGroupCrypto(cryptoInstance),
+                groupTitleLookup = { db.conversationDao().get(it)?.title },
             )
             val storage = AndroidPieceStorage(
                 context = ctx,

@@ -2242,6 +2242,22 @@ plan GM-11. Record results in the Results log.
   - A malformed link shows no action.
 - **Source:** plan O-14, GM-10. **Status:** TODO (built in GM-10 via FlashInlineInviteCard; ready for physical device test in GM-11)
 
+## 4ze. Swarm non-member frames and row naming (ERROR-110, ERROR-111, 2026-10-06)
+
+### SWM-43 - A device outside the group is not counted
+- **Setup:** swarm switch on, group of A (origin) and B; device C is paired with A but not in the group (or was removed from it).
+- **Steps:** A sends a file to the group; leave C connected to A.
+- **Pass:** A's log shows `dropped non-member ...` frames from C at most once a second, C is not in A's delivered set (the "safe to leave" line counts only B), and C gets no file.
+- **Source:** ERROR-110.
+- **Status:** TODO
+
+### SWM-44 - The Transfers row names the group
+- **Setup:** a group named "Family" with the swarm switch on.
+- **Steps:** send a file to it, open the Transfers screen on both phones.
+- **Pass:** the row on both says "Family" (never an id such as `g2-...`); after renaming the group and sending again the new name shows.
+- **Source:** ERROR-111.
+- **Status:** TODO
+
 ## 4zd. Swarm origin source lost (ERROR-109, 2026-10-06)
 
 ### SWM-40 - A deleted source is reported, not silent

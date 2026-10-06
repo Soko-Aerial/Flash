@@ -1,5 +1,20 @@
 # Current Handoff
 
+## 2026-10-06 (l) - Swarm review follow-ups: first contact, offline members, lost source, non-members (ERROR-107...111)
+
+- **Committed:** ERROR-107 `568bebad`, ERROR-108 / ADR-081 `14ba2a76`, ERROR-109 `212a1f3d`; ERROR-110 / 111 in the commit after them (see `git log`).
+- **Done in code (all unit-tested, none device-verified):**
+  - ERROR-107: the receiver learns the origin's pieces although the origin's first Summary beat the announcement (`PeerHandler.handleSummaryArrived` answers once).
+  - ERROR-108: the swarm announcement is signed in the chat layer with the frame's `sentAt`; the receiver's bubble is keyed by the message id; a member that was offline gets the offer through catch-up (`SwarmOffer` on the catch-up `Message`, schema v11, any holder may relay, the author's signature is verified).
+  - ERROR-109: an origin that cannot read its source sends `Reject(GONE)` and a signed `SourceStatus(LOST)` (also to members that connect later), and keeps the loss across a restart. No `RESTORED` is ever sent.
+  - ERROR-110: Summary / Have / HaveAll from a non-member are ignored (driver and engine).
+  - ERROR-111: the Transfers row shows the group's name (or "Group"), not its id.
+- **Device checks owed:** `SWM-35`...`SWM-44` (TEST-BACKLOG 4zb...4ze), plus the earlier `SWM-07`...`SWM-34`, `GCALL-18`, `LOG-01`...`LOG-03`.
+- **Unrelated flakes seen:** `RoomSwarmStateStoreTest` "store operations delegate correctly to dao", `SwarmInteropTest` OriginDropAndRejoin ("Converged bitfield must still be incomplete while origin is offline"), `RealFlashChatRepositoryTest` "delete for everyone ..." each failed once under full-suite load and passed on rerun; `:core:persistence:testAndroidHostTest` DataStore tests fail on a Windows temp-dir rename (baseline not checked).
+- **Known limits:** origin source loss is permanent until the content is registered again (ERROR-109); a group rename shows after the next announce or restart (ERROR-111); legacy (non-v2) groups carry no swarm offer in catch-up.
+- **Still open from the session:** roster display names for unpaired members in the call name resolver; 14 direct `android.util.Log` call sites to move to `FlashLog`; per-piece fsync / Room write cost (measure first); desktop has no swarm restart prompt or log export row.
+- **Next:** the owner's device runs of `SWM-35`...`SWM-44`, starting with `SWM-35` (first contact) and `SWM-37` (offline member).
+
 ## 2026-10-06 (latest, g) - Ink splash docs completed
 
 - **Committed:** code in `c86b599b`; the docs in the commit after it (see `git log`).

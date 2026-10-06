@@ -7390,3 +7390,64 @@ None.
 
 ### Status
 FIXED IN CODE, unit-tested, NOT device-verified (stays OPEN until SWM-40...SWM-42 pass)
+
+
+## ERROR-110 - Swarm applied Summary / Have / HaveAll from a device that is not a member of the group
+
+### Date
+2026-10-06
+
+### Area
+Group swarm / `SwarmEngine`, `SwarmDriver` (INV-3: a non-member exchanges nothing with us)
+
+### Symptoms
+Found by code reading (not seen on a device). `Request` and `ManifestGet` were checked against the group roster; `Summary`, `Have` and `HaveAll` were not. A non-member's `HaveAll` was recorded as a delivery on the origin (`deliveredTo`, which feeds "safe to leave"), and a non-member's `Summary` was applied whole: its entries shaped our piece map and its tombstones were applied.
+
+### Root cause
+`SwarmDriver.handleFrame` forwarded the three frames without a roster check, and the engine handlers did not look at `peer.allowedGroups`. Requests to a non-member were already prevented by the scheduler (it filters on `isPeerAllowed`), so the harm was bookkeeping and tombstone application, not a leaked file.
+
+### Failed attempts
+None.
+
+### Working fix
+The driver drops the three frames when `groupContext.isPeerAllowed` is false (read live, so a member removed a moment ago is not heard before the engine is told), logged rate-limited as `dropped non-member ...`. The engine ignores them too when the peer is marked denied for the group, so the sans-IO core does not depend on the driver for INV-3.
+
+### Verification
+`SwarmNonMemberFramesTest` (2 tests, seen failing first): a stranger's `HaveAll` is not a delivery while a member's is; a stranger's `Summary` carrying a tombstone changes nothing and gets no reply. `:core:swarm:jvmTest`, `:core:engine:jvmTest`, `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm` green. The `Have` guard has no test of its own (no observable effect: the scheduler already ignores a non-member's piece map). Device check `SWM-43`.
+
+### Related files
+- `core/swarm/src/commonMain/kotlin/com/transfer/flash/core/swarm/engine/SwarmEngine.kt`
+- `core/swarm/src/commonMain/kotlin/com/transfer/flash/core/swarm/driver/SwarmDriver.kt`
+- `core/swarm/src/commonTest/kotlin/com/transfer/flash/core/swarm/engine/SwarmNonMemberFramesTest.kt`
+
+### Status
+FIXED IN CODE, unit-tested, NOT device-verified (stays OPEN until SWM-43 passes)
+
+
+## ERROR-111 - The Transfers row of a swarm file showed the group id as the peer name
+
+### Date
+2026-10-06
+
+### Area
+Group swarm / `SwarmDriver.updateTransferRow`, `SwarmGroupContext`
+
+### Symptoms
+Cosmetic, found by code reading: a swarm transfer row's `peerName` was the raw group id (for example `g2-...`).
+
+### Root cause
+`updateTransferRow` is not suspending and the swarm port had no way to ask for the group's name, so it used the id.
+
+### Working fix
+`SwarmGroupContext.groupTitle(groupId)` (default null); `MessagingSwarmGroupContext` takes a `groupTitleLookup`, wired to `conversationDao().get(id)?.title` on Android (`Flash.kt`, `DiscoveryEngineHolder`) and desktop. The driver resolves the title when a group is announced or restored and the row uses it, or "Group" when it is unknown (never the id). A group renamed later shows the new name after the next announce or restart.
+
+### Verification
+`SwarmHostLifecycleTest` (2 new): row named "Family" with a title, "Group" without; both fail when `peerName = groupId` is restored. Device check `SWM-44`.
+
+### Related files
+- `core/swarm/src/commonMain/kotlin/com/transfer/flash/core/swarm/driver/SwarmDriver.kt`, `SwarmGroupContext.kt`
+- `core/engine/src/commonMain/kotlin/com/transfer/flash/core/engine/swarm/MessagingSwarmGroupContext.kt`
+- `core/engine/src/androidMain/kotlin/com/transfer/flash/core/engine/Flash.kt`, `app/.../debug/DiscoveryEngineHolder.kt`, `desktop/.../DesktopEngine.kt`
+
+### Status
+FIXED IN CODE, unit-tested, NOT device-verified (stays OPEN until SWM-44 passes)
