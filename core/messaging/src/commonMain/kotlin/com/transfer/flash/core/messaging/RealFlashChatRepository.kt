@@ -2443,6 +2443,7 @@ public class RealFlashChatRepository(
             if (conv?.isGroup != true) return@launch
             if (members != null && isRemovedHere(members, conversationId)) return@launch
             val cached = pendingGroupAttachmentSignatures.remove(messageId)
+            val swarmOffer = pendingSwarmOffers.remove(messageId)
             val sentAt = cached?.first ?: now
             val signature = cached?.second ?: if (conv.groupProto == GroupPolicy.V2_PROTOCOL) {
                 val signed = signedGroups
@@ -2474,6 +2475,9 @@ public class RealFlashChatRepository(
                     attachmentSize = sizeBytes,
                     attachmentPath = localPath,
                     groupSig = signature,
+                    swarmRoot = swarmOffer?.first,
+                    swarmPieceSize = swarmOffer?.second,
+                    swarmRootSig = swarmOffer?.third,
                 ),
             )
             if (recipients.isNotEmpty() && deliveries != null) {
@@ -3010,12 +3014,18 @@ public class RealFlashChatRepository(
                                     text = "",
                                     sentAt = frame.sentAt.takeIf { it > 0 } ?: now,
                                     status = "DELIVERED",
-                                    attachmentTransferId = frame.transferId,
+                                    // ERROR-108: the swarm's row id is the message id, not this recipient's transfer id.
+                                    // A bubble keyed by the transfer id never found its row, so it showed no progress and
+                                    // Accept / Pause / Cancel on it reached nothing.
+                                    attachmentTransferId = frame.messageId,
                                     attachmentName = frame.fileName,
                                     attachmentMime = frame.mimeType,
                                     attachmentSize = frame.sizeBytes,
                                     attachmentPath = null,
                                     groupSig = groupSig,
+                                    swarmRoot = frame.root,
+                                    swarmPieceSize = frame.pieceSize,
+                                    swarmRootSig = frame.rootSig,
                                 ),
                             )
                             touchConversation(frame.groupId, now)
@@ -3035,7 +3045,8 @@ public class RealFlashChatRepository(
                     swarmAnnouncementListener?.onSwarmAnnouncement(
                         groupId = frame.groupId,
                         messageId = frame.messageId,
-                        transferId = frame.transferId,
+                        // The swarm row's id is the message id (see the row insert above), so that is what the host gets.
+                        transferId = frame.messageId,
                         from = frame.from,
                         root = frame.root!!,
                         pieceSize = frame.pieceSize!!,
@@ -3500,6 +3511,9 @@ public class RealFlashChatRepository(
      */
     private val pendingGroupAttachmentSignatures = SyncMap<String, Pair<Long, String?>>()
 
+    /** messageId -> (root, pieceSize, rootSig) of a swarm file between its first announcement and its row (ERROR-108). */
+    private val pendingSwarmOffers = SyncMap<String, Triple<String, Int, String>>()
+
     override fun getRecipientTransferIds(messageId: String): Set<String> =
         groupMessageTransfers[messageId]?.toSet().orEmpty()
 
@@ -3570,6 +3584,18 @@ public class RealFlashChatRepository(
                 pair
             }
         }
+        // ERROR-108: the announcement signature must cover THIS message's sentAt, which only this layer knows. The one the
+        // origin made when it registered the file used its own clock a moment earlier, so a receiver, which checks it
+        // against the frame's sentAt, could not verify it and refused the offer. Sign here; fall back to the host's
+        // signature only on a device that cannot sign (the receiver then has nothing to verify against either).
+        val offerSig = if (swarm == 1 && root != null && pieceSize != null) {
+            signedGroups?.signSwarmAnnouncement(groupId, messageId, root, sizeBytes, fileName, mimeType, sentAt) ?: rootSig
+        } else {
+            rootSig
+        }
+        if (swarm == 1 && root != null && pieceSize != null && offerSig != null) {
+            pendingSwarmOffers[messageId] = Triple(root, pieceSize, offerSig)
+        }
         return groupTransportSink?.send(
             recipientDeviceId,
             GroupWireFrame.GroupMedia(
@@ -3587,7 +3613,7 @@ public class RealFlashChatRepository(
                 root = root,
                 pieceSize = pieceSize,
                 swarm = swarm,
-                rootSig = rootSig,
+                rootSig = offerSig,
             ),
         ) == true
     }
@@ -3873,7 +3899,21 @@ public class RealFlashChatRepository(
         replyToId = replyToId,
         replyToPreview = replyToPreview,
         signature = groupSig,
+        swarmOffer = swarmOfferOrNull(),
     )
+
+    /**
+     * ERROR-108: the offer a relayed file row needs, only when the row is a signed (v2) swarm file; null for everything
+     * else, so text, legacy rows and unsigned rows travel exactly as before.
+     */
+    private fun MessageEntity.swarmOfferOrNull(): GroupWireFrame.SwarmOffer? {
+        val root = swarmRoot ?: return null
+        val pieceSize = swarmPieceSize ?: return null
+        val rootSig = swarmRootSig ?: return null
+        val name = attachmentName ?: return null
+        if (groupSig == null || attachmentSize <= 0L) return null
+        return GroupWireFrame.SwarmOffer(name, attachmentMime ?: "application/octet-stream", attachmentSize, root, pieceSize, rootSig)
+    }
 
     /**
      * The one-line stand-in a catch-up carries for an attachment row in legacy (v1) groups. A sync push
@@ -3925,6 +3965,24 @@ public class RealFlashChatRepository(
             senderName = label
             groupSig = message.signature
         }
+        // ERROR-108: a file the member missed. The author's announcement signature is checked against the roster key
+        // before any field of the offer is believed, so a relaying member cannot swap the file. Without a swarm listener
+        // (swarm switched off here) the row is taken as plain text, as before.
+        val offer = message.swarmOffer
+        val listener = swarmAnnouncementListener
+        val swarmFile = if (offer != null && groupSig != null && listener != null) {
+            val verified = signedGroups?.verifySwarmAnnouncement(
+                frame.groupId, message.from, message.messageId, offer.root,
+                offer.sizeBytes, offer.fileName, offer.mimeType, message.sentAt, offer.rootSig,
+            ) == true
+            if (!verified) {
+                FlashLog.w("CHAT", "SECURITY: group SyncPush file offer dropped, bad announcement signature (group=${frame.groupId} msg=${message.messageId} author=${message.from} relay=${frame.from})")
+                return
+            }
+            offer
+        } else {
+            null
+        }
         val now = timeSource.nowMs()
         val boundedSentAt = minOf(message.sentAt, now)
         val inserted = messageDao.insert(
@@ -3939,16 +3997,36 @@ public class RealFlashChatRepository(
                 replyToId = message.replyToId,
                 replyToPreview = message.replyToPreview,
                 groupSig = groupSig,
+                attachmentTransferId = swarmFile?.let { message.messageId },
+                attachmentName = swarmFile?.fileName,
+                attachmentMime = swarmFile?.mimeType,
+                attachmentSize = swarmFile?.sizeBytes ?: 0L,
+                swarmRoot = swarmFile?.root,
+                swarmPieceSize = swarmFile?.pieceSize,
+                swarmRootSig = swarmFile?.rootSig,
             ),
         )
         if (inserted != -1L) {
             recordCatchUpArrival(frame.groupId)
-            onInboundTextMessageWithGroupTitle(
-                frame.groupId,
-                senderName,
-                message.text,
-                conversationDao.get(frame.groupId)?.title?.ifBlank { null },
-            )
+            val groupTitle = conversationDao.get(frame.groupId)?.title?.ifBlank { null }
+            if (swarmFile != null && listener != null) {
+                onInboundAttachmentWithGroupTitle(frame.groupId, senderName, swarmFile.fileName, swarmFile.mimeType, groupTitle)
+                listener.onSwarmAnnouncement(
+                    groupId = frame.groupId,
+                    messageId = message.messageId,
+                    transferId = message.messageId,
+                    from = message.from,
+                    root = swarmFile.root,
+                    pieceSize = swarmFile.pieceSize,
+                    totalSize = swarmFile.sizeBytes,
+                    fileName = swarmFile.fileName,
+                    mimeType = swarmFile.mimeType,
+                    sentAt = message.sentAt,
+                    rootSig = swarmFile.rootSig,
+                )
+            } else {
+                onInboundTextMessageWithGroupTitle(frame.groupId, senderName, message.text, groupTitle)
+            }
         }
         groupTransportSink?.send(
             frame.from,

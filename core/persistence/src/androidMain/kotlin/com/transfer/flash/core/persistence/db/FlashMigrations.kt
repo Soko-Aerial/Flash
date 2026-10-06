@@ -43,6 +43,9 @@ public object FlashMigrations {
     /** v9 -> v10: group settings and local preferences (ADR-074, GM-9). */
     public val MIGRATION_9_10: Migration = SupportSqlMigration(FlashSchemaSteps.STEP_9_10)
 
+    /** v10 -> v11: the swarm offer of a group file message (ERROR-108). */
+    public val MIGRATION_10_11: Migration = SupportSqlMigration(FlashSchemaSteps.STEP_10_11)
+
     /** Every migration, in order, for the open path. */
     public val ALL: Array<Migration> = FlashSchemaSteps.ALL.map { SupportSqlMigration(it) }.toTypedArray()
 }

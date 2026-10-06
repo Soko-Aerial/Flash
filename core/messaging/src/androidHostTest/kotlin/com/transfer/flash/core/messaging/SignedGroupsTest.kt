@@ -1049,6 +1049,132 @@ class SignedGroupsTest {
         assertFalse(receiver.isVouchedMember(created.groupId, "x", keyOf(directory, "x")))
     }
 
+    // ------------------------------------------------------------------------------ swarm files (ERROR-107, ERROR-108)
+    // A swarm file is announced to each member by a chat frame. These tests pin what a member can do with that frame
+    // and with its catch-up copy: the offer verifies, the bubble is keyed by the swarm row, a member that was offline
+    // when the file was sent still learns of it, any holder can relay it, and a relay cannot swap the file.
+
+    private val swarmRoot = "ab".repeat(32)
+    private val swarmName = "big.bin"
+    private val swarmMime = "application/octet-stream"
+    private val swarmSize = 20_000_000L
+    private val swarmPiece = 1_048_576
+
+    private fun captureSwarmOffers(id: String): MutableList<String> {
+        val seen = java.util.concurrent.CopyOnWriteArrayList<String>()
+        nodes.getValue(id).repo.swarmAnnouncementListener = GroupSwarmAnnouncementListener {
+            groupId, messageId, transferId, from, root, pieceSize, totalSize, fileName, _, _, _ ->
+            seen += "$groupId|$messageId|$transferId|$from|$root|$pieceSize|$totalSize|$fileName"
+        }
+        return seen
+    }
+
+    /** What the host's origin registration used to hand over: a signature made with the origin's own clock. */
+    private fun hostRootSig(author: String, groupId: String, messageId: String, atMs: Long): String =
+        GroupCanonical.encode(
+            cryptos.getValue(author).sign(
+                GroupCanonical.swarmAnnounceBytes(groupId, messageId, author, swarmRoot, swarmSize, swarmName, swarmMime, atMs),
+            ),
+        )
+
+    private suspend fun announceSwarmFile(author: String, groupId: String, messageId: String, vararg recipients: String) {
+        val repo = nodes.getValue(author).repo
+        val hostSig = hostRootSig(author, groupId, messageId, System.currentTimeMillis() - 7)
+        for (recipient in recipients) {
+            repo.beginGroupAttachment(
+                groupId, recipient, messageId, "xfer-$recipient-$messageId", "wire-$messageId",
+                swarmName, swarmMime, swarmSize, swarmRoot, swarmPiece, 1, hostSig,
+            )
+        }
+        repo.sendGroupAttachment(groupId, messageId, messageId, swarmName, swarmMime, swarmSize, "content://big")
+        settle()
+    }
+
+    @Test
+    fun `a member accepts a swarm offer although the host signed it with another clock, and keys the bubble by the swarm row`() = runBlocking {
+        mesh("dev-a", "dev-b", "dev-c")
+        val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+        val seenB = captureSwarmOffers("dev-b")
+
+        announceSwarmFile("dev-a", groupId, "att-sw", "dev-b")
+
+        assertEquals("the offer reached the swarm layer exactly once: $seenB", 1, seenB.size)
+        assertEquals("$groupId|att-sw|att-sw|dev-a|$swarmRoot|$swarmPiece|$swarmSize|$swarmName", seenB.single())
+        val row = nodes.getValue("dev-b").messageDao.getByLocalId("att-sw")!!
+        assertEquals("the bubble is keyed by the swarm row id (the message id), not by this recipient's transfer id", "att-sw", row.attachmentTransferId)
+        assertEquals("the offer is kept so this member can relay it", swarmRoot, row.swarmRoot)
+    }
+
+    @Test
+    fun `a member that was offline when a swarm file was sent gets the offer in its catch-up`() = runBlocking {
+        mesh("dev-a", "dev-b", "dev-c")
+        val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+        val seenC = captureSwarmOffers("dev-c")
+        goOffline("dev-c")
+
+        announceSwarmFile("dev-a", groupId, "att-sw", "dev-b", "dev-c")
+        assertTrue("dev-c heard nothing while offline", seenC.isEmpty())
+
+        connect("dev-a", "dev-c")
+        settleLong()
+
+        assertEquals("the catch-up carried the offer: $seenC", 1, seenC.size)
+        assertEquals("$groupId|att-sw|att-sw|dev-a|$swarmRoot|$swarmPiece|$swarmSize|$swarmName", seenC.single())
+        val row = nodes.getValue("dev-c").messageDao.getByLocalId("att-sw")!!
+        assertEquals(swarmName, row.attachmentName)
+        assertEquals(swarmSize, row.attachmentSize)
+        assertEquals("att-sw", row.attachmentTransferId)
+        assertEquals("Ada", row.senderName)
+    }
+
+    @Test
+    fun `any member that holds a swarm file message can relay its offer, the author need not be online`() = runBlocking {
+        mesh("dev-a", "dev-b", "dev-c")
+        val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+        val seenC = captureSwarmOffers("dev-c")
+        captureSwarmOffers("dev-b") // a member without the swarm switch on keeps no offer to relay
+        goOffline("dev-c")
+        announceSwarmFile("dev-a", groupId, "att-sw", "dev-b", "dev-c")
+
+        goOffline("dev-a")
+        connect("dev-b", "dev-c")
+        settleLong()
+
+        assertEquals("relayed by dev-b, attributed to the author: $seenC", 1, seenC.size)
+        assertTrue(seenC.single().contains("|dev-a|"))
+    }
+
+    @Test
+    fun `a relay cannot swap the file of a swarm offer`() = runBlocking {
+        mesh("dev-a", "dev-b", "dev-c")
+        val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+        val seenC = captureSwarmOffers("dev-c")
+        val honestSig = hostRootSig("dev-a", groupId, "att-sw", SENT_AT)
+        val authorSig = sign("dev-a", groupId, "att-sw", "dev-a", "")
+
+        fun push(syncId: String, name: String, root: String = swarmRoot) = GroupWireFrame.SyncPush(
+            groupId, syncId, "dev-b",
+            GroupWireFrame.Message(
+                groupId, "att-sw", "dev-a", "Ada", SENT_AT, "", null, null, 0L, authorSig,
+                swarmOffer = GroupWireFrame.SwarmOffer(name, swarmMime, swarmSize, root, swarmPiece, honestSig),
+            ),
+        )
+
+        val forgedSync = interceptSyncRequest("dev-c", "dev-b", groupId)
+        deliver("dev-b", "dev-c", push(forgedSync, "evil.exe"))
+        assertNull("a renamed file is not stored", nodes.getValue("dev-c").messageDao.getByLocalId("att-sw"))
+        assertTrue("and nothing was announced to the swarm", seenC.isEmpty())
+
+        val swappedSync = interceptSyncRequest("dev-c", "dev-b", groupId)
+        deliver("dev-b", "dev-c", push(swappedSync, swarmName, root = "cd".repeat(32)))
+        assertNull("a different root is not stored", nodes.getValue("dev-c").messageDao.getByLocalId("att-sw"))
+
+        val honestSync = interceptSyncRequest("dev-c", "dev-b", groupId)
+        deliver("dev-b", "dev-c", push(honestSync, swarmName))
+        assertNotNull("the author's own offer, relayed unchanged, is accepted", nodes.getValue("dev-c").messageDao.getByLocalId("att-sw"))
+        assertEquals(1, seenC.size)
+    }
+
     // ------------------------------------------------------------------------------ removal ripple
 
     /** Takes [id] off the network: no session with anyone, so nothing reaches it and it hears nothing. */

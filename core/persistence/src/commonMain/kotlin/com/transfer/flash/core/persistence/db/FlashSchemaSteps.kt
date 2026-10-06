@@ -218,6 +218,19 @@ internal object FlashSchemaSteps {
         ),
     )
 
+    /**
+     * v10 → v11: the swarm offer of a group file message (ERROR-108). Nullable, so every existing row reads as "no offer".
+     */
+    val STEP_10_11: FlashSchemaStep = FlashSchemaStep(
+        from = 10,
+        to = 11,
+        statements = listOf(
+            "ALTER TABLE messages ADD COLUMN swarmRoot TEXT",
+            "ALTER TABLE messages ADD COLUMN swarmPieceSize INTEGER",
+            "ALTER TABLE messages ADD COLUMN swarmRootSig TEXT",
+        ),
+    )
+
     /** Every step, in order, from version 1 to `FlashDatabase.DATABASE_VERSION`. */
-    val ALL: List<FlashSchemaStep> = listOf(STEP_1_2, STEP_2_3, STEP_3_4, STEP_4_5, STEP_5_6, STEP_6_7, STEP_7_8, STEP_8_9, STEP_9_10)
+    val ALL: List<FlashSchemaStep> = listOf(STEP_1_2, STEP_2_3, STEP_3_4, STEP_4_5, STEP_5_6, STEP_6_7, STEP_7_8, STEP_8_9, STEP_9_10, STEP_10_11)
 }

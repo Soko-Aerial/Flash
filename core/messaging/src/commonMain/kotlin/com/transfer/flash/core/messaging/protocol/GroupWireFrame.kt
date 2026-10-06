@@ -98,6 +98,20 @@ public sealed interface GroupWireFrame : ChatWireFrame {
         val isActive: Boolean,
     )
 
+    /**
+     * The file a catch-up [Message] stands for (ERROR-108): enough for a member that was offline at send time to join the
+     * swarm. [rootSig] is the author's signature over (group, message, root, size, name, type, sentAt), so a relaying
+     * member cannot swap the file; the receiver verifies it against the author's key before it believes any field here.
+     */
+    public data class SwarmOffer(
+        val fileName: String,
+        val mimeType: String,
+        val sizeBytes: Long,
+        val root: String,
+        val pieceSize: Int,
+        val rootSig: String,
+    )
+
     public data class Message(
         override val groupId: String,
         val messageId: String,
@@ -114,6 +128,8 @@ public sealed interface GroupWireFrame : ChatWireFrame {
          * copy verifiable, and [from] is then the explicit author, not the pusher.
          */
         val signature: String? = null,
+        /** A catch-up copy of a swarm file message carries its offer here (ERROR-108); null for text and live frames. */
+        val swarmOffer: SwarmOffer? = null,
     ) : GroupWireFrame
 
     public data class Receipt(

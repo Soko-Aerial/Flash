@@ -134,7 +134,13 @@ public object GroupFrameCodec {
                 listOf("author" to frame.message.from, "sig" to frame.message.signature)
             } else {
                 emptyList()
-            }
+            } + (frame.message.swarmOffer?.let { offer ->
+                // ERROR-108: the file a catch-up row stands for. Unknown keys are ignored by older builds.
+                listOf(
+                    "afn" to offer.fileName, "amime" to offer.mimeType, "asize" to offer.sizeBytes.toString(),
+                    "aroot" to offer.root, "apsize" to offer.pieceSize.toString(), "arsig" to offer.rootSig,
+                )
+            } ?: emptyList())
             is GroupWireFrame.SyncAck -> SYNC_PREFIX to listOf(
                 "op" to "ack", "groupId" to frame.groupId, "syncId" to frame.syncId,
                 "from" to frame.from, "hasMore" to frame.hasMore.toString(),
@@ -368,6 +374,7 @@ public object GroupFrameCodec {
                         fields["text"] ?: return null, fields["replyTo"]?.ifBlank { null },
                         fields["replyPreview"]?.ifBlank { null }, epoch,
                         signature = fields["sig"]?.ifBlank { null },
+                        swarmOffer = decodeSwarmOffer(fields),
                     ), epoch,
                 )
                 "ack" -> GroupWireFrame.SyncAck(
@@ -493,6 +500,16 @@ public object GroupFrameCodec {
     }
 
     /** Null when anything a bundle must carry is missing or the cert list is over its cap. */
+    /** All six fields or none: a half-described file is not an offer (the receiver would announce garbage). */
+    private fun decodeSwarmOffer(fields: Map<String, String>): GroupWireFrame.SwarmOffer? {
+        val root = fields["aroot"]?.ifBlank { null } ?: return null
+        val sig = fields["arsig"]?.ifBlank { null } ?: return null
+        val name = fields["afn"]?.ifBlank { null } ?: return null
+        val pieceSize = fields["apsize"]?.toIntOrNull()?.takeIf { it > 0 } ?: return null
+        val size = fields["asize"]?.toLongOrNull()?.takeIf { it > 0L } ?: return null
+        return GroupWireFrame.SwarmOffer(name, fields["amime"] ?: "application/octet-stream", size, root, pieceSize, sig)
+    }
+
     private fun decodeBundle(
         fields: Map<String, String>,
         groupId: String,

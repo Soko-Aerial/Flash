@@ -54,4 +54,12 @@ public data class MessageEntity(
      * be able to verify it. Null for direct messages, legacy groups and unsigned rows.
      */
     val groupSig: String? = null,
+    /**
+     * v11 (ERROR-108): the swarm offer a v2-group file message came with, kept so ANY holder can relay it to a
+     * member that was offline when it was sent. [swarmRootSig] is the author's signature over the announcement
+     * (root, size, name, type, sentAt), so a relay cannot swap the file. All three are null for everything else.
+     */
+    val swarmRoot: String? = null,
+    val swarmPieceSize: Int? = null,
+    val swarmRootSig: String? = null,
 )
