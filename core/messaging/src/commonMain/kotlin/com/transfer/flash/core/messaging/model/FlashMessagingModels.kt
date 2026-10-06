@@ -115,6 +115,8 @@ public data class FlashAttachmentProgress(
     val errorMessage: String? = null,
     val bytesDone: Long = 0L,
     val bytesTotal: Long = 0L,
+    /** Real swarm piece map (0 missing, 1 on peers, 2 in flight, 3 verified); empty when this is not a swarm transfer. */
+    val pieceBlocks: List<Int> = emptyList(),
 )
 
 /**
@@ -134,6 +136,8 @@ public data class FlashFileAttachmentUi(
     val canGoOffline: Boolean = false,
     val holdersOnline: Int = 0,
     val detailLine: String? = null,
+    /** Real swarm piece map; empty for a 1:1 transfer, in which case no map is drawn. */
+    val pieceBlocks: List<Int> = emptyList(),
 )
 
 /**
@@ -383,6 +387,8 @@ public data class FlashConversationUiState(
     val messages: List<FlashMessageUi>,
     /** Persisted unsent composer text for this conversation (#9), restored when the screen opens. */
     val draftText: String = "",
+    /** Message ids pinned on this device in this conversation, newest pin first (device-local, never sent to a peer). */
+    val pinnedMessageIds: List<String> = emptyList(),
     /**
      * Group Phase B: the real member roster for a group conversation (names, per-member online
      * flags, roles). Empty for direct chats and for group states produced before Phase B's

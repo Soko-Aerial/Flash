@@ -28,6 +28,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
@@ -109,6 +110,11 @@ fun FlashConversationScreen(
      * [FlashConversationUiState.draftText] on the next open. Default no-op for previews.
      */
     onPersistDraft: (String) -> Unit = {},
+    /**
+     * Pin or unpin a message on this device (stored, so it survives leaving the chat; never sent to the peer or group).
+     * Default no-op for previews: the pin then lasts only while the screen is open.
+     */
+    onSetMessagePinned: (messageId: String, pinned: Boolean) -> Unit = { _, _ -> },
     /**
      * Persist + broadcast a reaction toggle (#7). Defaults to no-op; the local optimistic update in
      * [toggleMessageReaction] still runs so the chip flips instantly regardless.
@@ -336,14 +342,17 @@ fun FlashConversationScreen(
         )
     }
 
-    val cameraLauncher = rememberFlashCameraCaptureLauncher { captured ->
-        stagedAttachments = stagedAttachments + FlashShareItemUi(
-            uri = captured.uri,
-            name = captured.name,
-            sizeBytes = captured.size,
-            mimeType = "image/jpeg",
-        )
-    }
+    val cameraLauncher = rememberFlashCameraCaptureLauncher(
+        onCaptured = { captured ->
+            stagedAttachments = stagedAttachments + FlashShareItemUi(
+                uri = captured.uri,
+                name = captured.name,
+                sizeBytes = captured.size,
+                mimeType = "image/jpeg",
+            )
+        },
+        onFailure = { message -> showMessage(message) },
+    )
 
     // B9: real microphone capture for voice messages. The recorder lives at screen scope so its
     // encoder survives the composer's gesture recompositions; released when the screen leaves.
@@ -363,6 +372,7 @@ fun FlashConversationScreen(
     // Microphone access is requested lazily on the first hold. We can't retroactively start the
     // capture the user just attempted, so a granted result simply enables the next hold to record.
     val permissions = rememberFlashPermissionRequester()
+    val uriHandler = LocalUriHandler.current
 
     var localMessages by remember(state.messages) { mutableStateOf(state.messages) }
     var draft by remember { mutableStateOf("") }
@@ -410,7 +420,16 @@ fun FlashConversationScreen(
     // Task 3.3: Per-conversation shared content sheet.
     var showSharedContent by remember { mutableStateOf(false) }
     // Task 3.4: Pinned message banner.
-    var pinnedMessageId by remember { mutableStateOf<String?>(null) }
+    // Device-local pins (newest first). The stored list is the truth; the local copy makes a tap show at once and keeps a
+    // host without storage working for the life of the screen.
+    var pinnedMessageIds by remember { mutableStateOf(state.pinnedMessageIds) }
+    LaunchedEffect(state.pinnedMessageIds) { pinnedMessageIds = state.pinnedMessageIds }
+    var pinBannerIndex by remember { mutableStateOf(0) }
+    val setPinned: (String, Boolean) -> Unit = { id, pinned ->
+        pinnedMessageIds = if (pinned) listOf(id) + pinnedMessageIds.filter { it != id } else pinnedMessageIds - id
+        onSetMessagePinned(id, pinned)
+        showMessage(FlashPinnedMessageMath.toastText(pinned))
+    }
 
     // UI-031: encryption trust sheet, opened from the header badge. Trust state comes from the
     // engine via isPeerTrusted (verified) + header.isEncrypted (channel encrypted). Groups keep
@@ -707,9 +726,12 @@ fun FlashConversationScreen(
                             }
 
                             // Task 3.4: Pinned message banner.
-                            val pinnedMessage = remember(pinnedMessageId, localMessages) {
-                                localMessages.firstOrNull { it.id == pinnedMessageId }
+                            // Only pins whose message is in the loaded window can be shown; the rest stay stored.
+                            val pinnedMessages = remember(pinnedMessageIds, localMessages) {
+                                pinnedMessageIds.mapNotNull { id -> localMessages.firstOrNull { it.id == id } }
                             }
+                            val pinnedIndex = FlashPinnedMessageMath.clampIndex(pinBannerIndex, pinnedMessages.size)
+                            val pinnedMessage = pinnedMessages.getOrNull(pinnedIndex)
                             AnimatedVisibility(
                                 visible = pinnedMessage != null,
                                 enter = fadeIn(motion.tweenNormalSpec()),
@@ -718,6 +740,8 @@ fun FlashConversationScreen(
                                 if (pinnedMessage != null) {
                                     FlashPinnedMessageBanner(
                                         message = pinnedMessage,
+                                        position = pinnedIndex,
+                                        total = pinnedMessages.size,
                                         onClick = {
                                             val idx = localMessages.indexOfFirst { it.id == pinnedMessage.id }
                                             if (idx >= 0) {
@@ -726,11 +750,9 @@ fun FlashConversationScreen(
                                                 }
                                                 highlightedMessageId = pinnedMessage.id
                                             }
+                                            pinBannerIndex = FlashPinnedMessageMath.nextIndex(pinnedIndex, pinnedMessages.size)
                                         },
-                                        onUnpin = {
-                                            pinnedMessageId = null
-                                            showMessage("Message unpinned")
-                                        },
+                                        onUnpin = { setPinned(pinnedMessage.id, false) },
                                     )
                                 }
                             }
@@ -764,6 +786,7 @@ fun FlashConversationScreen(
                 replyingTo = replyingToMessage,
                 onDismissReply = { replyingToMessage = null },
                 stagedAttachments = stagedAttachments,
+                placeholderText = FlashStagingMath.composerPlaceholder(stagedAttachments.size),
                 onRemoveStagedAttachment = { item ->
                     stagedAttachments = stagedAttachments.filter { it.uri != item.uri }
                 },
@@ -1002,16 +1025,8 @@ fun FlashConversationScreen(
             onSelectMultiple = {
                 selectedMessageIds = setOf(msg.id)
             },
-            onPin = {
-                if (pinnedMessageId == msg.id) {
-                    pinnedMessageId = null
-                    showMessage("Message unpinned")
-                } else {
-                    pinnedMessageId = msg.id
-                    showMessage("Message pinned")
-                }
-            },
-            isPinned = pinnedMessageId == msg.id,
+            onPin = { setPinned(msg.id, !FlashPinnedMessageMath.isPinnedIn(msg.id, pinnedMessageIds)) },
+            isPinned = FlashPinnedMessageMath.isPinnedIn(msg.id, pinnedMessageIds),
             onDelete = {
                 onDeleteMessage(setOf(msg.id))
                 focusedMessage = null
@@ -1054,6 +1069,7 @@ fun FlashConversationScreen(
     if (showAttachmentSheet) {
         FlashAttachmentSheet(
             onDismiss = { showAttachmentSheet = false },
+            hiddenActions = if (cameraLauncher.capturesFromCamera) emptySet() else setOf(FlashAttachmentType.Camera),
             onSelectAction = { action ->
                 showAttachmentSheet = false
                 // Map the tapped palette action to a document-picker MIME filter and launch SAF.
@@ -1068,7 +1084,14 @@ fun FlashConversationScreen(
                     FlashAttachmentType.Camera -> null
                 }
                 if (action == FlashAttachmentType.Camera) {
-                    cameraLauncher.launch()
+                    // The system camera intent throws unless CAMERA is granted (the app declares it for calls), so ask first.
+                    coroutineScope.launch {
+                        if (permissions.ensureGranted(FlashPermission.Camera)) {
+                            cameraLauncher.launch()
+                        } else {
+                            showMessage("Camera permission is required to take a photo")
+                        }
+                    }
                 } else if (mimeTypes != null) {
                     filePicker.launch(mimeTypes)
                 } else {
@@ -1275,7 +1298,12 @@ fun FlashConversationScreen(
                 showMessage("Download started")
             },
             onOpenUrl = { url ->
-                onShareText(url)
+                // A tap on a link opens it. It used to call the share chooser, which sent the link away instead.
+                try {
+                    uriHandler.openUri(url)
+                } catch (_: Exception) {
+                    showMessage("No app can open this link")
+                }
             },
             onJoinInviteGroup = onJoinInviteGroup,
             onJumpToMessage = { targetId ->

@@ -475,6 +475,7 @@ public class SwarmEngine(
                 distributedCopies = distCopies,
                 canGoOffline = c.role == SwarmRole.ORIGIN && distCopies >= 1,
                 deliveredTo = c.deliveredTo.toSet(),
+                pieceBlocks = computePieceBlocks(c),
             )
         }
         return SwarmSnapshot(map)
@@ -607,6 +608,19 @@ public class SwarmEngine(
                 )
             }
         }
+    }
+
+    /** Real piece state for the UI map: this device's bitfield, requests in flight, connected members' bitfields. */
+    private fun computePieceBlocks(content: ContentState): List<Int> {
+        val peerBitfields = peers.values
+            .filter { it.isConnected && it.peerId != localDeviceId && isPeerAllowed(content.groupId, it.peerId) }
+            .mapNotNull { it.contentStates[content.root]?.bitfield }
+        return PieceBlocks.compute(
+            totalPieces = content.totalPieces,
+            local = content.bitfield,
+            inFlight = content.inFlightByPiece.keys,
+            peerBitfields = peerBitfields,
+        )
     }
 
     private fun computeHolderStats(content: ContentState): Pair<Int, Int> {

@@ -49,6 +49,13 @@ object FlashStagingMath {
         return FlashShareTargetMath.formatBytes(total)
     }
 
+    /**
+     * The composer hint. Files and text travel as separate messages (the file offer has no caption field), so while files
+     * are staged the hint says the text follows them instead of implying it is attached.
+     */
+    fun composerPlaceholder(stagedCount: Int): String =
+        if (stagedCount > 0) "Message (sent after the files)..." else "Message..."
+
     fun formatStagedSummary(count: Int, totalBytes: Long): String {
         return if (count <= 1) {
             "$count item (${FlashShareTargetMath.formatBytes(totalBytes)})"

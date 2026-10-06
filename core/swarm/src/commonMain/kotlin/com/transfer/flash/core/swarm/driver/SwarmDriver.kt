@@ -649,6 +649,7 @@ public class SwarmDriver(
             errorMessage = errorMessage,
             canGoOffline = canGoOffline,
             holdersOnline = holdersOnline,
+            pieceBlocks = snapshot?.pieceBlocks.orEmpty(),
         )
 
         val currentList = _rows.value.toMutableList()
@@ -675,6 +676,7 @@ public class SwarmDriver(
                 bytesDone = snapshot.bytesDone,
                 totalBytes = snapshot.totalBytes,
                 isComplete = snapshot.state == SwarmLifecycleState.COMPLETE,
+                pieceBlocks = snapshot.pieceBlocks,
             )
         }
     }

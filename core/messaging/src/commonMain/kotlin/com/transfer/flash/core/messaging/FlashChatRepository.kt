@@ -23,6 +23,12 @@ public interface FlashChatRepository {
     public fun sendText(text: String)
 
     /**
+     * Sends [text] into [conversationId] without opening it, so a forward to several chats reaches
+     * each one (the open conversation is not touched). Default no-op for lightweight implementations.
+     */
+    public fun sendTextTo(conversationId: String, text: String) {}
+
+    /**
      * Retry sending a previously failed message (#21, ERROR-089).
      * Re-inserts the message into the outbox with attempts reset and now as createdAt.
      */
@@ -295,6 +301,13 @@ public interface FlashChatRepository {
      * text clears the draft. Default no-op for lightweight/sample implementations.
      */
     public fun saveDraft(text: String) {}
+
+    /**
+     * Pin or unpin a message of the active conversation, on this device only: nothing is sent to the peer or the
+     * group. Pins survive leaving the chat and a restart and are exposed through
+     * [FlashConversationUiState.pinnedMessageIds]. Default no-op for lightweight/sample implementations.
+     */
+    public fun setMessagePinned(messageId: String, pinned: Boolean) {}
 
     /**
      * Toggle the local user's [emoji] reaction on a message (#7). Persists the aggregated reaction

@@ -2,6 +2,7 @@ package com.transfer.flash.ui.calling
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class FlashCallRippleMathTest {
@@ -31,5 +32,20 @@ class FlashCallRippleMathTest {
         assertEquals(0.45f, minSpeakingAlpha, 0.001f)
         val maxSpeakingAlpha = FlashCallRippleMath.speakerBorderAlpha(isSpeaking = true, animationFraction = 1f)
         assertEquals(1.0f, maxSpeakingAlpha, 0.001f)
+    }
+
+    @Test
+    fun `a peer speaks only when the received level says so`() {
+        assertTrue(FlashCallRippleMath.isPeerSpeaking(active = true, peerMicMuted = false, peerAudioLevel = 0.2))
+        // An unmuted but silent peer must not glow: this was the false positive of the mic-switch rule.
+        assertFalse(FlashCallRippleMath.isPeerSpeaking(active = true, peerMicMuted = false, peerAudioLevel = 0.0))
+        assertFalse(FlashCallRippleMath.isPeerSpeaking(active = true, peerMicMuted = false, peerAudioLevel = 0.01))
+    }
+
+    @Test
+    fun `no level means no ripple, and a muted or not yet active call never ripples`() {
+        assertFalse(FlashCallRippleMath.isPeerSpeaking(active = true, peerMicMuted = false, peerAudioLevel = null))
+        assertFalse(FlashCallRippleMath.isPeerSpeaking(active = true, peerMicMuted = true, peerAudioLevel = 0.9))
+        assertFalse(FlashCallRippleMath.isPeerSpeaking(active = false, peerMicMuted = false, peerAudioLevel = 0.9))
     }
 }

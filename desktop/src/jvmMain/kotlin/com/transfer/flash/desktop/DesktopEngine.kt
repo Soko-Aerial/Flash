@@ -884,6 +884,7 @@ public class DesktopEngine(
                 reactionDao = db.reactionDao(),
                 groupMemberDao = db.groupMemberDao(),
                 groupDeliveryDao = db.groupDeliveryDao(),
+                messagePinDao = db.messagePinDao(),
                 readCursorDao = db.readCursorDao(),
                 runInTransaction = { block -> db.runInWriteTransaction(block) },
                 // ADR-044 V1: signed groups. The port signs with the identity key the TLS certificate presents; the
@@ -943,6 +944,7 @@ public class DesktopEngine(
                             errorMessage = t.errorMessage,
                             bytesDone = t.bytesDone,
                             bytesTotal = t.bytesTotal,
+                            pieceBlocks = t.pieceBlocks,
                         )
                     }
                 },
@@ -1044,6 +1046,8 @@ public class DesktopEngine(
             isGroupMember = { peerId, groupId ->
                 chatImpl?.isGroupCallMember(groupId, peerId) ?: trustStore.isTrusted(FlashDeviceId(peerId))
             },
+            // A member this device is not paired with is labelled with the name its group roster stores.
+            groupRosterNames = { groupId -> chatImpl?.groupRosterNames(groupId).orEmpty() },
             reachPeer = { peerId -> autoConnector?.ensureSession(peerId, AutoConnector.CALL_DIAL_BUDGET_MS) ?: false },
             // ADR-078: "Turn on camera" is offered only to a peer whose HELLO advertised cv1.
             peerFeatures = { peerId -> network.activeSessions.value[FlashDeviceId(peerId)]?.peer?.features.orEmpty() },

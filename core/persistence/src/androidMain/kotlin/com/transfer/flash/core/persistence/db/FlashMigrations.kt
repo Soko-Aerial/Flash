@@ -46,6 +46,9 @@ public object FlashMigrations {
     /** v10 -> v11: the swarm offer of a group file message (ERROR-108). */
     public val MIGRATION_10_11: Migration = SupportSqlMigration(FlashSchemaSteps.STEP_10_11)
 
+    /** v11 -> v12: device-local pinned messages (UI roadmap 3.4). */
+    public val MIGRATION_11_12: Migration = SupportSqlMigration(FlashSchemaSteps.STEP_11_12)
+
     /** Every migration, in order, for the open path. */
     public val ALL: Array<Migration> = FlashSchemaSteps.ALL.map { SupportSqlMigration(it) }.toTypedArray()
 }

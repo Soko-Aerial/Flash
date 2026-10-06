@@ -113,6 +113,8 @@ data class FlashTransferItemUi(
     val waitReason: com.transfer.flash.core.transfer.model.FlashTransferWaitReason? = null,
     val canGoOffline: Boolean = false,
     val holdersOnline: Int = 0,
+    /** Real swarm piece map (0 missing, 1 on peers, 2 in flight, 3 verified); empty for a 1:1 transfer. */
+    val pieceBlocks: List<Int> = emptyList(),
 )
 
 data class TransfersUiState(
@@ -816,14 +818,20 @@ private fun TransferRow(
     }
 }
 
+/**
+ * The progress bar with the velocity shimmer: the sweep gets faster as [speedBytesPerSec] grows
+ * ([FlashTransfersMath.shimmerDurationMillis]) and stops when the transfer is not [isActive] or motion is reduced.
+ * Shared by the Transfers rows and the transfer detail pane.
+ */
 @Composable
-private fun TransferProgressBar(
+internal fun TransferProgressBar(
     fraction: State<Float>,
     fillTint: Color,
     isActive: Boolean,
     speedBytesPerSec: Long,
     reduceMotion: Boolean,
     modifier: Modifier = Modifier,
+    barHeight: Dp = FlashDimensions.borderHairline * 4,
 ) {
     val durationMillis = remember(speedBytesPerSec) {
         FlashTransfersMath.shimmerDurationMillis(speedBytesPerSec)
@@ -846,7 +854,7 @@ private fun TransferProgressBar(
     Box(
         modifier
             .fillMaxWidth()
-            .height(FlashDimensions.borderHairline * 4)
+            .height(barHeight)
             .clip(FlashShapes.bubbleGrouped)
             .background(FlashTheme.colors.backgroundSurfaceSubtle),
     ) {

@@ -367,6 +367,12 @@ public data class FlashCallStats(
      * Null on a 1:1 call and before any participant has announced one.
      */
     public val networkBand: FlashNetworkBand? = null,
+    /**
+     * Level of the audio being received from the peer, 0..1 (WebRTC `inbound-rtp.audioLevel`) as of the last sample, so it
+     * is only as fresh as the stats interval. Null when the backend does not report it: the UI then shows no speaking
+     * ripple rather than guessing from the mic switch.
+     */
+    public val peerAudioLevel: Double? = null,
 ) {
     /** True once anything at all has been measured (used to gate the UI readout). */
     public val hasData: Boolean

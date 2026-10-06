@@ -1,5 +1,33 @@
 # Progress Log
 
+## 2026-10-06 (p) - Audit of the UI polish roadmap: six false "DONE" claims fixed (ERROR-116, ADR-084, ADR-085)
+
+### Worked on
+`problems.txt` (owner review of `docs/ui/UI-POLISH-AND-FEATURE-ROADMAP-PLAN.md`). Every claim was checked in the code before it was fixed; all were real except that the shared-content sheet "only searches loaded messages" (the conversation flow is not paged).
+
+### Changed
+- **Swarm piece map (3.6):** was invented data. `PieceBlocks` (`:core:swarm`) folds engine bitfields, in-flight pieces and peer bitfields into at most 64 blocks, carried `ContentSnapshot` -> `FlashSwarmStatus` -> `FlashTransfer.pieceBlocks` -> card and detail pane. No swarm state, no map.
+- **Forwarding (3.1):** `sendTextTo` + `forwardPayloadToChats` (Android) / `forwardToChats` (desktop): every target gets the text, groups included.
+- **Settings (1.3)** search and reset; **Transfers (1.2)** "Clear history" (`clearFinishedHistory`).
+- **Pins (3.4):** table `message_pins`, schema v12 (`STEP_11_12`, `MIGRATION_11_12`), several per chat, device-local, honest toast. Optional DAO parameter so the 36 test construction sites did not change.
+- **Captions (3.2): NOT built** (needs a field in the file offer, a wire change). The composer hint says the text is sent after the files. ADR-085, owner decision.
+- **Ripple (3.5):** `FlashCallStats.peerAudioLevel` (`inbound-rtp.audioLevel`), threshold 0.01, no level means no ripple. As fresh as the stats interval.
+- **Camera (0.1):** `FlashPermission.Camera` asked first, failures reach a toast, desktop hides the Camera action (`capturesFromCamera`).
+- **Small:** link tap opens the link; roster names in group calls (`groupRosterNames`, `CallCoordinator`); velocity-based nav hide (`FlashNavAutoHideMath`); detail-pane shimmer shares `TransferProgressBar`.
+- **Docs:** plan status table and a new section 2.1 correct the false claims; ERROR-116; ADR-084/085; `UIP-11`...`UIP-20` and `MIG-12` in TEST-BACKLOG (UIP-02 caption line marked obsolete in part).
+
+### Verification
+- Green: `:ui:chat:jvmTest`, `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm`, `:core:calling` `CallCoordinator*`, `:ui:callui` ripple test, `:core:persistence:jvmTest` (`FlashDatabaseJvmTest`, `FlashJvmMigrationsTest`), `FlashMigrationsChainTest` + `FlashSchemaStepsTest`, `:core:messaging` `RealFlashChatRepositoryTest`, `:core:engine:compileAndroidMain`.
+- Two `RealFlashChatRepositoryTest` sendText cases failed once under load (fixed-delay timing), passed on rerun.
+- **Environment issue, not this work:** `:core:persistence:testAndroidHostTest` has 12 `FlashSettingsDataStoreTest` / `DiscoveryModeSettingTest` failures on this Windows machine ("Unable to rename ...preferences_pb.tmp"). Ran only `--tests '*Migrations*' --tests '*Invariant*'` there.
+- Nothing is device-verified.
+
+### Remaining
+Device checks `UIP-11`...`UIP-20`, `MIG-12`, plus the older `UIP-01`...`UIP-10`. Owner decision: caption design (ADR-085).
+
+### Next AI
+The swarm star-topology investigation (`docs/SWARM-STAR-TOPOLOGY-INVESTIGATION.md`) is the next item of the same /goal: verify each claim against the code and the four flash-log files first.
+
 ## 2026-10-06 (o) - UI Polish & Feature Roadmap: Full Implementation (Phases 0, 1, 2, 3 Complete)
 
 ### Worked on

@@ -735,6 +735,39 @@ public fun DesktopShell(
         }
     }
 
+    // Forward a message to one or more chats. Every target is addressed by its own id (groups go through
+    // the group sender, paired peers get a direct transfer, text goes to the target chat, not to the open
+    // one) and nothing navigates, so several targets all receive it. Pairing is interactive and cannot be
+    // run once per target, so an unpaired one is skipped and named.
+    fun forwardToChats(targets: List<FlashShareRecipientUi>, payload: FlashSharePayloadUi) {
+        val (ready, unpaired) = targets.distinctBy { it.id }.partition { target ->
+            target.isGroup || trustedPeersByCoordinator.any { it.id == target.id }
+        }
+        ready.forEach { target ->
+            payload.items.forEach { item ->
+                sendFileToPeer(
+                    peerId = target.id,
+                    peerName = target.name,
+                    isGroup = target.isGroup,
+                    uri = item.uri,
+                    displayName = item.name,
+                    size = item.sizeBytes,
+                    mimeType = item.mimeType.takeIf { it.isNotBlank() && it != "*/*" }
+                        ?: DesktopHelpers.guessMimeType(item.name),
+                )
+            }
+            payload.text?.takeIf { it.isNotBlank() }?.let { chatRepository.sendTextTo(target.id, it) }
+        }
+        if (unpaired.isNotEmpty()) {
+            scope.launch {
+                snackbarHostState.showSnackbar(
+                    message = "Not sent to ${unpaired.joinToString { it.name }}: pair with them first",
+                    duration = SnackbarDuration.Long,
+                )
+            }
+        }
+    }
+
     LaunchedEffect(nearby.pairingPhase, trustedPeersByCoordinator) {
         val target = pendingDesktopShareRecipient ?: return@LaunchedEffect
         val (targetDeviceId, targetDeviceName) = target
@@ -1052,6 +1085,10 @@ public fun DesktopShell(
                 }
             },
             onRetryConnection = { engine.reconnectNow() },
+            // Task 3.1: the in-app Forward sheet. Without these the conversation screen had no
+            // recipients and Forward did nothing on desktop.
+            forwardRecipients = (desktopRecentChatRecipients + desktopPairedRecipients).distinctBy { it.id },
+            onForwardToRecipients = { targets, payload -> forwardToChats(targets, payload) },
             // Whether this peer is in the trust store, from the same list the Nearby
             // screen's rows and this screen's header already read.
             isPeerTrusted = conversationIdIsTrusted,
@@ -1082,6 +1119,7 @@ public fun DesktopShell(
                 chatRepository.sendReply(text, replyToId, replyToPreview)
             },
             onPersistDraft = chatRepository::saveDraft,
+            onSetMessagePinned = chatRepository::setMessagePinned,
             onToggleReaction = { messageId, emoji ->
                 chatRepository.toggleReaction(messageId, emoji)
             },
@@ -1497,6 +1535,11 @@ public fun DesktopShell(
                             }
                         },
                         onHistoryShare = { item -> DesktopHelpers.shareTransferredFile(item) },
+                        // Plan 1.2: the screen only draws "Clear history" when a host passes this.
+                        onClearHistory = {
+                            selectedTransferItem = null
+                            engine.transfers?.clearFinishedHistory()
+                        },
                         modifier = Modifier.fillMaxSize(),
                         listState = transfersScroll,
                         bottomInset = tabBottomInset,
@@ -2212,6 +2255,7 @@ private fun FlashTransfer.toDesktopTransferItemUi(): FlashTransferItemUi = Flash
     waitReason = waitReason,
     canGoOffline = canGoOffline,
     holdersOnline = holdersOnline,
+    pieceBlocks = pieceBlocks,
 )
 
 /** Desktop twin of `:app`'s `TransfersUiState.fromDomain` (mandatory boot flags, ERROR-034). */

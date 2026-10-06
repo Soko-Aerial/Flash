@@ -2472,6 +2472,75 @@ Built and unit-tested in commonTest across `:ui:chat`, `:ui:callui`, and platfor
 - **Pass:** Bottom nav capsule hides smoothly on rapid downward scroll and re-enters on scroll stop / upward scroll; tab hop tilts ±5°; reselecting active tab emits pulse ring.
 - **Source:** Tasks 1.4 & 2.5. **Status:** TODO
 
+### Corrections of 2026-10-06 to the section 4y tests above (ERROR-116)
+UIP-02 says a caption is sent together with the files: **obsolete in part**, captions are not built (ADR-085); the text goes as a separate message after the files. UIP-04 now covers several pins that survive leaving the chat (see UIP-12). UIP-05 now means the received audio level, see UIP-13. UIP-06 now reads real swarm state, see UIP-11.
+
+### UIP-11 - Swarm piece map shows real state and appears only for a swarm
+- **Setup:** A group of 3 devices with swarm on; one sends a 200 MB file. A second chat with a plain 1:1 file transfer.
+- **Steps:** On a receiver, open the file card and the detail pane during the download and after it.
+- **Pass:** The map appears only for the group file; blocks go from missing to available-on-peers to in-flight to verified as pieces arrive, in no fixed order; the holder count is the number of connected members that really have pieces; the 1:1 transfer shows no map; a finished file is all verified.
+- **Source:** ERROR-116, `PieceBlocks`. **Status:** TODO
+
+### UIP-12 - Pins are stored, several, and device-local
+- **Setup:** A chat with 5 or more messages, on a phone and on the Windows app.
+- **Steps:** Pin 3 messages. Tap the banner repeatedly. Leave the chat, reopen it, then restart the app. Unpin one from the banner. Check the other device.
+- **Pass:** The banner reads "Pinned message 1 of 3" and each tap scrolls to the next and pulses it; the pins are still there after leaving and after a restart; unpinning removes only that one; the toast says "Pinned on this device"; the other device shows no pin; deleting the conversation and recreating it shows none.
+- **Source:** ERROR-116, ADR-084. **Status:** TODO
+
+### UIP-13 - 1:1 call ripple follows the peer's voice
+- **Setup:** A 1:1 voice call between two devices.
+- **Steps:** The peer stays silent with the mic on for 10 s, then speaks, then mutes.
+- **Pass:** No speaking glow while the peer is silent; the glow appears within about one stats interval (up to 2 to 4 s) of speech and fades after; no glow while muted. Note the lag.
+- **Source:** ERROR-116, `FlashCallStats.peerAudioLevel`. **Status:** TODO
+
+### UIP-14 - Camera capture asks for permission and says when it fails
+- **Setup:** Android phone with the CAMERA permission denied (App info, Permissions).
+- **Steps:** Chat, Attach, Camera. Deny the prompt. Repeat and allow it, take a photo. Then disable the camera app if the phone allows it and retry.
+- **Pass:** The system prompt appears; denial shows "Camera permission is required to take a photo"; allowing opens the camera and the photo lands in the staging tray; with no camera app the toast says so. Nothing happens silently. On Windows the Camera tile is not in the Attach sheet.
+- **Source:** ERROR-116. **Status:** TODO
+
+### UIP-15 - Forward to several chats and to a group
+- **Setup:** Android phone, 3 direct chats and 1 group; a message in a fourth chat.
+- **Steps:** Forward the message to two direct chats and the group; repeat on Windows.
+- **Pass:** The text arrives once in each target (not repeated in one); the open chat does not move; the group target is a group message, not a pairing prompt; Windows forwards too.
+- **Source:** ERROR-116, `sendTextTo`. **Status:** TODO
+
+### UIP-16 - Settings search and reset; Transfers "Clear history"
+- **Setup:** Settings screen with a few values changed; Transfers with finished and failed rows.
+- **Steps:** Type "battery", then "videos", then nonsense. Reset to defaults. On Transfers, tap Clear history.
+- **Pass:** Search shows only matching sections and rows and says when nothing matches; Reset is disabled at defaults and restores them when pressed; Clear history removes completed rows (also finished swarm rows), keeps Failed and running ones, and received files and chat bubbles remain.
+- **Source:** ERROR-116. **Status:** TODO
+
+### UIP-17 - Link tap opens the link
+- **Setup:** A chat with an https link in a message.
+- **Steps:** Shared content, Links tab, tap the link.
+- **Pass:** The browser opens the link (no share chooser); a flash:// link that nothing handles shows "No app can open this link".
+- **Source:** ERROR-116. **Status:** TODO
+
+### UIP-18 - Unpaired group-call members show their roster names
+- **Setup:** A group of 3 where A is not paired with C (C joined through B's vouch). A starts a group call.
+- **Steps:** Read the participant list on A, and on C when it receives the invite from A.
+- **Pass:** C shows as its group name on A, not "Member (xxxx)"; a paired member keeps the name it has in the contact list.
+- **Source:** ERROR-116, `groupRosterNames`. **Status:** TODO
+
+### UIP-19 - Bottom bar hides on a fast flick only
+- **Setup:** Phone, a long chat list.
+- **Steps:** Scroll slowly down by dragging, then flick fast down, then flick up slowly, then fast, then go to the top.
+- **Pass:** A slow drag leaves the bar; a fast flick down hides it; a quick flick up shows it; the top always shows it. If the thresholds feel wrong, record the numbers (`FlashNavAutoHideMath`).
+- **Source:** ERROR-116. **Status:** TODO
+
+### UIP-20 - Detail-pane progress shimmer scales with speed
+- **Setup:** Tablet or desktop two-pane layout, an active transfer.
+- **Steps:** Open the transfer in the detail pane; compare a slow and a fast transfer; enable reduced motion.
+- **Pass:** The bar shimmers faster at higher MB/s, matches the Transfers row, and is still with reduced motion.
+- **Source:** ERROR-116. **Status:** TODO
+
+### MIG-12 - Upgrade a v11 install to v12
+- **Setup:** A phone with the previous build (schema v11) and some chats.
+- **Steps:** Install the new build over it; open a chat; pin a message.
+- **Pass:** The app opens with all chats intact (no crash on open) and the pin works.
+- **Source:** ADR-084, `STEP_11_12`. **Status:** TODO
+
 ## 5. Measurements — do these last
 
 They replace every *(measure)* estimate in the plans and decide tuning. Record each in `logs/experiments.md`.

@@ -90,6 +90,10 @@ enum class FlashAttachmentType(
     ),
 }
 
+/** The palette in display order without the [hidden] actions. */
+internal fun visibleAttachmentActions(hidden: Set<FlashAttachmentType>): List<FlashAttachmentType> =
+    FlashAttachmentType.values().filterNot { it in hidden }
+
 /**
  * UI-012 Modal Attachment Sheet.
  *
@@ -102,9 +106,11 @@ fun FlashAttachmentSheet(
     onDismiss: () -> Unit,
     onSelectAction: (FlashAttachmentType) -> Unit,
     modifier: Modifier = Modifier,
+    /** Actions this platform cannot perform (desktop has no camera capture); they are not shown at all. */
+    hiddenActions: Set<FlashAttachmentType> = emptySet(),
 ) {
     val colors = FlashTheme.colors
-    val actions = remember { FlashAttachmentType.values().toList() }
+    val actions = remember(hiddenActions) { visibleAttachmentActions(hiddenActions) }
     FlashSheetHost(
         onDismiss = onDismiss,
         containerColor = colors.backgroundSurface,

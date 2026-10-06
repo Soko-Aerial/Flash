@@ -1296,6 +1296,149 @@ private fun FlashShell(
         }
     }
 
+    val groupFileSender = remember(engine, chatRepository, discoveredEndpoints) {
+        GroupFileSender(
+            localDeviceId = { engine.localDeviceId },
+            groupMembers = { groupId -> chatRepository.groupMembers(groupId) },
+            deviceFor = { memberId, memberName ->
+                val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == memberId }
+                FlashDevice(
+                    id = FlashDeviceId(memberId),
+                    friendlyName = memberName,
+                    transportType = endpoint?.transportType ?: FlashTransportType.LAN,
+                )
+            },
+            announce = { groupId, recipientDeviceId, messageId, transferId, wireFileId, fileName, mimeType, sizeBytes, root, pieceSize, swarm, rootSig ->
+                chatRepository.beginGroupAttachment(
+                    groupId = groupId,
+                    recipientDeviceId = recipientDeviceId,
+                    messageId = messageId,
+                    transferId = transferId,
+                    wireFileId = wireFileId,
+                    fileName = fileName,
+                    mimeType = mimeType,
+                    sizeBytes = sizeBytes,
+                    root = root,
+                    pieceSize = pieceSize,
+                    swarm = swarm,
+                    rootSig = rootSig,
+                )
+            },
+            sendFile = { targetDevice, fileUri, fileName, sizeBytes, transferId, wireFileId ->
+                engine.transfers?.sendFile(
+                    targetDevice,
+                    fileUri,
+                    fileName,
+                    sizeBytes,
+                    transferId = transferId,
+                    wireFileId = wireFileId,
+                )
+            },
+            sendGroupAttachment = { groupId, messageId, transferId, fileName, mimeType, sizeBytes, localPath, dur, amps ->
+                chatRepository.sendGroupAttachment(
+                    conversationId = groupId,
+                    messageId = messageId,
+                    transferId = transferId,
+                    fileName = fileName,
+                    mimeType = mimeType,
+                    sizeBytes = sizeBytes,
+                    localPath = localPath,
+                    voiceDurationMs = dur,
+                    voiceAmplitudes = amps,
+                )
+            },
+            idFactory = { java.util.UUID.randomUUID().toString() },
+            isV2Group = { groupId -> chatRepository.isV2Group(groupId) },
+            peerFeatures = { peerId -> engine.peerFeatures(peerId) },
+            prepareSwarmOrigin = { groupId, messageId, fileName, mimeType, sizeBytes, uri ->
+                engine.prepareSwarmOrigin(groupId, messageId, fileName, mimeType, sizeBytes, uri)
+            },
+        )
+    }
+
+    // Delivers [payload] into one chat by that chat's own id: a group goes through the group sender
+    // (swarm / fan-out), a paired peer gets a direct transfer, and text is addressed to the target
+    // rather than to whichever conversation happens to be open. It does not navigate, so a forward to
+    // several chats reaches every one of them.
+    val deliverPayloadToChat: (recipient: FlashShareRecipientUi, payload: FlashSharePayloadUi) -> Unit = { recipient, payload ->
+        val transfers = engine.transfers
+        if (transfers != null) {
+            val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == recipient.id }
+            val targetDevice = FlashDevice(
+                id = FlashDeviceId(recipient.id),
+                friendlyName = recipient.name,
+                transportType = endpoint?.transportType ?: FlashTransportType.LAN,
+            )
+            scope.launch(Dispatchers.IO) {
+                payload.items.forEach { item ->
+                    val mime = item.mimeType.takeIf { it.isNotBlank() && it != "*/*" }
+                        ?: guessMimeType(item.name, item.uri, toastContext)
+                    if (recipient.isGroup) {
+                        groupFileSender.send(
+                            groupId = recipient.id,
+                            uri = item.uri,
+                            displayName = item.name,
+                            sizeBytes = item.sizeBytes,
+                            mimeType = mime,
+                        )
+                    } else {
+                        val transferId = transfers.sendFile(
+                            targetDevice = targetDevice,
+                            fileUri = item.uri,
+                            displayName = item.name,
+                            fileSize = item.sizeBytes,
+                        ).getOrNull()
+                        if (transferId != null) {
+                            chatRepository.sendAttachment(
+                                conversationId = recipient.id,
+                                transferId = transferId.value,
+                                fileName = item.name,
+                                mimeType = mime,
+                                sizeBytes = item.sizeBytes,
+                                localPath = item.uri,
+                            )
+                        }
+                    }
+                }
+                val text = payload.text
+                if (!text.isNullOrBlank()) {
+                    chatRepository.sendTextTo(recipient.id, text)
+                }
+            }
+        }
+    }
+
+    // Forward / share to one or more chats. Groups and paired peers are delivered directly. A lone
+    // unpaired target keeps the pairing-then-send flow; with several targets an unpaired one is
+    // skipped and named, because pairing is interactive and cannot be run once per target.
+    val forwardPayloadToChats: (targets: List<FlashShareRecipientUi>, payload: FlashSharePayloadUi) -> Unit = { targets, payload ->
+        val distinct = targets.distinctBy { it.id }
+        val (ready, unpaired) = distinct.partition { target ->
+            target.isGroup || trustedPeers.any { it.id == target.id }
+        }
+        if (ready.isEmpty() && unpaired.size == 1) {
+            val only = unpaired.first()
+            pendingShare.value = payload
+            sendSharedPayloadToPeer(only.id, only.name)
+        } else {
+            ready.forEach { deliverPayloadToChat(it, payload) }
+            if (ready.isNotEmpty()) pendingShare.value = null
+            if (ready.size == 1 && unpaired.isEmpty()) {
+                val only = ready.first()
+                chatRepository.openConversation(only.id)
+                selectedChatConversationId = only.id
+                nav.navigate(FlashDestination.Conversation, conversationId = only.id)
+            }
+            if (unpaired.isNotEmpty()) {
+                Toast.makeText(
+                    toastContext,
+                    "Not sent to ${unpaired.joinToString { it.name }}: pair with them first",
+                    Toast.LENGTH_LONG,
+                ).show()
+            }
+        }
+    }
+
     LaunchedEffect(pairingModel?.phase, trustedPeers) {
         val target = pendingShareRecipient ?: return@LaunchedEffect
         val (targetDeviceId, targetDeviceName) = target
@@ -1569,65 +1712,6 @@ private fun FlashShell(
 
     val conversationScreenContent: @Composable () -> Unit = {
         val conversationId = nav.current.conversationId
-        val groupFileSender = remember(engine, chatRepository, discoveredEndpoints) {
-            GroupFileSender(
-                localDeviceId = { engine.localDeviceId },
-                groupMembers = { groupId -> chatRepository.groupMembers(groupId) },
-                deviceFor = { memberId, memberName ->
-                    val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == memberId }
-                    FlashDevice(
-                        id = FlashDeviceId(memberId),
-                        friendlyName = memberName,
-                        transportType = endpoint?.transportType ?: FlashTransportType.LAN,
-                    )
-                },
-                announce = { groupId, recipientDeviceId, messageId, transferId, wireFileId, fileName, mimeType, sizeBytes, root, pieceSize, swarm, rootSig ->
-                    chatRepository.beginGroupAttachment(
-                        groupId = groupId,
-                        recipientDeviceId = recipientDeviceId,
-                        messageId = messageId,
-                        transferId = transferId,
-                        wireFileId = wireFileId,
-                        fileName = fileName,
-                        mimeType = mimeType,
-                        sizeBytes = sizeBytes,
-                        root = root,
-                        pieceSize = pieceSize,
-                        swarm = swarm,
-                        rootSig = rootSig,
-                    )
-                },
-                sendFile = { targetDevice, fileUri, fileName, sizeBytes, transferId, wireFileId ->
-                    engine.transfers?.sendFile(
-                        targetDevice,
-                        fileUri,
-                        fileName,
-                        sizeBytes,
-                        transferId = transferId,
-                        wireFileId = wireFileId,
-                    )
-                },
-                sendGroupAttachment = { groupId, messageId, transferId, fileName, mimeType, sizeBytes, localPath, dur, amps ->
-                    chatRepository.sendGroupAttachment(
-                        conversationId = groupId,
-                        messageId = messageId,
-                        transferId = transferId,
-                        fileName = fileName,
-                        mimeType = mimeType,
-                        sizeBytes = sizeBytes,
-                        localPath = localPath,
-                        voiceDurationMs = dur,
-                        voiceAmplitudes = amps,
-                    )
-                },
-                idFactory = { java.util.UUID.randomUUID().toString() },
-                isV2Group = { groupId -> chatRepository.isV2Group(groupId) },
-                peerFeatures = { peerId -> engine.peerFeatures(peerId) },
-                prepareSwarmOrigin = { groupId, messageId, fileName, mimeType, sizeBytes, uri ->
-                    engine.prepareSwarmOrigin(groupId, messageId, fileName, mimeType, sizeBytes, uri)
-                },
-            )
-        }
         FlashConversationScreen(
             state = conversationState,
             onBack = {
@@ -1657,6 +1741,7 @@ private fun FlashShell(
                 chatRepository.sendReply(text, replyToId, replyToPreview)
             },
             onPersistDraft = chatRepository::saveDraft,
+            onSetMessagePinned = chatRepository::setMessagePinned,
             onToggleReaction = { messageId, emoji ->
                 chatRepository.toggleReaction(messageId, emoji)
             },
@@ -1918,12 +2003,7 @@ private fun FlashShell(
             onRetryConnection = { engine.reconnectNow() },
             onShareText = { text -> shareText(toastContext, text) },
             forwardRecipients = recentChatRecipients + pairedRecipients,
-            onForwardToRecipients = { targets, payload ->
-                targets.forEach { target ->
-                    pendingShare.value = payload
-                    sendSharedPayloadToPeer(target.id, target.name)
-                }
-            },
+            onForwardToRecipients = { targets, payload -> forwardPayloadToChats(targets, payload) },
             // Group Phase D: conversationId + menu actions.
             conversationId = conversationId,
             addablePeers = trustedPeerRoster.filter { candidate ->
@@ -2181,6 +2261,11 @@ private fun FlashShell(
                 }
             },
             onHistoryShare = { item -> shareTransferredFile(toastContext, item) },
+            // Plan 1.2: the screen only draws "Clear history" when a host passes this.
+            onClearHistory = {
+                selectedTransferItem = null
+                engine.transfers?.clearFinishedHistory()
+            },
             modifier = Modifier.fillMaxSize(),
             listState = transfersScroll,
             bottomInset = tabBottomInset,
@@ -2710,7 +2795,12 @@ private fun FlashShell(
                 recentChats = recentChatRecipients,
                 isScanning = nearby.isScanning,
                 onSelectRecipient = { recipient ->
-                    sendSharedPayloadToPeer(recipient.id, recipient.name)
+                    if (recipient.isGroup) {
+                        // A group is not a pairable peer: deliver into it, never start pairing.
+                        forwardPayloadToChats(listOf(recipient), activeShare!!)
+                    } else {
+                        sendSharedPayloadToPeer(recipient.id, recipient.name)
+                    }
                 },
                 onDismiss = {
                     pendingShare.value = null

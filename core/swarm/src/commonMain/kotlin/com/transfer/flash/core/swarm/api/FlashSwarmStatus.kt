@@ -18,4 +18,5 @@ public data class FlashSwarmStatus(
     val bytesDone: Long,
     val totalBytes: Long,
     val isComplete: Boolean,
+    val pieceBlocks: List<Int> = emptyList(),
 )

@@ -7,47 +7,35 @@ import kotlin.test.assertTrue
 class FlashSwarmPieceMapMathTest {
 
     @Test
-    fun testCompleteProgressAllVerified() {
-        val statuses = FlashSwarmPieceMapMath.computeBlockStatuses(
-            totalBlocks = 32,
-            progress = 1.0f,
+    fun `engine block codes map to the matching statuses`() {
+        assertEquals(
+            listOf(
+                FlashPieceStatus.Missing,
+                FlashPieceStatus.AvailableOnPeers,
+                FlashPieceStatus.InFlightDownloading,
+                FlashPieceStatus.VerifiedSaved,
+            ),
+            FlashSwarmPieceMapMath.statusesFromBlocks(listOf(0, 1, 2, 3)),
         )
-        assertEquals(32, statuses.size)
-        assertTrue(statuses.all { it == FlashPieceStatus.VerifiedSaved })
-        assertEquals("All 32 pieces verified & saved", FlashSwarmPieceMapMath.summaryText(statuses))
     }
 
     @Test
-    fun testPartialProgressWithInFlight() {
-        val statuses = FlashSwarmPieceMapMath.computeBlockStatuses(
-            totalBlocks = 64,
-            progress = 0.5f,
-            holdersOnline = 2,
-            isDownloading = true,
-        )
-        assertEquals(64, statuses.size)
-        val verified = statuses.count { it == FlashPieceStatus.VerifiedSaved }
-        val inFlight = statuses.count { it == FlashPieceStatus.InFlightDownloading }
-        val onPeers = statuses.count { it == FlashPieceStatus.AvailableOnPeers }
-
-        assertEquals(32, verified)
-        assertEquals(4, inFlight)
-        assertTrue(onPeers > 0)
-        assertTrue(FlashSwarmPieceMapMath.summaryText(statuses).contains("32 of 64 pieces"))
+    fun `an unknown code reads as missing, never as progress`() {
+        assertEquals(listOf(FlashPieceStatus.Missing), FlashSwarmPieceMapMath.statusesFromBlocks(listOf(9)))
     }
 
     @Test
-    fun testZeroProgressIdle() {
-        val statuses = FlashSwarmPieceMapMath.computeBlockStatuses(
-            totalBlocks = 64,
-            progress = 0.0f,
-            holdersOnline = 0,
-            isDownloading = false,
+    fun `no blocks means no statuses so nothing is invented`() {
+        assertTrue(FlashSwarmPieceMapMath.statusesFromBlocks(emptyList()).isEmpty())
+    }
+
+    @Test
+    fun `summary counts come from the real blocks`() {
+        val statuses = FlashSwarmPieceMapMath.statusesFromBlocks(List(32) { 3 } + List(4) { 2 } + List(28) { 0 })
+        assertEquals("32 of 64 pieces • 4 in-flight", FlashSwarmPieceMapMath.summaryText(statuses))
+        assertEquals(
+            "All 8 pieces verified & saved",
+            FlashSwarmPieceMapMath.summaryText(FlashSwarmPieceMapMath.statusesFromBlocks(List(8) { 3 })),
         )
-        val verified = statuses.count { it == FlashPieceStatus.VerifiedSaved }
-        val missing = statuses.count { it == FlashPieceStatus.Missing }
-        assertEquals(0, verified)
-        assertEquals(64, missing)
-        assertEquals("0 of 64 pieces verified", FlashSwarmPieceMapMath.summaryText(statuses))
     }
 }

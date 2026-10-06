@@ -32,6 +32,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
@@ -47,9 +48,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.Dp
@@ -255,6 +258,91 @@ object FlashSettingsMath {
         return parts.joinToString(" · ")
     }
 
+    /**
+     * The searchable sections of the page. [rows] are the row titles each section holds, so a query
+     * for "battery" finds the section that has the battery row. Keep it in step with the screen.
+     */
+    enum class Section(val title: String, val subtitle: String, val rows: List<String>) {
+        APPEARANCE(
+            "Appearance & Feedback", "Theme, dynamic accent, haptics, and animation",
+            listOf("Theme", "System", "Light", "Dark", "Dynamic accent", "Haptics", "Launch animation"),
+        ),
+        STORAGE(
+            "Storage & Downloads", "Save destination, cache breakdown, and auto-download rules",
+            listOf(
+                "Save location", "Received files", "Clear received files", "Auto-download voice",
+                "Auto-download images", "Auto-download videos", "Auto-download files",
+            ),
+        ),
+        NETWORK(
+            "Network & Discovery", "Presence mode, background transfers, and battery settings",
+            listOf(
+                "Discovery mode", "Standard", "Ghost", "Eco", "Boost", "Background transfers",
+                "File Explorer context menu", "Unrestricted battery",
+            ),
+        ),
+        CALLING(
+            "Calling & Video", "Bandwidth prioritization and group video resolution",
+            listOf("Prioritise voice quality", "Send smaller video in groups"),
+        ),
+        SECURITY(
+            "Security & Trusted Devices", "Cryptographic protection and verified peers",
+            listOf("Encryption", "Trusted peers"),
+        ),
+        PERFORMANCE(
+            "Performance Tuning", "Hardware capability tier and UI motion budget",
+            listOf("Performance mode", "Auto", "Low", "Medium", "High"),
+        ),
+        SWARM(
+            "Group File Sharing & Diagnostics", "Swarm transfer sharing and log export",
+            listOf(
+                "Help share group files", "Keep finished files available for others",
+                "Group file sharing", "Swarm", "Export logs",
+            ),
+        ),
+    }
+
+    /** True when [query] is blank or case-insensitively contained in any of [texts]. */
+    fun matches(query: String, vararg texts: String): Boolean {
+        val q = query.trim()
+        if (q.isEmpty()) return true
+        return texts.any { it.contains(q, ignoreCase = true) }
+    }
+
+    /** Whether the section card shows at all for [query]: its own words or any of its rows match. */
+    fun sectionVisible(query: String, section: Section): Boolean =
+        matches(query, section.title, section.subtitle) || section.rows.any { matches(query, it) }
+
+    /** Whether one row shows: everything in a section whose own title matches, else just the matching rows. */
+    fun rowVisible(query: String, section: Section, vararg rowTexts: String): Boolean =
+        matches(query, section.title, section.subtitle) || matches(query, *rowTexts)
+
+    /**
+     * True when every preference that "Reset to defaults" would change is already at its default.
+     * Identity (display name), save location, trusted peers and read-only values are never reset.
+     * [FlashSettingsModel.windowsContextMenu] only counts where the host shows that row.
+     */
+    fun isAtDefaults(model: FlashSettingsModel): Boolean {
+        val d = FlashSettingsModel()
+        return model.themeMode == d.themeMode &&
+            model.dynamicAccent == d.dynamicAccent &&
+            model.hapticsEnabled == d.hapticsEnabled &&
+            model.launchAnimation == d.launchAnimation &&
+            model.backgroundTransfers == d.backgroundTransfers &&
+            model.discoveryMode.equals(d.discoveryMode, ignoreCase = true) &&
+            (!model.showWindowsContextMenu || model.windowsContextMenu == d.windowsContextMenu) &&
+            model.autoDownloadVoice == d.autoDownloadVoice &&
+            model.autoDownloadImage == d.autoDownloadImage &&
+            model.autoDownloadVideo == d.autoDownloadVideo &&
+            model.autoDownloadFile == d.autoDownloadFile &&
+            model.prioritiseVoiceQuality == d.prioritiseVoiceQuality &&
+            model.smallerVideoForMany == d.smallerVideoForMany &&
+            model.performanceMode == d.performanceMode &&
+            model.swarmHelpShare == d.swarmHelpShare &&
+            model.swarmKeepFinishedFiles == d.swarmKeepFinishedFiles &&
+            model.swarmEnabled == d.swarmEnabled
+    }
+
     fun discoveryModeShortLabel(mode: String): String = when (mode.uppercase()) {
         "GHOST" -> "Ghost"
         "ECO" -> "Eco"
@@ -321,6 +409,9 @@ fun FlashSettingsScreen(
     /** Shares Flash's own log file(s). Null hides the row (a host with no persistent log). */
     onExportLogs: (() -> Unit)? = null,
 ) {
+    var query by remember { mutableStateOf("") }
+    var showResetConfirmation by remember { mutableStateOf(false) }
+    val searching = query.isNotBlank()
     var showClearStorageConfirmation by remember { mutableStateOf(false) }
     var showRestartPrompt by remember { mutableStateOf(false) }
 
@@ -331,6 +422,39 @@ fun FlashSettingsScreen(
                 onRestartApp()
             },
             onLater = { showRestartPrompt = false },
+        )
+    }
+
+    if (showResetConfirmation) {
+        ResetDefaultsDialog(
+            onConfirm = {
+                showResetConfirmation = false
+                val d = FlashSettingsModel()
+                // Only calls a setter whose value differs, so an untouched preference is never rewritten.
+                if (model.themeMode != d.themeMode) onThemeModeSelected(d.themeMode)
+                if (model.dynamicAccent != d.dynamicAccent) onDynamicAccentChanged(d.dynamicAccent)
+                if (model.hapticsEnabled != d.hapticsEnabled) onHapticsChanged(d.hapticsEnabled)
+                if (model.launchAnimation != d.launchAnimation) onLaunchAnimationChanged(d.launchAnimation)
+                if (model.backgroundTransfers != d.backgroundTransfers) onBackgroundTransfersChanged(d.backgroundTransfers)
+                if (!model.discoveryMode.equals(d.discoveryMode, ignoreCase = true)) onDiscoveryModeChanged(d.discoveryMode)
+                if (model.showWindowsContextMenu && model.windowsContextMenu != d.windowsContextMenu) {
+                    onWindowsContextMenuChanged(d.windowsContextMenu)
+                }
+                if (model.autoDownloadVoice != d.autoDownloadVoice) onAutoDownloadVoiceChanged(d.autoDownloadVoice)
+                if (model.autoDownloadImage != d.autoDownloadImage) onAutoDownloadImageChanged(d.autoDownloadImage)
+                if (model.autoDownloadVideo != d.autoDownloadVideo) onAutoDownloadVideoChanged(d.autoDownloadVideo)
+                if (model.autoDownloadFile != d.autoDownloadFile) onAutoDownloadFileChanged(d.autoDownloadFile)
+                if (model.prioritiseVoiceQuality != d.prioritiseVoiceQuality) onPrioritiseVoiceQualityChanged(d.prioritiseVoiceQuality)
+                if (model.smallerVideoForMany != d.smallerVideoForMany) onSmallerVideoForManyChanged(d.smallerVideoForMany)
+                if (model.performanceMode != d.performanceMode) onPerformanceModeSelected(d.performanceMode)
+                if (model.swarmHelpShare != d.swarmHelpShare) onSwarmHelpShareChanged(d.swarmHelpShare)
+                if (model.swarmKeepFinishedFiles != d.swarmKeepFinishedFiles) onSwarmKeepFinishedFilesChanged(d.swarmKeepFinishedFiles)
+                if (model.swarmEnabled != d.swarmEnabled) {
+                    onSwarmEnabledChanged(d.swarmEnabled)
+                    if (onRestartApp != null) showRestartPrompt = true
+                }
+            },
+            onDismiss = { showResetConfirmation = false },
         )
     }
 
@@ -365,38 +489,44 @@ fun FlashSettingsScreen(
                 )
             }
         }
-        item(key = "identity") {
-            StaggerIn(1) { IdentityRow(model.displayName, onEditDisplayName) }
+        item(key = "search") {
+            StaggerIn(1) { SettingsSearchField(query = query, onQueryChange = { query = it }) }
+        }
+        if (FlashSettingsMath.matches(query, "Display name", model.displayName, "Name")) {
+            item(key = "identity") {
+                StaggerIn(1) { IdentityRow(model.displayName, onEditDisplayName) }
+            }
         }
 
         // 1. Appearance & Feedback
-        item(key = "section-appearance") {
+        if (FlashSettingsMath.sectionVisible(query, FlashSettingsMath.Section.APPEARANCE)) item(key = "section-appearance") {
             StaggerIn(2) {
                 ExpandableSettingsSection(
                     title = "Appearance & Feedback",
                     subtitle = "Theme, dynamic accent, haptics, and animation",
                     iconSpec = FlashIcons.Gallery,
                     initiallyExpanded = true,
+                    forceExpanded = searching,
                 ) {
-                    SettingsCard {
+                    if (FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.APPEARANCE, "Theme")) SettingsCard {
                         ThemeModeSegmented(
                             selected = model.themeMode,
                             onSelected = onThemeModeSelected,
                         )
                     }
-                    SwitchRow(
+                    if (FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.APPEARANCE, "Dynamic accent")) SwitchRow(
                         title = "Dynamic accent",
                         subtitle = "Tint Flash with your wallpaper colors where supported",
                         checked = model.dynamicAccent,
                         onCheckedChange = onDynamicAccentChanged,
                     )
-                    SwitchRow(
+                    if (FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.APPEARANCE, "Haptics")) SwitchRow(
                         title = "Haptics",
                         subtitle = "Subtle vibration feedback on actions",
                         checked = model.hapticsEnabled,
                         onCheckedChange = onHapticsChanged,
                     )
-                    SwitchRow(
+                    if (FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.APPEARANCE, "Launch animation")) SwitchRow(
                         title = "Launch animation",
                         subtitle = FlashSettingsMath.launchAnimationSubtitle(model.launchAnimation),
                         checked = model.launchAnimation,
@@ -407,45 +537,46 @@ fun FlashSettingsScreen(
         }
 
         // 2. Storage & Downloads
-        item(key = "section-storage") {
+        if (FlashSettingsMath.sectionVisible(query, FlashSettingsMath.Section.STORAGE)) item(key = "section-storage") {
             StaggerIn(3) {
                 ExpandableSettingsSection(
                     title = "Storage & Downloads",
                     subtitle = "Save destination, cache breakdown, and auto-download rules",
                     iconSpec = FlashIcons.Download,
                     initiallyExpanded = true,
+                    forceExpanded = searching,
                 ) {
-                    ValueRow(
+                    if (FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.STORAGE, "Save location")) ValueRow(
                         iconSpec = FlashIcons.Download,
                         title = "Save location",
                         subtitle = model.saveLocationLabel ?: "Choose where received files go",
                         value = null,
                         onClick = onPickSaveLocation,
                     )
-                    StorageUsageCard(
+                    if (FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.STORAGE, "Received files")) StorageUsageCard(
                         model = model,
                         onRefresh = onRefreshStorageUsage,
                         onClear = { showClearStorageConfirmation = true },
                     )
-                    SwitchRow(
+                    if (FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.STORAGE, "Auto-download voice")) SwitchRow(
                         title = "Auto-download voice",
                         subtitle = "Accept incoming voice messages automatically",
                         checked = model.autoDownloadVoice,
                         onCheckedChange = onAutoDownloadVoiceChanged,
                     )
-                    SwitchRow(
+                    if (FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.STORAGE, "Auto-download images")) SwitchRow(
                         title = "Auto-download images",
                         subtitle = "Accept incoming images automatically",
                         checked = model.autoDownloadImage,
                         onCheckedChange = onAutoDownloadImageChanged,
                     )
-                    SwitchRow(
+                    if (FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.STORAGE, "Auto-download videos")) SwitchRow(
                         title = "Auto-download videos",
                         subtitle = "Accept incoming videos automatically",
                         checked = model.autoDownloadVideo,
                         onCheckedChange = onAutoDownloadVideoChanged,
                     )
-                    SwitchRow(
+                    if (FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.STORAGE, "Auto-download files")) SwitchRow(
                         title = "Auto-download files",
                         subtitle = "Accept incoming files automatically",
                         checked = model.autoDownloadFile,
@@ -456,35 +587,36 @@ fun FlashSettingsScreen(
         }
 
         // 3. Network & Discovery
-        item(key = "section-network") {
+        if (FlashSettingsMath.sectionVisible(query, FlashSettingsMath.Section.NETWORK)) item(key = "section-network") {
             StaggerIn(4) {
                 ExpandableSettingsSection(
                     title = "Network & Discovery",
                     subtitle = "Presence mode, background transfers, and battery settings",
                     iconSpec = FlashIcons.Wifi,
                     initiallyExpanded = true,
+                    forceExpanded = searching,
                 ) {
-                    SettingsCard {
+                    if (FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.NETWORK, "Discovery mode")) SettingsCard {
                         DiscoveryModeSegmented(
                             selected = model.discoveryMode,
                             onSelected = onDiscoveryModeChanged,
                         )
                     }
-                    SwitchRow(
+                    if (FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.NETWORK, "Background transfers")) SwitchRow(
                         title = "Background transfers",
                         subtitle = "Keep sending when you leave the app",
                         checked = model.backgroundTransfers,
                         onCheckedChange = onBackgroundTransfersChanged,
                     )
                     if (model.showWindowsContextMenu) {
-                        SwitchRow(
+                        if (FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.NETWORK, "File Explorer context menu")) SwitchRow(
                             title = "File Explorer context menu",
                             subtitle = "Right-click any file or folder to send with Flash",
                             checked = model.windowsContextMenu,
                             onCheckedChange = onWindowsContextMenuChanged,
                         )
                     }
-                    ValueRow(
+                    if (FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.NETWORK, "Unrestricted battery")) ValueRow(
                         iconSpec = FlashIcons.Bolt,
                         title = "Unrestricted battery",
                         subtitle = FlashSettingsMath.batteryExemptionSubtitle(model.ignoringBatteryOptimizations),
@@ -496,21 +628,22 @@ fun FlashSettingsScreen(
         }
 
         // 4. Calling & Video
-        item(key = "section-calling") {
+        if (FlashSettingsMath.sectionVisible(query, FlashSettingsMath.Section.CALLING)) item(key = "section-calling") {
             StaggerIn(5) {
                 ExpandableSettingsSection(
                     title = "Calling & Video",
                     subtitle = "Bandwidth prioritization and group video resolution",
                     iconSpec = FlashIcons.VideoCall,
                     initiallyExpanded = true,
+                    forceExpanded = searching,
                 ) {
-                    SwitchRow(
+                    if (FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.CALLING, "Prioritise voice quality")) SwitchRow(
                         title = "Prioritise voice quality",
                         subtitle = FlashSettingsMath.prioritiseVoiceSubtitle(model.prioritiseVoiceQuality),
                         checked = model.prioritiseVoiceQuality,
                         onCheckedChange = onPrioritiseVoiceQualityChanged,
                     )
-                    SwitchRow(
+                    if (FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.CALLING, "Send smaller video in groups")) SwitchRow(
                         title = "Send smaller video in groups",
                         subtitle = FlashSettingsMath.smallerVideoForManySubtitle(model.smallerVideoForMany),
                         checked = model.smallerVideoForMany,
@@ -521,22 +654,23 @@ fun FlashSettingsScreen(
         }
 
         // 5. Security & Trusted Devices
-        item(key = "section-security") {
+        if (FlashSettingsMath.sectionVisible(query, FlashSettingsMath.Section.SECURITY)) item(key = "section-security") {
             StaggerIn(6) {
                 ExpandableSettingsSection(
                     title = "Security & Trusted Devices",
                     subtitle = "Cryptographic protection and verified peers",
                     iconSpec = FlashIcons.Verified,
                     initiallyExpanded = true,
+                    forceExpanded = searching,
                 ) {
-                    ValueRow(
+                    if (FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.SECURITY, "Encryption")) ValueRow(
                         iconSpec = FlashIcons.Encryption,
                         title = "Encryption",
                         subtitle = "How Flash protects your transfers",
                         value = null,
                         onClick = onOpenEncryption,
                     )
-                    ValueRow(
+                    if (FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.SECURITY, "Trusted peers")) ValueRow(
                         iconSpec = FlashIcons.Verified,
                         title = "Trusted peers",
                         subtitle = FlashSettingsMath.trustedPeersSubtitle(model.trustedPeerCount),
@@ -548,15 +682,16 @@ fun FlashSettingsScreen(
         }
 
         // 6. Performance & Engine Tuning
-        item(key = "section-performance") {
+        if (FlashSettingsMath.sectionVisible(query, FlashSettingsMath.Section.PERFORMANCE)) item(key = "section-performance") {
             StaggerIn(7) {
                 ExpandableSettingsSection(
                     title = "Performance Tuning",
                     subtitle = "Hardware capability tier and UI motion budget",
                     iconSpec = FlashIcons.Connection,
                     initiallyExpanded = false,
+                    forceExpanded = searching,
                 ) {
-                    SettingsCard {
+                    if (FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.PERFORMANCE, "Performance mode")) SettingsCard {
                         PerformanceModeSegmented(
                             selected = model.performanceMode,
                             detected = model.detectedPerformanceMode,
@@ -568,27 +703,28 @@ fun FlashSettingsScreen(
         }
 
         // 7. Group File Sharing (Swarm) & Diagnostics
-        item(key = "section-swarm") {
+        if (FlashSettingsMath.sectionVisible(query, FlashSettingsMath.Section.SWARM)) item(key = "section-swarm") {
             StaggerIn(8) {
                 ExpandableSettingsSection(
                     title = "Group File Sharing & Diagnostics",
                     subtitle = "Swarm transfer sharing and log export",
                     iconSpec = FlashIcons.Group,
                     initiallyExpanded = false,
+                    forceExpanded = searching,
                 ) {
-                    SwitchRow(
+                    if (FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.SWARM, "Help share group files")) SwitchRow(
                         title = "Help share group files",
                         subtitle = "Share received file pieces with other group members on your local network",
                         checked = model.swarmHelpShare,
                         onCheckedChange = onSwarmHelpShareChanged,
                     )
-                    SwitchRow(
+                    if (FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.SWARM, "Keep finished files available for others")) SwitchRow(
                         title = "Keep finished files available for others",
                         subtitle = "Keep completed group files available to help members who come online later",
                         checked = model.swarmKeepFinishedFiles,
                         onCheckedChange = onSwarmKeepFinishedFilesChanged,
                     )
-                    SwitchRow(
+                    if (FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.SWARM, "Group file sharing (swarm, experimental)")) SwitchRow(
                         title = "Group file sharing (swarm, experimental)",
                         subtitle = "Enable multi-device cooperative transfers in groups. Applies after restart",
                         checked = model.swarmEnabled,
@@ -598,7 +734,7 @@ fun FlashSettingsScreen(
                         },
                     )
                     if (onExportLogs != null) {
-                        ValueRow(
+                        if (FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.SWARM, "Export logs")) ValueRow(
                             iconSpec = FlashIcons.Share,
                             title = "Export logs",
                             subtitle = "Share Flash's recent log to help find a problem. It holds no message text or keys",
@@ -610,7 +746,31 @@ fun FlashSettingsScreen(
             }
         }
 
-        item(key = "about") { StaggerIn(9) { AboutCard(model) } }
+        val anySection = FlashSettingsMath.Section.entries.any { FlashSettingsMath.sectionVisible(query, it) }
+        val showAbout = FlashSettingsMath.matches(query, "About", "Version", "Protocol", "Device id")
+        if (searching && !anySection && !showAbout &&
+            !FlashSettingsMath.matches(query, "Display name", model.displayName, "Name")
+        ) {
+            item(key = "no-results") {
+                FlashText(
+                    text = "No settings match \"${query.trim()}\"",
+                    style = FlashTheme.typography.bodyDefault,
+                    color = FlashTheme.colors.textTertiary,
+                    modifier = Modifier.padding(vertical = FlashSpacing.space16),
+                )
+            }
+        }
+        if (!searching) {
+            item(key = "reset-defaults") {
+                StaggerIn(9) {
+                    ResetDefaultsRow(
+                        enabled = !FlashSettingsMath.isAtDefaults(model),
+                        onClick = { showResetConfirmation = true },
+                    )
+                }
+            }
+        }
+        if (showAbout) item(key = "about") { StaggerIn(10) { AboutCard(model) } }
     }
 }
 
@@ -620,9 +780,12 @@ private fun ExpandableSettingsSection(
     iconSpec: FlashIconSpec,
     subtitle: String? = null,
     initiallyExpanded: Boolean = true,
+    /** While a search is active every section opens so a match is never hidden behind a collapsed card. */
+    forceExpanded: Boolean = false,
     content: @Composable ColumnScope.() -> Unit,
 ) {
-    var expanded by remember { mutableStateOf(initiallyExpanded) }
+    var userExpanded by remember { mutableStateOf(initiallyExpanded) }
+    val expanded = userExpanded || forceExpanded
     val colors = FlashTheme.colors
     val motion = FlashTheme.motion
     val haptics = rememberFlashHaptics()
@@ -648,7 +811,7 @@ private fun ExpandableSettingsSection(
                 )
                 .clickable {
                     haptics(FlashHaptic.Tick)
-                    expanded = !expanded
+                    userExpanded = !userExpanded
                 }
                 .padding(FlashSpacing.space12),
             verticalAlignment = Alignment.CenterVertically,
@@ -1255,6 +1418,115 @@ private fun ClearReceivedFilesDialog(
         confirmButton = {
             TextButton(onClick = onConfirm) {
                 Text("Delete files", color = colors.textError)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel", color = colors.textSecondary)
+            }
+        },
+    )
+}
+
+@Composable
+private fun SettingsSearchField(
+    query: String,
+    onQueryChange: (String) -> Unit,
+) {
+    val colors = FlashTheme.colors
+    val typography = FlashTheme.typography
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(FlashShapes.composerInput)
+            .background(colors.composerInputBackground)
+            .border(
+                width = FlashDimensions.borderHairline,
+                color = colors.borderSubtle,
+                shape = FlashShapes.composerInput,
+            )
+            .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space8),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.weight(1f).semantics { contentDescription = "Search settings" }) {
+            BasicTextField(
+                value = query,
+                onValueChange = onQueryChange,
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                textStyle = typography.bodyDefault.copy(color = colors.textPrimary),
+                cursorBrush = SolidColor(colors.accentPrimary),
+                decorationBox = { innerTextField ->
+                    if (query.isEmpty()) {
+                        FlashText(
+                            text = "Search settings",
+                            style = typography.bodyDefault,
+                            color = colors.textTertiary,
+                            maxLines = 1,
+                        )
+                    }
+                    innerTextField()
+                },
+            )
+        }
+        if (query.isNotEmpty()) {
+            Box(
+                modifier = Modifier
+                    .size(FlashDimensions.minTouchTarget)
+                    .clip(CircleShape)
+                    .clickable(onClick = { onQueryChange("") })
+                    .semantics { role = Role.Button; contentDescription = "Clear search" },
+                contentAlignment = Alignment.Center,
+            ) {
+                FlashIcon(icon = FlashIcons.Close, size = FlashDimensions.iconSm, tint = colors.textSecondary)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ResetDefaultsRow(enabled: Boolean, onClick: () -> Unit) {
+    val colors = FlashTheme.colors
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.Center,
+    ) {
+        TextButton(
+            onClick = onClick,
+            enabled = enabled,
+            modifier = Modifier.semantics {
+                contentDescription = if (enabled) "Reset settings to defaults" else "Settings are already at their defaults"
+            },
+        ) {
+            Text("Reset to defaults", color = if (enabled) colors.textError else colors.textTertiary)
+        }
+    }
+}
+
+@Composable
+private fun ResetDefaultsDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
+    val colors = FlashTheme.colors
+    FlashConfirmHost(
+        onDismiss = onDismiss,
+        containerColor = colors.backgroundSurface,
+        title = {
+            FlashText(
+                text = "Reset to defaults?",
+                style = FlashTheme.typography.headingMedium,
+                color = colors.textPrimary,
+            )
+        },
+        text = {
+            FlashText(
+                text = "Appearance, downloads, network, calling, performance and group sharing options go back to " +
+                    "how Flash first shipped. Your name, save location and trusted devices stay as they are.",
+                style = FlashTheme.typography.bodyDefault,
+                color = colors.textSecondary,
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text("Reset", color = colors.textError)
             }
         },
         dismissButton = {
