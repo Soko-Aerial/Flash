@@ -78,6 +78,8 @@ internal class PeerHandler(
 
     fun handleSummaryArrived(
         e: SwarmEvent.SummaryArrived,
+        localServingEnabled: Boolean,
+        systemSuspended: Boolean,
         commands: MutableList<SwarmCommand>,
         onSummaryApplied: (String) -> Unit,
     ) {
@@ -88,8 +90,15 @@ internal class PeerHandler(
 
         // 2. Entries
         val peer = peers.getOrPut(e.peerId) { PeerConnectionState(e.peerId, emptySet()) }
+        // ERROR-104: the peer's first Summary can arrive before the chat message that announces its content here, and is then
+        // skipped as an unknown root. The peer announces to us when the message does arrive; if that shows content we hold
+        // pieces of and we had no state for the peer on it, the peer never saw our map, so answer once. It ends there: the
+        // peer's state for the root exists after the answer, and a holder of nothing has nothing the peer is waiting for.
+        var peerNeedsOurState = false
         for (entry in e.frame.entries) {
             val content = contents[e.frame.groupId to entry.root] ?: continue
+            val known = entry.root in peer.contentStates
+            if (!known && (content.isComplete || content.piecesDone > 0)) peerNeedsOurState = true
             val pcs = peer.getOrCreateContent(entry.root, content.totalPieces)
             pcs.servingEnabled = entry.servingEnabled
             when (entry.state) {
@@ -101,6 +110,9 @@ internal class PeerHandler(
                 }
                 SwarmContentState.PARTIAL -> { /* Populated via HAVE frames */ }
             }
+        }
+        if (peerNeedsOurState && peer.isConnected && peer.hasSw1Feature && peer.allowedGroups[e.frame.groupId] != false) {
+            sendSummary(e.peerId, e.frame.groupId, localServingEnabled, systemSuspended, commands)
         }
         onSummaryApplied(e.frame.groupId)
     }

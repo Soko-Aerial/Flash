@@ -1,5 +1,23 @@
 # Progress Log
 
+## 2026-10-06 (h) - Swarm first-contact hole (ERROR-107)
+
+### Worked on
+Owner asked for a scenario review of the swarm and then "fix the hole". The review found that a receiver can end up with no piece map for the origin.
+
+### Changed
+- `PeerHandler.handleSummaryArrived` answers a Summary once when it shows a root we hold pieces of and the peer was unknown for it (reason and loop guard in the code comment).
+- `SwarmFirstContactTest` (new).
+
+### Verification
+Test failed before the fix (0 replies), passes after; `:core:swarm:jvmTest`, `:core:engine:jvmTest --tests '*swarm*'` green. Not device-verified: `SWM-35`.
+
+### Remaining
+Catch-up for a member that was offline at send (no root / piece size / root signature), `SourceStatus` and reject when the origin's file is lost or changed, non-member Summary / Have, transfer row `peerName`.
+
+### Next AI
+Continue with those four in that order; each needs a test first.
+
 ## 2026-10-06 (g) - Ink launch splash (UI-056, ADR-080)
 
 ### Worked on
