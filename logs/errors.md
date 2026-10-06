@@ -1,5 +1,47 @@
 # Error Log
 
+## ERROR-103 - Group call participant list showed devices that are not in the group (raw ids)
+
+### Date
+2026-10-06
+
+### Area
+Calling / group call session (`FlashGroupCallSession`, `CallCoordinator`)
+
+### Symptoms
+The owner saw "pseudo ids" of members that are not in the group on the group call screen.
+
+### Error
+No exception. The participant list is built from `legs`; a leg's name falls back to the raw device id when
+`peerNameResolver` knows no name (unpaired or vouched member, or a stranger).
+
+### Root cause (code reading only, NOT reproduced on a device)
+The coordinator gates presence, query and the first invite against the roster, but once a session is live every other frame
+of that call id goes straight to the session. The session then created a leg (a tile) for: every id in the member list of a
+`GroupInvite` for the same call (the ERROR-088 invite retry), the `from` of a relayed `GroupJoin`, and a `GroupAccept` sender,
+without asking the roster. A stale member list (removed member) or a forged one put a stranger's id on the screen.
+Unpaired roster members legitimately still show their raw id: that is the separate naming gap below.
+
+### Working fix
+`FlashGroupCallSession` takes `isGroupMember` (the coordinator passes `isGroupMember(id, groupId)`, the roster check from
+ERROR-088). Invite members and the inviter, accept/join senders and presence adoption are ignored (logged "not an active member
+of group=") unless the roster accepts them. A leg that already exists is untouched.
+
+### Not fixed
+An unpaired roster member still has no display name on a tile (shows the id): the resolver only knows paired or discovered
+peers. The group roster stores a name per member; wiring it into `peerNameResolver` for calls is the next step.
+
+### Verification
+`FlashGroupCallMembershipFilterTest` (4 tests); with the filter disabled 3 of 4 fail (mutation-checked). Not device-verified:
+`GCALL-18` in `docs/testing/TEST-BACKLOG.md`.
+
+### Related files
+- `core/calling/src/commonMain/kotlin/com/transfer/flash/core/calling/FlashGroupCallSession.kt`
+- `core/calling/src/commonMain/kotlin/com/transfer/flash/core/calling/CallCoordinator.kt`
+
+### Status
+OPEN (fixed in code, awaiting GCALL-18)
+
 ## ERROR-102 - Swarm review: no restore after restart, startup deleted real partial downloads, serve switches ignored, dead environment hooks, unsafe driver state, cancel race, group summaries sent to non-members
 
 ### Date
