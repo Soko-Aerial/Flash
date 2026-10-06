@@ -257,6 +257,52 @@ class GroupJoinTest {
     }
 
     @Test
+    fun testJoinWhileTheInviterIsAlreadyConnected() = runBlocking {
+        // The owner-reported case: the desktop is already connected to the inviter when the link is pasted, so the
+        // accept itself and the hint dialer both start the proof. The request must still reach the inviter once.
+        val a = node("dev-a")
+        val c = node("dev-c")
+        val groupId = (a.repo.createGroupForInvite("Ada's Project") as FlashResult.Success).value
+        val inviteUrl = (a.repo.inviteFor(groupId) as FlashResult.Success).value
+        connect("dev-a", "dev-c")
+
+        val accepted = c.repo.acceptInvite(inviteUrl)
+        assertTrue(accepted is FlashResult.Success)
+        settle(cycles = 15)
+
+        val requests = a.joinRequestDao.getAllForGroup(groupId)
+        assertEquals("the inviter got exactly one request", 1, requests.size)
+        assertEquals("dev-c", requests[0].subjectId)
+        assertEquals("PENDING_APPROVAL", c.inviteDao.getByGroupId(groupId)?.state)
+    }
+
+    @Test
+    fun testApprovalMissedWhileOfflineCompletesOnReconnect() = runBlocking {
+        val a = node("dev-a")
+        val c = node("dev-c")
+        val groupId = (a.repo.createGroupForInvite("Ada's Project") as FlashResult.Success).value
+        val inviteUrl = (a.repo.inviteFor(groupId) as FlashResult.Success).value
+        c.repo.acceptInvite(inviteUrl)
+        connect("dev-a", "dev-c")
+        settle(cycles = 10)
+        assertEquals(1, a.joinRequestDao.getAllForGroup(groupId).size)
+
+        // The link drops before the admin gets to the approval; the bundle and the decision go nowhere.
+        disconnect("dev-a", "dev-c")
+        val approved = a.repo.approveJoinRequest(groupId, "dev-c")
+        assertTrue("approving works without the joiner connected: $approved", approved is FlashResult.Success)
+        assertNull("the joiner has heard nothing", c.memberDao.member(groupId, "dev-c"))
+
+        connect("dev-a", "dev-c")
+        settle(cycles = 15)
+
+        assertTrue("the joiner is in once the link is back", c.memberDao.member(groupId, "dev-c")?.isActive == true)
+        assertEquals("the roster travelled with it", "Ada's Project", c.conversationDao.get(groupId)?.title)
+        assertEquals("the request was not turned back into a pending one", 0,
+            a.joinRequestDao.getAllForGroup(groupId).count { it.state == "PENDING" })
+    }
+
+    @Test
     fun testOpenPolicyAutoApproval() = runBlocking {
         val a = node("dev-a")
         val c = node("dev-c")

@@ -9,6 +9,7 @@ import com.transfer.flash.core.messaging.model.FlashWaitingReason
 import com.transfer.flash.core.messaging.protocol.GroupCanonical
 import com.transfer.flash.core.messaging.protocol.GroupCharter
 import com.transfer.flash.core.messaging.protocol.GroupPolicy
+import com.transfer.flash.core.messaging.protocol.GroupSettings
 import com.transfer.flash.core.messaging.protocol.GroupSignatureRules
 import com.transfer.flash.core.messaging.protocol.GroupSigning
 import com.transfer.flash.core.messaging.protocol.GroupVouching
@@ -618,6 +619,53 @@ class SignedGroupsTest {
 
         assertEquals("d is added", setOf("dev-a", "dev-b", "dev-c", "dev-d"), active("dev-c", groupId))
         assertEquals("b's row was not touched by the bad cert", 1L, row("dev-c", groupId, "dev-b").membershipVersion)
+    }
+
+    @Test
+    fun `a member cannot switch on members-may-add by shipping its own unsigned settings`() = runBlocking {
+        mesh("dev-a", "dev-b", "dev-c", "dev-d")
+        val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+        val charter = charterOf("dev-a", groupId)
+        // dev-a left members-may-add off. dev-b is only a member, so its cert for dev-d is not an owner/admin act.
+        val addedByMember = certBy("dev-b", groupId, subject = "dev-d", seq = 1, active = true)
+        val forged = GroupSettings(
+            groupId = groupId,
+            version = 99L,
+            membersMayAdd = true,
+            opId = "forged",
+            signerId = "dev-b",
+            sig = GroupCanonical.encode(ByteArray(64) { 3 }),
+        )
+
+        deliver("dev-b", "dev-c", GroupWireFrame.Bundle(groupId, "dev-b", "op", charter, listOf(addedByMember), settings = forged))
+
+        assertEquals("dev-d was not admitted", setOf("dev-a", "dev-b", "dev-c"), active("dev-c", groupId))
+    }
+
+    @Test
+    fun `a member added by another member is admitted when the newcomer gets the whole roster`() = runBlocking {
+        mesh("dev-a", "dev-b", "dev-c", "dev-d")
+        val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+        val charter = charterOf("dev-a", groupId)
+        val rosterOfA = outbound.map { it.frame }.filterIsInstance<GroupWireFrame.Bundle>().first { it.groupId == groupId }.certs
+        val settings = GroupSigning(cryptos.getValue("dev-a")).signSettings(
+            groupId = groupId,
+            version = 2L,
+            joinPolicy = GroupSettings.POLICY_APPROVE,
+            inviteSharers = GroupSettings.SHARERS_ALL,
+            maxMembers = GroupPolicy.MAX_MEMBERS_V2,
+            swarmServing = true,
+            membersMayAdd = true,
+            opId = "owner-signed-v2",
+            signerId = "dev-a",
+        )
+        // dev-d has never seen the group: the roster it gets holds b's owner-signed cert and the cert b signed for d.
+        val addedByMember = certBy("dev-b", groupId, subject = "dev-d", seq = 1, active = true)
+
+        deliver("dev-b", "dev-d", GroupWireFrame.Bundle(groupId, "dev-b", "op", charter, listOf(addedByMember) + rosterOfA, settings = settings))
+
+        assertTrue("dev-d joined", row("dev-d", groupId, "dev-d").isActive)
+        assertEquals("Team", nodes.getValue("dev-d").conversationDao.conversations.getValue(groupId).title)
     }
 
     @Test

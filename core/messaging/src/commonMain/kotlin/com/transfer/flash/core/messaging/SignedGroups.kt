@@ -794,32 +794,59 @@ internal class SignedGroups(
             .mapNotNull { row -> row.subjectKey?.let { k -> GroupCanonical.decode(k)?.let { row.deviceId to it } } }
             .toMap().toMutableMap()
 
-        val effectiveSettings = frame.settings ?: currentSettings(groupId)
+        val storedSettings = groupSettingsDao?.getByGroupId(groupId)?.toSettings()
         val memberKeys = rows.values
             .filter { it.isActive }
             .mapNotNull { row -> row.subjectKey?.let { k -> GroupCanonical.decode(k)?.let { row.deviceId to it } } }
-            .toMap()
+            .toMap().toMutableMap()
 
+        // `membersMayAdd` decides whether a plain member's cert counts, so it is read only from settings whose
+        // signature checks out against the owner or a known admin, never from the raw frame. A group this device
+        // is only now joining has no stored settings, so the frame's own (verified) settings are what apply.
+        fun membersMayAddNow(): Boolean {
+            val incoming = frame.settings?.takeIf { s -> rules.checkSettings(charter, s) { id -> adminKeys[id] } == null }
+            val effective = if (incoming != null && settingsWins(incoming, storedSettings)) incoming else storedSettings
+            return effective?.membersMayAdd ?: false
+        }
+
+        // A member-issued cert is only checkable once its issuer's own cert is known, and that cert usually travels
+        // in the same bundle (a device being added to a group it has never seen gets the whole roster). So verify in
+        // passes: certs that fail only for lack of an issuer wait for the next pass, and every cert that verifies
+        // makes its subject's key available as an issuer. Anything still unresolved when a pass adds nothing is dropped.
         val verified = ArrayList<MemberCert>()
-        for (cert in candidates) {
-            val reason = rules.checkCert(
-                charter = charter,
-                cert = cert,
-                knownKey = rows[cert.subjectId]?.subjectKey,
-                adminLookup = { adminId -> adminKeys[adminId] },
-                membersMayAdd = effectiveSettings.membersMayAdd,
-                memberLookup = { memberId -> memberKeys[memberId] },
-            )
-            if (reason == null) {
-                verified += cert
-                if (cert.role == MemberCert.ROLE_ADMIN && cert.active) {
-                    GroupCanonical.decode(cert.subjectKey)?.let { adminKeys[cert.subjectId] = it }
-                } else if (!cert.active || cert.role != MemberCert.ROLE_ADMIN) {
-                    adminKeys.remove(cert.subjectId)
+        val waiting = ArrayList(candidates)
+        var progressed = true
+        while (waiting.isNotEmpty() && progressed) {
+            progressed = false
+            val iterator = waiting.iterator()
+            while (iterator.hasNext()) {
+                val cert = iterator.next()
+                val reason = rules.checkCert(
+                    charter = charter,
+                    cert = cert,
+                    knownKey = rows[cert.subjectId]?.subjectKey,
+                    adminLookup = { adminId -> adminKeys[adminId] },
+                    membersMayAdd = membersMayAddNow(),
+                    memberLookup = { memberId -> memberKeys[memberId] },
+                )
+                if (reason == "issuer") continue
+                iterator.remove()
+                if (reason == null) {
+                    verified += cert
+                    progressed = true
+                    if (cert.active) GroupCanonical.decode(cert.subjectKey)?.let { memberKeys[cert.subjectId] = it }
+                    if (cert.role == MemberCert.ROLE_ADMIN && cert.active) {
+                        GroupCanonical.decode(cert.subjectKey)?.let { adminKeys[cert.subjectId] = it }
+                    } else if (!cert.active || cert.role != MemberCert.ROLE_ADMIN) {
+                        adminKeys.remove(cert.subjectId)
+                    }
+                } else {
+                    FlashLog.w("CHAT", "Group cert dropped: group=$groupId subject=${cert.subjectId} from=$peerId reason=$reason")
                 }
-            } else {
-                FlashLog.w("CHAT", "Group cert dropped: group=$groupId subject=${cert.subjectId} from=$peerId reason=$reason")
             }
+        }
+        waiting.forEach { cert ->
+            FlashLog.w("CHAT", "Group cert dropped: group=$groupId subject=${cert.subjectId} issuer=${cert.issuerId} from=$peerId reason=issuer")
         }
 
         if (!known) {
