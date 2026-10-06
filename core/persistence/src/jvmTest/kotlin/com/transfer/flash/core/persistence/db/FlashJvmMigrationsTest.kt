@@ -49,11 +49,136 @@ class FlashJvmMigrationsTest {
     @Test
     fun `the exported schemas the tests depend on are present`() {
         // A missing schema would make the helper fail with a message about JSON, not about this.
-        listOf(1, 3, 4, 5, FlashDatabase.DATABASE_VERSION).forEach { version ->
+        listOf(1, 3, 4, 5, 6, 7, 8, 9, FlashDatabase.DATABASE_VERSION).forEach { version ->
             assertTrue(
                 Files.exists(SCHEMA_DIR.resolve("com.transfer.flash.core.persistence.db.FlashDatabase/$version.json")),
                 "schemas/…/$version.json is missing; the tests run from the module directory",
             )
+        }
+    }
+
+    @Test
+    fun `a v6 database gains the swarm tables and Room validates it`() = runBlocking {
+        helper.createDatabase(6).use { v6 ->
+            v6.execSQL(
+                "INSERT INTO conversations (id, title, isGroup, pinned, muted, archived, sortOrder, groupCreatedBy, groupCreatedAt, groupProto) " +
+                    "VALUES ('g2-crew', 'Crew', 1, 0, 0, 0, 1, 'owner', 1, 2)",
+            )
+        }
+
+        helper.runMigrationsAndValidate(FlashDatabase.DATABASE_VERSION, FlashJvmMigrations.ALL.toList()).use { upgraded ->
+            upgraded.execSQL(
+                "INSERT INTO swarm_content (root, groupId, messageId, role, originId, originKey, fileName, mime, totalSize, pieceSize, bits, bytesDone, state, localTransferId, sourcePersistent, partialKey, identitySize, identityModifiedMs, deliveredTo, createdAtMs, lastProgressAtMs, expiresAtMs) " +
+                    "VALUES ('root1', 'g2-crew', 'msg1', 'ORIGIN', 'orig', 'key', 'file.bin', 'application/octet-stream', 1000, 100, x'00', 0, 'INITIALIZING', 'tx1', 1, 'part1', 1000, 1, '[]', 1, 1, 1000)",
+            )
+            upgraded.prepare("SELECT root, state FROM swarm_content WHERE root = 'root1'").use { row ->
+                assertTrue(row.step(), "the swarm_content row was not inserted")
+                assertEquals("root1", row.getText(0))
+                assertEquals("INITIALIZING", row.getText(1))
+            }
+        }
+    }
+
+    @Test
+    fun `a v7 database gains the group secret tables and Room validates it`() = runBlocking {
+        helper.createDatabase(7).use { v7 ->
+            v7.execSQL(
+                "INSERT INTO conversations (id, title, isGroup, pinned, muted, archived, sortOrder, groupCreatedBy, groupCreatedAt, groupProto) " +
+                    "VALUES ('g2-crew', 'Crew', 1, 0, 0, 0, 1, 'owner', 1, 2)",
+            )
+        }
+
+        helper.runMigrationsAndValidate(FlashDatabase.DATABASE_VERSION, FlashJvmMigrations.ALL.toList()).use { upgraded ->
+            upgraded.execSQL(
+                "INSERT INTO group_secret (groupId, epoch, secretWrapped, `commit`, source, receivedAtMs) " +
+                    "VALUES ('g2-crew', 1, x'000102', '316155ba2ffa797afffc435dbba71497d1146322565fdc77e22bf66d9a9f728e', 'CREATED', 1000)",
+            )
+            upgraded.prepare("SELECT groupId, epoch, `commit` FROM group_secret WHERE groupId = 'g2-crew' AND epoch = 1").use { row ->
+                assertTrue(row.step(), "the group_secret row was not inserted")
+                assertEquals("g2-crew", row.getText(0))
+                assertEquals(1L, row.getLong(1))
+                assertEquals("316155ba2ffa797afffc435dbba71497d1146322565fdc77e22bf66d9a9f728e", row.getText(2))
+            }
+
+            upgraded.execSQL(
+                "INSERT INTO group_invite (groupId, inviterId, inviterFingerprint, acceptedAtMs, state) " +
+                    "VALUES ('g2-crew', 'dev1', 'fp123', 1000, 'JOINED')",
+            )
+            upgraded.prepare("SELECT groupId, state FROM group_invite WHERE groupId = 'g2-crew'").use { row ->
+                assertTrue(row.step(), "the group_invite row was not inserted")
+                assertEquals("g2-crew", row.getText(0))
+                assertEquals("JOINED", row.getText(1))
+            }
+
+            upgraded.execSQL(
+                "INSERT INTO group_join_request (groupId, subjectId, subjectKey, label, requestSig, viaPeerId, requestedAtMs, state, decidedBy, decidedAtMs) " +
+                    "VALUES ('g2-crew', 'subj1', 'key1', 'Label', 'sig1', 'peer1', 1000, 'PENDING', null, null)",
+            )
+            upgraded.prepare("SELECT groupId, state FROM group_join_request WHERE groupId = 'g2-crew'").use { row ->
+                assertTrue(row.step(), "the group_join_request row was not inserted")
+                assertEquals("g2-crew", row.getText(0))
+                assertEquals("PENDING", row.getText(1))
+            }
+        }
+    }
+
+    @Test
+    fun `a v8 database gains the group rotation table and Room validates it`() = runBlocking {
+        helper.createDatabase(8).use { v8 ->
+            v8.execSQL(
+                "INSERT INTO conversations (id, title, isGroup, pinned, muted, archived, sortOrder, groupCreatedBy, groupCreatedAt, groupProto) " +
+                    "VALUES ('g2-crew', 'Crew', 1, 0, 0, 0, 1, 'owner', 1, 2)",
+            )
+        }
+
+        helper.runMigrationsAndValidate(FlashDatabase.DATABASE_VERSION, FlashJvmMigrations.ALL.toList()).use { upgraded ->
+            upgraded.execSQL(
+                "INSERT INTO group_rotation (groupId, newEpoch, prevEpoch, `commit`, reason, adminId, rotationId, removedIds, sig, receivedAtMs) " +
+                    "VALUES ('g2-crew', 2, 1, '316155ba2ffa797afffc435dbba71497d1146322565fdc77e22bf66d9a9f728e', 'REMOVAL', 'owner', '0123456789abcdef0123456789abcdef', 'devX', 'sigBase64', 1000)",
+            )
+            upgraded.prepare("SELECT groupId, newEpoch, `commit`, reason FROM group_rotation WHERE groupId = 'g2-crew' AND newEpoch = 2").use { row ->
+                assertTrue(row.step(), "the group_rotation row was not inserted")
+                assertEquals("g2-crew", row.getText(0))
+                assertEquals(2L, row.getLong(1))
+                assertEquals("316155ba2ffa797afffc435dbba71497d1146322565fdc77e22bf66d9a9f728e", row.getText(2))
+                assertEquals("REMOVAL", row.getText(3))
+            }
+        }
+    }
+
+    @Test
+    fun `a v9 database gains the group settings and preferences tables and Room validates it`() = runBlocking {
+        helper.createDatabase(9).use { v9 ->
+            v9.execSQL(
+                "INSERT INTO conversations (id, title, isGroup, pinned, muted, archived, sortOrder, groupCreatedBy, groupCreatedAt, groupProto) " +
+                    "VALUES ('g2-crew', 'Crew', 1, 0, 0, 0, 1, 'owner', 1, 2)",
+            )
+        }
+
+        helper.runMigrationsAndValidate(FlashDatabase.DATABASE_VERSION, FlashJvmMigrations.ALL.toList()).use { upgraded ->
+            upgraded.execSQL(
+                "INSERT INTO group_settings (groupId, version, joinPolicy, inviteSharers, maxMembers, swarmServing, membersMayAdd, opId, signerId, sig) " +
+                    "VALUES ('g2-crew', 1, 'APPROVE', 'ALL', 20, 1, 0, 'op1', 'owner', 'sig1')",
+            )
+            upgraded.prepare("SELECT groupId, version, joinPolicy, maxMembers FROM group_settings WHERE groupId = 'g2-crew'").use { row ->
+                assertTrue(row.step(), "the group_settings row was not inserted")
+                assertEquals("g2-crew", row.getText(0))
+                assertEquals(1L, row.getLong(1))
+                assertEquals("APPROVE", row.getText(2))
+                assertEquals(20L, row.getLong(3))
+            }
+
+            upgraded.execSQL(
+                "INSERT INTO group_preferences (groupId, serveToGroup, serveWifiOnly, batteryThresholdPercent, keepAvailableDays, autoAcceptSizeBytes) " +
+                    "VALUES ('g2-crew', 1, 0, 20, 7, 104857600)",
+            )
+            upgraded.prepare("SELECT groupId, serveToGroup, batteryThresholdPercent, autoAcceptSizeBytes FROM group_preferences WHERE groupId = 'g2-crew'").use { row ->
+                assertTrue(row.step(), "the group_preferences row was not inserted")
+                assertEquals("g2-crew", row.getText(0))
+                assertEquals(1L, row.getLong(1))
+                assertEquals(20L, row.getLong(2))
+                assertEquals(104857600L, row.getLong(3))
+            }
         }
     }
 

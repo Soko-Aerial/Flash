@@ -26,14 +26,14 @@ public actual fun rememberFlashFilePickerLauncher(
         if (uri != null) {
             // Persist read access so the transfer can stream the file even after this screen dies.
             // `runCatching` because a provider is free to refuse, and a refusal must not lose the pick.
-            runCatching {
+            val isPersistable = runCatching {
                 context.contentResolver.takePersistableUriPermission(
                     uri,
                     Intent.FLAG_GRANT_READ_URI_PERMISSION,
                 )
-            }
+            }.isSuccess
             val (name, size) = resolveFileMetadata(context, uri)
-            onPicked(FlashPickedFile(uri = uri.toString(), name = name, size = size))
+            onPicked(FlashPickedFile(uri = uri.toString(), name = name, size = size, isPersistable = isPersistable))
         }
     }
     return remember(launcher) {

@@ -50,4 +50,10 @@ public data class FlashTransfer(
     val localPath: String? = null,
     /** Whether this transfer was transmitted with end-to-end encryption. */
     val isEncrypted: Boolean = false,
+    /** High-level wait reason when state is Queued (§5.5). */
+    val waitReason: FlashTransferWaitReason? = null,
+    /** Whether all missing pieces are distributed to peers, permitting the sender to safely disconnect (SW-11). */
+    val canGoOffline: Boolean = false,
+    /** Number of peers actively holding pieces of this content online. */
+    val holdersOnline: Int = 0,
 )

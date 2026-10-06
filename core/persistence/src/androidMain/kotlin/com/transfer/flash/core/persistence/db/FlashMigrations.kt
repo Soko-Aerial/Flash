@@ -31,6 +31,18 @@ public object FlashMigrations {
     /** v5 -> v6: v2-group columns (ADR-044 V1). */
     public val MIGRATION_5_6: Migration = SupportSqlMigration(FlashSchemaSteps.STEP_5_6)
 
+    /** v6 -> v7: group swarm content and tombstones (ADR-070, SW-6). */
+    public val MIGRATION_6_7: Migration = SupportSqlMigration(FlashSchemaSteps.STEP_6_7)
+
+    /** v7 -> v8: group membership by shared secret, invites, and join requests (ADR-044, ADR-073, GM-2). */
+    public val MIGRATION_7_8: Migration = SupportSqlMigration(FlashSchemaSteps.STEP_7_8)
+
+    /** v8 -> v9: group rotation notices (ADR-044, ADR-073, GM-6). */
+    public val MIGRATION_8_9: Migration = SupportSqlMigration(FlashSchemaSteps.STEP_8_9)
+
+    /** v9 -> v10: group settings and local preferences (ADR-074, GM-9). */
+    public val MIGRATION_9_10: Migration = SupportSqlMigration(FlashSchemaSteps.STEP_9_10)
+
     /** Every migration, in order, for the open path. */
     public val ALL: Array<Migration> = FlashSchemaSteps.ALL.map { SupportSqlMigration(it) }.toTypedArray()
 }

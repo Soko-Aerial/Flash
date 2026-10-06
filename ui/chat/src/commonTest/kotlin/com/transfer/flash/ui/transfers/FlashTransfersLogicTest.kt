@@ -107,6 +107,41 @@ class FlashTransfersLogicTest {
         assertEquals("1.0 MB/s · 1 min left", line)
     }
 
+    @Test
+    fun `swarm queued status line reflects waitReason`() {
+        val queuedItem = item(
+            FlashTransferState.Queued,
+            bytesDone = 50_000_000L,
+            bytesTotal = 100_000_000L,
+        ).copy(
+            waitReason = com.transfer.flash.core.transfer.model.FlashTransferWaitReason.WaitingForSender,
+            peerName = "Alex",
+        )
+        assertEquals("Waiting for Alex · 50.0 MB of 100.0 MB here", FlashTransfersMath.statusLine(queuedItem))
+    }
+
+    @Test
+    fun `swarm active sender shows safe to leave when canGoOffline is true`() {
+        val senderItem = item(FlashTransferState.Active).copy(
+            direction = FlashTransferDirection.Send,
+            canGoOffline = true,
+        )
+        assertEquals("You can go offline now", FlashTransfersMath.statusLine(senderItem))
+    }
+
+    @Test
+    fun `swarm active receiver shows multi holder count`() {
+        val receiverItem = item(
+            FlashTransferState.Active,
+            speed = 1024 * 1024,
+            eta = 90,
+        ).copy(
+            direction = FlashTransferDirection.Receive,
+            holdersOnline = 3,
+        )
+        assertEquals("Getting it from 3 devices · 1.0 MB/s · 1 min left", FlashTransfersMath.statusLine(receiverItem))
+    }
+
     // ---------------------------------------------------------------------------
     // progressBarWidthPx — the arithmetic lifted out of Modifier.fillMaxWidth(fraction)
     // when the progress fill moved to a layout-phase read (EXP-013). These assertions are

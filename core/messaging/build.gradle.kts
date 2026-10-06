@@ -83,17 +83,18 @@ kotlin {
             // the SQLCipher opener and the settings DataStore tier, which stay androidMain-only
             // (see below).
             implementation(project(":core:persistence"))
+            implementation(project(":core:transfer"))
+            implementation(project(":core:security"))
         }
         androidMain.dependencies {
             // The SQLCipher open path, the settings DataStore tier and room-ktx stay here: all
             // Android-only. The repository itself no longer is.
-            // TODO(cleanup): `:core:security`, `:core:network` and both androidx entries are dead
+            // TODO(cleanup): `:core:network` and both androidx entries are dead
             // — grep finds zero references to any of them in this module's main and test sources.
             // Parked here rather than deleted so core-messaging-android's POM keeps the four
             // runtime-scope entries 1.1.0 consumers resolve today; deleting them is a
             // consumer-visible resolution change that should be made repo-wide at once
             // (Phase 10 precedent, which parked three the same way).
-            implementation(project(":core:security"))
             implementation(project(":core:network"))
             implementation(libs.androidx.core.ktx)
             implementation(libs.androidx.lifecycle.runtime.ktx)

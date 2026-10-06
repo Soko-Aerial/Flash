@@ -103,6 +103,8 @@ internal enum class LinkHealth { GOOD, NEUTRAL, BAD }
 internal class CallQualityGovernor(
     private val degradeAfter: Int = DEGRADE_AFTER_SAMPLES,
     private val recoverAfter: Int = RECOVER_AFTER_SAMPLES,
+    private val recoveryCooldownMs: Long = 0L,
+    private val nowMs: () -> Long = { 0L },
 ) {
 
     /** Current rung. Changes only through [onSample] and [reset]. */
@@ -111,6 +113,7 @@ internal class CallQualityGovernor(
 
     private var badStreak: Int = 0
     private var goodStreak: Int = 0
+    private var lastStepAtMs: Long = 0L
 
     /**
      * Folds one sample in and returns the new rung, or **null when nothing should change** —
@@ -140,7 +143,9 @@ internal class CallQualityGovernor(
             val next = level.harsher ?: return null
             return stepTo(next)
         }
-        if (goodStreak >= recoverAfter) {
+        val elapsed = nowMs() - lastStepAtMs
+        val inCooldown = lastStepAtMs != 0L && elapsed in 1 until recoveryCooldownMs
+        if (goodStreak >= recoverAfter && !inCooldown) {
             val next = level.gentler ?: return null
             return stepTo(next)
         }
@@ -159,12 +164,14 @@ internal class CallQualityGovernor(
         level = VideoConcession.FULL
         badStreak = 0
         goodStreak = 0
+        lastStepAtMs = 0L
     }
 
     private fun stepTo(next: VideoConcession): VideoConcession {
         level = next
         badStreak = 0
         goodStreak = 0
+        lastStepAtMs = nowMs()
         return next
     }
 

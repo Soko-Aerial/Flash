@@ -49,11 +49,19 @@ import com.transfer.flash.core.network.sweep.SweepController
 import com.transfer.flash.core.network.sweep.SweepSituation
 import com.transfer.flash.core.network.sweep.SweepState
 import com.transfer.flash.core.network.sweep.TcpHostProbe
+import com.transfer.flash.core.engine.MagicFrameRouter
 import com.transfer.flash.core.network.ws.WsFlashNetwork
 import com.transfer.flash.core.network.ws.WsSession
 import com.transfer.flash.core.network.tls.TlsOptions
 import com.transfer.flash.core.network.tls.TofuPinVerifier
 import com.transfer.flash.core.network.tls.requireTransportSecurity
+import com.transfer.flash.core.swarm.api.FlashSwarm
+import com.transfer.flash.core.swarm.api.FlashSwarmConfig
+import com.transfer.flash.core.engine.swarm.SwarmHostBinding
+import com.transfer.flash.core.engine.swarm.MessagingSwarmGroupContext
+import com.transfer.flash.core.engine.swarm.AndroidPieceStorage
+import com.transfer.flash.core.engine.swarm.RoomSwarmStateStore
+import com.transfer.flash.core.swarm.model.SwarmManifest
 import com.transfer.flash.core.security.crypto.E2eFrameCodec
 import com.transfer.flash.core.security.crypto.FlashFingerprint
 import com.transfer.flash.core.security.crypto.KeystoreFlashCrypto
@@ -82,10 +90,9 @@ import com.transfer.flash.core.transfer.RealFlashTransferRepository
 import com.transfer.flash.core.engine.store.RoomRememberedEndpointStore
 import com.transfer.flash.core.engine.store.RoomTransferStore
 import com.transfer.flash.core.transfer.chunked.ChunkFrame
-import com.transfer.flash.core.transfer.chunked.IncrementalSha256
 import com.transfer.flash.core.transfer.chunked.ReceiveEvent
 import com.transfer.flash.core.transfer.chunked.ReceivePipeline
-import com.transfer.flash.core.transfer.chunked.Sha256
+import com.transfer.flash.core.transfer.chunked.WholeFileCheck
 import com.transfer.flash.core.transfer.multistream.StreamChannel
 import com.transfer.flash.core.transfer.policy.FileRandomAccessSinkHandle
 import com.transfer.flash.core.transfer.policy.RandomAccessChunkSink
@@ -242,6 +249,7 @@ object DiscoveryEngineHolder {
     @Volatile
     private var rememberedRoutes: RememberedRoutes? = null
     private var rememberedJob: Job? = null
+    private val magicRouter = MagicFrameRouter()
 
     /**
      * DR3 (ADR-047): the subnet sweep behind Nearby's "Scan network" and the automatic fallback for
@@ -406,6 +414,86 @@ object DiscoveryEngineHolder {
             // PC5: the tier feeds the connection policy, whose change re-times live sessions.
             modeController?.refresh()
         }
+
+    /** Experimental: group file sharing via swarm transfer (SW-8). Default FALSE. */
+    @Volatile
+    var groupSwarmEnabled: Boolean = false
+
+    @Volatile
+    private var swarmBinding: SwarmHostBinding? = null
+
+    @Volatile
+    private var dbRef: com.transfer.flash.core.persistence.db.FlashDatabase? = null
+
+    @Volatile
+    private var receivedDirRef: File? = null
+
+    @Volatile
+    private var cryptoRef: KeystoreFlashCrypto? = null
+
+    @Volatile
+    private var identityRef: FlashAdvertisedIdentity? = null
+
+    fun currentSwarm(): FlashSwarm? = swarmBinding?.swarm
+
+    fun attachSwarm(config: FlashSwarmConfig = FlashSwarmConfig()): FlashSwarm? {
+        synchronized(this) {
+            swarmBinding?.let { return it.swarm }
+            val net = network as? WsFlashNetwork ?: return null
+            val xfer = transferRepo as? RealFlashTransferRepository ?: return null
+            val chat = chatRepo as? RealFlashChatRepository ?: return null
+            val db = dbRef ?: return null
+            val ctx = appContextRef ?: return null
+            val gate = chat.groupGate
+            val localId = identityRef?.deviceId?.value ?: return null
+            val cryptoInstance = cryptoRef ?: return null
+            val groupContext = MessagingSwarmGroupContext(
+                localDeviceId = localId,
+                groupGate = gate,
+                groupMemberDao = { db.groupMemberDao() },
+                groupCrypto = com.transfer.flash.core.engine.group.FlashGroupCrypto(cryptoInstance),
+            )
+            val storage = AndroidPieceStorage(
+                context = ctx,
+                destinationDir = receivedDirRef ?: File(ctx.getExternalFilesDir(null) ?: ctx.filesDir, "FlashReceived"),
+            )
+            val stateStore = RoomSwarmStateStore(db.swarmDao())
+            val binding = SwarmHostBinding(
+                config = config,
+                localDeviceId = localId,
+                scope = appScope,
+                magicRouter = magicRouter,
+                network = net,
+                transferRepository = xfer,
+                groupContext = groupContext,
+                storage = storage,
+                stateStore = stateStore,
+                chatRepository = chat,
+                isCallActive = { calling?.activeCall?.value?.let { it.state != FlashCallState.ENDED } == true },
+                isServingEnabled = { userDiscoveryMode != FlashDiscoveryMode.ECO },
+            )
+            swarmBinding = binding
+            return binding.swarm
+        }
+    }
+
+    fun detachSwarm() {
+        synchronized(this) {
+            swarmBinding?.detach()
+            swarmBinding = null
+        }
+    }
+
+    suspend fun prepareSwarmOrigin(
+        groupId: String,
+        messageId: String,
+        fileName: String,
+        mimeType: String,
+        sizeBytes: Long,
+        uri: String,
+    ): Pair<SwarmManifest, String>? {
+        return swarmBinding?.prepareOrigin(groupId, messageId, fileName, mimeType, sizeBytes, uri)
+    }
 
     /**
      * Voice-call quiet flag: true while a call is ACTIVE, driven by the [CallCoordinator.activeCall]
@@ -587,6 +675,7 @@ object DiscoveryEngineHolder {
         // renders it as the start error with a retry. There is no plaintext fallback.
         val trustStore = AndroidPreferencesTrustStore(appContext)
         val crypto = KeystoreFlashCrypto(appContext)
+        cryptoRef = crypto
         val tlsOptions = requireTransportSecurity(
             onAttemptFailed = { attempt, error -> Log.w(TAG_WS, "TLS setup attempt $attempt failed: ${error.message}") },
         ) {
@@ -623,6 +712,7 @@ object DiscoveryEngineHolder {
         Log.i(TAG_DISCOVERY, "Starting Flash discovery with deviceId=${identity.deviceId.value} friendlyName=${identity.friendlyName}")
         localDeviceId = identity.deviceId.value
         localDeviceName = identity.friendlyName
+        identityRef = identity
 
         val transport = com.transfer.flash.core.discovery.nsd.NsdTransport(
             context = appContext,
@@ -690,6 +780,7 @@ object DiscoveryEngineHolder {
             // pinning a tier or switching the mode must reach the next connection and the next
             // redial without restarting the engine; live sessions are re-timed by modeController.
             transportProfile = { connectionPolicy().transport },
+            localFeatures = { if (swarmBinding != null) setOf("sw1", "gs1") else setOf("gs1") },
         )
         binderJob = DiscoveryRouteBinder.observe(appScope, engine.discoveredEndpoints, networkImpl)
 
@@ -725,9 +816,11 @@ object DiscoveryEngineHolder {
         // Audit B7: shares the facade's recovery path (and its single passphrase provider), so a lost
         // keystore key quarantines the unopenable DB instead of crash-looping every launch.
         val db = com.transfer.flash.core.engine.store.EncryptedDatabaseRecovery.openRecoveringLostKey(appContext)
+        dbRef = db
 
         // ---- receive-side infrastructure (must precede the send factory wiring) ----
         val receivedDir = receivedFilesRoot(appContext).apply { mkdirs() }
+        receivedDirRef = receivedDir
         val openHandles = ConcurrentHashMap<String, RandomAccessSinkHandle>()
         val incomingMeta = ConcurrentHashMap<String, ChunkFrame.FileStart>()
         // transferId -> absolute path of the received file on disk, so completed inbound transfers
@@ -943,6 +1036,8 @@ object DiscoveryEngineHolder {
             requireReceiverAcceptance = true,
             isPeerEncrypted = { peerId -> trustStore.getSessionKey(FlashDeviceId(peerId)) != null },
             performanceMode = { performanceMode },
+            // ADR-069 / FA-2: an accepted offer that cannot fit is refused by name instead of failing mid-write.
+            freeSpaceBytes = { receivedDir.takeIf { it.exists() }?.usableSpace },
         )
 
         // PC4 (ADR-046): presence sharing. Built before the chat repository, whose Online set it
@@ -1084,6 +1179,12 @@ object DiscoveryEngineHolder {
                         localPath = t.localPath ?: t.sourceUri,
                         speedMbps = t.speedBytesPerSec / 1_000_000f,
                         etaSeconds = t.etaSeconds.toInt(),
+                        waitReason = t.waitReason?.name,
+                        canGoOffline = t.canGoOffline,
+                        holdersOnline = t.holdersOnline,
+                        errorMessage = t.errorMessage,
+                        bytesDone = t.bytesDone,
+                        bytesTotal = t.bytesTotal,
                     )
                 }
             },
@@ -1156,7 +1257,43 @@ object DiscoveryEngineHolder {
                 session.connection.sendTextAsync(encoded)
                 true
             },
+            peerFeatures = { peerId -> networkImpl.activeSessions.value[FlashDeviceId(peerId)]?.peer?.features.orEmpty() },
+            groupInviteDao = db.groupInviteDao(),
+            groupJoinRequestDao = db.groupJoinRequestDao(),
+            groupSecretStore = com.transfer.flash.core.engine.group.RoomGroupSecretStore(db.groupSecretDao()),
+            groupRotationDao = db.groupRotationDao(),
+            groupSettingsDao = db.groupSettingsDao(),
+            groupPreferencesDao = db.groupPreferencesDao(),
+            localAddressHints = {
+                val port = networkImpl.serverPort
+                if (port > 0) {
+                    com.transfer.flash.core.network.util.LocalNetworkAddresses(appContext)
+                        .ipv4Addresses()
+                        .map { "$it:$port" }
+                } else {
+                    emptyList()
+                }
+            },
+            onConnectPeerWithHints = { peerId, hints ->
+                for (hint in hints) {
+                    if (networkImpl.hasLiveSession(peerId)) break
+                    val parts = hint.split(":")
+                    val host = parts[0]
+                    val port = parts.getOrNull(1)?.toIntOrNull()
+                        ?: com.transfer.flash.core.network.ws.WsTransferServer.PREFERRED_PORT
+                    val res = networkImpl.connectManual(host, port, peerId)
+                    if (res is com.transfer.flash.core.common.result.FlashResult.Success) break
+                }
+            },
         )
+        chatImpl.onJoinRequestNotification = { groupId, groupTitle, requesterName ->
+            FlashNotificationManager.showJoinRequest(
+                appContext,
+                groupId,
+                groupTitle,
+                requesterName,
+            )
+        }
         presenceChat = chatImpl
 
         // Sync peer friendly name across paired devices when peer connects with an updated name
@@ -1374,7 +1511,9 @@ object DiscoveryEngineHolder {
 
         // Accepts a pending inbound OFFER (#5): resolve the deferred sink FIRST (so no early chunk
         // is dropped), surface it as Transferring + a chat bubble, then RESUME the parked sender.
-        val acceptOffer: (String) -> Unit = { transferId ->
+        val acceptOffer: (String) -> Unit = acceptOffer@{ transferId ->
+            // ADR-069 / FA-2: refuse here, before the sink is resolved and the sender is released.
+            if (!transferImpl.admitIncoming(transferId)) return@acceptOffer
             val meta = incomingMeta[transferId]
             val pid = transferImpl.activeTransfers.value.find { it.id.value == transferId }?.peerDeviceId
             if (meta == null) {
@@ -1576,6 +1715,9 @@ object DiscoveryEngineHolder {
         network = networkImpl
         transferRepo = transferImpl
         chatRepo = chatImpl
+        if (groupSwarmEnabled) {
+            attachSwarm()
+        }
         pairing = pairingCoordinator
         this.calling = callCoordinator
         // PTT voice session (ADR-032 Phase 1): all transport access is lazy lambdas over
@@ -1915,7 +2057,7 @@ object DiscoveryEngineHolder {
             Log.d(TAG_TRANSFER, "Skipping auto-resume for $peerDeviceId: session did not survive glare")
             return
         }
-        val snapshot = transfers.activeTransfers.value
+        val snapshot = transfers.activeTransfers.value.filterNot { transfers.isExternalRow(it.id.value) }
         reconnectResume.retainOnly(snapshot.mapTo(HashSet(snapshot.size)) { it.id })
         val toResume = reconnectResume.onPeerSessionUp(peerDeviceId, snapshot)
         if (toResume.isEmpty()) return
@@ -2117,6 +2259,10 @@ object DiscoveryEngineHolder {
             reply(toSend)
         }
 
+        if (magicRouter.dispatch(peerDeviceId, frameData, secureReply)) {
+            return
+        }
+
         // 1. First route to active senders (ACKs or COMPLETE from receiver)
         val consumedBySender = try {
             transferImpl.onInboundFrame(frameData)
@@ -2233,14 +2379,17 @@ object DiscoveryEngineHolder {
                     // pipeline's per-chunk verify-before-write. Chunk hashes already guarantee each
                     // piece's integrity; this catches assembly/offset faults or manifest/content
                     // divergence before the file is surfaced as trusted.
-                    val wholeFileVerified = event.frame.verified && verifyWholeFile(path, expectedHex)
-                    transferImpl.onIncomingCompleted(
-                        transferId,
-                        wholeFileVerified,
-                        localPath = path,
-                    )
-                    Log.i(TAG_TRANSFER, "Receiver completed transferId=$transferId chunkVerified=${event.frame.verified} wholeFileVerified=$wholeFileVerified")
-                    secureReply(ChunkFrame.serialize(event.frame))
+                    // ADR-068: the shared completion path hashes the file; a mismatch fails the transfer, deletes
+                    // the file and forgets the confirmed chunks, so the session goes too and the sender is told.
+                    val wholeFile = transferImpl.onIncomingFileAssembled(transferId, path, expectedHex, event.frame.verified)
+                    val completeReply = if (wholeFile == WholeFileCheck.MISMATCH) {
+                        receivePipeline.cancelSession(transferId)
+                        ChunkFrame.Complete(transferId, event.frame.fileId, verified = false)
+                    } else {
+                        event.frame
+                    }
+                    Log.i(TAG_TRANSFER, "Receiver completed transferId=$transferId chunkVerified=${event.frame.verified} wholeFile=$wholeFile")
+                    secureReply(ChunkFrame.serialize(completeReply))
                 }
                 is ReceiveEvent.Rejected -> {
                     // Late ACK/COMPLETE arriving after our own dispatcher resolved is benign
@@ -2288,33 +2437,6 @@ object DiscoveryEngineHolder {
                 reply = reply,
                 onAttachmentStarted = onAttachmentStarted,
             )
-        }
-    }
-
-    /**
-     * Streams the fully-assembled destination file through SHA-256 and compares it in constant time
-     * against the manifest's declared whole-file digest (#19). Returns false when either input is
-     * missing/invalid or the file cannot be read, so an unverifiable transfer surfaces as
-     * unverified rather than being silently trusted.
-     */
-    private fun verifyWholeFile(path: String?, expectedHex: String?): Boolean {
-        if (path.isNullOrBlank() || expectedHex.isNullOrBlank() || !Sha256.isValidHex(expectedHex)) {
-            return false
-        }
-        return runCatching {
-            val acc = IncrementalSha256()
-            File(path).inputStream().use { input ->
-                val buffer = ByteArray(64 * 1024)
-                while (true) {
-                    val read = input.read(buffer)
-                    if (read < 0) break
-                    acc.update(buffer, 0, read)
-                }
-            }
-            Sha256.hexEqualsConstantTime(acc.digestHex(), Sha256.normalizeHex(expectedHex))
-        }.getOrElse { e ->
-            Log.w(TAG_TRANSFER, "Whole-file verify failed to read $path: ${e.message}")
-            false
         }
     }
 
@@ -2677,6 +2799,11 @@ object DiscoveryEngineHolder {
         // engine's power locks are dropped and its screen-on receiver is torn down.
         pttEngine?.shutdown()
         pttEngine = null
+        detachSwarm()
+        dbRef = null
+        receivedDirRef = null
+        cryptoRef = null
+        identityRef = null
         appContextRef?.let { PttSessionService.stop(it) }
         unregisterScreenReceiver()
         unregisterPttReceiver()

@@ -108,6 +108,7 @@ private class AndroidMulticastBinding(
 
     override val broadcastTargets: List<String> = broadcastDestinations.map { it.address.hostAddress.orEmpty() }
 
+    @Volatile private var sendFailureLogged = false
     @Volatile private var broadcastFailureLogged = false
 
     private val socket: MulticastSocket = MulticastSocket(null).apply {
@@ -128,7 +129,10 @@ private class AndroidMulticastBinding(
         socket.send(DatagramPacket(payload, payload.size, target))
         true
     }.getOrElse { error ->
-        Log.w(TAG, "multicast send failed on ${networkInterface.name}", error)
+        if (!sendFailureLogged) {
+            sendFailureLogged = true
+            Log.w(TAG, "multicast send failed on ${networkInterface.name}", error)
+        }
         false
     }
 
@@ -186,10 +190,17 @@ private class AndroidMulticastBinding(
     }
 }
 
+private val CELLULAR_INTERFACE_PREFIXES = listOf("rmnet", "ccmni", "wwan", "pdp", "seth", "dummy")
+
+private fun isCellularInterface(name: String): Boolean =
+    CELLULAR_INTERFACE_PREFIXES.any { name.startsWith(it, ignoreCase = true) }
+
 /**
- * Interfaces worth joining the group on: up, not loopback, with an IPv4 address. IPv6-only
- * interfaces are skipped because the announce address is an IPv4 group and a link-local source is
- * not dialable without its scope id.
+ * Interfaces worth joining the group on: up, not loopback, not point-to-point (VPN/tunnels),
+ * not cellular/mobile modems (rmnet/ccmni), with an IPv4 address. Cellular interfaces throw
+ * ENETUNREACH on multicast sends and do not route LAN discovery beacons.
+ * IPv6-only interfaces are skipped because the announce address is an IPv4 group and a
+ * link-local source is not dialable without its scope id.
  *
  * Deliberately does NOT pre-filter on `NetworkInterface.supportsMulticast()`, unlike the desktop
  * factory and `JmdnsBridge`'s enumeration. That flag is per-driver and its answer differs by OEM and
@@ -205,6 +216,8 @@ private fun multicastCapableInterfaces(): List<NetworkInterface> =
             runCatching {
                 candidate.isUp &&
                     !candidate.isLoopback &&
+                    !candidate.isPointToPoint &&
+                    !isCellularInterface(candidate.name) &&
                     candidate.inetAddresses.toList().any { it is Inet4Address }
             }.getOrDefault(false)
         }

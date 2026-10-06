@@ -88,6 +88,8 @@ public class JvmWsFlashNetwork(
     private val nowMs: () -> Long = System::currentTimeMillis,
     /** The device's transport tier (ERROR-033), read per use; defaults to the shipped numbers. */
     private val transportProfile: () -> FlashTransportProfile = { FlashPerformanceMode.HIGH.transport },
+    /** Tokens this device advertises in its HELLO `caps` (SW-2). */
+    private val localFeatures: () -> Set<String> = { emptySet() },
 ) : FlashNetwork, EndpointMemory, WsConnection.Listener {
 
     @Volatile
@@ -285,14 +287,18 @@ public class JvmWsFlashNetwork(
             pendingHandshakes[connection] = handshakeWaiter
             connection.start()
 
-            val helloMsg = FlashTextFraming.encodeFields(
-                HELLO_PREFIX,
+            val helloFields = mutableListOf(
                 "version" to PROTOCOL_VERSION.toString(),
                 "deviceId" to localDeviceId,
                 "name" to localFriendlyName,
                 "ping" to connection.keepalivePingIntervalMs.toString(),
                 "gv" to FlashProtocol.GROUP_PROTOCOL_LEVEL.toString(),
             )
+            val caps = formatHelloFeatures(localFeatures())
+            if (caps != null) {
+                helloFields.add("caps" to caps)
+            }
+            val helloMsg = FlashTextFraming.encodeFields(HELLO_PREFIX, helloFields)
             connection.sendText(helloMsg)
 
             val handshakeOutcome = withTimeoutOrNull(HANDSHAKE_TIMEOUT_MS) {
@@ -453,14 +459,18 @@ public class JvmWsFlashNetwork(
             }
 
 
-            val helloReply = FlashTextFraming.encodeFields(
-                HELLO_PREFIX,
+            val helloReplyFields = mutableListOf(
                 "version" to PROTOCOL_VERSION.toString(),
                 "deviceId" to localDeviceId,
                 "name" to localFriendlyName,
                 "ping" to connection.keepalivePingIntervalMs.toString(),
                 "gv" to FlashProtocol.GROUP_PROTOCOL_LEVEL.toString(),
             )
+            val caps = formatHelloFeatures(localFeatures())
+            if (caps != null) {
+                helloReplyFields.add("caps" to caps)
+            }
+            val helloReply = FlashTextFraming.encodeFields(HELLO_PREFIX, helloReplyFields)
             connection.sendText(helloReply)
 
             val session = WsSession(connection, claimedPeer) { s, _ ->
@@ -790,6 +800,7 @@ public class JvmWsFlashNetwork(
                 protocolVersion = peerVersion,
                 groupProtocol = parseGroupProtocol(parsedFields["gv"]),
                 identityKey = connection.peerPublicKeyEncoded?.let { Base64.encode(it) },
+                features = parseHelloFeatures(parsedFields["caps"]),
             )
 
             // Raises the read cap from 64 KiB to the post-handshake limit (audit S5).

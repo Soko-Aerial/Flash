@@ -119,6 +119,15 @@ private fun FlashGroupVideoChip(
                     Modifier
                 },
             )
+            if (participant.handRaised) {
+                FlashPeerBadges(
+                    micMuted = false,
+                    cameraOff = false,
+                    handRaised = true,
+                    onDark = true,
+                    modifier = Modifier.align(Alignment.TopEnd),
+                )
+            }
             if (participant.isMuted) {
                 Box(
                     modifier = Modifier
@@ -128,7 +137,7 @@ private fun FlashGroupVideoChip(
                         .background(Color.Black.copy(alpha = 0.6f)),
                     contentAlignment = Alignment.Center,
                 ) {
-                    FlashIcon(icon = FlashIcons.Mute, contentDescription = null, tint = Color.White, size = BADGE_ICON)
+                    FlashIcon(icon = FlashIcons.MicOff, contentDescription = null, tint = Color.White, size = BADGE_ICON)
                 }
             }
         }

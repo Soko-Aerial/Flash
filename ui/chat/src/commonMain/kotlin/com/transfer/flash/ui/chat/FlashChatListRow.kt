@@ -410,7 +410,7 @@ private fun FlashChatListTrailingIndicators(item: FlashChatListItemUi) {
     ) {
         if (item.isMuted) {
             FlashIcon(
-                icon = FlashIcons.Mute,
+                icon = FlashIcons.NotificationOff,
                 contentDescription = "Muted",
                 size = FlashDimensions.iconSm,
                 tint = colors.textTertiary,

@@ -94,6 +94,8 @@ fun FlashMessageList(
     onOpenMessageInfo: ((FlashMessageUi) -> Unit)? = null,
     /** ERROR-089: retry a failed outgoing message. */
     onRetryMessage: (String) -> Unit = {},
+    /** UI-054 (O-14): join action triggered from an inline group invite card. */
+    onJoinInvite: ((String) -> Unit)? = null,
 ) {
     val colors = FlashTheme.colors
     val motion = FlashTheme.motion
@@ -161,6 +163,7 @@ fun FlashMessageList(
     val currentOnCancelTransfer by rememberUpdatedState(onCancelTransfer)
     val currentOnOpenMessageInfo by rememberUpdatedState(onOpenMessageInfo)
     val currentOnRetryMessage by rememberUpdatedState(onRetryMessage)
+    val currentOnJoinInvite by rememberUpdatedState(onJoinInvite)
     val messageInfoOffered = onOpenMessageInfo != null
 
     val ordered = messages.asReversed()
@@ -256,6 +259,7 @@ fun FlashMessageList(
                     onCancelTransfer = onCancelTransferLambda,
                     onOpenMessageInfo = if (messageInfoOffered && FlashMessageInfoMath.isAvailable(message)) onOpenMessageInfoLambda else null,
                     onRetryMessage = { currentOnRetryMessage(message.id) },
+                    onJoinInvite = currentOnJoinInvite,
                     isHighlighted = isHighlighted,
                     searchQuery = searchQuery,
                     suppressSenderHeader = !showSenderHeaders,

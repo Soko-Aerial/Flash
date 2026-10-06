@@ -1,10 +1,13 @@
 package com.transfer.flash.core.messaging
 
 import com.transfer.flash.core.common.result.FlashResult
+import com.transfer.flash.core.messaging.group.GroupLocalPreferences
 import com.transfer.flash.core.messaging.model.FlashChatListUiState
 import com.transfer.flash.core.messaging.model.FlashConversationUiState
+import com.transfer.flash.core.messaging.model.FlashGroupJoinRequestUi
 import com.transfer.flash.core.messaging.model.FlashGroupMemberUi
 import com.transfer.flash.core.messaging.model.FlashMessageInfoUi
+import com.transfer.flash.core.messaging.protocol.GroupSettings
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.flowOf
@@ -27,6 +30,52 @@ public interface FlashChatRepository {
 
     /** Creates an ad-hoc trusted group. Phase 1 allows at most six members including this device. */
     public suspend fun createGroup(name: String, memberIds: Set<String>): FlashResult<String> =
+        FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Groups unavailable"))
+
+    /** Creates a v2 group with only the creator to be shared via invite link (GM-4). */
+    public suspend fun createGroupForInvite(name: String): FlashResult<String> =
+        FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Groups unavailable"))
+
+    /** Generates an invite link for [groupId] using the current secret and address hints (GM-4). */
+    public suspend fun inviteFor(groupId: String): FlashResult<String> =
+        FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Groups unavailable"))
+
+    /** Accepts an invite link, stores the secret, vouches the inviter, and initiates join (GM-4). */
+    public suspend fun acceptInvite(inviteUri: String): FlashResult<String> =
+        FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Groups unavailable"))
+
+    /** Approves a pending join request for [groupId] and issues a certificate (GM-4). Admin-only. */
+    public suspend fun approveJoinRequest(groupId: String, subjectId: String): FlashResult<Unit> =
+        FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Groups unavailable"))
+
+    /** Refuses a pending join request for [groupId] (GM-4). Admin-only. */
+    public suspend fun refuseJoinRequest(
+        groupId: String,
+        subjectId: String,
+        reason: String = "declined",
+    ): FlashResult<Unit> =
+        FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Groups unavailable"))
+
+    /**
+     * Returns the user-facing status sentence for an accepted invite to [groupId] (Table 8.3, M-03, M-07, M-08).
+     * Returns null if no invite exists for [groupId].
+     */
+    public suspend fun inviteStatusSentence(groupId: String): String? = null
+
+    /**
+     * Retries dialing address hints for all pending invites (e.g. after a network change).
+     */
+    public suspend fun retryPendingInviteHints(): Unit = Unit
+
+    /**
+     * Returns pending join requests for [groupId] awaiting admin decision (GM-10).
+     */
+    public suspend fun getPendingJoinRequests(groupId: String): List<FlashGroupJoinRequestUi> = emptyList()
+
+    /**
+     * Cancels / abandons a pending invite for [groupId] (GM-10).
+     */
+    public suspend fun cancelPendingInvite(groupId: String): FlashResult<Unit> =
         FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Groups unavailable"))
 
     /** Adds trusted peers to an existing group. */
@@ -59,6 +108,52 @@ public interface FlashChatRepository {
      * lightweight implementations decline.
      */
     public suspend fun removeGroupMember(groupId: String, deviceId: String): FlashResult<Unit> =
+        FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Groups unavailable"))
+
+    /**
+     * GM-6: Rotates the group secret ("Change group code"), invalidating prior invites while keeping
+     * existing members unaffected. Owner or admin action.
+     */
+    public suspend fun changeGroupCode(groupId: String): FlashResult<Unit> =
+        FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Groups unavailable"))
+
+    /**
+     * GM-9: Gets the current signed group settings for [groupId].
+     */
+    public suspend fun getGroupSettings(groupId: String): GroupSettings =
+        GroupSettings.defaults(groupId)
+
+    /**
+     * GM-9: Updates group settings for [groupId] and distributes the updated bundle to active members.
+     * Owner or admin action.
+     */
+    public suspend fun updateGroupSettings(
+        groupId: String,
+        joinPolicy: String? = null,
+        inviteSharers: String? = null,
+        maxMembers: Int? = null,
+        swarmServing: Boolean? = null,
+        membersMayAdd: Boolean? = null,
+    ): FlashResult<Unit> =
+        FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Groups unavailable"))
+
+    /**
+     * GM-9: Gets device-local preferences for [groupId].
+     */
+    public suspend fun getGroupLocalPreferences(groupId: String): GroupLocalPreferences =
+        GroupLocalPreferences.defaults(groupId)
+
+    /**
+     * GM-9: Updates device-local preferences for [groupId].
+     */
+    public suspend fun updateGroupLocalPreferences(
+        groupId: String,
+        serveToGroup: Boolean? = null,
+        serveWifiOnly: Boolean? = null,
+        batteryThresholdPercent: Int? = null,
+        keepAvailableDays: Int? = null,
+        autoAcceptSizeBytes: Long? = null,
+    ): FlashResult<Unit> =
         FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Groups unavailable"))
 
     /** Real roster for the currently requested group; lightweight implementations remain empty. */
@@ -107,6 +202,63 @@ public interface FlashChatRepository {
         mimeType: String,
         sizeBytes: Long,
     ): Boolean = false
+
+    /**
+     * Announces one recipient-specific group media transfer with optional swarm fields (SW-8).
+     */
+    public suspend fun beginGroupAttachment(
+        groupId: String,
+        recipientDeviceId: String,
+        messageId: String,
+        transferId: String,
+        wireFileId: String,
+        fileName: String,
+        mimeType: String,
+        sizeBytes: Long,
+        root: String?,
+        pieceSize: Int?,
+        swarm: Int?,
+        rootSig: String?,
+    ): Boolean = beginGroupAttachment(
+        groupId = groupId,
+        recipientDeviceId = recipientDeviceId,
+        messageId = messageId,
+        transferId = transferId,
+        wireFileId = wireFileId,
+        fileName = fileName,
+        mimeType = mimeType,
+        sizeBytes = sizeBytes,
+    )
+
+    /** Optional listener invoked when a verified group media swarm announcement arrives (SW-8). */
+    public var swarmAnnouncementListener: GroupSwarmAnnouncementListener?
+        get() = null
+        set(_) {}
+
+    /** Optional hook invoked when a group message is deleted for everyone by origin (SW-9). */
+    public var onGroupMessageDeletedForEveryone: ((groupId: String, messageId: String) -> Unit)?
+        get() = null
+        set(_) {}
+
+    /** Returns true if [groupId] is a v2 signed group. */
+    public fun isV2Group(groupId: String): Boolean =
+        com.transfer.flash.core.messaging.protocol.GroupPolicy.isV2GroupId(groupId)
+
+    /**
+     * Checks if [peerId] has proved knowledge of the group secret in this live session (GM-3).
+     * Used only for join requests and roster preview (GINV-2). Grants NO chat, call, or file traffic.
+     */
+    public fun hasProvedGroup(peerId: String, groupId: String): Boolean = false
+
+    /**
+     * Initiates mutual proof of group secret knowledge with [peerId] for [groupId] at [epoch] (GM-3).
+     */
+    public suspend fun initiateGroupProof(
+        peerId: String,
+        groupId: String,
+        epoch: Long,
+    ): com.transfer.flash.core.messaging.group.GroupProofResult =
+        com.transfer.flash.core.messaging.group.GroupProofResult.UNSUPPORTED
 
     /**
      * Full-history global search (#12): conversation ids that have at least one non-tombstoned

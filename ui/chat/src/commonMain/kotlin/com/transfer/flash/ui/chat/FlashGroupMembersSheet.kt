@@ -29,6 +29,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.transfer.flash.core.messaging.model.FlashChatHeaderUiState
+import com.transfer.flash.core.messaging.model.FlashGroupJoinRequestUi
 import com.transfer.flash.core.messaging.model.FlashGroupMemberUi
 import com.transfer.flash.core.messaging.model.FlashMemberRole
 import com.transfer.flash.core.messaging.model.FlashNetworkTransport
@@ -116,6 +117,12 @@ fun FlashGroupMembersSheet(
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
     isOwner: Boolean = false,
+    isAdmin: Boolean = false,
+    canShareInvite: Boolean = false,
+    onInviteClick: (() -> Unit)? = null,
+    pendingJoinRequests: List<FlashGroupJoinRequestUi> = emptyList(),
+    onApproveJoinRequest: ((FlashGroupJoinRequestUi) -> Unit)? = null,
+    onRefuseJoinRequest: ((FlashGroupJoinRequestUi) -> Unit)? = null,
     /**
      * ADR-044 V2: verify a member the owner introduced by running ordinary pairing with them. Null hides the action
      * (previews, hosts without pairing); it is only ever offered for a member that has `introducedBy`.
@@ -163,6 +170,82 @@ fun FlashGroupMembersSheet(
                     bottom = FlashSpacing.space32,
                 ),
         ) {
+            // UI-054: Invite People action row (shown only when this device may share it)
+            if (canShareInvite && onInviteClick != null) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(FlashShapes.bubbleGrouped)
+                        .clickable(onClick = onInviteClick)
+                        .padding(vertical = FlashSpacing.space8, horizontal = FlashSpacing.space4),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(CircleShape)
+                            .background(colors.accentPrimary.copy(alpha = 0.12f)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        FlashIcon(
+                            icon = FlashIcons.Share,
+                            contentDescription = "Invite people",
+                            tint = colors.accentPrimary,
+                        )
+                    }
+                    Column(modifier = Modifier.weight(1f)) {
+                        FlashText(
+                            text = "Invite people",
+                            style = FlashTheme.typography.bodyEmphasis,
+                            color = colors.accentPrimary,
+                        )
+                        FlashText(
+                            text = "Share link or copy to clipboard",
+                            style = FlashTheme.typography.metadataDefault,
+                            color = colors.textSecondary,
+                        )
+                    }
+                }
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = FlashSpacing.space8)
+                        .height(FlashDimensions.borderHairline)
+                        .background(colors.borderSubtle),
+                )
+            }
+
+            // UI-054: Join Requests section for admins/owners
+            if ((isOwner || isAdmin) && pendingJoinRequests.isNotEmpty()) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = FlashSpacing.space12),
+                    verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+                ) {
+                    FlashText(
+                        text = "Join requests (${pendingJoinRequests.size})",
+                        style = FlashTheme.typography.headingSmall,
+                        color = colors.textPrimary,
+                    )
+                    pendingJoinRequests.forEach { req ->
+                        FlashJoinRequestRow(
+                            request = req,
+                            onApprove = onApproveJoinRequest?.let { { it(req) } },
+                            onRefuse = onRefuseJoinRequest?.let { { it(req) } },
+                        )
+                    }
+                }
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = FlashSpacing.space12)
+                        .height(FlashDimensions.borderHairline)
+                        .background(colors.borderSubtle),
+                )
+            }
+
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -327,6 +410,100 @@ private fun FlashMemberRow(
                 style = FlashTheme.typography.bodyDefault,
                 color = colors.textError,
                 maxLines = 1,
+            )
+        }
+    }
+}
+
+/**
+ * Row representing a pending join request in the members sheet (UI-054).
+ * Shows applicant initials, name, removed badge if applicable, and Approve / Decline buttons.
+ */
+@Composable
+fun FlashJoinRequestRow(
+    request: FlashGroupJoinRequestUi,
+    onApprove: (() -> Unit)? = null,
+    onRefuse: (() -> Unit)? = null,
+    modifier: Modifier = Modifier,
+) {
+    val colors = FlashTheme.colors
+    val initials = request.label.take(2).uppercase().ifEmpty { "??" }
+
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(FlashShapes.bubbleGrouped)
+            .background(colors.backgroundSurfaceSubtle)
+            .padding(FlashSpacing.space12),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
+    ) {
+        FlashAvatar(
+            initials = initials,
+            seed = request.subjectId,
+            size = 36.dp,
+        )
+
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+            ) {
+                FlashText(
+                    text = request.label,
+                    style = FlashTheme.typography.bodyEmphasis,
+                    color = colors.textPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                if (request.isPreviouslyRemoved) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(colors.accentSecondary.copy(alpha = 0.12f))
+                            .padding(horizontal = 6.dp, vertical = 2.dp),
+                    ) {
+                        FlashText(
+                            text = "Previously removed",
+                            style = FlashTheme.typography.metadataEmphasis,
+                            color = colors.accentSecondary,
+                        )
+                    }
+                }
+            }
+            FlashText(
+                text = "Requested to join",
+                style = FlashTheme.typography.metadataDefault,
+                color = colors.textTertiary,
+            )
+        }
+
+        if (onRefuse != null) {
+            FlashText(
+                text = "Decline",
+                modifier = Modifier
+                    .clip(FlashShapes.chip)
+                    .clickable(role = Role.Button, onClick = onRefuse)
+                    .padding(horizontal = FlashSpacing.space8, vertical = FlashSpacing.space8),
+                style = FlashTheme.typography.captionEmphasis,
+                color = colors.textSecondary,
+            )
+        }
+
+        if (onApprove != null) {
+            FlashText(
+                text = "Approve",
+                modifier = Modifier
+                    .clip(FlashShapes.chip)
+                    .background(colors.accentPrimary.copy(alpha = 0.12f))
+                    .clickable(role = Role.Button, onClick = onApprove)
+                    .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space8),
+                style = FlashTheme.typography.captionEmphasis,
+                color = colors.accentPrimary,
             )
         }
     }

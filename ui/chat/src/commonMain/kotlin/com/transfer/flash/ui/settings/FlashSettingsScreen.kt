@@ -132,6 +132,12 @@ data class FlashSettingsModel(
     val appVersion: String = "dev",
     val protocolVersion: String = "FLASH_XFER/1",
     val deviceIdShort: String = "00000000",
+    /** Help share group files: share received file pieces with other group members. Default TRUE. */
+    val swarmHelpShare: Boolean = true,
+    /** Keep finished files available for others in the swarm. Default TRUE. */
+    val swarmKeepFinishedFiles: Boolean = true,
+    /** Experimental: group file sharing via swarm transfer (SW-8). Default FALSE. */
+    val swarmEnabled: Boolean = false,
 )
 
 /** Pure helpers backing the settings page (JVM-testable). */
@@ -265,6 +271,9 @@ fun FlashSettingsScreen(
     onDiscoveryModeChanged: (String) -> Unit = {},
     /** Toggles Windows Explorer context menu integration. */
     onWindowsContextMenuChanged: (Boolean) -> Unit = {},
+    onSwarmHelpShareChanged: (Boolean) -> Unit = {},
+    onSwarmKeepFinishedFilesChanged: (Boolean) -> Unit = {},
+    onSwarmEnabledChanged: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier,
     listState: LazyListState = rememberLazyListState(),
     /** Space the hanging shell bar occupies; content scrolls under it (UI-046). */
@@ -518,8 +527,40 @@ fun FlashSettingsScreen(
             }
         }
 
-        item(key = "about-label") { StaggerIn(24) { SectionLabel("ABOUT") } }
-        item(key = "about") { StaggerIn(25) { AboutCard(model) } }
+        item(key = "swarm-label") { StaggerIn(24) { SectionLabel("GROUP FILE SHARING") } }
+        item(key = "swarm-help-share") {
+            StaggerIn(24) {
+                SwitchRow(
+                    title = "Help share group files",
+                    subtitle = "Share received file pieces with other group members on your local network",
+                    checked = model.swarmHelpShare,
+                    onCheckedChange = onSwarmHelpShareChanged,
+                )
+            }
+        }
+        item(key = "swarm-keep-finished") {
+            StaggerIn(25) {
+                SwitchRow(
+                    title = "Keep finished files available for others",
+                    subtitle = "Keep completed group files available to help members who come online later",
+                    checked = model.swarmKeepFinishedFiles,
+                    onCheckedChange = onSwarmKeepFinishedFilesChanged,
+                )
+            }
+        }
+        item(key = "swarm-enabled") {
+            StaggerIn(25) {
+                SwitchRow(
+                    title = "Group file sharing (swarm, experimental)",
+                    subtitle = "Enable multi-device cooperative transfers in groups. Applies after restart",
+                    checked = model.swarmEnabled,
+                    onCheckedChange = onSwarmEnabledChanged,
+                )
+            }
+        }
+
+        item(key = "about-label") { StaggerIn(26) { SectionLabel("ABOUT") } }
+        item(key = "about") { StaggerIn(27) { AboutCard(model) } }
     }
 }
 

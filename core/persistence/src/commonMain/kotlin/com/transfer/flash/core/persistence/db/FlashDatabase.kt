@@ -11,6 +11,13 @@ import com.transfer.flash.core.persistence.db.dao.MessageDao
 import com.transfer.flash.core.persistence.db.dao.OutboxDao
 import com.transfer.flash.core.persistence.db.dao.ReadCursorDao
 import com.transfer.flash.core.persistence.db.dao.RememberedEndpointDao
+import com.transfer.flash.core.persistence.db.dao.SwarmDao
+import com.transfer.flash.core.persistence.db.dao.GroupInviteDao
+import com.transfer.flash.core.persistence.db.dao.GroupJoinRequestDao
+import com.transfer.flash.core.persistence.db.dao.GroupPreferencesDao
+import com.transfer.flash.core.persistence.db.dao.GroupRotationDao
+import com.transfer.flash.core.persistence.db.dao.GroupSecretDao
+import com.transfer.flash.core.persistence.db.dao.GroupSettingsDao
 import com.transfer.flash.core.persistence.db.dao.ReceiptDao
 import com.transfer.flash.core.persistence.db.dao.RecentSearchDao
 import com.transfer.flash.core.persistence.db.dao.ReactionDao
@@ -20,11 +27,19 @@ import com.transfer.flash.core.persistence.db.dao.TrustedPeerDao
 import com.transfer.flash.core.persistence.db.entity.ConversationEntity
 import com.transfer.flash.core.persistence.db.entity.DraftEntity
 import com.transfer.flash.core.persistence.db.entity.GroupDeliveryEntity
+import com.transfer.flash.core.persistence.db.entity.GroupInviteEntity
+import com.transfer.flash.core.persistence.db.entity.GroupJoinRequestEntity
 import com.transfer.flash.core.persistence.db.entity.GroupMemberEntity
+import com.transfer.flash.core.persistence.db.entity.GroupPreferencesEntity
+import com.transfer.flash.core.persistence.db.entity.GroupRotationEntity
+import com.transfer.flash.core.persistence.db.entity.GroupSecretEntity
+import com.transfer.flash.core.persistence.db.entity.GroupSettingsEntity
 import com.transfer.flash.core.persistence.db.entity.MessageEntity
 import com.transfer.flash.core.persistence.db.entity.OutboxEntity
 import com.transfer.flash.core.persistence.db.entity.ReadCursorEntity
 import com.transfer.flash.core.persistence.db.entity.RememberedEndpointEntity
+import com.transfer.flash.core.persistence.db.entity.SwarmContentEntity
+import com.transfer.flash.core.persistence.db.entity.SwarmTombstoneEntity
 import com.transfer.flash.core.persistence.db.entity.ReceiptEntity
 import com.transfer.flash.core.persistence.db.entity.RecentSearchEntity
 import com.transfer.flash.core.persistence.db.entity.ReactionEntity
@@ -64,6 +79,14 @@ import com.transfer.flash.core.persistence.db.entity.TrustedPeerEntity
         GroupMemberEntity::class,
         GroupDeliveryEntity::class,
         RememberedEndpointEntity::class,
+        SwarmContentEntity::class,
+        SwarmTombstoneEntity::class,
+        GroupSecretEntity::class,
+        GroupInviteEntity::class,
+        GroupJoinRequestEntity::class,
+        GroupRotationEntity::class,
+        GroupSettingsEntity::class,
+        GroupPreferencesEntity::class,
     ],
     version = FlashDatabase.DATABASE_VERSION,
     exportSchema = true,
@@ -99,6 +122,20 @@ public abstract class FlashDatabase : RoomDatabase() {
 
     public abstract fun rememberedEndpointDao(): RememberedEndpointDao
 
+    public abstract fun swarmDao(): SwarmDao
+
+    public abstract fun groupSecretDao(): GroupSecretDao
+
+    public abstract fun groupInviteDao(): GroupInviteDao
+
+    public abstract fun groupJoinRequestDao(): GroupJoinRequestDao
+
+    public abstract fun groupRotationDao(): GroupRotationDao
+
+    public abstract fun groupSettingsDao(): GroupSettingsDao
+
+    public abstract fun groupPreferencesDao(): GroupPreferencesDao
+
     public companion object {
         public const val DATABASE_NAME: String = "flash.db"
         // v2: MessageEntity gained attachment columns (attachmentTransferId/Name/Mime/Size/Path).
@@ -106,6 +143,10 @@ public abstract class FlashDatabase : RoomDatabase() {
         // v4: group membership/delivery tables and conversation group provenance.
         // v5: remembered_endpoints, the DR1 dial hints for paired peers (ADR-047).
         // v6: signed group membership and messages, the nullable v2-group columns (ADR-044 V1).
-        public const val DATABASE_VERSION: Int = 6
+        // v7: swarm_content and swarm_tombstone for group swarm transfers (ADR-072, SW-6).
+        // v8: group_secret, group_invite, group_join_request for group membership by secret (ADR-044, ADR-073, GM-2).
+        // v9: group_rotation for group rotation notices (ADR-044, ADR-073, GM-6).
+        // v10: group_settings and group_preferences for signed settings and local prefs (ADR-074, GM-9).
+        public const val DATABASE_VERSION: Int = 10
     }
 }

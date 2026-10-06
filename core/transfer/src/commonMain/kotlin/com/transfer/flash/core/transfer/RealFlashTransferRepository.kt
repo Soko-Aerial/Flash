@@ -13,6 +13,8 @@ import com.transfer.flash.core.transfer.chunked.Chunker
 import com.transfer.flash.core.transfer.chunked.FileMeta
 import com.transfer.flash.core.transfer.chunked.ResumeBitVector
 import com.transfer.flash.core.transfer.chunked.Sha256
+import com.transfer.flash.core.transfer.chunked.WholeFileCheck
+import com.transfer.flash.core.transfer.chunked.WholeFileVerifier
 import com.transfer.flash.core.transfer.concurrent.PlatformLock
 import com.transfer.flash.core.transfer.model.FlashTransfer
 import com.transfer.flash.core.transfer.model.FlashTransferDirection
@@ -36,6 +38,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import okio.FileSystem
+import okio.buffer
+import okio.Path.Companion.toPath
 
 // [FileSourceOpener] — the URI → stream seam this repository is constructed with — moved to
 // `commonMain/FileSourceOpener.kt` in Phase 13B-2 and its `open()` now returns `okio.Source`.
@@ -72,10 +78,58 @@ public class RealFlashTransferRepository(
     /** Predicate indicating whether a given peer device has an established encrypted channel. */
     private val isPeerEncrypted: (peerDeviceId: String) -> Boolean = { false },
     private val performanceMode: () -> FlashPerformanceMode = { FlashPerformanceMode.HIGH },
+    /**
+     * Free bytes where received files are written, or null when that is unknown (the default). The host supplies it
+     * (`File.usableSpace` of the receive directory); [admitIncoming] refuses an offer that cannot fit (ADR-069, FA-2).
+     * Null never blocks a transfer: an unknown amount is not a reason to refuse.
+     */
+    private val freeSpaceBytes: () -> Long? = { null },
 ) : FlashTransferRepository {
 
+    private val _internalTransfers = MutableStateFlow<List<FlashTransfer>>(emptyList())
+    private val _externalRows = MutableStateFlow<List<FlashTransfer>>(emptyList())
     private val _activeTransfers = MutableStateFlow<List<FlashTransfer>>(emptyList())
     override val activeTransfers: StateFlow<List<FlashTransfer>> = _activeTransfers.asStateFlow()
+
+    private var externalControl: ExternalTransferControl? = null
+
+    private fun updateMergedTransfers() {
+        val internal = _internalTransfers.value
+        val external = _externalRows.value
+        if (external.isEmpty()) {
+            _activeTransfers.value = internal
+        } else {
+            val externalIds = external.mapTo(HashSet(external.size)) { it.id.value }
+            _activeTransfers.value = internal.filterNot { it.id.value in externalIds } + external
+        }
+    }
+
+    private fun updateInternalTransfers(transform: (List<FlashTransfer>) -> List<FlashTransfer>) {
+        _internalTransfers.update(transform)
+        updateMergedTransfers()
+    }
+
+    /**
+     * Attaches external transfer rows (e.g. managed by FlashSwarm) into [activeTransfers] (SW-8).
+     */
+    public fun attachExternalRows(
+        rows: StateFlow<List<FlashTransfer>>,
+        control: ExternalTransferControl,
+    ) {
+        this.externalControl = control
+        repositoryScope.launch {
+            rows.collect { extList ->
+                _externalRows.value = extList
+                updateMergedTransfers()
+            }
+        }
+    }
+
+    /**
+     * True if [transferId] is an external (e.g. swarm) transfer row.
+     */
+    override fun isExternalRow(transferId: String): Boolean =
+        externalControl?.owns(transferId) == true
 
     /**
      * Receive-side intake control. Emitted when an INBOUND transfer is paused/resumed/cancelled.
@@ -98,6 +152,14 @@ public class RealFlashTransferRepository(
     public data class OutgoingControl(val transferId: String, val peerDeviceId: String?, val action: String)
 
     public companion object {
+        /** Shown on the receiving side when the assembled file does not match the digest the sender offered (ADR-068). */
+        public const val INTEGRITY_FAILED_MESSAGE: String =
+            "The file arrived damaged and was discarded. Try again to receive it afresh."
+
+        /** Shown on the sending side when the receiver reports the assembled file as damaged (ADR-068). */
+        public const val PEER_REPORTED_DAMAGE_MESSAGE: String =
+            "The other device reports the file arrived damaged. Try again to send it afresh."
+
         public const val ACTION_PAUSE: String = "pause"
         public const val ACTION_RESUME: String = "resume"
         public const val ACTION_CANCEL: String = "cancel"
@@ -236,13 +298,45 @@ public class RealFlashTransferRepository(
     ): FlashResult<FlashTransferId> {
         val transferId = FlashTransferId(transferIdString)
 
+    // FA-6 (ADR-069): a size of 0 from a picker means "empty" or "the provider did not say". The chunker cannot
+    // plan zero bytes, so it used to throw inside the send job and leave the row Queued for ever. Measure the
+    // unknown size by streaming the source once; refuse a truly empty or unreadable file with a visible Failed row.
+    // The call still returns Success: callers ignore Failure, so the row (Transfers list, chat bubble) is the message.
+    val totalBytes = if (fileSize > 0L) fileSize else measureSourceBytes(fileUri)
+    if (totalBytes == null || totalBytes <= 0L) {
+        val message = if (totalBytes == null) TransferFailureText.UNREADABLE_FILE else TransferFailureText.EMPTY_FILE
+        updateInternalTransfers {
+            it + FlashTransfer(
+                id = transferId,
+                peerName = targetDevice.friendlyName,
+                fileName = displayName,
+                direction = FlashTransferDirection.Sending,
+                bytesDone = 0L,
+                bytesTotal = 0L,
+                state = FlashTransferState.Failed,
+                sourceUri = fileUri,
+                wireFileId = fileId,
+                peerDeviceId = targetDevice.id.value,
+                errorMessage = message,
+                isEncrypted = isPeerEncrypted(targetDevice.id.value),
+            )
+        }
+        store?.insertTransfer(
+            transferId = transferIdString,
+            totalBytes = 0L,
+            status = FlashTransferState.Failed.name,
+        )
+        runCatching { FlashLog.w("TRANSFER", "send refused transferId=$transferIdString reason=${if (totalBytes == null) "unreadable" else "empty"}") }
+        return FlashResult.Success(transferId)
+    }
+
     val initialTransfer = FlashTransfer(
         id = transferId,
         peerName = targetDevice.friendlyName,
         fileName = displayName,
         direction = FlashTransferDirection.Sending,
         bytesDone = 0L,
-        bytesTotal = fileSize,
+        bytesTotal = totalBytes,
         state = FlashTransferState.Queued,
         sourceUri = fileUri,
         wireFileId = fileId,
@@ -260,10 +354,10 @@ public class RealFlashTransferRepository(
         registryLock.withLock { pauseIntents.add(transferIdString) }
     }
 
-    _activeTransfers.update { it + initialTransfer }
+    updateInternalTransfers { it + initialTransfer }
     store?.insertTransfer(
         transferId = transferIdString,
-        totalBytes = fileSize,
+        totalBytes = totalBytes,
         status = FlashTransferState.Queued.name,
     )
 
@@ -273,7 +367,7 @@ public class RealFlashTransferRepository(
                 fileId = fileId,
                 fileUri = fileUri,
                 displayName = displayName,
-                fileSize = fileSize,
+                fileSize = totalBytes,
                 peerName = targetDevice.friendlyName,
                 peerDeviceId = targetDevice.id.value,
             )
@@ -281,6 +375,32 @@ public class RealFlashTransferRepository(
         registryLock.withLock { runningJobs[transferIdString] = job }
 
         return FlashResult.Success(transferId)
+    }
+
+    /**
+     * Counts the bytes [fileSourceOpener] yields for [fileUri] by reading it once. Null when it cannot be opened or
+     * read. Only used when the picker gave no size, so the usual path never pays for it.
+     */
+    private suspend fun measureSourceBytes(fileUri: String): Long? = withContext(workerDispatcher) {
+        try {
+            val source = fileSourceOpener.open(fileUri).buffer()
+            try {
+                val scratch = ByteArray(64 * 1024)
+                var total = 0L
+                while (true) {
+                    val read = source.read(scratch)
+                    if (read < 0) break
+                    total += read
+                }
+                total
+            } finally {
+                source.close()
+            }
+        } catch (ce: kotlinx.coroutines.CancellationException) {
+            throw ce
+        } catch (_: Exception) {
+            null
+        }
     }
 
     private suspend fun executeSend(
@@ -362,26 +482,42 @@ public class RealFlashTransferRepository(
             when (val result = dispatcher.send()) {
                 is MultiStreamResult.Completed -> {
                     progressJob.cancel()
-                    updateTransferState(transferId) {
-                        it.copy(
-                            bytesDone = fileSize,
-                            state = FlashTransferState.Completed,
-                            speedBytesPerSec = 0L,
-                            etaSeconds = 0L,
-                        )
+                    if (result.verified == false) {
+                        // The receiver assembled every chunk and its whole-file check failed (ADR-068). Not a
+                        // success, and a retry must resend everything, so the confirmed set goes too.
+                        updateTransferState(transferId) {
+                            it.copy(
+                                state = FlashTransferState.Failed,
+                                errorMessage = PEER_REPORTED_DAMAGE_MESSAGE,
+                                speedBytesPerSec = 0L,
+                                etaSeconds = 0L,
+                            )
+                        }
+                        store?.clearDoneChunks(transferId)
+                        store?.setStatus(transferId, FlashTransferState.Failed.name)
+                    } else {
+                        updateTransferState(transferId) {
+                            it.copy(
+                                bytesDone = fileSize,
+                                state = FlashTransferState.Completed,
+                                speedBytesPerSec = 0L,
+                                etaSeconds = 0L,
+                            )
+                        }
+                        store?.setStatus(transferId, FlashTransferState.Completed.name)
+                        store?.setBytesDone(transferId, fileSize)
                     }
-                    store?.setStatus(transferId, FlashTransferState.Completed.name)
-                    store?.setBytesDone(transferId, fileSize)
                 }
 
                 is MultiStreamResult.Failed -> {
                     progressJob.cancel()
                     // Persist unconfirmed chunks if needed
                     val unconfirmed = result.unconfirmedIndexes
+                    val failureText = TransferFailureText.friendly(result.reason, transferId)
                     updateTransferState(transferId) {
                         it.copy(
                             state = FlashTransferState.Failed,
-                            errorMessage = result.reason,
+                            errorMessage = failureText,
                             speedBytesPerSec = 0L,
                             etaSeconds = 0L,
                         )
@@ -398,10 +534,11 @@ public class RealFlashTransferRepository(
             throw ce
         } catch (t: Throwable) {
             progressJob.cancel()
+            val failureText = TransferFailureText.friendly(t.message ?: t::class.simpleName, transferId)
             updateTransferState(transferId) {
                 it.copy(
                     state = FlashTransferState.Failed,
-                    errorMessage = t.message ?: "Transfer aborted unexpectedly",
+                    errorMessage = failureText,
                     speedBytesPerSec = 0L,
                     etaSeconds = 0L,
                 )
@@ -461,6 +598,10 @@ public class RealFlashTransferRepository(
     }
 
     override suspend fun pauseTransfer(transferId: FlashTransferId): FlashResult<Unit> {
+        if (externalControl?.owns(transferId.value) == true) {
+            externalControl?.pause(transferId.value)
+            return FlashResult.Success(Unit)
+        }
         val transfer = _activeTransfers.value.find { it.id == transferId }
             ?: return FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Transfer not found: ${transferId.value}"))
         val jobPresent = registryLock.withLock { transferId.value in runningJobs }
@@ -508,7 +649,19 @@ public class RealFlashTransferRepository(
         return FlashResult.Success(Unit)
     }
 
+    override suspend fun pauseForSystem(transferId: FlashTransferId, reason: String): FlashResult<Unit> {
+        if (externalControl?.owns(transferId.value) == true) {
+            externalControl?.pauseForSystem(transferId.value, reason)
+            return FlashResult.Success(Unit)
+        }
+        return pauseTransfer(transferId)
+    }
+
     override suspend fun resumeTransfer(transferId: FlashTransferId): FlashResult<Unit> {
+        if (externalControl?.owns(transferId.value) == true) {
+            externalControl?.resume(transferId.value)
+            return FlashResult.Success(Unit)
+        }
         val transfer = _activeTransfers.value.find { it.id == transferId }
             ?: return FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Transfer not found: ${transferId.value}"))
 
@@ -635,6 +788,10 @@ public class RealFlashTransferRepository(
     }
 
     override suspend fun cancelTransfer(transferId: FlashTransferId): FlashResult<Unit> {
+        if (externalControl?.owns(transferId.value) == true) {
+            externalControl?.cancel(transferId.value)
+            return FlashResult.Success(Unit)
+        }
         val transfer = _activeTransfers.value.find { it.id == transferId }
         receiverRateMetersLock.withLock { receiverRateMeters.remove(transferId.value) }
         val job = registryLock.withLock { runningJobs.remove(transferId.value) }
@@ -855,7 +1012,7 @@ public class RealFlashTransferRepository(
         peerName: String,
         peerDeviceId: String?,
     ) {
-        _activeTransfers.update { list ->
+        updateInternalTransfers { list ->
             if (list.any { it.id.value == transferId }) {
                 list
             } else {
@@ -876,6 +1033,10 @@ public class RealFlashTransferRepository(
     }
 
     override suspend fun acceptIncoming(transferId: FlashTransferId): FlashResult<Unit> {
+        if (externalControl?.owns(transferId.value) == true) {
+            externalControl?.accept(transferId.value)
+            return FlashResult.Success(Unit)
+        }
         val id = transferId.value
         val transfer = _activeTransfers.value.find { it.id.value == id }
             ?: return FlashResult.Failure(FlashError.TransferFailed(id, "unknown transfer"))
@@ -893,7 +1054,45 @@ public class RealFlashTransferRepository(
         return FlashResult.Success(Unit)
     }
 
+    /**
+     * The storage gate for an accepted inbound offer (ADR-069, FA-2). Hosts call it first thing when they act on an
+     * accept (the user's tap and auto-accept both end there) and stop when it returns false.
+     *
+     * Needs `bytesTotal - bytesDone` free (a resumed transfer already holds its written part). When that does not fit
+     * the row becomes Failed with [TransferFailureText.notEnoughSpace], the host's pending session is dropped (the
+     * local DECLINE action) and the sender abandons its parked send (a CANCEL). Without a [freeSpaceBytes] provider,
+     * or for an unknown row, it admits: an unknown amount is no reason to refuse.
+     */
+    public fun admitIncoming(transferId: String): Boolean {
+        val free = runCatching { freeSpaceBytes() }.getOrNull() ?: return true
+        val transfer = _activeTransfers.value.find { it.id.value == transferId } ?: return true
+        val needed = (transfer.bytesTotal - transfer.bytesDone).coerceAtLeast(0L)
+        if (needed <= free) return true
+        runCatching { FlashLog.w("TRANSFER", "inbound refused transferId=$transferId needed=$needed free=$free") }
+        receiverRateMetersLock.withLock { receiverRateMeters.remove(transferId) }
+        updateTransferState(transferId) {
+            it.copy(
+                state = FlashTransferState.Failed,
+                speedBytesPerSec = 0L,
+                etaSeconds = 0L,
+                errorMessage = TransferFailureText.notEnoughSpace(needed, free),
+            )
+        }
+        store?.let { activeStore ->
+            repositoryScope.launch(workerDispatcher) {
+                activeStore.setStatus(transferId, FlashTransferState.Failed.name)
+            }
+        }
+        emitIncoming(transferId, ACTION_DECLINE)
+        emitOutgoing(transferId, transfer.peerDeviceId, ACTION_CANCEL)
+        return false
+    }
+
     override suspend fun declineIncoming(transferId: FlashTransferId): FlashResult<Unit> {
+        if (externalControl?.owns(transferId.value) == true) {
+            externalControl?.decline(transferId.value)
+            return FlashResult.Success(Unit)
+        }
         val id = transferId.value
         receiverRateMetersLock.withLock { receiverRateMeters.remove(id) }
         val transfer = _activeTransfers.value.find { it.id.value == id }
@@ -932,7 +1131,7 @@ public class RealFlashTransferRepository(
             val existing = _activeTransfers.value.find { it.id.value == transferId }
             meter.record(existing?.bytesDone ?: 0L)
         }
-        _activeTransfers.update { list ->
+        updateInternalTransfers { list ->
             if (list.any { it.id.value == transferId }) {
                 // Row already present (an accepted OFFER, or a retry re-opening a session for a
                 // transfer that failed mid-flight): keep its identity but fill in the now-resolved
@@ -1021,8 +1220,72 @@ public class RealFlashTransferRepository(
         }
     }
 
+    /**
+     * Finishes an inbound transfer whose chunks have all been written, after checking the assembled file against the
+     * digest the sender offered (ADR-068, ERROR-098). The one completion path for every host.
+     *
+     * - [WholeFileCheck.MATCH]: completed and verified.
+     * - [WholeFileCheck.UNVERIFIABLE] (no digest on record, unreadable file): completed, flagged unverified, as before.
+     * - [WholeFileCheck.MISMATCH]: the file is deleted, the confirmed-chunk set is forgotten (memory and store) and the
+     *   transfer is **Failed**, never Completed: the transfer list labels every Completed transfer "Verified", so a
+     *   failed check that still completed would have been invisible. The host must also drop its pipeline session
+     *   (`ReceivePipeline.cancelSession`) and answer the sender with `COMPLETE verified=false` so it fails too.
+     *
+     * Blocking: hashes the whole file on the calling thread.
+     */
+    public fun onIncomingFileAssembled(
+        transferId: String,
+        localPath: String?,
+        expectedSha256Hex: String?,
+        chunksVerified: Boolean = true,
+        fileSystem: FileSystem = FileSystem.SYSTEM,
+    ): WholeFileCheck {
+        val check = if (chunksVerified) {
+            WholeFileVerifier.check(localPath, expectedSha256Hex, fileSystem)
+        } else {
+            WholeFileCheck.MISMATCH
+        }
+        when (check) {
+            WholeFileCheck.MATCH -> onIncomingCompleted(transferId, verified = true, localPath = localPath)
+            WholeFileCheck.UNVERIFIABLE -> onIncomingCompleted(transferId, verified = false, localPath = localPath)
+            WholeFileCheck.MISMATCH -> {
+                if (!localPath.isNullOrBlank()) {
+                    try {
+                        fileSystem.delete(localPath.toPath())
+                    } catch (_: okio.IOException) {
+                        // Best effort: the transfer is failed either way and a retry rewrites the file.
+                    }
+                }
+                onIncomingIntegrityFailed(transferId)
+            }
+        }
+        return check
+    }
+
+    private fun onIncomingIntegrityFailed(transferId: String) {
+        receiverRateMetersLock.withLock { receiverRateMeters.remove(transferId) }
+        receiverDoneLock.withLock { receiverDone.remove(transferId) }
+        store?.let { activeStore ->
+            repositoryScope.launch(workerDispatcher) {
+                activeStore.clearDoneChunks(transferId)
+                activeStore.setStatus(transferId, FlashTransferState.Failed.name)
+            }
+        }
+        updateTransferState(transferId) { transfer ->
+            transfer.copy(
+                bytesDone = 0L,
+                state = FlashTransferState.Failed,
+                speedBytesPerSec = 0L,
+                etaSeconds = 0L,
+                errorMessage = INTEGRITY_FAILED_MESSAGE,
+                localPath = null,
+            )
+        }
+    }
+
     override fun onIncomingFailed(transferId: String, reason: String) {
         receiverRateMetersLock.withLock { receiverRateMeters.remove(transferId) }
+        val failureText = TransferFailureText.friendly(reason, transferId)
         updateTransferState(transferId) { transfer ->
             // Never clobber a terminal state: a declined/cancelled offer or an already-completed
             // transfer must not be relabelled Failed by a late teardown callback.
@@ -1033,7 +1296,7 @@ public class RealFlashTransferRepository(
             } else {
                 transfer.copy(
                     state = FlashTransferState.Failed,
-                    errorMessage = reason,
+                    errorMessage = failureText,
                     speedBytesPerSec = 0L,
                     etaSeconds = 0L,
                 )
@@ -1042,7 +1305,7 @@ public class RealFlashTransferRepository(
     }
 
     private fun updateTransferState(transferId: String, transform: (FlashTransfer) -> FlashTransfer) {
-        _activeTransfers.update { list ->
+        updateInternalTransfers { list ->
             list.map { if (it.id.value == transferId) transform(it) else it }
         }
     }

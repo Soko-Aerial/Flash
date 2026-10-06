@@ -53,8 +53,21 @@ public interface FlashTransferRepository {
 
     public suspend fun pauseTransfer(transferId: FlashTransferId): FlashResult<Unit>
 
+    /**
+     * SW-2 Part C: Pause triggered by the system (e.g., OS service timeout, battery saver).
+     * Distinguishes non-destructive system stops from explicit user cancellation.
+     * Default delegates to [pauseTransfer].
+     */
+    public suspend fun pauseForSystem(transferId: FlashTransferId, reason: String): FlashResult<Unit> =
+        pauseTransfer(transferId)
+
     public suspend fun resumeTransfer(transferId: FlashTransferId): FlashResult<Unit>
     public suspend fun cancelTransfer(transferId: FlashTransferId): FlashResult<Unit>
+
+    /**
+     * True if [transferId] is managed by an external engine (e.g. FlashSwarm) rather than 1:1 transfer pipeline.
+     */
+    public fun isExternalRow(transferId: String): Boolean = false
 
     /**
      * Explicit user consent for an inbound transfer that arrived as an OFFER (#5). Flips the

@@ -1,6 +1,7 @@
 package com.transfer.flash.core.calling
 
 import com.shepeliev.webrtckmp.VideoStreamTrack
+import com.transfer.flash.core.calling.model.FlashCallReactionKind
 import com.transfer.flash.core.calling.model.FlashCallStats
 import com.transfer.flash.core.calling.model.FlashCallUiState
 import com.transfer.flash.core.calling.model.OngoingGroupCallUi
@@ -131,6 +132,23 @@ public interface FlashCalling {
      * off, to save heat and battery. No-op for a 1:1 call or when no call is live.
      */
     public fun setShowFewerVideos(on: Boolean): Unit = Unit
+
+    /**
+     * ADR-067: raises or lowers this device's hand; the other participants see it on this device's tile. No-op when idle.
+     */
+    public fun setHandRaised(raised: Boolean): Unit = Unit
+
+    /**
+     * ADR-067: shows [kind] on every participant's screen for a few seconds. Returns false when it was not sent (no live
+     * call, or inside the short gap that stops a button held down from flooding the call).
+     */
+    public fun sendReaction(kind: FlashCallReactionKind): Boolean = false
+
+    /**
+     * ADR-067 data saver: stops receiving video without ending the call. In a 1:1 call the other end is told and stops
+     * encoding for this device; in a group call this device asks nobody for video. Audio is untouched. No-op when idle.
+     */
+    public fun setDataSaver(on: Boolean): Unit = Unit
 
     /**
      * Feeds one inbound text frame in. Returns true when the text was a `FLASH_CALL` frame that

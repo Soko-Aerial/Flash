@@ -44,7 +44,9 @@ class FlashKeepaliveWorker(
 
     override suspend fun doWork(): Result {
         if (DiscoveryEngineHolder.isRunning()) {
-            // Service or UI already owns the engine: nothing to do, and stopping it would be wrong.
+            // Service or UI already owns the engine: trigger swarm retention cleanup and reevaluate
+            DiscoveryEngineHolder.currentSwarm()?.runRetentionCleanup()
+            DiscoveryEngineHolder.currentSwarm()?.reevaluate()
             return Result.success()
         }
 
@@ -56,6 +58,8 @@ class FlashKeepaliveWorker(
         }
 
         try {
+            DiscoveryEngineHolder.currentSwarm()?.runRetentionCleanup()
+            DiscoveryEngineHolder.currentSwarm()?.reevaluate()
             val network = DiscoveryEngineHolder.currentNetwork()
             val sawSession = network != null && withTimeoutOrNull(SESSION_WINDOW_MS) {
                 network.activeSessions.first { it.isNotEmpty() }

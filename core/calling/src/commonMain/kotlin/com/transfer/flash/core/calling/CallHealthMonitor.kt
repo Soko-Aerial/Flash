@@ -38,6 +38,9 @@ internal class CallHealthMonitor(
     /** The user's "Show fewer" choice; it lasts until turned off or the call ends. */
     var showFewer: Boolean = false
 
+    /** The user's data saver (ADR-067): receive no video at all; it lasts until turned off or the call ends. */
+    var dataSaver: Boolean = false
+
     private var thermal = FlashThermalStatus.NONE
     private var cpuHighSince: Long? = null
     private var cpuHigh = false
@@ -73,6 +76,10 @@ internal class CallHealthMonitor(
             )
         }
         val struggling = thermal >= FlashThermalStatus.MODERATE || cpuHigh
+        if (dataSaver) {
+            // No video to receive: nothing to warn about either, the tiles are not decoding anything.
+            return Verdict(struggling = struggling, receiveCap = 0)
+        }
         if (showFewer) {
             return Verdict(struggling = struggling, receiveCap = 1, showingFewer = true)
         }

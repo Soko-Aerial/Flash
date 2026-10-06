@@ -88,6 +88,8 @@ kotlin {
             // `android.*` imports, so it belongs in commonMain, not androidMain.
             implementation(project(":core:common"))
             implementation(project(":core:messaging"))
+            implementation(project(":core:security"))
+            implementation(project(":core:transfer"))
             implementation(project(":ui:theme"))
             implementation(project(":ui:platform-shims"))
 

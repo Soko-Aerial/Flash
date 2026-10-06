@@ -1,5 +1,6 @@
 package com.transfer.flash.core.calling.protocol
 
+import com.transfer.flash.core.calling.model.FlashCallReactionKind
 import com.transfer.flash.core.common.perf.FlashNetworkBand
 
 /**
@@ -189,6 +190,28 @@ public sealed interface CallWireFrame {
         override val callId: String,
         override val from: String,
         public val seq: Long,
+    ) : CallWireFrame
+
+    /**
+     * Either side, during a live call (ADR-067, `action=status`): what this participant's controls say. Every field is
+     * optional and a missing one means "unchanged / not stated", so an old client's silence and a newer client's partial
+     * update read the same. Sent on every change and once when the call connects.
+     *
+     * [reaction] is a one-shot: it rides one status frame, numbered by [reactionSeq] (wall-clock based and growing), so a
+     * receiver shows each number once and a replayed or reordered frame cannot show it again.
+     */
+    public data class Status(
+        override val callId: String,
+        override val from: String,
+        /** The microphone is live (false = muted). */
+        public val micOn: Boolean? = null,
+        /** The camera is on (false = off). Omitted on an audio call. */
+        public val cameraOn: Boolean? = null,
+        public val handRaised: Boolean? = null,
+        /** The sender wants the receiver's video (false = data saver: stop sending it video). */
+        public val receiveVideo: Boolean? = null,
+        public val reaction: FlashCallReactionKind? = null,
+        public val reactionSeq: Long = 0L,
     ) : CallWireFrame
 
     /** Group call: query whether an active call is ongoing in the group. */

@@ -2,6 +2,8 @@ package com.transfer.flash.core.messaging.model
 
 import com.transfer.flash.core.common.model.FlashDeviceId
 import com.transfer.flash.core.common.model.FlashPeerPresence
+import com.transfer.flash.core.messaging.group.GroupLocalPreferences
+import com.transfer.flash.core.messaging.protocol.GroupSettings
 
 @JvmInline
 public value class FlashMessageId(public val value: String)
@@ -107,6 +109,12 @@ public data class FlashAttachmentProgress(
     val localPath: String? = null,
     val speedMbps: Float = 0f,
     val etaSeconds: Int = 0,
+    val waitReason: String? = null,
+    val canGoOffline: Boolean = false,
+    val holdersOnline: Int = 0,
+    val errorMessage: String? = null,
+    val bytesDone: Long = 0L,
+    val bytesTotal: Long = 0L,
 )
 
 /**
@@ -122,6 +130,10 @@ public data class FlashFileAttachmentUi(
     val transferSpeedMbps: Float = 0f,
     val etaSeconds: Int = 0,
     val localUri: String? = null,
+    val waitReason: String? = null,
+    val canGoOffline: Boolean = false,
+    val holdersOnline: Int = 0,
+    val detailLine: String? = null,
 )
 
 /**
@@ -398,6 +410,27 @@ public data class FlashConversationUiState(
     val selfMembership: FlashSelfMembership = FlashSelfMembership.Active,
     /** UI-052: non-null while earlier group messages are arriving through catch-up; drives the "catching up" banner. */
     val groupSync: FlashGroupSyncUi? = null,
+    /** GM-9 / GM-10: whether this device can share an invite link for this group. */
+    val canShareInvite: Boolean = false,
+    /** GM-10: whether this group is a v2 signed group. */
+    val isGroupV2: Boolean = false,
+    /** GM-10: pending join requests awaiting admin decision (empty for non-admins). */
+    val pendingJoinRequests: List<FlashGroupJoinRequestUi> = emptyList(),
+    /** GM-10: signed settings for this group, if v2. */
+    val groupSettings: GroupSettings? = null,
+    /** GM-10: local preferences for this device in this group. */
+    val groupLocalPreferences: GroupLocalPreferences? = null,
+)
+
+/**
+ * A pending join request for this group (GM-10).
+ */
+public data class FlashGroupJoinRequestUi(
+    val subjectId: String,
+    val subjectKey: String,
+    val label: String,
+    val requestedAtMs: Long,
+    val isPreviouslyRemoved: Boolean = false,
 )
 
 /**

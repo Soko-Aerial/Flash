@@ -27,10 +27,14 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -45,6 +49,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.transfer.flash.ui.chat.FlashConfirmHost
 import com.transfer.flash.ui.chat.fileCategoryColorFor
 import com.transfer.flash.ui.chat.formatFileSize
 import com.transfer.flash.ui.chat.FlashEmptyState
@@ -95,6 +100,9 @@ data class FlashTransferItemUi(
      * Retry button made the button look broken.
      */
     val retryable: Boolean = true,
+    val waitReason: com.transfer.flash.core.transfer.model.FlashTransferWaitReason? = null,
+    val canGoOffline: Boolean = false,
+    val holdersOnline: Int = 0,
 )
 
 data class TransfersUiState(
@@ -190,14 +198,41 @@ object FlashTransfersMath {
 
     fun statusLine(item: FlashTransferItemUi): String = when (item.state) {
         FlashTransferState.Offered -> "Wants to send you this file"
-        FlashTransferState.Queued -> "Queued"
+        FlashTransferState.Queued -> {
+            if (item.waitReason != null) {
+                com.transfer.flash.ui.chat.FlashSwarmUiMath.receiverStatusLine(
+                    waitReason = item.waitReason,
+                    holdersOnline = item.holdersOnline,
+                    senderName = item.peerName,
+                    bytesDone = item.bytesDone,
+                    bytesTotal = item.bytesTotal,
+                    failureMessage = item.errorMessage,
+                ) ?: "Queued"
+            } else {
+                "Queued"
+            }
+        }
         FlashTransferState.Paused -> "Paused"
         FlashTransferState.Failed -> item.errorMessage?.takeIf { it.isNotBlank() } ?: "Failed"
         FlashTransferState.Completed -> if (item.verified) "Verified" else "Completed"
-        FlashTransferState.Active -> listOfNotNull(
-            formatSpeed(item.speedBytesPerSec).takeIf { it.isNotEmpty() },
-            formatEta(item.etaSeconds).takeIf { it.isNotEmpty() },
-        ).joinToString(" · ").ifBlank { "Transferring" }
+        FlashTransferState.Active -> {
+            if (item.direction == FlashTransferDirection.Send && item.canGoOffline) {
+                "You can go offline now"
+            } else if (item.direction == FlashTransferDirection.Receive && item.holdersOnline > 1) {
+                val speed = formatSpeed(item.speedBytesPerSec).takeIf { it.isNotEmpty() }
+                val eta = formatEta(item.etaSeconds).takeIf { it.isNotEmpty() }
+                listOfNotNull(
+                    "Getting it from ${item.holdersOnline} devices",
+                    speed,
+                    eta,
+                ).joinToString(" · ")
+            } else {
+                listOfNotNull(
+                    formatSpeed(item.speedBytesPerSec).takeIf { it.isNotEmpty() },
+                    formatEta(item.etaSeconds).takeIf { it.isNotEmpty() },
+                ).joinToString(" · ").ifBlank { "Transferring" }
+            }
+        }
     }
 }
 
@@ -229,6 +264,7 @@ fun FlashTransfersScreen(
     // top bar of its own to own that inset (Chats/Conversation do it in their headers).
     val surface = modifier.fillMaxSize().statusBarsPadding()
     val statusSwap = FlashTheme.motion.statusCrossfade()
+    var pendingCancelItem by remember { mutableStateOf<FlashTransferItemUi?>(null) }
     // Crossfade on the *branch*, not on `state`: the populated branch re-emits on every
     // progress tick and must not restart a transition.
     AnimatedContent(
@@ -247,7 +283,13 @@ fun FlashTransfersScreen(
             TransfersPageState.Populated -> PopulatedSections(
                 state = state,
                 onPauseResumeClick = onPauseResumeClick,
-                onCancelClick = onCancelClick,
+                onCancelClick = { item ->
+                    if (item.direction == FlashTransferDirection.Send) {
+                        pendingCancelItem = item
+                    } else {
+                        onCancelClick(item)
+                    }
+                },
                 onRetryClick = onRetryClick,
                 onHistoryOpen = onHistoryOpen,
                 onHistoryShare = onHistoryShare,
@@ -258,6 +300,44 @@ fun FlashTransfersScreen(
                 bottomInset = bottomInset,
             )
         }
+    }
+
+    if (pendingCancelItem != null) {
+        val colors = FlashTheme.colors
+        FlashConfirmHost(
+            onDismiss = { pendingCancelItem = null },
+            containerColor = colors.backgroundSurface,
+            title = {
+                FlashText(
+                    text = "Cancel for everyone?",
+                    style = FlashTheme.typography.headingMedium,
+                    color = colors.textPrimary,
+                )
+            },
+            text = {
+                FlashText(
+                    text = "Members who already have the file keep it.",
+                    style = FlashTheme.typography.bodyDefault,
+                    color = colors.textSecondary,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val itm = pendingCancelItem
+                    pendingCancelItem = null
+                    if (itm != null) {
+                        onCancelClick(itm)
+                    }
+                }) {
+                    Text("Cancel for everyone", color = colors.textError)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingCancelItem = null }) {
+                    Text("Keep transfer", color = colors.textSecondary)
+                }
+            },
+        )
     }
 }
 

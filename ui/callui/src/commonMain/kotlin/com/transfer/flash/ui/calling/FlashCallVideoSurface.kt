@@ -23,6 +23,8 @@ internal expect fun FlashCallVideoSurface(
     fit: CallVideoFit,
     modifier: Modifier = Modifier,
     zOrderMediaOverlay: Boolean = false,
+    /** Flip the picture left to right (ADR-067: the user's own preview, like a mirror). Never applied to what is sent. */
+    mirror: Boolean = false,
 )
 
 /** How the frame fills its box. Names are neutral; each actual maps to its own scaling enum. */

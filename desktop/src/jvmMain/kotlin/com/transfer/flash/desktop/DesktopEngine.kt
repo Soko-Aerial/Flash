@@ -40,6 +40,12 @@ import com.transfer.flash.core.messaging.protocol.PttSessionCodec
 import com.transfer.flash.core.messaging.util.FlashMimeTypes
 import com.transfer.flash.core.persistence.db.FlashDatabase
 import com.transfer.flash.core.persistence.db.openEncryptedFlashDatabase
+import com.transfer.flash.core.swarm.api.FlashSwarm
+import com.transfer.flash.core.swarm.api.FlashSwarmConfig
+import com.transfer.flash.core.engine.swarm.SwarmHostBinding
+import com.transfer.flash.core.engine.swarm.MessagingSwarmGroupContext
+import com.transfer.flash.core.engine.swarm.JvmPieceStorage
+import com.transfer.flash.core.engine.swarm.RoomSwarmStateStore
 import com.transfer.flash.core.ptt.FlashPtt
 import com.transfer.flash.core.ptt.PttAudioPlatform
 import com.transfer.flash.core.ptt.PttSessionEngine
@@ -60,6 +66,7 @@ import com.transfer.flash.core.network.sweep.SweepController
 import com.transfer.flash.core.network.sweep.SweepSituation
 import com.transfer.flash.core.network.sweep.SweepState
 import com.transfer.flash.core.network.sweep.TcpHostProbe
+import com.transfer.flash.core.engine.MagicFrameRouter
 import com.transfer.flash.core.network.ws.JvmWsFlashNetwork
 import com.transfer.flash.core.network.ws.WsSession
 import com.transfer.flash.core.network.ws.WsTransferServer
@@ -70,6 +77,7 @@ import com.transfer.flash.core.transfer.chunked.ChunkFrame
 import com.transfer.flash.core.transfer.chunked.ReceiveEvent
 import com.transfer.flash.core.transfer.chunked.ReceivePipeline
 import com.transfer.flash.core.transfer.chunked.RejectReason
+import com.transfer.flash.core.transfer.chunked.WholeFileCheck
 import com.transfer.flash.core.transfer.model.FlashTransferState
 import com.transfer.flash.core.transfer.multistream.StreamChannel
 import com.transfer.flash.core.transfer.policy.OkioRandomAccessSinkHandle
@@ -272,6 +280,79 @@ public class DesktopEngine(
     /** Push-to-talk voice sessions (ADR-032, ADR-058); built in [assemble], routed from the inbound text/binary paths. */
     @Volatile
     private var pttImpl: PttSessionEngine? = null
+    private val magicRouter = MagicFrameRouter()
+
+    @Volatile
+    private var swarmBinding: SwarmHostBinding? = null
+
+    /** Attached group swarm file transfer facade (SW-8), or null when not attached. */
+    public val swarm: FlashSwarm? get() = swarmBinding?.swarm
+
+    public fun attachSwarm(config: FlashSwarmConfig = FlashSwarmConfig()): FlashSwarm? {
+        synchronized(this) {
+            swarmBinding?.let { return it.swarm }
+            val net = networkImpl ?: return null
+            val xfer = transferImpl ?: return null
+            val chat = chatImpl ?: return null
+            val db = chatDb ?: return null
+            val gate = chat.groupGate
+            val groupContext = MessagingSwarmGroupContext(
+                localDeviceId = identity.deviceId.value,
+                groupGate = gate,
+                groupMemberDao = { db.groupMemberDao() },
+                groupCrypto = com.transfer.flash.core.engine.group.FlashGroupCrypto(crypto),
+            )
+            val storage = JvmPieceStorage(
+                partialDir = File(stateDir, "swarm/partial"),
+                destinationDir = canonicalRoot,
+            )
+            val stateStore = RoomSwarmStateStore(db.swarmDao())
+            val binding = SwarmHostBinding(
+                config = config,
+                localDeviceId = identity.deviceId.value,
+                scope = scope,
+                magicRouter = magicRouter,
+                network = net,
+                transferRepository = xfer,
+                groupContext = groupContext,
+                storage = storage,
+                stateStore = stateStore,
+                chatRepository = chat,
+                isCallActive = { callsImpl?.activeCall?.value?.let { it.state != FlashCallState.ENDED } == true },
+                isServingEnabled = { _discoveryMode.value != FlashDiscoveryMode.ECO },
+            )
+            swarmBinding = binding
+            scope.launch {
+                while (isActive) {
+                    delay(15 * 60 * 1000L)
+                    swarmBinding?.swarm?.runRetentionCleanup()
+                    swarmBinding?.swarm?.reevaluate()
+                }
+            }
+            return binding.swarm
+        }
+    }
+
+    public fun detachSwarm() {
+        synchronized(this) {
+            swarmBinding?.detach()
+            swarmBinding = null
+        }
+    }
+
+    public fun peerFeatures(peerId: String): Set<String> =
+        networkImpl?.activeSessions?.value?.get(FlashDeviceId(peerId))?.peer?.features.orEmpty()
+
+    public suspend fun prepareSwarmOrigin(
+        groupId: String,
+        messageId: String,
+        fileName: String,
+        mimeType: String,
+        sizeBytes: Long,
+        uri: String,
+    ): Pair<com.transfer.flash.core.swarm.model.SwarmManifest, String>? {
+        return swarmBinding?.prepareOrigin(groupId, messageId, fileName, mimeType, sizeBytes, uri)
+    }
 
     private val networkWatcher = com.transfer.flash.core.network.resilience.JvmNetworkWatcher(
         scope = scope,
@@ -330,6 +411,9 @@ public class DesktopEngine(
 
     /** Inbound attachment notification hook (for DesktopNotificationManager). */
     public var onInboundAttachmentNotification: ((conversationId: String, senderName: String?, fileName: String, mimeType: String, groupTitle: String?) -> Unit)? = null
+
+    /** Inbound group join request notification hook (for DesktopNotificationManager / shell). */
+    public var onJoinRequestNotification: ((groupId: String, groupTitle: String, requesterName: String) -> Unit)? = null
 
     /**
      * Chat history. The real repository once [assemble] has built it; the honest empty
@@ -499,6 +583,8 @@ public class DesktopEngine(
     private val openHandles = ConcurrentHashMap<String, RandomAccessSinkHandle>()
     private val incomingMeta = ConcurrentHashMap<String, ChunkFrame.FileStart>()
     private val receivedPaths = ConcurrentHashMap<String, String>()
+    private val rejectedLogCache = ConcurrentHashMap.newKeySet<String>()
+    private val rejectedCancelSent = ConcurrentHashMap.newKeySet<String>()
 
     private var sessionJobs = ConcurrentHashMap<WsSession, Job>()
 
@@ -599,6 +685,7 @@ public class DesktopEngine(
         // A live PTT session holds the microphone; shutdown() releases it (and resets the flows).
         runCatching { pttImpl?.shutdown() }
         pttImpl = null
+        detachSwarm()
         runCatching {
             runBlocking {
                 discoveryImpl?.stopAll()
@@ -657,6 +744,7 @@ public class DesktopEngine(
             tlsOptions = tlsOptions,
             // PC5 (ADR-048): the tier's pacing, adjusted by the connection mode (ECO / BOOST).
             transportProfile = { connectionPolicy().transport },
+            localFeatures = { if (swarmBinding != null) setOf("sw1", "gs1") else setOf("gs1") },
         )
         networkImpl = network
 
@@ -703,6 +791,7 @@ public class DesktopEngine(
             requireReceiverAcceptance = true,
             isPeerEncrypted = { peerId -> trustStore.getSessionKey(FlashDeviceId(peerId)) != null },
             performanceMode = { _settings.value.performanceMode ?: FlashPerformanceMode.HIGH },
+            freeSpaceBytes = { canonicalRoot.takeIf { it.exists() }?.usableSpace },
         )
         transferImpl = transfer
 
@@ -846,6 +935,12 @@ public class DesktopEngine(
                             localPath = t.localPath ?: t.sourceUri,
                             speedMbps = t.speedBytesPerSec / 1_000_000f,
                             etaSeconds = t.etaSeconds.toInt(),
+                            waitReason = t.waitReason?.name,
+                            canGoOffline = t.canGoOffline,
+                            holdersOnline = t.holdersOnline,
+                            errorMessage = t.errorMessage,
+                            bytesDone = t.bytesDone,
+                            bytesTotal = t.bytesTotal,
                         )
                     }
                 },
@@ -867,6 +962,32 @@ public class DesktopEngine(
                         true
                     }
                 },
+                peerFeatures = { peerId -> network.activeSessions.value[FlashDeviceId(peerId)]?.peer?.features.orEmpty() },
+                groupInviteDao = db.groupInviteDao(),
+                groupJoinRequestDao = db.groupJoinRequestDao(),
+                groupSecretStore = com.transfer.flash.core.engine.group.RoomGroupSecretStore(db.groupSecretDao()),
+                groupRotationDao = db.groupRotationDao(),
+                groupSettingsDao = db.groupSettingsDao(),
+                groupPreferencesDao = db.groupPreferencesDao(),
+                localAddressHints = {
+                    val port = network.serverPort
+                    if (port > 0) {
+                        com.transfer.flash.core.network.sweep.JvmLocalSubnets.lanSubnets()
+                            .map { "${it.address}:$port" }
+                    } else {
+                        emptyList()
+                    }
+                },
+                onConnectPeerWithHints = { peerId, hints ->
+                    for (hint in hints) {
+                        if (network.hasLiveSession(peerId)) break
+                        val parts = hint.split(":")
+                        val host = parts[0]
+                        val port = parts.getOrNull(1)?.toIntOrNull() ?: 4433
+                        val res = network.connectManual(host, port, peerId)
+                        if (res is com.transfer.flash.core.common.result.FlashResult.Success) break
+                    }
+                },
                 onInboundTextMessage = { conversationId, senderName, text ->
                     FlashLog.i(TAG_WS, "Inbound chat in $conversationId from ${senderName ?: "?"}: ${text.take(120)}")
                     onInboundMessageNotification?.invoke(conversationId, senderName, text, null)
@@ -885,6 +1006,10 @@ public class DesktopEngine(
                 },
                 scope = scope,
             )
+            chatImpl?.onJoinRequestNotification = { groupId, groupTitle, requesterName ->
+                FlashLog.i(TAG_WS, "Inbound join request in $groupId ($groupTitle) from $requesterName")
+                onJoinRequestNotification?.invoke(groupId, groupTitle, requesterName)
+            }
             boot("chat repository opened (${File(File(stateDir, "chat"), FlashDatabase.DATABASE_NAME).absolutePath})")
         }.onFailure { e ->
             FlashLog.w(TAG_WS, "Chat database unavailable; chats will be empty this run: ${e.message}")
@@ -1025,6 +1150,11 @@ public class DesktopEngine(
             emitSessionStarted = true,
             requireAcceptance = true,
         )
+
+        // ---- swarm integration (SW-8) ----
+        if (_settings.value.groupSwarmEnabled) {
+            attachSwarm()
+        }
 
         // ---- bring-up: bind WS server, start discovery, route endpoints, auto-dial ----
         val netStart = runBlocking { network.start(0) }
@@ -1273,8 +1403,19 @@ public class DesktopEngine(
                         incomingMeta.remove(control.transferId)
                         receivedPaths.remove(control.transferId)
                         openHandles.remove(control.transferId)?.let { runCatching { it.close() } }
+                        rejectedLogCache.remove(control.transferId)
+                        rejectedCancelSent.add(control.transferId)
                     }
-                    // Pause/resume are the sender asking us to stop or continue reading; the
+                    RealFlashTransferRepository.ACTION_RESUME -> {
+                        val tid = control.transferId
+                        if (transfer.isResumableInboundRetry(tid)) {
+                            val peerId = peerIdFor(tid)
+                            if (peerId.isNotEmpty()) {
+                                acceptOffer(tid, peerId)
+                            }
+                        }
+                    }
+                    // Pause is the sender asking us to stop reading; the
                     // pipeline already stops delivering when a session is gone, and the local row is
                     // driven by the repository's own state.
                     else -> Unit
@@ -1360,6 +1501,10 @@ public class DesktopEngine(
                 replyBytes
             }
             reply(toSend)
+        }
+
+        if (magicRouter.dispatch(peerDeviceId, frameData, secureReply)) {
+            return
         }
 
         val consumedBySender = try {
@@ -1455,15 +1600,33 @@ public class DesktopEngine(
                     val transferId = event.frame.transferId
                     openHandles.remove(transferId)?.let { it.flush(); it.close() }
                     val path = receivedPaths.remove(transferId)
-                    incomingMeta.remove(transferId)
-                    transfer.onIncomingCompleted(transferId, event.frame.verified, path)
-                    secureReply(ChunkFrame.serialize(event.frame))
+                    val expectedHex = incomingMeta.remove(transferId)?.fileSha256Hex
+                    // ADR-068 / ERROR-098: this host never checked the assembled file; it now uses the shared path.
+                    val wholeFile = transfer.onIncomingFileAssembled(transferId, path, expectedHex, event.frame.verified)
+                    val completeReply = if (wholeFile == WholeFileCheck.MISMATCH) {
+                        receivePipeline.cancelSession(transferId)
+                        ChunkFrame.Complete(transferId, event.frame.fileId, verified = false)
+                    } else {
+                        event.frame
+                    }
+                    secureReply(ChunkFrame.serialize(completeReply))
                 }
                 is ReceiveEvent.Rejected -> {
                     if (event.reason != RejectReason.AWAITING_ACCEPTANCE) {
-                        // Console-grade logging only: desktop has no logcat; the shell surfaces
-                        // failures through the Transfers tab state.
-                        println("[flash-desktop] receiver rejected: ${event.reason} tid=${event.transferId}")
+                        val tid = event.transferId
+                        // Rate-limit console logging per transferId & reason: terminal/cancelled transfers
+                        // would otherwise flood stdout with thousands of identical chunk rejection lines.
+                        val key = "$tid:${event.reason}"
+                        if (rejectedLogCache.size > 256) rejectedLogCache.clear()
+                        if (rejectedLogCache.add(key)) {
+                            println("[flash-desktop] receiver rejected: ${event.reason} tid=$tid")
+                        }
+                        if (event.reason == RejectReason.UNKNOWN_TRANSFER && tid != null) {
+                            if (rejectedCancelSent.size > 256) rejectedCancelSent.clear()
+                            if (rejectedCancelSent.add(tid)) {
+                                sendXfer(peerDeviceId, RealFlashTransferRepository.ACTION_CANCEL, tid)
+                            }
+                        }
                     }
                 }
             }
@@ -1584,6 +1747,8 @@ public class DesktopEngine(
      */
     private fun acceptOffer(transferId: String, peerDeviceId: String) {
         val transfer = transferImpl ?: return
+        // ADR-069 / FA-2: refuse before the sink is resolved and the sender is released.
+        if (!transfer.admitIncoming(transferId)) return
         val meta = incomingMeta[transferId] ?: return
         if (receivePipeline?.acceptSession(transferId) == true) {
             transfer.onIncomingStarted(

@@ -2,6 +2,7 @@
 
 package com.transfer.flash.core.messaging.protocol
 
+import com.transfer.flash.core.common.protocol.Base64
 import com.transfer.flash.core.common.protocol.FlashTextFraming
 
 /**
@@ -17,6 +18,7 @@ public object GroupFrameCodec {
     public const val DELETE_ACTION: String = "delete"
     public const val SYNC_PREFIX: String = "FLASH_GSYNC"
     public const val MEDIA_PREFIX: String = "FLASH_GMEDIA"
+    public const val MEMBERSHIP_PREFIX: String = "FLASH_GMEM"
 
     public fun encode(frame: GroupWireFrame): String {
         val (prefix, fields) = when (frame) {
@@ -73,7 +75,8 @@ public object GroupFrameCodec {
                     "c${index}i" to cert.issuerId,
                     "c${index}g" to cert.sig,
                 )
-            }
+            } + (frame.rotation?.let { rotationFields(it) } ?: emptyList()) +
+                (frame.settings?.let { settingsFields(it) } ?: emptyList())
             is GroupWireFrame.Message -> MESSAGE_PREFIX to listOf(
                 "groupId" to frame.groupId,
                 "msgId" to frame.messageId,
@@ -148,7 +151,96 @@ public object GroupFrameCodec {
                 "mime" to frame.mimeType,
                 "size" to frame.sizeBytes.toString(),
                 "sentAt" to frame.sentAt.toString(),
-            ) + listOfNotNull(frame.signature?.let { "sig" to it })
+            ) + listOfNotNull(
+                frame.signature?.let { "sig" to it },
+                frame.root?.let { "root" to it },
+                frame.pieceSize?.let { "psize" to it.toString() },
+                frame.swarm?.let { "swarm" to it.toString() },
+                frame.rootSig?.let { "rsig" to it },
+            )
+            is GroupWireFrame.GsHello -> MEMBERSHIP_PREFIX to listOf(
+                "op" to "hello",
+                "groupId" to frame.groupId,
+                "from" to frame.from,
+                "epoch" to frame.epoch.toString(),
+                "nonce" to Base64.encode(frame.nonce),
+            )
+            is GroupWireFrame.GsChallenge -> MEMBERSHIP_PREFIX to listOf(
+                "op" to "challenge",
+                "groupId" to frame.groupId,
+                "from" to frame.from,
+                "epoch" to frame.epoch.toString(),
+                "nonce" to Base64.encode(frame.nonce),
+                "mac" to Base64.encode(frame.mac),
+            )
+            is GroupWireFrame.GsProof -> MEMBERSHIP_PREFIX to listOf(
+                "op" to "proof",
+                "groupId" to frame.groupId,
+                "from" to frame.from,
+                "epoch" to frame.epoch.toString(),
+                "mac" to Base64.encode(frame.mac),
+            )
+            is GroupWireFrame.GsResult -> MEMBERSHIP_PREFIX to listOf(
+                "op" to "result",
+                "groupId" to frame.groupId,
+                "from" to frame.from,
+                "ok" to frame.ok.toString(),
+                "reason" to frame.reason,
+            )
+            is GroupWireFrame.GsJoinRequest -> MEMBERSHIP_PREFIX to listOf(
+                "op" to "join_req",
+                "groupId" to frame.groupId,
+                "from" to frame.from,
+                "epoch" to frame.epoch.toString(),
+                "subId" to frame.subjectId,
+                "subKey" to frame.subjectKey,
+                "label" to frame.label,
+                "reqAt" to frame.requestedAtMs.toString(),
+                "sig" to frame.signature,
+            )
+            is GroupWireFrame.GsJoinDecision -> MEMBERSHIP_PREFIX to listOf(
+                "op" to "join_decision",
+                "groupId" to frame.groupId,
+                "from" to frame.from,
+                "subId" to frame.subjectId,
+                "appr" to frame.approved.toString(),
+                "reason" to frame.reason,
+                "decBy" to frame.decidedBy,
+                "decAt" to frame.decidedAtMs.toString(),
+                "sig" to frame.signature,
+            )
+            is GroupWireFrame.GsRosterPreview -> MEMBERSHIP_PREFIX to listOf(
+                "op" to "roster_prev",
+                "groupId" to frame.groupId,
+                "from" to frame.from,
+                "cName" to frame.charter.name,
+                "cOwner" to frame.charter.ownerId,
+                "cOwnerKey" to frame.charter.ownerKey,
+                "cCreated" to frame.charter.createdAt.toString(),
+                "cNonce" to frame.charter.nonce,
+                "cProto" to frame.charter.proto.toString(),
+                "cSig" to frame.charter.sig,
+                "mCount" to frame.memberCount.toString(),
+            ) + indexed("n", frame.memberNames)
+            is GroupWireFrame.GsStale -> MEMBERSHIP_PREFIX to listOf(
+                "op" to "stale",
+                "groupId" to frame.groupId,
+                "from" to frame.from,
+                "epoch" to frame.epoch.toString(),
+            ) + rotationFields(frame.rotation)
+            is GroupWireFrame.GsSecretRequest -> MEMBERSHIP_PREFIX to listOf(
+                "op" to "secretRequest",
+                "groupId" to frame.groupId,
+                "from" to frame.from,
+                "epoch" to frame.epoch.toString(),
+            )
+            is GroupWireFrame.GsSecret -> MEMBERSHIP_PREFIX to listOf(
+                "op" to "secret",
+                "groupId" to frame.groupId,
+                "from" to frame.from,
+                "epoch" to frame.epoch.toString(),
+                "secret" to Base64.encode(frame.secret),
+            )
         }
         return FlashTextFraming.encodeFields(prefix, fields)
     }
@@ -243,6 +335,10 @@ public object GroupFrameCodec {
                 sizeBytes = fields.long("size") ?: 0L,
                 sentAt = fields.long("sentAt") ?: 0L,
                 signature = fields["sig"]?.ifBlank { null },
+                root = fields["root"]?.ifBlank { null },
+                pieceSize = fields["psize"]?.toIntOrNull(),
+                swarm = fields["swarm"]?.toIntOrNull(),
+                rootSig = fields["rsig"]?.ifBlank { null },
             )
         }
         FlashTextFraming.parseFields(text, SYNC_PREFIX)?.let { fields ->
@@ -278,6 +374,118 @@ public object GroupFrameCodec {
                     groupId, syncId, from, fields.indexed("msg") ?: return null,
                     fields["hasMore"]?.toBooleanStrictOrNull() ?: return null, epoch,
                 )
+                else -> null
+            }
+        }
+        FlashTextFraming.parseFields(text, MEMBERSHIP_PREFIX)?.let { fields ->
+            val groupId = fields.required("groupId") ?: return null
+            if (groupId.length > 64 || !GroupPolicy.isV2GroupId(groupId)) return null
+            val from = fields.required("from") ?: return null
+            if (from.length > 128) return null
+            val op = fields.required("op") ?: return null
+            return when (op) {
+                "hello" -> {
+                    val epoch = fields.long("epoch") ?: return null
+                    if (epoch !in 1L..0xFFFF_FFFFL) return null
+                    val nonceRaw = fields.required("nonce") ?: return null
+                    if (nonceRaw.length > 32) return null
+                    val nonce = runCatching { Base64.decode(nonceRaw) }.getOrNull() ?: return null
+                    if (nonce.size != 16) return null
+                    GroupWireFrame.GsHello(groupId, from, epoch, nonce)
+                }
+                "challenge" -> {
+                    val epoch = fields.long("epoch") ?: return null
+                    if (epoch !in 1L..0xFFFF_FFFFL) return null
+                    val nonceRaw = fields.required("nonce") ?: return null
+                    if (nonceRaw.length > 32) return null
+                    val nonce = runCatching { Base64.decode(nonceRaw) }.getOrNull() ?: return null
+                    if (nonce.size != 16) return null
+                    val macRaw = fields.required("mac") ?: return null
+                    if (macRaw.length > 64) return null
+                    val mac = runCatching { Base64.decode(macRaw) }.getOrNull() ?: return null
+                    if (mac.size != 32) return null
+                    GroupWireFrame.GsChallenge(groupId, from, epoch, nonce, mac)
+                }
+                "proof" -> {
+                    val epoch = fields.long("epoch") ?: return null
+                    if (epoch !in 1L..0xFFFF_FFFFL) return null
+                    val macRaw = fields.required("mac") ?: return null
+                    if (macRaw.length > 64) return null
+                    val mac = runCatching { Base64.decode(macRaw) }.getOrNull() ?: return null
+                    if (mac.size != 32) return null
+                    GroupWireFrame.GsProof(groupId, from, epoch, mac)
+                }
+                "result" -> {
+                    val ok = fields["ok"]?.toBooleanStrictOrNull() ?: return null
+                    val reason = fields.required("reason") ?: return null
+                    if (reason.length > 16 || reason !in setOf("ok", "failed", "stale")) return null
+                    GroupWireFrame.GsResult(groupId, from, ok, reason)
+                }
+                "join_req" -> {
+                    val epoch = fields.long("epoch") ?: return null
+                    if (epoch !in 1L..0xFFFF_FFFFL) return null
+                    val subId = fields.required("subId") ?: return null
+                    if (subId.length > 64) return null
+                    val subKey = fields.required("subKey") ?: return null
+                    if (subKey.length > 256) return null
+                    val label = fields.required("label") ?: return null
+                    if (label.length > GroupPolicy.MAX_LABEL_LENGTH) return null
+                    val reqAt = fields.long("reqAt") ?: return null
+                    if (reqAt <= 0L) return null
+                    val sig = fields.required("sig") ?: return null
+                    if (sig.length > 128) return null
+                    GroupWireFrame.GsJoinRequest(groupId, from, epoch, subId, subKey, label, reqAt, sig)
+                }
+                "join_decision" -> {
+                    val subId = fields.required("subId") ?: return null
+                    if (subId.length > 64) return null
+                    val approved = fields["appr"]?.toBooleanStrictOrNull() ?: return null
+                    val reason = fields.required("reason") ?: return null
+                    if (reason.length > 32) return null
+                    val decBy = fields.required("decBy") ?: return null
+                    if (decBy.length > 64) return null
+                    val decAt = fields.long("decAt") ?: return null
+                    if (decAt <= 0L) return null
+                    val sig = fields.required("sig") ?: return null
+                    if (sig.length > 128) return null
+                    GroupWireFrame.GsJoinDecision(groupId, from, subId, approved, reason, decBy, decAt, sig)
+                }
+                "roster_prev" -> {
+                    val charter = GroupCharter(
+                        groupId = groupId,
+                        name = fields.required("cName") ?: return null,
+                        ownerId = fields.required("cOwner") ?: return null,
+                        ownerKey = fields.required("cOwnerKey") ?: return null,
+                        createdAt = fields.long("cCreated") ?: return null,
+                        nonce = fields.required("cNonce") ?: return null,
+                        proto = fields.int("cProto") ?: return null,
+                        sig = fields.required("cSig") ?: return null,
+                    )
+                    val memberCount = fields.int("mCount") ?: return null
+                    if (memberCount !in 1..GroupPolicy.MAX_MEMBERS_V2) return null
+                    val names = fields.indexed("n") ?: return null
+                    GroupWireFrame.GsRosterPreview(groupId, from, charter, memberCount, names)
+                }
+                "stale" -> {
+                    val epoch = fields.long("epoch") ?: return null
+                    if (epoch !in 1L..0xFFFF_FFFFL) return null
+                    val rot = decodeRotation(fields, groupId) ?: return null
+                    GroupWireFrame.GsStale(groupId, from, epoch, rot)
+                }
+                "secretRequest" -> {
+                    val epoch = fields.long("epoch") ?: return null
+                    if (epoch !in 1L..0xFFFF_FFFFL) return null
+                    GroupWireFrame.GsSecretRequest(groupId, from, epoch)
+                }
+                "secret" -> {
+                    val epoch = fields.long("epoch") ?: return null
+                    if (epoch !in 1L..0xFFFF_FFFFL) return null
+                    val secretRaw = fields.required("secret") ?: return null
+                    if (secretRaw.length > 64) return null
+                    val secret = runCatching { Base64.decode(secretRaw) }.getOrNull() ?: return null
+                    if (secret.size != 32) return null
+                    GroupWireFrame.GsSecret(groupId, from, epoch, secret)
+                }
                 else -> null
             }
         }
@@ -319,7 +527,87 @@ public object GroupFrameCodec {
         }
         // An honest sender never repeats a subject; a repeat only costs the receiver verifications.
         if (certs.map { it.subjectId }.toSet().size != certs.size) return null
-        return GroupWireFrame.Bundle(groupId, from, operationId, charter, certs)
+        val rotation = decodeRotation(fields, groupId)
+        val settings = decodeSettings(fields, groupId)
+        return GroupWireFrame.Bundle(groupId, from, operationId, charter, certs, rotation, settings)
+    }
+
+    private fun settingsFields(s: GroupSettings): List<Pair<String, String>> = listOf(
+        "setVer" to s.version.toString(),
+        "setPolicy" to s.joinPolicy,
+        "setSharers" to s.inviteSharers,
+        "setMax" to s.maxMembers.toString(),
+        "setSwarm" to s.swarmServing.toString(),
+        "setMayAdd" to s.membersMayAdd.toString(),
+        "setOpId" to s.opId,
+        "setSigner" to s.signerId,
+        "setSig" to s.sig,
+    )
+
+    private fun decodeSettings(fields: Map<String, String>, defaultGroupId: String): GroupSettings? {
+        val ver = fields["setVer"]?.toLongOrNull() ?: return null
+        if (ver <= 0L) return null
+        val policy = fields["setPolicy"]?.takeIf { it == GroupSettings.POLICY_APPROVE || it == GroupSettings.POLICY_OPEN } ?: return null
+        val sharers = fields["setSharers"]?.takeIf { it == GroupSettings.SHARERS_ALL || it == GroupSettings.SHARERS_ADMINS } ?: return null
+        val maxMembers = fields["setMax"]?.toIntOrNull() ?: return null
+        if (maxMembers !in 2..GroupPolicy.MAX_MEMBERS_V2) return null
+        val swarm = fields["setSwarm"]?.toBooleanStrictOrNull() ?: return null
+        val mayAdd = fields["setMayAdd"]?.toBooleanStrictOrNull() ?: return null
+        val opId = fields.required("setOpId") ?: return null
+        if (opId.length > 64) return null
+        val signer = fields.required("setSigner") ?: return null
+        if (signer.length > 128) return null
+        val sig = fields.required("setSig") ?: return null
+        if (sig.length > 256) return null
+        return GroupSettings(
+            groupId = defaultGroupId,
+            version = ver,
+            joinPolicy = policy,
+            inviteSharers = sharers,
+            maxMembers = maxMembers,
+            swarmServing = swarm,
+            membersMayAdd = mayAdd,
+            opId = opId,
+            signerId = signer,
+            sig = sig,
+        )
+    }
+
+    private fun rotationFields(rot: GroupRotation): List<Pair<String, String>> = listOf(
+        "rotNew" to rot.newEpoch.toString(),
+        "rotPrev" to rot.prevEpoch.toString(),
+        "rotCommit" to rot.commit,
+        "rotReason" to rot.reason,
+        "rotAdmin" to rot.adminId,
+        "rotId" to rot.rotationId,
+        "rotRmCount" to rot.removedIds.size.toString(),
+    ) + rot.removedIds.mapIndexed { index, id -> "rotRm$index" to id } + listOf("rotSig" to rot.sig)
+
+    private fun decodeRotation(fields: Map<String, String>, defaultGroupId: String): GroupRotation? {
+        val rotNew = fields["rotNew"]?.toLongOrNull() ?: return null
+        val rotPrev = fields["rotPrev"]?.toLongOrNull() ?: return null
+        val rotCommit = fields["rotCommit"]?.takeIf { it.length == 64 } ?: return null
+        val rotReason = fields["rotReason"]?.takeIf { it.length <= 32 } ?: return null
+        val rotAdmin = fields["rotAdmin"]?.takeIf { it.isNotEmpty() && it.length <= 128 } ?: return null
+        val rotId = fields["rotId"]?.takeIf { it.length == 32 } ?: return null
+        val rotSig = fields["rotSig"]?.takeIf { it.isNotEmpty() && it.length <= 256 } ?: return null
+        val rotRmCount = fields["rotRmCount"]?.toIntOrNull()?.coerceAtLeast(0) ?: 0
+        if (rotRmCount > GroupPolicy.MAX_REMOVED_IDS_PER_ROTATION) return null
+        val removedIds = (0 until rotRmCount).mapNotNull { i ->
+            fields["rotRm$i"]?.takeIf { it.isNotEmpty() && it.length <= 128 }
+        }
+        if (removedIds.size != rotRmCount) return null
+        return GroupRotation(
+            groupId = defaultGroupId,
+            newEpoch = rotNew,
+            prevEpoch = rotPrev,
+            commit = rotCommit,
+            reason = rotReason,
+            adminId = rotAdmin,
+            rotationId = rotId,
+            removedIds = removedIds,
+            sig = rotSig,
+        )
     }
 
     private fun membershipFields(

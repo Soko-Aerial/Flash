@@ -81,6 +81,21 @@ object FlashNotificationManager {
         post(context, conversationId, content.title, content.body)
     }
 
+    /**
+     * GM-10: Posts notification for an incoming group join request.
+     * Collapsed per group using the standard post(context, groupId, ...) pipeline.
+     */
+    fun showJoinRequest(
+        context: Context,
+        groupId: String,
+        groupName: String,
+        applicantName: String,
+    ) {
+        val title = groupName.ifBlank { "Group" }
+        val body = "$applicantName wants to join"
+        post(context, groupId, title, body)
+    }
+
     /** Clears the notification for a conversation (e.g. the user just opened it). */
     fun clearConversation(context: Context, conversationId: String) {
         runCatching {

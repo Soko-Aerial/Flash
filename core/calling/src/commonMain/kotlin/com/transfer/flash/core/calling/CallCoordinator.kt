@@ -5,6 +5,7 @@ package com.transfer.flash.core.calling
 import com.transfer.flash.core.calling.model.FlashCallDirection
 import com.transfer.flash.core.calling.model.FlashCallEndReason
 import com.transfer.flash.core.calling.model.FlashCallLogEntry
+import com.transfer.flash.core.calling.model.FlashCallReactionKind
 import com.transfer.flash.core.calling.model.FlashCallUiState
 import com.transfer.flash.core.calling.model.OngoingGroupCallUi
 import com.transfer.flash.core.calling.protocol.CallFrameCodec
@@ -462,6 +463,21 @@ public class CallCoordinator(
 
     override fun setShowFewerVideos(on: Boolean) {
         currentGroupSession?.setShowFewerVideos(on)
+    }
+
+    override fun setHandRaised(raised: Boolean) {
+        currentGroupSession?.setHandRaised(raised)
+        currentSession?.setHandRaised(raised)
+    }
+
+    override fun sendReaction(kind: FlashCallReactionKind): Boolean {
+        currentGroupSession?.let { return it.sendReaction(kind) }
+        return currentSession?.sendReaction(kind) ?: false
+    }
+
+    override fun setDataSaver(on: Boolean) {
+        currentGroupSession?.setDataSaver(on)
+        currentSession?.setDataSaver(on)
     }
 
     /** Host calls this when the WS signaling session to the call peer died. */

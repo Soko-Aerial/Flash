@@ -61,8 +61,12 @@ public object FlashConversationMenuMath {
         isMember: Boolean = true,
         canAddMembers: Boolean = true,
         canContinueInNewGroup: Boolean = false,
+        canShareInvite: Boolean = false,
+        isV2: Boolean = false,
     ): List<FlashConversationMenuItem> = buildList {
         add(FlashConversationMenuItem.GROUP_INFO)
+        if (isMember && isV2) add(FlashConversationMenuItem.GROUP_SETTINGS)
+        if (isMember && canShareInvite) add(FlashConversationMenuItem.INVITE_LINK)
         if (isMember && canAddMembers) add(FlashConversationMenuItem.ADD_MEMBERS)
         if (isMember && canContinueInNewGroup) add(FlashConversationMenuItem.CONTINUE_IN_NEW_GROUP)
         add(FlashConversationMenuItem.SEARCH)
@@ -82,6 +86,8 @@ public enum class FlashConversationMenuItem(
     MARK_UNREAD("Mark as unread", FlashIcons.Read),
     CLEAR_CONVERSATION("Clear conversation", FlashIcons.Delete, isDestructive = true),
     GROUP_INFO("Group info", FlashIcons.Group),
+    GROUP_SETTINGS("Group settings", FlashIcons.Settings),
+    INVITE_LINK("Invite link", FlashIcons.Share),
     ADD_MEMBERS("Add members", FlashIcons.Group),
     CONTINUE_IN_NEW_GROUP("Continue in new group", FlashIcons.Group),
     LEAVE_GROUP("Leave group", FlashIcons.Close, isDestructive = true),

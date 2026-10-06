@@ -110,9 +110,11 @@ kotlin {
             api(project(":core:network"))
             api(project(":core:transfer"))
             api(project(":core:messaging"))
+            api(project(":core:persistence"))
+            api(project(":core:swarm"))
         }
         androidMain.dependencies {
-            // `api` for the same reason as `core:persistence` below: `FlashPtt` appears in the
+            // `api` for the same reason as `core:persistence`: `FlashPtt` appears in the
             // PUBLIC `FlashEngine.attachPtt(...)` / `FlashEngine.ptt` signatures, so a consumer
             // cannot call them without it on its compile classpath.
             //
@@ -149,12 +151,6 @@ kotlin {
             // entry breaks `:core:engine`'s `jvm()` target at variant selection (ERROR-049).
             // Nothing in commonMain or jvmMain names calling.
             compileOnly(project(":core:calling"))
-
-            // `api`, not `implementation`: FlashSettingsDataStore appears in the PUBLIC
-            // FlashEngine interface (`val settings`), so a consumer cannot use the engine
-            // without it on their compile classpath. This is also the pin that keeps
-            // FlashEngine.kt itself out of commonMain.
-            api(project(":core:persistence"))
 
             // Not dead: Flash.kt spreads `*FlashMigrations.ALL` into
             // FlashDatabaseOpener.openEncrypted and closes the RoomDatabase on teardown, so

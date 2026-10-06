@@ -18,6 +18,7 @@ import com.transfer.flash.core.messaging.model.FlashChatListUiState
 import com.transfer.flash.core.messaging.model.FlashConversationUiState
 import com.transfer.flash.core.messaging.model.FlashFileAttachmentUi
 import com.transfer.flash.core.messaging.model.FlashFileTransferStatus
+import com.transfer.flash.core.messaging.model.FlashGroupJoinRequestUi
 import com.transfer.flash.core.messaging.model.FlashGroupMemberUi
 import com.transfer.flash.core.messaging.model.FlashGroupSyncUi
 import com.transfer.flash.core.messaging.model.FlashImageAttachmentUi
@@ -30,10 +31,16 @@ import com.transfer.flash.core.messaging.model.FlashQuotedReplyUi
 import com.transfer.flash.core.messaging.model.FlashSelfMembership
 import com.transfer.flash.core.messaging.model.FlashReaction
 import com.transfer.flash.core.messaging.model.FlashVoiceAttachmentUi
+import com.transfer.flash.core.messaging.group.GroupProofResult
+import com.transfer.flash.core.messaging.group.GroupProofSessions
+import com.transfer.flash.core.messaging.group.GroupSecretStore
+import com.transfer.flash.core.messaging.group.GroupTraffic
 import com.transfer.flash.core.messaging.protocol.ChatWireFrame
 import com.transfer.flash.core.messaging.protocol.GroupCrypto
 import com.transfer.flash.core.messaging.protocol.GroupMembershipVersion
 import com.transfer.flash.core.messaging.protocol.GroupPolicy
+import com.transfer.flash.core.messaging.protocol.GroupRotation
+import com.transfer.flash.core.messaging.protocol.toRotation
 import com.transfer.flash.core.messaging.protocol.GroupSyncCursor
 import com.transfer.flash.core.messaging.protocol.GroupSyncPolicy
 import com.transfer.flash.core.messaging.protocol.GroupSyncRoundState
@@ -43,6 +50,7 @@ import com.transfer.flash.core.messaging.protocol.GroupWireFrame
 import com.transfer.flash.core.messaging.protocol.MessageWireFrame
 import com.transfer.flash.core.messaging.protocol.OutgoingSyncRequest
 import com.transfer.flash.core.messaging.protocol.membershipUpdateWins
+import com.transfer.flash.core.transfer.TransferFailureText
 import com.transfer.flash.core.messaging.util.assignDaySeparators
 import com.transfer.flash.core.messaging.util.computeMessageGroupPositions
 import com.transfer.flash.core.messaging.util.FlashMimeTypes
@@ -55,8 +63,29 @@ import com.transfer.flash.core.messaging.util.throttleLatest
 import com.transfer.flash.core.persistence.db.dao.ConversationDao
 import com.transfer.flash.core.persistence.db.dao.DraftDao
 import com.transfer.flash.core.persistence.db.dao.GroupDeliveryDao
+import com.transfer.flash.core.persistence.db.dao.GroupInviteDao
+import com.transfer.flash.core.persistence.db.dao.GroupJoinRequestDao
 import com.transfer.flash.core.persistence.db.dao.GroupMemberDao
+import com.transfer.flash.core.persistence.db.dao.GroupPreferencesDao
+import com.transfer.flash.core.persistence.db.dao.GroupRotationDao
+import com.transfer.flash.core.persistence.db.dao.GroupSettingsDao
 import com.transfer.flash.core.persistence.db.dao.MessageDao
+import com.transfer.flash.core.messaging.group.GroupLocalPreferences
+import com.transfer.flash.core.messaging.group.toEntity
+import com.transfer.flash.core.messaging.group.toPreferences
+import com.transfer.flash.core.messaging.group.toSettings
+import com.transfer.flash.core.messaging.protocol.GroupSettings
+import com.transfer.flash.core.persistence.db.entity.GroupInviteEntity
+import com.transfer.flash.core.persistence.db.entity.GroupJoinRequestEntity
+import com.transfer.flash.core.security.group.GroupInvite
+import com.transfer.flash.core.security.group.GroupInviteCodec
+import com.transfer.flash.core.security.group.GroupSecret
+import com.transfer.flash.core.security.group.GroupSecretCommit
+import com.transfer.flash.core.messaging.group.GroupMembershipStatusText
+import com.transfer.flash.core.messaging.group.GroupSecretSource
+import com.transfer.flash.core.messaging.group.StoredGroupSecret
+import com.transfer.flash.core.messaging.protocol.GroupCanonical
+import com.transfer.flash.core.messaging.protocol.GroupCharter
 import com.transfer.flash.core.persistence.db.dao.OutboxDao
 import com.transfer.flash.core.persistence.db.dao.ReadCursorDao
 import com.transfer.flash.core.persistence.db.dao.ReactionDao
@@ -245,6 +274,28 @@ public class RealFlashChatRepository(
     private val readCursorDao: ReadCursorDao? = null,
     /** How long the catch-up banner outlives the last arrival; a parameter so a test need not wait [GroupPolicy.SYNC_QUIET_MS]. */
     private val groupSyncQuietMs: Long = GroupPolicy.SYNC_QUIET_MS,
+    /** GM-2 / GM-3: Secret-based group membership store. */
+    private val groupSecretStore: GroupSecretStore? = null,
+    /** GM-3: Advertised peer features on live session (e.g. "gs1"). */
+    private val peerFeatures: (String) -> Set<String> = { emptySet() },
+    /** GM-4: Group invite storage DAO. */
+    private val groupInviteDao: GroupInviteDao? = null,
+    /** GM-4: Group join request storage DAO. */
+    private val groupJoinRequestDao: GroupJoinRequestDao? = null,
+    /** GM-4: Address hints for invite creation (up to 3 addresses). */
+    private val localAddressHints: () -> List<String> = { emptyList() },
+    /** GM-4: Host hook to dial peer address hints upon accepting an invite. */
+    private val onConnectPeerWithHints: (suspend (peerId: String, hints: List<String>) -> Unit)? = null,
+    /** GM-8: Host hook to dial an individual address hint for [peerId]. Returns true if connected. */
+    private val onConnectPeerHint: (suspend (peerId: String, hint: String) -> Boolean)? = null,
+    /** GM-4: Group join policy lookup ("approve" or "open"). */
+    private val groupJoinPolicy: (groupId: String) -> String = { "approve" },
+    /** GM-6: Group rotation notice storage DAO. */
+    private val groupRotationDao: GroupRotationDao? = null,
+    /** GM-9: Group settings storage DAO. */
+    private val groupSettingsDao: GroupSettingsDao? = null,
+    /** GM-9: Group local preferences storage DAO. */
+    private val groupPreferencesDao: GroupPreferencesDao? = null,
 ) : FlashChatRepository {
 
     /**
@@ -265,6 +316,39 @@ public class RealFlashChatRepository(
      */
     private val groupTitleCache = SyncMap<String, String>()
 
+    /** GM-4: Active accepted invite group IDs providing charter trust roots. */
+    private val acceptedInviteGroupIds = SyncSet<String>()
+
+    /** GM-4: Per-group join policy overrides. */
+    private val groupJoinPolicyOverrides = SyncMap<String, String>()
+
+    /** GM-8: In-memory address hints for pending invites to retry on network changes. */
+    private val pendingInviteHints = SyncMap<String, List<String>>()
+    /** GM-8: Group name from invite for display while join is pending (M-03, M-07). */
+    private val pendingInviteGroupNames = SyncMap<String, String>()
+    /** GM-8: Groups whose hints have exhausted or timed out without establishing a session. */
+    private val hintsExhausted = SyncSet<String>()
+    /** Connected peers currently active. */
+    private val currentConnectedPeers = SyncSet<String>()
+
+    private fun isPeerOnline(peerId: String): Boolean = currentConnectedPeers.contains(peerId)
+
+    /** GM-10: Triggered when an inbound join request arrives requiring admin approval. */
+    public var onJoinRequestNotification: ((groupId: String, groupTitle: String, requesterName: String) -> Unit)? = null
+
+    /** GM-10: Refresh trigger for open conversation state (settings, join requests, etc.). */
+    private val conversationRefreshTrigger = MutableStateFlow(0L)
+
+    /** Sets group join policy ("open" or "approve") for [groupId] (GM-4). */
+    public fun setGroupJoinPolicy(groupId: String, policy: String) {
+        groupJoinPolicyOverrides[groupId] = policy
+    }
+
+    private suspend fun isGroupJoinOpen(groupId: String): Boolean =
+        groupJoinPolicyOverrides[groupId]?.equals("open", ignoreCase = true) == true ||
+            signedGroups?.currentSettings(groupId)?.joinPolicy.equals(GroupSettings.POLICY_OPEN, ignoreCase = true) ||
+            groupJoinPolicy(groupId).equals("open", ignoreCase = true)
+
     /** The v2 group engine (ADR-044 V1); null when the host gave no crypto identity or group storage. */
     private val signedGroups: SignedGroups? =
         if (groupCrypto != null && groupMemberDao != null) {
@@ -279,13 +363,87 @@ public class RealFlashChatRepository(
                 vouching = groupVouching,
                 nowMs = { timeSource.nowMs() },
                 newId = { UuidIdGenerator.newId() },
+                hasInvite = { acceptedInviteGroupIds.contains(it) },
+                groupRotationDao = groupRotationDao,
+                groupSecretStore = groupSecretStore,
+                groupSettingsDao = groupSettingsDao,
             )
         } else {
             null
         }
 
-    private suspend fun isV2Group(groupId: String): Boolean =
-        conversationDao.get(groupId)?.groupProto == GroupPolicy.V2_PROTOCOL
+    /** GM-3: Group secret proof sessions. */
+    public val groupProofSessions: GroupProofSessions? =
+        if (groupSecretStore != null && groupCrypto != null) {
+            GroupProofSessions(
+                localDeviceId = localDeviceId,
+                groupCrypto = groupCrypto,
+                peerIdentityKey = peerIdentityKey,
+                peerFeatures = peerFeatures,
+                groupSecretStore = groupSecretStore,
+                sendFrame = { peerId, frame ->
+                    groupTransportSink?.send(peerId, frame) ?: false
+                },
+                timeSource = timeSource,
+                onStaleProof = { peerDeviceId, groupId ->
+                    val member = groupMemberDao?.member(groupId, peerDeviceId)
+                    if (member?.isActive == true) {
+                        val latestRot = groupRotationDao?.getLatestForGroup(groupId)?.toRotation()
+                        if (latestRot != null) {
+                            groupTransportSink?.send(
+                                peerDeviceId,
+                                GroupWireFrame.GsStale(
+                                    groupId = groupId,
+                                    from = localDeviceId,
+                                    epoch = latestRot.newEpoch,
+                                    rotation = latestRot,
+                                ),
+                            )
+                        }
+                    }
+                },
+            )
+        } else {
+            null
+        }
+
+    override fun hasProvedGroup(peerId: String, groupId: String): Boolean =
+        groupProofSessions?.hasProved(peerId, groupId) ?: false
+
+    override suspend fun initiateGroupProof(
+        peerId: String,
+        groupId: String,
+        epoch: Long,
+    ): GroupProofResult =
+        groupProofSessions?.initiateProof(peerId, groupId, epoch) ?: GroupProofResult.FAILED
+
+    internal suspend fun bundleForGroup(groupId: String): GroupWireFrame.Bundle? =
+        signedGroups?.bundleFor(groupId)
+
+    override var swarmAnnouncementListener: GroupSwarmAnnouncementListener? = null
+    override var onGroupMessageDeletedForEveryone: ((groupId: String, messageId: String) -> Unit)? = null
+
+    public val groupGate: com.transfer.flash.core.messaging.group.GroupGate =
+        com.transfer.flash.core.messaging.group.RosterGroupGate(
+            localDeviceId = localDeviceId,
+            members = { groupMemberDao },
+            isTrustedPeer = { isTrustedPeer(it) },
+            isVouchedMember = { gId, dId, sessionKey ->
+                signedGroups?.isVouchedMember(gId, dId, sessionKey) == true
+            },
+            hasMemberKey = { gId, dId ->
+                groupMemberDao?.member(gId, dId)?.subjectKey != null
+            },
+            peerIdentityKey = { peerIdentityKey(it) },
+            swarmServingEnabled = { gId ->
+                val settings = signedGroups?.currentSettings(gId) ?: GroupSettings.defaults(gId)
+                val prefs = getGroupLocalPreferences(gId)
+                settings.swarmServing && prefs.serveToGroup
+            },
+        )
+
+    override fun isV2Group(groupId: String): Boolean =
+        GroupPolicy.isV2GroupId(groupId)
 
     /**
      * F3: this device's performance tier as seen by the sync protocol — it paces pushes TO us
@@ -464,6 +622,31 @@ public class RealFlashChatRepository(
         attachmentProgress.throttleLatest(ATTACHMENT_PROGRESS_THROTTLE_MS)
 
     init {
+        // GM-4: Load accepted invite group IDs to restore charter trust roots.
+        scope.launch(ioDispatcher) {
+            groupInviteDao?.getAll()?.forEach { entity ->
+                if (entity.state != "REFUSED" && entity.state != "ABANDONED") {
+                    acceptedInviteGroupIds.add(entity.groupId)
+                }
+            }
+        }
+
+        // GM-6: Recover unrotated tombstones from crashes (GINV-4).
+        scope.launch(ioDispatcher) {
+            val recovered = signedGroups?.recoverUnrotatedTombstones().orEmpty()
+            for (rot in recovered) {
+                broadcastRotation(rot.groupId, rot)
+            }
+        }
+
+        // GM-7: Upgrade existing v2 groups without secrets on startup (O-11).
+        scope.launch(ioDispatcher) {
+            val upgraded = signedGroups?.upgradeExistingV2Groups().orEmpty()
+            for (rot in upgraded) {
+                broadcastRotation(rot.groupId, rot)
+            }
+        }
+
         // Observe conversation list from Room, joined with live session presence + unread counts.
         scope.launch(ioDispatcher) {
             combine(
@@ -542,9 +725,21 @@ public class RealFlashChatRepository(
             }
         }
 
-        // Prune ephemeral typing indicators the instant a peer departs/disconnects.
+        // Prune ephemeral typing indicators and clear proof sessions the instant a peer departs/disconnects.
         scope.launch(ioDispatcher) {
+            var previousOnline = emptySet<String>()
             onlinePeerIds.collect { onlineSet ->
+                val departed = previousOnline - onlineSet
+                val arrived = onlineSet - previousOnline
+                previousOnline = onlineSet
+                currentConnectedPeers.clear()
+                currentConnectedPeers.addAll(onlineSet)
+                for (peerId in departed) {
+                    groupProofSessions?.onSessionDown(peerId)
+                }
+                for (peerId in arrived) {
+                    onPeerSessionUp(peerId)
+                }
                 var changed = false
                 typingStates.toMap().forEach { (convId, members) ->
                     val isGroup = conversationDao.get(convId)?.isGroup == true
@@ -671,6 +866,11 @@ public class RealFlashChatRepository(
         activeReadState = readState
 
         activeConversationJob = scope.launch(ioDispatcher) {
+            if (isV2Group(conversationId)) {
+                signedGroups?.upgradeGroupSecret(conversationId)?.let { rot ->
+                    broadcastRotation(conversationId, rot)
+                }
+            }
             val isGroupConversation = conversationDao.get(conversationId)?.isGroup == true
             readState.isGroup = isGroupConversation
             val deliveryCountsFlow = if (isGroupConversation) {
@@ -756,11 +956,12 @@ public class RealFlashChatRepository(
 
             // The roster is read inside the combine below, so a change to the member table (an owner removal, a leave, an
             // add from another device) has to re-run it, or an open members sheet keeps showing the old members.
-            val rosterFlow = if (isGroupConversation) {
+            val rawRosterFlow = if (isGroupConversation) {
                 groupMemberDao?.observeMembers(conversationId) ?: flowOf(emptyList())
             } else {
                 flowOf(emptyList())
             }
+            val rosterFlow = combine(rawRosterFlow, conversationRefreshTrigger) { roster, _ -> roster }
             // UI-052: how many catch-up messages have arrived, for the banner; nothing for a direct chat.
             val syncFlow = if (isGroupConversation) {
                 groupSyncActivity.map { it[conversationId]?.received }.distinctUntilChanged()
@@ -797,8 +998,13 @@ public class RealFlashChatRepository(
                     val selfMember = members.firstOrNull { it.deviceId == localDeviceId }
                     val isOwner = conversationEntity.groupCreatedBy == localDeviceId
                     val isMemberActive = selfMembership == FlashSelfMembership.Active
-                    val isAdmin = isMemberActive && selfMember?.role == "admin"
+                    val isAdmin = isOwner || (isMemberActive && selfMember?.role == "admin")
                     val isV2 = conversationEntity.groupProto == GroupPolicy.V2_PROTOCOL
+                    val currentSettings = if (isV2) signedGroups?.currentSettings(conversationId) ?: GroupSettings.defaults(conversationId) else null
+                    val canShare = isMemberActive && isV2 && (isOwner || isAdmin || currentSettings?.inviteSharers == GroupSettings.SHARERS_ALL)
+                    val canAdd = isMemberActive && (!isV2 || isOwner || isAdmin || currentSettings?.membersMayAdd == true)
+                    val pendingReqs = if (isV2 && (isOwner || isAdmin)) getPendingJoinRequests(conversationId) else emptyList()
+                    val localPrefs = if (isV2) getGroupLocalPreferences(conversationId) else null
                     FlashConversationUiState(
                         header = FlashChatHeaderUiState(
                             title = title,
@@ -824,13 +1030,18 @@ public class RealFlashChatRepository(
                             )
                         },
                         canRemoveMembers = isMemberActive && isV2 && (isOwner || isAdmin),
-                        canAddMembers = isMemberActive && (!isV2 || isOwner || isAdmin),
+                        canAddMembers = canAdd,
                         isGroupOwner = isMemberActive && isOwner,
                         isGroupAdmin = isAdmin,
                         canPromoteAdmin = isMemberActive && isV2 && isOwner,
                         canContinueInNewGroup = isMemberActive && !isOwner,
                         selfMembership = selfMembership,
                         groupSync = syncReceived?.let { FlashGroupSyncUi(receivedCount = it) },
+                        canShareInvite = canShare,
+                        isGroupV2 = isV2,
+                        pendingJoinRequests = pendingReqs,
+                        groupSettings = currentSettings,
+                        groupLocalPreferences = localPrefs,
                     ) to Pair(content.newestMessageId, content.newestInboundId)
                 } else {
                     directHeaderState(content, peers, typingByConversation, conversationId)
@@ -1081,6 +1292,348 @@ public class RealFlashChatRepository(
         }
     }
 
+    override suspend fun createGroupForInvite(name: String): FlashResult<String> =
+        withContext(ioDispatcher) {
+            val signed = signedGroups
+                ?: return@withContext FlashResult.Failure(FlashError.Unknown("Signed groups are unavailable on this device"))
+            val secretStore = groupSecretStore
+                ?: return@withContext FlashResult.Failure(FlashError.Unknown("Group secret store is unavailable"))
+            val groupName = GroupPolicy.normalizedName(name)
+                ?: return@withContext FlashResult.Failure(FlashError.Unknown("Group name must be 1-${GroupPolicy.MAX_GROUP_NAME_LENGTH} characters"))
+            if (!GroupPolicy.validMemberIds(listOf(localDeviceId), localDeviceId, GroupPolicy.MAX_MEMBERS_V2, minMembers = 1)) {
+                return@withContext FlashResult.Failure(FlashError.Unknown("Invalid group membership"))
+            }
+            val created = signed.create(groupName, emptyMap()) { localDisplayName }
+            val rot = signed.upgradeGroupSecret(created.groupId)
+            if (rot == null && secretStore.current(created.groupId) == null) {
+                val now = timeSource.nowMs()
+                val secret = GroupSecret.generate()
+                secretStore.put(
+                    StoredGroupSecret(
+                        groupId = created.groupId,
+                        epoch = 1L,
+                        secret = secret,
+                        source = GroupSecretSource.CREATED,
+                        receivedAtMs = now,
+                    ),
+                )
+            }
+            groupTitleCache[created.groupId] = groupName
+            FlashLog.i("CHAT", "Group v2 created for invite: group=${created.groupId}")
+            FlashResult.Success(created.groupId)
+        }
+
+    override suspend fun inviteFor(groupId: String): FlashResult<String> =
+        withContext(ioDispatcher) {
+            if (!isV2Group(groupId)) {
+                return@withContext FlashResult.Failure(
+                    FlashError.Unknown("Only groups made with the latest Flash version support invite links"),
+                )
+            }
+            val crypto = groupCrypto
+                ?: return@withContext FlashResult.Failure(FlashError.Unknown("Crypto identity unavailable"))
+            val secretStore = groupSecretStore
+                ?: return@withContext FlashResult.Failure(FlashError.Unknown("Group secret store unavailable"))
+            val members = groupMemberDao
+                ?: return@withContext FlashResult.Failure(FlashError.Unknown("Group storage unavailable"))
+            val self = members.member(groupId, localDeviceId)?.takeIf { it.isActive }
+                ?: return@withContext FlashResult.Failure(FlashError.Unknown("You are not an active group member"))
+            val conv = conversationDao.get(groupId)
+                ?: return@withContext FlashResult.Failure(FlashError.Unknown("Group not found"))
+            val isOwner = conv.groupCreatedBy == localDeviceId || self.role == "owner"
+            val isAdmin = isOwner || self.role == "admin"
+            val settings = signedGroups?.currentSettings(groupId) ?: GroupSettings.defaults(groupId)
+            if (settings.inviteSharers == GroupSettings.SHARERS_ADMINS && !isAdmin) {
+                return@withContext FlashResult.Failure(
+                    FlashError.Unknown("Only an admin can share invites for this group"),
+                )
+            }
+            val signed = signedGroups
+            var currentSecret = secretStore.current(groupId)
+            if (signed != null && (currentSecret == null || groupRotationDao?.getLatestForGroup(groupId) == null)) {
+                val rot = signed.upgradeGroupSecret(groupId)
+                if (rot != null) {
+                    broadcastRotation(groupId, rot)
+                }
+                currentSecret = secretStore.current(groupId)
+            }
+            if (currentSecret == null && groupRotationDao == null) {
+                val newSecret = GroupSecret.generate()
+                val record = StoredGroupSecret(
+                    groupId = groupId,
+                    epoch = 1L,
+                    secret = newSecret,
+                    source = GroupSecretSource.CREATED,
+                    receivedAtMs = timeSource.nowMs(),
+                )
+                secretStore.put(record)
+                currentSecret = record
+            }
+            if (currentSecret == null) {
+                return@withContext FlashResult.Failure(
+                    FlashError.Unknown("An admin needs to open this group on the new version first"),
+                )
+            }
+            val now = timeSource.nowMs()
+            val fpBytes = crypto.sha256(crypto.publicKey)
+            val hints = localAddressHints().take(3)
+            val invite = GroupInvite(
+                version = 1,
+                groupId = groupId,
+                epoch = currentSecret.epoch,
+                secret = currentSecret.secret,
+                groupName = conv.title,
+                inviterDeviceId = localDeviceId,
+                inviterKeyFingerprint = fpBytes,
+                addressHints = hints,
+                issuedAtMs = now,
+            )
+            val encoded = GroupInviteCodec.encode(invite)
+            FlashResult.Success(encoded)
+        }
+
+    override suspend fun acceptInvite(inviteUri: String): FlashResult<String> =
+        withContext(ioDispatcher) {
+            val invite = GroupInviteCodec.decode(inviteUri)
+                ?: return@withContext FlashResult.Failure(FlashError.Unknown(GroupMembershipStatusText.INVALID_INVITE))
+            val members = groupMemberDao
+                ?: return@withContext FlashResult.Failure(FlashError.Unknown("Group storage unavailable"))
+            val current = members.member(invite.groupId, localDeviceId)
+            if (current?.isActive == true) {
+                return@withContext FlashResult.Success(invite.groupId)
+            }
+            val now = timeSource.nowMs()
+            val inviteEntity = GroupInviteEntity(
+                groupId = invite.groupId,
+                inviterId = invite.inviterDeviceId,
+                inviterFingerprint = invite.inviterFingerprintHex.uppercase(),
+                acceptedAtMs = now,
+                state = "PENDING_CONTACT",
+            )
+            groupInviteDao?.upsert(inviteEntity)
+            acceptedInviteGroupIds.add(invite.groupId)
+            pendingInviteHints[invite.groupId] = invite.addressHints
+            pendingInviteGroupNames[invite.groupId] = invite.groupName
+            hintsExhausted.remove(invite.groupId)
+            groupSecretStore?.put(
+                StoredGroupSecret(
+                    groupId = invite.groupId,
+                    epoch = invite.epoch,
+                    secret = invite.secret,
+                    source = GroupSecretSource.INVITE,
+                    receivedAtMs = now,
+                ),
+            )
+            // Pre-install inviter's key as a scoped vouch
+            groupVouching?.vouch(invite.inviterDeviceId, invite.inviterFingerprintHex.uppercase(), invite.groupId)
+            // Dial address hints in order (GM-4 task 3, GM-8 task 1)
+            scope.launch(ioDispatcher) {
+                dialHintsInOrder(invite.groupId, invite.inviterDeviceId, invite.addressHints)
+            }
+            // If already connected to inviter or gs1 peer, trigger proof session
+            if (isPeerOnline(invite.inviterDeviceId)) {
+                triggerProofForPendingInvites(invite.inviterDeviceId)
+            }
+            FlashResult.Success(invite.groupId)
+        }
+
+    private suspend fun dialHintsInOrder(groupId: String, inviterId: String, hints: List<String>) {
+        if (hints.isEmpty()) {
+            FlashLog.i("GROUP", "No address hints in invite for $groupId; waiting for discovery (M-03)")
+            hintsExhausted.add(groupId)
+            return
+        }
+        val deadline = timeSource.nowMs() + HINT_DIAL_TIMEOUT_MS
+        for (hint in hints) {
+            if (timeSource.nowMs() >= deadline) {
+                FlashLog.i("GROUP", "Hint dial deadline reached (30s) for $groupId; waiting for discovery (M-03)")
+                break
+            }
+            if (isPeerOnline(inviterId)) {
+                FlashLog.i("GROUP", "Session already established to inviter $inviterId in group $groupId")
+                triggerProofForPendingInvites(inviterId)
+                return
+            }
+            FlashLog.i("GROUP", "Dialing address hint $hint for inviter $inviterId in group $groupId")
+            val success = if (onConnectPeerHint != null) {
+                onConnectPeerHint.invoke(inviterId, hint)
+            } else if (onConnectPeerWithHints != null) {
+                onConnectPeerWithHints.invoke(inviterId, listOf(hint))
+                isPeerOnline(inviterId)
+            } else {
+                false
+            }
+            if (success || isPeerOnline(inviterId)) {
+                FlashLog.i("GROUP", "Address hint $hint succeeded for inviter $inviterId in group $groupId")
+                triggerProofForPendingInvites(inviterId)
+                return
+            }
+        }
+        FlashLog.i("GROUP", "Hints exhausted for group $groupId; waiting for discovery (M-03)")
+        hintsExhausted.add(groupId)
+    }
+
+    override suspend fun inviteStatusSentence(groupId: String): String? = withContext(ioDispatcher) {
+        val members = groupMemberDao
+        if (members?.member(groupId, localDeviceId)?.isActive == true) {
+            return@withContext "Joined"
+        }
+        val invite = groupInviteDao?.getByGroupId(groupId) ?: return@withContext null
+        val groupName = conversationDao.get(groupId)?.title
+            ?.takeIf { it.isNotBlank() }
+            ?: pendingInviteGroupNames[groupId]
+            ?: "the group"
+        val now = timeSource.nowMs()
+        val elapsedMs = now - invite.acceptedAtMs
+        when (invite.state) {
+            "PENDING_CONTACT" -> {
+                if (elapsedMs >= HINT_DIAL_TIMEOUT_MS || hintsExhausted.contains(groupId)) {
+                    GroupMembershipStatusText.waitingForMember(groupName)
+                } else {
+                    "Connecting to inviter…"
+                }
+            }
+            "PENDING_APPROVAL" -> GroupMembershipStatusText.waitingForAdmin(groupName)
+            "REFUSED" -> GroupMembershipStatusText.requestDeclined(groupName)
+            "JOINED" -> "Joined"
+            "ABANDONED" -> "Cancelled"
+            else -> null
+        }
+    }
+
+    override suspend fun retryPendingInviteHints(): Unit = withContext(ioDispatcher) {
+        val pending = groupInviteDao?.getByState("PENDING_CONTACT") ?: emptyList()
+        for (invite in pending) {
+            val hints = pendingInviteHints[invite.groupId] ?: emptyList()
+            if (hints.isNotEmpty() && !isPeerOnline(invite.inviterId)) {
+                hintsExhausted.remove(invite.groupId)
+                scope.launch(ioDispatcher) {
+                    dialHintsInOrder(invite.groupId, invite.inviterId, hints)
+                }
+            }
+        }
+    }
+
+    public fun onNetworkChanged() {
+        scope.launch(ioDispatcher) {
+            retryPendingInviteHints()
+        }
+    }
+
+    override suspend fun approveJoinRequest(groupId: String, subjectId: String): FlashResult<Unit> =
+        withContext(ioDispatcher) {
+            val signed = signedGroups
+                ?: return@withContext FlashResult.Failure(FlashError.Unknown("Signed groups unavailable"))
+            val members = groupMemberDao
+                ?: return@withContext FlashResult.Failure(FlashError.Unknown("Group storage unavailable"))
+            val self = members.member(groupId, localDeviceId)?.takeIf { it.isActive }
+            val isOwner = conversationDao.get(groupId)?.groupCreatedBy == localDeviceId
+            val isAdmin = isOwner || self?.role == "admin"
+            if (!isAdmin) {
+                return@withContext FlashResult.Failure(FlashError.Unknown("Only an admin can approve join requests"))
+            }
+            val active = members.activeMembers(groupId)
+            val maxMembers = signedGroups?.currentSettings(groupId)?.maxMembers ?: GroupPolicy.MAX_MEMBERS_V2
+            if (active.size >= maxMembers) {
+                return@withContext FlashResult.Failure(FlashError.Unknown("Group is full"))
+            }
+            val req = groupJoinRequestDao?.getAllForGroup(groupId)?.firstOrNull {
+                it.subjectId == subjectId && it.state == "PENDING"
+            } ?: return@withContext FlashResult.Failure(FlashError.Unknown("Join request not found"))
+            val keyBytes = GroupCanonical.decode(req.subjectKey)
+                ?: return@withContext FlashResult.Failure(FlashError.Unknown("Invalid subject key"))
+            val added = signed.addMembers(groupId, mapOf(subjectId to keyBytes)) { req.label }
+                ?: return@withContext FlashResult.Failure(FlashError.Unknown("Failed to certify member"))
+            val now = timeSource.nowMs()
+            groupJoinRequestDao?.updateDecision(groupId, subjectId, req.subjectKey, "APPROVED", localDeviceId, now)
+            conversationRefreshTrigger.value = now
+            // Send full bundle to subject
+            groupTransportSink?.send(subjectId, added.full)
+            // Broadcast changed bundle to existing members
+            active.forEach { member ->
+                if (member.deviceId != localDeviceId && member.deviceId != subjectId) {
+                    groupTransportSink?.send(member.deviceId, added.changed)
+                }
+            }
+            // Send decision
+            val decBytes = GroupCanonical.joinDecisionBytes(groupId, subjectId, true, "approved", localDeviceId, now)
+            val decSig = GroupCanonical.encode(groupCrypto?.sign(decBytes) ?: ByteArray(0))
+            val decision = GroupWireFrame.GsJoinDecision(
+                groupId = groupId,
+                from = localDeviceId,
+                subjectId = subjectId,
+                approved = true,
+                reason = "approved",
+                decidedBy = localDeviceId,
+                decidedAtMs = now,
+                signature = decSig,
+            )
+            groupTransportSink?.send(subjectId, decision)
+            FlashResult.Success(Unit)
+        }
+
+    override suspend fun refuseJoinRequest(
+        groupId: String,
+        subjectId: String,
+        reason: String,
+    ): FlashResult<Unit> = withContext(ioDispatcher) {
+        val members = groupMemberDao
+            ?: return@withContext FlashResult.Failure(FlashError.Unknown("Group storage unavailable"))
+        val self = members.member(groupId, localDeviceId)?.takeIf { it.isActive }
+        val isOwner = conversationDao.get(groupId)?.groupCreatedBy == localDeviceId
+        val isAdmin = isOwner || self?.role == "admin"
+        if (!isAdmin) {
+            return@withContext FlashResult.Failure(FlashError.Unknown("Only an admin can refuse join requests"))
+        }
+        val req = groupJoinRequestDao?.getAllForGroup(groupId)?.firstOrNull {
+            it.subjectId == subjectId && it.state == "PENDING"
+        } ?: return@withContext FlashResult.Failure(FlashError.Unknown("Join request not found"))
+        val now = timeSource.nowMs()
+        groupJoinRequestDao?.updateDecision(groupId, subjectId, req.subjectKey, "REFUSED", localDeviceId, now)
+        conversationRefreshTrigger.value = now
+        val decBytes = GroupCanonical.joinDecisionBytes(groupId, subjectId, false, reason, localDeviceId, now)
+        val decSig = GroupCanonical.encode(groupCrypto?.sign(decBytes) ?: ByteArray(0))
+        val decision = GroupWireFrame.GsJoinDecision(
+            groupId = groupId,
+            from = localDeviceId,
+            subjectId = subjectId,
+            approved = false,
+            reason = reason,
+            decidedBy = localDeviceId,
+            decidedAtMs = now,
+            signature = decSig,
+        )
+        groupTransportSink?.send(subjectId, decision)
+        FlashResult.Success(Unit)
+    }
+
+    override suspend fun getPendingJoinRequests(groupId: String): List<FlashGroupJoinRequestUi> =
+        withContext(ioDispatcher) {
+            val requests = groupJoinRequestDao?.getAllForGroup(groupId)?.filter { it.state == "PENDING" } ?: emptyList()
+            val members = groupMemberDao
+            val rotations = groupRotationDao?.getAllForGroup(groupId).orEmpty()
+            requests.map { req ->
+                val isRemoved = members?.member(groupId, req.subjectId)?.let { !it.isActive } == true ||
+                    rotations.any { req.subjectId in it.toRotation().removedIds }
+                FlashGroupJoinRequestUi(
+                    subjectId = req.subjectId,
+                    subjectKey = req.subjectKey,
+                    label = req.label,
+                    requestedAtMs = req.requestedAtMs,
+                    isPreviouslyRemoved = isRemoved,
+                )
+            }
+        }
+
+    override suspend fun cancelPendingInvite(groupId: String): FlashResult<Unit> =
+        withContext(ioDispatcher) {
+            val invite = groupInviteDao?.getByGroupId(groupId)
+                ?: return@withContext FlashResult.Failure(FlashError.Unknown("No invite found for group"))
+            groupInviteDao?.updateState(groupId, "ABANDONED")
+            conversationRefreshTrigger.value = timeSource.nowMs()
+            FlashResult.Success(Unit)
+        }
+
     override suspend fun createGroup(name: String, memberIds: Set<String>): FlashResult<String> =
         // Group mutations do Room writes AND blocking socket writes (WsConnection.sendText), so
         // they must never run on the caller's dispatcher: the UI calls this from the main thread
@@ -1324,6 +1877,40 @@ public class RealFlashChatRepository(
         return FlashResult.Success(Unit)
     }
 
+    /**
+     * GM-6: Rotates the group secret ("Change group code"), invalidating prior invites while keeping
+     * existing members unaffected. Owner or admin action.
+     */
+    override suspend fun changeGroupCode(groupId: String): FlashResult<Unit> =
+        withContext(ioDispatcher) { changeGroupCodeLocked(groupId) }
+
+    private suspend fun changeGroupCodeLocked(groupId: String): FlashResult<Unit> {
+        val signed = signedGroups
+            ?: return FlashResult.Failure(FlashError.Unknown("Signed groups are unavailable on this device"))
+        if (!isV2Group(groupId)) {
+            return FlashResult.Failure(FlashError.Unknown("Only groups made with the latest Flash version support changing group code"))
+        }
+        val members = groupMemberDao
+            ?: return FlashResult.Failure(FlashError.Unknown("Group storage unavailable"))
+        val self = members.member(groupId, localDeviceId)?.takeIf { it.isActive }
+        val isOwner = conversationDao.get(groupId)?.groupCreatedBy == localDeviceId
+        val isAdmin = self?.role == "admin"
+        if (!isOwner && !isAdmin) {
+            return FlashResult.Failure(FlashError.Unknown("Only the group owner or an admin can change the group code"))
+        }
+        val rotation = signed.rotateGroupSecret(groupId, GroupRotation.REASON_MANUAL, emptyList())
+            ?: return FlashResult.Failure(FlashError.Unknown("Failed to rotate group secret"))
+
+        val targets = members.activeMembers(groupId).map { it.deviceId }.filter { it != localDeviceId }
+        val bundle = signed.bundleFor(groupId)
+        if (bundle != null) {
+            targets.forEach { groupTransportSink?.send(it, bundle) }
+        }
+        FlashLog.i("CHAT", "Group secret rotated (change group code): group=$groupId newEpoch=${rotation.newEpoch}")
+        conversationRefreshTrigger.value = timeSource.nowMs()
+        return FlashResult.Success(Unit)
+    }
+
     private suspend fun leaveGroupLocked(groupId: String, successorId: String? = null): FlashResult<Unit> {
         val members = groupMemberDao
             ?: return FlashResult.Failure(FlashError.Unknown("Group storage unavailable"))
@@ -1399,7 +1986,8 @@ public class RealFlashChatRepository(
         val self = members.member(groupId, localDeviceId)?.takeIf { it.isActive }
         val isOwner = conversationDao.get(groupId)?.groupCreatedBy == localDeviceId
         val isAdmin = self?.role == "admin"
-        if (!isOwner && !isAdmin) {
+        val settings = signed.currentSettings(groupId)
+        if (!isOwner && !isAdmin && !settings.membersMayAdd) {
             return FlashResult.Failure(FlashError.Unknown("Only the group owner or an admin can add members"))
         }
         val existing = members.activeMembers(groupId)
@@ -1408,8 +1996,8 @@ public class RealFlashChatRepository(
         }
         val newcomers = memberIds.filter { id -> existing.none { it.deviceId == id } }.toSet()
         if (newcomers.isEmpty()) return FlashResult.Success(Unit)
-        if (existing.size + newcomers.size > GroupPolicy.MAX_MEMBERS_V2) {
-            return FlashResult.Failure(FlashError.Unknown("Groups support at most ${GroupPolicy.MAX_MEMBERS_V2} members"))
+        if (existing.size + newcomers.size > settings.maxMembers) {
+            return FlashResult.Failure(FlashError.Unknown("Groups support at most ${settings.maxMembers} members"))
         }
         if (newcomers.any { peerGroupProtocol(it) < GroupPolicy.V2_PROTOCOL }) {
             return FlashResult.Failure(FlashError.Unknown("Update Flash on that device before adding it to this group"))
@@ -1448,6 +2036,77 @@ public class RealFlashChatRepository(
             groupMemberDao?.activeMembers(groupId)
                 ?.map { it.toMemberUi(introducedBy = introducedByOf(it, ownerName)) }
                 .orEmpty()
+        }
+
+    override suspend fun getGroupSettings(groupId: String): GroupSettings =
+        withContext(ioDispatcher) {
+            signedGroups?.currentSettings(groupId)
+                ?: groupSettingsDao?.getByGroupId(groupId)?.toSettings()
+                ?: GroupSettings.defaults(groupId)
+        }
+
+    override suspend fun updateGroupSettings(
+        groupId: String,
+        joinPolicy: String?,
+        inviteSharers: String?,
+        maxMembers: Int?,
+        swarmServing: Boolean?,
+        membersMayAdd: Boolean?,
+    ): FlashResult<Unit> =
+        withContext(ioDispatcher) {
+            val signed = signedGroups
+                ?: return@withContext FlashResult.Failure(FlashError.Unknown("Signed groups are unavailable on this device"))
+            val members = groupMemberDao
+                ?: return@withContext FlashResult.Failure(FlashError.Unknown("Group storage unavailable"))
+            val self = members.member(groupId, localDeviceId)?.takeIf { it.isActive }
+            val isOwner = conversationDao.get(groupId)?.groupCreatedBy == localDeviceId
+            val isAdmin = isOwner || self?.role == "admin"
+            if (!isAdmin) {
+                return@withContext FlashResult.Failure(FlashError.Unknown("Only the group owner or an admin can update settings"))
+            }
+            val bundle = signed.updateSettings(
+                groupId = groupId,
+                joinPolicy = joinPolicy,
+                inviteSharers = inviteSharers,
+                maxMembers = maxMembers,
+                swarmServing = swarmServing,
+                membersMayAdd = membersMayAdd,
+            ) ?: return@withContext FlashResult.Failure(FlashError.Unknown("Failed to sign or update group settings"))
+
+            val activeOthers = members.activeMembers(groupId).map { it.deviceId } - localDeviceId
+            activeOthers.forEach { target ->
+                groupTransportSink?.send(target, bundle)
+            }
+            conversationRefreshTrigger.value = timeSource.nowMs()
+            FlashResult.Success(Unit)
+        }
+
+    override suspend fun getGroupLocalPreferences(groupId: String): GroupLocalPreferences =
+        withContext(ioDispatcher) {
+            groupPreferencesDao?.getByGroupId(groupId)?.toPreferences()
+                ?: GroupLocalPreferences.defaults(groupId)
+        }
+
+    override suspend fun updateGroupLocalPreferences(
+        groupId: String,
+        serveToGroup: Boolean?,
+        serveWifiOnly: Boolean?,
+        batteryThresholdPercent: Int?,
+        keepAvailableDays: Int?,
+        autoAcceptSizeBytes: Long?,
+    ): FlashResult<Unit> =
+        withContext(ioDispatcher) {
+            val current = getGroupLocalPreferences(groupId)
+            val updated = current.copy(
+                serveToGroup = serveToGroup ?: current.serveToGroup,
+                serveWifiOnly = serveWifiOnly ?: current.serveWifiOnly,
+                batteryThresholdPercent = batteryThresholdPercent ?: current.batteryThresholdPercent,
+                keepAvailableDays = keepAvailableDays ?: current.keepAvailableDays,
+                autoAcceptSizeBytes = autoAcceptSizeBytes ?: current.autoAcceptSizeBytes,
+            )
+            groupPreferencesDao?.upsert(updated.toEntity())
+            conversationRefreshTrigger.value = timeSource.nowMs()
+            FlashResult.Success(Unit)
         }
 
     /** The group owner's stored label, even after the owner left (their row stays as a tombstone). */
@@ -1983,7 +2642,45 @@ public class RealFlashChatRepository(
      * `from` field cannot claim another trusted member's identity.
      */
     public suspend fun onInboundGroupWireFrame(peerDeviceId: String, frame: GroupWireFrame) {
-        if (peerDeviceId != frame.from || !isGroupPeerTrusted(frame.groupId, peerDeviceId)) return
+        if (frame is GroupWireFrame.GsHello ||
+            frame is GroupWireFrame.GsChallenge ||
+            frame is GroupWireFrame.GsProof ||
+            frame is GroupWireFrame.GsResult
+        ) {
+            if (peerDeviceId != frame.from) return
+            groupProofSessions?.let { sessions ->
+                when (frame) {
+                    is GroupWireFrame.GsHello -> sessions.onHello(peerDeviceId, frame)
+                    is GroupWireFrame.GsChallenge -> sessions.onChallenge(peerDeviceId, frame)
+                    is GroupWireFrame.GsProof -> sessions.onProof(peerDeviceId, frame)
+                    is GroupWireFrame.GsResult -> sessions.onResult(peerDeviceId, frame)
+                    else -> Unit
+                }
+            }
+            return
+        }
+
+        if (frame is GroupWireFrame.GsJoinRequest) {
+            if (peerDeviceId != frame.from) return
+            handleInboundJoinRequest(peerDeviceId, frame)
+            return
+        }
+
+        if (frame is GroupWireFrame.GsJoinDecision) {
+            if (peerDeviceId != frame.from) return
+            handleInboundJoinDecision(peerDeviceId, frame)
+            return
+        }
+
+        if (frame is GroupWireFrame.GsRosterPreview) {
+            if (peerDeviceId != frame.from) return
+            handleInboundRosterPreview(peerDeviceId, frame)
+            return
+        }
+
+        val isTrusted = isGroupPeerTrusted(frame.groupId, peerDeviceId) ||
+            (frame is GroupWireFrame.Bundle && acceptedInviteGroupIds.contains(frame.groupId))
+        if (peerDeviceId != frame.from || !isTrusted) return
         val members = groupMemberDao ?: return
         if (frame is GroupWireFrame.Membership && GroupPolicy.isV2GroupId(frame.groupId)) {
             // ADR-044 V1 (D1): the `g2-` namespace belongs to signed groups. A legacy frame for it can
@@ -2216,12 +2913,44 @@ public class RealFlashChatRepository(
                     return
                 }
                 val outcome = signed.onBundle(peerDeviceId, frame)
-                if (outcome is SignedGroups.BundleOutcome.Applied && outcome.joined) {
-                    FlashLog.i("CHAT", "Group v2 joined: group=${frame.groupId} owner=${frame.charter.ownerId} from=$peerDeviceId")
-                    groupTitleCache[frame.groupId] = frame.charter.name
-                    // The group is new here and holds no messages, and F3 sync only fires on a
-                    // session-up edge: ask for history now, as a legacy bootstrap does.
-                    requestGroupCatchUp(frame.groupId)
+                if (outcome is SignedGroups.BundleOutcome.Applied) {
+                    val selfActive = groupMemberDao?.member(frame.groupId, localDeviceId)?.isActive == true
+                    if (outcome.joined || selfActive) {
+                        FlashLog.i("CHAT", "Group v2 joined: group=${frame.groupId} owner=${frame.charter.ownerId} from=$peerDeviceId")
+                        groupTitleCache[frame.groupId] = frame.charter.name
+                        groupInviteDao?.updateState(frame.groupId, "JOINED")
+                        pendingInviteHints.remove(frame.groupId)
+                        hintsExhausted.remove(frame.groupId)
+                        // The group is new here and holds no messages, and F3 sync only fires on a
+                        // session-up edge: ask for history now, as a legacy bootstrap does.
+                        requestGroupCatchUp(frame.groupId)
+                    }
+                    if (outcome.needsSecret && outcome.rotation != null) {
+                        if (groupGate.allows(frame.groupId, peerDeviceId, GroupTraffic.CHAT)) {
+                            groupTransportSink?.send(
+                                peerDeviceId,
+                                GroupWireFrame.GsSecretRequest(
+                                    groupId = frame.groupId,
+                                    from = localDeviceId,
+                                    epoch = outcome.rotation.newEpoch,
+                                ),
+                            )
+                        }
+                    }
+                    if (outcome.winningRotation != null) {
+                        groupTransportSink?.send(
+                            peerDeviceId,
+                            GroupWireFrame.GsStale(
+                                groupId = frame.groupId,
+                                from = localDeviceId,
+                                epoch = outcome.winningRotation.newEpoch,
+                                rotation = outcome.winningRotation,
+                            ),
+                        )
+                    }
+                    if (outcome.reRotated != null) {
+                        broadcastRotation(frame.groupId, outcome.reRotated)
+                    }
                 }
             }
             is GroupWireFrame.Sync -> {
@@ -2248,6 +2977,75 @@ public class RealFlashChatRepository(
                     }
                     senderName = label
                     groupSig = frame.signature
+                }
+                val isSwarmOffer = frame.swarm == 1 &&
+                    frame.root != null &&
+                    frame.pieceSize != null &&
+                    frame.rootSig != null &&
+                    swarmAnnouncementListener != null &&
+                    (signedGroups == null || signedGroups.verifySwarmAnnouncement(
+                        frame.groupId, frame.from, frame.messageId, frame.root,
+                        frame.sizeBytes, frame.fileName, frame.mimeType, frame.sentAt, frame.rootSig
+                    ))
+
+                if (isSwarmOffer) {
+                    val now = timeSource.nowMs()
+                    groupTransportSink?.send(
+                        frame.from,
+                        GroupWireFrame.Receipt(
+                            groupId = frame.groupId,
+                            messageId = frame.messageId,
+                            from = localDeviceId,
+                            deliveredAt = now,
+                        ),
+                    )
+                    scope.launch(ioDispatcher) {
+                        if (claimedGroupMedia.add(frame.transferId)) {
+                            val insertedRowId = messageDao.insert(
+                                MessageEntity(
+                                    localId = frame.messageId,
+                                    conversationId = frame.groupId,
+                                    senderId = frame.from,
+                                    senderName = senderName,
+                                    text = "",
+                                    sentAt = frame.sentAt.takeIf { it > 0 } ?: now,
+                                    status = "DELIVERED",
+                                    attachmentTransferId = frame.transferId,
+                                    attachmentName = frame.fileName,
+                                    attachmentMime = frame.mimeType,
+                                    attachmentSize = frame.sizeBytes,
+                                    attachmentPath = null,
+                                    groupSig = groupSig,
+                                ),
+                            )
+                            touchConversation(frame.groupId, now)
+                            if (insertedRowId != -1L) {
+                                runCatching {
+                                    onInboundAttachmentWithGroupTitle(
+                                        frame.groupId,
+                                        senderName,
+                                        frame.fileName,
+                                        frame.mimeType,
+                                        conversationDao.get(frame.groupId)?.title?.ifBlank { null },
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    swarmAnnouncementListener?.onSwarmAnnouncement(
+                        groupId = frame.groupId,
+                        messageId = frame.messageId,
+                        transferId = frame.transferId,
+                        from = frame.from,
+                        root = frame.root!!,
+                        pieceSize = frame.pieceSize!!,
+                        totalSize = frame.sizeBytes,
+                        fileName = frame.fileName,
+                        mimeType = frame.mimeType,
+                        sentAt = frame.sentAt,
+                        rootSig = frame.rootSig!!,
+                    )
+                    return
                 }
                 pendingGroupMedia[frame.transferId] = frame.copy(senderName = senderName)
                 val now = timeSource.nowMs()
@@ -2308,6 +3106,364 @@ public class RealFlashChatRepository(
                     }
                 }
             }
+            is GroupWireFrame.GsHello,
+            is GroupWireFrame.GsChallenge,
+            is GroupWireFrame.GsProof,
+            is GroupWireFrame.GsResult,
+            is GroupWireFrame.GsJoinRequest,
+            is GroupWireFrame.GsJoinDecision,
+            is GroupWireFrame.GsRosterPreview -> Unit
+            is GroupWireFrame.GsStale -> handleInboundGsStale(peerDeviceId, frame)
+            is GroupWireFrame.GsSecretRequest -> handleInboundGsSecretRequest(peerDeviceId, frame)
+            is GroupWireFrame.GsSecret -> handleInboundGsSecret(peerDeviceId, frame)
+        }
+    }
+
+    private suspend fun broadcastRotation(groupId: String, rotation: GroupRotation) {
+        val members = groupMemberDao ?: return
+        val active = members.activeMembers(groupId)
+        for (m in active) {
+            if (m.deviceId == localDeviceId) continue
+            groupTransportSink?.send(
+                m.deviceId,
+                GroupWireFrame.GsStale(
+                    groupId = groupId,
+                    from = localDeviceId,
+                    epoch = rotation.newEpoch,
+                    rotation = rotation,
+                ),
+            )
+        }
+    }
+
+    private suspend fun handleInboundGsStale(peerDeviceId: String, frame: GroupWireFrame.GsStale) {
+        if (peerDeviceId != frame.from) return
+        val signed = signedGroups ?: return
+        val outcome = signed.handleIncomingRotation(frame.groupId, frame.rotation, peerDeviceId)
+        when (outcome) {
+            is SignedGroups.RotationOutcome.Applied -> {
+                if (outcome.needsSecret) {
+                    if (groupGate.allows(frame.groupId, peerDeviceId, GroupTraffic.CHAT)) {
+                        groupTransportSink?.send(
+                            peerDeviceId,
+                            GroupWireFrame.GsSecretRequest(
+                                groupId = frame.groupId,
+                                from = localDeviceId,
+                                epoch = outcome.rotation.newEpoch,
+                            ),
+                        )
+                    }
+                }
+                if (outcome.reRotated != null) {
+                    broadcastRotation(frame.groupId, outcome.reRotated)
+                }
+            }
+            is SignedGroups.RotationOutcome.WonConcurrently -> {
+                groupTransportSink?.send(
+                    peerDeviceId,
+                    GroupWireFrame.GsStale(
+                        groupId = frame.groupId,
+                        from = localDeviceId,
+                        epoch = outcome.winningRotation.newEpoch,
+                        rotation = outcome.winningRotation,
+                    ),
+                )
+            }
+            is SignedGroups.RotationOutcome.Ignored -> Unit
+        }
+    }
+
+    private suspend fun handleInboundGsSecretRequest(peerDeviceId: String, frame: GroupWireFrame.GsSecretRequest) {
+        if (peerDeviceId != frame.from) return
+        // Check allows(CHAT) AT THAT MOMENT (task 3)
+        if (!groupGate.allows(frame.groupId, peerDeviceId, GroupTraffic.CHAT)) {
+            FlashLog.w("CHAT", "SECURITY: GsSecretRequest refused: not allowed CHAT at this moment (group=${frame.groupId} peer=$peerDeviceId)")
+            return
+        }
+
+        // SW-0 (2026-10-04, security 10.2): never to a device id named in removedIds of any rotation notice held
+        val rotations = groupRotationDao?.getAllForGroup(frame.groupId).orEmpty()
+        val isRemoved = rotations.any { rot ->
+            rot.removedIds.split(',').map { it.trim() }.contains(peerDeviceId)
+        }
+        if (isRemoved) {
+            FlashLog.w("CHAT", "SECURITY: GsSecretRequest refused: peer $peerDeviceId is in removedIds for group=${frame.groupId}")
+            return
+        }
+
+        val secretStore = groupSecretStore ?: return
+        val record = secretStore.get(frame.groupId, frame.epoch) ?: return
+        val response = GroupWireFrame.GsSecret(
+            groupId = frame.groupId,
+            from = localDeviceId,
+            epoch = frame.epoch,
+            secret = record.secret.toByteArray(),
+        )
+        groupTransportSink?.send(peerDeviceId, response)
+    }
+
+    private suspend fun handleInboundGsSecret(peerDeviceId: String, frame: GroupWireFrame.GsSecret) {
+        if (peerDeviceId != frame.from) return
+        if (!groupGate.allows(frame.groupId, peerDeviceId, GroupTraffic.CHAT)) {
+            FlashLog.w("CHAT", "SECURITY: GsSecret dropped: peer $peerDeviceId not allowed CHAT at this moment (group=${frame.groupId})")
+            return
+        }
+        if (frame.secret.size != GroupSecret.SECRET_SIZE_BYTES) {
+            FlashLog.w("CHAT", "GsSecret dropped: invalid secret size (${frame.secret.size})")
+            return
+        }
+
+        val rotationDao = groupRotationDao ?: return
+        val rotation = rotationDao.getByGroupAndEpoch(frame.groupId, frame.epoch) ?: run {
+            FlashLog.w("CHAT", "GsSecret dropped: no rotation notice for group=${frame.groupId} epoch=${frame.epoch}")
+            return
+        }
+
+        val candidateSecret = GroupSecret.fromBytes(frame.secret)
+        val matches = GroupSecretCommit.matchesHex(
+            commitHex = rotation.commit,
+            groupId = frame.groupId,
+            epoch = frame.epoch,
+            secret = candidateSecret,
+        )
+        if (!matches) {
+            FlashLog.w("CHAT", "SECURITY: GsSecret commit check failed for group=${frame.groupId} epoch=${frame.epoch} from=$peerDeviceId")
+            return
+        }
+
+        val secretStore = groupSecretStore ?: return
+        val now = timeSource.nowMs()
+        val record = StoredGroupSecret(
+            groupId = frame.groupId,
+            epoch = frame.epoch,
+            secret = candidateSecret,
+            commit = rotation.commit,
+            source = GroupSecretSource.HANDOVER,
+            receivedAtMs = now,
+        )
+        secretStore.put(record)
+        FlashLog.i("CHAT", "Stored handed-over group secret: group=${frame.groupId} epoch=${frame.epoch} from=$peerDeviceId")
+    }
+
+    private suspend fun handleInboundJoinRequest(peerDeviceId: String, frame: GroupWireFrame.GsJoinRequest) {
+        val crypto = groupCrypto ?: return
+        val members = groupMemberDao ?: return
+        val isDirect = (peerDeviceId == frame.subjectId)
+
+        if (isDirect) {
+            // Direct request from joiner
+            // 1. Session must have proved knowledge of group secret (GINV-2)
+            if (groupProofSessions?.hasProved(peerDeviceId, frame.groupId) != true) {
+                FlashLog.w("CHAT", "SECURITY: GsJoinRequest dropped: session $peerDeviceId has not proved group ${frame.groupId}")
+                return
+            }
+            // 2. subjectKey must be the live session key
+            val liveKey = peerIdentityKey(peerDeviceId)
+            if (liveKey == null || liveKey.isEmpty()) {
+                FlashLog.w("CHAT", "SECURITY: GsJoinRequest dropped: no live key for $peerDeviceId")
+                return
+            }
+            val encodedLiveKey = GroupCanonical.encode(liveKey)
+            if (frame.subjectKey != encodedLiveKey) {
+                FlashLog.w("CHAT", "SECURITY: GsJoinRequest dropped: subjectKey does not match live key for $peerDeviceId")
+                return
+            }
+        } else {
+            // Forwarded request from another peer - forwarder must be an active group member
+            val forwarder = members.member(frame.groupId, peerDeviceId)
+            if (forwarder?.isActive != true) {
+                FlashLog.w("CHAT", "SECURITY: GsJoinRequest dropped: forwarder $peerDeviceId is not active member of ${frame.groupId}")
+                return
+            }
+        }
+
+        // Verify cryptographic signature against subjectKey (joiner's key)
+        val subjectKeyBytes = GroupCanonical.decode(frame.subjectKey) ?: return
+        val sigBytes = GroupCanonical.decode(frame.signature) ?: return
+        val reqBytes = GroupCanonical.joinRequestBytes(
+            groupId = frame.groupId,
+            epoch = frame.epoch,
+            subjectId = frame.subjectId,
+            subjectKeyBase64 = frame.subjectKey,
+            label = frame.label,
+            requestedAtMs = frame.requestedAtMs,
+        ) ?: return
+        if (!crypto.verify(sigBytes, reqBytes, subjectKeyBytes)) {
+            FlashLog.w("CHAT", "SECURITY: GsJoinRequest dropped: invalid signature from ${frame.subjectId}")
+            return
+        }
+
+        // 5. Reply GsRosterPreview to joiner if direct
+        if (isDirect) {
+            val conversation = conversationDao.get(frame.groupId)
+            if (conversation != null && conversation.groupProto == GroupPolicy.V2_PROTOCOL) {
+                val active = members.activeMembers(frame.groupId)
+                val charter = GroupCharter(
+                    groupId = frame.groupId,
+                    name = conversation.title,
+                    ownerId = conversation.groupCreatedBy ?: "",
+                    ownerKey = conversation.groupOwnerKey ?: "",
+                    createdAt = conversation.groupCreatedAt ?: 0L,
+                    nonce = conversation.groupNonce ?: "",
+                    proto = conversation.groupProto,
+                    sig = conversation.groupCharterSig ?: "",
+                )
+                val preview = GroupWireFrame.GsRosterPreview(
+                    groupId = frame.groupId,
+                    from = localDeviceId,
+                    charter = charter,
+                    memberCount = active.size,
+                    memberNames = active.map { it.displayName },
+                )
+                groupTransportSink?.send(peerDeviceId, preview)
+            }
+        }
+
+        // 6. Store request in group_join_request
+        val entity = GroupJoinRequestEntity(
+            groupId = frame.groupId,
+            subjectId = frame.subjectId,
+            subjectKey = frame.subjectKey,
+            label = frame.label,
+            requestSig = frame.signature,
+            viaPeerId = peerDeviceId,
+            requestedAtMs = frame.requestedAtMs,
+            state = "PENDING",
+            decidedBy = null,
+            decidedAtMs = null,
+        )
+        groupJoinRequestDao?.upsert(entity)
+
+        // 7. Check if this device is admin/owner
+        val self = members.member(frame.groupId, localDeviceId)?.takeIf { it.isActive }
+        val isOwner = conversationDao.get(frame.groupId)?.groupCreatedBy == localDeviceId
+        val isAdmin = isOwner || self?.role == "admin"
+        if (isAdmin) {
+            // Under policy "open", auto-approve UNLESS tombstoned (GINV-5) or group is full
+            val isTombstoned = members.member(frame.groupId, frame.subjectId)?.let {
+                !it.isActive && it.subjectKey == frame.subjectKey
+            } == true
+            val activeCount = members.activeMembers(frame.groupId).size
+            val maxMembers = signedGroups?.currentSettings(frame.groupId)?.maxMembers ?: GroupPolicy.MAX_MEMBERS_V2
+            if (activeCount >= maxMembers) {
+                refuseJoinRequest(frame.groupId, frame.subjectId, reason = "full")
+            } else if (!isTombstoned && isGroupJoinOpen(frame.groupId)) {
+                approveJoinRequest(frame.groupId, frame.subjectId)
+            } else {
+                val groupTitle = conversationDao.get(frame.groupId)?.title ?: "Group"
+                onJoinRequestNotification?.invoke(frame.groupId, groupTitle, frame.label)
+                conversationRefreshTrigger.value = timeSource.nowMs()
+            }
+        } else {
+            // Forward signed request to every admin this device has an active session with
+            forwardJoinRequestToAdmins(frame)
+        }
+    }
+
+    private suspend fun handleInboundJoinDecision(peerDeviceId: String, frame: GroupWireFrame.GsJoinDecision) {
+        if (frame.subjectId != localDeviceId) return
+        val invite = groupInviteDao?.getByGroupId(frame.groupId) ?: return
+        if (!frame.approved) {
+            groupInviteDao.updateState(frame.groupId, "REFUSED")
+            acceptedInviteGroupIds.remove(frame.groupId)
+            groupVouching?.revoke(invite.inviterId, frame.groupId)
+            groupSecretStore?.forget(frame.groupId)
+            pendingInviteHints.remove(frame.groupId)
+            hintsExhausted.remove(frame.groupId)
+            FlashLog.i("CHAT", "Group join request refused: ${frame.reason} for ${frame.groupId}")
+        } else {
+            groupInviteDao.updateState(frame.groupId, "APPROVED")
+            FlashLog.i("CHAT", "Group join request approved for ${frame.groupId}")
+        }
+    }
+
+    private suspend fun handleInboundRosterPreview(peerDeviceId: String, frame: GroupWireFrame.GsRosterPreview) {
+        val invite = groupInviteDao?.getByGroupId(frame.groupId) ?: return
+        if (invite.state == "REFUSED" || invite.state == "ABANDONED") return
+        val signed = signedGroups ?: return
+        val err = signed.checkCharter(frame.charter)
+        if (err != null) {
+            FlashLog.w("CHAT", "SECURITY: GsRosterPreview charter invalid: $err from $peerDeviceId")
+            return
+        }
+        FlashLog.i("CHAT", "Received GsRosterPreview for ${frame.groupId}: ${frame.memberCount} members")
+    }
+
+    private suspend fun onPeerSessionUp(peerId: String) {
+        triggerProofForPendingInvites(peerId)
+        // Forward any pending join requests where peerId is an admin in that group
+        val pendingRequests = groupJoinRequestDao?.getAll()?.filter { it.state == "PENDING" } ?: emptyList()
+        val members = groupMemberDao ?: return
+        for (req in pendingRequests) {
+            val adminRow = members.member(req.groupId, peerId)
+            val conversation = conversationDao.get(req.groupId)
+            val isOwner = conversation?.groupCreatedBy == peerId
+            val isAdmin = isOwner || (adminRow?.isActive == true && (adminRow.role == "owner" || adminRow.role == "admin"))
+            if (isAdmin) {
+                val frame = GroupWireFrame.GsJoinRequest(
+                    groupId = req.groupId,
+                    from = localDeviceId,
+                    epoch = groupSecretStore?.current(req.groupId)?.epoch ?: 1L,
+                    subjectId = req.subjectId,
+                    subjectKey = req.subjectKey,
+                    label = req.label,
+                    requestedAtMs = req.requestedAtMs,
+                    signature = req.requestSig,
+                )
+                groupTransportSink?.send(peerId, frame)
+            }
+        }
+    }
+
+    private suspend fun triggerProofForPendingInvites(peerId: String) {
+        if (!peerFeatures(peerId).contains("gs1")) return
+        val pending = groupInviteDao?.getAll()?.filter {
+            it.state == "PENDING_CONTACT" || it.state == "PENDING_APPROVAL"
+        } ?: emptyList()
+        for (invite in pending) {
+            val secretRecord = groupSecretStore?.current(invite.groupId) ?: continue
+            val result = groupProofSessions?.initiateProof(peerId, invite.groupId, secretRecord.epoch)
+            if (result == GroupProofResult.OK) {
+                sendJoinRequest(peerId, invite.groupId, secretRecord.epoch)
+            }
+        }
+    }
+
+    private suspend fun sendJoinRequest(peerId: String, groupId: String, epoch: Long) {
+        val crypto = groupCrypto ?: return
+        val now = timeSource.nowMs()
+        val subjectKeyStr = GroupCanonical.encode(crypto.publicKey)
+        val bytes = GroupCanonical.joinRequestBytes(
+            groupId = groupId,
+            epoch = epoch,
+            subjectId = localDeviceId,
+            subjectKeyBase64 = subjectKeyStr,
+            label = localDisplayName,
+            requestedAtMs = now,
+        ) ?: return
+        val sig = GroupCanonical.encode(crypto.sign(bytes))
+        val req = GroupWireFrame.GsJoinRequest(
+            groupId = groupId,
+            from = localDeviceId,
+            epoch = epoch,
+            subjectId = localDeviceId,
+            subjectKey = subjectKeyStr,
+            label = localDisplayName,
+            requestedAtMs = now,
+            signature = sig,
+        )
+        groupTransportSink?.send(peerId, req)
+        groupInviteDao?.updateState(groupId, "PENDING_APPROVAL")
+    }
+
+    private suspend fun forwardJoinRequestToAdmins(req: GroupWireFrame.GsJoinRequest) {
+        val members = groupMemberDao ?: return
+        val active = members.activeMembers(req.groupId)
+        val adminIds = active.filter { it.role == "owner" || it.role == "admin" }.map { it.deviceId }
+        for (adminId in adminIds) {
+            if (adminId != localDeviceId) {
+                groupTransportSink?.send(adminId, req)
+            }
         }
     }
 
@@ -2361,6 +3517,34 @@ public class RealFlashChatRepository(
         fileName: String,
         mimeType: String,
         sizeBytes: Long,
+    ): Boolean = beginGroupAttachment(
+        groupId = groupId,
+        recipientDeviceId = recipientDeviceId,
+        messageId = messageId,
+        transferId = transferId,
+        wireFileId = wireFileId,
+        fileName = fileName,
+        mimeType = mimeType,
+        sizeBytes = sizeBytes,
+        root = null,
+        pieceSize = null,
+        swarm = null,
+        rootSig = null,
+    )
+
+    override suspend fun beginGroupAttachment(
+        groupId: String,
+        recipientDeviceId: String,
+        messageId: String,
+        transferId: String,
+        wireFileId: String,
+        fileName: String,
+        mimeType: String,
+        sizeBytes: Long,
+        root: String?,
+        pieceSize: Int?,
+        swarm: Int?,
+        rootSig: String?,
     ): Boolean {
         if (messageId.isBlank() || transferId.isBlank() || wireFileId.isBlank()) return false
         val members = groupMemberDao ?: return false
@@ -2400,6 +3584,10 @@ public class RealFlashChatRepository(
                 sizeBytes = sizeBytes,
                 sentAt = sentAt,
                 signature = signature,
+                root = root,
+                pieceSize = pieceSize,
+                swarm = swarm,
+                rootSig = rootSig,
             ),
         ) == true
     }
@@ -2451,6 +3639,16 @@ public class RealFlashChatRepository(
                 if (isV2Group(groupId)) {
                     // A v2 group reconciles with its signed roster (charter + every cert, tombstones included).
                     signedGroups?.bundleFor(groupId)?.let { groupTransportSink?.send(peerDeviceId, it) }
+                    val latestRot = groupRotationDao?.getLatestForGroup(groupId)
+                    val currentSec = groupSecretStore?.current(groupId)
+                    if (latestRot != null && (currentSec?.epoch ?: 0L) < latestRot.newEpoch) {
+                        if (groupGate.allows(groupId, peerDeviceId, GroupTraffic.CHAT)) {
+                            groupTransportSink?.send(
+                                peerDeviceId,
+                                GroupWireFrame.GsSecretRequest(groupId, localDeviceId, latestRot.newEpoch),
+                            )
+                        }
+                    }
                     continue
                 }
                 val state = buildStateFrame(groupId) ?: continue
@@ -2670,7 +3868,7 @@ public class RealFlashChatRepository(
 
         sentAt = sentAt,
 
-        text = if (attachmentTransferId != null) attachmentLabel() else text,
+        text = if (groupSig == null && attachmentTransferId != null) attachmentLabel() else text,
 
         replyToId = replyToId,
         replyToPreview = replyToPreview,
@@ -2678,10 +3876,11 @@ public class RealFlashChatRepository(
     )
 
     /**
-     * The one-line stand-in a catch-up carries for an attachment row. A sync push never re-sends file bytes, and
-     * the row's own `text` is empty (or a voice note's `vmsg:` waveform metadata), so sending it as is would leave
-     * the newcomer with an empty bubble or raw metadata. Only legacy groups reach this: a v2 group relays signed
-     * rows only, and an attachment row is unsigned, so the holder's request filter already leaves it out.
+     * The one-line stand-in a catch-up carries for an attachment row in legacy (v1) groups. A sync push
+     * never re-sends file bytes, and the row's own `text` is empty (or a voice note's `vmsg:` waveform metadata),
+     * so sending it as is would leave the newcomer with an empty bubble or raw metadata. Only legacy groups
+     * use this: in v2 groups, `groupSig` covers the author's original `text`, so altering it would invalidate
+     * the cryptographic signature.
      */
     private fun MessageEntity.attachmentLabel(): String {
         val mime = attachmentMime.orEmpty()
@@ -3358,10 +4557,19 @@ public class RealFlashChatRepository(
             // that member's group deliveries retryable, so a returning member drains its backlog
             // without waking deliveries for members that are still offline.
             outboxDao.makePendingDue(now)
-            peerDeviceId?.let { groupDeliveryDao?.makePendingDueForMember(it, now) }
+            peerDeviceId?.let {
+                currentConnectedPeers.add(it)
+                groupDeliveryDao?.makePendingDueForMember(it, now)
+                onPeerSessionUp(it)
+            }
             notifyOutboxDrain()
             drainOutboxOnce()
         }
+    }
+
+    public fun notifyPeerSessionDown(peerDeviceId: String) {
+        currentConnectedPeers.remove(peerDeviceId)
+        groupProofSessions?.onSessionDown(peerDeviceId)
     }
 
     override fun openAttachmentPicker() {}
@@ -3640,6 +4848,7 @@ public class RealFlashChatRepository(
             outboxDao.delete(localId)
 
             if (conversation.isGroup) {
+                onGroupMessageDeletedForEveryone?.invoke(conversation.id, localId)
                 val members = groupMemberDao ?: return@launch
                 val frame = GroupWireFrame.DeleteForEveryone(
                     groupId = conversation.id,
@@ -3814,12 +5023,24 @@ public class RealFlashChatRepository(
                 val totalSpeed = recipientTransfers.sumOf { it.speedMbps.toDouble() }.toFloat()
                 val maxEta = recipientTransfers.maxOfOrNull { it.etaSeconds } ?: 0
                 val path = recipientTransfers.firstOrNull { !it.localPath.isNullOrBlank() }?.localPath
+                val anyCanGoOffline = recipientTransfers.any { it.canGoOffline }
+                val maxHolders = recipientTransfers.maxOfOrNull { it.holdersOnline } ?: 0
+                val firstWaitReason = recipientTransfers.firstOrNull { it.waitReason != null }?.waitReason
+                val firstError = recipientTransfers.firstOrNull { !it.errorMessage.isNullOrBlank() }?.errorMessage
+                val sumDone = recipientTransfers.sumOf { it.bytesDone }
+                val sumTotal = recipientTransfers.sumOf { it.bytesTotal }
                 FlashAttachmentProgress(
                     progress = avgProgress,
                     status = status,
                     localPath = path,
                     speedMbps = totalSpeed,
                     etaSeconds = maxEta,
+                    waitReason = firstWaitReason,
+                    canGoOffline = anyCanGoOffline,
+                    holdersOnline = maxHolders,
+                    errorMessage = firstError,
+                    bytesDone = sumDone,
+                    bytesTotal = sumTotal,
                 )
             } else null
         }
@@ -3865,21 +5086,65 @@ public class RealFlashChatRepository(
                     ),
                 )
             }
-            else -> base.copy(
-                fileAttachments = listOf(
-                    FlashFileAttachmentUi(
-                        id = transferId,
-                        name = name,
-                        sizeBytes = entity.attachmentSize,
-                        mimeType = mime,
-                        transferStatus = status,
-                        transferProgress = progress,
-                        transferSpeedMbps = live?.speedMbps ?: 0f,
-                        etaSeconds = live?.etaSeconds ?: 0,
-                        localUri = path,
+            else -> {
+                val detailLine = if (base.isMine) {
+                    if (live?.canGoOffline == true && status != FlashFileTransferStatus.Downloaded) {
+                        if (base.deliveredTo != null && base.deliveredTotal != null && base.deliveredTotal > 0) {
+                            "Delivered to ${base.deliveredTo} of ${base.deliveredTotal} · You can go offline now"
+                        } else {
+                            "You can go offline now"
+                        }
+                    } else if (base.deliveredTo != null && base.deliveredTotal != null && base.deliveredTotal > 0 && status != FlashFileTransferStatus.Downloaded) {
+                        "Delivered to ${base.deliveredTo} of ${base.deliveredTotal}"
+                    } else if (!live?.errorMessage.isNullOrBlank()) {
+                        live?.errorMessage
+                    } else null
+                } else {
+                    if (live?.waitReason != null) {
+                        when (live.waitReason) {
+                            "WaitingForSender" -> {
+                                val done = live.bytesDone
+                                val total = entity.attachmentSize
+                                if (done > 0L && total > 0L) {
+                                    TransferFailureText.waitingForSenderProgress(base.senderName, done, total)
+                                } else {
+                                    TransferFailureText.waitingForSender(base.senderName)
+                                }
+                            }
+                            "WaitingForHolders" -> TransferFailureText.WAITING_FOR_MISSING_PARTS
+                            "WaitingForNetwork" -> TransferFailureText.WAITING_FOR_WIFI
+                            "WaitingForSpace" -> "Not enough free space"
+                            "WaitingForStorage" -> TransferFailureText.STORAGE_UNAVAILABLE
+                            "WaitingForSystem" -> TransferFailureText.SYSTEM_TIMEOUT
+                            "WaitingForSession" -> TransferFailureText.CONNECTING_MEMBERS
+                            else -> null
+                        }
+                    } else if ((live?.holdersOnline ?: 0) > 1 && status == FlashFileTransferStatus.Transferring) {
+                        "Getting it from ${live?.holdersOnline} devices"
+                    } else if (!live?.errorMessage.isNullOrBlank()) {
+                        live?.errorMessage
+                    } else null
+                }
+                base.copy(
+                    fileAttachments = listOf(
+                        FlashFileAttachmentUi(
+                            id = transferId,
+                            name = name,
+                            sizeBytes = entity.attachmentSize,
+                            mimeType = mime,
+                            transferStatus = status,
+                            transferProgress = progress,
+                            transferSpeedMbps = live?.speedMbps ?: 0f,
+                            etaSeconds = live?.etaSeconds ?: 0,
+                            localUri = path,
+                            waitReason = live?.waitReason,
+                            canGoOffline = live?.canGoOffline ?: false,
+                            holdersOnline = live?.holdersOnline ?: 0,
+                            detailLine = detailLine,
+                        ),
                     ),
-                ),
-            )
+                )
+            }
         }
     }
 
@@ -3990,6 +5255,9 @@ public class RealFlashChatRepository(
     }
 
     private companion object {
+        /** GM-8: Default timeout for address hint dialing before falling back to discovery (M-03). */
+        const val HINT_DIAL_TIMEOUT_MS: Long = 30_000L
+
         /** Why a v2 group could not be created or extended: the invitee's key is not verifiably available. */
         const val V2_KEY_UNAVAILABLE: String =
             "Connect to every invited device and try again (its security key could not be verified)"
@@ -4055,4 +5323,6 @@ public class RealFlashChatRepository(
         // typing automatically clears so an inactive or disconnected peer is not stuck typing.
         const val TYPING_EXPIRY_MS = 6_000L
     }
+
+    internal fun signedGroupsForTesting(): SignedGroups? = signedGroups
 }

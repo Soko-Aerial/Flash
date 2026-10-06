@@ -139,6 +139,8 @@ fun FlashMessageBubble(
      * ERROR-089: tapping a failed delivery status icon retries delivery via [FlashChatRepository.retryMessage].
      */
     onRetryMessage: ((String) -> Unit)? = null,
+    /** UI-054 (O-14): join action triggered from an inline group invite card. */
+    onJoinInvite: ((String) -> Unit)? = null,
 ) {
     val alignment = if (message.isMine) Alignment.End else Alignment.Start
 
@@ -174,6 +176,7 @@ fun FlashMessageBubble(
                 searchQuery = searchQuery,
                 onOpenMessageInfo = onOpenMessageInfo,
                 onRetryMessage = onRetryMessage,
+                onJoinInvite = onJoinInvite,
             )
         }
 
@@ -209,6 +212,7 @@ private fun FlashBubbleSurface(
     searchQuery: String?,
     onOpenMessageInfo: (() -> Unit)?,
     onRetryMessage: ((String) -> Unit)? = null,
+    onJoinInvite: ((String) -> Unit)? = null,
 ) {
     val colors = FlashTheme.colors
     val typography = FlashTheme.typography
@@ -395,6 +399,14 @@ private fun FlashBubbleSurface(
                         ),
                         style = typography.bodyDefault,
                         color = bodyColor,
+                    )
+                }
+                val inviteUrl = remember(message.text) { FlashGroupInviteJoinMath.extractInviteUrl(message.text) }
+                if (inviteUrl != null) {
+                    Spacer(modifier = Modifier.height(FlashSpacing.space8))
+                    FlashInlineInviteCard(
+                        inviteUrl = inviteUrl,
+                        onJoinInvite = { onJoinInvite?.invoke(it) },
                     )
                 }
                 Spacer(modifier = Modifier.height(FlashSpacing.space4))

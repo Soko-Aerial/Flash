@@ -156,6 +156,33 @@ public interface FlashEngine : Closeable {
      * nothing is attached.
      */
     public fun onCallSignalingRestored(peerDeviceId: String)
+
+    /**
+     * The attached group swarm file transfer engine (SW-8), or null when none is attached.
+     *
+     * Swarm is **opt-in** (behind a feature switch, off by default). Once attached, this facade
+     * routes inbound "FSW1" binary frames to it, advertises "sw1" in local features, and integrates
+     * transfer rows into [transfers].
+     */
+    public val swarm: com.transfer.flash.core.swarm.api.FlashSwarm?
+
+    /**
+     * Builds, attaches and returns a swarm engine wired to this facade's network, messaging,
+     * storage, and database.
+     */
+    public fun attachSwarm(
+        config: com.transfer.flash.core.swarm.api.FlashSwarmConfig = com.transfer.flash.core.swarm.api.FlashSwarmConfig()
+    ): com.transfer.flash.core.swarm.api.FlashSwarm?
+
+    /**
+     * Attaches a host-constructed [com.transfer.flash.core.swarm.api.FlashSwarm].
+     */
+    public fun attachSwarm(swarm: com.transfer.flash.core.swarm.api.FlashSwarm)
+
+    /**
+     * Detaches the swarm engine. Idempotent; a no-op when nothing is attached.
+     */
+    public fun detachSwarm()
 }
 
 /**
@@ -188,10 +215,37 @@ public class DefaultFlashEngine(
         audioRateHz: () -> Int,
     ) -> FlashPtt)? = null,
     private val onUpdateFriendlyName: ((String) -> Boolean)? = null,
+    private val swarmFactory: ((com.transfer.flash.core.swarm.api.FlashSwarmConfig) -> com.transfer.flash.core.swarm.api.FlashSwarm)? = null,
 ) : FlashEngine {
     private val closed = java.util.concurrent.atomic.AtomicBoolean(false)
     private val pttLock = Any()
     private val callingLock = Any()
+    private val swarmLock = Any()
+
+    @Volatile
+    private var attachedSwarm: com.transfer.flash.core.swarm.api.FlashSwarm? = null
+
+    override val swarm: com.transfer.flash.core.swarm.api.FlashSwarm? get() = attachedSwarm
+
+    override fun attachSwarm(config: com.transfer.flash.core.swarm.api.FlashSwarmConfig): com.transfer.flash.core.swarm.api.FlashSwarm? {
+        synchronized(swarmLock) {
+            attachedSwarm?.let { return it }
+            val factory = swarmFactory ?: return null
+            return factory(config).also { attachedSwarm = it }
+        }
+    }
+
+    override fun attachSwarm(swarm: com.transfer.flash.core.swarm.api.FlashSwarm) {
+        synchronized(swarmLock) {
+            if (attachedSwarm == null) attachedSwarm = swarm
+        }
+    }
+
+    override fun detachSwarm() {
+        synchronized(swarmLock) {
+            attachedSwarm = null
+        }
+    }
 
     @Volatile
     private var attachedPtt: FlashPtt? = null
@@ -305,6 +359,7 @@ public class DefaultFlashEngine(
 
     override fun close() {
         if (closed.compareAndSet(false, true)) {
+            detachSwarm()
             detachCalling()
             detachPtt()
             onClose()

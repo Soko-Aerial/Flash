@@ -23,6 +23,7 @@ internal actual fun FlashCallVideoSurface(
     fit: CallVideoFit,
     modifier: Modifier,
     zOrderMediaOverlay: Boolean,
+    mirror: Boolean,
 ) {
     // (same orientation, different orientation): Balanced fits a picture turned the other way
     // whole instead of zooming into it (see CallVideoFit.Balanced).
@@ -44,7 +45,10 @@ internal actual fun FlashCallVideoSurface(
             }
         },
         modifier = modifier,
-        update = { holder.bind(track) },
+        update = {
+            holder.bind(track)
+            it.setMirror(mirror)
+        },
         onRelease = { holder.release() },
     )
 

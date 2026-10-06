@@ -58,6 +58,7 @@ import com.transfer.flash.core.messaging.model.FlashChatHeaderUiState
 import com.transfer.flash.core.messaging.model.FlashNetworkTransport
 import com.transfer.flash.core.security.pairing.FlashPairingCoordinator
 import com.transfer.flash.core.security.pairing.FlashTrustedPeer
+import com.transfer.flash.core.engine.group.GroupFileSender
 import com.transfer.flash.core.transfer.model.FlashTransfer
 import com.transfer.flash.core.transfer.model.FlashTransferDirection as DomainDirection
 import com.transfer.flash.core.transfer.model.FlashTransferState as DomainState
@@ -203,6 +204,8 @@ public fun DesktopShell(
 
     // ── Group creation (Item 3) ──
     var showCreateGroup by remember { mutableStateOf(false) }
+    var showJoinGroupDialog by remember { mutableStateOf(false) }
+    var activeJoinLink by remember { mutableStateOf<String?>(null) }
 
     // ── Calls, 33a: the shared coordinator behind the shared overlay ──
     // `calls` is null until assemble builds it; the empty flow keeps this collect
@@ -279,6 +282,16 @@ public fun DesktopShell(
         engine.pairing.messages.collectLatest { message ->
             FlashLog.i(TAG_PAIRING, message)
             snackbarHostState.showSnackbar(message = message, duration = SnackbarDuration.Short)
+        }
+    }
+    LaunchedEffect(engine, snackbarHostState) {
+        engine.onJoinRequestNotification = { _, groupTitle, requesterName ->
+            scope.launch {
+                snackbarHostState.showSnackbar(
+                    message = "$requesterName wants to join $groupTitle",
+                    duration = SnackbarDuration.Short,
+                )
+            }
         }
     }
     // The pairing DIALOG is driven entirely by this one value, so when it fails to appear there is
@@ -629,44 +642,70 @@ public fun DesktopShell(
     ) {
         val transfers = engine.transfers ?: return
         if (isGroup) {
-            val sharedMessageId = java.util.UUID.randomUUID().toString()
-            val sharedWireFileId = java.util.UUID.randomUUID().toString()
+            val groupFileSender = GroupFileSender(
+                localDeviceId = { engine.localDeviceId },
+                groupMembers = { groupId -> chatRepository.groupMembers(groupId) },
+                deviceFor = { memberId, memberName ->
+                    val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == memberId }
+                    FlashDevice(
+                        id = FlashDeviceId(memberId),
+                        friendlyName = memberName,
+                        transportType = endpoint?.transportType ?: FlashTransportType.LAN,
+                    )
+                },
+                announce = { groupId, recipientDeviceId, messageId, transferId, wireFileId, fileName, mime, sizeBytes, root, pieceSize, swarm, rootSig ->
+                    chatRepository.beginGroupAttachment(
+                        groupId = groupId,
+                        recipientDeviceId = recipientDeviceId,
+                        messageId = messageId,
+                        transferId = transferId,
+                        wireFileId = wireFileId,
+                        fileName = fileName,
+                        mimeType = mime,
+                        sizeBytes = sizeBytes,
+                        root = root,
+                        pieceSize = pieceSize,
+                        swarm = swarm,
+                        rootSig = rootSig,
+                    )
+                },
+                sendFile = { targetDevice, fileUri, fileName, sizeBytes, transferId, wireFileId ->
+                    transfers.sendFile(
+                        targetDevice,
+                        fileUri,
+                        fileName,
+                        sizeBytes,
+                        transferId = transferId,
+                        wireFileId = wireFileId,
+                    )
+                },
+                sendGroupAttachment = { groupId, messageId, transferId, fileName, mime, sizeBytes, localPath, dur, amps ->
+                    chatRepository.sendGroupAttachment(
+                        conversationId = groupId,
+                        messageId = messageId,
+                        transferId = transferId,
+                        fileName = fileName,
+                        mimeType = mime,
+                        sizeBytes = sizeBytes,
+                        localPath = localPath,
+                        voiceDurationMs = dur,
+                        voiceAmplitudes = amps,
+                    )
+                },
+                idFactory = { java.util.UUID.randomUUID().toString() },
+                isV2Group = { groupId -> chatRepository.isV2Group(groupId) },
+                peerFeatures = { peerId -> engine.peerFeatures(peerId) },
+                prepareSwarmOrigin = { groupId, messageId, fileName, mimeType, sizeBytes, uri ->
+                    engine.prepareSwarmOrigin(groupId, messageId, fileName, mimeType, sizeBytes, uri)
+                },
+            )
             scope.launch(Dispatchers.IO) {
-                chatRepository.groupMembers(peerId)
-                    .filter { it.id != engine.localDeviceId }
-                    .forEach { member ->
-                        val recipientTransferId = java.util.UUID.randomUUID().toString()
-                        val announced = chatRepository.beginGroupAttachment(
-                            groupId = peerId,
-                            recipientDeviceId = member.id,
-                            messageId = sharedMessageId,
-                            transferId = recipientTransferId,
-                            wireFileId = sharedWireFileId,
-                            fileName = displayName,
-                            mimeType = mimeType,
-                            sizeBytes = size,
-                        )
-                        if (!announced) return@forEach
-                        val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == member.id }
-                        val targetDevice = FlashDevice(
-                            id = FlashDeviceId(member.id),
-                            friendlyName = member.name,
-                            transportType = endpoint?.transportType ?: FlashTransportType.LAN,
-                        )
-                        transfers.sendFile(
-                            targetDevice, uri, displayName, size,
-                            transferId = recipientTransferId,
-                            wireFileId = sharedWireFileId,
-                        )
-                    }
-                chatRepository.sendGroupAttachment(
-                    conversationId = peerId,
-                    messageId = sharedMessageId,
-                    transferId = sharedMessageId,
-                    fileName = displayName,
-                    mimeType = mimeType,
+                groupFileSender.send(
+                    groupId = peerId,
+                    uri = uri,
+                    displayName = displayName,
                     sizeBytes = size,
-                    localPath = uri,
+                    mimeType = mimeType,
                     voiceDurationMs = voiceDurationMs,
                     voiceAmplitudes = voiceAmplitudes,
                 )
@@ -921,6 +960,9 @@ public fun DesktopShell(
             performanceMode = desktopSettings.performanceMode,
             backgroundTransfers = desktopSettings.closeToTray,
             saveLocationLabel = desktopSettings.saveLocation ?: engine.canonicalRoot.absolutePath,
+            swarmHelpShare = desktopSettings.swarmHelpShare,
+            swarmKeepFinishedFiles = desktopSettings.swarmKeepFinishedFiles,
+            swarmEnabled = desktopSettings.groupSwarmEnabled,
         )
     }
 
@@ -985,6 +1027,10 @@ public fun DesktopShell(
             },
             onRetryLoad = { engine.start() },
             onNewGroupClick = { showCreateGroup = true },
+            onJoinWithLinkClick = {
+                activeJoinLink = null
+                showJoinGroupDialog = true
+            },
             modifier = Modifier.fillMaxSize(),
             listState = chatListScroll,
             bottomInset = tabBottomInset,
@@ -1328,6 +1374,66 @@ public fun DesktopShell(
                     }
                 }
             },
+            onApproveJoinRequest = { gid, subjectId ->
+                scope.launch {
+                    val res = chatRepository.approveJoinRequest(gid, subjectId)
+                    if (res !is com.transfer.flash.core.common.result.FlashResult.Success) {
+                        snackbarHostState.showSnackbar("Couldn't approve join request", duration = SnackbarDuration.Short)
+                    }
+                }
+            },
+            onRefuseJoinRequest = { gid, subjectId ->
+                scope.launch {
+                    val res = chatRepository.refuseJoinRequest(gid, subjectId)
+                    if (res !is com.transfer.flash.core.common.result.FlashResult.Success) {
+                        snackbarHostState.showSnackbar("Couldn't refuse join request", duration = SnackbarDuration.Short)
+                    }
+                }
+            },
+            onUpdateGroupSettings = { gid, joinPolicy, inviteSharers, maxMembers, swarmServing, membersMayAdd ->
+                scope.launch {
+                    val res = chatRepository.updateGroupSettings(
+                        groupId = gid,
+                        joinPolicy = joinPolicy,
+                        inviteSharers = inviteSharers,
+                        maxMembers = maxMembers,
+                        swarmServing = swarmServing,
+                        membersMayAdd = membersMayAdd,
+                    )
+                    if (res !is com.transfer.flash.core.common.result.FlashResult.Success) {
+                        snackbarHostState.showSnackbar("Couldn't update settings", duration = SnackbarDuration.Short)
+                    }
+                }
+            },
+            onUpdateGroupPreferences = { gid, serveToGroup, serveWifiOnly, batteryThreshold, keepDays ->
+                scope.launch {
+                    val res = chatRepository.updateGroupLocalPreferences(
+                        groupId = gid,
+                        serveToGroup = serveToGroup,
+                        serveWifiOnly = serveWifiOnly,
+                        batteryThresholdPercent = batteryThreshold,
+                        keepAvailableDays = keepDays,
+                    )
+                    if (res !is com.transfer.flash.core.common.result.FlashResult.Success) {
+                        snackbarHostState.showSnackbar("Couldn't update preferences", duration = SnackbarDuration.Short)
+                    }
+                }
+            },
+            onChangeGroupCode = { gid ->
+                scope.launch {
+                    val res = chatRepository.changeGroupCode(gid)
+                    if (res !is com.transfer.flash.core.common.result.FlashResult.Success) {
+                        snackbarHostState.showSnackbar("Couldn't change group code", duration = SnackbarDuration.Short)
+                    }
+                }
+            },
+            onRequestInviteLink = { gid ->
+                (chatRepository.inviteFor(gid) as? com.transfer.flash.core.common.result.FlashResult.Success)?.value
+            },
+            onJoinInviteGroup = { inviteUrl ->
+                activeJoinLink = inviteUrl
+                showJoinGroupDialog = true
+            },
         )
     }
 
@@ -1534,6 +1640,15 @@ public fun DesktopShell(
                         },
                         onBackgroundTransfersChanged = { next ->
                             scope.launch { engine.updateSettings { it.copy(closeToTray = next) } }
+                        },
+                        onSwarmHelpShareChanged = { next ->
+                            scope.launch { engine.updateSettings { it.copy(swarmHelpShare = next) } }
+                        },
+                        onSwarmKeepFinishedFilesChanged = { next ->
+                            scope.launch { engine.updateSettings { it.copy(swarmKeepFinishedFiles = next) } }
+                        },
+                        onSwarmEnabledChanged = { next ->
+                            scope.launch { engine.updateSettings { it.copy(groupSwarmEnabled = next) } }
                         },
                         onPickSaveLocation = {
                             val chooser = javax.swing.JFileChooser().apply {
@@ -1767,6 +1882,34 @@ public fun DesktopShell(
                                 message = reason ?: "Couldn't create the group — check that every member is paired",
                                 duration = SnackbarDuration.Long,
                             )
+                        }
+                    }
+                },
+            )
+        }
+        if (showJoinGroupDialog) {
+            com.transfer.flash.ui.chat.FlashJoinGroupDialog(
+                initialInviteUrl = activeJoinLink,
+                onDismiss = {
+                    showJoinGroupDialog = false
+                    activeJoinLink = null
+                },
+                onJoin = { inviteUrl ->
+                    scope.launch {
+                        val result = chatRepository.acceptInvite(inviteUrl)
+                        when (result) {
+                            is com.transfer.flash.core.common.result.FlashResult.Success -> {
+                                showJoinGroupDialog = false
+                                activeJoinLink = null
+                                chatRepository.openConversation(result.value)
+                                selectedChatConversationId = result.value
+                                nav.navigate(FlashDestination.Conversation, conversationId = result.value)
+                            }
+                            is com.transfer.flash.core.common.result.FlashResult.Failure -> {
+                                val err = (result.error as? com.transfer.flash.core.common.result.FlashError.Unknown)?.message
+                                    ?: "Couldn't join group"
+                                snackbarHostState.showSnackbar(err, duration = SnackbarDuration.Short)
+                            }
                         }
                     }
                 },
@@ -2006,6 +2149,12 @@ public fun DesktopShell(
                 onSendSmallerVideo = {
                     scope.launch { engine.updateSettings { it.copy(smallerVideoForMany = true) } }
                 },
+                // ADR-067 / UI-050f. No audio routes (the desktop has no router: the speaker toggle stays) and no
+                // picture-in-picture; the rest is the same as the phone.
+                peerVerified = !ringingCall.isGroup && trustedPeersByCoordinator.any { it.id == ringingCall.peerId },
+                onSetHandRaised = { raised -> calls?.setHandRaised(raised) },
+                onSendReaction = { kind -> calls?.sendReaction(kind) ?: false },
+                onSetDataSaver = { on -> calls?.setDataSaver(on) },
             )
         }
     }
@@ -2044,6 +2193,9 @@ private fun FlashTransfer.toDesktopTransferItemUi(): FlashTransferItemUi = Flash
     verified = state == DomainState.Completed,
     localPath = localPath ?: sourceUri,
     retryable = state != DomainState.Cancelled,
+    waitReason = waitReason,
+    canGoOffline = canGoOffline,
+    holdersOnline = holdersOnline,
 )
 
 /** Desktop twin of `:app`'s `TransfersUiState.fromDomain` (mandatory boot flags, ERROR-034). */

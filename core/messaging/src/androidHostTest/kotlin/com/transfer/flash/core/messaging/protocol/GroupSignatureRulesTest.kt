@@ -24,7 +24,8 @@ class GroupSignatureRulesTest {
         "bea" to bea.fingerprintHex(),
         "mal" to mal.fingerprintHex(),
     )
-    private val rules = GroupSignatureRules(me, "me", { it in paired }, { pins[it] })
+    private val acceptedInvites = mutableSetOf<String>()
+    private val rules = GroupSignatureRules(me, "me", { it in paired }, { pins[it] }, vouching = null, hasInvite = { it in acceptedInvites })
     private val ownerSigning = GroupSigning(owner)
 
     private fun nonce(seed: Int) = ByteArray(GroupPolicy.CHARTER_NONCE_BYTES) { (seed + it).toByte() }
@@ -71,6 +72,46 @@ class GroupSignatureRulesTest {
     fun aCharterWhoseOwnerIsNotPairedIsRejected() {
         paired -= "owner"
         assertEquals("owner-not-paired", rules.checkCharter(charter()))
+    }
+
+    @Test
+    fun aCharterFromAnUnpairedOwnerWithAcceptedInviteIsValid() {
+        val c = charter()
+        paired -= "owner"
+        pins.remove("owner")
+        assertEquals("owner-not-paired", rules.checkCharter(c))
+
+        acceptedInvites += c.groupId
+        assertNull(rules.checkCharter(c))
+    }
+
+    @Test
+    fun aCharterFromAnUnpairedOwnerWithoutInviteIsRejected() {
+        val c = charter()
+        paired -= "owner"
+        pins.remove("owner")
+        acceptedInvites.remove(c.groupId)
+        assertEquals("owner-not-paired", rules.checkCharter(c))
+    }
+
+    @Test
+    fun aCharterWithInviteButTamperedSignatureIsRejected() {
+        val c = charter()
+        paired -= "owner"
+        pins.remove("owner")
+        acceptedInvites += c.groupId
+        assertEquals("signature", rules.checkCharter(c.copy(name = "Tampered")))
+    }
+
+    @Test
+    fun aCharterWithInviteButWrongIdDerivationIsRejected() {
+        val real = charter()
+        val squat = GroupSigning(mal).newCharter("Crew", "mal", 2_000L, nonce(1))
+        paired -= "mal"
+        pins.remove("mal")
+        acceptedInvites += real.groupId
+        val forcedId = squat.copy(groupId = real.groupId)
+        assertEquals("id-derivation", rules.checkCharter(forcedId))
     }
 
     @Test

@@ -73,6 +73,7 @@ internal actual fun FlashCallVideoSurface(
     fit: CallVideoFit,
     modifier: Modifier,
     zOrderMediaOverlay: Boolean,
+    mirror: Boolean,
 ) {
     val holder = remember { DesktopVideoSink() }
 
@@ -121,6 +122,7 @@ internal actual fun FlashCallVideoSurface(
                 native.save()
                 native.clipRect(Rect.makeWH(size.width, size.height))
                 native.translate(size.width / 2f, size.height / 2f)
+                if (mirror) native.scale(-1f, 1f)
                 if (rotation != 0) native.rotate(rotation.toFloat())
                 native.drawImageRect(
                     image,

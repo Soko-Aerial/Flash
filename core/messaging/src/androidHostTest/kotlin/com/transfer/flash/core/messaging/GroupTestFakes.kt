@@ -22,6 +22,20 @@ import com.transfer.flash.core.persistence.db.entity.OutboxEntity
 import com.transfer.flash.core.persistence.db.entity.ReadCursorEntity
 import com.transfer.flash.core.persistence.db.entity.ReactionEntity
 import com.transfer.flash.core.persistence.db.entity.ReceiptEntity
+import com.transfer.flash.core.persistence.db.dao.GroupInviteDao
+import com.transfer.flash.core.persistence.db.dao.GroupJoinRequestDao
+import com.transfer.flash.core.persistence.db.dao.GroupRotationDao
+import com.transfer.flash.core.persistence.db.dao.GroupSecretDao
+import com.transfer.flash.core.persistence.db.dao.GroupSettingsDao
+import com.transfer.flash.core.persistence.db.dao.GroupPreferencesDao
+import com.transfer.flash.core.persistence.db.entity.GroupInviteEntity
+import com.transfer.flash.core.persistence.db.entity.GroupJoinRequestEntity
+import com.transfer.flash.core.persistence.db.entity.GroupRotationEntity
+import com.transfer.flash.core.persistence.db.entity.GroupSecretEntity
+import com.transfer.flash.core.persistence.db.entity.GroupSettingsEntity
+import com.transfer.flash.core.persistence.db.entity.GroupPreferencesEntity
+import com.transfer.flash.core.messaging.group.GroupSecretStore
+import com.transfer.flash.core.messaging.group.StoredGroupSecret
 import com.transfer.flash.core.persistence.db.entity.RecentSearchEntity
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.flow.Flow
@@ -420,3 +434,177 @@ internal class InMemoryReadCursorDao : ReadCursorDao {
     override fun observeCursors(conversationId: String): Flow<List<ReadCursorEntity>> =
         MutableStateFlow(cursors.values.filter { it.conversationId == conversationId }.sortedBy { it.memberId }).asStateFlow()
 }
+
+internal class InMemoryGroupInviteDao : GroupInviteDao {
+    val invites = ConcurrentHashMap<String, GroupInviteEntity>()
+
+    override suspend fun upsert(entity: GroupInviteEntity) {
+        invites[entity.groupId] = entity
+    }
+
+    override suspend fun getByGroupId(groupId: String): GroupInviteEntity? = invites[groupId]
+
+    override suspend fun getByState(state: String): List<GroupInviteEntity> =
+        invites.values.filter { it.state == state }.sortedByDescending { it.acceptedAtMs }
+
+    override suspend fun updateState(groupId: String, state: String) {
+        invites[groupId]?.let { invites[groupId] = it.copy(state = state) }
+    }
+
+    override suspend fun delete(groupId: String) {
+        invites.remove(groupId)
+    }
+
+    override suspend fun getAll(): List<GroupInviteEntity> = invites.values.toList()
+}
+
+internal class InMemoryGroupJoinRequestDao : GroupJoinRequestDao {
+    val requests = ConcurrentHashMap<Triple<String, String, String>, GroupJoinRequestEntity>()
+
+    override suspend fun upsert(entity: GroupJoinRequestEntity) {
+        requests[Triple(entity.groupId, entity.subjectId, entity.subjectKey)] = entity
+    }
+
+    override suspend fun get(groupId: String, subjectId: String, subjectKey: String): GroupJoinRequestEntity? =
+        requests[Triple(groupId, subjectId, subjectKey)]
+
+    override suspend fun getAllForGroup(groupId: String): List<GroupJoinRequestEntity> =
+        requests.values.filter { it.groupId == groupId }.sortedByDescending { it.requestedAtMs }
+
+    override suspend fun updateDecision(
+        groupId: String,
+        subjectId: String,
+        subjectKey: String,
+        state: String,
+        decidedBy: String?,
+        decidedAtMs: Long?,
+    ) {
+        val key = Triple(groupId, subjectId, subjectKey)
+        requests[key]?.let {
+            requests[key] = it.copy(state = state, decidedBy = decidedBy, decidedAtMs = decidedAtMs)
+        }
+    }
+
+    override suspend fun deleteExpired(olderThanMs: Long) {
+        requests.values.filter { it.requestedAtMs < olderThanMs }.forEach {
+            requests.remove(Triple(it.groupId, it.subjectId, it.subjectKey))
+        }
+    }
+
+    override suspend fun deleteForGroup(groupId: String) {
+        requests.values.filter { it.groupId == groupId }.forEach {
+            requests.remove(Triple(it.groupId, it.subjectId, it.subjectKey))
+        }
+    }
+
+    override suspend fun getAll(): List<GroupJoinRequestEntity> = requests.values.toList()
+}
+
+internal class InMemoryGroupSecretDao : GroupSecretDao {
+    val secrets = ConcurrentHashMap<Pair<String, Long>, GroupSecretEntity>()
+
+    override suspend fun upsert(entity: GroupSecretEntity) {
+        secrets[entity.groupId to entity.epoch] = entity
+    }
+
+    override suspend fun getByGroupAndEpoch(groupId: String, epoch: Long): GroupSecretEntity? =
+        secrets[groupId to epoch]
+
+    override suspend fun getLatestForGroup(groupId: String): GroupSecretEntity? =
+        secrets.values.filter { it.groupId == groupId }.maxByOrNull { it.epoch }
+
+    override suspend fun getAllForGroup(groupId: String): List<GroupSecretEntity> =
+        secrets.values.filter { it.groupId == groupId }.sortedBy { it.epoch }
+
+    override suspend fun deleteForGroup(groupId: String) {
+        secrets.keys.removeAll { it.first == groupId }
+    }
+
+    override suspend fun getAll(): List<GroupSecretEntity> = secrets.values.toList()
+}
+
+internal class InMemoryGroupSecretStore : GroupSecretStore {
+    val records = ConcurrentHashMap<Pair<String, Long>, StoredGroupSecret>()
+    val currentEpochs = ConcurrentHashMap<String, Long>()
+
+    override suspend fun current(groupId: String): StoredGroupSecret? {
+        val cur = currentEpochs[groupId] ?: return null
+        return records[groupId to cur]
+    }
+
+    override suspend fun get(groupId: String, epoch: Long): StoredGroupSecret? =
+        records[groupId to epoch]
+
+    override suspend fun put(record: StoredGroupSecret) {
+        records[record.groupId to record.epoch] = record
+        val cur = currentEpochs[record.groupId] ?: 0L
+        if (record.epoch >= cur) currentEpochs[record.groupId] = record.epoch
+    }
+
+    override suspend fun forget(groupId: String) {
+        records.keys.removeAll { it.first == groupId }
+        currentEpochs.remove(groupId)
+    }
+}
+
+internal class InMemoryGroupRotationDao : GroupRotationDao {
+    val rotations = ConcurrentHashMap<Pair<String, Long>, GroupRotationEntity>()
+
+    override suspend fun upsert(entity: GroupRotationEntity) {
+        rotations[entity.groupId to entity.newEpoch] = entity
+    }
+
+    override suspend fun getByGroupAndEpoch(groupId: String, newEpoch: Long): GroupRotationEntity? =
+        rotations[groupId to newEpoch]
+
+    override suspend fun getLatestForGroup(groupId: String): GroupRotationEntity? =
+        rotations.values.filter { it.groupId == groupId }
+            .sortedWith(compareByDescending<GroupRotationEntity> { it.newEpoch }.thenBy { it.rotationId })
+            .firstOrNull()
+
+    override suspend fun getAllForGroup(groupId: String): List<GroupRotationEntity> =
+        rotations.values.filter { it.groupId == groupId }.sortedBy { it.newEpoch }
+
+    override suspend fun deleteForGroup(groupId: String) {
+        rotations.keys.removeAll { it.first == groupId }
+    }
+
+    override suspend fun getAll(): List<GroupRotationEntity> = rotations.values.toList()
+}
+
+internal class InMemoryGroupSettingsDao : GroupSettingsDao {
+    val settings = ConcurrentHashMap<String, GroupSettingsEntity>()
+
+    override suspend fun upsert(entity: GroupSettingsEntity) {
+        settings[entity.groupId] = entity
+    }
+
+    override suspend fun getByGroupId(groupId: String): GroupSettingsEntity? =
+        settings[groupId]
+
+    override suspend fun deleteForGroup(groupId: String) {
+        settings.remove(groupId)
+    }
+
+    override suspend fun getAll(): List<GroupSettingsEntity> = settings.values.toList()
+}
+
+internal class InMemoryGroupPreferencesDao : GroupPreferencesDao {
+    val preferences = ConcurrentHashMap<String, GroupPreferencesEntity>()
+
+    override suspend fun upsert(entity: GroupPreferencesEntity) {
+        preferences[entity.groupId] = entity
+    }
+
+    override suspend fun getByGroupId(groupId: String): GroupPreferencesEntity? =
+        preferences[groupId]
+
+    override suspend fun deleteForGroup(groupId: String) {
+        preferences.remove(groupId)
+    }
+
+    override suspend fun getAll(): List<GroupPreferencesEntity> = preferences.values.toList()
+}
+
+
+

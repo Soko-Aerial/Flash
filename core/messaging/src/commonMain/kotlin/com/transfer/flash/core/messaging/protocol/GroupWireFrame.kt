@@ -71,10 +71,18 @@ public sealed interface GroupWireFrame : ChatWireFrame {
         val operationId: String,
         val charter: GroupCharter,
         val certs: List<MemberCert>,
+        val rotation: GroupRotation? = null,
+        val settings: GroupSettings? = null,
     ) : GroupWireFrame {
         init {
             require(charter.groupId == groupId && certs.all { it.groupId == groupId }) {
                 "a bundle carries one group"
+            }
+            if (rotation != null) {
+                require(rotation.groupId == groupId) { "rotation notice must match bundle group id" }
+            }
+            if (settings != null) {
+                require(settings.groupId == groupId) { "settings must match bundle group id" }
             }
         }
     }
@@ -194,7 +202,169 @@ public sealed interface GroupWireFrame : ChatWireFrame {
         val sizeBytes: Long,
         val sentAt: Long,
         val signature: String? = null,
+        val root: String? = null,
+        val pieceSize: Int? = null,
+        val swarm: Int? = null,
+        val rootSig: String? = null,
     ) : GroupWireFrame
+
+    /**
+     * Group membership proof wire frames (GM-3, ADR-073, protocol "Group membership v1").
+     * Prefix FLASH_GMEM.
+     */
+    public data class GsHello(
+        override val groupId: String,
+        override val from: String,
+        val epoch: Long,
+        val nonce: ByteArray,
+    ) : GroupWireFrame {
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (other !is GsHello) return false
+            return groupId == other.groupId && from == other.from && epoch == other.epoch && nonce.contentEquals(other.nonce)
+        }
+
+        override fun hashCode(): Int =
+            ((groupId.hashCode() * 31 + from.hashCode()) * 31 + epoch.hashCode()) * 31 + nonce.contentHashCode()
+
+        override fun toString(): String =
+            "GsHello(groupId='$groupId', from='$from', epoch=$epoch, nonce=[${nonce.size}B])"
+    }
+
+    public data class GsChallenge(
+        override val groupId: String,
+        override val from: String,
+        val epoch: Long,
+        val nonce: ByteArray,
+        val mac: ByteArray,
+    ) : GroupWireFrame {
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (other !is GsChallenge) return false
+            return groupId == other.groupId && from == other.from && epoch == other.epoch &&
+                nonce.contentEquals(other.nonce) && mac.contentEquals(other.mac)
+        }
+
+        override fun hashCode(): Int =
+            (((groupId.hashCode() * 31 + from.hashCode()) * 31 + epoch.hashCode()) * 31 + nonce.contentHashCode()) * 31 + mac.contentHashCode()
+
+        override fun toString(): String =
+            "GsChallenge(groupId='$groupId', from='$from', epoch=$epoch, nonce=[${nonce.size}B], mac=[${mac.size}B])"
+    }
+
+    public data class GsProof(
+        override val groupId: String,
+        override val from: String,
+        val epoch: Long,
+        val mac: ByteArray,
+    ) : GroupWireFrame {
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (other !is GsProof) return false
+            return groupId == other.groupId && from == other.from && epoch == other.epoch && mac.contentEquals(other.mac)
+        }
+
+        override fun hashCode(): Int =
+            ((groupId.hashCode() * 31 + from.hashCode()) * 31 + epoch.hashCode()) * 31 + mac.contentHashCode()
+
+        override fun toString(): String =
+            "GsProof(groupId='$groupId', from='$from', epoch=$epoch, mac=[${mac.size}B])"
+    }
+
+    public data class GsResult(
+        override val groupId: String,
+        override val from: String,
+        val ok: Boolean,
+        val reason: String,
+    ) : GroupWireFrame
+
+    /**
+     * Join request sent by an invitee after proving group secret knowledge (GM-4).
+     */
+    public data class GsJoinRequest(
+        override val groupId: String,
+        override val from: String,
+        val epoch: Long,
+        val subjectId: String,
+        val subjectKey: String,
+        val label: String,
+        val requestedAtMs: Long,
+        val signature: String,
+    ) : GroupWireFrame
+
+    /**
+     * Join decision sent by an admin or forwarded to the joiner (GM-4).
+     */
+    public data class GsJoinDecision(
+        override val groupId: String,
+        override val from: String,
+        val subjectId: String,
+        val approved: Boolean,
+        val reason: String,
+        val decidedBy: String,
+        val decidedAtMs: Long,
+        val signature: String,
+    ) : GroupWireFrame
+
+    /**
+     * Roster preview sent to the joiner after a valid join request (GM-4).
+     */
+    public data class GsRosterPreview(
+        override val groupId: String,
+        override val from: String,
+        val charter: GroupCharter,
+        val memberCount: Int,
+        val memberNames: List<String>,
+    ) : GroupWireFrame
+
+    /**
+     * Stale epoch response sending the latest rotation notice to an active member (GM-6).
+     */
+    public data class GsStale(
+        override val groupId: String,
+        override val from: String,
+        val epoch: Long,
+        val rotation: GroupRotation,
+    ) : GroupWireFrame
+
+    /**
+     * Secret request sent by a member who lacks the secret for [epoch] (GM-6).
+     */
+    public data class GsSecretRequest(
+        override val groupId: String,
+        override val from: String,
+        val epoch: Long,
+    ) : GroupWireFrame
+
+    /**
+     * Secret handover frame carrying the 32-byte group secret over live TLS (GM-6).
+     *
+     * Security:
+     * - [toString] is redacted and NEVER leaks secret bytes in logs (GINV-1).
+     * - [equals] and [hashCode] use constant-time / array comparison.
+     */
+    public data class GsSecret(
+        override val groupId: String,
+        override val from: String,
+        val epoch: Long,
+        val secret: ByteArray,
+    ) : GroupWireFrame {
+        init {
+            require(secret.size == 32) { "Group secret must be exactly 32 bytes" }
+        }
+
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (other !is GsSecret) return false
+            return groupId == other.groupId && from == other.from && epoch == other.epoch && secret.contentEquals(other.secret)
+        }
+
+        override fun hashCode(): Int =
+            ((groupId.hashCode() * 31 + from.hashCode()) * 31 + epoch.hashCode()) * 31 + secret.contentHashCode()
+
+        override fun toString(): String =
+            "GsSecret(groupId='$groupId', from='$from', epoch=$epoch, secret=[${secret.size}B])"
+    }
 }
 
 public enum class GroupSyncTier { LOW, MEDIUM, HIGH }

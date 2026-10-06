@@ -63,6 +63,9 @@ public class DesktopNotificationManager(
         engine.onInboundAttachmentNotification = { conversationId, senderName, fileName, mimeType, groupTitle ->
             handleInboundAttachment(conversationId, senderName, fileName, mimeType, groupTitle)
         }
+        engine.onJoinRequestNotification = { groupId, groupTitle, requesterName ->
+            handleJoinRequest(groupId, groupTitle, requesterName)
+        }
 
         // Observe transfers when ready
         transferJob = scope.launch {
@@ -100,6 +103,7 @@ public class DesktopNotificationManager(
         started = false
         engine.onInboundMessageNotification = null
         engine.onInboundAttachmentNotification = null
+        engine.onJoinRequestNotification = null
         transferJob?.cancel()
         transferJob = null
         callsJob?.cancel()
@@ -161,6 +165,25 @@ public class DesktopNotificationManager(
 
         if (!inForeground) {
             onBackgroundMessageReceived?.invoke(conversationId)
+        }
+    }
+
+    public fun handleJoinRequest(
+        groupId: String,
+        groupTitle: String,
+        requesterName: String,
+    ) {
+        val inForeground = isWindowForegroundAndActive()
+        val shouldSuppress = inForeground && activeConversationId() == groupId
+
+        if (!shouldSuppress && isNotificationsEnabled()) {
+            val title = groupTitle.ifBlank { "Group" }
+            val body = "$requesterName wants to join"
+            dispatchNotification(title, body, Notification.Type.Info)
+        }
+
+        if (!inForeground) {
+            onBackgroundMessageReceived?.invoke(groupId)
         }
     }
 

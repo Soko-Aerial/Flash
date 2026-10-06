@@ -48,6 +48,10 @@ public class RoomTransferStore(
         transferChunkDao.insertAll(indexes.map { TransferChunkEntity(transferId, it, done = true) })
     }
 
+    override suspend fun clearDoneChunks(transferId: String) {
+        transferChunkDao.deleteChunks(transferId)
+    }
+
     override suspend fun allDoneChunks(): List<TransferStore.ChunkRef> =
         transferChunkDao.allDoneChunks().map { TransferStore.ChunkRef(it.transferId, it.chunkIndex) }
 }
