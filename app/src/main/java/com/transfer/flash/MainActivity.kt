@@ -117,6 +117,7 @@ import com.transfer.flash.core.persistence.settings.FlashSettingsDataStore
 import com.transfer.flash.ui.shell.FlashBottomNav
 import com.transfer.flash.ui.shell.FlashBottomNavDefaults
 import com.transfer.flash.ui.shell.FlashBottomNavItem
+import com.transfer.flash.ui.shell.rememberAutoNavVisible
 import com.transfer.flash.ui.splash.FlashLaunchSplashProcess
 import com.transfer.flash.ui.transfers.FlashTransfersScreen
 import com.transfer.flash.ui.transfers.FlashTransfersMath
@@ -1916,6 +1917,13 @@ private fun FlashShell(
             // is the one case where the banner should say "try again in a moment".
             onRetryConnection = { engine.reconnectNow() },
             onShareText = { text -> shareText(toastContext, text) },
+            forwardRecipients = recentChatRecipients + pairedRecipients,
+            onForwardToRecipients = { targets, payload ->
+                targets.forEach { target ->
+                    pendingShare.value = payload
+                    sendSharedPayloadToPeer(target.id, target.name)
+                }
+            },
             // Group Phase D: conversationId + menu actions.
             conversationId = conversationId,
             addablePeers = trustedPeerRoster.filter { candidate ->
@@ -2617,9 +2625,18 @@ private fun FlashShell(
                             is com.transfer.flash.core.common.result.FlashResult.Success -> {
                                 showJoinGroupDialog = false
                                 activeJoinLink = null
-                                chatRepository.openConversation(result.value)
-                                selectedChatConversationId = result.value
-                                nav.navigate(FlashDestination.Conversation, conversationId = result.value)
+                                // A group this device has not joined yet has no conversation row: opening it would show
+                                // an empty chat titled with the raw group id. The group appears in the list once the
+                                // admin approves; until then say where the request stands.
+                                val status = chatRepository.inviteStatusSentence(result.value)
+                                if (status == "Joined") {
+                                    chatRepository.openConversation(result.value)
+                                    selectedChatConversationId = result.value
+                                    nav.navigate(FlashDestination.Conversation, conversationId = result.value)
+                                } else {
+                                    val message = status ?: "Join request sent"
+                                    Toast.makeText(toastContext, message, Toast.LENGTH_LONG).show()
+                                }
                             }
                             is com.transfer.flash.core.common.result.FlashResult.Failure -> {
                                 val err = (result.error as? com.transfer.flash.core.common.result.FlashError.Unknown)?.message
@@ -2633,6 +2650,15 @@ private fun FlashShell(
         }
 
         if (!twoPane) {
+            val activeListScroll = when (nav.current.destination) {
+                FlashDestination.ChatList -> chatListScroll
+                FlashDestination.Transfers -> transfersScroll
+                FlashDestination.NearbyDevices -> nearbyScroll
+                FlashDestination.Settings -> settingsScroll
+                else -> null
+            }
+            val autoNavVisible by rememberAutoNavVisible(activeListScroll)
+
             Box(Modifier.align(Alignment.BottomCenter)) {
                 AnimatedVisibility(
                     visible = showBar,
@@ -2643,6 +2669,7 @@ private fun FlashShell(
                         items = liveBottomNavTabs,
                         selectedTab = nav.current.destination,
                         onTabSelected = nav::selectTab,
+                        visible = autoNavVisible,
                         // Telegram behaviour: tapping the tab you are already on returns it to the top.
                         onTabReselected = { destination ->
                             val listState = when (destination) {

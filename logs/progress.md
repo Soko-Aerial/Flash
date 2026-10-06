@@ -1,5 +1,112 @@
 # Progress Log
 
+## 2026-10-06 (o) - UI Polish & Feature Roadmap: Full Implementation (Phases 0, 1, 2, 3 Complete)
+
+### Worked on
+Completed full implementation and verification of all 4 phases of `docs/ui/UI-POLISH-AND-FEATURE-ROADMAP-PLAN.md`:
+- **Phase 0 (P0 Bug Fixes & Dead Actions):**
+  - Camera attachment capture platform integration (`FlashCameraCapture`).
+  - Unicode "✕" re-skin in Adaptive Detail Panes with themed icon buttons and accessible touch targets.
+  - Whole-card voice message tap playback toggle.
+  - Unpaired group call participant name resolution fallback (`"Member (xxxx)"`).
+- **Phase 1 (UI Ergonomics & Screen Upgrades):**
+  - Complete redesign of Adaptive Detail Panes (`FlashDetailPanes.kt`): Transfer & Peer detail panes with category color badges, velocity shimmer progress bar, SHA-256 verification card, peer profile card, action dock.
+  - Transfers screen refinements (`FlashTransfersScreen.kt`): split overloaded FAILED section into FAILED (with retry) and muted CANCELLED / DECLINED; added "Clear history" action and bulk pause/resume controls.
+  - Settings screen reorganization (`FlashSettingsScreen.kt`): grouped into 5 expandable category cards (Appearance, Storage & Downloads, Network & Discovery, Calling & Video, Advanced & Swarm) with search filter and defaults reset.
+  - Bottom navigation auto-hide on rapid scroll with spring physics re-entry (`FlashBottomNav.kt`).
+- **Phase 2 (Micro-Interactions & Fluid Motion Polish):**
+  - Reaction chip scale pop bounce (`0.5f` -> `1.25f` -> `1.0f`), 4-particle radial puff, `FlashHaptic.Tick`, and instant `reduceMotion` snap (`FlashReactionChip.kt`).
+  - Outgoing message spring launch physics with vertical delta and scale pop (`FlashMessageList.kt`).
+  - Voice recording gesture physics (`FlashComposer.kt`, `FlashVoiceRecording.kt`): slide-to-cancel with rubber-band resistance and trash icon morph; drag-up padlock lock into hands-free recording bar; breathing red dot indicator.
+  - Transfer progress bar velocity shimmer scaling dynamically with MB/s throughput (`FlashTransfersScreen.kt`).
+  - Bottom nav tab hop directional tilt (`±5°`) and active reselect pulse ring (`FlashBottomNav.kt`).
+- **Phase 3 (Major New Feature Flows & Visual Capabilities):**
+  - Native in-app message forwarding sheet (`FlashShareTargetSheet.kt`): search, recent chats, active nearby peers, multi-select (up to 5 targets), quote snippet preview, send button.
+  - Composer attachment pre-send staging tray (`FlashAttachmentStagingTray.kt`): horizontal carousel with thumbnails/icons, remove button, "+ Add more", caption input.
+  - Per-conversation shared content viewer (`FlashSharedContentSheet.kt`): 4 tabs (Media 3-col grid with viewer, Files list with extension badges, Audio inline playback, Links with jump-to-chat).
+  - Pinned messages banner (`FlashPinnedMessageBanner.kt`): pin/unpin context menu action, header banner preview, smooth scroll + 700ms pulse glow highlight.
+  - Real-time audio speaking ripple in calling UI (`FlashCallRippleMath.kt`): outer & middle avatar glow waves modulated with audio energy (`1.0f` resting to `1.22f` speaking); pulsing accent border ring on active speaker in group video grid (`FlashGroupVideoGrid.kt`).
+  - Swarm transfer block availability grid map (`FlashSwarmPieceMap.kt`): Canvas micro-block matrix (verified green, downloading pulsing cyan, peer available amber, missing dark gray) integrated into `FlashFileMessageCard.kt` and `FlashDetailPanes.kt`.
+
+### Changed
+- New math helpers and unit tests in commonTest:
+  - `FlashShareTargetMath` + `FlashShareTargetMathTest`
+  - `FlashStagingMath` + `FlashStagingMathTest`
+  - `FlashSharedContentMath` + `FlashSharedContentMathTest`
+  - `FlashPinnedMessageMath` + `FlashPinnedMessageMathTest`
+  - `FlashCallRippleMath` + `FlashCallRippleMathTest`
+  - `FlashSwarmPieceMapMath` + `FlashSwarmPieceMapMathTest`
+  - `FlashTransfersLogicTest`
+- Platform shims:
+  - `FlashCameraCapture` (common expect, Android `ActivityResultContracts.TakePicture` actual, Desktop fallback actual).
+- UI Components & Screens:
+  - `FlashShareTargetSheet`, `FlashAttachmentStagingTray`, `FlashSharedContentSheet`, `FlashPinnedMessageBanner`, `FlashSwarmPieceMap`.
+  - Upgraded `FlashDetailPanes`, `FlashTransfersScreen`, `FlashSettingsScreen`, `FlashBottomNav`, `FlashComposer`, `FlashMessageList`, `FlashCallScreen`, `FlashGroupVideoGrid`, `FlashFileMessageCard`, `FlashConversationScreen`, `FlashReactionChip`, `FlashVoiceMessageCard`, `FlashVoiceRecording`.
+
+### Verification
+- `./gradlew :ui:chat:jvmTest :ui:callui:jvmTest :core:messaging:jvmTest` (BUILD SUCCESSFUL, all unit tests passing).
+- `./gradlew :app:compileDebugKotlin :desktop:compileKotlinJvm` (BUILD SUCCESSFUL, clean build).
+- Added device tests owed UIP-01 through UIP-10 in `docs/testing/TEST-BACKLOG.md` §4y.
+
+### Next AI
+Device verification on physical Android phones and Desktop for UIP-01 through UIP-10.
+
+## 2026-10-06 (n) - UI Polish & Roadmap: Phase 0 P0 Bug Fixes & Dead Actions
+
+### Worked on
+Completed full audit and Phase 0 implementation of UI polish roadmap (`docs/ui/UI-POLISH-AND-FEATURE-ROADMAP-PLAN.md`):
+- Task 0.1: Camera attachment capture integration (`FlashCameraCapture`).
+- Task 0.2: Re-skin ad-hoc Unicode "✕" and action buttons in adaptive detail panes (`FlashDetailPanes`).
+- Task 0.3: Wire whole-card tap on voice message card to toggle audio play/pause (`FlashVoiceMessageCard`).
+- Task 0.4: Resolve unpaired call participant roster names to friendly fallback (`FlashGroupCallSession`).
+
+### Changed
+- `FlashCameraCapture`: Added common expect and Android/Desktop actual shims in `:ui:platform-shims`. Android uses `ActivityResultContracts.TakePicture()` with app cache `FileProvider`; Desktop provides an informative toast/fallback.
+- `FlashConversationScreen`: Wired `rememberFlashCameraCaptureLauncher` on `FlashAttachmentType.Camera` to trigger capture and forward to `onSendFile`.
+- `FlashDetailPanes`: Replaced raw text "✕" with themed `FlashIcons.Close` in minimum 48dp touch targets with proper `Role.Button` semantics; added styled `FlashDetailButton` components with custom radius and color tokens.
+- `FlashVoiceMessageCard`: Enabled clicking anywhere on the voice note card body to toggle playback without interfering with waveform scrubbing.
+- `FlashGroupCallSession`: Unpaired participant IDs longer than 8 characters now format as `"Member (${peerId.take(4)})"`.
+
+### Verification
+- `:ui:chat:jvmTest`, `:ui:callui:jvmTest` passed.
+- `:desktop:compileKotlinJvm`, `:app:compileDebugKotlin` passed without errors.
+
+### Next AI
+Proceed with Phase 1 (UI Ergonomics & Screen Upgrades):
+- Task 1.1: Complete redesign of Adaptive Detail Panes (`FlashDetailPanes.kt`).
+- Task 1.2: Refine Transfers Queue Screen (`FlashTransfersScreen.kt`).
+- Task 1.3: Settings Page Categorization (`FlashSettingsScreen.kt`).
+- Task 1.4: Bottom Navigation Auto-Hide on Scroll (`FlashBottomNav.kt`).
+
+## 2026-10-06 (m) - Joining a group by invite and members-may-add (ERROR-112, ERROR-113, ERROR-114)
+
+### Worked on
+The owner's report: with "members may add" on, a device added by a plain member showed on the admin but nothing on the device itself; the invite link pasted on the desktop opened a chat titled with the group id and no request reached the admin; a later join notification on the phone was approved and the desktop still did not join. Logs read: `flash-log-1791274838510.txt`, `flash-log-1791281483944.txt` and `~/.flash/desktop.log`.
+
+### Changed
+- `SignedGroups.onBundle` (ERROR-112): certs verify in passes so a member-issued cert is checked against the issuer's own cert from the same bundle; `membersMayAdd` is read only from settings whose signature verifies (closes a hole where a member could ship its own unsigned settings).
+- `GroupProofSessions.initiateProof` (ERROR-113): single-flight per (peer, group) under a mutex; a late caller waits for the proof in flight; logging added.
+- `RealFlashChatRepository`: single-flight `triggerProofForPendingInvites` with 3 retries (3/6/9 s), `acceptInvite` starts the proof in the background, a join request from an existing active member is answered with the roster, `GROUP`/`CHAT` log lines on every join step. The file keeps its CRLF endings.
+- `DesktopShell`, `MainActivity` (ERROR-114): after Join the host shows `inviteStatusSentence` and opens the chat only if the status is "Joined".
+- Tests: `GroupSettingsTest` (added device is active), `SignedGroupsTest` (2), `GroupProofSessionsTest` (race), `GroupJoinTest` (2).
+
+### Why
+The logs showed `Group cert dropped ... reason=issuer` on the added device on every reconnect (ERROR-112), and no proof or request lines at all on the desktop after "Session already established to inviter" (ERROR-113). The code showed the two proof starters racing across a suspend point.
+
+### Verification
+`:core:messaging:testAndroidHostTest`, `:core:messaging:jvmTest`, `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm` green. The new tests for ERROR-112 and the proof race fail on the old code (mutation-checked). No device run.
+
+### Problems
+- The Python patch of `SignedGroups.kt` failed on mixed line endings; `RealFlashChatRepository.kt` lost its CRLF in one rewrite (a 10,000-line diff) and was rewritten with CRLF (106-line diff).
+- The 09:34 approval that never completed on the desktop is NOT proven. The old logs hold no proof or approval lines; the logs also show Wi-Fi instability (mass connection aborts and TLS BAD_PACKET_LENGTH about every 10-12 minutes). The new logging will show which step fails.
+
+### Remaining
+- Device checks `GJOIN-01`...`GJOIN-03` (TEST-BACKLOG 4zf). Keep both logs if `GJOIN-03` fails.
+- `pendingInviteHints` is in memory only; no persistent "pending join" row in the chat list.
+
+### Next AI
+Read `GJOIN-03` results first. If the desktop still does not join after an approval, grep both logs for `Join approved`, `Join request`, `Invite proof` and `Group bundle` before changing code.
+
 ## 2026-10-06 (k) - Swarm non-member frames and row name (ERROR-110, ERROR-111)
 
 ### Worked on

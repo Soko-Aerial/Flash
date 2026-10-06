@@ -65,6 +65,7 @@ import com.transfer.flash.core.messaging.model.FlashSelfMembership
 import com.transfer.flash.core.messaging.util.sampleFlashConversationState
 import com.transfer.flash.ui.shims.FlashBackHandler
 import com.transfer.flash.ui.shims.FlashPermission
+import com.transfer.flash.ui.shims.rememberFlashCameraCaptureLauncher
 import com.transfer.flash.ui.shims.rememberFlashClipboard
 import com.transfer.flash.ui.shims.rememberFlashFilePickerLauncher
 import com.transfer.flash.ui.shims.rememberFlashPermissionRequester
@@ -204,10 +205,17 @@ fun FlashConversationScreen(
     onRetryConnection: () -> Boolean = { false },
     /**
      * Forward message text out of the app via the system chooser (ACTION_SEND). In-app forwarding
-     * needs a conversation picker that does not exist yet; sharing is the honest action behind a
-     * "Forward" button until it does. Default no-op keeps previews inert.
+     * falls back to this when [forwardRecipients] is empty. Default no-op keeps previews inert.
      */
     onShareText: (String) -> Unit = {},
+    /**
+     * In-app forwarding candidate recipients (recent chats, groups, paired devices).
+     */
+    forwardRecipients: List<FlashShareRecipientUi> = emptyList(),
+    /**
+     * Host callback when forwarding a payload to selected in-app recipients.
+     */
+    onForwardToRecipients: (recipients: List<FlashShareRecipientUi>, payload: FlashSharePayloadUi) -> Unit = { _, _ -> },
     /**
      * Group Phase D: add trusted peers to this group (empty members is a no-op). Default no-op
      * keeps previews inert; the host routes to the repository's addGroupMembers.
@@ -300,12 +308,41 @@ fun FlashConversationScreen(
         showMessage("Copied to clipboard")
     }
 
+    // Task 3.2: Staged attachments awaiting dispatch with optional message caption.
+    var stagedAttachments by remember { mutableStateOf(emptyList<FlashShareItemUi>()) }
+
     // UI-012: system document picker for attachments. The shim resolves the display name + size from
     // the platform (content resolver on Android) and takes the persistable read grant, so the transfer
     // can still stream the file after this screen dies; the callback fires only when a file was picked.
     val filePicker = rememberFlashFilePickerLauncher { picked ->
-        onSendFile(picked.uri, picked.name, picked.size)
-        showMessage("Sending ${picked.name}")
+        val ext = picked.name.substringAfterLast('.', "").lowercase()
+        val mime = when (ext) {
+            "jpg", "jpeg" -> "image/jpeg"
+            "png" -> "image/png"
+            "gif" -> "image/gif"
+            "webp" -> "image/webp"
+            "mp4", "mkv", "mov", "webm" -> "video/mp4"
+            "mp3", "m4a", "wav", "ogg", "aac" -> "audio/mp4"
+            "pdf" -> "application/pdf"
+            "txt" -> "text/plain"
+            "zip" -> "application/zip"
+            else -> "*/*"
+        }
+        stagedAttachments = stagedAttachments + FlashShareItemUi(
+            uri = picked.uri,
+            name = picked.name,
+            sizeBytes = picked.size,
+            mimeType = mime,
+        )
+    }
+
+    val cameraLauncher = rememberFlashCameraCaptureLauncher { captured ->
+        stagedAttachments = stagedAttachments + FlashShareItemUi(
+            uri = captured.uri,
+            name = captured.name,
+            sizeBytes = captured.size,
+            mimeType = "image/jpeg",
+        )
     }
 
     // B9: real microphone capture for voice messages. The recorder lives at screen scope so its
@@ -370,6 +407,10 @@ fun FlashConversationScreen(
 
     // UI-032: 1:1 peer details sheet (opened from the header avatar for non-group chats).
     var showPeerDetails by remember { mutableStateOf(false) }
+    // Task 3.3: Per-conversation shared content sheet.
+    var showSharedContent by remember { mutableStateOf(false) }
+    // Task 3.4: Pinned message banner.
+    var pinnedMessageId by remember { mutableStateOf<String?>(null) }
 
     // UI-031: encryption trust sheet, opened from the header badge. Trust state comes from the
     // engine via isPeerTrusted (verified) + header.isEncrypted (channel encrypted). Groups keep
@@ -387,6 +428,7 @@ fun FlashConversationScreen(
     var inviteUrl by remember { mutableStateOf<String?>(null) }
     var memberToRemove by remember { mutableStateOf<FlashGroupMemberUi?>(null) }
     var pendingCancelFileId by remember { mutableStateOf<String?>(null) }
+    var pendingForwardPayload by remember { mutableStateOf<FlashSharePayloadUi?>(null) }
     val menuItems = if (state.header.isGroup) {
         FlashConversationMenuMath.groupItems(
             canLeave = state.header.memberCount > 1,
@@ -507,9 +549,6 @@ fun FlashConversationScreen(
                                 selectedMessageIds = emptySet()
                             },
                             onForward = {
-                                // Was a "Forwarding N messages" toast that forwarded nothing. There
-                                // is no in-app conversation picker yet, so hand the selection to the
-                                // system chooser — the same fallback the media viewer's Forward uses.
                                 val selectedTexts = localMessages
                                     .filter { it.id in selectedMessageIds }
                                     .map { it.text }
@@ -517,7 +556,13 @@ fun FlashConversationScreen(
                                 if (selectedTexts.isEmpty()) {
                                     showMessage("Nothing to forward")
                                 } else {
-                                    onShareText(selectedTexts.joinToString("\n"))
+                                    val text = selectedTexts.joinToString("\n")
+                                    val payload = FlashSharePayloadUi(text = text)
+                                    if (forwardRecipients.isNotEmpty()) {
+                                        pendingForwardPayload = payload
+                                    } else {
+                                        onShareText(text)
+                                    }
                                 }
                                 selectedMessageIds = emptySet()
                             },
@@ -660,6 +705,35 @@ fun FlashConversationScreen(
                             ) {
                                 (state.groupSync ?: lastGroupSync)?.let { sync -> FlashGroupSyncBanner(sync = sync) }
                             }
+
+                            // Task 3.4: Pinned message banner.
+                            val pinnedMessage = remember(pinnedMessageId, localMessages) {
+                                localMessages.firstOrNull { it.id == pinnedMessageId }
+                            }
+                            AnimatedVisibility(
+                                visible = pinnedMessage != null,
+                                enter = fadeIn(motion.tweenNormalSpec()),
+                                exit = fadeOut(motion.tweenFastSpec()),
+                            ) {
+                                if (pinnedMessage != null) {
+                                    FlashPinnedMessageBanner(
+                                        message = pinnedMessage,
+                                        onClick = {
+                                            val idx = localMessages.indexOfFirst { it.id == pinnedMessage.id }
+                                            if (idx >= 0) {
+                                                coroutineScope.launch {
+                                                    listState.animateScrollToItem(idx)
+                                                }
+                                                highlightedMessageId = pinnedMessage.id
+                                            }
+                                        },
+                                        onUnpin = {
+                                            pinnedMessageId = null
+                                            showMessage("Message unpinned")
+                                        },
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -689,16 +763,27 @@ fun FlashConversationScreen(
                 isAttachmentExpanded = showAttachmentSheet,
                 replyingTo = replyingToMessage,
                 onDismissReply = { replyingToMessage = null },
+                stagedAttachments = stagedAttachments,
+                onRemoveStagedAttachment = { item ->
+                    stagedAttachments = stagedAttachments.filter { it.uri != item.uri }
+                },
                 onSend = {
                     val text = draft.trim()
-                    if (text.isNotEmpty()) {
+                    val hasAttachments = stagedAttachments.isNotEmpty()
+                    if (text.isNotEmpty() || hasAttachments) {
                         val quoted = replyingToMessage
-                        if (quoted != null) {
-                            // #8: carry the quoted id + a trimmed preview so the peer renders the quote.
-                            onSendReply(text, quoted.id, quoted.text.take(120))
-                        } else {
-                            onSendText(text)
+                        stagedAttachments.forEach { item ->
+                            onSendFile(item.uri, item.name, item.sizeBytes)
                         }
+                        if (text.isNotEmpty()) {
+                            if (quoted != null) {
+                                // #8: carry the quoted id + a trimmed preview so the peer renders the quote.
+                                onSendReply(text, quoted.id, quoted.text.take(120))
+                            } else {
+                                onSendText(text)
+                            }
+                        }
+                        stagedAttachments = emptyList()
                         draft = ""
                         replyingToMessage = null
                         // Sending clears the composer → stop the typing indicator (#11).
@@ -882,24 +967,51 @@ fun FlashConversationScreen(
                 copyText(msg.text)
             },
             onForward = {
-                // Was a "Forwarding message" toast that forwarded nothing. No in-app conversation
-                // picker exists yet, so route to the system chooser: text as text, a media/file
-                // message as its local stream (both fall back to the file card's localUri).
                 val image = msg.images.firstOrNull()
                 val file = msg.fileAttachments.firstOrNull()
                 val voice = msg.voiceAttachments.firstOrNull()
-                when {
-                    msg.text.isNotBlank() -> onShareText(msg.text)
-                    image?.uri != null -> onShareImage(image.uri, image.mimeType)
-                    voice?.uri != null -> onShareImage(voice.uri, voice.mimeType)
-                    file?.localUri != null -> onShareImage(file.localUri, file.mimeType)
-                    else -> showMessage("Nothing to forward yet")
+                val imgUri = image?.uri
+                val voiceUri = voice?.uri
+                val fileLocalUri = file?.localUri
+                val payload = when {
+                    msg.text.isNotBlank() -> FlashSharePayloadUi(text = msg.text)
+                    imgUri != null -> FlashSharePayloadUi(
+                        items = listOf(FlashShareItemUi(uri = imgUri, name = "Image", mimeType = image.mimeType)),
+                    )
+                    voiceUri != null -> FlashSharePayloadUi(
+                        items = listOf(FlashShareItemUi(uri = voiceUri, name = "Voice message", mimeType = voice.mimeType)),
+                    )
+                    fileLocalUri != null -> FlashSharePayloadUi(
+                        items = listOf(FlashShareItemUi(uri = fileLocalUri, name = file.name, sizeBytes = file.sizeBytes, mimeType = file.mimeType)),
+                    )
+                    else -> null
+                }
+                if (payload != null && forwardRecipients.isNotEmpty()) {
+                    pendingForwardPayload = payload
+                } else {
+                    when {
+                        msg.text.isNotBlank() -> onShareText(msg.text)
+                        imgUri != null -> onShareImage(imgUri, image.mimeType)
+                        voiceUri != null -> onShareImage(voiceUri, voice.mimeType)
+                        fileLocalUri != null -> onShareImage(fileLocalUri, file.mimeType)
+                        else -> showMessage("Nothing to forward yet")
+                    }
                 }
                 focusedMessage = null
             },
             onSelectMultiple = {
                 selectedMessageIds = setOf(msg.id)
             },
+            onPin = {
+                if (pinnedMessageId == msg.id) {
+                    pinnedMessageId = null
+                    showMessage("Message unpinned")
+                } else {
+                    pinnedMessageId = msg.id
+                    showMessage("Message pinned")
+                }
+            },
+            isPinned = pinnedMessageId == msg.id,
             onDelete = {
                 onDeleteMessage(setOf(msg.id))
                 focusedMessage = null
@@ -955,7 +1067,9 @@ fun FlashConversationScreen(
                     FlashAttachmentType.Files, FlashAttachmentType.FlashTransfer -> listOf("*/*")
                     FlashAttachmentType.Camera -> null
                 }
-                if (mimeTypes != null) {
+                if (action == FlashAttachmentType.Camera) {
+                    cameraLauncher.launch()
+                } else if (mimeTypes != null) {
                     filePicker.launch(mimeTypes)
                 } else {
                     onAttachmentClick()
@@ -1002,6 +1116,7 @@ fun FlashConversationScreen(
             } else {
                 null
             },
+            onOpenSharedContent = { showSharedContent = true },
         )
     }
 
@@ -1132,6 +1247,47 @@ fun FlashConversationScreen(
             onDismiss = { showPeerDetails = false },
             isTrusted = isPeerTrusted,
             onRevokeTrust = onRevokePeerTrust,
+            onOpenSharedContent = { showSharedContent = true },
+        )
+    }
+
+    // Task 3.3: Per-conversation shared content sheet
+    if (showSharedContent) {
+        FlashSharedContentSheet(
+            title = state.header.title,
+            messages = localMessages,
+            onDismiss = { showSharedContent = false },
+            onOpenMedia = { index, items ->
+                mediaViewerItems = items
+                mediaViewerStartIndex = index
+                mediaViewerVisible = true
+                showSharedContent = false
+            },
+            onOpenFile = { localUri, mimeType, fileName ->
+                if (localUri != null) {
+                    onOpenAttachment(localUri, mimeType, fileName)
+                } else {
+                    showMessage("File not downloaded yet")
+                }
+            },
+            onDownloadFile = { transferId ->
+                onAcceptOffer(transferId)
+                showMessage("Download started")
+            },
+            onOpenUrl = { url ->
+                onShareText(url)
+            },
+            onJoinInviteGroup = onJoinInviteGroup,
+            onJumpToMessage = { targetId ->
+                showSharedContent = false
+                val idx = localMessages.indexOfFirst { it.id == targetId }
+                if (idx >= 0) {
+                    coroutineScope.launch {
+                        listState.animateScrollToItem(idx)
+                    }
+                    highlightedMessageId = targetId
+                }
+            },
         )
     }
 
@@ -1197,11 +1353,17 @@ fun FlashConversationScreen(
                     }
                 },
                 onForward = { index ->
-                    // Forwarding into another in-app conversation needs a chat picker that does not
-                    // exist yet; offer the system share sheet instead of silently doing nothing.
                     val image = mediaViewerItems.getOrNull(index)?.image
-                    if (image?.uri != null) {
-                        onShareImage(image.uri, image.mimeType)
+                    val imgUri = image?.uri
+                    if (imgUri != null) {
+                        val payload = FlashSharePayloadUi(
+                            items = listOf(FlashShareItemUi(uri = imgUri, name = "Media", mimeType = image.mimeType)),
+                        )
+                        if (forwardRecipients.isNotEmpty()) {
+                            pendingForwardPayload = payload
+                        } else {
+                            onShareImage(imgUri, image.mimeType)
+                        }
                     } else {
                         showMessage(notReadyLabel(image))
                     }
@@ -1220,6 +1382,32 @@ fun FlashConversationScreen(
                 },
             )
         }
+    }
+
+    // Task 3.1: Native In-App Forwarding Sheet
+    pendingForwardPayload?.let { payload ->
+        val (paired, others) = remember(forwardRecipients) {
+            forwardRecipients.partition { it.isPaired && !it.isGroup }
+        }
+        FlashShareTargetSheet(
+            payload = payload,
+            title = "Forward message",
+            pairedDevices = paired,
+            recentChats = others,
+            nearbyDevices = emptyList(),
+            isScanning = false,
+            onSelectRecipient = { recipient ->
+                onForwardToRecipients(listOf(recipient), payload)
+                pendingForwardPayload = null
+                showMessage("Forwarded to ${recipient.name}")
+            },
+            onForward = { chosen ->
+                onForwardToRecipients(chosen, payload)
+                pendingForwardPayload = null
+                showMessage("Forwarded to ${chosen.size} chats")
+            },
+            onDismiss = { pendingForwardPayload = null },
+        )
     }
 
     // D7a: the snackbar host is the LAST sibling of this screen, not the Scaffold's `snackbarHost`

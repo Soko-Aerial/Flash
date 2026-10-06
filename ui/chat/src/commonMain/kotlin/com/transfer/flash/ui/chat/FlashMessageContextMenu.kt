@@ -84,6 +84,8 @@ fun FlashMessageFocusOverlay(
     modifier: Modifier = Modifier,
     /** UI-051: shows a "Message Info" item. The host passes it only for a message that offers it. */
     onMessageInfo: (() -> Unit)? = null,
+    onPin: (() -> Unit)? = null,
+    isPinned: Boolean = false,
 ) {
     val colors = FlashTheme.colors
 
@@ -190,6 +192,13 @@ fun FlashMessageFocusOverlay(
                             onDismiss()
                         }
                     },
+                    onPin = onPin?.let { pin ->
+                        {
+                            pin()
+                            onDismiss()
+                        }
+                    },
+                    isPinned = isPinned,
                 )
             }
         }
@@ -399,6 +408,8 @@ fun FlashContextMenuCard(
     onDeleteForEveryone: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
     onMessageInfo: (() -> Unit)? = null,
+    onPin: (() -> Unit)? = null,
+    isPinned: Boolean = false,
 ) {
     val colors = FlashTheme.colors
 
@@ -425,8 +436,15 @@ fun FlashContextMenuCard(
             label = "Forward",
             onClick = onForward,
         )
+        if (onPin != null) {
+            FlashContextMenuItem(
+                icon = FlashIcons.Pin,
+                label = if (isPinned) "Unpin" else "Pin",
+                onClick = onPin,
+            )
+        }
         FlashContextMenuItem(
-            icon = FlashIcons.Pin,
+            icon = FlashIcons.Check,
             label = "Select Multiple",
             onClick = onSelectMultiple,
         )
@@ -460,10 +478,15 @@ fun FlashContextMenuCard(
 }
 
 /** Pure action visibility used by common tests and the context menu. */
-internal fun messageActionLabels(isMine: Boolean, hasMessageInfo: Boolean = false): List<String> = buildList {
+internal fun messageActionLabels(
+    isMine: Boolean,
+    hasMessageInfo: Boolean = false,
+    canPin: Boolean = false,
+): List<String> = buildList {
     add("Reply")
     add("Copy Text")
     add("Forward")
+    if (canPin) add("Pin")
     add("Select Multiple")
     if (hasMessageInfo) add(FlashMessageInfoMath.MENU_LABEL)
     if (isMine) add("Delete for everyone")

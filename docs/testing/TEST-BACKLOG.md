@@ -2318,6 +2318,31 @@ plan GM-11. Record results in the Results log.
 - **Source:** ERROR-107.
 - **Status:** TODO
 
+## 4zf. Join by invite and members-may-add (ERROR-112, ERROR-113, ERROR-114, 2026-10-06)
+
+Capture before you start: export the logs on every device (the new `GROUP` lines show the proof result and each join step).
+
+### GJOIN-01 - A device added by a plain member joins
+- **Setup:** three or more devices in one v2 group; the admin turns "Members may add" on in the group settings. The device to add is paired with the member who adds it.
+- **Steps:** on a plain member (not the admin) use Add members and pick the new device. Wait 30 s on the new device.
+- **Pass:** the new device lists the group with its name and the full member list, with no `Group cert dropped ... reason=issuer` line in its log; the admin and the others show it as a member. With "Members may add" OFF, an add attempt by a plain member is refused.
+- **Source:** ERROR-112.
+- **Status:** TODO
+
+### GJOIN-02 - Pasting an invite while already connected to the inviter
+- **Setup:** desktop paired with and connected to the group's admin; another member's phone nearby.
+- **Steps:** the admin copies the invite link; paste it on the desktop and press Join.
+- **Pass:** the dialog closes at once; the desktop shows a message ("Connecting to inviter..." or the waiting-for-admin sentence) and does NOT open an empty chat titled with the group id; within 10 s the admin sees the request (members sheet and notification); the desktop log has an `Invite proof: ... result=` line and a join-request-sent line. After the admin approves, the group appears on the desktop with its name and members. Repeat with the joiner on a phone.
+- **Source:** ERROR-113, ERROR-114.
+- **Status:** TODO
+
+### GJOIN-03 - Approval while the joiner is disconnected
+- **Setup:** as GJOIN-02, request sent and visible to the admin.
+- **Steps:** switch the desktop's Wi-Fi off; the admin approves; wait a minute; switch Wi-Fi on.
+- **Pass:** the admin log shows the approval with the bundle not delivered; once the link is back the desktop joins within 30 s without the admin doing anything; no second notification appears on the admin. If it does NOT join, keep both logs: that is the unproven 09:34 case of ERROR-113.
+- **Source:** ERROR-113.
+- **Status:** TODO
+
 ## 4za. Ink launch splash (UI-056, ADR-080, 2026-10-06)
 
 Built and unit-tested (`FlashLaunchSplashTest` 21/21). Desktop frames were rendered off-screen and checked by eye. Not device-verified.
@@ -2361,6 +2386,70 @@ Built and unit-tested (`FlashLaunchSplashTest` 21/21). Desktop frames were rende
 - **Steps:** Start the Windows app. Hide it to the tray and reopen it. Switch the accent and cold start again.
 - **Pass:** The splash plays once at start and not on the tray reopen. Clicks during it do nothing. The ink and bolt take the accent colour while the ground stays the same.
 - **Source:** UI-056. **Status:** TODO
+
+## 4y. UI polish and feature flows (`docs/ui/UI-POLISH-AND-FEATURE-ROADMAP-PLAN.md`, 2026-10-06)
+
+Built and unit-tested in commonTest across `:ui:chat`, `:ui:callui`, and platform-shims. Device tests owed:
+
+### UIP-01 — Native In-App Forwarding Sheet
+- **Setup:** A conversation with messages on an Android phone or Desktop.
+- **Steps:** Long-press or right-click any message, select "Forward". Verify search, selection up to 5 recipients (direct chats, groups, nearby peers), quote preview, and sending.
+- **Pass:** Messages forward cleanly to all selected targets with quoted attribution.
+- **Source:** Task 3.1. **Status:** TODO
+
+### UIP-02 — Composer Attachment Pre-Send Staging Tray
+- **Setup:** Chat conversation screen.
+- **Steps:** Pick multiple files/images or capture a camera photo.
+- **Pass:** Attachments appear in horizontal staging tray above composer; individual items can be removed; caption can be typed; clicking send dispatches files and text together.
+- **Source:** Task 3.2. **Status:** TODO
+
+### UIP-03 — Per-Conversation Shared Content Viewer
+- **Setup:** Conversation with existing media, files, voice notes, and links.
+- **Steps:** Open peer details / group members sheet -> tap "Shared Media & Files".
+- **Pass:** 4 tabs display (Media 3-column grid, Files with extension badges, Audio with inline play, Links with jump-to-chat).
+- **Source:** Task 3.3. **Status:** TODO
+
+### UIP-04 — Pinned Messages Banner
+- **Setup:** Conversation screen.
+- **Steps:** Long-press message -> Pin. Tap pinned banner.
+- **Pass:** Slim pinned banner renders below header; tapping smoothly scrolls to target message with 700ms pulse glow highlight; unpinning clears banner.
+- **Source:** Task 3.4. **Status:** TODO
+
+### UIP-05 — Real-Time Audio Speaking Ripple in Calling UI
+- **Setup:** 1:1 and group audio/video call between two devices.
+- **Steps:** Speak into the microphone and pause.
+- **Pass:** Call avatar ripples dynamically with speech volume (silence rests at 1.0f..1.06f, speech expands to 1.22f); active speaker in group video displays pulsing accent border ring.
+- **Source:** Task 3.5. **Status:** TODO
+
+### UIP-06 — Swarm Transfer Block Availability Grid Map
+- **Setup:** Active or completed swarm file transfer in a group.
+- **Steps:** Tap "Show piece map" on file card or inspect in Adaptive Detail Pane.
+- **Pass:** Micro-block matrix displays verified, in-flight downloading, peer available, and missing blocks accurately.
+- **Source:** Task 3.6. **Status:** TODO
+
+### UIP-07 — Voice Recording Gesture Physics
+- **Setup:** Chat composer on phone.
+- **Steps:** Hold mic button. Slide left toward trash; release past 100dp. Next recording, slide up to lock hands-free.
+- **Pass:** Left-slide shows rubber-band resistance and morphs into trash can; upward slide locks into hands-free bar with pause/resume and send; red dot pulses.
+- **Source:** Task 2.3. **Status:** TODO
+
+### UIP-08 — Adaptive Detail Panes Redesign
+- **Setup:** Desktop or tablet in expanded two-pane layout.
+- **Steps:** Select an active or completed transfer and a peer.
+- **Pass:** Modern cards display with category color badge, animated progress bar with shimmer, SHA-256 verification shield, and action dock.
+- **Source:** Task 1.1. **Status:** TODO
+
+### UIP-09 — Transfers Screen Refinements
+- **Setup:** Transfers screen with multiple completed, failed, and cancelled transfers.
+- **Steps:** Verify section separation. Tap "Clear history". Test bulk pause/resume.
+- **Pass:** Cancelled transfers are in muted section without retry buttons; "Clear history" removes completed records; bulk pause/resume operates on all active transfers.
+- **Source:** Task 1.2. **Status:** TODO
+
+### UIP-10 — Bottom Nav Auto-Hide & Motion Physics
+- **Setup:** Phone running chat list or transfers list.
+- **Steps:** Scroll down quickly, then scroll up. Switch tabs. Reselect current tab.
+- **Pass:** Bottom nav capsule hides smoothly on rapid downward scroll and re-enters on scroll stop / upward scroll; tab hop tilts ±5°; reselecting active tab emits pulse ring.
+- **Source:** Tasks 1.4 & 2.5. **Status:** TODO
 
 ## 5. Measurements — do these last
 

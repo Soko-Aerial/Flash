@@ -2,13 +2,17 @@ package com.transfer.flash.ui.chat
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -24,11 +28,14 @@ import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
@@ -38,6 +45,7 @@ import androidx.compose.ui.unit.sp
 import com.transfer.flash.core.messaging.model.FlashReaction
 import com.transfer.flash.ui.theme.FlashDimensions
 import com.transfer.flash.ui.theme.FlashHaptic
+import com.transfer.flash.ui.theme.FlashMotion
 import com.transfer.flash.ui.theme.FlashSpacing
 import com.transfer.flash.ui.theme.FlashText
 import com.transfer.flash.ui.theme.FlashTheme
@@ -66,6 +74,35 @@ fun FlashReactionChip(
     val motion = FlashTheme.motion
     val haptics = rememberFlashHaptics()
     val interactionSource = remember { MutableInteractionSource() }
+
+    val scaleAnim = remember { Animatable(1f) }
+    val puffProgress = remember { Animatable(1f) }
+
+    LaunchedEffect(reaction.isSelfReacted) {
+        if (reaction.isSelfReacted && !motion.reduceMotion) {
+            scaleAnim.snapTo(0.6f)
+            scaleAnim.animateTo(
+                targetValue = 1f,
+                animationSpec = spring(
+                    dampingRatio = 0.65f,
+                    stiffness = 500f,
+                ),
+            )
+        }
+    }
+
+    LaunchedEffect(reaction.isSelfReacted) {
+        if (reaction.isSelfReacted && !motion.reduceMotion) {
+            puffProgress.snapTo(0f)
+            puffProgress.animateTo(
+                targetValue = 1f,
+                animationSpec = tween(
+                    durationMillis = 250,
+                    easing = FlashMotion.Decelerate,
+                ),
+            )
+        }
+    }
 
     val backgroundColor by animateColorAsState(
         targetValue = if (reaction.isSelfReacted) {
@@ -106,31 +143,51 @@ fun FlashReactionChip(
     }
 
     Box(
-        modifier = modifier
-            .sizeIn(minWidth = 36.dp, minHeight = 28.dp)
-            .flashPressScale(interactionSource, pressedScale = 0.94f)
-            .clip(CircleShape)
-            .background(backgroundColor)
-            .border(BorderStroke(borderWidth, borderColor), CircleShape)
-            .combinedClickable(
-                interactionSource = interactionSource,
-                indication = null,
-                onClick = {
-                    haptics(FlashHaptic.Tick)
-                    onToggle()
-                },
-                onLongClick = {
-                    haptics(FlashHaptic.Confirm)
-                    onLongClick()
-                },
-            )
-            .padding(horizontal = FlashSpacing.space8, vertical = FlashSpacing.space4)
-            .semantics {
-                role = Role.Button
-                contentDescription = contentDesc
-            },
+        modifier = modifier,
         contentAlignment = Alignment.Center,
     ) {
+        if (puffProgress.value < 1f) {
+            val accent = colors.accentPrimary
+            Canvas(Modifier.matchParentSize().graphicsLayer { alpha = 1f - puffProgress.value }) {
+                val radius = (size.maxDimension / 2f + 8.dp.toPx()) * puffProgress.value
+                val particleRadius = 2.dp.toPx()
+                drawCircle(accent, particleRadius, center = Offset(center.x - radius, center.y))
+                drawCircle(accent, particleRadius, center = Offset(center.x + radius, center.y))
+                drawCircle(accent, particleRadius, center = Offset(center.x, center.y - radius))
+                drawCircle(accent, particleRadius, center = Offset(center.x, center.y + radius))
+            }
+        }
+
+        Box(
+            modifier = Modifier
+                .graphicsLayer {
+                    scaleX = scaleAnim.value
+                    scaleY = scaleAnim.value
+                }
+                .sizeIn(minWidth = 36.dp, minHeight = 28.dp)
+                .flashPressScale(interactionSource, pressedScale = 0.94f)
+                .clip(CircleShape)
+                .background(backgroundColor)
+                .border(BorderStroke(borderWidth, borderColor), CircleShape)
+                .combinedClickable(
+                    interactionSource = interactionSource,
+                    indication = null,
+                    onClick = {
+                        haptics(FlashHaptic.Tick)
+                        onToggle()
+                    },
+                    onLongClick = {
+                        haptics(FlashHaptic.Confirm)
+                        onLongClick()
+                    },
+                )
+                .padding(horizontal = FlashSpacing.space8, vertical = FlashSpacing.space4)
+                .semantics {
+                    role = Role.Button
+                    contentDescription = contentDesc
+                },
+            contentAlignment = Alignment.Center,
+        ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.Center,
@@ -173,6 +230,7 @@ fun FlashReactionChip(
                 }
             }
         }
+    }
     }
 }
 

@@ -24,7 +24,9 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -46,6 +48,7 @@ import com.transfer.flash.ui.theme.FlashDimensions
 import com.transfer.flash.ui.theme.FlashHaptic
 import com.transfer.flash.ui.theme.FlashShapes
 import com.transfer.flash.ui.theme.FlashSpacing
+import com.transfer.flash.ui.theme.FlashText
 import com.transfer.flash.ui.theme.FlashTheme
 import com.transfer.flash.ui.theme.rememberFlashHaptics
 import org.jetbrains.compose.ui.tooling.preview.Preview
@@ -340,6 +343,52 @@ fun FlashFileMessageCard(
                         size = 16.dp,
                         tint = colors.textError,
                     )
+                }
+            }
+        }
+
+        // Task 3.6: Swarm piece availability grid map
+        if (attachment.holdersOnline > 0 ||
+            attachment.detailLine?.contains("swarm", ignoreCase = true) == true ||
+            (attachment.transferStatus == FlashFileTransferStatus.Transferring && attachment.transferProgress > 0f)
+        ) {
+            var pieceMapExpanded by remember { mutableStateOf(false) }
+
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space4),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { pieceMapExpanded = !pieceMapExpanded }
+                        .padding(vertical = FlashSpacing.space4),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    FlashText(
+                        text = if (pieceMapExpanded) "Hide piece map" else "Show piece map",
+                        style = typography.captionEmphasis.copy(fontSize = 11.sp),
+                        color = colors.accentPrimary,
+                    )
+                    FlashIcon(
+                        icon = if (pieceMapExpanded) FlashIcons.ChevronDown else FlashIcons.Forward,
+                        contentDescription = null,
+                        size = 12.dp,
+                        tint = colors.accentPrimary,
+                    )
+                }
+
+                if (pieceMapExpanded) {
+                    Spacer(modifier = Modifier.height(FlashSpacing.space4))
+                    FlashSwarmPieceMap(
+                        progress = attachment.transferProgress,
+                        holdersOnline = attachment.holdersOnline,
+                        isDownloading = attachment.transferStatus == FlashFileTransferStatus.Transferring,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(modifier = Modifier.height(FlashSpacing.space4))
                 }
             }
         }

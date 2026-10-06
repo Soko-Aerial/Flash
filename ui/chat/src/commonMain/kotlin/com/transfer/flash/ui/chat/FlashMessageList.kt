@@ -269,10 +269,20 @@ fun FlashMessageList(
                             if (entering) {
                                 Modifier.graphicsLayer {
                                     alpha = enterProgress
-                                    translationY = (1f - enterProgress) * (size.height / 4f)
-                                    val s = 0.96f + (0.04f * enterProgress)
-                                    scaleX = s
-                                    scaleY = s
+                                    if (message.isMine) {
+                                        // Outgoing spring launch: originates from bottom-right (send button)
+                                        translationY = (1f - enterProgress) * (size.height / 2.5f)
+                                        translationX = (1f - enterProgress) * 32f
+                                        val s = 0.85f + (0.15f * enterProgress)
+                                        scaleX = s
+                                        scaleY = s
+                                    } else {
+                                        // Incoming entrance: subtle downward drift and scale settle
+                                        translationY = (1f - enterProgress) * (size.height / 5f)
+                                        val s = 0.95f + (0.05f * enterProgress)
+                                        scaleX = s
+                                        scaleY = s
+                                    }
                                 }
                             } else {
                                 Modifier

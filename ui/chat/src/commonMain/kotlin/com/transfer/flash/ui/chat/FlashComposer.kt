@@ -103,12 +103,15 @@ fun FlashComposer(
     onVoiceRecordCancel: () -> Unit = {},
     /** B9: real per-tick loudness (0..100) from the live recorder; null falls back to demo samples. */
     voiceAmplitudeProvider: (() -> Int)? = null,
+    /** Task 3.2: pending attachments staged for sending. */
+    stagedAttachments: List<FlashShareItemUi> = emptyList(),
+    onRemoveStagedAttachment: (FlashShareItemUi) -> Unit = {},
 ) {
     val colors = FlashTheme.colors
     val typography = FlashTheme.typography
     val motion = FlashTheme.motion
     val density = androidx.compose.ui.platform.LocalDensity.current
-    val canSend = draft.isNotBlank() && enabled
+    val canSend = (draft.isNotBlank() || stagedAttachments.isNotEmpty()) && enabled
 
     // --- UI-020 voice recording state (local to the composer) ---
     var recordingPhase by remember { mutableStateOf(FlashRecordingPhase.Idle) }
@@ -193,6 +196,19 @@ fun FlashComposer(
             }
         }
 
+        // Task 3.2: Staged Attachments Tray
+        AnimatedVisibility(
+            visible = stagedAttachments.isNotEmpty(),
+            enter = motion.replyExpandEnter(),
+            exit = if (motion.reduceMotion) fadeOut(tween(0)) else fadeOut(tween(motion.fastMillis)),
+        ) {
+            FlashAttachmentStagingTray(
+                stagedAttachments = stagedAttachments,
+                onRemove = onRemoveStagedAttachment,
+                onAddMore = onAttachmentClick,
+            )
+        }
+
         // Main input bar row � transforms into the recording surface (UI-020).
         // The mic button lives OUTSIDE the swapped region so ONE persistent node owns
         // the hold gesture across Idle/Holding/CancelArmed � swapping it mid-hold would
@@ -200,7 +216,7 @@ fun FlashComposer(
         val isRecordingActive = recordingPhase != FlashRecordingPhase.Idle
         val showMic = when (recordingPhase) {
             FlashRecordingPhase.Locked -> false
-            FlashRecordingPhase.Idle -> draft.isBlank()
+            FlashRecordingPhase.Idle -> draft.isBlank() && stagedAttachments.isEmpty()
             else -> true
         }
 

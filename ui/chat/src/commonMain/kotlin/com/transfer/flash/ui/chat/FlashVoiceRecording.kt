@@ -2,6 +2,7 @@ package com.transfer.flash.ui.chat
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
@@ -33,6 +34,7 @@ import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -164,6 +166,14 @@ fun FlashMicButton(
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
 
+    var dragOffsetX by remember { mutableFloatStateOf(0f) }
+    var dragOffsetY by remember { mutableFloatStateOf(0f) }
+
+    val slideX = if (isRecording) (dragOffsetX * 0.45f).coerceIn(-cancelThresholdPx, 0f) else 0f
+    val slideY = if (isRecording) (dragOffsetY * 0.45f).coerceIn(-lockThresholdPx, 0f) else 0f
+    val isNearCancel = isRecording && -dragOffsetX >= cancelThresholdPx * 0.75f
+    val isNearLock = isRecording && -dragOffsetY >= lockThresholdPx * 0.75f
+
     // `scale` stays a State and is read inside `graphicsLayer` (EXP-013): the spring settles over
     // ~400ms, and only the two colour animations below genuinely need composition (they feed
     // `background()` and a tint parameter), so unwrapping this one would extend the recomposition
@@ -174,15 +184,29 @@ fun FlashMicButton(
         label = "mic_button_press_scale",
     )
     val backgroundColor by animateColorAsState(
-        targetValue = if (isRecording) colors.accentPrimary else Color.Transparent,
+        targetValue = when {
+            isNearCancel -> colors.textError.copy(alpha = 0.25f)
+            isRecording -> colors.accentPrimary
+            else -> Color.Transparent
+        },
         animationSpec = tween(motion.fastMillis),
         label = "mic_button_background",
     )
     val iconTint by animateColorAsState(
-        targetValue = if (isRecording) colors.textOnAccent else colors.textTertiary,
+        targetValue = when {
+            isNearCancel -> colors.textError
+            isRecording -> colors.textOnAccent
+            else -> colors.textTertiary
+        },
         animationSpec = tween(motion.fastMillis),
         label = "mic_button_icon_tint",
     )
+
+    val currentIcon = when {
+        isNearCancel -> FlashIcons.Delete
+        isNearLock -> FlashIcons.Pin
+        else -> FlashIcons.Microphone
+    }
 
     Box(
         modifier = modifier
@@ -190,6 +214,8 @@ fun FlashMicButton(
             .graphicsLayer {
                 scaleX = scale.value
                 scaleY = scale.value
+                translationX = slideX
+                translationY = slideY
             }
             .clip(CircleShape)
             .background(backgroundColor)
@@ -208,9 +234,13 @@ fun FlashMicButton(
                         val delta = change.positionChange()
                         totalDx += delta.x
                         totalDy += delta.y
+                        dragOffsetX = totalDx
+                        dragOffsetY = totalDy
                         onSlideUpdate(totalDx, totalDy)
                         change.consume()
                     }
+                    dragOffsetX = 0f
+                    dragOffsetY = 0f
                     onRecordEnd()
                 }
             }
@@ -221,7 +251,7 @@ fun FlashMicButton(
         contentAlignment = Alignment.Center,
     ) {
         FlashIcon(
-            icon = FlashIcons.Microphone,
+            icon = currentIcon,
             contentDescription = null,
             tint = iconTint,
             modifier = Modifier.size(FlashSpacing.space20),
@@ -266,8 +296,11 @@ fun FlashVoiceRecordingBar(
     } else {
         rememberInfiniteTransition(label = "recordDotPulse").animateFloat(
             initialValue = 1f,
-            targetValue = if (isPaused) 0.35f else 0.45f,
-            animationSpec = infiniteRepeatable(tween(motion.normalMillis)),
+            targetValue = if (isPaused) 0.35f else 0.4f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 650, easing = FlashMotion.Standard),
+                repeatMode = RepeatMode.Reverse,
+            ),
             label = "recordDotAlpha",
         )
     }
