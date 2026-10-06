@@ -1,6 +1,7 @@
 package com.transfer.flash.core.swarm.engine
 
 import com.transfer.flash.core.swarm.codec.ManifestCodec
+import com.transfer.flash.core.swarm.codec.SwarmFrame
 import com.transfer.flash.core.swarm.model.Bitfield
 import com.transfer.flash.core.swarm.model.ContentRoot
 import com.transfer.flash.core.swarm.model.PieceMath
@@ -46,6 +47,12 @@ internal class ContentState(
     var manifestRequestSentAtMs: Long = 0L
 
     var originSourceLost: Boolean = false
+
+    /** The origin's own signed LOST statement (ERROR-109), kept so a member that connects later hears it without a new signature. */
+    var signedSourceLost: SwarmFrame.SourceStatus? = null
+
+    /** `atMs` of the newest SourceStatus applied from the origin; an older one that arrives late is ignored. */
+    var sourceStatusAtMs: Long = 0L
     var storageUnavailable: Boolean = false
     var verifyFailures: Int = 0
 

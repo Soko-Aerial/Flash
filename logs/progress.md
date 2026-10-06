@@ -1,5 +1,22 @@
 # Progress Log
 
+## 2026-10-06 (j) - Swarm origin source lost (ERROR-109)
+
+### Worked on
+Item 2 of the owner's list: "Source file lost or changed on A: A serves nothing and sends no reject. SourceStatus is never sent, so the receiver just retries. originSourceLost isn't persisted either."
+
+### Changed
+Reject(GONE) to the requester; a signed `SourceStatus(LOST)` sent once to connected members and again to a member that connects later; the origin's persisted cleared bits are honoured on restart; a receiver accepts a SourceStatus only from the content's origin and not older than the one applied. Details and the limit (no RESTORED) in ERROR-109.
+
+### Verification
+`SwarmOriginSourceLostTest` (6), mutation-checked; `:core:swarm:jvmTest`, `:core:engine:jvmTest --tests '*warm*'`, `:app` and `:desktop` compile green. Not device-verified: `SWM-40`...`SWM-42`.
+
+### Remaining
+Non-member Summary / Have (item 3), transfer row `peerName` (item 4).
+
+### Next AI
+Do items 3 and 4, test first.
+
 ## 2026-10-06 (i) - Swarm file offers: signature, bubble link, catch-up for offline members (ERROR-108, ADR-081)
 
 ### Worked on

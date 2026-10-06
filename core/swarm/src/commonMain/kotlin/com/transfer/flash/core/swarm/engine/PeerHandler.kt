@@ -39,6 +39,12 @@ internal class PeerHandler(
             }
             for (content in contents.values) {
                 if (peer.allowedGroups[content.groupId] == false) continue
+                content.signedSourceLost?.let { lost ->
+                    // ERROR-109: a member that was away hears that this origin cannot serve (already signed, no new signature).
+                    if (content.originSourceLost) {
+                        commands.add(SwarmCommand.Send(peerId = e.peerId, frame = lost))
+                    }
+                }
                 if (!content.isComplete && content.piecesDone > 0) {
                     val ranges = content.persistedBits.toRanges()
                     if (ranges.isNotEmpty()) {

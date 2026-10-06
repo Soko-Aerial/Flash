@@ -49,7 +49,9 @@ class SwarmRestartRestoreTest {
         originId: String = "origin",
     ): SwarmContentRecord {
         val pieceCount = manifest.pieceCount
-        val bits = Bitfield(pieceCount).also { b -> doneBits.forEach { b.set(it, true) } }
+        // An origin record always carries every bit set until a read of its source fails (ERROR-109).
+        val held = if (role == SwarmRole.ORIGIN && doneBits.isEmpty()) (0 until pieceCount).toSet() else doneBits
+        val bits = Bitfield(pieceCount).also { b -> held.forEach { b.set(it, true) } }
         return SwarmContentRecord(
             root = manifest.root,
             groupId = groupId,
