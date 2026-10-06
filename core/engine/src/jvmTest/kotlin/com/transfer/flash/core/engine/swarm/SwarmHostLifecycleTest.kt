@@ -209,6 +209,80 @@ class SwarmHostLifecycleTest {
         assertEquals(262_144L, row.bytesTotal)
     }
 
+    private fun transferRowNamedBy(title: String?): String = runBlocking {
+        val dao = SwarmInteropTest.FakeSwarmDao()
+        dao.upsertContent(
+            SwarmContentEntity(
+                root = "0303030303030303030303030303030303030303030303030303030303030303",
+                groupId = "g-family",
+                messageId = "m_named",
+                role = "RECEIVER",
+                originId = "orig",
+                originKey = "key",
+                fileName = "act.bin",
+                mime = "application/octet-stream",
+                totalSize = 262_144L,
+                pieceSize = 65_536,
+                manifest = null,
+                bits = byteArrayOf(0x01),
+                bytesDone = 65_536L,
+                state = "ACTIVE",
+                waitReason = null,
+                failReason = null,
+                localTransferId = "m_named",
+                sourceUri = null,
+                sourcePersistent = false,
+                partialKey = "part_named",
+                finalPath = null,
+                identitySize = 0L,
+                identityModifiedMs = 0L,
+                deliveredTo = "",
+                createdAtMs = 90_000L,
+                lastProgressAtMs = 90_000L,
+                expiresAtMs = 200_000L,
+            )
+        )
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val driver = SwarmDriver(
+            config = FlashSwarmConfig(),
+            localDeviceId = "localNode",
+            scope = scope,
+            transport = NetworkSwarmTransport(sendFrameToPeer = { _, _ -> true }, requestSessionForPeer = { _ -> }),
+            groupContext = object : SwarmGroupContext {
+                override suspend fun isPeerAllowed(groupId: String, peerId: String): Boolean = true
+                override suspend fun isLocalActiveMember(groupId: String): Boolean = true
+                override suspend fun signStatement(groupId: String, statement: ByteArray): ByteArray? = null
+                override fun verifyStatement(authorKey: String, statement: ByteArray, signature: ByteArray): Boolean = true
+                override suspend fun authorKey(groupId: String, authorId: String): String? = null
+                override suspend fun groupTitle(groupId: String): String? = title
+                override val membershipChanges: Flow<String> get() = emptyFlow()
+            },
+            storage = RecordingPieceStorage(),
+            stateStore = RoomSwarmStateStore(dao),
+            timeSource = object : com.transfer.flash.core.common.time.FlashTimeSource {
+                override fun nowMs(): Long = 100_000L
+            },
+        )
+        try {
+            withTimeout(5000) {
+                while (driver.rows.value.none { it.id.value == "m_named" }) delay(25)
+            }
+            driver.rows.value.first { it.id.value == "m_named" }.peerName
+        } finally {
+            scope.coroutineContext[kotlinx.coroutines.Job]?.cancel()
+        }
+    }
+
+    @Test
+    fun `the transfer row names the group, not its id`() {
+        assertEquals("Family", transferRowNamedBy("Family"))
+    }
+
+    @Test
+    fun `a group without a known name reads Group, never the id`() {
+        assertEquals("Group", transferRowNamedBy(null))
+    }
+
     @Test
     fun `deleteMessageForEveryone wires to cancelAsOrigin with DELETED reason and clears on detach`() = runBlocking {
         val testTag = System.currentTimeMillis()

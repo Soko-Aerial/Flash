@@ -248,6 +248,8 @@ public class SwarmEngine(
                 }
             }
             is SwarmEvent.SummaryArrived -> {
+                // ERROR-110: INV-3, a device outside the group exchanges nothing with us, tombstones included.
+                if (!isPeerAllowed(event.frame.groupId, event.peerId)) return commands
                 peerHandler.handleSummaryArrived(event, localServingEnabled, systemSuspended, commands) { gid ->
                     for (content in contents.values.filter { it.groupId == gid }) {
                         if (content.state == SwarmLifecycleState.ACTIVE) {
@@ -262,6 +264,7 @@ public class SwarmEngine(
                 }
             }
             is SwarmEvent.HaveArrived -> {
+                if (!isPeerAllowed(event.frame.groupId, event.peerId)) return commands
                 contents[event.frame.groupId to event.frame.root]?.let { content ->
                     peerHandler.handleHaveArrived(event, content) {
                         updateWaitReason(it)
@@ -273,6 +276,7 @@ public class SwarmEngine(
                 }
             }
             is SwarmEvent.HaveAllArrived -> {
+                if (!isPeerAllowed(event.frame.groupId, event.peerId)) return commands
                 contents[event.frame.groupId to event.frame.root]?.let { content ->
                     peerHandler.handleHaveAllArrived(event, content) {
                         updateWaitReason(it)

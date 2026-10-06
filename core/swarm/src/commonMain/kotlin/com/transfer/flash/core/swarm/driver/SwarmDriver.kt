@@ -77,6 +77,9 @@ public class SwarmDriver(
     // Touched by the actor and by worker-dispatcher coroutines, so every shared map is lock-guarded.
     private val statusFlows = SyncMap<String, MutableStateFlow<FlashSwarmStatus?>>()
 
+    /** groupId -> the group's name, resolved when the group is first seen (the row builder is not suspending). */
+    private val groupTitles = SyncMap<String, String>()
+
     private val contentRecords = SyncMap<Pair<String, ContentRoot>, SwarmContentRecord>()
     private val transferIdToKey = SyncMap<String, Pair<String, ContentRoot>>()
     private val keyToTransferId = SyncMap<Pair<String, ContentRoot>, String>()
@@ -195,6 +198,7 @@ public class SwarmDriver(
                 val groups = records.map { it.groupId }.distinct()
                 for (g in groups) {
                     knownGroups.add(g)
+                    rememberGroupTitle(g)
                     emitMembership(g, recheckInactive = false)
                 }
                 for (record in records) {
@@ -294,6 +298,11 @@ public class SwarmDriver(
     private suspend fun handleFrame(peerId: String, frame: SwarmFrame) {
         when (frame) {
             is SwarmFrame.Summary -> {
+                // ERROR-110: the roster is read live here, so a member removed a moment ago is not heard before the engine is told.
+                if (!groupContext.isPeerAllowed(frame.groupId, peerId)) {
+                    logDropped("non-member summary", peerId, 0)
+                    return
+                }
                 val validTombstones = frame.tombstones.filter { tb ->
                     val authorKey = groupContext.authorKey(tb.groupId, tb.originId)
                     val stmt = SwarmStatement.cancel(
@@ -324,8 +333,20 @@ public class SwarmDriver(
                 }
             }
             is SwarmFrame.ManifestPart -> eventChannel.send(SwarmEvent.ManifestPartArrived(peerId, frame, now()))
-            is SwarmFrame.Have -> eventChannel.send(SwarmEvent.HaveArrived(peerId, frame, now()))
-            is SwarmFrame.HaveAll -> eventChannel.send(SwarmEvent.HaveAllArrived(peerId, frame, now()))
+            is SwarmFrame.Have -> {
+                if (groupContext.isPeerAllowed(frame.groupId, peerId)) {
+                    eventChannel.send(SwarmEvent.HaveArrived(peerId, frame, now()))
+                } else {
+                    logDropped("non-member have", peerId, 0)
+                }
+            }
+            is SwarmFrame.HaveAll -> {
+                if (groupContext.isPeerAllowed(frame.groupId, peerId)) {
+                    eventChannel.send(SwarmEvent.HaveAllArrived(peerId, frame, now()))
+                } else {
+                    logDropped("non-member have-all", peerId, 0)
+                }
+            }
             is SwarmFrame.Request -> {
                 val allowed = groupContext.isPeerAllowed(frame.groupId, peerId)
                 // Serving is a separate switch (signed group setting + this device's preference), not part of membership.
@@ -617,7 +638,8 @@ public class SwarmDriver(
 
         val transfer = FlashTransfer(
             id = FlashTransferId(transferId),
-            peerName = cmd.groupId,
+            // ERROR-111: a person reads the group's name, not its id.
+            peerName = groupTitles[cmd.groupId] ?: "Group",
             fileName = record?.fileName ?: "file.bin",
             direction = direction,
             bytesDone = cmd.bytesDone,
@@ -720,6 +742,11 @@ public class SwarmDriver(
         eventChannel.send(SwarmEvent.Tick(nowMs))
     }
 
+    private suspend fun rememberGroupTitle(groupId: String) {
+        val title = runCatching { groupContext.groupTitle(groupId) }.getOrNull()?.takeIf { it.isNotBlank() } ?: return
+        groupTitles[groupId] = title
+    }
+
     /**
      * Announces a new content piece as origin or receiver (§5.2, SW-8).
      */
@@ -729,6 +756,7 @@ public class SwarmDriver(
         keyToTransferId[event.groupId to event.root] = event.messageId
         // A group's peers must be classified before anything about it is announced to them.
         if (knownGroups.add(event.groupId)) emitMembership(event.groupId, recheckInactive = false)
+        rememberGroupTitle(event.groupId)
         FlashLog.i("SWARM", "announce root=${event.root.hex.take(8)} group=${event.groupId} origin=${event.isOrigin} size=${event.totalSize}")
         eventChannel.send(event)
     }

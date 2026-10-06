@@ -302,6 +302,7 @@ public class DesktopEngine(
                 groupGate = gate,
                 groupMemberDao = { db.groupMemberDao() },
                 groupCrypto = com.transfer.flash.core.engine.group.FlashGroupCrypto(crypto),
+                groupTitleLookup = { db.conversationDao().get(it)?.title },
             )
             val storage = JvmPieceStorage(
                 partialDir = File(stateDir, "swarm/partial"),

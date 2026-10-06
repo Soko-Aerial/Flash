@@ -27,6 +27,9 @@ public interface SwarmGroupContext {
     /** Looks up public key for [authorId] in [groupId]. */
     public suspend fun authorKey(groupId: String, authorId: String): String?
 
+    /** The name the user gave the group, for the Transfers row; null when unknown (the row then says "Group"). */
+    public suspend fun groupTitle(groupId: String): String? = null
+
     /** Emits a group ID whenever that group's roster or trust changed. */
     public val membershipChanges: Flow<String>
 }

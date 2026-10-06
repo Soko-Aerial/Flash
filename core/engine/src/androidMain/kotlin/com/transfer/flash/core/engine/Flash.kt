@@ -817,6 +817,7 @@ private class Wiring(
                     groupGate = groupGate,
                     groupMemberDao = { db.groupMemberDao() },
                     groupCrypto = com.transfer.flash.core.engine.group.FlashGroupCrypto(crypto),
+                    groupTitleLookup = { db.conversationDao().get(it)?.title },
                 )
                 val storage = com.transfer.flash.core.engine.swarm.AndroidPieceStorage(
                     context = appContext,
