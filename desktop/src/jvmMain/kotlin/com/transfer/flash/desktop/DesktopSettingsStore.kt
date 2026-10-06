@@ -45,6 +45,8 @@ public data class DesktopSettings(
     val swarmHelpShare: Boolean = true,
     /** Keep finished files available for others in the swarm. Default TRUE. */
     val swarmKeepFinishedFiles: Boolean = true,
+    /** UI-056 / ADR-080: the handwritten launch animation when Flash starts. Default TRUE. */
+    val launchAnimation: Boolean = true,
 )
 
 /**
@@ -105,6 +107,7 @@ internal class DesktopSettingsStore(private val stateDir: File) {
             groupSwarmEnabled = props.getProperty(KEY_GROUP_SWARM_ENABLED, "false").toBoolean(),
             swarmHelpShare = props.getProperty(KEY_SWARM_HELP_SHARE, "true").toBoolean(),
             swarmKeepFinishedFiles = props.getProperty(KEY_SWARM_KEEP_FINISHED_FILES, "true").toBoolean(),
+            launchAnimation = props.getProperty(KEY_LAUNCH_ANIMATION, "true").toBoolean(),
         )
     }
 
@@ -130,6 +133,7 @@ internal class DesktopSettingsStore(private val stateDir: File) {
         props.setProperty(KEY_GROUP_SWARM_ENABLED, settings.groupSwarmEnabled.toString())
         props.setProperty(KEY_SWARM_HELP_SHARE, settings.swarmHelpShare.toString())
         props.setProperty(KEY_SWARM_KEEP_FINISHED_FILES, settings.swarmKeepFinishedFiles.toString())
+        props.setProperty(KEY_LAUNCH_ANIMATION, settings.launchAnimation.toString())
         if (settings.performanceMode != null) {
             props.setProperty(KEY_PERFORMANCE_MODE, settings.performanceMode.name)
         } else {
@@ -183,6 +187,7 @@ internal class DesktopSettingsStore(private val stateDir: File) {
         const val KEY_GROUP_SWARM_ENABLED: String = "group_swarm_enabled"
         const val KEY_SWARM_HELP_SHARE: String = "swarm_help_share"
         const val KEY_SWARM_KEEP_FINISHED_FILES: String = "swarm_keep_finished_files"
+        const val KEY_LAUNCH_ANIMATION: String = "launch_animation"
 
         /** Same three tokens `FlashSettingsDataStore.THEME_MODE_*` uses. */
         const val THEME_MODE_SYSTEM: String = "system"

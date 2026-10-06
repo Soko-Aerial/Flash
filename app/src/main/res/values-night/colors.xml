@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- System splash ground in dark mode (UI-056): graphite900, the colour it had before UI-056. -->
+    <color name="flash_splash_bg">#FF171A22</color>
+</resources>

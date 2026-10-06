@@ -20,9 +20,6 @@ import androidx.lifecycle.lifecycleScope
 import androidx.core.content.ContextCompat
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.EnterTransition
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
@@ -120,7 +117,7 @@ import com.transfer.flash.core.persistence.settings.FlashSettingsDataStore
 import com.transfer.flash.ui.shell.FlashBottomNav
 import com.transfer.flash.ui.shell.FlashBottomNavDefaults
 import com.transfer.flash.ui.shell.FlashBottomNavItem
-import com.transfer.flash.ui.splash.FlashSplashScreen
+import com.transfer.flash.ui.splash.FlashLaunchSplashProcess
 import com.transfer.flash.ui.transfers.FlashTransfersScreen
 import com.transfer.flash.ui.transfers.FlashTransfersMath
 import com.transfer.flash.ui.transfers.FlashTransferState
@@ -131,6 +128,8 @@ import com.transfer.flash.core.transfer.model.FlashTransferId
 import com.transfer.flash.notifications.FlashNotificationManager
 import com.transfer.flash.ui.icons.FlashIcons
 import com.transfer.flash.core.messaging.model.FlashNetworkTransport
+import com.transfer.flash.ui.theme.FlashLaunchSplashGate
+import com.transfer.flash.ui.theme.FlashLaunchSplashOverlay
 import com.transfer.flash.ui.theme.FlashMaterialTheme
 import com.transfer.flash.ui.theme.FlashTheme
 import com.transfer.flash.ui.theme.rememberFlashMotion
@@ -142,8 +141,10 @@ import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Showcase host (Phase 8 app shell, docs/ui-page-plan.md): four-tab FlashBottomNav +
@@ -205,14 +206,48 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         // Must be called before super.onCreate to take over the theme's splash window.
-        // Keep the cold-start splash up for exactly as long as the engine takes to boot:
-        // a fast phone dismisses it almost immediately, a slow phone holds it — no fixed
-        // minimum. Also release on start failure so a boot error never traps the user.
+        //
+        // UI-056 / ADR-080: on a cold start the handwritten Ink splash (Compose) follows the system
+        // splash and plays to its end. The process-wide gate decides once whether it plays:
+        //  - Pending: the "Launch animation" setting is being read. Hold the system splash.
+        //  - Playing: release the system splash at once and fade it into the Ink splash.
+        //  - Skipped / Finished (setting off, a call answer or PTT press, or not the first window of
+        //    this process): the old rule. Hold the system splash for as long as the engine takes to
+        //    boot, with no fixed minimum, and release on a start failure so it never traps the user.
         val splashScreen = installSplashScreen()
+        val launchSplash = FlashLaunchSplashProcess.gate
+        if (FlashLaunchSplashProcess.isTimeCriticalLaunch(intent)) launchSplash.skip()
         splashScreen.setKeepOnScreenCondition {
-            !appEngine.ready.value && appEngine.startError.value == null
+            when (launchSplash.phase) {
+                FlashLaunchSplashGate.Phase.Pending -> true
+                FlashLaunchSplashGate.Phase.Playing -> false
+                FlashLaunchSplashGate.Phase.Skipped, FlashLaunchSplashGate.Phase.Finished ->
+                    !appEngine.ready.value && appEngine.startError.value == null
+            }
+        }
+        splashScreen.setOnExitAnimationListener { provider ->
+            // With a listener set, the app must remove the system splash itself (androidx docs).
+            if (launchSplash.phase == FlashLaunchSplashGate.Phase.Playing) {
+                provider.view.animate()
+                    .alpha(0f)
+                    .setDuration(SYSTEM_SPLASH_FADE_MS)
+                    .withEndAction { provider.remove() }
+                    .start()
+            } else {
+                provider.remove()
+            }
         }
         super.onCreate(savedInstanceState)
+        if (launchSplash.phase == FlashLaunchSplashGate.Phase.Pending) {
+            lifecycleScope.launch {
+                // One DataStore read. A read slower than this means a struggling device, which is
+                // the wrong moment to add an animation: skip it rather than hold the splash longer.
+                val enabled = withTimeoutOrNull(LAUNCH_SETTING_READ_TIMEOUT_MS) {
+                    appEngine.settingsStore.launchAnimation.first()
+                } ?: false
+                launchSplash.decide(enabled)
+            }
+        }
         enableEdgeToEdge()
         maybeRequestNotificationPermission()
         // Bug 7: a notification tap can cold-start the activity (no onNewIntent on cold
@@ -569,6 +604,12 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+/** UI-056: how long the system splash takes to fade into the Ink splash. */
+private const val SYSTEM_SPLASH_FADE_MS: Long = 200L
+
+/** UI-056: the longest the system splash waits for the "Launch animation" setting before skipping it. */
+private const val LAUNCH_SETTING_READ_TIMEOUT_MS: Long = 1_000L
+
 /** Toast when a group call could not be placed at all (ERROR-095); a call that starts but leaves someone out names them on its screen. */
 private const val GROUP_CALL_NOT_STARTED: String =
     "Couldn't start the group call: none of its members can be called from this device " +
@@ -620,6 +661,8 @@ fun FlashApp(
     onClearReceivedFiles: () -> Unit = {},
     onRestartApp: (() -> Unit)? = null,
     onExportLogs: (() -> Unit)? = null,
+    /** UI-056: the process-wide launch splash gate; MainActivity decides it before the first frame. */
+    launchSplash: FlashLaunchSplashGate = FlashLaunchSplashProcess.gate,
 ) {
     // #14 / UI-049 wiring: Appearance/Haptics are only real if the host applies them, so the settings
     // model lives above the theme. ONE theme scope owns the whole shell — a nested
@@ -657,6 +700,7 @@ fun FlashApp(
     val swarmHelpShare by store.swarmHelpShare.collectAsState(initial = true)
     val swarmKeepFinishedFiles by store.swarmKeepFinishedFiles.collectAsState(initial = true)
     val swarmEnabled by store.groupSwarmEnabled.collectAsState(initial = false)
+    val launchAnimation by store.launchAnimation.collectAsState(initial = true)
 
     val ready by engine.ready.collectAsState()
     val trustedFallback = remember { MutableStateFlow(emptyList<NearbyTrustedPeerUi>()) }
@@ -696,6 +740,7 @@ fun FlashApp(
         swarmHelpShare = swarmHelpShare,
         swarmKeepFinishedFiles = swarmKeepFinishedFiles,
         swarmEnabled = swarmEnabled,
+        launchAnimation = launchAnimation,
     )
     // Captured here (composable scope) so the non-composable lambda below can construct an
     // AndroidPreferencesIdentityStore when the display name changes.
@@ -741,6 +786,7 @@ fun FlashApp(
                 store.setSwarmKeepFinishedFiles(updated.swarmKeepFinishedFiles)
             }
             if (updated.swarmEnabled != settings.swarmEnabled) store.setGroupSwarmEnabled(updated.swarmEnabled)
+            if (updated.launchAnimation != settings.launchAnimation) store.setLaunchAnimation(updated.launchAnimation)
         }
     }
 
@@ -767,19 +813,11 @@ fun FlashApp(
             minimalChrome = effectivePerformanceMode.minimalChrome,
             motion = rememberFlashMotion(reduceMotionResolved),
         ) {
-            // Launch animation: the looping splash stays up until the engine is ready (or
-            // boot fails), then fades out. No minimum display time — a fast boot dismisses
-            // it almost immediately; a slow one keeps it looping. The 6s ceiling only
-            // guards against a stalled boot trapping the user, never adds latency.
+            // UI-056 / ADR-080: the Ink launch splash. It plays only when the process-wide gate says so
+            // (a cold start with the setting on), always to its end, and then leaves as soon as the
+            // engine is ready or has failed — or at the 6 s ceiling (ERROR-034), so a stalled boot
+            // never traps the user. The old looping bolt splash it replaces is gone.
             val startError by engine.startError.collectAsState()
-            var dismissSplash by remember { mutableStateOf(false) }
-            LaunchedEffect(ready, startError) {
-                if (ready || startError != null) dismissSplash = true
-            }
-            LaunchedEffect(Unit) {
-                kotlinx.coroutines.delay(6_000)
-                dismissSplash = true
-            }
             Box(modifier = Modifier.fillMaxSize()) {
                 FlashShell(
                     engine = engine,
@@ -813,13 +851,10 @@ fun FlashApp(
                         Toast.makeText(pttToastContext, message, Toast.LENGTH_SHORT).show()
                     },
                 )
-                AnimatedVisibility(
-                    visible = !dismissSplash,
-                    enter = EnterTransition.None,
-                    exit = fadeOut(animationSpec = tween(250)),
-                ) {
-                    FlashSplashScreen()
-                }
+                FlashLaunchSplashOverlay(
+                    gate = launchSplash,
+                    engineSettled = ready || startError != null,
+                )
             }
         }
     }
@@ -2233,6 +2268,9 @@ private fun FlashShell(
             },
             onHapticsChanged = {
                 onSettingsChange(settings.copy(hapticsEnabled = it))
+            },
+            onLaunchAnimationChanged = {
+                onSettingsChange(settings.copy(launchAnimation = it))
             },
             onBackgroundTransfersChanged = {
                 // Bug 6: opting into background mesh = ask the system (AOSP Doze/

@@ -963,6 +963,7 @@ public fun DesktopShell(
             swarmHelpShare = desktopSettings.swarmHelpShare,
             swarmKeepFinishedFiles = desktopSettings.swarmKeepFinishedFiles,
             swarmEnabled = desktopSettings.groupSwarmEnabled,
+            launchAnimation = desktopSettings.launchAnimation,
         )
     }
 
@@ -1649,6 +1650,9 @@ public fun DesktopShell(
                         },
                         onSwarmEnabledChanged = { next ->
                             scope.launch { engine.updateSettings { it.copy(groupSwarmEnabled = next) } }
+                        },
+                        onLaunchAnimationChanged = { next ->
+                            scope.launch { engine.updateSettings { it.copy(launchAnimation = next) } }
                         },
                         onPickSaveLocation = {
                             val chooser = javax.swing.JFileChooser().apply {

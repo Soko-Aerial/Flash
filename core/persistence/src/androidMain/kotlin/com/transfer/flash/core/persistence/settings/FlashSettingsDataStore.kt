@@ -77,6 +77,7 @@ public class FlashSettingsDataStore(
         public val groupSwarmEnabled: Preferences.Key<Boolean> = booleanPreferencesKey("group_swarm_enabled")
         public val swarmHelpShare: Preferences.Key<Boolean> = booleanPreferencesKey("swarm_help_share")
         public val swarmKeepFinishedFiles: Preferences.Key<Boolean> = booleanPreferencesKey("swarm_keep_finished_files")
+        public val launchAnimation: Preferences.Key<Boolean> = booleanPreferencesKey("launch_animation")
     }
 
     public companion object {
@@ -213,6 +214,13 @@ public class FlashSettingsDataStore(
     public val swarmKeepFinishedFiles: Flow<Boolean> =
         preferences.map { it[Keys.swarmKeepFinishedFiles] ?: true }
 
+    /**
+     * UI-056 / ADR-080: play the handwritten "Flash" launch animation on a cold start. Default TRUE.
+     * Read once per process, before the first frame, so a change takes effect on the next cold start.
+     */
+    public val launchAnimation: Flow<Boolean> =
+        preferences.map { it[Keys.launchAnimation] ?: true }
+
     public suspend fun setThemeMode(value: String) {
         dataStore.edit { it[Keys.themeMode] = value }
     }
@@ -282,6 +290,10 @@ public class FlashSettingsDataStore(
 
     public suspend fun setGroupSwarmEnabled(value: Boolean) {
         dataStore.edit { it[Keys.groupSwarmEnabled] = value }
+    }
+
+    public suspend fun setLaunchAnimation(value: Boolean) {
+        dataStore.edit { it[Keys.launchAnimation] = value }
     }
 
     public suspend fun setSwarmHelpShare(value: Boolean) {

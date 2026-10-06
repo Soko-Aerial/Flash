@@ -95,6 +95,15 @@ class FlashSettingsLogicTest {
         assertFalse(model.swarmEnabled)
     }
 
+    /** UI-056 / ADR-080: on by default, and the copy says it does not replay on a switch back. */
+    @Test
+    fun `the launch animation is on by default and says when it plays`() {
+        assertTrue(FlashSettingsModel().launchAnimation)
+        val on = FlashSettingsMath.launchAnimationSubtitle(enabled = true)
+        assertTrue(on.contains("starts") && on.contains("switch back"), on)
+        assertNotEquals(on, FlashSettingsMath.launchAnimationSubtitle(enabled = false))
+    }
+
     /** ERROR-033. Auto is the absence of a pin, so it needs a label of its own alongside the tiers. */
     @Test
     fun `the performance picker labels auto separately from the three tiers`() {

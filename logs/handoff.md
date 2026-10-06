@@ -1,6 +1,25 @@
 # Current Handoff
 
-## 2026-10-06 (latest, e) - Upgrade retry + receiver gate (ERROR-105 follow-up)
+## 2026-10-06 (latest, f) - Ink launch splash (UI-056 / ADR-080), docs incomplete
+
+- **Done in code:** the cold-start splash now writes "Flash" in Hershey Script 1-stroke, then draws the bolt, on Android and desktop. The relevant files are:
+  - `ui/theme/.../FlashInkSplash.kt`, `FlashLaunchSplash.kt` (with `FlashLaunchSplashGate`) and `FlashInkSplashGlyphs.kt`
+  - `app/.../ui/splash/FlashLaunchSplashProcess.kt`
+  - `MainActivity`, `DesktopMain`
+  - `values-night/colors.xml`
+- **Behaviour:** the splash plays once per process (on desktop, once per application). It always plays to the end, with a 6 s ceiling. It is skipped for call-answer and PTT launches, and when the setting read takes longer than 1 s.
+- **Setting:** Settings > Launch animation, on by default.
+- **Licence:** the Hershey acknowledgement is in `NOTICE` and `config/aboutlibraries` (generated notices checked on both hosts).
+- **Verified:** `:ui:theme:jvmTest` + `testAndroidHostTest` (splash 21/21), `:ui:chat:jvmTest`, `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm`. Desktop frames were rendered off-screen and checked by eye. Not device-verified: `SPLASH-01`...`08` (TEST-BACKLOG 4za).
+- **Still owed (docs):**
+  - `docs/ui/launch-splash.md` (UI-056 spec, plus the generator `node kotlin-strokes.js HersheyScript1.svg Flash`, which samples SVG glyph paths and lays them out by advance width)
+  - the `ui-research-index.md` row
+  - ADR-080 in `docs/decisions.md`
+  - a `logs/progress.md` entry
+  - AGENTS.md §29
+- **Next:** write those docs, then `SPLASH-01`.
+
+## 2026-10-06 (e) - Upgrade retry + receiver gate (ERROR-105 follow-up)
 
 - **Committed before this:** `2c03732e` (ERROR-105 / ADR-078 / ADR-079). This follow-up is committed on top of it (see `git log`).
 - **Done in code:** a lost video-upgrade request or offer is retried (caller `upgradeOfferPending`, callee repeats `vu=1`); `FlashCallActionReceiver` `ACTION_ANSWER` no longer accepts directly.
