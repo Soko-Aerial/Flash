@@ -1,6 +1,8 @@
 package com.transfer.flash.core.swarm.engine
 
 import com.transfer.flash.core.swarm.codec.ManifestCodec
+import com.transfer.flash.core.swarm.codec.SourceReason
+import com.transfer.flash.core.swarm.codec.SourceState
 import com.transfer.flash.core.swarm.codec.SwarmFrame
 import com.transfer.flash.core.swarm.model.Bitfield
 import com.transfer.flash.core.swarm.model.ContentRoot
@@ -118,6 +120,19 @@ internal class ContentLifecycleHandler(
         content.identityModifiedMs = r.identityModifiedMs
         content.deliveredTo.addAll(r.deliveredTo)
 
+        if (r.role == SwarmRole.ORIGIN && r.bits.size == (content.totalPieces + 7) / 8) {
+            // ERROR-109: an origin starts with every bit set, so a persisted bit that is clear is a piece whose source could
+            // not be read. Honouring it keeps a restart from claiming the whole file again.
+            val persisted = Bitfield.fromByteArray(content.totalPieces, r.bits)
+            for (i in 0 until content.totalPieces) {
+                if (!persisted.get(i)) {
+                    content.bitfield.set(i, false)
+                    content.persistedBits.set(i, false)
+                    content.bytesDone -= content.pieceLength(i)
+                    content.originSourceLost = true
+                }
+            }
+        }
         if (r.role == SwarmRole.RECEIVER) {
             val persisted = if (r.state == SwarmLifecycleState.COMPLETE) {
                 Bitfield(content.totalPieces).also { for (i in 0 until content.totalPieces) it.set(i, true) }
@@ -151,6 +166,19 @@ internal class ContentLifecycleHandler(
             changed = true
         }
         if (changed) commands.add(SwarmCommand.PersistRecord(content.toRecord(e.nowMs)))
+        if (content.role == SwarmRole.ORIGIN && content.originSourceLost && content.state == SwarmLifecycleState.ACTIVE) {
+            commands.add(
+                SwarmCommand.SignSourceStatus(
+                    groupId = content.groupId,
+                    root = content.root,
+                    originId = content.originId,
+                    messageId = content.messageId,
+                    status = SourceState.LOST,
+                    reason = SourceReason.NONE,
+                    atMs = e.nowMs,
+                )
+            )
+        }
         commands.add(
             SwarmCommand.Log(
                 "restored root=${r.root.hex.take(8)} group=${r.groupId} role=${r.role} state=${content.state} " +

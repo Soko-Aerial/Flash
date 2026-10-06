@@ -2242,6 +2242,28 @@ plan GM-11. Record results in the Results log.
   - A malformed link shows no action.
 - **Source:** plan O-14, GM-10. **Status:** TODO (built in GM-10 via FlashInlineInviteCard; ready for physical device test in GM-11)
 
+## 4zd. Swarm origin source lost (ERROR-109, 2026-10-06)
+
+### SWM-40 - A deleted source is reported, not silent
+- **Setup:** swarm switch on, origin A and members B, C connected, a 200 MB file on A.
+- **Steps:** A sends; while B downloads, delete the file on A (file manager) before B finishes.
+- **Pass:** B's log shows `Reject` with GONE (no repeated unanswered requests every few seconds), then B's row shows a "waiting for others / sender" line instead of a stuck percentage; C (which has all pieces) completes B's download if C finished first; A's log has `source status` signed once, not once per piece.
+- **Source:** ERROR-109.
+- **Status:** TODO
+
+### SWM-41 - A member that was offline hears the loss
+- **Setup:** as SWM-40; phone C offline during the delete.
+- **Steps:** bring C online.
+- **Pass:** C's row shows the origin cannot serve, with no request loop to A.
+- **Source:** ERROR-109.
+- **Status:** TODO
+
+### SWM-42 - Restart keeps the loss
+- **Setup:** after SWM-40, force-stop and reopen the app on A.
+- **Pass:** A does not offer the lost pieces (`Summary` not complete in the log), B/C do not request them from A.
+- **Source:** ERROR-109.
+- **Status:** TODO
+
 ## 4zc. Swarm file offers and catch-up (ERROR-108, ADR-081, 2026-10-06)
 
 ### SWM-36 - A live swarm offer is accepted and the bubble follows the transfer

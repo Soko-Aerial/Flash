@@ -261,6 +261,12 @@ public sealed interface SwarmEvent {
         override val nowMs: Long,
     ) : SwarmEvent
 
+    /** The driver signed a [SwarmCommand.SignSourceStatus] (ERROR-109). */
+    public data class SourceStatusSigned(
+        public val frame: SwarmFrame.SourceStatus,
+        override val nowMs: Long,
+    ) : SwarmEvent
+
     public data class TombstoneSigned(
         public val tombstone: SwarmTombstone,
         override val nowMs: Long,

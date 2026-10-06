@@ -1,5 +1,7 @@
 package com.transfer.flash.core.swarm.engine
 
+import com.transfer.flash.core.swarm.codec.SourceReason
+import com.transfer.flash.core.swarm.codec.SourceState
 import com.transfer.flash.core.swarm.codec.SwarmFrame
 import com.transfer.flash.core.swarm.model.ContentRoot
 import com.transfer.flash.core.swarm.model.SwarmContentRecord
@@ -107,6 +109,20 @@ public sealed interface SwarmCommand {
         public val messageId: String,
         public val reason: SwarmTombstoneReason,
         public val cancelledAtMs: Long,
+    ) : SwarmCommand
+
+    /**
+     * Requests driver to sign a [SwarmFrame.SourceStatus] statement as origin (ERROR-109). The driver answers with
+     * [SwarmEvent.SourceStatusSigned]; nothing is sent until then, so a device that cannot sign says nothing.
+     */
+    public data class SignSourceStatus(
+        public val groupId: String,
+        public val root: ContentRoot,
+        public val originId: String,
+        public val messageId: String,
+        public val status: SourceState,
+        public val reason: SourceReason,
+        public val atMs: Long,
     ) : SwarmCommand
 
     /** Requests driver to persist a verified tombstone in database. */

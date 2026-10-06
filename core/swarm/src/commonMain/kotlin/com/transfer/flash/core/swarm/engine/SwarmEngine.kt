@@ -199,12 +199,36 @@ public class SwarmEngine(
                     }
                 }
             }
+            is SwarmEvent.SourceStatusSigned -> {
+                contents[event.frame.groupId to event.frame.root]?.let { content ->
+                    // ERROR-109: only while the source is still lost; a late signature must not announce a loss that ended.
+                    if (content.role == SwarmRole.ORIGIN && content.originSourceLost) {
+                        content.signedSourceLost = event.frame
+                        for ((peerId, peer) in peers) {
+                            if (peer.isConnected && peer.hasSw1Feature && isPeerAllowed(content.groupId, peerId)) {
+                                commands.add(SwarmCommand.Send(peerId = peerId, frame = event.frame))
+                            }
+                        }
+                    }
+                }
+            }
             is SwarmEvent.SourceStatusArrived -> {
                 if (!event.signatureValid) {
                     strikeBook.recordStrike(event.peerId, event.frame.root)
                     return commands
                 }
+                val target = contents[event.frame.groupId to event.frame.root]
+                // ERROR-109: only the content's own origin can say its source is lost or back (a valid signature from any
+                // other member is still not the origin), and an older statement than the one applied is a replay.
+                if (target != null &&
+                    (target.role != SwarmRole.RECEIVER ||
+                        event.frame.originId != target.originId ||
+                        event.frame.atMs < target.sourceStatusAtMs)
+                ) {
+                    return commands
+                }
                 contents[event.frame.groupId to event.frame.root]?.let { content ->
+                    content.sourceStatusAtMs = event.frame.atMs
                     content.originSourceLost = event.frame.status == SourceState.LOST
                     updateWaitReason(content)
                     publishRow(content, commands)

@@ -7352,3 +7352,41 @@ None.
 
 ### Status
 FIXED IN CODE, unit-tested, NOT device-verified (stays OPEN until SWM-36...SWM-39 pass)
+
+
+## ERROR-109 - Swarm origin whose file is deleted or changed goes silent: no reject, no SourceStatus, lost state forgotten on restart
+
+### Date
+2026-10-06
+
+### Area
+Group swarm / `:core:swarm` serving (`ServeHandler`, `ContentLifecycleHandler`, `SwarmDriver`)
+
+### Symptoms
+Found by code reading in the owner's swarm review (not seen on a device). When the origin's source file was deleted, replaced or became unreadable: the origin served nothing and answered nothing, so the requester kept an unanswered request and asked again; members never learned that the origin could not serve, so they showed the wait reason for an origin that would never come back (instead of looking at the other holders); after a restart the origin claimed the whole file again.
+
+### Root cause
+`ServeHandler.handlePieceRead` handled `CHANGED` / `GONE` only locally: it cleared the bit and set `originSourceLost`. `SourceStatus` had a codec, a verifier and a receiving handler, but nothing ever produced one, and a `Reject(GONE)` for the piece asked for was never sent. The cleared bit was persisted, but `handleRestored` rebuilt an origin with every bit set, so the loss was forgotten. The receiver also accepted a validly signed `SourceStatus` from any member, not only from the content's origin.
+
+### Failed attempts
+None.
+
+### Working fix
+- A failed read sends `Reject(GONE, pieces=[index])` to the requester (if allowed).
+- The first failed read on an origin emits `SignSourceStatus(LOST, CHANGED|DELETED)`; the driver signs it (same path as a tombstone, `SwarmStatement.source`) and answers `SourceStatusSigned`; the engine sends it to every connected allowed `sw1` peer and keeps it, and sends it again to a member that connects later (no second signature).
+- `handleRestored` honours the persisted bits of an origin: a clear bit means the piece's source could not be read, so the origin does not claim the file, marks the loss, and signs the status again.
+- A receiver applies a `SourceStatus` only when its `originId` is the content's origin and its `atMs` is not older than the one already applied.
+
+### Not done on purpose
+`RESTORED` is never sent: nothing re-checks a source that comes back (the bit stays clear), so an origin that lost its file stays lost until the content is registered again. A transient loss (SD card, revoked permission) therefore becomes durable now that it survives a restart.
+
+### Verification
+`SwarmOriginSourceLostTest` (6 tests, written first): GONE reject; one signature request then a send to every member; no second signature on a second failed read; a late connecting member hears the status and the Summary does not claim the file; restart keeps the loss and re-signs; a status from a non-origin member is ignored. Mutation (reject disabled, restore ignored) fails 3 of them. `:core:swarm:jvmTest`, `:core:engine:jvmTest --tests '*warm*'`, `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm` green. `SwarmRestartRestoreTest` fixture corrected: an origin record carries all bits set. Device checks `SWM-40`...`SWM-42`.
+
+### Related files
+- `core/swarm/src/commonMain/kotlin/com/transfer/flash/core/swarm/engine/ServeHandler.kt`, `SwarmEngine.kt`, `PeerHandler.kt`, `ContentLifecycleHandler.kt`, `ContentState.kt`, `SwarmCommand.kt`, `SwarmEvent.kt`
+- `core/swarm/src/commonMain/kotlin/com/transfer/flash/core/swarm/driver/SwarmDriver.kt`
+- `core/swarm/src/commonTest/kotlin/com/transfer/flash/core/swarm/engine/SwarmOriginSourceLostTest.kt`
+
+### Status
+FIXED IN CODE, unit-tested, NOT device-verified (stays OPEN until SWM-40...SWM-42 pass)

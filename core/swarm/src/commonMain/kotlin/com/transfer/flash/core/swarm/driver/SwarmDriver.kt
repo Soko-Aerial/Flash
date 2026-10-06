@@ -499,6 +499,35 @@ public class SwarmDriver(
                     }
                 }
             }
+            is SwarmCommand.SignSourceStatus -> {
+                scope.launch(workerDispatcher) {
+                    val stmt = SwarmStatement.source(
+                        groupId = cmd.groupId,
+                        root = cmd.root,
+                        originId = cmd.originId,
+                        messageId = cmd.messageId,
+                        status = cmd.status.name,
+                        reason = cmd.reason.name,
+                        atMs = cmd.atMs,
+                    )
+                    val sig = groupContext.signStatement(cmd.groupId, stmt)
+                    if (sig != null) {
+                        val frame = SwarmFrame.SourceStatus(
+                            groupId = cmd.groupId,
+                            root = cmd.root,
+                            originId = cmd.originId,
+                            messageId = cmd.messageId,
+                            status = cmd.status,
+                            reason = cmd.reason,
+                            atMs = cmd.atMs,
+                            signature = sig,
+                        )
+                        eventChannel.send(SwarmEvent.SourceStatusSigned(frame, now()))
+                    } else {
+                        FlashLog.w("SWARM", "source status not signed root=${cmd.root.hex.take(8)} (no signing key for the group)")
+                    }
+                }
+            }
             is SwarmCommand.PersistTombstone -> {
                 scope.launch(workerDispatcher) {
                     stateStore.putTombstone(cmd.tombstone)

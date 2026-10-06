@@ -273,6 +273,21 @@ class SimNode(
                         processCommands(nextCmds)
                     }
                 }
+                is SwarmCommand.SignSourceStatus -> {
+                    val frame = SwarmFrame.SourceStatus(
+                        groupId = cmd.groupId,
+                        root = cmd.root,
+                        originId = cmd.originId,
+                        messageId = cmd.messageId,
+                        status = cmd.status,
+                        reason = cmd.reason,
+                        atMs = cmd.atMs,
+                        signature = ByteArray(64) { 1 },
+                    )
+                    queue.schedule(0L) {
+                        processCommands(engine.handle(SwarmEvent.SourceStatusSigned(frame, clock.nowMs)))
+                    }
+                }
                 is SwarmCommand.PersistTombstone -> {
                     store.putTombstone(cmd.tombstone)
                 }

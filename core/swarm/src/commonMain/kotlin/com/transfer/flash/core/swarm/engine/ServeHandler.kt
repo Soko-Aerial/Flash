@@ -1,5 +1,7 @@
 package com.transfer.flash.core.swarm.engine
 
+import com.transfer.flash.core.swarm.codec.SourceReason
+import com.transfer.flash.core.swarm.codec.SourceState
 import com.transfer.flash.core.swarm.codec.SwarmFrame
 import com.transfer.flash.core.swarm.model.PieceReadStatus
 import com.transfer.flash.core.swarm.model.SwarmLifecycleState
@@ -159,8 +161,37 @@ internal class ServeHandler(
                         bytesDone = content.bytesDone,
                     )
                 )
-                if (content.role == SwarmRole.ORIGIN) {
+                // ERROR-109: the requester asked for this piece and must hear that it will not come, or it waits on a
+                // request nobody answers and asks again. A later request for another piece gets the same answer.
+                if (isPeerAllowed) {
+                    commands.add(
+                        SwarmCommand.Send(
+                            peerId = e.peerId,
+                            frame = SwarmFrame.Reject(
+                                groupId = content.groupId,
+                                root = content.root,
+                                reason = SwarmRejectReason.GONE,
+                                retryAfterMs = 0L,
+                                scopeAll = false,
+                                pieces = listOf(e.index),
+                            ),
+                        )
+                    )
+                }
+                if (content.role == SwarmRole.ORIGIN && !content.originSourceLost) {
                     content.originSourceLost = true
+                    // The first failed read tells every member, signed, so they stop waiting on this origin (once, not per piece).
+                    commands.add(
+                        SwarmCommand.SignSourceStatus(
+                            groupId = content.groupId,
+                            root = content.root,
+                            originId = content.originId,
+                            messageId = content.messageId,
+                            status = SourceState.LOST,
+                            reason = if (e.status == PieceReadStatus.CHANGED) SourceReason.CHANGED else SourceReason.DELETED,
+                            atMs = e.nowMs,
+                        )
+                    )
                 }
                 onSourceChanged(content)
             }
