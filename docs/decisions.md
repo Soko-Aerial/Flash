@@ -2076,6 +2076,8 @@ SC-02, MEAS-08. Do not describe groups of 20 as tested until they are.
 undesigned; per-sender keys or ownership transfer are requested; a group needs more than 64
 tombstones; MEAS-02 / PC6 (FO-05) is run and 32 is reconsidered.
 
+**Superseded in part by ADR-073 (2026-10-04):** the owner reversed the rejection of a group-wide shared secret ("Alternatives considered" above) on 2026-10-03/04 (decision D1). Under ADR-073 the secret is used only to join, to rotate and for an optional discovery beacon; the device key stays the identity and the signed roster stays. Everything else in this ADR stands. ADR-073 is PROPOSED until the owner accepts its text.
+
 ## ADR-045 — One connection planner decides who dials; modes will own the connection policy
 
 ### Date
@@ -3285,3 +3287,515 @@ or a peer leaving mid-request.
 
 ### Revisit when
 `GVID-01`…`GVID-07` are run, and after `MEAS-09`, `MEAS-05` and `MEAS-03` (floor value, CPU threshold, LOW-tier encoder instances).
+
+## ADR-067 — In-call extras: one additive `status` frame, a host-owned audio-output list, data saver, reactions and raise-hand
+
+### Decision (2026-10-02, UI-050f)
+1. **One new signaling frame, `FLASH_CALL action=status`**, carries what a participant's controls say: `mic`, `cam`, `hand`, `rv` (the sender
+   wants the other side's video) as optional `1`/`0` flags, and a one-shot reaction (`react` + `rseq`). A missing field means "not stated",
+   so an old client's silence and a new client's partial update read the same, and **an old client ignores the whole frame** (unknown actions
+   decode to null). Sent on every change and once when media connects; resent when signaling is restored. See `docs/protocol.md`.
+2. **State is kept in `CallStatusBook`**, one immutable value swapped by compare-and-set (no lock). A peer that never spoke reads as mic on,
+   camera on, hand down, wanting video: the call as it looked before this frame existed.
+3. **Reactions** (like / love / wow) are shown once per sequence number per sender and a sender is held to one per 400 ms on **both** ends
+   (the sender's limit stops a held button, the receiver's stops a client that ignores it). The list is capped at 8 and entries leave after 3.5 s.
+4. **Data saver.** 1:1: the user's device sends `rv=0`; the peer then sets `encoding.active=false` on its video sender (the same switch the
+   voice-priority governor uses, folded into `applyVideoConcession`), so nothing is received or decoded and audio is untouched. Group: purely
+   local; `CallHealthMonitor.dataSaver` makes the receive cap 0 and no frame is sent (the peers simply stop being asked).
+5. **Audio output list.** The host owns routing (ADR-025). `FlashCallAudioRoute` (earpiece, speaker, Bluetooth, wired) and the pure rule
+   `FlashCallAudioRouting.resolve` live in `core:calling` and are unit-tested; the Android `FlashCallAudioRouter` reports `routes` and takes an
+   explicit `setRoute`. A pick is honoured while the device exists and is forgotten when it goes (a call is never left silent on an unplugged
+   headset). The earpiece is pinned **only** on an explicit pick. The desktop reports no routes and keeps its speaker toggle.
+6. **Host features that need no wire change:** Android picture-in-picture (manifest `supportsPictureInPicture` + `configChanges`; auto-enter
+   from API 31, the More panel row from API 26), keep-screen-on during a live video call, and the proximity wake lock for a live voice call on
+   the earpiece (`FlashCallAudioRouting.screenOffAgainstEar`).
+7. **The shield claims only the pairing check** ("Verified": the device is in the paired list). It does not say "end-to-end".
+8. **A latent race fixed on the way:** `FlashCallSession` wrote its UI state with plain read-copy-write from the media thread in several places
+   (`applyVideoConcession`, connect, mute, camera, speaker); a concurrent status update could be lost (a test lost the peer's data-saver flag).
+   All now go through `updateState`/`_state.update`.
+
+### Context
+The owner asked for the call features that messaging apps have, in three groups (small UI, medium, Flash-specific). Items that need a native
+capability the project does not expose, or a device to be meaningful, are not built (below).
+
+### Alternatives considered
+- **One frame per feature** (`mute`, `hand`, `react`...). Rejected: four frames to version, order and test; the combined frame is idempotent.
+- **Reactions as chat messages.** Rejected: they are ephemeral, belong to the call, and must not enter history or the outbox.
+- **Data saver as a media-level `receive=false` on the receiver.** Not built: the webrtc-kmp surface exposes no receiver-side stop; stopping the
+  sender saves the bandwidth, which is the point.
+- **A stock Material bottom sheet for the panels.** Rejected by AGENTS section 34; the panels are custom (`FlashCallPanel`).
+- **Show an "end-to-end verified" shield.** Rejected: what is verified is the pairing; the wording stays at that.
+
+### Not built in this step (honest list)
+Torch and tap-to-zoom (no camera-control API in `webrtc-kmp`), noise-suppression toggle and background blur (need a native audio / video
+processing hook), promoting a 1:1 call to a group (a roster and signaling change, needs its own ADR), screen sharing (a capture source per
+platform, mainly desktop), sending a file or message from inside the call (a navigation decision: the call overlay covers the chat), the mirror
+toggle for **group** self tiles, and an LAN-versus-hotspot label (the app has no such datum; the chip says "Local network").
+
+### Consequences
+- A wire addition that older builds ignore; a build that does not know `status` shows no badges and receives no hand / reaction.
+- Everything is unit-tested and none of it is device-verified: `CALLX-01`...`CALLX-12` in `docs/testing/TEST-BACKLOG.md` (section 4r).
+- The link-quality thresholds (60 / 200 ms, 2 / 8 % loss) are a first guess for a LAN and are not measured.
+- Changing the activity's `configChanges` means the Activity is no longer recreated on a size change; Compose handles the new size itself.
+
+### Revisit when
+`CALLX-*` are run; a measurement of RTT and loss on LAN and hotspot (to set the link grades); when `webrtc-kmp` exposes camera controls or audio
+processing.
+
+## ADR-068 - One whole-file integrity check for every host; a failed check fails the transfer on both ends
+
+### Decision (2026-10-02, ERROR-098, audit finding FA-1)
+1. **One implementation.** `WholeFileVerifier.check(path, expectedSha256Hex)` in `core:transfer` (common code) streams the assembled file through
+   SHA-256 and returns `MATCH`, `MISMATCH` or `UNVERIFIABLE` (no path, no valid offered digest, unreadable file). The Android holder and the library
+   facade had private copies; the Windows desktop had none.
+2. **One completion path.** `RealFlashTransferRepository.onIncomingFileAssembled(transferId, path, expectedHex, chunksVerified)` is what every host calls
+   when the last chunk is in. `MATCH`: Completed. `UNVERIFIABLE`: Completed and flagged, exactly as before (an absent digest must not fail a
+   good file). `MISMATCH`: the file is deleted, the confirmed-chunk set is forgotten (memory and `TransferStore.clearDoneChunks`), and the transfer is
+   **Failed** with a plain-language message.
+3. **Why Failed, not "Completed, unverified".** Both UIs derive the "Verified" label from `state == Completed`, so a Completed transfer that failed its
+   check would have been displayed as verified. The check was invisible to the user on Android as well.
+4. **The sender is told.** On `MISMATCH` the host cancels its `ReceivePipeline` session and replies `COMPLETE verified=false`. A sender that receives
+   `verified=false` marks its transfer Failed ("The other device reports the file arrived damaged...") and clears its confirmed chunks, so a retry
+   resends the whole file. `verified=true`, or no flag, behaves as before, so older peers are unaffected (they always send `true`).
+5. **Schema:** none. `TransferChunkDao.deleteChunks` is a new query on the existing table; `TransferStore.clearDoneChunks` has a no-op default so an
+   existing adapter still compiles.
+
+### Alternatives considered
+- **Turn on `ReceivePipeline.recheckWholeFileDigest`.** Rejected: it needs a digest provider per transfer and only sets the `verified` flag, which both
+  UIs ignore (point 3); the host still had to act on it.
+- **Keep Completed + an `errorMessage`.** Rejected (point 3).
+- **Keep the corrupt file for inspection.** Rejected: a retry would otherwise find a full-size file and a full done-set and finish "instantly".
+
+### Consequences
+- Hashing is blocking on the calling thread (as Android already did): a multi-GB file holds the receive-event collector for seconds. Not changed here;
+  moving it to a worker is a follow-up if `FA-01` / measurement shows a stall.
+- A mismatch on a retry loop is possible if the source file itself keeps changing; each attempt fails visibly instead of "verifying".
+- The desktop has `store = null` (no resume across restart), so there the done-set lives in memory only and is cleared in memory.
+- Not device-verified: `FA-01`.
+
+### Revisit when
+`FA-01` is run; or when FA-4 (persisting transfer identity) is done, which changes what a retry after a mismatch can do across a restart.
+
+## ADR-069 - Refuse a receive that cannot fit, word failures for people, and refuse an empty file visibly
+
+### Decision (2026-10-03, ERROR-099, audit findings FA-2, FA-3, FA-6)
+1. **Free-space gate (FA-2).** `RealFlashTransferRepository` takes an optional `freeSpaceBytes: () -> Long?` (the host passes
+   `File.usableSpace` of the receive directory, or null when the directory does not exist). `admitIncoming(transferId)` needs
+   `bytesTotal - bytesDone` free (a resumed transfer already holds the part it wrote). When it does not fit, the row becomes **Failed** with
+   "Not enough free space to receive this file. It needs X and only Y is available...", the host's pending session is dropped (local `ACTION_DECLINE`) and
+   the sender's parked send is cancelled (`ACTION_CANCEL`). Android, desktop and the library facade call it as the first line of their `acceptOffer`, which
+   both the user's Accept and auto-accept reach. A null or throwing probe admits: an unknown amount is never a reason to refuse.
+2. **Typed wording (FA-3).** `TransferFailureText.friendly(rawReason, transferId)` maps the reasons the engine can produce (`source length mismatch`,
+   `source read failed`, `all channels failed`, `data channel closed`, `peer disconnected`, `ack drain timeout`, `cancelled by peer`) to one sentence each; anything
+   else becomes "The transfer stopped unexpectedly. Try again." The raw reason is logged under `TRANSFER` and never shown. Applied at the three
+   failure sites (dispatcher result, caught exception, `onIncomingFailed`). No new field on `FlashTransfer`: the sentence is the `errorMessage`.
+3. **Empty and unknown-size files (FA-6).** A size of 0 (or negative) from a picker can mean "empty" or "the provider did not say". `sendFile` now measures it by
+   streaming the source once. Measured > 0: the send goes ahead with that size. Measured 0: a **Failed** row "This file is empty (0 bytes)...". Unreadable: a Failed row
+   "The file could not be read...". The call still returns `FlashResult.Success`: callers (`MainActivity`, `DesktopShell`) read `getOrNull()` and ignore a Failure, so
+   the visible row (Transfers list, chat bubble) is the message. Before this the chunker's `require(totalBytes > 0)` threw inside the send job and the row stayed Queued.
+4. **Wire:** no change. `CANCEL` and `RESUME` already exist; the refusing receiver uses `CANCEL`.
+
+### Alternatives considered
+- **Refuse at offer time, before the user is asked.** Rejected: the user may free space and accept; refusing earlier would cancel the sender for them. The check is
+  repeated at the moment of accept, which is when the space is needed.
+- **A typed `FlashTransferFailure` enum on the model.** Deferred: no UI branches on the kind yet (a Retry button is not built). Adding it later is additive.
+- **Return `FlashResult.Failure` for an empty file.** Rejected: every caller drops it silently, so the user would see nothing.
+- **Pre-allocate the file to fail early.** Rejected here: different behaviour per filesystem and it hides the problem on resume.
+
+### Consequences
+- The sender of a refused offer sees its transfer cancelled by the other device, not the reason (the wire has no reason field). Adding one is a protocol
+  change and was not done.
+- `File.usableSpace` is an estimate: another app can fill the disk after the check, in which case the write still fails and now reads as a generic failure.
+  Not checked against the official Android storage documentation or on a device (`FA-02`).
+- Measuring an unknown-size file reads it once more: only when the picker gave no size, so the normal path is unchanged.
+- A desktop receive directory the user has just changed is re-read on every accept (the provider is a lambda), so the check follows the setting.
+- Not device-verified: `FA-02`, `FA-03`, `FA-06`.
+
+### Revisit when
+`FA-02`/`FA-03`/`FA-06` are run; when a Retry action or a failure-reason field on the wire is built (then promote the sentence to a typed reason).
+
+## ADR-070 - The group swarm is an optional module, `:core:swarm`, that a host attaches
+
+### Status
+**PROPOSED 2026-10-04 (SW-0), awaiting the owner's acceptance of this text.** The owner chose a separate module on 2026-10-04 (plan O-6,
+"it should be a different module"). Nothing is built. Plan: `docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md` (section 2, phases SW-1 to SW-3
+and SW-8).
+
+### Decision (2026-10-04, plan sections 2 and 5.1)
+1. **A new Kotlin Multiplatform module `:core:swarm`** (Android + JVM, `explicitApi()`, package `com.transfer.flash.core.swarm`), published as
+   its own artifact `core-swarm`. It holds the sans-IO engine, the FSW1 codec (ADR-071), the manifest, the driver and four ports
+   (`SwarmTransport`, `SwarmGroupContext`, `PieceStorage`, `SwarmStateStore`; plan 5.2).
+2. **Dependency rules (plan 2.5, enforced by a `LayeringTest` in SW-3):**
+   - `:core:swarm` may depend on `:core:common`, `:core:transfer` (the `FlashTransfer` model and `Sha256`) and kotlinx-coroutines (driver only).
+   - It must not depend on `:core:network`, `:core:messaging`, `:core:persistence`, `:core:engine`, `:core:calling`, `:core:ptt`, any `ui:*`
+     module, or any platform API in `commonMain`.
+   - No lower module (`common`, `network`, `transfer`, `messaging`, `persistence`, `discovery`, `security`) imports it.
+3. **`:core:engine` depends on it with `api` and wires it in one place**, `SwarmHostBinding`, the way it carries `:core:ptt` (ADR-058). Nothing
+   runs until the host calls `attachSwarm(config)`. `Flash.create` does not attach.
+4. **The lower layers get two generic seams that never name the swarm (SW-2):**
+   - a `caps` field in the WebSocket HELLO, exposed as `FlashDevice.features: Set<String>`. With an empty set the HELLO bytes are unchanged
+     (golden test);
+   - a `MagicFrameRouter` in `:core:engine` that routes binary frames by their 4-byte magic after decryption. `FSW1` is always recognised, and
+     dropped when no handler is attached, so a stray frame never reaches the transfer pipeline.
+5. **Wire gate.** A device puts `sw1` into `caps` only while the swarm is attached. No device sends an FSW1 frame to a peer whose HELLO lacked
+   `sw1`.
+6. **Fallback.** The shared group sender (`GroupFileSender`, SW-1) uses today's per-member push for every member without `sw1`, for everyone
+   when the swarm is not attached, for legacy `g-` groups (O-4), for empty files (FA-6) and for files above the piece limit (ADR-071).
+7. **Default.** The Flash app keeps the swarm switched off until SW-12 shows `SWM-09`..`SWM-15` PASS on at least three devices, one of them
+   Windows (O-8).
+
+### Alternatives considered
+- **Inside the transport (`:core:network`):** rejected. Membership lives in `:core:messaging`, which depends on the network, so this creates
+  a cycle. It would also put a new, complex policy inside the device-verified transport that carries chat and calls, and a transport that
+  owns sockets and real time cannot be simulated on a virtual clock (plan 2.1).
+- **A package inside `:core:transfer`:** rejected. It would ship to every transfer consumer, it needs group context the 1:1 engine does not
+  have, and it invites shortcuts into the device-verified 1:1 path (plan 2.2).
+- **`compileOnly`, like calling (ADR-033):** not chosen. Calling needs it for WebRTC native libraries and permissions; the swarm is pure Kotlin
+  with neither. `compileOnly` throws `NoClassDefFoundError` on any path that names a swarm type when the jar is missing, and R8 already strips an
+  unused swarm from an app. It stays available if the owner wants consumers not to download the jar at all.
+- **One HELLO field per capability** (as `ping` and `gv` are today): rejected for new modules. Every optional module would touch the transport
+  again.
+- **A third-party torrent engine:** anitorrent is GPL-3 and rejected; Ketch (Apache-2.0) is a reference only (design section 11, D13).
+
+### Consequences
+- 15 published modules instead of 14. `jitpack.yml` and the README change in SW-8, and the release dry-run is repeated.
+- The HELLO gains one optional field, once. Later optional modules add tokens, not fields.
+- A swarm bug can break only group files. Switching the swarm off restores today's behaviour (plan R9).
+- Not device-verified: nothing exists yet.
+
+### Revisit when
+The owner wants `compileOnly`; a Rust or other non-Kotlin core is decided (D7); a second consumer of the magic router or of `caps` appears.
+
+## ADR-071 - Swarm wire FSW1, the content id and the signed announcement
+
+### Status
+**PROPOSED 2026-10-04 (SW-0), awaiting the owner's acceptance.** The byte layout is in `docs/protocol.md` "Group swarm wire FSW1 v1". The golden
+vectors are written in SW-3, by hand, before the codec.
+
+### Decision (2026-10-04, plan 5.3)
+1. **Envelope:** magic `"FSW1"`, `u8 version = 1`, `u8 type`, `u16 flags` (0 in v1; receivers ignore unknown bits), `u32 bodyLength`, then the
+   body. Little-endian, like framing v2. One FSW1 frame per WebSocket binary message, and `bodyLength` must match the rest of the message
+   exactly.
+2. **Carriage:** binary WebSocket frames through the same `SecureBinaryFrameCodec` layer as transfer chunks. The magic is checked after
+   decryption. Between peers without a pairing session key the frames are protected by TLS only (as transfer chunks to vouched members are
+   today; ADR-073 lists it as a limit). FSW1 v1 rides the WebSocket session only, never Android's TCP data channels, whose frames are capped
+   at 512 KiB (`DataChannelFraming.MAX_FRAME_BYTES` [code, 2026-10-04]) and could not carry a 1 MiB piece.
+3. **Twelve frame types:** `SUMMARY`, `MANIFEST_GET`, `MANIFEST_PART`, `HAVE`, `HAVE_ALL`, `REQUEST`, `PIECE`, `REJECT`, `CANCEL`, `CANCEL_ACK`,
+   `SOURCE_STATUS`, `UNREQUEST`. **Every frame except `SUMMARY` names both its group id and its root**, so the gate is checked per group and a
+   cross-group answer is never ambiguous (INV-3, INV-8). `SUMMARY` names its group once.
+4. **Version rule:** an unknown `type` is ignored and not counted as malformed. An unknown envelope `version` is answered with
+   `REJECT(UNSUPPORTED)` at most once per peer per 10 minutes.
+5. **Limits** (anything over a limit is dropped and counted as malformed):
+   - piece size: a power of two from 64 KiB to 1 MiB, and not larger than the largest binary frame the session carries (SW-3 reads it);
+   - at most 16,384 pieces, so a file of at most 16 GiB is swarmed, and the manifest is at most 524,341 bytes in at most 9 fragments of 64 KiB;
+   - at most 64 indexes in a `REQUEST`, `REJECT` or `UNREQUEST`;
+   - at most one `HAVE` per second per peer per root;
+   - group id at most 64 bytes, device and message ids at most 128 bytes, a signature at most 128 bytes;
+   - three malformed FSW1 frames from one peer within a minute: ignore that peer's FSW1 frames for 10 minutes. **Never drop the session for
+     this**, because it also carries chat and calls.
+6. **The content id:** `root = SHA-256(manifest bytes)`, and the manifest bytes are `"FSWM" ‖ u8 version ‖ u32 pieceSize ‖ u64 totalSize ‖
+   whole-file SHA-256 ‖ u32 pieceCount ‖ pieceCount × piece SHA-256`. The file name is not part of the root; the same bytes under another name
+   are the same content. The origin picks the piece size with `PieceMath.choosePieceSize` (SW-3), the smallest allowed size that needs at most
+   16,384 pieces.
+7. **Not swarmed:** empty files (FA-6 keeps its visible Failed row through the push path) and files that would need more than 16,384 pieces.
+8. **The announcement** is today's `FLASH_GMEDIA` frame with four optional fields: `root`, `pieceSize`, `swarm=1` and `rootSig`. `rootSig` is the
+   origin's ECDSA P-256 / SHA-256 signature over the statement `flash-swarm-v1/announce` (group id, message id, origin id, root, size, file
+   name, MIME type, sent-at), encoded with the v2 group canonical rules. The origin sends these fields only to members whose HELLO had `sw1`;
+   every other member gets today's frame, unchanged, followed by today's push.
+9. **Domain separation.** Every swarm statement has its own tag (`flash-swarm-v1/announce`, `/cancel`, `/source`), so no chat, charter or cert
+   signature can verify as a swarm statement, nor the reverse (tested in SW-8).
+10. **Old decoders (SW-0 task 4, answered from the code 2026-10-04).** `FlashTextFraming.parseFields` builds a key-to-value map and
+    `GroupFrameCodec.decode` reads only the keys it names, so an older build ignores the four new fields. It would then wait for a FILE_START
+    that the swarm never sends, which is why rule 8 sends the fields only to `sw1` peers.
+
+### Alternatives considered
+- **New types inside the `FLSH` chunk framing:** rejected. `ChunkFrame` is the device-verified 1:1 pipeline, and the plan forbids changing it.
+- **Text frames for the control messages:** rejected. Pieces are binary anyway; one binary codec with one table of limits is simpler to fuzz.
+- **kotlinx-serialization or protobuf:** rejected. A new dependency, and the project writes its binary codecs by hand (`ChunkFrame`, `PTT1`).
+- **The file name inside the root:** rejected. It would make the same bytes under another name different content (design section 3).
+- **A Merkle tree over the pieces** (as BitTorrent v2 uses): not chosen. A flat list is at most 512 KiB at the limit and simpler. A tree pays
+  off for much larger files, where the list itself becomes a burden.
+- **Root-only frames (no group id):** rejected. With two shared groups the gate would have to guess which group a request belongs to.
+- **An unsigned announcement trusted through TLS:** rejected. Catch-up (ADR-059) relays announcements, and a cancel must verify against the
+  origin even after it has left.
+
+### Consequences
+- One new binary magic, distinct from `FLSH`, `PTT1` and `FSEC`.
+- The root depends on the piece size, so the same file announced by two origins is one content only when both chose the same piece size.
+  `choosePieceSize` is deterministic, so this holds while both use the same `maxPiece`.
+- Files above 16 GiB keep today's push.
+
+### Revisit when
+SW-3 finds the largest binary frame below 64 KiB (the floor changes); files above 16 GiB need the swarm; a second FSW version is needed.
+
+## ADR-072 - Swarm reliability: the origin offer policy, wait reasons, cancel everywhere and retention
+
+### Status
+**PROPOSED 2026-10-04 (SW-0), awaiting the owner's acceptance.** The owner set the goal on 2026-10-04: "I want the swarm because I don't want
+sending a file to fail", a half-sent file must finish among the members and continue when the sender returns, and the sender's cancel must
+stop it everywhere. O-1 to O-4, O-7 to O-10 and D9 to D12 were accepted as recommended the same day.
+
+### Decision (2026-10-04, plan sections 3, 4, 5.6 and 8.1)
+1. **The contract is R1 to R9** (plan section 3) and the invariants INV-1 to INV-12 (plan 5.6). Each has a test.
+2. **Rule A, every receiver:** pull the rarest pieces first with a random tie-break, and ask the origin only for pieces no other connected
+   member holds.
+3. **Rule B, the origin offer policy (mandatory, INV-7):** the origin serves pieces that no member holds and nobody is fetching before anything
+   else, and answers a request for an already-copied piece `REJECT(ELSEWHERE)` while such work waits. Every byte the origin uploads is a byte
+   the group did not have.
+4. **Waiting is never failing.** Seven wait reasons (`WAITING_FOR_SENDER`, `_HOLDERS`, `_NETWORK`, `_SPACE`, `_STORAGE`, `_SYSTEM`, `_SESSION`),
+   each moved on by named events, not by timers (INV-9). The row shows `Queued` plus a new additive field `FlashTransfer.waitReason`; no new
+   `FlashTransferState` value.
+5. **Cancel everywhere.** Only the origin's Cancel, or its Delete for everyone, creates a tombstone: group id, root, origin id, message id,
+   reason (`USER` / `DELETED`), time, signed with `flash-swarm-v1/cancel`. A member applies it only if it verifies against the origin key
+   stored with the announcement (INV-6). It is forwarded until `CANCEL_ACK`, carried in every `SUMMARY`, and applied before any request
+   (INV-5).
+   - **A tombstone cancels one announcement,** the one whose `(groupId, messageId)` it names. The content (group, root) stops being requested
+     and served only when every announcement of it in that group is tombstoned. So a replayed old tombstone cannot cancel a later re-send of
+     the same file, and one origin's cancel never touches another member's announcement of the same bytes. (This sharpens INV-5 and plan 5.4's
+     tombstone key; the plan carries the note.)
+   - A receiver's own Cancel is local.
+   - **A system stop is never a cancel** (INV-10): Android's foreground-service timeout, battery saver and process death pause the row with
+     `WAITING_FOR_SYSTEM`. SW-2 splits the user stop from the system stop, because `FlashBackgroundService.onTimeout` cancels transfers today.
+6. **Finished copies after a cancel** stay with their receiver but are no longer served for that announcement (O-2).
+7. **The origin loses its file:** a signed `SOURCE_STATUS(LOST)`; not a cancel. Members keep exchanging what exists. If the sender picks the
+   same bytes again, the root matches and `RESTORED` resumes it (O-3). No staging copy is made.
+8. **Retention (O-1):** an unfinished download waits up to 7 days for missing pieces, and a finished copy stays available to others for 7 days;
+   tombstones are kept 14 days.
+9. **The only terminal ends** are: complete; cancelled; retention expired; the source lost with no holder left (E-19); the device removed from
+   the group (E-34); a whole-file mismatch that survives one re-fetch round (E-14, ADR-068 wording). There is no attempt cap.
+10. **Membership.** Every request is checked against the group gate at that moment (ADR-075, INV-3). An origin that left or was removed no
+    longer serves, but its cancel still counts (O-9).
+11. **Shared resources.** In ECO a device downloads but does not serve (D9). During a call the swarm drops to one serve slot and halves its
+    request windows. Downloading rows, and an origin that is the only holder of a needed piece, keep the foreground service; serving a finished
+    file does not, unless the device setting "keep available" is on.
+
+### Alternatives considered
+- **Holders keep serving after the origin cancels** (design 4.8): rejected by the owner (D10 answered: cancel everywhere).
+- **Deterministic striping** of pieces over receivers: rejected (design 4.4). It needs a global assignment and breaks under churn.
+- **Rarest-first without the origin offer policy:** rejected. In the half-sent case the members would hold the same pieces twice (R3).
+- **Timed retries with a cap:** rejected. They turn "the sender is offline" into a failure (R2).
+- **Deleting finished copies on cancel:** rejected (O-2). A delivered file is the receiver's; Delete for everyone stays the way to remove the
+  message.
+- **A staging copy of the source:** rejected (O-3). It doubles storage.
+- **Tombstones keyed by content alone:** rejected (rule 5). A replay would cancel later re-sends and other members' announcements.
+
+### Consequences
+- `FlashTransfer` gains one appended parameter: source-compatible, but already-compiled consumers must be rebuilt (minor version bump).
+- Honest limits the UI must state: pieces that exist nowhere, frozen devices (Transsion), the Android 15+ six-hour `dataSync` limit
+  ([developer.android.com/develop/background-work/services/fg-service-timeout](https://developer.android.com/develop/background-work/services/fg-service-timeout)),
+  retention, hotspot client isolation, and that members who join later do not get earlier files.
+- Whether 1:1 transfers should also pause on the service limit (O-7) is a separate, later change with its own ADR line.
+- Not device-verified: `SWM-09`..`SWM-29` are owed.
+
+### Revisit when
+`SWM-*` device results arrive; the retention defaults prove wrong in use; O-7 is built.
+
+## ADR-073 - Group membership by group id + secret (reverses ADR-044's rejection of a group-wide secret)
+
+### Status
+**PROPOSED 2026-10-04 (SW-0), awaiting the owner's acceptance of this text.** The owner reversed the rejection on 2026-10-03 and confirmed it on
+2026-10-04 (D1 accepted, D2 admin approves, "anyone in the group should receive regardless of paired state"). Track GM of the plan delivers it.
+No code before acceptance, and no ownership-transfer code at all (ERROR-089 is the owner's decision).
+
+### Context
+ADR-044 rejected a group-wide shared secret because it "authenticates someone in the group, not a device, so a removed member keeps access
+until the secret rotates". The objection is correct. So the secret never becomes the identity: it is the key to the door, and the device
+key stays the thing that is authenticated, listed and removed.
+
+### Decision (2026-10-04, design 1.2 to 1.7 as changed by plan 1.3, 2.6, 5.7 and O-11 to O-15)
+1. **The secret.** Each v2 group has a secret per epoch: 32 bytes from the platform's secure random, made by the app, never typed (D3). Epochs
+   start at 1 and grow by one per rotation.
+2. **It is used for three things only (O-13):** asking to join; rotation, which locks out a removed member and old invites; and the optional
+   beacon (GM-8b, not built unless the owner asks).
+3. **The device key is the identity (GINV-2).** The roster stays a set of admin-signed member certificates (ADR-044 V1/V2; admins are the owner
+   and co-owners, ADR-063). Traffic between roster members needs no proof of the secret: the gate (ADR-075) compares the live TLS key with the
+   key the certificate names. This replaces design 1.5 condition 1.
+4. **The invite is a trust root (GINV-3).** `flash://g/1/<base64url>` carries the group id, epoch, secret, group name, the inviter's device id
+   and key fingerprint, at most three address hints and the issue time (`docs/protocol.md` "Group membership v1"). Because the group id
+   already commits to the owner key (`deriveGroupId`), `checkCharter` gets a second accepted root: an invite this device accepted for exactly
+   that group id. Pairing with the owner stays a root. A bundle alone never makes a device accept a group it did not ask for.
+5. **Joining:**
+   1. The joiner accepts the invite and pre-installs the inviter's key as a vouch **scoped to that group**, so the first dial pins nothing by
+      trust-on-first-use (ripple 37).
+   2. The two devices run a three-message proof bound to both live TLS key fingerprints (HMAC-SHA-256 with
+      `K_auth = HKDF-SHA256(secret, "flash-gsa-v1" ‖ group id ‖ epoch)`; GINV-7).
+   3. The joiner sends a signed join request, which members forward to the admins.
+   4. An admin decides. Approval is an ordinary admin-signed member certificate, which existing vouching (ADR-044 V2) introduces to every
+      member, old builds included.
+6. **Join policy** (a signed group setting, ADR-074): `APPROVE` by default (D2), or `OPEN`. `OPEN` never auto-approves a key the group has
+   tombstoned (GINV-5). A full group (20) refuses.
+7. **Who may share an invite:** every member by default (O-12); a setting can restrict it to admins. It is advisory: whoever holds the link can
+   pass it on.
+8. **Rotation on every removal, without sealing.** The admin that signs a removal signs a rotation notice in the same transaction (GINV-4):
+   group id, new and previous epoch, a commitment `SHA-256("flash-gs-commit-v1" ‖ group id ‖ epoch ‖ secret)`, the removed ids, the reason, the
+   admin and a random rotation id. The notice holds no secret. The new secret moves only as a `GsSecret` frame inside a live TLS session, from
+   any member that holds it to a peer that passes `allows(CHAT)` at that moment and is not named as removed in any stored notice; the receiver
+   checks it against the commitment. Two concurrent rotations: the smaller rotation id wins, and the admin whose rotation lost rotates again. A
+   leave does not rotate by default; "Change group code" rotates on demand.
+   - **Why not sealing (design 1.6):** every member holds the secret anyway, so sealing only hides it from members that already have it. Sealing
+     to each member's identity key needs key agreement, and the Android identity key is `SIGN|VERIFY` only (`docs/security.md` section 2);
+     whether a Keystore key can agree keys below API 31 was not verified (`PURPOSE_AGREE_KEY` is API 31+, Flash's minSdk is 24). Sealing would
+     need a second, per-device agreement key.
+9. **Existing v2 groups** get a secret when an admin device on the new build opens them (O-11, GM-7). Legacy `g-` groups never do (D5).
+10. **History:** a new member gets the catch-up of today (O-15, ADR-059).
+11. **At rest:** the secret is stored per group and epoch in the chat database, which on Android is SQLCipher with an AndroidKeyStore-wrapped
+    key (`docs/security.md` section 1). The desktop's protection is checked in GM-2; if its database is not encrypted, the secret is wrapped with
+    the key that protects the desktop identity. It is excluded from backups and never logged (GINV-1).
+12. **The 1:1 world is untouched (GINV-8, D4):** a peer that is only a group member never becomes a 1:1 contact, a pairing, a push-to-talk
+    recipient or a 1:1 caller.
+13. **GINV-1 to GINV-8** (plan 5.7) are part of this decision.
+14. **Membership privacy (refinement made in SW-0).** A device that is asked to prove a group it does not hold, or an epoch it cannot verify,
+    answers with a random challenge and then a plain failure, so a stranger who knows a group id cannot learn who is in it. It says "stale" only
+    after a valid proof at an older epoch it still holds, or to an active roster member. No device acts on an epoch number it was not shown a
+    signed notice for.
+
+### What it does not provide (say so in the UI and docs)
+- No forward secrecy. A removed member keeps what it received, and a member that has not yet heard of a removal still sends to the removed
+  device (ADR-044's limit stands).
+- A leaked invite admits nobody on its own under `APPROVE`; under `OPEN` it admits whoever holds it until a removal and rotation.
+- File chunks and FSW1 pieces between peers that are not paired travel under TLS only: there is no pairing session key, so no `FSEC`
+  envelope, and no group session key is planned.
+- A lying admin can approve a key it controls, as a lying owner can vouch one under ADR-044.
+
+### Alternatives considered
+- **Keep pairing with the owner as the only root (ADR-044):** rejected by the owner.
+- **The secret as the identity** (anyone who proves it is a member): rejected. It is ADR-044's objection: no roster, no removal.
+- **A per-session proof for all group traffic (design 1.5):** rejected (O-13). It stops no attacker that the roster check misses, and it adds a
+  way for working chat and calls to go silent.
+- **A sealed `RekeyBundle` per member (design 1.6):** rejected, rule 8.
+- **TLS 1.3 external PSK:** not chosen. Support in JSSE on Android and the desktop JVM was not found.
+- **A short typed code with a PAKE:** rejected (D3).
+- **MLS (RFC 9420) or sender keys:** out of scope; far larger work.
+- **A new `GROUP` pin source (design 1.2):** not chosen. The group-scoped vouch reuses `VouchRules` and its conflict rules with no network
+  change (GM-4).
+
+### Consequences
+- `checkCharter` has two roots; the refusal test "no invite and an unpaired owner" is mandatory (GM-4).
+- One schema step adds `group_secret`, `group_invite` and `group_join_request` (shared with SW-6 and FA-4).
+- A new text-frame prefix `FLASH_GMEM` and the `gs1` token in `caps`. Old builds ignore both.
+- `PinSource.VOUCHED` is documented as "or named by an invite this device accepted for that group".
+- Not device-verified: `GSEC-*`, `GSET-*` and `GMB-01`..`GMB-14` are owed.
+
+### Revisit when
+The owner decides what happens when an owner is gone (ERROR-089, "D then A"); typed codes are wanted (then a PAKE); per-sender keys or forward
+secrecy are wanted; the device checks fail.
+
+## ADR-074 - Group settings: signed settings shared by the group, and preferences that never leave the device
+
+### Status
+**PROPOSED 2026-10-04 (SW-0), awaiting the owner's acceptance.** Design section 2.1; built in GM-9.
+
+### Decision (2026-10-04)
+1. **Two scopes, never mixed.**
+2. **Signed settings** (`GroupSettings`):
+   - fields: group id, `version` (grows by one per change), `joinPolicy` (`APPROVE` / `OPEN`), `inviteSharers` (`ALL` / `ADMINS`), `maxMembers`
+     (at most 20), `swarmServing` (on / off), `membersMayAdd` (on / off), `opId`, signer and signature over `flash-gset-v1` (v2 group canonical
+     rules);
+   - only an admin (owner or co-owner, ADR-063) signs them;
+   - the highest valid `version` wins; on a tie, the smaller `opId`;
+   - they travel as extra keys in the roster bundle, which old builds ignore (ADR-071 rule 10).
+3. **Defaults when a group has no settings object:** `APPROVE`, `ALL`, 20, serving on, `membersMayAdd` off. Until GM-9, the members sheet hides
+   "Add members" from devices that are not admins (it fails silently for them today).
+4. **The group name is not a setting in v1.** It is part of the owner-signed charter, and a known group's charter must equal the stored one
+   (bundle rule 3 in `docs/protocol.md`), so renaming needs its own decision.
+5. **Device-local preferences:** serve files to this group; serve only on Wi-Fi; a battery threshold; how long to keep a finished file
+   available; auto-accept size; mute. They never appear in any frame.
+6. **Who reads what:** the join flow reads `joinPolicy` and `inviteSharers`; the gate reads `swarmServing` and the local serve preference
+   (ADR-075 rule 4); `addMembers` reads `membersMayAdd`.
+7. **A setting only ever restricts.** No setting grants what the gate refuses.
+
+### Alternatives considered
+- **Local preferences only:** rejected. A join policy that each device holds differently cannot be enforced.
+- **Last writer wins by timestamp:** rejected. Clocks differ between devices; `(version, opId)` is the membership log's rule already.
+- **The settings inside the charter:** rejected. The charter cannot change (rule 4).
+- **One signature per field:** rejected. More bytes and no gain.
+
+### Consequences
+- One more signed object per group. A forged or older update is dropped, and two admins who change settings at once converge.
+- Not device-verified: `GSET-01`..`GSET-03` are owed.
+
+### Revisit when
+The owner wants more settings (history for new members after O-15, renaming, a member limit above 20 after FO-05).
+
+## ADR-075 - The group gate: one predicate for all v2 group traffic, read for every frame
+
+### Status
+**PROPOSED 2026-10-04 (SW-0), awaiting the owner's acceptance.** Built in GM-5, the first code phase; SW-8 depends on it.
+
+### Decision (2026-10-04, plan 5.7)
+1. **`GroupGate`** in `:core:messaging` (package `com.transfer.flash.core.messaging.group`) with `allows(groupId, peerId, kind)`,
+   `isMember(groupId, deviceId)` and `changes: Flow<String>`. The kinds are `ROSTER`, `CHAT`, `CALL`, `FILE_SEND`, `FILE_RECEIVE` and
+   `FILE_SERVE`.
+2. **The rule for a v2 group (`g2-`).** `allows` is true only when:
+   1. this device's own roster row is active;
+   2. the peer's roster row is active;
+   3. the peer is paired with this device, **or** the key of the peer's live TLS session equals the key its roster certificate names. How the
+      certificate came to exist does not matter: the owner after pairing, an admin after a join with the secret, or a vouch;
+   4. for `FILE_SERVE` only: the group's `swarmServing` and the device's "serve files to this group" are both on (both default to on).
+3. **`isMember`** is rules 1 and 2, plus "the roster names a key for the peer, or it is paired" (today's `isGroupCallMember`). It needs no live
+   session, and decides whom to dial and invite.
+4. **Legacy groups (`g-`)** keep today's rule: paired and active (D5).
+5. **What the four predicates of today become:**
+
+   | Today | Becomes | Behaviour change |
+   |---|---|---|
+   | `isActiveGroupMember` (text, receipts, reads, deletes, typing, sync) | `allows(CHAT)` | None |
+   | `isGroupCallPeer` | `allows(CALL)` | None |
+   | `isGroupCallMember` | `isMember` | None |
+   | `isActiveTrustedMember` on a v2 group (`GroupMedia` receive, `beginGroupAttachment`) | `allows(FILE_RECEIVE)` / `allows(FILE_SEND)` | **Members not paired with the sender now receive and send files** |
+   | the recipient filter in `sendGroupAttachment` | `isMember` | Same as above |
+   | `onBundle` | not gated by `allows` | None: a bundle is believed for its signatures, not for who relayed it |
+   | the swarm's `isPeerAllowed` (SW-8) | `allows(FILE_SERVE)` to serve, `allows(FILE_RECEIVE)` to fetch | New |
+
+6. **Per frame, never per session (GINV-6).** `allows` is read for every inbound frame and request and for every send. No cached answer outlives
+   a `changes` event. On `changes`, the call layer re-checks `allows(CALL)` for each live leg of that group and drops the legs that fail, which
+   closes the "a call leg already established is not re-checked after a removal" limit (ripple 46).
+7. **The 1:1 world is unchanged (GINV-8):** `isTrustedPeer` keeps gating 1:1 chat, 1:1 calls, push-to-talk and pairing.
+
+### Alternatives considered
+- **Keep four predicates:** rejected. They have already drifted, and one of them requires pairing.
+- **A gate in the network layer:** rejected. The network does not know groups.
+- **Decide once per session:** rejected. A removal must take effect on the next frame; ERROR-088 showed what a check made at session start
+  misses.
+- **A separate swarm gate:** rejected. Two sources of truth for one question.
+
+### Consequences
+- Chat and calls behave as before; GM-5 first pins today's behaviour in a table test over the four predicates.
+- Files change: members that are not paired with the sender send and receive them through today's push, under TLS only (ADR-073). This
+  lifts `docs/security.md` section 9's "vouched members get no files" when GM-5 lands.
+- Call legs are now dropped when a member is removed mid-call (new behaviour, device check `GSEC-08`).
+- Not device-verified: `GMB-*` and `GSEC-08` are owed.
+
+### Revisit when
+The owner decides on ownership loss (ERROR-089); a group kind other than `g-` and `g2-` appears; device checks fail.
+
+## ADR-076 - Group secret rotation on member removal, manual code change, and voluntary leave behavior
+
+### Status
+**DECIDED 2026-10-05 (GM-6).** Built and verified in `:core:messaging`.
+
+### Decision
+1. **Removal = tombstone + rotation in one transaction (GINV-4):**
+   - When an owner or admin removes a member, it creates an authorized tombstone certificate and generates a rotation notice (`GroupRotation`) with `reason = REMOVAL` and `removedIds` containing the removed member ID in a single atomic database operation.
+   - The rotation notice is signed by the admin/owner over `"flash-grot-v1"` and carries SHA-256 commitment `GroupSecretCommit.ofHex(groupId, newEpoch, newSecret)`, `adminId`, and a random 16-byte hex `rotationId`.
+   - On startup, `SignedGroups.recoverUnrotatedTombstones()` checks if any tombstone authored by the local device lacks a corresponding rotation notice signed by the local device; if so, it issues a rotation covering the unrotated removals.
+2. **Secret Handover (GINV-1, GINV-4, SW-0):**
+   - Group secrets NEVER leave the device unencrypted, and NEVER appear in bundles, notices, tombstones, or logs.
+   - A member holding a rotation notice for `newEpoch` whose current secret epoch is older sends `GsSecretRequest(groupId, localDeviceId, newEpoch)`.
+   - A responder validates `groupGate.allows(groupId, peerId, GroupTraffic.CHAT)` **at that exact moment**, and verifies the requesting peer is NOT in `removedIds` of any rotation notice it holds.
+   - The responder replies with `GsSecret`. The receiver verifies `GroupSecretCommit.matchesHex(commit, groupId, epoch, secret)` before storing with `source = HANDOVER`.
+3. **Concurrent Admin Rotations:**
+   - If two admins rotate concurrently at the same `newEpoch`, the rotation notice with the smaller `rotationId` (lexicographically) wins.
+   - The losing admin re-rotates at `newEpoch + 1`, listing its removals in `removedIds`, and broadcasts the new rotation notice via `GsStale` to active group members so all admins and members converge without any removals lost.
+4. **"Change group code":**
+   - An explicit admin/owner action with `reason = MANUAL` that rotates the secret and advances the epoch without listing any removed IDs.
+   - Prior group invite codes and join links (bound to older epochs) are immediately invalidated, while existing roster members exchange the new secret via handover without interruption.
+5. **Voluntary leave behavior (Plan §7B task 7, row 42):**
+   - Voluntary leave does NOT rotate group secrets by default.
+   - Rationale: Voluntary departure is not an adversarial expulsion; avoiding automatic secret rotation on every ordinary leave prevents cascade broadcast storms, minimizes mobile radio and battery wake-ups, and prevents unnecessary churn in active groups.
+   - If an administrator desires forward secrecy after a member's departure or suspects compromise, the administrator can trigger "Change group code" or remove the member.
+
+### Consequences
+- Removed members cannot receive new group secrets or decrypt future group swarm transfers or join via old invites.
+- Prospective joiners holding expired/stale invites receive `GroupProofResult.STALE` and no rotation notice (`GsStale` is never sent to non-members).
+- All 7 test cases in `GroupRotationTest` are verified green.

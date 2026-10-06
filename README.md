@@ -365,6 +365,7 @@ Take the umbrella, or compose only the lightweight pieces:
 | `core-messaging` | Experimental — shipped (API may change) | Yes (transitive) | Chat repository; pulled in transitively by `core-engine`. Don't depend on it directly yet. |
 | `core-calling` | Experimental — shipped | No (but ~30 MB WebRTC) | Voice/video calls. Reachable via `Flash.create` (`engine.attachCalling(...)`) — but the umbrella declares it `compileOnly`, so **add it yourself**; see [Voice & video calls](#voice--video-calls). |
 | `core-ptt` | Experimental — shipped (API may change) | No | Push-to-talk floor, capture, playout and PTT wire codecs. Reachable via `Flash.create` (`engine.attachPtt(...)`) — see [Push-to-talk](#push-to-talk-ptt). |
+| `core-swarm` | Experimental — shipped (API may change) | No | Sans-IO group swarm file transfer engine, piece math, manifest builder/codec, and FSW1 wire frames. Reachable via `FlashEngine.attachSwarm(...)` — pulled in transitively by `core-engine`. |
 | `ui-theme` | Experimental — shipped | No | The Flash design system (colors, typography, motion, icons) for Compose. |
 | `ui-platform-shims` | Experimental — shipped | No | Platform seams (back handling, clipboard, file picking, permissions, image decode, audio playback, voice capture) that `ui-chat` compiles against. Transitive — depend on it only if you are reimplementing the chat UI. |
 | `ui-chat` | Experimental — shipped | No | The chat list / conversation / transfers / settings UI. Stateless; add `core-messaging` for its state types. |

@@ -609,3 +609,112 @@ Recomposes only when the warning or the cap changes (at most once per stats samp
 ### Known limitations
 - The CPU threshold (40 % of all cores for 30 s) is provisional until G0 measures a real call.
 - Desktop has no thermal signal; only CPU (and software decoding on a non-HIGH tier) can warn there.
+
+---
+
+## UI-050e — In-call control dock: icons, state and motion (2026-10-02)
+
+**Status:** IMPLEMENTED (unit-tested, rendered in a Skia scene on the desktop JVM; not device-verified, `CALLDOCK-01`...`CALLDOCK-05`).
+
+### Purpose
+The owner found the in-call icons unrepresentative. Checked against the code, they were: the Mute button drew a crossed-out **notification bell**
+(`flash_ic_mute`, also the chat list's "muted conversation" glyph), the camera toggle was a still-photo camera that never changed, the flip button
+did not read as a flip, hang-up was the accept handset with a slash ("call blocked"), and every toggle changed only tint, with the *muted* state
+in the accent colour that elsewhere means *on*. There were no labels and the accessibility text never followed the state.
+
+### Approaches considered
+1. Keep the glyphs and only change colours. Rejected: the wrong symbol stays wrong.
+2. Swap in Material Symbols. Rejected: AGENTS.md section 34 (no stock Material glyphs) and UI-002.
+3. **Chosen:** new Flash-stroke glyphs (24 dp viewport, 2 dp round strokes), a glyph per state, a one-word label under every control, and a per-control
+   motion signature that exists only at the HIGH tier.
+
+### Icons
+| Control | On / default | Off / alternate |
+|---|---|---|
+| Microphone | `flash_ic_microphone` | `flash_ic_mic_off` (capsule broken by a slash) |
+| Video | `flash_ic_video_call` (`FlashIcons.Video`) | `flash_ic_video_off` |
+| Flip camera | `flash_ic_camera_flip` (two chasing arrows around a lens, 180-degree symmetric) | n/a |
+| Audio route | `flash_ic_speaker` | `flash_ic_earpiece` (phone) |
+| End / decline | `flash_ic_hangup` (the accept handset turned onto its back via a `<group rotation="135">`) | n/a |
+| Accept | `flash_ic_call_accept` (unchanged) | n/a |
+The bell is now `FlashIcons.NotificationOff` (was `Mute`); the group-video strip's muted-participant badge uses `MicOff`. The geometry of
+mic-off / video-off is the usual "shape broken by a diagonal" construction and was drawn here, not imported.
+
+### State language
+Resting control: subtle surface, primary glyph. Control in its **emphasised** state (muted mic, camera off, speaker on): solid inverted surface
+(`textPrimary` fill, `backgroundApp` glyph). The glyph also changes, so state never depends on colour alone. Flip is dimmed (and disabled for
+TalkBack) while the camera is off instead of vanishing, so the row does not jump. Labels show the **state** ("Mic on / Muted", "Video on / Video off",
+"Speaker / Earpiece", "Flip", "End"); the TalkBack description is the **action** ("Mute microphone", "Turn camera on", "Switch to earpiece").
+The label is hidden from TalkBack so the button is not read twice. Audio calls show Mic, Route, End; video calls show Mic, Video, Flip, Route, End.
+
+### Motion (by performance tier)
+`FlashPerformanceMode` collapses to two UI behaviours (ADR-036 / `FlashPerformanceMode` KDoc): **HIGH animates; MEDIUM and LOW both set
+`reduceMotion` and `minimalChrome`.** This work follows that policy rather than inventing a third level.
+
+| | HIGH | MEDIUM / LOW |
+|---|---|---|
+| Mic, Route | new glyph pops in on a spring (scale 0.5 to overshoot to 1, fade in) | instant swap |
+| Video | eyelid: the new glyph opens vertically (scaleY 0.08 to 1) | instant swap |
+| Flip | a half turn per tap on a spring | no turn |
+| End / Decline | handset tips 28 degrees while pressed, springs back | static |
+| Ripple ring | on a toggle a ring leaves the button (signal out: mic live, camera on, speaker on) or collapses onto it (signal cut) | none |
+| Accept (incoming) | the handset swings like a ringing phone for ~0.6 s and a ripple leaves the button, then 1.4 s rest, repeating | static |
+| Colour change | 120 ms tween | snaps |
+| Dock surface | 85 % translucent over the video | opaque (`minimalChrome`) |
+| Haptic | Tick on toggles, Reject on end / decline, Confirm on accept | the same (haptics are independent of reduce-motion, `FlashHapticPolicy`) |
+Every animated value is read inside `graphicsLayer` / `drawBehind`, so a frame costs a render pass, never a recomposition (EXP-013). No loop runs
+outside the RINGING state. The first composition never animates.
+
+### Code
+`ui/callui/.../FlashCallControlDock.kt` (dock, `FlashCallDockButton`, `FlashIncomingCallButton`, `CallDockText`, pure motion math),
+`FlashCallScreen.kt` (uses them), `ui/theme/.../FlashIcons.kt` + `composeResources/drawable/flash_ic_*.xml`.
+Tests: `FlashCallControlDockTest` (wording and motion math), `FlashCallControlDockRenderTest` (HIGH is mid-animation 60 ms after a toggle and
+settled later; reduce-motion is already final; every state draws in light and dark; `FLASH_DOCK_SHOTS=<dir>` writes PNGs).
+
+### Known limitations
+- Not seen on a phone. The Skia render shows glyph legibility and states, not the feel of the springs.
+- MEDIUM could afford a cheap fade; it is deliberately identical to LOW until a measurement says otherwise (ERROR-033 reasoning).
+- Bluetooth / wired routes have no state in `FlashCallUiState`; the route control is still a two-way speaker / earpiece toggle (planned: audio-route picker).
+- The single-camera case (most desktops) still shows Flip when the camera is on; hiding it needs a capability flag from the call core.
+
+## UI-050f — In-call extras: audio output, More panel, badges, reactions, data saver (2026-10-02)
+
+**Status:** IMPLEMENTED (unit-tested; not device-verified, `CALLX-01`...`CALLX-12`). Wire and rules: ADR-067, `docs/protocol.md` ("Call status").
+
+### Purpose
+The owner's list after the dock redesign: features a call needs beyond mute / camera / speaker. This section records what was built and, as
+plainly, what was not.
+
+### Approaches considered
+1. A stock Material bottom sheet and Material icons. Rejected (AGENTS section 34).
+2. A second row of dock buttons for every feature. Rejected: six buttons already fill a 360 dp phone.
+3. **Chosen:** keep the dock to six slots (mic, video, flip, output, **More**, end), put the rest behind a custom panel, and show the other
+   end's state as small badges where the person already is.
+
+### What the screen does now
+| Feature | Where | Notes |
+|---|---|---|
+| Audio output | dock button; opens a list (earpiece, speaker, Bluetooth, wired) only when a headset is in play, otherwise it is the old speaker toggle | the button shows the output in force; a desktop reports no routes and keeps the toggle |
+| Remote badges | mic-off, camera-off, hand: under the name (1:1), next to the name on a group tile, on a group chip; the group status word also says "Camera off" / "Hand raised" | `FlashPeerBadges`; state is also in the semantics |
+| Remote camera off | 1:1: the avatar and "<name>'s camera is off" cover the video | the surface stays composed (renderer rule) |
+| More panel | reactions (like / love / wow), raise or lower hand, data saver, mirror my video, picture-in-picture (Android) | `FlashCallPanel`, custom; tap the dim, back, or the close glyph |
+| Reactions | float up from above the dock at HIGH; sit in a still stack of at most 3 at MEDIUM / LOW | live-region announcement per reaction |
+| Data saver | switch in More; a pill "Data saver on - Turn off" above the dock; 1:1 shows "Video paused"; the other side sees a note that it is on data saver | audio is untouched |
+| Mirror my video | switch in More; flips the self preview only, never what is sent | 1:1 only; group self tiles are not mirrored |
+| Picture-in-picture | Android: auto-enter on API 31+ for a live 1:1 video call, More row on API 26+; in PiP the screen draws the picture or the avatar only | `inPictureInPicture` |
+| Keep screen on / proximity | host: screen stays on during a live video call; a live voice call on the earpiece turns the screen off against the ear | `FlashCallProximity` |
+| Link chip + shield | "Local network" with a dot graded from RTT and loss; a "Verified" shield for a paired 1:1 peer | wording is deliberately limited to the pairing check |
+
+### Motion
+Same two behaviours as the dock: HIGH animates (the panel slides, reactions float and fade), MEDIUM / LOW show the same information still.
+
+### Not built (and why)
+Torch and tap-to-zoom, noise-suppression toggle, background blur, add-a-person to a 1:1 call, screen sharing, send a file or message from inside a
+call, a LAN-versus-hotspot label. They need a native capability the project does not expose, a roster / signaling design of their own, or a
+navigation decision. See ADR-067 "Not built".
+
+### Known limitations
+- Nothing here has been seen on a device. The link-quality thresholds are a first guess.
+- A 1:1 call and an Android activity with `configChanges` are new combinations; see `CALLX-06`.
+- Pre-API-31 phones enter picture-in-picture only from the More panel (no `onUserLeaveHint` hook was added).
+- A proximity wake lock is released after 2 hours as a safety net.

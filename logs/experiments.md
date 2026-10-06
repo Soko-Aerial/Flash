@@ -1,5 +1,70 @@
 # Experiments Log
 
+## EXP-020 — Multi-node sans-IO group swarm simulation scenarios (SIM-01 through SIM-20)
+
+### Date
+2026-10-04
+
+### Note
+**Simulator, not devices.** Deterministic virtual clock, in-memory heap storage with crash semantics, synthetic network topology.
+
+### Scenarios & Results
+| Scenario | Description | Result | Verification |
+|---|---|---|---|
+| SIM-01 | Origin + 9 receivers, equal rates, 1,000 pieces | PASSED | All complete, origin upload ≤ 1.5× total size, 0 corrupt writes |
+| SIM-02 | Half-sent: origin leaves at 50%, all converge on union, origin returns | PASSED | Receivers converge on union, wait with WAITING_FOR_SENDER, origin returns, all complete, origin upload ≤ 1.5× |
+| SIM-03 | Origin leaves at 0% | PASSED | Receivers wait with WAITING_FOR_SENDER, 0 REQUEST frames sent while waiting, all resume when origin returns |
+| SIM-04 | Origin and member with unique pieces leave; all return orders | PASSED | All complete after both return in every permutation |
+| SIM-05 | Churn: random leave/join every 1-10s for 10 nodes | PASSED | All complete after churn ends, no deadlock |
+| SIM-06 | Corrupt server flips bytes | PASSED | Corrupt server banned after 3 strikes, honest receiver completes, 0 corrupt writes |
+| SIM-07 | Member removed mid-transfer | PASSED | Inbound request rejected with NOT_MEMBER, stops and deletes partial, no pieces sent post-removal |
+| SIM-08 | Origin cancels while 2 nodes are offline | PASSED | Online nodes cancel in 1 RTT, offline nodes cancel on reconnect before sending any REQUEST |
+| SIM-09 | Non-origin forges cancel | PASSED | Forged cancel rejected, forger struck, transfer completes |
+| SIM-10 | Receiver crashes mid-download (unsynced writes dropped) | PASSED | Restarts from durable persisted bits, completes, never sends HAVE for lost piece |
+| SIM-11 | Origin crashes and restarts | PASSED | Origin recovers origin record, serves again after restart, members complete |
+| SIM-12 | Heterogeneous link rates (fast/slow mix) | PASSED | Swarm completes reliably with non-blocking rate adaptivity |
+| SIM-13 | ECO node (servingEnabled = false) | PASSED | Never serves (0 bytes uploaded), completes download successfully |
+| SIM-14 | Node without sw1 feature | PASSED | Receives 0 FSW1 frames, isolated from swarm transport |
+| SIM-15 | Cross-group isolation (G1 & G2) | PASSED | Requests for G1 content from G2-only member rejected with UNKNOWN |
+| SIM-16 | Request flood from one node | PASSED | Max active serve slots and requester byte budget hold, non-flooding peers protected |
+| SIM-17 | Scale: 20 nodes, 16,384 pieces | PASSED | Real CI run time bounded, memory efficient with streaming piece generation |
+| SIM-18 | Node runs out of space at 30%, then frees space | PASSED | Enters WAITING_FOR_SPACE, resumes and completes when space freed |
+| SIM-19 | Origin suspended by system (service timeout) | PASSED | No tombstone signed; members wait, transfer resumes on system resume |
+| SIM-20 | Origin source lost/changed | PASSED | Emits SOURCE_STATUS(LOST), members complete union, source re-pick restores serving |
+
+### Conclusion
+Pure sans-IO `SwarmEngine` obeys all 12 invariants (INV-1 through INV-12), origin offer policy (Rule B), rarest-first request scheduling (Rule A), and backoff/congestion control across all edge cases.
+
+
+## EXP-019 — Group video call size: owner-reported 3 and 4 devices, realistic limit 3 to 4 (owner observation, not a measurement)
+
+### Date
+2026-10-02
+
+### Devices
+Not recorded. The owner reported "three devices in a video call and even 4 devices" without naming phones, tiers or builds.
+
+### Setup
+Not recorded: build, network, band, router, camera state, call length.
+
+### Result
+- A group video call with 3 devices was run, and one with 4 devices.
+- The owner's conclusion: the realistic limit for a video call is 3 to 4 devices.
+- The code still allows 8 video and 12 voice participants (`FlashGroupCallLimits`, ADR-050). The per-tier budgets in
+  `docs/calling/GROUP-VIDEO-PLAN.md` are design estimates, not measurements.
+
+### Why it is plausible (design reasoning, not a result)
+A full mesh makes every device encode a copy for each viewer and decode one stream per sender, so the work per phone
+grows with the group. The plan's own conclusion is that only a relay peer (a small media server) removes that ceiling.
+
+### Conclusion
+Treat "3 to 4" as one owner's observation on unrecorded hardware. Do not hard-code it as a universal limit and do not
+lower the code cap on this evidence alone. GRP-10 in `docs/testing/TEST-BACKLOG.md` is the measurement that confirms or
+moves it (5, 6 and 8 devices, with fps, freezes, CPU, battery and temperature per tier).
+
+### Status
+OBSERVATION, device and build unknown. Open until GRP-10 runs.
+
 ## EXP-018 — `javax.sound.sampled` for desktop push-to-talk: formats, release behaviour, cold-open latency
 
 ### Date

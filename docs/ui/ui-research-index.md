@@ -90,8 +90,13 @@ Per-component docs use [`component-doc-template.md`](component-doc-template.md).
 | UI-050b | Group video grid (G1) | [calling-ui.md](calling-ui.md) | IMPLEMENTED (not device-verified) | UI-050 |
 | UI-050c | Group video focus: compact main tile + strip, tap to pin (G5) | [calling-ui.md](calling-ui.md) | IMPLEMENTED (2026-09-29; not device-verified) | UI-050b |
 | UI-050d | Group video health banner and "Show fewer" (G6) | [calling-ui.md](calling-ui.md) | IMPLEMENTED (2026-09-29; not device-verified) | UI-050c |
+| UI-050e | In-call control dock: state-aware icons, labels, tier-aware motion | [calling-ui.md](calling-ui.md) | IMPLEMENTED (2026-10-02; unit-tested + Skia render; device checks CALLDOCK-01..05 owed) | UI-050, UI-002, UI-037 |
+| UI-050f | In-call extras: audio output list, More panel, reactions, raise hand, data saver, badges, PiP, link / verified chip | [calling-ui.md](calling-ui.md) | IMPLEMENTED (2026-10-02; unit-tested; device checks CALLX-01..12 owed; ADR-067) | UI-050e |
 | UI-051 | Message Info sheet (who has read / received / is waiting) | [message-info.md](message-info.md) | IMPLEMENTED 2026-09-30, unit-tested, device check CGS-06 owed (chat/group sync audit, TASK-MSG-INFO-1/2) | UI-015, UI-029, UI-008 |
 | UI-052 | Group catch-up progress banner | [group-ui.md](group-ui.md) (UI-052 section) | IMPLEMENTED 2026-09-30, unit-tested, device check CGS-07 owed (TASK-GRP-SYNC-2) | UI-030, UI-029 |
+| UI-053 | Group settings sheet (signed group settings + this device's preferences, invite entry point) | [group-settings.md](group-settings.md) | IMPLEMENTED 2026-10-05 (ADR-074, GM-10; unit-tested; device checks GSET-01..03 owed) | UI-029, UI-001, UI-002 |
+| UI-054 | Group invite and join flow (invite creation/sharing, join dialog, pending status, admin join requests banner/sheet) | [group-invite-join.md](group-invite-join.md) | IMPLEMENTED 2026-10-05 (ADR-074, ADR-076, GM-10; unit-tested; device checks GMB-04, GMB-14 owed) | UI-053, UI-029, UI-001 |
+| UI-055 | Group file availability (swarm row states, wait reasons, "Delivered to k of n", "You can go offline now", Cancel for everyone) | [group-file-availability.md](group-file-availability.md) | IMPLEMENTED 2026-10-05 (ADR-072, SW-11) | UI-016, UI-047, UI-027 |
 
 > UI-046–UI-049 were added under Phase 8 App-Shell authority (`docs/ui-page-plan.md`, owner-approved plan).
 > All four research docs reached DESIGNED before their implementation per the research-first rule.

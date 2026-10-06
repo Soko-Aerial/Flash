@@ -278,6 +278,25 @@ FLASH_CALL action=gquery    callId=<uuid> groupId=<uuid> from=<id>
     sender, with no renegotiation.
   - All four are checked like every call frame: `from` must equal the transport peer, and the sender must be a
     participant of this call.
+- **Call status (ADR-067, 2026-10-02).** One frame, in 1:1 and group calls, for what a participant's controls say:
+
+  ```text
+  FLASH_CALL action=status callId=<uuid> from=<id> [mic=<1|0>] [cam=<1|0>] [hand=<1|0>] [rv=<1|0>] [react=<like|love|wow> rseq=<n>]
+  ```
+
+  - Every field is optional and a missing field means "not stated / unchanged". Anything other than `1` or `0` in a flag reads as not stated.
+    `mic=0` is muted; `cam=0` is camera off (omitted on an audio call); `hand=1` is a raised hand; `rv=0` means the sender wants no video
+    from the receiver (data saver). An unknown `react` name is not a reaction.
+  - **Compatibility.** An older client decodes the action as unknown and ignores the frame, so nothing breaks; it simply shows no badges.
+    A peer that never sent a status reads as mic on, camera on, hand down, wanting video.
+  - **Sent** on every change of a field, once when media connects (a mute pressed while connecting would otherwise be lost) and when signaling is
+    restored. In a group, to every participant who accepted (not to ones only invited); not sent in a call that has ended.
+  - **`rv` in 1:1:** the receiver of `rv=0` sets `encoding.active=false` on its video sender (no renegotiation, the camera track is untouched);
+    `rv=1` switches it back, subject to the voice-priority governor. In a group `rv` is not sent: data saver is local (nobody is asked for video).
+  - **Reactions** are a one-shot: `rseq` is wall-clock based and strictly growing per sender; a receiver shows each number once and ignores an
+    older or repeated one. A sender sends at most one per 400 ms and a receiver shows at most one per 400 ms per sender (a dropped one still
+    spends its number). Reactions are never stored.
+  - Checked like every call frame: `from` must equal the transport peer, and in a group the sender must be a participant with a live leg.
 - `FLASH_CALL` frame handling is **fail-closed on the sender**: the frame's `from` must equal the
   authenticated transport peer. For group frames the participant is resolved from that `from` and
   never from the peer the frame arrived through, because a group frame can be relayed along a mesh
@@ -313,6 +332,20 @@ FLASH_WS_HELLO version=2 deviceId=<id> name=<name> ping=<ms> gv=<group-protocol-
 - Both the dialer and the acceptor learn the peer's level from the peer's HELLO; it is exposed as
   `FlashDevice.groupProtocol` on the session's `peer`. A v2 group is created or extended only with devices whose level
   is at least `2`.
+
+#### Capability list and the `caps` HELLO field (ADR-070, SW-2, 2026-10-04)
+
+```text
+FLASH_WS_HELLO version=2 deviceId=<id> name=<name> ping=<ms> [gv=<level>] [caps=<token1,token2,...>]
+```
+
+- `caps` is a comma-separated list of ASCII feature tokens advertised by the sender, exposed as `FlashDevice.features: Set<String>`.
+- **Formatting and parsing:** Tokens match `[a-z0-9]{1,16}` and are sorted alphabetically. At most 32 tokens are retained; malformed tokens or tokens exceeding 32 are dropped. Parsing never throws.
+- **Omitted when empty:** To preserve exact byte equality for clients with no additional features, `caps` is completely omitted when the set is empty.
+- **Reserved / defined tokens:**
+  - `sw1`: Group swarm wire v1 support (`FSW1` binary frames).
+  - `gs1`: Group secret / invite membership support.
+- **Session lifetime:** Features apply to new sessions. Connected sessions retain the features negotiated during handshake until reconnected. Unknown tokens are ignored.
 
 ## Groups (Phase 1, 2026-09-08)
 
@@ -735,3 +768,338 @@ The production transfer protocol will run over TLS and will include:
 - `RESUME`
 
 The wire protocol must stay transport-independent so LAN and Wi-Fi Direct can use the same transfer engine.
+
+## Transfer completion and integrity (ADR-068, 2026-10-02)
+
+Chunk frames (`FLSH` framing v2) are documented in the KDoc of `core/transfer/.../chunked/ChunkFrame.kt`; this section records only the completion rule.
+
+- `FILE_START` carries the whole-file SHA-256 (`fileSha256Hex`) and every `CHUNK` carries its own SHA-256, verified by the receiver before the chunk is written.
+- When the receiver has every chunk it reads the assembled file back, hashes it and compares it with `fileSha256Hex`.
+  - **Match, or nothing to compare against:** it answers `COMPLETE verified=true` (unchanged wire behaviour).
+  - **Mismatch:** it deletes the file, forgets its confirmed chunks, drops the session and answers **`COMPLETE verified=false`**.
+- A sender that receives `COMPLETE verified=false` treats the transfer as failed, clears its confirmed chunks and resends everything on retry.
+  A sender that receives `verified=true` (every build before this change always did) completes as before.
+- Compatibility: an older receiver never sends `verified=false`, so a new sender behaves as before with it; an older sender ignores the flag
+  (it completes), so a damaged file between a new receiver and an old sender fails on the receiver only.
+
+## Group swarm wire FSW1 v1 (ADR-071, PROPOSED 2026-10-04, not implemented)
+
+**Status:** module `:core:swarm` and wire codec implemented in SW-3. Plan: `docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md`
+5.3; behaviour rules in ADR-072.
+
+### Golden vectors (SW-3)
+
+Verified by `SwarmGoldenVectorsTest` in `:core:swarm`. All multi-byte integers are little-endian.
+
+- **`HAVE_ALL` (`groupId="g1"`, `root="01"*32`):**
+  `465357310105000024000000020067310101010101010101010101010101010101010101010101010101010101010101`
+- **`PIECE` (`groupId="g1"`, `root="01"*32`, `index=7`, `bytes=0x0a,0x0b,0x0c`):**
+  `46535731010700002f00000002006731010101010101010101010101010101010101010101010101010101010101010107000000030000000a0b0c`
+- **`REQUEST` (`groupId="g1"`, `root="01"*32`, `pieces=[3, 8]`):**
+  `46535731010600002d000000020067310101010101010101010101010101010101010101010101010101010101010101020300000008000000`
+- **`HAVE` (`groupId="g1"`, `root="01"*32`, `ranges=[(0, 5), (10, 2)]`):**
+  `465357310104000036000000020067310101010101010101010101010101010101010101010101010101010101010101020000000000050000000a00000002000000`
+- **`REJECT` (`groupId="g1"`, `root="01"*32`, `reason=BUSY(1)`, `retryAfterMs=1500`, `scopeAll=false`, `pieces=[4]`):**
+  `46535731010800002f00000002006731010101010101010101010101010101010101010101010101010101010101010101dc050000000104000000`
+- **`CANCEL` (`groupId="g1"`, `root="01"*32`, `originId="devA"`, `messageId="msg1"`, `reason=USER(1)`, `cancelledAtMs=10000`, `sig=[0x30,0x06,0x02,0x01,0x01,0x02,0x01,0x02]`):**
+  `46535731010900004300000002006731010101010101010101010101010101010101010101010101010101010101010104006465764104006d73673101102700000000000008003006020101020102`
+- **`SOURCE_STATUS` (`groupId="g1"`, `root="01"*32`, `originId="devA"`, `messageId="msg1"`, `status=LOST(1)`, `reason=DELETED(1)`, `atMs=5000`, `sig=[0x01,0x02]`):**
+  `46535731010b00003e00000002006731010101010101010101010101010101010101010101010101010101010101010104006465764104006d7367310101881300000000000002000102`
+- **`SUMMARY` (`groupId="g1"`, `tombstones=[]`, `entries=[root="02"*32, state=PARTIAL(1), servingEnabled=true]`):**
+  `46535731010100002a000000020067310000010002020202020202020202020202020202020202020202020202020202020202020101`
+- **2-piece manifest canonical bytes (`version=1`, `pieceSize=65536`, `totalSize=100000`, `fileSha256="30"*32`, `pieces=["10"*32, "20"*32]`):**
+  `4653574d0100000100a08601000000000030303030303030303030303030303030303030303030303030303030303030300200000010101010101010101010101010101010101010101010101010101010101010102020202020202020202020202020202020202020202020202020202020202020`
+
+### Envelope
+
+```text
+magic       4B  "FSW1" (0x46 0x53 0x57 0x31); checked after FSEC decryption, by the engine's magic router (SW-2). Reserved: dropped with rate-limited warning if no handler is registered.
+version     u8  1
+type        u8  1..12 (table below)
+flags       u16 0 in v1; receivers ignore unknown bits
+bodyLength  u32 must equal the number of bytes left in the WebSocket binary message
+body        ..  per type
+```
+
+- **Little-endian**, like framing v2 and `PTT1`. One FSW1 frame per WebSocket binary message; trailing bytes make it malformed.
+- **Carriage:** the WebSocket session only, through `SecureBinaryFrameCodec` (an `FSEC` envelope when the peers share a pairing session key,
+  plain otherwise, TLS in both cases). Never Android's TCP data channels: their frames are capped at 512 KiB
+  (`DataChannelFraming.MAX_FRAME_BYTES`).
+- **Who may receive one:** only a peer whose HELLO `caps` contained `sw1`. A build without the swarm attached drops FSW1 in the router; a
+  build from before SW-2 never advertises `sw1`, so it is never sent one.
+- **Field encodings:**
+
+  | Name | Encoding | Limit |
+  |---|---|---|
+  | `str` | `u16` length + UTF-8 bytes | group id ≤ 64 bytes; device and message ids ≤ 128 bytes |
+  | `root` | 32 raw bytes, the content id | in text frames: 64 lowercase hex characters |
+  | `index` | `u32` piece index | `< pieceCount` |
+  | `sig` | `u16` length + the ECDSA P-256 / SHA-256 signature bytes as the platform produces them (DER) | ≤ 128 bytes |
+
+### Frame bodies
+
+Every type except `SUMMARY` starts with `str groupId` and `root`, so the gate is always checked for one named group (INV-3, INV-8).
+
+| Type | Name | Body after `groupId`, `root` | Limits and rules |
+|---|---|---|---|
+| 1 | `SUMMARY` | (no root) `str groupId`, `u16 tombCount`, tombCount × tombstone (the `CANCEL` body), `u16 entryCount`, entryCount × (`root`, `u8 state` 0 NONE / 1 PARTIAL / 2 ALL, `u8 entryFlags` bit 0 = serving enabled) | tombCount ≤ 64, entryCount ≤ 256; every tombstone names this frame's group. A device sends as many `SUMMARY` frames as it needs, **all tombstones before any entry** across them. Sent after a session comes up and after a membership change. |
+| 2 | `MANIFEST_GET` | `u16 fragmentIndex` | `fragmentIndex < 9` |
+| 3 | `MANIFEST_PART` | `u16 fragmentIndex`, `u16 fragmentCount`, `u32 length`, bytes | fragmentCount 1..9; length 1..65,536; every fragment but the last is exactly 65,536 bytes |
+| 4 | `HAVE` | `u16 rangeCount`, rangeCount × (`u32 start`, `u32 count`) | 1..1,024 ranges, sorted, non-empty, not overlapping, inside `pieceCount`; at most one per second per peer per root |
+| 5 | `HAVE_ALL` | (nothing) | also means "I finished and verified the whole file" |
+| 6 | `REQUEST` | `u8 count`, count × `index` | count 1..64, indexes distinct |
+| 7 | `PIECE` | `index`, `u32 length`, bytes | length = the manifest's length of that piece (`pieceSize`, the last may be shorter) |
+| 8 | `REJECT` | `u8 reason`, `u32 retryAfterMs`, `u8 scope` (0 = the listed pieces, 1 = all), `u8 count`, count × `index` | count 0..64, and 0 when scope = 1 |
+| 9 | `CANCEL` | (tombstone) `str originId`, `str messageId`, `u8 reason` (1 `USER`, 2 `DELETED`), `u64 cancelledAtMs`, `sig` | origin only (INV-6); cancels the announcement `(groupId, messageId)` |
+| 10 | `CANCEL_ACK` | `str messageId` | stops re-forwarding that tombstone to that peer |
+| 11 | `SOURCE_STATUS` | `str originId`, `str messageId`, `u8 status` (1 `LOST`, 2 `RESTORED`), `u8 reason` (0 none, 1 `DELETED`, 2 `CHANGED`, 3 `PERMISSION`), `u64 atMs`, `sig` | origin only; the newest `atMs` per announcement wins; not a cancel |
+| 12 | `UNREQUEST` | `u8 count`, count × `index` | count 1..64 |
+
+`CANCEL_ACK` and the tombstone name the message id because **a tombstone cancels one announcement, not the content** (ADR-072 rule 5): the
+content `(groupId, root)` stops being requested and served only when every announcement of it in that group is tombstoned.
+
+**Reject reasons** (an unknown value is treated as `BUSY`):
+
+| Value | Reason | Meaning |
+|---|---|---|
+| 1 | `BUSY` | Slots or budget full; ask again after `retryAfterMs`. |
+| 2 | `ELSEWHERE` | Origin only: another member holds the piece (origin offer policy, INV-7). |
+| 3 | `UNKNOWN` | This device holds no announcement of this root **in this group**. Also the answer for content held only in another group (INV-8). |
+| 4 | `GONE` | This device had it and can no longer read it. |
+| 5 | `NOT_MEMBER` | The requester fails the group gate for this group (ADR-075). |
+| 6 | `CANCELLED` | Every announcement of this content in this group is tombstoned. |
+| 7 | `UNSUPPORTED` | The envelope version is unknown. Sent with an empty group id and an all-zero root, at most once per peer per 10 minutes. |
+
+### Manifest and content id
+
+```text
+magic       4B  "FSWM"
+version     u8  1
+pieceSize   u32 a power of two, 65,536..1,048,576, and no larger than the largest binary frame the session carries (SW-3 records it)
+totalSize   u64 > 0
+fileSha256  32B whole-file SHA-256 (the ADR-068 hash)
+pieceCount  u32 1..16,384, equal to ceil(totalSize / pieceSize)
+pieceHash   pieceCount × 32B, the SHA-256 of each piece
+
+root = SHA-256(every byte above)          at most 53 + 16,384 × 32 = 524,341 bytes, so at most 9 fragments
+```
+
+- Little-endian, like the frames. The fragments are consecutive slices of these bytes.
+- A receiver uses a manifest only after recomputing the root, and checks `totalSize` and `pieceSize` against the announcement.
+- **Not swarmed:** an empty file, and a file that needs more than 16,384 pieces at the largest allowed piece size (more than 16 GiB). Both use
+  today's push.
+
+### Signed statements
+
+Built with the **v2 group canonical rules** (section "v2 groups": tag first, every field a 4-byte big-endian length plus bytes, a `long` as
+8 bytes big-endian). They are big-endian although the frames are little-endian: a statement is a separate byte string, not a frame. Signed
+with the origin's identity key (ECDSA P-256 / SHA-256), verified against the origin key stored with the announcement.
+
+| Statement | Tag | Fields in order |
+|---|---|---|
+| announce | `flash-swarm-v1/announce` | groupId, messageId, originId, root (hex), sizeBytes, fileName, mimeType, sentAt |
+| cancel | `flash-swarm-v1/cancel` | groupId, root (hex), originId, messageId, reason (`USER` / `DELETED`), cancelledAtMs |
+| source | `flash-swarm-v1/source` | groupId, root (hex), originId, messageId, status (`LOST` / `RESTORED`), reason (`NONE` / `DELETED` / `CHANGED` / `PERMISSION`), atMs |
+
+The tags differ from every group tag (`flash-gcharter-v1`, `flash-gcert-v1`, `flash-gmsg-v1`), so no signature verifies across kinds.
+
+### The announcement: four optional `FLASH_GMEDIA` fields
+
+```text
+FLASH_GMEDIA groupId=… msgId=… transferId=… wireFileId=… from=… name=… fileName=… mime=… size=… sentAt=… sig=…
+             root=<64 hex> pieceSize=<n> swarm=1 rootSig=<b64>
+```
+
+- The origin adds the four fields only for members whose HELLO had `sw1`. Every other member gets today's frame, unchanged, and today's push.
+- `transferId` stays per recipient: it is the receiver's row id, as today. `wireFileId` keeps today's value and is not used by the swarm (no
+  FILE_START follows).
+- `sig` (today's v2 message signature) stays. `rootSig` signs the announce statement above.
+- A receiver drops a `swarm=1` announcement, and creates no bubble, when `rootSig` does not verify against the origin's roster key, `root` is
+  not 64 hex characters, `pieceSize` is outside the limits, or `size` is 0 or more than 16,384 × `pieceSize`.
+
+### Version and compatibility
+
+- An unknown `type` is ignored and not counted as malformed. An unknown envelope `version` gets `REJECT(UNSUPPORTED)`.
+- Three malformed FSW1 frames from one peer within a minute: ignore that peer's FSW1 frames for 10 minutes. **Never drop the session for this.**
+- **What an older build does with the new `FLASH_GMEDIA` fields (SW-0 task 4, [code] 2026-10-04).** `FlashTextFraming.parseFields` turns the
+  frame into a key-to-value map, and `GroupFrameCodec.decode` reads only the keys it names, so an older build decodes the frame exactly as
+  before and ignores `root`, `pieceSize`, `swarm` and `rootSig`. It would then park the frame and wait for a FILE_START that the swarm never
+  sends; that is why the fields go only to `sw1` peers.
+
+## Group membership v1 (ADR-073, ADR-074, ADR-075; PROPOSED 2026-10-04, not implemented)
+
+**Status:** GM-1 and GM-2 invite format implemented (2026-10-05): key derivation, commitment, mutual proof primitives, and invite codec in `:core:security`. Golden vectors below. Plan: `GROUP-SWARM-IMPLEMENTATION-PLAN.md` track GM (7B) and 5.7.
+
+### Byte conventions
+
+- Integers are **big-endian**, like the v2 canonical bytes. (FSW1 is little-endian; do not mix them.)
+- `lp(x)` is a `u16` big-endian length followed by the bytes. Text is UTF-8.
+- An ASCII tag at the start of a hashed or MACed string has no length prefix: it is fixed and comes first.
+- Signed statements use the v2 canonical rules and ECDSA P-256 / SHA-256 with the signer's identity key.
+- In text frames, binary values are standard base64 (as in the bundle); in the invite link, base64url without padding.
+
+### Keys and commitment
+
+```text
+secret_e   = 32 bytes from the platform's secure random, one per epoch e (e >= 1). Never typed, never derived from text.
+K_auth(e)  = HKDF-SHA256(ikm = secret_e, salt = empty, info = "flash-gsa-v1"     ‖ lp(groupId) ‖ u32 e, length 32)
+K_beacon(e)= HKDF-SHA256(ikm = secret_e, salt = empty, info = "flash-gbeacon-v1" ‖ lp(groupId) ‖ u32 e, length 32)   GM-8b, optional
+commit(e)  = SHA-256("flash-gs-commit-v1" ‖ lp(groupId) ‖ u32 e ‖ secret_e)
+```
+
+Golden vectors (inputs: `secret` = bytes `00..1f`, `groupId` = `"g2-6f01129f28cff84f8ef67cb9d1970499"`, `epoch` = 1; produced by independent reference and asserted in `GroupMembershipGoldenVectorTest`):
+
+- `K_auth(1)` = `b0d2233864667368d2cb1403155bfc24d419fc76afe1622af35c260760ae05c6`
+- `K_beacon(1)` = `273172fb813d6be217a75698449672e003cdea570e000bc07b7664d3890fafcd`
+- `commit(1)` = `316155ba2ffa797afffc435dbba71497d1146322565fdc77e22bf66d9a9f728e`
+
+### Invite
+
+```text
+flash://g/1/<base64url(payload), no padding>
+
+payload:
+version      u8   1 (the "1" in the link repeats it)
+groupId      lp   ≤ 64 bytes, starts with "g2-"
+epoch        u32  ≥ 1
+secret       32B
+groupName    lp   1..80 characters (GroupPolicy.MAX_GROUP_NAME_LENGTH), ≤ 320 bytes
+inviterId    lp   ≤ 128 bytes
+inviterFp    32B  SHA-256 of the inviter's identity public key (the fingerprint the trust store pins)
+hintCount    u8   0..3
+hints        hintCount × lp, each "host:port", ≤ 64 bytes
+issuedAtMs   u64  display only
+```
+
+- About 250 bytes, about 340 characters as a link.
+- Decoding never throws: an unknown version, an oversize field, a count over its limit or trailing bytes give no invite.
+- Not signed: whoever can change an invite already holds the secret.
+- The link is a secret. The app never puts it into a log, a notification or a chat on its own; the user may share it anywhere (GINV-1).
+
+Golden vector (inputs: `secret` = bytes `00..1f`, `groupId` = `"g2-6f01129f28cff84f8ef67cb9d1970499"`, `epoch` = 1, `groupName` = `"Flash Core Team"`, `inviterId` = `"alpha-tester-device"`, `inviterFp` = bytes `20..3f`, `hints` = `["192.168.1.100:8765", "10.0.0.1:8765"]`, `issuedAtMs` = 1728123456789; asserted in `GroupMembershipGoldenVectorTest`):
+
+- Binary payload (188 bytes):
+  `01002367322d366630313132396632386366663834663865663637636239643139373034393900000001000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f000f466c61736820436f7265205465616d0013616c7068612d7465737465722d646576696365202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f0200123139322e3136382e312e3130303a38373635000d31302e302e302e313a38373635000001925c2f4d15`
+- URI (263 characters):
+  `flash://g/1/AQAjZzItNmYwMTEyOWYyOGNmZjg0ZjhlZjY3Y2I5ZDE5NzA0OTkAAAABAAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8AD0ZsYXNoIENvcmUgVGVhbQATYWxwaGEtdGVzdGVyLWRldmljZSAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4_AgASMTkyLjE2OC4xLjEwMDo4NzY1AA0xMC4wLjAuMTo4NzY1AAABklwvTRU`
+
+### Capability
+
+`gs1` in the HELLO `caps` field (SW-2). No `FLASH_GMEM` frame is ever sent to a peer whose HELLO lacked it.
+
+### Frames: prefix `FLASH_GMEM`
+
+Text frames with the `FlashTextFraming` field rules. Every frame carries `op`, `groupId` and `from`, and `from` must equal the transport
+peer, otherwise the frame is dropped. An unknown `op` is ignored. Every field has a limit; decoding never throws, and a frame over a limit is
+dropped.
+
+| `op` | Fields after `op`, `groupId`, `from` | Sent by | Phase |
+|---|---|---|---|
+| `hello` | `epoch`, `nonce` (16 bytes) | the initiator (a joiner) | GM-3 |
+| `challenge` | `epoch`, `nonce` (16 bytes), `mac` (32 bytes) | the responder | GM-3 |
+| `proof` | `epoch`, `mac` (32 bytes) | the initiator | GM-3 |
+| `result` | `ok` (`true`/`false`), `reason` (`ok` / `failed` / `stale`) | the responder | GM-3 |
+| `stale` | `epoch` (the responder's current), the rotation notice keys below | a responder with a newer epoch, **only to an active roster member's live key** | GM-6 |
+| `secretRequest` | `epoch` | a member that lacks the secret of `epoch` | GM-6 |
+| `secret` | `epoch`, `secret` (32 bytes) | a member that holds it (handover rules below) | GM-6 |
+| `join` | `epoch`, `subjectId`, `subjectKey` (SPKI, ≤ 256 bytes), `label` (≤ 80 characters), `requestedAt`, `sig` | the joiner; members relay it unchanged except `from` | GM-4 |
+| `decision` | `subjectId`, `subjectKey`, `decision` (`refused`), `reason` (`refused` / `full`), `decidedBy`, `decidedAt`, `sig` | an admin; relayed unchanged except `from` | GM-4 |
+| `preview` | the charter keys of the bundle (`cName`, `cOwner`, `cOwnerKey`, `cCreated`, `cNonce`, `cProto`, `cSig`), `memberCount` (≤ 20), `n0`..`n19` (labels) | a member, to a joiner whose proof passed | GM-4 |
+
+Approval has no frame of its own: it is the admin-signed member certificate in an ordinary `FLASH_GROUP action=bundle`.
+
+### The proof
+
+```text
+T(role) = "flash-gsp-v1" ‖ role ‖ lp(fpI) ‖ lp(fpR) ‖ lp(groupId) ‖ u32 epoch ‖ nonceI(16) ‖ nonceR(16)
+role    = 0x49 ('I') for the initiator's MAC, 0x52 ('R') for the responder's
+fpI/fpR = SHA-256 of the identity public key each side presents in THIS live TLS session (each side computes both from the session)
+```
+
+Golden vectors (inputs: `fpI` = bytes `10..2f`, `fpR` = bytes `30..4f`, `nonceI` = bytes `a0..af`, `nonceR` = bytes `b0..bf`, asserted in `GroupMembershipGoldenVectorTest`):
+
+- `T('R')` (154 bytes):
+  `666c6173682d6773702d7631520020101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f0020303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f002367322d366630313132396632386366663834663865663637636239643139373034393900000001a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf`
+- `challenge.mac` = `afa3ae3ad3da3a316785d560d96da2f137f3bf0ad635820c16723481a9f3431c`
+- `T('I')` (154 bytes):
+  `666c6173682d6773702d7631490020101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f0020303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f002367322d366630313132396632386366663834663865663637636239643139373034393900000001a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf`
+- `proof.mac` = `1880e5348e5f0ef6135d0a4742f44fcc2442bbe390fc403a99744eefc236b367`
+
+
+1. MACs are compared in constant time. A proof instance is one-shot and times out after 20 seconds per (peer, group).
+2. At most 5 failed proofs per peer per 10 minutes; after that `hello` from that peer is ignored until the window passes. The session is never
+   dropped for this.
+3. **Responder privacy.** A responder that does not hold the group, or not the epoch named in `hello`, still answers `challenge` (random nonce,
+   random MAC) and then `result ok=false reason=failed`, so a stranger who knows a group id cannot learn who is in it. It answers
+   `reason=stale` only after a valid proof at an older epoch it still holds, and sends `stale` with the notice only to an active roster member.
+4. **An epoch number is a claim.** No device changes any state because of the epoch in a `hello`; rotations are learned only from signed
+   notices.
+5. A passed proof is a fact of the live session, used only for `join` and `preview` (GINV-2). It grants no chat, call or file traffic and is
+   never persisted.
+
+### Join request and decision
+
+| Statement | Tag | Fields in order |
+|---|---|---|
+| join request | `flash-gjoin-v1` | groupId, epoch, subjectId, subjectKey (bytes), label, requestedAt |
+| refusal | `flash-gjdec-v1` | groupId, subjectId, subjectKey (bytes), decision, reason, decidedBy, decidedAt |
+
+- The first member to receive a `join` checks: the proof passed on this session for this group; `subjectId` is the transport peer;
+  `subjectKey` is the live TLS key; the signature verifies. A relay checks the signature only. Requests are kept per
+  `(groupId, subjectId, subjectKey)` and expire after 7 days.
+- A `decision` counts only when `decidedBy` is an admin in the stored roster (the admin lookup of `checkCert`, ADR-063).
+- Policy `OPEN` never auto-approves a key this group has tombstoned (GINV-5). A full group (20) refuses with `reason=full`.
+
+### Charter trust root (changes bundle receiver rules 1 and 2 in GM-4)
+
+An unknown `g2-` group is accepted when the charter is valid, the device's own certificate in the bundle is valid, active and for its key,
+**and** this device is paired with the owner **or** holds an accepted invite for exactly that group id (state not `REFUSED` / `ABANDONED`). With
+an invite, the sender of the bundle need not be paired. A bundle for a group with neither root is refused (GINV-3), however valid its
+signatures.
+
+### Rotation notice
+
+Carried as extra keys on `FLASH_GROUP action=bundle` (with the removal it belongs to) and on `op=stale`:
+
+```text
+rotNew=<epoch> rotPrev=<epoch> rotCommit=<64 hex> rotReason=<REMOVAL|MANUAL|UPGRADE> rotAdmin=<id> rotId=<32 hex>
+rotRmCount=<0..64> rotRm0=<id> … rotSig=<b64>
+```
+
+- Statement `flash-grot-v1`: groupId, newEpoch, prevEpoch, commit (hex), reason, adminId, rotationId, removedCount, then each removed id as a
+  field.
+- Valid only when an admin signed it. `newEpoch > prevEpoch`; an upgrade of an existing group has `prevEpoch = 0`, `newEpoch = 1`.
+- A device keeps the valid notice with the highest `newEpoch`; for the same `newEpoch`, the smaller `rotId` wins. An admin whose rotation lost
+  rotates again with its removals.
+- **The notice never contains the secret.**
+
+### Secret handover (`op=secret`)
+
+- Sent only inside a live TLS session, to a peer that passes `allows(CHAT)` at that moment and is not named in `rotRm` of any stored notice,
+  and only for an epoch the sender holds.
+- The receiver stores it only when it holds a valid notice for that epoch and `commit(epoch)` matches; otherwise it drops the frame and logs
+  the group id and epoch only.
+
+### Group settings (ADR-074)
+
+Carried as extra keys on the bundle:
+
+```text
+setVer=<n> setJoin=<APPROVE|OPEN> setShare=<ALL|ADMINS> setMax=<1..20> setServe=<true|false> setAdd=<true|false>
+setOp=<uuid> setBy=<admin id> setSig=<b64>
+```
+
+- Statement `flash-gset-v1`: groupId, version, joinPolicy, inviteSharers, maxMembers, swarmServing, membersMayAdd, opId, signerId.
+- Valid only when an admin signed it. The highest `setVer` wins; on a tie, the smaller `setOp`. Device-local preferences never appear on any
+  wire.
+
+### Compatibility with older builds ([code], read 2026-10-04)
+
+- **Extra keys on a bundle** (`rot*`, `set*`): `parseFields` builds a map and `decodeBundle` reads only the keys it names (`certCount`, the
+  charter keys and `c<i>…`), so an older build applies the bundle exactly as before and ignores the notice and the settings.
+- **The `FLASH_GMEM` prefix:** `GroupFrameCodec.decode` returns null for an unknown prefix. On Android the dispatch then logs "Received
+  unrecognized text frame (n chars)", the length only, never the text. On the desktop and in the library facade the frame falls through to the
+  transfer text decoder; that it is dropped there without effect was not traced line by line, so GM-3 adds a test. None is sent to a peer
+  without `gs1` anyway.
+- An older member still trusts members who joined with the secret: their admin-signed certificates reach it as ordinary vouches (ADR-044 V2;
+  test in GM-4, ripple 40).

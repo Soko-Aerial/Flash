@@ -259,3 +259,12 @@ Provisional `ui/chat/` composables import `com.transfer.flash.ui.icons.*`.
 ## What makes this Flash?
 
 Flash icons use a **single stroke language** tuned to the Pulse palette — round 1.5dp lines on a 20dp grid, neither Material filled glyphs nor Stream proprietary paths. P2P-specific symbols (relay, Wi‑Fi Direct, encryption, device) are first-class in the MVP set. Tints come from `FlashTheme`, so icons inherit Flash identity automatically in light and dark. The result reads as a cohesive Flash toolset, not an icon font borrowed from another product.
+
+---
+
+## Addendum 2026-10-02 — call icons redrawn (UI-050e)
+
+- `FlashIcons.Mute` was a crossed-out bell and was used for the in-call microphone. It is now **`NotificationOff`** (same drawable, chat use only).
+- New: `MicOff` (`flash_ic_mic_off`), `Video` (alias of `flash_ic_video_call`), `VideoOff` (`flash_ic_video_off`), `Earpiece` (`flash_ic_earpiece`).
+- Redrawn: `CameraFlip` (two chasing arrows around a lens), `Hangup` (the handset turned onto its back; no slash).
+- A call control that toggles has one glyph per state; see `docs/ui/calling-ui.md` UI-050e.
