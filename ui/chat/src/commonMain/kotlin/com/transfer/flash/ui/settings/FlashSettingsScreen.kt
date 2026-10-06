@@ -289,8 +289,26 @@ fun FlashSettingsScreen(
      * `ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` intent needs an Activity.
      */
     onOpenBatterySettings: () -> Unit = {},
+    /**
+     * Relaunches the app. Null on a host that cannot (the swarm switch then only says it applies after a restart).
+     * Offered right after the swarm switch changes, because the engine reads that setting once when it starts.
+     */
+    onRestartApp: (() -> Unit)? = null,
+    /** Shares Flash's own log file(s). Null hides the row (a host with no persistent log). */
+    onExportLogs: (() -> Unit)? = null,
 ) {
     var showClearStorageConfirmation by remember { mutableStateOf(false) }
+    var showRestartPrompt by remember { mutableStateOf(false) }
+
+    if (showRestartPrompt && onRestartApp != null) {
+        RestartForSwarmDialog(
+            onRestart = {
+                showRestartPrompt = false
+                onRestartApp()
+            },
+            onLater = { showRestartPrompt = false },
+        )
+    }
 
     if (showClearStorageConfirmation) {
         ClearReceivedFilesDialog(
@@ -554,8 +572,26 @@ fun FlashSettingsScreen(
                     title = "Group file sharing (swarm, experimental)",
                     subtitle = "Enable multi-device cooperative transfers in groups. Applies after restart",
                     checked = model.swarmEnabled,
-                    onCheckedChange = onSwarmEnabledChanged,
+                    onCheckedChange = {
+                        onSwarmEnabledChanged(it)
+                        if (onRestartApp != null) showRestartPrompt = true
+                    },
                 )
+            }
+        }
+
+        if (onExportLogs != null) {
+            item(key = "diagnostics-label") { StaggerIn(26) { SectionLabel("DIAGNOSTICS") } }
+            item(key = "export-logs") {
+                StaggerIn(26) {
+                    ValueRow(
+                        iconSpec = FlashIcons.Share,
+                        title = "Export logs",
+                        subtitle = "Share Flash's recent log to help find a problem. It holds no message text or keys",
+                        value = null,
+                        onClick = onExportLogs,
+                    )
+                }
             }
         }
 
@@ -1120,6 +1156,40 @@ private fun ClearReceivedFilesDialog(
         dismissButton = {
             TextButton(onClick = onDismiss) {
                 Text("Cancel", color = colors.textSecondary)
+            }
+        },
+    )
+}
+
+@Composable
+private fun RestartForSwarmDialog(onRestart: () -> Unit, onLater: () -> Unit) {
+    val colors = FlashTheme.colors
+    FlashConfirmHost(
+        onDismiss = onLater,
+        containerColor = colors.backgroundSurface,
+        title = {
+            FlashText(
+                text = "Restart Flash?",
+                style = FlashTheme.typography.headingMedium,
+                color = colors.textPrimary,
+            )
+        },
+        text = {
+            FlashText(
+                text = "Group file sharing changes when Flash starts. Restart now to apply it; " +
+                    "transfers and calls in progress will stop.",
+                style = FlashTheme.typography.bodyDefault,
+                color = colors.textSecondary,
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onRestart) {
+                Text("Restart now", color = colors.textPrimary)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onLater) {
+                Text("Later", color = colors.textSecondary)
             }
         },
     )

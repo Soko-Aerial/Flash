@@ -1,5 +1,25 @@
 # Progress Log
 
+## 2026-10-06 (c) - Persistent Android log, export, swarm restart prompt (ADR-077)
+
+### Worked on
+Owner request: logs that survive without adb, an export, and "restart to enable swarm".
+
+### Changed
+- `RotatingFileLogSink` (core/common androidMain): bounded queue + writer thread, rotation (5 x 1 MB), redaction, crash write, forward to logcat; `installAndroidFileLog` + `FlashApplication.fileLog`.
+- Settings screen (shared): "Diagnostics > Export logs" row and the "Restart Flash?" dialog after the swarm switch; both are optional callbacks, so Desktop is unchanged. Android host: `restartApp()` and `exportLogs()` in `MainActivity`.
+- `files/logs` excluded from Auto Backup and device transfer.
+- ADR-077 records why no log server was built.
+
+### Verification
+`RotatingFileLogSinkTest` (6) and the rest of `:core:common:testAndroidHostTest` green; `:app:compileDebugKotlin` and `:desktop:compileKotlinJvm` compile. Not run on a device: LOG-01..03, SWM-34.
+
+### Remaining
+14 app files still log through `android.util.Log` (not in the file). Desktop has no restart prompt or export row. Passive test-evidence lines and the remaining swarm review items (per-piece fsync cost, non-member Summary/Have, row peerName) are open.
+
+### Next AI
+Move the direct `android.util.Log` calls to `FlashLog` (SWARM/GROUP_CALL first), then decide on the test-evidence lines.
+
 ## 2026-10-06 (b) - Group call phantom member ids (ERROR-103)
 
 ### Worked on

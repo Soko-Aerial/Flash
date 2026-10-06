@@ -250,6 +250,8 @@ class MainActivity : ComponentActivity() {
                 receivedStorageState = receivedStorageState,
                 onRefreshStorageUsage = ::refreshReceivedStorageUsage,
                 onClearReceivedFiles = ::clearReceivedFiles,
+                onRestartApp = ::restartApp,
+                onExportLogs = ::exportLogs,
             )
         }
         refreshReceivedStorageUsage()
@@ -403,6 +405,59 @@ class MainActivity : ComponentActivity() {
                 onSuccess = { total -> FlashReceivedStorageState(totalBytes = total) },
                 onFailure = { FlashReceivedStorageState(totalBytes = cached, hasError = true) },
             )
+        }
+    }
+
+    /**
+     * Relaunches the app so a setting the engine reads once at start (the swarm switch) takes effect. The launch intent is
+     * handed to the system first and the process ends afterwards; the short delay lets the setting that was just changed
+     * reach its store.
+     */
+    private fun restartApp() {
+        val launch = packageManager.getLaunchIntentForPackage(packageName)
+            ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        if (launch == null) {
+            Toast.makeText(this, "Close and reopen Flash to apply this", Toast.LENGTH_LONG).show()
+            return
+        }
+        lifecycleScope.launch {
+            kotlinx.coroutines.delay(500L)
+            startActivity(launch)
+            android.os.Process.killProcess(android.os.Process.myPid())
+        }
+    }
+
+    /** Shares Flash's own rotating log (all files, oldest first) as one text file with a short device header. */
+    private fun exportLogs() {
+        lifecycleScope.launch {
+            val shareUri = withContext(Dispatchers.IO) {
+                runCatching {
+                    val sink = (application as com.transfer.flash.di.FlashApplication).fileLog
+                    sink.flush()
+                    val dir = java.io.File(cacheDir, "log-export").apply { mkdirs() }
+                    dir.listFiles()?.forEach { it.delete() }
+                    val out = java.io.File(dir, "flash-log-" + System.currentTimeMillis() + ".txt")
+                    out.bufferedWriter().use { w ->
+                        w.write(
+                            "Flash log export; Android " + Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + "); " +
+                                Build.MANUFACTURER + " " + Build.MODEL + "\n",
+                        )
+                        sink.files().forEach { f -> f.bufferedReader().use { it.copyTo(w) } }
+                    }
+                    androidx.core.content.FileProvider.getUriForFile(this@MainActivity, "$packageName.fileprovider", out)
+                }.getOrNull()
+            }
+            if (shareUri == null) {
+                Toast.makeText(this@MainActivity, "Can't export the log", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            val send = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_STREAM, shareUri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            runCatching { startActivity(Intent.createChooser(send, "Share Flash log")) }
+                .onFailure { Toast.makeText(this@MainActivity, "No app to share with", Toast.LENGTH_SHORT).show() }
         }
     }
 
@@ -563,6 +618,8 @@ fun FlashApp(
     receivedStorageState: MutableStateFlow<FlashReceivedStorageState>,
     onRefreshStorageUsage: () -> Unit = {},
     onClearReceivedFiles: () -> Unit = {},
+    onRestartApp: (() -> Unit)? = null,
+    onExportLogs: (() -> Unit)? = null,
 ) {
     // #14 / UI-049 wiring: Appearance/Haptics are only real if the host applies them, so the settings
     // model lives above the theme. ONE theme scope owns the whole shell — a nested
@@ -736,6 +793,8 @@ fun FlashApp(
                     onEnableBackgroundTransfers = onEnableBackgroundTransfers,
                     onRefreshStorageUsage = onRefreshStorageUsage,
                     onClearReceivedFiles = onClearReceivedFiles,
+                    onRestartApp = onRestartApp,
+                    onExportLogs = onExportLogs,
                 )
                 // Phase 3: PTT session overlay above every tab (below the boot splash).
                 // State-driven, not nav-driven: back-navigation underneath never kills a
@@ -779,6 +838,8 @@ private fun FlashShell(
     onEnableBackgroundTransfers: () -> Unit,
     onRefreshStorageUsage: () -> Unit,
     onClearReceivedFiles: () -> Unit,
+    onRestartApp: (() -> Unit)?,
+    onExportLogs: (() -> Unit)?,
 ) {
     val nav = rememberFlashNavigationState()
     // Phase 3.1: Chats bind to the real Room-backed repository once the engine has booted.
@@ -2193,6 +2254,8 @@ private fun FlashShell(
             onOpenBatterySettings = onEnableBackgroundTransfers,
             onRefreshStorageUsage = onRefreshStorageUsage,
             onClearReceivedFiles = onClearReceivedFiles,
+            onRestartApp = onRestartApp,
+            onExportLogs = onExportLogs,
             onSwarmHelpShareChanged = {
                 onSettingsChange(settings.copy(swarmHelpShare = it))
             },

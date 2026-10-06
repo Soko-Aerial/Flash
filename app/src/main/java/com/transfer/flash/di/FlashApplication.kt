@@ -2,6 +2,8 @@ package com.transfer.flash.di
 
 import android.app.Application
 import android.content.ComponentCallbacks2
+import com.transfer.flash.core.common.logging.RotatingFileLogSink
+import com.transfer.flash.core.common.logging.installAndroidFileLog
 import com.transfer.flash.core.common.perf.AndroidThermalGovernor
 import com.transfer.flash.core.common.perf.MemoryGovernor
 import com.transfer.flash.core.common.perf.MemoryTrimLevel
@@ -11,8 +13,14 @@ import dagger.hilt.android.HiltAndroidApp
 @HiltAndroidApp
 class FlashApplication : Application() {
 
+    /** Flash's own persistent log (rotating files under `files/logs`); see [installAndroidFileLog]. */
+    lateinit var fileLog: RotatingFileLogSink
+        private set
+
     override fun onCreate() {
         super.onCreate()
+        // First, so the engine's startup lines and a crash during it are kept.
+        fileLog = installAndroidFileLog(java.io.File(filesDir, "logs"))
         AndroidThermalGovernor.install(this)
         // ADR-041: safety net for a process the user (or an OEM killer) ended — see the worker's
         // KDoc for what it deliberately does not do.
