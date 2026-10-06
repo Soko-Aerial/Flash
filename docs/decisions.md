@@ -3864,7 +3864,9 @@ has `addTrack` and `replaceTrack` but no `addTransceiver`.
 - Known risks, measured only partly: the m-line is added after DTLS under MaxBundle through `CallSdp.tuneLocal` /
   `tuneRemote` / `enforceVp8Only`. A native two-peer test on the desktop `webrtc-java` stack passes in both directions
   (`DesktopMediaStackSmokeTest`); the Android libwebrtc stack is untested (`VUP-01`). A `vu` arriving during an ICE restart
-  is serialised by `signalMutex` but not retried (`VUP-04`). A failed upgrade offer is logged and the call carries on.
+  is serialised by `signalMutex`; if its offer could not be delivered the caller keeps it owed and retries on `Connected` and on
+  signaling restored, the callee repeats `vu=1` until it has answered an offer with a video section, and the caller ignores a
+  repeated `vu` while its offer awaits an answer (`VUP-04`). A failed upgrade offer is logged and the call carries on.
 
 ### Revisit when
 `VUP-01`..`04` are run, or a group upgrade is asked for.

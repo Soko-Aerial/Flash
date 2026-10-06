@@ -229,6 +229,22 @@ public class FlashCallSession(
     @Volatile
     private var videoActive: Boolean = video
 
+    /**
+     * ADR-078 retry state. The CALLER owes an offer for a video section that was added ([upgradeOfferPending]); it stays
+     * set until an offer is delivered, and is tried again when the connection or signaling comes back (an ICE restart or
+     * a lost session swallows the first try). The CALLEE repeats its `vu=1` request on every status
+     * ([upgradeRequestPending]) until an answer to an offer with a video section has gone out.
+     */
+    @Volatile
+    private var upgradeOfferPending: Boolean = false
+
+    @Volatile
+    private var upgradeRequestPending: Boolean = false
+
+    /** Caller: a video offer went out and its answer has not come back. A repeated `vu=1` in that window is not a new request. */
+    @Volatile
+    private var videoOfferAwaitingAnswer: Boolean = false
+
     /** Decides when to trade video away for voice. Pure; see [CallQualityGovernor]. */
     private val governor = CallQualityGovernor(
         recoveryCooldownMs = 8_000L,
@@ -676,12 +692,21 @@ public class FlashCallSession(
         videoActive = true
         updateState { it.copy(video = true, cameraOff = false, cameraProblem = null, notice = null, canUpgradeToVideo = false) }
         if (direction == FlashCallDirection.OUTGOING) {
+            upgradeOfferPending = true
             offerVideoUpgrade()
             sendStatus()
         } else {
+            upgradeRequestPending = true
             sendStatus(videoUpgrade = true)
         }
         return true
+    }
+
+    /** ADR-078: the connection or signaling is back; a caller that still owes the video offer sends it now. */
+    private fun retryUpgradeOffer() {
+        if (ended || !upgradeOfferPending || direction != FlashCallDirection.OUTGOING) return
+        FlashLog.i("CALL", "retrying the video upgrade offer call=$callId")
+        scope.launch { offerVideoUpgrade() }
     }
 
     /**
@@ -699,6 +724,10 @@ public class FlashCallSession(
                 val applied = setLocalDescriptionTuned(pc, offer)
                 val delivered = sendFrame(CallWireFrame.Offer(callId = callId, from = localDeviceId, sdp = applied.sdp))
                 FlashLog.i("CALL", "video upgrade offer delivered=$delivered call=$callId")
+                if (delivered) {
+                    upgradeOfferPending = false
+                    videoOfferAwaitingAnswer = true
+                }
                 delivered
             } catch (e: CancellationException) {
                 throw e
@@ -850,7 +879,8 @@ public class FlashCallSession(
         }
         // ADR-078: an offer with a video section on a voice call is the peer adding its camera. This side starts with
         // its own camera off (nothing is sent until the user turns it on), and learns the video path from the offer.
-        if (!videoActive && frame.sdp.lineSequence().any { it.startsWith("m=video") }) {
+        val offersVideo = frame.sdp.lineSequence().any { it.startsWith("m=video") }
+        if (!videoActive && offersVideo) {
             FlashLog.i("CALL", "peer added video to the call call=$callId")
             videoActive = true
             updateState { it.copy(video = true, cameraOff = _localVideoStreamTrack.value == null || it.cameraOff) }
@@ -865,13 +895,15 @@ public class FlashCallSession(
                 OfferAnswerOptions(offerToReceiveAudio = true, offerToReceiveVideo = videoActive),
             )
             val applied = setLocalDescriptionTuned(pc, answer)
-            sendFrame(
+            val delivered = sendFrame(
                 CallWireFrame.Answer(
                     callId = callId,
                     from = localDeviceId,
                     sdp = applied.sdp,
                 ),
             )
+            // The request for a video offer is answered by an answer that carries the video section.
+            if (delivered && offersVideo) upgradeRequestPending = false
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -894,6 +926,7 @@ public class FlashCallSession(
         onMediaThread {
         try {
             setRemoteDescriptionTuned(pc, SessionDescriptionType.Answer, frame.sdp)
+            videoOfferAwaitingAnswer = false
             flushPendingIce()
         } catch (e: CancellationException) {
             throw e
@@ -1356,6 +1389,7 @@ public class FlashCallSession(
                         }
                         armStatsPolling(pc)
                         refreshUpgradeOffer()
+                        retryUpgradeOffer()
                         // Tell the peer where our controls stand: a mute pressed while connecting went nowhere.
                         sendStatus()
                     }
@@ -1398,6 +1432,14 @@ public class FlashCallSession(
         _state.update { it.copy(state = state) }
     }
 
+    /** Test hook: this side added a camera but the peer has not yet answered an offer for it (ADR-078 retry). */
+    internal fun setUpgradeRequestPendingForTesting(pending: Boolean) {
+        upgradeRequestPending = pending
+    }
+
+    /** Test hook: the caller still owes the video offer. */
+    internal val upgradeOfferPendingForTesting: Boolean get() = upgradeOfferPending
+
     /** Test hook: the camera is off (what joining a video call without a camera leaves). */
     internal fun setCameraOffForTesting(off: Boolean) {
         _state.update { it.copy(cameraOff = off) }
@@ -1432,7 +1474,7 @@ public class FlashCallSession(
             receiveVideo = if (videoActive) !st.dataSaver else null,
             reaction = reaction,
             reactionSeq = reactionSeq,
-            videoUpgrade = if (videoUpgrade) true else null,
+            videoUpgrade = if (videoUpgrade || upgradeRequestPending) true else null,
         )
         scope.launch { sendFrame(frame) }
     }
@@ -1449,7 +1491,10 @@ public class FlashCallSession(
                 updateState { it.copy(video = true, cameraOff = _localVideoStreamTrack.value == null || it.cameraOff) }
                 sendStatus()
             }
-            scope.launch { offerVideoUpgrade() }
+            if (!videoOfferAwaitingAnswer) {
+                upgradeOfferPending = true
+                scope.launch { offerVideoUpgrade() }
+            }
         }
         val wantedVideo = statusBook.wantsVideo(peerId)
         val shown = statusBook.apply(peerId, frame)
@@ -1949,6 +1994,8 @@ public class FlashCallSession(
     public fun onSignalingLost() {
         if (ended) return
         if (signalingGraceJob?.isActive == true) return // already counting
+        // An answer that was on its way is lost with the session; the callee's next vu=1 is a real request again.
+        videoOfferAwaitingAnswer = false
         FlashLog.i("CALL", "signaling lost, holding call for ${disconnectGraceMs}ms call=$callId")
         signalingGraceJob = scope.launch {
             delay(disconnectGraceMs)
@@ -1974,6 +2021,7 @@ public class FlashCallSession(
         signalingGraceJob = null
         // A status sent while signaling was down went nowhere; say it again.
         sendStatus()
+        retryUpgradeOffer()
     }
 
     private companion object {

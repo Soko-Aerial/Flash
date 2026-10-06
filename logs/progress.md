@@ -1,5 +1,24 @@
 # Progress Log
 
+## 2026-10-06 (f) - Video-upgrade retry and the receiver answer gate (ERROR-105 follow-up)
+
+### Worked on
+The two fixable leftovers of ERROR-105 after commit `2c03732e`. Group voice-to-video (ADR-078 needs its own design) and the frozen Android camera (webrtc-kmp exposes no event) are deferred by agreement.
+
+### Changed
+- `FlashCallSession`: the caller keeps `upgradeOfferPending` until an offer is delivered and retries on `Connected` and `onSignalingRestored`; the callee repeats `vu=1` while `upgradeRequestPending`, cleared once its answer to an offer with a video section is sent; the caller ignores a repeated `vu` while `videoOfferAwaitingAnswer` (cleared on answer and on signaling loss).
+- `FlashCallActionReceiver`: `ACTION_ANSWER` brings the app to the front with `EXTRA_ANSWER_CALL` and no longer accepts, so the Activity's permission gate runs.
+- Two tests in `FlashCallVideoUpgradeTest` (state only).
+
+### Verification
+`:core:calling:testAndroidHostTest`, `:core:calling:allTests`, `:ui:callui:allTests`, `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm` green. Mutation-checked: dropping `upgradeRequestPending` from the status fails the callee test. The caller-side retry is only asserted as "stays owed, call stays up" because a JVM unit test has no peer connection; the real behaviour is `VUP-04`. Nothing device-verified.
+
+### Remaining
+Group voice-to-video; frozen-camera detection; `VUP-01`..`04` and `CALLMEDIA-01`..`05` on devices. ERROR-105 stays OPEN.
+
+### Next AI
+Run `VUP-04` after `VUP-01`; if the video does not arrive after an ICE restart, check the `retrying the video upgrade offer` log line.
+
 ## 2026-10-06 (e) - The five open call items of ERROR-104 (ERROR-105, ADR-078, ADR-079)
 
 ### Worked on
