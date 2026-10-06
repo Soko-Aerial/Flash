@@ -1,5 +1,13 @@
 # Current Handoff
 
+## 2026-10-06 (p) - UI roadmap audit fixed (ERROR-116); swarm star-topology next
+
+- **Correction to the entry below:** the plan was NOT 100 % complete. Six parts were false or partial and are now fixed in code (details: progress (p), plan section 2.1, ERROR-116, ADR-084, ADR-085): real swarm piece map, multi-target and group forwarding (Android + desktop), settings search/reset, Clear history, stored multi-pin (`message_pins`, schema v12), 1:1 ripple from real audio level, camera permission and visible failures (desktop hides Camera), roster names in group calls, link open, velocity nav hide, detail-pane shimmer.
+- **Not built:** file captions (needs a wire change, owner decision, ADR-085).
+- **Verified:** unit tests and both compiles green (list in progress (p)); nothing on a device. `FlashSettingsDataStoreTest` fails on this Windows box (DataStore tmp rename), unrelated.
+- **Device checks owed:** `UIP-01`...`UIP-20`, `MIG-12` (TEST-BACKLOG 4y).
+- **Next:** `docs/SWARM-STAR-TOPOLOGY-INVESTIGATION.md` (vouched members and group media, `SyncPush` media signature): verify each claim against `RealFlashChatRepository.kt` and the four `flash-log-*.txt` files, then fix.
+
 ## 2026-10-06 (o) - UI Polish & Feature Roadmap Implementation Complete (Phases 0, 1, 2, 3)
 
 - **Plan:** `docs/ui/UI-POLISH-AND-FEATURE-ROADMAP-PLAN.md` (100% complete across all 4 phases).

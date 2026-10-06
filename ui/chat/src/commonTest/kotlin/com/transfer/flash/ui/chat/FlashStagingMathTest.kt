@@ -29,4 +29,11 @@ class FlashStagingMathTest {
         assertEquals("1 item (1.0 KB)", FlashStagingMath.formatStagedSummary(1, 1024L))
         assertEquals("3 items (4.0 MB)", FlashStagingMath.formatStagedSummary(3, 4 * 1024 * 1024L))
     }
+
+    @Test
+    fun `the composer hint says text follows the files while files are staged`() {
+        assertEquals("Message...", FlashStagingMath.composerPlaceholder(0))
+        assertEquals("Message (sent after the files)...", FlashStagingMath.composerPlaceholder(1))
+        assertEquals("Message (sent after the files)...", FlashStagingMath.composerPlaceholder(4))
+    }
 }

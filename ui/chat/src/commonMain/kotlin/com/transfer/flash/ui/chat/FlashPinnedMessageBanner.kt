@@ -41,6 +41,9 @@ public fun FlashPinnedMessageBanner(
     onClick: () -> Unit,
     onUnpin: () -> Unit,
     modifier: Modifier = Modifier,
+    /** Which pin this is (0-based) of [total], when the conversation has several; a tap on the banner moves to the next. */
+    position: Int = 0,
+    total: Int = 1,
 ) {
     val colors = FlashTheme.colors
     val typography = FlashTheme.typography
@@ -51,8 +54,8 @@ public fun FlashPinnedMessageBanner(
     val preview = remember(contentSummary) {
         FlashPinnedMessageMath.previewSnippet(contentSummary)
     }
-    val headerTitle = remember(message.senderName, message.isMine) {
-        FlashPinnedMessageMath.senderHeader(message.senderName, message.isMine)
+    val headerTitle = remember(message.senderName, message.isMine, position, total) {
+        FlashPinnedMessageMath.senderHeader(message.senderName, message.isMine, position, total)
     }
 
     Row(

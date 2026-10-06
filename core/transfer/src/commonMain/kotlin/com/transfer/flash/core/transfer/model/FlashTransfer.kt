@@ -56,4 +56,10 @@ public data class FlashTransfer(
     val canGoOffline: Boolean = false,
     /** Number of peers actively holding pieces of this content online. */
     val holdersOnline: Int = 0,
+    /**
+     * Real piece map of a group swarm transfer, at most 64 blocks: 0 missing, 1 held by a connected
+     * member, 2 being fetched, 3 verified here. Empty for every non-swarm (1:1) transfer, so the UI
+     * shows a piece map only when there is real piece state to show.
+     */
+    val pieceBlocks: List<Int> = emptyList(),
 )

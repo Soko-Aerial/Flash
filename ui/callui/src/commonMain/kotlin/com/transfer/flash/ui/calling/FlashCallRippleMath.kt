@@ -14,6 +14,16 @@ public object FlashCallRippleMath {
     public const val RESTING_ALPHA_RINGING: Float = 0.08f
     public const val SPEAKING_ALPHA: Float = 0.16f
 
+    /** Received level (0..1) above which the peer counts as speaking; the group call's detector uses the same value. */
+    public const val SPEAKING_LEVEL_THRESHOLD: Double = 0.01
+
+    /**
+     * Whether the peer of a 1:1 call is speaking right now. Driven by the received audio level, never by the mic switch:
+     * an unmuted peer who is silent does not glow, and a backend that reports no level (null) shows no ripple.
+     */
+    public fun isPeerSpeaking(active: Boolean, peerMicMuted: Boolean, peerAudioLevel: Double?): Boolean =
+        active && !peerMicMuted && peerAudioLevel != null && peerAudioLevel > SPEAKING_LEVEL_THRESHOLD
+
     /**
      * Calculates the modulated outer glow scale during speaking.
      * When speaking, expands up to 1.22f scaled with base pulse.

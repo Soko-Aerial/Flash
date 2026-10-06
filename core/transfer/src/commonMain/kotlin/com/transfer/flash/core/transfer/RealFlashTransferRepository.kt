@@ -93,15 +93,35 @@ public class RealFlashTransferRepository(
 
     private var externalControl: ExternalTransferControl? = null
 
+    /**
+     * Ids of completed rows the user cleared. External (swarm) rows are re-published whole on every emission, so
+     * a cleared one has to be filtered out of the merge, not just deleted once.
+     */
+    private val dismissedFinishedIds = MutableStateFlow<Set<String>>(emptySet())
+
     private fun updateMergedTransfers() {
         val internal = _internalTransfers.value
         val external = _externalRows.value
-        if (external.isEmpty()) {
-            _activeTransfers.value = internal
+        val merged = if (external.isEmpty()) {
+            internal
         } else {
             val externalIds = external.mapTo(HashSet(external.size)) { it.id.value }
-            _activeTransfers.value = internal.filterNot { it.id.value in externalIds } + external
+            internal.filterNot { it.id.value in externalIds } + external
         }
+        val dismissed = dismissedFinishedIds.value
+        _activeTransfers.value = if (dismissed.isEmpty()) {
+            merged
+        } else {
+            // Only a still-completed row stays hidden: a row that left Completed (never expected) shows again.
+            merged.filterNot { it.state == FlashTransferState.Completed && it.id.value in dismissed }
+        }
+    }
+
+    override fun clearFinishedHistory() {
+        val finished = _activeTransfers.value.filter { it.state == FlashTransferState.Completed }
+        if (finished.isEmpty()) return
+        dismissedFinishedIds.update { it + finished.map { row -> row.id.value } }
+        updateMergedTransfers()
     }
 
     private fun updateInternalTransfers(transform: (List<FlashTransfer>) -> List<FlashTransfer>) {

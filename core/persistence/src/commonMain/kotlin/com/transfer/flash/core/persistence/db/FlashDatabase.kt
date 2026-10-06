@@ -5,6 +5,7 @@ import androidx.room.Database
 import androidx.room.RoomDatabase
 import com.transfer.flash.core.persistence.db.dao.ConversationDao
 import com.transfer.flash.core.persistence.db.dao.DraftDao
+import com.transfer.flash.core.persistence.db.dao.MessagePinDao
 import com.transfer.flash.core.persistence.db.dao.GroupDeliveryDao
 import com.transfer.flash.core.persistence.db.dao.GroupMemberDao
 import com.transfer.flash.core.persistence.db.dao.MessageDao
@@ -26,6 +27,7 @@ import com.transfer.flash.core.persistence.db.dao.TransferDao
 import com.transfer.flash.core.persistence.db.dao.TrustedPeerDao
 import com.transfer.flash.core.persistence.db.entity.ConversationEntity
 import com.transfer.flash.core.persistence.db.entity.DraftEntity
+import com.transfer.flash.core.persistence.db.entity.MessagePinEntity
 import com.transfer.flash.core.persistence.db.entity.GroupDeliveryEntity
 import com.transfer.flash.core.persistence.db.entity.GroupInviteEntity
 import com.transfer.flash.core.persistence.db.entity.GroupJoinRequestEntity
@@ -87,6 +89,7 @@ import com.transfer.flash.core.persistence.db.entity.TrustedPeerEntity
         GroupRotationEntity::class,
         GroupSettingsEntity::class,
         GroupPreferencesEntity::class,
+        MessagePinEntity::class,
     ],
     version = FlashDatabase.DATABASE_VERSION,
     exportSchema = true,
@@ -136,6 +139,8 @@ public abstract class FlashDatabase : RoomDatabase() {
 
     public abstract fun groupPreferencesDao(): GroupPreferencesDao
 
+    public abstract fun messagePinDao(): MessagePinDao
+
     public companion object {
         public const val DATABASE_NAME: String = "flash.db"
         // v2: MessageEntity gained attachment columns (attachmentTransferId/Name/Mime/Size/Path).
@@ -148,6 +153,7 @@ public abstract class FlashDatabase : RoomDatabase() {
         // v9: group_rotation for group rotation notices (ADR-044, ADR-073, GM-6).
         // v10: group_settings and group_preferences for signed settings and local prefs (ADR-074, GM-9).
         // v11: MessageEntity gained the swarm offer columns (swarmRoot/swarmPieceSize/swarmRootSig) so a catch-up can relay a file (ERROR-108).
-        public const val DATABASE_VERSION: Int = 11
+        // v12: message_pins, the device-local pinned messages of a conversation (UI roadmap 3.4).
+        public const val DATABASE_VERSION: Int = 12
     }
 }

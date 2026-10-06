@@ -231,6 +231,20 @@ internal object FlashSchemaSteps {
         ),
     )
 
+    /**
+     * v11 → v12: device-local pinned messages (UI roadmap 3.4). A new table only, so nothing existing is touched.
+     */
+    val STEP_11_12: FlashSchemaStep = FlashSchemaStep(
+        from = 11,
+        to = 12,
+        statements = listOf(
+            "CREATE TABLE IF NOT EXISTS message_pins (" +
+                "conversationId TEXT NOT NULL, messageId TEXT NOT NULL, pinnedAt INTEGER NOT NULL, " +
+                "PRIMARY KEY(conversationId, messageId))",
+            "CREATE INDEX IF NOT EXISTS index_message_pins_conversationId ON message_pins (conversationId)",
+        ),
+    )
+
     /** Every step, in order, from version 1 to `FlashDatabase.DATABASE_VERSION`. */
-    val ALL: List<FlashSchemaStep> = listOf(STEP_1_2, STEP_2_3, STEP_3_4, STEP_4_5, STEP_5_6, STEP_6_7, STEP_7_8, STEP_8_9, STEP_9_10, STEP_10_11)
+    val ALL: List<FlashSchemaStep> = listOf(STEP_1_2, STEP_2_3, STEP_3_4, STEP_4_5, STEP_5_6, STEP_6_7, STEP_7_8, STEP_8_9, STEP_9_10, STEP_10_11, STEP_11_12)
 }

@@ -20,6 +20,8 @@ public data class ContentSnapshot(
     public val distributedCopies: Int,
     public val canGoOffline: Boolean,
     public val deliveredTo: Set<String>,
+    /** Real piece map, at most 64 blocks (0 missing, 1 on peers, 2 in flight, 3 verified); see [PieceBlocks]. */
+    public val pieceBlocks: List<Int> = emptyList(),
 )
 
 /**

@@ -70,6 +70,7 @@ import com.transfer.flash.core.persistence.db.dao.GroupPreferencesDao
 import com.transfer.flash.core.persistence.db.dao.GroupRotationDao
 import com.transfer.flash.core.persistence.db.dao.GroupSettingsDao
 import com.transfer.flash.core.persistence.db.dao.MessageDao
+import com.transfer.flash.core.persistence.db.dao.MessagePinDao
 import com.transfer.flash.core.messaging.group.GroupLocalPreferences
 import com.transfer.flash.core.messaging.group.toEntity
 import com.transfer.flash.core.messaging.group.toPreferences
@@ -93,6 +94,7 @@ import com.transfer.flash.core.persistence.db.dao.ReceiptDao
 import com.transfer.flash.core.persistence.db.dao.RecentSearchDao
 import com.transfer.flash.core.persistence.db.entity.ConversationEntity
 import com.transfer.flash.core.persistence.db.entity.DraftEntity
+import com.transfer.flash.core.persistence.db.entity.MessagePinEntity
 import com.transfer.flash.core.persistence.db.entity.GroupDeliveryEntity
 import com.transfer.flash.core.persistence.db.entity.GroupMemberEntity
 import com.transfer.flash.core.persistence.db.entity.MessageEntity
@@ -165,6 +167,8 @@ public class RealFlashChatRepository(
     private val reactionDao: ReactionDao,
     private val groupMemberDao: GroupMemberDao? = null,
     private val groupDeliveryDao: GroupDeliveryDao? = null,
+    /** Device-local pinned messages. Null (tests, previews) means pins are not stored and the state carries none. */
+    private val messagePinDao: MessagePinDao? = null,
     /** Only already-paired peers can create, join, or send group traffic. */
     private val isTrustedPeer: (String) -> Boolean = { false },
     /** Checks whether E2E encryption is established with [conversationId]. */
@@ -886,7 +890,7 @@ public class RealFlashChatRepository(
             }
             // Inner combine (5 flows): pure message content — rows + draft + attachment progress +
             // reactions + observable group-delivery aggregates.
-            val contentFlow = combine(
+            val messageContentFlow = combine(
                 messageDao.observeConversation(conversationId),
                 draftDao.observeDraft(conversationId),
                 pacedAttachmentProgress,
@@ -955,10 +959,17 @@ public class RealFlashChatRepository(
                 ConversationContent(
                     messages = computeMessageGroupPositions(messagesWithSeparators),
                     draftText = draftEntity?.text.orEmpty(),
+                    pinnedMessageIds = emptyList(),
                     newestMessageId = newestMessageId,
                     newestInboundId = newestInboundId,
                 )
             }
+
+            // Pins live in their own table; joined here so the 5-flow content combine above stays within its overload.
+            val contentFlow = combine(
+                messageContentFlow,
+                messagePinDao?.observePinnedIds(conversationId) ?: flowOf(emptyList()),
+            ) { content, pinnedIds -> content.copy(pinnedMessageIds = pinnedIds) }
 
             // The roster is read inside the combine below, so a change to the member table (an owner removal, a leave, an
             // add from another device) has to re-run it, or an open members sheet keeps showing the old members.
@@ -1029,6 +1040,7 @@ public class RealFlashChatRepository(
                         ),
                         messages = content.messages,
                         draftText = content.draftText,
+                        pinnedMessageIds = content.pinnedMessageIds,
                         members = members.map { member ->
                             member.toMemberUi(
                                 isOnline = member.deviceId in peers.online,
@@ -1216,6 +1228,7 @@ public class RealFlashChatRepository(
             messages = content.messages,
             // Restore any unsent composer text (#9); blank when there is no saved draft.
             draftText = content.draftText,
+            pinnedMessageIds = content.pinnedMessageIds,
         )
     }
 
@@ -1223,6 +1236,7 @@ public class RealFlashChatRepository(
     private data class ConversationContent(
         val messages: List<FlashMessageUi>,
         val draftText: String,
+        val pinnedMessageIds: List<String>,
         val newestMessageId: String?,
         val newestInboundId: String?,
     )
@@ -2244,6 +2258,11 @@ public class RealFlashChatRepository(
     }
 
     override fun sendText(text: String) {
+        val conversationId = activeConversationId ?: return
+        sendTextTo(conversationId, text)
+    }
+
+    override fun sendTextTo(conversationId: String, text: String) {
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return
         val capped = if (trimmed.length > GroupPolicy.MAX_MESSAGE_TEXT_LENGTH) {
@@ -2252,7 +2271,6 @@ public class RealFlashChatRepository(
         } else {
             trimmed
         }
-        val conversationId = activeConversationId ?: return
         val now = timeSource.nowMs()
         val localId = UuidIdGenerator.newId()
 
@@ -2368,6 +2386,18 @@ public class RealFlashChatRepository(
                     createdAt = now,
                 ),
             )
+        }
+    }
+
+    override fun setMessagePinned(messageId: String, pinned: Boolean) {
+        val conversationId = activeConversationId ?: return
+        val dao = messagePinDao ?: return
+        scope.launch(ioDispatcher) {
+            if (pinned) {
+                dao.upsert(MessagePinEntity(conversationId, messageId, timeSource.nowMs()))
+            } else {
+                dao.unpin(conversationId, messageId)
+            }
         }
     }
 
@@ -4287,6 +4317,17 @@ public class RealFlashChatRepository(
         return isTrustedPeer(deviceId) || signedGroups?.hasVouchedRosterKey(groupId, deviceId) == true
     }
 
+    /**
+     * The names of group [groupId]'s active members as the roster stores them (device id to display name), so a call
+     * can label a member this device is not paired with, instead of "Member (a1b2)".
+     */
+    public suspend fun groupRosterNames(groupId: String): Map<String, String> {
+        val members = groupMemberDao ?: return emptyMap()
+        return members.activeMembers(groupId)
+            .filter { it.displayName.isNotBlank() }
+            .associate { it.deviceId to it.displayName }
+    }
+
     private fun selfMembershipOf(row: GroupMemberEntity?): FlashSelfMembership = when {
         row == null || row.isActive -> FlashSelfMembership.Active
         // A leave is issued by the leaver (v2) or carries no issuer (legacy); only an owner tombstone is a removal.
@@ -5076,6 +5117,7 @@ public class RealFlashChatRepository(
             // deliberate "the whole conversation is gone" action, unlike per-message tombstoning).
             messageDao.deleteByConversations(list)
             conversationDao.deleteConversations(list)
+            list.forEach { messagePinDao?.clearConversation(it) }
         }
         clearListSelection()
     }
@@ -5238,6 +5280,7 @@ public class RealFlashChatRepository(
                     errorMessage = firstError,
                     bytesDone = sumDone,
                     bytesTotal = sumTotal,
+                    pieceBlocks = recipientTransfers.firstOrNull { it.pieceBlocks.isNotEmpty() }?.pieceBlocks.orEmpty(),
                 )
             } else null
         }
@@ -5338,6 +5381,7 @@ public class RealFlashChatRepository(
                             canGoOffline = live?.canGoOffline ?: false,
                             holdersOnline = live?.holdersOnline ?: 0,
                             detailLine = detailLine,
+                            pieceBlocks = live?.pieceBlocks.orEmpty(),
                         ),
                     ),
                 )

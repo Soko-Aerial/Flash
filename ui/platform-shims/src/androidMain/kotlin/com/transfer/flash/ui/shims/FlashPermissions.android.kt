@@ -63,4 +63,5 @@ private class PendingPermissionRequest {
 private val FlashPermission.manifestName: String
     get() = when (this) {
         FlashPermission.Microphone -> Manifest.permission.RECORD_AUDIO
+        FlashPermission.Camera -> Manifest.permission.CAMERA
     }

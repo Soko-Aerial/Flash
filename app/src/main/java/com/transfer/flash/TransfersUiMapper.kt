@@ -49,6 +49,7 @@ fun FlashTransfer.toUiItem(): FlashTransferItemUi = FlashTransferItemUi(
     waitReason = waitReason,
     canGoOffline = canGoOffline,
     holdersOnline = holdersOnline,
+    pieceBlocks = pieceBlocks,
 )
 
 /**

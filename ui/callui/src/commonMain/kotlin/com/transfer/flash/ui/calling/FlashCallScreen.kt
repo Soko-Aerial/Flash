@@ -348,7 +348,12 @@ private fun FlashCallIdentityBlock(state: FlashCallUiState, session: FlashCallMe
     val colors = FlashTheme.colors
     val pulsing = state.state == FlashCallState.RINGING || state.state == FlashCallState.ACTIVE
     val scale = rememberCallPulseScale(pulsing)
-    val isSpeaking = !state.peerMicMuted && state.state == FlashCallState.ACTIVE
+    val peerAudioLevel = rememberCallStats(session?.stats)?.peerAudioLevel
+    val isSpeaking = FlashCallRippleMath.isPeerSpeaking(
+        active = state.state == FlashCallState.ACTIVE,
+        peerMicMuted = state.peerMicMuted,
+        peerAudioLevel = peerAudioLevel,
+    )
 
     val outerScale = FlashCallRippleMath.computeOuterGlowScale(isSpeaking, scale.value)
     val middleScale = FlashCallRippleMath.computeMiddleGlowScale(isSpeaking, scale.value)

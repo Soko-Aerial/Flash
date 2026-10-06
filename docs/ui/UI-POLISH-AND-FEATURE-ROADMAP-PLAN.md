@@ -27,15 +27,42 @@ This plan outlines the systematic implementation of:
 
 ```
 ┌────────────────────────────────────────────────────────┬──────────┐
-│ Phase 0: P0 Bug Fixes & Dead UI Action Resolution      │ 100% DONE│
+│ Phase 0: P0 Bug Fixes & Dead UI Action Resolution      │ code done*│
 ├────────────────────────────────────────────────────────┼──────────┤
-│ Phase 1: High-Priority UI Ergonomics & Screen Upgrades │ 100% DONE│
+│ Phase 1: High-Priority UI Ergonomics & Screen Upgrades │ code done*│
 ├────────────────────────────────────────────────────────┼──────────┤
-│ Phase 2: Micro-Interactions & Fluid Motion Polish      │ 100% DONE│
+│ Phase 2: Micro-Interactions & Fluid Motion Polish      │ code done*│
 ├────────────────────────────────────────────────────────┼──────────┤
-│ Phase 3: Major New Feature Flows & Visual Capabilities │ 100% DONE│
+│ Phase 3: Major New Feature Flows & Visual Capabilities │ code done*│
 └────────────────────────────────────────────────────────┴──────────┘
 ```
+
+\* "100% DONE" was wrong when first written: see section 2.1 (audit of 2026-10-06). Code is now complete except captions (ADR-085); nothing is device-verified.
+
+---
+
+## 2.1 Audit correction (2026-10-06): several "DONE" claims above were false or only partly true
+
+The table above and the task notes below were written when the code compiled, not when it was checked against the
+behaviour they describe. `problems.txt` (an owner-supplied review) listed six problems; each was checked in the code
+before it was fixed. Status after the fixes of 2026-10-06 (ERROR-116, ADR-084). Nothing here is device-verified: see
+`docs/testing/TEST-BACKLOG.md` section 4y (UIP-01...UIP-20).
+
+| Task | What was wrong | State now |
+|---|---|---|
+| 3.6 swarm piece map | Drew invented data: one progress number filled the grid in order and "on peers" was progress + 25 % per holder; `FlashDetailPanes` hard-coded 2 holders, so every active 1:1 file claimed a swarm. | **Real.** `PieceBlocks` (`:core:swarm`) folds the engine's bitfields, in-flight pieces and peer bitfields into at most 64 blocks, carried on `ContentSnapshot` -> `FlashSwarmStatus` -> `FlashTransfer.pieceBlocks` -> the file card and detail pane. A transfer with no swarm state has no blocks and shows no map. |
+| 3.1 forwarding | Android reused the file-share path: text went into the open chat once per target (so only the last chat, repeated) and a group target fell into the pairing branch. Desktop never passed `forwardRecipients`. | **Fixed.** `RealFlashChatRepository.sendTextTo(conversationId, text)` addresses a chat without touching the open one; `forwardPayloadToChats` (Android) and `forwardToChats` (desktop) deliver to every target, groups included. |
+| 1.3 settings | No search and no reset-to-defaults existed. | **Added** (`FlashSettingsMath.sectionVisible/rowVisible/isAtDefaults`, a search field, a reset row). |
+| 1.2 transfers | "Clear history" never appeared (`onClearHistory` was never passed). | **Added** (`FlashTransferRepository.clearFinishedHistory()` hides completed rows, also swarm rows, for the session; Failed and in-flight rows stay). |
+| 3.4 pinned messages | A `remember` state: lost on leaving the chat, one pin only, toast "Message pinned". | **Device-local, stored, several.** Table `message_pins` (schema v12). The banner walks the pins on tap ("Pinned message 2 of 3"). The toast says "Pinned on this device". A pin is **not** shared with the peer or the group (no wire change, by design). |
+| 3.2 staging tray captions | No captions: the composer text goes out as a separate message after the files. | **Not built, and now stated honestly.** A real caption needs a field in the file offer (a wire and protocol change), which is an owner decision. The composer hint reads "Message (sent after the files)..." while files are staged. |
+| 3.5 speaking ripple | A 1:1 call glowed whenever the peer's mic switch was on. | **Driven by audio.** `FlashCallStats.peerAudioLevel` (WebRTC `inbound-rtp.audioLevel`) above 0.01 while ACTIVE and unmuted; no level (backend without it) means no ripple. The level is as fresh as the stats interval (`callStatsIntervalMs`, 2 s on LOW), so the ripple is coarse, not frame-accurate. The group tile ring already used a real level. |
+| 0.1 camera | `runCatching` swallowed a denied permission (the manifest declares CAMERA, so the system image-capture intent throws unless it is granted); desktop "Camera" opened a file chooser. | **Fixed.** `FlashPermission.Camera` is requested first; failures reach a toast ("No camera app found", "Camera permission is required...", "Could not open the camera"); desktop (`capturesFromCamera = false`) hides the Camera action. |
+| shared content | A link tap opened the share chooser. | **Opens the link** (`LocalUriHandler`; "No app can open this link" on failure). |
+| shared content search | Claimed to search only loaded messages. | **Not a defect:** `observeConversation` is not paged, so every message of the chat is loaded. |
+| 0.4 call names | Only a "Member (a1b2)" fallback; roster names were not wired in. | **Wired.** `CallCoordinator.groupRosterNames` is read once per group call (start, join, incoming); paired or discovered names still win. |
+| 1.4 nav auto-hide | Reacted to any 20 px of travel. | **Velocity-based** (`FlashNavAutoHideMath`: hide at >= 600 px/s down, show at >= 300 px/s up or at the top). |
+| 1.1 detail-pane shimmer | The detail pane had a plain bar. | **Shares `TransferProgressBar`** with the Transfers rows (velocity shimmer scaled by throughput, off when reduced motion). |
 
 ---
 

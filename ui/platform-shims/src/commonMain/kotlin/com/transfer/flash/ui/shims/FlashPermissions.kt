@@ -5,12 +5,15 @@ import androidx.compose.runtime.Composable
 /**
  * The runtime permissions Flash's chat UI asks for.
  *
- * Exactly one entry today — `RECORD_AUDIO`, for voice messages. Modelled as an enum rather than a raw
+ * `RECORD_AUDIO` for voice messages and `CAMERA` for taking a photo. Modelled as an enum rather than a raw
  * permission string because the string is an Android constant that `commonMain` cannot name, and
  * because a desktop actual has to be able to answer for the whole set without knowing any of them.
  */
 public enum class FlashPermission {
     Microphone,
+
+    /** `CAMERA`: the app declares it (calls), so the system camera intent throws unless it is granted. */
+    Camera,
 }
 
 /** Reads and requests runtime permissions. */

@@ -55,6 +55,7 @@ import com.transfer.flash.ui.transfers.FlashTransferDirection
 import com.transfer.flash.ui.transfers.FlashTransferItemUi
 import com.transfer.flash.ui.transfers.FlashTransferState
 import com.transfer.flash.ui.transfers.FlashTransfersMath
+import com.transfer.flash.ui.transfers.TransferProgressBar
 
 private fun extensionOf(name: String): String = name.substringAfterLast('.', "").trim()
 
@@ -202,21 +203,15 @@ fun FlashTransferDetailPane(
 
             Spacer(Modifier.height(FlashSpacing.space8))
 
-            // Animated progress bar
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(6.dp)
-                    .clip(RoundedCornerShape(FlashShapes.radius8))
-                    .background(colors.backgroundSurfaceSubtle),
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxHeight()
-                        .fillMaxWidth(fraction.value.coerceIn(0f, 1f))
-                        .background(fillTint),
-                )
-            }
+            // Animated progress bar with the same velocity shimmer as the Transfers rows.
+            TransferProgressBar(
+                fraction = fraction,
+                fillTint = fillTint,
+                isActive = item.state == FlashTransferState.Active,
+                speedBytesPerSec = item.speedBytesPerSec,
+                reduceMotion = FlashTheme.motion.reduceMotion,
+                barHeight = 6.dp,
+            )
 
             Spacer(Modifier.height(FlashSpacing.space12))
 
@@ -242,12 +237,15 @@ fun FlashTransferDetailPane(
         }
 
         // Task 3.6: Swarm Transfer Block Availability Grid Map
-        DetailCard(title = "Swarm Block Availability") {
-            FlashSwarmPieceMap(
-                progress = fraction.value,
-                holdersOnline = if (item.state == FlashTransferState.Active) 2 else 0,
-                isDownloading = item.state == FlashTransferState.Active && item.direction == FlashTransferDirection.Receive,
-            )
+        // Real piece state only: a 1:1 transfer has none, so no card (it used to claim 2 peers).
+        if (item.pieceBlocks.isNotEmpty()) {
+            DetailCard(title = "Swarm Block Availability") {
+                FlashSwarmPieceMap(
+                    blocks = item.pieceBlocks,
+                    holdersOnline = item.holdersOnline,
+                    isDownloading = item.state == FlashTransferState.Active && item.direction == FlashTransferDirection.Receive,
+                )
+            }
         }
 
         // Integrity & Security Card

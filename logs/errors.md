@@ -7576,3 +7576,32 @@ The proof result was not mapped to a user-visible state.
 
 ### Status
 OPEN - fixed in code, unit-tested, NOT device-verified (until GJOIN-04 passes)
+
+## ERROR-116 - The UI polish roadmap was marked 100 % DONE while six parts were false or partly true
+
+### Date
+2026-10-06
+
+### Area
+UI / `docs/ui/UI-POLISH-AND-FEATURE-ROADMAP-PLAN.md` (Phases 0 to 3), swarm piece map, forwarding, settings, transfers, pins, calls, camera
+
+### Symptoms
+An owner review (`problems.txt`) found: the swarm piece map drew made-up data and claimed 2 peers on every active file; Forward on Android sent the text to the last target only and could not address a group, and did nothing on desktop; settings had no search or reset and Transfers had no "Clear history"; a pin was lost on leaving the chat (one pin only, toast "Message pinned"); the staging tray had no captions; the 1:1 call ripple followed the peer's mic switch, not audio; camera capture could fail silently; plus five smaller points. Every claim was checked against the code first; all were real except "the shared-content sheet only searches loaded messages" (the conversation flow is not paged).
+
+### Root cause
+The plan was marked DONE after the code compiled and the pure helpers had tests, without checking the behaviour the plan describes (mock data in `FlashSwarmPieceMapMath.computeBlockStatuses`, a single shared `sendText` that reads the open chat, hard-coded `holdersOnline`, a `remember` pin, `runCatching` around a launch that throws `SecurityException`, `isSpeaking = !peerMicMuted`).
+
+### Working fix
+See the table in `docs/ui/UI-POLISH-AND-FEATURE-ROADMAP-PLAN.md` section 2.1 (one row per problem) and ADR-084 (device-local pins, schema v12). In short: real piece blocks from the swarm engine (`PieceBlocks`); `sendTextTo` + `forwardPayloadToChats`/`forwardToChats`; settings search/reset; `clearFinishedHistory`; stored multi-pin table `message_pins`; camera permission request and visible failures, desktop hides Camera; `peerAudioLevel` drives the 1:1 ripple; link tap opens the link; roster names in group calls (`groupRosterNames`); velocity-based nav hide; shared progress bar with velocity shimmer in the detail pane.
+
+### Not fixed (owner decision)
+Captions on a file (Task 3.2). The file offer has no caption field, so a real caption is a wire and protocol change. The composer now says the text is "sent after the files".
+
+### Verification
+Unit tests: `PieceBlocksTest`, `FlashSwarmPieceMapMathTest`, `FlashSettingsSearchResetTest`, `FlashPinnedMessageMathTest`, `FlashStagingMathTest`, `FlashAttachmentSheetVisibilityTest`, `FlashNavAutoHideMathTest`, `FlashCallRippleMathTest`, `CallCoordinatorRosterNamesTest`, `RealFlashChatRepositoryTest` (`sendTextTo`, pins), `RealFlashTransferRepositoryTest` (clear history), `FlashDatabaseJvmTest` (pin DAO on real SQLite), `FlashMigrationsChainTest` and `FlashJvmMigrationsTest` (v11 to v12). `:app:compileDebugKotlin` and `:desktop:compileKotlinJvm` green. Two `RealFlashChatRepositoryTest` sendText cases failed once under load (fixed-delay timing) and passed on rerun. `FlashSettingsDataStoreTest` (12 cases) fails in this Windows environment with "Unable to rename ...preferences_pb.tmp" and does not touch this work.
+
+### Related files
+`core/swarm/.../engine/PieceBlocks.kt`, `core/messaging/.../RealFlashChatRepository.kt`, `core/persistence/.../MessagePinEntity.kt`, `core/calling/.../CallCoordinator.kt`, `ui/chat/.../FlashConversationScreen.kt`, `ui/platform-shims/.../FlashCameraCapture*.kt`, `app/.../MainActivity.kt`, `desktop/.../DesktopShell.kt`
+
+### Status
+OPEN - fixed in code, unit-tested, NOT device-verified (until UIP-02, UIP-04, UIP-05, UIP-06, UIP-11...UIP-20 pass)

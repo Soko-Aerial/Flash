@@ -60,6 +60,7 @@ import com.transfer.flash.ui.theme.FlashText
 import com.transfer.flash.ui.theme.FlashTheme
 import com.transfer.flash.ui.theme.rememberFlashHaptics
 import kotlin.math.abs
+import kotlin.time.TimeSource
 import kotlin.math.sqrt
 
 /**
@@ -163,39 +164,72 @@ private const val LabelWeightSelected = 600
 private const val LabelWeightIdle = 400
 
 /**
+ * The rule behind [rememberAutoNavVisible]: the bar follows how fast the list moves, not how far it has moved.
+ * A quick downward flick hides it, a quick upward flick (or reaching the top) brings it back, and a slow reading
+ * drift changes nothing, so the bar does not twitch while someone reads.
+ */
+object FlashNavAutoHideMath {
+    /** Downward speed, px per second, at or above which the bar hides. */
+    const val HIDE_VELOCITY_PX_PER_S: Float = 600f
+
+    /** Upward speed, px per second, at or above which the bar returns (lower than hiding: showing is the safe side). */
+    const val SHOW_VELOCITY_PX_PER_S: Float = 300f
+
+    /**
+     * Rough size of one list row in px, used only to turn a change of first visible item into a distance, since the
+     * real row heights are not known here. A speed estimate does not need better.
+     */
+    const val ROW_ESTIMATE_PX: Float = 160f
+
+    /** Signed distance scrolled between two observations (positive = content moved up, i.e. the user scrolled down). */
+    fun scrolledPx(previousIndex: Int, previousOffset: Int, index: Int, offset: Int): Float =
+        (index - previousIndex) * ROW_ESTIMATE_PX + (offset - previousOffset)
+
+    fun velocityPxPerSec(deltaPx: Float, elapsedMs: Long): Float =
+        if (elapsedMs <= 0L) 0f else deltaPx * 1000f / elapsedMs
+
+    /** The new visibility. [atTop] (first row fully in view) always shows the bar. */
+    fun visibleAfter(current: Boolean, deltaPx: Float, elapsedMs: Long, atTop: Boolean): Boolean {
+        if (atTop) return true
+        val v = velocityPxPerSec(deltaPx, elapsedMs)
+        return when {
+            v >= HIDE_VELOCITY_PX_PER_S -> false
+            v <= -SHOW_VELOCITY_PX_PER_S -> true
+            else -> current
+        }
+    }
+}
+
+/**
  * Observes a [LazyListState] and derives whether navigation chrome should remain visible.
- * Automatically hides on downward scroll to maximize content reading area on smaller screens,
- * and restores immediately on upward scroll or list settle.
+ * Hides on a fast downward scroll to maximize content reading area on smaller screens, and restores on a fast upward
+ * scroll or when the list is back at the top ([FlashNavAutoHideMath]).
  */
 @Composable
 fun rememberAutoNavVisible(
     listState: LazyListState?,
-    scrollThresholdPx: Float = 20f,
 ): State<Boolean> {
     val isVisible = remember { mutableStateOf(true) }
     if (listState == null) return isVisible
 
-    var previousIndex by remember(listState) { mutableIntStateOf(listState.firstVisibleItemIndex) }
-    var previousScrollOffset by remember(listState) { mutableIntStateOf(listState.firstVisibleItemScrollOffset) }
-
     LaunchedEffect(listState) {
+        var previousIndex = listState.firstVisibleItemIndex
+        var previousOffset = listState.firstVisibleItemScrollOffset
+        var previousMark = TimeSource.Monotonic.markNow()
         snapshotFlow {
             listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
         }.collect { (index, offset) ->
-            if (index > previousIndex) {
-                isVisible.value = false
-            } else if (index < previousIndex) {
-                isVisible.value = true
-            } else {
-                val delta = offset - previousScrollOffset
-                if (delta > scrollThresholdPx) {
-                    isVisible.value = false
-                } else if (delta < -scrollThresholdPx || offset <= 0) {
-                    isVisible.value = true
-                }
-            }
+            val elapsedMs = previousMark.elapsedNow().inWholeMilliseconds
+            val delta = FlashNavAutoHideMath.scrolledPx(previousIndex, previousOffset, index, offset)
+            isVisible.value = FlashNavAutoHideMath.visibleAfter(
+                current = isVisible.value,
+                deltaPx = delta,
+                elapsedMs = elapsedMs,
+                atTop = index == 0 && offset <= 0,
+            )
             previousIndex = index
-            previousScrollOffset = offset
+            previousOffset = offset
+            previousMark = TimeSource.Monotonic.markNow()
         }
     }
     return isVisible

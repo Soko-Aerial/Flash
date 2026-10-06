@@ -1893,6 +1893,7 @@ public class FlashCallSession(
             } else {
                 null
             },
+            peerAudioLevel = audioIn?.members?.num("audioLevel"),
         )
     }
 

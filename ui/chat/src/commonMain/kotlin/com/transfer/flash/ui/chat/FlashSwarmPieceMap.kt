@@ -44,7 +44,8 @@ import com.transfer.flash.ui.theme.FlashTheme
 /**
  * Task 3.6: Swarm Transfer Block Availability Grid Map.
  *
- * Renders a high-performance Canvas-drawn micro-block matrix representing swarm file chunks:
+ * Renders a high-performance Canvas-drawn micro-block matrix of the engine's real piece state
+ * ([blocks], see `FlashTransfer.pieceBlocks`); callers draw it only when [blocks] is not empty:
  * - Verified & Saved: accent/green
  * - In-flight downloading: pulsing cyan
  * - Available on swarm peers: amber outline
@@ -52,24 +53,17 @@ import com.transfer.flash.ui.theme.FlashTheme
  */
 @Composable
 public fun FlashSwarmPieceMap(
-    progress: Float,
+    blocks: List<Int>,
     holdersOnline: Int,
     isDownloading: Boolean,
     modifier: Modifier = Modifier,
-    totalBlocks: Int = FlashSwarmPieceMapMath.DEFAULT_BLOCK_COUNT,
     columns: Int = FlashSwarmPieceMapMath.DEFAULT_COLUMNS,
 ) {
     val colors = FlashTheme.colors
     val motion = FlashTheme.motion
 
-    val statuses = remember(progress, holdersOnline, isDownloading, totalBlocks) {
-        FlashSwarmPieceMapMath.computeBlockStatuses(
-            totalBlocks = totalBlocks,
-            progress = progress,
-            holdersOnline = holdersOnline,
-            isDownloading = isDownloading,
-        )
-    }
+    val statuses = remember(blocks) { FlashSwarmPieceMapMath.statusesFromBlocks(blocks) }
+    val totalBlocks = statuses.size
 
     val summary = remember(statuses) {
         FlashSwarmPieceMapMath.summaryText(statuses)
@@ -138,7 +132,7 @@ public fun FlashSwarmPieceMap(
         Spacer(modifier = Modifier.height(FlashSpacing.space8))
 
         // Canvas micro-block grid
-        val rows = (totalBlocks + columns - 1) / columns
+        val rows = ((totalBlocks + columns - 1) / columns).coerceAtLeast(1)
         val blockSpacingPx = 4f
         val cornerRadiusPx = 3f
 

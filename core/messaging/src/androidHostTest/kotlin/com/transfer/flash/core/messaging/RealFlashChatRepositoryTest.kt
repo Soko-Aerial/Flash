@@ -15,6 +15,8 @@ import com.transfer.flash.core.persistence.db.dao.GroupDeliveryCount
 import com.transfer.flash.core.persistence.db.dao.GroupDeliveryDao
 import com.transfer.flash.core.persistence.db.dao.GroupMemberDao
 import com.transfer.flash.core.persistence.db.dao.MessageDao
+import com.transfer.flash.core.persistence.db.dao.MessagePinDao
+import com.transfer.flash.core.persistence.db.entity.MessagePinEntity
 import com.transfer.flash.core.persistence.db.dao.OutboxDao
 import com.transfer.flash.core.persistence.db.dao.ReactionDao
 import com.transfer.flash.core.persistence.db.dao.ReceiptDao
@@ -352,6 +354,37 @@ class RealFlashChatRepositoryTest {
         }
     }
 
+    private class FakeMessagePinDao : MessagePinDao {
+        val rows = ConcurrentHashMap<Pair<String, String>, MessagePinEntity>()
+        private val flows = ConcurrentHashMap<String, MutableStateFlow<List<String>>>()
+
+        private fun stateFor(conversationId: String) = flows.getOrPut(conversationId) { MutableStateFlow(emptyList()) }
+
+        private fun publish(conversationId: String) {
+            stateFor(conversationId).value = rows.values
+                .filter { it.conversationId == conversationId }
+                .sortedWith(compareByDescending<MessagePinEntity> { it.pinnedAt }.thenBy { it.messageId })
+                .map { it.messageId }
+        }
+
+        override suspend fun upsert(pin: MessagePinEntity) {
+            rows[pin.conversationId to pin.messageId] = pin
+            publish(pin.conversationId)
+        }
+
+        override fun observePinnedIds(conversationId: String): Flow<List<String>> = stateFor(conversationId)
+
+        override suspend fun unpin(conversationId: String, messageId: String) {
+            rows.remove(conversationId to messageId)
+            publish(conversationId)
+        }
+
+        override suspend fun clearConversation(conversationId: String) {
+            rows.keys.removeAll { it.first == conversationId }
+            publish(conversationId)
+        }
+    }
+
     private class FakeReactionDao : ReactionDao {
         val rows = ConcurrentHashMap<Pair<String, String>, ReactionEntity>()
         val flow = MutableStateFlow<List<ReactionEntity>>(emptyList())
@@ -395,6 +428,85 @@ class RealFlashChatRepositoryTest {
             recents.clear()
             flow.value = emptyList()
         }
+    }
+
+    @Test
+    fun `pins are stored per conversation, newest first, and survive closing and reopening the chat`() = runBlocking {
+        val pinDao = FakeMessagePinDao()
+        val repository = newRepository(messagePinDao = pinDao)
+
+        repository.openConversation("conv-a")
+        repository.setMessagePinned("m1", true)
+        kotlinx.coroutines.delay(20)
+        repository.setMessagePinned("m2", true)
+        kotlinx.coroutines.delay(100)
+        assertEquals(listOf("m2", "m1"), repository.conversationState.value.pinnedMessageIds)
+
+        repository.closeConversation()
+        repository.openConversation("conv-b")
+        kotlinx.coroutines.delay(100)
+        assertTrue("another chat must not see conv-a's pins", repository.conversationState.value.pinnedMessageIds.isEmpty())
+
+        repository.openConversation("conv-a")
+        kotlinx.coroutines.delay(100)
+        assertEquals(listOf("m2", "m1"), repository.conversationState.value.pinnedMessageIds)
+
+        repository.setMessagePinned("m2", false)
+        kotlinx.coroutines.delay(100)
+        assertEquals(listOf("m1"), repository.conversationState.value.pinnedMessageIds)
+    }
+
+    @Test
+    fun `deleting a conversation drops its pins`() = runBlocking {
+        val pinDao = FakeMessagePinDao()
+        val repository = newRepository(messagePinDao = pinDao)
+        repository.openConversation("conv-a")
+        repository.setMessagePinned("m1", true)
+        kotlinx.coroutines.delay(100)
+        assertEquals(1, pinDao.rows.size)
+
+        repository.deleteConversations(setOf("conv-a"))
+        kotlinx.coroutines.delay(100)
+        assertTrue(pinDao.rows.isEmpty())
+    }
+
+    @Test
+    fun `without a pin store a pin request is ignored and the state carries none`() = runBlocking {
+        val repository = newRepository()
+        repository.openConversation("conv-a")
+        repository.setMessagePinned("m1", true)
+        kotlinx.coroutines.delay(100)
+        assertTrue(repository.conversationState.value.pinnedMessageIds.isEmpty())
+    }
+
+    @Test
+    fun `sendTextTo addresses the target chat and leaves the open conversation alone`() = runBlocking {
+        val messageDao = FakeMessageDao()
+        val repository = RealFlashChatRepository(
+            localDeviceId = "my-device-id",
+            localDisplayName = "Kali",
+            messageDao = messageDao,
+            conversationDao = FakeConversationDao(),
+            outboxDao = FakeOutboxDao(),
+            receiptDao = FakeReceiptDao(),
+            draftDao = FakeDraftDao(),
+            recentSearchDao = FakeRecentSearchDao(),
+            reactionDao = FakeReactionDao(),
+            transportSink = MessageTransportSink { _, _ -> true },
+            ioDispatcher = testDispatcher,
+        )
+
+        // Forwarding to several chats must not depend on, or move, the open conversation.
+        repository.openConversation("conv-alex")
+        repository.sendTextTo("conv-bob", "forwarded")
+        repository.sendTextTo("conv-cara", "forwarded")
+        kotlinx.coroutines.delay(100)
+
+        assertEquals(
+            setOf("conv-bob", "conv-cara"),
+            messageDao.messages.values.map { it.conversationId }.toSet(),
+        )
+        assertTrue(messageDao.messages.values.none { it.conversationId == "conv-alex" })
     }
 
     @Test
@@ -3351,6 +3463,7 @@ class RealFlashChatRepositoryTest {
         reactionDao: FakeReactionDao = FakeReactionDao(),
         groupMemberDao: GroupMemberDao? = null,
         groupDeliveryDao: GroupDeliveryDao? = null,
+        messagePinDao: MessagePinDao? = null,
         trustedPeers: Set<String> = emptySet(),
         onlinePeerIds: Flow<Set<String>> = MutableStateFlow(trustedPeers + setOf("peer-a", "peer-b", "peer-c", "dev-a", "dev-b", "dev-c")),
         groupSink: (suspend (String, GroupWireFrame) -> Boolean)? = null,
@@ -3375,6 +3488,7 @@ class RealFlashChatRepositoryTest {
         reactionDao = reactionDao,
         groupMemberDao = groupMemberDao,
         groupDeliveryDao = groupDeliveryDao,
+        messagePinDao = messagePinDao,
         isTrustedPeer = { it in trustedPeers || it == localDeviceId },
         groupTransportSink = groupSink?.let { sink -> GroupTransportSink { target, frame -> sink(target, frame) } },
         transportSink = MessageTransportSink { target, frame -> messageSink(target, frame) },

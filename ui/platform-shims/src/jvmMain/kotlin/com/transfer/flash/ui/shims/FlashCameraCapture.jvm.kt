@@ -7,13 +7,18 @@ import javax.swing.JFileChooser
 import javax.swing.filechooser.FileNameExtensionFilter
 
 /**
- * JVM / Desktop camera capture fallback: allows choosing an existing photo from disk.
+ * JVM / Desktop has no camera capture: [FlashCameraCaptureLauncher.capturesFromCamera] is false so the chat does not
+ * offer a Camera action. [launch] still lets a caller choose an existing photo from disk.
  */
 @Composable
 public actual fun rememberFlashCameraCaptureLauncher(
     onCaptured: (FlashPickedFile) -> Unit,
+    onFailure: (String) -> Unit,
 ): FlashCameraCaptureLauncher = remember(onCaptured) {
     object : FlashCameraCaptureLauncher {
+        // No capture UI on desktop: the chat hides its Camera action, so this chooser is not reached from there.
+        override val capturesFromCamera: Boolean = false
+
         override fun launch() {
             val chooser = JFileChooser().apply {
                 isMultiSelectionEnabled = false

@@ -1122,6 +1122,7 @@ object DiscoveryEngineHolder {
             reactionDao = db.reactionDao(),
             groupMemberDao = db.groupMemberDao(),
             groupDeliveryDao = db.groupDeliveryDao(),
+            messagePinDao = db.messagePinDao(),
             readCursorDao = db.readCursorDao(),
             runInTransaction = { block -> db.runInWriteTransaction(block) },
             // ADR-044 V1: signed groups. The port signs with the identity key the TLS certificate presents; the
@@ -1187,6 +1188,7 @@ object DiscoveryEngineHolder {
                         errorMessage = t.errorMessage,
                         bytesDone = t.bytesDone,
                         bytesTotal = t.bytesTotal,
+                        pieceBlocks = t.pieceBlocks,
                     )
                 }
             },
@@ -1395,6 +1397,8 @@ object DiscoveryEngineHolder {
             // ERROR-088: who is in the call is the roster (paired or vouched), not who has a live session right now;
             // the live-key check above is applied when an announcement is sent or received.
             isGroupMember = { peerId, groupId -> chatImpl.isGroupCallMember(groupId, peerId) },
+            // A member this device is not paired with is labelled with the name its group roster stores.
+            groupRosterNames = { groupId -> chatImpl.groupRosterNames(groupId) },
             // ERROR-088: a member that is not connected yet is dialed on demand (also in ECO), so it can be invited
             // and can join. Cheap when a session is live; bounded by the planner's urgent-dial floor otherwise.
             reachPeer = { peerId -> autoConnector?.ensureSession(peerId, AutoConnector.CALL_DIAL_BUDGET_MS) ?: false },

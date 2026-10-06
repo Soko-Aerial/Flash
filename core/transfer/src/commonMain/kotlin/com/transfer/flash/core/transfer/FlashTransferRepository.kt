@@ -51,6 +51,13 @@ public interface FlashTransferRepository {
     ): FlashResult<FlashTransferId> =
         sendFile(targetDevice, fileUri, displayName, fileSize, wireFileId)
 
+    /**
+     * Removes every [FlashTransferState.Completed] row from [activeTransfers] (the Transfers tab's "Clear history").
+     * Failed and in-flight rows stay: they need the user's attention. Received files and chat bubbles are untouched
+     * (a bubble keeps the path stamped on its own row). Default no-op for lightweight implementations.
+     */
+    public fun clearFinishedHistory() {}
+
     public suspend fun pauseTransfer(transferId: FlashTransferId): FlashResult<Unit>
 
     /**

@@ -510,6 +510,28 @@ class RealFlashTransferRepositoryTest {
     }
 
     @Test
+    fun `clearFinishedHistory removes completed rows only and they stay gone`() = runBlocking {
+        val repo = offerRepo()
+        repo.onIncomingOffered("tx-done", "fx-done", "a.bin", 1024L, "Pixel", "peer-1")
+        repo.acceptIncoming(FlashTransferId("tx-done"))
+        repo.onIncomingCompleted("tx-done", verified = true, localPath = "/tmp/a.bin")
+        repo.onIncomingOffered("tx-live", "fx-live", "b.bin", 2048L, "Pixel", "peer-1")
+        repo.acceptIncoming(FlashTransferId("tx-live"))
+        repo.onIncomingOffered("tx-failed", "fx-failed", "c.bin", 2048L, "Pixel", "peer-1")
+        repo.acceptIncoming(FlashTransferId("tx-failed"))
+        repo.onIncomingFailed("tx-failed", "boom")
+
+        repo.clearFinishedHistory()
+
+        val ids = repo.activeTransfers.value.map { it.id.value }.toSet()
+        assertEquals(setOf("tx-live", "tx-failed"), ids)
+
+        // A later change to another row must not bring the cleared one back.
+        repo.onIncomingProgress("tx-live", 512L)
+        assertTrue("tx-done" !in repo.activeTransfers.value.map { it.id.value })
+    }
+
+    @Test
     fun `sendFile preserves an explicit wire file id`() = runBlocking {
         val repo = RealFlashTransferRepository(
             chunker = Chunker(),

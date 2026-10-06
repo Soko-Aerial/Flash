@@ -348,10 +348,7 @@ fun FlashFileMessageCard(
         }
 
         // Task 3.6: Swarm piece availability grid map
-        if (attachment.holdersOnline > 0 ||
-            attachment.detailLine?.contains("swarm", ignoreCase = true) == true ||
-            (attachment.transferStatus == FlashFileTransferStatus.Transferring && attachment.transferProgress > 0f)
-        ) {
+        if (attachment.pieceBlocks.isNotEmpty() && attachment.transferStatus != FlashFileTransferStatus.Downloaded) {
             var pieceMapExpanded by remember { mutableStateOf(false) }
 
             Column(
@@ -383,7 +380,7 @@ fun FlashFileMessageCard(
                 if (pieceMapExpanded) {
                     Spacer(modifier = Modifier.height(FlashSpacing.space4))
                     FlashSwarmPieceMap(
-                        progress = attachment.transferProgress,
+                        blocks = attachment.pieceBlocks,
                         holdersOnline = attachment.holdersOnline,
                         isDownloading = attachment.transferStatus == FlashFileTransferStatus.Transferring,
                         modifier = Modifier.fillMaxWidth(),

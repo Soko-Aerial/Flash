@@ -100,6 +100,13 @@ public class CallCoordinator(
     private val performanceMode: () -> FlashPerformanceMode = { FlashPerformanceMode.HIGH },
     private val peerNameResolver: (peerId: String) -> String? = { null },
     /**
+     * The names a group's roster stores for its active members (device id to display name). A group call labels a
+     * member by [peerNameResolver] first (paired or discovered), then by this, so a member this device is not paired
+     * with shows its roster name rather than "Member (a1b2)". Suspend because the roster lives in the chat database;
+     * it is read once when a group call is started, joined or received, never on a UI thread. Default: no names.
+     */
+    private val groupRosterNames: suspend (groupId: String) -> Map<String, String> = { emptyMap() },
+    /**
      * This device's network band (G2) for group calls. Must be cheap and must not block: it is read
      * for every group announcement (every 4 s). The default keeps callers that do not detect it
      * sending UNKNOWN, which the other end treats as "decide by my own band".
@@ -248,6 +255,7 @@ public class CallCoordinator(
         currentMap.remove(groupId)
         _ongoingGroupCalls.value = currentMap
 
+        warmRosterNames(groupId)
         val callId = com.transfer.flash.core.common.id.UuidIdGenerator.newId()
         val session = FlashGroupCallSession(
             callId = callId,
@@ -261,7 +269,7 @@ public class CallCoordinator(
             sendFrame = { frame, peerId -> sendGroupFrame(groupId, frame, peerId) },
             onEnded = ::onGroupSessionEnded,
             performanceMode = performanceMode,
-            peerNameResolver = peerNameResolver,
+            peerNameResolver = groupNameResolver(groupId),
             isGroupMember = { id -> isGroupMember(id, groupId) },
             networkBand = networkBand,
             smallerVideoForMany = smallerVideoForMany,
@@ -289,6 +297,7 @@ public class CallCoordinator(
 
         val groupCallUi = _ongoingGroupCalls.value[groupId]
         val groupName = groupCallUi?.groupName ?: "Group Call"
+        warmRosterNames(groupId)
 
         val session = FlashGroupCallSession(
             callId = callId,
@@ -302,7 +311,7 @@ public class CallCoordinator(
             sendFrame = { frame, peerId -> sendGroupFrame(groupId, frame, peerId) },
             onEnded = ::onGroupSessionEnded,
             performanceMode = performanceMode,
-            peerNameResolver = peerNameResolver,
+            peerNameResolver = groupNameResolver(groupId),
             isGroupMember = { id -> isGroupMember(id, groupId) },
             networkBand = networkBand,
             smallerVideoForMany = smallerVideoForMany,
@@ -785,7 +794,30 @@ public class CallCoordinator(
 
     private fun CallWireFrame.frameName(): String = this::class.simpleName ?: "frame"
 
-    private fun startIncomingGroup(peerId: String, frame: CallWireFrame.GroupInvite) {
+    /** Roster names read so far, keyed `groupId/deviceId`. Copy-on-write so a session may read it from any thread. */
+    private val rosterNames = MutableStateFlow<Map<String, String>>(emptyMap())
+
+    /** Reads group [groupId]'s roster names into [rosterNames]. A failed read leaves the fallback label, never a failed call. */
+    private suspend fun warmRosterNames(groupId: String) {
+        val names = try {
+            groupRosterNames(groupId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            FlashLog.w("GROUP_CALL", "Roster names for group=$groupId unavailable: ${t.message}")
+            return
+        }
+        if (names.isEmpty()) return
+        rosterNames.update { current -> current + names.mapKeys { (id, _) -> "$groupId/$id" } }
+    }
+
+    /** The name resolver a group session uses: paired or discovered first, then the group's roster. */
+    private fun groupNameResolver(groupId: String): (String) -> String? = { id ->
+        peerNameResolver(id)?.ifBlank { null } ?: rosterNames.value["$groupId/$id"]
+    }
+
+    private suspend fun startIncomingGroup(peerId: String, frame: CallWireFrame.GroupInvite) {
+        warmRosterNames(frame.groupId)
         val session = FlashGroupCallSession(
             callId = frame.callId,
             groupId = frame.groupId,
@@ -798,7 +830,7 @@ public class CallCoordinator(
             sendFrame = { out, to -> sendGroupFrame(frame.groupId, out, to) },
             onEnded = ::onGroupSessionEnded,
             performanceMode = performanceMode,
-            peerNameResolver = peerNameResolver,
+            peerNameResolver = groupNameResolver(frame.groupId),
             isGroupMember = { id -> isGroupMember(id, frame.groupId) },
             networkBand = networkBand,
             smallerVideoForMany = smallerVideoForMany,

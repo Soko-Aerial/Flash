@@ -3,6 +3,7 @@ package com.transfer.flash.core.persistence.db
 import androidx.room.Room
 import androidx.sqlite.driver.bundled.BundledSQLiteDriver
 import com.transfer.flash.core.persistence.db.entity.GroupDeliveryEntity
+import com.transfer.flash.core.persistence.db.entity.MessagePinEntity
 import com.transfer.flash.core.persistence.db.entity.SwarmContentEntity
 import com.transfer.flash.core.persistence.db.entity.SwarmTombstoneEntity
 import com.transfer.flash.core.persistence.db.entity.TrustedPeerEntity
@@ -212,6 +213,29 @@ class FlashDatabaseJvmTest {
         } finally {
             collector.cancel()
         }
+    }
+
+    @Test
+    fun `message pins are ordered newest first, scoped to one conversation and removable`() = runBlocking {
+        val dao = openDatabase().messagePinDao()
+        assertTrue(dao.observePinnedIds("c1").first().isEmpty())
+
+        dao.upsert(MessagePinEntity("c1", "m1", pinnedAt = 10L))
+        dao.upsert(MessagePinEntity("c1", "m2", pinnedAt = 20L))
+        dao.upsert(MessagePinEntity("c2", "m9", pinnedAt = 30L))
+        assertEquals(listOf("m2", "m1"), dao.observePinnedIds("c1").first())
+        assertEquals(listOf("m9"), dao.observePinnedIds("c2").first())
+
+        // Pinning again refreshes the row instead of duplicating it.
+        dao.upsert(MessagePinEntity("c1", "m1", pinnedAt = 40L))
+        assertEquals(listOf("m1", "m2"), dao.observePinnedIds("c1").first())
+
+        dao.unpin("c1", "m1")
+        assertEquals(listOf("m2"), dao.observePinnedIds("c1").first())
+
+        dao.clearConversation("c1")
+        assertTrue(dao.observePinnedIds("c1").first().isEmpty())
+        assertEquals(listOf("m9"), dao.observePinnedIds("c2").first())
     }
 
     @Test

@@ -4019,3 +4019,37 @@ ERROR-115. Reading the path showed an out-of-date link failing silently, and an 
 
 ### Revisit when
 An expiry or single-use rule is chosen, or a place exists where a device shows its own key code.
+
+## ADR-084 - Pinned messages are stored on the device, several per chat, and are never sent to anyone
+
+### Decision
+A pin is a row of table `message_pins (conversationId, messageId, pinnedAt)` (Room schema v12, migration `STEP_11_12`, a new table only). It is device-local: nothing is sent to the peer or the group, the banner shows the pins of this device, and the toast says "Pinned on this device". A chat may hold several pins, newest first; a tap on the banner walks them. Deleting a conversation deletes its pins. `RealFlashChatRepository` takes the DAO as an optional constructor parameter (null means pins are not stored), so the 36 test construction sites did not change.
+
+### Context
+The first implementation was a `remember` state in the conversation screen: lost on leaving the chat, one pin only (UI roadmap 3.4, ERROR-116).
+
+### Alternatives considered
+- Pins shared with the group (a wire frame, per-member state, conflict rules): a protocol decision the owner has not made; a local pin is useful on its own and can later be promoted.
+- A column on `conversations`: the full-row conversation upsert once reset the read cursor, pin and mute (ERROR-087), so a column there is the riskier place.
+- Keeping the pin in memory only: honest, but it is what the review rejected.
+
+### Why this one
+Smallest persistent design with no protocol change and no risk to existing rows.
+
+### Revisit when
+The owner wants pins visible to other members (then a signed group frame and a conflict rule are needed), or a pinned message must survive its own deletion.
+
+## ADR-085 - A file caption is not built: it needs a field in the file offer
+
+### Decision
+Staged files and the composer text are sent as separate messages (files first, then the text). The composer hint says so. No caption field is added to the transfer offer or the swarm offer until the owner decides.
+
+### Context
+UI roadmap 3.2 said captions existed; they did not (ERROR-116). An attachment row is local-only; the peer's row is built from the transfer offer, so a caption has to travel in the offer (and in the group-media and swarm-offer frames).
+
+### Alternatives considered
+- Add an optional `caption` to the offer frames (forward compatible, older peers ignore it): the likely design, but it changes `docs/protocol.md` and three frame families.
+- Send the text as a message and visually attach it to the file bubble: needs a link between two messages, which is also a schema change.
+
+### Revisit when
+The owner chooses a caption design.
