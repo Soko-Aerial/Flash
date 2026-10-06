@@ -228,6 +228,9 @@ class GroupJoinTest {
         val cyReq = requests[0]
         assertEquals("dev-c", cyReq.subjectId)
         assertEquals("PENDING", cyReq.state)
+        // Cy is not paired with Ada, so the admin is shown a self-chosen name and told so.
+        val shown = a.repo.getPendingJoinRequests(groupId).single()
+        assertFalse("an unpaired requester is not a known device", shown.isKnownDevice)
 
         // Ada approves Cy's join request
         val approveResult = a.repo.approveJoinRequest(groupId, "dev-c")
@@ -300,6 +303,34 @@ class GroupJoinTest {
         assertEquals("the roster travelled with it", "Ada's Project", c.conversationDao.get(groupId)?.title)
         assertEquals("the request was not turned back into a pending one", 0,
             a.joinRequestDao.getAllForGroup(groupId).count { it.state == "PENDING" })
+    }
+
+    @Test
+    fun testALinkFromBeforeAGroupCodeChangeSaysSoAndANewLinkWorks() = runBlocking {
+        // Before: an old link made the joiner wait for ever on "Connecting..." with no request and no message.
+        val a = node("dev-a")
+        val c = node("dev-c")
+        val groupId = (a.repo.createGroupForInvite("Ada's Project") as FlashResult.Success).value
+        val oldLink = (a.repo.inviteFor(groupId) as FlashResult.Success).value
+        assertTrue(a.repo.changeGroupCode(groupId) is FlashResult.Success)
+        val newLink = (a.repo.inviteFor(groupId) as FlashResult.Success).value
+
+        connect("dev-a", "dev-c")
+        c.repo.acceptInvite(oldLink)
+        settle(cycles = 15)
+
+        assertEquals("STALE", c.inviteDao.getByGroupId(groupId)?.state)
+        assertEquals(
+            com.transfer.flash.core.messaging.group.GroupMembershipStatusText.INVITE_REPLACED,
+            c.repo.inviteStatusSentence(groupId),
+        )
+        assertEquals("no request reached the admin", 0, a.joinRequestDao.getAllForGroup(groupId).size)
+
+        // Taking the new link starts over and reaches the admin.
+        c.repo.acceptInvite(newLink)
+        settle(cycles = 15)
+        assertEquals(1, a.joinRequestDao.getAllForGroup(groupId).size)
+        assertEquals("PENDING_APPROVAL", c.inviteDao.getByGroupId(groupId)?.state)
     }
 
     @Test

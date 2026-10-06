@@ -45,6 +45,19 @@ public object FlashGroupInviteJoinMath {
         }
     }
 
+    /**
+     * The line under a join request: when it came, and a warning when the approving device is not paired with the
+     * requester (its name is then whatever it chose to call itself).
+     */
+    public fun joinRequestSubtitle(requestedAtMs: Long, nowMs: Long, isKnownDevice: Boolean): String {
+        val whenText = formatRequestTime(requestedAtMs, nowMs)
+        return if (isKnownDevice) {
+            "Requested to join · $whenText"
+        } else {
+            "Not paired with you, name chosen by the device · $whenText"
+        }
+    }
+
     /** Formats a relative timestamp for join requests. */
     public fun formatRequestTime(requestedAtMs: Long, nowMs: Long): String {
         val diffMs = (nowMs - requestedAtMs).coerceAtLeast(0L)

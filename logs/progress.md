@@ -78,6 +78,34 @@ Proceed with Phase 1 (UI Ergonomics & Screen Upgrades):
 - Task 1.3: Settings Page Categorization (`FlashSettingsScreen.kt`).
 - Task 1.4: Bottom Navigation Auto-Hide on Scroll (`FlashBottomNav.kt`).
 
+## 2026-10-06 (n) - Invite link follow-ups: stale links, who is asking, who invited (ERROR-115, ADR-083)
+
+### Worked on
+The owner asked what happens when a user takes a group invite link (investigation, nothing changed), then to fix the worst gap and go on to the rest.
+
+### Changed
+- ERROR-115: a stale or rejected invite is now a visible state (`STALE` / `INVALID`) with the M-06 / M-05 sentences instead of "Connecting..." for ever; `INVALID` is retried on reconnect; `STALE` forgets the secret and the vouch. `acceptInvite` logs the vouch verdict.
+- Join dialog shows "invited by <name>" when this device knows the inviter (`FlashChatRepository.inviterDisplayName`, both hosts pass it).
+- Join request rows: an unpaired requester is marked "Not paired with you, name chosen by the device"; a paired one is shown under the name the approving device knows (`FlashGroupJoinRequestUi.isKnownDevice`); the row shows how long ago it came.
+- Tests: `GroupJoinTest` (stale link; unpaired flag), `FlashGroupInviteJoinMathTest` (subtitle).
+
+### Why
+The investigation found that `STALE` and a rejected proof were swallowed, and that the admin approves on a name the requester picked.
+
+### Verification
+`:core:messaging:testAndroidHostTest`, `:core:messaging:jvmTest`, `:ui:chat:jvmTest`, `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm` green. The stale-link test fails with the fix disabled. No device run.
+
+### Verified by reading, not run
+A named dial to an unpaired inviter is pinned: `acceptInvite` vouches the link's fingerprint, `TrustStoreGroupVouching` writes it as the pin, the TLS layer trusts what `getPin` returns, and a dial that names the peer rejects another key. A refused vouch (the id is already pinned under another key) keeps the older pin, so it is still safe. `GJOIN-06` checks it on devices.
+
+### Left alone on purpose (owner decisions, see the handoff)
+- The link has no expiry, single use or per-person binding (it is a bearer credential; the only revocation is "Change group code"). Adding an expiry changes the wire meaning of `issuedAtMs` (display only today).
+- Address hints are LAN IPv4 only and `pendingInviteHints` is in memory.
+- `PENDING_APPROVAL` does not expire and there is no persistent pending-join row (UI work).
+
+### Next AI
+Ask the owner about the three open decisions before building them. Run `GJOIN-04`...`GJOIN-06`.
+
 ## 2026-10-06 (m) - Joining a group by invite and members-may-add (ERROR-112, ERROR-113, ERROR-114)
 
 ### Worked on

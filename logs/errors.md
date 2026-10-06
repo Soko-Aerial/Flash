@@ -7546,3 +7546,33 @@ There is no persistent "pending join" row in the chat list; the status is shown 
 
 ### Status
 OPEN - fixed in code, NOT device-verified (until GJOIN-02 passes)
+
+## ERROR-115 - An out-of-date invite link left the joiner on "Connecting..." for ever
+
+### Date
+2026-10-06
+
+### Area
+Group membership / `RealFlashChatRepository.triggerProofForPendingInvites`, `scheduleInviteProofRetry`
+
+### Symptoms
+Found by reading the invite path (no device report yet). A link made before a group-code change (removal of a member, "Change group code") carries the old secret. The joiner's proof comes back `STALE` (the inviter still holds the old epoch) or is rejected (`FAILED`). `triggerProofForPendingInvites` handled only `OK`, `FAILED` and `TIMEOUT`: `STALE` fell into `else -> Unit`, and a `FAILED` proof gave up after 3 retries with only a log line. No join request was sent, the invite row stayed `PENDING_CONTACT`, and the joiner saw "Connecting to inviter..." and then "Waiting for a member..." with nothing to say the link was the problem. The existing `onStaleProof` hook answers only peers that are already active members, so it never reached a joiner.
+
+### Root cause
+The proof result was not mapped to a user-visible state.
+
+### Working fix
+- `STALE` marks the invite `STALE`: the sentence is M-06 ("This invite was replaced. Ask for a new one."), the secret is forgotten, the inviter's vouch is revoked, and the group id leaves the charter trust set (also after a restart).
+- `FAILED` after the retries marks the invite `INVALID` (M-05, "This invite is no longer valid."). `INVALID` is retried on the next session-up, so a transient failure is not final. A `TIMEOUT` stays silent (it says nothing about the link).
+- Taking a new link starts over (`acceptInvite` overwrites the row and the secret).
+- `acceptInvite` now logs the verdict of the inviter vouch (`Inviter vouch: ... verdict=`).
+
+### Verification
+`GroupJoinTest.testALinkFromBeforeAGroupCodeChangeSaysSoAndANewLinkWorks` (fails with the `STALE` branch disabled, mutation-checked). `:core:messaging:testAndroidHostTest`, `jvmTest`, `:ui:chat:jvmTest`, `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm` green. Device check `GJOIN-04`.
+
+### Related files
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/RealFlashChatRepository.kt`
+- `core/persistence/.../entity/GroupInviteEntity.kt` (new states documented; the column is a string, no migration)
+
+### Status
+OPEN - fixed in code, unit-tested, NOT device-verified (until GJOIN-04 passes)

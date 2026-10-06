@@ -532,9 +532,13 @@ fun FlashJoinRequestRow(
                 }
             }
             FlashText(
-                text = "Requested to join",
+                text = FlashGroupInviteJoinMath.joinRequestSubtitle(
+                    request.requestedAtMs,
+                    com.transfer.flash.core.common.time.SystemTimeSource.nowMs(),
+                    request.isKnownDevice,
+                ),
                 style = FlashTheme.typography.metadataDefault,
-                color = colors.textTertiary,
+                color = if (request.isKnownDevice) colors.textTertiary else colors.accentSecondary,
             )
         }
 
